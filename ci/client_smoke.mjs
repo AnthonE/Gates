@@ -61,6 +61,14 @@ const REQUIRED = [
   "client_catalog_ptr",
   "client_toast_pop",
   "client_cell_harvested",
+  "client_craft_jobs_ptr",
+  "client_craft_q",
+  "client_recipes_ptr",
+  "client_recipes_state",
+  "client_craft_pop",
+  "client_craft_refusal_pop",
+  "client_action_craft",
+  "client_action_cancel",
 ];
 
 let failed = 0;
@@ -112,7 +120,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 2, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 3, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
@@ -157,6 +165,41 @@ check(ex.client_weak_mark_cell() >>> 0 === ((1 << 16) | 2), "mark cell mismatch"
 check(ex.client_weak_mark_info() === ((1 << 8) | 0x40), "mark info mismatch");
 const invView = new Uint16Array(ex.memory.buffer, ex.client_inv_ptr(), 60);
 check(invView.every((v) => v === 0), "inventory view should start empty");
+
+// --- craft surface: action encode out, craft events in --------------------
+const craftLen = ex.client_action_craft(3, 2);
+check(craftLen > 0 && craftLen <= 4, `craft action length odd: ${craftLen}`);
+check(ex.client_action_craft(64, 1) === 0, "recipe past the table must refuse");
+check(ex.client_action_craft(0, 0) === 0, "zero count must refuse");
+const cancelLen = ex.client_action_cancel(1);
+check(cancelLen > 0 && cancelLen <= 2, `cancel action length odd: ${cancelLen}`);
+check(ex.client_action_cancel(4) === 0, "index past the queue must refuse");
+
+// Hand-framed craft-done: kind EVENT(5, 3 bits LSB-first) · subtype
+// CRAFT_DONE(8, 4 bits) · item=9 (16 bits) · added=2 (16 bits).
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
+  0xc5, 0x04, 0x00, 0x01, 0x00,
+]);
+const doneFlags = ex.client_on_stream(5);
+check(doneFlags === 128, `craft-done should apply with CRAFT_DONE flag: ${doneFlags}`);
+check(
+  (ex.client_craft_pop() >>> 0) === ((9 << 16) | 2),
+  "craft toast should carry item 9 × 2",
+);
+check(ex.client_craft_pop() >>> 0 === 0xffffffff, "craft toast ring should drain");
+
+// Hand-framed craft-refused: kind EVENT(5) · subtype CRAFT_REFUSED(9) ·
+// reason=4 (8 bits).
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x4d, 0x02]);
+const refusedFlags = ex.client_on_stream(2);
+check(
+  refusedFlags === 256,
+  `craft-refused should apply with CRAFT_REFUSED flag: ${refusedFlags}`,
+);
+check(ex.client_craft_refusal_pop() === 4, "refusal reason should be 4");
+check(ex.client_craft_refusal_pop() >>> 0 === 0xffffffff, "refusal ring should drain");
+check((ex.client_craft_q() >>> 0) === 0, "queue should still be empty");
+check((ex.client_recipes_state() >>> 0) === 0, "no recipes dripped yet");
 
 // Garbage on the stream must be refused with the error bit, not trap.
 new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 3).set([0xff, 0xff, 0xff]);

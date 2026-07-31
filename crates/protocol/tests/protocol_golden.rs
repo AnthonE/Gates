@@ -5,38 +5,47 @@
 //! `PROTO_VER` bump in the same commit is the wire drifting by accident.
 
 use protocol::goldens::{
-    event_catalog, event_gather, event_inv, event_slot_change, event_slot_sync, event_weak_mark,
-    hello, input_acks_only, input_full, refuse_full, snapshot_cap, snapshot_delta,
-    snapshot_keyframe, welcome, SnapshotCase, FIXTURES,
+    action_cancel, action_craft, event_catalog, event_craft_done, event_craft_q,
+    event_craft_refused, event_gather, event_inv, event_recipes, event_slot_change,
+    event_slot_sync, event_weak_mark, hello, input_acks_only, input_full, refuse_full,
+    snapshot_cap, snapshot_delta, snapshot_keyframe, welcome, SnapshotCase, FIXTURES,
 };
 use protocol::{
-    decode_event, decode_hello, decode_input, decode_refuse, decode_snapshot, decode_welcome,
-    encode_event_catalog, encode_event_gather, encode_event_inv, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_weak_mark, encode_hello, encode_input, encode_refuse,
-    encode_snapshot, encode_welcome, peek_kind, EventMsg, InputDatagram, WireError, CATALOG_BATCH,
-    KIND_EVENT, KIND_HELLO, KIND_INPUT, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME,
-    MAX_EVENT_MSG_BYTES, SLOT_SYNC_BATCH,
+    decode_action, decode_event, decode_hello, decode_input, decode_refuse, decode_snapshot,
+    decode_welcome, encode_action_cancel, encode_action_craft, encode_event_catalog,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_gather,
+    encode_event_inv, encode_event_recipes, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_weak_mark, encode_hello, encode_input, encode_refuse, encode_snapshot,
+    encode_welcome, peek_kind, ActionMsg, EventMsg, InputDatagram, WireError, CATALOG_BATCH,
+    KIND_ACTION, KIND_EVENT, KIND_HELLO, KIND_INPUT, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME,
+    MAX_EVENT_MSG_BYTES, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 15] = [
-    include_bytes!("golden/v2_input_acks_only.bin"),
-    include_bytes!("golden/v2_input_full.bin"),
-    include_bytes!("golden/v2_snapshot_keyframe.bin"),
-    include_bytes!("golden/v2_snapshot_delta.bin"),
-    include_bytes!("golden/v2_snapshot_cap.bin"),
-    include_bytes!("golden/v2_hello.bin"),
-    include_bytes!("golden/v2_welcome.bin"),
-    include_bytes!("golden/v2_refuse_full.bin"),
-    include_bytes!("golden/v2_event_gather.bin"),
-    include_bytes!("golden/v2_event_inv.bin"),
-    include_bytes!("golden/v2_event_slot_harvested.bin"),
-    include_bytes!("golden/v2_event_slot_respawned.bin"),
-    include_bytes!("golden/v2_event_slot_sync.bin"),
-    include_bytes!("golden/v2_event_catalog.bin"),
-    include_bytes!("golden/v2_event_weak_mark.bin"),
+const GOLDEN: [&[u8]; 21] = [
+    include_bytes!("golden/v3_input_acks_only.bin"),
+    include_bytes!("golden/v3_input_full.bin"),
+    include_bytes!("golden/v3_snapshot_keyframe.bin"),
+    include_bytes!("golden/v3_snapshot_delta.bin"),
+    include_bytes!("golden/v3_snapshot_cap.bin"),
+    include_bytes!("golden/v3_hello.bin"),
+    include_bytes!("golden/v3_welcome.bin"),
+    include_bytes!("golden/v3_refuse_full.bin"),
+    include_bytes!("golden/v3_event_gather.bin"),
+    include_bytes!("golden/v3_event_inv.bin"),
+    include_bytes!("golden/v3_event_slot_harvested.bin"),
+    include_bytes!("golden/v3_event_slot_respawned.bin"),
+    include_bytes!("golden/v3_event_slot_sync.bin"),
+    include_bytes!("golden/v3_event_catalog.bin"),
+    include_bytes!("golden/v3_event_weak_mark.bin"),
+    include_bytes!("golden/v3_event_craft_q.bin"),
+    include_bytes!("golden/v3_event_craft_done.bin"),
+    include_bytes!("golden/v3_event_craft_refused.bin"),
+    include_bytes!("golden/v3_event_recipes.bin"),
+    include_bytes!("golden/v3_action_craft.bin"),
+    include_bytes!("golden/v3_action_cancel.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -81,28 +90,58 @@ fn test_protocol_golden() {
     golden_stream(GOLDEN[5], FIXTURES[5]);
     golden_stream(GOLDEN[6], FIXTURES[6]);
     golden_stream(GOLDEN[7], FIXTURES[7]);
-    for i in 8..15 {
+    for i in 8..19 {
         golden_event(GOLDEN[i], FIXTURES[i]);
     }
+    golden_action(GOLDEN[19], FIXTURES[19]);
+    golden_action(GOLDEN[20], FIXTURES[20]);
+}
+
+/// C→S action frames: byte-stable, kind-peekable, decode-exact.
+fn golden_action(fixture: &[u8], name: &str) {
+    let mut buf = [0u8; 64];
+    assert_eq!(peek_kind(fixture).unwrap(), KIND_ACTION, "{name}");
+    let len = match name {
+        "v3_action_craft.bin" => {
+            let (recipe, count) = action_craft();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Craft { recipe, count },
+                "{name}: decode mismatch"
+            );
+            encode_action_craft(recipe, count, &mut buf).unwrap()
+        }
+        "v3_action_cancel.bin" => {
+            let index = action_cancel();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::CraftCancel { index },
+                "{name}: decode mismatch"
+            );
+            encode_action_cancel(index, &mut buf).unwrap()
+        }
+        other => panic!("unknown action fixture {other}"),
+    };
+    assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
 }
 
 /// The handshake trio: byte-stable, kind-peekable, decode-exact.
 fn golden_stream(fixture: &[u8], name: &str) {
     let mut buf = [0u8; 64];
     match name {
-        "v2_hello.bin" => {
+        "v3_hello.bin" => {
             let len = encode_hello(&hello(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_HELLO);
             assert_eq!(decode_hello(fixture).unwrap(), hello());
         }
-        "v2_welcome.bin" => {
+        "v3_welcome.bin" => {
             let len = encode_welcome(&welcome(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_WELCOME);
             assert_eq!(decode_welcome(fixture).unwrap(), welcome());
         }
-        "v2_refuse_full.bin" => {
+        "v3_refuse_full.bin" => {
             let len = encode_refuse(&refuse_full(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_REFUSE);
@@ -117,7 +156,7 @@ fn golden_event(fixture: &[u8], name: &str) {
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     assert_eq!(peek_kind(fixture).unwrap(), KIND_EVENT, "{name}");
     let len = match name {
-        "v2_event_gather.bin" => {
+        "v3_event_gather.bin" => {
             let (item, added) = event_gather();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -126,7 +165,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_gather(item, added, &mut buf).unwrap()
         }
-        "v2_event_inv.bin" => {
+        "v3_event_inv.bin" => {
             let (slots, count) = event_inv();
             match decode_event(fixture).unwrap() {
                 EventMsg::Inv {
@@ -140,8 +179,8 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_inv(&slots[..count], &mut buf).unwrap()
         }
-        "v2_event_slot_harvested.bin" | "v2_event_slot_respawned.bin" => {
-            let harvested = name == "v2_event_slot_harvested.bin";
+        "v3_event_slot_harvested.bin" | "v3_event_slot_respawned.bin" => {
+            let harvested = name == "v3_event_slot_harvested.bin";
             let (cx, cz) = event_slot_change();
             let want = if harvested {
                 EventMsg::SlotHarvested { cx, cz }
@@ -151,7 +190,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             assert_eq!(decode_event(fixture).unwrap(), want, "{name}");
             encode_event_slot_change(harvested, cx, cz, &mut buf).unwrap()
         }
-        "v2_event_slot_sync.bin" => {
+        "v3_event_slot_sync.bin" => {
             let (reset, cells) = event_slot_sync();
             match decode_event(fixture).unwrap() {
                 EventMsg::SlotSync {
@@ -167,7 +206,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_slot_sync(reset, &cells, &mut buf).unwrap()
         }
-        "v2_event_catalog.bin" => {
+        "v3_event_catalog.bin" => {
             let cat = event_catalog();
             match decode_event(fixture).unwrap() {
                 EventMsg::Catalog {
@@ -196,7 +235,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             assert_eq!(took, CATALOG_BATCH, "{name}: batch shrank");
             len
         }
-        "v2_event_weak_mark.bin" => {
+        "v3_event_weak_mark.bin" => {
             let (cx, cz, mark8, weak_hit) = event_weak_mark();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -209,6 +248,70 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_event_weak_mark(cx, cz, mark8, weak_hit, &mut buf).unwrap()
+        }
+        "v3_event_craft_q.bin" => {
+            let (jobs, eta) = event_craft_q();
+            match decode_event(fixture).unwrap() {
+                EventMsg::CraftQ {
+                    jobs: got,
+                    count,
+                    eta_ticks,
+                } => {
+                    assert_eq!(count as usize, jobs.len(), "{name}: count mismatch");
+                    assert_eq!(eta_ticks, eta, "{name}: eta mismatch");
+                    for (i, j) in jobs.iter().enumerate() {
+                        assert_eq!(
+                            got[i],
+                            (j.recipe as u8, j.remaining as u8),
+                            "{name}: job {i} mismatch"
+                        );
+                    }
+                }
+                other => panic!("{name}: wrong variant {other:?}"),
+            }
+            encode_event_craft_q(&jobs, eta, &mut buf).unwrap()
+        }
+        "v3_event_craft_done.bin" => {
+            let (item, added) = event_craft_done();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::CraftDone { item, added },
+                "{name}: decode mismatch"
+            );
+            encode_event_craft_done(item, added, &mut buf).unwrap()
+        }
+        "v3_event_craft_refused.bin" => {
+            let reason = event_craft_refused();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::CraftRefused { reason },
+                "{name}: decode mismatch"
+            );
+            encode_event_craft_refused(reason, &mut buf).unwrap()
+        }
+        "v3_event_recipes.bin" => {
+            let cc = event_recipes();
+            match decode_event(fixture).unwrap() {
+                EventMsg::Recipes {
+                    total,
+                    first,
+                    count,
+                    rows,
+                } => {
+                    assert_eq!(
+                        (total, first, count),
+                        (cc.recipe_count as u8, 0, RECIPE_BATCH as u8),
+                        "{name}: header mismatch"
+                    );
+                    for (i, row) in rows.iter().enumerate().take(count as usize) {
+                        assert_eq!(*row, cc.recipes[i], "{name}: row {i} mismatch");
+                    }
+                }
+                other => panic!("{name}: wrong variant {other:?}"),
+            }
+            let (len, took) = encode_event_recipes(&cc, 0, &mut buf).unwrap();
+            assert_eq!(took, RECIPE_BATCH, "{name}: batch shrank");
+            len
         }
         other => panic!("unknown event fixture {other}"),
     };
@@ -300,6 +403,7 @@ fn test_decode_is_total() {
         let _ = decode_welcome(bytes);
         let _ = decode_refuse(bytes);
         let _ = decode_event(bytes);
+        let _ = decode_action(bytes);
     };
     let mut scratch = [0u8; DATAGRAM_BUDGET_BYTES];
     for fixture in GOLDEN {

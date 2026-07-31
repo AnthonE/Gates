@@ -11,14 +11,14 @@ use crate::slot::{
 };
 use crate::stats::ShardStats;
 use protocol::{
-    decode_hello, decode_input, encode_refuse, encode_welcome, peek_kind, ItemCatalog, Refuse,
-    Welcome, KIND_INPUT, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES, PROTO_VER, REFUSE_FULL,
-    REFUSE_VERSION,
+    decode_action, decode_hello, decode_input, encode_refuse, encode_welcome, peek_kind, ActionMsg,
+    ItemCatalog, Refuse, Welcome, KIND_INPUT, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES, PROTO_VER,
+    REFUSE_FULL, REFUSE_VERSION,
 };
 use rtrb::RingBuffer;
 use sim_core::limits::{
-    CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP, INPUT_RING_CAP, MAX_PLAYERS,
-    SNAPSHOT_RING_CAP, TICK_HZ,
+    ACTION_RING_CAP, CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP, INPUT_RING_CAP,
+    MAX_PLAYERS, SNAPSHOT_RING_CAP, TICK_HZ,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,11 +70,13 @@ pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
 
 /// Boot a shard: bind, spawn the sim thread and the accept loop, return.
 /// The caller owns process lifetime; `shutdown` stops the sim thread.
-/// `gather` and `catalog` are the content bake (CLAUDE.md wall 7) — data
-/// the world runs on, handed over before the first tick like the seed.
+/// `gather`, `craft`, and `catalog` are the content bake (CLAUDE.md wall
+/// 7) — data the world runs on, handed over before the first tick like
+/// the seed.
 pub async fn spawn_shard(
     cfg: ShardConfig,
     gather: sim_core::gather::GatherContent,
+    craft: sim_core::craft::CraftContent,
     catalog: ItemCatalog,
 ) -> Result<ShardHandle, String> {
     let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])
@@ -122,7 +124,8 @@ pub async fn spawn_shard(
             .name("sim".into())
             .spawn(move || {
                 sim_thread(
-                    seed, dev_spawn, gather, catalog, ctrl_rx, grave_tx, slots, stats, shutdown,
+                    seed, dev_spawn, gather, craft, catalog, ctrl_rx, grave_tx, slots, stats,
+                    shutdown,
                 )
             })
             .map_err(|e| format!("sim thread spawn: {e}"))?;
@@ -151,9 +154,11 @@ pub async fn spawn_shard(
 // ---------------------------------------------------------------------------
 
 /// What a handshake task hands back once the client said a valid hello.
+/// The recv half stays: after the hello it is the C→S action lane.
 struct Handshaken {
     connection: Connection,
     send: SendStream,
+    recv: RecvStream,
 }
 
 async fn accept_loop(
@@ -206,10 +211,10 @@ async fn handshake_task(
         let (send, mut recv) = connection.accept_bi().await.map_err(|_| ())?;
         let (hello_buf, hello_len) = read_frame(&mut recv).await.ok_or(())?;
         let hello = decode_hello(&hello_buf[..hello_len]).map_err(|_| ())?;
-        Ok::<_, ()>((connection, send, hello))
+        Ok::<_, ()>((connection, send, recv, hello))
     })
     .await;
-    let Ok(Ok((connection, send, hello))) = result else {
+    let Ok(Ok((connection, send, recv, hello))) = result else {
         ShardStats::bump(&stats.handshake_errors);
         return;
     };
@@ -218,7 +223,13 @@ async fn handshake_task(
         spawn_refusal(connection, send, REFUSE_VERSION);
         return;
     }
-    let _ = done_tx.send(Handshaken { connection, send }).await;
+    let _ = done_tx
+        .send(Handshaken {
+            connection,
+            send,
+            recv,
+        })
+        .await;
 }
 
 /// Claim a slot, build the rings, hand the sim its ends, welcome the
@@ -234,6 +245,7 @@ async fn install(
     let Handshaken {
         connection,
         mut send,
+        recv,
     } = done;
     let Some((slot, generation)) = (0..MAX_PLAYERS).find_map(|s| slots.claim(s).map(|g| (s, g)))
     else {
@@ -246,11 +258,13 @@ async fn install(
     let id = (generation << 8) | slot as u32;
 
     let (input_tx, input_rx) = RingBuffer::new(INPUT_RING_CAP);
+    let (action_tx, action_rx) = RingBuffer::<ActionMsg>::new(ACTION_RING_CAP);
     let (snap_tx, snap_rx) = RingBuffer::<SnapMsg>::new(SNAPSHOT_RING_CAP);
     let (ev_tx, ev_rx) = RingBuffer::<EvMsg>::new(EVENT_RING_CAP);
     let link = Link {
         generation,
         input: input_rx,
+        actions: action_rx,
         snaps: snap_tx,
         events: ev_tx,
     };
@@ -273,6 +287,16 @@ async fn install(
     tokio::spawn(reader_task(
         connection.clone(),
         input_tx,
+        slots.clone(),
+        stats.clone(),
+        slot,
+        generation,
+    ));
+    // The bidi recv half stays open for the connection's life: after the
+    // hello it is the C→S action lane (craft requests).
+    tokio::spawn(action_reader_task(
+        recv,
+        action_tx,
         slots.clone(),
         stats.clone(),
         slot,
@@ -322,6 +346,54 @@ async fn reader_task(
                 }
             }
             Err(_) => ShardStats::bump(&stats.input_dg_bad),
+        }
+    }
+    slots.mark_leaving(slot, generation);
+}
+
+/// Reads length-prefixed C→S action frames off the bidi stream for the
+/// connection's life. A full ring backpressures: the task stops reading
+/// until the sim drains, and QUIC flow control holds the client (limits.rs
+/// `ACTION_RING_CAP` policy — the reliable lane never drops). A frame
+/// that fails to decode drops the session: framing trust is gone, and
+/// client-driven bytes never panic, only count (`actions_bad`).
+async fn action_reader_task(
+    mut recv: RecvStream,
+    mut action_tx: rtrb::Producer<ActionMsg>,
+    slots: Arc<SlotTable>,
+    stats: Arc<ShardStats>,
+    slot: usize,
+    generation: u32,
+) {
+    loop {
+        let word = slots.load(slot);
+        if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
+            return; // slot moved on; sim (or another task) already knows
+        }
+        let Some((buf, len)) = read_frame(&mut recv).await else {
+            break; // stream closed or oversize frame: the session is done
+        };
+        match decode_action(&buf[..len]) {
+            Ok(mut act) => {
+                ShardStats::bump(&stats.actions_ok);
+                loop {
+                    match action_tx.push(act) {
+                        Ok(()) => break,
+                        Err(rtrb::PushError::Full(back)) => {
+                            act = back;
+                            let word = slots.load(slot);
+                            if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
+                                return;
+                            }
+                            tokio::time::sleep(WRITER_POLL).await;
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                ShardStats::bump(&stats.actions_bad);
+                break;
+            }
         }
     }
     slots.mark_leaving(slot, generation);
@@ -475,6 +547,7 @@ fn sim_thread(
     seed: u64,
     dev_spawn: Option<(f32, f32)>,
     gather: sim_core::gather::GatherContent,
+    craft: sim_core::craft::CraftContent,
     catalog: ItemCatalog,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut grave_tx: rtrb::Producer<Link>,
@@ -485,6 +558,7 @@ fn sim_thread(
     let mut core = ShardCore::new(seed);
     core.world.dev_spawn = dev_spawn;
     core.world.gather = gather;
+    core.world.craft = craft;
     core.catalog = catalog;
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_PLAYERS);
     links.resize_with(MAX_PLAYERS, || None);
@@ -538,11 +612,17 @@ fn sim_thread(
                 }
             }
         }
-        // Drain inputs.
+        // Drain inputs, and at most one action per client per tick — the
+        // ring buffers the burst, the stream backpressures past it.
         for slot in 0..MAX_PLAYERS {
             if let Some(link) = links[slot].as_mut() {
                 while let Ok(dg) = link.input.pop() {
                     core.push_input(slot, &dg);
+                }
+                if core.wants_action(slot) {
+                    if let Ok(act) = link.actions.pop() {
+                        core.push_action(slot, act);
+                    }
                 }
             }
         }

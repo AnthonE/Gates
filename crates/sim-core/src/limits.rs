@@ -105,6 +105,34 @@ pub const INV_SLOTS: usize = 30;
 /// selector falls back to slot 0 (`world::apply`).
 pub const HOTBAR_SLOTS: usize = 6;
 
+/// Recipe definitions the sim preallocates for (the alpha ladder is ~34
+/// rows, CONTENT.md §2). The content bake refuses a set past this.
+/// Proposed default, DECISIONS.md §open (craft verb row).
+pub const MAX_RECIPES: usize = 64;
+
+/// Inputs one recipe may carry (alpha data uses ≤ 3). The bake refuses
+/// past it. Structural cap like `MAX_TOOLS_PER_NODE`, not a knob.
+pub const MAX_RECIPE_INPUTS: usize = 4;
+
+/// Per-player craft queue jobs (the reference crafting screen's queue
+/// strip). Overflow policy: **refuse** — the enqueue bounces with an
+/// integer reason code (EV_CRAFT_REFUSED). Proposed default, DECISIONS.md
+/// §open (craft verb row).
+pub const CRAFT_QUEUE: usize = 4;
+
+/// Units one craft request may ask for (the quantity stepper's ceiling).
+/// Overflow policy: **refuse** the request. Proposed default, DECISIONS.md
+/// §open (craft verb row).
+pub const CRAFT_COUNT_MAX: u16 = 99;
+
+/// Per-connection inbound ring of decoded C→S action messages (net task →
+/// sim; the reliable bidi lane). Overflow policy: **backpressure** — the
+/// reader task stops reading the stream until the ring drains, so QUIC
+/// flow control pushes the wait back to the sender; nothing on the
+/// reliable lane is dropped. Proposed default, DECISIONS.md §open (craft
+/// wire row).
+pub const ACTION_RING_CAP: usize = 8;
+
 /// Sparse slot-life store (harvested/damaged scatter slots). Sized past
 /// the ~8–12 k live slots a seed produces (TERRAIN.md §6) so harvested
 /// entries always fit. Overflow policy: **evict** — standing-damage

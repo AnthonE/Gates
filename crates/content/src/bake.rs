@@ -7,10 +7,11 @@
 //! Boot path only: allocation and `String` errors are fine here; nothing
 //! in this module runs on the sim thread.
 
-use crate::schema::NodeArchetype;
+use crate::schema::{NodeArchetype, Station};
 use crate::Content;
+use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
-use sim_core::limits::MAX_ITEM_DEFS;
+use sim_core::limits::{MAX_ITEM_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ};
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
 fn node_slot(a: NodeArchetype) -> usize {
@@ -97,5 +98,82 @@ impl Content {
             gc.nodes[slot] = def;
         }
         Ok(gc)
+    }
+
+    /// Rank of `id` among all recipe ids, sorted — the wire-side recipe
+    /// index (same canonical mapping as `item_index`).
+    pub fn recipe_index(&self, id: &str) -> Option<u16> {
+        let mut rank = 0u16;
+        let mut found = false;
+        for r in &self.recipes {
+            if r.id.as_str() < id {
+                rank += 1;
+            } else if r.id == id {
+                found = true;
+            }
+        }
+        found.then_some(rank)
+    }
+
+    /// The craft table. Refuses sets the sim's fixed capacities — or the
+    /// wire's field widths (seconds u16, output count u8) — can't hold.
+    pub fn bake_craft(&self) -> Result<CraftContent, String> {
+        if self.recipes.len() > MAX_RECIPES {
+            return Err(format!(
+                "bake: {} recipes exceed the sim's {MAX_RECIPES}-row table",
+                self.recipes.len()
+            ));
+        }
+        let mut cc = CraftContent::EMPTY;
+        cc.recipe_count = self.recipes.len() as u16;
+        for r in &self.recipes {
+            let idx = self.recipe_index(&r.id).expect("own id resolves") as usize;
+            if r.seconds == 0 || r.seconds > u16::MAX as u32 {
+                return Err(format!(
+                    "bake: `{}` seconds {} outside 1..=65535",
+                    r.id, r.seconds
+                ));
+            }
+            if r.count == 0 || r.count > u8::MAX as u32 {
+                return Err(format!(
+                    "bake: `{}` output count {} outside 1..=255",
+                    r.id, r.count
+                ));
+            }
+            if r.inputs.len() > MAX_RECIPE_INPUTS {
+                return Err(format!(
+                    "bake: `{}` has more than {MAX_RECIPE_INPUTS} inputs",
+                    r.id
+                ));
+            }
+            let mut def = RecipeDef {
+                output: self
+                    .item_index(&r.output)
+                    .ok_or_else(|| format!("bake: `{}` output missing", r.id))?,
+                out_count: r.count as u16,
+                ticks: r.seconds * TICK_HZ,
+                station: match r.station {
+                    Station::None => STATION_NONE,
+                    Station::Workbench1 => STATION_WORKBENCH1,
+                    Station::Furnace => STATION_FURNACE,
+                },
+                n_inputs: r.inputs.len() as u8,
+                inputs: [(0, 0); MAX_RECIPE_INPUTS],
+            };
+            for (n, input) in r.inputs.iter().enumerate() {
+                let item = self
+                    .item_index(&input.item)
+                    .ok_or_else(|| format!("bake: `{}` input `{}` missing", r.id, input.item))?;
+                let count = u16::try_from(input.count).map_err(|_| {
+                    format!(
+                        "bake: `{}` input `{}` count overflows u16",
+                        r.id, input.item
+                    )
+                })?;
+                def.inputs[n] = (item, count);
+            }
+            cc.recipes[idx] = def;
+        }
+        Ok(cc)
     }
 }

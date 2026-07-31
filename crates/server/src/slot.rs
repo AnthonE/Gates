@@ -10,7 +10,7 @@
 //!   handles), sim→accept graveyard ring (returns them, so the sim thread
 //!   never deallocates — L2 outlives the tick).
 
-use protocol::{InputDatagram, MAX_EVENT_MSG_BYTES};
+use protocol::{ActionMsg, InputDatagram, MAX_EVENT_MSG_BYTES};
 use rtrb::{Consumer, Producer};
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -138,6 +138,9 @@ impl EvMsg {
 pub struct Link {
     pub generation: u32,
     pub input: Consumer<InputDatagram>,
+    /// C→S reliable actions (craft requests). The sim drains at most one
+    /// per tick; a full ring backpressures the stream reader (limits.rs).
+    pub actions: Consumer<ActionMsg>,
     pub snaps: Producer<SnapMsg>,
     pub events: Producer<EvMsg>,
 }

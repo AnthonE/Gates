@@ -4,10 +4,11 @@
 //! applied in submission order, then players step in slot order — the fixed
 //! order determinism requires.
 
+use crate::craft::{self, CraftContent, CraftJob};
 use crate::gather::{self, GatherContent, ItemStack, SlotLives, NO_CELL};
 use crate::input::InputFrame;
 use crate::limits::{
-    HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS,
+    CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS,
     STATE_HASH_INTERVAL,
 };
 use crate::movement::{self, Body};
@@ -30,6 +31,11 @@ pub const EV_SLOT_RESPAWNED: u8 = 3;
 /// next mark heading (u8 over the 256-entry yaw LUT). Swinger-only fact:
 /// the mark is per-player (gather.rs).
 pub const EV_WEAK_MARK: u8 = 4;
+/// EV_CRAFT_DONE: a = player id, b = item index << 16 | units actually
+/// added (0 = full inventory; the loss is announced, never silent).
+pub const EV_CRAFT_DONE: u8 = 5;
+/// EV_CRAFT_REFUSED: a = player id, b = `craft::REFUSE_*` reason code.
+pub const EV_CRAFT_REFUSED: u8 = 6;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SimEvent {
@@ -104,6 +110,10 @@ pub struct Player {
     /// heading derives from these (gather.rs), so they are sim state.
     pub ws_cell: u32,
     pub ws_hits: u16,
+    /// Craft queue, dense with the head at 0 (craft.rs). Sim state.
+    pub jobs: [CraftJob; CRAFT_QUEUE],
+    /// Tick the head job's current unit completes at; 0 = idle.
+    pub craft_done_at: u64,
 }
 
 impl Default for Player {
@@ -117,6 +127,8 @@ impl Default for Player {
             next_swing: 0,
             ws_cell: NO_CELL,
             ws_hits: 0,
+            jobs: [CraftJob::default(); CRAFT_QUEUE],
+            craft_done_at: 0,
         }
     }
 }
@@ -125,9 +137,28 @@ impl Default for Player {
 /// tick numbers (DESIGN.md §7).
 #[derive(Clone, Copy, Debug)]
 pub enum Command {
-    Join { id: u32 },
-    Leave { id: u32 },
-    Input { id: u32, frame: InputFrame },
+    Join {
+        id: u32,
+    },
+    Leave {
+        id: u32,
+    },
+    Input {
+        id: u32,
+        frame: InputFrame,
+    },
+    /// Enqueue `count` crafts of recipe row `recipe` (craft.rs validates
+    /// and refuses by event, never by panic).
+    Craft {
+        id: u32,
+        recipe: u16,
+        count: u16,
+    },
+    /// Cancel the queue job at `index`, refunding its remaining inputs.
+    CraftCancel {
+        id: u32,
+        index: u16,
+    },
 }
 
 pub struct World {
@@ -140,6 +171,8 @@ pub struct World {
     /// `content/*.toml`, before the first tick. The WAL pins the content
     /// hash it was baked from when the WAL file format lands.
     pub gather: GatherContent,
+    /// Baked recipe rules (craft.rs). Construction input like `gather`.
+    pub craft: CraftContent,
     /// Sparse harvested/damaged slot records (TERRAIN.md §2).
     pub slot_lives: SlotLives,
     /// This tick's outbound events; cleared at tick start.
@@ -164,6 +197,7 @@ impl World {
             players: [Player::default(); MAX_PLAYERS],
             scatter: ScatterTable::alpha_default(),
             gather: GatherContent::EMPTY,
+            craft: CraftContent::EMPTY,
             slot_lives: SlotLives::new(),
             events: EventQueue::default(),
             last_hash: 0,
@@ -230,6 +264,29 @@ impl World {
                     self.players[slot].frame = frame;
                 }
             }
+            Command::Craft { id, recipe, count } => {
+                if let Some(slot) = self.slot_of(id) {
+                    craft::enqueue(
+                        &self.craft,
+                        self.tick,
+                        &mut self.players[slot],
+                        recipe,
+                        count,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::CraftCancel { id, index } => {
+                if let Some(slot) = self.slot_of(id) {
+                    craft::cancel(
+                        &self.craft,
+                        &self.gather,
+                        self.tick,
+                        &mut self.players[slot],
+                        index,
+                    );
+                }
+            }
         }
     }
 
@@ -256,6 +313,7 @@ impl World {
                     &mut self.events,
                     p,
                 );
+                craft::step(&self.craft, &self.gather, tick, p, &mut self.events);
             }
         }
         self.slot_lives.respawn_due(tick, &mut self.events);
@@ -302,6 +360,13 @@ impl World {
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
                 h.update(&sb);
             }
+            let mut cb = [0u8; 8 + CRAFT_QUEUE * 4];
+            cb[0..8].copy_from_slice(&p.craft_done_at.to_le_bytes());
+            for (j, job) in p.jobs.iter().enumerate() {
+                cb[8 + j * 4..8 + j * 4 + 2].copy_from_slice(&job.recipe.to_le_bytes());
+                cb[8 + j * 4 + 2..8 + j * 4 + 4].copy_from_slice(&job.remaining.to_le_bytes());
+            }
+            h.update(&cb);
         }
         h.update(&(self.slot_lives.len() as u64).to_le_bytes());
         for e in self.slot_lives.entries() {

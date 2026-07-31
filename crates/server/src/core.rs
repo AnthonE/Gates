@@ -7,18 +7,22 @@
 use crate::client::ClientNetState;
 use crate::stats::ShardStats;
 use protocol::{
-    encode_event_catalog, encode_event_gather, encode_event_inv, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_weak_mark, EntityState, InputDatagram, InvSlot,
-    ItemCatalog, SnapshotEncoder, SnapshotHeader, WireError, MAX_EVENT_MSG_BYTES, SLOT_SYNC_BATCH,
+    encode_event_catalog, encode_event_craft_done, encode_event_craft_q,
+    encode_event_craft_refused, encode_event_gather, encode_event_inv, encode_event_recipes,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark, ActionMsg,
+    EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireError,
+    MAX_EVENT_MSG_BYTES, SLOT_SYNC_BATCH,
 };
+use sim_core::craft::CraftJob;
 use sim_core::gather::ItemStack;
 use sim_core::limits::{
-    AOI_ENTER_CM, AOI_EXIT_CM, DATAGRAM_BUDGET_BYTES, INV_SLOTS, MAX_COMMANDS_PER_TICK,
-    MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
-    SYNC_SCAN_PER_TICK,
+    AOI_ENTER_CM, AOI_EXIT_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, INV_SLOTS,
+    MAX_COMMANDS_PER_TICK, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS,
+    STALENESS_CEILING, SYNC_SCAN_PER_TICK,
 };
 use sim_core::world::{
-    Command, Player, World, EV_GATHER, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_WEAK_MARK,
+    Command, Player, World, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_GATHER, EV_SLOT_HARVESTED,
+    EV_SLOT_RESPAWNED, EV_WEAK_MARK,
 };
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
@@ -130,6 +134,23 @@ impl ShardCore {
         }
     }
 
+    /// Whether this client can accept another C→S action this tick — the
+    /// net thread pops its action ring only through an open hand, so a
+    /// deferred action stays ringed (and, past the ring, in the stream).
+    pub fn wants_action(&self, slot: usize) -> bool {
+        self.clients[slot].connected && self.clients[slot].pending_action.is_none()
+    }
+
+    /// Hand one decoded action to this client's pending slot. Callers
+    /// check `wants_action` first; a push into a full hand is dropped
+    /// (defensive — the contract keeps it unreachable).
+    pub fn push_action(&mut self, slot: usize, act: ActionMsg) {
+        let c = &mut self.clients[slot];
+        if c.connected && c.pending_action.is_none() {
+            c.pending_action = Some(act);
+        }
+    }
+
     /// One fixed tick: queued joins/leaves + one consumed input per client
     /// → `World::tick`, then interest/priority accrual, then the event
     /// lane (sim events routed + per-client sync/catalog/inventory drips),
@@ -151,6 +172,26 @@ impl ShardCore {
                     cmds[n] = Command::Input { id: c.id, frame };
                     n += 1;
                 }
+            }
+        }
+        // Pending actions ride after inputs, at most one per client per
+        // tick. A full command buffer defers the action to the next tick
+        // (limits.rs policy) — it stays in the client's hand.
+        for slot in 0..MAX_PLAYERS {
+            let c = &mut self.clients[slot];
+            if !c.connected || n == MAX_COMMANDS_PER_TICK {
+                continue;
+            }
+            if let Some(act) = c.pending_action.take() {
+                cmds[n] = match act {
+                    ActionMsg::Craft { recipe, count } => Command::Craft {
+                        id: c.id,
+                        recipe,
+                        count,
+                    },
+                    ActionMsg::CraftCancel { index } => Command::CraftCancel { id: c.id, index },
+                };
+                n += 1;
             }
         }
         self.world.tick(&cmds[..n]);
@@ -224,6 +265,29 @@ impl ShardCore {
                             } else {
                                 // A lost mark is cosmetic; the resync is
                                 // the uniform recovery, same as a toast.
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_CRAFT_DONE | EV_CRAFT_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // crafter left this tick
+                    };
+                    let enc = if ev.code == EV_CRAFT_DONE {
+                        encode_event_craft_done((ev.b >> 16) as u16, ev.b as u16, &mut self.ev_buf)
+                    } else {
+                        encode_event_craft_refused(ev.b as u8, &mut self.ev_buf)
+                    };
+                    match enc {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                // The craft-queue shadow re-diffs after the
+                                // resync; the toast itself is cosmetic.
                                 self.clients[slot].ev_resync();
                                 ShardStats::bump(&stats.ev_resyncs);
                             }
@@ -305,6 +369,23 @@ impl ShardCore {
             }
         }
 
+        // Recipe rows, same drip shape (the craft menu's data).
+        let c = &self.clients[slot];
+        let cc = &self.world.craft;
+        if cc.recipe_count > 0 && c.recipes_cursor < cc.recipe_count as usize {
+            match encode_event_recipes(cc, c.recipes_cursor, &mut self.ev_buf) {
+                Ok((len, took)) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].recipes_cursor += took;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
         // Harvested-set walk (join sync / resync), drip-fed. The cursor
         // walks the live store; entries that move behind it mid-walk stay
         // unsynced until their own respawn event — bounded staleness the
@@ -370,6 +451,34 @@ impl ShardCore {
                     if send(Lane::Event, slot, &self.ev_buf[..len]) {
                         ShardStats::bump(&stats.ev_sent);
                         self.clients[slot].last_inv = inv;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Craft-queue diff against the last successfully queued copy. The
+        // shadow includes the head timer: a completed unit that leaves the
+        // queue shape identical (batch of N, next unit starts) still moves
+        // `craft_done_at`, and the client re-anchors its countdown.
+        let c = &self.clients[slot];
+        let p = &self.world.players[c.own_wslot];
+        let (jobs, done_at): ([CraftJob; CRAFT_QUEUE], u64) = (p.jobs, p.craft_done_at);
+        if jobs != c.last_jobs || done_at != c.last_done_at {
+            let live = jobs
+                .iter()
+                .position(|j| j.remaining == 0)
+                .unwrap_or(CRAFT_QUEUE);
+            let eta = done_at.saturating_sub(self.world.tick).min(u16::MAX as u64) as u16;
+            match encode_event_craft_q(&jobs[..live], eta, &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        let c = &mut self.clients[slot];
+                        c.last_jobs = jobs;
+                        c.last_done_at = done_at;
                     }
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),

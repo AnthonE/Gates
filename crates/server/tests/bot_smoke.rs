@@ -14,18 +14,23 @@ const BOTS: usize = 50;
 
 /// The shipped content set, baked — the smoke runs the same boot path the
 /// shard binary does, so gather and the catalog are live under the herd.
-fn baked_content() -> (sim_core::gather::GatherContent, protocol::ItemCatalog) {
+fn baked_content() -> (
+    sim_core::gather::GatherContent,
+    sim_core::craft::CraftContent,
+    protocol::ItemCatalog,
+) {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let content = content::Content::load_dir(&dir).expect("shipped content loads");
     let gather = content.bake_gather().expect("shipped content bakes");
+    let craft = content.bake_craft().expect("shipped recipes bake");
     let catalog = server::net::bake_catalog(&content).expect("shipped catalog bakes");
-    (gather, catalog)
+    (gather, craft, catalog)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bot_smoke_50() {
-    let (gather, catalog) = baked_content();
-    let handle = spawn_shard(ShardConfig::ephemeral(0xC0FFEE), gather, catalog)
+    let (gather, craft, catalog) = baked_content();
+    let handle = spawn_shard(ShardConfig::ephemeral(0xC0FFEE), gather, craft, catalog)
         .await
         .expect("shard boots");
     let addr = handle.local_addr;
@@ -119,8 +124,8 @@ async fn test_version_gate_refuses() {
     use protocol::{encode_hello, Hello, MAX_STREAM_MSG_BYTES};
     use server::net::{read_frame, write_frame};
 
-    let (gather, catalog) = baked_content();
-    let handle = spawn_shard(ShardConfig::ephemeral(7), gather, catalog)
+    let (gather, craft, catalog) = baked_content();
+    let handle = spawn_shard(ShardConfig::ephemeral(7), gather, craft, catalog)
         .await
         .expect("boots");
     let endpoint = bot_endpoint().expect("endpoint");
