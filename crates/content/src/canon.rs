@@ -187,6 +187,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(pair[0]);
         h.u(pair[1]);
     }
+    h.u(b.headshot_mult);
     h.u(b.armor_extra_hits_max);
     h.u(b.upkeep_solo_daily_max_min);
     h.u(c.balance.banded_nodes.len() as u32);

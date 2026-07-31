@@ -85,6 +85,12 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
         };
         let base = hits_to_kill(hp, w.damage, 0);
         in_band(base, band, &format!("ttk `{}`", w.id))?;
+        if w.headshot_mult != bands.headshot_mult {
+            return Err(format!(
+                "band break: headshot mult on `{}` is {}, the band says exactly {}",
+                w.id, w.headshot_mult, bands.headshot_mult
+            ));
+        }
         for a in &c.armors {
             let with = hits_to_kill(hp, w.damage, a.reduction_pct);
             if with - base > bands.armor_extra_hits_max {

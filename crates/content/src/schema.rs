@@ -267,6 +267,8 @@ pub struct Bands {
     pub ttk_melee: [u32; 2],
     pub ttk_bow: [u32; 2],
     pub ttk_firearm: [u32; 2],
+    /// Every banded weapon carries exactly this headshot multiplier.
+    pub headshot_mult: u32,
     pub armor_extra_hits_max: u32,
     pub node_yield: [u32; 2],
     pub node_hits: [u32; 2],

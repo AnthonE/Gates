@@ -200,6 +200,13 @@ fn band_breaks_refused() {
         "reduction_pct = 60",
         "band break: `item.armor_roadsign_body`",
     );
+    // Headshot: ×5 would one-tap past the TTK band; ×2 exactly, banded.
+    refuses(
+        "weapons.toml",
+        "headshot_mult = 2",
+        "headshot_mult = 5",
+        "band break: headshot",
+    );
 }
 
 #[test]

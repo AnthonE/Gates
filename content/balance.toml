@@ -26,6 +26,9 @@ upkeep_pct_per_day = 10
 ttk_melee = [3, 5]
 ttk_bow = [3, 4]
 ttk_firearm = [4, 6]
+# "headshot × 2" (CONTENT §4) — every banded weapon carries exactly this,
+# so a data edit can't quietly make headshots one-tap past the TTK band.
+headshot_mult = 2
 # Any single armor piece may add at most this many hits vs any banded weapon.
 armor_extra_hits_max = 2
 # Anchor 3 — a banded node's total yield and hit count at tier-1 tools.
