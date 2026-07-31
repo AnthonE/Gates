@@ -147,7 +147,10 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   };
   // The aimed grid address for the selected piece: a point mid-reach
   // ahead of the feet picks the cell; wall shapes snap to the nearest
-  // cell edge, canonicalized to west/north (sim-core build.rs).
+  // cell edge, canonicalized to west/north (sim-core build.rs). Fills
+  // one reused object — this runs in the RAF loop while build mode is
+  // on, and the RAF path allocates nothing (CLAUDE.md trap list).
+  const bTarget = { cx: 0, cz: 0, level: 0, loc: 0, shape: 0 };
   const buildTarget = () => {
     const R = views.render;
     const shape = views.pieceDefs[build.row * 8];
@@ -167,7 +170,12 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     } else if (shape === 4) {
       loc = 1;
     }
-    return { cx, cz, level: shape === 0 ? 0 : build.level, loc, shape };
+    bTarget.cx = cx;
+    bTarget.cz = cz;
+    bTarget.level = shape === 0 ? 0 : build.level;
+    bTarget.loc = loc;
+    bTarget.shape = shape;
+    return bTarget;
   };
   const buildStrip = () => {
     if (!build.on) {
@@ -471,7 +479,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       scene.setCamera(R[1], R[2], R[3], input.yaw, input.pitch);
       terrain.update(R[1], R[3]);
       if (build.on) {
-        // Preallocated math + one mesh transform: RAF-safe.
+        // Scalar math into a reused object + one mesh transform.
         const t = buildTarget();
         scene.setGhost(t.shape, t.cx, t.cz, t.level, t.loc, groundAt(t.cx, t.cz));
       }

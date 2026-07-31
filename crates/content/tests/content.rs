@@ -391,4 +391,23 @@ fn bake_building_refuses_out_of_cap_rows() {
     let c = build(&srcs).expect("three costs is a bake error, not a schema error");
     let err = c.bake_building().expect_err("three-cost piece baked");
     assert!(err.contains("cost rows"), "{err}");
+
+    // Two cost rows naming the same item: the sim checks each row's
+    // affordability independently, so a double-listed item would pass
+    // the check yet under-collect — refuse at bake.
+    let mut srcs = sources();
+    let entry = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "building.toml")
+        .unwrap();
+    entry.1 = entry.1.replacen(
+        "cost = [{ item = \"item.wood\", count = 350 }]",
+        "cost = [\n    { item = \"item.wood\", count = 350 },\n    { item = \"item.wood\", count = 1 },\n]",
+        1,
+    );
+    let c = build(&srcs).expect("a duplicate cost item is a bake error, not a schema error");
+    let err = c
+        .bake_building()
+        .expect_err("double-listed cost item baked");
+    assert!(err.contains("twice"), "{err}");
 }

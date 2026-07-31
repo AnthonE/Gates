@@ -246,6 +246,12 @@ impl Content {
                 let count = u16::try_from(cost.count).map_err(|_| {
                     format!("bake: `{}` cost `{}` count overflows u16", p.id, cost.item)
                 })?;
+                // One row per item: the sim checks each row's
+                // affordability independently, so a double-listed item
+                // would pass the check yet under-collect.
+                if def.costs[..n].iter().any(|&(i, _)| i == item) {
+                    return Err(format!("bake: `{}` lists cost `{}` twice", p.id, cost.item));
+                }
                 def.costs[n] = (item, count);
             }
             bc.pieces[idx] = def;
