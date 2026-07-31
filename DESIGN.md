@@ -176,8 +176,11 @@ gates/
                    # golden tests. Shared native/wasm. Zero game logic.
     server/        # tokio + wtransport termination, session/auth, AOI +
                    # snapshot encoding, WAL persistence, admin, bots.
-    client-wasm/   # thin wasm-bindgen bridge exposing sim-core prediction
-                   # + chunk generation to JS.
+    client-wasm/   # the client netcode core (snapshot view, prediction/
+                   # reconciliation, interpolation, client clock) — pure,
+                   # native-tested, shared with the server's bot client —
+                   # plus a thin raw C-ABI wasm bridge to JS (no bindgen;
+                   # the same pattern the parity probe ships).
   web/             # three.js app (vite): renderer, input, interpolation,
                    # UI overlay (plain DOM), wallet connect.
 ```

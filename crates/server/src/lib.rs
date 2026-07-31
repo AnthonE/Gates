@@ -24,7 +24,9 @@ pub mod core;
 pub mod net;
 pub mod slot;
 pub mod stats;
-pub mod view;
+/// The client-side snapshot view lives in `client-wasm` (the browser and
+/// the bots share one implementation); re-exported for the gates.
+pub use client_wasm::view;
 
 pub use protocol::PROTO_VER;
 pub use sim_core::limits;

@@ -6,6 +6,8 @@
 /web/dist/
 **/pkg/
 *.wasm.map
+# Copied wasm artifact (dev.sh / ci/gates.sh place it; cargo owns it)
+/web/public/client_wasm.wasm
 
 # Cargo.lock IS committed — ashfall ships binaries, not a library.
 

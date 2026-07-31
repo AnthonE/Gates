@@ -4,13 +4,14 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **M0 — the shell** (`DESIGN.md` §11, the overnight): workspace + five
-   crates · sim-core tick/worldgen/capsule/state_hash · protocol codec +
-   goldens · server accept/rings/30 Hz/AOI/snapshots · client
-   connect/predict/interpolate · gates live (`test_alloc_zero`,
-   `test_replay`, `test_parity_wasm`, `test_protocol_golden`) · bots bin.
-   Exit: two tabs walk around each other on a seeded island; `./ci/gates.sh`
-   green.
+1. **M0 exit check** (`DESIGN.md` §11): the shell is fully built — sim-core,
+   protocol, server, wasm client core, web client — and `./ci/gates.sh` is
+   green, including the client loop gate (bit-exact prediction, loss
+   recovery, interpolation). What remains needs a human with a browser:
+   run `cargo run -p server --bin shard` + `./web/dev.sh`, open two tabs,
+   paste the shard log's cert hash, confirm two capsules walk around each
+   other on the island. Then delete this item. Standing follow-up for a
+   later slice: a headless-browser e2e so this check joins CI.
 2. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6):
    gather/slots · inventory/craft from `content/` · build grid + hearth +
    upkeep/decay · death/backpack/respawn-on-bag.

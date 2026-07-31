@@ -1,8 +1,9 @@
 //! The client side of the snapshot pipeline, pure (no I/O): apply
 //! datagrams, keep the applied-snapshot ring the delta baselines come
-//! from, produce ack fields. The bots bin, the smoke gate, and the budget
-//! gate all reconstruct through this — and the web client implements
-//! exactly this contract in wasm/JS.
+//! from, produce ack fields. Lives in `client-wasm` so the browser (via
+//! the wasm bridge), the server's bot client, and the smoke/budget gates
+//! all reconstruct through the one implementation — the load tool can
+//! never drift from the thing it load-tests.
 //!
 //! Contract highlights (NETCODE.md §3 + protocol doc):
 //! - apply only monotonically newer snapshots; discard stale, never ack it;
@@ -95,6 +96,15 @@ impl ClientView {
         Ok(Applied::Ok {
             delta: header.baseline_age != 0,
         })
+    }
+
+    /// The most recently applied snapshot — the interpolation feed reads
+    /// its decoded entities right after `apply` returns `Ok`.
+    pub fn newest(&self) -> Option<&Snapshot> {
+        let t = self.newest_applied?;
+        self.ring[ring_index(t)]
+            .as_ref()
+            .filter(|s| s.header.tick == t)
     }
 
     /// The redundant ack header for the next input datagram
