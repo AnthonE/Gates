@@ -11,8 +11,11 @@
 //! surfaces at their base; stairs are a ramp rising toward +Z through the
 //! storey; walls block their edge for the storey they span; doorways
 //! block only their posts (the 1.2 m opening passes; the lintel never
-//! matters at capsule height until a jump exists). Door deployables stay
-//! non-blocking — open/close is the door slice (NOW.md).
+//! matters at capsule height until a jump exists). A **closed door**
+//! deployable in a doorway blocks the whole edge like a wall; open doors
+//! and empty doorways pass. Door state is a shut bit per (column, level,
+//! edge), maintained by deploy.rs in lockstep with the door records —
+//! derived state like the rest of the index.
 //!
 //! The store side is `ColIndex`: an open-addressed, linear-probed map
 //! from build column (cx, cz) to per-level occupancy bitmasks, sized so
@@ -62,6 +65,11 @@ pub struct ColMasks {
     pub walls_n: u8,
     pub doors_w: u8,
     pub doors_n: u8,
+    /// Closed-door bits: set ⇒ the doorway at this level/edge holds a
+    /// closed door deployable and blocks its full span (deploy.rs keeps
+    /// these in lockstep with the door records).
+    pub shut_w: u8,
+    pub shut_n: u8,
 }
 
 impl ColMasks {
@@ -72,10 +80,20 @@ impl ColMasks {
         walls_n: 0,
         doors_w: 0,
         doors_n: 0,
+        shut_w: 0,
+        shut_n: 0,
     };
 
     fn is_empty(&self) -> bool {
-        (self.planes | self.stairs | self.walls_w | self.walls_n | self.doors_w | self.doors_n) == 0
+        (self.planes
+            | self.stairs
+            | self.walls_w
+            | self.walls_n
+            | self.doors_w
+            | self.doors_n
+            | self.shut_w
+            | self.shut_n)
+            == 0
     }
 
     /// The mask a (shape, loc) pair lives in, or None for shapes with no
@@ -206,6 +224,64 @@ impl ColIndex {
         }
         if self.masks[i].is_empty() {
             self.remove_slot(i);
+        }
+    }
+
+    /// Set or clear a closed-door bit (deploy.rs: a door placing, its
+    /// doorway decaying it away, or a use toggle). A non-edge loc is a
+    /// no-op — the caller validated the address holds a door. Clearing
+    /// an emptied column drops its slot like `del`.
+    pub fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
+        if loc != LOC_EDGE_W && loc != LOC_EDGE_N {
+            return;
+        }
+        if !shut {
+            // Clear: reuse the del-style walk; absent column means clear.
+            let key = Self::key(cx, cz);
+            let mut i = Self::home(key);
+            loop {
+                let k = self.keys[i];
+                if k == 0 {
+                    return;
+                }
+                if k == key {
+                    break;
+                }
+                i = (i + 1) & (COL_INDEX_SLOTS - 1);
+            }
+            let m = &mut self.masks[i];
+            if loc == LOC_EDGE_W {
+                m.shut_w &= !(1 << level);
+            } else {
+                m.shut_n &= !(1 << level);
+            }
+            if self.masks[i].is_empty() {
+                self.remove_slot(i);
+            }
+            return;
+        }
+        if self.len as usize >= COL_INDEX_SLOTS - 1 {
+            return; // full-table posture matches add(): bounded staleness
+        }
+        let key = Self::key(cx, cz);
+        let mut i = Self::home(key);
+        loop {
+            let k = self.keys[i];
+            if k == key {
+                break;
+            }
+            if k == 0 {
+                self.keys[i] = key;
+                self.len += 1;
+                break;
+            }
+            i = (i + 1) & (COL_INDEX_SLOTS - 1);
+        }
+        let m = &mut self.masks[i];
+        if loc == LOC_EDGE_W {
+            m.shut_w |= 1 << level;
+        } else {
+            m.shut_n |= 1 << level;
         }
     }
 
@@ -341,10 +417,10 @@ fn cell_edges_block(
             continue;
         }
         let m = cols.get(ecx as u16, ecz as u16);
-        let (walls, doors) = if west {
-            (m.walls_w, m.doors_w)
+        let (walls, doors, shuts) = if west {
+            (m.walls_w, m.doors_w, m.shut_w)
         } else {
-            (m.walls_n, m.doors_n)
+            (m.walls_n, m.doors_n, m.shut_n)
         };
         if walls | doors == 0 {
             continue;
@@ -357,6 +433,8 @@ fn cell_edges_block(
             if !has_wall && !has_door {
                 continue;
             }
+            // A closed door seals the doorway: full span, like a wall.
+            let posts_only = has_door && !has_wall && shuts & bit == 0;
             let bottom = base + level as f32 * LEVEL_H_M;
             if feet_y >= bottom + LEVEL_H_M || feet_y + CAPSULE_HEIGHT_M <= bottom {
                 continue; // that storey is above the head or below the feet
@@ -365,12 +443,12 @@ fn cell_edges_block(
                 // x-plane at ecx·3, spanning z from ecz·3.
                 let px = ecx as f32 * BUILD_CELL_M;
                 let s0 = ecz as f32 * BUILD_CELL_M;
-                edge_hit(px, s0, x, nx, nz, has_door && !has_wall)
+                edge_hit(px, s0, x, nx, nz, posts_only)
             } else {
                 // z-plane at ecz·3, spanning x from ecx·3.
                 let pz = ecz as f32 * BUILD_CELL_M;
                 let s0 = ecx as f32 * BUILD_CELL_M;
-                edge_hit(pz, s0, z, nz, nx, has_door && !has_wall)
+                edge_hit(pz, s0, z, nz, nx, posts_only)
             };
             if hit {
                 return true;

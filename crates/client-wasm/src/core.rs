@@ -14,7 +14,7 @@ use protocol::{decode_event, encode_input, EventMsg, InputDatagram, ItemCatalog,
 use sim_core::build::{BuildContent, PieceRec};
 use sim_core::collide::ColIndex;
 use sim_core::craft::CraftContent;
-use sim_core::deploy::{DeployContent, DeployRec};
+use sim_core::deploy::{DeployContent, DeployRec, ARCH_DOOR};
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
 use sim_core::limits::{
@@ -173,6 +173,14 @@ impl PieceSet {
         &self.cols
     }
 
+    /// Set or clear a closed-door bit in the predictor's index. Doors
+    /// live in the deploy mirror, but they seal *pieces*, so the bit
+    /// belongs to this index — `ClientCore` is what keeps the two
+    /// stores' views of a doorway in step (the sim does the same).
+    fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
+        self.cols.set_door(cx, cz, level, loc, shut);
+    }
+
     /// True if the set changed (a known address with the same row is a
     /// duplicate, not a change).
     fn insert(&mut self, rec: PieceRec, defs: &BuildContent, have: u16) -> bool {
@@ -293,22 +301,44 @@ impl DeploySet {
         true
     }
 
-    fn remove(&mut self, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+    /// The removed record, so the caller can unseal a doorway the gone
+    /// door was holding shut.
+    fn remove(&mut self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<DeployRec> {
         if let Some(i) = self.recs[..self.len]
             .iter()
             .position(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
         {
+            let gone = self.recs[i];
             self.len -= 1;
             self.recs[i] = self.recs[self.len];
-            true
+            Some(gone)
         } else {
-            false
+            None
         }
+    }
+
+    /// Apply a door announcement to the mirrored record; returns the
+    /// record as it now stands, or None when this client has never heard
+    /// of that address (the deploy walk will bring it, carrying state).
+    fn set_open(&mut self, cx: u16, cz: u16, level: u8, loc: u8, open: bool) -> Option<DeployRec> {
+        let r = self.recs[..self.len]
+            .iter_mut()
+            .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)?;
+        r.open = open;
+        Some(*r)
     }
 
     fn clear(&mut self) {
         self.len = 0;
     }
+}
+
+/// True if deploy row `row` is a door **and this client knows it is**.
+/// Rows that haven't dripped in yet read as arch 0, so the `have` gate
+/// is what keeps an unknown row from sealing a doorway it doesn't own;
+/// the defs-arrival handler re-derives once the rows land.
+fn is_door(defs: &DeployContent, have: u16, row: u8) -> bool {
+    (row as u16) < have.min(defs.def_count) && defs.defs[row as usize].arch == ARCH_DOOR
 }
 
 /// What `on_datagram` did with the bytes (the bridge's status code).
@@ -405,6 +435,16 @@ pub struct ClientCore {
     deploy_refusals: [u8; REFUSAL_RING],
     deploy_refusal_head: usize,
     deploy_refusal_len: usize,
+    /// The address of a door this client toggled optimistically on its
+    /// own input and has not heard back about (NETCODE.md §6.1: your own
+    /// door plays on input, remote doors on the event). At most one is
+    /// outstanding, so a prediction never compounds. The next action
+    /// outcome resolves it: the door announcement confirms (absolute
+    /// state, so it corrects just as well), any deploy refusal rolls it
+    /// back, and an `ev_resync` walk re-derives the lot. A refusal that
+    /// belonged to some *other* queued action rolls this door back early
+    /// — harmless, because a use that does land announces right behind.
+    pending_door: Option<(u16, u16, u8, u8)>,
     /// The last removal's grid address (valid while the flags say a
     /// removal was applied this message).
     pub removed_addr: (u16, u16, u8, u8),
@@ -470,6 +510,7 @@ impl ClientCore {
             deploy_refusals: [0; REFUSAL_RING],
             deploy_refusal_head: 0,
             deploy_refusal_len: 0,
+            pending_door: None,
             removed_addr: (0, 0, 0, 0),
             stock_addr: (0, 0, 0),
             stock: [(0, 0); HEARTH_STOCK_ROWS],
@@ -632,6 +673,10 @@ impl ClientCore {
                         flags |= APPLIED_PIECES;
                     }
                 }
+                if reset {
+                    // The clear took every door's shut bit with it.
+                    self.apply_doors();
+                }
             }
             EventMsg::BuildRefused { reason } => {
                 if self.build_refusal_len == REFUSAL_RING {
@@ -655,30 +700,51 @@ impl ClientCore {
                 }
                 self.piece_defs_have = self.piece_defs_have.max(first as u16 + count as u16);
                 // Records that arrived before their rows had no collision
-                // shape yet — the new rows may name them.
+                // shape yet — the new rows may name them. The rebuild
+                // clears the index, doors included, so they go back on.
                 self.pieces
                     .rebuild_cols(&self.piece_defs, self.piece_defs_have);
+                self.apply_doors();
                 flags |= APPLIED_PIECE_DEFS;
             }
             EventMsg::DeployPlaced { rec } => {
                 if self.deploys.insert(rec) {
+                    self.seal_for(rec);
                     self.push_deploy_change(rec);
                     flags |= APPLIED_DEPLOYS;
                 }
             }
             EventMsg::DeploySync { reset, recs, count } => {
                 if reset {
+                    // Every door this client knew is now unknown: drop
+                    // their bits and let the walk re-seal what it brings.
+                    // The walk is server truth, so an outstanding
+                    // prediction has nothing left to roll back onto.
+                    self.pending_door = None;
                     self.deploys.clear();
+                    self.pieces
+                        .rebuild_cols(&self.piece_defs, self.piece_defs_have);
                     flags |= APPLIED_DEPLOY_RESET;
                 }
                 for &rec in recs.iter().take(count as usize) {
                     if self.deploys.insert(rec) {
+                        self.seal_for(rec);
                         self.push_deploy_change(rec);
                         flags |= APPLIED_DEPLOYS;
                     }
                 }
             }
             EventMsg::DeployRefused { reason } => {
+                // Refusals are sender-only, so this one is *this client's*
+                // — but not necessarily this door's: the action ring holds
+                // 8, so an earlier deploy or feed can bounce while a door
+                // toggle is still queued. Rolling back on either is what
+                // keeps a genuinely refused use from sticking; a
+                // mis-attributed rollback self-heals, because a use that
+                // does land announces absolute state right behind it.
+                if self.rollback_door() {
+                    flags |= APPLIED_DEPLOYS;
+                }
                 if self.deploy_refusal_len == REFUSAL_RING {
                     self.deploy_refusal_head = (self.deploy_refusal_head + 1) % REFUSAL_RING;
                     self.deploy_refusal_len -= 1;
@@ -699,6 +765,9 @@ impl ClientCore {
                     self.deploy_defs.defs[first as usize + i] = *row;
                 }
                 self.deploy_defs_have = self.deploy_defs_have.max(first as u16 + count as u16);
+                // Records whose row was unknown never sealed anything;
+                // the new rows may say they are doors.
+                self.apply_doors();
                 flags |= APPLIED_DEPLOY_DEFS;
             }
             EventMsg::PieceRemoved { cx, cz, level, loc } => {
@@ -711,9 +780,33 @@ impl ClientCore {
                 }
             }
             EventMsg::DeployRemoved { cx, cz, level, loc } => {
-                if self.deploys.remove(cx, cz, level, loc) {
+                if self.pending_door == Some((cx, cz, level, loc)) {
+                    self.pending_door = None; // predicted a door that's gone
+                }
+                if let Some(gone) = self.deploys.remove(cx, cz, level, loc) {
+                    if is_door(&self.deploy_defs, self.deploy_defs_have, gone.row) {
+                        self.pieces.set_door(cx, cz, level, loc, false);
+                    }
                     self.removed_addr = (cx, cz, level, loc);
                     flags |= APPLIED_DEPLOY_REMOVED;
+                }
+            }
+            EventMsg::Door {
+                cx,
+                cz,
+                level,
+                loc,
+                open,
+            } => {
+                // Absolute state: this confirms an optimistic toggle or
+                // corrects it, and either way the wait is over.
+                if self.pending_door == Some((cx, cz, level, loc)) {
+                    self.pending_door = None;
+                }
+                if let Some(rec) = self.deploys.set_open(cx, cz, level, loc, open) {
+                    self.seal_for(rec);
+                    self.push_deploy_change(rec);
+                    flags |= APPLIED_DEPLOYS;
                 }
             }
             EventMsg::Stock {
@@ -766,6 +859,95 @@ impl ClientCore {
     /// Piece records the last applied message added (renderer detail).
     pub fn piece_changes(&self) -> &[PieceRec] {
         &self.piece_changes[..self.n_piece_changes]
+    }
+
+    /// Toggle the door at the address **optimistically**, on this
+    /// client's own input, before the server has spoken — NETCODE.md
+    /// §6.1: your own door plays on input, remote doors on the event.
+    /// The mirror and the predictor's shut bit flip together, so the body
+    /// you are predicting walks through the door you just opened instead
+    /// of holding at the threshold for half an RTT.
+    ///
+    /// Returns the predicted open state, or None when there is nothing to
+    /// predict: no known door at that address, or a prediction already
+    /// outstanding (one at a time — the next action outcome resolves it).
+    /// Refusing to predict is always safe; the announcement still lands.
+    pub fn predict_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<bool> {
+        if self.pending_door.is_some() {
+            return None;
+        }
+        let rec = *self
+            .deploys
+            .entries()
+            .iter()
+            .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)?;
+        if !is_door(&self.deploy_defs, self.deploy_defs_have, rec.row) {
+            return None;
+        }
+        let rec = self.deploys.set_open(cx, cz, level, loc, !rec.open)?;
+        self.seal_for(rec);
+        self.pending_door = Some((cx, cz, level, loc));
+        Some(rec.open)
+    }
+
+    /// Undo an outstanding optimistic toggle — the sim refused the use
+    /// (out of reach, or the door went away under it), so the door never
+    /// moved. Server truth wins; the mirror goes back where it was.
+    ///
+    /// True when a record actually moved, so the caller raises
+    /// `APPLIED_DEPLOYS` — the renderer swung that leaf on the press and
+    /// nothing else will ever tell it to swing back (no announcement is
+    /// coming: the server's state never changed).
+    fn rollback_door(&mut self) -> bool {
+        let Some((cx, cz, level, loc)) = self.pending_door.take() else {
+            return false;
+        };
+        let Some(rec) = self
+            .deploys
+            .entries()
+            .iter()
+            .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
+            .copied()
+        else {
+            return false; // the record left the mirror; nothing to put back
+        };
+        match self.deploys.set_open(cx, cz, level, loc, !rec.open) {
+            Some(rec) => {
+                self.seal_for(rec);
+                self.push_deploy_change(rec);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// One record's contribution to the predictor's door bits: a closed
+    /// door seals its doorway, an open one (and every non-door) doesn't.
+    fn seal_for(&mut self, rec: DeployRec) {
+        if is_door(&self.deploy_defs, self.deploy_defs_have, rec.row) {
+            self.pieces
+                .set_door(rec.cx, rec.cz, rec.level, rec.loc, !rec.open);
+        }
+    }
+
+    /// Re-seal every closed door in the mirror. The collision index is
+    /// derived state, so anything that clears or rebuilds it drops the
+    /// door bits along with the piece bits — this puts them back. One
+    /// bounded pass over the deploy mirror, event-lane cadence only,
+    /// never the render loop.
+    fn apply_doors(&mut self) {
+        let Self {
+            pieces,
+            deploys,
+            deploy_defs,
+            deploy_defs_have,
+            ..
+        } = self;
+        for rec in deploys.entries() {
+            if is_door(deploy_defs, *deploy_defs_have, rec.row) {
+                pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, !rec.open);
+            }
+        }
     }
 
     fn push_deploy_change(&mut self, rec: DeployRec) {
@@ -1130,5 +1312,129 @@ mod tests {
 
         assert!(c.on_stream(&[0xFF, 0xFF, 0xFF]).is_err());
         assert_eq!(c.event_errors, 1);
+    }
+
+    /// The predictor collides against the same closed doors the sim does,
+    /// and the shut bit survives every path that rebuilds the derived
+    /// index. A door the client renders shut but predicts through is the
+    /// exact desync this test exists to catch.
+    #[test]
+    fn doors_seal_the_predictor_index_and_survive_a_rebuild() {
+        use protocol::{
+            encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+            encode_event_door, encode_event_piece_defs, encode_event_piece_placed,
+            encode_event_removed,
+        };
+        use sim_core::build::{BuildContent, PieceRec, LOC_EDGE_W, SHAPE_DOORWAY};
+        use sim_core::deploy::DeployContent;
+
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (cx, cz, level) = (341u16, 682u16, 0u8);
+        let shut = |c: &ClientCore| c.pieces.cols().get(cx, cz).shut_w & 1 != 0;
+
+        // The doorway piece and the def tables the client needs to read
+        // "row 2 is a door" (probe fixtures: piece row 3 is the doorway,
+        // deploy row 2 the door).
+        let bc = BuildContent::probe_fixture();
+        let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let dc = DeployContent::probe_fixture();
+        let (len, _) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let doorway = PieceRec {
+            cx,
+            cz,
+            level,
+            loc: LOC_EDGE_W,
+            row: 3,
+            ..PieceRec::default()
+        };
+        let len = encode_event_piece_placed(&doorway, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.piece_defs.pieces[3].shape, SHAPE_DOORWAY);
+        assert!(!shut(&c), "an empty doorway is not sealed");
+
+        // The door lands closed: the doorway seals.
+        let door = DeployRec {
+            cx,
+            cz,
+            level,
+            loc: LOC_EDGE_W,
+            row: 2,
+            ..DeployRec::default()
+        };
+        let len = encode_event_deploy_placed(&door, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(shut(&c), "a placed door seals its doorway");
+
+        // Opened, then closed again — the announcement is absolute.
+        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_DEPLOYS);
+        assert!(!shut(&c), "an open door passes");
+        assert!(c.deploy_changes()[0].open, "the renderer hears the state");
+        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, false, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(shut(&c), "a reclosed door seals again");
+
+        // A later piece-def batch rebuilds the collision index from the
+        // piece mirror alone; the door bits must go back on with it.
+        let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(shut(&c), "the defs rebuild dropped the door bit");
+
+        // Your own door swings on input, not on the reply (NETCODE.md
+        // §6.1): the predictor unseals immediately, and only one
+        // prediction is outstanding at a time.
+        assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_W), Some(true));
+        assert!(!shut(&c), "the predicted open door still blocks the body");
+        assert_eq!(
+            c.predict_door(cx, cz, level, LOC_EDGE_W),
+            None,
+            "a second toggle must wait for the first to resolve"
+        );
+        // The announcement confirms it and frees the next prediction.
+        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(!shut(&c));
+        assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_W), Some(false));
+        assert!(shut(&c), "the predicted close seals for the predictor");
+
+        // A refusal instead rolls the prediction back to server truth —
+        // and must say so with APPLIED_DEPLOYS, because the renderer
+        // swung that leaf on the press and no announcement is coming
+        // (the sim's state never moved, so there is nothing to announce).
+        let len =
+            encode_event_deploy_refused(sim_core::deploy::REFUSE_D_REACH as u8, &mut buf).unwrap();
+        let flags = c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(
+            flags & (APPLIED_DEPLOYS | APPLIED_DEPLOY_REFUSED),
+            APPLIED_DEPLOYS | APPLIED_DEPLOY_REFUSED,
+            "a rolled-back door must reach the renderer"
+        );
+        assert_eq!(
+            c.deploy_changes().len(),
+            1,
+            "the rolled-back record must ride the change list"
+        );
+        assert!(
+            c.deploy_changes()[0].open,
+            "the change carries the state the sim never left"
+        );
+        assert!(!shut(&c), "a refused toggle must not leave the door shut");
+        assert!(
+            c.deploys.entries()[0].open,
+            "the mirror kept the state the sim never left"
+        );
+        // Nothing is outstanding now, so the next press predicts again.
+        assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_W), Some(false));
+        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, false, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(shut(&c));
+
+        // And the door going away unseals the doorway it was holding.
+        let len = encode_event_removed(false, cx, cz, level, LOC_EDGE_W, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(!shut(&c), "a removed door leaves nothing sealed");
     }
 }

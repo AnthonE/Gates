@@ -6,12 +6,13 @@ Done items are deleted, not checked — history lives in git and
 
 1. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
-   solid (slice 8: piece collision v0 — walls/doorways block, planes
-   and stair ramps are ground, shared by tick and predictor through a
-   derived column index; the client piece mirror feeds prediction, no
-   wire change). Next: door open/close (doors place and pass freely
-   until then) · upgrade-in-place · chat · death/backpack/
-   respawn-on-bag (bags place + cap now; the anchor lands there).
+   solid (slice 9: doors — a door places closed and seals its doorway,
+   the use action toggles it, wire v6 carries the action, the
+   announcement and the open bit on every deploy record; E is the
+   client's use key and your own door swings on the press, NETCODE §6.1).
+   Next: door locks (any hand in reach toggles today) · upgrade-in-place
+   · chat · death/backpack/respawn-on-bag (bags place + cap now; the
+   anchor lands there).
 2. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
 3. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·

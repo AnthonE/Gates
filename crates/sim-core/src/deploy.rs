@@ -34,10 +34,21 @@
 //!   gated), capped at `STOCK_MAX` per material. Withdrawal waits for the
 //!   container UI; stock readback rides the feed ack only.
 //!
+//! - **Doors** (door v0, DECISIONS.md §open): a door places **closed**
+//!   and seals its doorway (collide.rs shut bits — the store keeps them
+//!   in lockstep exactly like the piece store keeps its masks). The
+//!   **use** action toggles it open/closed: any player within build reach
+//!   may toggle — no lock exists yet (locks are a later slice, the
+//!   reference's unlocked-door behavior). EV_DOOR announces the new state
+//!   for the wire; removal (decay, or the doorway decaying under it)
+//!   clears the shut bit with the record. The state is absolute on the
+//!   wire, never a delta, so the client that toggled optimistically
+//!   (NETCODE.md §6.1) is confirmed or corrected by the same event.
+//!
 //! Not in this slice (documented, not forgotten): no support cascade when
 //! a piece decays away (floating pieces keep decaying on their own if
-//! unpaid), no door open/close (doors are static until piece collision
-//! lands), no owner on the wire (respawn-on-bag adds its own lane).
+//! unpaid), no door locks (any hand in reach toggles), no owner on the
+//! wire (respawn-on-bag adds its own lane).
 
 use crate::build::{BuildContent, Pieces, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, SHAPE_DOORWAY};
 use crate::craft::{inv_count, inv_take};
@@ -47,8 +58,8 @@ use crate::limits::{
 };
 use crate::terrain;
 use crate::world::{
-    EventQueue, Player, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_PIECE_REMOVED,
-    EV_STOCK,
+    EventQueue, Player, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
+    EV_PIECE_REMOVED, EV_STOCK,
 };
 
 /// Archetype codes (schema order: CONTENT.md §1 deployable).
@@ -79,6 +90,8 @@ pub const REFUSE_D_CLAIM: u32 = 7;
 pub const REFUSE_D_OVERLAP: u32 = 8;
 pub const REFUSE_D_BAG_CAP: u32 = 9;
 pub const REFUSE_D_HEARTH: u32 = 10;
+/// A use request named an address holding no door.
+pub const REFUSE_D_DOOR: u32 = 11;
 
 /// Hearth privilege radius in meters, planar from the hearth's cell
 /// center. Proposed default, DECISIONS.md §open ("deployables v0").
@@ -206,6 +219,10 @@ pub struct DeployRec {
     pub hp: u16,
     /// Last upkeep period processed (`tick / UPKEEP_PERIOD_TICKS`).
     pub uh: u16,
+    /// Door state (ARCH_DOOR only; false for everything else). Doors
+    /// place closed; the use action toggles. Sim state, hashed, and on
+    /// the wire (the deploy record's open bit, wire v6).
+    pub open: bool,
 }
 
 /// One hearth's claim + stock, in the dense hearth list. Identity is the
@@ -388,7 +405,7 @@ pub fn place_deploy(
     seed: u64,
     dc: &DeployContent,
     bc: &BuildContent,
-    pieces: &Pieces,
+    pieces: &mut Pieces,
     deploys: &mut Deploys,
     p: &mut Player,
     tick: u64,
@@ -478,10 +495,15 @@ pub fn place_deploy(
         owner: p.id,
         hp: def.hp,
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
+        open: false,
     };
     if !deploys.insert(rec) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
         return;
+    }
+    if def.arch == ARCH_DOOR {
+        // Doors place closed and seal their doorway (door v0).
+        pieces.set_door(cx, cz, level, loc, true);
     }
     if def.arch == ARCH_HEARTH {
         deploys.hearths[deploys.hearth_count] = HearthRec {
@@ -545,6 +567,52 @@ pub fn feed(
         p.id,
         crate::gather::cell_key(cx, cz),
         level as u32,
+    );
+}
+
+/// Apply one use request (`Command::Use`): toggle the door at the
+/// address. Any player within build reach may toggle — no lock exists
+/// yet (door v0). The shut bit in the collision index flips in the same
+/// call, so the tick that toggles is the tick that blocks (or opens);
+/// EV_DOOR announces the new state for the wire.
+#[allow(clippy::too_many_arguments)]
+pub fn use_door(
+    dc: &DeployContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    p: &mut Player,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    events: &mut EventQueue,
+) {
+    let Some(i) = deploys.entries[..deploys.len]
+        .iter()
+        .position(|d| d.cx == cx && d.cz == cz && d.level == level && d.loc == loc)
+    else {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_DOOR, 0);
+        return;
+    };
+    if dc.defs[deploys.entries[i].row as usize].arch != ARCH_DOOR {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_DOOR, 0);
+        return;
+    }
+    let (ax, az) = cell_center(cx, cz);
+    let (px, pz) = player_xz(p);
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
+        return;
+    }
+    let open = !deploys.entries[i].open;
+    deploys.entries[i].open = open;
+    pieces.set_door(cx, cz, level, loc, !open);
+    events.push(
+        EV_DOOR,
+        crate::gather::cell_key(cx, cz),
+        ((level as u32) << 16) | ((loc as u32) << 8) | open as u32,
+        p.id,
     );
 }
 
@@ -659,6 +727,10 @@ pub fn upkeep_sweep(
             }) {
                 let drec = deploys.entries[di];
                 deploys.remove_at(di, dc);
+                if dc.defs[drec.row as usize].arch == ARCH_DOOR {
+                    // The door goes with its doorway; unseal the edge.
+                    pieces.set_door(drec.cx, drec.cz, drec.level, drec.loc, false);
+                }
                 events.push(
                     EV_DEPLOY_REMOVED,
                     crate::gather::cell_key(drec.cx, drec.cz),
@@ -708,6 +780,10 @@ pub fn upkeep_sweep(
         if removed {
             deploys.remove_at(i, dc);
             *deploy_cursor = (i as u32).min(deploys.len.saturating_sub(1) as u32);
+            if def.arch == ARCH_DOOR {
+                // A decayed door stops sealing its doorway.
+                pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, false);
+            }
             events.push(
                 EV_DEPLOY_REMOVED,
                 crate::gather::cell_key(rec.cx, rec.cz),
@@ -789,7 +865,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -807,7 +883,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -826,7 +902,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -846,7 +922,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -863,7 +939,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -882,7 +958,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -913,7 +989,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -931,7 +1007,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -947,7 +1023,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -964,7 +1040,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut poor,
             0,
@@ -991,7 +1067,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut own,
             0,
@@ -1035,7 +1111,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut foe,
             0,
@@ -1088,7 +1164,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut own,
             0,
@@ -1106,7 +1182,7 @@ mod tests {
     fn bag_cap_holds_per_owner() {
         let dc = DeployContent::probe_fixture();
         let bc = BuildContent::probe_fixture();
-        let pieces = Pieces::new();
+        let mut pieces = Pieces::new();
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = player_at_cell(CX, CZ, &[(5, 20)]);
@@ -1122,7 +1198,7 @@ mod tests {
                 SEED,
                 &dc,
                 &bc,
-                &pieces,
+                &mut pieces,
                 &mut deploys,
                 &mut p,
                 0,
@@ -1154,7 +1230,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -1215,7 +1291,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -1271,7 +1347,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -1293,7 +1369,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -1315,7 +1391,7 @@ mod tests {
             SEED,
             &dc,
             &bc,
-            &pieces,
+            &mut pieces,
             &mut deploys,
             &mut p,
             0,
@@ -1352,6 +1428,261 @@ mod tests {
             "uncovered deployables decay ({} vs {})",
             far_rec.hp,
             dc.defs[3].hp
+        );
+    }
+
+    /// A westward strafe at yaw 0 (forward +Z, right +X — the collide.rs
+    /// test convention).
+    fn walk_west() -> crate::input::InputFrame {
+        crate::input::InputFrame {
+            seq: 1,
+            move_x: -127,
+            ..crate::input::InputFrame::default()
+        }
+    }
+
+    /// Foundation + doorway (build row 3) + door (deploy row 2) on the
+    /// west edge of (CX, CZ); returns the acting player.
+    fn doored(
+        bc: &BuildContent,
+        dc: &DeployContent,
+        pieces: &mut Pieces,
+        deploys: &mut Deploys,
+        ev: &mut EventQueue,
+    ) -> Player {
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (4, 2)]);
+        founded(bc, pieces, &mut p, CX, CZ);
+        crate::build::place(
+            SEED, bc, deploys, pieces, &mut p, 0, 3, CX, CZ, 0, LOC_EDGE_W, ev,
+        );
+        assert_eq!(last(ev).0, crate::world::EV_PIECE_PLACED, "doorway lands");
+        place_deploy(
+            SEED, dc, bc, pieces, deploys, &mut p, 0, 2, CX, CZ, 0, LOC_EDGE_W, ev,
+        );
+        assert_eq!(last(ev).0, crate::world::EV_DEPLOY_PLACED, "door lands");
+        p
+    }
+
+    /// Walk a fresh body west through the doorway; the x it pins at.
+    fn walk_x_after(pieces: &Pieces) -> f32 {
+        let mut b = crate::movement::Body::at(
+            SEED,
+            CX as f32 * crate::build::BUILD_CELL_M + 1.5,
+            CZ as f32 * crate::build::BUILD_CELL_M + 1.5,
+        );
+        let f = walk_west();
+        for _ in 0..120 {
+            crate::movement::step(SEED, pieces.cols(), &mut b, &f);
+        }
+        b.qx as f32 * crate::movement::POS_XZ_Q
+    }
+
+    #[test]
+    fn door_places_closed_toggles_open_and_reseals() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        let wall_x = CX as f32 * crate::build::BUILD_CELL_M;
+
+        // Placed closed: sim state, the shut bit, and the walk agree.
+        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
+        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
+        assert!(
+            walk_x_after(&pieces) >= wall_x,
+            "a closed door must block the doorway opening"
+        );
+
+        // Use opens: EV_DOOR announces, the same walk passes.
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (
+                crate::world::EV_DOOR,
+                crate::gather::cell_key(CX, CZ),
+                (LOC_EDGE_W as u32) << 8 | 1,
+                7
+            )
+        );
+        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
+        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 0);
+        assert!(
+            walk_x_after(&pieces) < wall_x - 0.5,
+            "an open door must pass like an empty doorway"
+        );
+
+        // Use again reseals.
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2 & 1, 0, "EV_DOOR carries open = 0");
+        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
+        assert!(
+            walk_x_after(&pieces) >= wall_x,
+            "reclosed door blocks again"
+        );
+    }
+
+    #[test]
+    fn use_refusals_name_no_door_and_reach() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+
+        // Nothing at the address.
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (3, 1), (4, 2)]);
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_D_DOOR);
+
+        // A deployable that is not a door (the any-class workbench).
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_D_DOOR, "a workbench is not a door");
+
+        // A real door, toggled from 20 m away: reach refusal, state kept.
+        crate::build::place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            2,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        let mut far = player_at_cell(CX + 7, CZ, &[]);
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut far,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_D_REACH);
+        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
+        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
+    }
+
+    #[test]
+    fn doorway_decay_takes_the_door_and_unseals() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
+
+        // No hearth anywhere: everything decays away within 20 periods.
+        let mut pc = 0u32;
+        let mut dcur = 0u32;
+        for hour in 1..=20u64 {
+            upkeep_sweep(
+                &dc,
+                &bc,
+                &mut pieces,
+                &mut deploys,
+                hour * UPKEEP_PERIOD_TICKS + 1,
+                &mut pc,
+                &mut dcur,
+                &mut ev,
+            );
+            if pieces.is_empty() && deploys.is_empty() {
+                break;
+            }
+        }
+        assert!(pieces.is_empty(), "unpaid pieces never decayed away");
+        assert!(
+            deploys.is_empty(),
+            "the door must go with (or before) its doorway"
+        );
+        let m = pieces.cols().get(CX, CZ);
+        assert_eq!(
+            (m.doors_w, m.shut_w),
+            (0, 0),
+            "a decayed doorway leaves no door collision behind"
         );
     }
 }

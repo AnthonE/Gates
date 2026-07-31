@@ -122,10 +122,11 @@ impl BuildContent {
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
     /// probe fixture's items (fixture, not game content). Row 2 costs a
-    /// different item so multi-material inventories are inside the gates.
+    /// different item so multi-material inventories are inside the gates;
+    /// row 3 is the doorway a door deployable needs (the door slice).
     pub fn probe_fixture() -> Self {
         let mut b = Self::EMPTY;
-        b.piece_count = 3;
+        b.piece_count = 4;
         b.pieces[0] = PieceDef {
             shape: SHAPE_FOUNDATION,
             material: MAT_WOOD,
@@ -146,6 +147,13 @@ impl BuildContent {
             hp: 150,
             n_costs: 1,
             costs: [(1, 3), (0, 0)],
+        };
+        b.pieces[3] = PieceDef {
+            shape: SHAPE_DOORWAY,
+            material: MAT_WOOD,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 3), (0, 0)],
         };
         b
     }
@@ -241,6 +249,12 @@ impl Pieces {
     pub(crate) fn set_upkeep(&mut self, i: usize, hp: u16, uh: u16) {
         self.entries[i].hp = hp;
         self.entries[i].uh = uh;
+    }
+
+    /// Set or clear the closed-door bit at a doorway edge (deploy.rs owns
+    /// when: door placement, the use toggle, and door removal).
+    pub(crate) fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
+        self.cols.set_door(cx, cz, level, loc, shut);
     }
 }
 

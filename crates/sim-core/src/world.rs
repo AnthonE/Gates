@@ -56,6 +56,10 @@ pub const EV_DEPLOY_REMOVED: u8 = 12;
 /// EV_STOCK: a = feeder player id, b = hearth cell key, c = level — the
 /// feed ack; the wire reads the hearth's stock from the world at encode.
 pub const EV_STOCK: u8 = 13;
+/// EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | open (1 =
+/// open), c = the toggling player id. Broadcast — door state is a world
+/// fact like a placement.
+pub const EV_DOOR: u8 = 14;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SimEvent {
@@ -207,6 +211,15 @@ pub enum Command {
         cx: u16,
         cz: u16,
         level: u8,
+    },
+    /// Toggle the door at the address open/closed (deploy.rs validates
+    /// and refuses by event, never by panic).
+    Use {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
     },
 }
 
@@ -394,7 +407,7 @@ impl World {
                         self.seed,
                         &self.deploy,
                         &self.build,
-                        &self.pieces,
+                        &mut self.pieces,
                         &mut self.deploys,
                         &mut self.players[slot],
                         self.tick,
@@ -416,6 +429,27 @@ impl World {
                         cx,
                         cz,
                         level,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Use {
+                id,
+                cx,
+                cz,
+                level,
+                loc,
+            } => {
+                if let Some(slot) = self.slot_of(id) {
+                    deploy::use_door(
+                        &self.deploy,
+                        &mut self.pieces,
+                        &mut self.deploys,
+                        &mut self.players[slot],
+                        cx,
+                        cz,
+                        level,
+                        loc,
                         &mut self.events,
                     );
                 }
@@ -543,6 +577,7 @@ impl World {
             buf[7..9].copy_from_slice(&d.hp.to_le_bytes());
             buf[9..11].copy_from_slice(&d.uh.to_le_bytes());
             buf[11..15].copy_from_slice(&d.owner.to_le_bytes());
+            buf[15] = d.open as u8;
             h.update(&buf);
         }
         h.update(&(self.deploys.hearths().len() as u64).to_le_bytes());
