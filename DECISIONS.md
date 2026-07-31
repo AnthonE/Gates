@@ -1,4 +1,4 @@
-# ashfall · DECISIONS.md — spoken, and waiting to be spoken
+# Gates · DECISIONS.md — spoken, and waiting to be spoken
 
 Two lists. **Spoken** is append-only: date, the call, the operator's own
 words, a pointer. **Open** is the knob registry — every **(knob)** in the
@@ -14,12 +14,12 @@ invented into code that isn't on this page.
 | 2026-07-30 | **The stack**: Rust server, three.js client, WebTransport/QUIC, no-blocking/no-alloc server discipline (*"backend is in rust, frontend three.js… no allocations in the hotpath… it should be a great game to build upon if we ace the skeleton"*). | `DESIGN.md` · `NETCODE.md` |
 | 2026-07-30 | **The coins**: OBOL is the in-world working coin; SCRY and MYRRH price skins, cosmetic only (*"how might we manage to get obol into the mix? Scry and Myrhh can be the premium currency for skins"*). Never-table stands as a wall. | `DESIGN.md` §3 |
 | 2026-07-30 | **Built by a loop system** (*"we are going to use a loop system we have to build this out"*). Loop discipline in `CLAUDE.md`; this file + `NOW.md` are the steering. | `CLAUDE.md` |
+| 2026-07-31 | **The name is `Gates`** — not `ashfall`, which no one chose (*"idk where the name ashfall came from its 'Gates' or Scry Gate"*; asked which, answered `Gates`). Matches the repo; stays a separate brand orbiting scry per DESIGN §13. Knob closed, removed from §open and DESIGN §14. | `DESIGN.md` §13 |
 
 ## Open (defaults ship until spoken)
 
 | knob | default | doc |
 |---|---|---|
-| the name | `ashfall` (codename) | DESIGN §14 |
 | shard cap / reference box | 100 / 4-core VPS | DESIGN §14 |
 | wipe cadence · BP survival | monthly · BPs one extra cycle | DESIGN §2 |
 | island size | 2,048 m | TERRAIN §6 |

@@ -1,4 +1,4 @@
-# ashfall · NETCODE.md — the multiplayer, in full (v0.1)
+# Gates · NETCODE.md — the multiplayer, in full (v0.1)
 
 > Extends `DESIGN.md` §5–7; where they disagree, this file wins. Grounded in
 > the canon (Gaffer on Games, Source, Overwatch GDC, Quake 3) and in what

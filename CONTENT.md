@@ -1,4 +1,4 @@
-# ashfall · CONTENT.md — the game as data (v0.1)
+# Gates · CONTENT.md — the game as data (v0.1)
 
 > Pillar 1 says content is data; this doc is where that becomes true.
 > Everything a player can hold, craft, build, shoot, or loot is a row in

@@ -1,4 +1,4 @@
-# ashfall · TERRAIN.md — the island (v0.1)
+# Gates · TERRAIN.md — the island (v0.1)
 
 > Extends `DESIGN.md` §2/§9 and rides `NETCODE.md`'s laws. No monuments in
 > alpha — but the island still has to *play* like a survival map: loot

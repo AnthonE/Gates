@@ -1,6 +1,6 @@
-# ashfall — design of record, v0.1
+# Gates — design of record, v0.1
 
-> working codename; the name is the operator's to change. Everything here is
+> the name is `Gates` (spoken 2026-07-31, DECISIONS.md). Everything here is
 > buildable as written; knobs the operator must still rule on are marked
 > **(knob)** and collected in §14. Written 2026-07-30, the night before the
 > shell. This file drops at the repo root and is the design of record until
@@ -165,7 +165,7 @@ exchange the coins. That is the entire monetary constitution.
 Cargo workspace, five crates, one law about where code may live:
 
 ```
-ashfall/
+gates/
   crates/
     sim-core/      # the deterministic heart: world state, movement, combat,
                    # building, economy rules. No I/O, no clock, no threads,
@@ -419,7 +419,7 @@ a later quest can gate on a real played round with no human in the loop.
   caps enforced by the sim itself (movement *is* server-simulated;
   prediction is cosmetic), fire-rate from item stats not packet cadence.
 - **Session and identity**: guest UUID sessions play instantly. Binding a
-  wallet = signing one EIP-191 message (`ashfall join <shard> <nonce>`) —
+  wallet = signing one EIP-191 message (`gates join <shard> <nonce>`) —
   same pattern as every scry game action; the wallet then owns banked OBOL,
   skins, and the character slot. One live session per wallet.
 - Flood control at the edge: per-connection datagram/stream rate limits in
@@ -489,7 +489,6 @@ is scry's standing rule: the operator's eye and a public SCRY transfer.
 
 | knob | default until spoken |
 |---|---|
-| the name | `ashfall` stays a codename |
 | shard cap / reference hardware | 100 players / 4-core VPS |
 | wipe cadence + BP survival | monthly map, BPs survive one cycle |
 | hunger/thirst depth | minimal timer-drain v1 |

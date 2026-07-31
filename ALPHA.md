@@ -1,4 +1,4 @@
-# ashfall · ALPHA.md — everything else the alpha needs (v0.1)
+# Gates · ALPHA.md — everything else the alpha needs (v0.1)
 
 > The gap sweep: what a playable, announceable alpha requires beyond
 > `DESIGN.md` + `NETCODE.md` + `TERRAIN.md`. Ordered by "the game is a
@@ -85,8 +85,8 @@ replay — the deterministic replay is the dupe investigation tool.
 
 ## 4 · Product & launch
 
-- **The name** — still `ashfall` placeholder; the operator names it
-  before anything public **(operator)**.
+- **The name** — `Gates`, spoken 2026-07-31 (`DECISIONS.md`). Settled; no
+  longer blocks anything public.
 - **Landing page**: one static page on the game domain — what it is, the
   never-table (what money can't buy, verbatim from DESIGN §3.3), wipe
   clock, "play" button, browser requirements line (iOS < 26.4 honestly

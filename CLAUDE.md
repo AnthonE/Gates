@@ -1,4 +1,4 @@
-# CLAUDE.md — ashfall
+# CLAUDE.md — Gates
 
 The operating manual for anyone — human or agent loop — working this repo.
 Read this first, every iteration. It is deliberately bounded: no dated
