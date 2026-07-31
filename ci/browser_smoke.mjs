@@ -150,7 +150,6 @@ try {
 } catch (e) {
   fail(e.message);
 }
-const shardLog = devShard.log;
 
 // --- serve the built bundle, with the production COOP/COEP headers ----------
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm", ".css": "text/css" };
