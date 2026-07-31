@@ -78,6 +78,7 @@ pub async fn spawn_shard(
     gather: sim_core::gather::GatherContent,
     craft: sim_core::craft::CraftContent,
     build: sim_core::build::BuildContent,
+    deploy: sim_core::deploy::DeployContent,
     catalog: ItemCatalog,
 ) -> Result<ShardHandle, String> {
     let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])
@@ -125,8 +126,8 @@ pub async fn spawn_shard(
             .name("sim".into())
             .spawn(move || {
                 sim_thread(
-                    seed, dev_spawn, gather, craft, build, catalog, ctrl_rx, grave_tx, slots,
-                    stats, shutdown,
+                    seed, dev_spawn, gather, craft, build, deploy, catalog, ctrl_rx, grave_tx,
+                    slots, stats, shutdown,
                 )
             })
             .map_err(|e| format!("sim thread spawn: {e}"))?;
@@ -550,6 +551,7 @@ fn sim_thread(
     gather: sim_core::gather::GatherContent,
     craft: sim_core::craft::CraftContent,
     build: sim_core::build::BuildContent,
+    deploy: sim_core::deploy::DeployContent,
     catalog: ItemCatalog,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut grave_tx: rtrb::Producer<Link>,
@@ -562,6 +564,7 @@ fn sim_thread(
     core.world.gather = gather;
     core.world.craft = craft;
     core.world.build = build;
+    core.world.deploy = deploy;
     core.catalog = catalog;
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_PLAYERS);
     links.resize_with(MAX_PLAYERS, || None);

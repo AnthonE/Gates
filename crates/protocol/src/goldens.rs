@@ -11,12 +11,13 @@
 
 use crate::{
     EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse, SnapshotHeader,
-    Welcome, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    Welcome, DEPLOY_SYNC_BATCH, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::craft::{
     CraftContent, CraftJob, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
 };
+use sim_core::deploy::{DeployContent, DeployRec};
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
 use sim_core::limits::{
@@ -24,34 +25,43 @@ use sim_core::limits::{
 };
 use sim_core::rng::Pcg32;
 
-/// Fixture file names, keyed by wire version (`PROTO_VER` 4 ⇒ `v4_*`).
-pub const FIXTURES: [&str; 26] = [
-    "v4_input_acks_only.bin",
-    "v4_input_full.bin",
-    "v4_snapshot_keyframe.bin",
-    "v4_snapshot_delta.bin",
-    "v4_snapshot_cap.bin",
-    "v4_hello.bin",
-    "v4_welcome.bin",
-    "v4_refuse_full.bin",
-    "v4_event_gather.bin",
-    "v4_event_inv.bin",
-    "v4_event_slot_harvested.bin",
-    "v4_event_slot_respawned.bin",
-    "v4_event_slot_sync.bin",
-    "v4_event_catalog.bin",
-    "v4_event_weak_mark.bin",
-    "v4_event_craft_q.bin",
-    "v4_event_craft_done.bin",
-    "v4_event_craft_refused.bin",
-    "v4_event_recipes.bin",
-    "v4_action_craft.bin",
-    "v4_action_cancel.bin",
-    "v4_action_place.bin",
-    "v4_event_piece_placed.bin",
-    "v4_event_piece_sync.bin",
-    "v4_event_build_refused.bin",
-    "v4_event_piece_defs.bin",
+/// Fixture file names, keyed by wire version (`PROTO_VER` 5 ⇒ `v5_*`).
+pub const FIXTURES: [&str; 35] = [
+    "v5_input_acks_only.bin",
+    "v5_input_full.bin",
+    "v5_snapshot_keyframe.bin",
+    "v5_snapshot_delta.bin",
+    "v5_snapshot_cap.bin",
+    "v5_hello.bin",
+    "v5_welcome.bin",
+    "v5_refuse_full.bin",
+    "v5_event_gather.bin",
+    "v5_event_inv.bin",
+    "v5_event_slot_harvested.bin",
+    "v5_event_slot_respawned.bin",
+    "v5_event_slot_sync.bin",
+    "v5_event_catalog.bin",
+    "v5_event_weak_mark.bin",
+    "v5_event_craft_q.bin",
+    "v5_event_craft_done.bin",
+    "v5_event_craft_refused.bin",
+    "v5_event_recipes.bin",
+    "v5_action_craft.bin",
+    "v5_action_cancel.bin",
+    "v5_action_place.bin",
+    "v5_event_piece_placed.bin",
+    "v5_event_piece_sync.bin",
+    "v5_event_build_refused.bin",
+    "v5_event_piece_defs.bin",
+    "v5_action_deploy.bin",
+    "v5_action_feed.bin",
+    "v5_event_deploy_placed.bin",
+    "v5_event_deploy_sync.bin",
+    "v5_event_deploy_refused.bin",
+    "v5_event_deploy_defs.bin",
+    "v5_event_piece_removed.bin",
+    "v5_event_deploy_removed.bin",
+    "v5_event_stock.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -365,6 +375,7 @@ pub fn event_piece_placed() -> PieceRec {
         level: 1,
         loc: sim_core::build::LOC_EDGE_N,
         row: 13,
+        ..PieceRec::default()
     }
 }
 
@@ -378,6 +389,7 @@ pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
         level: rng.next_bounded(8) as u8,
         loc: rng.next_bounded(4) as u8,
         row: rng.next_bounded(32) as u8,
+        ..PieceRec::default()
     });
     (true, recs)
 }
@@ -415,6 +427,65 @@ pub fn event_piece_defs() -> BuildContent {
         bc.pieces[i] = def;
     }
     bc
+}
+
+/// A deploy-place request: (row, cx, cz, level, loc) — a door into a
+/// doorway on a cell's west edge.
+pub fn action_deploy() -> (u16, u16, u16, u8, u8) {
+    (9, 341, 682, 0, sim_core::build::LOC_EDGE_W)
+}
+
+/// A feed of the hearth at (cx, cz, level).
+pub fn action_feed() -> (u16, u16, u8) {
+    (341, 682, 0)
+}
+
+/// The deployable record behind the placed broadcast (owner/hp/uh are
+/// sim-side and never cross — the fixture keeps their defaults).
+pub fn event_deploy_placed() -> DeployRec {
+    DeployRec {
+        cx: 341,
+        cz: 682,
+        level: 1,
+        loc: sim_core::build::LOC_PLANE,
+        row: 9,
+        ..DeployRec::default()
+    }
+}
+
+/// A full deploy-sync batch with the reset bit set.
+pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
+    let mut rng = Pcg32::new(0x0047_4154_4553, 19);
+    let recs = core::array::from_fn(|_| DeployRec {
+        cx: rng.next_bounded(1024) as u16,
+        cz: rng.next_bounded(1024) as u16,
+        level: rng.next_bounded(8) as u8,
+        loc: rng.next_bounded(4) as u8,
+        row: rng.next_bounded(16) as u8,
+        ..DeployRec::default()
+    });
+    (true, recs)
+}
+
+/// A refusal carrying `sim_core::deploy::REFUSE_D_CLAIM`.
+pub fn event_deploy_refused() -> u8 {
+    sim_core::deploy::REFUSE_D_CLAIM as u8
+}
+
+/// The deploy-def table (the sim's probe fixture is already the mixed
+/// shape the drip needs: four archetypes over four placements).
+pub fn event_deploy_defs() -> DeployContent {
+    DeployContent::probe_fixture()
+}
+
+/// The removed-piece address: (cx, cz, level, loc).
+pub fn event_removed() -> (u16, u16, u8, u8) {
+    (341, 682, 0, sim_core::build::LOC_EDGE_N)
+}
+
+/// A feed ack: hearth address + three stock rows.
+pub fn event_stock() -> (u16, u16, u8, [(u16, u32); 3]) {
+    (341, 682, 0, [(44, 1_900), (38, 0), (25, 123_456)])
 }
 
 /// The worst-case shape (DESIGN.md §12 `test_snapshot_budget` at the

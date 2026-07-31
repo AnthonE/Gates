@@ -13,15 +13,16 @@
 
 use crate::bits::{BitReader, BitWriter, WireError};
 use crate::{
-    expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, KIND_BITS, KIND_EVENT,
-    PIECE_ROW_BITS,
+    expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, DEPLOY_ROW_BITS,
+    KIND_BITS, KIND_EVENT, PIECE_ROW_BITS,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_ROOF};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
+use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_DOOR, PLACE_ANY};
 use sim_core::gather::ItemStack;
 use sim_core::limits::{
-    CRAFT_QUEUE, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PIECE_COSTS,
-    MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+    CRAFT_QUEUE, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOY_DEFS,
+    MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
 };
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
@@ -49,11 +50,19 @@ pub const PIECE_SYNC_BATCH: usize = 32;
 /// Piece-def rows one defs message carries (a full row is ~11 B).
 pub const PIECE_DEFS_BATCH: usize = 6;
 
+/// Placed-deployable records one sync message carries (a record is 29
+/// bits; 24 keep the batch ≈ 88 B, well under the message cap). The join
+/// walk is drip-fed like the piece sync.
+pub const DEPLOY_SYNC_BATCH: usize = 24;
+
+/// Deploy-def rows one defs message carries (a full row is ~5 B).
+pub const DEPLOY_DEFS_BATCH: usize = 8;
+
 /// Longest item display name on the wire; the catalog bake refuses past
 /// it (content names are short by construction — CONTENT.md §2).
 pub const MAX_ITEM_NAME_BYTES: usize = 24;
 
-const SUB_BITS: u32 = 4;
+const SUB_BITS: u32 = 5;
 const SUB_GATHER: u32 = 0;
 const SUB_INV: u32 = 1;
 const SUB_SLOT_HARVESTED: u32 = 2;
@@ -69,6 +78,13 @@ const SUB_PIECE_PLACED: u32 = 11;
 const SUB_PIECE_SYNC: u32 = 12;
 const SUB_BUILD_REFUSED: u32 = 13;
 const SUB_PIECE_DEFS: u32 = 14;
+const SUB_DEPLOY_PLACED: u32 = 15;
+const SUB_DEPLOY_SYNC: u32 = 16;
+const SUB_DEPLOY_REFUSED: u32 = 17;
+const SUB_DEPLOY_DEFS: u32 = 18;
+const SUB_PIECE_REMOVED: u32 = 19;
+const SUB_DEPLOY_REMOVED: u32 = 20;
+const SUB_STOCK: u32 = 21;
 
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
@@ -91,6 +107,12 @@ const PIECE_DEFS_COUNT_BITS: u32 = 3;
 const SHAPE_BITS: u32 = 3;
 const MATERIAL_BITS: u32 = 2;
 const N_COSTS_BITS: u32 = 2;
+const DEPLOY_SYNC_COUNT_BITS: u32 = 5;
+const DEPLOY_DEFS_TOTAL_BITS: u32 = 5;
+const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
+const ARCH_BITS: u32 = 3;
+const PLACEMENT_BITS: u32 = 2;
+const STOCK_COUNT_BITS: u32 = 3;
 
 /// One changed inventory slot on the wire.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -228,6 +250,52 @@ pub enum EventMsg {
         first: u8,
         count: u8,
         rows: [PieceDef; PIECE_DEFS_BATCH],
+    },
+    /// A deployable landed (broadcast — world facts like pieces). The
+    /// wire carries address + row only; owner/hp/uh stay sim-side, so
+    /// decoded records hold their defaults there.
+    DeployPlaced { rec: DeployRec },
+    /// One batch of the placed-deployable walk (join sync / resync).
+    DeploySync {
+        reset: bool,
+        recs: [DeployRec; DEPLOY_SYNC_BATCH],
+        count: u8,
+    },
+    /// A deploy or feed request bounced: `reason` is a
+    /// `sim_core::deploy::REFUSE_D_*` code.
+    DeployRefused { reason: u8 },
+    /// Deploy-def rows `first..first+count` of a `total`-row table — the
+    /// deployable menu's data, dripped like the piece defs.
+    DeployDefs {
+        total: u8,
+        first: u8,
+        count: u8,
+        rows: [DeployDef; DEPLOY_DEFS_BATCH],
+    },
+    /// Decay removed the piece at the address (broadcast; in-progress
+    /// piece walks restart server-side).
+    PieceRemoved {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
+    /// Decay (or its supporting piece's removal) removed the deployable
+    /// at the address.
+    DeployRemoved {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
+    /// The feed ack: the hearth's stock rows after the transfer, aligned
+    /// to the baked upkeep-material list (item index, units).
+    Stock {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        rows: [(u16, u32); HEARTH_STOCK_ROWS],
+        count: u8,
     },
 }
 
@@ -452,6 +520,7 @@ fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
         level: r.read(BUILD_LEVEL_BITS)? as u8,
         loc: r.read(BUILD_LOC_BITS)? as u8,
         row: r.read(PIECE_ROW_BITS)? as u8,
+        ..PieceRec::default()
     };
     // Coord/level/loc widths are exact; only the row can be forged.
     if rec.row as usize >= MAX_PIECE_DEFS {
@@ -527,6 +596,157 @@ pub fn encode_event_piece_defs(
         }
     }
     Ok((w.finish(), count))
+}
+
+/// One placed-deployable record on the wire: 29 bits, shared by the
+/// placed broadcast and the sync batches. Every width is exact, so only
+/// sim-impossible addresses need refusing at encode.
+fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError> {
+    if rec.cx as usize >= MAX_BUILD_COORD
+        || rec.cz as usize >= MAX_BUILD_COORD
+        || rec.level as usize >= MAX_BUILD_LEVELS
+        || rec.loc > LOC_EDGE_N
+        || rec.row as usize >= MAX_DEPLOY_DEFS
+    {
+        return Err(WireError::Range);
+    }
+    w.write(rec.cx as u32, BUILD_CELL_BITS)?;
+    w.write(rec.cz as u32, BUILD_CELL_BITS)?;
+    w.write(rec.level as u32, BUILD_LEVEL_BITS)?;
+    w.write(rec.loc as u32, BUILD_LOC_BITS)?;
+    w.write(rec.row as u32, DEPLOY_ROW_BITS)?;
+    Ok(())
+}
+
+fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
+    Ok(DeployRec {
+        cx: r.read(BUILD_CELL_BITS)? as u16,
+        cz: r.read(BUILD_CELL_BITS)? as u16,
+        level: r.read(BUILD_LEVEL_BITS)? as u8,
+        loc: r.read(BUILD_LOC_BITS)? as u8,
+        row: r.read(DEPLOY_ROW_BITS)? as u8,
+        ..DeployRec::default()
+    })
+}
+
+pub fn encode_event_deploy_placed(rec: &DeployRec, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_DEPLOY_PLACED)?;
+    write_deploy_rec(&mut w, rec)?;
+    Ok(w.finish())
+}
+
+/// A batch may be empty only with `reset` — the same contract as the
+/// piece sync.
+pub fn encode_event_deploy_sync(
+    reset: bool,
+    recs: &[DeployRec],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if recs.len() > DEPLOY_SYNC_BATCH || (recs.is_empty() && !reset) {
+        return Err(WireError::Cap);
+    }
+    let mut w = begin(buf, SUB_DEPLOY_SYNC)?;
+    w.write_bit(reset)?;
+    w.write(recs.len() as u32, DEPLOY_SYNC_COUNT_BITS)?;
+    for rec in recs {
+        write_deploy_rec(&mut w, rec)?;
+    }
+    Ok(w.finish())
+}
+
+pub fn encode_event_deploy_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_DEPLOY_REFUSED)?;
+    w.write(reason as u32, 8)?;
+    Ok(w.finish())
+}
+
+/// Encode up to `DEPLOY_DEFS_BATCH` baked deployable rows starting at
+/// `first`. Returns the byte length and how many rows rode along. Row
+/// shapes the bake refuses (hp 0, out-of-range codes) refuse here too.
+pub fn encode_event_deploy_defs(
+    dc: &DeployContent,
+    first: usize,
+    buf: &mut [u8],
+) -> Result<(usize, usize), WireError> {
+    let total = dc.def_count as usize;
+    if total > MAX_DEPLOY_DEFS || first >= total {
+        return Err(WireError::Range);
+    }
+    let count = DEPLOY_DEFS_BATCH.min(total - first);
+    let mut w = begin(buf, SUB_DEPLOY_DEFS)?;
+    w.write(total as u32, DEPLOY_DEFS_TOTAL_BITS)?;
+    w.write(first as u32, DEPLOY_DEFS_TOTAL_BITS)?;
+    w.write(count as u32, DEPLOY_DEFS_COUNT_BITS)?;
+    for def in dc.defs[first..first + count].iter() {
+        if def.arch > ARCH_DOOR || def.placement > PLACE_ANY || def.hp == 0 {
+            return Err(WireError::Range);
+        }
+        w.write(def.arch as u32, ARCH_BITS)?;
+        w.write(def.placement as u32, PLACEMENT_BITS)?;
+        w.write(def.hp as u32, 16)?;
+        w.write(def.item as u32, 16)?;
+    }
+    Ok((w.finish(), count))
+}
+
+/// A decay removal at a grid address — `piece` picks which store.
+pub fn encode_event_removed(
+    piece: bool,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= MAX_BUILD_COORD
+        || cz as usize >= MAX_BUILD_COORD
+        || level as usize >= MAX_BUILD_LEVELS
+        || loc > LOC_EDGE_N
+    {
+        return Err(WireError::Range);
+    }
+    let sub = if piece {
+        SUB_PIECE_REMOVED
+    } else {
+        SUB_DEPLOY_REMOVED
+    };
+    let mut w = begin(buf, sub)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    Ok(w.finish())
+}
+
+/// The feed ack: `rows` are the hearth's live stock rows, aligned to the
+/// baked upkeep-material list. Empty is legal (a hearth with no priced
+/// materials cannot exist, but the width allows the message shape).
+pub fn encode_event_stock(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    rows: &[(u16, u32)],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if rows.len() > HEARTH_STOCK_ROWS {
+        return Err(WireError::Cap);
+    }
+    if cx as usize >= MAX_BUILD_COORD
+        || cz as usize >= MAX_BUILD_COORD
+        || level as usize >= MAX_BUILD_LEVELS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_STOCK)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(rows.len() as u32, STOCK_COUNT_BITS)?;
+    for &(item, units) in rows {
+        w.write(item as u32, 16)?;
+        w.write(units, 32)?;
+    }
+    Ok(w.finish())
 }
 
 /// Total decode of one event-lane message: arbitrary bytes in, `Ok` or a
@@ -757,6 +977,93 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 first: first as u8,
                 count: count as u8,
                 rows,
+            }
+        }
+        SUB_DEPLOY_PLACED => EventMsg::DeployPlaced {
+            rec: read_deploy_rec(&mut r)?,
+        },
+        SUB_DEPLOY_SYNC => {
+            let reset = r.read_bit()?;
+            let count = r.read(DEPLOY_SYNC_COUNT_BITS)? as usize;
+            if count > DEPLOY_SYNC_BATCH || (count == 0 && !reset) {
+                return Err(WireError::Malformed);
+            }
+            let mut recs = [DeployRec::default(); DEPLOY_SYNC_BATCH];
+            for rec in recs.iter_mut().take(count) {
+                *rec = read_deploy_rec(&mut r)?;
+            }
+            EventMsg::DeploySync {
+                reset,
+                recs,
+                count: count as u8,
+            }
+        }
+        SUB_DEPLOY_REFUSED => EventMsg::DeployRefused {
+            reason: r.read(8)? as u8,
+        },
+        SUB_DEPLOY_DEFS => {
+            let total = r.read(DEPLOY_DEFS_TOTAL_BITS)? as usize;
+            let first = r.read(DEPLOY_DEFS_TOTAL_BITS)? as usize;
+            let count = r.read(DEPLOY_DEFS_COUNT_BITS)? as usize;
+            if total > MAX_DEPLOY_DEFS
+                || count == 0
+                || count > DEPLOY_DEFS_BATCH
+                || first + count > total
+            {
+                return Err(WireError::Malformed);
+            }
+            let mut rows = [DeployDef::INERT; DEPLOY_DEFS_BATCH];
+            for row in rows.iter_mut().take(count) {
+                let arch = r.read(ARCH_BITS)? as u8;
+                let placement = r.read(PLACEMENT_BITS)? as u8;
+                let hp = r.read(16)? as u16;
+                let item = r.read(16)? as u16;
+                if arch > ARCH_DOOR || hp == 0 {
+                    return Err(WireError::Malformed);
+                }
+                *row = DeployDef {
+                    arch,
+                    placement,
+                    hp,
+                    item,
+                };
+            }
+            EventMsg::DeployDefs {
+                total: total as u8,
+                first: first as u8,
+                count: count as u8,
+                rows,
+            }
+        }
+        sub @ (SUB_PIECE_REMOVED | SUB_DEPLOY_REMOVED) => {
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            if sub == SUB_PIECE_REMOVED {
+                EventMsg::PieceRemoved { cx, cz, level, loc }
+            } else {
+                EventMsg::DeployRemoved { cx, cz, level, loc }
+            }
+        }
+        SUB_STOCK => {
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let count = r.read(STOCK_COUNT_BITS)? as usize;
+            if count > HEARTH_STOCK_ROWS {
+                return Err(WireError::Malformed);
+            }
+            let mut rows = [(0u16, 0u32); HEARTH_STOCK_ROWS];
+            for row in rows.iter_mut().take(count) {
+                *row = (r.read(16)? as u16, r.read(32)?);
+            }
+            EventMsg::Stock {
+                cx,
+                cz,
+                level,
+                rows,
+                count: count as u8,
             }
         }
         _ => return Err(WireError::Malformed),
@@ -1032,6 +1339,7 @@ mod tests {
             level: 3,
             loc: LOC_EDGE_N,
             row: 17,
+            ..PieceRec::default()
         };
         let len = encode_event_piece_placed(&rec, &mut buf).unwrap();
         assert_eq!(
@@ -1063,6 +1371,7 @@ mod tests {
             level: (i % MAX_BUILD_LEVELS) as u8,
             loc: (i % 4) as u8,
             row: (i % MAX_PIECE_DEFS) as u8,
+            ..PieceRec::default()
         });
         let len = encode_event_piece_sync(true, &recs, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
@@ -1139,6 +1448,170 @@ mod tests {
     }
 
     #[test]
+    fn deploy_placed_sync_and_refused_round_trip() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let rec = DeployRec {
+            cx: 341,
+            cz: 682,
+            level: 1,
+            loc: sim_core::build::LOC_PLANE,
+            row: 7,
+            ..DeployRec::default()
+        };
+        let len = encode_event_deploy_placed(&rec, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::DeployPlaced { rec },
+            "owner/hp/uh stay sim-side: decode carries defaults"
+        );
+        // A record the sim could never hold refuses at encode.
+        let bad = DeployRec {
+            row: MAX_DEPLOY_DEFS as u8,
+            ..rec
+        };
+        assert_eq!(
+            encode_event_deploy_placed(&bad, &mut buf),
+            Err(WireError::Range)
+        );
+
+        // A full sync batch fits the cap; empty only resets.
+        let recs: [DeployRec; DEPLOY_SYNC_BATCH] = core::array::from_fn(|i| DeployRec {
+            cx: i as u16 * 41,
+            cz: 1023 - i as u16,
+            level: (i % MAX_BUILD_LEVELS) as u8,
+            loc: (i % 4) as u8,
+            row: (i % MAX_DEPLOY_DEFS) as u8,
+            ..DeployRec::default()
+        });
+        let len = encode_event_deploy_sync(true, &recs, &mut buf).unwrap();
+        assert!(len <= MAX_EVENT_MSG_BYTES);
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::DeploySync {
+                reset,
+                recs: got,
+                count,
+            } => {
+                assert!(reset);
+                assert_eq!(count as usize, DEPLOY_SYNC_BATCH);
+                assert_eq!(got, recs);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        assert!(encode_event_deploy_sync(true, &[], &mut buf).is_ok());
+        assert_eq!(
+            encode_event_deploy_sync(false, &[], &mut buf),
+            Err(WireError::Cap)
+        );
+
+        let len = encode_event_deploy_refused(7, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::DeployRefused { reason: 7 }
+        );
+    }
+
+    #[test]
+    fn deploy_defs_batches_walk_the_table_within_cap() {
+        let dc = DeployContent::probe_fixture();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+        assert!(len <= MAX_EVENT_MSG_BYTES);
+        assert_eq!(took, 4, "fixture has 4 rows, all fit one batch");
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::DeployDefs {
+                total,
+                first,
+                count,
+                rows,
+            } => {
+                assert_eq!((total, first, count), (4, 0, 4));
+                assert_eq!(rows[0], dc.defs[0], "decode rebuilds the sim row");
+                assert_eq!(rows[3], dc.defs[3]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        assert_eq!(
+            encode_event_deploy_defs(&dc, 4, &mut buf),
+            Err(WireError::Range),
+            "cursor past the table refuses"
+        );
+        // A row the bake would refuse (hp 0) refuses here.
+        let mut bad = dc;
+        bad.defs[1].hp = 0;
+        assert_eq!(
+            encode_event_deploy_defs(&bad, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        // The 16-row cap shape drips in two batches.
+        let mut full = DeployContent::EMPTY;
+        full.def_count = MAX_DEPLOY_DEFS as u16;
+        for i in 0..MAX_DEPLOY_DEFS {
+            full.defs[i] = DeployDef {
+                arch: (i % 7) as u8,
+                placement: (i % 4) as u8,
+                hp: u16::MAX,
+                item: u16::MAX,
+            };
+        }
+        let (len, took) = encode_event_deploy_defs(&full, 0, &mut buf).unwrap();
+        assert!(len <= MAX_EVENT_MSG_BYTES);
+        assert_eq!(took, DEPLOY_DEFS_BATCH);
+        let (_, took2) = encode_event_deploy_defs(&full, took, &mut buf).unwrap();
+        assert_eq!(took + took2, MAX_DEPLOY_DEFS);
+    }
+
+    #[test]
+    fn removals_and_stock_round_trip() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        for piece in [true, false] {
+            let len = encode_event_removed(piece, 341, 682, 2, LOC_EDGE_N, &mut buf).unwrap();
+            let want = if piece {
+                EventMsg::PieceRemoved {
+                    cx: 341,
+                    cz: 682,
+                    level: 2,
+                    loc: LOC_EDGE_N,
+                }
+            } else {
+                EventMsg::DeployRemoved {
+                    cx: 341,
+                    cz: 682,
+                    level: 2,
+                    loc: LOC_EDGE_N,
+                }
+            };
+            assert_eq!(decode_event(&buf[..len]).unwrap(), want);
+        }
+        assert_eq!(
+            encode_event_removed(true, 1024, 0, 0, 0, &mut buf),
+            Err(WireError::Range)
+        );
+
+        // Stock at the row cap round-trips; past it refuses.
+        let rows = [(0u16, 2_000u32), (5, 0), (9, 123_456), (63, u32::MAX)];
+        let len = encode_event_stock(341, 682, 0, &rows, &mut buf).unwrap();
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::Stock {
+                cx,
+                cz,
+                level,
+                rows: got,
+                count,
+            } => {
+                assert_eq!((cx, cz, level), (341, 682, 0));
+                assert_eq!(count as usize, HEARTH_STOCK_ROWS);
+                assert_eq!(got, rows);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let too_many = [(0u16, 0u32); HEARTH_STOCK_ROWS + 1];
+        assert_eq!(
+            encode_event_stock(0, 0, 0, &too_many, &mut buf),
+            Err(WireError::Cap)
+        );
+    }
+
+    #[test]
     fn trailing_garbage_and_unknown_subtype_are_malformed() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let len = encode_event_gather(1, 2, &mut buf).unwrap();
@@ -1147,8 +1620,11 @@ mod tests {
             Err(WireError::Malformed),
             "spare byte after a valid message must fail the strict tail"
         );
-        // kind EVENT + subtype 15: unknown.
-        let raw = [(KIND_EVENT | (15 << KIND_BITS)) as u8, 0];
-        assert_eq!(decode_event(&raw[..1]), Err(WireError::Malformed));
+        // kind EVENT + subtype 22: unknown (the first unused subtype).
+        let raw = [
+            (KIND_EVENT | (22 << KIND_BITS)) as u8,
+            (22 >> (8 - KIND_BITS)) as u8,
+        ];
+        assert_eq!(decode_event(&raw[..2]), Err(WireError::Malformed));
     }
 }

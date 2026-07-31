@@ -166,6 +166,36 @@ pub const MAX_BUILD_COORD: usize = 1_024;
 /// §open (build grid row).
 pub const MAX_BUILD_LEVELS: usize = 8;
 
+/// Deployable definitions the sim preallocates for (the alpha set is 9
+/// rows, content/deployables.toml). The content bake refuses a set past
+/// this; the wire carries the row in 4 bits — exactly this range.
+/// Structural cap like `MAX_PIECE_DEFS`.
+pub const MAX_DEPLOY_DEFS: usize = 16;
+
+/// Placed deployables per shard. Overflow policy: **refuse** the
+/// placement with an integer reason code (EV_DEPLOY_REFUSED) — same
+/// posture as `MAX_PIECES`. Proposed default, DECISIONS.md §open
+/// (deployables row).
+pub const MAX_DEPLOYS: usize = 1_024;
+
+/// Hearths per shard, tracked in their own dense list so claim checks
+/// and the upkeep sweep scan hearths, never the whole deploy store.
+/// Overflow policy: **refuse** the hearth placement. Proposed default,
+/// DECISIONS.md §open (deployables row).
+pub const MAX_HEARTHS: usize = 256;
+
+/// Stock rows per hearth — one per distinct upkeep material (the union
+/// of building-cost items; the alpha build table uses 3). The bake
+/// refuses a build table needing more. Structural cap, not a knob.
+pub const HEARTH_STOCK_ROWS: usize = 4;
+
+/// Piece + deployable records the upkeep/decay sweep visits per tick
+/// (each store advances its own cursor by this many entries). Bounded
+/// per-tick work: a full pass over both stores takes seconds while the
+/// upkeep period is an hour. Proposed default, DECISIONS.md §open
+/// (upkeep/decay row).
+pub const UPKEEP_SWEEP_PER_TICK: usize = 64;
+
 /// Per-connection outbound ring of reliable event-lane messages (sim →
 /// net; the bidi stream). Overflow policy: **resync** — a refused push
 /// flags the client for an event-lane resync (harvested-set walk restarts

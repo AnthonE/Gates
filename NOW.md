@@ -5,14 +5,15 @@ Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
 1. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
-   Gather, craft, and the build grid are sim'd and on the wire (slice 6:
-   pieces baked from `content/building.toml`, the place action on the
-   action lane, grid placement with support/terrain/cost rules, piece
-   broadcast + join-sync + def drip, plain build mode — B/wheel/R/F/
-   right-click with a ghost; wire v4). Next: deployables + hearth +
-   upkeep/decay (arms the station-gated recipes; doors/bags/boxes are
-   deployables) · piece collision + the predictor's piece store ·
-   upgrade-in-place · chat · death/backpack/respawn-on-bag.
+   Gather, craft, build, and deployables are sim'd and on the wire
+   (slice 7: deployables baked from `content/deployables.toml`, the
+   deploy/feed actions, hearth privilege radius, hourly upkeep charged
+   from hearth stock, unpaid decay with removal broadcasts, station
+   proximity arming the workbench/furnace recipes, deploys in the build
+   wheel + E-to-feed; wire v5). Next: piece collision + the predictor's
+   piece store · door open/close (doors place but are static until
+   collision exists) · upgrade-in-place · chat · death/backpack/
+   respawn-on-bag (bags place + cap now; the anchor lands there).
 2. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
 3. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·

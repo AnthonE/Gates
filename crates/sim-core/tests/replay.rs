@@ -17,20 +17,24 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-/// Regenerated this commit: the build verb landed — state_hash covers the
-/// placed-piece store, and the script drives Place commands (placements
-/// and every refusal reason) through the log.
-const GOLDEN_FINAL_HASH: u64 = 0x6345_2659_5DEE_6F44;
+/// Regenerated this commit: deployables + hearth + upkeep/decay landed —
+/// state_hash covers the deploy store, hearth stock, piece hp/upkeep and
+/// the sweep cursors, and the script drives PlaceDeploy/Feed commands and
+/// upkeep-period leaps through the log.
+const GOLDEN_FINAL_HASH: u64 = 0x23E8_D6A1_1537_E17F;
 
 fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut world = World::new(seed);
     world.gather = GatherContent::probe_fixture();
     world.craft = CraftContent::probe_fixture();
     world.build = BuildContent::probe_fixture();
+    world.deploy = sim_core::deploy::DeployContent::probe_fixture();
     let mut rng = Pcg32::new(seed, 11);
     let mut yaws = [0u16; 64];
     let mut joined: u32 = 0;
     let mut hashes = Vec::new();
+    let (mut placed, mut deployed, mut decayed) = (0u32, 0u32, 0u32);
+    let mut hearth_cell = (0u16, 0u16);
 
     for t in 0..TICKS {
         let mut cmds: Vec<Command> = Vec::new();
@@ -84,15 +88,137 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     loc: ((t / 53 + id as u64) % 4) as u8,
                 });
             }
+            // The deploy verb too: a bag and a workbench at the player's
+            // feet (the success shapes, once the granted or gathered
+            // items are there), a rotating junk request for the refusal
+            // reasons, and a feed (mostly the no-hearth refusal).
+            if (t + id as u64).is_multiple_of(71) {
+                let b = &world.players[(id as usize - 1) % 64].body;
+                let cell = |q: i32| {
+                    sim_core::build::build_cell_of(q as f32 * sim_core::movement::POS_XZ_Q)
+                        .clamp(0, 1023) as u16
+                };
+                let (cx, cz) = (cell(b.qx), cell(b.qz));
+                cmds.push(Command::PlaceDeploy {
+                    id,
+                    row: 3,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: 0,
+                });
+                cmds.push(Command::PlaceDeploy {
+                    id,
+                    row: 1,
+                    cx: (cx + 1).min(1023),
+                    cz,
+                    level: 0,
+                    loc: 0,
+                });
+                cmds.push(Command::PlaceDeploy {
+                    id,
+                    row: ((t / 71 + id as u64) % 5) as u16,
+                    cx,
+                    cz,
+                    level: ((t / 142) % 2) as u8,
+                    loc: ((t / 71 + id as u64) % 4) as u8,
+                });
+                cmds.push(Command::Feed {
+                    id,
+                    cx,
+                    cz,
+                    level: 0,
+                });
+            }
+        }
+        // A scripted hearth: grant a kit to the first eight bots (a
+        // fixture arrangement, like the wire tests' server-side grants —
+        // identical on both runs, so the replay contract holds), then
+        // bot 1 founds, hearths, and feeds one remembered cell. This
+        // pins the pay path — everything unpaid decays by the leaps.
+        if t == 149 {
+            for w in 0..8usize {
+                if world.players[w].active {
+                    for (k, &(item, count)) in [(0u16, 200u16), (1, 200), (2, 50), (3, 50), (4, 50)]
+                        .iter()
+                        .enumerate()
+                    {
+                        world.players[w].inv[20 + k] = sim_core::gather::ItemStack { item, count };
+                    }
+                }
+            }
+        }
+        if t == 150 {
+            let b = &world.players[0].body;
+            let cell = |q: i32| {
+                sim_core::build::build_cell_of(q as f32 * sim_core::movement::POS_XZ_Q)
+                    .clamp(0, 1023) as u16
+            };
+            hearth_cell = (cell(b.qx), cell(b.qz));
+        }
+        if (150..=153).contains(&t) {
+            let (cx, cz) = hearth_cell;
+            let id = world.players[0].id;
+            match t {
+                150 => cmds.push(Command::Place {
+                    id,
+                    row: 0,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: 0,
+                }),
+                151 => cmds.push(Command::PlaceDeploy {
+                    id,
+                    row: 0,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: 0,
+                }),
+                _ => cmds.push(Command::Feed {
+                    id,
+                    cx,
+                    cz,
+                    level: 0,
+                }),
+            }
+        }
+        // Leap the clock three upkeep periods on a cadence: over the run
+        // that is ~40 periods, enough to decay unpaid fixture pieces
+        // (100 hp − 5/period) all the way to removal — charge, decay,
+        // and the removal cascade all inside the replayed surface.
+        if t % 64 == 63 {
+            world.tick += 3 * sim_core::deploy::UPKEEP_PERIOD_TICKS;
         }
         world.tick(&cmds);
+        for e in world.events.entries() {
+            match e.code {
+                sim_core::world::EV_PIECE_PLACED => placed += 1,
+                sim_core::world::EV_DEPLOY_PLACED => deployed += 1,
+                sim_core::world::EV_PIECE_REMOVED | sim_core::world::EV_DEPLOY_REMOVED => {
+                    decayed += 1
+                }
+                _ => {}
+            }
+        }
         if world.tick.is_multiple_of(STATE_HASH_INTERVAL) {
             hashes.push(world.last_hash);
         }
     }
+    // Counted from events, not the final stores: decay legitimately
+    // removes early placements before the run ends.
     assert!(
-        !world.pieces.is_empty(),
+        placed > 0,
         "the script placed nothing — the build success path fell out of the replay surface"
+    );
+    assert!(
+        deployed > 0,
+        "the script deployed nothing — the deploy success path fell out of the replay surface"
+    );
+    assert!(
+        decayed > 0,
+        "nothing decayed away — the removal path fell out of the replay surface"
     );
     (hashes, world.state_hash())
 }

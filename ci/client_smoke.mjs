@@ -75,6 +75,17 @@ const REQUIRED = [
   "client_piece_defs_ptr",
   "client_piece_defs_state",
   "client_build_refusal_pop",
+  "client_action_deploy",
+  "client_action_feed",
+  "client_deploy_changes_ptr",
+  "client_deploy_changes_len",
+  "client_deploy_defs_ptr",
+  "client_deploy_defs_state",
+  "client_deploy_refusal_pop",
+  "client_removed_key",
+  "client_removed_info",
+  "client_stock_ptr",
+  "client_stock_count",
 ];
 
 let failed = 0;
@@ -126,7 +137,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 4, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 5, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
@@ -145,10 +156,10 @@ check(render[0] === 0, "not started before the first own snapshot");
 check(render[10] >= 100, `client tick should run ahead of 100: ${render[10]}`);
 
 // --- event lane: a hand-framed harvest event through the stream path ------
-// kind EVENT(5, 3 bits LSB-first) · subtype SLOT_HARVESTED(2, 4 bits) ·
-// cx=1 (16 bits) · cz=2 (16 bits) — protocol/src/event.rs layout.
+// kind EVENT(5, 3 bits LSB-first) · subtype SLOT_HARVESTED(2, 5 bits) ·
+// cx=1 (16 bits) · cz=2 (16 bits) — protocol/src/event.rs v5 layout.
 check(ex.client_cell_harvested(1, 2) === 0, "cell must start standing");
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([0x95, 0x00, 0x00, 0x01, 0x00]);
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([0x15, 0x01, 0x00, 0x02, 0x00]);
 const evFlags = ex.client_on_stream(5);
 check(evFlags === 2, `harvest event should apply with SLOTS flag: ${evFlags}`);
 check(ex.client_slot_changes_len() === 1, "one cell change expected");
@@ -160,12 +171,12 @@ check(ex.client_cell_harvested(1, 2) === 1, "cell must read harvested now");
 check(ex.client_toast_pop() >>> 0 === 0xffffffff, "no toast should be buffered");
 check(ex.client_weak_mark_cell() >>> 0 === 0xffffffff, "no weak mark should be up");
 
-// A hand-framed weak-mark event: kind EVENT(5) · subtype WEAK_MARK(6) ·
+// A hand-framed weak-mark event: kind EVENT(5) · subtype WEAK_MARK(6, 5 bits) ·
 // cx=1 (16) · cz=2 (16) · mark8=0x40 (8) · weak_hit=1 (1 bit).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 6).set([
-  0xb5, 0x00, 0x00, 0x01, 0x00, 0xa0,
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 7).set([
+  0x35, 0x01, 0x00, 0x02, 0x00, 0x40, 0x01,
 ]);
-const markFlags = ex.client_on_stream(6);
+const markFlags = ex.client_on_stream(7);
 check(markFlags === 32, `weak-mark event should apply with MARK flag: ${markFlags}`);
 check(ex.client_weak_mark_cell() >>> 0 === ((1 << 16) | 2), "mark cell mismatch");
 check(ex.client_weak_mark_info() === ((1 << 8) | 0x40), "mark info mismatch");
@@ -182,9 +193,9 @@ check(cancelLen > 0 && cancelLen <= 2, `cancel action length odd: ${cancelLen}`)
 check(ex.client_action_cancel(4) === 0, "index past the queue must refuse");
 
 // Hand-framed craft-done: kind EVENT(5, 3 bits LSB-first) · subtype
-// CRAFT_DONE(8, 4 bits) · item=9 (16 bits) · added=2 (16 bits).
+// CRAFT_DONE(8, 5 bits) · item=9 (16 bits) · added=2 (16 bits).
 new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
-  0xc5, 0x04, 0x00, 0x01, 0x00,
+  0x45, 0x09, 0x00, 0x02, 0x00,
 ]);
 const doneFlags = ex.client_on_stream(5);
 check(doneFlags === 128, `craft-done should apply with CRAFT_DONE flag: ${doneFlags}`);
@@ -194,9 +205,9 @@ check(
 );
 check(ex.client_craft_pop() >>> 0 === 0xffffffff, "craft toast ring should drain");
 
-// Hand-framed craft-refused: kind EVENT(5) · subtype CRAFT_REFUSED(9) ·
+// Hand-framed craft-refused: kind EVENT(5) · subtype CRAFT_REFUSED(9, 5 bits) ·
 // reason=4 (8 bits).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x4d, 0x02]);
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x4d, 0x04]);
 const refusedFlags = ex.client_on_stream(2);
 check(
   refusedFlags === 256,
@@ -215,31 +226,76 @@ check(ex.client_action_place(0, 1024, 0, 0, 0) === 0, "cx past the grid must ref
 check(ex.client_action_place(0, 0, 0, 8, 0) === 0, "level past the cap must refuse");
 
 // Hand-framed piece-placed: kind EVENT(5, 3 bits LSB-first) · subtype
-// PIECE_PLACED(11, 4 bits) · cx=341 (10) · cz=682 (10) · level=3 (3) ·
-// loc=3 (2) · row=17 (8) — protocol/src/event.rs layout.
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
-  0xdd, 0xaa, 0x54, 0xdd, 0x11,
+// PIECE_PLACED(11, 5 bits) · cx=341 (10) · cz=682 (10) · level=3 (3) ·
+// loc=3 (2) · row=17 (8) — protocol/src/event.rs v5 layout.
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 6).set([
+  0x5d, 0x55, 0xa9, 0xba, 0x23, 0x00,
 ]);
-const pieceFlags = ex.client_on_stream(5);
+const pieceFlags = ex.client_on_stream(6);
 check(pieceFlags === 1024, `piece-placed should apply with PIECES flag: ${pieceFlags}`);
 check(ex.client_piece_changes_len() === 1, "one piece change expected");
 const pchange = new Uint32Array(ex.memory.buffer, ex.client_piece_changes_ptr(), 2);
 check(pchange[0] === ((341 << 16) | 682), `piece change key odd: ${pchange[0]}`);
 check(pchange[1] === ((3 << 16) | (3 << 8) | 17), `piece change info odd: ${pchange[1]}`);
 // The same record again is a duplicate, not a change.
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
-  0xdd, 0xaa, 0x54, 0xdd, 0x11,
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 6).set([
+  0x5d, 0x55, 0xa9, 0xba, 0x23, 0x00,
 ]);
-check(ex.client_on_stream(5) === 0, "duplicate piece must not re-flag");
+check(ex.client_on_stream(6) === 0, "duplicate piece must not re-flag");
 
-// Hand-framed build-refused: kind EVENT(5) · subtype BUILD_REFUSED(13) ·
-// reason=2 (8 bits).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x6d, 0x01]);
+// Hand-framed build-refused: kind EVENT(5) · subtype BUILD_REFUSED(13, 5 bits)
+// · reason=2 (8 bits).
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x6d, 0x02]);
 const bRefused = ex.client_on_stream(2);
 check(bRefused === 4096, `build-refused should apply with its flag: ${bRefused}`);
 check(ex.client_build_refusal_pop() === 2, "build refusal reason should be 2");
 check(ex.client_build_refusal_pop() >>> 0 === 0xffffffff, "build refusal ring should drain");
 check((ex.client_piece_defs_state() >>> 0) === 0, "no piece defs dripped yet");
+
+// --- deploy surface: deploy/feed actions out, deploy events in ------------
+const deployLen = ex.client_action_deploy(3, 341, 341, 0, 0);
+check(deployLen === 5, `deploy action length odd: ${deployLen}`);
+check(ex.client_action_deploy(16, 0, 0, 0, 0) === 0, "row past the table must refuse");
+const feedLen = ex.client_action_feed(341, 341, 0);
+check(feedLen === 4, `feed action length odd: ${feedLen}`);
+check(ex.client_action_feed(1024, 0, 0) === 0, "cx past the grid must refuse");
+
+// Hand-framed deploy-placed: kind EVENT(5) · subtype DEPLOY_PLACED(15, 5
+// bits) · cx=341 (10) · cz=682 (10) · level=1 (3) · loc=0 (2) · row=3 (4).
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
+  0x7d, 0x55, 0xa9, 0x1a, 0x06,
+]);
+const deployFlags = ex.client_on_stream(5);
+check(deployFlags === 16384, `deploy-placed should apply with its flag: ${deployFlags}`);
+check(ex.client_deploy_changes_len() === 1, "one deploy change expected");
+const dchange = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
+check(dchange[0] === ((341 << 16) | 682), `deploy change key odd: ${dchange[0]}`);
+check(dchange[1] === ((1 << 16) | 3), `deploy change info odd: ${dchange[1]}`);
+
+// Hand-framed piece-removed: kind EVENT(5) · subtype PIECE_REMOVED(19, 5
+// bits) · the piece placed above (cx=341 · cz=682 · level=3 · loc=3).
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
+  0x9d, 0x55, 0xa9, 0xba, 0x01,
+]);
+const rmFlags = ex.client_on_stream(5);
+check(rmFlags === 524288, `piece-removed should apply with its flag: ${rmFlags}`);
+check(ex.client_removed_key() === ((341 << 16) | 682), "removed key mismatch");
+check(ex.client_removed_info() === ((3 << 8) | 3), "removed info mismatch");
+// Removing it again names no known address: no flag.
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
+  0x9d, 0x55, 0xa9, 0xba, 0x01,
+]);
+check(ex.client_on_stream(5) === 0, "unknown removal must not flag");
+
+// Hand-framed deploy-refused: kind EVENT(5) · subtype DEPLOY_REFUSED(17,
+// 5 bits) · reason=7 (claim).
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x8d, 0x07]);
+const dRefused = ex.client_on_stream(2);
+check(dRefused === 65536, `deploy-refused should apply with its flag: ${dRefused}`);
+check(ex.client_deploy_refusal_pop() === 7, "deploy refusal reason should be 7");
+check(ex.client_deploy_refusal_pop() >>> 0 === 0xffffffff, "deploy refusal ring should drain");
+check((ex.client_deploy_defs_state() >>> 0) === 0, "no deploy defs dripped yet");
+check(ex.client_stock_count() === 0, "no stock ack yet");
 
 // Garbage on the stream must be refused with the error bit, not trap.
 new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 3).set([0xff, 0xff, 0xff]);

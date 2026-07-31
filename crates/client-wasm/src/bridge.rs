@@ -12,13 +12,14 @@
 
 use crate::core::ClientCore;
 use protocol::{
-    decode_refuse, decode_welcome, encode_action_cancel, encode_action_craft, encode_action_place,
-    encode_hello, peek_kind, Hello, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES,
-    PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
+    decode_refuse, decode_welcome, encode_action_cancel, encode_action_craft, encode_action_deploy,
+    encode_action_feed, encode_action_place, encode_hello, peek_kind, Hello, DEPLOY_SYNC_BATCH,
+    KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
-    CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, INV_SLOTS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS,
-    MAX_RECIPES, MAX_RECIPE_INPUTS, MAX_SNAPSHOT_ENTITIES,
+    CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_DEPLOY_DEFS,
+    MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+    MAX_SNAPSHOT_ENTITIES,
 };
 use sim_core::terrain::{self, ScatterTable};
 use std::cell::RefCell;
@@ -49,6 +50,8 @@ const RECIPE_ROW_WORDS: usize = 6 + 2 * MAX_RECIPE_INPUTS;
 /// Piece-def view row, u16 words: shape, material, hp, n_costs, then
 /// (item, count) per cost slot.
 const PIECE_DEF_ROW_WORDS: usize = 4 + 2 * MAX_PIECE_COSTS;
+/// Deploy-def view row, u16 words: arch, placement, hp, item.
+const DEPLOY_DEF_ROW_WORDS: usize = 4;
 /// `client_on_stream` error flag (high bit; real flags are low bits).
 const STREAM_ERR: u32 = 1 << 31;
 
@@ -78,6 +81,14 @@ struct Bridge {
     piece_changes_len: u32,
     /// Piece-def table view: `PIECE_DEF_ROW_WORDS` u16s per piece row.
     piece_defs: Box<[u16; MAX_PIECE_DEFS * PIECE_DEF_ROW_WORDS]>,
+    /// Deployable records the last stream message added, packed like the
+    /// piece pairs: [cx << 16 | cz, level << 16 | loc << 8 | row].
+    deploy_changes: [u32; DEPLOY_SYNC_BATCH * 2],
+    deploy_changes_len: u32,
+    /// Deploy-def table view: `DEPLOY_DEF_ROW_WORDS` u16s per row.
+    deploy_defs: Box<[u16; MAX_DEPLOY_DEFS * DEPLOY_DEF_ROW_WORDS]>,
+    /// Last stock ack: [item, units] u32 pairs (rows live in the core).
+    stock: [u32; HEARTH_STOCK_ROWS * 2],
 }
 
 impl Bridge {
@@ -100,6 +111,10 @@ impl Bridge {
             piece_changes: [0; PIECE_SYNC_BATCH * 2],
             piece_changes_len: 0,
             piece_defs: Box::new([0; MAX_PIECE_DEFS * PIECE_DEF_ROW_WORDS]),
+            deploy_changes: [0; DEPLOY_SYNC_BATCH * 2],
+            deploy_changes_len: 0,
+            deploy_defs: Box::new([0; MAX_DEPLOY_DEFS * DEPLOY_DEF_ROW_WORDS]),
+            stock: [0; HEARTH_STOCK_ROWS * 2],
         }
     }
 }
@@ -231,6 +246,10 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             piece_changes,
             piece_changes_len,
             piece_defs,
+            deploy_changes,
+            deploy_changes_len,
+            deploy_defs,
+            stock,
             ..
         } = b
         else {
@@ -307,7 +326,135 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
                 }
             }
         }
+        if flags & (crate::core::APPLIED_DEPLOYS | crate::core::APPLIED_DEPLOY_RESET) != 0 {
+            let ch = core.deploy_changes();
+            for (i, rec) in ch.iter().enumerate() {
+                deploy_changes[i * 2] = ((rec.cx as u32) << 16) | rec.cz as u32;
+                deploy_changes[i * 2 + 1] =
+                    ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32;
+            }
+            *deploy_changes_len = ch.len() as u32;
+        }
+        if flags & crate::core::APPLIED_DEPLOY_DEFS != 0 {
+            for i in 0..(core.deploy_defs_have as usize).min(MAX_DEPLOY_DEFS) {
+                let def = &core.deploy_defs.defs[i];
+                let row =
+                    &mut deploy_defs[i * DEPLOY_DEF_ROW_WORDS..(i + 1) * DEPLOY_DEF_ROW_WORDS];
+                row[0] = def.arch as u16;
+                row[1] = def.placement as u16;
+                row[2] = def.hp;
+                row[3] = def.item;
+            }
+        }
+        if flags & crate::core::APPLIED_STOCK != 0 {
+            for (i, &(item, units)) in core.stock.iter().enumerate() {
+                stock[i * 2] = item as u32;
+                stock[i * 2 + 1] = units;
+            }
+        }
         flags
+    })
+}
+
+/// Deployable records from the last stream message, packed as u32 pairs
+/// ([cx << 16 | cz, level << 16 | loc << 8 | row]).
+#[no_mangle]
+pub extern "C" fn client_deploy_changes_ptr() -> *const u32 {
+    with(|b| b.deploy_changes.as_ptr())
+}
+
+#[no_mangle]
+pub extern "C" fn client_deploy_changes_len() -> u32 {
+    with(|b| b.deploy_changes_len)
+}
+
+/// Deploy-def table view: `DEPLOY_DEF_ROW_WORDS` u16 words per row
+/// (arch, placement, hp, item), refreshed by `client_on_stream`
+/// (`APPLIED_DEPLOY_DEFS`).
+#[no_mangle]
+pub extern "C" fn client_deploy_defs_ptr() -> *const u16 {
+    with(|b| b.deploy_defs.as_ptr())
+}
+
+/// Deploy-def drip progress: total rows << 16 | rows received so far.
+#[no_mangle]
+pub extern "C" fn client_deploy_defs_state() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => ((core.deploy_defs.def_count as u32) << 16) | core.deploy_defs_have as u32,
+        None => 0,
+    })
+}
+
+/// The last removal's address: cx << 16 | cz (pair with
+/// `client_removed_info`; valid while the removal flags are set).
+#[no_mangle]
+pub extern "C" fn client_removed_key() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => ((core.removed_addr.0 as u32) << 16) | core.removed_addr.1 as u32,
+        None => 0,
+    })
+}
+
+/// The last removal's level << 8 | loc.
+#[no_mangle]
+pub extern "C" fn client_removed_info() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => ((core.removed_addr.2 as u32) << 8) | core.removed_addr.3 as u32,
+        None => 0,
+    })
+}
+
+/// Last stock ack: [item, units] u32 pairs, `client_stock_count` rows.
+#[no_mangle]
+pub extern "C" fn client_stock_ptr() -> *const u32 {
+    with(|b| b.stock.as_ptr())
+}
+
+#[no_mangle]
+pub extern "C" fn client_stock_count() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => core.stock_count as u32,
+        None => 0,
+    })
+}
+
+/// Oldest buffered deploy refusal reason; `u32::MAX` when none.
+#[no_mangle]
+pub extern "C" fn client_deploy_refusal_pop() -> u32 {
+    with(
+        |b| match b.core.as_mut().and_then(|c| c.pop_deploy_refusal()) {
+            Some(reason) => reason as u32,
+            None => u32::MAX,
+        },
+    )
+}
+
+/// Encode a deploy-place request into the out buffer; returns its length,
+/// or 0 when the arguments are outside the wire's domain.
+#[no_mangle]
+pub extern "C" fn client_action_deploy(row: u32, cx: u32, cz: u32, level: u32, loc: u32) -> u32 {
+    with(|b| {
+        encode_action_deploy(
+            row as u16,
+            cx as u16,
+            cz as u16,
+            level as u8,
+            loc as u8,
+            &mut b.out_buf,
+        )
+        .map(|n| n as u32)
+        .unwrap_or(0)
+    })
+}
+
+/// Encode a feed request into the out buffer; returns its length, or 0
+/// when the arguments are outside the wire's domain.
+#[no_mangle]
+pub extern "C" fn client_action_feed(cx: u32, cz: u32, level: u32) -> u32 {
+    with(|b| {
+        encode_action_feed(cx as u16, cz as u16, level as u8, &mut b.out_buf)
+            .map(|n| n as u32)
+            .unwrap_or(0)
     })
 }
 
