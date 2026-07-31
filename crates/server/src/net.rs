@@ -176,13 +176,13 @@ async fn handshake_task(
         Ok::<_, ()>((connection, send, hello))
     })
     .await;
-    let Ok(Ok((connection, mut send, hello))) = result else {
+    let Ok(Ok((connection, send, hello))) = result else {
         ShardStats::bump(&stats.handshake_errors);
         return;
     };
     if hello.proto_ver != PROTO_VER {
         ShardStats::bump(&stats.refused_version);
-        let _ = write_refuse(&mut send, REFUSE_VERSION).await;
+        spawn_refusal(connection, send, REFUSE_VERSION);
         return;
     }
     let _ = done_tx.send(Handshaken { connection, send }).await;
@@ -205,7 +205,7 @@ async fn install(
     let Some((slot, generation)) = (0..MAX_PLAYERS).find_map(|s| slots.claim(s).map(|g| (s, g)))
     else {
         ShardStats::bump(&stats.refused_full);
-        let _ = write_refuse(&mut send, REFUSE_FULL).await;
+        spawn_refusal(connection, send, REFUSE_FULL);
         return;
     };
     // Player id: slot in the low byte, claim generation above — unique
@@ -224,7 +224,7 @@ async fn install(
         // "wait"). The claim reverts; the client may retry.
         slots.unclaim(slot, generation);
         ShardStats::bump(&stats.refused_full);
-        let _ = write_refuse(&mut send, REFUSE_FULL).await;
+        spawn_refusal(connection, send, REFUSE_FULL);
         return;
     }
 
@@ -343,6 +343,22 @@ async fn write_refuse(send: &mut SendStream, code: u8) -> Result<(), ()> {
     let mut payload = [0u8; MAX_STREAM_MSG_BYTES];
     let len = encode_refuse(&Refuse { code }, &mut payload).map_err(|_| ())?;
     write_frame(send, &payload[..len]).await
+}
+
+/// Refusals are posted, never hung (DESIGN.md §5.9) — and never block the
+/// accept loop. A buffered write dies with the dropped connection, so
+/// delivery needs `finish` (retransmit-until-acked) before the drop; that
+/// waits on the peer, so it runs detached, bounded by the handshake
+/// timeout so a non-acking client can't pin the task.
+fn spawn_refusal(connection: Connection, mut send: SendStream, code: u8) {
+    tokio::spawn(async move {
+        let _ = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+            write_refuse(&mut send, code).await?;
+            send.finish().await.map_err(|_| ())
+        })
+        .await;
+        drop(connection);
+    });
 }
 
 async fn write_welcome(send: &mut SendStream, msg: &Welcome) -> Result<(), ()> {
