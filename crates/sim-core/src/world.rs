@@ -4,10 +4,11 @@
 //! applied in submission order, then players step in slot order — the fixed
 //! order determinism requires.
 
-use crate::gather::{self, GatherContent, ItemStack, SlotLives};
+use crate::gather::{self, GatherContent, ItemStack, SlotLives, NO_CELL};
 use crate::input::InputFrame;
 use crate::limits::{
-    INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS, STATE_HASH_INTERVAL,
+    HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS,
+    STATE_HASH_INTERVAL,
 };
 use crate::movement::{self, Body};
 use crate::rng::cell_hash;
@@ -25,12 +26,17 @@ pub const EV_GATHER: u8 = 1;
 pub const EV_SLOT_HARVESTED: u8 = 2;
 /// EV_SLOT_RESPAWNED: a = cell key, b = 0.
 pub const EV_SLOT_RESPAWNED: u8 = 3;
+/// EV_WEAK_MARK: a = player id, b = cell key, c = weak-hit bit << 8 |
+/// next mark heading (u8 over the 256-entry yaw LUT). Swinger-only fact:
+/// the mark is per-player (gather.rs).
+pub const EV_WEAK_MARK: u8 = 4;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SimEvent {
     pub code: u8,
     pub a: u32,
     pub b: u32,
+    pub c: u32,
 }
 
 /// Per-tick event ring (limits.rs: MAX_EVENTS_PER_TICK, drop newest,
@@ -44,12 +50,12 @@ pub struct EventQueue {
 }
 
 impl EventQueue {
-    pub fn push(&mut self, code: u8, a: u32, b: u32) {
+    pub fn push(&mut self, code: u8, a: u32, b: u32, c: u32) {
         if self.len == MAX_EVENTS_PER_TICK {
             self.dropped += 1;
             return;
         }
-        self.entries[self.len] = SimEvent { code, a, b };
+        self.entries[self.len] = SimEvent { code, a, b, c };
         self.len += 1;
     }
 
@@ -93,6 +99,11 @@ pub struct Player {
     pub inv: [ItemStack; INV_SLOTS],
     /// Tick the next swing is allowed at (gather.rs cadence).
     pub next_swing: u64,
+    /// Weak-spot chase: the cell this player last landed a hit on
+    /// (`NO_CELL` = none) and how many hits they've landed there. The mark
+    /// heading derives from these (gather.rs), so they are sim state.
+    pub ws_cell: u32,
+    pub ws_hits: u16,
 }
 
 impl Default for Player {
@@ -104,6 +115,8 @@ impl Default for Player {
             frame: InputFrame::default(),
             inv: [ItemStack::default(); INV_SLOTS],
             next_swing: 0,
+            ws_cell: NO_CELL,
+            ws_hits: 0,
         }
     }
 }
@@ -208,6 +221,12 @@ impl World {
             }
             Command::Input { id, frame } => {
                 if let Some(slot) = self.slot_of(id) {
+                    let mut frame = frame;
+                    if frame.sel as usize >= HOTBAR_SLOTS {
+                        // The wire refuses 6–7 at decode; a non-wire
+                        // command (bot, test, WAL) falls back to slot 0.
+                        frame.sel = 0;
+                    }
                     self.players[slot].frame = frame;
                 }
             }
@@ -259,7 +278,7 @@ impl World {
             if !p.active {
                 continue;
             }
-            let mut buf = [0u8; 40];
+            let mut buf = [0u8; 48];
             buf[0..4].copy_from_slice(&p.id.to_le_bytes());
             buf[4..8].copy_from_slice(&p.body.qx.to_le_bytes());
             buf[8..12].copy_from_slice(&p.body.qy.to_le_bytes());
@@ -273,6 +292,9 @@ impl World {
             buf[27] = p.frame.move_x as u8;
             buf[28] = p.frame.move_z as u8;
             buf[29..37].copy_from_slice(&p.next_swing.to_le_bytes());
+            buf[37] = p.frame.sel;
+            buf[38..42].copy_from_slice(&p.ws_cell.to_le_bytes());
+            buf[42..44].copy_from_slice(&p.ws_hits.to_le_bytes());
             h.update(&buf);
             for s in p.inv.iter() {
                 let mut sb = [0u8; 4];

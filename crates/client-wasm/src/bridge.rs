@@ -269,6 +269,27 @@ pub extern "C" fn client_toast_pop() -> u32 {
     })
 }
 
+/// The own weak-spot mark's cell key (cx << 16 | cz), or `u32::MAX` when
+/// no mark is up. Refreshed by `client_on_stream` (`APPLIED_MARK` flag).
+#[no_mangle]
+pub extern "C" fn client_weak_mark_cell() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => core.mark_cell,
+        None => u32::MAX,
+    })
+}
+
+/// The mark detail: `weak_hit << 8 | mark8` — heading over the 256-entry
+/// yaw LUT (0 faces +Z, rotating toward +X) plus whether the announcing
+/// hit landed weak. Meaningless while no mark is up.
+#[no_mangle]
+pub extern "C" fn client_weak_mark_info() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => ((core.mark_weak_hit as u32) << 8) | core.mark8 as u32,
+        None => 0,
+    })
+}
+
 /// Whether the scatter slot at cell (cx, cz) is currently harvested —
 /// the renderer's build-time check for chunks streaming in.
 #[no_mangle]
@@ -283,7 +304,14 @@ pub extern "C" fn client_cell_harvested(cx: u32, cz: u32) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn client_set_input(buttons: u32, yaw: u32, pitch: u32, move_x: i32, move_z: i32) {
+pub extern "C" fn client_set_input(
+    buttons: u32,
+    yaw: u32,
+    pitch: u32,
+    move_x: i32,
+    move_z: i32,
+    sel: u32,
+) {
     with(|b| {
         if let Some(core) = b.core.as_mut() {
             core.set_input(
@@ -292,6 +320,7 @@ pub extern "C" fn client_set_input(buttons: u32, yaw: u32, pitch: u32, move_x: i
                 pitch as u8,
                 move_x.clamp(-127, 127) as i8,
                 move_z.clamp(-127, 127) as i8,
+                sel as u8,
             );
         }
     })

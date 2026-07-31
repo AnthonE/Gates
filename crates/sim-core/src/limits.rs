@@ -99,6 +99,12 @@ pub const MAX_ITEM_DEFS: usize = 64;
 /// Inventory slots per player: 6 hotbar + 24 backpack (ALPHA.md §1).
 pub const INV_SLOTS: usize = 30;
 
+/// Hotbar width — the first `HOTBAR_SLOTS` inventory slots, the only ones
+/// the held-item selector may name (ALPHA.md §1). The wire carries the
+/// selector in 3 bits and refuses 6–7; a non-wire command with an invalid
+/// selector falls back to slot 0 (`world::apply`).
+pub const HOTBAR_SLOTS: usize = 6;
+
 /// Sparse slot-life store (harvested/damaged scatter slots). Sized past
 /// the ~8–12 k live slots a seed produces (TERRAIN.md §6) so harvested
 /// entries always fit. Overflow policy: **evict** — standing-damage

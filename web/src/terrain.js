@@ -183,6 +183,11 @@ export class Terrain {
     pool.instanceMatrix.needsUpdate = true;
   }
 
+  /** The rendered scatter entry at cellKey, or null (chunk not streamed). */
+  cellEntry(cellKey) {
+    return this.cellIndex.get(cellKey) || null;
+  }
+
   /** Event-lane fact: the node at this cell vanished or came back. */
   setCellHarvested(cellKey, harvested) {
     const entry = this.cellIndex.get(cellKey);

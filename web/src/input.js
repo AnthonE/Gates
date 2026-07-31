@@ -10,6 +10,7 @@ export class InputTracker {
   constructor(canvas) {
     this.yaw = 0; // radians, free-running
     this.pitch = 0; // radians, +up
+    this.sel = 0; // selected hotbar slot 0..5 (keys 1–6)
     this.keys = {
       w: false,
       a: false,
@@ -43,6 +44,14 @@ export class InputTracker {
       if (this.pitch < -PITCH_LIMIT) this.pitch = -PITCH_LIMIT;
     });
     const onKey = (e, down) => {
+      if (down && e.code.startsWith("Digit")) {
+        const n = e.code.charCodeAt(5) - 49; // "Digit1" → 0 … "Digit6" → 5
+        if (n >= 0 && n <= 5) {
+          this.sel = n;
+          e.preventDefault();
+          return;
+        }
+      }
       switch (e.code) {
         case "KeyW":
           this.keys.w = down;

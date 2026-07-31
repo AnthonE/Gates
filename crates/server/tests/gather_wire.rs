@@ -6,11 +6,11 @@
 //! through the same resync path. Deterministic, no sockets; asserts are
 //! structural and exact.
 
-use client_wasm::core::{ClientCore, APPLIED_RESET};
+use client_wasm::core::{ClientCore, APPLIED_MARK, APPLIED_RESET};
 use protocol::ItemCatalog;
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
-use sim_core::gather::{cell_key, GatherContent, SWING_INTERVAL_TICKS};
+use sim_core::gather::{cell_key, weak_mark8, GatherContent, NO_CELL, SWING_INTERVAL_TICKS};
 use sim_core::input::BTN_PRIMARY;
 use sim_core::terrain::{self, Occupant, ScatterTable, CELL_SIZE};
 use sim_core::yaw_dir;
@@ -150,14 +150,64 @@ fn gather_rides_the_wire() {
         (1usize, ClientCore::new(SEED, id_of(1), 0)),
     ];
 
-    // Swing until the tree exhausts: client 0 holds primary facing it,
-    // client 1 stands idle beside it.
-    let ticks = SWING_INTERVAL_TICKS * (tree.hits as u64 + 2);
-    for _ in 0..ticks {
-        clients[0].1.set_input(BTN_PRIMARY, yaw, 0, 0, 0);
-        clients[1].1.set_input(0, yaw, 0, 0, 0);
+    // Let the join drip (catalog + the sync reset batch) finish first: a
+    // mark announced in the same tick the reset batch goes out is cleared
+    // by it — join-window noise the next swing repairs, not what this
+    // gate pins.
+    for _ in 0..4 {
+        clients[0].1.set_input(0, yaw, 0, 0, 0, 0);
+        clients[1].1.set_input(0, yaw, 0, 0, 0, 0);
         pump(&mut core, &stats, &mut clients, &[]);
     }
+
+    // Swing until the tree exhausts: client 0 holds primary facing it
+    // with hotbar slot 2 selected (empty — the bare hand), client 1
+    // stands idle beside it.
+    let ticks = SWING_INTERVAL_TICKS * (tree.hits as u64 + 2);
+    let mut mark_flags = [0u32; 2];
+    let mut first_mark8 = None;
+    for _ in 0..ticks {
+        clients[0].1.set_input(BTN_PRIMARY, yaw, 0, 0, 0, 2);
+        clients[1].1.set_input(0, yaw, 0, 0, 0, 0);
+        let flags = pump(&mut core, &stats, &mut clients, &[]);
+        mark_flags[0] |= flags[0];
+        mark_flags[1] |= flags[1];
+        if clients[0].1.mark_cell != NO_CELL {
+            assert_eq!(clients[0].1.mark_cell, key, "mark parked off-node");
+            first_mark8.get_or_insert(clients[0].1.mark8);
+        }
+    }
+
+    // The weak mark rode to the swinger alone, matched the sim's pure
+    // derivation for hit 1, and the harvest broadcast cleared it.
+    assert_ne!(mark_flags[0] & APPLIED_MARK, 0, "swinger never saw a mark");
+    assert_eq!(
+        mark_flags[1] & APPLIED_MARK,
+        0,
+        "mark leaked to a bystander"
+    );
+    assert_eq!(
+        first_mark8,
+        Some(weak_mark8(SEED, cx, cz, id_of(0), 1)),
+        "first mark heading drifted from the sim's derivation"
+    );
+    assert_eq!(
+        clients[0].1.mark_cell, NO_CELL,
+        "exhaustion left a stale mark up"
+    );
+
+    // The selected hotbar slot rode the input datagrams to the sim.
+    assert_eq!(
+        core.world
+            .players
+            .iter()
+            .find(|p| p.active && p.id == id_of(0))
+            .expect("swinger in world")
+            .frame
+            .sel,
+        2,
+        "hotbar selection never reached the server"
+    );
 
     // The swinger's inventory mirror matches the world exactly.
     let world_inv = core
@@ -199,7 +249,7 @@ fn gather_rides_the_wire() {
     let mut late_flags = 0u32;
     for _ in 0..8 {
         for (_, c) in clients.iter_mut() {
-            c.set_input(0, yaw, 0, 0, 0);
+            c.set_input(0, yaw, 0, 0, 0, 0);
         }
         late_flags |= pump(&mut core, &stats, &mut clients, &[])[2];
     }
@@ -222,7 +272,7 @@ fn gather_rides_the_wire() {
     core.world.tick = respawn_at;
     for _ in 0..4 {
         for (_, c) in clients.iter_mut() {
-            c.set_input(0, yaw, 0, 0, 0);
+            c.set_input(0, yaw, 0, 0, 0, 0);
         }
         pump(&mut core, &stats, &mut clients, &[]);
     }
@@ -260,8 +310,8 @@ fn event_ring_overflow_heals_by_resync() {
     // Client 1's event ring refuses everything while the tree is felled.
     let ticks = SWING_INTERVAL_TICKS * (tree.hits as u64 + 2);
     for _ in 0..ticks {
-        clients[0].1.set_input(BTN_PRIMARY, yaw, 0, 0, 0);
-        clients[1].1.set_input(0, yaw, 0, 0, 0);
+        clients[0].1.set_input(BTN_PRIMARY, yaw, 0, 0, 0, 0);
+        clients[1].1.set_input(0, yaw, 0, 0, 0, 0);
         pump(&mut core, &stats, &mut clients, &[1]);
     }
     assert!(core.world.slot_lives.is_harvested(cx, cz));
@@ -273,8 +323,8 @@ fn event_ring_overflow_heals_by_resync() {
 
     // The ring drains; the resync walk restores the truth.
     for _ in 0..8 {
-        clients[0].1.set_input(0, yaw, 0, 0, 0);
-        clients[1].1.set_input(0, yaw, 0, 0, 0);
+        clients[0].1.set_input(0, yaw, 0, 0, 0, 0);
+        clients[1].1.set_input(0, yaw, 0, 0, 0, 0);
         pump(&mut core, &stats, &mut clients, &[]);
     }
     assert!(

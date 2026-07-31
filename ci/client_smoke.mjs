@@ -112,12 +112,12 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 1, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 2, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
 ex.client_new(SEED, 257, 100);
-ex.client_set_input(1, 12000, 128, 0, 127);
+ex.client_set_input(1, 12000, 128, 0, 127, 3);
 const steps = ex.client_advance(100.0);
 check(steps >= 1 && steps <= 4, `advance(100ms) steps odd: ${steps}`);
 const dgLen = ex.client_poll_input();
@@ -144,6 +144,17 @@ check(change[1] === 1, "change must say harvested");
 check(ex.client_cell_harvested(1, 2) === 1, "cell must read harvested now");
 // wasm i32 returns read signed in JS; >>> 0 recovers the u32 sentinel.
 check(ex.client_toast_pop() >>> 0 === 0xffffffff, "no toast should be buffered");
+check(ex.client_weak_mark_cell() >>> 0 === 0xffffffff, "no weak mark should be up");
+
+// A hand-framed weak-mark event: kind EVENT(5) · subtype WEAK_MARK(6) ·
+// cx=1 (16) · cz=2 (16) · mark8=0x40 (8) · weak_hit=1 (1 bit).
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 6).set([
+  0xb5, 0x00, 0x00, 0x01, 0x00, 0xa0,
+]);
+const markFlags = ex.client_on_stream(6);
+check(markFlags === 32, `weak-mark event should apply with MARK flag: ${markFlags}`);
+check(ex.client_weak_mark_cell() >>> 0 === ((1 << 16) | 2), "mark cell mismatch");
+check(ex.client_weak_mark_info() === ((1 << 8) | 0x40), "mark info mismatch");
 const invView = new Uint16Array(ex.memory.buffer, ex.client_inv_ptr(), 60);
 check(invView.every((v) => v === 0), "inventory view should start empty");
 

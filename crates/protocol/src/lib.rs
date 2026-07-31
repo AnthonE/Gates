@@ -8,8 +8,9 @@
 //! **Input, C→S** — `kind:3 · snapshot_ack:16 · ack_bits:32 ·
 //! first_client_tick:32 · frame_count:4`, then if any frames:
 //! `first_seq:16` and per frame `buttons:8 · yaw:16 · pitch:8 · move_x:8 ·
-//! move_z:8`. Frames are the client's unacked tail, oldest first,
-//! seq-consecutive by construction (seq rides the wire once).
+//! move_z:8 · sel:3` (hotbar selector 0–5; 6–7 refuse as malformed).
+//! Frames are the client's unacked tail, oldest first, seq-consecutive by
+//! construction (seq rides the wire once).
 //!
 //! **Snapshot, S→C** — `kind:3 · tick:32 · baseline_age:8 ·
 //! last_executed_seq:16 · nudge:2 · removed_count:7 · entity_count:7`,
@@ -31,18 +32,19 @@ pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use event::{
     decode_event, encode_event_catalog, encode_event_gather, encode_event_inv,
-    encode_event_slot_change, encode_event_slot_sync, EventMsg, InvSlot, ItemCatalog,
-    CATALOG_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, SLOT_SYNC_BATCH,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark, EventMsg, InvSlot,
+    ItemCatalog, CATALOG_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
-use sim_core::limits::{MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
+use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 
 /// Wire protocol version. Bumps only with a packet-layout change and
 /// regenerated goldens in the same commit (CLAUDE.md wall 6). v1 added
-/// the reliable event lane (`KIND_EVENT`, `event.rs`) — a v0 client would
-/// not understand the stream messages a v1 server sends unprompted, so
-/// the hello gate refuses the pair; fixtures are keyed `v1_*`.
-pub const PROTO_VER: u16 = 1;
+/// the reliable event lane (`KIND_EVENT`, `event.rs`). v2 added the
+/// hotbar selector to every input frame and the weak-mark event subtype —
+/// a v1 server would misread a v2 input datagram's frame records, so the
+/// hello gate refuses the pair; fixtures are keyed `v2_*`.
+pub const PROTO_VER: u16 = 2;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -64,6 +66,8 @@ pub const MAX_STREAM_MSG_BYTES: usize = 64;
 
 const FRAME_COUNT_BITS: u32 = 4;
 const COUNT_BITS: u32 = 7;
+/// Hotbar selector width: 3 bits hold 0–5; 6–7 are refused at decode.
+const SEL_BITS: u32 = 3;
 
 // Position on the wire, absolute records (DESIGN.md §5.5 quanta: 3 cm x/z,
 // 1 cm y; widths + biases registered in DECISIONS.md §open, pinned by
@@ -257,11 +261,15 @@ pub fn encode_input(dg: &InputDatagram, buf: &mut [u8]) -> Result<usize, WireErr
     if let Some(first) = frames.first() {
         w.write(first.seq as u32, 16)?;
         for f in frames {
+            if f.sel as usize >= HOTBAR_SLOTS {
+                return Err(WireError::Range);
+            }
             w.write(f.buttons as u32, 8)?;
             w.write(f.yaw as u32, 16)?;
             w.write(f.pitch as u32, 8)?;
             w.write(f.move_x as u8 as u32, 8)?;
             w.write(f.move_z as u8 as u32, 8)?;
+            w.write(f.sel as u32, SEL_BITS)?;
         }
     }
     Ok(w.finish())
@@ -290,7 +298,11 @@ pub fn decode_input(buf: &[u8]) -> Result<InputDatagram, WireError> {
                 pitch: r.read(8)? as u8,
                 move_x: r.read(8)? as u8 as i8,
                 move_z: r.read(8)? as u8 as i8,
+                sel: r.read(SEL_BITS)? as u8,
             };
+            if frame.sel as usize >= HOTBAR_SLOTS {
+                return Err(WireError::Malformed);
+            }
             // Cannot fail: count ≤ cap, seqs consecutive by construction.
             dg.push(frame)?;
         }

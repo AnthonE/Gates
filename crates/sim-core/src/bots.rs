@@ -30,5 +30,8 @@ pub fn bot_frame(rng: &mut Pcg32, prev_yaw: u16, seq: u16) -> InputFrame {
         pitch: rng.next_bounded(256) as u8,
         move_x: strafe as i8,
         move_z: forward as i8,
+        // Wander the hotbar too, so held-item selection is inside the
+        // alloc/replay/parity surface.
+        sel: rng.next_bounded(6) as u8,
     }
 }

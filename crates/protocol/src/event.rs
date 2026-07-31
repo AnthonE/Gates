@@ -40,6 +40,7 @@ const SUB_SLOT_HARVESTED: u32 = 2;
 const SUB_SLOT_RESPAWNED: u32 = 3;
 const SUB_SLOT_SYNC: u32 = 4;
 const SUB_CATALOG: u32 = 5;
+const SUB_WEAK_MARK: u32 = 6;
 
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
@@ -129,6 +130,15 @@ pub enum EventMsg {
         count: u8,
         names: [[u8; MAX_ITEM_NAME_BYTES]; CATALOG_BATCH],
         lens: [u8; CATALOG_BATCH],
+    },
+    /// Own weak-spot mark after a landed hit (swinger-only): the node's
+    /// cell, the next mark heading (u8 over the shared 256-entry yaw LUT,
+    /// pointing node → stand point), and whether that hit was a weak hit.
+    WeakMark {
+        cx: u16,
+        cz: u16,
+        mark8: u8,
+        weak_hit: bool,
     },
 }
 
@@ -232,6 +242,21 @@ pub fn encode_event_catalog(
     Ok((w.finish(), count))
 }
 
+pub fn encode_event_weak_mark(
+    cx: u16,
+    cz: u16,
+    mark8: u8,
+    weak_hit: bool,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_WEAK_MARK)?;
+    w.write(cx as u32, 16)?;
+    w.write(cz as u32, 16)?;
+    w.write(mark8 as u32, 8)?;
+    w.write_bit(weak_hit)?;
+    Ok(w.finish())
+}
+
 /// Total decode of one event-lane message: arbitrary bytes in, `Ok` or a
 /// `WireError` out, never a panic — same contract as the datagrams.
 pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
@@ -321,6 +346,12 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 lens,
             }
         }
+        SUB_WEAK_MARK => EventMsg::WeakMark {
+            cx: r.read(16)? as u16,
+            cz: r.read(16)? as u16,
+            mark8: r.read(8)? as u8,
+            weak_hit: r.read_bit()?,
+        },
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;
@@ -439,6 +470,23 @@ mod tests {
             encode_event_catalog(&cat, 11, &mut buf),
             Err(WireError::Range)
         );
+    }
+
+    #[test]
+    fn weak_mark_round_trips_both_flag_states() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        for weak_hit in [false, true] {
+            let len = encode_event_weak_mark(0x0141, 0x0087, 0xC3, weak_hit, &mut buf).unwrap();
+            assert_eq!(
+                decode_event(&buf[..len]).unwrap(),
+                EventMsg::WeakMark {
+                    cx: 0x0141,
+                    cz: 0x0087,
+                    mark8: 0xC3,
+                    weak_hit,
+                }
+            );
+        }
     }
 
     #[test]

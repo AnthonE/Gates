@@ -233,12 +233,14 @@ fn bake_carries_the_shipped_numbers() {
     assert_eq!(gc.stack_max[wood as usize], 1000, "items.toml wood stack");
 
     // gatherables.toml gather.tree: output wood, 10 hits, hand 5,
-    // stone hatchet 20 — read back from the baked table.
+    // stone hatchet 20, weak-spot +50% — read back from the baked table.
     let tree = &gc.nodes[0];
     assert_eq!(tree.output, wood);
     assert_eq!(tree.hits, 10);
     assert_eq!(tree.yield_for(sim_core::gather::NO_ITEM), 5);
     assert_eq!(tree.yield_for(hatchet), 20);
+    assert_eq!(tree.weak_pct, 50, "gatherables.toml weak_spot_bonus_pct");
+    assert_eq!(gc.nodes[4].weak_pct, 0, "the bush carries no mark");
 
     // Index mapping is a bijection into 0..len.
     let mut seen = vec![false; c.items.len()];

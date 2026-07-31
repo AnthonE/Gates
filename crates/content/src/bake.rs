@@ -70,6 +70,8 @@ impl Content {
                 hits: u16::try_from(g.hits)
                     .map_err(|_| format!("bake: `{}` hits overflow u16", g.id))?,
                 hand_yield: 0,
+                weak_pct: u16::try_from(g.weak_spot_bonus_pct)
+                    .map_err(|_| format!("bake: `{}` weak-spot bonus overflows u16", g.id))?,
                 tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
             };
             let mut tool_n = 0usize;

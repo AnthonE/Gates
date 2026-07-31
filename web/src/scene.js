@@ -51,6 +51,16 @@ export class GameScene {
       color: 0x8a8a8a,
     });
 
+    // The weak-spot glint (DESIGN.md §2 "the Rust juice"): one unlit
+    // octahedron parked on the marked node's flank; hidden when no mark.
+    // Sizes are cosmetics (DECISIONS.md §open, client cosmetics row).
+    this.weakMark = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.18),
+      new THREE.MeshBasicMaterial({ color: 0xffe066 }),
+    );
+    this.weakMark.visible = false;
+    this.scene.add(this.weakMark);
+
     this._dir = new THREE.Vector3();
     this._target = new THREE.Vector3();
 
@@ -70,6 +80,16 @@ export class GameScene {
     this._dir.set(Math.sin(yawRad) * cp, Math.sin(pitchRad), Math.cos(yawRad) * cp);
     this._target.copy(c.position).add(this._dir);
     c.lookAt(this._target);
+  }
+
+  /** Park the weak-spot glint at a world position, or hide it. */
+  setWeakMark(x, y, z) {
+    this.weakMark.position.set(x, y, z);
+    this.weakMark.visible = true;
+  }
+
+  hideWeakMark() {
+    this.weakMark.visible = false;
   }
 
   /** Upsert one interpolated remote; `stamp` drives mark-and-sweep. */

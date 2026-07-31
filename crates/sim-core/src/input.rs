@@ -23,4 +23,8 @@ pub struct InputFrame {
     pub move_x: i8,
     /// Forward axis, +forward, -127..=127.
     pub move_z: i8,
+    /// Selected hotbar slot 0..HOTBAR_SLOTS — the held item (client keys
+    /// 1–6). 3 bits on the wire (decode refuses 6–7); `world::apply`
+    /// falls invalid non-wire values back to slot 0.
+    pub sel: u8,
 }

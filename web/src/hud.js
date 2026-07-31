@@ -15,7 +15,9 @@ export class Hud {
     this.toasts = document.getElementById("toasts");
     this.last = "";
     this.cells = [];
+    this.cellDivs = [];
     this.cellTexts = [];
+    this.selected = -1;
     for (let i = 0; i < 6; i++) {
       const cell = document.createElement("div");
       cell.className = "hotcell";
@@ -23,6 +25,7 @@ export class Hud {
       cell.appendChild(label);
       this.hotbar.appendChild(cell);
       this.cells.push(label);
+      this.cellDivs.push(cell);
       this.cellTexts.push("");
     }
   }
@@ -50,6 +53,14 @@ export class Hud {
         this.cells[i].textContent = t;
       }
     }
+  }
+
+  /** Highlight the selected hotbar cell; only a change touches the DOM. */
+  setSelected(sel) {
+    if (sel === this.selected) return;
+    if (this.selected >= 0) this.cellDivs[this.selected].classList.remove("sel");
+    this.selected = sel;
+    if (sel >= 0 && sel < 6) this.cellDivs[sel].classList.add("sel");
   }
 
   /** One floating "+N Thing" line; oldest evicted past the cap. */

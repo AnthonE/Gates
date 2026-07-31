@@ -18,6 +18,7 @@ import { Hud } from "./hud.js";
 
 const WASM_URL = "/client_wasm.wasm";
 const REFUSE_REASONS = ["protocol version mismatch", "shard is full"];
+const MARK_TO_RAD = (Math.PI * 2) / 256;
 
 const $ = (id) => document.getElementById(id);
 const urlInput = $("url");
@@ -148,6 +149,24 @@ function run(ex, views, wt, seed, playerId, streamReader, streamLeftover) {
           hud.toast(`+${t & 0xffff} ${itemName(t >>> 16)}`);
         }
       }
+      if (flags & 32 /* MARK */) {
+        const cell = ex.client_weak_mark_cell() >>> 0;
+        const entry = cell === 0xffffffff ? null : terrain.cellEntry(cell);
+        if (!entry) {
+          scene.hideWeakMark();
+        } else {
+          // Heading u8 over the shared yaw LUT: 0 faces +Z, rotates
+          // toward +X. Offsets are cosmetics (DECISIONS.md §open).
+          const a = (ex.client_weak_mark_info() & 0xff) * MARK_TO_RAD;
+          const r = entry.arch === 1 ? 0.9 : 1.05;
+          const lift = entry.arch === 1 ? 1.4 : 0.6;
+          scene.setWeakMark(
+            entry.x + Math.sin(a) * r,
+            entry.y + lift,
+            entry.z + Math.cos(a) * r,
+          );
+        }
+      }
     },
     onClosed,
   );
@@ -168,6 +187,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamLeftover) {
       input.pitchU8(),
       input.moveX(),
       input.moveZ(),
+      input.sel,
     );
     ex.client_advance(dt);
     const dgLen = ex.client_poll_input();
@@ -221,6 +241,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamLeftover) {
       hotbar.push(count > 0 ? `${itemName(views.inv[s * 2])} ×${count}` : "");
     }
     hud.setHotbar(hotbar);
+    hud.setSelected(input.sel);
     const remotes = [];
     const n = R[13] | 0;
     for (let k = 0; k < n; k++) {
