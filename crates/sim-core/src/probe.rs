@@ -74,10 +74,11 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 id: 2,
                 index: (t % 5) as u16,
             };
-            // Bot 1 also pokes the build verb at its own feet: row 3 is
+            // Bot 1 also pokes the build verb at its own feet: row 4 is
             // out of range and the loc cycle mismatches most shapes, so
             // placement successes AND every refusal reason ride the
-            // parity/replay/alloc surface once inventories fill.
+            // parity/replay/alloc surface once inventories fill —
+            // including doorways (row 3), which arm the door verb below.
             let own_cell = {
                 let b = &world.players[0].body;
                 let cx = crate::build::build_cell_of(b.qx as f32 * crate::movement::POS_XZ_Q);
@@ -87,7 +88,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
             // t ≡ 11 (mod 16) on every place tick, so cycle on t/16.
             let place = Command::Place {
                 id: 1,
-                row: ((t / 16) % 4) as u16,
+                row: ((t / 16) % 5) as u16,
                 cx: own_cell.0,
                 cz: own_cell.1,
                 level: ((t / 32) % 2) as u8,
@@ -163,6 +164,23 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                     Command::Input { id: 1, frame: f1 },
                     Command::Input { id: 2, frame: f2 },
                     place,
+                ]);
+            } else if t % 16 == 13 {
+                // Bot 2 pokes the use verb at its own cell's edges: no
+                // door there almost always (the door refusal path), the
+                // real toggle when its wanderings placed one — either
+                // way the door command is inside the parity/replay/alloc
+                // surface (loc 2/3 cycle; 0/1 hit the not-a-door arm).
+                world.tick(&[
+                    Command::Input { id: 1, frame: f1 },
+                    Command::Input { id: 2, frame: f2 },
+                    Command::Use {
+                        id: 2,
+                        cx: own2.0,
+                        cz: own2.1,
+                        level: ((t / 64) % 2) as u8,
+                        loc: ((t / 16) % 4) as u8,
+                    },
                 ]);
             } else if t % 64 == 20 {
                 world.tick(&[

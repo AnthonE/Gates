@@ -103,6 +103,7 @@ const DEPLOY_REFUSE_TEXT = [
   "too close to a hearth",
   "bag limit reached",
   "no hearth there",
+  "no door there",
 ];
 // sim-core build.rs shape/material code order (UI labels, not content).
 const SHAPE_TEXT = ["foundation", "wall", "doorway", "floor", "stairs", "roof"];
@@ -150,6 +151,25 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     views.refresh();
     if (len > 0) actions.send(views.output, len);
   };
+  // Your own door swings on the press, not on the reply (NETCODE.md
+  // §6.1) — the wasm mirror flips the record and the predictor's shut
+  // bit, and this redraws it. The server's announcement is absolute, so
+  // it confirms or corrects; a refusal rolls the mirror back and rides
+  // out as a deploy change like any other, so the leaf swings back
+  // through the same redraw path below.
+  const sendUse = (cx, cz, level, loc) => {
+    const len = ex.client_action_use(cx, cz, level, loc);
+    views.refresh();
+    if (len > 0) actions.send(views.output, len);
+    const open = ex.client_predict_door(cx, cz, level, loc) >>> 0;
+    if (open !== 0xffffffff) {
+      const rec = deployRecs.get(((cx << 16) | cz) * 4096 + ((level << 8) | loc));
+      if (rec) {
+        rec.open = open === 1;
+        drawDeploy(rec);
+      }
+    }
+  };
 
   // Build mode (plain-UI stand-in for the radial at alpha): B toggles,
   // wheel cycles the piece row — and past the piece table, the deployable
@@ -180,6 +200,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       rec.loc,
       views.deployDefs[rec.row * 4],
       groundAt(rec.cx, rec.cz),
+      rec.open,
     );
   };
   const pieceTotal = () => (ex.client_piece_defs_state() >>> 0) >>> 16;
@@ -267,7 +288,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     }
     hud.setBuild(
       `build: ${what} · L${build.level} · ${costs}` +
-        ` — wheel piece · R/F level · right-click place · E feed hearth · B close`,
+        ` — wheel piece · R/F level · right-click place · E use door / feed hearth · B close`,
     );
   };
   // Feed the nearest hearth within reach of the feet (the authoritative
@@ -290,6 +311,28 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     }
     if (best) sendFeed(best.cx, best.cz, best.level);
     else hud.toast("no hearth in reach");
+  };
+  // E is the use key: the nearest door within reach toggles, and only
+  // when there is none does E fall through to feeding a hearth. Reach is
+  // measured to the door's **cell center**, the same distance the sim
+  // gates on — picking a target the server would refuse only costs a
+  // rolled-back prediction and a bounce.
+  const tryUse = () => {
+    const R = views.render;
+    let best = null;
+    let bestD = REACH * REACH;
+    for (const rec of deployRecs.values()) {
+      if (views.deployDefs[rec.row * 4] !== 6) continue; // not a door
+      const dx = rec.cx * BUILD_CELL + BUILD_CELL / 2 - R[1];
+      const dz = rec.cz * BUILD_CELL + BUILD_CELL / 2 - R[3];
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD) {
+        bestD = d2;
+        best = rec;
+      }
+    }
+    if (best) sendUse(best.cx, best.cz, best.level, best.loc);
+    else tryFeed();
   };
 
   // Rebuild the craft panel + queue strip from the wasm views. Runs on
@@ -374,7 +417,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       buildStrip();
       e.preventDefault();
     } else if (e.code === "KeyE") {
-      tryFeed();
+      tryUse();
       e.preventDefault();
     }
   });
@@ -535,11 +578,12 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
           const rec = {
             cx: key >>> 16,
             cz: key & 0xffff,
-            level: info >>> 16,
+            level: (info >>> 16) & 0xff,
             loc: (info >>> 8) & 0xff,
             row: info & 0xff,
+            open: (info >>> 24) === 1,
           };
-          deployRecs.set(key * 4096 + (info >>> 8), rec);
+          deployRecs.set(key * 4096 + ((info >>> 8) & 0xffff), rec);
           drawDeploy(rec);
         }
       }

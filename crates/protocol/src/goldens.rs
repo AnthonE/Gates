@@ -25,43 +25,45 @@ use sim_core::limits::{
 };
 use sim_core::rng::Pcg32;
 
-/// Fixture file names, keyed by wire version (`PROTO_VER` 5 ⇒ `v5_*`).
-pub const FIXTURES: [&str; 35] = [
-    "v5_input_acks_only.bin",
-    "v5_input_full.bin",
-    "v5_snapshot_keyframe.bin",
-    "v5_snapshot_delta.bin",
-    "v5_snapshot_cap.bin",
-    "v5_hello.bin",
-    "v5_welcome.bin",
-    "v5_refuse_full.bin",
-    "v5_event_gather.bin",
-    "v5_event_inv.bin",
-    "v5_event_slot_harvested.bin",
-    "v5_event_slot_respawned.bin",
-    "v5_event_slot_sync.bin",
-    "v5_event_catalog.bin",
-    "v5_event_weak_mark.bin",
-    "v5_event_craft_q.bin",
-    "v5_event_craft_done.bin",
-    "v5_event_craft_refused.bin",
-    "v5_event_recipes.bin",
-    "v5_action_craft.bin",
-    "v5_action_cancel.bin",
-    "v5_action_place.bin",
-    "v5_event_piece_placed.bin",
-    "v5_event_piece_sync.bin",
-    "v5_event_build_refused.bin",
-    "v5_event_piece_defs.bin",
-    "v5_action_deploy.bin",
-    "v5_action_feed.bin",
-    "v5_event_deploy_placed.bin",
-    "v5_event_deploy_sync.bin",
-    "v5_event_deploy_refused.bin",
-    "v5_event_deploy_defs.bin",
-    "v5_event_piece_removed.bin",
-    "v5_event_deploy_removed.bin",
-    "v5_event_stock.bin",
+/// Fixture file names, keyed by wire version (`PROTO_VER` 6 ⇒ `v6_*`).
+pub const FIXTURES: [&str; 37] = [
+    "v6_input_acks_only.bin",
+    "v6_input_full.bin",
+    "v6_snapshot_keyframe.bin",
+    "v6_snapshot_delta.bin",
+    "v6_snapshot_cap.bin",
+    "v6_hello.bin",
+    "v6_welcome.bin",
+    "v6_refuse_full.bin",
+    "v6_event_gather.bin",
+    "v6_event_inv.bin",
+    "v6_event_slot_harvested.bin",
+    "v6_event_slot_respawned.bin",
+    "v6_event_slot_sync.bin",
+    "v6_event_catalog.bin",
+    "v6_event_weak_mark.bin",
+    "v6_event_craft_q.bin",
+    "v6_event_craft_done.bin",
+    "v6_event_craft_refused.bin",
+    "v6_event_recipes.bin",
+    "v6_action_craft.bin",
+    "v6_action_cancel.bin",
+    "v6_action_place.bin",
+    "v6_event_piece_placed.bin",
+    "v6_event_piece_sync.bin",
+    "v6_event_build_refused.bin",
+    "v6_event_piece_defs.bin",
+    "v6_action_deploy.bin",
+    "v6_action_feed.bin",
+    "v6_event_deploy_placed.bin",
+    "v6_event_deploy_sync.bin",
+    "v6_event_deploy_refused.bin",
+    "v6_event_deploy_defs.bin",
+    "v6_event_piece_removed.bin",
+    "v6_event_deploy_removed.bin",
+    "v6_event_stock.bin",
+    "v6_action_use.bin",
+    "v6_event_door.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -441,7 +443,8 @@ pub fn action_feed() -> (u16, u16, u8) {
 }
 
 /// The deployable record behind the placed broadcast (owner/hp/uh are
-/// sim-side and never cross — the fixture keeps their defaults).
+/// sim-side and never cross — the fixture keeps their defaults). The
+/// open bit is set so the wire's newest bit is pinned at 1 somewhere.
 pub fn event_deploy_placed() -> DeployRec {
     DeployRec {
         cx: 341,
@@ -449,6 +452,7 @@ pub fn event_deploy_placed() -> DeployRec {
         level: 1,
         loc: sim_core::build::LOC_PLANE,
         row: 9,
+        open: true,
         ..DeployRec::default()
     }
 }
@@ -462,9 +466,20 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
         level: rng.next_bounded(8) as u8,
         loc: rng.next_bounded(4) as u8,
         row: rng.next_bounded(16) as u8,
+        open: rng.next_bounded(2) == 0,
         ..DeployRec::default()
     });
     (true, recs)
+}
+
+/// A use request: the address of a door on a cell's west edge.
+pub fn action_use() -> (u16, u16, u8, u8) {
+    (341, 682, 0, sim_core::build::LOC_EDGE_W)
+}
+
+/// A door announcement: the same address, now open.
+pub fn event_door() -> (u16, u16, u8, u8, bool) {
+    (341, 682, 0, sim_core::build::LOC_EDGE_W, true)
 }
 
 /// A refusal carrying `sim_core::deploy::REFUSE_D_CLAIM`.

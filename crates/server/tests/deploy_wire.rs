@@ -14,7 +14,7 @@ use client_wasm::core::{
 use protocol::{ActionMsg, ItemCatalog};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
-use sim_core::build::{BuildContent, LOC_PLANE};
+use sim_core::build::{BuildContent, LOC_EDGE_W, LOC_PLANE};
 use sim_core::deploy::{DeployContent, REFUSE_D_CLAIM, UPKEEP_PERIOD_TICKS};
 use sim_core::gather::{GatherContent, ItemStack};
 
@@ -288,6 +288,171 @@ fn deployables_ride_the_wire() {
     for (_, c) in &clients {
         assert_eq!(c.pieces.len(), core.world.pieces.len(), "mirror drifted");
     }
+
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// The door lane end to end: a door places closed, the use action toggles
+/// it, every client's mirror **and** its predictor collision index follow,
+/// a late joiner learns the state from the sync walk (not from having
+/// been there), and a use aimed at something that isn't a door bounces
+/// with its reason.
+#[test]
+fn doors_toggle_across_the_wire() {
+    let stats = ShardStats::default();
+    let mut core = ShardCore::new(SEED);
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+
+    // The kit: wood for the foundation and the doorway, one door.
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].inv[0] = ItemStack { item: 0, count: 50 };
+    core.world.players[w0].inv[1] = ItemStack { item: 4, count: 5 };
+
+    for a in [
+        ActionMsg::Place {
+            row: 0,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_PLANE,
+        },
+        ActionMsg::Place {
+            row: 3,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+        },
+    ] {
+        act(&mut core, 0, a);
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(core.world.pieces.len(), 2, "foundation + doorway");
+    for (_, c) in &clients {
+        assert_eq!(
+            c.pieces.cols().get(CX, CZ).shut_w & 1,
+            0,
+            "an empty doorway must not be sealed"
+        );
+    }
+
+    // The door lands closed, on both mirrors and in both predictors.
+    act(
+        &mut core,
+        0,
+        ActionMsg::Deploy {
+            row: 2,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+        },
+    );
+    let flags = pump(&mut core, &stats, &mut clients);
+    assert_ne!(flags[0] & APPLIED_DEPLOYS, 0, "owner never saw the door");
+    assert_ne!(flags[1] & APPLIED_DEPLOYS, 0, "broadcast missed bystander");
+    for (_, c) in &clients {
+        let rec = c
+            .deploys
+            .entries()
+            .iter()
+            .find(|r| r.loc == LOC_EDGE_W)
+            .expect("door in the mirror");
+        assert!(!rec.open, "doors place closed");
+        assert_eq!(
+            c.pieces.cols().get(CX, CZ).shut_w & 1,
+            1,
+            "a closed door must seal the doorway the predictor walks"
+        );
+    }
+
+    // The use action opens it — for everyone, including the bystander.
+    act(
+        &mut core,
+        0,
+        ActionMsg::Use {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+        },
+    );
+    let flags = pump(&mut core, &stats, &mut clients);
+    assert_ne!(flags[0] & APPLIED_DEPLOYS, 0, "toggler never heard back");
+    assert_ne!(flags[1] & APPLIED_DEPLOYS, 0, "door state is a broadcast");
+    assert!(
+        core.world
+            .deploys
+            .find(CX, CZ, 0, LOC_EDGE_W)
+            .expect("door in the world")
+            .open
+    );
+    for (_, c) in &clients {
+        let rec = c
+            .deploys
+            .entries()
+            .iter()
+            .find(|r| r.loc == LOC_EDGE_W)
+            .expect("door in the mirror");
+        assert!(rec.open, "the open state never crossed");
+        assert_eq!(
+            c.pieces.cols().get(CX, CZ).shut_w & 1,
+            0,
+            "an open door must stop sealing the predictor's doorway"
+        );
+    }
+
+    // A late joiner reads the open door off the sync walk.
+    assert!(core.connect(2, id_of(2)));
+    clients.push((2usize, ClientCore::new(SEED, id_of(2), 0)));
+    for _ in 0..5 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let late = &clients[2].1;
+    let rec = late
+        .deploys
+        .entries()
+        .iter()
+        .find(|r| r.loc == LOC_EDGE_W)
+        .expect("late joiner missed the door");
+    assert!(rec.open, "the walk carried the door shut");
+    assert_eq!(
+        late.pieces.cols().get(CX, CZ).shut_w & 1,
+        0,
+        "late joiner's predictor sealed a door that stands open"
+    );
+
+    // Using something that is not a door bounces, and only at the sender.
+    act(
+        &mut core,
+        0,
+        ActionMsg::Use {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_PLANE,
+        },
+    );
+    let flags = pump(&mut core, &stats, &mut clients);
+    assert_ne!(flags[0] & APPLIED_DEPLOY_REFUSED, 0);
+    assert_eq!(
+        clients[0].1.pop_deploy_refusal(),
+        Some(sim_core::deploy::REFUSE_D_DOOR as u8)
+    );
+    assert_eq!(clients[1].1.pop_deploy_refusal(), None, "refusal leaked");
 
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }

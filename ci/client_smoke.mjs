@@ -77,6 +77,8 @@ const REQUIRED = [
   "client_build_refusal_pop",
   "client_action_deploy",
   "client_action_feed",
+  "client_action_use",
+  "client_predict_door",
   "client_deploy_changes_ptr",
   "client_deploy_changes_len",
   "client_deploy_defs_ptr",
@@ -137,7 +139,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 5, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 6, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
@@ -259,6 +261,10 @@ check(ex.client_action_deploy(16, 0, 0, 0, 0) === 0, "row past the table must re
 const feedLen = ex.client_action_feed(341, 341, 0);
 check(feedLen === 4, `feed action length odd: ${feedLen}`);
 check(ex.client_action_feed(1024, 0, 0) === 0, "cx past the grid must refuse");
+const useLen = ex.client_action_use(341, 341, 0, 2);
+check(useLen === 4, `use action length odd: ${useLen}`);
+check(ex.client_action_use(341, 341, 8, 2) === 0, "level past the grid must refuse");
+check(ex.client_action_use(341, 341, 0, 4) === 0, "loc past the four must refuse");
 
 // Hand-framed deploy-placed: kind EVENT(5) · subtype DEPLOY_PLACED(15, 5
 // bits) · cx=341 (10) · cz=682 (10) · level=1 (3) · loc=0 (2) · row=3 (4).
@@ -271,6 +277,31 @@ check(ex.client_deploy_changes_len() === 1, "one deploy change expected");
 const dchange = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
 check(dchange[0] === ((341 << 16) | 682), `deploy change key odd: ${dchange[0]}`);
 check(dchange[1] === ((1 << 16) | 3), `deploy change info odd: ${dchange[1]}`);
+
+// Hand-framed door announcement for that same address: kind EVENT(5) ·
+// subtype DOOR(22, 5 bits) · cx=341 (10) · cz=682 (10) · level=1 (3) ·
+// loc=0 (2) · open=1 (1). The mirror flips and re-emits the record with
+// its open bit set — bit 24 of the packed change word.
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
+  0xb5, 0x55, 0xa9, 0x1a, 0x02,
+]);
+const doorFlags = ex.client_on_stream(5);
+check(doorFlags === 16384, `door should apply with the deploy flag: ${doorFlags}`);
+check(ex.client_deploy_changes_len() === 1, "one deploy change expected for the door");
+const dopen = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
+check(dopen[1] === ((1 << 24) | (1 << 16) | 3), `door change info odd: ${dopen[1]}`);
+
+// Optimistic toggle (NETCODE.md §6.1): row 3 has no def dripped here, so
+// the client cannot know it is a door and must decline to predict —
+// declining is always safe, the announcement still lands.
+check(
+  (ex.client_predict_door(341, 682, 1, 0) >>> 0) === 0xffffffff,
+  "predicted a toggle on a row whose archetype never arrived",
+);
+check(
+  (ex.client_predict_door(1, 1, 0, 2) >>> 0) === 0xffffffff,
+  "predicted a toggle at an address holding nothing",
+);
 
 // Hand-framed piece-removed: kind EVENT(5) · subtype PIECE_REMOVED(19, 5
 // bits) · the piece placed above (cx=341 · cz=682 · level=3 · loc=3).
@@ -296,6 +327,33 @@ check(ex.client_deploy_refusal_pop() === 7, "deploy refusal reason should be 7")
 check(ex.client_deploy_refusal_pop() >>> 0 === 0xffffffff, "deploy refusal ring should drain");
 check((ex.client_deploy_defs_state() >>> 0) === 0, "no deploy defs dripped yet");
 check(ex.client_stock_count() === 0, "no stock ack yet");
+
+// With a door archetype dripped and a door placed, the press predicts —
+// and a refusal must roll it back all the way out to the renderer, since
+// the sim's state never moved and no announcement is ever coming.
+// Hand-framed deploy-defs: total=1 · first=0 · count=1 · row 0 =
+// (arch DOOR 6, placement DOORWAY 3, hp 60, item 4).
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 8).set([
+  0x95, 0x01, 0x84, 0xe7, 0x01, 0x20, 0x00, 0x00,
+]);
+check(ex.client_on_stream(8) === 131072, "deploy defs should apply with their flag");
+// Hand-framed deploy-placed: cx=100 · cz=200 · level=0 · loc=2 · row=0 · open=0.
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
+  0x7d, 0x64, 0x20, 0x03, 0x01,
+]);
+check(ex.client_on_stream(5) === 16384, "door placement should apply");
+check(ex.client_predict_door(100, 200, 0, 2) === 1, "the press must swing your own door");
+// Hand-framed deploy-refused, reason 11 (REFUSE_D_DOOR).
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x8d, 0x0b]);
+const rolled = ex.client_on_stream(2);
+check(
+  (rolled & 16384) !== 0 && (rolled & 65536) !== 0,
+  `a refused use must roll back AND reach the renderer: ${rolled}`,
+);
+check(ex.client_deploy_refusal_pop() === 11, "refusal reason should be 11");
+check(ex.client_deploy_changes_len() === 1, "the rolled-back record must ride the changes");
+const drolled = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
+check((drolled[1] >>> 24) === 0, `rolled-back door must read closed: ${drolled[1]}`);
 
 // Garbage on the stream must be refused with the error bit, not trap.
 new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 3).set([0xff, 0xff, 0xff]);

@@ -13,8 +13,9 @@
 use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_craft, encode_action_deploy,
-    encode_action_feed, encode_action_place, encode_hello, peek_kind, Hello, DEPLOY_SYNC_BATCH,
-    KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
+    encode_action_feed, encode_action_place, encode_action_use, encode_hello, peek_kind, Hello,
+    DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_DEPLOY_DEFS,
@@ -82,7 +83,8 @@ struct Bridge {
     /// Piece-def table view: `PIECE_DEF_ROW_WORDS` u16s per piece row.
     piece_defs: Box<[u16; MAX_PIECE_DEFS * PIECE_DEF_ROW_WORDS]>,
     /// Deployable records the last stream message added, packed like the
-    /// piece pairs: [cx << 16 | cz, level << 16 | loc << 8 | row].
+    /// piece pairs plus the door's open bit:
+    /// [cx << 16 | cz, open << 24 | level << 16 | loc << 8 | row].
     deploy_changes: [u32; DEPLOY_SYNC_BATCH * 2],
     deploy_changes_len: u32,
     /// Deploy-def table view: `DEPLOY_DEF_ROW_WORDS` u16s per row.
@@ -330,8 +332,10 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             let ch = core.deploy_changes();
             for (i, rec) in ch.iter().enumerate() {
                 deploy_changes[i * 2] = ((rec.cx as u32) << 16) | rec.cz as u32;
-                deploy_changes[i * 2 + 1] =
-                    ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32;
+                deploy_changes[i * 2 + 1] = ((rec.open as u32) << 24)
+                    | ((rec.level as u32) << 16)
+                    | ((rec.loc as u32) << 8)
+                    | rec.row as u32;
             }
             *deploy_changes_len = ch.len() as u32;
         }
@@ -357,7 +361,7 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
 }
 
 /// Deployable records from the last stream message, packed as u32 pairs
-/// ([cx << 16 | cz, level << 16 | loc << 8 | row]).
+/// ([cx << 16 | cz, open << 24 | level << 16 | loc << 8 | row]).
 #[no_mangle]
 pub extern "C" fn client_deploy_changes_ptr() -> *const u32 {
     with(|b| b.deploy_changes.as_ptr())
@@ -455,6 +459,37 @@ pub extern "C" fn client_action_feed(cx: u32, cz: u32, level: u32) -> u32 {
         encode_action_feed(cx as u16, cz as u16, level as u8, &mut b.out_buf)
             .map(|n| n as u32)
             .unwrap_or(0)
+    })
+}
+
+/// Encode a use request (toggle the door at the address) into the out
+/// buffer; returns its length, or 0 when the arguments are outside the
+/// wire's domain.
+#[no_mangle]
+pub extern "C" fn client_action_use(cx: u32, cz: u32, level: u32, loc: u32) -> u32 {
+    with(|b| {
+        encode_action_use(cx as u16, cz as u16, level as u8, loc as u8, &mut b.out_buf)
+            .map(|n| n as u32)
+            .unwrap_or(0)
+    })
+}
+
+/// Toggle the door at the address optimistically, on this client's own
+/// input (NETCODE.md §6.1). Returns the predicted open state (0 or 1),
+/// or `u32::MAX` when nothing was predicted — no known door there, or a
+/// prediction already outstanding. Call it beside `client_action_use`:
+/// the renderer redraws on a 0/1, and leaves the door alone otherwise.
+#[no_mangle]
+pub extern "C" fn client_predict_door(cx: u32, cz: u32, level: u32, loc: u32) -> u32 {
+    with(|b| {
+        match b
+            .core
+            .as_mut()
+            .and_then(|c| c.predict_door(cx as u16, cz as u16, level as u8, loc as u8))
+        {
+            Some(open) => open as u32,
+            None => u32::MAX,
+        }
     })
 }
 

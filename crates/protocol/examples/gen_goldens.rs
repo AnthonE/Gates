@@ -8,13 +8,14 @@
 
 use protocol::{
     encode_action_cancel, encode_action_craft, encode_action_deploy, encode_action_feed,
-    encode_action_place, encode_event_build_refused, encode_event_catalog, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_gather, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_weak_mark, encode_hello, encode_input,
-    encode_refuse, encode_snapshot, encode_welcome, goldens,
+    encode_action_place, encode_action_use, encode_event_build_refused, encode_event_catalog,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_gather, encode_event_inv,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_weak_mark, encode_hello, encode_input, encode_refuse,
+    encode_snapshot, encode_welcome, goldens,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -156,4 +157,12 @@ fn main() {
     let (cx, cz, level, rows) = goldens::event_stock();
     let len = encode_event_stock(cx, cz, level, &rows, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[34], &buf[..len]);
+
+    let (cx, cz, level, loc) = goldens::action_use();
+    let len = encode_action_use(cx, cz, level, loc, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[35], &buf[..len]);
+
+    let (cx, cz, level, loc, open) = goldens::event_door();
+    let len = encode_event_door(cx, cz, level, loc, open, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[36], &buf[..len]);
 }

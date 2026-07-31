@@ -104,8 +104,11 @@ fn stand_still(yaw: u16, seq: u16) -> Command {
 }
 
 /// Build a world with player 1 standing at `pos`, gather fixture armed.
-fn world_at(pos: (f32, f32)) -> World {
-    let mut w = World::new(SEED);
+/// Boxed: a `World` is several hundred KB, and by-value copies through
+/// test frames overflow default test-thread stacks (the same reason the
+/// piece store boxes its column index).
+fn world_at(pos: (f32, f32)) -> Box<World> {
+    let mut w = Box::new(World::new(SEED));
     w.gather = GatherContent::probe_fixture();
     w.dev_spawn = Some(pos);
     w.tick(&[Command::Join { id: 1 }]);
@@ -457,7 +460,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
 #[test]
 fn inert_content_gathers_nothing() {
     let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
-    let mut w = World::new(SEED); // no fixture: GatherContent::EMPTY
+    let mut w = Box::new(World::new(SEED)); // no fixture: GatherContent::EMPTY
     w.dev_spawn = Some(pos);
     w.tick(&[Command::Join { id: 1 }]);
     for t in 0..SWING_INTERVAL_TICKS * 2 {

@@ -491,7 +491,7 @@ mod tests {
             SEED,
             &dc,
             &BuildContent::probe_fixture(),
-            &Pieces::new(),
+            &mut Pieces::new(),
             &mut nod,
             &mut p,
             0,

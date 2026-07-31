@@ -206,7 +206,13 @@ export class GameScene {
    * Upsert one deployable: a colored box per archetype, standing on the
    * level plane (body deploys) or filling a doorway edge (doors).
    */
-  setDeploy(cx, cz, level, loc, arch, groundY) {
+  /**
+   * Park a deployable at a grid address. `open` only means anything for
+   * a door: closed it fills its doorway edge, open it swings a quarter
+   * turn onto its hinge — the same read the sim's collision has, so a
+   * player never walks through a leaf that still looks shut.
+   */
+  setDeploy(cx, cz, level, loc, arch, groundY, open) {
     const key = `${cx},${cz},${level},${loc}`;
     const old = this.deploys.get(key);
     if (old) this.scene.remove(old);
@@ -219,9 +225,17 @@ export class GameScene {
     const obj = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     const baseY = groundY + LIFT + level * LEVEL_H;
     if (loc === 2 || loc === 3) {
-      // A door in a doorway edge, oriented like the wall there.
+      // A door in a doorway edge, oriented like the wall there. Open, it
+      // swings off the hinge end of its leaf and lies across the cell.
       if (loc === 2) {
-        obj.position.set(cx * CELL, baseY + h / 2, cz * CELL + CELL / 2);
+        if (open) {
+          obj.rotation.y = Math.PI / 2;
+          obj.position.set(cx * CELL + d / 2, baseY + h / 2, cz * CELL + CELL / 2 - d / 2);
+        } else {
+          obj.position.set(cx * CELL, baseY + h / 2, cz * CELL + CELL / 2);
+        }
+      } else if (open) {
+        obj.position.set(cx * CELL + CELL / 2 - d / 2, baseY + h / 2, cz * CELL + d / 2);
       } else {
         obj.rotation.y = Math.PI / 2;
         obj.position.set(cx * CELL + CELL / 2, baseY + h / 2, cz * CELL);

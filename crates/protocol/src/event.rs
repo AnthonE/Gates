@@ -85,6 +85,7 @@ const SUB_DEPLOY_DEFS: u32 = 18;
 const SUB_PIECE_REMOVED: u32 = 19;
 const SUB_DEPLOY_REMOVED: u32 = 20;
 const SUB_STOCK: u32 = 21;
+const SUB_DOOR: u32 = 22;
 
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
@@ -252,8 +253,8 @@ pub enum EventMsg {
         rows: [PieceDef; PIECE_DEFS_BATCH],
     },
     /// A deployable landed (broadcast — world facts like pieces). The
-    /// wire carries address + row only; owner/hp/uh stay sim-side, so
-    /// decoded records hold their defaults there.
+    /// wire carries address + row + the door's open bit; owner/hp/uh stay
+    /// sim-side, so decoded records hold their defaults there.
     DeployPlaced { rec: DeployRec },
     /// One batch of the placed-deployable walk (join sync / resync).
     DeploySync {
@@ -287,6 +288,17 @@ pub enum EventMsg {
         cz: u16,
         level: u8,
         loc: u8,
+    },
+    /// The door at the address changed state (broadcast — a door is a
+    /// world fact like the piece it sits in). `open` is the state after
+    /// the toggle, never a delta: a client that missed one hears the
+    /// truth from the next one.
+    Door {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        open: bool,
     },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list (item index, units).
@@ -598,9 +610,12 @@ pub fn encode_event_piece_defs(
     Ok((w.finish(), count))
 }
 
-/// One placed-deployable record on the wire: 29 bits, shared by the
+/// One placed-deployable record on the wire: 30 bits, shared by the
 /// placed broadcast and the sync batches. Every width is exact, so only
-/// sim-impossible addresses need refusing at encode.
+/// sim-impossible addresses need refusing at encode. The trailing bit is
+/// the door's open state — meaningless for every other archetype, and
+/// always 0 there, so it costs a bit and saves a second lane for the
+/// join walk (a client that walked in must see which doors stand open).
 fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError> {
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
@@ -615,6 +630,7 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write(rec.level as u32, BUILD_LEVEL_BITS)?;
     w.write(rec.loc as u32, BUILD_LOC_BITS)?;
     w.write(rec.row as u32, DEPLOY_ROW_BITS)?;
+    w.write_bit(rec.open)?;
     Ok(())
 }
 
@@ -625,6 +641,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
         level: r.read(BUILD_LEVEL_BITS)? as u8,
         loc: r.read(BUILD_LOC_BITS)? as u8,
         row: r.read(DEPLOY_ROW_BITS)? as u8,
+        open: r.read_bit()?,
         ..DeployRec::default()
     })
 }
@@ -746,6 +763,32 @@ pub fn encode_event_stock(
         w.write(item as u32, 16)?;
         w.write(units, 32)?;
     }
+    Ok(w.finish())
+}
+
+/// The door at the address is now `open` (broadcast). Absolute state,
+/// not a toggle: two of these crossing never leave a client inverted.
+pub fn encode_event_door(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    open: bool,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= MAX_BUILD_COORD
+        || cz as usize >= MAX_BUILD_COORD
+        || level as usize >= MAX_BUILD_LEVELS
+        || loc > LOC_EDGE_N
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_DOOR)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    w.write_bit(open)?;
     Ok(w.finish())
 }
 
@@ -1066,6 +1109,14 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 count: count as u8,
             }
         }
+        // Address + state, every width exact — nothing to forge.
+        SUB_DOOR => EventMsg::Door {
+            cx: r.read(BUILD_CELL_BITS)? as u16,
+            cz: r.read(BUILD_CELL_BITS)? as u16,
+            level: r.read(BUILD_LEVEL_BITS)? as u8,
+            loc: r.read(BUILD_LOC_BITS)? as u8,
+            open: r.read_bit()?,
+        },
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;
@@ -1401,7 +1452,7 @@ mod tests {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
-        assert_eq!(took, 3, "fixture has 3 rows, all fit one batch");
+        assert_eq!(took, 4, "fixture has 4 rows, all fit one batch");
         match decode_event(&buf[..len]).unwrap() {
             EventMsg::PieceDefs {
                 total,
@@ -1409,14 +1460,14 @@ mod tests {
                 count,
                 rows,
             } => {
-                assert_eq!((total, first, count), (3, 0, 3));
+                assert_eq!((total, first, count), (4, 0, 4));
                 assert_eq!(rows[0], bc.pieces[0], "decode rebuilds the sim row");
-                assert_eq!(rows[2], bc.pieces[2]);
+                assert_eq!(rows[3], bc.pieces[3]);
             }
             other => panic!("wrong variant: {other:?}"),
         }
         assert_eq!(
-            encode_event_piece_defs(&bc, 3, &mut buf),
+            encode_event_piece_defs(&bc, 4, &mut buf),
             Err(WireError::Range),
             "cursor past the table refuses"
         );
@@ -1620,10 +1671,10 @@ mod tests {
             Err(WireError::Malformed),
             "spare byte after a valid message must fail the strict tail"
         );
-        // kind EVENT + subtype 22: unknown (the first unused subtype).
+        // kind EVENT + subtype 23: unknown (the first unused subtype).
         let raw = [
-            (KIND_EVENT | (22 << KIND_BITS)) as u8,
-            (22 >> (8 - KIND_BITS)) as u8,
+            (KIND_EVENT | (23 << KIND_BITS)) as u8,
+            (23 >> (8 - KIND_BITS)) as u8,
         ];
         assert_eq!(decode_event(&raw[..2]), Err(WireError::Malformed));
     }
