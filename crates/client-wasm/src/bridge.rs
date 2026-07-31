@@ -27,8 +27,9 @@ use std::cell::RefCell;
 
 /// Incoming scratch: comfortably above the server's 1100 B send clamp.
 const IN_CAP: usize = 2048;
-/// Handshake words: [kind, player_id, seed_lo, seed_hi, tick, refuse_code].
-const HS_WORDS: usize = 6;
+/// Handshake words:
+/// [kind, player_id, seed_lo, seed_hi, tick, refuse_code, dev].
+const HS_WORDS: usize = 7;
 /// Render layout: a 13-float own/status block, a count, then 8 floats per
 /// remote (ids ride the parallel u32 buffer — f32 can't hold late-shard
 /// generations exactly).
@@ -180,6 +181,7 @@ pub extern "C" fn client_parse_handshake(len: u32) -> u32 {
                         (w.seed >> 32) as u32,
                         w.tick,
                         0,
+                        w.dev as u32,
                     ];
                     1
                 }
@@ -187,7 +189,7 @@ pub extern "C" fn client_parse_handshake(len: u32) -> u32 {
             },
             Ok(KIND_REFUSE) => match decode_refuse(bytes) {
                 Ok(r) => {
-                    b.hs_buf = [2, 0, 0, 0, 0, r.code as u32];
+                    b.hs_buf = [2, 0, 0, 0, 0, r.code as u32, 0];
                     2
                 }
                 Err(_) => 0,

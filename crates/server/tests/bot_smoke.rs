@@ -265,3 +265,53 @@ async fn test_version_gate_refuses() {
         .shutdown
         .store(true, std::sync::atomic::Ordering::Relaxed);
 }
+
+/// The dev gate at its source: a shard's welcome carries `dev` true iff it
+/// is running a dev override (`shard.toml dev_spawn`). The browser client
+/// installs its dev affordances — `__gatesDebug.setView`, the capture
+/// harness's camera hook — on this bit and nothing else, so a public shard
+/// reporting true would put a dev surface on every player's page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_welcome_dev_bit_tracks_dev_spawn() {
+    use protocol::{decode_welcome, encode_hello, Hello, MAX_STREAM_MSG_BYTES, PROTO_VER};
+    use server::net::{read_frame, write_frame};
+
+    // Same shard, same everything, one config key apart.
+    for (dev_spawn, want) in [(None, false), (Some((1024.0, 1024.0)), true)] {
+        let (gather, craft, build, deploy, catalog) = baked_content();
+        let mut cfg = ShardConfig::ephemeral(13);
+        cfg.dev_spawn = dev_spawn;
+        let handle = spawn_shard(cfg, gather, craft, build, deploy, catalog)
+            .await
+            .expect("boots");
+        let endpoint = bot_endpoint().expect("endpoint");
+        let connection = endpoint
+            .connect(&format!("https://{}", handle.local_addr))
+            .await
+            .expect("connects");
+        let opening = connection.open_bi().await.expect("open_bi");
+        let (mut send, mut recv) = opening.await.expect("bi");
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let len = encode_hello(
+            &Hello {
+                proto_ver: PROTO_VER,
+            },
+            &mut buf,
+        )
+        .expect("encode");
+        write_frame(&mut send, &buf[..len]).await.expect("hello");
+        let (reply, reply_len) =
+            tokio::time::timeout(Duration::from_secs(5), read_frame(&mut recv))
+                .await
+                .expect("welcome inside 5 s")
+                .expect("a welcome frame");
+        let welcome = decode_welcome(&reply[..reply_len]).expect("welcome decodes");
+        assert_eq!(
+            welcome.dev, want,
+            "dev_spawn {dev_spawn:?} must welcome with dev = {want}"
+        );
+        handle
+            .shutdown
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}

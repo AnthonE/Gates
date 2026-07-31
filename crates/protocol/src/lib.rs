@@ -59,9 +59,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// 4 → 5 bits). v6 added the door lane: the use action (address only)
 /// and the door event subtype, and every placed-deployable record on the
 /// wire grew its open bit — so a v5 deploy record parses off-by-one from
-/// here on, the hello gate refuses the pair, and fixtures are keyed
-/// `v6_*`.
-pub const PROTO_VER: u16 = 6;
+/// here on, the hello gate refuses the pair. v7 added the welcome's `dev`
+/// bit: the shard states whether it is a dev shard, which is what gates
+/// the client's dev affordances. Fixtures are keyed `v7_*`.
+pub const PROTO_VER: u16 = 7;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -132,11 +133,19 @@ pub struct Hello {
 
 /// S→C: the join bundle v0 — player id, world seed, current server tick.
 /// Grows (spawn ring, catalog hash) with the slices that add those.
+///
+/// `dev` is the shard stating what it is. A dev shard is one running dev
+/// overrides (today: `shard.toml dev_spawn`); the client installs its
+/// dev-only affordances — the `setView` camera hook a capture harness aims
+/// with — only when this bit is set, so a public shard's client has no
+/// such surface at all. It is a statement about the SHARD, never a grant
+/// of authority: nothing behind it changes what the sim accepts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Welcome {
     pub player_id: u32,
     pub seed: u64,
     pub tick: u32,
+    pub dev: bool,
 }
 
 /// S→C: refusal with a posted reason — a shard at cap refuses at hello,
@@ -173,6 +182,7 @@ pub fn encode_welcome(msg: &Welcome, buf: &mut [u8]) -> Result<usize, WireError>
     w.write(msg.seed as u32, 32)?;
     w.write((msg.seed >> 32) as u32, 32)?;
     w.write(msg.tick, 32)?;
+    w.write(msg.dev as u32, 1)?;
     Ok(w.finish())
 }
 
@@ -185,11 +195,13 @@ pub fn decode_welcome(buf: &[u8]) -> Result<Welcome, WireError> {
     let lo = r.read(32)? as u64;
     let hi = r.read(32)? as u64;
     let tick = r.read(32)?;
+    let dev = r.read(1)? != 0;
     expect_zero_padding(&mut r)?;
     Ok(Welcome {
         player_id,
         seed: lo | (hi << 32),
         tick,
+        dev,
     })
 }
 

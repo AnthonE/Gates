@@ -53,7 +53,8 @@ async function boot(url, certHex) {
   views.refresh();
   views.input.set(reply);
   const kind = ex.client_parse_handshake(reply.length);
-  const hs = new Uint32Array(ex.memory.buffer, ex.client_hs_ptr(), 6);
+  // [kind, player_id, seed_lo, seed_hi, tick, refuse_code, dev]
+  const hs = new Uint32Array(ex.memory.buffer, ex.client_hs_ptr(), 7);
   if (kind === 2) {
     throw new Error(
       `refused: ${REFUSE_REASONS[hs[5]] || `code ${hs[5]}`}`,
@@ -63,12 +64,16 @@ async function boot(url, certHex) {
   const playerId = hs[1];
   const seed = BigInt(hs[2]) | (BigInt(hs[3]) << 32n);
   const serverTick = hs[4];
+  // The shard states whether it is a dev shard (protocol Welcome.dev, set
+  // by shard.toml's dev_spawn). Nothing else gates the dev affordances
+  // below, so a public shard's page never grows them.
+  const dev = hs[6] === 1;
 
   ex.client_new(seed, playerId, serverTick);
   views.refresh();
 
   $("start").style.display = "none";
-  run(ex, views, wt, seed, playerId, reader, writer, leftover);
+  run(ex, views, wt, seed, playerId, reader, writer, leftover, dev);
 }
 
 const REFUSE_TEXT = [
@@ -111,7 +116,7 @@ const MAT_TEXT = ["wood", "stone", "metal"];
 const BUILD_CELL = 3;
 const MAX_LEVEL = 7;
 
-function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLeftover) {
+function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLeftover, dev) {
   const canvas = $("gl");
   const scene = new GameScene(canvas);
   const terrain = new Terrain(scene.scene, seed, ex, WASM_URL);
@@ -647,6 +652,13 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   let last = performance.now();
   let stamp = 0;
 
+  // The dev-only camera hook (DECISIONS.md §open "dev view hook"), bound
+  // ONCE here — the 250 ms timer republishes this same function object
+  // rather than minting a closure per tick, and the RAF path never sees it
+  // at all. Null on a public shard, where `setView` is then not a property
+  // that exists.
+  const devSetView = dev ? (yaw, pitch) => input.setView(yaw, pitch) : null;
+
   function frame(now) {
     if (closed) return;
     requestAnimationFrame(frame);
@@ -734,10 +746,14 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       const b = 14 + k * 8;
       remotes.push([views.remoteIds[k], R[b], R[b + 1], R[b + 2]]);
     }
-    globalThis.__gatesDebug = {
+    const debug = {
       playerId,
+      dev,
       inWorld: R[0] === 1,
       own: [R[1], R[2], R[3]],
+      // What the camera is actually built from this frame (the RAF loop
+      // hands scene.setCamera these two), so an aim is checkable.
+      view: [input.yaw, input.pitch],
       snapshots: R[8],
       remotes,
       oversize: sender.stats.oversize,
@@ -749,6 +765,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       deployDefs: (ex.client_deploy_defs_state() >>> 0) & 0xffff,
       deploys: scene.deploys.size,
     };
+    if (devSetView) debug.setView = devSetView;
+    globalThis.__gatesDebug = debug;
   }, 250);
 }
 

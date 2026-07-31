@@ -83,6 +83,20 @@ export class InputTracker {
     });
   }
 
+  // Aim from outside the mouse. Headless Chromium grants pointer lock but
+  // produces no movementX/movementY, so a capture harness can walk and
+  // never look; this is the only way to park the camera at a fixed
+  // vantage. Same clamps the mouse path applies, so nothing downstream can
+  // tell the two apart — and no allocation, since the caller reaches it
+  // off the 250 ms timer's debug object, never the RAF loop.
+  setView(yaw, pitch) {
+    if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) return false;
+    this.yaw = yaw;
+    this.pitch =
+      pitch > PITCH_LIMIT ? PITCH_LIMIT : pitch < -PITCH_LIMIT ? -PITCH_LIMIT : pitch;
+    return true;
+  }
+
   yawU16() {
     let t = this.yaw / TWO_PI;
     t -= Math.floor(t);
