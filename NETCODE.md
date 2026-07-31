@@ -133,8 +133,10 @@ Refinements over `DESIGN.md` §5, with the canon's shipped parameters:
   cost nothing.
 - **Quantize both sides.** The server's own sim runs on the quantized
   values it transmits (position 3 cm x/z · 1 cm y chunk-relative, yaw u16,
-  pitch u8, velocity bounded ±16 m/s with a 1-bit **at-rest flag** that
-  elides it), so client and server never disagree by a rounding error —
+  pitch u8, velocity ±81.92 m/s at 1 cm/s — wide enough for the spoken terminal
+  50 m/s — with a 1-bit **at-rest flag** that elides it; widths pinned by
+  `test_protocol_golden`, registered in DECISIONS §open), so client and
+  server never disagree by a rounding error —
   Gaffer's rule, and load-bearing for our bit-identical wasm prediction.
   Players have no free orientation (yaw/pitch only) and projectiles face
   their velocity, so no quaternion ever rides a datagram; full transforms

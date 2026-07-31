@@ -20,13 +20,13 @@ $NICE cargo fmt --all --check || fail "rustfmt"
 echo "== gate: clippy walls (-D warnings; sim walls via crates/sim-core/clippy.toml)"
 $NICE cargo clippy --workspace --all-targets -- -D warnings || fail "clippy"
 
-echo "== gate: native test suite (alloc_zero, replay, terrain_golden, unit)"
+echo "== gate: native test suite (alloc_zero, replay, terrain_golden, protocol_golden, unit)"
 $NICE cargo test --workspace --release || fail "cargo test"
 
-echo "== gate: wasm build (sim-core -> wasm32-unknown-unknown)"
+echo "== gate: wasm build (sim-core + protocol -> wasm32-unknown-unknown)"
 rustup target list --installed | grep -q '^wasm32-unknown-unknown$' \
   || fail "wasm32-unknown-unknown target not installed"
-$NICE cargo build -p sim-core --release --target wasm32-unknown-unknown \
+$NICE cargo build -p sim-core -p protocol --release --target wasm32-unknown-unknown \
   || fail "wasm build"
 
 echo "== gate: test_parity_wasm (native vs wasm, byte-equal digests)"

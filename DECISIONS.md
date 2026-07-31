@@ -51,3 +51,4 @@ invented into code that isn't on this page.
 | worldgen shape params | **all** shape constants in `terrain.rs` (relief 1/600 m gain 2.4 · warp 45 m @ 1/1200 · coast r 960±100 edge 160 · sea floor 12 m · moisture 1/700 · ridge 16 m @ 1/220 from 52 m · biome bands beach <2 m / highland >52 m / forest moist >0.05 · remap LUT v0 · scatter weights v0), pinned by `test_terrain_golden` | sim-core `terrain.rs` |
 | command buffer cap | 256 per tick, overflow defers to next tick | sim-core `limits.rs` |
 | spawn placeholder (until the spawn-ring slice) | 96 hashed candidates · interior 224–1824 m · height 1.5–45 m · slope < 1.0 · fallback island center | sim-core `world.rs` |
+| snapshot v0 wire widths | pos x/z 17 bit · y 14 bit @ −20.48 m bias · vy 14 bit @ ±81.9 m/s (covers terminal 50; NETCODE §3's ±16 predates the spoken terminal) · pos-delta 8/10/8 bit · ids u32 · counts 7 bit, pinned by `test_protocol_golden` | protocol `lib.rs` |

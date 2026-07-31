@@ -6,3 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The types that cross the wire (InputFrame, quantized body fields) and
+# the caps in limits.rs. Pure and wasm-clean; protocol adds no game logic
+# on top (DESIGN.md §4).
+sim-core = { path = "../sim-core" }
