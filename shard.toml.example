@@ -1,0 +1,7 @@
+# Gates shard config, example. Copy to shard.toml (gitignored — this file
+# is per-deployment, .gitignore says why) and edit; `cargo run -p server
+# --bin shard` reads shard.toml. Unknown keys are refused; see
+# crates/server/src/config.rs.
+
+bind = "127.0.0.1:4433"
+seed = 20260731

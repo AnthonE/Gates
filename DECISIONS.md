@@ -52,3 +52,6 @@ invented into code that isn't on this page.
 | command buffer cap | 256 per tick, overflow defers to next tick | sim-core `limits.rs` |
 | spawn placeholder (until the spawn-ring slice) | 96 hashed candidates · interior 224–1824 m · height 1.5–45 m · slope < 1.0 · fallback island center | sim-core `world.rs` |
 | snapshot v0 wire widths | pos x/z 17 bit · y 14 bit @ −20.48 m bias · vy 14 bit @ ±81.9 m/s (covers terminal 50; NETCODE §3's ±16 predates the spoken terminal) · pos-delta 8/10/8 bit · ids u32 · counts 7 bit, pinned by `test_protocol_golden` | protocol `lib.rs` |
+| server ring & buffer caps | input ring 32 datagrams (drop newest — redundancy re-carries) · snapshot ring 4 (skip) · ctrl 8 / graveyard 256 (refuse/retry) · input buffer 16 frames (skip ahead) · pending removals 256 (resync) | sim-core `limits.rs` |
+| nudge fill-ins (NETCODE §4 speaks target 1–2 · >6 → consume 2 · empty → resync) | Faster at depth 0 · Ok 1–2 · Slower ≥3 · starve 30 ticks before hard-resync | server `client.rs` |
+| net plumbing bounds | handshake timeout 5 s · writer poll 2 ms · sim backlog drop past 8 ticks | server `net.rs` |

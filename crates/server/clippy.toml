@@ -1,0 +1,26 @@
+# The server walls (CLAUDE.md wall 3, DESIGN.md L3): the sim thread takes
+# no locks and iterates nothing nondeterministic. Enforced crate-wide —
+# the net side never needed a lock either (rings + atomics + tokio tasks),
+# so any appearance of one of these types is a design regression, not an
+# inconvenience. String/format stay legal here (bins, config, errors);
+# their sim-thread ban (L5) is scoped by review to `core`/`client`, which
+# import neither.
+
+disallowed-types = [
+    # Nondeterministic iteration
+    "std::collections::HashMap",
+    "std::collections::HashSet",
+    # Locks and blocking sync — inter-thread traffic is rings + atomics
+    "std::sync::Mutex",
+    "std::sync::RwLock",
+    "std::sync::Condvar",
+    "std::sync::Barrier",
+    "std::sync::mpsc::Sender",
+    "std::sync::mpsc::Receiver",
+    "tokio::sync::Mutex",
+    "tokio::sync::RwLock",
+]
+
+# NETCODE.md §2.1's "never send_datagram_wait" needs no lint here:
+# wtransport exposes only the non-blocking send_datagram, and this crate
+# never touches quinn::Connection directly.

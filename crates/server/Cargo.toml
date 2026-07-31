@@ -8,3 +8,13 @@ publish.workspace = true
 [dependencies]
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util"] }
+# Git-pinned ≥ 0f7609a (CLAUDE.md traps, NETCODE.md §2.2): crates.io still
+# tops out at 0.7.1, which has the two-byte remote panic (#317). This rev is
+# main as of 2026-07-25, containing the fix plus one header-order fix.
+wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8e7ff33c6eef522d308007da55d1df9f81", features = [
+    "dangerous-configuration",
+    "self-signed",
+    "quinn",
+] }
+rtrb = "0.3"

@@ -6,7 +6,9 @@
 // them in hot-path code; an example binary is not hot-path code.
 #![allow(clippy::disallowed_macros)]
 
-use protocol::{encode_input, encode_snapshot, goldens};
+use protocol::{
+    encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
+};
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
 fn write_fixture(name: &str, bytes: &[u8]) {
@@ -41,4 +43,11 @@ fn main() {
         .unwrap();
         write_fixture(name, &buf[..len]);
     }
+
+    let len = encode_hello(&goldens::hello(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[5], &buf[..len]);
+    let len = encode_welcome(&goldens::welcome(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[6], &buf[..len]);
+    let len = encode_refuse(&goldens::refuse_full(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[7], &buf[..len]);
 }
