@@ -399,7 +399,9 @@ a later quest can gate on a real played round with no human in the loop.
 - **Structure**: net worker owns the WebTransport session (datagram decode
   off the main thread, transferable buffers over); main thread runs sim
   prediction (wasm), interpolation, three.js scene. COOP/COEP headers set
-  from day one so SharedArrayBuffer is available when wanted.
+  from day one so SharedArrayBuffer is available when wanted. (M0 ships
+  the session on the main thread — decode is already zero-copy into wasm;
+  the worker move is a later slice, the headers are live now.)
 - **World**: terrain chunks generated client-side from the seed through the
   same wasm worldgen `sim-core` uses (zero terrain bandwidth, identical by
   the float discipline); server remains collision-authoritative.

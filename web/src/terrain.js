@@ -39,11 +39,15 @@ export class Terrain {
     this.seed = seed;
     this.ex = ex; // main-thread wasm: slot queries only (fast, tiny)
     this.material = new THREE.MeshLambertMaterial({ vertexColors: true });
-    this.chunks = new Map(); // "cx,cz" -> { mesh } | { pending: true }
+    this.chunks = new Map(); // "cx,cz" -> { cx, cz, mesh? , pending? }
     this.queue = [];
     this.inFlight = false;
     this.teardown = [];
     this.farBuilt = false;
+    // The desired-set scan runs only on chunk-boundary crossings, so the
+    // steady-state RAF path builds no key strings (DESIGN.md L8).
+    this.lastCcx = -1000;
+    this.lastCcz = -1000;
 
     this.pools = [];
     this.owners = []; // per archetype: entry objects parallel to instances
@@ -114,7 +118,8 @@ export class Terrain {
       } else {
         mesh.position.set(msg.x0, 0, msg.z0);
         this.scene.add(mesh);
-        this.chunks.set(msg.key, { mesh });
+        entry.pending = false;
+        entry.mesh = mesh;
         this._addScatter(msg.key, msg.x0, msg.z0);
       }
     }
@@ -177,27 +182,28 @@ export class Terrain {
   update(px, pz) {
     const ccx = Math.floor(px / CHUNK);
     const ccz = Math.floor(pz / CHUNK);
-    for (let dz = -NEAR_RADIUS; dz <= NEAR_RADIUS; dz++) {
-      for (let dx = -NEAR_RADIUS; dx <= NEAR_RADIUS; dx++) {
-        const cx = ccx + dx;
-        const cz = ccz + dz;
-        if (cx < 0 || cz < 0 || cx * CHUNK >= ISLAND || cz * CHUNK >= ISLAND)
-          continue;
-        const key = cx + "," + cz;
-        if (!this.chunks.has(key)) {
-          this.chunks.set(key, { pending: true });
-          this.queue.push({ key, cx, cz, d: Math.abs(dx) + Math.abs(dz) });
+    if (ccx !== this.lastCcx || ccz !== this.lastCcz) {
+      this.lastCcx = ccx;
+      this.lastCcz = ccz;
+      for (let dz = -NEAR_RADIUS; dz <= NEAR_RADIUS; dz++) {
+        for (let dx = -NEAR_RADIUS; dx <= NEAR_RADIUS; dx++) {
+          const cx = ccx + dx;
+          const cz = ccz + dz;
+          if (cx < 0 || cz < 0 || cx * CHUNK >= ISLAND || cz * CHUNK >= ISLAND)
+            continue;
+          const key = cx + "," + cz;
+          if (!this.chunks.has(key)) {
+            this.chunks.set(key, { cx, cz, pending: true });
+            this.queue.push({ key, cx, cz, d: Math.abs(dx) + Math.abs(dz) });
+          }
         }
       }
-    }
-    // Stream-out: mark chunks beyond radius+1 (hysteresis), drop 1/frame.
-    if (this.teardown.length === 0) {
+      // Stream-out: mark chunks beyond radius+1 (hysteresis), drop 1/frame.
       for (const [key, entry] of this.chunks) {
         if (!entry.mesh) continue;
-        const [cx, cz] = key.split(",").map(Number);
         if (
-          Math.abs(cx - ccx) > NEAR_RADIUS + 1 ||
-          Math.abs(cz - ccz) > NEAR_RADIUS + 1
+          Math.abs(entry.cx - ccx) > NEAR_RADIUS + 1 ||
+          Math.abs(entry.cz - ccz) > NEAR_RADIUS + 1
         ) {
           this.teardown.push(key);
         }

@@ -233,7 +233,7 @@ pub extern "C" fn client_render() -> u32 {
         render[1] = p[0];
         render[2] = p[1];
         render[3] = p[2];
-        render[4] = core.predict.body.qvy as f32 * 0.01;
+        render[4] = core.predict.body.qvy as f32 * sim_core::movement::VEL_Q;
         render[5] = if core.predict.body.grounded { 1.0 } else { 0.0 };
         render[6] = core.predict.error_magnitude();
         render[7] = core.predict.mispredictions as f32;
