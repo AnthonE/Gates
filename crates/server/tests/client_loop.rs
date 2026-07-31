@@ -48,7 +48,7 @@ fn steer(c: &mut ClientCore, rng: &mut Pcg32, yaw: &mut u16, moving: bool) {
     } else {
         (0, 0)
     };
-    c.set_input(buttons, *yaw, 0, mx, mz);
+    c.set_input(buttons, *yaw, 0, mx, mz, 0);
 }
 
 /// One lockstep pump: clients advance one tick and post inputs, the shard
@@ -169,7 +169,7 @@ fn loss_corrects_and_reconverges() {
 
     // Then quiesce with clean delivery: everything must reconverge.
     for _ in 0..120u32 {
-        clients[0].1.set_input(0, yaw, 0, 0, 0);
+        clients[0].1.set_input(0, yaw, 0, 0, 0, 0);
         pump(&mut core, &stats, &mut clients, || false);
     }
     let c = &clients[0].1;

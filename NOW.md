@@ -5,12 +5,11 @@ Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
 1. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
-   Gather is sim'd (slice 2) and on the wire (slice 3: event lane v1 —
-   slot events + own inventory/toasts to the client, node vanish +
-   respawn in the renderer, join sync, item-name catalog, primary
-   button in the browser). Next: hotbar select + the weak-spot bonus ·
-   craft from `content/` · build grid + hearth + upkeep/decay ·
-   death/backpack/respawn-on-bag.
+   Gather is sim'd, on the wire, and juiced (slice 4: hotbar select —
+   keys 1–6, `sel` on every input frame, held item = selected slot —
+   and the per-player weak-spot mark with its content bonus, glint
+   rendered on the node; wire v2). Next: craft from `content/` · build
+   grid + hearth + upkeep/decay · death/backpack/respawn-on-bag.
 2. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
 3. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·

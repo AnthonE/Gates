@@ -8,8 +8,8 @@
 
 use protocol::{
     encode_event_catalog, encode_event_gather, encode_event_inv, encode_event_slot_change,
-    encode_event_slot_sync, encode_hello, encode_input, encode_refuse, encode_snapshot,
-    encode_welcome, goldens,
+    encode_event_slot_sync, encode_event_weak_mark, encode_hello, encode_input, encode_refuse,
+    encode_snapshot, encode_welcome, goldens,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -74,4 +74,8 @@ fn main() {
     let (len, took) = encode_event_catalog(&goldens::event_catalog(), 0, &mut buf).unwrap();
     assert_eq!(took, protocol::CATALOG_BATCH);
     write_fixture(goldens::FIXTURES[13], &buf[..len]);
+
+    let (cx, cz, mark8, weak_hit) = goldens::event_weak_mark();
+    let len = encode_event_weak_mark(cx, cz, mark8, weak_hit, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[14], &buf[..len]);
 }

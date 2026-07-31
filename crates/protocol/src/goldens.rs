@@ -18,22 +18,23 @@ use sim_core::input::InputFrame;
 use sim_core::limits::{INV_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 use sim_core::rng::Pcg32;
 
-/// Fixture file names, keyed by wire version (`PROTO_VER` 1 ⇒ `v1_*`).
-pub const FIXTURES: [&str; 14] = [
-    "v1_input_acks_only.bin",
-    "v1_input_full.bin",
-    "v1_snapshot_keyframe.bin",
-    "v1_snapshot_delta.bin",
-    "v1_snapshot_cap.bin",
-    "v1_hello.bin",
-    "v1_welcome.bin",
-    "v1_refuse_full.bin",
-    "v1_event_gather.bin",
-    "v1_event_inv.bin",
-    "v1_event_slot_harvested.bin",
-    "v1_event_slot_respawned.bin",
-    "v1_event_slot_sync.bin",
-    "v1_event_catalog.bin",
+/// Fixture file names, keyed by wire version (`PROTO_VER` 2 ⇒ `v2_*`).
+pub const FIXTURES: [&str; 15] = [
+    "v2_input_acks_only.bin",
+    "v2_input_full.bin",
+    "v2_snapshot_keyframe.bin",
+    "v2_snapshot_delta.bin",
+    "v2_snapshot_cap.bin",
+    "v2_hello.bin",
+    "v2_welcome.bin",
+    "v2_refuse_full.bin",
+    "v2_event_gather.bin",
+    "v2_event_inv.bin",
+    "v2_event_slot_harvested.bin",
+    "v2_event_slot_respawned.bin",
+    "v2_event_slot_sync.bin",
+    "v2_event_catalog.bin",
+    "v2_event_weak_mark.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -69,6 +70,7 @@ pub fn input_full() -> InputDatagram {
             pitch: rng.next_bounded(0x100) as u8,
             move_x: rng.next_bounded(255) as i32 as i8,
             move_z: (rng.next_bounded(255) as i32 - 127) as i8,
+            sel: rng.next_bounded(6) as u8,
         };
         dg.push(f).expect("golden construction is in-cap by design");
     }
@@ -224,6 +226,11 @@ pub fn event_slot_sync() -> (bool, [(u16, u16); SLOT_SYNC_BATCH]) {
     let cells =
         core::array::from_fn(|_| (rng.next_bounded(256) as u16, rng.next_bounded(256) as u16));
     (true, cells)
+}
+
+/// A weak-mark message with the weak-hit bit set: (cx, cz, mark8, weak_hit).
+pub fn event_weak_mark() -> (u16, u16, u8, bool) {
+    (0x0102, 0x0304, 0xA7, true)
 }
 
 /// A catalog whose first batch is exactly `CATALOG_BATCH` names of mixed

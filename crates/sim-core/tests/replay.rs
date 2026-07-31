@@ -15,9 +15,10 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-/// Regenerated this commit: gather landed in the sim — bots now hold the
-/// primary button, state_hash covers inventories + slot lives.
-const GOLDEN_FINAL_HASH: u64 = 0x32C6_502A_5DC4_1BEA;
+/// Regenerated this commit: hotbar select + the weak-spot bonus landed —
+/// bot frames carry `sel`, state_hash covers the selector and the
+/// weak-spot chase, and aligned hits pay the content bonus.
+const GOLDEN_FINAL_HASH: u64 = 0x6DAC_C8DD_0731_6DE7;
 
 fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut world = World::new(seed);

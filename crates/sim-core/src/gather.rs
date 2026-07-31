@@ -19,11 +19,14 @@ use crate::limits::{INV_SLOTS, MAX_ITEM_DEFS, MAX_SLOT_LIVES};
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::rng::{cell_hash, splitmix64};
 use crate::terrain::{self, Occupant, ScatterTable, CELL_SIZE};
-use crate::world::{EventQueue, Player, EV_GATHER, EV_SLOT_HARVESTED};
+use crate::world::{EventQueue, Player, EV_GATHER, EV_SLOT_HARVESTED, EV_WEAK_MARK};
 use crate::yaw_lut::yaw_dir;
 
 /// Sentinel: no item. Doubles as the bare-hand "held item".
 pub const NO_ITEM: u16 = u16::MAX;
+
+/// Sentinel cell key: no weak-spot chase in progress (`Player::ws_cell`).
+pub const NO_CELL: u32 = u32::MAX;
 
 /// Occupants that can be gathered: Tree, StoneNode, MetalNode, SulfurNode,
 /// Bush — terrain `Occupant` 1..=5. Rock and BarrelSlot are not nodes.
@@ -48,6 +51,12 @@ pub const DY_MAX_M: f32 = 3.0;
 /// a zero-length aim vector has no direction to test against.
 pub const POINT_BLANK_M2: f32 = 0.04;
 
+/// Weak-spot sector half-angle 45°: cos authored offline (√2/2), no trig
+/// at runtime. A hit landed while standing inside the mark's sector pays
+/// the content's `weak_spot_bonus_pct` extra (DECISIONS.md §open, "gather
+/// verb v0").
+pub const WEAK_COS: f32 = 0.707_106_77;
+
 /// Node respawn window in ticks: 20–45 min at 30 Hz (DECISIONS.md §open,
 /// "node/barrel respawn").
 pub const RESPAWN_MIN_TICKS: u64 = 36_000;
@@ -56,6 +65,8 @@ pub const RESPAWN_RANGE_TICKS: u64 = 45_000;
 /// Noise channel for respawn jitter (worldgen channels live in terrain.rs;
 /// this one is sim-side and collides with nothing below 96).
 const CH_RESPAWN: u32 = 97;
+/// Noise channel for the weak-spot mark heading.
+const CH_WEAK: u32 = 98;
 
 /// One gatherable archetype's baked rules. `output == NO_ITEM` ⇒ not
 /// gatherable (the inert default).
@@ -67,6 +78,9 @@ pub struct NodeDef {
     pub hits: u16,
     /// Units per bare-hand swing.
     pub hand_yield: u16,
+    /// Extra yield % on a weak-spot hit (content `weak_spot_bonus_pct`);
+    /// 0 disables the mark for this archetype.
+    pub weak_pct: u16,
     /// (item index, units per swing) rows; `(NO_ITEM, 0)` = empty row.
     pub tools: [(u16, u16); MAX_TOOLS_PER_NODE],
 }
@@ -76,6 +90,7 @@ impl NodeDef {
         output: NO_ITEM,
         hits: 0,
         hand_yield: 0,
+        weak_pct: 0,
         tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
     };
 
@@ -126,21 +141,22 @@ impl GatherContent {
             c.stack_max[i] = 100;
             i += 1;
         }
-        // (output, hits, hand, tool-item, tool-yield) per archetype.
-        let rows: [(u16, u16, u16, u16, u16); GATHERABLE_KINDS] = [
-            (0, 4, 7, 1, 13),       // Tree
-            (1, 5, 6, 0, 11),       // StoneNode
-            (2, 6, 3, 0, 9),        // MetalNode
-            (3, 6, 3, 1, 9),        // SulfurNode
-            (4, 1, 10, NO_ITEM, 0), // Bush: one-hit pickup
+        // (output, hits, hand, weak %, tool-item, tool-yield) per archetype.
+        let rows: [(u16, u16, u16, u16, u16, u16); GATHERABLE_KINDS] = [
+            (0, 4, 7, 100, 1, 13),     // Tree
+            (1, 5, 6, 50, 0, 11),      // StoneNode
+            (2, 6, 3, 25, 0, 9),       // MetalNode
+            (3, 6, 3, 75, 1, 9),       // SulfurNode
+            (4, 1, 10, 0, NO_ITEM, 0), // Bush: one-hit pickup, no mark
         ];
         let mut k = 0;
         while k < GATHERABLE_KINDS {
-            let (out, hits, hand, tool, per) = rows[k];
+            let (out, hits, hand, weak, tool, per) = rows[k];
             c.nodes[k] = NodeDef {
                 output: out,
                 hits,
                 hand_yield: hand,
+                weak_pct: weak,
                 tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
             };
             if tool != NO_ITEM {
@@ -297,7 +313,7 @@ impl SlotLives {
         while i < self.len {
             let e = self.entries[i];
             if e.respawn_at != 0 && tick >= e.respawn_at {
-                events.push(crate::world::EV_SLOT_RESPAWNED, cell_key(e.cx, e.cz), 0);
+                events.push(crate::world::EV_SLOT_RESPAWNED, cell_key(e.cx, e.cz), 0, 0);
                 self.len -= 1;
                 self.entries[i] = self.entries[self.len];
             } else {
@@ -317,6 +333,17 @@ impl Default for SlotLives {
 #[inline]
 pub fn cell_key(cx: u16, cz: u16) -> u32 {
     ((cx as u32) << 16) | cz as u32
+}
+
+/// The weak-spot mark after `n` landed hits by `pid` on the node at
+/// `(cx, cz)`: a heading over the 256-entry yaw LUT, pointing from the
+/// node toward where the swinger must stand. Per-player (the reference
+/// mechanic's mark is yours alone) and pure — server, replay, and any
+/// future client-side ghost all derive the same mark.
+#[inline]
+pub fn weak_mark8(seed: u64, cx: u16, cz: u16, pid: u32, n: u16) -> u8 {
+    let h = cell_hash(seed, cx as i32, cz as i32, CH_WEAK);
+    (splitmix64(h ^ ((pid as u64) << 16) ^ n as u64) >> 32) as u8
 }
 
 /// One player's swing gate + target pick + payout. Called every tick for
@@ -345,7 +372,8 @@ pub fn swing(
     let pcz = crate::fmath::floor_i32(pz / CELL_SIZE);
 
     // Nearest standing gatherable slot in reach, inside the aim cone.
-    let mut best: Option<(f32, u16, u16, usize)> = None;
+    // (d2, node→player planar offset, cell, gatherable index.)
+    let mut best: Option<(f32, f32, f32, u16, u16, usize)> = None;
     let mut dz_cell = -1;
     while dz_cell <= 1 {
         let mut dx_cell = -1;
@@ -368,14 +396,14 @@ pub fn swing(
                     && best.is_none_or(|(bd2, ..)| d2 < bd2)
                     && !lives.is_harvested(cx as u16, cz as u16)
                 {
-                    best = Some((d2, cx as u16, cz as u16, ni));
+                    best = Some((d2, -dx, -dz, cx as u16, cz as u16, ni));
                 }
             }
             dx_cell += 1;
         }
         dz_cell += 1;
     }
-    let Some((_, cx, cz, ni)) = best else {
+    let Some((d2, ox, oz, cx, cz, ni)) = best else {
         return; // whiff — the cooldown is already paid
     };
 
@@ -393,21 +421,56 @@ pub fn swing(
         life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
     }
 
-    let held = if p.inv[0].count > 0 {
-        p.inv[0].item
+    // The weak-spot chase: switching nodes restarts it; the mark only
+    // exists after the first landed hit. A hit landed while standing in
+    // the current mark's sector pays the content bonus; point-blank has
+    // no bearing to judge, so it never bonuses.
+    let ck = cell_key(cx, cz);
+    if p.ws_cell != ck {
+        p.ws_cell = ck;
+        p.ws_hits = 0;
+    }
+    let mut weak_hit = false;
+    if def.weak_pct > 0 && p.ws_hits > 0 && d2 > POINT_BLANK_M2 {
+        let mark = weak_mark8(seed, cx, cz, p.id, p.ws_hits);
+        let (wx, wz) = yaw_dir((mark as u16) << 8);
+        weak_hit = ox * wx + oz * wz > WEAK_COS * d2.sqrt();
+    }
+    p.ws_hits = p.ws_hits.saturating_add(1);
+
+    let held = if p.inv[p.frame.sel as usize].count > 0 {
+        p.inv[p.frame.sel as usize].item
     } else {
         NO_ITEM
     };
-    let pay = def.yield_for(held);
+    let mut pay = def.yield_for(held);
+    if weak_hit {
+        pay = ((pay as u32 * (100 + def.weak_pct as u32)) / 100).min(u16::MAX as u32) as u16;
+    }
     let added = inv_add(
         &mut p.inv,
         def.output,
         pay,
         gc.stack_max[def.output as usize],
     );
-    events.push(EV_GATHER, p.id, ((def.output as u32) << 16) | added as u32);
+    events.push(
+        EV_GATHER,
+        p.id,
+        ((def.output as u32) << 16) | added as u32,
+        0,
+    );
     if exhausted {
-        events.push(EV_SLOT_HARVESTED, cell_key(cx, cz), ni as u32);
+        events.push(EV_SLOT_HARVESTED, ck, ni as u32, 0);
+        p.ws_cell = NO_CELL;
+        p.ws_hits = 0;
+    } else if def.weak_pct > 0 {
+        let next = weak_mark8(seed, cx, cz, p.id, p.ws_hits);
+        events.push(
+            EV_WEAK_MARK,
+            p.id,
+            ck,
+            ((weak_hit as u32) << 8) | next as u32,
+        );
     }
 }
 

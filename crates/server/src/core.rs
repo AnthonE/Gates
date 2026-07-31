@@ -8,8 +8,8 @@ use crate::client::ClientNetState;
 use crate::stats::ShardStats;
 use protocol::{
     encode_event_catalog, encode_event_gather, encode_event_inv, encode_event_slot_change,
-    encode_event_slot_sync, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder,
-    SnapshotHeader, WireError, MAX_EVENT_MSG_BYTES, SLOT_SYNC_BATCH,
+    encode_event_slot_sync, encode_event_weak_mark, EntityState, InputDatagram, InvSlot,
+    ItemCatalog, SnapshotEncoder, SnapshotHeader, WireError, MAX_EVENT_MSG_BYTES, SLOT_SYNC_BATCH,
 };
 use sim_core::gather::ItemStack;
 use sim_core::limits::{
@@ -17,7 +17,9 @@ use sim_core::limits::{
     MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
     SYNC_SCAN_PER_TICK,
 };
-use sim_core::world::{Command, Player, World, EV_GATHER, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED};
+use sim_core::world::{
+    Command, Player, World, EV_GATHER, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_WEAK_MARK,
+};
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
 /// distance falloff half-scale is 32 m. Other classes land with their
@@ -200,6 +202,28 @@ impl ShardCore {
                             } else {
                                 // A lost toast is cosmetic, but the resync
                                 // costs nothing when nothing else was lost.
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_WEAK_MARK => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // swinger left this tick
+                    };
+                    let cx = (ev.b >> 16) as u16;
+                    let cz = ev.b as u16;
+                    let mark8 = ev.c as u8;
+                    let weak_hit = ev.c & 0x100 != 0;
+                    match encode_event_weak_mark(cx, cz, mark8, weak_hit, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                // A lost mark is cosmetic; the resync is
+                                // the uniform recovery, same as a toast.
                                 self.clients[slot].ev_resync();
                                 ShardStats::bump(&stats.ev_resyncs);
                             }

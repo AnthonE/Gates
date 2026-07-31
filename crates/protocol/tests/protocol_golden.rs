@@ -5,35 +5,38 @@
 //! `PROTO_VER` bump in the same commit is the wire drifting by accident.
 
 use protocol::goldens::{
-    event_catalog, event_gather, event_inv, event_slot_change, event_slot_sync, hello,
-    input_acks_only, input_full, refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe,
-    welcome, SnapshotCase, FIXTURES,
+    event_catalog, event_gather, event_inv, event_slot_change, event_slot_sync, event_weak_mark,
+    hello, input_acks_only, input_full, refuse_full, snapshot_cap, snapshot_delta,
+    snapshot_keyframe, welcome, SnapshotCase, FIXTURES,
 };
 use protocol::{
     decode_event, decode_hello, decode_input, decode_refuse, decode_snapshot, decode_welcome,
     encode_event_catalog, encode_event_gather, encode_event_inv, encode_event_slot_change,
-    encode_event_slot_sync, encode_hello, encode_input, encode_refuse, encode_snapshot,
-    encode_welcome, peek_kind, EventMsg, InputDatagram, CATALOG_BATCH, KIND_EVENT, KIND_HELLO,
-    KIND_INPUT, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME, MAX_EVENT_MSG_BYTES, SLOT_SYNC_BATCH,
+    encode_event_slot_sync, encode_event_weak_mark, encode_hello, encode_input, encode_refuse,
+    encode_snapshot, encode_welcome, peek_kind, EventMsg, InputDatagram, WireError, CATALOG_BATCH,
+    KIND_EVENT, KIND_HELLO, KIND_INPUT, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME,
+    MAX_EVENT_MSG_BYTES, SLOT_SYNC_BATCH,
 };
+use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 14] = [
-    include_bytes!("golden/v1_input_acks_only.bin"),
-    include_bytes!("golden/v1_input_full.bin"),
-    include_bytes!("golden/v1_snapshot_keyframe.bin"),
-    include_bytes!("golden/v1_snapshot_delta.bin"),
-    include_bytes!("golden/v1_snapshot_cap.bin"),
-    include_bytes!("golden/v1_hello.bin"),
-    include_bytes!("golden/v1_welcome.bin"),
-    include_bytes!("golden/v1_refuse_full.bin"),
-    include_bytes!("golden/v1_event_gather.bin"),
-    include_bytes!("golden/v1_event_inv.bin"),
-    include_bytes!("golden/v1_event_slot_harvested.bin"),
-    include_bytes!("golden/v1_event_slot_respawned.bin"),
-    include_bytes!("golden/v1_event_slot_sync.bin"),
-    include_bytes!("golden/v1_event_catalog.bin"),
+const GOLDEN: [&[u8]; 15] = [
+    include_bytes!("golden/v2_input_acks_only.bin"),
+    include_bytes!("golden/v2_input_full.bin"),
+    include_bytes!("golden/v2_snapshot_keyframe.bin"),
+    include_bytes!("golden/v2_snapshot_delta.bin"),
+    include_bytes!("golden/v2_snapshot_cap.bin"),
+    include_bytes!("golden/v2_hello.bin"),
+    include_bytes!("golden/v2_welcome.bin"),
+    include_bytes!("golden/v2_refuse_full.bin"),
+    include_bytes!("golden/v2_event_gather.bin"),
+    include_bytes!("golden/v2_event_inv.bin"),
+    include_bytes!("golden/v2_event_slot_harvested.bin"),
+    include_bytes!("golden/v2_event_slot_respawned.bin"),
+    include_bytes!("golden/v2_event_slot_sync.bin"),
+    include_bytes!("golden/v2_event_catalog.bin"),
+    include_bytes!("golden/v2_event_weak_mark.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -78,7 +81,7 @@ fn test_protocol_golden() {
     golden_stream(GOLDEN[5], FIXTURES[5]);
     golden_stream(GOLDEN[6], FIXTURES[6]);
     golden_stream(GOLDEN[7], FIXTURES[7]);
-    for i in 8..14 {
+    for i in 8..15 {
         golden_event(GOLDEN[i], FIXTURES[i]);
     }
 }
@@ -87,19 +90,19 @@ fn test_protocol_golden() {
 fn golden_stream(fixture: &[u8], name: &str) {
     let mut buf = [0u8; 64];
     match name {
-        "v1_hello.bin" => {
+        "v2_hello.bin" => {
             let len = encode_hello(&hello(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_HELLO);
             assert_eq!(decode_hello(fixture).unwrap(), hello());
         }
-        "v1_welcome.bin" => {
+        "v2_welcome.bin" => {
             let len = encode_welcome(&welcome(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_WELCOME);
             assert_eq!(decode_welcome(fixture).unwrap(), welcome());
         }
-        "v1_refuse_full.bin" => {
+        "v2_refuse_full.bin" => {
             let len = encode_refuse(&refuse_full(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_REFUSE);
@@ -114,7 +117,7 @@ fn golden_event(fixture: &[u8], name: &str) {
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     assert_eq!(peek_kind(fixture).unwrap(), KIND_EVENT, "{name}");
     let len = match name {
-        "v1_event_gather.bin" => {
+        "v2_event_gather.bin" => {
             let (item, added) = event_gather();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -123,7 +126,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_gather(item, added, &mut buf).unwrap()
         }
-        "v1_event_inv.bin" => {
+        "v2_event_inv.bin" => {
             let (slots, count) = event_inv();
             match decode_event(fixture).unwrap() {
                 EventMsg::Inv {
@@ -137,8 +140,8 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_inv(&slots[..count], &mut buf).unwrap()
         }
-        "v1_event_slot_harvested.bin" | "v1_event_slot_respawned.bin" => {
-            let harvested = name == "v1_event_slot_harvested.bin";
+        "v2_event_slot_harvested.bin" | "v2_event_slot_respawned.bin" => {
+            let harvested = name == "v2_event_slot_harvested.bin";
             let (cx, cz) = event_slot_change();
             let want = if harvested {
                 EventMsg::SlotHarvested { cx, cz }
@@ -148,7 +151,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             assert_eq!(decode_event(fixture).unwrap(), want, "{name}");
             encode_event_slot_change(harvested, cx, cz, &mut buf).unwrap()
         }
-        "v1_event_slot_sync.bin" => {
+        "v2_event_slot_sync.bin" => {
             let (reset, cells) = event_slot_sync();
             match decode_event(fixture).unwrap() {
                 EventMsg::SlotSync {
@@ -164,7 +167,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_slot_sync(reset, &cells, &mut buf).unwrap()
         }
-        "v1_event_catalog.bin" => {
+        "v2_event_catalog.bin" => {
             let cat = event_catalog();
             match decode_event(fixture).unwrap() {
                 EventMsg::Catalog {
@@ -193,9 +196,60 @@ fn golden_event(fixture: &[u8], name: &str) {
             assert_eq!(took, CATALOG_BATCH, "{name}: batch shrank");
             len
         }
+        "v2_event_weak_mark.bin" => {
+            let (cx, cz, mark8, weak_hit) = event_weak_mark();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::WeakMark {
+                    cx,
+                    cz,
+                    mark8,
+                    weak_hit,
+                },
+                "{name}: decode mismatch"
+            );
+            encode_event_weak_mark(cx, cz, mark8, weak_hit, &mut buf).unwrap()
+        }
         other => panic!("unknown event fixture {other}"),
     };
     assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
+}
+
+/// The hotbar selector's wire domain is 0–5: the encoder refuses 6+ and
+/// the decoder refuses a 6 or 7 someone forges into the 3-bit field.
+#[test]
+fn test_input_sel_domain_is_enforced() {
+    let mut dg = InputDatagram::new(1, 0, 9);
+    dg.push(InputFrame {
+        seq: 3,
+        sel: 6,
+        ..InputFrame::default()
+    })
+    .unwrap();
+    let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
+    assert_eq!(encode_input(&dg, &mut buf), Err(WireError::Range));
+
+    // Forge sel = 7 on the wire: a one-frame datagram's sel field is its
+    // last 3 payload bits. Encode a valid frame, then read the layout
+    // back with the sel bits forced high via a re-encoded bit image.
+    let mut ok = InputDatagram::new(1, 0, 9);
+    ok.push(InputFrame {
+        seq: 3,
+        sel: 5,
+        ..InputFrame::default()
+    })
+    .unwrap();
+    let len = encode_input(&ok, &mut buf).unwrap();
+    assert_eq!(decode_input(&buf[..len]).unwrap(), ok);
+    // sel rides bits 151..154 (3+16+32+32+4 header, 16 first_seq, 48 frame
+    // bits before it; the writer is LSB-first within each byte): force all
+    // three high — sel 7 — and decode must refuse.
+    let sel_bit = 3 + 16 + 32 + 32 + 4 + 16 + 48;
+    for b in 0..3 {
+        let bit = sel_bit + b;
+        buf[bit / 8] |= 1 << (bit % 8);
+    }
+    assert_eq!(decode_input(&buf[..len]), Err(WireError::Malformed));
 }
 
 /// The delta packet earns its keep: the same content absolute-encoded

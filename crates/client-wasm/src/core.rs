@@ -11,9 +11,9 @@ use crate::interp::Interp;
 use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
 use protocol::{decode_event, encode_input, EventMsg, InputDatagram, ItemCatalog, WireError};
-use sim_core::gather::{cell_key, ItemStack};
+use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
-use sim_core::limits::{INV_SLOTS, MAX_SLOT_LIVES};
+use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, MAX_SLOT_LIVES};
 
 /// Gather toasts buffered for the HUD (drop-oldest — a toast is cosmetic).
 pub const TOAST_RING: usize = 8;
@@ -24,6 +24,8 @@ pub const APPLIED_SLOTS: u32 = 1 << 1;
 pub const APPLIED_RESET: u32 = 1 << 2;
 pub const APPLIED_TOAST: u32 = 1 << 3;
 pub const APPLIED_CATALOG: u32 = 1 << 4;
+/// The own weak-spot mark moved, appeared, or cleared.
+pub const APPLIED_MARK: u32 = 1 << 5;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -93,6 +95,7 @@ struct InputState {
     pitch: u8,
     move_x: i8,
     move_z: i8,
+    sel: u8,
 }
 
 pub struct ClientCore {
@@ -121,6 +124,12 @@ pub struct ClientCore {
     toasts: [(u16, u16); TOAST_RING],
     toast_head: usize,
     toast_len: usize,
+    /// The own weak-spot mark (server-announced, per-player): the node's
+    /// cell (`NO_CELL` = none), the mark heading over the 256-entry yaw
+    /// LUT, and whether the announcing hit landed weak.
+    pub mark_cell: u32,
+    pub mark8: u8,
+    pub mark_weak_hit: bool,
     pub events_applied: u64,
     pub event_errors: u64,
 }
@@ -149,6 +158,9 @@ impl ClientCore {
             toasts: [(0, 0); TOAST_RING],
             toast_head: 0,
             toast_len: 0,
+            mark_cell: NO_CELL,
+            mark8: 0,
+            mark_weak_hit: false,
             events_applied: 0,
             event_errors: 0,
         }
@@ -190,12 +202,12 @@ impl ClientCore {
             EventMsg::SlotHarvested { cx, cz } => {
                 self.harvested.insert(cell_key(cx, cz));
                 self.push_change(cell_key(cx, cz), true);
-                flags |= APPLIED_SLOTS;
+                flags |= APPLIED_SLOTS | self.clear_mark_if(cell_key(cx, cz));
             }
             EventMsg::SlotRespawned { cx, cz } => {
                 self.harvested.remove(cell_key(cx, cz));
                 self.push_change(cell_key(cx, cz), false);
-                flags |= APPLIED_SLOTS;
+                flags |= APPLIED_SLOTS | self.clear_mark_if(cell_key(cx, cz));
             }
             EventMsg::SlotSync {
                 reset,
@@ -204,13 +216,25 @@ impl ClientCore {
             } => {
                 if reset {
                     self.harvested.clear();
-                    flags |= APPLIED_RESET;
+                    flags |= APPLIED_RESET | self.clear_mark_if(self.mark_cell);
                 }
                 for &(cx, cz) in cells.iter().take(count as usize) {
                     self.harvested.insert(cell_key(cx, cz));
                     self.push_change(cell_key(cx, cz), true);
+                    flags |= self.clear_mark_if(cell_key(cx, cz));
                 }
                 flags |= APPLIED_SLOTS;
+            }
+            EventMsg::WeakMark {
+                cx,
+                cz,
+                mark8,
+                weak_hit,
+            } => {
+                self.mark_cell = cell_key(cx, cz);
+                self.mark8 = mark8;
+                self.mark_weak_hit = weak_hit;
+                flags |= APPLIED_MARK;
             }
             EventMsg::Catalog {
                 total,
@@ -230,6 +254,18 @@ impl ClientCore {
             }
         }
         Ok(flags)
+    }
+
+    /// Clear the mark when `key` is its node; returns the flag that says
+    /// the mark changed (0 otherwise). `NO_CELL` never matches.
+    fn clear_mark_if(&mut self, key: u32) -> u32 {
+        if self.mark_cell != NO_CELL && self.mark_cell == key {
+            self.mark_cell = NO_CELL;
+            self.mark_weak_hit = false;
+            APPLIED_MARK
+        } else {
+            0
+        }
     }
 
     fn push_change(&mut self, key: u32, harvested: bool) {
@@ -255,14 +291,16 @@ impl ClientCore {
         Some(t)
     }
 
-    /// The live input state; sampled once per generated frame.
-    pub fn set_input(&mut self, buttons: u8, yaw: u16, pitch: u8, move_x: i8, move_z: i8) {
+    /// The live input state; sampled once per generated frame. `sel`
+    /// clamps into the hotbar (the encoder refuses 6+ outright).
+    pub fn set_input(&mut self, buttons: u8, yaw: u16, pitch: u8, move_x: i8, move_z: i8, sel: u8) {
         self.input = InputState {
             buttons,
             yaw,
             pitch,
             move_x,
             move_z,
+            sel: sel.min(HOTBAR_SLOTS as u8 - 1),
         };
     }
 
@@ -278,6 +316,7 @@ impl ClientCore {
                 pitch: self.input.pitch,
                 move_x: self.input.move_x,
                 move_z: self.input.move_z,
+                sel: self.input.sel,
             };
             self.next_seq = self.next_seq.wrapping_add(1);
             self.clock.client_tick = self.clock.client_tick.wrapping_add(1);
@@ -436,6 +475,45 @@ mod tests {
         let len = encode_event_slot_sync(false, &[(2, 2), (4, 4)], &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_SLOTS);
         assert_eq!(c.harvested.len(), 3);
+    }
+
+    #[test]
+    fn weak_mark_sets_moves_and_clears_with_its_node() {
+        use protocol::encode_event_weak_mark;
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        assert_eq!(c.mark_cell, NO_CELL);
+
+        let len = encode_event_weak_mark(10, 20, 0x40, false, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_MARK);
+        assert_eq!(
+            (c.mark_cell, c.mark8, c.mark_weak_hit),
+            (cell_key(10, 20), 0x40, false)
+        );
+
+        // The mark moves with the next landed hit (weak this time).
+        let len = encode_event_weak_mark(10, 20, 0x9C, true, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!((c.mark8, c.mark_weak_hit), (0x9C, true));
+
+        // Another node's harvest leaves it; its own clears it.
+        let len = encode_event_slot_change(true, 11, 21, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_SLOTS);
+        assert_eq!(c.mark_cell, cell_key(10, 20));
+        let len = encode_event_slot_change(true, 10, 20, &mut buf).unwrap();
+        assert_eq!(
+            c.on_stream(&buf[..len]).unwrap(),
+            APPLIED_SLOTS | APPLIED_MARK
+        );
+        assert_eq!(c.mark_cell, NO_CELL);
+
+        // A sync reset clears whatever mark survived.
+        let len = encode_event_weak_mark(3, 4, 0x11, false, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let len = encode_event_slot_sync(true, &[], &mut buf).unwrap();
+        let flags = c.on_stream(&buf[..len]).unwrap();
+        assert_ne!(flags & APPLIED_MARK, 0);
+        assert_eq!(c.mark_cell, NO_CELL);
     }
 
     #[test]
