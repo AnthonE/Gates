@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sim-core",
+    "crates/protocol",
+    "crates/server",
+    "crates/client-wasm",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Release profile keeps debug assertions off but stays deterministic: no
+# fast-math anywhere, ever. opt-level 3 + thin LTO for the wasm artifact size.
+[profile.release]
+lto = "thin"
+codegen-units = 1

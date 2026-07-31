@@ -1,0 +1,15 @@
+[package]
+name = "sim-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# rlib for the server and client-wasm bridge; cdylib so the parity gate can
+# build this crate directly to wasm32-unknown-unknown and drive the probe
+# exports from node with no bindgen in between.
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
