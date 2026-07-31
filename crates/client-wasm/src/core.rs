@@ -13,9 +13,13 @@ use crate::view::{Applied, ClientView};
 use protocol::{decode_event, encode_input, EventMsg, InputDatagram, ItemCatalog, WireError};
 use sim_core::build::{BuildContent, PieceRec};
 use sim_core::craft::CraftContent;
+use sim_core::deploy::{DeployContent, DeployRec};
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
-use sim_core::limits::{CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_PIECES, MAX_SLOT_LIVES};
+use sim_core::limits::{
+    CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_DEPLOYS, MAX_PIECES,
+    MAX_SLOT_LIVES,
+};
 
 /// Gather toasts buffered for the HUD (drop-oldest — a toast is cosmetic).
 pub const TOAST_RING: usize = 8;
@@ -47,6 +51,20 @@ pub const APPLIED_PIECE_RESET: u32 = 1 << 11;
 pub const APPLIED_BUILD_REFUSED: u32 = 1 << 12;
 /// Piece-def rows arrived (the build menu's data grew).
 pub const APPLIED_PIECE_DEFS: u32 = 1 << 13;
+/// Placed deployables arrived (`deploy_changes()` has the records).
+pub const APPLIED_DEPLOYS: u32 = 1 << 14;
+/// The deployable set reset first (join sync / resync) — clear meshes.
+pub const APPLIED_DEPLOY_RESET: u32 = 1 << 15;
+/// A deploy or feed request bounced (a refusal reason is buffered).
+pub const APPLIED_DEPLOY_REFUSED: u32 = 1 << 16;
+/// Deploy-def rows arrived (the deploy menu's data grew).
+pub const APPLIED_DEPLOY_DEFS: u32 = 1 << 17;
+/// A hearth stock ack arrived (`stock`/`stock_count` hold the rows).
+pub const APPLIED_STOCK: u32 = 1 << 18;
+/// Decay removed a piece (`removed_addr()` names the address).
+pub const APPLIED_PIECE_REMOVED: u32 = 1 << 19;
+/// Decay removed a deployable (`removed_addr()` names the address).
+pub const APPLIED_DEPLOY_REMOVED: u32 = 1 << 20;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -153,6 +171,83 @@ impl PieceSet {
     fn clear(&mut self) {
         self.len = 0;
     }
+
+    fn remove(&mut self, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+        if let Some(i) = self.recs[..self.len]
+            .iter()
+            .position(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
+        {
+            self.len -= 1;
+            self.recs[i] = self.recs[self.len];
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The client's mirror of the placed-deployable set — the same bounded,
+/// address-keyed posture as `PieceSet` (`MAX_DEPLOYS`).
+pub struct DeploySet {
+    recs: Box<[DeployRec]>,
+    len: usize,
+}
+
+impl DeploySet {
+    fn new() -> Self {
+        Self {
+            recs: vec![DeployRec::default(); MAX_DEPLOYS].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn entries(&self) -> &[DeployRec] {
+        &self.recs[..self.len]
+    }
+
+    /// True if the set changed (same contract as `PieceSet::insert`).
+    fn insert(&mut self, rec: DeployRec) -> bool {
+        for r in self.recs[..self.len].iter_mut() {
+            if r.cx == rec.cx && r.cz == rec.cz && r.level == rec.level && r.loc == rec.loc {
+                if *r == rec {
+                    return false;
+                }
+                *r = rec;
+                return true;
+            }
+        }
+        if self.len == self.recs.len() {
+            return false;
+        }
+        self.recs[self.len] = rec;
+        self.len += 1;
+        true
+    }
+
+    fn remove(&mut self, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+        if let Some(i) = self.recs[..self.len]
+            .iter()
+            .position(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
+        {
+            self.len -= 1;
+            self.recs[i] = self.recs[self.len];
+            true
+        } else {
+            false
+        }
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
 }
 
 /// What `on_datagram` did with the bytes (the bridge's status code).
@@ -237,6 +332,25 @@ pub struct ClientCore {
     build_refusals: [u8; REFUSAL_RING],
     build_refusal_head: usize,
     build_refusal_len: usize,
+    /// The placed-deployable mirror (address-keyed; the renderer's truth).
+    pub deploys: DeploySet,
+    /// Deployable records the last `on_stream` call added or replaced.
+    deploy_changes: [DeployRec; protocol::DEPLOY_SYNC_BATCH],
+    n_deploy_changes: usize,
+    /// The deploy-def table as dripped so far (same rows the sim runs).
+    pub deploy_defs: DeployContent,
+    /// Rows received so far (batches arrive in order).
+    pub deploy_defs_have: u16,
+    deploy_refusals: [u8; REFUSAL_RING],
+    deploy_refusal_head: usize,
+    deploy_refusal_len: usize,
+    /// The last removal's grid address (valid while the flags say a
+    /// removal was applied this message).
+    pub removed_addr: (u16, u16, u8, u8),
+    /// The last stock ack: hearth address, rows, live row count.
+    pub stock_addr: (u16, u16, u8),
+    pub stock: [(u16, u32); HEARTH_STOCK_ROWS],
+    pub stock_count: u8,
     pub events_applied: u64,
     pub event_errors: u64,
 }
@@ -287,6 +401,18 @@ impl ClientCore {
             build_refusals: [0; REFUSAL_RING],
             build_refusal_head: 0,
             build_refusal_len: 0,
+            deploys: DeploySet::new(),
+            deploy_changes: [DeployRec::default(); protocol::DEPLOY_SYNC_BATCH],
+            n_deploy_changes: 0,
+            deploy_defs: DeployContent::EMPTY,
+            deploy_defs_have: 0,
+            deploy_refusals: [0; REFUSAL_RING],
+            deploy_refusal_head: 0,
+            deploy_refusal_len: 0,
+            removed_addr: (0, 0, 0, 0),
+            stock_addr: (0, 0, 0),
+            stock: [(0, 0); HEARTH_STOCK_ROWS],
+            stock_count: 0,
             events_applied: 0,
             event_errors: 0,
         }
@@ -298,6 +424,7 @@ impl ClientCore {
     pub fn on_stream(&mut self, bytes: &[u8]) -> Result<u32, WireError> {
         self.n_slot_changes = 0;
         self.n_piece_changes = 0;
+        self.n_deploy_changes = 0;
         let msg = match decode_event(bytes) {
             Ok(m) => m,
             Err(e) => {
@@ -462,6 +589,71 @@ impl ClientCore {
                 self.piece_defs_have = self.piece_defs_have.max(first as u16 + count as u16);
                 flags |= APPLIED_PIECE_DEFS;
             }
+            EventMsg::DeployPlaced { rec } => {
+                if self.deploys.insert(rec) {
+                    self.push_deploy_change(rec);
+                    flags |= APPLIED_DEPLOYS;
+                }
+            }
+            EventMsg::DeploySync { reset, recs, count } => {
+                if reset {
+                    self.deploys.clear();
+                    flags |= APPLIED_DEPLOY_RESET;
+                }
+                for &rec in recs.iter().take(count as usize) {
+                    if self.deploys.insert(rec) {
+                        self.push_deploy_change(rec);
+                        flags |= APPLIED_DEPLOYS;
+                    }
+                }
+            }
+            EventMsg::DeployRefused { reason } => {
+                if self.deploy_refusal_len == REFUSAL_RING {
+                    self.deploy_refusal_head = (self.deploy_refusal_head + 1) % REFUSAL_RING;
+                    self.deploy_refusal_len -= 1;
+                }
+                self.deploy_refusals
+                    [(self.deploy_refusal_head + self.deploy_refusal_len) % REFUSAL_RING] = reason;
+                self.deploy_refusal_len += 1;
+                flags |= APPLIED_DEPLOY_REFUSED;
+            }
+            EventMsg::DeployDefs {
+                total,
+                first,
+                count,
+                rows,
+            } => {
+                self.deploy_defs.def_count = total as u16;
+                for (i, row) in rows.iter().enumerate().take(count as usize) {
+                    self.deploy_defs.defs[first as usize + i] = *row;
+                }
+                self.deploy_defs_have = self.deploy_defs_have.max(first as u16 + count as u16);
+                flags |= APPLIED_DEPLOY_DEFS;
+            }
+            EventMsg::PieceRemoved { cx, cz, level, loc } => {
+                if self.pieces.remove(cx, cz, level, loc) {
+                    self.removed_addr = (cx, cz, level, loc);
+                    flags |= APPLIED_PIECE_REMOVED;
+                }
+            }
+            EventMsg::DeployRemoved { cx, cz, level, loc } => {
+                if self.deploys.remove(cx, cz, level, loc) {
+                    self.removed_addr = (cx, cz, level, loc);
+                    flags |= APPLIED_DEPLOY_REMOVED;
+                }
+            }
+            EventMsg::Stock {
+                cx,
+                cz,
+                level,
+                rows,
+                count,
+            } => {
+                self.stock_addr = (cx, cz, level);
+                self.stock = rows;
+                self.stock_count = count;
+                flags |= APPLIED_STOCK;
+            }
         }
         Ok(flags)
     }
@@ -500,6 +692,30 @@ impl ClientCore {
     /// Piece records the last applied message added (renderer detail).
     pub fn piece_changes(&self) -> &[PieceRec] {
         &self.piece_changes[..self.n_piece_changes]
+    }
+
+    fn push_deploy_change(&mut self, rec: DeployRec) {
+        if self.n_deploy_changes < self.deploy_changes.len() {
+            self.deploy_changes[self.n_deploy_changes] = rec;
+            self.n_deploy_changes += 1;
+        }
+    }
+
+    /// Deployable records the last applied message added (renderer detail).
+    pub fn deploy_changes(&self) -> &[DeployRec] {
+        &self.deploy_changes[..self.n_deploy_changes]
+    }
+
+    /// Oldest buffered deploy refusal reason
+    /// (`sim_core::deploy::REFUSE_D_*`).
+    pub fn pop_deploy_refusal(&mut self) -> Option<u8> {
+        if self.deploy_refusal_len == 0 {
+            return None;
+        }
+        let r = self.deploy_refusals[self.deploy_refusal_head];
+        self.deploy_refusal_head = (self.deploy_refusal_head + 1) % REFUSAL_RING;
+        self.deploy_refusal_len -= 1;
+        Some(r)
     }
 
     /// Oldest buffered build refusal reason (`sim_core::build::REFUSE_B_*`).

@@ -12,9 +12,12 @@
 //! per request · inputs consumed up front for the whole batch · cancel
 //! refunds the remaining units' inputs · output (and refund) an inventory
 //! can't hold is lost, the same documented policy as gather until ground
-//! drops land · station-gated recipes refuse until placed stations exist
-//! (the build slice).
+//! drops land · station-gated recipes need a placed station deployable
+//! (workbench/furnace archetype, deploy.rs) within `STATION_RADIUS_M` of
+//! the crafter at enqueue — enqueue-time only, the reference behavior:
+//! walking away never cancels a queue.
 
+use crate::deploy::{DeployContent, Deploys, ARCH_FURNACE, ARCH_WORKBENCH};
 use crate::gather::{inv_add, GatherContent, ItemStack};
 use crate::limits::{
     CRAFT_COUNT_MAX, CRAFT_QUEUE, INV_SLOTS, MAX_ITEM_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
@@ -25,6 +28,11 @@ use crate::world::{EventQueue, Player, EV_CRAFT_DONE, EV_CRAFT_REFUSED};
 pub const STATION_NONE: u8 = 0;
 pub const STATION_WORKBENCH1: u8 = 1;
 pub const STATION_FURNACE: u8 = 2;
+
+/// How close (planar, meters) a placed station must stand at enqueue —
+/// the reference's workbench-proximity read. Proposed default,
+/// DECISIONS.md §open ("deployables v0").
+pub const STATION_RADIUS_M: f32 = 5.0;
 
 /// Integer refusal reasons (CLAUDE.md wall 3: integer event codes only),
 /// carried by EV_CRAFT_REFUSED / the craft-refused wire subtype.
@@ -44,8 +52,8 @@ pub struct RecipeDef {
     /// Ticks one unit takes (content seconds × TICK_HZ; bake keeps this
     /// exact and ≥ 1, so a craft never completes in its enqueue tick).
     pub ticks: u32,
-    /// `STATION_*` code. Anything but `STATION_NONE` refuses at enqueue
-    /// until placed stations exist (the build slice).
+    /// `STATION_*` code. Anything but `STATION_NONE` needs a placed
+    /// station deployable near the crafter at enqueue.
     pub station: u8,
     /// Live rows in `inputs`.
     pub n_inputs: u8,
@@ -167,8 +175,12 @@ fn shift_left(jobs: &mut [CraftJob; CRAFT_QUEUE], from: usize) {
 /// Apply one craft request (`Command::Craft`). Refusals are events, not
 /// errors — the client hears why. Inputs for the whole batch are consumed
 /// here; the head job's first unit starts its timer immediately.
+/// `dc`/`deploys` carry the placed stations for the proximity gate.
+#[allow(clippy::too_many_arguments)]
 pub fn enqueue(
     cc: &CraftContent,
+    dc: &DeployContent,
+    deploys: &Deploys,
     tick: u64,
     p: &mut Player,
     recipe: u16,
@@ -189,10 +201,17 @@ pub fn enqueue(
         return;
     }
     if def.station != STATION_NONE {
-        // No placed stations exist yet; the build slice turns this into a
-        // proximity check instead of a flat refusal.
-        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_STATION, 0);
-        return;
+        let arch = if def.station == STATION_FURNACE {
+            ARCH_FURNACE
+        } else {
+            ARCH_WORKBENCH
+        };
+        let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+        let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+        if !deploys.arch_near(dc, arch, px, pz, STATION_RADIUS_M) {
+            events.push(EV_CRAFT_REFUSED, p.id, REFUSE_STATION, 0);
+            return;
+        }
     }
     let Some(slot) = p.jobs.iter().position(|j| j.remaining == 0) else {
         events.push(EV_CRAFT_REFUSED, p.id, REFUSE_QUEUE_FULL, 0);
@@ -347,9 +366,10 @@ mod tests {
     #[test]
     fn enqueue_consumes_starts_and_step_pays() {
         let (cc, gc) = fixture();
+        let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
         let mut p = player(&[(0, 10)]);
         let mut ev = EventQueue::default();
-        enqueue(&cc, 100, &mut p, 0, 2, &mut ev);
+        enqueue(&cc, &dc, &nod, 100, &mut p, 0, 2, &mut ev);
         assert!(ev.is_empty(), "no refusal");
         assert_eq!(
             p.jobs[0],
@@ -380,6 +400,7 @@ mod tests {
     #[test]
     fn refusals_name_their_reason_and_change_nothing() {
         let (cc, _gc) = fixture();
+        let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
         let mut p = player(&[(0, 100), (1, 100), (2, 100)]);
         let mut ev = EventQueue::default();
         let cases: [(u16, u16, u32); 4] = [
@@ -389,13 +410,13 @@ mod tests {
             (2, 1, REFUSE_STATION),
         ];
         for (recipe, count, reason) in cases {
-            enqueue(&cc, 10, &mut p, recipe, count, &mut ev);
+            enqueue(&cc, &dc, &nod, 10, &mut p, recipe, count, &mut ev);
             let e = ev.entries()[ev.len() - 1];
             assert_eq!((e.code, e.a, e.b), (EV_CRAFT_REFUSED, 7, reason));
         }
         // Missing inputs: recipe 1 wants 2×item1 + 1×item2 per unit.
         let mut poor = player(&[(1, 1)]);
-        enqueue(&cc, 10, &mut poor, 1, 1, &mut ev);
+        enqueue(&cc, &dc, &nod, 10, &mut poor, 1, 1, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!(e.b, REFUSE_INPUTS);
         assert_eq!(inv_count(&poor.inv, 1), 1, "nothing consumed on refusal");
@@ -403,21 +424,22 @@ mod tests {
         // Queue full: fill all four, the fifth bounces.
         let mut busy = player(&[(0, 90)]);
         for _ in 0..CRAFT_QUEUE {
-            enqueue(&cc, 10, &mut busy, 0, 1, &mut ev);
+            enqueue(&cc, &dc, &nod, 10, &mut busy, 0, 1, &mut ev);
         }
         assert!(busy.jobs.iter().all(|j| j.remaining == 1));
         let before = ev.len();
-        enqueue(&cc, 10, &mut busy, 0, 1, &mut ev);
+        enqueue(&cc, &dc, &nod, 10, &mut busy, 0, 1, &mut ev);
         assert_eq!(ev.entries()[before].b, REFUSE_QUEUE_FULL);
     }
 
     #[test]
     fn cancel_refunds_remaining_and_rearms_the_head() {
         let (cc, gc) = fixture();
+        let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
         let mut p = player(&[(0, 30), (1, 20), (2, 20)]);
         let mut ev = EventQueue::default();
-        enqueue(&cc, 50, &mut p, 0, 3, &mut ev); // 9 × item0
-        enqueue(&cc, 50, &mut p, 1, 2, &mut ev); // 4 × item1, 2 × item2
+        enqueue(&cc, &dc, &nod, 50, &mut p, 0, 3, &mut ev); // 9 × item0
+        enqueue(&cc, &dc, &nod, 50, &mut p, 1, 2, &mut ev); // 4 × item1, 2 × item2
         assert_eq!(inv_count(&p.inv, 0), 21);
         assert_eq!(p.craft_done_at, 52);
 
@@ -452,8 +474,61 @@ mod tests {
     }
 
     #[test]
+    fn placed_station_arms_the_gated_recipe() {
+        use crate::build::{BuildContent, Pieces, LOC_PLANE};
+        use crate::movement::Body;
+
+        let (cc, _gc) = fixture();
+        let dc = crate::deploy::DeployContent::probe_fixture();
+        let mut nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        // The browser-smoke cell (world::tests guards it walkable), so
+        // the any-class workbench can stand on bare terrain.
+        const SEED: u64 = 20260731;
+        let mut p = player(&[(0, 10), (3, 1)]);
+        p.body = Body::at(SEED, 1024.0, 1024.0);
+        crate::deploy::place_deploy(
+            SEED,
+            &dc,
+            &BuildContent::probe_fixture(),
+            &Pieces::new(),
+            &mut nod,
+            &mut p,
+            0,
+            1, // fixture row 1: the workbench
+            341,
+            341,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(
+            ev.entries()[ev.len() - 1].code,
+            crate::world::EV_DEPLOY_PLACED
+        );
+
+        // Beside the bench, the workbench recipe enqueues.
+        enqueue(&cc, &dc, &nod, 10, &mut p, 2, 1, &mut ev);
+        assert_eq!(
+            p.jobs[0],
+            CraftJob {
+                recipe: 2,
+                remaining: 1
+            }
+        );
+
+        // Out of the station radius, it refuses again.
+        let mut far = player(&[(0, 10)]);
+        far.body = Body::at(SEED, 1024.0 + STATION_RADIUS_M + 2.0, 1024.0);
+        enqueue(&cc, &dc, &nod, 10, &mut far, 2, 1, &mut ev);
+        let e = ev.entries()[ev.len() - 1];
+        assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_STATION));
+    }
+
+    #[test]
     fn overflowing_output_is_lost_not_wedged() {
         let (cc, gc) = fixture();
+        let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
         // 7 of item 0: the batch consumes 6, so slot 0 keeps one unit and
         // stays occupied — no slot frees up for the output.
         let mut p = player(&[(0, 7)]);
@@ -465,7 +540,7 @@ mod tests {
             };
         }
         let mut ev = EventQueue::default();
-        enqueue(&cc, 10, &mut p, 0, 2, &mut ev);
+        enqueue(&cc, &dc, &nod, 10, &mut p, 0, 2, &mut ev);
         step(&cc, &gc, 12, &mut p, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!(e.code, EV_CRAFT_DONE);

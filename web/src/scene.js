@@ -18,6 +18,18 @@ const LIFT = 0.3; // foundation top sits this far above the terrain sample
 const SLAB = 0.3; // plane-piece thickness
 const WALL_T = 0.24; // edge-piece thickness
 const TIER_COLORS = [0x8a6a45, 0x84837c, 0x5f6a72]; // wood · stone · metal
+// Deployable stand-ins by archetype code (sim deploy.rs order: bag,
+// hearth, box, fire, furnace, workbench, door): [w, h, d, color].
+// Cosmetics (DECISIONS.md §open, client cosmetics row).
+const DEPLOY_STYLE = [
+  [1.2, 0.25, 0.7, 0x7a9c4e], // bag
+  [0.9, 0.9, 0.9, 0x8c3b2e], // hearth
+  [1.0, 0.7, 1.0, 0x7a5c3a], // box
+  [0.7, 0.4, 0.7, 0xd07030], // fire
+  [1.1, 1.5, 1.1, 0x4f4a45], // furnace
+  [1.6, 0.9, 0.9, 0xa1793f], // workbench
+  [0.12, 2.1, 0.9, 0x6b4a2b], // door (thickness, height, width)
+];
 
 export class GameScene {
   constructor(canvas) {
@@ -75,6 +87,8 @@ export class GameScene {
     // one material per tier; meshes are added on placement events (never
     // the RAF path) and swept only by a piece-set reset.
     this.pieces = new Map(); // "cx,cz,level,loc" -> Object3D
+    this.deploys = new Map(); // "cx,cz,level,loc" -> Object3D
+    this._deployMats = new Map(); // arch -> material (shared per kind)
     this._planeGeo = new THREE.BoxGeometry(CELL - 0.04, SLAB, CELL - 0.04);
     this._wallGeo = new THREE.BoxGeometry(WALL_T, LEVEL_H, CELL - 0.04);
     this._postGeo = new THREE.BoxGeometry(WALL_T, LEVEL_H, 0.9);
@@ -176,6 +190,60 @@ export class GameScene {
   clearPieces() {
     for (const obj of this.pieces.values()) this.scene.remove(obj);
     this.pieces.clear();
+  }
+
+  removePiece(cx, cz, level, loc) {
+    const key = `${cx},${cz},${level},${loc}`;
+    const obj = this.pieces.get(key);
+    if (obj) {
+      this.scene.remove(obj);
+      this.pieces.delete(key);
+    }
+  }
+
+  /**
+   * Upsert one deployable: a colored box per archetype, standing on the
+   * level plane (body deploys) or filling a doorway edge (doors).
+   */
+  setDeploy(cx, cz, level, loc, arch, groundY) {
+    const key = `${cx},${cz},${level},${loc}`;
+    const old = this.deploys.get(key);
+    if (old) this.scene.remove(old);
+    const [w, h, d, color] = DEPLOY_STYLE[arch] || DEPLOY_STYLE[2];
+    let mat = this._deployMats.get(arch);
+    if (!mat) {
+      mat = new THREE.MeshLambertMaterial({ color });
+      this._deployMats.set(arch, mat);
+    }
+    const obj = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    const baseY = groundY + LIFT + level * LEVEL_H;
+    if (loc === 2 || loc === 3) {
+      // A door in a doorway edge, oriented like the wall there.
+      if (loc === 2) {
+        obj.position.set(cx * CELL, baseY + h / 2, cz * CELL + CELL / 2);
+      } else {
+        obj.rotation.y = Math.PI / 2;
+        obj.position.set(cx * CELL + CELL / 2, baseY + h / 2, cz * CELL);
+      }
+    } else {
+      obj.position.set(cx * CELL + CELL / 2, baseY + h / 2, cz * CELL + CELL / 2);
+    }
+    this.scene.add(obj);
+    this.deploys.set(key, obj);
+  }
+
+  removeDeploy(cx, cz, level, loc) {
+    const key = `${cx},${cz},${level},${loc}`;
+    const obj = this.deploys.get(key);
+    if (obj) {
+      this.scene.remove(obj);
+      this.deploys.delete(key);
+    }
+  }
+
+  clearDeploys() {
+    for (const obj of this.deploys.values()) this.scene.remove(obj);
+    this.deploys.clear();
   }
 
   /** Park the placement ghost over the aimed address. */

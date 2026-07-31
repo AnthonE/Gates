@@ -54,6 +54,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
         world.gather = crate::gather::GatherContent::probe_fixture();
         world.craft = crate::craft::CraftContent::probe_fixture();
         world.build = crate::build::BuildContent::probe_fixture();
+        world.deploy = crate::deploy::DeployContent::probe_fixture();
         world.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
         let mut rng = Pcg32::new(seq_seed, 7);
         let mut yaws = [0u16; 2];
@@ -92,6 +93,60 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 level: ((t / 32) % 2) as u8,
                 loc: ((t / 16) % 4) as u8,
             };
+            // Bot 2 pokes the deploy verb at its own feet: row 4 is out
+            // of range and loc/level cycle, so placements AND every
+            // deploy refusal reason ride the surface; feed mostly hits
+            // the no-hearth refusal, and the successes cover stock. The
+            // gated craft (recipe 2) arms once bot 2's workbench stands.
+            let own2 = {
+                let b = &world.players[1].body;
+                let cx = crate::build::build_cell_of(b.qx as f32 * crate::movement::POS_XZ_Q);
+                let cz = crate::build::build_cell_of(b.qz as f32 * crate::movement::POS_XZ_Q);
+                (cx.clamp(0, 1023) as u16, cz.clamp(0, 1023) as u16)
+            };
+            let place_deploy = Command::PlaceDeploy {
+                id: 2,
+                row: ((t / 16) % 5) as u16,
+                cx: own2.0,
+                cz: own2.1,
+                level: ((t / 64) % 2) as u8,
+                loc: ((t / 16) % 4) as u8,
+            };
+            if t == ticks / 2 {
+                // Leap the clock 30 upkeep periods so charge, decay, and
+                // removal run inside the parity/replay/alloc surface
+                // without simulating thirty real hours (deploy.rs; every
+                // timer is tick-driven, so the leap is deterministic).
+                world.tick += 30 * crate::deploy::UPKEEP_PERIOD_TICKS;
+            }
+            // 35 ≡ 3 (mod 16): the feed branch must test first or the
+            // deploy branch would shadow it.
+            if t % 64 == 35 {
+                world.tick(&[
+                    Command::Input { id: 1, frame: f1 },
+                    Command::Input { id: 2, frame: f2 },
+                    Command::Feed {
+                        id: 2,
+                        cx: own2.0,
+                        cz: own2.1,
+                        level: 0,
+                    },
+                    Command::Craft {
+                        id: 2,
+                        recipe: 2,
+                        count: 1,
+                    },
+                ]);
+                continue;
+            }
+            if t % 16 == 3 {
+                world.tick(&[
+                    Command::Input { id: 1, frame: f1 },
+                    Command::Input { id: 2, frame: f2 },
+                    place_deploy,
+                ]);
+                continue;
+            }
             if t % 16 == 7 {
                 world.tick(&[
                     Command::Input { id: 1, frame: f1 },

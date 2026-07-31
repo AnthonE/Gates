@@ -7,12 +7,14 @@
 #![allow(clippy::disallowed_macros)]
 
 use protocol::{
-    encode_action_cancel, encode_action_craft, encode_action_place, encode_event_build_refused,
-    encode_event_catalog, encode_event_craft_done, encode_event_craft_q,
-    encode_event_craft_refused, encode_event_gather, encode_event_inv, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_sync, encode_event_recipes,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark, encode_hello,
-    encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
+    encode_action_cancel, encode_action_craft, encode_action_deploy, encode_action_feed,
+    encode_action_place, encode_event_build_refused, encode_event_catalog, encode_event_craft_done,
+    encode_event_craft_q, encode_event_craft_refused, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_gather, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_weak_mark, encode_hello, encode_input,
+    encode_refuse, encode_snapshot, encode_welcome, goldens,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -121,4 +123,37 @@ fn main() {
     let (len, took) = encode_event_piece_defs(&goldens::event_piece_defs(), 0, &mut buf).unwrap();
     assert_eq!(took, protocol::PIECE_DEFS_BATCH);
     write_fixture(goldens::FIXTURES[25], &buf[..len]);
+
+    let (row, cx, cz, level, loc) = goldens::action_deploy();
+    let len = encode_action_deploy(row, cx, cz, level, loc, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[26], &buf[..len]);
+
+    let (cx, cz, level) = goldens::action_feed();
+    let len = encode_action_feed(cx, cz, level, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[27], &buf[..len]);
+
+    let len = encode_event_deploy_placed(&goldens::event_deploy_placed(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[28], &buf[..len]);
+
+    let (reset, recs) = goldens::event_deploy_sync();
+    let len = encode_event_deploy_sync(reset, &recs, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[29], &buf[..len]);
+
+    let len = encode_event_deploy_refused(goldens::event_deploy_refused(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[30], &buf[..len]);
+
+    let dc = goldens::event_deploy_defs();
+    let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+    assert_eq!(took, dc.def_count as usize);
+    write_fixture(goldens::FIXTURES[31], &buf[..len]);
+
+    let (cx, cz, level, loc) = goldens::event_removed();
+    let len = encode_event_removed(true, cx, cz, level, loc, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[32], &buf[..len]);
+    let len = encode_event_removed(false, cx, cz, level, loc, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[33], &buf[..len]);
+
+    let (cx, cz, level, rows) = goldens::event_stock();
+    let len = encode_event_stock(cx, cz, level, &rows, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[34], &buf[..len]);
 }

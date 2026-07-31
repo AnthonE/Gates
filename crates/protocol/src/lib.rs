@@ -32,11 +32,13 @@ pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use event::{
     decode_event, encode_event_build_refused, encode_event_catalog, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_gather, encode_event_inv,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
-    encode_event_recipes, encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark,
-    EventMsg, InvSlot, ItemCatalog, CATALOG_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
-    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_craft_q, encode_event_craft_refused, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_gather, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_weak_mark, EventMsg, InvSlot,
+    ItemCatalog, CATALOG_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
+    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -48,10 +50,14 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// v3 added the C→S action lane (`KIND_ACTION`: craft request / cancel on
 /// the bidi stream) and the craft event subtypes (queue, done, refused,
 /// recipe catalog). v4 added the build lane: the place action and the
-/// piece event subtypes (placed, join sync, refused, piece-def catalog) —
-/// a v3 peer would refuse them all as malformed, so the hello gate
-/// refuses the pair; fixtures are keyed `v4_*`.
-pub const PROTO_VER: u16 = 4;
+/// piece event subtypes (placed, join sync, refused, piece-def catalog).
+/// v5 added the deployable lane — deploy-place and feed actions (the
+/// action subtype field widened 2 → 3 bits), the deploy event subtypes
+/// (placed, join sync, refused, def catalog, stock ack) and the
+/// piece/deploy removal broadcasts (the event subtype field widened
+/// 4 → 5 bits) — every pre-v5 frame parses differently, so the hello
+/// gate refuses the pair; fixtures are keyed `v5_*`.
+pub const PROTO_VER: u16 = 5;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -204,10 +210,12 @@ pub fn decode_refuse(buf: &[u8]) -> Result<Refuse, WireError> {
 // Action messages (C→S, the reliable bidi lane)
 // ---------------------------------------------------------------------------
 
-const ACTION_SUB_BITS: u32 = 2;
+const ACTION_SUB_BITS: u32 = 3;
 const ACT_CRAFT: u32 = 0;
 const ACT_CANCEL: u32 = 1;
 const ACT_PLACE: u32 = 2;
+const ACT_DEPLOY: u32 = 3;
+const ACT_FEED: u32 = 4;
 /// Cancel index width mirrors the queue (`CRAFT_QUEUE` = 4 fits 3 bits);
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
@@ -219,6 +227,9 @@ pub(crate) const BUILD_CELL_BITS: u32 = 10;
 pub(crate) const BUILD_LEVEL_BITS: u32 = 3;
 pub(crate) const BUILD_LOC_BITS: u32 = 2;
 pub(crate) const PIECE_ROW_BITS: u32 = 8;
+/// Deployable rows cross in 4 bits — exactly `MAX_DEPLOY_DEFS`, so the
+/// width itself is the range check.
+pub(crate) const DEPLOY_ROW_BITS: u32 = 4;
 
 /// One decoded C→S action. The wire enforces shape (recipe inside the
 /// sim's table, a live index, a nonzero count); meaning — does the recipe
@@ -241,6 +252,18 @@ pub enum ActionMsg {
         level: u8,
         loc: u8,
     },
+    /// Place baked deployable row `row` at the grid address. Same
+    /// contract: the wire enforces shape, the sim delivers meaning as a
+    /// deploy-refused event.
+    Deploy {
+        row: u16,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
+    /// Feed the hearth at the address from the sender's inventory.
+    Feed { cx: u16, cz: u16, level: u8 },
 }
 
 pub fn encode_action_craft(recipe: u16, count: u16, buf: &mut [u8]) -> Result<usize, WireError> {
@@ -296,6 +319,49 @@ pub fn encode_action_place(
     Ok(w.finish())
 }
 
+pub fn encode_action_deploy(
+    row: u16,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if row as usize >= sim_core::limits::MAX_DEPLOY_DEFS
+        || cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || loc > sim_core::build::LOC_EDGE_N
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_DEPLOY, ACTION_SUB_BITS)?;
+    w.write(row as u32, DEPLOY_ROW_BITS)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    Ok(w.finish())
+}
+
+pub fn encode_action_feed(cx: u16, cz: u16, level: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_FEED, ACTION_SUB_BITS)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    Ok(w.finish())
+}
+
 /// Total decode of one C→S action frame — client-driven bytes, so the
 /// same never-panic contract as the input datagrams.
 pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
@@ -340,6 +406,22 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 loc,
             }
         }
+        ACT_DEPLOY => {
+            // Every field width is exact (deploy rows are 4 bits =
+            // MAX_DEPLOY_DEFS): nothing here can be forged out of range.
+            ActionMsg::Deploy {
+                row: r.read(DEPLOY_ROW_BITS)? as u16,
+                cx: r.read(BUILD_CELL_BITS)? as u16,
+                cz: r.read(BUILD_CELL_BITS)? as u16,
+                level: r.read(BUILD_LEVEL_BITS)? as u8,
+                loc: r.read(BUILD_LOC_BITS)? as u8,
+            }
+        }
+        ACT_FEED => ActionMsg::Feed {
+            cx: r.read(BUILD_CELL_BITS)? as u16,
+            cz: r.read(BUILD_CELL_BITS)? as u16,
+            level: r.read(BUILD_LEVEL_BITS)? as u8,
+        },
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;

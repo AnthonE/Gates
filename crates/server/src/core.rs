@@ -8,23 +8,27 @@ use crate::client::ClientNetState;
 use crate::stats::ShardStats;
 use protocol::{
     encode_event_build_refused, encode_event_catalog, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_gather, encode_event_inv,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
-    encode_event_recipes, encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark,
-    ActionMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader,
-    WireError, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_craft_q, encode_event_craft_refused, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_gather, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_weak_mark, ActionMsg, EntityState,
+    InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireError,
+    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
+use sim_core::deploy::DeployRec;
 use sim_core::gather::ItemStack;
 use sim_core::limits::{
-    AOI_ENTER_CM, AOI_EXIT_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, INV_SLOTS,
+    AOI_ENTER_CM, AOI_EXIT_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS,
     MAX_COMMANDS_PER_TICK, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS,
     STALENESS_CEILING, SYNC_SCAN_PER_TICK,
 };
 use sim_core::world::{
-    Command, Player, World, EV_BUILD_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_GATHER,
-    EV_PIECE_PLACED, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_WEAK_MARK,
+    Command, Player, World, EV_BUILD_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEPLOY_PLACED,
+    EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_GATHER, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_WEAK_MARK,
 };
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
@@ -206,6 +210,26 @@ impl ShardCore {
                         level,
                         loc,
                     },
+                    ActionMsg::Deploy {
+                        row,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    } => Command::PlaceDeploy {
+                        id: c.id,
+                        row,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    },
+                    ActionMsg::Feed { cx, cz, level } => Command::Feed {
+                        id: c.id,
+                        cx,
+                        cz,
+                        level,
+                    },
                 };
                 n += 1;
             }
@@ -336,6 +360,7 @@ impl ShardCore {
                         level: (ev.b >> 16) as u8,
                         loc: (ev.b >> 8) as u8,
                         row: ev.b as u8,
+                        ..PieceRec::default()
                     };
                     match encode_event_piece_placed(&rec, &mut self.ev_buf) {
                         Ok(len) => {
@@ -350,6 +375,127 @@ impl ShardCore {
                                     self.clients[slot].ev_resync();
                                     ShardStats::bump(&stats.ev_resyncs);
                                 }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_DEPLOY_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // requester left this tick
+                    };
+                    match encode_event_deploy_refused(ev.b as u8, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_DEPLOY_PLACED => {
+                    // Owner (ev.c) stays sim-side: the wire record is
+                    // address + row (event.rs).
+                    let rec = DeployRec {
+                        cx: (ev.a >> 16) as u16,
+                        cz: ev.a as u16,
+                        level: (ev.b >> 16) as u8,
+                        loc: (ev.b >> 8) as u8,
+                        row: ev.b as u8,
+                        ..DeployRec::default()
+                    };
+                    match encode_event_deploy_placed(&rec, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    // The deploy walk re-derives it.
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_PIECE_REMOVED | EV_DEPLOY_REMOVED => {
+                    let piece = ev.code == EV_PIECE_REMOVED;
+                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+                    match encode_event_removed(piece, cx, cz, level, loc, &mut self.ev_buf) {
+                        Ok(len) => {
+                            let store_len = if piece {
+                                self.world.pieces.len()
+                            } else {
+                                self.world.deploys.len()
+                            };
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                // A swap-remove reshuffles the store under
+                                // any in-progress walk (cursor inside the
+                                // shrunken store): restart that walk with
+                                // a reset batch. Finished walks (cursor
+                                // past the store) hear the broadcast.
+                                let c = &mut self.clients[slot];
+                                if piece {
+                                    if c.piece_sync_cursor > 0 && c.piece_sync_cursor <= store_len {
+                                        c.piece_sync_cursor = 0;
+                                        c.piece_sync_reset = true;
+                                    }
+                                } else if c.deploy_sync_cursor > 0
+                                    && c.deploy_sync_cursor <= store_len
+                                {
+                                    c.deploy_sync_cursor = 0;
+                                    c.deploy_sync_reset = true;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_STOCK => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // feeder left this tick
+                    };
+                    let (cx, cz) = ((ev.b >> 16) as u16, ev.b as u16);
+                    let level = ev.c as u8;
+                    let Some(hr) = self
+                        .world
+                        .deploys
+                        .hearths()
+                        .iter()
+                        .find(|h| h.cx == cx && h.cz == cz && h.level == level)
+                    else {
+                        continue; // hearth decayed in the same tick
+                    };
+                    let mut rows = [(0u16, 0u32); HEARTH_STOCK_ROWS];
+                    let n = self.world.deploy.mat_count as usize;
+                    for (m, row) in rows.iter_mut().enumerate().take(n) {
+                        *row = (self.world.deploy.mats[m], hr.stock[m]);
+                    }
+                    match encode_event_stock(cx, cz, level, &rows[..n], &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                // The next feed re-announces; cosmetic.
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
                             }
                         }
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
@@ -521,6 +667,46 @@ impl ShardCore {
                         let c = &mut self.clients[slot];
                         c.piece_sync_reset = false;
                         c.piece_sync_cursor += n;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Deploy-def rows, same drip shape (the deploy menu's data).
+        let c = &self.clients[slot];
+        let dc = &self.world.deploy;
+        if dc.def_count > 0 && c.deploy_defs_cursor < dc.def_count as usize {
+            match encode_event_deploy_defs(dc, c.deploy_defs_cursor, &mut self.ev_buf) {
+                Ok((len, took)) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].deploy_defs_cursor += took;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Placed-deployable walk (join sync / resync), drip-fed like the
+        // piece walk. A decay removal mid-walk restarts it (pump_events).
+        let c = &self.clients[slot];
+        let deploys = self.world.deploys.entries();
+        if c.deploy_sync_reset || c.deploy_sync_cursor < deploys.len() {
+            let at = c.deploy_sync_cursor.min(deploys.len());
+            let n = DEPLOY_SYNC_BATCH.min(deploys.len() - at);
+            let batch = &deploys[at..][..n];
+            match encode_event_deploy_sync(c.deploy_sync_reset, batch, &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        let c = &mut self.clients[slot];
+                        c.deploy_sync_reset = false;
+                        c.deploy_sync_cursor = at + n;
                     } else {
                         return;
                     }

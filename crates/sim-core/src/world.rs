@@ -6,6 +6,7 @@
 
 use crate::build::{self, BuildContent, Pieces};
 use crate::craft::{self, CraftContent, CraftJob};
+use crate::deploy::{self, DeployContent, Deploys};
 use crate::gather::{self, GatherContent, ItemStack, SlotLives, NO_CELL};
 use crate::input::InputFrame;
 use crate::limits::{
@@ -42,6 +43,19 @@ pub const EV_CRAFT_REFUSED: u8 = 6;
 pub const EV_PIECE_PLACED: u8 = 7;
 /// EV_BUILD_REFUSED: a = player id, b = `build::REFUSE_B_*` reason code.
 pub const EV_BUILD_REFUSED: u8 = 8;
+/// EV_DEPLOY_PLACED: a = build cell key, b = level << 16 | loc << 8 |
+/// row, c = owner player id.
+pub const EV_DEPLOY_PLACED: u8 = 9;
+/// EV_DEPLOY_REFUSED: a = player id, b = `deploy::REFUSE_D_*` reason.
+pub const EV_DEPLOY_REFUSED: u8 = 10;
+/// EV_PIECE_REMOVED: a = build cell key, b = level << 16 | loc << 8 | row
+/// (decay took it; the wire broadcasts and restarts in-progress walks).
+pub const EV_PIECE_REMOVED: u8 = 11;
+/// EV_DEPLOY_REMOVED: a = build cell key, b = level << 16 | loc << 8 | row.
+pub const EV_DEPLOY_REMOVED: u8 = 12;
+/// EV_STOCK: a = feeder player id, b = hearth cell key, c = level — the
+/// feed ack; the wire reads the hearth's stock from the world at encode.
+pub const EV_STOCK: u8 = 13;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SimEvent {
@@ -176,6 +190,24 @@ pub enum Command {
         level: u8,
         loc: u8,
     },
+    /// Place baked deployable row `row` at grid address (deploy.rs
+    /// validates and refuses by event, never by panic).
+    PlaceDeploy {
+        id: u32,
+        row: u16,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
+    /// Feed the hearth at the address from the feeder's inventory
+    /// (deploy.rs).
+    Feed {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
+    },
 }
 
 pub struct World {
@@ -192,8 +224,16 @@ pub struct World {
     pub craft: CraftContent,
     /// Baked building-piece rules (build.rs). Construction input too.
     pub build: BuildContent,
+    /// Baked deployable rules + upkeep globals (deploy.rs). Construction
+    /// input too.
+    pub deploy: DeployContent,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
+    /// Placed deployables + the hearth list — sim state, hashed.
+    pub deploys: Deploys,
+    /// Upkeep/decay sweep cursors (deploy.rs) — sim state, hashed.
+    pub sweep_piece: u32,
+    pub sweep_deploy: u32,
     /// Sparse harvested/damaged slot records (TERRAIN.md §2).
     pub slot_lives: SlotLives,
     /// This tick's outbound events; cleared at tick start.
@@ -220,7 +260,11 @@ impl World {
             gather: GatherContent::EMPTY,
             craft: CraftContent::EMPTY,
             build: BuildContent::EMPTY,
+            deploy: DeployContent::EMPTY,
             pieces: Pieces::new(),
+            deploys: Deploys::new(),
+            sweep_piece: 0,
+            sweep_deploy: 0,
             slot_lives: SlotLives::new(),
             events: EventQueue::default(),
             last_hash: 0,
@@ -291,6 +335,8 @@ impl World {
                 if let Some(slot) = self.slot_of(id) {
                     craft::enqueue(
                         &self.craft,
+                        &self.deploy,
+                        &self.deploys,
                         self.tick,
                         &mut self.players[slot],
                         recipe,
@@ -322,13 +368,54 @@ impl World {
                     build::place(
                         self.seed,
                         &self.build,
+                        &self.deploys,
                         &mut self.pieces,
                         &mut self.players[slot],
+                        self.tick,
                         row,
                         cx,
                         cz,
                         level,
                         loc,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::PlaceDeploy {
+                id,
+                row,
+                cx,
+                cz,
+                level,
+                loc,
+            } => {
+                if let Some(slot) = self.slot_of(id) {
+                    deploy::place_deploy(
+                        self.seed,
+                        &self.deploy,
+                        &self.build,
+                        &self.pieces,
+                        &mut self.deploys,
+                        &mut self.players[slot],
+                        self.tick,
+                        row,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Feed { id, cx, cz, level } => {
+                if let Some(slot) = self.slot_of(id) {
+                    deploy::feed(
+                        &self.deploy,
+                        &mut self.deploys,
+                        &mut self.players[slot],
+                        cx,
+                        cz,
+                        level,
                         &mut self.events,
                     );
                 }
@@ -363,6 +450,16 @@ impl World {
             }
         }
         self.slot_lives.respawn_due(tick, &mut self.events);
+        deploy::upkeep_sweep(
+            &self.deploy,
+            &self.build,
+            &mut self.pieces,
+            &mut self.deploys,
+            tick,
+            &mut self.sweep_piece,
+            &mut self.sweep_deploy,
+            &mut self.events,
+        );
         self.tick += 1;
         if self.tick.is_multiple_of(STATE_HASH_INTERVAL) {
             self.last_hash = self.state_hash();
@@ -425,14 +522,43 @@ impl World {
         }
         h.update(&(self.pieces.len() as u64).to_le_bytes());
         for r in self.pieces.entries() {
-            let mut buf = [0u8; 8];
+            let mut buf = [0u8; 12];
             buf[0..2].copy_from_slice(&r.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&r.cz.to_le_bytes());
             buf[4] = r.level;
             buf[5] = r.loc;
             buf[6] = r.row;
+            buf[7..9].copy_from_slice(&r.hp.to_le_bytes());
+            buf[9..11].copy_from_slice(&r.uh.to_le_bytes());
             h.update(&buf);
         }
+        h.update(&(self.deploys.len() as u64).to_le_bytes());
+        for d in self.deploys.entries() {
+            let mut buf = [0u8; 16];
+            buf[0..2].copy_from_slice(&d.cx.to_le_bytes());
+            buf[2..4].copy_from_slice(&d.cz.to_le_bytes());
+            buf[4] = d.level;
+            buf[5] = d.loc;
+            buf[6] = d.row;
+            buf[7..9].copy_from_slice(&d.hp.to_le_bytes());
+            buf[9..11].copy_from_slice(&d.uh.to_le_bytes());
+            buf[11..15].copy_from_slice(&d.owner.to_le_bytes());
+            h.update(&buf);
+        }
+        h.update(&(self.deploys.hearths().len() as u64).to_le_bytes());
+        for hr in self.deploys.hearths() {
+            let mut buf = [0u8; 12];
+            buf[0..2].copy_from_slice(&hr.cx.to_le_bytes());
+            buf[2..4].copy_from_slice(&hr.cz.to_le_bytes());
+            buf[4] = hr.level;
+            buf[5..9].copy_from_slice(&hr.owner.to_le_bytes());
+            h.update(&buf);
+            for s in hr.stock.iter() {
+                h.update(&s.to_le_bytes());
+            }
+        }
+        h.update(&self.sweep_piece.to_le_bytes());
+        h.update(&self.sweep_deploy.to_le_bytes());
         h.digest()
     }
 }

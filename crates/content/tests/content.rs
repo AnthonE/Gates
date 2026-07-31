@@ -411,3 +411,62 @@ fn bake_building_refuses_out_of_cap_rows() {
         .expect_err("double-listed cost item baked");
     assert!(err.contains("twice"), "{err}");
 }
+
+/// The deployable bake carries the shipped rows + the upkeep globals.
+#[test]
+fn bake_deployables_carries_the_shipped_numbers() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let dc = c.bake_deployables().expect("shipped deployables must bake");
+    assert_eq!(dc.def_count as usize, c.deployables.len());
+
+    // deployables.toml item.hearth: hearth archetype, foundation
+    // placement, hp 500 — read back from the baked row.
+    let idx = c.deploy_index("item.hearth").unwrap() as usize;
+    let def = &dc.defs[idx];
+    assert_eq!(def.arch, sim_core::deploy::ARCH_HEARTH);
+    assert_eq!(def.placement, sim_core::deploy::PLACE_FOUNDATION);
+    assert_eq!(def.hp, 500);
+    assert_eq!(def.item, c.item_index("item.hearth").unwrap());
+
+    // The doors keep their doorway placement and material pairing.
+    let idx = c.deploy_index("item.door_wood").unwrap() as usize;
+    assert_eq!(dc.defs[idx].arch, sim_core::deploy::ARCH_DOOR);
+    assert_eq!(dc.defs[idx].placement, sim_core::deploy::PLACE_DOORWAY);
+
+    // Upkeep materials are exactly the distinct build-cost items,
+    // ascending, and the pct is balance.toml's global.
+    let wood = c.item_index("item.wood").unwrap();
+    let stone = c.item_index("item.stone").unwrap();
+    let frags = c.item_index("item.metal_frags").unwrap();
+    let mut want = [wood, stone, frags];
+    want.sort_unstable();
+    assert_eq!(dc.mat_count, 3);
+    assert_eq!(&dc.mats[..3], &want);
+    assert_eq!(
+        dc.upkeep_pct_per_day as u32,
+        c.balance.globals.upkeep_pct_per_day
+    );
+
+    // Index mapping is a bijection into 0..len.
+    let mut seen = vec![false; c.deployables.len()];
+    for d in &c.deployables {
+        let i = c.deploy_index(&d.id).unwrap() as usize;
+        assert!(!seen[i], "deploy index {i} assigned twice");
+        seen[i] = true;
+    }
+}
+
+/// The deployable bake refuses what the sim's capacities can't hold.
+#[test]
+fn bake_deployables_refuses_out_of_cap_rows() {
+    // hp past u16 can't cross the wire's width.
+    let mut srcs = sources();
+    let entry = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "deployables.toml")
+        .unwrap();
+    entry.1 = entry.1.replacen("hp = 500\n", "hp = 70000\n", 1);
+    let c = build(&srcs).expect("oversize hp is a bake error, not a schema error");
+    let err = c.bake_deployables().expect_err("70000-hp deployable baked");
+    assert!(err.contains("overflows u16"), "{err}");
+}

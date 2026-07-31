@@ -88,6 +88,21 @@ const BUILD_REFUSE_TEXT = [
   "out of reach",
   "missing materials",
   "world is full",
+  "claimed by a hearth",
+];
+// sim-core deploy.rs REFUSE_D_* order.
+const DEPLOY_REFUSE_TEXT = [
+  "no such deployable",
+  "spot taken",
+  "needs support",
+  "bad ground",
+  "out of reach",
+  "item not in inventory",
+  "world is full",
+  "claimed by a hearth",
+  "too close to a hearth",
+  "bag limit reached",
+  "no hearth there",
 ];
 // sim-core build.rs shape/material code order (UI labels, not content).
 const SHAPE_TEXT = ["foundation", "wall", "doorway", "floor", "stairs", "roof"];
@@ -125,12 +140,24 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     views.refresh();
     if (len > 0) actions.send(views.output, len);
   };
+  const sendDeploy = (row, cx, cz, level, loc) => {
+    const len = ex.client_action_deploy(row, cx, cz, level, loc);
+    views.refresh();
+    if (len > 0) actions.send(views.output, len);
+  };
+  const sendFeed = (cx, cz, level) => {
+    const len = ex.client_action_feed(cx, cz, level);
+    views.refresh();
+    if (len > 0) actions.send(views.output, len);
+  };
 
   // Build mode (plain-UI stand-in for the radial at alpha): B toggles,
-  // wheel cycles the piece row, R/F moves the working level, right-click
-  // places at the aimed grid address. The server validates everything.
+  // wheel cycles the piece row — and past the piece table, the deployable
+  // rows — R/F moves the working level, right-click places at the aimed
+  // grid address. The server validates everything.
   const build = { on: false, row: 0, level: 0 };
   const pieceRecs = new Map(); // address key -> rec, for defs-arrival redraws
+  const deployRecs = new Map(); // address key -> rec, same idea
   const groundAt = (cx, cz) =>
     ex.terrain_height_at(seed, cx * BUILD_CELL + 1.5, cz * BUILD_CELL + 1.5);
   const drawPiece = (rec) => {
@@ -145,15 +172,47 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       groundAt(rec.cx, rec.cz),
     );
   };
+  const drawDeploy = (rec) => {
+    scene.setDeploy(
+      rec.cx,
+      rec.cz,
+      rec.level,
+      rec.loc,
+      views.deployDefs[rec.row * 4],
+      groundAt(rec.cx, rec.cz),
+    );
+  };
+  const pieceTotal = () => (ex.client_piece_defs_state() >>> 0) >>> 16;
+  const deployTotal = () => (ex.client_deploy_defs_state() >>> 0) >>> 16;
+  // The selected build row: a piece row, or past the piece table a
+  // deployable row (doors snap to edges like walls; the rest sit in the
+  // cell body). One reused object — this runs in the RAF loop while
+  // build mode is on (CLAUDE.md trap list: no per-frame allocations).
+  const sel = { deploy: false, row: 0, shape: 0 };
+  const selRow = () => {
+    const pt = pieceTotal();
+    if (build.row < pt) {
+      sel.deploy = false;
+      sel.row = build.row;
+      sel.shape = views.pieceDefs[build.row * 8];
+    } else {
+      const dr = build.row - pt;
+      sel.deploy = true;
+      sel.row = dr;
+      sel.shape = views.deployDefs[dr * 4 + 1] === 2 ? 2 : 0;
+    }
+    return sel;
+  };
   // The aimed grid address for the selected piece: a point mid-reach
   // ahead of the feet picks the cell; wall shapes snap to the nearest
   // cell edge, canonicalized to west/north (sim-core build.rs). Fills
   // one reused object — this runs in the RAF loop while build mode is
   // on, and the RAF path allocates nothing (CLAUDE.md trap list).
-  const bTarget = { cx: 0, cz: 0, level: 0, loc: 0, shape: 0 };
+  const bTarget = { cx: 0, cz: 0, level: 0, loc: 0, shape: 0, deploy: false, row: 0 };
   const buildTarget = () => {
     const R = views.render;
-    const shape = views.pieceDefs[build.row * 8];
+    const sel = selRow();
+    const shape = sel.shape;
     const ax = R[1] + Math.sin(input.yaw) * 3.5;
     const az = R[3] + Math.cos(input.yaw) * 3.5;
     let cx = Math.max(0, Math.min(1023, Math.floor(ax / BUILD_CELL)));
@@ -172,9 +231,11 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     }
     bTarget.cx = cx;
     bTarget.cz = cz;
-    bTarget.level = shape === 0 ? 0 : build.level;
+    bTarget.level = !sel.deploy && shape === 0 ? 0 : build.level;
     bTarget.loc = loc;
     bTarget.shape = shape;
+    bTarget.deploy = sel.deploy;
+    bTarget.row = sel.row;
     return bTarget;
   };
   const buildStrip = () => {
@@ -182,21 +243,51 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       hud.setBuild("");
       return;
     }
-    const D = views.pieceDefs;
-    const total = (ex.client_piece_defs_state() >>> 0) >>> 16;
-    if (total === 0) {
+    const pt = pieceTotal();
+    if (pt === 0) {
       hud.setBuild("build: waiting for piece table…");
       return;
     }
-    const b = build.row * 8;
-    const costs = [];
-    for (let k = 0; k < D[b + 3]; k++) {
-      costs.push(`${D[b + 4 + k * 2 + 1]} ${itemName(D[b + 4 + k * 2])}`);
+    const sel = selRow();
+    let what;
+    let costs;
+    if (sel.deploy) {
+      const b = sel.row * 4;
+      what = itemName(views.deployDefs[b + 3]);
+      costs = `1 ${what}`;
+    } else {
+      const D = views.pieceDefs;
+      const b = sel.row * 8;
+      what = `${MAT_TEXT[D[b + 1]] || "?"} ${SHAPE_TEXT[D[b]] || "?"}`;
+      const parts = [];
+      for (let k = 0; k < D[b + 3]; k++) {
+        parts.push(`${D[b + 4 + k * 2 + 1]} ${itemName(D[b + 4 + k * 2])}`);
+      }
+      costs = parts.join(" + ");
     }
     hud.setBuild(
-      `build: ${MAT_TEXT[D[b + 1]] || "?"} ${SHAPE_TEXT[D[b]] || "?"} · L${build.level} · ` +
-        `${costs.join(" + ")} — wheel piece · R/F level · right-click place · B close`,
+      `build: ${what} · L${build.level} · ${costs}` +
+        ` — wheel piece · R/F level · right-click place · E feed hearth · B close`,
     );
+  };
+  // Feed the nearest hearth within reach of the feet (the authoritative
+  // reach check is the server's; this only picks the target address).
+  const tryFeed = () => {
+    const R = views.render;
+    let best = null;
+    let bestD = 5.5 * 5.5;
+    for (const rec of deployRecs.values()) {
+      if (views.deployDefs[rec.row * 4] !== 1) continue; // not a hearth
+      const dx = rec.cx * BUILD_CELL + 1.5 - R[1];
+      const dz = rec.cz * BUILD_CELL + 1.5 - R[3];
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD) {
+        bestD = d2;
+        best = rec;
+      }
+    }
+    if (best) sendFeed(best.cx, best.cz, best.level);
+    else hud.toast("no hearth in reach");
   };
 
   // Rebuild the craft panel + queue strip from the wasm views. Runs on
@@ -280,11 +371,14 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       build.level = Math.max(0, Math.min(MAX_LEVEL, build.level + d));
       buildStrip();
       e.preventDefault();
+    } else if (e.code === "KeyE") {
+      tryFeed();
+      e.preventDefault();
     }
   });
   document.addEventListener("wheel", (e) => {
     if (!build.on || closed) return;
-    const total = (ex.client_piece_defs_state() >>> 0) >>> 16;
+    const total = pieceTotal() + deployTotal();
     if (total > 0) {
       const d = e.deltaY > 0 ? 1 : total - 1;
       build.row = (build.row + d) % total;
@@ -295,7 +389,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   document.addEventListener("mousedown", (e) => {
     if (build.on && input.locked && e.button === 2 && !closed) {
       const t = buildTarget();
-      sendPlace(build.row, t.cx, t.cz, t.level, t.loc);
+      if (t.deploy) sendDeploy(t.row, t.cx, t.cz, t.level, t.loc);
+      else sendPlace(t.row, t.cx, t.cz, t.level, t.loc);
     }
   });
   const onClosed = () => {
@@ -426,6 +521,60 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
           hud.toast(`can't build: ${BUILD_REFUSE_TEXT[r] || `code ${r}`}`);
         }
       }
+      if (flags & 32768 /* DEPLOY_RESET */) {
+        scene.clearDeploys();
+        deployRecs.clear();
+      }
+      if (flags & (16384 | 32768) /* DEPLOYS|DEPLOY_RESET */) {
+        const n = ex.client_deploy_changes_len();
+        for (let i = 0; i < n; i++) {
+          const key = views.deployChanges[i * 2];
+          const info = views.deployChanges[i * 2 + 1];
+          const rec = {
+            cx: key >>> 16,
+            cz: key & 0xffff,
+            level: info >>> 16,
+            loc: (info >>> 8) & 0xff,
+            row: info & 0xff,
+          };
+          deployRecs.set(key * 4096 + (info >>> 8), rec);
+          drawDeploy(rec);
+        }
+      }
+      if (flags & 131072 /* DEPLOY_DEFS */) {
+        for (const rec of deployRecs.values()) drawDeploy(rec);
+        buildStrip();
+      }
+      if (flags & 65536 /* DEPLOY_REFUSED */) {
+        for (;;) {
+          const r = ex.client_deploy_refusal_pop() >>> 0;
+          if (r === 0xffffffff) break;
+          hud.toast(`can't place: ${DEPLOY_REFUSE_TEXT[r] || `code ${r}`}`);
+        }
+      }
+      if (flags & 262144 /* STOCK */) {
+        const n = ex.client_stock_count();
+        const parts = [];
+        for (let i = 0; i < n; i++) {
+          parts.push(`${views.stock[i * 2 + 1]} ${itemName(views.stock[i * 2])}`);
+        }
+        hud.toast(`hearth stock: ${parts.join(" · ")}`);
+      }
+      if (flags & (524288 | 1048576) /* PIECE_REMOVED | DEPLOY_REMOVED */) {
+        const key = ex.client_removed_key() >>> 0;
+        const info = ex.client_removed_info() >>> 0;
+        const cx = key >>> 16;
+        const cz = key & 0xffff;
+        const level = info >>> 8;
+        const loc = info & 0xff;
+        if (flags & 524288) {
+          scene.removePiece(cx, cz, level, loc);
+          pieceRecs.delete(key * 4096 + ((level << 8) | loc));
+        } else {
+          scene.removeDeploy(cx, cz, level, loc);
+          deployRecs.delete(key * 4096 + ((level << 8) | loc));
+        }
+      }
       if (flags & 32 /* MARK */) {
         const cell = ex.client_weak_mark_cell() >>> 0;
         const entry = cell === 0xffffffff ? null : terrain.cellEntry(cell);
@@ -551,6 +700,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       craftQ: qCount,
       pieceDefs: (ex.client_piece_defs_state() >>> 0) & 0xffff,
       pieces: scene.pieces.size,
+      deployDefs: (ex.client_deploy_defs_state() >>> 0) & 0xffff,
+      deploys: scene.deploys.size,
     };
   }, 250);
 }

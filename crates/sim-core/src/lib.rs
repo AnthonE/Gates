@@ -8,6 +8,7 @@
 pub mod bots;
 pub mod build;
 pub mod craft;
+pub mod deploy;
 pub mod fmath;
 pub mod gather;
 pub mod input;

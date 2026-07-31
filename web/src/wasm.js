@@ -29,6 +29,9 @@ export class WasmViews {
     this.recipes = null; // Uint16Array over client_recipes_ptr (14-word rows)
     this.pieceChanges = null; // Uint32Array over client_piece_changes_ptr
     this.pieceDefs = null; // Uint16Array over client_piece_defs_ptr (8-word rows)
+    this.deployChanges = null; // Uint32Array over client_deploy_changes_ptr
+    this.deployDefs = null; // Uint16Array over client_deploy_defs_ptr (4-word rows)
+    this.stock = null; // Uint32Array over client_stock_ptr (item,units pairs)
     this.inCap = ex.client_in_cap();
     this.refresh();
   }
@@ -52,6 +55,9 @@ export class WasmViews {
     const recipesPtr = ex.client_recipes_ptr();
     const pieceChangesPtr = ex.client_piece_changes_ptr();
     const pieceDefsPtr = ex.client_piece_defs_ptr();
+    const deployChangesPtr = ex.client_deploy_changes_ptr();
+    const deployDefsPtr = ex.client_deploy_defs_ptr();
+    const stockPtr = ex.client_stock_ptr();
 
     const buf = ex.memory.buffer;
     if (buf === this.buffer) return;
@@ -71,5 +77,11 @@ export class WasmViews {
     this.pieceChanges = new Uint32Array(buf, pieceChangesPtr, 32 * 2);
     // 32 piece defs × (shape, material, hp, n_costs, 2×(item,count)).
     this.pieceDefs = new Uint16Array(buf, pieceDefsPtr, 32 * 8);
+    // 24 deploy records × [cx<<16|cz, level<<16|loc<<8|row].
+    this.deployChanges = new Uint32Array(buf, deployChangesPtr, 24 * 2);
+    // 16 deploy defs × (arch, placement, hp, item).
+    this.deployDefs = new Uint16Array(buf, deployDefsPtr, 16 * 4);
+    // 4 hearth stock rows × (item, units).
+    this.stock = new Uint32Array(buf, stockPtr, 4 * 2);
   }
 }

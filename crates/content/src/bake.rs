@@ -7,16 +7,21 @@
 //! Boot path only: allocation and `String` errors are fine here; nothing
 //! in this module runs on the sim thread.
 
-use crate::schema::{Material, NodeArchetype, Shape, Station};
+use crate::schema::{DeployArchetype, Material, NodeArchetype, Placement, Shape, Station};
 use crate::Content;
 use sim_core::build::{
     BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
     SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
 };
 use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
+use sim_core::deploy::{
+    DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
+    ARCH_WORKBENCH, PLACE_ANY, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_GROUND,
+};
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
 use sim_core::limits::{
-    MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
+    HEARTH_STOCK_ROWS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS,
+    MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
 };
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
@@ -257,5 +262,95 @@ impl Content {
             bc.pieces[idx] = def;
         }
         Ok(bc)
+    }
+
+    /// Rank of `id` among all deployable ids, sorted — the wire-side
+    /// deployable row (same canonical mapping as `item_index`).
+    pub fn deploy_index(&self, id: &str) -> Option<u16> {
+        let mut rank = 0u16;
+        let mut found = false;
+        for d in &self.deployables {
+            if d.id.as_str() < id {
+                rank += 1;
+            } else if d.id == id {
+                found = true;
+            }
+        }
+        found.then_some(rank)
+    }
+
+    /// The deployable table + upkeep globals. Refuses sets the sim's
+    /// fixed capacities can't hold, including a build table whose cost
+    /// items outgrow the hearth stock rows.
+    pub fn bake_deployables(&self) -> Result<DeployContent, String> {
+        if self.deployables.len() > MAX_DEPLOY_DEFS {
+            return Err(format!(
+                "bake: {} deployables exceed the sim's {MAX_DEPLOY_DEFS}-row table",
+                self.deployables.len()
+            ));
+        }
+        let mut dc = DeployContent::EMPTY;
+        dc.def_count = self.deployables.len() as u16;
+        for d in &self.deployables {
+            let idx = self.deploy_index(&d.id).expect("own id resolves") as usize;
+            let hp = u16::try_from(d.hp)
+                .map_err(|_| format!("bake: `{}` hp {} overflows u16", d.id, d.hp))?;
+            if hp == 0 {
+                return Err(format!("bake: `{}` hp 0 is the inert sentinel", d.id));
+            }
+            dc.defs[idx] = DeployDef {
+                arch: match d.archetype {
+                    DeployArchetype::Bag => ARCH_BAG,
+                    DeployArchetype::Hearth => ARCH_HEARTH,
+                    DeployArchetype::Box => ARCH_BOX,
+                    DeployArchetype::Fire => ARCH_FIRE,
+                    DeployArchetype::Furnace => ARCH_FURNACE,
+                    DeployArchetype::Workbench => ARCH_WORKBENCH,
+                    DeployArchetype::Door => ARCH_DOOR,
+                },
+                placement: match d.placement {
+                    Placement::Ground => PLACE_GROUND,
+                    Placement::Foundation => PLACE_FOUNDATION,
+                    Placement::Doorway => PLACE_DOORWAY,
+                    Placement::Any => PLACE_ANY,
+                },
+                hp,
+                item: self
+                    .item_index(&d.id)
+                    .ok_or_else(|| format!("bake: `{}` is not an item", d.id))?,
+            };
+        }
+        // Upkeep materials: distinct build-cost items, ascending — the
+        // hearth stock rows align to this order.
+        let mut mats: Vec<u16> = Vec::new();
+        for p in &self.pieces {
+            for cost in &p.cost {
+                let item = self
+                    .item_index(&cost.item)
+                    .ok_or_else(|| format!("bake: `{}` cost `{}` missing", p.id, cost.item))?;
+                if !mats.contains(&item) {
+                    mats.push(item);
+                }
+            }
+        }
+        mats.sort_unstable();
+        if mats.len() > HEARTH_STOCK_ROWS {
+            return Err(format!(
+                "bake: {} distinct build-cost items exceed the {HEARTH_STOCK_ROWS} hearth stock rows",
+                mats.len()
+            ));
+        }
+        for (n, &item) in mats.iter().enumerate() {
+            dc.mats[n] = item;
+        }
+        dc.mat_count = mats.len() as u8;
+        dc.upkeep_pct_per_day =
+            u16::try_from(self.balance.globals.upkeep_pct_per_day).map_err(|_| {
+                format!(
+                    "bake: upkeep_pct_per_day {} overflows u16",
+                    self.balance.globals.upkeep_pct_per_day
+                )
+            })?;
+        Ok(dc)
     }
 }

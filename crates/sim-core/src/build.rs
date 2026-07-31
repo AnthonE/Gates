@@ -19,10 +19,13 @@
 //! needs a foundation beside it (level 0) or an edge piece below / a plane
 //! beside it (higher levels); a plane above ground needs an edge piece
 //! under one of its four sides; stairs need the plane they stand on.
-//! Upkeep, decay, upgrade-in-place, and hearth privilege are the next
-//! slice (NOW.md).
+//! Hearth privilege gates placement (deploy.rs: a foreign hearth's radius
+//! refuses with `REFUSE_B_CLAIM`), and pieces carry hp + an upkeep clock
+//! for the decay sweep (deploy.rs `upkeep_sweep`). Upgrade-in-place and
+//! piece collision are the next slice (NOW.md).
 
 use crate::craft::{inv_count, inv_take};
+use crate::deploy::{Deploys, UPKEEP_PERIOD_TICKS};
 use crate::fmath::floor_i32;
 use crate::limits::{
     MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_PIECES, MAX_PIECE_COSTS, MAX_PIECE_DEFS,
@@ -61,6 +64,7 @@ pub const REFUSE_B_TERRAIN: u32 = 3;
 pub const REFUSE_B_REACH: u32 = 4;
 pub const REFUSE_B_COST: u32 = 5;
 pub const REFUSE_B_FULL: u32 = 6;
+pub const REFUSE_B_CLAIM: u32 = 7;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
 /// Proposed default, DECISIONS.md §open ("build grid v0").
@@ -148,6 +152,8 @@ impl BuildContent {
 
 /// One placed piece. Its grid address (cx, cz, level, loc) is its
 /// identity — pieces don't move and the wire refers to them by address.
+/// `hp` and `uh` are sim-only (the wire carries address + row; clients
+/// learn of decay by the removal broadcast, not by watching hp).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PieceRec {
     pub cx: u16,
@@ -156,12 +162,16 @@ pub struct PieceRec {
     pub loc: u8,
     /// Baked piece row this address holds.
     pub row: u8,
+    /// Current hp (decay drains it; piece damage lands in M2).
+    pub hp: u16,
+    /// Last upkeep period processed (`tick / UPKEEP_PERIOD_TICKS`).
+    pub uh: u16,
 }
 
 /// The placed-piece store: dense, insertion-ordered (command order, so
-/// iteration is deterministic). Append-only this slice — decay/damage
-/// removal lands with the hearth slice. Overflow refuses the placement
-/// (limits.rs `MAX_PIECES`).
+/// iteration is deterministic). Decay removal swap-removes (the wire
+/// layer restarts in-progress sync walks on any removal). Overflow
+/// refuses the placement (limits.rs `MAX_PIECES`).
 pub struct Pieces {
     entries: [PieceRec; MAX_PIECES],
     len: usize,
@@ -202,6 +212,18 @@ impl Pieces {
         self.entries[self.len] = rec;
         self.len += 1;
         true
+    }
+
+    /// Swap-remove entry `i` (the decay sweep's removal; deploy.rs).
+    pub(crate) fn remove_at(&mut self, i: usize) {
+        self.len -= 1;
+        self.entries[i] = self.entries[self.len];
+    }
+
+    /// Update entry `i`'s upkeep state (the decay sweep's write-back).
+    pub(crate) fn set_upkeep(&mut self, i: usize, hp: u16, uh: u16) {
+        self.entries[i].hp = hp;
+        self.entries[i].uh = uh;
     }
 }
 
@@ -291,12 +313,16 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
 /// Apply one place request (`Command::Place`). Refusals are events, not
 /// errors — the placer hears why. The cost is paid whole at placement;
 /// the piece is announced by EV_PIECE_PLACED for the wire to broadcast.
+/// `deploys` carries the hearth list for the privilege check; `tick`
+/// stamps the piece's upkeep clock (deploy.rs).
 #[allow(clippy::too_many_arguments)]
 pub fn place(
     seed: u64,
     bc: &BuildContent,
+    deploys: &Deploys,
     pieces: &mut Pieces,
     p: &mut Player,
+    tick: u64,
     row: u16,
     cx: u16,
     cz: u16,
@@ -333,6 +359,10 @@ pub fn place(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
         return;
     }
+    if deploys.foreign_claim(ax, az, p.id) {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
+        return;
+    }
     if def.shape == SHAPE_FOUNDATION {
         let h = terrain::height(seed, ax, az);
         if h < FOUNDATION_MIN_H_M || terrain::slope(seed, ax, az) >= FOUNDATION_MAX_SLOPE {
@@ -356,6 +386,8 @@ pub fn place(
         level,
         loc,
         row: row as u8,
+        hp: def.hp,
+        uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
     };
     if !pieces.insert(rec) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_FULL, 0);
@@ -412,14 +444,17 @@ mod tests {
     fn foundation_wall_floor_chain_places_and_pays() {
         let bc = BuildContent::probe_fixture();
         let mut pieces = Pieces::new();
+        let nod = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = player_at_cell_center(&[(0, 20), (1, 10)]);
 
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             0,
             CX,
             CZ,
@@ -440,8 +475,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             1,
             CX,
             CZ,
@@ -456,8 +493,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             2,
             CX,
             CZ,
@@ -473,8 +512,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             1,
             CX,
             CZ,
@@ -489,6 +530,7 @@ mod tests {
     fn refusals_name_their_reason_and_change_nothing() {
         let bc = BuildContent::probe_fixture();
         let mut pieces = Pieces::new();
+        let nod = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = player_at_cell_center(&[(0, 100), (1, 100)]);
 
@@ -503,8 +545,10 @@ mod tests {
             place(
                 SEED,
                 &bc,
+                &nod,
                 &mut pieces,
                 &mut p,
+                0,
                 row,
                 CX,
                 CZ,
@@ -519,8 +563,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             0,
             CX + 7,
             CZ,
@@ -535,8 +581,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             1,
             CX,
             CZ,
@@ -549,8 +597,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             2,
             CX,
             CZ,
@@ -565,8 +615,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut poor,
+            0,
             0,
             CX,
             CZ,
@@ -580,8 +632,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             0,
             CX,
             CZ,
@@ -593,8 +647,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             0,
             CX,
             CZ,
@@ -610,6 +666,7 @@ mod tests {
     fn terrain_refuses_the_sea() {
         let bc = BuildContent::probe_fixture();
         let mut pieces = Pieces::new();
+        let nod = Deploys::new();
         let mut ev = EventQueue::default();
         // Cell (1,1) is deep sea on every island seed (coast radius starts
         // ~800 m in); stand the player there to isolate the terrain rule.
@@ -618,8 +675,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             0,
             1,
             1,
@@ -633,6 +692,7 @@ mod tests {
     #[test]
     fn store_full_refuses_not_evicts() {
         let mut pieces = Pieces::new();
+        let nod = Deploys::new();
         for i in 0..MAX_PIECES {
             assert!(pieces.insert(PieceRec {
                 cx: (i % MAX_BUILD_COORD) as u16,
@@ -640,6 +700,8 @@ mod tests {
                 level: 0,
                 loc: LOC_PLANE,
                 row: 0,
+                hp: 1,
+                uh: 0,
             }));
         }
         assert!(!pieces.insert(PieceRec::default()));
@@ -651,8 +713,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             0,
             CX,
             CZ,
@@ -668,6 +732,7 @@ mod tests {
     fn edge_canonicalization_shares_the_boundary() {
         let bc = BuildContent::probe_fixture();
         let mut pieces = Pieces::new();
+        let nod = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = player_at_cell_center(&[(0, 100)]);
         // Foundation in the cell EAST of the wall's canonical cell: the
@@ -676,8 +741,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             0,
             CX,
             CZ,
@@ -688,8 +755,10 @@ mod tests {
         place(
             SEED,
             &bc,
+            &nod,
             &mut pieces,
             &mut p,
+            0,
             1,
             CX + 1,
             CZ,
