@@ -1,12 +1,17 @@
-//! Kinematic capsule vs terrain (TERRAIN.md §3), shared verbatim by server
-//! and wasm prediction. Quantize-both-sides: positions and vertical
-//! velocity live as integer quanta; each step decodes, integrates with
-//! walled float ops, and re-quantizes — the sim runs on the values it
-//! transmits (NETCODE.md §3), so prediction can never drift by rounding.
+//! Kinematic capsule vs terrain and placed pieces (TERRAIN.md §3), shared
+//! verbatim by server and wasm prediction. Quantize-both-sides: positions
+//! and vertical velocity live as integer quanta; each step decodes,
+//! integrates with walled float ops, and re-quantizes — the sim runs on
+//! the values it transmits (NETCODE.md §3), so prediction can never drift
+//! by rounding. Piece collision comes in through `cols` (collide.rs): the
+//! server passes its piece store's index, the predictor the client
+//! mirror's — same code, same bits.
 //!
 //! Movement constants are proposed defaults registered in DECISIONS.md
-//! §open (sim movement constants row).
+//! §open (sim movement constants row); capsule and piece-slab dimensions
+//! in the piece collision v0 row.
 
+use crate::collide::{self, ColIndex};
 use crate::fmath::floor_i32;
 use crate::input::{InputFrame, BTN_SPRINT};
 use crate::terrain::{self, CLIFF_SLOPE_RATIO, ISLAND_SIZE, SEA_LEVEL};
@@ -80,8 +85,9 @@ fn climbable(from_y: f32, to_ground: f32, run: f32) -> bool {
 }
 
 /// One fixed-timestep step of one capsule. Pure: same inputs, same result,
-/// native or wasm.
-pub fn step(seed: u64, body: &mut Body, frame: &InputFrame) {
+/// native or wasm. `cols` is the placed-piece collision index — the
+/// server's store and the client's mirror step through this same code.
+pub fn step(seed: u64, cols: &ColIndex, body: &mut Body, frame: &InputFrame) {
     let x = body.qx as f32 * POS_XZ_Q;
     let y = body.qy as f32 * POS_Y_Q;
     let z = body.qz as f32 * POS_XZ_Q;
@@ -101,7 +107,8 @@ pub fn step(seed: u64, body: &mut Body, frame: &InputFrame) {
         wz *= inv;
     }
 
-    let ground_here = terrain::height(seed, x, z);
+    // Wade on the effective ground (a floor over shallows stays dry).
+    let ground_here = terrain::height(seed, x, z).max(collide::piece_ground(seed, cols, x, z, y));
     let mut speed = if frame.buttons & BTN_SPRINT != 0 {
         SPRINT_SPEED
     } else {
@@ -112,6 +119,9 @@ pub fn step(seed: u64, body: &mut Body, frame: &InputFrame) {
     }
 
     // Horizontal, axis-resolved: full move, then x-only, then z-only.
+    // Walls veto a candidate outright; a built surface accepts on the
+    // step rule alone (a stair-step, not a cliff — the ramp and slab
+    // rises are bounded by design), terrain keeps the cliff ratio.
     let dx = wx * speed * DT;
     let dz = wz * speed * DT;
     let mut nx = x;
@@ -126,8 +136,17 @@ pub fn step(seed: u64, body: &mut Body, frame: &InputFrame) {
             if run2 <= 0.0 {
                 continue;
             }
+            if collide::blocked(seed, cols, x, z, cx, cz, y) {
+                continue;
+            }
             let g = terrain::height(seed, cx, cz);
-            if climbable(y, g, run2.sqrt()) {
+            let pg = collide::piece_ground(seed, cols, cx, cz, y);
+            let ok = if pg > g {
+                pg - y <= STEP_UP
+            } else {
+                climbable(y, g, run2.sqrt())
+            };
+            if ok {
                 nx = cx;
                 nz = cz;
                 break;
@@ -135,8 +154,10 @@ pub fn step(seed: u64, body: &mut Body, frame: &InputFrame) {
         }
     }
 
-    // Vertical: snap within step range, otherwise fall.
-    let ground = terrain::height(seed, nx, nz);
+    // Vertical: snap within step range, otherwise fall. Built surfaces
+    // count as ground only when the step rule already admitted them
+    // (piece_ground's lid), so a floor overhead is a ceiling, not a lift.
+    let ground = terrain::height(seed, nx, nz).max(collide::piece_ground(seed, cols, nx, nz, y));
     let mut ny = y;
     if body.grounded && ground - y <= STEP_UP && y - ground <= STEP_UP {
         ny = ground;

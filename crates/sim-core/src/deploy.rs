@@ -645,7 +645,7 @@ pub fn upkeep_sweep(
             uh = h_now; // bounded catch-up: the missed hours are forgiven
         }
         if removed {
-            pieces.remove_at(i);
+            pieces.remove_at(i, def.shape);
             *piece_cursor = (i as u32).min(pieces.len().saturating_sub(1) as u32);
             events.push(
                 EV_PIECE_REMOVED,

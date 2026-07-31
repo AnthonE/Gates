@@ -17,11 +17,11 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-/// Regenerated this commit: deployables + hearth + upkeep/decay landed —
-/// state_hash covers the deploy store, hearth stock, piece hp/upkeep and
-/// the sweep cursors, and the script drives PlaceDeploy/Feed commands and
-/// upkeep-period leaps through the log.
-const GOLDEN_FINAL_HASH: u64 = 0x23E8_D6A1_1537_E17F;
+/// Regenerated this commit: piece collision v0 landed — movement now
+/// collides with the pieces this script's bots place at their feet
+/// (walls block, slabs are ground), so every body's path through the
+/// log moves.
+const GOLDEN_FINAL_HASH: u64 = 0x7621_1820_7872_DAC4;
 
 fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut world = World::new(seed);

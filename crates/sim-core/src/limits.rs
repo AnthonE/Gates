@@ -166,6 +166,12 @@ pub const MAX_BUILD_COORD: usize = 1_024;
 /// §open (build grid row).
 pub const MAX_BUILD_LEVELS: usize = 8;
 
+/// Column-index slots (collide.rs): open-addressed map from build column
+/// to occupancy masks, power of two, 2 × MAX_PIECES so it never passes
+/// half load (each piece occupies at most one column). Structural cap
+/// derived from MAX_PIECES, not a knob.
+pub const COL_INDEX_SLOTS: usize = 16_384;
+
 /// Deployable definitions the sim preallocates for (the alpha set is 9
 /// rows, content/deployables.toml). The content bake refuses a set past
 /// this; the wire carries the row in 4 bits — exactly this range.
