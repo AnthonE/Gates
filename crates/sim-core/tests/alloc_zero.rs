@@ -6,16 +6,18 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sim_core::bots::bot_frame;
+use sim_core::build::BuildContent;
 use sim_core::craft::CraftContent;
 use sim_core::gather::GatherContent;
 use sim_core::limits::MAX_PLAYERS;
 use sim_core::rng::Pcg32;
 use sim_core::world::{Command, World};
 
-/// One tick's commands: every bot's input plus a craft enqueue and a
-/// cancel, so the craft verb (enqueue, step, refusal, cancel) sits inside
-/// the counted window. Fixed-size — the test itself must not allocate.
-fn tick_cmds(rng: &mut Pcg32, yaws: &mut [u16; MAX_PLAYERS], t: u16) -> [Command; MAX_PLAYERS + 2] {
+/// One tick's commands: every bot's input plus a craft enqueue, a cancel,
+/// and a place, so the craft and build verbs (enqueue, step, placement,
+/// every refusal) sit inside the counted window. Fixed-size — the test
+/// itself must not allocate.
+fn tick_cmds(rng: &mut Pcg32, yaws: &mut [u16; MAX_PLAYERS], t: u16) -> [Command; MAX_PLAYERS + 3] {
     core::array::from_fn(|i| {
         if i < MAX_PLAYERS {
             let f = bot_frame(rng, yaws[i], t);
@@ -30,10 +32,21 @@ fn tick_cmds(rng: &mut Pcg32, yaws: &mut [u16; MAX_PLAYERS], t: u16) -> [Command
                 recipe: t % 4, // 3 is out of range: the refusal path counts too
                 count: 1 + t % 2,
             }
-        } else {
+        } else if i == MAX_PLAYERS + 1 {
             Command::CraftCancel {
                 id: ((t as u32 * 7) % MAX_PLAYERS as u32) + 1,
                 index: t % 5,
+            }
+        } else {
+            // The island-center cell: bots near it place, the rest refuse
+            // on reach — both build paths inside the counted window.
+            Command::Place {
+                id: ((t as u32 * 11) % MAX_PLAYERS as u32) + 1,
+                row: t % 4,
+                cx: 341,
+                cz: 341,
+                level: (t % 2) as u8,
+                loc: ((t / 2) % 4) as u8,
             }
         }
     })
@@ -70,6 +83,7 @@ fn test_alloc_zero() {
     // enqueues, unit completions, refusals, and cancels.
     world.gather = GatherContent::probe_fixture();
     world.craft = CraftContent::probe_fixture();
+    world.build = BuildContent::probe_fixture();
     let mut rng = Pcg32::new(0xA110C, 3);
     let mut yaws = [0u16; MAX_PLAYERS];
 

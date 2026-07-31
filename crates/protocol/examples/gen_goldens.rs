@@ -7,10 +7,12 @@
 #![allow(clippy::disallowed_macros)]
 
 use protocol::{
-    encode_action_cancel, encode_action_craft, encode_event_catalog, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_gather, encode_event_inv,
-    encode_event_recipes, encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark,
-    encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
+    encode_action_cancel, encode_action_craft, encode_action_place, encode_event_build_refused,
+    encode_event_catalog, encode_event_craft_done, encode_event_craft_q,
+    encode_event_craft_refused, encode_event_gather, encode_event_inv, encode_event_piece_defs,
+    encode_event_piece_placed, encode_event_piece_sync, encode_event_recipes,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark, encode_hello,
+    encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -101,4 +103,22 @@ fn main() {
 
     let len = encode_action_cancel(goldens::action_cancel(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[20], &buf[..len]);
+
+    let (row, cx, cz, level, loc) = goldens::action_place();
+    let len = encode_action_place(row, cx, cz, level, loc, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[21], &buf[..len]);
+
+    let len = encode_event_piece_placed(&goldens::event_piece_placed(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[22], &buf[..len]);
+
+    let (reset, recs) = goldens::event_piece_sync();
+    let len = encode_event_piece_sync(reset, &recs, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[23], &buf[..len]);
+
+    let len = encode_event_build_refused(goldens::event_build_refused(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[24], &buf[..len]);
+
+    let (len, took) = encode_event_piece_defs(&goldens::event_piece_defs(), 0, &mut buf).unwrap();
+    assert_eq!(took, protocol::PIECE_DEFS_BATCH);
+    write_fixture(goldens::FIXTURES[25], &buf[..len]);
 }

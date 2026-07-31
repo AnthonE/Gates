@@ -9,6 +9,16 @@ const EYE_HEIGHT = 1.6; // cosmetic (DECISIONS.md §open, client cosmetics)
 const SKY = 0x8fb4d6;
 const YAW_TO_RAD = (Math.PI * 2) / 65536;
 
+// Build-grid render dimensions. Cell/level sizes are the sim's grid
+// (DECISIONS.md §open, build grid v0); lift, thicknesses, and tier
+// colors are cosmetics (client cosmetics row).
+const CELL = 3;
+const LEVEL_H = 3;
+const LIFT = 0.3; // foundation top sits this far above the terrain sample
+const SLAB = 0.3; // plane-piece thickness
+const WALL_T = 0.24; // edge-piece thickness
+const TIER_COLORS = [0x8a6a45, 0x84837c, 0x5f6a72]; // wood · stone · metal
+
 export class GameScene {
   constructor(canvas) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -61,6 +71,27 @@ export class GameScene {
     this.weakMark.visible = false;
     this.scene.add(this.weakMark);
 
+    // Placed building pieces, keyed by grid address. Shared geometries +
+    // one material per tier; meshes are added on placement events (never
+    // the RAF path) and swept only by a piece-set reset.
+    this.pieces = new Map(); // "cx,cz,level,loc" -> Object3D
+    this._planeGeo = new THREE.BoxGeometry(CELL - 0.04, SLAB, CELL - 0.04);
+    this._wallGeo = new THREE.BoxGeometry(WALL_T, LEVEL_H, CELL - 0.04);
+    this._postGeo = new THREE.BoxGeometry(WALL_T, LEVEL_H, 0.9);
+    this._lintelGeo = new THREE.BoxGeometry(WALL_T, 0.9, CELL - 0.04 - 1.8);
+    this._stairsGeo = new THREE.BoxGeometry(CELL - 0.04, SLAB, 4.15);
+    this._tierMats = TIER_COLORS.map(
+      (c) => new THREE.MeshLambertMaterial({ color: c }),
+    );
+    // The placement ghost: one wireframe box, rescaled to the aimed
+    // piece's shape each frame build mode is on.
+    this.ghost = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ color: 0x9fd08f, wireframe: true }),
+    );
+    this.ghost.visible = false;
+    this.scene.add(this.ghost);
+
     this._dir = new THREE.Vector3();
     this._target = new THREE.Vector3();
 
@@ -90,6 +121,88 @@ export class GameScene {
 
   hideWeakMark() {
     this.weakMark.visible = false;
+  }
+
+  /**
+   * Upsert one placed piece. `groundY` is the shared-worldgen terrain
+   * height at the cell center — both tabs derive the same y, no piece
+   * height rides the wire. Shape codes are sim-core build.rs's.
+   */
+  setPiece(cx, cz, level, loc, shape, material, groundY) {
+    const key = `${cx},${cz},${level},${loc}`;
+    const old = this.pieces.get(key);
+    if (old) this.scene.remove(old);
+    const mat = this._tierMats[material] || this._tierMats[0];
+    const baseY = groundY + LIFT + level * LEVEL_H;
+    const cxm = cx * CELL + CELL / 2;
+    const czm = cz * CELL + CELL / 2;
+    let obj;
+    if (shape === 1 || shape === 2) {
+      // Wall / doorway on the west (x = cx·3) or north (z = cz·3) edge;
+      // the doorway keeps its opening — the intended breach point reads.
+      if (shape === 1) {
+        obj = new THREE.Mesh(this._wallGeo, mat);
+      } else {
+        obj = new THREE.Group();
+        const a = new THREE.Mesh(this._postGeo, mat);
+        a.position.z = -(CELL - 0.9) / 2 + 0.0;
+        const b = new THREE.Mesh(this._postGeo, mat);
+        b.position.z = (CELL - 0.9) / 2 - 0.0;
+        const l = new THREE.Mesh(this._lintelGeo, mat);
+        l.position.y = LEVEL_H / 2 - 0.45;
+        obj.add(a, b, l);
+      }
+      if (loc === 2) {
+        obj.position.set(cx * CELL, baseY + LEVEL_H / 2, czm);
+      } else {
+        obj.rotation.y = Math.PI / 2;
+        obj.position.set(cxm, baseY + LEVEL_H / 2, cz * CELL);
+      }
+    } else if (shape === 4) {
+      // Stairs: a ramp through the level. The grid stores no facing, so
+      // the ramp always rises toward +Z (cosmetic, v0).
+      obj = new THREE.Mesh(this._stairsGeo, mat);
+      obj.rotation.x = -Math.PI / 4;
+      obj.position.set(cxm, baseY + LEVEL_H / 2, czm);
+    } else {
+      // Foundation / floor / roof: a slab whose top is the level plane.
+      obj = new THREE.Mesh(this._planeGeo, mat);
+      obj.position.set(cxm, baseY - SLAB / 2, czm);
+    }
+    this.scene.add(obj);
+    this.pieces.set(key, obj);
+  }
+
+  clearPieces() {
+    for (const obj of this.pieces.values()) this.scene.remove(obj);
+    this.pieces.clear();
+  }
+
+  /** Park the placement ghost over the aimed address. */
+  setGhost(shape, cx, cz, level, loc, groundY) {
+    const g = this.ghost;
+    const baseY = groundY + LIFT + level * LEVEL_H;
+    const cxm = cx * CELL + CELL / 2;
+    const czm = cz * CELL + CELL / 2;
+    if (shape === 1 || shape === 2) {
+      g.scale.set(WALL_T, LEVEL_H, CELL);
+      g.rotation.y = loc === 3 ? Math.PI / 2 : 0;
+      if (loc === 2) g.position.set(cx * CELL, baseY + LEVEL_H / 2, czm);
+      else g.position.set(cxm, baseY + LEVEL_H / 2, cz * CELL);
+    } else if (shape === 4) {
+      g.scale.set(CELL, LEVEL_H, CELL);
+      g.rotation.y = 0;
+      g.position.set(cxm, baseY + LEVEL_H / 2, czm);
+    } else {
+      g.scale.set(CELL, SLAB, CELL);
+      g.rotation.y = 0;
+      g.position.set(cxm, baseY - SLAB / 2, czm);
+    }
+    g.visible = true;
+  }
+
+  hideGhost() {
+    this.ghost.visible = false;
   }
 
   /** Upsert one interpolated remote; `stamp` drives mark-and-sweep. */

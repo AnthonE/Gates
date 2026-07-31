@@ -7,11 +7,17 @@
 //! Boot path only: allocation and `String` errors are fine here; nothing
 //! in this module runs on the sim thread.
 
-use crate::schema::{NodeArchetype, Station};
+use crate::schema::{Material, NodeArchetype, Shape, Station};
 use crate::Content;
+use sim_core::build::{
+    BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
+    SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
+};
 use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
-use sim_core::limits::{MAX_ITEM_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ};
+use sim_core::limits::{
+    MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
+};
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
 fn node_slot(a: NodeArchetype) -> usize {
@@ -175,5 +181,75 @@ impl Content {
             cc.recipes[idx] = def;
         }
         Ok(cc)
+    }
+
+    /// Rank of `id` among all building-piece ids, sorted — the wire-side
+    /// piece row (same canonical mapping as `item_index`).
+    pub fn piece_index(&self, id: &str) -> Option<u16> {
+        let mut rank = 0u16;
+        let mut found = false;
+        for p in &self.pieces {
+            if p.id.as_str() < id {
+                rank += 1;
+            } else if p.id == id {
+                found = true;
+            }
+        }
+        found.then_some(rank)
+    }
+
+    /// The build table. Refuses sets the sim's fixed capacities — or the
+    /// wire's field widths (hp u16) — can't hold.
+    pub fn bake_building(&self) -> Result<BuildContent, String> {
+        if self.pieces.len() > MAX_PIECE_DEFS {
+            return Err(format!(
+                "bake: {} building pieces exceed the sim's {MAX_PIECE_DEFS}-row table",
+                self.pieces.len()
+            ));
+        }
+        let mut bc = BuildContent::EMPTY;
+        bc.piece_count = self.pieces.len() as u16;
+        for p in &self.pieces {
+            let idx = self.piece_index(&p.id).expect("own id resolves") as usize;
+            if p.cost.len() > MAX_PIECE_COSTS {
+                return Err(format!(
+                    "bake: `{}` has more than {MAX_PIECE_COSTS} cost rows",
+                    p.id
+                ));
+            }
+            let mut def = PieceDef {
+                shape: match p.shape {
+                    Shape::Foundation => SHAPE_FOUNDATION,
+                    Shape::Wall => SHAPE_WALL,
+                    Shape::Doorway => SHAPE_DOORWAY,
+                    Shape::Floor => SHAPE_FLOOR,
+                    Shape::Stairs => SHAPE_STAIRS,
+                    Shape::Roof => SHAPE_ROOF,
+                },
+                material: match p.material {
+                    Material::Wood => MAT_WOOD,
+                    Material::Stone => MAT_STONE,
+                    Material::Metal => MAT_METAL,
+                },
+                hp: u16::try_from(p.hp)
+                    .map_err(|_| format!("bake: `{}` hp {} overflows u16", p.id, p.hp))?,
+                n_costs: p.cost.len() as u8,
+                costs: [(0, 0); MAX_PIECE_COSTS],
+            };
+            if def.hp == 0 {
+                return Err(format!("bake: `{}` hp 0 is the inert sentinel", p.id));
+            }
+            for (n, cost) in p.cost.iter().enumerate() {
+                let item = self
+                    .item_index(&cost.item)
+                    .ok_or_else(|| format!("bake: `{}` cost `{}` missing", p.id, cost.item))?;
+                let count = u16::try_from(cost.count).map_err(|_| {
+                    format!("bake: `{}` cost `{}` count overflows u16", p.id, cost.item)
+                })?;
+                def.costs[n] = (item, count);
+            }
+            bc.pieces[idx] = def;
+        }
+        Ok(bc)
     }
 }

@@ -333,3 +333,62 @@ fn bake_craft_refuses_out_of_cap_rows() {
     let err = c.bake_craft().expect_err("five-input recipe baked");
     assert!(err.contains("inputs"), "{err}");
 }
+
+/// The shipped building set bakes into the sim's piece table, and the
+/// baked rows say what building.toml says.
+#[test]
+fn bake_building_carries_the_shipped_numbers() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let bc = c.bake_building().expect("shipped building set must bake");
+    assert_eq!(bc.piece_count as usize, c.pieces.len());
+
+    // building.toml build.wall_stone: shape wall, stone, hp 1750,
+    // 350 stone — read back from the baked row.
+    let idx = c.piece_index("build.wall_stone").unwrap() as usize;
+    let def = &bc.pieces[idx];
+    assert_eq!(def.shape, sim_core::build::SHAPE_WALL);
+    assert_eq!(def.material, sim_core::build::MAT_STONE);
+    assert_eq!(def.hp, 1750);
+    assert_eq!(def.n_costs, 1);
+    let stone = c.item_index("item.stone").unwrap();
+    assert_eq!(def.costs[0], (stone, 350));
+
+    // Index mapping is a bijection into 0..len.
+    let mut seen = vec![false; c.pieces.len()];
+    for p in &c.pieces {
+        let i = c.piece_index(&p.id).unwrap() as usize;
+        assert!(!seen[i], "piece index {i} assigned twice");
+        seen[i] = true;
+    }
+}
+
+/// The building bake refuses what the sim's capacities or the wire's
+/// field widths can't hold.
+#[test]
+fn bake_building_refuses_out_of_cap_rows() {
+    // hp past u16 can't cross the wire's width.
+    let mut srcs = sources();
+    let entry = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "building.toml")
+        .unwrap();
+    entry.1 = entry.1.replacen("hp = 3000\n", "hp = 70000\n", 1);
+    let c = build(&srcs).expect("oversize hp is a bake error, not a schema error");
+    let err = c.bake_building().expect_err("70000-hp piece baked");
+    assert!(err.contains("overflows u16"), "{err}");
+
+    // A third cost row exceeds MAX_PIECE_COSTS.
+    let mut srcs = sources();
+    let entry = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "building.toml")
+        .unwrap();
+    entry.1 = entry.1.replacen(
+        "cost = [{ item = \"item.wood\", count = 350 }]",
+        "cost = [\n    { item = \"item.wood\", count = 350 },\n    { item = \"item.stone\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n]",
+        1,
+    );
+    let c = build(&srcs).expect("three costs is a bake error, not a schema error");
+    let err = c.bake_building().expect_err("three-cost piece baked");
+    assert!(err.contains("cost rows"), "{err}");
+}

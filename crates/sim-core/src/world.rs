@@ -4,6 +4,7 @@
 //! applied in submission order, then players step in slot order — the fixed
 //! order determinism requires.
 
+use crate::build::{self, BuildContent, Pieces};
 use crate::craft::{self, CraftContent, CraftJob};
 use crate::gather::{self, GatherContent, ItemStack, SlotLives, NO_CELL};
 use crate::input::InputFrame;
@@ -36,6 +37,11 @@ pub const EV_WEAK_MARK: u8 = 4;
 pub const EV_CRAFT_DONE: u8 = 5;
 /// EV_CRAFT_REFUSED: a = player id, b = `craft::REFUSE_*` reason code.
 pub const EV_CRAFT_REFUSED: u8 = 6;
+/// EV_PIECE_PLACED: a = build cell key (cx << 16 | cz), b = level << 16 |
+/// loc << 8 | piece row.
+pub const EV_PIECE_PLACED: u8 = 7;
+/// EV_BUILD_REFUSED: a = player id, b = `build::REFUSE_B_*` reason code.
+pub const EV_BUILD_REFUSED: u8 = 8;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SimEvent {
@@ -159,6 +165,17 @@ pub enum Command {
         id: u32,
         index: u16,
     },
+    /// Place baked building-piece row `row` at grid address (cx, cz,
+    /// level, loc) (build.rs validates and refuses by event, never by
+    /// panic).
+    Place {
+        id: u32,
+        row: u16,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
 }
 
 pub struct World {
@@ -173,6 +190,10 @@ pub struct World {
     pub gather: GatherContent,
     /// Baked recipe rules (craft.rs). Construction input like `gather`.
     pub craft: CraftContent,
+    /// Baked building-piece rules (build.rs). Construction input too.
+    pub build: BuildContent,
+    /// Placed building pieces — sim state, hashed.
+    pub pieces: Pieces,
     /// Sparse harvested/damaged slot records (TERRAIN.md §2).
     pub slot_lives: SlotLives,
     /// This tick's outbound events; cleared at tick start.
@@ -198,6 +219,8 @@ impl World {
             scatter: ScatterTable::alpha_default(),
             gather: GatherContent::EMPTY,
             craft: CraftContent::EMPTY,
+            build: BuildContent::EMPTY,
+            pieces: Pieces::new(),
             slot_lives: SlotLives::new(),
             events: EventQueue::default(),
             last_hash: 0,
@@ -284,6 +307,29 @@ impl World {
                         self.tick,
                         &mut self.players[slot],
                         index,
+                    );
+                }
+            }
+            Command::Place {
+                id,
+                row,
+                cx,
+                cz,
+                level,
+                loc,
+            } => {
+                if let Some(slot) = self.slot_of(id) {
+                    build::place(
+                        self.seed,
+                        &self.build,
+                        &mut self.pieces,
+                        &mut self.players[slot],
+                        row,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        &mut self.events,
                     );
                 }
             }
@@ -375,6 +421,16 @@ impl World {
             buf[2..4].copy_from_slice(&e.cz.to_le_bytes());
             buf[4..6].copy_from_slice(&e.hits.to_le_bytes());
             buf[8..16].copy_from_slice(&e.respawn_at.to_le_bytes());
+            h.update(&buf);
+        }
+        h.update(&(self.pieces.len() as u64).to_le_bytes());
+        for r in self.pieces.entries() {
+            let mut buf = [0u8; 8];
+            buf[0..2].copy_from_slice(&r.cx.to_le_bytes());
+            buf[2..4].copy_from_slice(&r.cz.to_le_bytes());
+            buf[4] = r.level;
+            buf[5] = r.loc;
+            buf[6] = r.row;
             h.update(&buf);
         }
         h.digest()

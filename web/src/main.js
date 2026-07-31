@@ -79,6 +79,21 @@ const REFUSE_TEXT = [
   "missing ingredients",
 ];
 const STATION_TEXT = ["", "needs workbench", "needs furnace"];
+// sim-core build.rs REFUSE_B_* order.
+const BUILD_REFUSE_TEXT = [
+  "no such piece",
+  "spot taken",
+  "needs support",
+  "bad ground",
+  "out of reach",
+  "missing materials",
+  "world is full",
+];
+// sim-core build.rs shape/material code order (UI labels, not content).
+const SHAPE_TEXT = ["foundation", "wall", "doorway", "floor", "stairs", "roof"];
+const MAT_TEXT = ["wood", "stone", "metal"];
+const BUILD_CELL = 3;
+const MAX_LEVEL = 7;
 
 function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLeftover) {
   const canvas = $("gl");
@@ -104,6 +119,76 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     const len = ex.client_action_cancel(index);
     views.refresh();
     if (len > 0) actions.send(views.output, len);
+  };
+  const sendPlace = (row, cx, cz, level, loc) => {
+    const len = ex.client_action_place(row, cx, cz, level, loc);
+    views.refresh();
+    if (len > 0) actions.send(views.output, len);
+  };
+
+  // Build mode (plain-UI stand-in for the radial at alpha): B toggles,
+  // wheel cycles the piece row, R/F moves the working level, right-click
+  // places at the aimed grid address. The server validates everything.
+  const build = { on: false, row: 0, level: 0 };
+  const pieceRecs = new Map(); // address key -> rec, for defs-arrival redraws
+  const groundAt = (cx, cz) =>
+    ex.terrain_height_at(seed, cx * BUILD_CELL + 1.5, cz * BUILD_CELL + 1.5);
+  const drawPiece = (rec) => {
+    const D = views.pieceDefs;
+    scene.setPiece(
+      rec.cx,
+      rec.cz,
+      rec.level,
+      rec.loc,
+      D[rec.row * 8],
+      D[rec.row * 8 + 1],
+      groundAt(rec.cx, rec.cz),
+    );
+  };
+  // The aimed grid address for the selected piece: a point mid-reach
+  // ahead of the feet picks the cell; wall shapes snap to the nearest
+  // cell edge, canonicalized to west/north (sim-core build.rs).
+  const buildTarget = () => {
+    const R = views.render;
+    const shape = views.pieceDefs[build.row * 8];
+    const ax = R[1] + Math.sin(input.yaw) * 3.5;
+    const az = R[3] + Math.cos(input.yaw) * 3.5;
+    let cx = Math.max(0, Math.min(1023, Math.floor(ax / BUILD_CELL)));
+    let cz = Math.max(0, Math.min(1023, Math.floor(az / BUILD_CELL)));
+    let loc = 0;
+    if (shape === 1 || shape === 2) {
+      const fx = ax / BUILD_CELL - cx;
+      const fz = az / BUILD_CELL - cz;
+      const m = Math.min(fx, 1 - fx, fz, 1 - fz);
+      if (m === fx) loc = 2;
+      else if (m === 1 - fx) (cx += 1), (loc = 2);
+      else if (m === fz) loc = 3;
+      else (cz += 1), (loc = 3);
+    } else if (shape === 4) {
+      loc = 1;
+    }
+    return { cx, cz, level: shape === 0 ? 0 : build.level, loc, shape };
+  };
+  const buildStrip = () => {
+    if (!build.on) {
+      hud.setBuild("");
+      return;
+    }
+    const D = views.pieceDefs;
+    const total = (ex.client_piece_defs_state() >>> 0) >>> 16;
+    if (total === 0) {
+      hud.setBuild("build: waiting for piece table…");
+      return;
+    }
+    const b = build.row * 8;
+    const costs = [];
+    for (let k = 0; k < D[b + 3]; k++) {
+      costs.push(`${D[b + 4 + k * 2 + 1]} ${itemName(D[b + 4 + k * 2])}`);
+    }
+    hud.setBuild(
+      `build: ${MAT_TEXT[D[b + 1]] || "?"} ${SHAPE_TEXT[D[b]] || "?"} · L${build.level} · ` +
+        `${costs.join(" + ")} — wheel piece · R/F level · right-click place · B close`,
+    );
   };
 
   // Rebuild the craft panel + queue strip from the wasm views. Runs on
@@ -170,12 +255,39 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   };
 
   document.addEventListener("keydown", (e) => {
-    if (e.code === "KeyC" && !closed) {
+    if (closed) return;
+    if (e.code === "KeyC") {
       if (hud.toggleCraft()) {
         document.exitPointerLock();
         craftDirty = true;
       }
       e.preventDefault();
+    } else if (e.code === "KeyB") {
+      build.on = !build.on;
+      if (!build.on) scene.hideGhost();
+      buildStrip();
+      e.preventDefault();
+    } else if (build.on && (e.code === "KeyR" || e.code === "KeyF")) {
+      const d = e.code === "KeyR" ? 1 : -1;
+      build.level = Math.max(0, Math.min(MAX_LEVEL, build.level + d));
+      buildStrip();
+      e.preventDefault();
+    }
+  });
+  document.addEventListener("wheel", (e) => {
+    if (!build.on || closed) return;
+    const total = (ex.client_piece_defs_state() >>> 0) >>> 16;
+    if (total > 0) {
+      const d = e.deltaY > 0 ? 1 : total - 1;
+      build.row = (build.row + d) % total;
+      buildStrip();
+    }
+  });
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+  document.addEventListener("mousedown", (e) => {
+    if (build.on && input.locked && e.button === 2 && !closed) {
+      const t = buildTarget();
+      sendPlace(build.row, t.cx, t.cz, t.level, t.loc);
     }
   });
   const onClosed = () => {
@@ -272,6 +384,40 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       if (flags & (1 | 64 | 512) /* INV | CRAFT_Q | RECIPES */) {
         craftDirty = true;
       }
+      if (flags & 2048 /* PIECE_RESET */) {
+        scene.clearPieces();
+        pieceRecs.clear();
+      }
+      if (flags & (1024 | 2048) /* PIECES|PIECE_RESET */) {
+        const n = ex.client_piece_changes_len();
+        for (let i = 0; i < n; i++) {
+          const key = views.pieceChanges[i * 2];
+          const info = views.pieceChanges[i * 2 + 1];
+          const rec = {
+            cx: key >>> 16,
+            cz: key & 0xffff,
+            level: info >>> 16,
+            loc: (info >>> 8) & 0xff,
+            row: info & 0xff,
+          };
+          pieceRecs.set(key * 4096 + (info >>> 8), rec);
+          drawPiece(rec);
+        }
+      }
+      if (flags & 8192 /* PIECE_DEFS */) {
+        // Def rows can land after pieces that reference them (a late
+        // joiner's sync walk outruns the def drip): redraw everything —
+        // the set is small and this fires at most a handful of times.
+        for (const rec of pieceRecs.values()) drawPiece(rec);
+        buildStrip();
+      }
+      if (flags & 4096 /* BUILD_REFUSED */) {
+        for (;;) {
+          const r = ex.client_build_refusal_pop() >>> 0;
+          if (r === 0xffffffff) break;
+          hud.toast(`can't build: ${BUILD_REFUSE_TEXT[r] || `code ${r}`}`);
+        }
+      }
       if (flags & 32 /* MARK */) {
         const cell = ex.client_weak_mark_cell() >>> 0;
         const entry = cell === 0xffffffff ? null : terrain.cellEntry(cell);
@@ -324,6 +470,11 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (R[0] === 1) {
       scene.setCamera(R[1], R[2], R[3], input.yaw, input.pitch);
       terrain.update(R[1], R[3]);
+      if (build.on) {
+        // Preallocated math + one mesh transform: RAF-safe.
+        const t = buildTarget();
+        scene.setGhost(t.shape, t.cx, t.cz, t.level, t.loc, groundAt(t.cx, t.cz));
+      }
     }
     for (let k = 0; k < nRemotes; k++) {
       const b = 14 + k * 8;
@@ -373,6 +524,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       rebuildCraft();
       craftDirty = false;
     }
+    if (build.on) buildStrip();
     const remotes = [];
     const n = R[13] | 0;
     for (let k = 0; k < n; k++) {
@@ -389,6 +541,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       hotbar,
       recipes: (ex.client_recipes_state() >>> 0) & 0xffff,
       craftQ: qCount,
+      pieceDefs: (ex.client_piece_defs_state() >>> 0) & 0xffff,
+      pieces: scene.pieces.size,
     };
   }, 250);
 }

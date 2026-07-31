@@ -209,6 +209,21 @@
         gap: 4px;
         z-index: 5;
       }
+      #build {
+        position: fixed;
+        left: 50%;
+        bottom: 96px;
+        transform: translateX(-50%);
+        display: none;
+        padding: 4px 10px;
+        background: rgba(10, 15, 20, 0.55);
+        border: 1px solid #3a5064;
+        border-radius: 4px;
+        font: 11px monospace;
+        color: #cdd9e4;
+        z-index: 5;
+        pointer-events: none;
+      }
       .qcell {
         min-width: 90px;
         padding: 4px 8px;
@@ -251,6 +266,7 @@
     <div id="hud"></div>
     <div id="cross">·</div>
     <div id="hotbar"></div>
+    <div id="build"></div>
     <div id="craftq"></div>
     <div id="craft"></div>
     <div id="toasts"></div>
@@ -270,7 +286,8 @@
       <p id="hint">
         WASD move · shift sprint · click to look around · hold left mouse to
         gather · 1–6 select hotbar · C craft (click a recipe; shift ×5;
-        click a queued job to cancel)
+        click a queued job to cancel) · B build (wheel picks the piece,
+        R/F the level, right-click places)
       </p>
     </div>
     <script type="module" src="/src/main.js"></script>

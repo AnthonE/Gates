@@ -11,39 +11,47 @@
 
 use crate::{
     EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse, SnapshotHeader,
-    Welcome, SLOT_SYNC_BATCH,
+    Welcome, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
+use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::craft::{
     CraftContent, CraftJob, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
 };
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
-use sim_core::limits::{INV_SLOTS, MAX_INPUT_FRAMES, MAX_RECIPE_INPUTS, MAX_SNAPSHOT_ENTITIES};
+use sim_core::limits::{
+    INV_SLOTS, MAX_INPUT_FRAMES, MAX_PIECE_COSTS, MAX_RECIPE_INPUTS, MAX_SNAPSHOT_ENTITIES,
+};
 use sim_core::rng::Pcg32;
 
-/// Fixture file names, keyed by wire version (`PROTO_VER` 3 ⇒ `v3_*`).
-pub const FIXTURES: [&str; 21] = [
-    "v3_input_acks_only.bin",
-    "v3_input_full.bin",
-    "v3_snapshot_keyframe.bin",
-    "v3_snapshot_delta.bin",
-    "v3_snapshot_cap.bin",
-    "v3_hello.bin",
-    "v3_welcome.bin",
-    "v3_refuse_full.bin",
-    "v3_event_gather.bin",
-    "v3_event_inv.bin",
-    "v3_event_slot_harvested.bin",
-    "v3_event_slot_respawned.bin",
-    "v3_event_slot_sync.bin",
-    "v3_event_catalog.bin",
-    "v3_event_weak_mark.bin",
-    "v3_event_craft_q.bin",
-    "v3_event_craft_done.bin",
-    "v3_event_craft_refused.bin",
-    "v3_event_recipes.bin",
-    "v3_action_craft.bin",
-    "v3_action_cancel.bin",
+/// Fixture file names, keyed by wire version (`PROTO_VER` 4 ⇒ `v4_*`).
+pub const FIXTURES: [&str; 26] = [
+    "v4_input_acks_only.bin",
+    "v4_input_full.bin",
+    "v4_snapshot_keyframe.bin",
+    "v4_snapshot_delta.bin",
+    "v4_snapshot_cap.bin",
+    "v4_hello.bin",
+    "v4_welcome.bin",
+    "v4_refuse_full.bin",
+    "v4_event_gather.bin",
+    "v4_event_inv.bin",
+    "v4_event_slot_harvested.bin",
+    "v4_event_slot_respawned.bin",
+    "v4_event_slot_sync.bin",
+    "v4_event_catalog.bin",
+    "v4_event_weak_mark.bin",
+    "v4_event_craft_q.bin",
+    "v4_event_craft_done.bin",
+    "v4_event_craft_refused.bin",
+    "v4_event_recipes.bin",
+    "v4_action_craft.bin",
+    "v4_action_cancel.bin",
+    "v4_action_place.bin",
+    "v4_event_piece_placed.bin",
+    "v4_event_piece_sync.bin",
+    "v4_event_build_refused.bin",
+    "v4_event_piece_defs.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -341,6 +349,72 @@ pub fn action_craft() -> (u16, u16) {
 /// A cancel of queue job 2.
 pub fn action_cancel() -> u16 {
     2
+}
+
+/// A place request: (row, cx, cz, level, loc) — a stone wall on a cell's
+/// north edge, one storey up.
+pub fn action_place() -> (u16, u16, u16, u8, u8) {
+    (13, 341, 682, 1, sim_core::build::LOC_EDGE_N)
+}
+
+/// The piece record behind the placed broadcast.
+pub fn event_piece_placed() -> PieceRec {
+    PieceRec {
+        cx: 341,
+        cz: 682,
+        level: 1,
+        loc: sim_core::build::LOC_EDGE_N,
+        row: 13,
+    }
+}
+
+/// A full piece-sync batch with the reset bit set — the join-sync first
+/// message at its cap.
+pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
+    let mut rng = Pcg32::new(0x0047_4154_4553, 18);
+    let recs = core::array::from_fn(|_| PieceRec {
+        cx: rng.next_bounded(1024) as u16,
+        cz: rng.next_bounded(1024) as u16,
+        level: rng.next_bounded(8) as u8,
+        loc: rng.next_bounded(4) as u8,
+        row: rng.next_bounded(32) as u8,
+    });
+    (true, recs)
+}
+
+/// A refusal carrying `sim_core::build::REFUSE_B_SUPPORT`.
+pub fn event_build_refused() -> u8 {
+    sim_core::build::REFUSE_B_SUPPORT as u8
+}
+
+/// A seven-row piece table whose first batch is exactly
+/// `PIECE_DEFS_BATCH` rows of mixed shape/material/cost-count shapes.
+pub fn event_piece_defs() -> BuildContent {
+    /// (shape, material, hp, costs) — fixture shorthand.
+    type Row = (u8, u8, u16, &'static [(u16, u16)]);
+    let mut bc = BuildContent::EMPTY;
+    bc.piece_count = 7;
+    let rows: [Row; 7] = [
+        (sim_core::build::SHAPE_FOUNDATION, 0, 750, &[(0, 350)]),
+        (sim_core::build::SHAPE_WALL, 1, 1750, &[(1, 350)]),
+        (sim_core::build::SHAPE_DOORWAY, 2, 3000, &[(7, 160)]),
+        (sim_core::build::SHAPE_FLOOR, 0, 750, &[(0, 350), (4, 10)]),
+        (sim_core::build::SHAPE_STAIRS, 1, 1750, &[(1, 200)]),
+        (sim_core::build::SHAPE_ROOF, 2, 65_535, &[(65_535, 65_535)]),
+        (sim_core::build::SHAPE_WALL, 0, 750, &[(0, 350)]),
+    ];
+    for (i, &(shape, material, hp, costs)) in rows.iter().enumerate() {
+        let mut def = PieceDef {
+            shape,
+            material,
+            hp,
+            n_costs: costs.len() as u8,
+            costs: [(0, 0); MAX_PIECE_COSTS],
+        };
+        def.costs[..costs.len()].copy_from_slice(costs);
+        bc.pieces[i] = def;
+    }
+    bc
 }
 
 /// The worst-case shape (DESIGN.md §12 `test_snapshot_budget` at the

@@ -141,6 +141,31 @@ pub const ACTION_RING_CAP: usize = 8;
 /// the hit. Proposed default, DECISIONS.md §open (gather bounds row).
 pub const MAX_SLOT_LIVES: usize = 16_384;
 
+/// Building-piece definitions the sim preallocates for (the alpha set is
+/// 18 rows — 6 shapes × 3 materials, content/building.toml). The content
+/// bake refuses a set past this. Structural cap like `MAX_ITEM_DEFS`.
+pub const MAX_PIECE_DEFS: usize = 32;
+
+/// Cost rows one building piece may carry (alpha data uses 1). The bake
+/// refuses past it. Structural cap, not a knob.
+pub const MAX_PIECE_COSTS: usize = 2;
+
+/// Placed building pieces per shard. Overflow policy: **refuse** the
+/// placement with an integer reason code (EV_BUILD_REFUSED) — a full world
+/// refuses loudly, never evicts someone's wall. Proposed default,
+/// DECISIONS.md §open (build grid row).
+pub const MAX_PIECES: usize = 8_192;
+
+/// Build-grid coordinate ceiling: cells index 0..MAX_BUILD_COORD on each
+/// axis, matching the wire's 10-bit cell fields (the 2,048 m island spans
+/// ~683 3 m cells; foundations further out die on the terrain rule first).
+pub const MAX_BUILD_COORD: usize = 1_024;
+
+/// Build levels (vertical storeys) per cell, 0-based. The wire carries the
+/// level in 3 bits — exactly this range. Proposed default, DECISIONS.md
+/// §open (build grid row).
+pub const MAX_BUILD_LEVELS: usize = 8;
+
 /// Per-connection outbound ring of reliable event-lane messages (sim →
 /// net; the bidi stream). Overflow policy: **resync** — a refused push
 /// flags the client for an event-lane resync (harvested-set walk restarts
