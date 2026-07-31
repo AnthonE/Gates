@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+content = { path = "../content" }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-wasm = { path = "../client-wasm" }

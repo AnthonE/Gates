@@ -1,0 +1,72 @@
+# Gates · content/gatherables.toml — node/tree archetypes → per-tool yield
+# (CONTENT.md §1). Archetypes name sim-core scatter occupants (terrain.rs).
+# `hand` is the bare-hand row — a naked spawn bootstraps by punching stone
+# for a rock. Weak-spot hits (the glint / the X, DESIGN.md §2) pay
+# `weak_spot_bonus_pct` extra on that hit's yield.
+#
+# The farm band (balance.toml, CONTENT §4 anchor 3): archetypes listed in
+# `banded_nodes` must total 250–400 units over 8–12 hits with a tier-1 tool.
+
+[[gatherable]]
+id = "gather.tree"
+archetype = "tree"
+output = "item.wood"
+hits = 10
+weak_spot_bonus_pct = 50
+
+[gatherable.yield_per_hit]
+hand = 5
+"item.rock" = 10
+"item.hatchet_stone" = 20
+"item.hatchet_metal" = 30
+
+[[gatherable]]
+id = "gather.stone_node"
+archetype = "stone_node"
+output = "item.stone"
+hits = 10
+weak_spot_bonus_pct = 50
+
+[gatherable.yield_per_hit]
+hand = 5
+"item.rock" = 10
+"item.pickaxe_stone" = 20
+"item.pickaxe_metal" = 30
+
+[[gatherable]]
+id = "gather.metal_node"
+archetype = "metal_node"
+output = "item.metal_ore"
+hits = 10
+weak_spot_bonus_pct = 50
+
+[gatherable.yield_per_hit]
+hand = 3
+"item.rock" = 5
+"item.pickaxe_stone" = 15
+"item.pickaxe_metal" = 30
+
+[[gatherable]]
+id = "gather.sulfur_node"
+archetype = "sulfur_node"
+output = "item.sulfur_ore"
+hits = 10
+weak_spot_bonus_pct = 50
+
+[gatherable.yield_per_hit]
+hand = 3
+"item.rock" = 5
+"item.pickaxe_stone" = 15
+"item.pickaxe_metal" = 30
+
+# Bush: an instant hand pickup, not a swung node — outside the node band.
+
+[[gatherable]]
+id = "gather.bush"
+archetype = "bush"
+output = "item.cloth"
+hits = 1
+weak_spot_bonus_pct = 0
+
+[gatherable.yield_per_hit]
+hand = 10

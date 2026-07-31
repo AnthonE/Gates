@@ -1,0 +1,40 @@
+# Gates · content/loot.toml — container archetype → weighted entries
+# (CONTENT.md §5). Barrels are components-weighted (the coast-road reason);
+# the revolver rides as a rare barrel drop per DECISIONS.md §open
+# "revolver: barrel drop or craft-only". Respawn timing is the §open
+# node/barrel knob, not a content field.
+
+[[loot_table]]
+id = "loot.barrel"
+container = "barrel"
+rolls_min = 1
+rolls_max = 2
+
+entries = [
+    { item = "item.cloth", weight = 20, count_min = 10, count_max = 20 },
+    { item = "item.fat", weight = 15, count_min = 5, count_max = 10 },
+    { item = "item.metal_frags", weight = 15, count_min = 10, count_max = 25 },
+    { item = "item.lowgrade", weight = 10, count_min = 10, count_max = 20 },
+    { item = "item.gears", weight = 10, count_min = 1, count_max = 2 },
+    { item = "item.rope", weight = 12, count_min = 1, count_max = 2 },
+    { item = "item.tarp", weight = 8, count_min = 1, count_max = 1 },
+    { item = "item.revolver", weight = 1, count_min = 1, count_max = 1 },
+]
+
+[[loot_table]]
+id = "loot.crate"
+container = "crate"
+rolls_min = 2
+rolls_max = 3
+
+entries = [
+    { item = "item.metal_frags", weight = 15, count_min = 25, count_max = 50 },
+    { item = "item.gunpowder", weight = 10, count_min = 10, count_max = 30 },
+    { item = "item.sulfur", weight = 10, count_min = 20, count_max = 40 },
+    { item = "item.gears", weight = 12, count_min = 1, count_max = 3 },
+    { item = "item.rope", weight = 12, count_min = 1, count_max = 3 },
+    { item = "item.tarp", weight = 10, count_min = 1, count_max = 2 },
+    { item = "item.medkit", weight = 8, count_min = 1, count_max = 1 },
+    { item = "item.pistol_ammo", weight = 8, count_min = 4, count_max = 8 },
+    { item = "item.arrow_metal", weight = 10, count_min = 5, count_max = 10 },
+]

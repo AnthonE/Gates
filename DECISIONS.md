@@ -32,7 +32,10 @@ invented into code that isn't on this page.
 | haven sleeper timeout | 20 min | NETCODE §6.3 |
 | node/barrel respawn | 20–45 / 15–30 min jittered | TERRAIN §2 · CONTENT §5 |
 | despawn base constant | 5 min × rarity (≈5/20/40/60) | CONTENT §1 |
-| balance bands: raid ratio · TTK · farm rate | ≈1.5× starter · 3–6 hits · 300/node | CONTENT §4 |
+| balance bands: raid ratio · TTK · farm rate | ≈1.5× starter · 3–6 hits · 300/node — declared as data in `content/balance.toml` v0 (raid stone 1.0–3.0× rising by tier · TTK melee 3–5 / bow 3–4 / revolver 4–6 / armor +≤2 hits · node 250–400 over 8–12 hits · wood wall 5–9 min · upkeep ≤15 min/day), computed and asserted by `test_content`, refused at boot | CONTENT §4 |
+| player max hp (TTK divides by it) | 100 | CONTENT §4 · content/balance.toml |
+| content opening values (alpha set v0) | `content/*.toml` as committed — ~48 items, every number a knob with the file as its default; farm rates 50/50/30/30/20 per min, components 4 road-min (fat 2), satchel 240 gunpowder | CONTENT §2 · content/ |
+| content dir | `content/` at repo root; `shard.toml content_dir` overrides | CONTENT §0 · server `config.rs` |
 | revolver: barrel drop or craft-only | rare drop | CONTENT §5 |
 | food set (meat cut?) | berries/mushrooms/corn, meat cut | CONTENT §2 |
 | bank deposit fee | 2%, burns | DESIGN §3.1 |

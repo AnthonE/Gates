@@ -30,6 +30,31 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    // Content validates at boot (CLAUDE.md wall 7): a set that fails
+    // schema, reference, or balance-band checks does not get a shard. The
+    // hash pins into the WAL header when the WAL file format lands.
+    let content = match content::Content::load_dir(std::path::Path::new(&cfg.content_dir)) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("shard: content refused: {e}");
+            std::process::exit(1);
+        }
+    };
+    let a = content.anchors();
+    println!(
+        "content ok: {} items · hash {:016x}",
+        content.items.len(),
+        content.hash()
+    );
+    println!(
+        "content anchors: raid w/s/m {:.2}/{:.2}/{:.2} · satchel {:.1} min · starter {:.1} min · upkeep {:.1} min/day",
+        a.raid_ratio[0],
+        a.raid_ratio[1],
+        a.raid_ratio[2],
+        a.satchel_minutes,
+        a.starter_minutes,
+        a.upkeep_daily_minutes
+    );
     let seed = cfg.seed;
     let handle = match spawn_shard(cfg).await {
         Ok(h) => h,
