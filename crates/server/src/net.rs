@@ -48,7 +48,12 @@ pub struct ShardHandle {
 
 /// Boot a shard: bind, spawn the sim thread and the accept loop, return.
 /// The caller owns process lifetime; `shutdown` stops the sim thread.
-pub async fn spawn_shard(cfg: ShardConfig) -> Result<ShardHandle, String> {
+/// `gather` is the content bake (CLAUDE.md wall 7) — data the world runs
+/// on, handed over before the first tick like the seed itself.
+pub async fn spawn_shard(
+    cfg: ShardConfig,
+    gather: sim_core::gather::GatherContent,
+) -> Result<ShardHandle, String> {
     let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])
         .map_err(|e| format!("self-signed identity: {e}"))?;
     let cert_hash = identity
@@ -92,7 +97,11 @@ pub async fn spawn_shard(cfg: ShardConfig) -> Result<ShardHandle, String> {
         let dev_spawn = cfg.dev_spawn;
         std::thread::Builder::new()
             .name("sim".into())
-            .spawn(move || sim_thread(seed, dev_spawn, ctrl_rx, grave_tx, slots, stats, shutdown))
+            .spawn(move || {
+                sim_thread(
+                    seed, dev_spawn, gather, ctrl_rx, grave_tx, slots, stats, shutdown,
+                )
+            })
             .map_err(|e| format!("sim thread spawn: {e}"))?;
     }
 
@@ -379,9 +388,11 @@ pub async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), ()
 // The sim thread
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn sim_thread(
     seed: u64,
     dev_spawn: Option<(f32, f32)>,
+    gather: sim_core::gather::GatherContent,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut grave_tx: rtrb::Producer<Link>,
     slots: Arc<SlotTable>,
@@ -390,6 +401,7 @@ fn sim_thread(
 ) {
     let mut core = ShardCore::new(seed);
     core.world.dev_spawn = dev_spawn;
+    core.world.gather = gather;
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_PLAYERS);
     links.resize_with(MAX_PLAYERS, || None);
     let mut links = links.into_boxed_slice();

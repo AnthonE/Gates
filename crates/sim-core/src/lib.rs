@@ -7,6 +7,7 @@
 
 pub mod bots;
 pub mod fmath;
+pub mod gather;
 pub mod input;
 pub mod limits;
 pub mod movement;

@@ -5,9 +5,12 @@
 //! and replay reproduces that for free because the frame is sim state.
 
 /// Button bits (ALPHA.md §1 sizes sprint/crouch into the field; crouch has
-/// no sim effect yet — it lands with the combat pass).
+/// no sim effect yet — it lands with the combat pass). PRIMARY is the
+/// swing/use button: gather now (M1), attack with M2. A new bit in an
+/// already-sized field — the wire layout does not move.
 pub const BTN_SPRINT: u8 = 1 << 0;
 pub const BTN_CROUCH: u8 = 1 << 1;
+pub const BTN_PRIMARY: u8 = 1 << 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct InputFrame {

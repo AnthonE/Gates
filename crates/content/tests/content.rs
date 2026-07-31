@@ -218,3 +218,52 @@ fn door_must_stay_weaker_than_wall() {
         "must stay under",
     );
 }
+
+/// The shipped set bakes into the sim's fixed tables, and the baked rows
+/// say what the TOML says — the bridge across wall 7 carries the data
+/// unchanged.
+#[test]
+fn bake_carries_the_shipped_numbers() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let gc = c.bake_gather().expect("shipped content must bake");
+
+    let wood = c.item_index("item.wood").unwrap();
+    let hatchet = c.item_index("item.hatchet_stone").unwrap();
+    assert_eq!(gc.item_count as usize, c.items.len());
+    assert_eq!(gc.stack_max[wood as usize], 1000, "items.toml wood stack");
+
+    // gatherables.toml gather.tree: output wood, 10 hits, hand 5,
+    // stone hatchet 20 — read back from the baked table.
+    let tree = &gc.nodes[0];
+    assert_eq!(tree.output, wood);
+    assert_eq!(tree.hits, 10);
+    assert_eq!(tree.yield_for(sim_core::gather::NO_ITEM), 5);
+    assert_eq!(tree.yield_for(hatchet), 20);
+
+    // Index mapping is a bijection into 0..len.
+    let mut seen = vec![false; c.items.len()];
+    for item in &c.items {
+        let i = c.item_index(&item.id).unwrap() as usize;
+        assert!(!seen[i], "index {i} assigned twice");
+        seen[i] = true;
+    }
+}
+
+/// Two gatherable rows for one archetype cannot bake — the sim holds one
+/// def per node kind.
+#[test]
+fn bake_refuses_duplicate_archetype() {
+    let mut srcs = sources();
+    let entry = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "gatherables.toml")
+        .unwrap();
+    entry.1.push_str(
+        "\n[[gatherable]]\nid = \"gather.bush2\"\narchetype = \"bush\"\n\
+         output = \"item.cloth\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+         [gatherable.yield_per_hit]\nhand = 10\n",
+    );
+    let c = build(&srcs).expect("duplicate archetype is a bake error, not a schema error");
+    let err = c.bake_gather().expect_err("duplicate archetype baked");
+    assert!(err.contains("duplicate gatherable"), "{err}");
+}

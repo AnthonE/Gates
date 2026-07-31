@@ -4,9 +4,13 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6):
-   gather/slots · inventory/craft from `content/` · build grid + hearth +
-   upkeep/decay · death/backpack/respawn-on-bag.
+1. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
+   Sim-side gather/slots/inventory landed (slice 2: swing verb, slot
+   life + respawn, baked content tables, event ring). Next: gather on
+   the wire — slot events + own inventory to the client, node vanish,
+   HUD counts, join sync · hotbar select + the weak-spot bonus · craft
+   from `content/` · build grid + hearth + upkeep/decay ·
+   death/backpack/respawn-on-bag.
 2. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
 3. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·

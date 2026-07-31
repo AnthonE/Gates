@@ -6,6 +6,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sim_core::bots::bot_frame;
+use sim_core::gather::GatherContent;
 use sim_core::limits::MAX_PLAYERS;
 use sim_core::rng::Pcg32;
 use sim_core::world::{Command, World};
@@ -36,6 +37,9 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 #[test]
 fn test_alloc_zero() {
     let mut world = World::new(0xA110C);
+    // The gather fixture puts swings, yields, slot-life writes, and the
+    // respawn sweep inside the counted window.
+    world.gather = GatherContent::probe_fixture();
     let mut rng = Pcg32::new(0xA110C, 3);
     let mut yaws = [0u16; MAX_PLAYERS];
 

@@ -40,6 +40,13 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    let gather = match content.bake_gather() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("shard: content bake refused: {e}");
+            std::process::exit(1);
+        }
+    };
     let a = content.anchors();
     println!(
         "content ok: {} items · hash {:016x}",
@@ -56,7 +63,7 @@ async fn main() {
         a.upkeep_daily_minutes
     );
     let seed = cfg.seed;
-    let handle = match spawn_shard(cfg).await {
+    let handle = match spawn_shard(cfg, gather).await {
         Ok(h) => h,
         Err(e) => {
             eprintln!("shard: {e}");

@@ -7,5 +7,6 @@ publish.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+sim-core = { path = "../sim-core" }
 toml = "0.8"
 xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
