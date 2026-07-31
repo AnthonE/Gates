@@ -27,6 +27,8 @@ export class WasmViews {
     this.slotChanges = null; // Uint32Array over client_slot_changes_ptr
     this.craftJobs = null; // Uint16Array over client_craft_jobs_ptr
     this.recipes = null; // Uint16Array over client_recipes_ptr (14-word rows)
+    this.pieceChanges = null; // Uint32Array over client_piece_changes_ptr
+    this.pieceDefs = null; // Uint16Array over client_piece_defs_ptr (8-word rows)
     this.inCap = ex.client_in_cap();
     this.refresh();
   }
@@ -48,6 +50,8 @@ export class WasmViews {
     const slotChangesPtr = ex.client_slot_changes_ptr();
     const craftJobsPtr = ex.client_craft_jobs_ptr();
     const recipesPtr = ex.client_recipes_ptr();
+    const pieceChangesPtr = ex.client_piece_changes_ptr();
+    const pieceDefsPtr = ex.client_piece_defs_ptr();
 
     const buf = ex.memory.buffer;
     if (buf === this.buffer) return;
@@ -63,5 +67,9 @@ export class WasmViews {
     this.craftJobs = new Uint16Array(buf, craftJobsPtr, 4 * 2);
     // 64 recipes × (output, count, ticks lo/hi, station, n_inputs, 4×(item,count)).
     this.recipes = new Uint16Array(buf, recipesPtr, 64 * 14);
+    // 32 piece records × [cx<<16|cz, level<<16|loc<<8|row].
+    this.pieceChanges = new Uint32Array(buf, pieceChangesPtr, 32 * 2);
+    // 32 piece defs × (shape, material, hp, n_costs, 2×(item,count)).
+    this.pieceDefs = new Uint16Array(buf, pieceDefsPtr, 32 * 8);
   }
 }

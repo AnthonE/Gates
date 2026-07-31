@@ -11,10 +11,11 @@ use crate::interp::Interp;
 use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
 use protocol::{decode_event, encode_input, EventMsg, InputDatagram, ItemCatalog, WireError};
+use sim_core::build::{BuildContent, PieceRec};
 use sim_core::craft::CraftContent;
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
-use sim_core::limits::{CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_SLOT_LIVES};
+use sim_core::limits::{CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_PIECES, MAX_SLOT_LIVES};
 
 /// Gather toasts buffered for the HUD (drop-oldest — a toast is cosmetic).
 pub const TOAST_RING: usize = 8;
@@ -38,6 +39,14 @@ pub const APPLIED_CRAFT_DONE: u32 = 1 << 7;
 pub const APPLIED_CRAFT_REFUSED: u32 = 1 << 8;
 /// Recipe rows arrived (the craft menu's data grew).
 pub const APPLIED_RECIPES: u32 = 1 << 9;
+/// Placed pieces arrived (`piece_changes()` has the records).
+pub const APPLIED_PIECES: u32 = 1 << 10;
+/// The piece set reset first (join sync / resync) — clear meshes.
+pub const APPLIED_PIECE_RESET: u32 = 1 << 11;
+/// A place request bounced (a refusal reason is buffered).
+pub const APPLIED_BUILD_REFUSED: u32 = 1 << 12;
+/// Piece-def rows arrived (the build menu's data grew).
+pub const APPLIED_PIECE_DEFS: u32 = 1 << 13;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -82,6 +91,63 @@ impl HarvestedSet {
             self.len -= 1;
             self.cells[i] = self.cells[self.len];
         }
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+/// The client's mirror of the placed-piece set, keyed by grid address —
+/// bounded like the server's store (`MAX_PIECES`). Insertion is
+/// idempotent (a piece can arrive by broadcast AND by the sync walk); an
+/// insert past capacity is dropped, the same bounded posture as the
+/// harvested set (the server refuses placements there too, so a full
+/// client store only desyncs against a server bug, and the next resync
+/// walk retries).
+pub struct PieceSet {
+    recs: Box<[PieceRec]>,
+    len: usize,
+}
+
+impl PieceSet {
+    fn new() -> Self {
+        Self {
+            recs: vec![PieceRec::default(); MAX_PIECES].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn entries(&self) -> &[PieceRec] {
+        &self.recs[..self.len]
+    }
+
+    /// True if the set changed (a known address with the same row is a
+    /// duplicate, not a change).
+    fn insert(&mut self, rec: PieceRec) -> bool {
+        for r in self.recs[..self.len].iter_mut() {
+            if r.cx == rec.cx && r.cz == rec.cz && r.level == rec.level && r.loc == rec.loc {
+                if *r == rec {
+                    return false;
+                }
+                *r = rec;
+                return true;
+            }
+        }
+        if self.len == self.recs.len() {
+            return false;
+        }
+        self.recs[self.len] = rec;
+        self.len += 1;
+        true
     }
 
     fn clear(&mut self) {
@@ -159,6 +225,18 @@ pub struct ClientCore {
     refusals: [u8; REFUSAL_RING],
     refusal_head: usize,
     refusal_len: usize,
+    /// The placed-piece mirror (address-keyed; the renderer's truth).
+    pub pieces: PieceSet,
+    /// Piece records the last `on_stream` call added or replaced.
+    piece_changes: [PieceRec; protocol::PIECE_SYNC_BATCH],
+    n_piece_changes: usize,
+    /// The piece-def table as dripped so far (same rows the sim runs).
+    pub piece_defs: BuildContent,
+    /// Rows received so far (batches arrive in order).
+    pub piece_defs_have: u16,
+    build_refusals: [u8; REFUSAL_RING],
+    build_refusal_head: usize,
+    build_refusal_len: usize,
     pub events_applied: u64,
     pub event_errors: u64,
 }
@@ -201,6 +279,14 @@ impl ClientCore {
             refusals: [0; REFUSAL_RING],
             refusal_head: 0,
             refusal_len: 0,
+            pieces: PieceSet::new(),
+            piece_changes: [PieceRec::default(); protocol::PIECE_SYNC_BATCH],
+            n_piece_changes: 0,
+            piece_defs: BuildContent::EMPTY,
+            piece_defs_have: 0,
+            build_refusals: [0; REFUSAL_RING],
+            build_refusal_head: 0,
+            build_refusal_len: 0,
             events_applied: 0,
             event_errors: 0,
         }
@@ -211,6 +297,7 @@ impl ClientCore {
     /// renderer is in `slot_changes()` until the next call.
     pub fn on_stream(&mut self, bytes: &[u8]) -> Result<u32, WireError> {
         self.n_slot_changes = 0;
+        self.n_piece_changes = 0;
         let msg = match decode_event(bytes) {
             Ok(m) => m,
             Err(e) => {
@@ -334,6 +421,47 @@ impl ClientCore {
                 self.recipes_have = self.recipes_have.max(first as u16 + count as u16);
                 flags |= APPLIED_RECIPES;
             }
+            EventMsg::PiecePlaced { rec } => {
+                if self.pieces.insert(rec) {
+                    self.push_piece_change(rec);
+                    flags |= APPLIED_PIECES;
+                }
+            }
+            EventMsg::PieceSync { reset, recs, count } => {
+                if reset {
+                    self.pieces.clear();
+                    flags |= APPLIED_PIECE_RESET;
+                }
+                for &rec in recs.iter().take(count as usize) {
+                    if self.pieces.insert(rec) {
+                        self.push_piece_change(rec);
+                        flags |= APPLIED_PIECES;
+                    }
+                }
+            }
+            EventMsg::BuildRefused { reason } => {
+                if self.build_refusal_len == REFUSAL_RING {
+                    self.build_refusal_head = (self.build_refusal_head + 1) % REFUSAL_RING;
+                    self.build_refusal_len -= 1;
+                }
+                self.build_refusals
+                    [(self.build_refusal_head + self.build_refusal_len) % REFUSAL_RING] = reason;
+                self.build_refusal_len += 1;
+                flags |= APPLIED_BUILD_REFUSED;
+            }
+            EventMsg::PieceDefs {
+                total,
+                first,
+                count,
+                rows,
+            } => {
+                self.piece_defs.piece_count = total as u16;
+                for (i, row) in rows.iter().enumerate().take(count as usize) {
+                    self.piece_defs.pieces[first as usize + i] = *row;
+                }
+                self.piece_defs_have = self.piece_defs_have.max(first as u16 + count as u16);
+                flags |= APPLIED_PIECE_DEFS;
+            }
         }
         Ok(flags)
     }
@@ -360,6 +488,29 @@ impl ClientCore {
     /// Cell changes from the last applied message (renderer detail).
     pub fn slot_changes(&self) -> &[(u32, bool)] {
         &self.slot_changes[..self.n_slot_changes]
+    }
+
+    fn push_piece_change(&mut self, rec: PieceRec) {
+        if self.n_piece_changes < self.piece_changes.len() {
+            self.piece_changes[self.n_piece_changes] = rec;
+            self.n_piece_changes += 1;
+        }
+    }
+
+    /// Piece records the last applied message added (renderer detail).
+    pub fn piece_changes(&self) -> &[PieceRec] {
+        &self.piece_changes[..self.n_piece_changes]
+    }
+
+    /// Oldest buffered build refusal reason (`sim_core::build::REFUSE_B_*`).
+    pub fn pop_build_refusal(&mut self) -> Option<u8> {
+        if self.build_refusal_len == 0 {
+            return None;
+        }
+        let r = self.build_refusals[self.build_refusal_head];
+        self.build_refusal_head = (self.build_refusal_head + 1) % REFUSAL_RING;
+        self.build_refusal_len -= 1;
+        Some(r)
     }
 
     /// Oldest buffered gather toast, if any: (item index, units added).

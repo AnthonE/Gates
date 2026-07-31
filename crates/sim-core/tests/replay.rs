@@ -5,6 +5,7 @@
 //! pinned: any accidental drift in sim behavior reddens this gate.
 
 use sim_core::bots::bot_frame;
+use sim_core::build::BuildContent;
 use sim_core::craft::CraftContent;
 use sim_core::gather::GatherContent;
 use sim_core::limits::STATE_HASH_INTERVAL;
@@ -16,15 +17,16 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-/// Regenerated this commit: the craft verb landed — state_hash covers the
-/// per-player craft queue, and the script drives Craft/CraftCancel
-/// commands (enqueue, completion, refusal, cancel) through the log.
-const GOLDEN_FINAL_HASH: u64 = 0xECCF_F5D7_4B0E_4664;
+/// Regenerated this commit: the build verb landed — state_hash covers the
+/// placed-piece store, and the script drives Place commands (placements
+/// and every refusal reason) through the log.
+const GOLDEN_FINAL_HASH: u64 = 0x6345_2659_5DEE_6F44;
 
 fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut world = World::new(seed);
     world.gather = GatherContent::probe_fixture();
     world.craft = CraftContent::probe_fixture();
+    world.build = BuildContent::probe_fixture();
     let mut rng = Pcg32::new(seed, 11);
     let mut yaws = [0u16; 64];
     let mut joined: u32 = 0;
@@ -64,12 +66,34 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     index: (t % 4) as u16,
                 });
             }
+            // The build verb rides the log too: places at the player's own
+            // cell (successes once wood accrues) plus out-of-range rows and
+            // mismatched locs (the refusal paths).
+            if (t + id as u64).is_multiple_of(53) {
+                let b = &world.players[(id as usize - 1) % 64].body;
+                let cell = |q: i32| {
+                    sim_core::build::build_cell_of(q as f32 * sim_core::movement::POS_XZ_Q)
+                        .clamp(0, 1023) as u16
+                };
+                cmds.push(Command::Place {
+                    id,
+                    row: ((t / 53 + id as u64) % 4) as u16,
+                    cx: cell(b.qx),
+                    cz: cell(b.qz),
+                    level: ((t / 106) % 2) as u8,
+                    loc: ((t / 53 + id as u64) % 4) as u8,
+                });
+            }
         }
         world.tick(&cmds);
         if world.tick.is_multiple_of(STATE_HASH_INTERVAL) {
             hashes.push(world.last_hash);
         }
     }
+    assert!(
+        !world.pieces.is_empty(),
+        "the script placed nothing — the build success path fell out of the replay surface"
+    );
     (hashes, world.state_hash())
 }
 

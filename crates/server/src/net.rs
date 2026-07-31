@@ -70,13 +70,14 @@ pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
 
 /// Boot a shard: bind, spawn the sim thread and the accept loop, return.
 /// The caller owns process lifetime; `shutdown` stops the sim thread.
-/// `gather`, `craft`, and `catalog` are the content bake (CLAUDE.md wall
-/// 7) — data the world runs on, handed over before the first tick like
-/// the seed.
+/// `gather`, `craft`, `build`, and `catalog` are the content bake
+/// (CLAUDE.md wall 7) — data the world runs on, handed over before the
+/// first tick like the seed.
 pub async fn spawn_shard(
     cfg: ShardConfig,
     gather: sim_core::gather::GatherContent,
     craft: sim_core::craft::CraftContent,
+    build: sim_core::build::BuildContent,
     catalog: ItemCatalog,
 ) -> Result<ShardHandle, String> {
     let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])
@@ -124,8 +125,8 @@ pub async fn spawn_shard(
             .name("sim".into())
             .spawn(move || {
                 sim_thread(
-                    seed, dev_spawn, gather, craft, catalog, ctrl_rx, grave_tx, slots, stats,
-                    shutdown,
+                    seed, dev_spawn, gather, craft, build, catalog, ctrl_rx, grave_tx, slots,
+                    stats, shutdown,
                 )
             })
             .map_err(|e| format!("sim thread spawn: {e}"))?;
@@ -548,6 +549,7 @@ fn sim_thread(
     dev_spawn: Option<(f32, f32)>,
     gather: sim_core::gather::GatherContent,
     craft: sim_core::craft::CraftContent,
+    build: sim_core::build::BuildContent,
     catalog: ItemCatalog,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut grave_tx: rtrb::Producer<Link>,
@@ -559,6 +561,7 @@ fn sim_thread(
     core.world.dev_spawn = dev_spawn;
     core.world.gather = gather;
     core.world.craft = craft;
+    core.world.build = build;
     core.catalog = catalog;
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_PLAYERS);
     links.resize_with(MAX_PLAYERS, || None);

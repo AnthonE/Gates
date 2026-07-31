@@ -31,11 +31,12 @@ pub mod goldens;
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use event::{
-    decode_event, encode_event_catalog, encode_event_craft_done, encode_event_craft_q,
-    encode_event_craft_refused, encode_event_gather, encode_event_inv, encode_event_recipes,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark, EventMsg, InvSlot,
-    ItemCatalog, CATALOG_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, RECIPE_BATCH,
-    SLOT_SYNC_BATCH,
+    decode_event, encode_event_build_refused, encode_event_catalog, encode_event_craft_done,
+    encode_event_craft_q, encode_event_craft_refused, encode_event_gather, encode_event_inv,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
+    encode_event_recipes, encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark,
+    EventMsg, InvSlot, ItemCatalog, CATALOG_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
+    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -46,9 +47,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// hotbar selector to every input frame and the weak-mark event subtype.
 /// v3 added the C→S action lane (`KIND_ACTION`: craft request / cancel on
 /// the bidi stream) and the craft event subtypes (queue, done, refused,
-/// recipe catalog) — a v2 peer would refuse them all as malformed, so the
-/// hello gate refuses the pair; fixtures are keyed `v3_*`.
-pub const PROTO_VER: u16 = 3;
+/// recipe catalog). v4 added the build lane: the place action and the
+/// piece event subtypes (placed, join sync, refused, piece-def catalog) —
+/// a v3 peer would refuse them all as malformed, so the hello gate
+/// refuses the pair; fixtures are keyed `v4_*`.
+pub const PROTO_VER: u16 = 4;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -204,9 +207,18 @@ pub fn decode_refuse(buf: &[u8]) -> Result<Refuse, WireError> {
 const ACTION_SUB_BITS: u32 = 2;
 const ACT_CRAFT: u32 = 0;
 const ACT_CANCEL: u32 = 1;
+const ACT_PLACE: u32 = 2;
 /// Cancel index width mirrors the queue (`CRAFT_QUEUE` = 4 fits 3 bits);
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
+/// Build-grid field widths (limits.rs: `MAX_BUILD_COORD` 1024 cells,
+/// `MAX_BUILD_LEVELS` 8, four locs, `MAX_PIECE_DEFS` 32 rows). Coord,
+/// level, and loc widths are exact; piece rows past the cap refuse at
+/// decode. Shared with the event lane's piece records (`event.rs`).
+pub(crate) const BUILD_CELL_BITS: u32 = 10;
+pub(crate) const BUILD_LEVEL_BITS: u32 = 3;
+pub(crate) const BUILD_LOC_BITS: u32 = 2;
+pub(crate) const PIECE_ROW_BITS: u32 = 8;
 
 /// One decoded C→S action. The wire enforces shape (recipe inside the
 /// sim's table, a live index, a nonzero count); meaning — does the recipe
@@ -218,6 +230,17 @@ pub enum ActionMsg {
     Craft { recipe: u16, count: u16 },
     /// Cancel the queue job at `index`, refunding remaining inputs.
     CraftCancel { index: u16 },
+    /// Place baked piece row `row` at build-grid address (cx, cz, level,
+    /// loc). Shape here too: address inside the grid, row inside the
+    /// table; support/terrain/cost are the sim's verdict, delivered as a
+    /// build-refused event.
+    Place {
+        row: u16,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
 }
 
 pub fn encode_action_craft(recipe: u16, count: u16, buf: &mut [u8]) -> Result<usize, WireError> {
@@ -246,6 +269,33 @@ pub fn encode_action_cancel(index: u16, buf: &mut [u8]) -> Result<usize, WireErr
     Ok(w.finish())
 }
 
+pub fn encode_action_place(
+    row: u16,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if row as usize >= sim_core::limits::MAX_PIECE_DEFS
+        || cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || loc > sim_core::build::LOC_EDGE_N
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_PLACE, ACTION_SUB_BITS)?;
+    w.write(row as u32, PIECE_ROW_BITS)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    Ok(w.finish())
+}
+
 /// Total decode of one C→S action frame — client-driven bytes, so the
 /// same never-panic contract as the input datagrams.
 pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
@@ -271,6 +321,24 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             ActionMsg::CraftCancel { index }
+        }
+        ACT_PLACE => {
+            let row = r.read(PIECE_ROW_BITS)? as u16;
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            // Coord/level/loc widths are exact; only the row can be forged.
+            if row as usize >= sim_core::limits::MAX_PIECE_DEFS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Place {
+                row,
+                cx,
+                cz,
+                level,
+                loc,
+            }
         }
         _ => return Err(WireError::Malformed),
     };

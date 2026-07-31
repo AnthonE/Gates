@@ -117,6 +117,14 @@ pub struct ClientNetState {
     pub catalog_cursor: usize,
     /// Next recipe row the recipe drip sends.
     pub recipes_cursor: usize,
+    /// Next piece-def row the build-menu drip sends.
+    pub piece_defs_cursor: usize,
+    /// Placed-piece walk: next `world.pieces` entry index to send. The
+    /// store is append-only this slice, so the walk is stable.
+    pub piece_sync_cursor: usize,
+    /// The next piece batch carries the reset bit (fresh join or
+    /// event-lane resync): the client clears its piece set first.
+    pub piece_sync_reset: bool,
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
@@ -153,6 +161,9 @@ impl ClientNetState {
             sync_reset: true,
             catalog_cursor: 0,
             recipes_cursor: 0,
+            piece_defs_cursor: 0,
+            piece_sync_cursor: 0,
+            piece_sync_reset: true,
             pending_action: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
             last_done_at: 0,
@@ -160,15 +171,19 @@ impl ClientNetState {
     }
 
     /// Restart everything the event lane owes this client (fresh join and
-    /// ring-overflow recovery are the same path): the harvested-set walk
-    /// from the top with a reset batch, the catalog and recipe drips from
-    /// row zero, and a forced craft-queue resend. The inventory shadow
-    /// stays — it re-diffs against the world by itself.
+    /// ring-overflow recovery are the same path): the harvested-set and
+    /// placed-piece walks from the top with reset batches, the catalog /
+    /// recipe / piece-def drips from row zero, and a forced craft-queue
+    /// resend. The inventory shadow stays — it re-diffs against the world
+    /// by itself.
     pub fn ev_resync(&mut self) {
         self.sync_cursor = 0;
         self.sync_reset = true;
         self.catalog_cursor = 0;
         self.recipes_cursor = 0;
+        self.piece_defs_cursor = 0;
+        self.piece_sync_cursor = 0;
+        self.piece_sync_reset = true;
         self.last_done_at = u64::MAX;
     }
 

@@ -7,12 +7,14 @@
 use crate::client::ClientNetState;
 use crate::stats::ShardStats;
 use protocol::{
-    encode_event_catalog, encode_event_craft_done, encode_event_craft_q,
-    encode_event_craft_refused, encode_event_gather, encode_event_inv, encode_event_recipes,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark, ActionMsg,
-    EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireError,
-    MAX_EVENT_MSG_BYTES, SLOT_SYNC_BATCH,
+    encode_event_build_refused, encode_event_catalog, encode_event_craft_done,
+    encode_event_craft_q, encode_event_craft_refused, encode_event_gather, encode_event_inv,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
+    encode_event_recipes, encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark,
+    ActionMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader,
+    WireError, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
+use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
 use sim_core::gather::ItemStack;
 use sim_core::limits::{
@@ -21,8 +23,8 @@ use sim_core::limits::{
     STALENESS_CEILING, SYNC_SCAN_PER_TICK,
 };
 use sim_core::world::{
-    Command, Player, World, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_GATHER, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_WEAK_MARK,
+    Command, Player, World, EV_BUILD_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_GATHER,
+    EV_PIECE_PLACED, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_WEAK_MARK,
 };
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
@@ -190,6 +192,20 @@ impl ShardCore {
                         count,
                     },
                     ActionMsg::CraftCancel { index } => Command::CraftCancel { id: c.id, index },
+                    ActionMsg::Place {
+                        row,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    } => Command::Place {
+                        id: c.id,
+                        row,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    },
                 };
                 n += 1;
             }
@@ -295,6 +311,50 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_BUILD_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // placer left this tick
+                    };
+                    match encode_event_build_refused(ev.b as u8, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                // A lost refusal is cosmetic; the resync is
+                                // the uniform recovery.
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_PIECE_PLACED => {
+                    let rec = PieceRec {
+                        cx: (ev.a >> 16) as u16,
+                        cz: ev.a as u16,
+                        level: (ev.b >> 16) as u8,
+                        loc: (ev.b >> 8) as u8,
+                        row: ev.b as u8,
+                    };
+                    match encode_event_piece_placed(&rec, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    // The piece walk re-derives it.
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_SLOT_HARVESTED | EV_SLOT_RESPAWNED => {
                     let cx = (ev.a >> 16) as u16;
                     let cz = ev.a as u16;
@@ -386,6 +446,23 @@ impl ShardCore {
             }
         }
 
+        // Piece-def rows, same drip shape (the build menu's data).
+        let c = &self.clients[slot];
+        let bc = &self.world.build;
+        if bc.piece_count > 0 && c.piece_defs_cursor < bc.piece_count as usize {
+            match encode_event_piece_defs(bc, c.piece_defs_cursor, &mut self.ev_buf) {
+                Ok((len, took)) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].piece_defs_cursor += took;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
         // Harvested-set walk (join sync / resync), drip-fed. The cursor
         // walks the live store; entries that move behind it mid-walk stay
         // unsynced until their own respawn event — bounded staleness the
@@ -425,6 +502,30 @@ impl ShardCore {
             } else {
                 // Window held only standing-damage entries: nothing to say.
                 self.clients[slot].sync_cursor += scanned;
+            }
+        }
+
+        // Placed-piece walk (join sync / resync), drip-fed like the
+        // harvested set. The store is append-only this slice, so the walk
+        // is stable; a piece that also arrived by broadcast lands twice
+        // and the client's address-keyed apply dedups it.
+        let c = &self.clients[slot];
+        let pieces = self.world.pieces.entries();
+        if c.piece_sync_reset || c.piece_sync_cursor < pieces.len() {
+            let n = PIECE_SYNC_BATCH.min(pieces.len() - c.piece_sync_cursor.min(pieces.len()));
+            let batch = &pieces[c.piece_sync_cursor.min(pieces.len())..][..n];
+            match encode_event_piece_sync(c.piece_sync_reset, batch, &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        let c = &mut self.clients[slot];
+                        c.piece_sync_reset = false;
+                        c.piece_sync_cursor += n;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
         }
 

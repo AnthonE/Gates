@@ -69,6 +69,12 @@ const REQUIRED = [
   "client_craft_refusal_pop",
   "client_action_craft",
   "client_action_cancel",
+  "client_action_place",
+  "client_piece_changes_ptr",
+  "client_piece_changes_len",
+  "client_piece_defs_ptr",
+  "client_piece_defs_state",
+  "client_build_refusal_pop",
 ];
 
 let failed = 0;
@@ -120,7 +126,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 3, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 4, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
@@ -200,6 +206,40 @@ check(ex.client_craft_refusal_pop() === 4, "refusal reason should be 4");
 check(ex.client_craft_refusal_pop() >>> 0 === 0xffffffff, "refusal ring should drain");
 check((ex.client_craft_q() >>> 0) === 0, "queue should still be empty");
 check((ex.client_recipes_state() >>> 0) === 0, "no recipes dripped yet");
+
+// --- build surface: place action out, piece events in ---------------------
+const placeLen = ex.client_action_place(0, 341, 341, 0, 0);
+check(placeLen === 5, `place action length odd: ${placeLen}`);
+check(ex.client_action_place(32, 0, 0, 0, 0) === 0, "row past the table must refuse");
+check(ex.client_action_place(0, 1024, 0, 0, 0) === 0, "cx past the grid must refuse");
+check(ex.client_action_place(0, 0, 0, 8, 0) === 0, "level past the cap must refuse");
+
+// Hand-framed piece-placed: kind EVENT(5, 3 bits LSB-first) · subtype
+// PIECE_PLACED(11, 4 bits) · cx=341 (10) · cz=682 (10) · level=3 (3) ·
+// loc=3 (2) · row=17 (8) — protocol/src/event.rs layout.
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
+  0xdd, 0xaa, 0x54, 0xdd, 0x11,
+]);
+const pieceFlags = ex.client_on_stream(5);
+check(pieceFlags === 1024, `piece-placed should apply with PIECES flag: ${pieceFlags}`);
+check(ex.client_piece_changes_len() === 1, "one piece change expected");
+const pchange = new Uint32Array(ex.memory.buffer, ex.client_piece_changes_ptr(), 2);
+check(pchange[0] === ((341 << 16) | 682), `piece change key odd: ${pchange[0]}`);
+check(pchange[1] === ((3 << 16) | (3 << 8) | 17), `piece change info odd: ${pchange[1]}`);
+// The same record again is a duplicate, not a change.
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
+  0xdd, 0xaa, 0x54, 0xdd, 0x11,
+]);
+check(ex.client_on_stream(5) === 0, "duplicate piece must not re-flag");
+
+// Hand-framed build-refused: kind EVENT(5) · subtype BUILD_REFUSED(13) ·
+// reason=2 (8 bits).
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x6d, 0x01]);
+const bRefused = ex.client_on_stream(2);
+check(bRefused === 4096, `build-refused should apply with its flag: ${bRefused}`);
+check(ex.client_build_refusal_pop() === 2, "build refusal reason should be 2");
+check(ex.client_build_refusal_pop() >>> 0 === 0xffffffff, "build refusal ring should drain");
+check((ex.client_piece_defs_state() >>> 0) === 0, "no piece defs dripped yet");
 
 // Garbage on the stream must be refused with the error bit, not trap.
 new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 3).set([0xff, 0xff, 0xff]);

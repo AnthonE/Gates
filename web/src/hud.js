@@ -15,8 +15,10 @@ export class Hud {
     this.toasts = document.getElementById("toasts");
     this.craft = document.getElementById("craft");
     this.craftq = document.getElementById("craftq");
+    this.build = document.getElementById("build");
     this.craftOpen = false;
     this.last = "";
+    this.lastBuild = "";
     this.cells = [];
     this.cellDivs = [];
     this.cellTexts = [];
@@ -113,6 +115,14 @@ export class Hud {
       this.last = text;
       this.el.textContent = text;
     }
+  }
+
+  /** The build-mode strip; an empty string hides it. */
+  setBuild(text) {
+    if (text === this.lastBuild) return;
+    this.lastBuild = text;
+    this.build.textContent = text;
+    this.build.style.display = text ? "block" : "none";
   }
 
   /** Six strings, one per hotbar slot; only changed cells touch the DOM. */

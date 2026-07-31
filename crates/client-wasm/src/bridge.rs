@@ -12,12 +12,13 @@
 
 use crate::core::ClientCore;
 use protocol::{
-    decode_refuse, decode_welcome, encode_action_cancel, encode_action_craft, encode_hello,
-    peek_kind, Hello, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES, PROTO_VER, SLOT_SYNC_BATCH,
+    decode_refuse, decode_welcome, encode_action_cancel, encode_action_craft, encode_action_place,
+    encode_hello, peek_kind, Hello, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES,
+    PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
-    CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, INV_SLOTS, MAX_ITEM_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
-    MAX_SNAPSHOT_ENTITIES,
+    CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, INV_SLOTS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS,
+    MAX_RECIPES, MAX_RECIPE_INPUTS, MAX_SNAPSHOT_ENTITIES,
 };
 use sim_core::terrain::{self, ScatterTable};
 use std::cell::RefCell;
@@ -45,6 +46,9 @@ const CATALOG_ROW: usize = 1 + MAX_ITEM_NAME_BYTES;
 /// Recipe view row, u16 words: output, out_count, ticks lo, ticks hi,
 /// station, n_inputs, then (item, count) per input slot.
 const RECIPE_ROW_WORDS: usize = 6 + 2 * MAX_RECIPE_INPUTS;
+/// Piece-def view row, u16 words: shape, material, hp, n_costs, then
+/// (item, count) per cost slot.
+const PIECE_DEF_ROW_WORDS: usize = 4 + 2 * MAX_PIECE_COSTS;
 /// `client_on_stream` error flag (high bit; real flags are low bits).
 const STREAM_ERR: u32 = 1 << 31;
 
@@ -68,6 +72,12 @@ struct Bridge {
     craft_jobs: [u16; CRAFT_QUEUE * 2],
     /// Recipe table view: `RECIPE_ROW_WORDS` u16s per recipe index.
     recipes: Box<[u16; MAX_RECIPES * RECIPE_ROW_WORDS]>,
+    /// Piece records the last stream message added, packed as u32 pairs:
+    /// [cx << 16 | cz, level << 16 | loc << 8 | row].
+    piece_changes: [u32; PIECE_SYNC_BATCH * 2],
+    piece_changes_len: u32,
+    /// Piece-def table view: `PIECE_DEF_ROW_WORDS` u16s per piece row.
+    piece_defs: Box<[u16; MAX_PIECE_DEFS * PIECE_DEF_ROW_WORDS]>,
 }
 
 impl Bridge {
@@ -87,6 +97,9 @@ impl Bridge {
             catalog: Box::new([0; MAX_ITEM_DEFS * CATALOG_ROW]),
             craft_jobs: [0; CRAFT_QUEUE * 2],
             recipes: Box::new([0; MAX_RECIPES * RECIPE_ROW_WORDS]),
+            piece_changes: [0; PIECE_SYNC_BATCH * 2],
+            piece_changes_len: 0,
+            piece_defs: Box::new([0; MAX_PIECE_DEFS * PIECE_DEF_ROW_WORDS]),
         }
     }
 }
@@ -215,6 +228,9 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             catalog,
             craft_jobs,
             recipes,
+            piece_changes,
+            piece_changes_len,
+            piece_defs,
             ..
         } = b
         else {
@@ -268,7 +284,88 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
                 }
             }
         }
+        if flags & (crate::core::APPLIED_PIECES | crate::core::APPLIED_PIECE_RESET) != 0 {
+            let ch = core.piece_changes();
+            for (i, rec) in ch.iter().enumerate() {
+                piece_changes[i * 2] = ((rec.cx as u32) << 16) | rec.cz as u32;
+                piece_changes[i * 2 + 1] =
+                    ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32;
+            }
+            *piece_changes_len = ch.len() as u32;
+        }
+        if flags & crate::core::APPLIED_PIECE_DEFS != 0 {
+            for i in 0..(core.piece_defs_have as usize).min(MAX_PIECE_DEFS) {
+                let def = &core.piece_defs.pieces[i];
+                let row = &mut piece_defs[i * PIECE_DEF_ROW_WORDS..(i + 1) * PIECE_DEF_ROW_WORDS];
+                row[0] = def.shape as u16;
+                row[1] = def.material as u16;
+                row[2] = def.hp;
+                row[3] = def.n_costs as u16;
+                for (k, &(item, count)) in def.costs.iter().enumerate() {
+                    row[4 + k * 2] = item;
+                    row[4 + k * 2 + 1] = count;
+                }
+            }
+        }
         flags
+    })
+}
+
+/// Piece records from the last stream message, packed as u32 pairs
+/// ([cx << 16 | cz, level << 16 | loc << 8 | row]).
+#[no_mangle]
+pub extern "C" fn client_piece_changes_ptr() -> *const u32 {
+    with(|b| b.piece_changes.as_ptr())
+}
+
+#[no_mangle]
+pub extern "C" fn client_piece_changes_len() -> u32 {
+    with(|b| b.piece_changes_len)
+}
+
+/// Piece-def table view: `PIECE_DEF_ROW_WORDS` u16 words per piece row
+/// (shape, material, hp, n_costs, then item/count per cost slot),
+/// refreshed by `client_on_stream` (`APPLIED_PIECE_DEFS`).
+#[no_mangle]
+pub extern "C" fn client_piece_defs_ptr() -> *const u16 {
+    with(|b| b.piece_defs.as_ptr())
+}
+
+/// Piece-def drip progress: total rows << 16 | rows received so far.
+#[no_mangle]
+pub extern "C" fn client_piece_defs_state() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => ((core.piece_defs.piece_count as u32) << 16) | core.piece_defs_have as u32,
+        None => 0,
+    })
+}
+
+/// Oldest buffered build refusal reason; `u32::MAX` when none.
+#[no_mangle]
+pub extern "C" fn client_build_refusal_pop() -> u32 {
+    with(
+        |b| match b.core.as_mut().and_then(|c| c.pop_build_refusal()) {
+            Some(reason) => reason as u32,
+            None => u32::MAX,
+        },
+    )
+}
+
+/// Encode a place request into the out buffer for the bidi lane; returns
+/// its length, or 0 when the arguments are outside the wire's domain.
+#[no_mangle]
+pub extern "C" fn client_action_place(row: u32, cx: u32, cz: u32, level: u32, loc: u32) -> u32 {
+    with(|b| {
+        encode_action_place(
+            row as u16,
+            cx as u16,
+            cz as u16,
+            level as u8,
+            loc as u8,
+            &mut b.out_buf,
+        )
+        .map(|n| n as u32)
+        .unwrap_or(0)
     })
 }
 

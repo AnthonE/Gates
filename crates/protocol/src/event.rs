@@ -12,10 +12,17 @@
 //! the client decodes server bytes, the server encodes on the sim thread.
 
 use crate::bits::{BitReader, BitWriter, WireError};
-use crate::{expect_zero_padding, KIND_BITS, KIND_EVENT};
+use crate::{
+    expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, KIND_BITS, KIND_EVENT,
+    PIECE_ROW_BITS,
+};
+use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_ROOF};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
 use sim_core::gather::ItemStack;
-use sim_core::limits::{CRAFT_QUEUE, INV_SLOTS, MAX_ITEM_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS};
+use sim_core::limits::{
+    CRAFT_QUEUE, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PIECE_COSTS,
+    MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+};
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
 /// batch ≈ 264 B, a full slot-sync batch ≈ 258 B) with headroom; the
@@ -34,6 +41,14 @@ pub const CATALOG_BATCH: usize = 8;
 /// keep the drip well under the message cap).
 pub const RECIPE_BATCH: usize = 4;
 
+/// Placed-piece records one sync message carries (a record is 33 bits;
+/// 32 keep the batch ≈ 134 B, well under the message cap). The join walk
+/// is drip-fed like the harvested-set sync.
+pub const PIECE_SYNC_BATCH: usize = 32;
+
+/// Piece-def rows one defs message carries (a full row is ~11 B).
+pub const PIECE_DEFS_BATCH: usize = 6;
+
 /// Longest item display name on the wire; the catalog bake refuses past
 /// it (content names are short by construction — CONTENT.md §2).
 pub const MAX_ITEM_NAME_BYTES: usize = 24;
@@ -50,6 +65,10 @@ const SUB_CRAFT_Q: u32 = 7;
 const SUB_CRAFT_DONE: u32 = 8;
 const SUB_CRAFT_REFUSED: u32 = 9;
 const SUB_RECIPES: u32 = 10;
+const SUB_PIECE_PLACED: u32 = 11;
+const SUB_PIECE_SYNC: u32 = 12;
+const SUB_BUILD_REFUSED: u32 = 13;
+const SUB_PIECE_DEFS: u32 = 14;
 
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
@@ -66,6 +85,12 @@ const RECIPE_COUNT_BITS: u32 = 3;
 const RECIPE_TICKS_BITS: u32 = 24;
 const STATION_BITS: u32 = 2;
 const N_INPUTS_BITS: u32 = 3;
+const PIECE_SYNC_COUNT_BITS: u32 = 6;
+const PIECE_DEFS_TOTAL_BITS: u32 = 6;
+const PIECE_DEFS_COUNT_BITS: u32 = 3;
+const SHAPE_BITS: u32 = 3;
+const MATERIAL_BITS: u32 = 2;
+const N_COSTS_BITS: u32 = 2;
 
 /// One changed inventory slot on the wire.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -181,6 +206,28 @@ pub enum EventMsg {
         first: u8,
         count: u8,
         rows: [RecipeDef; RECIPE_BATCH],
+    },
+    /// A building piece landed (broadcast — pieces are world facts like
+    /// slot changes). The record is the sim's own `PieceRec`.
+    PiecePlaced { rec: PieceRec },
+    /// One batch of the placed-piece walk (join sync / event-lane resync).
+    /// `reset` clears the client's piece set first.
+    PieceSync {
+        reset: bool,
+        recs: [PieceRec; PIECE_SYNC_BATCH],
+        count: u8,
+    },
+    /// A place request bounced: `reason` is a `sim_core::build::REFUSE_B_*`
+    /// code (unknown values render as a generic refusal).
+    BuildRefused { reason: u8 },
+    /// Piece-def rows `first..first+count` of a `total`-row table — the
+    /// build menu's data, dripped like the recipe table. Rows decode to
+    /// the same `PieceDef` the sim runs.
+    PieceDefs {
+        total: u8,
+        first: u8,
+        count: u8,
+        rows: [PieceDef; PIECE_DEFS_BATCH],
     },
 }
 
@@ -378,6 +425,110 @@ pub fn encode_event_recipes(
     Ok((w.finish(), count))
 }
 
+/// One placed-piece record on the wire: 33 bits, shared by the placed
+/// broadcast and the sync batches. Refuses an address outside the grid or
+/// a row outside the def table — this encoder only ever sees sim records.
+fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
+    if rec.cx as usize >= MAX_BUILD_COORD
+        || rec.cz as usize >= MAX_BUILD_COORD
+        || rec.level as usize >= MAX_BUILD_LEVELS
+        || rec.loc > LOC_EDGE_N
+        || rec.row as usize >= MAX_PIECE_DEFS
+    {
+        return Err(WireError::Range);
+    }
+    w.write(rec.cx as u32, BUILD_CELL_BITS)?;
+    w.write(rec.cz as u32, BUILD_CELL_BITS)?;
+    w.write(rec.level as u32, BUILD_LEVEL_BITS)?;
+    w.write(rec.loc as u32, BUILD_LOC_BITS)?;
+    w.write(rec.row as u32, PIECE_ROW_BITS)?;
+    Ok(())
+}
+
+fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
+    let rec = PieceRec {
+        cx: r.read(BUILD_CELL_BITS)? as u16,
+        cz: r.read(BUILD_CELL_BITS)? as u16,
+        level: r.read(BUILD_LEVEL_BITS)? as u8,
+        loc: r.read(BUILD_LOC_BITS)? as u8,
+        row: r.read(PIECE_ROW_BITS)? as u8,
+    };
+    // Coord/level/loc widths are exact; only the row can be forged.
+    if rec.row as usize >= MAX_PIECE_DEFS {
+        return Err(WireError::Malformed);
+    }
+    Ok(rec)
+}
+
+pub fn encode_event_piece_placed(rec: &PieceRec, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_PIECE_PLACED)?;
+    write_piece_rec(&mut w, rec)?;
+    Ok(w.finish())
+}
+
+/// A batch may be empty only with `reset` — the "your piece set is now
+/// empty" resync message, same contract as the slot sync.
+pub fn encode_event_piece_sync(
+    reset: bool,
+    recs: &[PieceRec],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if recs.len() > PIECE_SYNC_BATCH || (recs.is_empty() && !reset) {
+        return Err(WireError::Cap);
+    }
+    let mut w = begin(buf, SUB_PIECE_SYNC)?;
+    w.write_bit(reset)?;
+    w.write(recs.len() as u32, PIECE_SYNC_COUNT_BITS)?;
+    for rec in recs {
+        write_piece_rec(&mut w, rec)?;
+    }
+    Ok(w.finish())
+}
+
+pub fn encode_event_build_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_BUILD_REFUSED)?;
+    w.write(reason as u32, 8)?;
+    Ok(w.finish())
+}
+
+/// Encode up to `PIECE_DEFS_BATCH` baked piece rows starting at `first`.
+/// Returns the byte length and how many rows rode along. Row shapes the
+/// bake refuses (hp 0, too many costs) refuse here too.
+pub fn encode_event_piece_defs(
+    bc: &BuildContent,
+    first: usize,
+    buf: &mut [u8],
+) -> Result<(usize, usize), WireError> {
+    let total = bc.piece_count as usize;
+    if total > MAX_PIECE_DEFS || first >= total {
+        return Err(WireError::Range);
+    }
+    let count = PIECE_DEFS_BATCH.min(total - first);
+    let mut w = begin(buf, SUB_PIECE_DEFS)?;
+    w.write(total as u32, PIECE_DEFS_TOTAL_BITS)?;
+    w.write(first as u32, PIECE_DEFS_TOTAL_BITS)?;
+    w.write(count as u32, PIECE_DEFS_COUNT_BITS)?;
+    for def in bc.pieces[first..first + count].iter() {
+        if def.shape > SHAPE_ROOF
+            || def.material > MAT_METAL
+            || def.hp == 0
+            || def.n_costs == 0
+            || def.n_costs as usize > MAX_PIECE_COSTS
+        {
+            return Err(WireError::Range);
+        }
+        w.write(def.shape as u32, SHAPE_BITS)?;
+        w.write(def.material as u32, MATERIAL_BITS)?;
+        w.write(def.hp as u32, 16)?;
+        w.write(def.n_costs as u32, N_COSTS_BITS)?;
+        for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
+            w.write(item as u32, 16)?;
+            w.write(units as u32, 16)?;
+        }
+    }
+    Ok((w.finish(), count))
+}
+
 /// Total decode of one event-lane message: arbitrary bytes in, `Ok` or a
 /// `WireError` out, never a panic — same contract as the datagrams.
 pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
@@ -536,6 +687,72 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 };
             }
             EventMsg::Recipes {
+                total: total as u8,
+                first: first as u8,
+                count: count as u8,
+                rows,
+            }
+        }
+        SUB_PIECE_PLACED => EventMsg::PiecePlaced {
+            rec: read_piece_rec(&mut r)?,
+        },
+        SUB_PIECE_SYNC => {
+            let reset = r.read_bit()?;
+            let count = r.read(PIECE_SYNC_COUNT_BITS)? as usize;
+            if count > PIECE_SYNC_BATCH || (count == 0 && !reset) {
+                return Err(WireError::Malformed);
+            }
+            let mut recs = [PieceRec::default(); PIECE_SYNC_BATCH];
+            for rec in recs.iter_mut().take(count) {
+                *rec = read_piece_rec(&mut r)?;
+            }
+            EventMsg::PieceSync {
+                reset,
+                recs,
+                count: count as u8,
+            }
+        }
+        SUB_BUILD_REFUSED => EventMsg::BuildRefused {
+            reason: r.read(8)? as u8,
+        },
+        SUB_PIECE_DEFS => {
+            let total = r.read(PIECE_DEFS_TOTAL_BITS)? as usize;
+            let first = r.read(PIECE_DEFS_TOTAL_BITS)? as usize;
+            let count = r.read(PIECE_DEFS_COUNT_BITS)? as usize;
+            if total > MAX_PIECE_DEFS
+                || count == 0
+                || count > PIECE_DEFS_BATCH
+                || first + count > total
+            {
+                return Err(WireError::Malformed);
+            }
+            let mut rows = [PieceDef::INERT; PIECE_DEFS_BATCH];
+            for row in rows.iter_mut().take(count) {
+                let shape = r.read(SHAPE_BITS)? as u8;
+                let material = r.read(MATERIAL_BITS)? as u8;
+                let hp = r.read(16)? as u16;
+                let n_costs = r.read(N_COSTS_BITS)? as u8;
+                if shape > SHAPE_ROOF
+                    || material > MAT_METAL
+                    || hp == 0
+                    || n_costs == 0
+                    || n_costs as usize > MAX_PIECE_COSTS
+                {
+                    return Err(WireError::Malformed);
+                }
+                let mut costs = [(0u16, 0u16); MAX_PIECE_COSTS];
+                for cost in costs.iter_mut().take(n_costs as usize) {
+                    *cost = (r.read(16)? as u16, r.read(16)? as u16);
+                }
+                *row = PieceDef {
+                    shape,
+                    material,
+                    hp,
+                    n_costs,
+                    costs,
+                };
+            }
+            EventMsg::PieceDefs {
                 total: total as u8,
                 first: first as u8,
                 count: count as u8,
@@ -804,6 +1021,121 @@ mod tests {
         assert_eq!(took, RECIPE_BATCH);
         let (_, took2) = encode_event_recipes(&cc, took, &mut buf).unwrap();
         assert_eq!(took + took2, cc.recipe_count as usize);
+    }
+
+    #[test]
+    fn piece_placed_and_build_refused_round_trip() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let rec = PieceRec {
+            cx: 341,
+            cz: 682,
+            level: 3,
+            loc: LOC_EDGE_N,
+            row: 17,
+        };
+        let len = encode_event_piece_placed(&rec, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::PiecePlaced { rec }
+        );
+        // A record the sim could never hold refuses at encode.
+        let bad = PieceRec {
+            row: MAX_PIECE_DEFS as u8,
+            ..rec
+        };
+        assert_eq!(
+            encode_event_piece_placed(&bad, &mut buf),
+            Err(WireError::Range)
+        );
+        let len = encode_event_build_refused(4, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::BuildRefused { reason: 4 }
+        );
+    }
+
+    #[test]
+    fn piece_sync_full_batch_fits_the_cap() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let recs: [PieceRec; PIECE_SYNC_BATCH] = core::array::from_fn(|i| PieceRec {
+            cx: i as u16 * 31,
+            cz: 1023 - i as u16,
+            level: (i % MAX_BUILD_LEVELS) as u8,
+            loc: (i % 4) as u8,
+            row: (i % MAX_PIECE_DEFS) as u8,
+        });
+        let len = encode_event_piece_sync(true, &recs, &mut buf).unwrap();
+        assert!(len <= MAX_EVENT_MSG_BYTES);
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::PieceSync {
+                reset,
+                recs: got,
+                count,
+            } => {
+                assert!(reset);
+                assert_eq!(count as usize, PIECE_SYNC_BATCH);
+                assert_eq!(got, recs);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // Empty is only a message when it resets.
+        assert!(encode_event_piece_sync(true, &[], &mut buf).is_ok());
+        assert_eq!(
+            encode_event_piece_sync(false, &[], &mut buf),
+            Err(WireError::Cap)
+        );
+    }
+
+    #[test]
+    fn piece_defs_batches_walk_the_table_within_cap() {
+        let bc = BuildContent::probe_fixture();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, took) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();
+        assert!(len <= MAX_EVENT_MSG_BYTES);
+        assert_eq!(took, 3, "fixture has 3 rows, all fit one batch");
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::PieceDefs {
+                total,
+                first,
+                count,
+                rows,
+            } => {
+                assert_eq!((total, first, count), (3, 0, 3));
+                assert_eq!(rows[0], bc.pieces[0], "decode rebuilds the sim row");
+                assert_eq!(rows[2], bc.pieces[2]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        assert_eq!(
+            encode_event_piece_defs(&bc, 3, &mut buf),
+            Err(WireError::Range),
+            "cursor past the table refuses"
+        );
+        // A row the bake would refuse (hp 0) refuses here.
+        let mut bad = bc;
+        bad.pieces[1].hp = 0;
+        assert_eq!(
+            encode_event_piece_defs(&bad, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        // The full 18-row alpha shape drips in three batches.
+        let mut full = BuildContent::EMPTY;
+        full.piece_count = 18;
+        for i in 0..18 {
+            full.pieces[i] = PieceDef {
+                shape: (i % 6) as u8,
+                material: (i % 3) as u8,
+                hp: u16::MAX,
+                n_costs: MAX_PIECE_COSTS as u8,
+                costs: [(u16::MAX, u16::MAX); MAX_PIECE_COSTS],
+            };
+        }
+        let (len, took) = encode_event_piece_defs(&full, 0, &mut buf).unwrap();
+        assert!(len <= MAX_EVENT_MSG_BYTES);
+        assert_eq!(took, PIECE_DEFS_BATCH);
+        let (_, took2) = encode_event_piece_defs(&full, took, &mut buf).unwrap();
+        let (_, took3) = encode_event_piece_defs(&full, took + took2, &mut buf).unwrap();
+        assert_eq!(took + took2 + took3, 18);
     }
 
     #[test]
