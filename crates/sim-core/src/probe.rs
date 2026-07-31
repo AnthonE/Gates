@@ -39,15 +39,19 @@ pub extern "C" fn probe_terrain(seed: u64) -> u64 {
     h.digest()
 }
 
-/// Movement parity: `sequences` independent random input sequences, each a
-/// fresh world + 2 bots × `ticks` ticks; the per-sequence state hashes fold
-/// into one digest (DESIGN.md §4: 10,000 sequences through both builds).
+/// Movement + gather parity: `sequences` independent random input
+/// sequences, each a fresh world + 2 bots × `ticks` ticks; the
+/// per-sequence state hashes fold into one digest (DESIGN.md §4: 10,000
+/// sequences through both builds). Bots hold the primary button in
+/// bursts and the world carries the synthetic gather fixture, so slot
+/// life, yields, and inventories are inside the parity surface.
 #[no_mangle]
 pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> u64 {
     let mut h = Xxh3::new();
     for s in 0..sequences {
         let seq_seed = splitmix64(master_seed ^ (s as u64));
         let mut world = World::new(seq_seed);
+        world.gather = crate::gather::GatherContent::probe_fixture();
         world.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
         let mut rng = Pcg32::new(seq_seed, 7);
         let mut yaws = [0u16; 2];

@@ -7,6 +7,7 @@
 //! This crate is boot-path, not tick-path: it allocates freely and does
 //! I/O. Nothing here is called from the sim thread.
 
+pub mod bake;
 pub mod balance;
 mod canon;
 pub mod schema;

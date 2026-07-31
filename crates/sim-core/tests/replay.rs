@@ -5,6 +5,7 @@
 //! pinned: any accidental drift in sim behavior reddens this gate.
 
 use sim_core::bots::bot_frame;
+use sim_core::gather::GatherContent;
 use sim_core::limits::STATE_HASH_INTERVAL;
 use sim_core::rng::Pcg32;
 use sim_core::world::{Command, World};
@@ -14,10 +15,13 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-const GOLDEN_FINAL_HASH: u64 = 0x55C1_EAF2_1BB6_D7E9;
+/// Regenerated this commit: gather landed in the sim — bots now hold the
+/// primary button, state_hash covers inventories + slot lives.
+const GOLDEN_FINAL_HASH: u64 = 0x32C6_502A_5DC4_1BEA;
 
 fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut world = World::new(seed);
+    world.gather = GatherContent::probe_fixture();
     let mut rng = Pcg32::new(seed, 11);
     let mut yaws = [0u16; 64];
     let mut joined: u32 = 0;

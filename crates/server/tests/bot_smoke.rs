@@ -12,9 +12,19 @@ use std::time::Duration;
 
 const BOTS: usize = 50;
 
+/// The shipped content set, baked — the smoke runs the same boot path the
+/// shard binary does, so gather is live under the bot herd.
+fn baked_content() -> sim_core::gather::GatherContent {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    content::Content::load_dir(&dir)
+        .expect("shipped content loads")
+        .bake_gather()
+        .expect("shipped content bakes")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bot_smoke_50() {
-    let handle = spawn_shard(ShardConfig::ephemeral(0xC0FFEE))
+    let handle = spawn_shard(ShardConfig::ephemeral(0xC0FFEE), baked_content())
         .await
         .expect("shard boots");
     let addr = handle.local_addr;
@@ -104,7 +114,9 @@ async fn test_version_gate_refuses() {
     use protocol::{encode_hello, Hello, MAX_STREAM_MSG_BYTES};
     use server::net::{read_frame, write_frame};
 
-    let handle = spawn_shard(ShardConfig::ephemeral(7)).await.expect("boots");
+    let handle = spawn_shard(ShardConfig::ephemeral(7), baked_content())
+        .await
+        .expect("boots");
     let endpoint = bot_endpoint().expect("endpoint");
     let connection = endpoint
         .connect(&format!("https://{}", handle.local_addr))

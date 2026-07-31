@@ -90,3 +90,26 @@ pub const INPUT_THROTTLE_DEPTH: usize = 6;
 /// recovery path for everything else too. Proposed default, DECISIONS.md
 /// §open.
 pub const PENDING_REMOVALS_CAP: usize = 256;
+
+/// Item definitions the sim preallocates for (the alpha set is ~48 rows,
+/// CONTENT.md §2). The content bake refuses a set past this. Proposed
+/// default, DECISIONS.md §open (gather bounds row).
+pub const MAX_ITEM_DEFS: usize = 64;
+
+/// Inventory slots per player: 6 hotbar + 24 backpack (ALPHA.md §1).
+pub const INV_SLOTS: usize = 30;
+
+/// Sparse slot-life store (harvested/damaged scatter slots). Sized past
+/// the ~8–12 k live slots a seed produces (TERRAIN.md §6) so harvested
+/// entries always fit. Overflow policy: **evict** — standing-damage
+/// entries only, lowest hits first (the evicted node heals); harvested
+/// entries are never evicted, and a store somehow full of them refuses
+/// the hit. Proposed default, DECISIONS.md §open (gather bounds row).
+pub const MAX_SLOT_LIVES: usize = 16_384;
+
+/// Sim event ring, cleared every tick — the sim's only output channel
+/// besides state itself (integer codes, CLAUDE.md wall 3). Overflow
+/// policy: **drop newest**, counted; the late-join slot sync (the wire
+/// slice) re-derives anything a lost event failed to announce. Proposed
+/// default, DECISIONS.md §open (gather bounds row).
+pub const MAX_EVENTS_PER_TICK: usize = 256;
