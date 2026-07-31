@@ -4,7 +4,13 @@
 // through cached typed-array views (DESIGN.md L8).
 
 import { loadWasm, WasmViews } from "./wasm.js";
-import { connect, handshake, pumpDatagrams, makeSender } from "./net.js";
+import {
+  connect,
+  handshake,
+  pumpDatagrams,
+  pumpStream,
+  makeSender,
+} from "./net.js";
 import { InputTracker } from "./input.js";
 import { GameScene } from "./scene.js";
 import { Terrain } from "./terrain.js";
@@ -38,7 +44,10 @@ async function boot(url, certHex) {
   // Handshake: wasm encodes/decodes; JS only frames bytes on the stream.
   const views = new WasmViews(ex);
   const helloLen = ex.client_hello();
-  const reply = await handshake(wt, views.output.slice(0, helloLen));
+  const { reply, reader, leftover } = await handshake(
+    wt,
+    views.output.slice(0, helloLen),
+  );
   views.refresh();
   views.input.set(reply);
   const kind = ex.client_parse_handshake(reply.length);
@@ -57,10 +66,10 @@ async function boot(url, certHex) {
   views.refresh();
 
   $("start").style.display = "none";
-  run(ex, views, wt, seed, playerId);
+  run(ex, views, wt, seed, playerId, reader, leftover);
 }
 
-function run(ex, views, wt, seed, playerId) {
+function run(ex, views, wt, seed, playerId, streamReader, streamLeftover) {
   const canvas = $("gl");
   const scene = new GameScene(canvas);
   const terrain = new Terrain(scene.scene, seed, ex, WASM_URL);
@@ -83,6 +92,62 @@ function run(ex, views, wt, seed, playerId) {
       views.refresh();
       views.input.set(bytes);
       ex.client_on_datagram(bytes.length);
+    },
+    onClosed,
+  );
+
+  // Item names fill in as catalog batches arrive; unnamed indices fall
+  // back to the number (never cached, so the name wins once it lands).
+  const nameCache = new Map();
+  const textDecoder = new TextDecoder();
+  const itemName = (idx) => {
+    const cached = nameCache.get(idx);
+    if (cached) return cached;
+    const len = views.catalog[idx * 25];
+    if (!len) return `#${idx}`;
+    const name = textDecoder.decode(
+      views.catalog.subarray(idx * 25 + 1, idx * 25 + 1 + len),
+    );
+    nameCache.set(idx, name);
+    return name;
+  };
+
+  // The reliable event lane: gather payouts, inventory, node vanish /
+  // respawn, join sync, catalog (protocol::event). Low-rate, outside the
+  // RAF path; flags mirror client-wasm core::APPLIED_*.
+  pumpStream(
+    streamReader,
+    streamLeftover,
+    (bytes) => {
+      if (bytes.length > views.inCap) return;
+      views.refresh();
+      views.input.set(bytes);
+      const flags = ex.client_on_stream(bytes.length);
+      if (flags & 0x80000000) {
+        // Our own server sent bytes we can't decode — the smoke gate
+        // fails on console.error, which is exactly right.
+        console.error("event lane: message failed to decode");
+        return;
+      }
+      views.refresh();
+      if (flags & 4 /* RESET */) terrain.resetHarvested();
+      if (flags & (2 | 4) /* SLOTS|RESET */) {
+        const n = ex.client_slot_changes_len();
+        for (let i = 0; i < n; i++) {
+          terrain.setCellHarvested(
+            views.slotChanges[i * 2],
+            views.slotChanges[i * 2 + 1] === 1,
+          );
+        }
+      }
+      if (flags & 8 /* TOAST */) {
+        for (;;) {
+          // wasm i32 returns read signed in JS; >>> 0 recovers the u32.
+          const t = ex.client_toast_pop() >>> 0;
+          if (t === 0xffffffff) break;
+          hud.toast(`+${t & 0xffff} ${itemName(t >>> 16)}`);
+        }
+      }
     },
     onClosed,
   );
@@ -143,13 +208,19 @@ function run(ex, views, wt, seed, playerId) {
     if (closed) return;
     const R = views.render;
     hud.set(
-      `gates m0 · player ${playerId}\n` +
+      `gates m1 · player ${playerId}\n` +
         `tick ~${R[9].toFixed(0)} (client ${R[10].toFixed(0)})\n` +
         `snapshots ${R[8].toFixed(0)} · remotes ${R[13].toFixed(0)}\n` +
         `mispredict ${R[7].toFixed(0)} · resync ${R[11].toFixed(0)} · err ${R[6].toFixed(2)}m\n` +
         `dg sent ${sender.stats.sent} · oversize ${sender.stats.oversize}` +
         (R[0] === 1 ? "" : "\nwaiting for first snapshot…"),
     );
+    const hotbar = [];
+    for (let s = 0; s < 6; s++) {
+      const count = views.inv[s * 2 + 1];
+      hotbar.push(count > 0 ? `${itemName(views.inv[s * 2])} ×${count}` : "");
+    }
+    hud.setHotbar(hotbar);
     const remotes = [];
     const n = R[13] | 0;
     for (let k = 0; k < n; k++) {
@@ -163,6 +234,7 @@ function run(ex, views, wt, seed, playerId) {
       snapshots: R[8],
       remotes,
       oversize: sender.stats.oversize,
+      hotbar,
     };
   }, 250);
 }

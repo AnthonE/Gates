@@ -38,7 +38,15 @@ export async function connect(url, certHex) {
   return wt;
 }
 
-/** u16-LE length-prefixed frame on the bidi lane (server/src/net.rs). */
+/** Event-lane frame cap — protocol::MAX_EVENT_MSG_BYTES, kept in sync. */
+const MAX_EVENT_FRAME = 320;
+
+/**
+ * u16-LE length-prefixed frame on the bidi lane (server/src/net.rs).
+ * The stream stays open after the welcome — it is the reliable event
+ * lane — so the reader and any already-buffered bytes are returned for
+ * `pumpStream` to continue with.
+ */
 export async function handshake(wt, helloBytes) {
   const bidi = await wt.createBidirectionalStream();
   const writer = bidi.writable.getWriter();
@@ -56,8 +64,11 @@ export async function handshake(wt, helloBytes) {
       const len = buf[0] | (buf[1] << 8);
       if (len === 0 || len > 64) throw new Error("bad handshake frame");
       if (buf.length >= 2 + len) {
-        reader.releaseLock();
-        return buf.subarray(2, 2 + len);
+        return {
+          reply: buf.subarray(2, 2 + len),
+          reader,
+          leftover: buf.subarray(2 + len),
+        };
       }
     }
     const { value, done } = await reader.read();
@@ -67,6 +78,43 @@ export async function handshake(wt, helloBytes) {
     next.set(value, buf.length);
     buf = next;
   }
+}
+
+/**
+ * Fire the event-lane RX pump: onMessage is called per framed message.
+ * Event traffic is low-rate and off the RAF path, so the concat here is
+ * not hot-loop allocation (DESIGN.md L8 is about the frame loop).
+ */
+export function pumpStream(reader, leftover, onMessage, onClosed) {
+  (async () => {
+    let buf = leftover;
+    try {
+      for (;;) {
+        while (buf.length >= 2) {
+          const len = buf[0] | (buf[1] << 8);
+          if (len === 0 || len > MAX_EVENT_FRAME) {
+            throw new Error("bad event frame");
+          }
+          if (buf.length < 2 + len) break;
+          onMessage(buf.subarray(2, 2 + len));
+          buf = buf.subarray(2 + len);
+        }
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (buf.length === 0) {
+          buf = value;
+        } else {
+          const next = new Uint8Array(buf.length + value.length);
+          next.set(buf);
+          next.set(value, buf.length);
+          buf = next;
+        }
+      }
+    } catch {
+      // Connection died; wt.closed reports it.
+    }
+    onClosed();
+  })();
 }
 
 /** Fire the datagram RX pump; onBytes is called per datagram. */

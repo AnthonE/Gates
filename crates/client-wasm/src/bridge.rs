@@ -13,9 +13,9 @@
 use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_hello, peek_kind, Hello, KIND_REFUSE, KIND_WELCOME,
-    PROTO_VER,
+    MAX_ITEM_NAME_BYTES, PROTO_VER, SLOT_SYNC_BATCH,
 };
-use sim_core::limits::{DATAGRAM_BUDGET_BYTES, MAX_SNAPSHOT_ENTITIES};
+use sim_core::limits::{DATAGRAM_BUDGET_BYTES, INV_SLOTS, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
 use sim_core::terrain::{self, ScatterTable};
 use std::cell::RefCell;
 
@@ -32,9 +32,15 @@ const RENDER_FLOATS: usize = OWN_FLOATS + 1 + MAX_SNAPSHOT_ENTITIES * REMOTE_FLO
 /// Terrain fill grid bound: the far mesh at 8 m over 2,048 m is 257
 /// samples plus a 2-sample normal apron.
 const HEIGHTS_MAX_N: usize = 259;
-/// Slot fill: one chunk of 8×8 scatter cells, 6 floats per resolved slot.
+/// Slot fill: one chunk of 8×8 scatter cells, 8 floats per resolved slot
+/// (occupant, x, y, z, yaw, scale, cx, cz — cell coords so the renderer
+/// can key instances by cell for harvest/respawn).
 const SLOTS_MAX_CELLS: usize = 8;
-const SLOT_FLOATS: usize = 6;
+const SLOT_FLOATS: usize = 8;
+/// Catalog view row: length byte + name bytes.
+const CATALOG_ROW: usize = 1 + MAX_ITEM_NAME_BYTES;
+/// `client_on_stream` error flag (high bit; real flags are low bits).
+const STREAM_ERR: u32 = 1 << 31;
 
 struct Bridge {
     core: Option<ClientCore>,
@@ -45,6 +51,13 @@ struct Bridge {
     remote_ids: [u32; MAX_SNAPSHOT_ENTITIES],
     heights: Vec<f32>,
     slots: [f32; SLOTS_MAX_CELLS * SLOTS_MAX_CELLS * SLOT_FLOATS],
+    /// (cell key, harvested) pairs from the last stream message.
+    changes: [u32; SLOT_SYNC_BATCH * 2],
+    changes_len: u32,
+    /// Own inventory view: item, count per slot.
+    inv: [u16; INV_SLOTS * 2],
+    /// Item names: `CATALOG_ROW` bytes per item index.
+    catalog: Box<[u8; MAX_ITEM_DEFS * CATALOG_ROW]>,
 }
 
 impl Bridge {
@@ -58,6 +71,10 @@ impl Bridge {
             remote_ids: [0; MAX_SNAPSHOT_ENTITIES],
             heights: vec![0.0; HEIGHTS_MAX_N * HEIGHTS_MAX_N],
             slots: [0.0; SLOTS_MAX_CELLS * SLOTS_MAX_CELLS * SLOT_FLOATS],
+            changes: [0; SLOT_SYNC_BATCH * 2],
+            changes_len: 0,
+            inv: [0; INV_SLOTS * 2],
+            catalog: Box::new([0; MAX_ITEM_DEFS * CATALOG_ROW]),
         }
     }
 }
@@ -166,6 +183,102 @@ pub extern "C" fn client_on_datagram(len: u32) -> u32 {
             return 5;
         };
         core.on_datagram(&in_buf[..n]) as u32
+    })
+}
+
+/// One event-lane stream message of `len` bytes from the in buffer.
+/// Returns the `core::APPLIED_*` flags, or the high bit on a decode error
+/// / missing client. Refreshes whichever views the flags point at: the
+/// slot-change pairs, the inventory words, the catalog rows.
+#[no_mangle]
+pub extern "C" fn client_on_stream(len: u32) -> u32 {
+    with(|b| {
+        let n = (len as usize).min(IN_CAP);
+        let Bridge {
+            core: Some(core),
+            in_buf,
+            changes,
+            changes_len,
+            inv,
+            catalog,
+            ..
+        } = b
+        else {
+            return STREAM_ERR;
+        };
+        let flags = match core.on_stream(&in_buf[..n]) {
+            Ok(f) => f,
+            Err(_) => return STREAM_ERR,
+        };
+        if flags & (crate::core::APPLIED_SLOTS | crate::core::APPLIED_RESET) != 0 {
+            let ch = core.slot_changes();
+            for (i, &(key, harvested)) in ch.iter().enumerate() {
+                changes[i * 2] = key;
+                changes[i * 2 + 1] = harvested as u32;
+            }
+            *changes_len = ch.len() as u32;
+        }
+        if flags & crate::core::APPLIED_INV != 0 {
+            for (i, s) in core.inv.iter().enumerate() {
+                inv[i * 2] = s.item;
+                inv[i * 2 + 1] = s.count;
+            }
+        }
+        if flags & crate::core::APPLIED_CATALOG != 0 {
+            for i in 0..(core.catalog.count as usize).min(MAX_ITEM_DEFS) {
+                let name = core.catalog.name(i);
+                let row = &mut catalog[i * CATALOG_ROW..(i + 1) * CATALOG_ROW];
+                row[0] = name.len() as u8;
+                row[1..1 + name.len()].copy_from_slice(name);
+            }
+        }
+        flags
+    })
+}
+
+/// Pairs of (cell key, harvested 0/1) from the last stream message.
+#[no_mangle]
+pub extern "C" fn client_slot_changes_ptr() -> *const u32 {
+    with(|b| b.changes.as_ptr())
+}
+
+#[no_mangle]
+pub extern "C" fn client_slot_changes_len() -> u32 {
+    with(|b| b.changes_len)
+}
+
+/// Own inventory view: `INV_SLOTS` × (item, count) u16 words.
+#[no_mangle]
+pub extern "C" fn client_inv_ptr() -> *const u16 {
+    with(|b| b.inv.as_ptr())
+}
+
+/// Item-name rows: `1 + MAX_ITEM_NAME_BYTES` bytes per index (len, bytes).
+#[no_mangle]
+pub extern "C" fn client_catalog_ptr() -> *const u8 {
+    with(|b| b.catalog.as_ptr())
+}
+
+/// Oldest buffered gather toast as `item << 16 | added`; `u32::MAX` when
+/// none (a real toast never reaches it: items cap far below u16::MAX).
+#[no_mangle]
+pub extern "C" fn client_toast_pop() -> u32 {
+    with(|b| match b.core.as_mut().and_then(|c| c.pop_toast()) {
+        Some((item, added)) => ((item as u32) << 16) | added as u32,
+        None => u32::MAX,
+    })
+}
+
+/// Whether the scatter slot at cell (cx, cz) is currently harvested —
+/// the renderer's build-time check for chunks streaming in.
+#[no_mangle]
+pub extern "C" fn client_cell_harvested(cx: u32, cz: u32) -> u32 {
+    with(|b| match &b.core {
+        Some(core) => {
+            core.harvested
+                .contains(sim_core::gather::cell_key(cx as u16, cz as u16)) as u32
+        }
+        None => 0,
     })
 }
 
@@ -321,8 +434,8 @@ pub extern "C" fn terrain_heights_ptr() -> *const f32 {
 }
 
 /// Resolve the scatter slots of a `cells × cells` block starting at cell
-/// `(cx0, cz0)`. Writes 6 floats per resolved slot — occupant, x, y, z,
-/// yaw (0..255), scale — and returns the slot count.
+/// `(cx0, cz0)`. Writes 8 floats per resolved slot — occupant, x, y, z,
+/// yaw (0..255), scale, cx, cz — and returns the slot count.
 #[no_mangle]
 pub extern "C" fn terrain_fill_slots(seed: u64, cx0: i32, cz0: i32, cells: u32) -> u32 {
     with(|b| {
@@ -342,6 +455,8 @@ pub extern "C" fn terrain_fill_slots(seed: u64, cx0: i32, cz0: i32, cells: u32) 
                 b.slots[base + 3] = s.z;
                 b.slots[base + 4] = s.yaw as f32;
                 b.slots[base + 5] = s.scale;
+                b.slots[base + 6] = (cx0 + dx) as f32;
+                b.slots[base + 7] = (cz0 + dz) as f32;
                 n += 1;
             }
         }

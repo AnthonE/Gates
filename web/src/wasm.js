@@ -22,6 +22,9 @@ export class WasmViews {
     this.output = null; // Uint8Array over client_out_ptr
     this.render = null; // Float32Array over client_render_ptr
     this.remoteIds = null; // Uint32Array over client_remote_ids_ptr
+    this.inv = null; // Uint16Array over client_inv_ptr (item,count ×30)
+    this.catalog = null; // Uint8Array over client_catalog_ptr (25 B rows)
+    this.slotChanges = null; // Uint32Array over client_slot_changes_ptr
     this.inCap = ex.client_in_cap();
     this.refresh();
   }
@@ -38,6 +41,9 @@ export class WasmViews {
     const outPtr = ex.client_out_ptr();
     const renderPtr = ex.client_render_ptr();
     const remoteIdsPtr = ex.client_remote_ids_ptr();
+    const invPtr = ex.client_inv_ptr();
+    const catalogPtr = ex.client_catalog_ptr();
+    const slotChangesPtr = ex.client_slot_changes_ptr();
 
     const buf = ex.memory.buffer;
     if (buf === this.buffer) return;
@@ -47,5 +53,8 @@ export class WasmViews {
     // 13 own/status floats + count + 64 remotes × 8 floats.
     this.render = new Float32Array(buf, renderPtr, 14 + 64 * 8);
     this.remoteIds = new Uint32Array(buf, remoteIdsPtr, 64);
+    this.inv = new Uint16Array(buf, invPtr, 30 * 2);
+    this.catalog = new Uint8Array(buf, catalogPtr, 64 * 25);
+    this.slotChanges = new Uint32Array(buf, slotChangesPtr, 64 * 2);
   }
 }

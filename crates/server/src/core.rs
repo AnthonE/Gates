@@ -6,12 +6,18 @@
 
 use crate::client::ClientNetState;
 use crate::stats::ShardStats;
-use protocol::{EntityState, InputDatagram, SnapshotEncoder, SnapshotHeader, WireError};
-use sim_core::limits::{
-    AOI_ENTER_CM, AOI_EXIT_CM, DATAGRAM_BUDGET_BYTES, MAX_COMMANDS_PER_TICK, MAX_PLAYERS,
-    MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
+use protocol::{
+    encode_event_catalog, encode_event_gather, encode_event_inv, encode_event_slot_change,
+    encode_event_slot_sync, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder,
+    SnapshotHeader, WireError, MAX_EVENT_MSG_BYTES, SLOT_SYNC_BATCH,
 };
-use sim_core::world::{Command, Player, World};
+use sim_core::gather::ItemStack;
+use sim_core::limits::{
+    AOI_ENTER_CM, AOI_EXIT_CM, DATAGRAM_BUDGET_BYTES, INV_SLOTS, MAX_COMMANDS_PER_TICK,
+    MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
+    SYNC_SCAN_PER_TICK,
+};
+use sim_core::world::{Command, Player, World, EV_GATHER, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED};
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
 /// distance falloff half-scale is 32 m. Other classes land with their
@@ -22,6 +28,17 @@ const PRIORITY_HALF_SCALE_M: f32 = 32.0;
 /// Consecutive byte-overflow refusals before the fill loop stops trying
 /// smaller records (bounded work per snapshot, not a wire number).
 const FILL_OVERFLOW_STREAK: u32 = 3;
+
+/// Which pipe `tick`'s send closure should put the bytes on. Snapshots
+/// ride datagrams (lossy, superseding); events ride the reliable bidi
+/// stream. The closure returns whether the bytes were accepted — only the
+/// event lane acts on a refusal (ring full ⇒ `ev_resync`, the same
+/// recovery a fresh join uses).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lane {
+    Snapshot,
+    Event,
+}
 
 pub struct ShardCore {
     pub world: World,
@@ -37,6 +54,13 @@ pub struct ShardCore {
     removed_buf: [u32; MAX_SNAPSHOT_ENTITIES],
     /// Scratch: encode target; the closure receives its bytes.
     dg_buf: [u8; DATAGRAM_BUDGET_BYTES],
+    /// Item display names for the catalog drip. Boot input like the baked
+    /// gather table: the shard installs it before the first tick; empty
+    /// (the default) sends no catalog, which is what content-less tests
+    /// run under.
+    pub catalog: ItemCatalog,
+    /// Scratch: event-lane encode target.
+    ev_buf: [u8; MAX_EVENT_MSG_BYTES],
 }
 
 impl ShardCore {
@@ -52,6 +76,8 @@ impl ShardCore {
             sent_buf: [EntityState::default(); MAX_SNAPSHOT_ENTITIES],
             removed_buf: [0; MAX_SNAPSHOT_ENTITIES],
             dg_buf: [0; DATAGRAM_BUDGET_BYTES],
+            catalog: ItemCatalog::EMPTY,
+            ev_buf: [0; MAX_EVENT_MSG_BYTES],
         }
     }
 
@@ -103,10 +129,12 @@ impl ShardCore {
     }
 
     /// One fixed tick: queued joins/leaves + one consumed input per client
-    /// → `World::tick`, then interest/priority accrual, then — on the
-    /// 15 Hz cadence — one encoded snapshot per connected client handed to
-    /// `send(slot, bytes)`.
-    pub fn tick(&mut self, stats: &ShardStats, mut send: impl FnMut(usize, &[u8])) {
+    /// → `World::tick`, then interest/priority accrual, then the event
+    /// lane (sim events routed + per-client sync/catalog/inventory drips),
+    /// then — on the 15 Hz cadence — one encoded snapshot per connected
+    /// client. All bytes go to `send(lane, slot, bytes)`; its bool is the
+    /// ring's verdict and only the event lane acts on it.
+    pub fn tick(&mut self, stats: &ShardStats, mut send: impl FnMut(Lane, usize, &[u8]) -> bool) {
         let mut cmds = [Command::Leave { id: 0 }; MAX_COMMANDS_PER_TICK];
         let mut n = self.queued_len;
         cmds[..n].copy_from_slice(&self.queued[..n]);
@@ -131,6 +159,8 @@ impl ShardCore {
             }
         }
 
+        self.pump_events(stats, &mut send);
+
         if self.world.tick.is_multiple_of(SNAPSHOT_INTERVAL_TICKS) {
             for slot in 0..MAX_PLAYERS {
                 if !self.clients[slot].connected {
@@ -138,8 +168,187 @@ impl ShardCore {
                 }
                 if let Some(len) = self.encode_snapshot(slot, stats) {
                     ShardStats::bump(&stats.snap_sent);
-                    send(slot, &self.dg_buf[..len]);
+                    send(Lane::Snapshot, slot, &self.dg_buf[..len]);
                 }
+            }
+        }
+    }
+
+    /// The event lane, one tick's worth: this tick's sim events routed to
+    /// their audiences, then per client at most one catalog batch, one
+    /// harvested-set sync batch, and one inventory diff. A refused push
+    /// (or a dropped sim event) flags the affected clients for
+    /// `ev_resync` — the walk restarts; nothing is silently lost.
+    fn pump_events(
+        &mut self,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        for i in 0..self.world.events.len() {
+            let ev = self.world.events.entries()[i];
+            match ev.code {
+                EV_GATHER => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // gatherer left this tick
+                    };
+                    let item = (ev.b >> 16) as u16;
+                    let added = ev.b as u16;
+                    match encode_event_gather(item, added, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                // A lost toast is cosmetic, but the resync
+                                // costs nothing when nothing else was lost.
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_SLOT_HARVESTED | EV_SLOT_RESPAWNED => {
+                    let cx = (ev.a >> 16) as u16;
+                    let cz = ev.a as u16;
+                    let harvested = ev.code == EV_SLOT_HARVESTED;
+                    match encode_event_slot_change(harvested, cx, cz, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                _ => {}
+            }
+        }
+        if self.world.events.dropped > 0 {
+            // The ring refused events this tick; whatever they announced,
+            // the sync walk re-derives (limits.rs event-ring policy).
+            for slot in 0..MAX_PLAYERS {
+                if self.clients[slot].connected {
+                    self.clients[slot].ev_resync();
+                    ShardStats::bump(&stats.ev_resyncs);
+                }
+            }
+        }
+
+        for slot in 0..MAX_PLAYERS {
+            if self.clients[slot].connected {
+                self.drip_client(slot, stats, send);
+            }
+        }
+    }
+
+    /// Resolve which connection slot player `id` belongs to.
+    fn client_slot_of(&self, id: u32) -> Option<usize> {
+        (0..MAX_PLAYERS).find(|&s| self.clients[s].connected && self.clients[s].id == id)
+    }
+
+    /// One client's drip work: catalog batch, harvested-set sync batch,
+    /// inventory diff — each at most one message per tick, so per-client
+    /// event work is bounded regardless of world size. A refused push
+    /// stops this client's drip for the tick (the ring is full; the same
+    /// state re-offers next tick).
+    fn drip_client(
+        &mut self,
+        slot: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        // Catalog: names first — toasts and hotbar labels want them early.
+        let c = &self.clients[slot];
+        if self.catalog.count > 0 && c.catalog_cursor < self.catalog.count as usize {
+            match encode_event_catalog(&self.catalog, c.catalog_cursor, &mut self.ev_buf) {
+                Ok((len, took)) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].catalog_cursor += took;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Harvested-set walk (join sync / resync), drip-fed. The cursor
+        // walks the live store; entries that move behind it mid-walk stay
+        // unsynced until their own respawn event — bounded staleness the
+        // respawn window already caps, documented over machinery.
+        let c = &self.clients[slot];
+        let lives = &self.world.slot_lives;
+        if c.sync_reset || c.sync_cursor < lives.len() {
+            let mut cells = [(0u16, 0u16); SLOT_SYNC_BATCH];
+            let mut n_cells = 0usize;
+            let mut scanned = 0usize;
+            let entries = lives.entries();
+            while c.sync_cursor + scanned < entries.len()
+                && scanned < SYNC_SCAN_PER_TICK
+                && n_cells < SLOT_SYNC_BATCH
+            {
+                let e = entries[c.sync_cursor + scanned];
+                if e.respawn_at != 0 {
+                    cells[n_cells] = (e.cx, e.cz);
+                    n_cells += 1;
+                }
+                scanned += 1;
+            }
+            if c.sync_reset || n_cells > 0 {
+                match encode_event_slot_sync(c.sync_reset, &cells[..n_cells], &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            let c = &mut self.clients[slot];
+                            c.sync_reset = false;
+                            c.sync_cursor += scanned;
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            } else {
+                // Window held only standing-damage entries: nothing to say.
+                self.clients[slot].sync_cursor += scanned;
+            }
+        }
+
+        // Inventory diff against the last successfully queued copy.
+        let c = &self.clients[slot];
+        if c.own_wslot == usize::MAX {
+            return; // join still queued; no inventory to speak of
+        }
+        let inv: [ItemStack; INV_SLOTS] = self.world.players[c.own_wslot].inv;
+        let mut changed = [InvSlot::default(); INV_SLOTS];
+        let mut n_changed = 0usize;
+        for (i, (now, last)) in inv.iter().zip(c.last_inv.iter()).enumerate() {
+            if now != last {
+                changed[n_changed] = InvSlot {
+                    slot: i as u8,
+                    stack: *now,
+                };
+                n_changed += 1;
+            }
+        }
+        if n_changed > 0 {
+            match encode_event_inv(&changed[..n_changed], &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].last_inv = inv;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
         }
     }

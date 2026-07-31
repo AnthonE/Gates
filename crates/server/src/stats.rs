@@ -38,6 +38,13 @@ pub struct ShardStats {
     /// Clients forced back to the zero-state baseline by a bookkeeping
     /// overflow (pending removals) — the honest escape hatch.
     pub forced_resyncs: AtomicU64,
+    /// Event-lane messages accepted by per-connection rings.
+    pub ev_sent: AtomicU64,
+    /// Event-lane resyncs: a refused ring push or a dropped sim event
+    /// restarted a client's harvested-set walk (limits.rs policy).
+    pub ev_resyncs: AtomicU64,
+    /// Event-lane stream writes that failed (connection dying).
+    pub ev_send_errors: AtomicU64,
 }
 
 impl ShardStats {

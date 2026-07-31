@@ -107,6 +107,20 @@ pub const INV_SLOTS: usize = 30;
 /// the hit. Proposed default, DECISIONS.md §open (gather bounds row).
 pub const MAX_SLOT_LIVES: usize = 16_384;
 
+/// Per-connection outbound ring of reliable event-lane messages (sim →
+/// net; the bidi stream). Overflow policy: **resync** — a refused push
+/// flags the client for an event-lane resync (harvested-set walk restarts
+/// with a reset batch, catalog restarts, the inventory shadow already
+/// re-diffs), the same recovery path a fresh join uses. Proposed default,
+/// DECISIONS.md §open (gather wire row).
+pub const EVENT_RING_CAP: usize = 64;
+
+/// Slot-life entries the per-client harvested-set walk scans per tick
+/// (join sync / resync is drip-fed: at most one sync message per client
+/// per tick, at most this many entries examined to fill it). Proposed
+/// default, DECISIONS.md §open (gather wire row).
+pub const SYNC_SCAN_PER_TICK: usize = 256;
+
 /// Sim event ring, cleared every tick — the sim's only output channel
 /// besides state itself (integer codes, CLAUDE.md wall 3). Overflow
 /// policy: **drop newest**, counted; the late-join slot sync (the wire

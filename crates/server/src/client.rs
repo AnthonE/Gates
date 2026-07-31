@@ -12,9 +12,10 @@
 //! special case.
 
 use protocol::{EntityState, Nudge};
+use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
 use sim_core::limits::{
-    INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
+    INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INV_SLOTS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
     PENDING_REMOVALS_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS,
 };
 
@@ -98,6 +99,21 @@ pub struct ClientNetState {
     pub newest_acked: Option<u32>,
     pending_removals: [u32; PENDING_REMOVALS_CAP],
     pending_len: usize,
+
+    // --- event lane (reliable bidi stream, protocol::event) ---
+    /// Own inventory as last successfully queued to this client; the sim
+    /// diffs the world's copy against it each tick and sends the changed
+    /// slots. Only updated when the ring accepted the message, so a
+    /// refused push re-diffs by itself.
+    pub last_inv: [ItemStack; INV_SLOTS],
+    /// Harvested-set walk: next `slot_lives` entry index to scan. At or
+    /// past the store's len ⇒ the walk is done.
+    pub sync_cursor: usize,
+    /// The next sync batch carries the reset bit (fresh join or
+    /// event-lane resync): the client clears its set before applying.
+    pub sync_reset: bool,
+    /// Next item index the catalog drip sends.
+    pub catalog_cursor: usize,
 }
 
 impl ClientNetState {
@@ -120,7 +136,21 @@ impl ClientNetState {
             newest_acked: None,
             pending_removals: [0; PENDING_REMOVALS_CAP],
             pending_len: 0,
+            last_inv: [ItemStack::default(); INV_SLOTS],
+            sync_cursor: 0,
+            sync_reset: true,
+            catalog_cursor: 0,
         }
+    }
+
+    /// Restart everything the event lane owes this client (fresh join and
+    /// ring-overflow recovery are the same path): the harvested-set walk
+    /// from the top with a reset batch, the catalog from row zero. The
+    /// inventory shadow stays — it re-diffs against the world by itself.
+    pub fn ev_resync(&mut self) {
+        self.sync_cursor = 0;
+        self.sync_reset = true;
+        self.catalog_cursor = 0;
     }
 
     /// Arm the slot for a fresh connection. Everything netcode resets; the
