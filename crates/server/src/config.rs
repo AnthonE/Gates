@@ -1,5 +1,5 @@
 //! Shard boot config, read from `shard.toml` (CLAUDE.md commands). Parsed
-//! by hand — two keys don't earn a serde dependency; unknown keys are
+//! by hand — three keys don't earn a serde dependency; unknown keys are
 //! refused so a typo can't silently run defaults.
 
 use std::net::SocketAddr;
@@ -10,6 +10,10 @@ pub struct ShardConfig {
     pub bind: SocketAddr,
     /// World seed — the whole island derives from it (TERRAIN.md §0).
     pub seed: u64,
+    /// Dev-only fixed spawn `"x,z"` in meters (DECISIONS.md §open row
+    /// "dev spawn override"). Unset is the shipping default; never set it
+    /// on a public shard — every joiner lands on the same point.
+    pub dev_spawn: Option<(f32, f32)>,
 }
 
 impl ShardConfig {
@@ -18,6 +22,7 @@ impl ShardConfig {
         Self {
             bind: "127.0.0.1:0".parse().expect("static addr"),
             seed,
+            dev_spawn: None,
         }
     }
 }
@@ -28,6 +33,7 @@ impl ShardConfig {
 pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut bind: Option<SocketAddr> = None;
     let mut seed: Option<u64> = None;
+    let mut dev_spawn: Option<(f32, f32)> = None;
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -53,12 +59,38 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                         .map_err(|e| format!("shard.toml line {}: bad seed: {e}", n + 1))?,
                 );
             }
+            "dev_spawn" => {
+                let (x, z) = value
+                    .split_once(',')
+                    .ok_or_else(|| format!("shard.toml line {}: dev_spawn wants \"x,z\"", n + 1))?;
+                let x: f32 = x
+                    .trim()
+                    .parse()
+                    .map_err(|e| format!("shard.toml line {}: bad dev_spawn x: {e}", n + 1))?;
+                let z: f32 = z
+                    .trim()
+                    .parse()
+                    .map_err(|e| format!("shard.toml line {}: bad dev_spawn z: {e}", n + 1))?;
+                let island = sim_core::terrain::ISLAND_SIZE;
+                if !(x.is_finite()
+                    && z.is_finite()
+                    && (0.0..=island).contains(&x)
+                    && (0.0..=island).contains(&z))
+                {
+                    return Err(format!(
+                        "shard.toml line {}: dev_spawn ({x},{z}) outside the {island} m island",
+                        n + 1
+                    ));
+                }
+                dev_spawn = Some((x, z));
+            }
             other => return Err(format!("shard.toml line {}: unknown key `{other}`", n + 1)),
         }
     }
     Ok(ShardConfig {
         bind: bind.ok_or("shard.toml: missing `bind`")?,
         seed: seed.ok_or("shard.toml: missing `seed`")?,
+        dev_spawn,
     })
 }
 
@@ -71,7 +103,27 @@ mod tests {
         let cfg = parse_shard_toml("# shard\nbind = \"127.0.0.1:4433\"\nseed = 7\n").unwrap();
         assert_eq!(cfg.bind.port(), 4433);
         assert_eq!(cfg.seed, 7);
+        assert_eq!(cfg.dev_spawn, None);
         assert!(parse_shard_toml("bind = \"127.0.0.1:1\"").is_err()); // missing seed
         assert!(parse_shard_toml("bind = \"127.0.0.1:1\"\nseed = 1\nwat = 2").is_err());
+    }
+
+    #[test]
+    fn dev_spawn_parses_and_refuses() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 1\n";
+        let ok = parse_shard_toml(&format!("{base}dev_spawn = \"1024, 1024\"\n")).unwrap();
+        assert_eq!(ok.dev_spawn, Some((1024.0, 1024.0)));
+        for bad in [
+            "\"1024\"",
+            "\"1024,\"",
+            "\"-1,5\"",
+            "\"9999,5\"",
+            "\"nan,5\"",
+        ] {
+            assert!(
+                parse_shard_toml(&format!("{base}dev_spawn = {bad}\n")).is_err(),
+                "accepted dev_spawn = {bad}"
+            );
+        }
     }
 }

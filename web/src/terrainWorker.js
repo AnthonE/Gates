@@ -8,16 +8,34 @@ import { loadWasm } from "./wasm.js";
 
 let ex = null;
 let seed = 0n;
+let loading = null;
 
+// `async onmessage` does NOT serialize messages: while `init` awaits loadWasm,
+// later messages are still delivered. The main thread's _kick() posts `build`
+// from the RAF loop as soon as the first snapshot lands, guarded only by
+// `inFlight` — which is false until `ready`. So builds arrived with `ex` still
+// null and the near ring died on every chunk ("Cannot read properties of null
+// reading 'terrain_fill_heights'"), while the far mesh — posted from the ready
+// handler — rendered fine and made screenshots look correct.
+//
+// Sequencing here rather than on the main thread: the worker owns whether it is
+// usable, so no future caller can reintroduce the race by forgetting to wait.
 self.onmessage = async (e) => {
   const msg = e.data;
   if (msg.type === "init") {
     seed = msg.seed;
-    ex = await loadWasm(msg.wasmUrl);
+    loading = loadWasm(msg.wasmUrl).then((m) => {
+      ex = m;
+    });
+    await loading;
     self.postMessage({ type: "ready" });
     return;
   }
   if (msg.type === "build") {
+    if (!ex) {
+      if (!loading) throw new Error("build before init — worker has no wasm");
+      await loading;
+    }
     const built = build(msg);
     self.postMessage({ type: "built", ...built }, [
       built.positions.buffer,

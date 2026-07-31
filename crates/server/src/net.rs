@@ -89,9 +89,10 @@ pub async fn spawn_shard(cfg: ShardConfig) -> Result<ShardHandle, String> {
         let shutdown = shutdown.clone();
         let slots = slots.clone();
         let seed = cfg.seed;
+        let dev_spawn = cfg.dev_spawn;
         std::thread::Builder::new()
             .name("sim".into())
-            .spawn(move || sim_thread(seed, ctrl_rx, grave_tx, slots, stats, shutdown))
+            .spawn(move || sim_thread(seed, dev_spawn, ctrl_rx, grave_tx, slots, stats, shutdown))
             .map_err(|e| format!("sim thread spawn: {e}"))?;
     }
 
@@ -380,6 +381,7 @@ pub async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), ()
 
 fn sim_thread(
     seed: u64,
+    dev_spawn: Option<(f32, f32)>,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut grave_tx: rtrb::Producer<Link>,
     slots: Arc<SlotTable>,
@@ -387,6 +389,7 @@ fn sim_thread(
     shutdown: Arc<AtomicBool>,
 ) {
     let mut core = ShardCore::new(seed);
+    core.world.dev_spawn = dev_spawn;
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_PLAYERS);
     links.resize_with(MAX_PLAYERS, || None);
     let mut links = links.into_boxed_slice();
