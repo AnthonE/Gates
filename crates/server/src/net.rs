@@ -135,7 +135,12 @@ pub async fn spawn_shard(
 
     tokio::spawn(accept_loop(
         endpoint,
-        cfg.seed,
+        ShardFacts {
+            seed: cfg.seed,
+            // A shard running a dev override is a dev shard, and says so
+            // in every welcome — that bit is the client's only dev gate.
+            dev: cfg.dev_spawn.is_some(),
+        },
         ctrl_tx,
         grave_rx,
         slots,
@@ -155,6 +160,15 @@ pub async fn spawn_shard(
 // Accept side
 // ---------------------------------------------------------------------------
 
+/// What every joiner is told about the shard itself: the seed its whole
+/// world derives from, and whether this is a dev shard — the bit the
+/// client gates its dev affordances on.
+#[derive(Clone, Copy)]
+struct ShardFacts {
+    seed: u64,
+    dev: bool,
+}
+
 /// What a handshake task hands back once the client said a valid hello.
 /// The recv half stays: after the hello it is the C→S action lane.
 struct Handshaken {
@@ -165,7 +179,7 @@ struct Handshaken {
 
 async fn accept_loop(
     endpoint: Endpoint<Server>,
-    seed: u64,
+    facts: ShardFacts,
     mut ctrl_tx: rtrb::Producer<Connect>,
     mut grave_rx: rtrb::Consumer<Link>,
     slots: Arc<SlotTable>,
@@ -184,7 +198,7 @@ async fn accept_loop(
                 tokio::spawn(handshake_task(incoming, done_tx, stats));
             }
             Some(done) = done_rx.recv() => {
-                install(done, seed, &mut ctrl_tx, &slots, &stats).await;
+                install(done, facts, &mut ctrl_tx, &slots, &stats).await;
             }
             _ = sweep.tick() => {
                 while let Ok(link) = grave_rx.pop() {
@@ -239,7 +253,7 @@ async fn handshake_task(
 /// hang (DESIGN.md §5.9).
 async fn install(
     done: Handshaken,
-    seed: u64,
+    facts: ShardFacts,
     ctrl_tx: &mut rtrb::Producer<Connect>,
     slots: &Arc<SlotTable>,
     stats: &Arc<ShardStats>,
@@ -281,8 +295,9 @@ async fn install(
 
     let welcome = Welcome {
         player_id: id,
-        seed,
+        seed: facts.seed,
         tick: ShardStats::get(&stats.current_tick) as u32,
+        dev: facts.dev,
     };
     let _ = write_welcome(&mut send, &welcome).await;
 

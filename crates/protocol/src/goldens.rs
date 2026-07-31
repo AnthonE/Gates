@@ -25,45 +25,45 @@ use sim_core::limits::{
 };
 use sim_core::rng::Pcg32;
 
-/// Fixture file names, keyed by wire version (`PROTO_VER` 6 ⇒ `v6_*`).
+/// Fixture file names, keyed by wire version (`PROTO_VER` 7 ⇒ `v7_*`).
 pub const FIXTURES: [&str; 37] = [
-    "v6_input_acks_only.bin",
-    "v6_input_full.bin",
-    "v6_snapshot_keyframe.bin",
-    "v6_snapshot_delta.bin",
-    "v6_snapshot_cap.bin",
-    "v6_hello.bin",
-    "v6_welcome.bin",
-    "v6_refuse_full.bin",
-    "v6_event_gather.bin",
-    "v6_event_inv.bin",
-    "v6_event_slot_harvested.bin",
-    "v6_event_slot_respawned.bin",
-    "v6_event_slot_sync.bin",
-    "v6_event_catalog.bin",
-    "v6_event_weak_mark.bin",
-    "v6_event_craft_q.bin",
-    "v6_event_craft_done.bin",
-    "v6_event_craft_refused.bin",
-    "v6_event_recipes.bin",
-    "v6_action_craft.bin",
-    "v6_action_cancel.bin",
-    "v6_action_place.bin",
-    "v6_event_piece_placed.bin",
-    "v6_event_piece_sync.bin",
-    "v6_event_build_refused.bin",
-    "v6_event_piece_defs.bin",
-    "v6_action_deploy.bin",
-    "v6_action_feed.bin",
-    "v6_event_deploy_placed.bin",
-    "v6_event_deploy_sync.bin",
-    "v6_event_deploy_refused.bin",
-    "v6_event_deploy_defs.bin",
-    "v6_event_piece_removed.bin",
-    "v6_event_deploy_removed.bin",
-    "v6_event_stock.bin",
-    "v6_action_use.bin",
-    "v6_event_door.bin",
+    "v7_input_acks_only.bin",
+    "v7_input_full.bin",
+    "v7_snapshot_keyframe.bin",
+    "v7_snapshot_delta.bin",
+    "v7_snapshot_cap.bin",
+    "v7_hello.bin",
+    "v7_welcome.bin",
+    "v7_refuse_full.bin",
+    "v7_event_gather.bin",
+    "v7_event_inv.bin",
+    "v7_event_slot_harvested.bin",
+    "v7_event_slot_respawned.bin",
+    "v7_event_slot_sync.bin",
+    "v7_event_catalog.bin",
+    "v7_event_weak_mark.bin",
+    "v7_event_craft_q.bin",
+    "v7_event_craft_done.bin",
+    "v7_event_craft_refused.bin",
+    "v7_event_recipes.bin",
+    "v7_action_craft.bin",
+    "v7_action_cancel.bin",
+    "v7_action_place.bin",
+    "v7_event_piece_placed.bin",
+    "v7_event_piece_sync.bin",
+    "v7_event_build_refused.bin",
+    "v7_event_piece_defs.bin",
+    "v7_action_deploy.bin",
+    "v7_action_feed.bin",
+    "v7_event_deploy_placed.bin",
+    "v7_event_deploy_sync.bin",
+    "v7_event_deploy_refused.bin",
+    "v7_event_deploy_defs.bin",
+    "v7_event_piece_removed.bin",
+    "v7_event_deploy_removed.bin",
+    "v7_event_stock.bin",
+    "v7_action_use.bin",
+    "v7_event_door.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -204,11 +204,16 @@ pub fn hello() -> Hello {
     }
 }
 
+/// `dev` is pinned TRUE here on purpose: a false bit is byte-identical to
+/// the zero padding it sits in, so only the set bit actually locks the
+/// field's position in the fixture. The false case is covered by the
+/// roundtrip in `tests/protocol_golden.rs`.
 pub fn welcome() -> Welcome {
     Welcome {
         player_id: 0x0000_0107,
         seed: 0x0047_4154_4553_2121,
         tick: 654_321,
+        dev: true,
     }
 }
 

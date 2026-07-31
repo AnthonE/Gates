@@ -139,9 +139,40 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 6, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 7, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
+
+// --- handshake parse: the welcome's dev bit reaches JS --------------------
+// The canonical v7 welcome fixture, driven through the same entry the
+// browser boot uses. That word is the ONLY gate on the page's dev
+// affordances (`__gatesDebug.setView`), so a bridge that dropped it would
+// either ship them to every public shard or withhold them from the capture
+// harness — and neither shows up anywhere else in this suite.
+const welcomeGolden = readFileSync(
+  join(root, "crates/protocol/tests/golden/v7_welcome.bin"),
+);
+const parseHandshake = (bytes) => {
+  // ptr first, buffer second: a getter may grow memory and detach a
+  // buffer captured before it (the boot bug of 2026-07-31).
+  const inPtr = ex.client_in_ptr();
+  new Uint8Array(ex.memory.buffer, inPtr, bytes.length).set(bytes);
+  const kind = ex.client_parse_handshake(bytes.length);
+  const hsPtr = ex.client_hs_ptr();
+  const hs = new Uint32Array(ex.memory.buffer, hsPtr, 7);
+  return { kind, playerId: hs[1], dev: hs[6] };
+};
+const devOn = parseHandshake(welcomeGolden);
+check(devOn.kind === 1, `welcome should parse as kind 1: ${devOn.kind}`);
+check(devOn.playerId === 0x107, `welcome player id odd: ${devOn.playerId}`);
+check(devOn.dev === 1, "a dev shard's welcome must reach JS as dev = 1");
+// The same bytes with the dev bit (index 131, LSB-first) cleared — exactly
+// what a shard with no dev override sends.
+const publicWelcome = Uint8Array.from(welcomeGolden);
+publicWelcome[16] &= ~0x08;
+const devOff = parseHandshake(publicWelcome);
+check(devOff.kind === 1, `a public shard's welcome must still parse: ${devOff.kind}`);
+check(devOff.dev === 0, "a public shard's welcome must reach JS as dev = 0");
 
 ex.client_new(SEED, 257, 100);
 ex.client_set_input(1, 12000, 128, 0, 127, 3);
