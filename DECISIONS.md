@@ -46,3 +46,8 @@ invented into code that isn't on this page.
 | playtest channel (Discord/Telegram) | unset | ALPHA §4 |
 | coalescing rates · stream-in batch sizes | per NETCODE, bench-tuned | NETCODE §5 |
 | grass · tree LOD distances · map-as-item | cosmetic defaults | TERRAIN §4/§5 |
+| sim movement constants | walk 3.0 · sprint 5.5 m/s · gravity 20 m/s² · terminal 50 m/s · wade ×0.5 below ground 0.4 m · world border margin 8 m | sim-core `movement.rs` |
+| velocity quantization | 1 cm/s (positions per DESIGN §5.5: 3 cm x/z · 1 cm y) | sim-core `movement.rs` |
+| worldgen shape params | **all** shape constants in `terrain.rs` (relief 1/600 m gain 2.4 · warp 45 m @ 1/1200 · coast r 960±100 edge 160 · sea floor 12 m · moisture 1/700 · ridge 16 m @ 1/220 from 52 m · biome bands beach <2 m / highland >52 m / forest moist >0.05 · remap LUT v0 · scatter weights v0), pinned by `test_terrain_golden` | sim-core `terrain.rs` |
+| command buffer cap | 256 per tick, overflow defers to next tick | sim-core `limits.rs` |
+| spawn placeholder (until the spawn-ring slice) | 96 hashed candidates · interior 224–1824 m · height 1.5–45 m · slope < 1.0 · fallback island center | sim-core `world.rs` |
