@@ -5,22 +5,26 @@
 //! `PROTO_VER` bump in the same commit is the wire drifting by accident.
 
 use protocol::goldens::{
-    input_acks_only, input_full, snapshot_cap, snapshot_delta, snapshot_keyframe, SnapshotCase,
-    FIXTURES,
+    hello, input_acks_only, input_full, refuse_full, snapshot_cap, snapshot_delta,
+    snapshot_keyframe, welcome, SnapshotCase, FIXTURES,
 };
 use protocol::{
-    decode_input, decode_snapshot, encode_input, encode_snapshot, peek_kind, InputDatagram,
-    KIND_INPUT, KIND_SNAPSHOT,
+    decode_hello, decode_input, decode_refuse, decode_snapshot, decode_welcome, encode_hello,
+    encode_input, encode_refuse, encode_snapshot, encode_welcome, peek_kind, InputDatagram,
+    KIND_HELLO, KIND_INPUT, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 5] = [
+const GOLDEN: [&[u8]; 8] = [
     include_bytes!("golden/v0_input_acks_only.bin"),
     include_bytes!("golden/v0_input_full.bin"),
     include_bytes!("golden/v0_snapshot_keyframe.bin"),
     include_bytes!("golden/v0_snapshot_delta.bin"),
     include_bytes!("golden/v0_snapshot_cap.bin"),
+    include_bytes!("golden/v0_hello.bin"),
+    include_bytes!("golden/v0_welcome.bin"),
+    include_bytes!("golden/v0_refuse_full.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -62,6 +66,35 @@ fn test_protocol_golden() {
     golden_snapshot(&snapshot_keyframe(), GOLDEN[2], FIXTURES[2]);
     golden_snapshot(&snapshot_delta(), GOLDEN[3], FIXTURES[3]);
     golden_snapshot(&snapshot_cap(), GOLDEN[4], FIXTURES[4]);
+    golden_stream(GOLDEN[5], FIXTURES[5]);
+    golden_stream(GOLDEN[6], FIXTURES[6]);
+    golden_stream(GOLDEN[7], FIXTURES[7]);
+}
+
+/// The handshake trio: byte-stable, kind-peekable, decode-exact.
+fn golden_stream(fixture: &[u8], name: &str) {
+    let mut buf = [0u8; 64];
+    match name {
+        "v0_hello.bin" => {
+            let len = encode_hello(&hello(), &mut buf).unwrap();
+            assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
+            assert_eq!(peek_kind(fixture).unwrap(), KIND_HELLO);
+            assert_eq!(decode_hello(fixture).unwrap(), hello());
+        }
+        "v0_welcome.bin" => {
+            let len = encode_welcome(&welcome(), &mut buf).unwrap();
+            assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
+            assert_eq!(peek_kind(fixture).unwrap(), KIND_WELCOME);
+            assert_eq!(decode_welcome(fixture).unwrap(), welcome());
+        }
+        "v0_refuse_full.bin" => {
+            let len = encode_refuse(&refuse_full(), &mut buf).unwrap();
+            assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
+            assert_eq!(peek_kind(fixture).unwrap(), KIND_REFUSE);
+            assert_eq!(decode_refuse(fixture).unwrap(), refuse_full());
+        }
+        other => panic!("unknown stream fixture {other}"),
+    }
 }
 
 /// The delta packet earns its keep: the same content absolute-encoded
@@ -108,6 +141,9 @@ fn test_decode_is_total() {
         let _ = decode_input(bytes);
         let _ = decode_snapshot(bytes, &[]);
         let _ = decode_snapshot(bytes, delta_case.baseline());
+        let _ = decode_hello(bytes);
+        let _ = decode_welcome(bytes);
+        let _ = decode_refuse(bytes);
     };
     let mut scratch = [0u8; DATAGRAM_BUDGET_BYTES];
     for fixture in GOLDEN {

@@ -40,6 +40,16 @@ pub const PROTO_VER: u16 = 0;
 pub const KIND_BITS: u32 = 3;
 pub const KIND_INPUT: u32 = 0;
 pub const KIND_SNAPSHOT: u32 = 1;
+/// Stream-lane message kinds (the bidi handshake, DESIGN.md §5.9). Same
+/// 3-bit kind space; stream messages ride length-prefixed (u16 LE) frames
+/// on the reliable lane, never datagrams.
+pub const KIND_HELLO: u32 = 2;
+pub const KIND_WELCOME: u32 = 3;
+pub const KIND_REFUSE: u32 = 4;
+
+/// Longest stream-lane message payload the handshake accepts. Overflow
+/// policy: refuse (`Malformed`) — a hello has no business being big.
+pub const MAX_STREAM_MSG_BYTES: usize = 64;
 
 const FRAME_COUNT_BITS: u32 = 4;
 const COUNT_BITS: u32 = 7;
@@ -74,6 +84,97 @@ pub fn peek_kind(buf: &[u8]) -> Result<u32, WireError> {
 }
 
 // ---------------------------------------------------------------------------
+// Stream-lane handshake messages (bidi, DESIGN.md §5.9)
+// ---------------------------------------------------------------------------
+
+/// C→S on the bidi stream: `hello{proto_ver}`. The version gate happens
+/// before anything else exists for this client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hello {
+    pub proto_ver: u16,
+}
+
+/// S→C: the join bundle v0 — player id, world seed, current server tick.
+/// Grows (spawn ring, catalog hash) with the slices that add those.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Welcome {
+    pub player_id: u32,
+    pub seed: u64,
+    pub tick: u32,
+}
+
+/// S→C: refusal with a posted reason — a shard at cap refuses at hello,
+/// never hangs (DESIGN.md §5.9).
+pub const REFUSE_VERSION: u8 = 0;
+pub const REFUSE_FULL: u8 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Refuse {
+    pub code: u8,
+}
+
+pub fn encode_hello(msg: &Hello, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_HELLO, KIND_BITS)?;
+    w.write(msg.proto_ver as u32, 16)?;
+    Ok(w.finish())
+}
+
+pub fn decode_hello(buf: &[u8]) -> Result<Hello, WireError> {
+    let mut r = BitReader::new(buf);
+    if r.read(KIND_BITS)? != KIND_HELLO {
+        return Err(WireError::Malformed);
+    }
+    let proto_ver = r.read(16)? as u16;
+    expect_zero_padding(&mut r)?;
+    Ok(Hello { proto_ver })
+}
+
+pub fn encode_welcome(msg: &Welcome, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_WELCOME, KIND_BITS)?;
+    w.write(msg.player_id, 32)?;
+    w.write(msg.seed as u32, 32)?;
+    w.write((msg.seed >> 32) as u32, 32)?;
+    w.write(msg.tick, 32)?;
+    Ok(w.finish())
+}
+
+pub fn decode_welcome(buf: &[u8]) -> Result<Welcome, WireError> {
+    let mut r = BitReader::new(buf);
+    if r.read(KIND_BITS)? != KIND_WELCOME {
+        return Err(WireError::Malformed);
+    }
+    let player_id = r.read(32)?;
+    let lo = r.read(32)? as u64;
+    let hi = r.read(32)? as u64;
+    let tick = r.read(32)?;
+    expect_zero_padding(&mut r)?;
+    Ok(Welcome {
+        player_id,
+        seed: lo | (hi << 32),
+        tick,
+    })
+}
+
+pub fn encode_refuse(msg: &Refuse, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_REFUSE, KIND_BITS)?;
+    w.write(msg.code as u32, 8)?;
+    Ok(w.finish())
+}
+
+pub fn decode_refuse(buf: &[u8]) -> Result<Refuse, WireError> {
+    let mut r = BitReader::new(buf);
+    if r.read(KIND_BITS)? != KIND_REFUSE {
+        return Err(WireError::Malformed);
+    }
+    let code = r.read(8)? as u8;
+    expect_zero_padding(&mut r)?;
+    Ok(Refuse { code })
+}
+
+// ---------------------------------------------------------------------------
 // Input datagram (C→S)
 // ---------------------------------------------------------------------------
 
@@ -82,9 +183,12 @@ pub fn peek_kind(buf: &[u8]) -> Result<u32, WireError> {
 /// `push` enforces it so the wire can carry one seq for all of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InputDatagram {
-    /// Newest snapshot tick received (low 16 bits, wrap-compare).
+    /// Newest snapshot tick **applied** (low 16 bits, wrap-compare). An
+    /// ack means applied, not merely received: a stale snapshot the client
+    /// discarded is never acked, so the server's mirror of what the client
+    /// knows (its delta baseline) folds exactly the acked set.
     pub snapshot_ack: u16,
-    /// Bit n set ⇒ snapshot tick `snapshot_ack − n − 1` also received.
+    /// Bit n set ⇒ snapshot tick `snapshot_ack − n − 1` also applied.
     pub ack_bits: u32,
     /// Client tick of `frames[0]`; with no frames, the client's current
     /// tick (the datagram still feeds the server's clock estimate).
@@ -472,21 +576,39 @@ impl Snapshot {
     }
 }
 
-/// Decode against the baseline the header names (the client picks it out
-/// of its acked-state ring by `tick − baseline_age`; passing the wrong
-/// slice is a caller bug the id lookup will usually catch as `Malformed`).
-/// Total: arbitrary bytes in, `Ok` or a `WireError` out, never a panic.
+/// Header-only read, so a receiver can pick the baseline snapshot
+/// (`tick − baseline_age`) out of its applied ring before the full
+/// `decode_snapshot` call. Reads exactly the header bits; the body goes
+/// untouched.
+pub fn peek_snapshot_header(buf: &[u8]) -> Result<SnapshotHeader, WireError> {
+    let mut r = BitReader::new(buf);
+    if r.read(KIND_BITS)? != KIND_SNAPSHOT {
+        return Err(WireError::Malformed);
+    }
+    read_snapshot_header(&mut r)
+}
+
+fn read_snapshot_header(r: &mut BitReader) -> Result<SnapshotHeader, WireError> {
+    Ok(SnapshotHeader {
+        tick: r.read(32)?,
+        baseline_age: r.read(8)? as u8,
+        last_executed_seq: r.read(16)? as u16,
+        nudge: Nudge::from_bits(r.read(2)?),
+    })
+}
+
+/// Decode against the baseline the header names — the **sent content** of
+/// the snapshot at `tick − baseline_age`, which the client holds because
+/// it applied (and therefore acked) that snapshot. Entities absent from
+/// that snapshot arrive absolute; nothing is ever folded across snapshots,
+/// so both sides hold byte-identical baselines by construction. Total:
+/// arbitrary bytes in, `Ok` or a `WireError` out, never a panic.
 pub fn decode_snapshot(buf: &[u8], baseline: &[EntityState]) -> Result<Snapshot, WireError> {
     let mut r = BitReader::new(buf);
     if r.read(KIND_BITS)? != KIND_SNAPSHOT {
         return Err(WireError::Malformed);
     }
-    let header = SnapshotHeader {
-        tick: r.read(32)?,
-        baseline_age: r.read(8)? as u8,
-        last_executed_seq: r.read(16)? as u16,
-        nudge: Nudge::from_bits(r.read(2)?),
-    };
+    let header = read_snapshot_header(&mut r)?;
     let removed_count = r.read(COUNT_BITS)? as usize;
     let entity_count = r.read(COUNT_BITS)? as usize;
     if removed_count > MAX_SNAPSHOT_ENTITIES || entity_count > MAX_SNAPSHOT_ENTITIES {

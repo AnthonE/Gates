@@ -9,18 +9,21 @@
 //! is the wire drifting by accident — the exact thing the gate exists to
 //! catch.
 
-use crate::{EntityState, InputDatagram, Nudge, SnapshotHeader};
+use crate::{EntityState, Hello, InputDatagram, Nudge, Refuse, SnapshotHeader, Welcome};
 use sim_core::input::InputFrame;
 use sim_core::limits::{MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 0 ⇒ `v0_*`).
-pub const FIXTURES: [&str; 5] = [
+pub const FIXTURES: [&str; 8] = [
     "v0_input_acks_only.bin",
     "v0_input_full.bin",
     "v0_snapshot_keyframe.bin",
     "v0_snapshot_delta.bin",
     "v0_snapshot_cap.bin",
+    "v0_hello.bin",
+    "v0_welcome.bin",
+    "v0_refuse_full.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -149,6 +152,28 @@ pub fn snapshot_delta() -> SnapshotCase {
         baseline_len: 4,
         entities,
         entity_len: 5,
+    }
+}
+
+/// The bidi-lane handshake trio (DESIGN.md §5.9), fixed values so the
+/// stream lane is golden-pinned like the datagrams.
+pub fn hello() -> Hello {
+    Hello {
+        proto_ver: crate::PROTO_VER,
+    }
+}
+
+pub fn welcome() -> Welcome {
+    Welcome {
+        player_id: 0x0000_0107,
+        seed: 0x0047_4154_4553_2121,
+        tick: 654_321,
+    }
+}
+
+pub fn refuse_full() -> Refuse {
+    Refuse {
+        code: crate::REFUSE_FULL,
     }
 }
 

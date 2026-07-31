@@ -20,7 +20,7 @@ $NICE cargo fmt --all --check || fail "rustfmt"
 echo "== gate: clippy walls (-D warnings; sim walls via crates/sim-core/clippy.toml)"
 $NICE cargo clippy --workspace --all-targets -- -D warnings || fail "clippy"
 
-echo "== gate: native test suite (alloc_zero, replay, terrain_golden, protocol_golden, unit)"
+echo "== gate: native test suite (alloc_zero, replay, terrain_golden, protocol_golden, snapshot_budget, bot smoke, unit)"
 $NICE cargo test --workspace --release || fail "cargo test"
 
 echo "== gate: wasm build (sim-core + protocol -> wasm32-unknown-unknown)"
