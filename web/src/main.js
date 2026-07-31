@@ -271,11 +271,13 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     );
   };
   // Feed the nearest hearth within reach of the feet (the authoritative
-  // reach check is the server's; this only picks the target address).
+  // reach check is the server's 5 m — build grid v0, DECISIONS.md §open;
+  // this only picks the target address inside that same radius).
+  const REACH = 5;
   const tryFeed = () => {
     const R = views.render;
     let best = null;
-    let bestD = 5.5 * 5.5;
+    let bestD = REACH * REACH;
     for (const rec of deployRecs.values()) {
       if (views.deployDefs[rec.row * 4] !== 1) continue; // not a hearth
       const dx = rec.cx * BUILD_CELL + 1.5 - R[1];
