@@ -1,0 +1,36 @@
+# Build output
+/target/
+**/target/
+/web/node_modules/
+**/node_modules/
+/web/dist/
+**/pkg/
+*.wasm.map
+
+# Cargo.lock IS committed — ashfall ships binaries, not a library.
+
+# Local config and state. shard.toml is per-deployment: every knob in the docs
+# reads from it, so it is exactly the file that must not be shared.
+shard.toml
+.env
+.env.*
+!.env.example
+
+# Dev certs (ECDSA P-256, regenerated on build per NETCODE §2.2) and any key
+# material that wanders in. This repo is PUBLIC.
+*.pem
+*.key
+*.p12
+certs/
+
+# Runtime artifacts: WAL, snapshots, ledger exports, replays
+/data/
+*.wal
+*.snapshot
+anomaly.log
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
