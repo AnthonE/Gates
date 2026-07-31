@@ -43,9 +43,9 @@ const MAX_EVENT_FRAME = 320;
 
 /**
  * u16-LE length-prefixed frame on the bidi lane (server/src/net.rs).
- * The stream stays open after the welcome — it is the reliable event
- * lane — so the reader and any already-buffered bytes are returned for
- * `pumpStream` to continue with.
+ * The stream stays open after the welcome — S→C it is the reliable event
+ * lane, C→S the action lane — so the reader (plus any already-buffered
+ * bytes) and the writer are both returned to keep using.
  */
 export async function handshake(wt, helloBytes) {
   const bidi = await wt.createBidirectionalStream();
@@ -55,7 +55,6 @@ export async function handshake(wt, helloBytes) {
   frame[1] = (helloBytes.length >> 8) & 0xff;
   frame.set(helloBytes, 2);
   await writer.write(frame);
-  writer.releaseLock();
 
   const reader = bidi.readable.getReader();
   let buf = new Uint8Array(0);
@@ -67,6 +66,7 @@ export async function handshake(wt, helloBytes) {
         return {
           reply: buf.subarray(2, 2 + len),
           reader,
+          writer,
           leftover: buf.subarray(2 + len),
         };
       }
@@ -78,6 +78,25 @@ export async function handshake(wt, helloBytes) {
     next.set(value, buf.length);
     buf = next;
   }
+}
+
+/**
+ * C→S action sender on the bidi writer: frames and writes one message
+ * (craft request / cancel). Click-rate traffic, not the RAF path — the
+ * copy here is not hot-loop allocation.
+ */
+export function makeActionSender(writer) {
+  return {
+    send(src, len) {
+      if (len === 0 || len > 64) return false;
+      const frame = new Uint8Array(2 + len);
+      frame[0] = len & 0xff;
+      frame[1] = (len >> 8) & 0xff;
+      frame.set(src.subarray(0, len), 2);
+      writer.write(frame).catch(() => {});
+      return true;
+    },
+  };
 }
 
 /**

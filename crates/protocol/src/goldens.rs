@@ -13,28 +13,37 @@ use crate::{
     EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse, SnapshotHeader,
     Welcome, SLOT_SYNC_BATCH,
 };
+use sim_core::craft::{
+    CraftContent, CraftJob, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
+};
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
-use sim_core::limits::{INV_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
+use sim_core::limits::{INV_SLOTS, MAX_INPUT_FRAMES, MAX_RECIPE_INPUTS, MAX_SNAPSHOT_ENTITIES};
 use sim_core::rng::Pcg32;
 
-/// Fixture file names, keyed by wire version (`PROTO_VER` 2 ⇒ `v2_*`).
-pub const FIXTURES: [&str; 15] = [
-    "v2_input_acks_only.bin",
-    "v2_input_full.bin",
-    "v2_snapshot_keyframe.bin",
-    "v2_snapshot_delta.bin",
-    "v2_snapshot_cap.bin",
-    "v2_hello.bin",
-    "v2_welcome.bin",
-    "v2_refuse_full.bin",
-    "v2_event_gather.bin",
-    "v2_event_inv.bin",
-    "v2_event_slot_harvested.bin",
-    "v2_event_slot_respawned.bin",
-    "v2_event_slot_sync.bin",
-    "v2_event_catalog.bin",
-    "v2_event_weak_mark.bin",
+/// Fixture file names, keyed by wire version (`PROTO_VER` 3 ⇒ `v3_*`).
+pub const FIXTURES: [&str; 21] = [
+    "v3_input_acks_only.bin",
+    "v3_input_full.bin",
+    "v3_snapshot_keyframe.bin",
+    "v3_snapshot_delta.bin",
+    "v3_snapshot_cap.bin",
+    "v3_hello.bin",
+    "v3_welcome.bin",
+    "v3_refuse_full.bin",
+    "v3_event_gather.bin",
+    "v3_event_inv.bin",
+    "v3_event_slot_harvested.bin",
+    "v3_event_slot_respawned.bin",
+    "v3_event_slot_sync.bin",
+    "v3_event_catalog.bin",
+    "v3_event_weak_mark.bin",
+    "v3_event_craft_q.bin",
+    "v3_event_craft_done.bin",
+    "v3_event_craft_refused.bin",
+    "v3_event_recipes.bin",
+    "v3_action_craft.bin",
+    "v3_action_cancel.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -255,6 +264,83 @@ pub fn event_catalog() -> ItemCatalog {
         cat.set(i, n).expect("golden names are in-cap by design");
     }
     cat
+}
+
+/// A part-full craft queue (head mid-batch) with a live head timer.
+pub fn event_craft_q() -> ([CraftJob; 3], u16) {
+    (
+        [
+            CraftJob {
+                recipe: 5,
+                remaining: 2,
+            },
+            CraftJob {
+                recipe: 0,
+                remaining: 99,
+            },
+            CraftJob {
+                recipe: 63,
+                remaining: 1,
+            },
+        ],
+        777,
+    )
+}
+
+/// One completed unit: (item index, units that actually landed).
+pub fn event_craft_done() -> (u16, u16) {
+    (12, 3)
+}
+
+/// A refusal carrying `sim_core::craft::REFUSE_INPUTS`.
+pub fn event_craft_refused() -> u8 {
+    sim_core::craft::REFUSE_INPUTS as u8
+}
+
+/// A six-row recipe table whose first batch is exactly `RECIPE_BATCH`
+/// rows of mixed station / input-count shapes.
+pub fn event_recipes() -> CraftContent {
+    /// (output, out_count, ticks, station, inputs) — fixture shorthand.
+    type Row = (u16, u16, u32, u8, &'static [(u16, u16)]);
+    let mut cc = CraftContent::EMPTY;
+    cc.recipe_count = 6;
+    let rows: [Row; 6] = [
+        (4, 1, 15 * 30, STATION_NONE, &[(0, 100), (1, 50)]),
+        (9, 3, 5 * 30, STATION_NONE, &[(0, 25), (1, 10)]),
+        (20, 10, 5 * 30, STATION_WORKBENCH1, &[(6, 20), (8, 10)]),
+        (
+            31,
+            1,
+            30 * 30,
+            STATION_WORKBENCH1,
+            &[(20, 240), (12, 2), (13, 1), (5, 4)],
+        ),
+        (7, 1, 2 * 30, STATION_FURNACE, &[(2, 1)]),
+        (63, 255, 65_535 * 30, STATION_NONE, &[(62, 65_535)]),
+    ];
+    for (i, &(output, out_count, ticks, station, inputs)) in rows.iter().enumerate() {
+        let mut def = RecipeDef {
+            output,
+            out_count,
+            ticks,
+            station,
+            n_inputs: inputs.len() as u8,
+            inputs: [(0, 0); MAX_RECIPE_INPUTS],
+        };
+        def.inputs[..inputs.len()].copy_from_slice(inputs);
+        cc.recipes[i] = def;
+    }
+    cc
+}
+
+/// A craft request: (recipe index, count).
+pub fn action_craft() -> (u16, u16) {
+    (33, 5)
+}
+
+/// A cancel of queue job 2.
+pub fn action_cancel() -> u16 {
+    2
 }
 
 /// The worst-case shape (DESIGN.md §12 `test_snapshot_budget` at the

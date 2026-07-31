@@ -6,10 +6,38 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sim_core::bots::bot_frame;
+use sim_core::craft::CraftContent;
 use sim_core::gather::GatherContent;
 use sim_core::limits::MAX_PLAYERS;
 use sim_core::rng::Pcg32;
 use sim_core::world::{Command, World};
+
+/// One tick's commands: every bot's input plus a craft enqueue and a
+/// cancel, so the craft verb (enqueue, step, refusal, cancel) sits inside
+/// the counted window. Fixed-size — the test itself must not allocate.
+fn tick_cmds(rng: &mut Pcg32, yaws: &mut [u16; MAX_PLAYERS], t: u16) -> [Command; MAX_PLAYERS + 2] {
+    core::array::from_fn(|i| {
+        if i < MAX_PLAYERS {
+            let f = bot_frame(rng, yaws[i], t);
+            yaws[i] = f.yaw;
+            Command::Input {
+                id: i as u32 + 1,
+                frame: f,
+            }
+        } else if i == MAX_PLAYERS {
+            Command::Craft {
+                id: (t as u32 % MAX_PLAYERS as u32) + 1,
+                recipe: t % 4, // 3 is out of range: the refusal path counts too
+                count: 1 + t % 2,
+            }
+        } else {
+            Command::CraftCancel {
+                id: ((t as u32 * 7) % MAX_PLAYERS as u32) + 1,
+                index: t % 5,
+            }
+        }
+    })
+}
 
 struct CountingAlloc;
 
@@ -38,8 +66,10 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 fn test_alloc_zero() {
     let mut world = World::new(0xA110C);
     // The gather fixture puts swings, yields, slot-life writes, and the
-    // respawn sweep inside the counted window.
+    // respawn sweep inside the counted window; the craft fixture adds
+    // enqueues, unit completions, refusals, and cancels.
     world.gather = GatherContent::probe_fixture();
+    world.craft = CraftContent::probe_fixture();
     let mut rng = Pcg32::new(0xA110C, 3);
     let mut yaws = [0u16; MAX_PLAYERS];
 
@@ -48,14 +78,7 @@ fn test_alloc_zero() {
         core::array::from_fn(|i| Command::Join { id: i as u32 + 1 });
     world.tick(&joins);
     for t in 0..30u16 {
-        let cmds: [Command; MAX_PLAYERS] = core::array::from_fn(|i| {
-            let f = bot_frame(&mut rng, yaws[i], t);
-            yaws[i] = f.yaw;
-            Command::Input {
-                id: i as u32 + 1,
-                frame: f,
-            }
-        });
+        let cmds = tick_cmds(&mut rng, &mut yaws, t);
         world.tick(&cmds);
     }
 
@@ -63,14 +86,7 @@ fn test_alloc_zero() {
     let f0 = FREES.load(Ordering::SeqCst);
 
     for t in 0..300u16 {
-        let cmds: [Command; MAX_PLAYERS] = core::array::from_fn(|i| {
-            let f = bot_frame(&mut rng, yaws[i], t.wrapping_add(30));
-            yaws[i] = f.yaw;
-            Command::Input {
-                id: i as u32 + 1,
-                frame: f,
-            }
-        });
+        let cmds = tick_cmds(&mut rng, &mut yaws, t.wrapping_add(30));
         world.tick(&cmds);
     }
     // The hash path must be allocation-free too.

@@ -11,12 +11,16 @@ use crate::interp::Interp;
 use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
 use protocol::{decode_event, encode_input, EventMsg, InputDatagram, ItemCatalog, WireError};
+use sim_core::craft::CraftContent;
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
-use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, MAX_SLOT_LIVES};
+use sim_core::limits::{CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_SLOT_LIVES};
 
 /// Gather toasts buffered for the HUD (drop-oldest — a toast is cosmetic).
 pub const TOAST_RING: usize = 8;
+
+/// Craft refusal reasons buffered for the HUD (drop-oldest, cosmetic).
+pub const REFUSAL_RING: usize = 4;
 
 /// What one event-lane message changed, as bit flags the bridge hands JS.
 pub const APPLIED_INV: u32 = 1 << 0;
@@ -26,6 +30,14 @@ pub const APPLIED_TOAST: u32 = 1 << 3;
 pub const APPLIED_CATALOG: u32 = 1 << 4;
 /// The own weak-spot mark moved, appeared, or cleared.
 pub const APPLIED_MARK: u32 = 1 << 5;
+/// The own craft queue changed (jobs and/or the head timer).
+pub const APPLIED_CRAFT_Q: u32 = 1 << 6;
+/// A craft unit completed (a toast is buffered).
+pub const APPLIED_CRAFT_DONE: u32 = 1 << 7;
+/// A craft request bounced (a refusal reason is buffered).
+pub const APPLIED_CRAFT_REFUSED: u32 = 1 << 8;
+/// Recipe rows arrived (the craft menu's data grew).
+pub const APPLIED_RECIPES: u32 = 1 << 9;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -130,6 +142,23 @@ pub struct ClientCore {
     pub mark_cell: u32,
     pub mark8: u8,
     pub mark_weak_hit: bool,
+    /// The recipe table as dripped so far (same rows the sim runs).
+    pub recipes: CraftContent,
+    /// Rows received so far; the table is complete when this reaches
+    /// `recipes.recipe_count` (batches arrive in order).
+    pub recipes_have: u16,
+    /// Authoritative own craft queue as last announced: (recipe,
+    /// remaining) live jobs, head first, and the head unit's remaining
+    /// ticks at announce time.
+    pub jobs: [(u8, u8); CRAFT_QUEUE],
+    pub jobs_count: u8,
+    pub craft_eta_ticks: u16,
+    craft_toasts: [(u16, u16); TOAST_RING],
+    craft_toast_head: usize,
+    craft_toast_len: usize,
+    refusals: [u8; REFUSAL_RING],
+    refusal_head: usize,
+    refusal_len: usize,
     pub events_applied: u64,
     pub event_errors: u64,
 }
@@ -161,6 +190,17 @@ impl ClientCore {
             mark_cell: NO_CELL,
             mark8: 0,
             mark_weak_hit: false,
+            recipes: CraftContent::EMPTY,
+            recipes_have: 0,
+            jobs: [(0, 0); CRAFT_QUEUE],
+            jobs_count: 0,
+            craft_eta_ticks: 0,
+            craft_toasts: [(0, 0); TOAST_RING],
+            craft_toast_head: 0,
+            craft_toast_len: 0,
+            refusals: [0; REFUSAL_RING],
+            refusal_head: 0,
+            refusal_len: 0,
             events_applied: 0,
             event_errors: 0,
         }
@@ -252,6 +292,48 @@ impl ClientCore {
                 }
                 flags |= APPLIED_CATALOG;
             }
+            EventMsg::CraftQ {
+                jobs,
+                count,
+                eta_ticks,
+            } => {
+                self.jobs = jobs;
+                self.jobs_count = count;
+                self.craft_eta_ticks = eta_ticks;
+                flags |= APPLIED_CRAFT_Q;
+            }
+            EventMsg::CraftDone { item, added } => {
+                if self.craft_toast_len == TOAST_RING {
+                    self.craft_toast_head = (self.craft_toast_head + 1) % TOAST_RING;
+                    self.craft_toast_len -= 1;
+                }
+                self.craft_toasts[(self.craft_toast_head + self.craft_toast_len) % TOAST_RING] =
+                    (item, added);
+                self.craft_toast_len += 1;
+                flags |= APPLIED_CRAFT_DONE;
+            }
+            EventMsg::CraftRefused { reason } => {
+                if self.refusal_len == REFUSAL_RING {
+                    self.refusal_head = (self.refusal_head + 1) % REFUSAL_RING;
+                    self.refusal_len -= 1;
+                }
+                self.refusals[(self.refusal_head + self.refusal_len) % REFUSAL_RING] = reason;
+                self.refusal_len += 1;
+                flags |= APPLIED_CRAFT_REFUSED;
+            }
+            EventMsg::Recipes {
+                total,
+                first,
+                count,
+                rows,
+            } => {
+                self.recipes.recipe_count = total as u16;
+                for (i, row) in rows.iter().enumerate().take(count as usize) {
+                    self.recipes.recipes[first as usize + i] = *row;
+                }
+                self.recipes_have = self.recipes_have.max(first as u16 + count as u16);
+                flags |= APPLIED_RECIPES;
+            }
         }
         Ok(flags)
     }
@@ -289,6 +371,28 @@ impl ClientCore {
         self.toast_head = (self.toast_head + 1) % TOAST_RING;
         self.toast_len -= 1;
         Some(t)
+    }
+
+    /// Oldest buffered craft-done toast: (item index, units added).
+    pub fn pop_craft_toast(&mut self) -> Option<(u16, u16)> {
+        if self.craft_toast_len == 0 {
+            return None;
+        }
+        let t = self.craft_toasts[self.craft_toast_head];
+        self.craft_toast_head = (self.craft_toast_head + 1) % TOAST_RING;
+        self.craft_toast_len -= 1;
+        Some(t)
+    }
+
+    /// Oldest buffered craft refusal reason (`sim_core::craft::REFUSE_*`).
+    pub fn pop_craft_refusal(&mut self) -> Option<u8> {
+        if self.refusal_len == 0 {
+            return None;
+        }
+        let r = self.refusals[self.refusal_head];
+        self.refusal_head = (self.refusal_head + 1) % REFUSAL_RING;
+        self.refusal_len -= 1;
+        Some(r)
     }
 
     /// The live input state; sampled once per generated frame. `sel`
@@ -514,6 +618,56 @@ mod tests {
         let flags = c.on_stream(&buf[..len]).unwrap();
         assert_ne!(flags & APPLIED_MARK, 0);
         assert_eq!(c.mark_cell, NO_CELL);
+    }
+
+    #[test]
+    fn stream_tracks_craft_queue_recipes_and_toasts() {
+        use protocol::{
+            encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused,
+            encode_event_recipes,
+        };
+        use sim_core::craft::CraftJob;
+
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+
+        // Recipes drip in and land at their table rows.
+        let cc = CraftContent::probe_fixture();
+        let (len, took) = encode_event_recipes(&cc, 0, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_RECIPES);
+        assert_eq!((c.recipes.recipe_count, c.recipes_have), (3, took as u16));
+        assert_eq!(c.recipes.recipes[1], cc.recipes[1]);
+
+        // The queue announce replaces the whole view.
+        let jobs = [
+            CraftJob {
+                recipe: 1,
+                remaining: 2,
+            },
+            CraftJob {
+                recipe: 0,
+                remaining: 5,
+            },
+        ];
+        let len = encode_event_craft_q(&jobs, 90, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CRAFT_Q);
+        assert_eq!(c.jobs_count, 2);
+        assert_eq!(c.jobs[0], (1, 2));
+        assert_eq!(c.craft_eta_ticks, 90);
+        let len = encode_event_craft_q(&[], 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.jobs_count, 0, "empty announce clears the queue");
+
+        // Done toasts and refusals ride their own rings.
+        let len = encode_event_craft_done(3, 2, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CRAFT_DONE);
+        assert_eq!(c.pop_craft_toast(), Some((3, 2)));
+        assert_eq!(c.pop_craft_toast(), None);
+        assert_eq!(c.pop_toast(), None, "craft toast never leaks into gather's");
+        let len = encode_event_craft_refused(4, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CRAFT_REFUSED);
+        assert_eq!(c.pop_craft_refusal(), Some(4));
+        assert_eq!(c.pop_craft_refusal(), None);
     }
 
     #[test]

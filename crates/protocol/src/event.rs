@@ -13,8 +13,9 @@
 
 use crate::bits::{BitReader, BitWriter, WireError};
 use crate::{expect_zero_padding, KIND_BITS, KIND_EVENT};
+use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
 use sim_core::gather::ItemStack;
-use sim_core::limits::{INV_SLOTS, MAX_ITEM_DEFS};
+use sim_core::limits::{CRAFT_QUEUE, INV_SLOTS, MAX_ITEM_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS};
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
 /// batch ≈ 264 B, a full slot-sync batch ≈ 258 B) with headroom; the
@@ -29,6 +30,10 @@ pub const SLOT_SYNC_BATCH: usize = 64;
 /// Item names one catalog message carries.
 pub const CATALOG_BATCH: usize = 8;
 
+/// Recipe rows one recipes message carries (a full row is ~22 B; four
+/// keep the drip well under the message cap).
+pub const RECIPE_BATCH: usize = 4;
+
 /// Longest item display name on the wire; the catalog bake refuses past
 /// it (content names are short by construction — CONTENT.md §2).
 pub const MAX_ITEM_NAME_BYTES: usize = 24;
@@ -41,6 +46,10 @@ const SUB_SLOT_RESPAWNED: u32 = 3;
 const SUB_SLOT_SYNC: u32 = 4;
 const SUB_CATALOG: u32 = 5;
 const SUB_WEAK_MARK: u32 = 6;
+const SUB_CRAFT_Q: u32 = 7;
+const SUB_CRAFT_DONE: u32 = 8;
+const SUB_CRAFT_REFUSED: u32 = 9;
+const SUB_RECIPES: u32 = 10;
 
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
@@ -48,6 +57,15 @@ const SYNC_COUNT_BITS: u32 = 7;
 const CATALOG_TOTAL_BITS: u32 = 7;
 const CATALOG_COUNT_BITS: u32 = 4;
 const NAME_LEN_BITS: u32 = 5;
+const CRAFT_Q_COUNT_BITS: u32 = 3;
+const RECIPE_TOTAL_BITS: u32 = 7;
+const RECIPE_COUNT_BITS: u32 = 3;
+/// Craft time crosses as raw ticks (the value the sim runs), not seconds
+/// — no cadence coupling; 24 bits cover the bake's ceiling (65535 s ×
+/// TICK_HZ ≈ 2 M ticks) with headroom.
+const RECIPE_TICKS_BITS: u32 = 24;
+const STATION_BITS: u32 = 2;
+const N_INPUTS_BITS: u32 = 3;
 
 /// One changed inventory slot on the wire.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -139,6 +157,30 @@ pub enum EventMsg {
         cz: u16,
         mark8: u8,
         weak_hit: bool,
+    },
+    /// Authoritative own craft queue after a change: `count` live jobs
+    /// (dense, head first) as (recipe index, units remaining), plus the
+    /// head unit's remaining ticks at send time (the client counts down
+    /// locally between messages).
+    CraftQ {
+        jobs: [(u8, u8); CRAFT_QUEUE],
+        count: u8,
+        eta_ticks: u16,
+    },
+    /// One craft unit completed: `added` units of `item` landed (0 = full
+    /// inventory — the loss is announced). The toast; `Inv` is the truth.
+    CraftDone { item: u16, added: u16 },
+    /// A craft request bounced: `reason` is a `sim_core::craft::REFUSE_*`
+    /// code (unknown values render as a generic refusal).
+    CraftRefused { reason: u8 },
+    /// Recipe rows `first..first+count` of a `total`-row table — the
+    /// craft menu's data, dripped like the item catalog. Rows decode to
+    /// the same `RecipeDef` the sim runs (craft time crosses as ticks).
+    Recipes {
+        total: u8,
+        first: u8,
+        count: u8,
+        rows: [RecipeDef; RECIPE_BATCH],
     },
 }
 
@@ -257,6 +299,85 @@ pub fn encode_event_weak_mark(
     Ok(w.finish())
 }
 
+/// `jobs` is the dense live prefix of a player's queue (empty ⇒ "queue
+/// cleared"). Refuses a job the wire's widths can't carry: a dead job
+/// (`remaining == 0`), a remaining over u8, or a recipe outside the table.
+pub fn encode_event_craft_q(
+    jobs: &[CraftJob],
+    eta_ticks: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if jobs.len() > CRAFT_QUEUE {
+        return Err(WireError::Cap);
+    }
+    let mut w = begin(buf, SUB_CRAFT_Q)?;
+    w.write(jobs.len() as u32, CRAFT_Q_COUNT_BITS)?;
+    for j in jobs {
+        if j.remaining == 0 || j.remaining > u8::MAX as u16 || j.recipe as usize >= MAX_RECIPES {
+            return Err(WireError::Range);
+        }
+        w.write(j.recipe as u32, 8)?;
+        w.write(j.remaining as u32, 8)?;
+    }
+    w.write(eta_ticks as u32, 16)?;
+    Ok(w.finish())
+}
+
+pub fn encode_event_craft_done(item: u16, added: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_CRAFT_DONE)?;
+    w.write(item as u32, 16)?;
+    w.write(added as u32, 16)?;
+    Ok(w.finish())
+}
+
+pub fn encode_event_craft_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_CRAFT_REFUSED)?;
+    w.write(reason as u32, 8)?;
+    Ok(w.finish())
+}
+
+/// Encode up to `RECIPE_BATCH` baked recipe rows starting at `first`.
+/// Returns the byte length and how many rows rode along. Row shapes the
+/// bake refuses (zero ticks, zero output, too many inputs) refuse here
+/// too — this encoder only ever sees baked tables.
+pub fn encode_event_recipes(
+    cc: &CraftContent,
+    first: usize,
+    buf: &mut [u8],
+) -> Result<(usize, usize), WireError> {
+    let total = cc.recipe_count as usize;
+    if total > MAX_RECIPES || first >= total {
+        return Err(WireError::Range);
+    }
+    let count = RECIPE_BATCH.min(total - first);
+    let mut w = begin(buf, SUB_RECIPES)?;
+    w.write(total as u32, RECIPE_TOTAL_BITS)?;
+    w.write(first as u32, RECIPE_TOTAL_BITS)?;
+    w.write(count as u32, RECIPE_COUNT_BITS)?;
+    for def in cc.recipes[first..first + count].iter() {
+        if def.ticks == 0
+            || def.ticks >= (1 << RECIPE_TICKS_BITS)
+            || def.out_count == 0
+            || def.out_count > u8::MAX as u16
+            || def.station > STATION_FURNACE
+            || def.n_inputs == 0
+            || def.n_inputs as usize > MAX_RECIPE_INPUTS
+        {
+            return Err(WireError::Range);
+        }
+        w.write(def.output as u32, 16)?;
+        w.write(def.out_count as u32, 8)?;
+        w.write(def.ticks, RECIPE_TICKS_BITS)?;
+        w.write(def.station as u32, STATION_BITS)?;
+        w.write(def.n_inputs as u32, N_INPUTS_BITS)?;
+        for &(item, per) in def.inputs.iter().take(def.n_inputs as usize) {
+            w.write(item as u32, 16)?;
+            w.write(per as u32, 16)?;
+        }
+    }
+    Ok((w.finish(), count))
+}
+
 /// Total decode of one event-lane message: arbitrary bytes in, `Ok` or a
 /// `WireError` out, never a panic — same contract as the datagrams.
 pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
@@ -352,6 +473,75 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             mark8: r.read(8)? as u8,
             weak_hit: r.read_bit()?,
         },
+        SUB_CRAFT_Q => {
+            let count = r.read(CRAFT_Q_COUNT_BITS)? as usize;
+            if count > CRAFT_QUEUE {
+                return Err(WireError::Malformed);
+            }
+            let mut jobs = [(0u8, 0u8); CRAFT_QUEUE];
+            for j in jobs.iter_mut().take(count) {
+                let recipe = r.read(8)? as u8;
+                let remaining = r.read(8)? as u8;
+                if recipe as usize >= MAX_RECIPES || remaining == 0 {
+                    return Err(WireError::Malformed);
+                }
+                *j = (recipe, remaining);
+            }
+            EventMsg::CraftQ {
+                jobs,
+                count: count as u8,
+                eta_ticks: r.read(16)? as u16,
+            }
+        }
+        SUB_CRAFT_DONE => EventMsg::CraftDone {
+            item: r.read(16)? as u16,
+            added: r.read(16)? as u16,
+        },
+        SUB_CRAFT_REFUSED => EventMsg::CraftRefused {
+            reason: r.read(8)? as u8,
+        },
+        SUB_RECIPES => {
+            let total = r.read(RECIPE_TOTAL_BITS)? as usize;
+            let first = r.read(RECIPE_TOTAL_BITS)? as usize;
+            let count = r.read(RECIPE_COUNT_BITS)? as usize;
+            if total > MAX_RECIPES || count == 0 || count > RECIPE_BATCH || first + count > total {
+                return Err(WireError::Malformed);
+            }
+            let mut rows = [RecipeDef::INERT; RECIPE_BATCH];
+            for row in rows.iter_mut().take(count) {
+                let output = r.read(16)? as u16;
+                let out_count = r.read(8)? as u16;
+                let ticks = r.read(RECIPE_TICKS_BITS)?;
+                let station = r.read(STATION_BITS)? as u8;
+                let n_inputs = r.read(N_INPUTS_BITS)? as u8;
+                if out_count == 0
+                    || ticks == 0
+                    || station > STATION_FURNACE
+                    || n_inputs == 0
+                    || n_inputs as usize > MAX_RECIPE_INPUTS
+                {
+                    return Err(WireError::Malformed);
+                }
+                let mut inputs = [(0u16, 0u16); MAX_RECIPE_INPUTS];
+                for input in inputs.iter_mut().take(n_inputs as usize) {
+                    *input = (r.read(16)? as u16, r.read(16)? as u16);
+                }
+                *row = RecipeDef {
+                    output,
+                    out_count,
+                    ticks,
+                    station,
+                    n_inputs,
+                    inputs,
+                };
+            }
+            EventMsg::Recipes {
+                total: total as u8,
+                first: first as u8,
+                count: count as u8,
+                rows,
+            }
+        }
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;
@@ -487,6 +677,133 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn craft_q_round_trips_and_refuses_bad_jobs() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let jobs = [
+            CraftJob {
+                recipe: 3,
+                remaining: 99,
+            },
+            CraftJob {
+                recipe: 0,
+                remaining: 1,
+            },
+        ];
+        let len = encode_event_craft_q(&jobs, 1234, &mut buf).unwrap();
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::CraftQ {
+                jobs: got,
+                count,
+                eta_ticks,
+            } => {
+                assert_eq!(count, 2);
+                assert_eq!(&got[..2], &[(3, 99), (0, 1)]);
+                assert_eq!(eta_ticks, 1234);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // Empty is the "queue cleared" message.
+        let len = encode_event_craft_q(&[], 0, &mut buf).unwrap();
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::CraftQ { count, .. } => assert_eq!(count, 0),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // A dead job, an over-u8 remaining, an out-of-table recipe: Range.
+        for bad in [
+            CraftJob {
+                recipe: 0,
+                remaining: 0,
+            },
+            CraftJob {
+                recipe: 0,
+                remaining: 256,
+            },
+            CraftJob {
+                recipe: MAX_RECIPES as u16,
+                remaining: 1,
+            },
+        ] {
+            assert_eq!(
+                encode_event_craft_q(&[bad], 0, &mut buf),
+                Err(WireError::Range)
+            );
+        }
+    }
+
+    #[test]
+    fn craft_done_and_refused_round_trip() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let len = encode_event_craft_done(9, 3, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::CraftDone { item: 9, added: 3 }
+        );
+        let len = encode_event_craft_refused(4, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::CraftRefused { reason: 4 }
+        );
+    }
+
+    #[test]
+    fn recipes_batches_walk_the_table_within_cap() {
+        let cc = CraftContent::probe_fixture();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, took) = encode_event_recipes(&cc, 0, &mut buf).unwrap();
+        assert!(len <= MAX_EVENT_MSG_BYTES);
+        assert_eq!(took, 3, "fixture has 3 rows, all fit one batch");
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::Recipes {
+                total,
+                first,
+                count,
+                rows,
+            } => {
+                assert_eq!((total, first, count), (3, 0, 3));
+                assert_eq!(rows[0], cc.recipes[0], "decode rebuilds the sim row");
+                assert_eq!(rows[1], cc.recipes[1]);
+                assert_eq!(rows[2], cc.recipes[2]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        assert_eq!(
+            encode_event_recipes(&cc, 3, &mut buf),
+            Err(WireError::Range),
+            "cursor past the table refuses"
+        );
+        // A row the bake would refuse (zero ticks) refuses here.
+        let mut bad = cc;
+        bad.recipes[1].ticks = 0;
+        assert_eq!(
+            encode_event_recipes(&bad, 0, &mut buf),
+            Err(WireError::Range)
+        );
+    }
+
+    #[test]
+    fn recipes_full_batch_fits_the_cap() {
+        // Worst shape: RECIPE_BATCH rows, every input row live at u16 max.
+        let mut cc = CraftContent::EMPTY;
+        cc.recipe_count = RECIPE_BATCH as u16 + 1;
+        for i in 0..cc.recipe_count as usize {
+            cc.recipes[i] = RecipeDef {
+                output: u16::MAX,
+                out_count: 255,
+                ticks: 65_535 * sim_core::limits::TICK_HZ,
+                station: STATION_FURNACE,
+                n_inputs: MAX_RECIPE_INPUTS as u8,
+                inputs: [(u16::MAX, u16::MAX); MAX_RECIPE_INPUTS],
+            };
+        }
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, took) = encode_event_recipes(&cc, 0, &mut buf).unwrap();
+        assert!(len <= MAX_EVENT_MSG_BYTES);
+        assert_eq!(took, RECIPE_BATCH);
+        let (_, took2) = encode_event_recipes(&cc, took, &mut buf).unwrap();
+        assert_eq!(took + took2, cc.recipe_count as usize);
     }
 
     #[test]

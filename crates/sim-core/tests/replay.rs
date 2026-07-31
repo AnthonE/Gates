@@ -5,6 +5,7 @@
 //! pinned: any accidental drift in sim behavior reddens this gate.
 
 use sim_core::bots::bot_frame;
+use sim_core::craft::CraftContent;
 use sim_core::gather::GatherContent;
 use sim_core::limits::STATE_HASH_INTERVAL;
 use sim_core::rng::Pcg32;
@@ -15,14 +16,15 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-/// Regenerated this commit: hotbar select + the weak-spot bonus landed —
-/// bot frames carry `sel`, state_hash covers the selector and the
-/// weak-spot chase, and aligned hits pay the content bonus.
-const GOLDEN_FINAL_HASH: u64 = 0x6DAC_C8DD_0731_6DE7;
+/// Regenerated this commit: the craft verb landed — state_hash covers the
+/// per-player craft queue, and the script drives Craft/CraftCancel
+/// commands (enqueue, completion, refusal, cancel) through the log.
+const GOLDEN_FINAL_HASH: u64 = 0xECCF_F5D7_4B0E_4664;
 
 fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut world = World::new(seed);
     world.gather = GatherContent::probe_fixture();
+    world.craft = CraftContent::probe_fixture();
     let mut rng = Pcg32::new(seed, 11);
     let mut yaws = [0u16; 64];
     let mut joined: u32 = 0;
@@ -47,6 +49,21 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
             let f = bot_frame(&mut rng, yaws[id as usize - 1], t as u16);
             yaws[id as usize - 1] = f.yaw;
             cmds.push(Command::Input { id, frame: f });
+            // The craft verb rides the same log: periodic enqueues (row 3
+            // is out of range — the refusal path) and rarer cancels.
+            if (t + id as u64).is_multiple_of(37) {
+                cmds.push(Command::Craft {
+                    id,
+                    recipe: ((t / 37 + id as u64) % 4) as u16,
+                    count: 1 + (id as u64 % 3) as u16,
+                });
+            }
+            if (t + id as u64).is_multiple_of(149) {
+                cmds.push(Command::CraftCancel {
+                    id,
+                    index: (t % 4) as u16,
+                });
+            }
         }
         world.tick(&cmds);
         if world.tick.is_multiple_of(STATE_HASH_INTERVAL) {

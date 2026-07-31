@@ -25,6 +25,8 @@ export class WasmViews {
     this.inv = null; // Uint16Array over client_inv_ptr (item,count ×30)
     this.catalog = null; // Uint8Array over client_catalog_ptr (25 B rows)
     this.slotChanges = null; // Uint32Array over client_slot_changes_ptr
+    this.craftJobs = null; // Uint16Array over client_craft_jobs_ptr
+    this.recipes = null; // Uint16Array over client_recipes_ptr (14-word rows)
     this.inCap = ex.client_in_cap();
     this.refresh();
   }
@@ -44,6 +46,8 @@ export class WasmViews {
     const invPtr = ex.client_inv_ptr();
     const catalogPtr = ex.client_catalog_ptr();
     const slotChangesPtr = ex.client_slot_changes_ptr();
+    const craftJobsPtr = ex.client_craft_jobs_ptr();
+    const recipesPtr = ex.client_recipes_ptr();
 
     const buf = ex.memory.buffer;
     if (buf === this.buffer) return;
@@ -56,5 +60,8 @@ export class WasmViews {
     this.inv = new Uint16Array(buf, invPtr, 30 * 2);
     this.catalog = new Uint8Array(buf, catalogPtr, 64 * 25);
     this.slotChanges = new Uint32Array(buf, slotChangesPtr, 64 * 2);
+    this.craftJobs = new Uint16Array(buf, craftJobsPtr, 4 * 2);
+    // 64 recipes × (output, count, ticks lo/hi, station, n_inputs, 4×(item,count)).
+    this.recipes = new Uint16Array(buf, recipesPtr, 64 * 14);
   }
 }

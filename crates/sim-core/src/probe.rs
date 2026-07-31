@@ -52,6 +52,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
         let seq_seed = splitmix64(master_seed ^ (s as u64));
         let mut world = World::new(seq_seed);
         world.gather = crate::gather::GatherContent::probe_fixture();
+        world.craft = crate::craft::CraftContent::probe_fixture();
         world.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
         let mut rng = Pcg32::new(seq_seed, 7);
         let mut yaws = [0u16; 2];
@@ -59,10 +60,41 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
             let f1 = bot_frame(&mut rng, yaws[0], t as u16);
             let f2 = bot_frame(&mut rng, yaws[1], t as u16);
             yaws = [f1.yaw, f2.yaw];
-            world.tick(&[
-                Command::Input { id: 1, frame: f1 },
-                Command::Input { id: 2, frame: f2 },
-            ]);
+            // Bots poke the craft verb on a fixed cadence so enqueue,
+            // completion, refusal, and cancel are all inside the parity/
+            // replay/alloc surface (fixture recipes, gathered inputs).
+            let craft = Command::Craft {
+                id: 1,
+                recipe: (t % 4) as u16, // 3 = out of range: refusal path
+                count: 1 + (t % 2) as u16,
+            };
+            let cancel = Command::CraftCancel {
+                id: 2,
+                index: (t % 5) as u16,
+            };
+            if t % 16 == 7 {
+                world.tick(&[
+                    Command::Input { id: 1, frame: f1 },
+                    Command::Input { id: 2, frame: f2 },
+                    craft,
+                    Command::Craft {
+                        id: 2,
+                        recipe: 0,
+                        count: 1,
+                    },
+                ]);
+            } else if t % 64 == 20 {
+                world.tick(&[
+                    Command::Input { id: 1, frame: f1 },
+                    Command::Input { id: 2, frame: f2 },
+                    cancel,
+                ]);
+            } else {
+                world.tick(&[
+                    Command::Input { id: 1, frame: f1 },
+                    Command::Input { id: 2, frame: f2 },
+                ]);
+            }
         }
         h.update(&world.state_hash().to_le_bytes());
     }

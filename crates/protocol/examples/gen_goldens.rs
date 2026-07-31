@@ -7,9 +7,10 @@
 #![allow(clippy::disallowed_macros)]
 
 use protocol::{
-    encode_event_catalog, encode_event_gather, encode_event_inv, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_weak_mark, encode_hello, encode_input, encode_refuse,
-    encode_snapshot, encode_welcome, goldens,
+    encode_action_cancel, encode_action_craft, encode_event_catalog, encode_event_craft_done,
+    encode_event_craft_q, encode_event_craft_refused, encode_event_gather, encode_event_inv,
+    encode_event_recipes, encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark,
+    encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -78,4 +79,26 @@ fn main() {
     let (cx, cz, mark8, weak_hit) = goldens::event_weak_mark();
     let len = encode_event_weak_mark(cx, cz, mark8, weak_hit, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[14], &buf[..len]);
+
+    let (jobs, eta) = goldens::event_craft_q();
+    let len = encode_event_craft_q(&jobs, eta, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[15], &buf[..len]);
+
+    let (item, added) = goldens::event_craft_done();
+    let len = encode_event_craft_done(item, added, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[16], &buf[..len]);
+
+    let len = encode_event_craft_refused(goldens::event_craft_refused(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[17], &buf[..len]);
+
+    let (len, took) = encode_event_recipes(&goldens::event_recipes(), 0, &mut buf).unwrap();
+    assert_eq!(took, protocol::RECIPE_BATCH);
+    write_fixture(goldens::FIXTURES[18], &buf[..len]);
+
+    let (recipe, count) = goldens::action_craft();
+    let len = encode_action_craft(recipe, count, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[19], &buf[..len]);
+
+    let len = encode_action_cancel(goldens::action_cancel(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[20], &buf[..len]);
 }

@@ -269,3 +269,67 @@ fn bake_refuses_duplicate_archetype() {
     let err = c.bake_gather().expect_err("duplicate archetype baked");
     assert!(err.contains("duplicate gatherable"), "{err}");
 }
+
+/// The shipped recipe ladder bakes into the sim's craft table, and the
+/// baked rows say what recipes.toml says.
+#[test]
+fn bake_craft_carries_the_shipped_numbers() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_craft().expect("shipped recipes must bake");
+    assert_eq!(cc.recipe_count as usize, c.recipes.len());
+
+    // recipes.toml recipe.hatchet_stone: 100 wood + 50 stone → 1 hatchet,
+    // 15 s at station none — read back from the baked row.
+    let idx = c.recipe_index("recipe.hatchet_stone").unwrap() as usize;
+    let def = &cc.recipes[idx];
+    assert_eq!(def.output, c.item_index("item.hatchet_stone").unwrap());
+    assert_eq!(def.out_count, 1);
+    assert_eq!(def.ticks, 15 * sim_core::limits::TICK_HZ);
+    assert_eq!(def.station, sim_core::craft::STATION_NONE);
+    assert_eq!(def.n_inputs, 2);
+    let wood = c.item_index("item.wood").unwrap();
+    let stone = c.item_index("item.stone").unwrap();
+    assert!(def.inputs[..2].contains(&(wood, 100)));
+    assert!(def.inputs[..2].contains(&(stone, 50)));
+
+    // Station codes map in schema order.
+    let furnace = c.recipe_index("recipe.furnace").unwrap() as usize;
+    assert_eq!(
+        cc.recipes[furnace].station,
+        sim_core::craft::STATION_WORKBENCH1
+    );
+    let frags = c.recipe_index("recipe.metal_frags").unwrap() as usize;
+    assert_eq!(cc.recipes[frags].station, sim_core::craft::STATION_FURNACE);
+
+    // Index mapping is a bijection into 0..len.
+    let mut seen = vec![false; c.recipes.len()];
+    for r in &c.recipes {
+        let i = c.recipe_index(&r.id).unwrap() as usize;
+        assert!(!seen[i], "recipe index {i} assigned twice");
+        seen[i] = true;
+    }
+}
+
+/// The craft bake refuses what the sim's capacities or the wire's field
+/// widths can't hold — a refused bake is a refused boot.
+#[test]
+fn bake_craft_refuses_out_of_cap_rows() {
+    // seconds 0 can't arm a timer.
+    let mut srcs = sources();
+    let entry = srcs.iter_mut().find(|(n, _)| *n == "recipes.toml").unwrap();
+    entry.1 = entry.1.replace("seconds = 3\n", "seconds = 0\n");
+    let c = build(&srcs).expect("zero seconds is a bake error, not a schema error");
+    let err = c.bake_craft().expect_err("zero-second recipe baked");
+    assert!(err.contains("seconds"), "{err}");
+
+    // A fifth input exceeds MAX_RECIPE_INPUTS.
+    let mut srcs = sources();
+    let entry = srcs.iter_mut().find(|(n, _)| *n == "recipes.toml").unwrap();
+    entry.1 = entry.1.replace(
+        "inputs = [{ item = \"item.stone\", count = 15 }]",
+        "inputs = [\n    { item = \"item.stone\", count = 15 },\n    { item = \"item.wood\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n    { item = \"item.fat\", count = 1 },\n    { item = \"item.charcoal\", count = 1 },\n]",
+    );
+    let c = build(&srcs).expect("five inputs is a bake error, not a schema error");
+    let err = c.bake_craft().expect_err("five-input recipe baked");
+    assert!(err.contains("inputs"), "{err}");
+}

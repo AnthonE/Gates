@@ -12,10 +12,13 @@
 
 use crate::core::ClientCore;
 use protocol::{
-    decode_refuse, decode_welcome, encode_hello, peek_kind, Hello, KIND_REFUSE, KIND_WELCOME,
-    MAX_ITEM_NAME_BYTES, PROTO_VER, SLOT_SYNC_BATCH,
+    decode_refuse, decode_welcome, encode_action_cancel, encode_action_craft, encode_hello,
+    peek_kind, Hello, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES, PROTO_VER, SLOT_SYNC_BATCH,
 };
-use sim_core::limits::{DATAGRAM_BUDGET_BYTES, INV_SLOTS, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
+use sim_core::limits::{
+    CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, INV_SLOTS, MAX_ITEM_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+    MAX_SNAPSHOT_ENTITIES,
+};
 use sim_core::terrain::{self, ScatterTable};
 use std::cell::RefCell;
 
@@ -39,6 +42,9 @@ const SLOTS_MAX_CELLS: usize = 8;
 const SLOT_FLOATS: usize = 8;
 /// Catalog view row: length byte + name bytes.
 const CATALOG_ROW: usize = 1 + MAX_ITEM_NAME_BYTES;
+/// Recipe view row, u16 words: output, out_count, ticks lo, ticks hi,
+/// station, n_inputs, then (item, count) per input slot.
+const RECIPE_ROW_WORDS: usize = 6 + 2 * MAX_RECIPE_INPUTS;
 /// `client_on_stream` error flag (high bit; real flags are low bits).
 const STREAM_ERR: u32 = 1 << 31;
 
@@ -58,6 +64,10 @@ struct Bridge {
     inv: [u16; INV_SLOTS * 2],
     /// Item names: `CATALOG_ROW` bytes per item index.
     catalog: Box<[u8; MAX_ITEM_DEFS * CATALOG_ROW]>,
+    /// Craft queue view: recipe, remaining per job slot.
+    craft_jobs: [u16; CRAFT_QUEUE * 2],
+    /// Recipe table view: `RECIPE_ROW_WORDS` u16s per recipe index.
+    recipes: Box<[u16; MAX_RECIPES * RECIPE_ROW_WORDS]>,
 }
 
 impl Bridge {
@@ -75,6 +85,8 @@ impl Bridge {
             changes_len: 0,
             inv: [0; INV_SLOTS * 2],
             catalog: Box::new([0; MAX_ITEM_DEFS * CATALOG_ROW]),
+            craft_jobs: [0; CRAFT_QUEUE * 2],
+            recipes: Box::new([0; MAX_RECIPES * RECIPE_ROW_WORDS]),
         }
     }
 }
@@ -201,6 +213,8 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             changes_len,
             inv,
             catalog,
+            craft_jobs,
+            recipes,
             ..
         } = b
         else {
@@ -232,7 +246,108 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
                 row[1..1 + name.len()].copy_from_slice(name);
             }
         }
+        if flags & crate::core::APPLIED_CRAFT_Q != 0 {
+            for (i, &(recipe, remaining)) in core.jobs.iter().enumerate() {
+                craft_jobs[i * 2] = recipe as u16;
+                craft_jobs[i * 2 + 1] = remaining as u16;
+            }
+        }
+        if flags & crate::core::APPLIED_RECIPES != 0 {
+            for i in 0..(core.recipes_have as usize).min(MAX_RECIPES) {
+                let def = &core.recipes.recipes[i];
+                let row = &mut recipes[i * RECIPE_ROW_WORDS..(i + 1) * RECIPE_ROW_WORDS];
+                row[0] = def.output;
+                row[1] = def.out_count;
+                row[2] = def.ticks as u16;
+                row[3] = (def.ticks >> 16) as u16;
+                row[4] = def.station as u16;
+                row[5] = def.n_inputs as u16;
+                for (k, &(item, count)) in def.inputs.iter().enumerate() {
+                    row[6 + k * 2] = item;
+                    row[6 + k * 2 + 1] = count;
+                }
+            }
+        }
         flags
+    })
+}
+
+/// Craft queue view: `CRAFT_QUEUE` × (recipe, remaining) u16 words,
+/// refreshed by `client_on_stream` (`APPLIED_CRAFT_Q`).
+#[no_mangle]
+pub extern "C" fn client_craft_jobs_ptr() -> *const u16 {
+    with(|b| b.craft_jobs.as_ptr())
+}
+
+/// Craft queue summary: live job count << 16 | head-unit remaining ticks
+/// at the last announce (the UI counts down between messages).
+#[no_mangle]
+pub extern "C" fn client_craft_q() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => ((core.jobs_count as u32) << 16) | core.craft_eta_ticks as u32,
+        None => 0,
+    })
+}
+
+/// Recipe table view: `RECIPE_ROW_WORDS` u16 words per recipe index
+/// (output, out_count, ticks lo/hi, station, n_inputs, then item/count
+/// per input slot), refreshed by `client_on_stream` (`APPLIED_RECIPES`).
+#[no_mangle]
+pub extern "C" fn client_recipes_ptr() -> *const u16 {
+    with(|b| b.recipes.as_ptr())
+}
+
+/// Recipe drip progress: total rows << 16 | rows received so far.
+#[no_mangle]
+pub extern "C" fn client_recipes_state() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => ((core.recipes.recipe_count as u32) << 16) | core.recipes_have as u32,
+        None => 0,
+    })
+}
+
+/// Oldest buffered craft-done toast as `item << 16 | added`; `u32::MAX`
+/// when none.
+#[no_mangle]
+pub extern "C" fn client_craft_pop() -> u32 {
+    with(
+        |b| match b.core.as_mut().and_then(|c| c.pop_craft_toast()) {
+            Some((item, added)) => ((item as u32) << 16) | added as u32,
+            None => u32::MAX,
+        },
+    )
+}
+
+/// Oldest buffered craft refusal reason; `u32::MAX` when none.
+#[no_mangle]
+pub extern "C" fn client_craft_refusal_pop() -> u32 {
+    with(
+        |b| match b.core.as_mut().and_then(|c| c.pop_craft_refusal()) {
+            Some(reason) => reason as u32,
+            None => u32::MAX,
+        },
+    )
+}
+
+/// Encode a craft request into the out buffer for the bidi lane; returns
+/// its length, or 0 when the arguments are outside the wire's domain.
+#[no_mangle]
+pub extern "C" fn client_action_craft(recipe: u32, count: u32) -> u32 {
+    with(|b| {
+        encode_action_craft(recipe as u16, count as u16, &mut b.out_buf)
+            .map(|n| n as u32)
+            .unwrap_or(0)
+    })
+}
+
+/// Encode a cancel of queue job `index` into the out buffer; returns its
+/// length, or 0 when the index is outside the queue.
+#[no_mangle]
+pub extern "C" fn client_action_cancel(index: u32) -> u32 {
+    with(|b| {
+        encode_action_cancel(index as u16, &mut b.out_buf)
+            .map(|n| n as u32)
+            .unwrap_or(0)
     })
 }
 

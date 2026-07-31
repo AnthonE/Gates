@@ -6,6 +6,7 @@
 //! The clippy walls for this crate live in `clippy.toml` next door.
 
 pub mod bots;
+pub mod craft;
 pub mod fmath;
 pub mod gather;
 pub mod input;

@@ -45,6 +45,11 @@ pub struct ShardStats {
     pub ev_resyncs: AtomicU64,
     /// Event-lane stream writes that failed (connection dying).
     pub ev_send_errors: AtomicU64,
+    /// C→S action frames decoded and ringed.
+    pub actions_ok: AtomicU64,
+    /// C→S action frames that failed to decode — client-driven bytes on
+    /// the reliable lane, so the session drops (framing trust is gone).
+    pub actions_bad: AtomicU64,
 }
 
 impl ShardStats {

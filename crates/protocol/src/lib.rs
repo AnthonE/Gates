@@ -31,9 +31,11 @@ pub mod goldens;
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use event::{
-    decode_event, encode_event_catalog, encode_event_gather, encode_event_inv,
+    decode_event, encode_event_catalog, encode_event_craft_done, encode_event_craft_q,
+    encode_event_craft_refused, encode_event_gather, encode_event_inv, encode_event_recipes,
     encode_event_slot_change, encode_event_slot_sync, encode_event_weak_mark, EventMsg, InvSlot,
-    ItemCatalog, CATALOG_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, SLOT_SYNC_BATCH,
+    ItemCatalog, CATALOG_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, RECIPE_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -41,10 +43,12 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// Wire protocol version. Bumps only with a packet-layout change and
 /// regenerated goldens in the same commit (CLAUDE.md wall 6). v1 added
 /// the reliable event lane (`KIND_EVENT`, `event.rs`). v2 added the
-/// hotbar selector to every input frame and the weak-mark event subtype —
-/// a v1 server would misread a v2 input datagram's frame records, so the
-/// hello gate refuses the pair; fixtures are keyed `v2_*`.
-pub const PROTO_VER: u16 = 2;
+/// hotbar selector to every input frame and the weak-mark event subtype.
+/// v3 added the C→S action lane (`KIND_ACTION`: craft request / cancel on
+/// the bidi stream) and the craft event subtypes (queue, done, refused,
+/// recipe catalog) — a v2 peer would refuse them all as malformed, so the
+/// hello gate refuses the pair; fixtures are keyed `v3_*`.
+pub const PROTO_VER: u16 = 3;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -59,6 +63,10 @@ pub const KIND_REFUSE: u32 = 4;
 /// S→C reliable event-lane messages (`event.rs`): subtyped, so the whole
 /// lane spends one kind.
 pub const KIND_EVENT: u32 = 5;
+/// C→S reliable action messages (craft request / cancel): subtyped like
+/// the event lane, riding the same bidi stream in length-prefixed frames
+/// (the server's 64 B `read_frame` acceptance).
+pub const KIND_ACTION: u32 = 6;
 
 /// Longest stream-lane message payload the handshake accepts. Overflow
 /// policy: refuse (`Malformed`) — a hello has no business being big.
@@ -187,6 +195,87 @@ pub fn decode_refuse(buf: &[u8]) -> Result<Refuse, WireError> {
     let code = r.read(8)? as u8;
     expect_zero_padding(&mut r)?;
     Ok(Refuse { code })
+}
+
+// ---------------------------------------------------------------------------
+// Action messages (C→S, the reliable bidi lane)
+// ---------------------------------------------------------------------------
+
+const ACTION_SUB_BITS: u32 = 2;
+const ACT_CRAFT: u32 = 0;
+const ACT_CANCEL: u32 = 1;
+/// Cancel index width mirrors the queue (`CRAFT_QUEUE` = 4 fits 3 bits);
+/// values past the queue refuse at decode like a forged hotbar selector.
+const CANCEL_INDEX_BITS: u32 = 3;
+
+/// One decoded C→S action. The wire enforces shape (recipe inside the
+/// sim's table, a live index, a nonzero count); meaning — does the recipe
+/// exist, are the inputs there — is the sim's verdict, delivered as a
+/// craft-refused event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionMsg {
+    /// Enqueue `count` crafts of recipe row `recipe`.
+    Craft { recipe: u16, count: u16 },
+    /// Cancel the queue job at `index`, refunding remaining inputs.
+    CraftCancel { index: u16 },
+}
+
+pub fn encode_action_craft(recipe: u16, count: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if recipe as usize >= sim_core::limits::MAX_RECIPES
+        || count == 0
+        || count > sim_core::limits::CRAFT_COUNT_MAX
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_CRAFT, ACTION_SUB_BITS)?;
+    w.write(recipe as u32, 8)?;
+    w.write(count as u32, 8)?;
+    Ok(w.finish())
+}
+
+pub fn encode_action_cancel(index: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if index as usize >= sim_core::limits::CRAFT_QUEUE {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_CANCEL, ACTION_SUB_BITS)?;
+    w.write(index as u32, CANCEL_INDEX_BITS)?;
+    Ok(w.finish())
+}
+
+/// Total decode of one C→S action frame — client-driven bytes, so the
+/// same never-panic contract as the input datagrams.
+pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
+    let mut r = BitReader::new(buf);
+    if r.read(KIND_BITS)? != KIND_ACTION {
+        return Err(WireError::Malformed);
+    }
+    let msg = match r.read(ACTION_SUB_BITS)? {
+        ACT_CRAFT => {
+            let recipe = r.read(8)? as u16;
+            let count = r.read(8)? as u16;
+            if recipe as usize >= sim_core::limits::MAX_RECIPES
+                || count == 0
+                || count > sim_core::limits::CRAFT_COUNT_MAX
+            {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Craft { recipe, count }
+        }
+        ACT_CANCEL => {
+            let index = r.read(CANCEL_INDEX_BITS)? as u16;
+            if index as usize >= sim_core::limits::CRAFT_QUEUE {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::CraftCancel { index }
+        }
+        _ => return Err(WireError::Malformed),
+    };
+    expect_zero_padding(&mut r)?;
+    Ok(msg)
 }
 
 // ---------------------------------------------------------------------------

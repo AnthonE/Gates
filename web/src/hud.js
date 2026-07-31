@@ -13,6 +13,9 @@ export class Hud {
     this.cross = document.getElementById("cross");
     this.hotbar = document.getElementById("hotbar");
     this.toasts = document.getElementById("toasts");
+    this.craft = document.getElementById("craft");
+    this.craftq = document.getElementById("craftq");
+    this.craftOpen = false;
     this.last = "";
     this.cells = [];
     this.cellDivs = [];
@@ -35,6 +38,74 @@ export class Hud {
     this.cross.style.display = "block";
     this.hotbar.style.display = "flex";
     this.toasts.style.display = "block";
+  }
+
+  /** Toggle the craft panel; returns whether it is now open. */
+  toggleCraft() {
+    this.craftOpen = !this.craftOpen;
+    this.craft.style.display = this.craftOpen ? "flex" : "none";
+    return this.craftOpen;
+  }
+
+  /**
+   * Rebuild the craft panel. `rows` is the recipe list precomputed by
+   * main.js: { recipe, name, count, seconds, gated, gateText, craftable,
+   * inputs: [{ text, ok }] }. Event-driven + slow-timer only — never the
+   * RAF path.
+   */
+  setCraft(rows, onCraft) {
+    const panel = this.craft;
+    panel.textContent = "";
+    const h = document.createElement("h2");
+    h.textContent = "CRAFT";
+    panel.appendChild(h);
+    for (const r of rows) {
+      const div = document.createElement("div");
+      div.className = r.gated ? "crow gated" : "crow";
+      const name = document.createElement("div");
+      name.className = "cname";
+      name.textContent = r.count > 1 ? `${r.name} ×${r.count}` : r.name;
+      div.appendChild(name);
+      const meta = document.createElement("div");
+      meta.className = "cmeta";
+      meta.textContent = `${r.seconds}s · `;
+      for (let i = 0; i < r.inputs.length; i++) {
+        const inp = r.inputs[i];
+        const span = document.createElement("span");
+        span.className = inp.ok ? "cin ok" : "cin miss";
+        span.textContent = inp.text + (i < r.inputs.length - 1 ? " · " : "");
+        meta.appendChild(span);
+      }
+      if (r.gated) {
+        const gate = document.createElement("span");
+        gate.className = "gate";
+        gate.textContent = ` · ${r.gateText}`;
+        meta.appendChild(gate);
+      }
+      div.appendChild(meta);
+      if (!r.gated) {
+        div.addEventListener("click", (e) => onCraft(r.recipe, e.shiftKey ? 5 : 1));
+      }
+      panel.appendChild(div);
+    }
+  }
+
+  /**
+   * Rebuild the craft queue strip. `jobs` is [{ index, label }]; empty
+   * hides the strip. Clicking a job cancels it.
+   */
+  setCraftQueue(jobs, onCancel) {
+    const strip = this.craftq;
+    strip.textContent = "";
+    strip.style.display = jobs.length ? "flex" : "none";
+    for (const j of jobs) {
+      const cell = document.createElement("div");
+      cell.className = "qcell";
+      cell.textContent = j.label;
+      cell.title = "click to cancel";
+      cell.addEventListener("click", () => onCancel(j.index));
+      strip.appendChild(cell);
+    }
   }
 
   set(text) {

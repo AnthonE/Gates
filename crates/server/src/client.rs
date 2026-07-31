@@ -11,12 +11,13 @@
 //! overflow all fall to the same zero-state path — recovery is not a
 //! special case.
 
-use protocol::{EntityState, Nudge};
+use protocol::{ActionMsg, EntityState, Nudge};
+use sim_core::craft::CraftJob;
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
 use sim_core::limits::{
-    INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INV_SLOTS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
-    PENDING_REMOVALS_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS,
+    CRAFT_QUEUE, INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INV_SLOTS, MAX_PLAYERS,
+    MAX_SNAPSHOT_ENTITIES, PENDING_REMOVALS_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS,
 };
 
 /// Consecutive starved ticks before the nudge escalates to `HardResync`
@@ -114,6 +115,17 @@ pub struct ClientNetState {
     pub sync_reset: bool,
     /// Next item index the catalog drip sends.
     pub catalog_cursor: usize,
+    /// Next recipe row the recipe drip sends.
+    pub recipes_cursor: usize,
+    /// One decoded C→S action awaiting its command slot (the sim drains
+    /// the ring only into an empty hand — defer, never drop).
+    pub pending_action: Option<ActionMsg>,
+    /// Craft queue as last successfully queued to this client; the sim
+    /// diffs the world's copy each tick, like `last_inv`.
+    pub last_jobs: [CraftJob; CRAFT_QUEUE],
+    /// The head-timer value behind the last queued queue message.
+    /// `u64::MAX` forces a resend (the ev_resync path).
+    pub last_done_at: u64,
 }
 
 impl ClientNetState {
@@ -140,17 +152,24 @@ impl ClientNetState {
             sync_cursor: 0,
             sync_reset: true,
             catalog_cursor: 0,
+            recipes_cursor: 0,
+            pending_action: None,
+            last_jobs: [CraftJob::default(); CRAFT_QUEUE],
+            last_done_at: 0,
         }
     }
 
     /// Restart everything the event lane owes this client (fresh join and
     /// ring-overflow recovery are the same path): the harvested-set walk
-    /// from the top with a reset batch, the catalog from row zero. The
-    /// inventory shadow stays — it re-diffs against the world by itself.
+    /// from the top with a reset batch, the catalog and recipe drips from
+    /// row zero, and a forced craft-queue resend. The inventory shadow
+    /// stays — it re-diffs against the world by itself.
     pub fn ev_resync(&mut self) {
         self.sync_cursor = 0;
         self.sync_reset = true;
         self.catalog_cursor = 0;
+        self.recipes_cursor = 0;
+        self.last_done_at = u64::MAX;
     }
 
     /// Arm the slot for a fresh connection. Everything netcode resets; the

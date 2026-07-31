@@ -140,6 +140,89 @@
         color: #d7e6c8;
         text-align: right;
       }
+      /* Craft panel — plain DOM over the live world (clarity over chrome
+         at alpha; the reference renders its menus the same way). */
+      #craft {
+        position: fixed;
+        right: 12px;
+        top: 48px;
+        bottom: 96px;
+        width: min(340px, 44vw);
+        display: none;
+        flex-direction: column;
+        gap: 2px;
+        overflow-y: auto;
+        background: rgba(10, 15, 20, 0.82);
+        border: 1px solid #2a3642;
+        border-radius: 6px;
+        padding: 8px;
+        z-index: 6;
+        font: 11px monospace;
+      }
+      #craft h2 {
+        margin: 0 0 4px;
+        font: 12px monospace;
+        letter-spacing: 0.2em;
+        color: #8ea0b0;
+      }
+      .crow {
+        padding: 5px 6px;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        cursor: pointer;
+        color: #cdd9e4;
+      }
+      .crow:hover {
+        background: rgba(28, 44, 58, 0.7);
+        border-color: #3a5064;
+      }
+      .crow .cname {
+        color: #e6edf3;
+        font-size: 12px;
+      }
+      .crow .cmeta {
+        color: #7d8fa0;
+      }
+      .crow.gated {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .crow.gated:hover {
+        background: none;
+        border-color: transparent;
+      }
+      .crow .gate {
+        color: #d9b96f;
+      }
+      .cin.ok {
+        color: #a9cf8f;
+      }
+      .cin.miss {
+        color: #d98b8b;
+      }
+      #craftq {
+        position: fixed;
+        left: 50%;
+        bottom: 60px;
+        transform: translateX(-50%);
+        display: none;
+        gap: 4px;
+        z-index: 5;
+      }
+      .qcell {
+        min-width: 90px;
+        padding: 4px 8px;
+        background: rgba(10, 15, 20, 0.55);
+        border: 1px solid #4a5a3a;
+        border-radius: 4px;
+        text-align: center;
+        font: 10px monospace;
+        color: #cdd9e4;
+        cursor: pointer;
+      }
+      .qcell:hover {
+        border-color: #d98b8b;
+      }
       .toast {
         text-shadow: 0 1px 3px #000;
         animation: toast-fade 1.6s ease-out forwards;
@@ -168,6 +251,8 @@
     <div id="hud"></div>
     <div id="cross">·</div>
     <div id="hotbar"></div>
+    <div id="craftq"></div>
+    <div id="craft"></div>
     <div id="toasts"></div>
     <div id="start">
       <h1>GATES</h1>
@@ -184,7 +269,8 @@
       <p id="starterr"></p>
       <p id="hint">
         WASD move · shift sprint · click to look around · hold left mouse to
-        gather · 1–6 select hotbar
+        gather · 1–6 select hotbar · C craft (click a recipe; shift ×5;
+        click a queued job to cancel)
       </p>
     </div>
     <script type="module" src="/src/main.js"></script>

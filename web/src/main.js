@@ -10,6 +10,7 @@ import {
   pumpDatagrams,
   pumpStream,
   makeSender,
+  makeActionSender,
 } from "./net.js";
 import { InputTracker } from "./input.js";
 import { GameScene } from "./scene.js";
@@ -45,7 +46,7 @@ async function boot(url, certHex) {
   // Handshake: wasm encodes/decodes; JS only frames bytes on the stream.
   const views = new WasmViews(ex);
   const helloLen = ex.client_hello();
-  const { reply, reader, leftover } = await handshake(
+  const { reply, reader, writer, leftover } = await handshake(
     wt,
     views.output.slice(0, helloLen),
   );
@@ -67,10 +68,19 @@ async function boot(url, certHex) {
   views.refresh();
 
   $("start").style.display = "none";
-  run(ex, views, wt, seed, playerId, reader, leftover);
+  run(ex, views, wt, seed, playerId, reader, writer, leftover);
 }
 
-function run(ex, views, wt, seed, playerId, streamReader, streamLeftover) {
+const REFUSE_TEXT = [
+  "no such recipe",
+  "bad count",
+  "needs a station",
+  "queue full",
+  "missing ingredients",
+];
+const STATION_TEXT = ["", "needs workbench", "needs furnace"];
+
+function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLeftover) {
   const canvas = $("gl");
   const scene = new GameScene(canvas);
   const terrain = new Terrain(scene.scene, seed, ex, WASM_URL);
@@ -79,7 +89,95 @@ function run(ex, views, wt, seed, playerId, streamReader, streamLeftover) {
   hud.show();
 
   const sender = makeSender(wt);
+  const actions = makeActionSender(streamWriter);
   let closed = false;
+  let craftDirty = true;
+  // The queue countdown re-anchors on every authoritative announce.
+  let craftEta = { ticks: 0, at: performance.now() };
+
+  const sendCraft = (recipe, count) => {
+    const len = ex.client_action_craft(recipe, count);
+    views.refresh();
+    if (len > 0) actions.send(views.output, len);
+  };
+  const sendCancel = (index) => {
+    const len = ex.client_action_cancel(index);
+    views.refresh();
+    if (len > 0) actions.send(views.output, len);
+  };
+
+  // Rebuild the craft panel + queue strip from the wasm views. Runs on
+  // the slow HUD timer and event flags only — never the RAF path.
+  const invHave = (item) => {
+    let n = 0;
+    for (let s = 0; s < 30; s++) {
+      if (views.inv[s * 2] === item && views.inv[s * 2 + 1] > 0) {
+        n += views.inv[s * 2 + 1];
+      }
+    }
+    return n;
+  };
+  const rebuildCraft = () => {
+    const state = ex.client_recipes_state() >>> 0;
+    const have = state & 0xffff;
+    if (hud.craftOpen) {
+      const rows = [];
+      for (let r = 0; r < have; r++) {
+        const b = r * 14;
+        const R = views.recipes;
+        const station = R[b + 4];
+        const inputs = [];
+        let craftable = true;
+        for (let k = 0; k < R[b + 5]; k++) {
+          const item = R[b + 6 + k * 2];
+          const need = R[b + 6 + k * 2 + 1];
+          const got = invHave(item);
+          if (got < need) craftable = false;
+          inputs.push({ text: `${itemName(item)} ${got}/${need}`, ok: got >= need });
+        }
+        rows.push({
+          recipe: r,
+          name: itemName(R[b]),
+          count: R[b + 1],
+          seconds: Math.round((R[b + 2] | (R[b + 3] << 16)) / 30),
+          gated: station !== 0,
+          gateText: STATION_TEXT[station] || "needs a station",
+          craftable,
+          inputs,
+        });
+      }
+      // Hand-craftable first, gated last — the reference rail's read.
+      rows.sort((a, b) => (a.gated === b.gated ? 0 : a.gated ? 1 : -1));
+      hud.setCraft(rows, sendCraft);
+    }
+    const q = ex.client_craft_q() >>> 0;
+    const count = q >>> 16;
+    const jobs = [];
+    for (let j = 0; j < count; j++) {
+      const recipe = views.craftJobs[j * 2];
+      const remaining = views.craftJobs[j * 2 + 1];
+      const b = recipe * 14;
+      const name = itemName(views.recipes[b]);
+      let label = `${name} ×${remaining}`;
+      if (j === 0) {
+        const elapsed = (performance.now() - craftEta.at) / 1000;
+        const left = Math.max(0, craftEta.ticks / 30 - elapsed);
+        label += ` · ${left.toFixed(0)}s`;
+      }
+      jobs.push({ index: j, label });
+    }
+    hud.setCraftQueue(jobs, sendCancel);
+  };
+
+  document.addEventListener("keydown", (e) => {
+    if (e.code === "KeyC" && !closed) {
+      if (hud.toggleCraft()) {
+        document.exitPointerLock();
+        craftDirty = true;
+      }
+      e.preventDefault();
+    }
+  });
   const onClosed = () => {
     if (closed) return;
     closed = true;
@@ -148,6 +246,31 @@ function run(ex, views, wt, seed, playerId, streamReader, streamLeftover) {
           if (t === 0xffffffff) break;
           hud.toast(`+${t & 0xffff} ${itemName(t >>> 16)}`);
         }
+      }
+      if (flags & 128 /* CRAFT_DONE */) {
+        for (;;) {
+          const t = ex.client_craft_pop() >>> 0;
+          if (t === 0xffffffff) break;
+          const added = t & 0xffff;
+          hud.toast(
+            added > 0
+              ? `crafted ${itemName(t >>> 16)} ×${added}`
+              : `crafted ${itemName(t >>> 16)} — inventory full, lost`,
+          );
+        }
+      }
+      if (flags & 256 /* CRAFT_REFUSED */) {
+        for (;;) {
+          const r = ex.client_craft_refusal_pop() >>> 0;
+          if (r === 0xffffffff) break;
+          hud.toast(`can't craft: ${REFUSE_TEXT[r] || `code ${r}`}`);
+        }
+      }
+      if (flags & 64 /* CRAFT_Q */) {
+        craftEta = { ticks: ex.client_craft_q() & 0xffff, at: performance.now() };
+      }
+      if (flags & (1 | 64 | 512) /* INV | CRAFT_Q | RECIPES */) {
+        craftDirty = true;
       }
       if (flags & 32 /* MARK */) {
         const cell = ex.client_weak_mark_cell() >>> 0;
@@ -242,6 +365,14 @@ function run(ex, views, wt, seed, playerId, streamReader, streamLeftover) {
     }
     hud.setHotbar(hotbar);
     hud.setSelected(input.sel);
+    // The craft views rebuild on change, or every timer tick while the
+    // panel or queue is visible (the ETA countdown text).
+    const qCount = (ex.client_craft_q() >>> 0) >>> 16;
+    if (craftDirty || hud.craftOpen || qCount > 0) {
+      views.refresh();
+      rebuildCraft();
+      craftDirty = false;
+    }
     const remotes = [];
     const n = R[13] | 0;
     for (let k = 0; k < n; k++) {
@@ -256,6 +387,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamLeftover) {
       remotes,
       oversize: sender.stats.oversize,
       hotbar,
+      recipes: (ex.client_recipes_state() >>> 0) & 0xffff,
+      craftQ: qCount,
     };
   }, 250);
 }
