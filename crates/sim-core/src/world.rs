@@ -436,7 +436,7 @@ impl World {
         let tick = self.tick;
         for p in self.players.iter_mut() {
             if p.active {
-                movement::step(seed, &mut p.body, &p.frame);
+                movement::step(seed, self.pieces.cols(), &mut p.body, &p.frame);
                 gather::swing(
                     seed,
                     tick,

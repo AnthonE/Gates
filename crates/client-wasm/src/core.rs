@@ -12,6 +12,7 @@ use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
 use protocol::{decode_event, encode_input, EventMsg, InputDatagram, ItemCatalog, WireError};
 use sim_core::build::{BuildContent, PieceRec};
+use sim_core::collide::ColIndex;
 use sim_core::craft::CraftContent;
 use sim_core::deploy::{DeployContent, DeployRec};
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
@@ -123,9 +124,27 @@ impl HarvestedSet {
 /// harvested set (the server refuses placements there too, so a full
 /// client store only desyncs against a server bug, and the next resync
 /// walk retries).
+///
+/// The mirror also keeps the predictor's collision index (`ColIndex`,
+/// collide.rs) in lockstep. A record's collision shape comes from its
+/// baked row, which drips separately (`PieceDefs`): rows not received
+/// yet contribute no collision, and the defs-arrival handler rebuilds
+/// the index — bounded staleness the next reconcile absorbs.
 pub struct PieceSet {
     recs: Box<[PieceRec]>,
     len: usize,
+    cols: Box<ColIndex>,
+}
+
+/// The collision shape of piece row `row`, if that row has dripped in.
+/// Undripped rows are `PieceDef::INERT` (shape 0 = a plane!), so gating
+/// on `have` is what keeps unknown rows out of the index.
+fn shape_of(defs: &BuildContent, have: u16, row: u8) -> Option<u8> {
+    if (row as u16) < have.min(defs.piece_count) {
+        Some(defs.pieces[row as usize].shape)
+    } else {
+        None
+    }
 }
 
 impl PieceSet {
@@ -133,6 +152,7 @@ impl PieceSet {
         Self {
             recs: vec![PieceRec::default(); MAX_PIECES].into_boxed_slice(),
             len: 0,
+            cols: Box::new(ColIndex::new()),
         }
     }
 
@@ -148,15 +168,29 @@ impl PieceSet {
         &self.recs[..self.len]
     }
 
+    /// The predictor's collision view (movement::step's `cols`).
+    pub fn cols(&self) -> &ColIndex {
+        &self.cols
+    }
+
     /// True if the set changed (a known address with the same row is a
     /// duplicate, not a change).
-    fn insert(&mut self, rec: PieceRec) -> bool {
+    fn insert(&mut self, rec: PieceRec, defs: &BuildContent, have: u16) -> bool {
         for r in self.recs[..self.len].iter_mut() {
             if r.cx == rec.cx && r.cz == rec.cz && r.level == rec.level && r.loc == rec.loc {
                 if *r == rec {
                     return false;
                 }
+                let old_row = r.row;
                 *r = rec;
+                if old_row != rec.row {
+                    if let Some(shape) = shape_of(defs, have, old_row) {
+                        self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
+                    }
+                    if let Some(shape) = shape_of(defs, have, rec.row) {
+                        self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+                    }
+                }
                 return true;
             }
         }
@@ -165,23 +199,50 @@ impl PieceSet {
         }
         self.recs[self.len] = rec;
         self.len += 1;
+        if let Some(shape) = shape_of(defs, have, rec.row) {
+            self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+        }
         true
     }
 
     fn clear(&mut self) {
         self.len = 0;
+        self.cols.clear();
     }
 
-    fn remove(&mut self, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+    fn remove(
+        &mut self,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        defs: &BuildContent,
+        have: u16,
+    ) -> bool {
         if let Some(i) = self.recs[..self.len]
             .iter()
             .position(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
         {
+            if let Some(shape) = shape_of(defs, have, self.recs[i].row) {
+                self.cols.del(cx, cz, level, loc, shape);
+            }
             self.len -= 1;
             self.recs[i] = self.recs[self.len];
             true
         } else {
             false
+        }
+    }
+
+    /// Rebuild the collision index from the records — the defs-arrival
+    /// path, where rows that were unknown at insert time gain shapes.
+    /// Event-lane cadence, never the render loop.
+    fn rebuild_cols(&mut self, defs: &BuildContent, have: u16) {
+        self.cols.clear();
+        for r in self.recs[..self.len].iter() {
+            if let Some(shape) = shape_of(defs, have, r.row) {
+                self.cols.add(r.cx, r.cz, r.level, r.loc, shape);
+            }
         }
     }
 }
@@ -549,7 +610,10 @@ impl ClientCore {
                 flags |= APPLIED_RECIPES;
             }
             EventMsg::PiecePlaced { rec } => {
-                if self.pieces.insert(rec) {
+                if self
+                    .pieces
+                    .insert(rec, &self.piece_defs, self.piece_defs_have)
+                {
                     self.push_piece_change(rec);
                     flags |= APPLIED_PIECES;
                 }
@@ -560,7 +624,10 @@ impl ClientCore {
                     flags |= APPLIED_PIECE_RESET;
                 }
                 for &rec in recs.iter().take(count as usize) {
-                    if self.pieces.insert(rec) {
+                    if self
+                        .pieces
+                        .insert(rec, &self.piece_defs, self.piece_defs_have)
+                    {
                         self.push_piece_change(rec);
                         flags |= APPLIED_PIECES;
                     }
@@ -587,6 +654,10 @@ impl ClientCore {
                     self.piece_defs.pieces[first as usize + i] = *row;
                 }
                 self.piece_defs_have = self.piece_defs_have.max(first as u16 + count as u16);
+                // Records that arrived before their rows had no collision
+                // shape yet — the new rows may name them.
+                self.pieces
+                    .rebuild_cols(&self.piece_defs, self.piece_defs_have);
                 flags |= APPLIED_PIECE_DEFS;
             }
             EventMsg::DeployPlaced { rec } => {
@@ -631,7 +702,10 @@ impl ClientCore {
                 flags |= APPLIED_DEPLOY_DEFS;
             }
             EventMsg::PieceRemoved { cx, cz, level, loc } => {
-                if self.pieces.remove(cx, cz, level, loc) {
+                if self
+                    .pieces
+                    .remove(cx, cz, level, loc, &self.piece_defs, self.piece_defs_have)
+                {
                     self.removed_addr = (cx, cz, level, loc);
                     flags |= APPLIED_PIECE_REMOVED;
                 }
@@ -791,7 +865,7 @@ impl ClientCore {
             };
             self.next_seq = self.next_seq.wrapping_add(1);
             self.clock.client_tick = self.clock.client_tick.wrapping_add(1);
-            self.predict.step(frame);
+            self.predict.step(frame, self.pieces.cols());
             self.input_due = true;
         }
         steps
@@ -845,7 +919,8 @@ impl ClientCore {
                 }
                 self.clock.on_snapshot(header.tick, header.nudge);
                 if let Some(own) = self.view.get(self.player_id).copied() {
-                    self.predict.reconcile(&own, header.last_executed_seq);
+                    self.predict
+                        .reconcile(&own, header.last_executed_seq, self.pieces.cols());
                 }
                 if delta {
                     Ingest::AppliedDelta

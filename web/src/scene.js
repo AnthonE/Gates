@@ -10,13 +10,14 @@ const SKY = 0x8fb4d6;
 const YAW_TO_RAD = (Math.PI * 2) / 65536;
 
 // Build-grid render dimensions. Cell/level sizes are the sim's grid
-// (DECISIONS.md §open, build grid v0); lift, thicknesses, and tier
-// colors are cosmetics (client cosmetics row).
+// (DECISIONS.md §open, build grid v0). LIFT and WALL_T (and the doorway
+// post width below) mirror sim-core collide.rs — collision truth since
+// piece collision v0; SLAB and tier colors stay cosmetics.
 const CELL = 3;
 const LEVEL_H = 3;
-const LIFT = 0.3; // foundation top sits this far above the terrain sample
-const SLAB = 0.3; // plane-piece thickness
-const WALL_T = 0.24; // edge-piece thickness
+const LIFT = 0.3; // collide.rs PIECE_LIFT_M
+const SLAB = 0.3; // plane-piece thickness (cosmetic)
+const WALL_T = 0.24; // collide.rs WALL_THICKNESS_M
 const TIER_COLORS = [0x8a6a45, 0x84837c, 0x5f6a72]; // wood · stone · metal
 // Deployable stand-ins by archetype code (sim deploy.rs order: bag,
 // hearth, box, fire, furnace, workbench, door): [w, h, d, color].

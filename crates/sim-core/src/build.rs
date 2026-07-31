@@ -12,8 +12,9 @@
 //! **plane** piece (foundation at level 0, floor/roof above) and one
 //! **riser** (stairs); each cell boundary holds one **edge** piece (wall/
 //! doorway) per level, canonicalized to the cell's west/north side. Pieces
-//! have no movement collision yet — that lands with the piece-damage
-//! slice, alongside the predictor's copy of the store (NOW.md).
+//! are movement collision (collide.rs): the store keeps a derived column
+//! index in lockstep so the tick's collision queries are O(1), and the
+//! client's mirror keeps its own copy for the predictor.
 //!
 //! Support rules v0: a foundation needs buildable terrain; an edge piece
 //! needs a foundation beside it (level 0) or an edge piece below / a plane
@@ -171,10 +172,16 @@ pub struct PieceRec {
 /// The placed-piece store: dense, insertion-ordered (command order, so
 /// iteration is deterministic). Decay removal swap-removes (the wire
 /// layer restarts in-progress sync walks on any removal). Overflow
-/// refuses the placement (limits.rs `MAX_PIECES`).
+/// refuses the placement (limits.rs `MAX_PIECES`). The column index is
+/// derived collision state (collide.rs) — maintained in lockstep here,
+/// never hashed, exactly like the event ring. Boxed: it is built once at
+/// construction (boot path — wall 2 counts the tick, and the tick only
+/// reads and flips bits in place) and keeping its 160 KB off the stack
+/// is what lets tests and the wasm probe build Worlds on default stacks.
 pub struct Pieces {
     entries: [PieceRec; MAX_PIECES],
     len: usize,
+    cols: Box<crate::collide::ColIndex>,
 }
 
 impl Pieces {
@@ -182,7 +189,13 @@ impl Pieces {
         Self {
             entries: [PieceRec::default(); MAX_PIECES],
             len: 0,
+            cols: Box::new(crate::collide::ColIndex::new()),
         }
+    }
+
+    /// The collision view movement steps against (collide.rs).
+    pub fn cols(&self) -> &crate::collide::ColIndex {
+        &self.cols
     }
 
     pub fn len(&self) -> usize {
@@ -204,18 +217,22 @@ impl Pieces {
     }
 
     /// Append a record. False ⇒ store full (the caller refuses the
-    /// placement; nothing is evicted).
-    fn insert(&mut self, rec: PieceRec) -> bool {
+    /// placement; nothing is evicted). `shape` keeps the column index in
+    /// lockstep — the caller has the baked row in hand.
+    fn insert(&mut self, rec: PieceRec, shape: u8) -> bool {
         if self.len == MAX_PIECES {
             return false;
         }
         self.entries[self.len] = rec;
         self.len += 1;
+        self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
         true
     }
 
     /// Swap-remove entry `i` (the decay sweep's removal; deploy.rs).
-    pub(crate) fn remove_at(&mut self, i: usize) {
+    pub(crate) fn remove_at(&mut self, i: usize, shape: u8) {
+        let rec = self.entries[i];
+        self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
         self.len -= 1;
         self.entries[i] = self.entries[self.len];
     }
@@ -389,7 +406,7 @@ pub fn place(
         hp: def.hp,
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
     };
-    if !pieces.insert(rec) {
+    if !pieces.insert(rec, def.shape) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_FULL, 0);
         return;
     }
@@ -694,17 +711,20 @@ mod tests {
         let mut pieces = Pieces::new();
         let nod = Deploys::new();
         for i in 0..MAX_PIECES {
-            assert!(pieces.insert(PieceRec {
-                cx: (i % MAX_BUILD_COORD) as u16,
-                cz: (i / MAX_BUILD_COORD) as u16,
-                level: 0,
-                loc: LOC_PLANE,
-                row: 0,
-                hp: 1,
-                uh: 0,
-            }));
+            assert!(pieces.insert(
+                PieceRec {
+                    cx: (i % MAX_BUILD_COORD) as u16,
+                    cz: (i / MAX_BUILD_COORD) as u16,
+                    level: 0,
+                    loc: LOC_PLANE,
+                    row: 0,
+                    hp: 1,
+                    uh: 0,
+                },
+                SHAPE_FOUNDATION
+            ));
         }
-        assert!(!pieces.insert(PieceRec::default()));
+        assert!(!pieces.insert(PieceRec::default(), SHAPE_FOUNDATION));
         assert_eq!(pieces.len(), MAX_PIECES);
 
         let bc = BuildContent::probe_fixture();

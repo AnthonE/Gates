@@ -8,6 +8,7 @@
 //! and folds the visual jump into a render-only smoothing offset.
 
 use protocol::EntityState;
+use sim_core::collide::ColIndex;
 use sim_core::input::InputFrame;
 use sim_core::limits::MAX_INPUT_FRAMES;
 use sim_core::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
@@ -75,8 +76,11 @@ impl Predictor {
     }
 
     /// One local input: append to the tail and, once started, step the
-    /// predicted body and record it under the frame's seq.
-    pub fn step(&mut self, frame: InputFrame) {
+    /// predicted body and record it under the frame's seq. `cols` is the
+    /// client piece mirror's collision index — the predictor collides
+    /// with the same walls the server does, one in-flight placement of
+    /// skew at most (a mismatch there is just a reconcile).
+    pub fn step(&mut self, frame: InputFrame, cols: &ColIndex) {
         if self.tail_len == MAX_INPUT_FRAMES {
             self.tail.copy_within(1.., 0);
             self.tail_len -= 1;
@@ -84,7 +88,7 @@ impl Predictor {
         self.tail[self.tail_len] = frame;
         self.tail_len += 1;
         if self.started {
-            movement::step(self.seed, &mut self.body, &frame);
+            movement::step(self.seed, cols, &mut self.body, &frame);
             self.record(frame.seq);
         }
     }
@@ -111,8 +115,9 @@ impl Predictor {
     }
 
     /// One snapshot's authoritative own state. Drops the acked tail
-    /// prefix; confirms the ring or rewinds-and-replays.
-    pub fn reconcile(&mut self, own: &EntityState, last_executed: u16) {
+    /// prefix; confirms the ring or rewinds-and-replays (the replay
+    /// collides through `cols` like the live steps did).
+    pub fn reconcile(&mut self, own: &EntityState, last_executed: u16, cols: &ColIndex) {
         let mut keep = 0;
         for i in 0..self.tail_len {
             let ahead = self.tail[i].seq.wrapping_sub(last_executed);
@@ -139,7 +144,7 @@ impl Predictor {
         self.body = Self::adopt(own);
         for i in 0..self.tail_len {
             let f = self.tail[i];
-            movement::step(self.seed, &mut self.body, &f);
+            movement::step(self.seed, cols, &mut self.body, &f);
             self.record(f.seq);
         }
         if self.started {
@@ -236,18 +241,83 @@ mod tests {
         use sim_core::world::Command;
         let mut world = World::new(SEED);
         world.tick(&[Command::Join { id: 7 }]);
+        let cols = Box::new(ColIndex::new());
         let mut p = Predictor::new(SEED);
-        p.reconcile(&own_state(&world, 7), 0); // adopt spawn
+        p.reconcile(&own_state(&world, 7), 0, &cols); // adopt spawn
 
         for seq in 1..=200u16 {
             let f = frame(seq, 127);
-            p.step(f);
+            p.step(f, &cols);
             world.tick(&[Command::Input { id: 7, frame: f }]);
-            p.reconcile(&own_state(&world, 7), seq);
+            p.reconcile(&own_state(&world, 7), seq, &cols);
         }
         assert_eq!(p.mispredictions, 0);
         assert_eq!(p.confirmations, 200);
         assert_eq!(p.error_magnitude(), 0.0);
+    }
+
+    /// Lockstep with pieces standing: the predictor collides with the
+    /// mirrored walls exactly as the server does — walking into a wall
+    /// pins both at the slab with zero mispredictions.
+    #[test]
+    fn prediction_collides_bit_exact_through_the_mirror() {
+        use sim_core::build::{BuildContent, LOC_EDGE_W, LOC_PLANE};
+        use sim_core::gather::ItemStack;
+        use sim_core::world::Command;
+
+        // The browser-smoke anchor: seed + cell guarded walkable natively.
+        let seed = 20260731u64;
+        let mut world = World::new(seed);
+        world.build = BuildContent::probe_fixture();
+        world.dev_spawn = Some((1024.5, 1024.5));
+        world.tick(&[Command::Join { id: 7 }]);
+        world.players[0].inv[0] = ItemStack { item: 0, count: 50 };
+        world.tick(&[
+            Command::Place {
+                id: 7,
+                row: 0,
+                cx: 341,
+                cz: 341,
+                level: 0,
+                loc: LOC_PLANE,
+            },
+            Command::Place {
+                id: 7,
+                row: 1,
+                cx: 341,
+                cz: 341,
+                level: 0,
+                loc: LOC_EDGE_W,
+            },
+        ]);
+        assert_eq!(world.pieces.len(), 2, "fixture placements must land");
+
+        // The client mirror: same records, its own index (core.rs path).
+        let mut cols = Box::new(ColIndex::new());
+        for r in world.pieces.entries() {
+            let shape = world.build.pieces[r.row as usize].shape;
+            cols.add(r.cx, r.cz, r.level, r.loc, shape);
+        }
+
+        let mut p = Predictor::new(seed);
+        p.reconcile(&own_state(&world, 7), 0, &cols);
+        for seq in 1..=150u16 {
+            // Strafe -x into the west wall, forever.
+            let f = InputFrame {
+                seq,
+                move_x: -127,
+                ..InputFrame::default()
+            };
+            p.step(f, &cols);
+            world.tick(&[Command::Input { id: 7, frame: f }]);
+            p.reconcile(&own_state(&world, 7), seq, &cols);
+        }
+        assert_eq!(p.mispredictions, 0, "mirror and server must agree");
+        let x = p.position()[0];
+        assert!(
+            x >= 341.0 * 3.0 + 0.5,
+            "the wall never engaged: x {x} walked through the slab"
+        );
     }
 
     /// A server-side disagreement rewinds, replays the tail, and folds the
@@ -257,13 +327,14 @@ mod tests {
         use sim_core::world::Command;
         let mut world = World::new(SEED);
         world.tick(&[Command::Join { id: 7 }]);
+        let cols = Box::new(ColIndex::new());
         let mut p = Predictor::new(SEED);
-        p.reconcile(&own_state(&world, 7), 0);
+        p.reconcile(&own_state(&world, 7), 0, &cols);
 
         // Client predicts 4 unacked walks the server never saw the same
         // way: server executes a different input for seq 1.
         for seq in 1..=4u16 {
-            p.step(frame(seq, 127));
+            p.step(frame(seq, 127), &cols);
         }
         let lie = InputFrame {
             move_z: -127,
@@ -271,7 +342,7 @@ mod tests {
         };
         world.tick(&[Command::Input { id: 7, frame: lie }]);
         let auth = own_state(&world, 7);
-        p.reconcile(&auth, 1);
+        p.reconcile(&auth, 1, &cols);
         assert_eq!(p.mispredictions, 1);
         assert_eq!(p.tail().len(), 3, "acked prefix dropped");
         assert!(p.error_magnitude() > 0.0, "visual error captured");
@@ -283,9 +354,10 @@ mod tests {
 
     #[test]
     fn tail_drops_oldest_at_the_wire_cap() {
+        let cols = Box::new(ColIndex::new());
         let mut p = Predictor::new(SEED);
         for seq in 1..=(MAX_INPUT_FRAMES as u16 + 5) {
-            p.step(frame(seq, 0));
+            p.step(frame(seq, 0), &cols);
         }
         assert_eq!(p.tail().len(), MAX_INPUT_FRAMES);
         assert_eq!(p.tail()[0].seq, 6, "oldest dropped first");
