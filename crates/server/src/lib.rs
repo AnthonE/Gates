@@ -5,9 +5,11 @@
 //! Thread model is the DESIGN.md §4 picture verbatim: tokio net tasks own
 //! sockets and streams; one std sim thread owns the world and every
 //! per-client netcode state; one accept loop owns connection lifecycle.
-//! The three talk only through bounded lock-free rings and per-slot
-//! atomics — the sim thread never touches a socket, a file, a lock, or
-//! (outside the tick boundary) the clock. Storage/WAL is a later slice.
+//! Traffic that touches the sim thread rides only bounded lock-free
+//! rings and per-slot atomics — it never touches a socket, a file, a
+//! lock, or (outside the tick boundary) the clock. Net-side tasks talk
+//! tokio-to-tokio through tokio plumbing (a bounded mpsc feeds finished
+//! handshakes to the accept loop). Storage/WAL is a later slice.
 //!
 //! Hot-path law enforcement in this crate (DESIGN.md L1–L5): the sim-side
 //! modules (`core`, `client`) use fixed-capacity storage only and allocate
