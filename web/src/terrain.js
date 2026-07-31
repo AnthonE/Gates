@@ -86,6 +86,12 @@ export class Terrain {
   }
 
   _onWorker(msg) {
+    if (msg.type === "error") {
+      // Worker-side invariant break: make it page-visible — the browser
+      // smoke gate fails on any console.error.
+      console.error(`terrain worker: ${msg.message}`);
+      return;
+    }
     if (msg.type === "ready") {
       // Far mesh first: the horizon exists before the player does.
       this.worker.postMessage({

@@ -33,7 +33,14 @@ self.onmessage = async (e) => {
   }
   if (msg.type === "build") {
     if (!ex) {
-      if (!loading) throw new Error("build before init — worker has no wasm");
+      if (!loading) {
+        // Unreachable today — terrain.js posts `init` in its constructor,
+        // before any build can queue. If a refactor reorders that, a throw
+        // here would vanish into an unhandled worker rejection; a posted
+        // error reaches the page, where the browser-smoke gate counts it.
+        self.postMessage({ type: "error", message: "build before init — worker has no wasm" });
+        return;
+      }
       await loading;
     }
     const built = build(msg);

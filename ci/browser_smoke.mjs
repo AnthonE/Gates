@@ -41,6 +41,9 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = path.join(root, "web/dist");
 const SHARD = path.join(root, "target/release/shard");
 const PORT = Number(process.env.BROWSER_SMOKE_PORT || 8934);
+// UDP port the temp shard binds; overridable so two smoke runs (or a smoke
+// beside a dev shard) don't fight over 4433.
+const WIRE_PORT = Number(process.env.BROWSER_SMOKE_WIRE_PORT || 4433);
 const JOIN_TIMEOUT_MS = Number(process.env.BROWSER_SMOKE_TIMEOUT_MS || 60000);
 const PLAY_MS = Number(process.env.BROWSER_SMOKE_PLAY_MS || 6000);
 // Seed and point are guarded natively: sim-core world::tests asserts this
@@ -97,7 +100,7 @@ tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gates-smoke-"));
 const cfgPath = path.join(tmpDir, "shard.toml");
 fs.writeFileSync(
   cfgPath,
-  `bind = "127.0.0.1:4433"\nseed = ${SEED}\ndev_spawn = "${DEV_SPAWN}"\n`,
+  `bind = "127.0.0.1:${WIRE_PORT}"\nseed = ${SEED}\ndev_spawn = "${DEV_SPAWN}"\n`,
 );
 const shardLog = [];
 shard = spawn(SHARD, [cfgPath], { cwd: root, env: { ...process.env, RUST_LOG: "warn" } });
@@ -164,7 +167,7 @@ const join = async (label) => {
   page.on("console", (m) => { if (m.type() === "error") errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
-  await page.fill("#url", "https://127.0.0.1:4433");
+  await page.fill("#url", `https://127.0.0.1:${WIRE_PORT}`);
   await page.fill("#cert", certHash);
   await page.click("#connect");
 
