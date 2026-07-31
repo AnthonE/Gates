@@ -176,8 +176,11 @@ gates/
                    # golden tests. Shared native/wasm. Zero game logic.
     server/        # tokio + wtransport termination, session/auth, AOI +
                    # snapshot encoding, WAL persistence, admin, bots.
-    client-wasm/   # thin wasm-bindgen bridge exposing sim-core prediction
-                   # + chunk generation to JS.
+    client-wasm/   # the client netcode core (snapshot view, prediction/
+                   # reconciliation, interpolation, client clock) — pure,
+                   # native-tested, shared with the server's bot client —
+                   # plus a thin raw C-ABI wasm bridge to JS (no bindgen;
+                   # the same pattern the parity probe ships).
   web/             # three.js app (vite): renderer, input, interpolation,
                    # UI overlay (plain DOM), wallet connect.
 ```
@@ -396,7 +399,9 @@ a later quest can gate on a real played round with no human in the loop.
 - **Structure**: net worker owns the WebTransport session (datagram decode
   off the main thread, transferable buffers over); main thread runs sim
   prediction (wasm), interpolation, three.js scene. COOP/COEP headers set
-  from day one so SharedArrayBuffer is available when wanted.
+  from day one so SharedArrayBuffer is available when wanted. (M0 ships
+  the session on the main thread — decode is already zero-copy into wasm;
+  the worker move is a later slice, the headers are live now.)
 - **World**: terrain chunks generated client-side from the seed through the
   same wasm worldgen `sim-core` uses (zero terrain bandwidth, identical by
   the float discipline); server remains collision-authoritative.

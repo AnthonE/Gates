@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gates</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #0c1117;
+        color: #dbe3ea;
+        font: 14px/1.45 system-ui, sans-serif;
+      }
+      #gl {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      /* UI is plain DOM outside the render loop (DESIGN.md L8). */
+      #start {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        align-items: center;
+        justify-content: center;
+        background: rgba(8, 12, 17, 0.92);
+        z-index: 10;
+      }
+      #start h1 {
+        letter-spacing: 0.5em;
+        font-weight: 300;
+        margin: 0 0 8px 0.5em;
+      }
+      #start label {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        width: min(440px, 90vw);
+        color: #8ea0b0;
+        font-size: 12px;
+      }
+      #start input {
+        background: #131a22;
+        border: 1px solid #2a3642;
+        color: #dbe3ea;
+        padding: 7px 9px;
+        border-radius: 4px;
+        font: 13px monospace;
+      }
+      #start button {
+        margin-top: 8px;
+        padding: 8px 26px;
+        background: #1d2b3a;
+        border: 1px solid #3a5064;
+        color: #dbe3ea;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      #start button:hover {
+        background: #24374b;
+      }
+      #starterr {
+        color: #d98b8b;
+        font-size: 12px;
+        min-height: 1em;
+        max-width: min(440px, 90vw);
+        word-break: break-word;
+      }
+      #hint {
+        color: #5d6d7c;
+        font-size: 12px;
+      }
+      #hud {
+        position: fixed;
+        top: 8px;
+        left: 10px;
+        font: 11px monospace;
+        color: #b8c6d2;
+        text-shadow: 0 1px 2px #000;
+        white-space: pre;
+        z-index: 5;
+        pointer-events: none;
+        display: none;
+      }
+      #cross {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        color: #e6edf3;
+        text-shadow: 0 0 3px #000;
+        z-index: 5;
+        pointer-events: none;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="gl"></canvas>
+    <div id="hud"></div>
+    <div id="cross">·</div>
+    <div id="start">
+      <h1>GATES</h1>
+      <label
+        >server
+        <input id="url" spellcheck="false" />
+      </label>
+      <label
+        >dev cert sha-256 (paste the shard log's dotted hex; leave empty for a
+        real certificate)
+        <input id="cert" spellcheck="false" />
+      </label>
+      <button id="connect">connect</button>
+      <p id="starterr"></p>
+      <p id="hint">WASD move · shift sprint · click the world to look around</p>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
