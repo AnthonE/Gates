@@ -1,0 +1,373 @@
+# Gates · content/recipes.toml — the craft ladder (CONTENT.md §1/§2).
+# station: none | workbench1 | furnace. `count` is the output quantity per
+# craft. Components (gears/rope/tarp) and fat have no recipe: barrel-only,
+# priced for the balance math by balance.toml `component_minutes`.
+
+# --- T0, station none ---------------------------------------------------
+
+[[recipe]]
+id = "recipe.rock"
+output = "item.rock"
+count = 1
+station = "none"
+seconds = 3
+inputs = [{ item = "item.stone", count = 15 }]
+
+[[recipe]]
+id = "recipe.torch"
+output = "item.torch"
+count = 1
+station = "none"
+seconds = 5
+inputs = [
+    { item = "item.wood", count = 30 },
+    { item = "item.cloth", count = 10 },
+]
+
+[[recipe]]
+id = "recipe.spear_wood"
+output = "item.spear_wood"
+count = 1
+station = "none"
+seconds = 10
+inputs = [{ item = "item.wood", count = 120 }]
+
+[[recipe]]
+id = "recipe.hatchet_stone"
+output = "item.hatchet_stone"
+count = 1
+station = "none"
+seconds = 15
+inputs = [
+    { item = "item.wood", count = 100 },
+    { item = "item.stone", count = 50 },
+]
+
+[[recipe]]
+id = "recipe.pickaxe_stone"
+output = "item.pickaxe_stone"
+count = 1
+station = "none"
+seconds = 15
+inputs = [
+    { item = "item.wood", count = 100 },
+    { item = "item.stone", count = 50 },
+]
+
+[[recipe]]
+id = "recipe.bow"
+output = "item.bow"
+count = 1
+station = "none"
+seconds = 30
+inputs = [
+    { item = "item.wood", count = 200 },
+    { item = "item.cloth", count = 50 },
+]
+
+[[recipe]]
+id = "recipe.arrow_wood"
+output = "item.arrow_wood"
+count = 3
+station = "none"
+seconds = 5
+inputs = [
+    { item = "item.wood", count = 25 },
+    { item = "item.stone", count = 10 },
+]
+
+[[recipe]]
+id = "recipe.bandage"
+output = "item.bandage"
+count = 1
+station = "none"
+seconds = 5
+inputs = [{ item = "item.cloth", count = 20 }]
+
+[[recipe]]
+id = "recipe.sleeping_bag"
+output = "item.sleeping_bag"
+count = 1
+station = "none"
+seconds = 15
+inputs = [{ item = "item.cloth", count = 60 }]
+
+[[recipe]]
+id = "recipe.box_small"
+output = "item.box_small"
+count = 1
+station = "none"
+seconds = 10
+inputs = [{ item = "item.wood", count = 100 }]
+
+[[recipe]]
+id = "recipe.fire_pit"
+output = "item.fire_pit"
+count = 1
+station = "none"
+seconds = 10
+inputs = [
+    { item = "item.wood", count = 100 },
+    { item = "item.stone", count = 50 },
+]
+
+# Hand-craftable T1 shells: the starter base must not gate on a workbench.
+
+[[recipe]]
+id = "recipe.workbench1"
+output = "item.workbench1"
+count = 1
+station = "none"
+seconds = 60
+inputs = [
+    { item = "item.wood", count = 500 },
+    { item = "item.stone", count = 100 },
+]
+
+[[recipe]]
+id = "recipe.hearth"
+output = "item.hearth"
+count = 1
+station = "none"
+seconds = 30
+inputs = [
+    { item = "item.wood", count = 300 },
+    { item = "item.stone", count = 100 },
+]
+
+[[recipe]]
+id = "recipe.door_wood"
+output = "item.door_wood"
+count = 1
+station = "none"
+seconds = 15
+inputs = [{ item = "item.wood", count = 200 }]
+
+[[recipe]]
+id = "recipe.building_plan"
+output = "item.building_plan"
+count = 1
+station = "none"
+seconds = 5
+inputs = [{ item = "item.wood", count = 50 }]
+
+[[recipe]]
+id = "recipe.hammer"
+output = "item.hammer"
+count = 1
+station = "none"
+seconds = 5
+inputs = [{ item = "item.wood", count = 75 }]
+
+[[recipe]]
+id = "recipe.lowgrade"
+output = "item.lowgrade"
+count = 4
+station = "none"
+seconds = 5
+inputs = [
+    { item = "item.fat", count = 1 },
+    { item = "item.cloth", count = 1 },
+]
+
+# --- T1, station workbench1 ---------------------------------------------
+
+[[recipe]]
+id = "recipe.furnace"
+output = "item.furnace"
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.stone", count = 200 },
+    { item = "item.wood", count = 50 },
+    { item = "item.lowgrade", count = 25 },
+]
+
+[[recipe]]
+id = "recipe.hatchet_metal"
+output = "item.hatchet_metal"
+count = 1
+station = "workbench1"
+seconds = 20
+inputs = [
+    { item = "item.wood", count = 100 },
+    { item = "item.metal_frags", count = 75 },
+]
+
+[[recipe]]
+id = "recipe.pickaxe_metal"
+output = "item.pickaxe_metal"
+count = 1
+station = "workbench1"
+seconds = 20
+inputs = [
+    { item = "item.wood", count = 100 },
+    { item = "item.metal_frags", count = 75 },
+]
+
+[[recipe]]
+id = "recipe.spear_metal"
+output = "item.spear_metal"
+count = 1
+station = "workbench1"
+seconds = 15
+inputs = [
+    { item = "item.wood", count = 100 },
+    { item = "item.metal_frags", count = 50 },
+]
+
+[[recipe]]
+id = "recipe.box_large"
+output = "item.box_large"
+count = 1
+station = "workbench1"
+seconds = 20
+inputs = [
+    { item = "item.wood", count = 250 },
+    { item = "item.metal_frags", count = 50 },
+]
+
+[[recipe]]
+id = "recipe.armor_burlap_head"
+output = "item.armor_burlap_head"
+count = 1
+station = "workbench1"
+seconds = 10
+inputs = [{ item = "item.cloth", count = 15 }]
+
+[[recipe]]
+id = "recipe.armor_burlap_body"
+output = "item.armor_burlap_body"
+count = 1
+station = "workbench1"
+seconds = 10
+inputs = [{ item = "item.cloth", count = 25 }]
+
+[[recipe]]
+id = "recipe.arrow_metal"
+output = "item.arrow_metal"
+count = 3
+station = "workbench1"
+seconds = 5
+inputs = [
+    { item = "item.wood", count = 25 },
+    { item = "item.metal_frags", count = 10 },
+]
+
+[[recipe]]
+id = "recipe.crossbow"
+output = "item.crossbow"
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.wood", count = 150 },
+    { item = "item.metal_frags", count = 75 },
+    { item = "item.rope", count = 2 },
+]
+
+# --- furnace runs -------------------------------------------------------
+
+[[recipe]]
+id = "recipe.metal_frags"
+output = "item.metal_frags"
+count = 1
+station = "furnace"
+seconds = 2
+inputs = [{ item = "item.metal_ore", count = 1 }]
+
+[[recipe]]
+id = "recipe.sulfur"
+output = "item.sulfur"
+count = 1
+station = "furnace"
+seconds = 1
+inputs = [{ item = "item.sulfur_ore", count = 1 }]
+
+[[recipe]]
+id = "recipe.charcoal"
+output = "item.charcoal"
+count = 1
+station = "furnace"
+seconds = 1
+inputs = [{ item = "item.wood", count = 1 }]
+
+# --- T2, the powder chain (workbench1 — alpha has one bench tier) -------
+
+[[recipe]]
+id = "recipe.gunpowder"
+output = "item.gunpowder"
+count = 10
+station = "workbench1"
+seconds = 5
+inputs = [
+    { item = "item.charcoal", count = 20 },
+    { item = "item.sulfur", count = 10 },
+]
+
+[[recipe]]
+id = "recipe.revolver"
+output = "item.revolver"
+count = 1
+station = "workbench1"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 125 },
+    { item = "item.wood", count = 100 },
+    { item = "item.gears", count = 2 },
+]
+
+[[recipe]]
+id = "recipe.pistol_ammo"
+output = "item.pistol_ammo"
+count = 4
+station = "workbench1"
+seconds = 10
+inputs = [
+    { item = "item.metal_frags", count = 10 },
+    { item = "item.gunpowder", count = 20 },
+]
+
+[[recipe]]
+id = "recipe.satchel_charge"
+output = "item.satchel_charge"
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.gunpowder", count = 240 },
+    { item = "item.rope", count = 2 },
+    { item = "item.tarp", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.door_metal"
+output = "item.door_metal"
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [{ item = "item.metal_frags", count = 200 }]
+
+[[recipe]]
+id = "recipe.armor_roadsign_body"
+output = "item.armor_roadsign_body"
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 40 },
+    { item = "item.tarp", count = 2 },
+    { item = "item.cloth", count = 20 },
+]
+
+[[recipe]]
+id = "recipe.medkit"
+output = "item.medkit"
+count = 1
+station = "workbench1"
+seconds = 20
+inputs = [
+    { item = "item.cloth", count = 50 },
+    { item = "item.lowgrade", count = 10 },
+]

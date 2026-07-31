@@ -1,0 +1,403 @@
+# Gates · content/items.toml — the alpha item set (CONTENT.md §2, ~45 rows).
+# Every number here is a knob with this file as its documented default
+# (DECISIONS.md §open "content opening values"). Ids are permanent strings;
+# renames are new ids. Rarity drives the despawn multiplier (§open row).
+#
+# tier: 0 naked era · 1 workbench era · 2 powder era
+# slot: hand | head | body | none
+
+# --- raw ---------------------------------------------------------------
+
+[[item]]
+id = "item.wood"
+name = "Wood"
+stack = 1000
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.stone"
+name = "Stone"
+stack = 1000
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.metal_ore"
+name = "Metal Ore"
+stack = 1000
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.sulfur_ore"
+name = "Sulfur Ore"
+stack = 1000
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.cloth"
+name = "Cloth"
+stack = 1000
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.fat"
+name = "Animal Fat"
+stack = 500
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.charcoal"
+name = "Charcoal"
+stack = 1000
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.metal_frags"
+name = "Metal Fragments"
+stack = 1000
+tier = 1
+rarity = "uncommon"
+slot = "none"
+
+[[item]]
+id = "item.sulfur"
+name = "Sulfur"
+stack = 1000
+tier = 1
+rarity = "uncommon"
+slot = "none"
+
+[[item]]
+id = "item.gunpowder"
+name = "Gunpowder"
+stack = 500
+tier = 2
+rarity = "uncommon"
+slot = "none"
+
+[[item]]
+id = "item.lowgrade"
+name = "Low Grade Fuel"
+stack = 500
+tier = 1
+rarity = "uncommon"
+slot = "none"
+
+# Components: barrel-only (CONTENT §2) — the reason the coast road matters.
+
+[[item]]
+id = "item.gears"
+name = "Gears"
+stack = 50
+tier = 1
+rarity = "uncommon"
+slot = "none"
+
+[[item]]
+id = "item.rope"
+name = "Rope"
+stack = 50
+tier = 1
+rarity = "uncommon"
+slot = "none"
+
+[[item]]
+id = "item.tarp"
+name = "Tarp"
+stack = 50
+tier = 1
+rarity = "uncommon"
+slot = "none"
+
+# --- T0, the naked era -------------------------------------------------
+
+[[item]]
+id = "item.rock"
+name = "Rock"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.torch"
+name = "Torch"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.spear_wood"
+name = "Wooden Spear"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.hatchet_stone"
+name = "Stone Hatchet"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.pickaxe_stone"
+name = "Stone Pickaxe"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.bow"
+name = "Hunting Bow"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.arrow_wood"
+name = "Wooden Arrow"
+stack = 100
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.bandage"
+name = "Bandage"
+stack = 10
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.sleeping_bag"
+name = "Sleeping Bag"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.box_small"
+name = "Small Box"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.fire_pit"
+name = "Fire Pit"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+# --- T1, the workbench era ---------------------------------------------
+
+[[item]]
+id = "item.workbench1"
+name = "Workbench"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+[[item]]
+id = "item.hearth"
+name = "Hearth"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+[[item]]
+id = "item.hatchet_metal"
+name = "Metal Hatchet"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+[[item]]
+id = "item.pickaxe_metal"
+name = "Metal Pickaxe"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+[[item]]
+id = "item.spear_metal"
+name = "Metal Spear"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+[[item]]
+id = "item.furnace"
+name = "Furnace"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+[[item]]
+id = "item.box_large"
+name = "Large Box"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+[[item]]
+id = "item.door_wood"
+name = "Wooden Door"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+[[item]]
+id = "item.building_plan"
+name = "Building Plan"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.hammer"
+name = "Hammer"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.armor_burlap_head"
+name = "Burlap Hood"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "head"
+
+[[item]]
+id = "item.armor_burlap_body"
+name = "Burlap Tunic"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "body"
+
+[[item]]
+id = "item.arrow_metal"
+name = "Metal Arrow"
+stack = 100
+tier = 1
+rarity = "uncommon"
+slot = "none"
+
+[[item]]
+id = "item.crossbow"
+name = "Crossbow"
+stack = 1
+tier = 1
+rarity = "rare"
+slot = "hand"
+
+# --- T2, the powder era ------------------------------------------------
+
+[[item]]
+id = "item.revolver"
+name = "Revolver"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+
+[[item]]
+id = "item.pistol_ammo"
+name = "Pistol Round"
+stack = 100
+tier = 2
+rarity = "uncommon"
+slot = "none"
+
+[[item]]
+id = "item.satchel_charge"
+name = "Satchel Charge"
+stack = 10
+tier = 2
+rarity = "rare"
+slot = "hand"
+
+[[item]]
+id = "item.door_metal"
+name = "Metal Door"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+
+[[item]]
+id = "item.armor_roadsign_body"
+name = "Roadsign Vest"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "body"
+
+[[item]]
+id = "item.medkit"
+name = "Medkit"
+stack = 5
+tier = 2
+rarity = "rare"
+slot = "hand"
+
+# --- food (meat cut per DECISIONS.md §open "food set") ------------------
+
+[[item]]
+id = "item.berries"
+name = "Berries"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.mushrooms"
+name = "Mushrooms"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.corn"
+name = "Corn"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "hand"

@@ -1,0 +1,38 @@
+# Gates · content/consumables.toml — health/food/water deltas over seconds
+# (CONTENT.md §1). Hunger is a minimal timer-drain at alpha (DESIGN.md §2);
+# food resets the timer, health deltas apply over `seconds`.
+
+[[consumable]]
+id = "item.bandage"
+health = 20
+food = 0
+water = 0
+seconds = 4
+
+[[consumable]]
+id = "item.medkit"
+health = 60
+food = 0
+water = 0
+seconds = 8
+
+[[consumable]]
+id = "item.berries"
+health = 0
+food = 15
+water = 5
+seconds = 2
+
+[[consumable]]
+id = "item.mushrooms"
+health = 0
+food = 20
+water = 0
+seconds = 2
+
+[[consumable]]
+id = "item.corn"
+health = 0
+food = 25
+water = 10
+seconds = 3

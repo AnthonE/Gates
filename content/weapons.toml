@@ -1,0 +1,64 @@
+# Gates · content/weapons.toml — combat rows (CONTENT.md §1). Damage is
+# per body hit; TTK bands in balance.toml assert hits-to-kill (CONTENT §4
+# anchor 2). `ballistic` present = projectile (M2 consumes speed/drop);
+# absent on a firearm = hitscan. The satchel's damage is structure damage —
+# the raid-ratio anchor divides wall hp by it.
+
+[[weapon]]
+id = "item.spear_wood"
+kind = "melee"
+damage = 25
+headshot_mult = 2
+rate_per_min = 48
+range_m = 2
+
+[[weapon]]
+id = "item.spear_metal"
+kind = "melee"
+damage = 30
+headshot_mult = 2
+rate_per_min = 48
+range_m = 2
+
+[[weapon]]
+id = "item.bow"
+kind = "bow"
+damage = 30
+headshot_mult = 2
+rate_per_min = 30
+range_m = 60
+ammo = "item.arrow_wood"
+
+[weapon.ballistic]
+speed_mps = 40
+drop_mps2 = 20
+
+[[weapon]]
+id = "item.crossbow"
+kind = "bow"
+damage = 35
+headshot_mult = 2
+rate_per_min = 20
+range_m = 80
+ammo = "item.arrow_metal"
+
+[weapon.ballistic]
+speed_mps = 55
+drop_mps2 = 20
+
+[[weapon]]
+id = "item.revolver"
+kind = "firearm"
+damage = 20
+headshot_mult = 2
+rate_per_min = 150
+range_m = 50
+ammo = "item.pistol_ammo"
+
+[[weapon]]
+id = "item.satchel_charge"
+kind = "throwable"
+damage = 500
+headshot_mult = 1
+rate_per_min = 10
+range_m = 10

@@ -10,3 +10,8 @@ seed = 20260731
 # joiner lands on the same point, which is how ci/browser_smoke.mjs puts
 # two tabs inside AOI range. DECISIONS.md §open "dev spawn override".
 # dev_spawn = "1024,1024"
+
+# Where content/*.toml lives (CLAUDE.md wall 7). Default "content",
+# resolved against the CWD. The shard refuses to boot on content that
+# fails schema, reference, or balance-band checks.
+# content_dir = "content"

@@ -1,0 +1,22 @@
+# Gates · content/armor.toml — worn protection (CONTENT.md §1). Reduction
+# applies to hits on that slot; the band (balance.toml) asserts any single
+# piece adds at most +2 hits-to-kill against every banded weapon
+# (CONTENT §4 anchor 2).
+
+[[armor]]
+id = "item.armor_burlap_head"
+slot = "head"
+reduction_pct = 10
+move_penalty_pct = 0
+
+[[armor]]
+id = "item.armor_burlap_body"
+slot = "body"
+reduction_pct = 15
+move_penalty_pct = 0
+
+[[armor]]
+id = "item.armor_roadsign_body"
+slot = "body"
+reduction_pct = 25
+move_penalty_pct = 5

@@ -14,6 +14,10 @@ pub struct ShardConfig {
     /// "dev spawn override"). Unset is the shipping default; never set it
     /// on a public shard — every joiner lands on the same point.
     pub dev_spawn: Option<(f32, f32)>,
+    /// Where `content/*.toml` lives (CLAUDE.md wall 7). Default `content`
+    /// resolves against the CWD, which the repo commands make the repo
+    /// root. The shard binary refuses to boot on invalid content.
+    pub content_dir: String,
 }
 
 impl ShardConfig {
@@ -23,6 +27,7 @@ impl ShardConfig {
             bind: "127.0.0.1:0".parse().expect("static addr"),
             seed,
             dev_spawn: None,
+            content_dir: "content".into(),
         }
     }
 }
@@ -34,6 +39,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut bind: Option<SocketAddr> = None;
     let mut seed: Option<u64> = None;
     let mut dev_spawn: Option<(f32, f32)> = None;
+    let mut content_dir: Option<String> = None;
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -84,6 +90,12 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 dev_spawn = Some((x, z));
             }
+            "content_dir" => {
+                if value.is_empty() {
+                    return Err(format!("shard.toml line {}: empty content_dir", n + 1));
+                }
+                content_dir = Some(value.to_string());
+            }
             other => return Err(format!("shard.toml line {}: unknown key `{other}`", n + 1)),
         }
     }
@@ -91,6 +103,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         bind: bind.ok_or("shard.toml: missing `bind`")?,
         seed: seed.ok_or("shard.toml: missing `seed`")?,
         dev_spawn,
+        content_dir: content_dir.unwrap_or_else(|| "content".into()),
     })
 }
 
@@ -104,6 +117,15 @@ mod tests {
         assert_eq!(cfg.bind.port(), 4433);
         assert_eq!(cfg.seed, 7);
         assert_eq!(cfg.dev_spawn, None);
+        assert_eq!(cfg.content_dir, "content");
+        let cfg = parse_shard_toml(
+            "bind = \"127.0.0.1:1\"\nseed = 7\ncontent_dir = \"/srv/gates/content\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.content_dir, "/srv/gates/content");
+        assert!(
+            parse_shard_toml("bind = \"127.0.0.1:1\"\nseed = 7\ncontent_dir = \"\"\n").is_err()
+        );
         assert!(parse_shard_toml("bind = \"127.0.0.1:1\"").is_err()); // missing seed
         assert!(parse_shard_toml("bind = \"127.0.0.1:1\"\nseed = 1\nwat = 2").is_err());
     }

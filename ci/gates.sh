@@ -22,7 +22,7 @@ $NICE cargo clippy --workspace --all-targets -- -D warnings || fail "clippy"
 $NICE cargo clippy -p client-wasm --target wasm32-unknown-unknown -- -D warnings \
   || fail "clippy (wasm bridge)"
 
-echo "== gate: native test suite (alloc_zero, replay, terrain_golden, protocol_golden, snapshot_budget, bot smoke, unit)"
+echo "== gate: native test suite (alloc_zero, replay, terrain_golden, protocol_golden, snapshot_budget, content, bot smoke, unit)"
 $NICE cargo test --workspace --release || fail "cargo test"
 
 echo "== gate: wasm build (sim-core + protocol + client-wasm -> wasm32-unknown-unknown)"
