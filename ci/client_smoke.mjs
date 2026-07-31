@@ -54,6 +54,13 @@ const REQUIRED = [
   "terrain_heights_ptr",
   "terrain_fill_slots",
   "terrain_slots_ptr",
+  "client_on_stream",
+  "client_slot_changes_ptr",
+  "client_slot_changes_len",
+  "client_inv_ptr",
+  "client_catalog_ptr",
+  "client_toast_pop",
+  "client_cell_harvested",
 ];
 
 let failed = 0;
@@ -95,14 +102,17 @@ check(ex.terrain_fill_heights(SEED, 0, 0, 100000, 1) === 0, "oversize grid must 
 
 const slotCount = ex.terrain_fill_slots(SEED, 128, 128, 8);
 check(slotCount >= 0 && slotCount <= 64, `slot count out of range: ${slotCount}`);
-const slots = new Float32Array(ex.memory.buffer, ex.terrain_slots_ptr(), slotCount * 6);
+const slots = new Float32Array(ex.memory.buffer, ex.terrain_slots_ptr(), slotCount * 8);
 for (let i = 0; i < slotCount; i++) {
-  const kind = slots[i * 6];
+  const kind = slots[i * 8];
   check(kind >= 1 && kind <= 7, `slot kind out of range: ${kind}`);
+  const cx = slots[i * 8 + 6];
+  const cz = slots[i * 8 + 7];
+  check(cx >= 128 && cx < 136 && cz >= 128 && cz < 136, `slot cell out of block: ${cx},${cz}`);
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 0, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 1, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
@@ -119,6 +129,27 @@ check(remotes === 0, `no snapshot yet, remotes should be 0: ${remotes}`);
 const render = new Float32Array(ex.memory.buffer, ex.client_render_ptr(), 14);
 check(render[0] === 0, "not started before the first own snapshot");
 check(render[10] >= 100, `client tick should run ahead of 100: ${render[10]}`);
+
+// --- event lane: a hand-framed harvest event through the stream path ------
+// kind EVENT(5, 3 bits LSB-first) · subtype SLOT_HARVESTED(2, 4 bits) ·
+// cx=1 (16 bits) · cz=2 (16 bits) — protocol/src/event.rs layout.
+check(ex.client_cell_harvested(1, 2) === 0, "cell must start standing");
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([0x95, 0x00, 0x00, 0x01, 0x00]);
+const evFlags = ex.client_on_stream(5);
+check(evFlags === 2, `harvest event should apply with SLOTS flag: ${evFlags}`);
+check(ex.client_slot_changes_len() === 1, "one cell change expected");
+const change = new Uint32Array(ex.memory.buffer, ex.client_slot_changes_ptr(), 2);
+check(change[0] === ((1 << 16) | 2), `change key odd: ${change[0]}`);
+check(change[1] === 1, "change must say harvested");
+check(ex.client_cell_harvested(1, 2) === 1, "cell must read harvested now");
+// wasm i32 returns read signed in JS; >>> 0 recovers the u32 sentinel.
+check(ex.client_toast_pop() >>> 0 === 0xffffffff, "no toast should be buffered");
+const invView = new Uint16Array(ex.memory.buffer, ex.client_inv_ptr(), 60);
+check(invView.every((v) => v === 0), "inventory view should start empty");
+
+// Garbage on the stream must be refused with the error bit, not trap.
+new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 3).set([0xff, 0xff, 0xff]);
+check((ex.client_on_stream(3) & 0x80000000) !== 0, "garbage stream msg must error");
 
 // Garbage datagram must be refused, not trap.
 new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 4).set([0xff, 0xff, 0xff, 0xff]);

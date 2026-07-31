@@ -71,7 +71,8 @@ export class Terrain {
       this.pools.push(mesh);
       this.owners.push([]);
     }
-    this.chunkSlots = new Map(); // key -> [{arch, idx, key}]
+    this.chunkSlots = new Map(); // key -> [{arch, idx, key, cellKey, …}]
+    this.cellIndex = new Map(); // cellKey (cx<<16|cz) -> entry
     this._m4 = new THREE.Matrix4();
     this._q = new THREE.Quaternion();
     this._e = new THREE.Euler();
@@ -137,28 +138,67 @@ export class Terrain {
     const slots = new Float32Array(
       this.ex.memory.buffer,
       this.ex.terrain_slots_ptr(),
-      count * 6,
+      count * 8,
     );
     const list = [];
     for (let i = 0; i < count; i++) {
-      const arch = slots[i * 6] | 0;
+      const arch = slots[i * 8] | 0;
       const pool = this.pools[arch];
       if (!pool || pool.count >= POOL_CAP) continue;
       const idx = pool.count;
-      this._e.set(0, slots[i * 6 + 4] * YAW8_TO_RAD, 0);
-      this._q.setFromEuler(this._e);
-      this._v.set(slots[i * 6 + 1], slots[i * 6 + 2], slots[i * 6 + 3]);
-      const s = slots[i * 6 + 5];
-      this._s.set(s, s, s);
-      this._m4.compose(this._v, this._q, this._s);
-      pool.setMatrixAt(idx, this._m4);
+      const cx = slots[i * 8 + 6] | 0;
+      const cz = slots[i * 8 + 7] | 0;
+      const entry = {
+        arch,
+        idx,
+        key,
+        cellKey: ((cx << 16) | cz) >>> 0,
+        x: slots[i * 8 + 1],
+        y: slots[i * 8 + 2],
+        z: slots[i * 8 + 3],
+        yaw8: slots[i * 8 + 4],
+        scale: slots[i * 8 + 5],
+        // Chunks stream in after the join sync: ask the client core.
+        hidden: this.ex.client_cell_harvested(cx, cz) === 1,
+      };
       pool.count = idx + 1;
-      pool.instanceMatrix.needsUpdate = true;
-      const entry = { arch, idx, key };
+      this._composeEntry(entry);
       this.owners[arch][idx] = entry;
+      this.cellIndex.set(entry.cellKey, entry);
       list.push(entry);
     }
     this.chunkSlots.set(key, list);
+  }
+
+  /** Write an entry's matrix — scale 0 while its node is harvested. */
+  _composeEntry(entry) {
+    const pool = this.pools[entry.arch];
+    this._e.set(0, entry.yaw8 * YAW8_TO_RAD, 0);
+    this._q.setFromEuler(this._e);
+    this._v.set(entry.x, entry.y, entry.z);
+    const s = entry.hidden ? 0 : entry.scale;
+    this._s.set(s, s, s);
+    this._m4.compose(this._v, this._q, this._s);
+    pool.setMatrixAt(entry.idx, this._m4);
+    pool.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Event-lane fact: the node at this cell vanished or came back. */
+  setCellHarvested(cellKey, harvested) {
+    const entry = this.cellIndex.get(cellKey);
+    if (!entry || entry.hidden === harvested) return;
+    entry.hidden = harvested;
+    this._composeEntry(entry);
+  }
+
+  /** Sync reset: un-hide everything; the batch that follows re-hides. */
+  resetHarvested() {
+    for (const entry of this.cellIndex.values()) {
+      if (entry.hidden) {
+        entry.hidden = false;
+        this._composeEntry(entry);
+      }
+    }
   }
 
   _removeScatter(key) {
@@ -180,6 +220,7 @@ export class Terrain {
       pool.count = last;
       owners.pop();
       pool.instanceMatrix.needsUpdate = true;
+      this.cellIndex.delete(entry.cellKey);
     }
     this.chunkSlots.delete(key);
   }

@@ -5,18 +5,20 @@
 //! (drop-oldest) and never `_wait`.
 
 use crate::config::ShardConfig;
-use crate::core::ShardCore;
+use crate::core::{Lane, ShardCore};
 use crate::slot::{
-    generation_of, state_of, Connect, Link, SlotTable, SnapMsg, SLOT_LEAVING, SLOT_LIVE,
+    generation_of, state_of, Connect, EvMsg, Link, SlotTable, SnapMsg, SLOT_LEAVING, SLOT_LIVE,
 };
 use crate::stats::ShardStats;
 use protocol::{
-    decode_hello, decode_input, encode_refuse, encode_welcome, peek_kind, Refuse, Welcome,
-    KIND_INPUT, MAX_STREAM_MSG_BYTES, PROTO_VER, REFUSE_FULL, REFUSE_VERSION,
+    decode_hello, decode_input, encode_refuse, encode_welcome, peek_kind, ItemCatalog, Refuse,
+    Welcome, KIND_INPUT, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES, PROTO_VER, REFUSE_FULL,
+    REFUSE_VERSION,
 };
 use rtrb::RingBuffer;
 use sim_core::limits::{
-    CTRL_RING_CAP, GRAVEYARD_RING_CAP, INPUT_RING_CAP, MAX_PLAYERS, SNAPSHOT_RING_CAP, TICK_HZ,
+    CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP, INPUT_RING_CAP, MAX_PLAYERS,
+    SNAPSHOT_RING_CAP, TICK_HZ,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,13 +48,34 @@ pub struct ShardHandle {
     pub shutdown: Arc<AtomicBool>,
 }
 
+/// Bake the item-name catalog from validated content (the same
+/// index-is-sorted-rank mapping `bake_gather` uses). Boot path: a name
+/// the wire can't carry refuses the boot, same as any other bake error.
+pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
+    let mut cat = ItemCatalog::EMPTY;
+    cat.count = content.items.len() as u16;
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves") as usize;
+        cat.set(idx, item.name.as_bytes()).map_err(|_| {
+            format!(
+                "catalog: item `{}` name `{}` is empty or over {} bytes",
+                item.id,
+                item.name,
+                protocol::MAX_ITEM_NAME_BYTES
+            )
+        })?;
+    }
+    Ok(cat)
+}
+
 /// Boot a shard: bind, spawn the sim thread and the accept loop, return.
 /// The caller owns process lifetime; `shutdown` stops the sim thread.
-/// `gather` is the content bake (CLAUDE.md wall 7) — data the world runs
-/// on, handed over before the first tick like the seed itself.
+/// `gather` and `catalog` are the content bake (CLAUDE.md wall 7) — data
+/// the world runs on, handed over before the first tick like the seed.
 pub async fn spawn_shard(
     cfg: ShardConfig,
     gather: sim_core::gather::GatherContent,
+    catalog: ItemCatalog,
 ) -> Result<ShardHandle, String> {
     let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])
         .map_err(|e| format!("self-signed identity: {e}"))?;
@@ -99,7 +122,7 @@ pub async fn spawn_shard(
             .name("sim".into())
             .spawn(move || {
                 sim_thread(
-                    seed, dev_spawn, gather, ctrl_rx, grave_tx, slots, stats, shutdown,
+                    seed, dev_spawn, gather, catalog, ctrl_rx, grave_tx, slots, stats, shutdown,
                 )
             })
             .map_err(|e| format!("sim thread spawn: {e}"))?;
@@ -224,10 +247,12 @@ async fn install(
 
     let (input_tx, input_rx) = RingBuffer::new(INPUT_RING_CAP);
     let (snap_tx, snap_rx) = RingBuffer::<SnapMsg>::new(SNAPSHOT_RING_CAP);
+    let (ev_tx, ev_rx) = RingBuffer::<EvMsg>::new(EVENT_RING_CAP);
     let link = Link {
         generation,
         input: input_rx,
         snaps: snap_tx,
+        events: ev_tx,
     };
     if ctrl_tx.push(Connect { slot, id, link }).is_err() {
         // Control ring full: refuse rather than wait (L4 — no bound is
@@ -248,6 +273,16 @@ async fn install(
     tokio::spawn(reader_task(
         connection.clone(),
         input_tx,
+        slots.clone(),
+        stats.clone(),
+        slot,
+        generation,
+    ));
+    // The bidi send half stays open for the connection's life: after the
+    // welcome it becomes the reliable event lane (protocol::event).
+    tokio::spawn(event_writer_task(
+        send,
+        ev_rx,
         slots.clone(),
         stats.clone(),
         slot,
@@ -331,12 +366,44 @@ async fn writer_task(
     slots.mark_leaving(slot, generation);
 }
 
+/// Drains the per-connection event ring onto the reliable bidi stream —
+/// in order, every message (this lane is the one that never drops; the
+/// bound lives at the ring, whose refusal the sim converts to a resync).
+/// A stalled peer parks this task on stream flow control; the keep-alive/
+/// idle-timeout pair reaps dead ones.
+async fn event_writer_task(
+    mut send: SendStream,
+    mut ev_rx: rtrb::Consumer<EvMsg>,
+    slots: Arc<SlotTable>,
+    stats: Arc<ShardStats>,
+    slot: usize,
+    generation: u32,
+) {
+    let mut poll = tokio::time::interval(WRITER_POLL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        poll.tick().await;
+        let word = slots.load(slot);
+        if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
+            return; // slot moved on; sim (or reader) already knows
+        }
+        while let Ok(msg) = ev_rx.pop() {
+            if write_frame(&mut send, msg.bytes()).await.is_err() {
+                ShardStats::bump(&stats.ev_send_errors);
+                slots.mark_leaving(slot, generation);
+                return;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Stream framing (u16 LE length prefix per message)
 // ---------------------------------------------------------------------------
 
 /// One length-prefixed message off a stream: `(buffer, len)`, or None on
-/// EOF/oversize (the caller drops the session).
+/// EOF/oversize (the caller drops the session). The 64 B cap is the
+/// server's C→S acceptance — a hello has no business being big.
 pub async fn read_frame(recv: &mut RecvStream) -> Option<([u8; MAX_STREAM_MSG_BYTES], usize)> {
     let mut len_buf = [0u8; 2];
     recv.read_exact(&mut len_buf).await.ok()?;
@@ -345,6 +412,21 @@ pub async fn read_frame(recv: &mut RecvStream) -> Option<([u8; MAX_STREAM_MSG_BY
         return None;
     }
     let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+    recv.read_exact(&mut buf[..len]).await.ok()?;
+    Some((buf, len))
+}
+
+/// The client-side read: one S→C event-lane frame, sized for
+/// `MAX_EVENT_MSG_BYTES` (bots and native harnesses; the browser's framer
+/// lives in `web/src/net.js` with the same cap).
+pub async fn read_event_frame(recv: &mut RecvStream) -> Option<([u8; MAX_EVENT_MSG_BYTES], usize)> {
+    let mut len_buf = [0u8; 2];
+    recv.read_exact(&mut len_buf).await.ok()?;
+    let len = u16::from_le_bytes(len_buf) as usize;
+    if len == 0 || len > MAX_EVENT_MSG_BYTES {
+        return None;
+    }
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     recv.read_exact(&mut buf[..len]).await.ok()?;
     Some((buf, len))
 }
@@ -393,6 +475,7 @@ fn sim_thread(
     seed: u64,
     dev_spawn: Option<(f32, f32)>,
     gather: sim_core::gather::GatherContent,
+    catalog: ItemCatalog,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut grave_tx: rtrb::Producer<Link>,
     slots: Arc<SlotTable>,
@@ -402,6 +485,7 @@ fn sim_thread(
     let mut core = ShardCore::new(seed);
     core.world.dev_spawn = dev_spawn;
     core.world.gather = gather;
+    core.catalog = catalog;
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_PLAYERS);
     links.resize_with(MAX_PLAYERS, || None);
     let mut links = links.into_boxed_slice();
@@ -463,15 +547,30 @@ fn sim_thread(
             }
         }
         // Tick + publish.
-        core.tick(&stats, |slot, bytes| {
-            if let Some(link) = links[slot].as_mut() {
-                let mut msg = SnapMsg {
-                    len: bytes.len() as u16,
-                    buf: [0; sim_core::limits::DATAGRAM_BUDGET_BYTES],
-                };
-                msg.buf[..bytes.len()].copy_from_slice(bytes);
-                if link.snaps.push(msg).is_err() {
-                    ShardStats::bump(&stats.snap_ring_skips);
+        core.tick(&stats, |lane, slot, bytes| {
+            let Some(link) = links[slot].as_mut() else {
+                return false;
+            };
+            match lane {
+                Lane::Snapshot => {
+                    let mut msg = SnapMsg {
+                        len: bytes.len() as u16,
+                        buf: [0; sim_core::limits::DATAGRAM_BUDGET_BYTES],
+                    };
+                    msg.buf[..bytes.len()].copy_from_slice(bytes);
+                    if link.snaps.push(msg).is_err() {
+                        ShardStats::bump(&stats.snap_ring_skips);
+                        return false; // counted; snapshots supersede anyway
+                    }
+                    true
+                }
+                Lane::Event => {
+                    let mut msg = EvMsg {
+                        len: bytes.len() as u16,
+                        buf: [0; MAX_EVENT_MSG_BYTES],
+                    };
+                    msg.buf[..bytes.len()].copy_from_slice(bytes);
+                    link.events.push(msg).is_ok()
                 }
             }
         });

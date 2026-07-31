@@ -12,7 +12,7 @@
 
 use client_wasm::core::ClientCore;
 use protocol::decode_input;
-use server::core::ShardCore;
+use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use sim_core::input::BTN_SPRINT;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
@@ -70,7 +70,20 @@ fn pump(
         }
     }
     let mut outs: Vec<(usize, Vec<u8>)> = Vec::new();
-    core.tick(stats, |slot, bytes| outs.push((slot, bytes.to_vec())));
+    let mut ev_outs: Vec<(usize, Vec<u8>)> = Vec::new();
+    core.tick(stats, |lane, slot, bytes| {
+        match lane {
+            Lane::Snapshot => outs.push((slot, bytes.to_vec())),
+            Lane::Event => ev_outs.push((slot, bytes.to_vec())),
+        }
+        true
+    });
+    // The event lane is reliable: loss never applies to it.
+    for (slot, bytes) in ev_outs {
+        if let Some(c) = clients.iter_mut().find(|(s, _)| *s == slot).map(|(_, c)| c) {
+            c.on_stream(&bytes).expect("server events decode");
+        }
+    }
     for (slot, bytes) in outs {
         if !lose() {
             let c = clients

@@ -5,26 +5,35 @@
 //! `PROTO_VER` bump in the same commit is the wire drifting by accident.
 
 use protocol::goldens::{
-    hello, input_acks_only, input_full, refuse_full, snapshot_cap, snapshot_delta,
-    snapshot_keyframe, welcome, SnapshotCase, FIXTURES,
+    event_catalog, event_gather, event_inv, event_slot_change, event_slot_sync, hello,
+    input_acks_only, input_full, refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe,
+    welcome, SnapshotCase, FIXTURES,
 };
 use protocol::{
-    decode_hello, decode_input, decode_refuse, decode_snapshot, decode_welcome, encode_hello,
-    encode_input, encode_refuse, encode_snapshot, encode_welcome, peek_kind, InputDatagram,
-    KIND_HELLO, KIND_INPUT, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME,
+    decode_event, decode_hello, decode_input, decode_refuse, decode_snapshot, decode_welcome,
+    encode_event_catalog, encode_event_gather, encode_event_inv, encode_event_slot_change,
+    encode_event_slot_sync, encode_hello, encode_input, encode_refuse, encode_snapshot,
+    encode_welcome, peek_kind, EventMsg, InputDatagram, CATALOG_BATCH, KIND_EVENT, KIND_HELLO,
+    KIND_INPUT, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME, MAX_EVENT_MSG_BYTES, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 8] = [
-    include_bytes!("golden/v0_input_acks_only.bin"),
-    include_bytes!("golden/v0_input_full.bin"),
-    include_bytes!("golden/v0_snapshot_keyframe.bin"),
-    include_bytes!("golden/v0_snapshot_delta.bin"),
-    include_bytes!("golden/v0_snapshot_cap.bin"),
-    include_bytes!("golden/v0_hello.bin"),
-    include_bytes!("golden/v0_welcome.bin"),
-    include_bytes!("golden/v0_refuse_full.bin"),
+const GOLDEN: [&[u8]; 14] = [
+    include_bytes!("golden/v1_input_acks_only.bin"),
+    include_bytes!("golden/v1_input_full.bin"),
+    include_bytes!("golden/v1_snapshot_keyframe.bin"),
+    include_bytes!("golden/v1_snapshot_delta.bin"),
+    include_bytes!("golden/v1_snapshot_cap.bin"),
+    include_bytes!("golden/v1_hello.bin"),
+    include_bytes!("golden/v1_welcome.bin"),
+    include_bytes!("golden/v1_refuse_full.bin"),
+    include_bytes!("golden/v1_event_gather.bin"),
+    include_bytes!("golden/v1_event_inv.bin"),
+    include_bytes!("golden/v1_event_slot_harvested.bin"),
+    include_bytes!("golden/v1_event_slot_respawned.bin"),
+    include_bytes!("golden/v1_event_slot_sync.bin"),
+    include_bytes!("golden/v1_event_catalog.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -69,25 +78,28 @@ fn test_protocol_golden() {
     golden_stream(GOLDEN[5], FIXTURES[5]);
     golden_stream(GOLDEN[6], FIXTURES[6]);
     golden_stream(GOLDEN[7], FIXTURES[7]);
+    for i in 8..14 {
+        golden_event(GOLDEN[i], FIXTURES[i]);
+    }
 }
 
 /// The handshake trio: byte-stable, kind-peekable, decode-exact.
 fn golden_stream(fixture: &[u8], name: &str) {
     let mut buf = [0u8; 64];
     match name {
-        "v0_hello.bin" => {
+        "v1_hello.bin" => {
             let len = encode_hello(&hello(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_HELLO);
             assert_eq!(decode_hello(fixture).unwrap(), hello());
         }
-        "v0_welcome.bin" => {
+        "v1_welcome.bin" => {
             let len = encode_welcome(&welcome(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_WELCOME);
             assert_eq!(decode_welcome(fixture).unwrap(), welcome());
         }
-        "v0_refuse_full.bin" => {
+        "v1_refuse_full.bin" => {
             let len = encode_refuse(&refuse_full(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_REFUSE);
@@ -95,6 +107,95 @@ fn golden_stream(fixture: &[u8], name: &str) {
         }
         other => panic!("unknown stream fixture {other}"),
     }
+}
+
+/// Event-lane messages: byte-stable, kind-peekable, decode-exact.
+fn golden_event(fixture: &[u8], name: &str) {
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    assert_eq!(peek_kind(fixture).unwrap(), KIND_EVENT, "{name}");
+    let len = match name {
+        "v1_event_gather.bin" => {
+            let (item, added) = event_gather();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Gather { item, added },
+                "{name}: decode mismatch"
+            );
+            encode_event_gather(item, added, &mut buf).unwrap()
+        }
+        "v1_event_inv.bin" => {
+            let (slots, count) = event_inv();
+            match decode_event(fixture).unwrap() {
+                EventMsg::Inv {
+                    slots: got,
+                    count: got_n,
+                } => {
+                    assert_eq!(got_n as usize, count, "{name}: count mismatch");
+                    assert_eq!(got[..count], slots[..count], "{name}: decode mismatch");
+                }
+                other => panic!("{name}: wrong variant {other:?}"),
+            }
+            encode_event_inv(&slots[..count], &mut buf).unwrap()
+        }
+        "v1_event_slot_harvested.bin" | "v1_event_slot_respawned.bin" => {
+            let harvested = name == "v1_event_slot_harvested.bin";
+            let (cx, cz) = event_slot_change();
+            let want = if harvested {
+                EventMsg::SlotHarvested { cx, cz }
+            } else {
+                EventMsg::SlotRespawned { cx, cz }
+            };
+            assert_eq!(decode_event(fixture).unwrap(), want, "{name}");
+            encode_event_slot_change(harvested, cx, cz, &mut buf).unwrap()
+        }
+        "v1_event_slot_sync.bin" => {
+            let (reset, cells) = event_slot_sync();
+            match decode_event(fixture).unwrap() {
+                EventMsg::SlotSync {
+                    reset: got_r,
+                    cells: got,
+                    count,
+                } => {
+                    assert_eq!(got_r, reset, "{name}: reset mismatch");
+                    assert_eq!(count as usize, SLOT_SYNC_BATCH);
+                    assert_eq!(got, cells, "{name}: decode mismatch");
+                }
+                other => panic!("{name}: wrong variant {other:?}"),
+            }
+            encode_event_slot_sync(reset, &cells, &mut buf).unwrap()
+        }
+        "v1_event_catalog.bin" => {
+            let cat = event_catalog();
+            match decode_event(fixture).unwrap() {
+                EventMsg::Catalog {
+                    total,
+                    first,
+                    count,
+                    names,
+                    lens,
+                } => {
+                    assert_eq!(
+                        (total, first, count),
+                        (cat.count as u8, 0, CATALOG_BATCH as u8),
+                        "{name}: header mismatch"
+                    );
+                    for i in 0..count as usize {
+                        assert_eq!(
+                            &names[i][..lens[i] as usize],
+                            cat.name(i),
+                            "{name}: name {i} mismatch"
+                        );
+                    }
+                }
+                other => panic!("{name}: wrong variant {other:?}"),
+            }
+            let (len, took) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
+            assert_eq!(took, CATALOG_BATCH, "{name}: batch shrank");
+            len
+        }
+        other => panic!("unknown event fixture {other}"),
+    };
+    assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
 }
 
 /// The delta packet earns its keep: the same content absolute-encoded
@@ -144,6 +245,7 @@ fn test_decode_is_total() {
         let _ = decode_hello(bytes);
         let _ = decode_welcome(bytes);
         let _ = decode_refuse(bytes);
+        let _ = decode_event(bytes);
     };
     let mut scratch = [0u8; DATAGRAM_BUDGET_BYTES];
     for fixture in GOLDEN {

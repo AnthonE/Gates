@@ -9,21 +9,31 @@
 //! is the wire drifting by accident — the exact thing the gate exists to
 //! catch.
 
-use crate::{EntityState, Hello, InputDatagram, Nudge, Refuse, SnapshotHeader, Welcome};
+use crate::{
+    EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse, SnapshotHeader,
+    Welcome, SLOT_SYNC_BATCH,
+};
+use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
-use sim_core::limits::{MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
+use sim_core::limits::{INV_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 use sim_core::rng::Pcg32;
 
-/// Fixture file names, keyed by wire version (`PROTO_VER` 0 ⇒ `v0_*`).
-pub const FIXTURES: [&str; 8] = [
-    "v0_input_acks_only.bin",
-    "v0_input_full.bin",
-    "v0_snapshot_keyframe.bin",
-    "v0_snapshot_delta.bin",
-    "v0_snapshot_cap.bin",
-    "v0_hello.bin",
-    "v0_welcome.bin",
-    "v0_refuse_full.bin",
+/// Fixture file names, keyed by wire version (`PROTO_VER` 1 ⇒ `v1_*`).
+pub const FIXTURES: [&str; 14] = [
+    "v1_input_acks_only.bin",
+    "v1_input_full.bin",
+    "v1_snapshot_keyframe.bin",
+    "v1_snapshot_delta.bin",
+    "v1_snapshot_cap.bin",
+    "v1_hello.bin",
+    "v1_welcome.bin",
+    "v1_refuse_full.bin",
+    "v1_event_gather.bin",
+    "v1_event_inv.bin",
+    "v1_event_slot_harvested.bin",
+    "v1_event_slot_respawned.bin",
+    "v1_event_slot_sync.bin",
+    "v1_event_catalog.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -175,6 +185,69 @@ pub fn refuse_full() -> Refuse {
     Refuse {
         code: crate::REFUSE_FULL,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Event-lane cases (v1): fixed values so the reliable lane is golden-pinned
+// like everything else. Encoders live in `event.rs`; the tests encode from
+// these and compare bytes and decodes.
+// ---------------------------------------------------------------------------
+
+pub fn event_gather() -> (u16, u16) {
+    (7, 13)
+}
+
+/// A worst-shape inventory update: every slot changed.
+pub fn event_inv() -> ([InvSlot; INV_SLOTS], usize) {
+    let mut rng = Pcg32::new(0x0047_4154_4553, 16);
+    let mut slots = [InvSlot::default(); INV_SLOTS];
+    for (i, s) in slots.iter_mut().enumerate() {
+        *s = InvSlot {
+            slot: i as u8,
+            stack: ItemStack {
+                item: rng.next_bounded(64) as u16,
+                count: rng.next_bounded(1000) as u16,
+            },
+        };
+    }
+    (slots, INV_SLOTS)
+}
+
+pub fn event_slot_change() -> (u16, u16) {
+    (0x0102, 0x0304)
+}
+
+/// A full sync batch with the reset bit set — the join-sync first message
+/// at its cap.
+pub fn event_slot_sync() -> (bool, [(u16, u16); SLOT_SYNC_BATCH]) {
+    let mut rng = Pcg32::new(0x0047_4154_4553, 17);
+    let cells =
+        core::array::from_fn(|_| (rng.next_bounded(256) as u16, rng.next_bounded(256) as u16));
+    (true, cells)
+}
+
+/// A catalog whose first batch is exactly `CATALOG_BATCH` names of mixed
+/// length — the fixture encodes the batch at `first = 0`.
+pub fn event_catalog() -> ItemCatalog {
+    let mut cat = ItemCatalog::EMPTY;
+    cat.count = 11;
+    let names: [&[u8]; 11] = [
+        b"Wood",
+        b"Stone",
+        b"Metal Ore",
+        b"Sulfur Ore",
+        b"Cloth",
+        b"Animal Fat",
+        b"Charcoal",
+        b"Fixture Name Of Width 24",
+        b"Sulfur",
+        b"Gunpowder",
+        b"Low Grade Fuel",
+    ];
+    for (i, n) in names.iter().enumerate() {
+        cat.set(i, n).expect("golden names are in-cap by design");
+    }
+    cat
 }
 
 /// The worst-case shape (DESIGN.md §12 `test_snapshot_budget` at the

@@ -24,17 +24,25 @@
 //! suite flips bits to prove it.
 
 pub mod bits;
+pub mod event;
 pub mod goldens;
 
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
+pub use event::{
+    decode_event, encode_event_catalog, encode_event_gather, encode_event_inv,
+    encode_event_slot_change, encode_event_slot_sync, EventMsg, InvSlot, ItemCatalog,
+    CATALOG_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, SLOT_SYNC_BATCH,
+};
 use sim_core::input::InputFrame;
 use sim_core::limits::{MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 
 /// Wire protocol version. Bumps only with a packet-layout change and
-/// regenerated goldens in the same commit (CLAUDE.md wall 6). The v0
-/// schemas in this file are the first layout; fixtures are keyed `v0_*`.
-pub const PROTO_VER: u16 = 0;
+/// regenerated goldens in the same commit (CLAUDE.md wall 6). v1 added
+/// the reliable event lane (`KIND_EVENT`, `event.rs`) — a v0 client would
+/// not understand the stream messages a v1 server sends unprompted, so
+/// the hello gate refuses the pair; fixtures are keyed `v1_*`.
+pub const PROTO_VER: u16 = 1;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -46,6 +54,9 @@ pub const KIND_SNAPSHOT: u32 = 1;
 pub const KIND_HELLO: u32 = 2;
 pub const KIND_WELCOME: u32 = 3;
 pub const KIND_REFUSE: u32 = 4;
+/// S→C reliable event-lane messages (`event.rs`): subtyped, so the whole
+/// lane spends one kind.
+pub const KIND_EVENT: u32 = 5;
 
 /// Longest stream-lane message payload the handshake accepts. Overflow
 /// policy: refuse (`Malformed`) — a hello has no business being big.
@@ -696,7 +707,7 @@ fn read_vel(r: &mut BitReader) -> Result<i32, WireError> {
 
 /// Strict tail: only byte padding may remain, and it must be zero — a
 /// packet with trailing garbage never passes as valid.
-fn expect_zero_padding(r: &mut BitReader) -> Result<(), WireError> {
+pub(crate) fn expect_zero_padding(r: &mut BitReader) -> Result<(), WireError> {
     let rem = r.remaining_bits();
     if rem >= 8 {
         return Err(WireError::Malformed);

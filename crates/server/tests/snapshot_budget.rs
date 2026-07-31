@@ -7,7 +7,7 @@
 //! VPS.
 
 use protocol::InputDatagram;
-use server::core::ShardCore;
+use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use server::view::{Applied, ClientView};
 use sim_core::limits::{
@@ -29,7 +29,7 @@ fn clustered_core(stats: &ShardStats) -> ShardCore {
         assert!(core.connect(slot, id_of(slot)), "connect {slot}");
         if (slot + 1) % 32 == 0 || slot + 1 == MAX_PLAYERS {
             // Command budget reserves headroom; land joins in batches.
-            core.tick(stats, |_, _| {});
+            core.tick(stats, |_, _, _| true);
         }
     }
     for (i, p) in core.world.players.iter_mut().enumerate() {
@@ -48,7 +48,12 @@ fn snapshot_round(core: &mut ShardCore, stats: &ShardStats) -> Vec<(usize, Vec<u
     let mut out = Vec::new();
     loop {
         let mut sent = Vec::new();
-        core.tick(stats, |slot, bytes| sent.push((slot, bytes.to_vec())));
+        core.tick(stats, |lane, slot, bytes| {
+            if lane == Lane::Snapshot {
+                sent.push((slot, bytes.to_vec()));
+            }
+            true
+        });
         if core.world.tick.is_multiple_of(SNAPSHOT_INTERVAL_TICKS) {
             out.extend(sent);
             return out;
@@ -190,7 +195,7 @@ fn test_aoi_hysteresis() {
     let mut core = ShardCore::new(SEED);
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));
-    core.tick(&stats, |_, _| {});
+    core.tick(&stats, |_, _, _| true);
 
     let q = |m: f32| (m / 0.03) as i32;
     let place = |core: &mut ShardCore, x0: f32, x1: f32| {

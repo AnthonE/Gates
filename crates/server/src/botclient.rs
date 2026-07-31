@@ -4,11 +4,12 @@
 //! contract the web client will implement. Used by `bin/bots` and the
 //! 50-bot smoke gate.
 
-use crate::net::{read_frame, write_frame};
+use crate::net::{read_event_frame, read_frame, write_frame};
 use crate::view::{Applied, ClientView};
 use protocol::{
-    decode_refuse, decode_welcome, encode_hello, encode_input, peek_kind, Hello, InputDatagram,
-    Welcome, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME, MAX_STREAM_MSG_BYTES, PROTO_VER,
+    decode_event, decode_refuse, decode_welcome, encode_hello, encode_input, peek_kind, Hello,
+    InputDatagram, Welcome, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME, MAX_STREAM_MSG_BYTES,
+    PROTO_VER,
 };
 use sim_core::bots::bot_frame;
 use sim_core::input::InputFrame;
@@ -33,6 +34,10 @@ pub struct BotReport {
     pub last_executed_seq: u16,
     pub own_updates: u64,
     pub max_entities_seen: usize,
+    /// Event-lane messages decoded off the reliable stream (a bot drains
+    /// the lane like the browser must — an unread lane backpressures).
+    pub events_received: u64,
+    pub event_decode_errors: u64,
 }
 
 /// Connect, handshake, then walk for `duration`. Any transport failure is
@@ -85,6 +90,25 @@ pub async fn run_bot(
         welcome: Some(welcome),
         ..BotReport::default()
     };
+
+    // Drain the event lane on its own task (a `select!` read would drop a
+    // half-read frame on cancellation and desync the stream). The browser
+    // client does the same: the lane pump is independent of the RAF loop.
+    let events_received = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let event_decode_errors = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    {
+        let (got, bad) = (events_received.clone(), event_decode_errors.clone());
+        tokio::spawn(async move {
+            let mut recv = recv;
+            while let Some((buf, len)) = read_event_frame(&mut recv).await {
+                match decode_event(&buf[..len]) {
+                    Ok(_) => got.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                    Err(_) => bad.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                };
+            }
+        });
+    }
+
     let mut view = ClientView::new();
     let mut rng = Pcg32::new(welcome.seed ^ 0xB07B_07B0, seed_stream);
     let mut seq: u16 = 1;
@@ -153,6 +177,10 @@ pub async fn run_bot(
             }
             _ = tokio::time::sleep_until(deadline) => {
                 report.last_executed_seq = view.last_executed_seq;
+                report.events_received =
+                    events_received.load(std::sync::atomic::Ordering::Relaxed);
+                report.event_decode_errors =
+                    event_decode_errors.load(std::sync::atomic::Ordering::Relaxed);
                 return Ok(report);
             }
         }

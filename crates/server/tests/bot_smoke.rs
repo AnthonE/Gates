@@ -13,18 +13,19 @@ use std::time::Duration;
 const BOTS: usize = 50;
 
 /// The shipped content set, baked — the smoke runs the same boot path the
-/// shard binary does, so gather is live under the bot herd.
-fn baked_content() -> sim_core::gather::GatherContent {
+/// shard binary does, so gather and the catalog are live under the herd.
+fn baked_content() -> (sim_core::gather::GatherContent, protocol::ItemCatalog) {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-    content::Content::load_dir(&dir)
-        .expect("shipped content loads")
-        .bake_gather()
-        .expect("shipped content bakes")
+    let content = content::Content::load_dir(&dir).expect("shipped content loads");
+    let gather = content.bake_gather().expect("shipped content bakes");
+    let catalog = server::net::bake_catalog(&content).expect("shipped catalog bakes");
+    (gather, catalog)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bot_smoke_50() {
-    let handle = spawn_shard(ShardConfig::ephemeral(0xC0FFEE), baked_content())
+    let (gather, catalog) = baked_content();
+    let handle = spawn_shard(ShardConfig::ephemeral(0xC0FFEE), gather, catalog)
         .await
         .expect("shard boots");
     let addr = handle.local_addr;
@@ -75,6 +76,10 @@ async fn test_bot_smoke_50() {
         assert_eq!(r.decode_errors, 0, "bot {i}: decode errors");
         assert_eq!(r.no_baseline, 0, "bot {i}: baseline anomalies");
         assert!(r.inputs_sent > 0, "bot {i}: sent no inputs");
+        // The event lane spoke: with content loaded every client gets at
+        // least the catalog drip, and every message must decode.
+        assert!(r.events_received > 0, "bot {i}: event lane silent");
+        assert_eq!(r.event_decode_errors, 0, "bot {i}: event decode errors");
     }
 
     // Interest works: 50 spawns scattered over the island won't all share
@@ -114,7 +119,8 @@ async fn test_version_gate_refuses() {
     use protocol::{encode_hello, Hello, MAX_STREAM_MSG_BYTES};
     use server::net::{read_frame, write_frame};
 
-    let handle = spawn_shard(ShardConfig::ephemeral(7), baked_content())
+    let (gather, catalog) = baked_content();
+    let handle = spawn_shard(ShardConfig::ephemeral(7), gather, catalog)
         .await
         .expect("boots");
     let endpoint = bot_endpoint().expect("endpoint");

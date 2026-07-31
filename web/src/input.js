@@ -10,7 +10,14 @@ export class InputTracker {
   constructor(canvas) {
     this.yaw = 0; // radians, free-running
     this.pitch = 0; // radians, +up
-    this.keys = { w: false, a: false, s: false, d: false, sprint: false };
+    this.keys = {
+      w: false,
+      a: false,
+      s: false,
+      d: false,
+      sprint: false,
+      primary: false,
+    };
     this.locked = false;
 
     canvas.addEventListener("click", () => {
@@ -18,6 +25,15 @@ export class InputTracker {
     });
     document.addEventListener("pointerlockchange", () => {
       this.locked = document.pointerLockElement === canvas;
+      if (!this.locked) this.keys.primary = false;
+    });
+    // The swing/use button (sim BTN_PRIMARY). The lock-acquiring click
+    // never swings: `locked` is still false when it fires.
+    document.addEventListener("mousedown", (e) => {
+      if (this.locked && e.button === 0) this.keys.primary = true;
+    });
+    document.addEventListener("mouseup", (e) => {
+      if (e.button === 0) this.keys.primary = false;
     });
     document.addEventListener("mousemove", (e) => {
       if (!this.locked) return;
@@ -54,6 +70,7 @@ export class InputTracker {
     window.addEventListener("blur", () => {
       this.keys.w = this.keys.a = this.keys.s = this.keys.d = false;
       this.keys.sprint = false;
+      this.keys.primary = false;
     });
   }
 
@@ -77,6 +94,7 @@ export class InputTracker {
   }
 
   buttons() {
-    return this.keys.sprint ? 1 : 0; // BTN_SPRINT
+    // BTN_SPRINT | BTN_PRIMARY (sim-core input.rs bit layout).
+    return (this.keys.sprint ? 1 : 0) | (this.keys.primary ? 4 : 0);
   }
 }

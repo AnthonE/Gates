@@ -7,7 +7,9 @@
 #![allow(clippy::disallowed_macros)]
 
 use protocol::{
-    encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
+    encode_event_catalog, encode_event_gather, encode_event_inv, encode_event_slot_change,
+    encode_event_slot_sync, encode_hello, encode_input, encode_refuse, encode_snapshot,
+    encode_welcome, goldens,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -50,4 +52,26 @@ fn main() {
     write_fixture(goldens::FIXTURES[6], &buf[..len]);
     let len = encode_refuse(&goldens::refuse_full(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[7], &buf[..len]);
+
+    let (item, added) = goldens::event_gather();
+    let len = encode_event_gather(item, added, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[8], &buf[..len]);
+
+    let (slots, count) = goldens::event_inv();
+    let len = encode_event_inv(&slots[..count], &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[9], &buf[..len]);
+
+    let (cx, cz) = goldens::event_slot_change();
+    let len = encode_event_slot_change(true, cx, cz, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[10], &buf[..len]);
+    let len = encode_event_slot_change(false, cx, cz, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[11], &buf[..len]);
+
+    let (reset, cells) = goldens::event_slot_sync();
+    let len = encode_event_slot_sync(reset, &cells, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[12], &buf[..len]);
+
+    let (len, took) = encode_event_catalog(&goldens::event_catalog(), 0, &mut buf).unwrap();
+    assert_eq!(took, protocol::CATALOG_BATCH);
+    write_fixture(goldens::FIXTURES[13], &buf[..len]);
 }

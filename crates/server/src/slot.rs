@@ -10,7 +10,7 @@
 //!   handles), sim→accept graveyard ring (returns them, so the sim thread
 //!   never deallocates — L2 outlives the tick).
 
-use protocol::InputDatagram;
+use protocol::{InputDatagram, MAX_EVENT_MSG_BYTES};
 use rtrb::{Consumer, Producer};
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -120,11 +120,26 @@ impl SnapMsg {
     }
 }
 
+/// One encoded event-lane message crossing sim→net (the reliable bidi
+/// stream). Fixed payload like `SnapMsg`; the writer task frames it.
+#[derive(Clone, Copy)]
+pub struct EvMsg {
+    pub len: u16,
+    pub buf: [u8; MAX_EVENT_MSG_BYTES],
+}
+
+impl EvMsg {
+    pub fn bytes(&self) -> &[u8] {
+        &self.buf[..self.len as usize]
+    }
+}
+
 /// The sim thread's ends of one connection's rings.
 pub struct Link {
     pub generation: u32,
     pub input: Consumer<InputDatagram>,
     pub snaps: Producer<SnapMsg>,
+    pub events: Producer<EvMsg>,
 }
 
 /// Accept→sim: install a freshly handshaken connection.
