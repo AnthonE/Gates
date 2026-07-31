@@ -39,6 +39,14 @@ pub struct World {
     pub scatter: ScatterTable,
     /// Hash stamped every `STATE_HASH_INTERVAL` ticks (0 until the first).
     pub last_hash: u64,
+    /// Dev-only fixed spawn override in meters (DECISIONS.md §open). None
+    /// (the default) is the shipping behavior: scattered `spawn_pos`. Set
+    /// only from `shard.toml dev_spawn` — it exists so a test can put two
+    /// clients inside AOI range on demand. Config, not state: it is world
+    /// construction input like `seed`, so it stays out of `state_hash`;
+    /// when the WAL file format lands, it pins into the header beside the
+    /// seed so replays reproduce the spawns they were played under.
+    pub dev_spawn: Option<(f32, f32)>,
 }
 
 impl World {
@@ -49,6 +57,7 @@ impl World {
             players: [Player::default(); MAX_PLAYERS],
             scatter: ScatterTable::alpha_default(),
             last_hash: 0,
+            dev_spawn: None,
         }
     }
 
@@ -56,6 +65,9 @@ impl World {
     /// first walkable one wins; island center as the total-miss fallback.
     /// The beach spawn ring proper is a later worldgen slice.
     pub fn spawn_pos(&self, id: u32) -> (f32, f32) {
+        if let Some(p) = self.dev_spawn {
+            return p;
+        }
         let mut attempt = 0i32;
         while attempt < 96 {
             let h = cell_hash(self.seed, id as i32, attempt, CH_SPAWN);
@@ -125,7 +137,8 @@ impl World {
     }
 
     /// xxh3 over canonical sim state, allocation-free. Slot order is the
-    /// canonical order.
+    /// canonical order. `dev_spawn` is construction input, not state — it
+    /// influences spawns the way `seed` does, and pins alongside it.
     pub fn state_hash(&self) -> u64 {
         let mut h = Xxh3::new();
         h.update(&self.seed.to_le_bytes());
@@ -150,5 +163,47 @@ impl World {
             h.update(&buf);
         }
         h.digest()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terrain;
+
+    /// The point and seed `ci/browser_smoke.mjs` puts both tabs on. Guarded
+    /// here natively so a worldgen change that sinks or steepens it fails
+    /// this test, not the browser gate.
+    const SMOKE_SEED: u64 = 20260731;
+    const SMOKE_SPAWN: (f32, f32) = (1024.0, 1024.0);
+
+    #[test]
+    fn dev_spawn_overrides_every_join() {
+        let mut w = World::new(SMOKE_SEED);
+        w.dev_spawn = Some(SMOKE_SPAWN);
+        w.tick(&[Command::Join { id: 7 }, Command::Join { id: 8 }]);
+        for id in [7u32, 8] {
+            let p = w.players.iter().find(|p| p.active && p.id == id).unwrap();
+            // Body::at quantizes at 3 cm x/z: exact in quantized space.
+            assert_eq!(p.body.qx, movement::quant_xz(SMOKE_SPAWN.0));
+            assert_eq!(p.body.qz, movement::quant_xz(SMOKE_SPAWN.1));
+        }
+        // And None still scatters: two ids land apart.
+        let mut w2 = World::new(SMOKE_SEED);
+        w2.tick(&[Command::Join { id: 7 }, Command::Join { id: 8 }]);
+        let a = w2.players[0].body;
+        let b = w2.players[1].body;
+        assert!(a.qx != b.qx || a.qz != b.qz);
+    }
+
+    #[test]
+    fn smoke_spawn_point_is_walkable() {
+        let (x, z) = SMOKE_SPAWN;
+        let h = terrain::height(SMOKE_SEED, x, z);
+        let s = terrain::slope(SMOKE_SEED, x, z);
+        assert!(
+            (1.5..45.0).contains(&h) && s < 1.0,
+            "browser-smoke spawn ({x},{z}) unwalkable at seed {SMOKE_SEED}: height {h} slope {s}"
+        );
     }
 }

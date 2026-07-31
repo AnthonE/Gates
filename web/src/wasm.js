@@ -27,14 +27,25 @@ export class WasmViews {
   }
 
   refresh() {
-    const buf = this.ex.memory.buffer;
+    const ex = this.ex;
+    // Every ptr getter FIRST, then read the buffer. A getter can allocate on
+    // its first call, which grows the memory and detaches any buffer already
+    // in hand — so `const buf = ex.memory.buffer` before these would capture a
+    // reference that `new Uint8Array(buf, …)` then rejects as detached. That
+    // was a hard boot failure in the browser ("Cannot perform Construct on a
+    // detached ArrayBuffer") that no native or node gate could see.
+    const inPtr = ex.client_in_ptr();
+    const outPtr = ex.client_out_ptr();
+    const renderPtr = ex.client_render_ptr();
+    const remoteIdsPtr = ex.client_remote_ids_ptr();
+
+    const buf = ex.memory.buffer;
     if (buf === this.buffer) return;
     this.buffer = buf;
-    const ex = this.ex;
-    this.input = new Uint8Array(buf, ex.client_in_ptr(), this.inCap);
-    this.output = new Uint8Array(buf, ex.client_out_ptr(), 1100);
+    this.input = new Uint8Array(buf, inPtr, this.inCap);
+    this.output = new Uint8Array(buf, outPtr, 1100);
     // 13 own/status floats + count + 64 remotes × 8 floats.
-    this.render = new Float32Array(buf, ex.client_render_ptr(), 14 + 64 * 8);
-    this.remoteIds = new Uint32Array(buf, ex.client_remote_ids_ptr(), 64);
+    this.render = new Float32Array(buf, renderPtr, 14 + 64 * 8);
+    this.remoteIds = new Uint32Array(buf, remoteIdsPtr, 64);
   }
 }

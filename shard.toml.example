@@ -5,3 +5,8 @@
 
 bind = "127.0.0.1:4433"
 seed = 20260731
+
+# Dev only — never on a public shard. Fixed spawn "x,z" in meters: every
+# joiner lands on the same point, which is how ci/browser_smoke.mjs puts
+# two tabs inside AOI range. DECISIONS.md §open "dev spawn override".
+# dev_spawn = "1024,1024"

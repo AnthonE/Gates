@@ -134,7 +134,11 @@ function run(ex, views, wt, seed, playerId) {
   }
   requestAnimationFrame(frame);
 
-  // HUD on its own slow timer, never in the render path.
+  // HUD on its own slow timer, never in the render path. The debug
+  // snapshot below rides the same timer for the same reason: it exists so
+  // ci/browser_smoke.mjs can assert remotes actually MOVE (a count can't
+  // tell a frozen remote from a live one), and page.evaluate reading a
+  // window global costs the RAF loop nothing.
   setInterval(() => {
     if (closed) return;
     const R = views.render;
@@ -146,6 +150,20 @@ function run(ex, views, wt, seed, playerId) {
         `dg sent ${sender.stats.sent} · oversize ${sender.stats.oversize}` +
         (R[0] === 1 ? "" : "\nwaiting for first snapshot…"),
     );
+    const remotes = [];
+    const n = R[13] | 0;
+    for (let k = 0; k < n; k++) {
+      const b = 14 + k * 8;
+      remotes.push([views.remoteIds[k], R[b], R[b + 1], R[b + 2]]);
+    }
+    globalThis.__gatesDebug = {
+      playerId,
+      inWorld: R[0] === 1,
+      own: [R[1], R[2], R[3]],
+      snapshots: R[8],
+      remotes,
+      oversize: sender.stats.oversize,
+    };
   }, 250);
 }
 

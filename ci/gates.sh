@@ -57,4 +57,15 @@ $NICE npm --prefix web ci --include=dev --no-audit --no-fund || fail "npm ci"
 $NICE npm --prefix web run build || fail "vite build"
 [ -f web/dist/client_wasm.wasm ] || fail "wasm artifact absent from web bundle"
 
+# The only gate that runs the JS in a browser. Everything above tests the
+# client's LOGIC natively or in node, which is why two hard boot bugs shipped
+# green on 2026-07-31: a detached-buffer throw in WasmViews that stopped the
+# client dead, and a terrain-worker race that killed the near ring while the
+# far mesh still rendered (so screenshots looked fine). Both are invisible to
+# every other gate here. Needs the release shard binary — build it first so a
+# missing binary is a loud failure and never a skip.
+echo "== gate: browser smoke (real shard, real WebTransport, real browser)"
+$NICE cargo build -p server --bin shard --release || fail "shard build"
+$NICE node ci/browser_smoke.mjs || fail "browser smoke"
+
 echo "ALL GATES GREEN"
