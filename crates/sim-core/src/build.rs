@@ -516,8 +516,9 @@ pub fn upgrade(
     let rec = pieces.entries()[i];
     // A record's row was validated at placement; re-checking it here is
     // what keeps a content table swapped under a live store from indexing
-    // out of bounds (the sim never panics on state, wall 5).
-    if rec.row as u16 >= bc.piece_count {
+    // out of bounds — and the inert row's `hp == 0` out of the damage
+    // carry's divisor below (the sim never panics on state, wall 5).
+    if rec.row as u16 >= bc.piece_count || bc.pieces[rec.row as usize].hp == 0 {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
         return;
     }
@@ -553,7 +554,7 @@ pub fn upgrade(
         inv_take(&mut p.inv, item, units as u32);
     }
     // Damage rides the ladder as a fraction, never below one hit of life
-    // (cur.hp is nonzero: the inert row is refused at placement).
+    // (cur.hp is nonzero: an inert row refused above).
     let carried = (rec.hp as u32 * def.hp as u32) / cur.hp as u32;
     let hp = carried.clamp(1, def.hp as u32) as u16;
     pieces.set_row(i, row as u8, hp);

@@ -17,10 +17,11 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-/// Regenerated this commit: door locks landed — deploy records carry (and
-/// hash) a lock bit, doors place locked to their placer, and this script
-/// now locks and unlocks the door it was already toggling.
-const GOLDEN_FINAL_HASH: u64 = 0x754A_E9E2_1A7C_8EA4;
+/// Regenerated this commit: upgrade-in-place landed — the piece fixture
+/// gained the stone rung its wall shape was missing (so the random place
+/// script's out-of-range row moved with it), and this script now climbs a
+/// second wall to that rung and is refused both ways off it.
+const GOLDEN_FINAL_HASH: u64 = 0x5D8A_C52A_352A_B4D0;
 
 fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut world = World::new(seed);
@@ -33,7 +34,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut joined: u32 = 0;
     let mut hashes = Vec::new();
     let (mut placed, mut deployed, mut decayed, mut doors) = (0u32, 0u32, 0u32, 0u32);
-    let (mut locked_seen, mut unlocked_seen) = (false, false);
+    let (mut locked_seen, mut unlocked_seen, mut upgraded_seen) = (false, false, false);
     let mut hearth_cell = (0u16, 0u16);
 
     for t in 0..TICKS {
@@ -79,11 +80,12 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     sim_core::build::build_cell_of(q as f32 * sim_core::movement::POS_XZ_Q)
                         .clamp(0, 1023) as u16
                 };
-                // Row 4 is out of range (the fixture is 4 rows since the
-                // doorway joined it) — the refusal path stays in surface.
+                // Row 5 is out of range (the fixture is 5 rows since the
+                // stone rung joined it) — the refusal path stays in
+                // surface.
                 cmds.push(Command::Place {
                     id,
-                    row: ((t / 53 + id as u64) % 5) as u16,
+                    row: ((t / 53 + id as u64) % 6) as u16,
                     cx: cell(b.qx),
                     cz: cell(b.qz),
                     level: ((t / 106) % 2) as u8,
@@ -158,7 +160,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
             };
             hearth_cell = (cell(b.qx), cell(b.qz));
         }
-        if (150..=160).contains(&t) {
+        if (150..=164).contains(&t) {
             let (cx, cz) = hearth_cell;
             let id = world.players[0].id;
             match t {
@@ -208,6 +210,41 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_W,
                 }),
+                // Then the upgrade verb's own arc on a second wall: a
+                // wood wall at the north edge, climbed to the fixture's
+                // stone rung, then asked back down (refused) and asked
+                // for by a hand the hearth does not answer to (refused
+                // on the claim) — the re-row and both bounces on the
+                // replayed surface. All of it before the feeds, which
+                // hand the builder's whole stock to the hearth.
+                159 => cmds.push(Command::Place {
+                    id,
+                    row: 1,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: sim_core::build::LOC_EDGE_N,
+                }),
+                160 | 161 => cmds.push(Command::Upgrade {
+                    id,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: sim_core::build::LOC_EDGE_N,
+                    material: if t == 160 {
+                        sim_core::build::MAT_STONE
+                    } else {
+                        sim_core::build::MAT_WOOD
+                    },
+                }),
+                162 => cmds.push(Command::Upgrade {
+                    id: world.players[1].id,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: sim_core::build::LOC_EDGE_N,
+                    material: sim_core::build::MAT_METAL,
+                }),
                 155 | 156 | 158 => cmds.push(Command::Lock {
                     // 156 is a hand that does not own this door — the
                     // refusal path, on the replayed surface too.
@@ -234,6 +271,15 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
             world.tick += 3 * sim_core::deploy::UPKEEP_PERIOD_TICKS;
         }
         world.tick(&cmds);
+        // The scripted upgrade's own verdict, read from the store the
+        // tick after it ran: an event says a piece was announced, only
+        // the record says which rung it stands on now.
+        if t == 160 {
+            upgraded_seen = world
+                .pieces
+                .find(hearth_cell.0, hearth_cell.1, 0, sim_core::build::LOC_EDGE_N)
+                .is_some_and(|p| p.row == 4);
+        }
         for e in world.events.entries() {
             match e.code {
                 sim_core::world::EV_PIECE_PLACED => placed += 1,
@@ -273,6 +319,11 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     assert!(
         doors >= 4,
         "the scripted door never toggled — the use verb fell out of the replay surface"
+    );
+    assert!(
+        upgraded_seen,
+        "the scripted wall never reached its stone rung — the upgrade verb fell \
+         out of the replay surface"
     );
     assert!(
         locked_seen && unlocked_seen,

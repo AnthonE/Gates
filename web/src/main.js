@@ -397,6 +397,14 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       hud.toast("no building in reach");
       return;
     }
+    // The def rows drip separately from the pieces that reference them,
+    // so a piece can be on screen before its material is known — asking
+    // then would send a rung picked out of an empty table.
+    const pieceDefsHave = (ex.client_piece_defs_state() >>> 0) & 0xffff;
+    if (best.row >= pieceDefsHave) {
+      hud.toast("still loading that piece");
+      return;
+    }
     const material = views.pieceDefs[best.row * 8 + 1] + 1;
     if (material > 2) {
       hud.toast("already metal");

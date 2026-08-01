@@ -17,7 +17,7 @@ use sim_core::world::{Command, World};
 /// and a place, so the craft and build verbs (enqueue, step, placement,
 /// every refusal) sit inside the counted window. Fixed-size — the test
 /// itself must not allocate.
-fn tick_cmds(rng: &mut Pcg32, yaws: &mut [u16; MAX_PLAYERS], t: u16) -> [Command; MAX_PLAYERS + 3] {
+fn tick_cmds(rng: &mut Pcg32, yaws: &mut [u16; MAX_PLAYERS], t: u16) -> [Command; MAX_PLAYERS + 4] {
     core::array::from_fn(|i| {
         if i < MAX_PLAYERS {
             let f = bot_frame(rng, yaws[i], t);
@@ -37,7 +37,7 @@ fn tick_cmds(rng: &mut Pcg32, yaws: &mut [u16; MAX_PLAYERS], t: u16) -> [Command
                 id: ((t as u32 * 7) % MAX_PLAYERS as u32) + 1,
                 index: t % 5,
             }
-        } else {
+        } else if i == MAX_PLAYERS + 2 {
             // The island-center cell: bots near it place, the rest refuse
             // on reach — both build paths inside the counted window.
             Command::Place {
@@ -47,6 +47,19 @@ fn tick_cmds(rng: &mut Pcg32, yaws: &mut [u16; MAX_PLAYERS], t: u16) -> [Command
                 cz: 341,
                 level: (t % 2) as u8,
                 loc: ((t / 2) % 4) as u8,
+            }
+        } else {
+            // And the upgrade verb over the same addresses: the ladder
+            // cycles wood/stone/metal, so the re-row, the sideways and
+            // downward refusals, and the missing-rung refusal are all
+            // inside the counted window too.
+            Command::Upgrade {
+                id: ((t as u32 * 11) % MAX_PLAYERS as u32) + 1,
+                cx: 341,
+                cz: 341,
+                level: (t % 2) as u8,
+                loc: ((t / 2) % 4) as u8,
+                material: (t % 3) as u8,
             }
         }
     })
