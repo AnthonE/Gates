@@ -7,7 +7,8 @@ Done items are deleted, not checked — history lives in git and
 1. **The horizon still casts nothing.** The shadow clipmap landed (two
    levels, 80 m and 240 m, committed centres, cached coarse updates —
    `DECISIONS.md` §open), so shadows now reach the edge of what *casts*:
-   the 5×5 near ring, ±192 m. Past that the far mesh receives and never
+   the 5×5 near ring, ±192 m on each world axis (its diagonal corners fall
+   outside level 1 and fade rather than cut). Past that the far mesh receives and never
    casts, by lighting v0's call — two disagreeing LODs of one hillside in
    one map is acne — so a mountain at 400 m is still lit flat. Fixing it
    is a terrain job before it is a shadow one (a skirt, or a shadow-only

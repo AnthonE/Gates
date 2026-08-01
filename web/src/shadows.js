@@ -20,9 +20,9 @@
 // casts from, and putting two disagreeing silhouettes of one hillside in one
 // map buys self-shadow acne along the whole boundary (terrain.js). So the
 // only casters that exist are the 5×5×64 m near ring, its scatter, placed
-// pieces, deployables and players — all inside ±192 m of the player. A third
-// level would render that identical set at a third of the resolution and
-// darken not one new pixel. The level table is generated from
+// pieces, deployables and players — all inside ±192 m of the player on each
+// world axis. A third level would render that identical set at a third of the
+// resolution and darken not one new pixel. The level table is generated from
 // (firstHalfWidth, scaleFactor, maxHalfWidth), so the day the horizon starts
 // casting, the levels arrive from a constant.
 //
@@ -52,7 +52,7 @@
 // [0,1]³), so the guard band and the cross-fade need no per-level uniforms
 // and cannot disagree with the committed centre by construction.
 //
-// Two deliberate deviations from the reference, both stated rather than
+// Three deliberate deviations from the reference, all stated rather than
 // silent:
 //
 //   1. Depth range. The reference's `far = margin + 2·half` leaves only
@@ -65,6 +65,14 @@
 //      would be code no frame can reach. Day/night is M2's; the rule it must
 //      obey — a direction change force-dirties every level — is written here
 //      and in `DECISIONS.md` §open rather than half-built.
+//   3. Per-level filter cost — see LEVEL_FILTER_TAPS, where it is argued.
+//
+// And one thing not built: the reference's §11 disposal path. Nothing tears a
+// GameScene down in this client — there is one, for the life of the page — so
+// a dispose() here would be untested code guarding a case that cannot happen.
+// The day a second scene can be constructed, the level lights, their targets
+// and their shadow maps are persistent GPU resources; treat a missing dispose
+// then as a real leak.
 
 import * as THREE from "three";
 
@@ -73,15 +81,20 @@ import * as THREE from "three";
 // map that shipped, so nothing about the near frame moves in this slice.
 const FIRST_HALF_M = 80;
 const SCALE_FACTOR = 3;
-const MAX_HALF_M = 240; // holds the near ring's ±192 m of casters
+// Holds the near ring's casters, which reach ±192 m on each world axis. Its
+// diagonal corners reach ~271 m in light-space X and fall outside this box;
+// there the cross-fade below retires the shadow smoothly instead of cutting
+// it, which is the behaviour the guard band exists to give.
+const MAX_HALF_M = 240;
 // Per level, finest first; short entries repeat the last. Level 0 keeps
 // lighting v0's 2048 px exactly. The coarse levels are HALF that, and it is
 // not a cosmetic saving: a level's map is re-rendered whenever the player
 // crosses one of its texels, so halving the resolution both quarters the
 // fragments rasterized and halves how often that happens. At full 2048 the
 // coarse level cost enough per frame to starve a third browser tab of CPU on
-// the reference-class box the browser gate runs on. 0.469 m texels still put
-// six across a pine's shadow at 150 m, which is what that level is for.
+// the gate box (shared, software GL — not a reference-hardware claim, and no
+// number here rides on it). 0.469 m texels still put six across a pine's
+// shadow at 150 m, which is what that level is for.
 const MAP_PX = [2048, 1024];
 // How far past the level box, along the sun ray, the light sits — the depth
 // the map has for casters ABOVE the receivers.
@@ -105,7 +118,7 @@ const UPDATE_BUDGET = 1;
 const MAX_CACHE_AGE = 64;
 // Normal bias in TEXELS of the level's own grid — lighting v0's value, now
 // scaled per level, which is the reference's whole point: one metre value
-// across a 0.078 m texel and a 0.234 m texel is not a coherent bias.
+// across a 0.078 m texel and a 0.469 m texel is not a coherent bias.
 const NORMAL_BIAS_TEXELS = 1.2;
 
 /** Half-widths, finest first; the last is exactly MAX_HALF_M. */
