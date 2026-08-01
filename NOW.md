@@ -47,26 +47,31 @@ Done items are deleted, not checked — history lives in git and
    pattern to copy is `noskip`: compile a `noh4` variant with materials
    v0's scalar hash and require the same frame.
 
-2. **The browser gate's third tab joins at 59.7 s of a 60 s budget.**
-   The *instrument* half of this is fixed (materials v1 row): the gate used
-   to get **2 looks in 62.6 s** because each poll made two `page.evaluate`
-   round trips and waited for the last before starting the next; it now
-   launches one cheap look every 250 ms with 4 outstanding and gets 12–19.
-   That is what turned "the third tab missed its join" from a mystery into
-   a reading, and the failure path now prints the page's own boot stage
-   (`#start` hidden → `run()` was reached) so the two cannot be confused
-   again.
+2. **A tab that boots beside another live tab takes 34 s to reach the
+   world. Nobody knows where those seconds go.**
+   The third-tab version of this went red on 2026-08-01 16:26 (`inWorld`
+   at 61.6 s of a 60 s window) and the recovery pass closed it, but by
+   removing the *contention*, not the cost: the gate now closes tab A and
+   tab B once their last assertion is made, so the public tab boots on an
+   empty box and joins in **0.3 s**, and a structural check refuses to let
+   it boot beside a live tab again. `JOIN_TIMEOUT_MS` was not touched.
 
-   The *client* half is untouched and is the live risk: with three tabs
-   software-rasterizing on this shared 4-core box, the third takes ~55 s to
-   reach `inWorld && snapshots > 0`. Grain did not cause it — the frame
-   moved 630 → 638 ms, 1.3% — but nothing has ever measured where those
-   55 s go, and every slice that adds a material or a program spends more
-   of them. **Do not fix this by widening `JOIN_TIMEOUT_MS`.** Measure it
-   first: the tab's own timeline from `#connect` to the first publish,
-   split into wasm load, connect, handshake, first compile and first
-   chunk. The cost probe already says a terrain program costs ~3 s to
-   compile here, and a fresh tab compiles more than one.
+   What that bought is the reading this item always wanted, at the harness
+   level: **join time is monotonic in live tabs — 0.4 s alone, 34–36 s
+   beside one, 55–61 s beside two.** The 34 s is the part still standing,
+   and it is still the thinnest margin in the suite: tab B needs a live
+   tab A (mutual AOI is M0's exit condition), so no amount of harness
+   tidying can hand it a quiet box.
+
+   The *client* half is therefore untouched and is the live risk. Grain
+   did not cause it — the frame moved 630 → 638 ms, 1.3% — but nothing
+   has measured where the seconds go, and every slice that adds a material
+   or a program spends more of them. **Do not fix this by widening
+   `JOIN_TIMEOUT_MS`.** Measure it first: the tab's own timeline from
+   `#connect` to the first publish, split into wasm load, connect,
+   handshake, first compile and first chunk. The cost probe already says a
+   terrain program costs ~3 s to compile here, and a fresh tab compiles
+   more than one.
 3. **Nothing casts past 720 m, and nothing out there has a silhouette.**
    The horizon casts now (`DECISIONS.md` §open) but two limits are stated
    rather than solved: the coarsest clipmap level stops at 720 m because

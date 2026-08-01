@@ -32,7 +32,11 @@
 // hook) is installed only when the shard's welcome says `dev`, and the only
 // place that if-statement actually runs is a browser. So this gate boots a
 // SECOND shard with no dev override — a public shard's config — and asserts the
-// hook is absent there and present, aiming, on the dev one.
+// hook is absent there and present, aiming, on the dev one. That third tab boots
+// only after the first two are CLOSED: on a four-core box with no GPU the join
+// time is a function of how many renderers are live (0.4 s / 34 s / 55 s for
+// one / two / three), and running it beside the other two is what put this wall
+// in the red on 2026-08-01. It shares nothing with them, so it waits for them.
 //
 // It is also where the LIGHTING rig is gated, for the same reason: a shadow map
 // only exists inside a renderer. The flags (map enabled, key casting, a tone
@@ -94,6 +98,27 @@ const MOVE_MIN_M = 2;
 const AIM_YAW = Math.PI / 2;
 const AIM_PITCH = -0.3;
 const AIM_EPS = 1e-3;
+// Before the aimed walk is measured, the PREVIOUS walk has to be all the way
+// out of the player's position. `own` is the client's own predicted position,
+// republished on the 250 ms HUD timer; the chat section walks both tabs apart
+// with held keys, and on this box the tail of that walk keeps arriving after
+// the key is up. A fixed settle wait was what stood here, and on 2026-08-01
+// 15:51 it was not enough: the aimed walk measured [5.01, 11.91] m — the +Z
+// leg of the CHAT walk still draining while the +X leg was already running,
+// against an assertion that requires the walk to be east-dominant. So the
+// baseline is now taken when the position has stopped moving on its own,
+// which is the condition the assertion was always written against.
+//
+// A round only counts if `snapshots` advanced across it: with a starved main
+// thread two reads can return the SAME publish, and "the position did not
+// change" would then mean "nobody looked", which is the reading that has
+// already cost this gate two passes.
+const AIM_SETTLE_MS = 400;
+const AIM_SETTLE_ROUNDS = 25;
+// Walk speed is 3 m/s, so a settle round that is still carrying the old walk
+// moves ~1.2 m. 0.05 m is 4% of that and far above the reconciliation jitter
+// of a client with no key held (measured 0.000 m between publishes at rest).
+const AIM_SETTLE_EPS_M = 0.05;
 // --- the lighting gate (DECISIONS.md §open, "lighting v0") ------------------
 // The shadow probe sweeps four yaws so the assertion does not depend on the
 // player having walked to a spot with a caster in one particular direction,
@@ -458,9 +483,20 @@ try {
 
 // One context per tab: separate sessions, separate localStorage — the same
 // isolation two real players have.
+//
+// How many of these are ALIVE AT ONCE is load-bearing on this box and is
+// tracked, not assumed. Every tab rasterizes in software (SwiftShader, no
+// GPU here or on the reference VPS), each renderer runs its own worker
+// threads, and there are four cores shared with nineteen other services. The
+// join time is monotonic in the count, measured over this gate's own history:
+// one live tab joins in 0.4 s, two in 34-36 s, three in 55-61 s. The third
+// reading is the one that went over the 60 s window on 2026-08-01 16:26 and
+// reddened the wall.
+const liveTabs = new Set();
 const join = async (label, port = WIRE_PORT, cert = certHash) => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
+  liveTabs.add(label);
   const errors = [];
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => { if (m.type() === "error") errors.push(`console.error: ${m.text()}`); });
@@ -575,19 +611,32 @@ const join = async (label, port = WIRE_PORT, cert = certHash) => {
             : "never published"
         })` +
         `\n    ${polls} looks launched in ${((Date.now() - t0) / 1000).toFixed(1)}s, ` +
-        `${inflight.size} still outstanding · ` +
+        `${inflight.size} still outstanding · ${liveTabs.size} tab(s) live · ` +
         `page state ${JSON.stringify(post)}` +
         (errors.length ? `\n` + errors.slice(0, 8).map((e) => `    ${e}`).join("\n") : "\n    no page errors"),
     );
   }
   // The look count rides along on the PASSING path too, because the instrument
   // starving is a slow failure and a run that squeaked in on its third look is
-  // one slice away from a run that never looks at all.
+  // one slice away from a run that never looks at all. The live-tab count rides
+  // along for the same reason from the other side: it is what the join time is
+  // a function of, so the two belong on one line.
   console.log(
     `  ${label}: in world as player ${dbg.playerId} at [${dbg.own.map((v) => v.toFixed(1))}] ` +
-      `(seen ${((Date.now() - t0) / 1000).toFixed(1)}s in, ${polls} looks launched)`,
+      `(seen ${((Date.now() - t0) / 1000).toFixed(1)}s in, ${polls} looks launched, ` +
+      `${liveTabs.size} tab${liveTabs.size === 1 ? "" : "s"} live)`,
   );
-  return { label, page, errors, playerId: dbg.playerId, dbg };
+  return {
+    label,
+    page,
+    errors,
+    playerId: dbg.playerId,
+    dbg,
+    close: async () => {
+      await context.close();
+      liveTabs.delete(label);
+    },
+  };
 };
 
 const A = await join("tab A");
@@ -1895,16 +1944,47 @@ const aimed = await A.page.evaluate(
   [AIM_YAW, AIM_PITCH],
 );
 if (aimed !== true) fail(`tab A: setView(${AIM_YAW}, ${AIM_PITCH}) returned ${aimed}`);
-// It has to survive into the next published snapshot, not just return true.
-await A.page.waitForTimeout(600);
-const view = await A.page.evaluate(() => globalThis.__gatesDebug.view);
+// It has to survive into the next published snapshot, not just return true —
+// and the baseline the aimed walk is measured from has to be a position that
+// is STANDING STILL. No key is held here; anything still moving is the chat
+// section's walk draining out of the predictor, and it is +Z, which is exactly
+// the axis the assertion below calls a failure. See AIM_SETTLE_* above.
+const restProbe = () =>
+  A.page.evaluate(() => ({
+    own: globalThis.__gatesDebug.own,
+    snapshots: globalThis.__gatesDebug.snapshots,
+    view: globalThis.__gatesDebug.view,
+  }));
+let rest = await restProbe();
+let atRest = null;
+let lastDrift = Infinity;
+let freshRounds = 0;
+for (let round = 0; round < AIM_SETTLE_ROUNDS && !atRest; round++) {
+  await A.page.waitForTimeout(AIM_SETTLE_MS);
+  const now = await restProbe();
+  // A publish the client never refreshed says nothing about whether it moved.
+  if (!(now.snapshots > rest.snapshots)) continue;
+  freshRounds++;
+  lastDrift = Math.hypot(now.own[0] - rest.own[0], now.own[2] - rest.own[2]);
+  rest = now;
+  if (lastDrift <= AIM_SETTLE_EPS_M) atRest = now;
+}
+if (!atRest) {
+  fail(
+    `tab A: with no key held the player never came to rest — last drift ` +
+      `${lastDrift.toFixed(2)} m in ${AIM_SETTLE_MS} ms over ${freshRounds} fresh ` +
+      `publish(es) of ${AIM_SETTLE_ROUNDS} rounds. The aimed walk below can only ` +
+      `measure the aim if it starts from a standing player.`,
+  );
+}
+const view = atRest.view;
 if (Math.abs(view[0] - AIM_YAW) > AIM_EPS || Math.abs(view[1] - AIM_PITCH) > AIM_EPS) {
   fail(`tab A: aimed at [${AIM_YAW}, ${AIM_PITCH}] but the camera reads [${view}]`);
 }
 // And the aim must reach the SIM, not just the camera: yaw pi/2 faces +X, so a
 // held W walks east. A hook that moved the render camera alone would pass the
 // readback above and still frame a player walking sideways out of shot.
-const beforeAim = (await A.page.evaluate(() => globalThis.__gatesDebug.own)).slice();
+const beforeAim = atRest.own.slice();
 await A.page.keyboard.down("KeyW");
 await A.page.waitForTimeout(PLAY_MS);
 await A.page.keyboard.up("KeyW");
@@ -1918,7 +1998,11 @@ if (dx < MOVE_MIN_M || Math.abs(dz) > dx) {
       `The hook is not reaching the input the sim runs on.`,
   );
 }
-console.log(`  dev hook: aimed to [${view.map((v) => v.toFixed(2))}], walked +X ${dx.toFixed(1)} m (dz ${dz.toFixed(1)})`);
+console.log(
+  `  dev hook: aimed to [${view.map((v) => v.toFixed(2))}], walked +X ${dx.toFixed(1)} m ` +
+    `(dz ${dz.toFixed(1)}), from rest after ${freshRounds} fresh publish(es), ` +
+    `last drift ${lastDrift.toFixed(3)} m`,
+);
 
 // Assertion 11 — DESIGN §9's draw budget, which had no gate until the shadow
 // pass gave it teeth: a second full pass over every caster is exactly the kind
@@ -1953,6 +2037,50 @@ console.log(
   `  budget: ${budget.calls} draw calls / ${budget.triangles} triangles this frame, ` +
     `peak ${budget.peakCalls} / ${budget.peakTriangles} (all passes)`,
 );
+
+// --- hand the box back before the last tab boots ----------------------------
+// A and B are DONE: every assertion either tab can make has been made, and the
+// dev-gate check below joins a different shard with a different session and
+// reads nothing from them. What they still do is rasterize — in software, on
+// four cores shared with nineteen other services — and that is what made this
+// wall red.
+//
+// The join time is monotonic in the number of live tabs, measured across this
+// gate's own history: 0.4 s alone, 34-36 s beside one, 55-61 s beside two. The
+// third reading is not a margin, it is a coin flip against a 60 s window, and
+// on 2026-08-01 16:26 it came up tails: `inWorld=true, snapshots=1` at 61.6 s —
+// the client HAD joined, one and a half seconds after the gate stopped waiting.
+// Slice 21 merged knowing it ("~55 s of a 60 s budget — measured, unexplained")
+// and the very next health run went red.
+//
+// So the fix is to stop asking a third tab to boot while two others hold the
+// cores, NOT to widen JOIN_TIMEOUT_MS — which NOW.md item 2 rules out by name,
+// and which would have bought one slice of quiet before landing back here.
+// Nothing asserted changes and no wait gets longer; the public tab simply gets
+// the same empty box tab A gets.
+for (const tab of [A, B]) {
+  // One last error sweep before the evidence goes away with the context. The
+  // aimed-walk section above had no page-error check of its own, so this is a
+  // window that was never looked at: a throw in setView, in the input path or
+  // in the render loop during those seconds went unreported.
+  if (tab.errors.length) {
+    fail(
+      `${tab.label}: ${tab.errors.length} page error(s) during the dev-hook walk:\n` +
+        tab.errors.slice(0, 8).map((e) => `    ${e}`).join("\n"),
+    );
+  }
+  await tab.close();
+}
+// And pin it, so a later slice cannot quietly put the contention back: the
+// public tab's join is only a fair reading of "can a client reach the world"
+// if it is the only client rendering.
+if (liveTabs.size !== 0) {
+  fail(
+    `public tab is about to boot beside ${liveTabs.size} live tab(s) (${[...liveTabs].join(", ")}) — ` +
+      `that is the configuration that reddened this wall on 2026-08-01`,
+  );
+}
+console.log(`  handed the box back: ${A.label} and ${B.label} closed, 0 tabs live`);
 
 // Assertion 12 — the gate itself. A shard with no dev override is exactly a
 // public shard's config, and its client must have no dev surface at all.
