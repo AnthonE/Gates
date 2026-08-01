@@ -107,20 +107,20 @@ cargo run -p server --bin replay -- --wal <file>
 ## The loop that builds this repo
 
 Most commits here are written by an autonomous loop, not typed. It lives at
-`/data/apps/gates-loop` — **outside this repo, deliberately.** The builder is
+`/mnt/hive-data/gates-loop` — **outside this repo, deliberately.** The builder is
 told not to touch it and the rubrics are checksummed between passes; if the
 harness lived in here, an agent would have write access to the criteria it is
 scored against, and a checksum would be the only thing in the way.
 
 | you want | do |
 |---|---|
-| start it | `tmux new -s gatesloop '/data/apps/gates-loop/gates-loop.sh'` |
-| stop it | `touch /data/apps/gates-loop/STOP` — finishes the pass, then exits |
-| what it is doing | `/data/apps/gates-loop/loop-status.sh` |
-| the frames it captured | `/data/apps/gates-loop/gallery.py`, then `ssh -L 8899:localhost:8899` |
-| why a pass failed | `/data/apps/gates-loop/findings/pass-<id>-{judge,visual}.md` |
+| start it | `tmux new -s gatesloop '/mnt/hive-data/gates-loop/gates-loop.sh'` |
+| stop it | `touch /mnt/hive-data/gates-loop/STOP` — finishes the pass, then exits |
+| what it is doing | `/mnt/hive-data/gates-loop/loop-status.sh` |
+| the frames it captured | `/mnt/hive-data/gates-loop/gallery.py`, then `ssh -L 8899:localhost:8899` |
+| why a pass failed | `/mnt/hive-data/gates-loop/findings/pass-<id>-{judge,visual}.md` |
 | undo a whole run | `git reset --hard gates-anchor-<stamp>` |
-| `ci/gates.sh` is red on a clean tree | `GATES_FIX_RED=1 /data/apps/gates-loop/gates-loop.sh` — one pass, wall only |
+| `ci/gates.sh` is red on a clean tree | `GATES_FIX_RED=1 /mnt/hive-data/gates-loop/gates-loop.sh` — one pass, wall only |
 
 Two judges score every pass and neither is the builder: one holds
 `judge/RUBRIC.md` (ten procedural checks — the merge gate) and one holds
