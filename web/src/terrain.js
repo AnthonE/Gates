@@ -24,7 +24,11 @@
 // all of it still one draw call per archetype.
 
 import * as THREE from "three";
-import { makeTerrainMaterial, surfaceMaterial } from "./materials.js";
+import {
+  makeTerrainCostVariants,
+  makeTerrainMaterial,
+  surfaceMaterial,
+} from "./materials.js";
 import {
   castInLevels,
   makeFarCasterDepthMaterial,
@@ -146,6 +150,8 @@ export class Terrain {
     this.seed = seed;
     this.ex = ex; // main-thread wasm: slot queries only (fast, tiny)
     this.material = makeTerrainMaterial();
+    // Built on the cost probe's first ask and never on a public shard.
+    this._costVariants = null;
     this.chunks = new Map(); // "cx,cz" -> { cx, cz, mesh? , pending? }
     this.queue = [];
     this.inFlight = false;
@@ -351,6 +357,43 @@ export class Terrain {
     if (this.clipmap && hx > 0) {
       this.clipmap.invalidate(cx, 0, cz, Math.sqrt(hx * hx + hz * hz));
     }
+  }
+
+  /**
+   * The ground's cost variants, built once on first ask (NOW.md item 1).
+   *
+   * Terrain owns them because Terrain owns the material and the meshes that
+   * wear it; `GameScene.costProbe` borrows them the same way it borrows the
+   * splat uniforms. Dev-only by construction — nothing calls this but the
+   * probe, and the probe is not installed on a public shard.
+   */
+  costVariants() {
+    if (!this._costVariants) {
+      this._costVariants = makeTerrainCostVariants();
+      // The shipped material is one of the four by name; hand back the LIVE
+      // one for "ship" so the probe's baseline is the program the frame has
+      // been rendering, not a second copy of it.
+      this._costVariants = this._costVariants.map((m) =>
+        m.userData.cost.variant === "ship" ? this.material : m,
+      );
+    }
+    return this._costVariants;
+  }
+
+  /**
+   * Put `material` on every piece of ground — both LODs, every streamed
+   * chunk. Probe-only: the shipped material is restored by the same call.
+   *
+   * The far mesh's `customDepthMaterial` is left alone on purpose. A variant
+   * changes what the ground COSTS to shade, and the depth pass shades
+   * nothing; swapping it too would move the shadow maps and make the timing
+   * a measurement of two things.
+   */
+  useMaterial(material) {
+    for (const entry of this.chunks.values()) {
+      if (entry.mesh) entry.mesh.material = material;
+    }
+    if (this.farMesh) this.farMesh.material = material;
   }
 
   /**

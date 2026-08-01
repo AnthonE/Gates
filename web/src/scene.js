@@ -551,6 +551,15 @@ export class GameScene {
     this._farHole = uniforms.uNearHole;
   }
 
+  /**
+   * The ground's cost variants and the swapper that wears them, borrowed the
+   * same way (Terrain owns both). Dev-only: main.js does not call this on a
+   * public shard, and `costProbe` returns null without it.
+   */
+  attachTerrainCost(hooks) {
+    this._terrainCost = hooks;
+  }
+
   /** Force every clipmap level to redraw on the next render. Probes only. */
   _redrawShadows() {
     for (const L of this.clipmap.levels) L.light.shadow.needsUpdate = true;
@@ -765,6 +774,242 @@ export class GameScene {
     return { width: w, height: h, pixels: w * h * yaws.length, changed, samples };
   }
 
+  /**
+   * Dev-only: where does the ground's fragment budget actually go?
+   *
+   * `NOW.md` item 1 is a cost question. Grain measured well and did not merge
+   * because the terrain program was already too expensive for the browser
+   * gate's third tab, and nothing in the tree could say which half was
+   * expensive — per-fragment shading, or program size. Both probes that exist
+   * prove a system REACHES the image and neither can say what it costs,
+   * because both work by weighting a term to zero with a uniform and a
+   * uniform cannot remove an instruction.
+   *
+   * So this compiles the ground four ways (materials.js TERRAIN_VARIANTS) and
+   * measures each one:
+   *
+   *   1. **Compile.** The first render through a variant pays its compile and
+   *      link. Timed with `gl.finish()` on both sides, and reported net of a
+   *      warm frame at the same scale — on a software rasterizer this is real
+   *      CPU on the tab's own thread, which is the join-window suspect. The
+   *      `ship` variant is the LIVE material and compiled at boot, so its
+   *      figure is near zero by construction; it is the others that say what
+   *      compiling one of these programs costs.
+   *   2. **Fill.** The same frame rendered at three viewport scales. The
+   *      camera's projection is untouched, so every scale draws the same
+   *      image at a different pixel count and coverage is held fixed; a
+   *      least-squares fit of ms against megapixels then splits the frame
+   *      into a per-fragment slope and a fixed cost (vertex work, state, JS).
+   *      Level 0's `needsUpdate` is already consumed when the probe runs and
+   *      the probe never sets it, so no shadow map is redrawn inside the
+   *      timing loop and the slope is the MAIN pass alone.
+   *   3. **Attribution.** A time difference between two programs is worth
+   *      nothing unless the image difference is known, so each variant's
+   *      frame is read back and compared against two references from the
+   *      shipped program: `uSurface = 1` (what ships) and `uSurface = 0`
+   *      (what the surface probe already calls "the field, removed"). The
+   *      `nofield` variant should land on the second exactly — every field
+   *      term is multiplied by `uSurface` and 0 × finite is 0 — and the gate
+   *      asserts it, which is what makes its timing the field's cost rather
+   *      than some other edit's.
+   *
+   * Every number here is TIMED and this box is a shared 4-core VM running a
+   * software rasterizer, so the milliseconds are not a claim about reference
+   * hardware. The ratios between variants measured in one sweep on one box
+   * are the useful part, and the counted facts (`depthFetches`,
+   * `fragmentChars`) are the part that is quotable anywhere.
+   *
+   * Renders ~18 frames per variant and allocates four framebuffer-sized
+   * readback buffers: never the RAF path.
+   */
+  costProbe(yaw, pitchRad, scales, frames, reps) {
+    const hooks = this._terrainCost;
+    const u = this._terrainUniforms;
+    if (!hooks || !u) return null;
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const size = this.renderer.getSize(new THREE.Vector2());
+    const shipped = this._terrainMat;
+    const ref = new Uint8Array(w * h * 4);
+    const flat = new Uint8Array(w * h * 4);
+    const shot = new Uint8Array(w * h * 4);
+    // The GPU sync. `gl.finish()` alone measured 0.2 ms for a 1280x720 frame
+    // on a software rasterizer that needs two orders of magnitude more than
+    // that — through Chrome's command buffer the call returns once the
+    // commands are consumed, not once the pixels exist, so what it timed was
+    // three's JS. A one-pixel `readPixels` cannot return before the frame it
+    // reads has actually been rasterized, so that is the barrier both ends of
+    // every measurement below use. (The gate's own fit caught this: a frame
+    // whose cost did not rise with its pixel count.)
+    const sync1 = new Uint8Array(4);
+    const sync = () => {
+      gl.finish();
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, sync1);
+    };
+
+    // Aim, like every other probe: a fill measurement is a measurement of how
+    // much ground is on screen, so the bearing has to be pinned or the number
+    // is about where the last assertion happened to leave the camera.
+    const keepQ = this.camera.quaternion.clone();
+    const cp = Math.cos(pitchRad);
+    this._dir.set(Math.sin(yaw) * cp, Math.sin(pitchRad), Math.cos(yaw) * cp);
+    this._target.copy(this.camera.position).add(this._dir);
+    this.camera.lookAt(this._target);
+
+    // The two reference frames, both from the SHIPPED program, so a variant's
+    // image is compared against the thing it is a variant of.
+    this.renderer.render(this.scene, this.camera);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, ref);
+    u.uSurface.value = 0;
+    this.renderer.render(this.scene, this.camera);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, flat);
+    u.uSurface.value = 1;
+
+    const luma = (b, p) => (b[p] * 2 + b[p + 1] * 5 + b[p + 2]) >> 3;
+    const compare = (a, b) => {
+      let up = 0;
+      let down = 0;
+      let max = 0;
+      for (let p = 0; p < a.length; p += 4) {
+        const d = luma(a, p) - luma(b, p);
+        if (d > 0) up++;
+        else if (d < 0) down++;
+        const m = d < 0 ? -d : d;
+        if (m > max) max = m;
+      }
+      return { up, down, changed: up + down, maxDelta: max };
+    };
+
+    // The runs, and the CONTROL that calibrates them. The shipped material is
+    // measured twice — once first, once last — and the difference between two
+    // sweeps of the same program is this box's timing resolution, measured
+    // rather than assumed. It is placed at the far end deliberately: adjacent
+    // repetitions share their weather, and the number worth having is the one
+    // that spans the whole probe.
+    //
+    // Without it the timed half is unreadable. It was: the first run of this
+    // measured the shipped ground at 179 ms/Mpx and the same ground with the
+    // whole noise field compiled OUT at 373 — a program doing strictly less
+    // work, "measured" twice as slow, because a 700 ms frame on four shared
+    // cores drifts further than the thing being measured is worth. A probe
+    // that cannot say that about itself will hand back exactly that number
+    // with a straight face.
+    const runs = hooks.variants().map((m) => ({ label: m.userData.cost.variant, material: m }));
+    runs.push({ label: "control", material: shipped });
+
+    const out = [];
+    for (const { label, material } of runs) {
+      hooks.use(material);
+      // Compile + link, paid on the first render through this program.
+      sync();
+      const c0 = performance.now();
+      this.renderer.render(this.scene, this.camera);
+      sync();
+      const firstMs = performance.now() - c0;
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, shot);
+
+      // The probe's self-test. This is the same batch the sweep times, run
+      // once with NO barrier after it — so it measures JS submission and
+      // nothing else. `fullFrameMs / submitMs` is then how much of a timed
+      // frame is the GPU, and it is the number that catches the bug this
+      // probe shipped with for three runs: `gl.finish()` through Chrome's
+      // command buffer returned once the commands were consumed, not once
+      // the pixels existed, and every "frame time" was 0.2 ms of JS. The
+      // ratio was ~1 then and is ~100 now. It is a check on the instrument,
+      // not on the hardware — which is why it is a ratio and not a duration.
+      sync();
+      const u0 = performance.now();
+      for (let f = 0; f < frames; f++) this.renderer.render(this.scene, this.camera);
+      const submitMs = (performance.now() - u0) / frames;
+      sync();
+
+      const points = [];
+      for (const s of scales) {
+        const vw = Math.max(1, Math.round(size.x * s));
+        const vh = Math.max(1, Math.round(size.y * s));
+        this.renderer.setScissorTest(true);
+        this.renderer.setViewport(0, 0, vw, vh);
+        this.renderer.setScissor(0, 0, vw, vh);
+        // Min over repetitions, not mean: on a box that shares four cores
+        // with nineteen other services, contention only ever adds time, so
+        // the smallest observation is the least contaminated one.
+        let best = Infinity;
+        let calls = 0;
+        for (let r = 0; r < reps; r++) {
+          sync();
+          this.renderer.info.reset();
+          const t0 = performance.now();
+          for (let f = 0; f < frames; f++) this.renderer.render(this.scene, this.camera);
+          sync();
+          const ms = (performance.now() - t0) / frames;
+          calls = this.renderer.info.render.calls / frames;
+          if (ms < best) best = ms;
+        }
+        points.push({
+          scale: s,
+          megapixels: (vw * vh * this.renderer.getPixelRatio() ** 2) / 1e6,
+          msPerFrame: best,
+          // What the timed frames actually submitted. A fill measurement over
+          // an empty scene would fit a clean line through nothing.
+          calls,
+        });
+      }
+      this.renderer.setScissorTest(false);
+      this.renderer.setViewport(0, 0, size.x, size.y);
+      this.renderer.setScissor(0, 0, size.x, size.y);
+
+      // Least squares on (megapixels, ms): slope is fill, intercept is
+      // everything a smaller viewport does not make cheaper.
+      let sx = 0;
+      let sy = 0;
+      let sxx = 0;
+      let sxy = 0;
+      for (const p of points) {
+        sx += p.megapixels;
+        sy += p.msPerFrame;
+        sxx += p.megapixels * p.megapixels;
+        sxy += p.megapixels * p.msPerFrame;
+      }
+      const n = points.length;
+      const den = n * sxx - sx * sx;
+      const msPerMpx = den === 0 ? 0 : (n * sxy - sx * sy) / den;
+      const fixedMs = den === 0 ? 0 : (sy * sxx - sx * sxy) / den;
+      const full = points.find((p) => p.scale === 1) || points[0];
+
+      out.push({
+        ...material.userData.cost,
+        ...(material.userData.programStats || {}),
+        variant: label,
+        firstFrameMs: firstMs,
+        submitMs,
+        compileMs: firstMs - full.msPerFrame,
+        msPerMpx,
+        fixedMs,
+        fullFrameMs: full.msPerFrame,
+        points,
+        vsShipped: compare(shot, ref),
+        vsFlat: compare(shot, flat),
+      });
+    }
+
+    hooks.use(shipped);
+    u.uSurface.value = 1;
+    this.camera.quaternion.copy(keepQ);
+    this.renderer.render(this.scene, this.camera);
+    return {
+      width: w,
+      height: h,
+      pixels: w * h,
+      pixelRatio: this.renderer.getPixelRatio(),
+      yaw,
+      pitch: pitchRad,
+      frames,
+      reps,
+      variants: out,
+    };
+  }
+
   /** The material system's structural facts, for the browser gate. */
   materials() {
     const m = this._terrainMat;
@@ -777,6 +1022,12 @@ export class GameScene {
         patched: !!this._terrainUniforms,
         surface: this._terrainUniforms ? this._terrainUniforms.uSurface.value : null,
         roughness: m ? m.roughness : null,
+        // What the shipped ground program costs per fragment and how big its
+        // source is — counted, so quotable anywhere (the fill times next to
+        // them in costProbe are not). `programStats` is null until the first
+        // compile, which has long happened by the time the gate reads this.
+        cost: m ? m.userData.cost : null,
+        programStats: m ? m.userData.programStats || null : null,
       },
       tiers: this._tierMats.map((t) => [t.type, t.roughness, t.metalness]),
       water: [this.water.material.roughness, this.water.material.metalness],

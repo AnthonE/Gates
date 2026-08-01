@@ -4,40 +4,85 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **The surface, second pass — and the fragment budget in the way.**
+1. **The surface, second pass — grain, and what the budget work found.**
    Materials v0 landed (four authored identities, one shared noise field,
    every channel from the same causes — `DECISIONS.md` §open), so the
    ground has a surface. What it still has no *texture*: the identities
    are analytic, so at arm's length the ground is smooth-shaded mottling
    with no grain. **It was built and measured on
    `loop/m1-surface-grain` (commit `d4232f6`, deliberately unmerged) —
-   read that branch before rebuilding any of it.** A fourth octave of the
-   shared field at a per-identity wavelength (sand 25/m, grass 8.3/m,
-   litter 11/m, rock 16.7/m) with a per-identity ridge fold and contrast,
-   driving albedo, roughness and a third bump octave, retired by pixel
-   footprint in cycles-per-pixel so each identity dies at its own
-   distance; plus a `grainProbe` that scores neighbour-to-neighbour
-   CONTRAST over the pixels a toggle moved — the measure that separates
-   grain from a wash, which the existing `surfaceProbe` cannot. It read
-   20.9% of the near frame moved and contrast 0.22 → 2.68 luma/px
-   (×12.2), 0.000% at 140 m, zero-noise control at both views. Triplanar
-   sampling of the grain works too (ridge folded per plane, blend
-   deviation restored by 1/|w|; 1.100 → 1.078 slope-to-contour on a 47°
-   face at ×1.00 overall contrast, exact identity on level ground).
-   **Why it did not merge, which is the real next problem.** The browser
-   gate runs three tabs on four shared cores with a software rasterizer.
-   `main` clears the public tab's 60 s join with ~no margin; the grain
-   build does not, and the triplanar half alone measured ~9% of frame
-   time (665 ms against 609 on one tree, versus `main`'s 508–587 band).
-   Cutting grain's reach to ~2.5 m brought frame time back inside that
-   band and the third tab still missed, so program size is a suspect
-   alongside per-fragment cost. **So do the budget work first**: measure
-   the terrain program's compile and fill cost directly and find the
-   headroom — the 36-tap level-0 PCF (`shadows.js` `LEVEL_FILTER_TAPS`,
-   `DECISIONS.md` §open) is the obvious place to look — then land grain
-   on top of it. Rails unchanged: constants into `DECISIONS.md` §open,
-   stay inside the `DESIGN.md` §9 budget the browser gate asserts (peak
-   147/300 calls, 1.05 M/1.5 M tris), no fps quoted from this box.
+   read that branch and its `BRANCH-NOTES.md` before rebuilding any of
+   it.** A fourth octave of the shared field at a per-identity wavelength
+   (sand 25/m, grass 8.3/m, litter 11/m, rock 16.7/m) with a per-identity
+   ridge fold and contrast, driving albedo, roughness and a third bump
+   octave, retired by pixel footprint in cycles-per-pixel so each
+   identity dies at its own distance; plus a `grainProbe` that scores
+   neighbour-to-neighbour CONTRAST over the pixels a toggle moved — the
+   measure that separates grain from a wash, which the existing
+   `surfaceProbe` cannot. It read 20.9% of the near frame moved and
+   contrast 0.22 → 2.68 luma/px (×12.2), 0.000% at 140 m, zero-noise
+   control at both views. Triplanar sampling of the grain works too
+   (ridge folded per plane, blend deviation restored by 1/|w|; 1.100 →
+   1.078 slope-to-contour on a 47° face at ×1.00 overall contrast, exact
+   identity on level ground).
+
+   **The budget work this list asked for is done, and it retired both
+   suspects** (`DECISIONS.md` §open "fragment budget v0";
+   `ci/browser_smoke.mjs` assertion 16). Grain did not merge because the
+   browser gate's third tab missed its 60 s join, and the two named
+   suspects were per-fragment cost and program size. Neither survives:
+
+   - **The 36-tap PCF this list pointed at is a 16-tap PCF.** The
+     constant was quoted from an older three; the installed r178's
+     `PCF_SOFT` is sixteen `texture2DCompare` over a 4×4 footprint, not
+     nine bilinear ones. It is now read off three's own installed chunk
+     and throws if that branch moves. The whole clipmap costs **18**
+     depth fetches a fragment, not 38 — so more than half the headroom
+     that was hoped for here was never there to take.
+   - **Program size is mostly three's, not ours.** The terrain fragment
+     program is **80,563 chars** of GLSL with `#include`s expanded, of
+     which **73,375 (91.1%) is stock `MeshStandardMaterial`** — measured
+     from the template three hands over, before the first replace — and
+     **7,188 (8.9%)** is everything this repo added to the ground: the
+     splat graph, four identities, causal modifiers, both bump octaves
+     and the clipmap patch. Within our share, the clipmap shadow GLSL is
+     2,503 chars and the field's three sample lines are 617. A grain
+     octave adds hundreds of characters to an 80 KB program. If program
+     size is what a joining tab cannot afford, the lever is three's
+     material, not this repo's shader.
+   - **Fill: only one number survived five runs — the whole shadow term
+     is 2.9–17.1% of the frame** (28 / 176 / 81 / 86 / 150 ms, right sign
+     5/5, though under its own run's floor on the noisiest two).
+     Everything finer is below what this box can hold still for. Each run
+     is read against the probe's own published resolution — two sweeps of
+     the *identical* program — and that floor was 0.3%, 2.7%, 3.8%, 10.5%
+     and 51.1% of frame, so it is itself a one-sample estimate that
+     swings 170×. Level 0's PCF did **not** converge (+18 / −98 / −42 /
+     −584 / −567 ms), and twice it refuted itself: `near1` keeps 3
+     fetches where `noshadow` has 0, so the PCF's share cannot exceed the
+     whole shadow term's in the same run, and it was 7× and 3.8× it. The
+     field did not resolve either — wrong sign in 3 of 5. **So the PCF is
+     not a lever worth pulling for grain, and this box cannot be the
+     instrument that decides anything finer than "the shadow term is
+     under a fifth of the frame."**
+   - **The consequence for grain, which is the point:** the ~9% frame
+     delta the grain branch rejected itself on (665 ms against 609) sits
+     inside the band this box's own noise covers, unpaired with any
+     control. That rejection was never a measurement. **Re-run it against
+     a floor** — `costProbe` takes variants, so a grain variant belongs
+     next to `nofield`, and it will be measured against a second sweep of
+     the shipped program in the same run — and decide from the ratio.
+     If grain's delta lands where the PCF's did, this box cannot answer
+     it and the decision has to move to the counted budget or to a
+     quieter machine.
+   - Free and already taken: the micro octave is skipped where its own
+     footprint fade has already retired it, gated image-identical against
+     a variant that samples it unconditionally (0 px differ, max 0/255).
+
+   Rails unchanged: constants into `DECISIONS.md` §open, stay inside the
+   `DESIGN.md` §9 budget the browser gate asserts (peak 147/300 calls,
+   1.05 M/1.5 M tris) and the fragment budget it now asserts too (18/24
+   fetches, 80,563/96,000 chars), no fps quoted from this box.
    One thing measured on the way that is worth not rediscovering: the
    gate's `join()` poll (`page.evaluate` every 250 ms) can spend the
    whole 60 s window on itself when three tabs are live — the third tab

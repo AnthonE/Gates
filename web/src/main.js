@@ -828,6 +828,21 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     ? (yaws, pitch, minDelta, heightM) =>
         scene.horizonProbe(yaws, pitch, minDelta, heightM)
     : null;
+  // And the cost probe (NOW.md item 1): the only one that answers what a
+  // term COSTS rather than whether it reaches the image. It compiles the
+  // ground four ways, so the variants it needs — and the swapper that wears
+  // them — are handed to the scene here and nowhere else. On a public shard
+  // this line does not run, so the variant programs are never built at all.
+  const devCostProbe = dev
+    ? (yaw, pitch, scales, frames, reps) =>
+        scene.costProbe(yaw, pitch, scales, frames, reps)
+    : null;
+  if (dev) {
+    scene.attachTerrainCost({
+      variants: () => terrain.costVariants(),
+      use: (m) => terrain.useMaterial(m),
+    });
+  }
 
   function frame(now) {
     if (closed) return;
@@ -954,6 +969,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (devSplatCensus) debug.splatCensus = devSplatCensus;
     if (devFarShadowProbe) debug.farShadowProbe = devFarShadowProbe;
     if (devHorizonProbe) debug.horizonProbe = devHorizonProbe;
+    if (devCostProbe) debug.costProbe = devCostProbe;
     globalThis.__gatesDebug = debug;
   }, 250);
 }

@@ -247,6 +247,59 @@ const SPLAT_MIN_SECOND = Number(process.env.BROWSER_SMOKE_SPLAT_MIN_SECOND || 0.
 // moisture channel's features are ~700 m across, so a ring is often one
 // biome) — this floor is set from the pinned spawn's measured 1.5%.
 const SPLAT_MIN_MIXED = Number(process.env.BROWSER_SMOKE_SPLAT_MIN_MIXED || 0.005);
+// --- the fragment budget (DECISIONS.md §open, "fragment budget v0") ---------
+// DESIGN §9 budgets the frame by DRAW CALLS and TRIANGLES, and the gate has
+// asserted both since lighting v0. Neither says anything about what a single
+// fragment costs — which is the budget `NOW.md` item 1 ran out of: the grain
+// branch measured well and did not merge because the terrain program was
+// already too expensive for the browser gate's third tab, and no gate here
+// could have caught that coming.
+//
+// These two are the per-fragment half, and both are COUNTED, so unlike the
+// milliseconds the probe prints they mean the same thing on this box and on
+// the reference VPS.
+//
+// Depth fetches per shaded fragment, summed over the clipmap's levels: 18
+// today (16 for level 0's PCF, read off three's own chunk, plus one each for
+// the two coarse levels). The cap leaves room for a fourth level or a modestly
+// wider coarse kernel and still fails the change that matters — a near filter
+// that goes back to being the most expensive thing in the shader.
+const DEPTH_FETCH_BUDGET = Number(process.env.BROWSER_SMOKE_DEPTH_FETCHES || 24);
+// The compiled terrain fragment program, in characters of GLSL with three's
+// `#include`s expanded: 80,563 today, of which 73,375 is three's stock
+// MeshStandardMaterial as it was handed over and 7,188 (8.9%) is everything
+// this repo added to the ground. The cap is ~19% over, which survives a three
+// minor bump and still catches a program that doubled.
+const TERRAIN_FRAGMENT_BUDGET = Number(process.env.BROWSER_SMOKE_FRAG_CHARS || 96000);
+// Where the cost probe aims and how it sweeps. The bearing is the surface
+// probe's steepest yaw at its own pitch — the view with the most ground in
+// it, which is the view a fill measurement should be made from. Three scales
+// so the fit has a degree of freedom left over; one frame per timed sample and
+// the min of four of them, because contention on a shared box only ever adds
+// time — the smallest observation is the least contaminated one, and averaging
+// frames inside a sample only mixes the clean ones back in with the dirty.
+// The probe measures its own resolution alongside these (its `control` run);
+// what these numbers buy is not precision, it is knowing how little there is.
+const COST_PROBE_YAW = (3 * Math.PI) / 2;
+const COST_PROBE_PITCH = -0.7;
+const COST_PROBE_SCALES = [1, 0.5, 0.25];
+const COST_PROBE_FRAMES = 1;
+const COST_PROBE_REPS = 4;
+// Two separately compiled programs may schedule identical arithmetic in a
+// different order, so the `nofield` variant is required to land on the
+// `uSurface = 0` image within one luma step rather than bit-exactly. Stated
+// before the run, not fitted to it.
+const COST_IDENTITY_MAX_DELTA = 1;
+// How much of a timed frame must be the GPU rather than JS draw submission,
+// as a ratio. A check on the instrument, not on this box's speed: the broken
+// barrier this probe shipped with scored ~1x and a working one scores ~100x,
+// so 2x separates them by a mile from either side and asserts no duration.
+const COST_SYNC_MIN_RATIO = 2;
+// The micro-octave skip gets a stricter tolerance than that, and it earns it:
+// where the fade is nonzero both programs evaluate the SAME expression, and
+// where it is zero the octave's contribution is multiplied by exactly 0. That
+// is bit-exactness, so the gate asks for it rather than for something near it.
+const COST_MICRO_SKIP_MAX_DELTA = 0;
 
 const fail = (msg) => {
   console.error(`GATE FAIL: ${msg}`);
@@ -1114,6 +1167,318 @@ console.log(
       .join(" "),
 );
 
+// Assertion 16 — THE FRAGMENT BUDGET. Assertions 9–15 all prove a system
+// reaches the image; none of them can say what it costs, because all of them
+// work by weighting a term to zero with a uniform, and a uniform removes no
+// instruction. That gap is what `NOW.md` item 1 ran into: grain measured well
+// and did not merge because the terrain program was already too expensive for
+// the third browser tab, and the two named suspects — per-fragment cost and
+// program size — could only be argued about.
+//
+// The counted half first, because it is the half that means the same thing on
+// the reference VPS as it does on this box.
+const fragCost = mat.terrain.cost;
+const fragProgram = mat.terrain.programStats;
+if (!fragCost || !fragProgram) {
+  fail(
+    `tab A: the terrain material reports cost=${JSON.stringify(fragCost)} ` +
+      `programStats=${JSON.stringify(fragProgram)} — the program was never measured, so the ` +
+      `fragment budget below is asserting nothing`,
+  );
+}
+if (fragCost.variant !== "ship") {
+  fail(
+    `tab A: the ground is rendering the "${fragCost.variant}" cost variant — those exist for ` +
+      `costProbe and must never be what a player sees`,
+  );
+}
+// Level 0's filter cost is read out of three's own installed chunk rather
+// than quoted in a constant, so this asserts the two agree: the clipmap's
+// reported total must be the sum of the per-level taps it publishes.
+const tapSum = cm.levels.reduce((n, L) => n + L.filterTaps, 0);
+if (cm.depthFetches !== tapSum) {
+  fail(
+    `tab A: the clipmap reports ${cm.depthFetches} depth fetches per fragment but its levels ` +
+      `sum to ${tapSum} ([${cm.levels.map((L) => L.filterTaps)}]) — the two are derived from ` +
+      `different things and one of them is wrong`,
+  );
+}
+if (fragCost.depthFetches !== cm.depthFetches) {
+  fail(
+    `tab A: the ground's program claims ${fragCost.depthFetches} depth fetches, the clipmap ` +
+      `claims ${cm.depthFetches} — the ground is not shadowed by the clipmap the gate measured`,
+  );
+}
+if (cm.depthFetches > DEPTH_FETCH_BUDGET) {
+  fail(
+    `tab A: every shaded fragment pays ${cm.depthFetches} shadow depth fetches ` +
+      `([${cm.levels.map((L) => L.filterTaps)}] per level), over the ${DEPTH_FETCH_BUDGET} budget. ` +
+      `This is the per-fragment cost DESIGN §9's draw-call and triangle budgets do not see.`,
+  );
+}
+if (!(fragProgram.resolvedFragmentChars > fragProgram.fragmentChars)) {
+  fail(
+    `tab A: the terrain program resolves to ${fragProgram.resolvedFragmentChars} chars from a ` +
+      `${fragProgram.fragmentChars}-char template — the #include expansion did nothing, so the ` +
+      `size below is a template's size and not a program's`,
+  );
+}
+// How much of that program is THIS repo's, measured against three's own
+// unpatched template captured before the first replace — not inferred from a
+// variant. The first cut of this gate took the `noshadow` variant's size for
+// "stock" and called the remainder ours; a variant is the shipped program
+// minus one term, and that mislabel understated this repo's share by 2.9x.
+if (!(fragCost.stockFragmentChars > 0)) {
+  fail(
+    `tab A: the terrain material reports a ${fragCost.stockFragmentChars}-char stock program — ` +
+      `the unpatched template was never measured, so the split below is inferred and not counted`,
+  );
+}
+if (!(fragCost.stockFragmentChars < fragProgram.resolvedFragmentChars)) {
+  fail(
+    `tab A: three's unpatched standard material resolves to ${fragCost.stockFragmentChars} chars ` +
+      `against the patched ${fragProgram.resolvedFragmentChars} — the ground's patches added no ` +
+      `source, so one of the two is not the program it claims to be`,
+  );
+}
+if (fragProgram.resolvedFragmentChars > TERRAIN_FRAGMENT_BUDGET) {
+  fail(
+    `tab A: the terrain fragment program is ${fragProgram.resolvedFragmentChars} chars of GLSL, ` +
+      `over the ${TERRAIN_FRAGMENT_BUDGET} budget. Program size is the other half of what a ` +
+      `software rasterizer charges a joining tab (NOW.md item 1).`,
+  );
+}
+
+// The timed half. Every number the probe returns below is measured on a
+// shared 4-core box through a software rasterizer, so none of them is a claim
+// about reference hardware and none is asserted as a threshold. What IS
+// asserted is that each variant differs from the shipped program in the
+// image, in the direction it must — because a time difference between two
+// programs is worth nothing unless the image difference is known.
+const costHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.costProbe);
+if (costHook !== "function") {
+  fail(`tab A: __gatesDebug.costProbe is ${costHook} on a dev shard — the fragment-budget gate cannot run`);
+}
+const cost = await A.page.evaluate(
+  ([yaw, pitch, scales, frames, reps]) =>
+    globalThis.__gatesDebug.costProbe(yaw, pitch, scales, frames, reps),
+  [COST_PROBE_YAW, COST_PROBE_PITCH, COST_PROBE_SCALES, COST_PROBE_FRAMES, COST_PROBE_REPS],
+);
+if (!cost) fail(`tab A: costProbe returned null — the scene never took the terrain cost variants`);
+const byName = Object.fromEntries(cost.variants.map((v) => [v.variant, v]));
+for (const want of ["ship", "nofield", "near1", "noshadow", "noskip", "control"]) {
+  if (!byName[want]) fail(`tab A: costProbe measured no "${want}" variant — it measured [${Object.keys(byName)}]`);
+}
+// Each variant must have swept every scale, or its fit is a line through one
+// point and the slope it reports is arbitrary.
+for (const v of cost.variants) {
+  if (v.points.length !== COST_PROBE_SCALES.length) {
+    fail(`tab A: variant "${v.variant}" swept ${v.points.length} of ${COST_PROBE_SCALES.length} scales`);
+  }
+  // The timed frames must have DRAWN, and drawn the same scene: a variant
+  // changes what the ground's fragments cost, never what is submitted. Equal
+  // call counts across variants is what makes the ms difference between two
+  // of them a shading difference rather than a geometry one.
+  for (const p of v.points) {
+    if (!(p.calls > 0)) {
+      fail(
+        `tab A: variant "${v.variant}" timed ${p.msPerFrame.toFixed(2)} ms/frame at scale ` +
+          `${p.scale} over ${p.calls} draw calls — the probe is timing an empty frame`,
+      );
+    }
+  }
+  const shipCalls = cost.variants[0].points.map((p) => p.calls).join(",");
+  const mine = v.points.map((p) => p.calls).join(",");
+  if (mine !== shipCalls) {
+    fail(
+      `tab A: variant "${v.variant}" submitted [${mine}] draw calls where "${cost.variants[0].variant}" ` +
+        `submitted [${shipCalls}] — the variants are not drawing the same scene, so the time ` +
+        `between them is not a shading cost`,
+    );
+  }
+  if (!Number.isFinite(v.msPerMpx) || !Number.isFinite(v.fullFrameMs)) {
+    fail(
+      `tab A: variant "${v.variant}" reports ${v.msPerMpx} ms/Mpx and ${v.fullFrameMs} ms/frame ` +
+        `across [${v.points.map((p) => p.msPerFrame.toFixed(1))}] ms at ` +
+        `[${v.points.map((p) => p.megapixels.toFixed(3))}] Mpx — the fit produced no number`,
+    );
+  }
+  // The probe must be timing the GPU, not its own draw-call submission. This
+  // is a check on the INSTRUMENT and it is deliberately a ratio: it asserts
+  // nothing about how fast this box is, only that a timed frame is mostly
+  // spent waiting for pixels that exist. It is here because the first cut of
+  // this probe used `gl.finish()` as its barrier, which through Chrome's
+  // command buffer returns before the frame is rasterized — every variant
+  // then "measured" 0.2 ms and the ratio below was ~1.
+  if (!(v.fullFrameMs >= COST_SYNC_MIN_RATIO * v.submitMs)) {
+    fail(
+      `tab A: variant "${v.variant}" timed ${v.fullFrameMs.toFixed(1)} ms per synced frame against ` +
+        `${v.submitMs.toFixed(1)} ms of unsynced draw submission — a ratio of ` +
+        `${(v.fullFrameMs / Math.max(v.submitMs, 1e-9)).toFixed(1)}x, under ${COST_SYNC_MIN_RATIO}x. ` +
+        `The probe is timing JS, not rendering, so every cost it reports is fiction.`,
+    );
+  }
+}
+// The probe's zero point, measured rather than argued: the "ship" variant IS
+// the live material, so its frame must equal the reference frame the probe
+// took before the sweep started. Anything else and every difference counted
+// below is partly the rasterizer talking.
+if (byName.ship.vsShipped.changed !== 0) {
+  fail(
+    `tab A: costProbe's "ship" variant differs from its own reference frame in ` +
+      `${byName.ship.vsShipped.changed} pixels (max ${byName.ship.vsShipped.maxDelta}/255) — the ` +
+      `probe's zero point is not zero, so the attributions below mean nothing`,
+  );
+}
+if (!(byName.ship.vsFlat.changed > 0)) {
+  fail(`tab A: costProbe's reference frames at uSurface 1 and 0 are identical — the field is off`);
+}
+// Attribution 1 — "nofield" removed the field's INSTRUCTIONS and nothing
+// else. Every field term is multiplied by uSurface and 0 x finite is exactly
+// 0, so a program compiled with the field's constants must render the frame
+// the surface probe's toggle already renders. If it does not, the time
+// difference between it and the shipped program is some other edit.
+const nofield = byName.nofield;
+if (nofield.vsFlat.maxDelta > COST_IDENTITY_MAX_DELTA) {
+  fail(
+    `tab A: the "nofield" variant differs from the shipped program at uSurface=0 by up to ` +
+      `${nofield.vsFlat.maxDelta}/255 luma over ${nofield.vsFlat.changed} pixels (tolerance ` +
+      `${COST_IDENTITY_MAX_DELTA}). It was supposed to compile the field OUT, not change it, so ` +
+      `whatever it costs is not the field's cost.`,
+  );
+}
+if (!(nofield.vsShipped.changed > 0)) {
+  fail(
+    `tab A: the "nofield" variant renders the shipped frame pixel for pixel — the field it was ` +
+      `built without is not reaching the image at all`,
+  );
+}
+// Attribution 1b — the micro octave is now SKIPPED where its own footprint
+// fade has already retired it, and that is only allowed to be an optimization
+// if it is not also an image change. `noskip` is the same program with the
+// sample taken unconditionally — materials v0's line — so the two must render
+// the same frame. This is the assertion that makes "bit-exact by
+// construction" a fact rather than a claim.
+const noskip = byName.noskip;
+if (noskip.microSkipped !== false || byName.ship.microSkipped !== true) {
+  fail(
+    `tab A: the "noskip" variant reports microSkipped=${noskip.microSkipped} and the shipped one ` +
+      `${byName.ship.microSkipped} — they are not the pair this check needs`,
+  );
+}
+if (noskip.vsShipped.maxDelta > COST_MICRO_SKIP_MAX_DELTA) {
+  fail(
+    `tab A: skipping the micro octave below its own footprint fade moved ` +
+      `${noskip.vsShipped.changed} pixels by up to ${noskip.vsShipped.maxDelta}/255 luma against ` +
+      `the same program sampling it unconditionally (tolerance ${COST_MICRO_SKIP_MAX_DELTA}). Every ` +
+      `use of that octave is multiplied by a fade that is exactly zero where the branch skips, so ` +
+      `an image difference means the branch is not where the fade is.`,
+  );
+}
+// Attribution 2 — "noshadow" removed the shadow term, which can only ADD
+// light. A single pixel darker than the shipped frame means the variant
+// changed something other than the shadow factor.
+const noshadow = byName.noshadow;
+if (noshadow.vsShipped.down !== 0) {
+  fail(
+    `tab A: the "noshadow" variant darkened ${noshadow.vsShipped.down} pixels against the shipped ` +
+      `frame. Removing a shadow term can only brighten; anything else means the variant is not the ` +
+      `same program minus its shadow.`,
+  );
+}
+if (!(noshadow.vsShipped.up > 0)) {
+  fail(`tab A: the "noshadow" variant brightened nothing — the ground is not shadowed in this view`);
+}
+if (noshadow.depthFetches !== 0 || !(byName.near1.depthFetches < byName.ship.depthFetches)) {
+  fail(
+    `tab A: cost variants report ship=${byName.ship.depthFetches} near1=${byName.near1.depthFetches} ` +
+      `noshadow=${noshadow.depthFetches} depth fetches — the variants are not the programs they claim`,
+  );
+}
+// And the source sizes must order the same way, or the "program size" half of
+// the measurement is comparing a program against itself.
+if (!(noshadow.resolvedFragmentChars < byName.ship.resolvedFragmentChars)) {
+  fail(
+    `tab A: the "noshadow" program is ${noshadow.resolvedFragmentChars} chars against the shipped ` +
+      `${byName.ship.resolvedFragmentChars} — removing the shadow term removed no source`,
+  );
+}
+// The probe's own timing resolution, measured: `control` is the shipped
+// program swept a second time at the far end of the probe, so the difference
+// between it and `ship` is what this box can tell apart between two sweeps of
+// IDENTICAL work. Nothing smaller than that may be called a cost, here or in
+// a commit message — which is the whole reason the control exists.
+const ship = byName.ship;
+const control = byName.control;
+const floorMpx = Math.abs(ship.msPerMpx - control.msPerMpx);
+const floorFrame = Math.abs(ship.fullFrameMs - control.fullFrameMs);
+if (!Number.isFinite(floorMpx) || !Number.isFinite(floorFrame)) {
+  fail(
+    `tab A: the cost probe's control swept ${control.msPerMpx} ms/Mpx against the shipped ` +
+      `${ship.msPerMpx} — with no finite resolution, every difference it reports is unreadable`,
+  );
+}
+if (control.resolvedFragmentChars !== ship.resolvedFragmentChars) {
+  fail(
+    `tab A: the cost probe's control measured a ${control.resolvedFragmentChars}-char program ` +
+      `against the shipped ${ship.resolvedFragmentChars} — the control is supposed to be the same ` +
+      `program measured twice, so it is calibrating nothing`,
+  );
+}
+const pct = (a, b) => (b > 0 ? ((a / b) * 100).toFixed(1) : "n/a");
+// Every delta is printed against the floor it has to clear, as a multiple of
+// it. Deliberately not a verdict: a reader who is shown "1.2x the floor" knows
+// what they have, and one shown only "73% of the frame" does not.
+const readAs = (delta) =>
+  `${delta < 0 ? "+" : "−"}${Math.abs(delta).toFixed(0)} ms ` +
+  `(${pct(Math.abs(delta), ship.fullFrameMs)}% of the frame, ` +
+  `${(Math.abs(delta) / Math.max(floorFrame, 1e-9)).toFixed(1)}x the floor)` +
+  (delta < 0 ? " — WRONG SIGN: less work measured slower" : "");
+const repoAdded = ship.resolvedFragmentChars - fragCost.stockFragmentChars;
+console.log(
+  `  fragment budget (counted): ${cm.depthFetches} shadow depth fetches/fragment ` +
+    `[${cm.levels.map((L) => L.filterTaps)}] under ${DEPTH_FETCH_BUDGET} · terrain program ` +
+    `${ship.resolvedFragmentChars} chars of GLSL under ${TERRAIN_FRAGMENT_BUDGET}: ` +
+    `${fragCost.stockFragmentChars} (${pct(fragCost.stockFragmentChars, ship.resolvedFragmentChars)}%) ` +
+    `is three's unpatched standard material, ${repoAdded} ` +
+    `(${pct(repoAdded, ship.resolvedFragmentChars)}%) is this repo's — of which the clipmap ` +
+    `shadow GLSL is ${ship.resolvedFragmentChars - noshadow.resolvedFragmentChars} and the field's ` +
+    `three sample lines ${ship.resolvedFragmentChars - nofield.resolvedFragmentChars} ` +
+    `(the field's shared helper and its consumers stay in every variant)` +
+    ` · micro-octave skip is image-identical (${noskip.vsShipped.changed} px differ, max ` +
+    `${noskip.vsShipped.maxDelta}/255)`,
+);
+console.log(
+  `  fragment budget (timed — shared 4-core box, software GL, NOT reference hardware): ` +
+    `full-scale frame ` +
+    cost.variants.map((v) => `${v.variant} ${v.fullFrameMs.toFixed(0)} ms`).join(" · "),
+);
+console.log(
+  `    resolution: two sweeps of the SAME program differ by ${floorFrame.toFixed(0)} ms ` +
+    `(${pct(floorFrame, ship.fullFrameMs)}% of ${ship.fullFrameMs.toFixed(0)}) — nothing under ` +
+    `that is a measurement. The fitted slopes are worse conditioned still (` +
+    cost.variants.map((v) => v.msPerMpx.toFixed(0)).join("/") +
+    ` ms/Mpx, floor ${floorMpx.toFixed(0)} = ${pct(floorMpx, ship.msPerMpx)}%), so the frame ` +
+    `times above are what the deltas below are taken from.`,
+);
+console.log(
+  `    shadow term ${readAs(ship.fullFrameMs - noshadow.fullFrameMs)}\n` +
+    `    level 0's ${cm.levels[0].filterTaps}-fetch PCF ` +
+    `${readAs(ship.fullFrameMs - byName.near1.fullFrameMs)}\n` +
+    `    noise field ${readAs(ship.fullFrameMs - nofield.fullFrameMs)}`,
+);
+console.log(
+  `    instrument: ${(ship.fullFrameMs / Math.max(ship.submitMs, 1e-9)).toFixed(0)}x of a timed ` +
+    `frame is GPU rather than JS submission (${ship.submitMs.toFixed(1)} ms unsynced), floor ` +
+    `${COST_SYNC_MIN_RATIO}x`,
+);
+console.log(
+  `    program compile, first render through each: ` +
+    cost.variants.map((v) => `${v.variant} ${v.firstFrameMs.toFixed(0)} ms`).join(" · ") +
+    ` (against a warm frame of ${ship.fullFrameMs.toFixed(0)} ms; "ship" and "control" were ` +
+    `already compiled, so they are this measurement's own floor too)`,
+);
+
 // Play: A walks forward, B walks backward — opposite headings off the shared
 // point. The terrain worker only builds once a player moves, so the window
 // where bug 2 fires is AFTER the first snapshot.
@@ -1291,7 +1656,17 @@ const publicSetView = await P.page.evaluate(() => typeof globalThis.__gatesDebug
 if (publicSetView !== "undefined") {
   fail(`public tab: __gatesDebug.setView is ${publicSetView} on a shard with no dev override — a dev affordance shipped to a public shard`);
 }
-for (const hook of ["shadowProbe", "farShadowProbe", "surfaceProbe", "splatCensus", "horizonProbe"]) {
+for (const hook of [
+  "shadowProbe",
+  "farShadowProbe",
+  "surfaceProbe",
+  "splatCensus",
+  "horizonProbe",
+  // The cost probe is the one dev affordance that also BUILDS something: its
+  // variants are three extra terrain programs. A public tab must neither have
+  // the hook nor the compiles behind it.
+  "costProbe",
+]) {
   const t = await P.page.evaluate((h) => typeof globalThis.__gatesDebug[h], hook);
   if (t !== "undefined") {
     fail(`public tab: __gatesDebug.${hook} is ${t} on a shard with no dev override — a dev affordance shipped to a public shard`);

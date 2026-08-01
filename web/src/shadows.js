@@ -185,32 +185,102 @@ export function setClipmapActiveLevels(n) {
 const FADE_OUTER = 1 - GUARD_BAND;
 const FADE_INNER = FADE_OUTER * (1 - BLEND_RATIO);
 
-// Per-level filter cost, in depth taps. The near level keeps three's own
-// `getShadow`, which under PCFSoftShadowMap is nine bilinear comparisons —
-// thirty-six fetches — and is what every close silhouette in the frame has
-// looked like since lighting v0. The coarse levels take ONE comparison.
+// --- what the near level's filter actually costs, read off three ------------
 //
-// That is a deliberate per-level choice, not a corner cut. Filtering nine
-// taps twice per fragment doubles the most expensive thing in the shader for
-// every pixel on screen, and it buys softness on a level whose texels are
-// 0.469 m and whose nearest content is 68 m away — where one texel is a
-// couple of screen pixels and PCF has almost nothing left to smooth. It is
-// measurable, too: at two soft levels this client slowed enough on the
-// browser gate's software rasterizer to make the pre-existing timing
-// assertions (join, held-walk bearing) go marginal. Cheaper filtering on
-// coarse cascades is the ordinary answer and the reference asks for exactly
-// this kind of per-level inspection (§9, §13).
-export const LEVEL_FILTER_TAPS = [36, 1];
+// The near level keeps three's own `getShadow`; the coarse levels take ONE
+// comparison. That is a deliberate per-level choice, not a corner cut.
+// Filtering the near kernel twice per fragment doubles the most expensive
+// thing in the shader for every pixel on screen, and it buys softness on a
+// level whose texels are 0.469 m and whose nearest content is 68 m away —
+// where one texel is a couple of screen pixels and PCF has almost nothing
+// left to smooth. It is measurable, too: at two soft levels this client
+// slowed enough on the browser gate's software rasterizer to make the
+// pre-existing timing assertions (join, held-walk bearing) go marginal.
+// Cheaper filtering on coarse cascades is the ordinary answer and the
+// reference asks for exactly this kind of per-level inspection (§9, §13).
+//
+// What changed here is only the NUMBER, and how it is obtained. This was a
+// hand-typed `[36, 1]`, and the 36 was quoted from an older three: r1xx's
+// PCF_SOFT was nine `texture2DShadowLerp` calls at four fetches each. The
+// installed r178 compiles a different kernel — sixteen `texture2DCompare`
+// calls over a 4×4 footprint, weighted 1/9 — so the constant overstated the
+// near filter by 2.25×, in a line `ci/browser_smoke.mjs` printed as fact and
+// `NOW.md` then pointed at as the obvious place to find headroom.
+//
+// A number that describes SOMEONE ELSE'S source rots the moment they change
+// it, so it is read out of that source. This counts the fetches in the branch
+// three will compile for the shadow type this client configures, and throws
+// if that branch is gone — the same rule the `getShadow(…)` call site above
+// is held to.
+export const NEAR_FILTER_TYPE = THREE.PCFSoftShadowMap;
+const NEAR_FILTER_BRANCH = "SHADOWMAP_TYPE_PCF_SOFT";
+
+function nearFilterFetches() {
+  const src = THREE.ShaderChunk.shadowmap_pars_fragment;
+  const head = src.indexOf(NEAR_FILTER_BRANCH);
+  if (head < 0) {
+    throw new Error(
+      `shadow clipmap: three ${THREE.REVISION}'s shadowmap chunk has no ` +
+        `${NEAR_FILTER_BRANCH} branch — the near level's filter cost cannot be read`,
+    );
+  }
+  let tail = src.length;
+  for (const marker of ["#elif", "#else", "#endif"]) {
+    const at = src.indexOf(marker, head + NEAR_FILTER_BRANCH.length);
+    if (at >= 0 && at < tail) tail = at;
+  }
+  const n = src.slice(head, tail).split("texture2DCompare(").length - 1;
+  if (n < 2) {
+    throw new Error(
+      `shadow clipmap: three ${THREE.REVISION}'s ${NEAR_FILTER_BRANCH} branch takes ` +
+        `${n} depth fetches — a soft filter that is one tap means the kernel moved ` +
+        `somewhere this cannot count it`,
+    );
+  }
+  return n;
+}
+
+// Per-level filter cost, in depth fetches per fragment. Finest first; short
+// entries repeat the last.
+export const LEVEL_FILTER_TAPS = [nearFilterFetches(), 1];
+
+// --- the shader variants the cost probe compiles ---------------------------
+// A uniform cannot remove an instruction: `uClipLevels` weights every level's
+// sample to zero and the sample is still taken, deliberately (a comparison
+// sampler behind a per-pixel branch has undefined derivatives). So the only
+// honest way to ask what a term COSTS is to compile the program without it
+// and time both — which is what these are for.
+//
+//   ship   — exactly what the client renders. The default everywhere.
+//   near1  — level 0 filtered like a coarse level. ship − near1 is the PCF.
+//   off    — no shadow term at all, zero depth fetches.
+//
+// They exist for `GameScene.costProbe` and are never on a frame the player
+// sees; `ship` is the only variant any material factory takes by default.
+export const SHADOW_VARIANTS = ["ship", "near1", "off"];
+
+/** Depth fetches per fragment, per variant. Counted, not timed. */
+export function clipmapFetches(variant = "ship") {
+  if (variant === "off") return 0;
+  const near = variant === "near1" ? 1 : LEVEL_FILTER_TAPS[0];
+  return near + (LEVEL_COUNT - 1) * levelTaps(1);
+}
 
 function levelTaps(i) {
   return LEVEL_FILTER_TAPS[Math.min(i, LEVEL_FILTER_TAPS.length - 1)];
 }
 
-function clipmapGlsl() {
+function clipmapGlsl(variant) {
+  if (variant === "off") {
+    return /* glsl */ `
+uniform float uClipLevels;
+float gatesClipmapShadow() { return 1.0; }
+`;
+  }
   let body = "";
   for (let i = 0; i < LEVEL_COUNT; i++) {
     const sample =
-      i === 0
+      i === 0 && variant !== "near1"
         ? /* glsl */ `getShadow(
       directionalShadowMap[ ${i} ],
       directionalLightShadows[ ${i} ].shadowMapSize,
@@ -351,8 +421,36 @@ function patchedLightsChunk() {
   );
 }
 
+// three resolves `#include <chunk>` on its way to the driver; this is the same
+// expansion, run so a program's SIZE can be counted rather than guessed at
+// from a template. Deliberately three's own rule — unknown chunk throws — so
+// a renamed chunk fails here as loudly as it would there. Not a hot path: it
+// runs once per compiled program, inside onBeforeCompile.
+const INCLUDE_RE = /^[ \t]*#include +<([\w\d./]+)>/gm;
+
+/** `src` with three's `#include`s expanded, in characters. */
+export function resolvedGlslChars(src) {
+  return resolveIncludes(src).length;
+}
+
+function resolveIncludes(src) {
+  let out = src;
+  for (let depth = 0; depth < 8 && out.includes("#include <"); depth++) {
+    out = out.replace(INCLUDE_RE, (_line, name) => {
+      const chunk = THREE.ShaderChunk[name];
+      if (chunk === undefined) {
+        throw new Error(
+          `shader size: three ${THREE.REVISION} has no ShaderChunk '${name}'`,
+        );
+      }
+      return chunk;
+    });
+  }
+  return out;
+}
+
 let cachedChunk = null;
-let cachedGlsl = null;
+const cachedGlsl = new Map();
 
 /**
  * Make one MeshStandardMaterial sample the clipmap instead of one map per
@@ -362,12 +460,22 @@ let cachedGlsl = null;
  * Every patched material shares the `uClipLevels` uniform OBJECT, so the
  * probe's toggle moves the whole scene in one write and no material can
  * disagree with another about how many levels are live.
+ *
+ * `variant` is one of SHADOW_VARIANTS and is "ship" for everything the client
+ * renders; the others exist so the cost probe can time a program compiled
+ * WITHOUT a term instead of pretending a uniform removed it. It is also the
+ * last patch any of these materials takes, so this is where the compiled
+ * source is measured: `userData.programStats` is the size of exactly what
+ * three hands the driver, which is the other half of `NOW.md` item 1's
+ * suspect list (per-fragment cost, and program size).
  */
-export function installClipmapShadows(material) {
-  if (cachedChunk === null) {
-    cachedChunk = patchedLightsChunk();
-    cachedGlsl = clipmapGlsl();
+export function installClipmapShadows(material, variant = "ship") {
+  if (!SHADOW_VARIANTS.includes(variant)) {
+    throw new Error(`shadow clipmap: unknown variant ${variant}`);
   }
+  if (cachedChunk === null) cachedChunk = patchedLightsChunk();
+  if (!cachedGlsl.has(variant)) cachedGlsl.set(variant, clipmapGlsl(variant));
+  const glsl = cachedGlsl.get(variant);
   const prior = material.onBeforeCompile;
   material.onBeforeCompile = (shader, renderer) => {
     if (prior) prior(shader, renderer);
@@ -375,9 +483,22 @@ export function installClipmapShadows(material) {
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <shadowmap_pars_fragment>",
-        `#include <shadowmap_pars_fragment>\n${cachedGlsl}`,
+        `#include <shadowmap_pars_fragment>\n${glsl}`,
       )
       .replace("#include <lights_fragment_begin>", cachedChunk);
+    material.userData.programStats = {
+      shadowVariant: variant,
+      depthFetches: clipmapFetches(variant),
+      // Patched template size, and the size after three's `#include`s are
+      // expanded — the second is the one that means something. A patched
+      // template is a few kilobytes of `#include` lines; what the driver is
+      // handed is that with every chunk pasted in, which is where a standard
+      // material's real bulk lives and what `NOW.md` item 1 names as the
+      // second suspect behind grain's failed merge.
+      fragmentChars: shader.fragmentShader.length,
+      vertexChars: shader.vertexShader.length,
+      resolvedFragmentChars: resolveIncludes(shader.fragmentShader).length,
+    };
   };
   return material;
 }
@@ -749,6 +870,13 @@ export class ShadowClipmap {
       updateBudget: UPDATE_BUDGET,
       maxCacheAge: MAX_CACHE_AGE,
       normalBiasTexels: NORMAL_BIAS_TEXELS,
+      // Depth fetches every shaded fragment pays for shadow, summed over the
+      // levels — the per-fragment half of the budget, counted rather than
+      // timed and therefore quotable anywhere. The near level's share is read
+      // off three's own chunk (nearFilterFetches), so a three upgrade that
+      // changes the kernel moves this number instead of rotting a comment.
+      depthFetches: clipmapFetches("ship"),
+      nearFilterType: NEAR_FILTER_TYPE,
       levels: this.levels.map((L, i) => ({
         halfWidthM: L.halfWidth,
         sampledHalfWidthM: L.halfWidth * FADE_OUTER,

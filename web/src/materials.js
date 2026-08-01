@@ -40,7 +40,11 @@
 // pixels that moved — the only proof a material reaches the image.
 
 import * as THREE from "three";
-import { installClipmapShadows } from "./shadows.js";
+import {
+  clipmapFetches,
+  installClipmapShadows,
+  resolvedGlslChars,
+} from "./shadows.js";
 
 // --- the four identities (TERRAIN.md §4's four sets) ------------------------
 // Colours are the retired vertex palette's, unchanged, so this slice changes
@@ -145,12 +149,91 @@ uniform vec3 uSnowColor;
 ${FIELD_GLSL}
 `;
 
+// --- the cost variants (NOW.md item 1) --------------------------------------
+// A uniform cannot remove an instruction. `uSurface` weights every field term
+// to zero and every `gmNoise` call still runs; `uClipLevels` weights every
+// shadow level to zero and every depth fetch is still taken (deliberately —
+// a comparison sampler behind a per-pixel branch has undefined derivatives).
+// So the two probes that prove those systems reach the image cannot say what
+// either COSTS, and `NOW.md` item 1 is a question about cost: grain did not
+// merge because the terrain program was already too expensive for the browser
+// gate's third tab, and nothing in the tree could say which half.
+//
+// These compile the ground WITHOUT a term instead:
+//
+//   field: "off"   — the noise field gone, not zeroed. Its image is the same
+//                    frame `uSurface = 0` produces (every field term is
+//                    multiplied by uSurface, and 0 × finite is exactly 0), so
+//                    the probe can CHECK that the variant removed only what
+//                    the surface probe's toggle removes, and the time between
+//                    them is then attributable to the field's instructions.
+//   shadow: "near1"/"off" — shadows.js' variants, same argument.
+//
+// Nothing the player sees is ever built from one: `makeTerrainMaterial()`
+// with no argument is the shipped program, and the gate asserts its variant
+// name is "ship".
+// A fifth is not about cost at all. `noskip` compiles the micro octave
+// UNCONDITIONALLY — the field exactly as materials v0 shipped it, before this
+// slice made the sample conditional on its own footprint fade. The skip is
+// bit-exact by construction (every use of that octave is multiplied by a fade
+// that is exactly zero wherever the branch skips, and 0 × finite is 0), and an
+// argument like that is worth precisely as much as the gate behind it. So the
+// gate renders both and requires the same frame.
+const TERRAIN_VARIANTS = ["ship", "nofield", "near1", "noshadow", "noskip"];
+
+const VARIANT_CONFIG = {
+  ship: { field: "full", shadow: "ship" },
+  nofield: { field: "off", shadow: "ship" },
+  near1: { field: "full", shadow: "near1" },
+  noshadow: { field: "full", shadow: "off" },
+  noskip: { field: "always", shadow: "ship" },
+};
+
+/** The three samples of the shared field, or the constants that replace it. */
+function fieldGlsl(field) {
+  if (field === "always") {
+    // materials v0's own line, kept alive as the thing `ship` is checked
+    // against. Not reachable from any material a player's frame is built from.
+    return /* glsl */ `
+        float gmMacro = gmNoise(gmXZ * uScales.x);
+        float gmMeso  = gmNoise(gmXZ * uScales.y);
+        float gmMicro = gmNoise(gmXZ * uScales.z);`;
+  }
+  if (field === "off") {
+    // 0.5 is the field's own midpoint, so every `(gm* - 0.5)` term folds to
+    // exactly zero and this variant lands on the `uSurface = 0` image.
+    return /* glsl */ `
+        float gmMacro = 0.5;
+        float gmMeso  = 0.5;
+        float gmMicro = 0.5;`;
+  }
+  return /* glsl */ `
+        float gmMacro = gmNoise(gmXZ * uScales.x);
+        float gmMeso  = gmNoise(gmXZ * uScales.y);
+        // The micro octave is skipped where its own footprint fade has
+        // already retired it. Every use of gmMicro below is multiplied by
+        // gmFadeMicro, so at a fade of exactly zero its value cannot reach
+        // the image and the skip is bit-exact rather than an approximation.
+        // Not a derivative hazard either: every fwidth/dFdx in this shader is
+        // taken outside this branch, which is why the footprint is computed
+        // above the field rather than below it.
+        float gmMicro = 0.0;
+        if (gmFadeMicro > 0.0) gmMicro = gmNoise(gmXZ * uScales.z);`;
+}
+
 /**
  * The terrain material. One instance serves every chunk and the far mesh,
  * so the uniforms below (including the probe's `uSurface`) are the scene's
  * single handle on the ground's surface.
+ *
+ * @param {string} [variantName] one of TERRAIN_VARIANTS; "ship" is what the
+ *   client renders and the only one built outside `costProbe`.
  */
-export function makeTerrainMaterial() {
+export function makeTerrainMaterial(variantName = "ship") {
+  if (!TERRAIN_VARIANTS.includes(variantName)) {
+    throw new Error(`unknown terrain material variant: ${variantName}`);
+  }
+  const variant = VARIANT_CONFIG[variantName];
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 1.0,
@@ -169,6 +252,13 @@ export function makeTerrainMaterial() {
   };
 
   material.onBeforeCompile = (shader) => {
+    // The baseline, captured BEFORE the first replace: three's own standard
+    // material as three handed it over. Measured rather than inferred, and
+    // this is the second time round — the first cut of this slice took the
+    // `noshadow` variant's size for "stock" and called the remainder ours,
+    // which understated what this repo adds to the ground by 2.9x. A variant
+    // is the shipped program minus ONE term; it is not the unpatched one.
+    material.userData.cost.stockFragmentChars = resolvedGlslChars(shader.fragmentShader);
     Object.assign(shader.uniforms, uniforms);
 
     shader.vertexShader = shader.vertexShader
@@ -194,9 +284,16 @@ export function makeTerrainMaterial() {
         "#include <color_fragment>",
         /* glsl */ `
         vec2 gmXZ = vGmPos.xz;
-        float gmMacro = gmNoise(gmXZ * uScales.x);
-        float gmMeso  = gmNoise(gmXZ * uScales.y);
-        float gmMicro = gmNoise(gmXZ * uScales.z);
+
+        // Filtered microstructure, hoisted: both octaves fade by pixel
+        // footprint, so detail that can no longer be resolved is gone rather
+        // than aliasing — and an octave that is gone need not be SAMPLED.
+        // The fades are computed here, above the field, for that second
+        // reason (see fieldGlsl).
+        float gmFw = max(length(fwidth(gmXZ)), 1e-5);
+        float gmFadeMeso = 1.0 - smoothstep(uFade.x, uFade.y, gmFw);
+        float gmFadeMicro = 1.0 - smoothstep(uFade.z, uFade.w, gmFw);
+${fieldGlsl(variant.field)}
 
         // Identity weights: the sim's own (height, moisture, slope) call,
         // pushed around by the field so the boundary is mottled, then
@@ -221,12 +318,6 @@ export function makeTerrainMaterial() {
         gmRough = mix(gmRough, ${SNOW_ROUGH.toFixed(3)}, gmSnow);
         gmAlbedo *= mix(1.0, ${WET_DARKEN.toFixed(3)}, gmWet);
         gmRough = mix(gmRough, ${WET_ROUGH.toFixed(3)}, gmWet);
-
-        // Filtered microstructure. Both octaves fade by pixel footprint, so
-        // detail that can no longer be resolved is gone rather than aliasing.
-        float gmFw = max(length(fwidth(gmXZ)), 1e-5);
-        float gmFadeMeso = 1.0 - smoothstep(uFade.x, uFade.y, gmFw);
-        float gmFadeMicro = 1.0 - smoothstep(uFade.z, uFade.w, gmFw);
 
         gmAlbedo *= 1.0 + uSurface * (
             (gmMacro - 0.5) * uMottle.x
@@ -280,7 +371,7 @@ export function makeTerrainMaterial() {
   // The ground is the biggest shadow RECEIVER in the frame, so it takes the
   // clipmap patch like everything else (shadow clipmap v0). Installed after
   // the splat patch above; it composes with it rather than replacing it.
-  installClipmapShadows(material);
+  installClipmapShadows(material, variant.shadow);
   // …and it is the biggest CASTER, which it was not until this line existed.
   //
   // three derives the shadow pass's material from this one and, for a
@@ -296,9 +387,29 @@ export function makeTerrainMaterial() {
   material.shadowSide = THREE.FrontSide;
   // One program for every chunk: without this three re-runs onBeforeCompile
   // per material-instance key and can compile the same shader repeatedly.
-  material.customProgramCacheKey = () => "gates-terrain-splat-v1-clipmap";
+  // The variant is part of the key or the probe's programs would collide with
+  // the shipped one and it would time the same shader four times.
+  material.customProgramCacheKey = () => `gates-terrain-splat-v1-clipmap-${variantName}`;
   material.userData.uniforms = uniforms;
+  // What this program costs, counted. `programStats` (the compiled source's
+  // size) is filled by installClipmapShadows on first compile — it is the
+  // last patch, so it measures what three actually hands the driver.
+  material.userData.cost = {
+    variant: variantName,
+    field: variant.field,
+    shadow: variant.shadow,
+    // Depth fetches and noise samples per shaded fragment: the two things
+    // `NOW.md` item 1 is trying to buy headroom from, both counted.
+    depthFetches: clipmapFetches(variant.shadow),
+    noiseSamples: variant.field === "off" ? 0 : 3,
+    microSkipped: variant.field === "full",
+  };
   return material;
+}
+
+/** Build one of each cost variant. `costProbe` owns the lifetime. */
+export function makeTerrainCostVariants() {
+  return TERRAIN_VARIANTS.map((name) => makeTerrainMaterial(name));
 }
 
 // --- authored identities for everything that is not the ground -------------
