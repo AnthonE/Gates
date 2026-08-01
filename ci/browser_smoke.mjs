@@ -1289,7 +1289,7 @@ const publicSetView = await P.page.evaluate(() => typeof globalThis.__gatesDebug
 if (publicSetView !== "undefined") {
   fail(`public tab: __gatesDebug.setView is ${publicSetView} on a shard with no dev override — a dev affordance shipped to a public shard`);
 }
-for (const hook of ["shadowProbe", "farShadowProbe", "surfaceProbe", "splatCensus"]) {
+for (const hook of ["shadowProbe", "farShadowProbe", "surfaceProbe", "splatCensus", "horizonProbe"]) {
   const t = await P.page.evaluate((h) => typeof globalThis.__gatesDebug[h], hook);
   if (t !== "undefined") {
     fail(`public tab: __gatesDebug.${hook} is ${t} on a shard with no dev override — a dev affordance shipped to a public shard`);
