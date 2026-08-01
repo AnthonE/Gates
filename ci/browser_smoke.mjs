@@ -105,20 +105,45 @@ const AIM_EPS = 1e-3;
 // the key is up. A fixed settle wait was what stood here, and on 2026-08-01
 // 15:51 it was not enough: the aimed walk measured [5.01, 11.91] m — the +Z
 // leg of the CHAT walk still draining while the +X leg was already running,
-// against an assertion that requires the walk to be east-dominant. So the
-// baseline is now taken when the position has stopped moving on its own,
-// which is the condition the assertion was always written against.
+// against an assertion that requires the walk to be east-dominant.
 //
-// A round only counts if `snapshots` advanced across it: with a starved main
-// thread two reads can return the SAME publish, and "the position did not
-// change" would then mean "nobody looked", which is the reading that has
-// already cost this gate two passes.
-const AIM_SETTLE_MS = 400;
-const AIM_SETTLE_ROUNDS = 25;
-// Walk speed is 3 m/s, so a settle round that is still carrying the old walk
-// moves ~1.2 m. 0.05 m is 4% of that and far above the reconciliation jitter
-// of a client with no key held (measured 0.000 m between publishes at rest).
-const AIM_SETTLE_EPS_M = 0.05;
+// The question to ask is "is the player still WALKING", not "is the player
+// perfectly still". Those are different, and asking the second one is how the
+// first attempt at this reddened the wall itself: a client with no key held
+// does not come to a dead stop on a starved box — reconciliation keeps nudging
+// the predicted position — so an epsilon on raw displacement was a test the
+// client can fail while behaving correctly (measured: 0.13 m of residual left
+// standing after 25 rounds, against a 0.05 m bar).
+//
+// What separates the two is SPEED, and the two cases are not close. A stale
+// input backlog drains at the walk speed the sim runs on, 3 m/s, until it is
+// empty; the residual left over after it measures 0.02-0.30 m/s across the six
+// readings taken while this was built. The bar sits in that gap, and it is set
+// from BOTH sides, because both sides are failures:
+//
+//   under it — 6x below a walk, so a draining backlog cannot clear it;
+//   over it  — 1.7x above the worst residual seen, so a correctly behaving
+//              client is not asked to reach a stillness it never reaches. That
+//              is the mistake that reddened the first attempt at this.
+//
+// And it is bounded by what the assertion downstream can absorb, which is the
+// number that actually matters: the residual runs +Z, the walk is measured
+// east-dominant, and a starved box shrinks the walk (dx has come in at 5.4 m)
+// at the same time as it lengthens the drain. At 0.5 m/s the residual can add
+// 3 m of dz over the 6 s walk, against a dx that has never measured under 5.4.
+// A 1.0 bar would allow 6 m and lose that margin.
+//
+// Two CONSECUTIVE intervals must clear it, so a decaying tail cannot be caught
+// at a trough.
+const AIM_REST_SPEED_MPS = 0.5;
+const AIM_REST_CLEAR_RUNS = 2;
+// Budget denominated in what is actually being waited for — fresh publishes —
+// with a wall deadline behind it so a client that has stopped publishing at all
+// fails loudly here instead of hanging. Under the worst starvation this gate
+// has recorded (6 publishes in 10 s) the deadline still buys ~15.
+const AIM_REST_PUBLISHES = 16;
+const AIM_REST_DEADLINE_MS = 25000;
+const AIM_REST_POLL_MS = 400;
 // --- the lighting gate (DECISIONS.md §open, "lighting v0") ------------------
 // The shadow probe sweeps four yaws so the assertion does not depend on the
 // player having walked to a spot with a caster in one particular direction,
@@ -1945,36 +1970,54 @@ const aimed = await A.page.evaluate(
 );
 if (aimed !== true) fail(`tab A: setView(${AIM_YAW}, ${AIM_PITCH}) returned ${aimed}`);
 // It has to survive into the next published snapshot, not just return true —
-// and the baseline the aimed walk is measured from has to be a position that
-// is STANDING STILL. No key is held here; anything still moving is the chat
-// section's walk draining out of the predictor, and it is +Z, which is exactly
-// the axis the assertion below calls a failure. See AIM_SETTLE_* above.
-const restProbe = () =>
-  A.page.evaluate(() => ({
+// and the baseline the aimed walk is measured from has to be a player who is
+// no longer WALKING. No key is held here; anything still moving at walking
+// pace is the chat section's walk draining out of the predictor, and it moves
+// +Z, which is exactly the axis the assertion below calls a failure. See
+// AIM_REST_* above for why this is a speed and not a displacement.
+const restProbe = async () => {
+  const r = await A.page.evaluate(() => ({
     own: globalThis.__gatesDebug.own,
     snapshots: globalThis.__gatesDebug.snapshots,
     view: globalThis.__gatesDebug.view,
   }));
+  // Stamped on arrival: the interval between two FRESH publishes is what the
+  // speed is over, and on a starved main thread that is several times the poll
+  // period. Dividing by the poll period instead would report a drain rate ~4x
+  // too high — an instrument that lies in the direction of failing the gate.
+  return { ...r, at: Date.now() };
+};
 let rest = await restProbe();
 let atRest = null;
-let lastDrift = Infinity;
-let freshRounds = 0;
-for (let round = 0; round < AIM_SETTLE_ROUNDS && !atRest; round++) {
-  await A.page.waitForTimeout(AIM_SETTLE_MS);
+let clearRun = 0;
+let fresh = 0;
+let lastSpeed = null;
+let lastGapMs = null;
+const restDeadline = Date.now() + AIM_REST_DEADLINE_MS;
+while (!atRest && fresh < AIM_REST_PUBLISHES && Date.now() < restDeadline) {
+  await A.page.waitForTimeout(AIM_REST_POLL_MS);
   const now = await restProbe();
-  // A publish the client never refreshed says nothing about whether it moved.
+  // A publish the client never refreshed says nothing about whether it moved:
+  // two reads of one starved publish would read as "did not move", which is
+  // the misreading that has already cost this gate two passes.
   if (!(now.snapshots > rest.snapshots)) continue;
-  freshRounds++;
-  lastDrift = Math.hypot(now.own[0] - rest.own[0], now.own[2] - rest.own[2]);
+  fresh++;
+  lastGapMs = now.at - rest.at;
+  lastSpeed = Math.hypot(now.own[0] - rest.own[0], now.own[2] - rest.own[2]) / (lastGapMs / 1000);
   rest = now;
-  if (lastDrift <= AIM_SETTLE_EPS_M) atRest = now;
+  clearRun = lastSpeed <= AIM_REST_SPEED_MPS ? clearRun + 1 : 0;
+  if (clearRun >= AIM_REST_CLEAR_RUNS) atRest = now;
 }
 if (!atRest) {
   fail(
-    `tab A: with no key held the player never came to rest — last drift ` +
-      `${lastDrift.toFixed(2)} m in ${AIM_SETTLE_MS} ms over ${freshRounds} fresh ` +
-      `publish(es) of ${AIM_SETTLE_ROUNDS} rounds. The aimed walk below can only ` +
-      `measure the aim if it starts from a standing player.`,
+    `tab A: with no key held the player never stopped walking — ` +
+      (lastSpeed === null
+        ? `no fresh publish in ${AIM_REST_DEADLINE_MS} ms, so nothing was ever measured ` +
+          `(the client has stopped publishing, which is its own failure)`
+        : `last ${lastSpeed.toFixed(2)} m/s over ${lastGapMs} ms, ${clearRun} of ` +
+          `${AIM_REST_CLEAR_RUNS} consecutive intervals under ${AIM_REST_SPEED_MPS} m/s, ` +
+          `${fresh} fresh publish(es) in ${AIM_REST_DEADLINE_MS} ms`) +
+      `. The aimed walk below can only measure the aim if the previous walk has drained.`,
   );
 }
 const view = atRest.view;
@@ -1998,10 +2041,13 @@ if (dx < MOVE_MIN_M || Math.abs(dz) > dx) {
       `The hook is not reaching the input the sim runs on.`,
   );
 }
+// The residual speed rides along on the PASSING path too: it is the margin the
+// AIM_REST_SPEED_MPS bar is set against, and the only way the next slice learns
+// that the gap between "residual" and "walking" has closed is by watching it.
 console.log(
   `  dev hook: aimed to [${view.map((v) => v.toFixed(2))}], walked +X ${dx.toFixed(1)} m ` +
-    `(dz ${dz.toFixed(1)}), from rest after ${freshRounds} fresh publish(es), ` +
-    `last drift ${lastDrift.toFixed(3)} m`,
+    `(dz ${dz.toFixed(1)}), from rest after ${fresh} fresh publish(es) — residual ` +
+    `${lastSpeed.toFixed(2)} m/s over ${lastGapMs} ms, bar ${AIM_REST_SPEED_MPS}, walk 3`,
 );
 
 // Assertion 11 — DESIGN §9's draw budget, which had no gate until the shadow
