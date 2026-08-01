@@ -160,7 +160,14 @@ fn test_alloc_zero() {
     let a0 = ALLOCS.load(Ordering::SeqCst);
     let f0 = FREES.load(Ordering::SeqCst);
 
+    // Both baselines are window-scoped on purpose: the warmup runs the
+    // same command cycle, so it stands pieces (and reaches the stone rung)
+    // before the counter starts. An assert that only asked whether a row-4
+    // record exists would be satisfied by the warmup's and say nothing
+    // about the window it names.
+    let rung_count = |w: &World| w.pieces.entries().iter().filter(|p| p.row == 4).count();
     let placed_before = world.pieces.len();
+    let rung_before = rung_count(&world);
     for t in 0..300u16 {
         let cmds = tick_cmds(
             &mut rng,
@@ -187,7 +194,7 @@ fn test_alloc_zero() {
          fell out of the alloc gate"
     );
     assert!(
-        world.pieces.entries().iter().any(|p| p.row == 4),
+        rung_count(&world) > rung_before,
         "nothing reached the fixture's stone rung inside the counted window — \
          the upgrade write path fell out of the alloc gate"
     );
