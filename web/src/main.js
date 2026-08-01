@@ -499,7 +499,12 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // global; local (20 m) is the default channel.
   hud.onChatSend = (raw) => {
     const global = raw.startsWith("/g ");
-    return sendChat(global ? raw.slice(3) : raw, global);
+    if (sendChat(global ? raw.slice(3) : raw, global)) return true;
+    // The cap is 48 UTF-8 BYTES, which the composer's maxlength (UTF-16
+    // code units) only approximates — a line of multi-byte characters can
+    // fit the box and still be refused. Say so rather than swallowing it.
+    hud.toast("line not sent — 48 bytes max, no control characters");
+    return false;
   };
   document.addEventListener("keydown", (e) => {
     if (closed) return;

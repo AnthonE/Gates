@@ -691,8 +691,6 @@ fn test_upgrade_material_domain_is_enforced() {
     assert_eq!(decode_action(&buf[..len]), Err(WireError::Malformed));
 }
 
-/// The delta packet earns its keep: the same content absolute-encoded
-/// must be strictly bigger, or delta encoding silently stopped engaging.
 /// Chat is the one field a player authors, so it is the one field a
 /// player can forge. Both edges hold the same rule: the encoder refuses
 /// to build a line the decoder would refuse, and the decoder refuses a
@@ -765,6 +763,8 @@ fn test_chat_text_domain_is_enforced() {
     assert_eq!(decode_event(&broken[..m]), Err(WireError::Malformed));
 }
 
+/// The delta packet earns its keep: the same content absolute-encoded
+/// must be strictly bigger, or delta encoding silently stopped engaging.
 #[test]
 fn test_delta_actually_compresses() {
     let case = snapshot_delta();

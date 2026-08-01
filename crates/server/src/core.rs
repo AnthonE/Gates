@@ -336,6 +336,11 @@ impl ShardCore {
                 continue;
             };
             if !self.clients[from_slot].connected {
+                // The speaker left between the line being ringed and this
+                // tick. Counted like every other undelivered line — a
+                // silent drop here would be the one that never shows up
+                // in the numbers.
+                ShardStats::bump(&stats.chat_undelivered);
                 continue;
             }
             let from_id = self.clients[from_slot].id;

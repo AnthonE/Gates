@@ -441,6 +441,36 @@ async fn reader_task(
 /// is gone. A *chat* frame that fails to decode does not — chat text is
 /// the one payload a client bug can plausibly malform, and it is counted
 /// and swallowed instead (`chat_bad`). Neither ever panics.
+/// The chat half of that demux, split out of the async task so the
+/// **wiring** — decode, then limiter, then ring, then which counter moves
+/// — is reachable by a test without a socket. A limiter that is never
+/// called is a limiter that stopped limiting, and that is not something a
+/// unit test of the bucket alone can notice.
+fn accept_chat(
+    frame: &[u8],
+    limiter: &mut ChatLimiter,
+    now: Instant,
+    chat_tx: &mut rtrb::Producer<ChatMsg>,
+    stats: &ShardStats,
+) {
+    let Ok(chat) = decode_chat(frame) else {
+        ShardStats::bump(&stats.chat_bad);
+        return;
+    };
+    if !limiter.allow(now) {
+        ShardStats::bump(&stats.chat_rate_limited);
+        return;
+    }
+    if chat_tx.push(chat).is_err() {
+        ShardStats::bump(&stats.chat_ring_drops);
+        return;
+    }
+    // Counted only once it is actually ringed — `chat_ok` says "decoded
+    // and ringed", so a dropped line must not also read as an accepted
+    // one.
+    ShardStats::bump(&stats.chat_ok);
+}
+
 async fn action_reader_task(
     mut recv: RecvStream,
     mut action_tx: rtrb::Producer<ActionMsg>,
@@ -460,19 +490,13 @@ async fn action_reader_task(
             break; // stream closed or oversize frame: the session is done
         };
         if peek_kind(&buf[..len]) == Ok(KIND_CHAT) {
-            match decode_chat(&buf[..len]) {
-                Ok(chat) => {
-                    if !limiter.allow(Instant::now()) {
-                        ShardStats::bump(&stats.chat_rate_limited);
-                        continue;
-                    }
-                    ShardStats::bump(&stats.chat_ok);
-                    if chat_tx.push(chat).is_err() {
-                        ShardStats::bump(&stats.chat_ring_drops);
-                    }
-                }
-                Err(_) => ShardStats::bump(&stats.chat_bad),
-            }
+            accept_chat(
+                &buf[..len],
+                &mut limiter,
+                Instant::now(),
+                &mut chat_tx,
+                &stats,
+            );
             continue;
         }
         match decode_action(&buf[..len]) {
@@ -822,5 +846,74 @@ mod tests {
             "a stale accounting timestamp is a limiter that stopped limiting"
         );
         assert!(!lim.allow(quiet + CHAT_REFILL / 2));
+    }
+
+    /// And the limiter is actually *wired*: the reader's chat path runs
+    /// decode → limit → ring in that order, and each refusal moves its own
+    /// counter. Deleting the limiter call would leave the bucket test above
+    /// green and this one red, which is the point of testing the wiring
+    /// rather than the struct.
+    #[test]
+    fn accept_chat_decodes_then_limits_then_rings() {
+        let stats = ShardStats::default();
+        let mut limiter = ChatLimiter::new();
+        let (mut tx, mut rx) = RingBuffer::<ChatMsg>::new(CHAT_RING_CAP);
+        let t0 = Instant::now();
+        let mut frame = [0u8; MAX_STREAM_MSG_BYTES];
+        let n = protocol::encode_chat(b"hearth is up", false, &mut frame).expect("encodes");
+        // The demux itself: this frame is chat, and an action frame is not.
+        assert_eq!(peek_kind(&frame[..n]), Ok(KIND_CHAT));
+        let mut act = [0u8; MAX_STREAM_MSG_BYTES];
+        let an = protocol::encode_action_cancel(0, &mut act).expect("encodes");
+        assert_eq!(peek_kind(&act[..an]), Ok(protocol::KIND_ACTION));
+
+        // The burst is accepted and ringed; everything past it is refused
+        // by the limiter, not by the ring.
+        for _ in 0..CHAT_BURST {
+            accept_chat(&frame[..n], &mut limiter, t0, &mut tx, &stats);
+        }
+        assert_eq!(ShardStats::get(&stats.chat_ok), CHAT_BURST as u64);
+        assert_eq!(ShardStats::get(&stats.chat_rate_limited), 0);
+        for _ in 0..5 {
+            accept_chat(&frame[..n], &mut limiter, t0, &mut tx, &stats);
+        }
+        assert_eq!(
+            ShardStats::get(&stats.chat_ok),
+            CHAT_BURST as u64,
+            "a line past the burst was ringed — the limiter is not wired in"
+        );
+        assert_eq!(ShardStats::get(&stats.chat_rate_limited), 5);
+
+        // Nothing but the burst reached the ring.
+        let mut ringed = 0;
+        while rx.pop().is_ok() {
+            ringed += 1;
+        }
+        assert_eq!(ringed, CHAT_BURST as usize);
+
+        // A full ring drops the line and counts it as dropped, never as ok.
+        let (mut full_tx, _full_rx) = RingBuffer::<ChatMsg>::new(CHAT_RING_CAP);
+        let mut fresh = ChatLimiter::new();
+        let ok_before = ShardStats::get(&stats.chat_ok);
+        for i in 0..CHAT_RING_CAP + 2 {
+            accept_chat(
+                &frame[..n],
+                &mut fresh,
+                t0 + CHAT_REFILL * i as u32,
+                &mut full_tx,
+                &stats,
+            );
+        }
+        assert_eq!(
+            ShardStats::get(&stats.chat_ok) - ok_before,
+            CHAT_RING_CAP as u64
+        );
+        assert_eq!(ShardStats::get(&stats.chat_ring_drops), 2);
+
+        // Bytes that fail the text rules are counted and swallowed — the
+        // session is not dropped the way a bad action frame drops it.
+        let bad = [KIND_CHAT as u8 | 0x08, 0xff, 0xff];
+        accept_chat(&bad, &mut fresh, t0, &mut tx, &stats);
+        assert_eq!(ShardStats::get(&stats.chat_bad), 1);
     }
 }
