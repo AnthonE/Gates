@@ -563,9 +563,14 @@ export class GameScene {
    * while the image is a flat wash: a field scaled into a single lattice
    * cell, a break-up amplitude of zero, uniforms never bound, a bump term
    * cancelled by its own footprint fade. So this renders the live scene
-   * twice per yaw with `uSurface` at 1 and at 0 — field on, field off, the
-   * causal modifiers and the identity blend identical in both — and counts
-   * the pixels that moved, separately by direction.
+   * twice per yaw with `uSurface` at 1 and at 0 and counts the pixels that
+   * moved, separately by direction.
+   *
+   * What the toggle holds fixed is the vertex splat weights, the four
+   * authored identities and the causal modifiers (wetness, snow, cliff);
+   * what it removes is every contribution of the noise field — the weight
+   * break-up, the albedo mottling, the roughness variation and the bump.
+   * So the delta is the field, and nothing else.
    *
    * The direction split is the part that is hard to fake: microstructure
    * lightens some pixels and darkens others, and any uniform change (an

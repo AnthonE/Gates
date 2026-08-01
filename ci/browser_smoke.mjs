@@ -606,8 +606,10 @@ if (census.mixedFraction < SPLAT_MIN_MIXED) {
 // be true while the ground is a flat wash: a field scaled into one lattice
 // cell, uniforms never bound, a bump term cancelled by its own footprint
 // fade. The probe renders the live scene twice per yaw with the field on and
-// off — identity blend and causal modifiers identical in both — and counts
-// the pixels that moved, by direction.
+// off and counts the pixels that moved, by direction. Held fixed across the
+// pair: the vertex splat weights, the four authored identities, and the
+// causal modifiers. Removed: every contribution of the noise field — the
+// weight break-up, the mottling, the roughness variation, the bump.
 const surfaceHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.surfaceProbe);
 if (surfaceHook !== "function") {
   fail(`tab A: __gatesDebug.surfaceProbe is ${surfaceHook} on a dev shard — the surface gate cannot run`);

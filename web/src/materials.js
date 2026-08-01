@@ -44,7 +44,8 @@ import * as THREE from "three";
 // --- the four identities (TERRAIN.md §4's four sets) ------------------------
 // Colours are the retired vertex palette's, unchanged, so this slice changes
 // the SURFACE and not the art direction: sand was C_BEACH, grass C_MEADOW,
-// litter C_FOREST, rock the midpoint of C_HIGHLAND and C_CLIFF. They are
+// litter C_FOREST, and rock sits between C_HIGHLAND and C_CLIFF (whose
+// midpoint is 0.505/0.495/0.49 — rock is rounded off it). They are
 // working-space (linear) triples, which is what the vertex path fed too.
 // `bump` is a unitless STRENGTH, not a height: the two bump octaves are
 // 5.6× apart in wavelength, so one amplitude in metres cannot serve both
