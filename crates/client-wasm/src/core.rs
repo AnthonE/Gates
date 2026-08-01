@@ -320,11 +320,24 @@ impl DeploySet {
     /// Apply a door announcement to the mirrored record; returns the
     /// record as it now stands, or None when this client has never heard
     /// of that address (the deploy walk will bring it, carrying state).
-    fn set_open(&mut self, cx: u16, cz: u16, level: u8, loc: u8, open: bool) -> Option<DeployRec> {
+    /// `locked` is None where only the leaf moved (an optimistic toggle
+    /// and its rollback never touch the lock).
+    fn set_open(
+        &mut self,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        open: bool,
+        locked: Option<bool>,
+    ) -> Option<DeployRec> {
         let r = self.recs[..self.len]
             .iter_mut()
             .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)?;
         r.open = open;
+        if let Some(locked) = locked {
+            r.locked = locked;
+        }
         Some(*r)
     }
 
@@ -797,13 +810,17 @@ impl ClientCore {
                 level,
                 loc,
                 open,
+                locked,
             } => {
-                // Absolute state: this confirms an optimistic toggle or
-                // corrects it, and either way the wait is over.
+                // Absolute state, both bits: this confirms an optimistic
+                // toggle or corrects it, and either way the wait is over.
                 if self.pending_door == Some((cx, cz, level, loc)) {
                     self.pending_door = None;
                 }
-                if let Some(rec) = self.deploys.set_open(cx, cz, level, loc, open) {
+                if let Some(rec) = self
+                    .deploys
+                    .set_open(cx, cz, level, loc, open, Some(locked))
+                {
                     self.seal_for(rec);
                     self.push_deploy_change(rec);
                     flags |= APPLIED_DEPLOYS;
@@ -884,7 +901,7 @@ impl ClientCore {
         if !is_door(&self.deploy_defs, self.deploy_defs_have, rec.row) {
             return None;
         }
-        let rec = self.deploys.set_open(cx, cz, level, loc, !rec.open)?;
+        let rec = self.deploys.set_open(cx, cz, level, loc, !rec.open, None)?;
         self.seal_for(rec);
         self.pending_door = Some((cx, cz, level, loc));
         Some(rec.open)
@@ -911,7 +928,7 @@ impl ClientCore {
         else {
             return false; // the record left the mirror; nothing to put back
         };
-        match self.deploys.set_open(cx, cz, level, loc, !rec.open) {
+        match self.deploys.set_open(cx, cz, level, loc, !rec.open, None) {
             Some(rec) => {
                 self.seal_for(rec);
                 self.push_deploy_change(rec);
@@ -1368,14 +1385,23 @@ mod tests {
         c.on_stream(&buf[..len]).unwrap();
         assert!(shut(&c), "a placed door seals its doorway");
 
-        // Opened, then closed again — the announcement is absolute.
-        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, &mut buf).unwrap();
+        // Opened, then closed again — the announcement is absolute, and
+        // it carries the lock bit beside the leaf (lock v0, wire v8).
+        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, true, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_DEPLOYS);
         assert!(!shut(&c), "an open door passes");
         assert!(c.deploy_changes()[0].open, "the renderer hears the state");
-        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, false, &mut buf).unwrap();
+        assert!(
+            c.deploy_changes()[0].locked,
+            "the renderer hears the lock too"
+        );
+        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, false, false, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(shut(&c), "a reclosed door seals again");
+        assert!(
+            !c.deploys.entries()[0].locked,
+            "an absolute announcement clears the lock as readily as it sets it"
+        );
 
         // A later piece-def batch rebuilds the collision index from the
         // piece mirror alone; the door bits must go back on with it.
@@ -1394,7 +1420,7 @@ mod tests {
             "a second toggle must wait for the first to resolve"
         );
         // The announcement confirms it and frees the next prediction.
-        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, &mut buf).unwrap();
+        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, true, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(!shut(&c));
         assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_W), Some(false));
@@ -1428,7 +1454,11 @@ mod tests {
         );
         // Nothing is outstanding now, so the next press predicts again.
         assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_W), Some(false));
-        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, false, &mut buf).unwrap();
+        assert!(
+            c.deploys.entries()[0].locked,
+            "predicting the leaf must not touch the lock"
+        );
+        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, false, true, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(shut(&c));
 

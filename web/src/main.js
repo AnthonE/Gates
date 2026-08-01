@@ -109,6 +109,7 @@ const DEPLOY_REFUSE_TEXT = [
   "bag limit reached",
   "no hearth there",
   "no door there",
+  "not your door",
 ];
 // sim-core build.rs shape/material code order (UI labels, not content).
 const SHAPE_TEXT = ["foundation", "wall", "doorway", "floor", "stairs", "roof"];
@@ -206,6 +207,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       views.deployDefs[rec.row * 4],
       groundAt(rec.cx, rec.cz),
       rec.open,
+      rec.locked,
     );
   };
   const pieceTotal = () => (ex.client_piece_defs_state() >>> 0) >>> 16;
@@ -293,7 +295,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     }
     hud.setBuild(
       `build: ${what} · L${build.level} · ${costs}` +
-        ` — wheel piece · R/F level · right-click place · E use door / feed hearth · B close`,
+        ` — wheel piece · R/F level · right-click place · E use door / feed hearth` +
+        ` · L lock door · B close`,
     );
   };
   // Feed the nearest hearth within reach of the feet (the authoritative
@@ -317,12 +320,11 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (best) sendFeed(best.cx, best.cz, best.level);
     else hud.toast("no hearth in reach");
   };
-  // E is the use key: the nearest door within reach toggles, and only
-  // when there is none does E fall through to feeding a hearth. Reach is
-  // measured to the door's **cell center**, the same distance the sim
-  // gates on — picking a target the server would refuse only costs a
-  // rolled-back prediction and a bounce.
-  const tryUse = () => {
+  // The nearest door within reach of the feet, or null. Reach is measured
+  // to the door's **cell center**, the same distance the sim gates on —
+  // picking a target the server would refuse only costs a rolled-back
+  // prediction and a bounce.
+  const nearestDoor = () => {
     const R = views.render;
     let best = null;
     let bestD = REACH * REACH;
@@ -336,8 +338,29 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         best = rec;
       }
     }
+    return best;
+  };
+  // E is the use key: the nearest door within reach toggles, and only
+  // when there is none does E fall through to feeding a hearth.
+  const tryUse = () => {
+    const best = nearestDoor();
     if (best) sendUse(best.cx, best.cz, best.level, best.loc);
     else tryFeed();
+  };
+  // L locks or unlocks it. Whether the door is yours is the server's
+  // verdict — the wire carries the lock bit but never the owner — so the
+  // press goes out either way and a refusal comes back as a toast. No
+  // prediction rides along: the announcement is absolute and this is not
+  // an action anyone spams.
+  const tryLock = () => {
+    const best = nearestDoor();
+    if (!best) {
+      hud.toast("no door in reach");
+      return;
+    }
+    const len = ex.client_action_lock(best.cx, best.cz, best.level, best.loc, best.locked ? 0 : 1);
+    views.refresh();
+    if (len > 0) actions.send(views.output, len);
   };
 
   // Rebuild the craft panel + queue strip from the wasm views. Runs on
@@ -423,6 +446,9 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       e.preventDefault();
     } else if (e.code === "KeyE") {
       tryUse();
+      e.preventDefault();
+    } else if (e.code === "KeyL") {
+      tryLock();
       e.preventDefault();
     }
   });
@@ -586,7 +612,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
             level: (info >>> 16) & 0xff,
             loc: (info >>> 8) & 0xff,
             row: info & 0xff,
-            open: (info >>> 24) === 1,
+            open: ((info >>> 24) & 1) === 1,
+            locked: ((info >>> 25) & 1) === 1,
           };
           deployRecs.set(key * 4096 + ((info >>> 8) & 0xffff), rec);
           drawDeploy(rec);

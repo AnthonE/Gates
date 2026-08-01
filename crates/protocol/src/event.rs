@@ -50,9 +50,9 @@ pub const PIECE_SYNC_BATCH: usize = 32;
 /// Piece-def rows one defs message carries (a full row is ~11 B).
 pub const PIECE_DEFS_BATCH: usize = 6;
 
-/// Placed-deployable records one sync message carries (a record is 29
-/// bits; 24 keep the batch ≈ 88 B, well under the message cap). The join
-/// walk is drip-fed like the piece sync.
+/// Placed-deployable records one sync message carries (a record is 31
+/// bits — address, row, open, locked; 24 keep the batch ≈ 94 B, well
+/// under the message cap). The join walk is drip-fed like the piece sync.
 pub const DEPLOY_SYNC_BATCH: usize = 24;
 
 /// Deploy-def rows one defs message carries (a full row is ~5 B).
@@ -290,15 +290,18 @@ pub enum EventMsg {
         loc: u8,
     },
     /// The door at the address changed state (broadcast — a door is a
-    /// world fact like the piece it sits in). `open` is the state after
-    /// the toggle, never a delta: a client that missed one hears the
-    /// truth from the next one.
+    /// world fact like the piece it sits in). `open` and `locked` are the
+    /// state after the action, never a delta: a client that missed one
+    /// hears the truth from the next one. Which hand may open a locked
+    /// door is not on the wire — the owner id stays sim-side, so a client
+    /// presses and learns from the outcome (lock v0).
     Door {
         cx: u16,
         cz: u16,
         level: u8,
         loc: u8,
         open: bool,
+        locked: bool,
     },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list (item index, units).
@@ -610,12 +613,13 @@ pub fn encode_event_piece_defs(
     Ok((w.finish(), count))
 }
 
-/// One placed-deployable record on the wire: 30 bits, shared by the
+/// One placed-deployable record on the wire: 31 bits, shared by the
 /// placed broadcast and the sync batches. Every width is exact, so only
-/// sim-impossible addresses need refusing at encode. The trailing bit is
-/// the door's open state — meaningless for every other archetype, and
-/// always 0 there, so it costs a bit and saves a second lane for the
-/// join walk (a client that walked in must see which doors stand open).
+/// sim-impossible addresses need refusing at encode. The trailing two
+/// bits are the door's open and locked state — meaningless for every
+/// other archetype, and always 0 there, so they cost two bits and save a
+/// second lane for the join walk (a client that walked in must see which
+/// doors stand open, and which stand locked).
 fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError> {
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
@@ -631,6 +635,7 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write(rec.loc as u32, BUILD_LOC_BITS)?;
     w.write(rec.row as u32, DEPLOY_ROW_BITS)?;
     w.write_bit(rec.open)?;
+    w.write_bit(rec.locked)?;
     Ok(())
 }
 
@@ -642,6 +647,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
         loc: r.read(BUILD_LOC_BITS)? as u8,
         row: r.read(DEPLOY_ROW_BITS)? as u8,
         open: r.read_bit()?,
+        locked: r.read_bit()?,
         ..DeployRec::default()
     })
 }
@@ -766,14 +772,17 @@ pub fn encode_event_stock(
     Ok(w.finish())
 }
 
-/// The door at the address is now `open` (broadcast). Absolute state,
-/// not a toggle: two of these crossing never leave a client inverted.
+/// The door at the address is now `open` and `locked` (broadcast).
+/// Absolute state, not a toggle: two of these crossing never leave a
+/// client inverted, and one lane carries the whole door so a client never
+/// holds half of it.
 pub fn encode_event_door(
     cx: u16,
     cz: u16,
     level: u8,
     loc: u8,
     open: bool,
+    locked: bool,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if cx as usize >= MAX_BUILD_COORD
@@ -789,6 +798,7 @@ pub fn encode_event_door(
     w.write(level as u32, BUILD_LEVEL_BITS)?;
     w.write(loc as u32, BUILD_LOC_BITS)?;
     w.write_bit(open)?;
+    w.write_bit(locked)?;
     Ok(w.finish())
 }
 
@@ -1116,6 +1126,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             level: r.read(BUILD_LEVEL_BITS)? as u8,
             loc: r.read(BUILD_LOC_BITS)? as u8,
             open: r.read_bit()?,
+            locked: r.read_bit()?,
         },
         _ => return Err(WireError::Malformed),
     };

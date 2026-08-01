@@ -31,6 +31,9 @@ const DEPLOY_STYLE = [
   [1.6, 0.9, 0.9, 0xa1793f], // workbench
   [0.12, 2.1, 0.9, 0x6b4a2b], // door (thickness, height, width)
 ];
+// A locked door reads as banded iron over the wood — the one bit of door
+// state a passer-by can see, and the thing they'd have to break.
+const DOOR_LOCKED_COLOR = 0x3c3f44;
 
 export class GameScene {
   constructor(canvas) {
@@ -207,20 +210,25 @@ export class GameScene {
    * level plane (body deploys) or filling a doorway edge (doors).
    */
   /**
-   * Park a deployable at a grid address. `open` only means anything for
-   * a door: closed it fills its doorway edge, open it swings a quarter
-   * turn onto its hinge — the same read the sim's collision has, so a
-   * player never walks through a leaf that still looks shut.
+   * Park a deployable at a grid address. `open` and `locked` only mean
+   * anything for a door: closed it fills its doorway edge, open it swings
+   * a quarter turn onto its hinge — the same read the sim's collision
+   * has, so a player never walks through a leaf that still looks shut —
+   * and locked it wears the iron.
    */
-  setDeploy(cx, cz, level, loc, arch, groundY, open) {
+  setDeploy(cx, cz, level, loc, arch, groundY, open, locked) {
     const key = `${cx},${cz},${level},${loc}`;
     const old = this.deploys.get(key);
     if (old) this.scene.remove(old);
     const [w, h, d, color] = DEPLOY_STYLE[arch] || DEPLOY_STYLE[2];
-    let mat = this._deployMats.get(arch);
+    // Two materials for the door archetype, one for everything else;
+    // both cached, because this runs on every door swing.
+    const ironclad = arch === 6 && locked;
+    const matKey = ironclad ? "door-locked" : arch;
+    let mat = this._deployMats.get(matKey);
     if (!mat) {
-      mat = new THREE.MeshLambertMaterial({ color });
-      this._deployMats.set(arch, mat);
+      mat = new THREE.MeshLambertMaterial({ color: ironclad ? DOOR_LOCKED_COLOR : color });
+      this._deployMats.set(matKey, mat);
     }
     const obj = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     const baseY = groundY + LIFT + level * LEVEL_H;

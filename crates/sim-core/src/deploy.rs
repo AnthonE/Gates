@@ -37,18 +37,30 @@
 //! - **Doors** (door v0, DECISIONS.md §open): a door places **closed**
 //!   and seals its doorway (collide.rs shut bits — the store keeps them
 //!   in lockstep exactly like the piece store keeps its masks). The
-//!   **use** action toggles it open/closed: any player within build reach
-//!   may toggle — no lock exists yet (locks are a later slice, the
-//!   reference's unlocked-door behavior). EV_DOOR announces the new state
+//!   **use** action toggles it open/closed for any player within build
+//!   reach — subject to the lock below. EV_DOOR announces the new state
 //!   for the wire; removal (decay, or the doorway decaying under it)
 //!   clears the shut bit with the record. The state is absolute on the
 //!   wire, never a delta, so the client that toggled optimistically
 //!   (NETCODE.md §6.1) is confirmed or corrected by the same event.
+//! - **Locks** (lock v0, DECISIONS.md §open): a door places **locked to
+//!   its placer**, and a locked door only uses for its owner — every
+//!   other hand bounces with `REFUSE_D_OWNER`. The **lock** action sets
+//!   that bit absolutely (not a toggle: two presses racing must not
+//!   fight) and only the owner may, so unlocking is how a door becomes
+//!   public — a shop front, a shared hut. Locking never moves the leaf:
+//!   an open door locks open, and its owner is the one who can shut it.
+//!   The bit rides the same EV_DOOR announcement as the open bit, so one
+//!   lane carries the whole door state, absolute, to everyone.
 //!
 //! Not in this slice (documented, not forgotten): no support cascade when
 //! a piece decays away (floating pieces keep decaying on their own if
-//! unpaid), no door locks (any hand in reach toggles), no owner on the
-//! wire (respawn-on-bag adds its own lane).
+//! unpaid), no *shared* access — a lock answers to one owner id, and
+//! codes/crew lists are the question §open asks (the hearth's claim is
+//! owner-only for the same reason), no owner on the wire (a stranger's
+//! locked door refuses after the press, which the mispredict path already
+//! rolls back — DESIGN.md §5.6's own example), no lock item (the lock is a
+//! property of the door, not a deployable).
 
 use crate::build::{BuildContent, Pieces, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, SHAPE_DOORWAY};
 use crate::craft::{inv_count, inv_take};
@@ -92,6 +104,9 @@ pub const REFUSE_D_BAG_CAP: u32 = 9;
 pub const REFUSE_D_HEARTH: u32 = 10;
 /// A use request named an address holding no door.
 pub const REFUSE_D_DOOR: u32 = 11;
+/// The door isn't yours: a use on someone else's **locked** door, or a
+/// lock request on a door you didn't place (lock v0).
+pub const REFUSE_D_OWNER: u32 = 12;
 
 /// Hearth privilege radius in meters, planar from the hearth's cell
 /// center. Proposed default, DECISIONS.md §open ("deployables v0").
@@ -223,6 +238,11 @@ pub struct DeployRec {
     /// place closed; the use action toggles. Sim state, hashed, and on
     /// the wire (the deploy record's open bit, wire v6).
     pub open: bool,
+    /// Lock state (ARCH_DOOR only; false for everything else). Doors
+    /// place **locked** to `owner`, and a locked door only uses for its
+    /// owner; the lock action sets this absolutely. Sim state, hashed,
+    /// and on the wire (the deploy record's locked bit, wire v8).
+    pub locked: bool,
 }
 
 /// One hearth's claim + stock, in the dense hearth list. Identity is the
@@ -496,6 +516,9 @@ pub fn place_deploy(
         hp: def.hp,
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
         open: false,
+        // A door is born locked to the hand that placed it (lock v0): the
+        // base is the point of the base. Everything else ignores the bit.
+        locked: def.arch == ARCH_DOOR,
     };
     if !deploys.insert(rec) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
@@ -570,11 +593,57 @@ pub fn feed(
     );
 }
 
+/// The door at the address, if one is there and the player stands within
+/// build reach of its cell center. Both refusals are pushed here, so the
+/// use and lock paths bounce identically for the same reason.
+#[allow(clippy::too_many_arguments)]
+fn door_in_reach(
+    dc: &DeployContent,
+    deploys: &Deploys,
+    p: &Player,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    events: &mut EventQueue,
+) -> Option<usize> {
+    let hit = deploys.entries[..deploys.len]
+        .iter()
+        .position(|d| d.cx == cx && d.cz == cz && d.level == level && d.loc == loc)
+        .filter(|&i| dc.defs[deploys.entries[i].row as usize].arch == ARCH_DOOR);
+    let Some(i) = hit else {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_DOOR, 0);
+        return None;
+    };
+    let (ax, az) = cell_center(cx, cz);
+    let (px, pz) = player_xz(p);
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
+        return None;
+    }
+    Some(i)
+}
+
+/// EV_DOOR: the door's whole state after a change, absolute (world.rs
+/// documents the packing). One announcement serves the toggle and the
+/// lock, so a client never holds half a door.
+fn announce_door(deploys: &Deploys, i: usize, by: u32, events: &mut EventQueue) {
+    let d = &deploys.entries[i];
+    events.push(
+        EV_DOOR,
+        crate::gather::cell_key(d.cx, d.cz),
+        ((d.level as u32) << 16) | ((d.loc as u32) << 8) | ((d.locked as u32) << 1) | d.open as u32,
+        by,
+    );
+}
+
 /// Apply one use request (`Command::Use`): toggle the door at the
-/// address. Any player within build reach may toggle — no lock exists
-/// yet (door v0). The shut bit in the collision index flips in the same
-/// call, so the tick that toggles is the tick that blocks (or opens);
-/// EV_DOOR announces the new state for the wire.
+/// address. Any player within build reach may toggle an **unlocked**
+/// door; a locked one answers only to its owner (lock v0) and bounces
+/// every other hand with `REFUSE_D_OWNER`. The shut bit in the collision
+/// index flips in the same call, so the tick that toggles is the tick
+/// that blocks (or opens); EV_DOOR announces the new state for the wire.
 #[allow(clippy::too_many_arguments)]
 pub fn use_door(
     dc: &DeployContent,
@@ -587,33 +656,45 @@ pub fn use_door(
     loc: u8,
     events: &mut EventQueue,
 ) {
-    let Some(i) = deploys.entries[..deploys.len]
-        .iter()
-        .position(|d| d.cx == cx && d.cz == cz && d.level == level && d.loc == loc)
-    else {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_DOOR, 0);
+    let Some(i) = door_in_reach(dc, deploys, p, cx, cz, level, loc, events) else {
         return;
     };
-    if dc.defs[deploys.entries[i].row as usize].arch != ARCH_DOOR {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_DOOR, 0);
-        return;
-    }
-    let (ax, az) = cell_center(cx, cz);
-    let (px, pz) = player_xz(p);
-    let (dx, dz) = (ax - px, az - pz);
-    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
+    if deploys.entries[i].locked && deploys.entries[i].owner != p.id {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
         return;
     }
     let open = !deploys.entries[i].open;
     deploys.entries[i].open = open;
     pieces.set_door(cx, cz, level, loc, !open);
-    events.push(
-        EV_DOOR,
-        crate::gather::cell_key(cx, cz),
-        ((level as u32) << 16) | ((loc as u32) << 8) | open as u32,
-        p.id,
-    );
+    announce_door(deploys, i, p.id, events);
+}
+
+/// Apply one lock request (`Command::Lock`): set the door's lock bit to
+/// `locked`. Owner-only, and absolute rather than a toggle — two presses
+/// racing would otherwise fight over the state (the same reason the use
+/// action carries no state). The leaf never moves: locking an open door
+/// leaves it open, and only its owner can then shut it.
+#[allow(clippy::too_many_arguments)]
+pub fn set_lock(
+    dc: &DeployContent,
+    deploys: &mut Deploys,
+    p: &Player,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    locked: bool,
+    events: &mut EventQueue,
+) {
+    let Some(i) = door_in_reach(dc, deploys, p, cx, cz, level, loc, events) else {
+        return;
+    };
+    if deploys.entries[i].owner != p.id {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+        return;
+    }
+    deploys.entries[i].locked = locked;
+    announce_door(deploys, i, p.id, events);
 }
 
 /// Per-period charge for one cost row: `ceil(cost × pct / 100 / 24)`.
@@ -1489,6 +1570,10 @@ mod tests {
 
         // Placed closed: sim state, the shut bit, and the walk agree.
         assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
+        assert!(
+            deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked,
+            "a door places locked to its placer (lock v0)"
+        );
         assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
         assert!(
             walk_x_after(&pieces) >= wall_x,
@@ -1512,7 +1597,9 @@ mod tests {
             (
                 crate::world::EV_DOOR,
                 crate::gather::cell_key(CX, CZ),
-                (LOC_EDGE_W as u32) << 8 | 1,
+                // open, and still locked — the announcement is the whole
+                // door, absolute (lock v0).
+                (LOC_EDGE_W as u32) << 8 | 2 | 1,
                 7
             )
         );
@@ -1540,6 +1627,146 @@ mod tests {
         assert!(
             walk_x_after(&pieces) >= wall_x,
             "reclosed door blocks again"
+        );
+    }
+
+    #[test]
+    fn a_locked_door_answers_only_to_its_owner() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        // A second hand at the same doorway, in reach, empty-handed.
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = 9;
+
+        // Locked: the stranger bounces and the leaf does not move.
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER),
+            "a locked door refuses a foreign hand"
+        );
+        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
+        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1, "and stays sealed");
+
+        // The owner's own press still works, locked and all.
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
+
+        // Unlocked, the door is public again — the door v0 behavior, now
+        // something its owner chooses rather than the only option.
+        set_lock(&dc, &mut deploys, &p, CX, CZ, 0, LOC_EDGE_W, false, &mut ev);
+        assert_eq!(
+            last(&ev),
+            (
+                crate::world::EV_DOOR,
+                crate::gather::cell_key(CX, CZ),
+                // Still open: unlocking never moves the leaf.
+                (LOC_EDGE_W as u32) << 8 | 1,
+                7
+            )
+        );
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DOOR, "an unlocked door opens");
+        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
+        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
+
+        // And a stranger may not lock what a stranger does not own.
+        set_lock(
+            &dc,
+            &mut deploys,
+            &stranger,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            true,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER)
+        );
+        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked);
+    }
+
+    #[test]
+    fn lock_is_absolute_and_bounces_like_a_use() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+
+        // Absolute, not a toggle: the same request twice is the same
+        // state twice (two presses racing must not fight).
+        for _ in 0..2 {
+            set_lock(&dc, &mut deploys, &p, CX, CZ, 0, LOC_EDGE_W, false, &mut ev);
+            assert_eq!(last(&ev).0, crate::world::EV_DOOR);
+            assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked);
+        }
+        set_lock(&dc, &mut deploys, &p, CX, CZ, 0, LOC_EDGE_W, true, &mut ev);
+        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked);
+        assert_eq!(
+            last(&ev).2 & 3,
+            2,
+            "EV_DOOR carries locked = 1 over a closed leaf"
+        );
+
+        // The address must hold a door, and the hand must be in reach —
+        // the same two refusals the use action bounces with.
+        set_lock(&dc, &mut deploys, &p, CX, CZ, 0, LOC_PLANE, true, &mut ev);
+        assert_eq!(last(&ev).2, REFUSE_D_DOOR, "no door at that address");
+        let far = player_at_cell(CX + 7, CZ, &[]);
+        set_lock(
+            &dc,
+            &mut deploys,
+            &far,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            false,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_D_REACH, "a lock has the build reach");
+        assert!(
+            deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked,
+            "a refused lock leaves the bit where it was"
         );
     }
 

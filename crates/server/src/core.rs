@@ -237,6 +237,20 @@ impl ShardCore {
                         level,
                         loc,
                     },
+                    ActionMsg::Lock {
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        locked,
+                    } => Command::Lock {
+                        id: c.id,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        locked,
+                    },
                 };
                 n += 1;
             }
@@ -405,14 +419,27 @@ impl ShardCore {
                 }
                 EV_DEPLOY_PLACED => {
                     // Owner (ev.c) stays sim-side: the wire record is
-                    // address + row + open (event.rs), and everything —
-                    // doors included — places closed.
+                    // address + row + open + locked (event.rs). Everything
+                    // places closed; a door places locked, which is a
+                    // world fact the whole shard sees (who it answers to
+                    // is not).
+                    let placed_door = self
+                        .world
+                        .deploys
+                        .find(
+                            (ev.a >> 16) as u16,
+                            ev.a as u16,
+                            (ev.b >> 16) as u8,
+                            (ev.b >> 8) as u8,
+                        )
+                        .is_some_and(|d| d.locked);
                     let rec = DeployRec {
                         cx: (ev.a >> 16) as u16,
                         cz: ev.a as u16,
                         level: (ev.b >> 16) as u8,
                         loc: (ev.b >> 8) as u8,
                         row: ev.b as u8,
+                        locked: placed_door,
                         ..DeployRec::default()
                     };
                     match encode_event_deploy_placed(&rec, &mut self.ev_buf) {
@@ -440,8 +467,8 @@ impl ShardCore {
                     // deploy walk — the sync record carries the bit.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
-                    let open = ev.b & 1 != 0;
-                    match encode_event_door(cx, cz, level, loc, open, &mut self.ev_buf) {
+                    let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
+                    match encode_event_door(cx, cz, level, loc, open, locked, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
