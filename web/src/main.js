@@ -122,6 +122,9 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   const canvas = $("gl");
   const scene = new GameScene(canvas);
   const terrain = new Terrain(scene.scene, seed, ex, WASM_URL);
+  // The ground's material lives with the terrain that feeds it; the scene
+  // borrows its uniforms so the surface probe has one handle (materials v0).
+  scene.attachTerrainMaterial(terrain.material);
   const input = new InputTracker(canvas);
   const hud = new Hud();
   hud.show();
@@ -793,6 +796,13 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   const devShadowProbe = dev
     ? (yaws, pitch, minDelta) => scene.shadowProbe(yaws, pitch, minDelta)
     : null;
+  // Materials v0's two: the same 2N-frame probe shape for the surface, and
+  // a census of the splat weights the shader is actually fed (~100 k vertex
+  // reads — a gate hook, never a frame one).
+  const devSurfaceProbe = dev
+    ? (yaws, pitch, minDelta) => scene.surfaceProbe(yaws, pitch, minDelta)
+    : null;
+  const devSplatCensus = dev ? () => terrain.splatCensus() : null;
 
   function frame(now) {
     if (closed) return;
@@ -903,9 +913,15 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       // (DESIGN §9's < 300 calls / < 1.5 M tris). Read off the scene, not
       // recomputed — what the gate asserts is what the renderer did.
       lighting: scene.lighting(),
+      // The material system's structural facts (materials v0): the ground's
+      // patched splat material, the authored per-surface responses, and how
+      // the scatter pools are tinted.
+      materials: { ...scene.materials(), scatter: terrain.scatterFacts() },
     };
     if (devSetView) debug.setView = devSetView;
     if (devShadowProbe) debug.shadowProbe = devShadowProbe;
+    if (devSurfaceProbe) debug.surfaceProbe = devSurfaceProbe;
+    if (devSplatCensus) debug.splatCensus = devSplatCensus;
     globalThis.__gatesDebug = debug;
   }, 250);
 }

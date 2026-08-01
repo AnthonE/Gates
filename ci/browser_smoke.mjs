@@ -123,6 +123,48 @@ const SHADOW_MIN_MAP_PX = 1024;
 // second pass over every caster is the obvious way to eat this budget.
 const DRAW_CALL_BUDGET = 300;
 const TRIANGLE_BUDGET = 1_500_000;
+// --- the materials gate (DECISIONS.md §open, "materials v0") ----------------
+// Same three-part shape as the lighting gate above, for the same reason: the
+// flags say a material was configured, the census says what the shader is
+// actually FED, and only a pair of frames says what reached the image.
+const SURFACE_PROBE_YAWS = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2];
+// Steeper than the shadow probe's: this one is about the GROUND's material,
+// so the frames it scores should be mostly ground in every direction.
+const SURFACE_PROBE_PITCH = -0.7;
+// A pixel counts as moved when the field took its luma up or down by more
+// than this out of 255 — the same floor the shadow probe uses, and for the
+// same reason (SwiftShader's dither noise between two renders sits under it).
+const SURFACE_PROBE_MIN_DELTA = 6;
+// Floors on the swept pixels the procedural field moves. The pinned spawn
+// measures 12.8% (per yaw 2.4 / 6.8 / 8.4 / 33.7), stable to the decimal
+// across runs; the failure they guard — a material whose field contributes
+// nothing — scores exactly 0.
+const SURFACE_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_SURFACE_MIN || 0.04);
+const SURFACE_MIN_FRACTION_PER_YAW = Number(process.env.BROWSER_SMOKE_SURFACE_MIN_YAW || 0.01);
+// And the half that is hard to fake, because the two above were SHOWN not to
+// bite on their own: collapsing the noise scales so the whole ring lands in
+// one lattice cell moved 66–96% of the pixels — a uniform darkening — and
+// sailed past both floors. Microstructure lightens some pixels and darkens
+// others; a constant field, a global tint or an exposure slip cannot. That
+// mutation scored +0.00% up on two of the four yaws against a worst real
+// yaw of +0.5%.
+const SURFACE_MIN_DIRECTIONAL = Number(process.env.BROWSER_SMOKE_SURFACE_MIN_DIR || 0.002);
+// The splat weights the shader is fed, over the streamed near ring. Constant
+// or one-hot weights render a perfectly convincing single material, so:
+// at least this many identities must hold real ground, and this much of the
+// ring must be a genuine two-identity blend rather than a hard biome cell.
+const SPLAT_MIN_IDENTITIES = 2;
+const SPLAT_IDENTITY_SHARE = 0.01;
+// Measured at the pinned spawn: spreads 1.00 / 1.00 / 0.00 / 0.16, deepest
+// second identity 0.50, 1.5% of the ring blended. Pinning the weights to a
+// constant vector takes all four spreads to 0.000.
+const SPLAT_MIN_SPREAD = Number(process.env.BROWSER_SMOKE_SPLAT_MIN_SPREAD || 0.15);
+const SPLAT_MIN_SECOND = Number(process.env.BROWSER_SMOKE_SPLAT_MIN_SECOND || 0.35);
+// Area, not just an extremum: the transition must be a band, not one row of
+// vertices. Which biomes a 320 m ring contains is a worldgen fact (the
+// moisture channel's features are ~700 m across, so a ring is often one
+// biome) — this floor is set from the pinned spawn's measured 1.5%.
+const SPLAT_MIN_MIXED = Number(process.env.BROWSER_SMOKE_SPLAT_MIN_MIXED || 0.005);
 
 const fail = (msg) => {
   console.error(`GATE FAIL: ${msg}`);
@@ -437,6 +479,191 @@ console.log(
     `+${Math.min(...shadowPassCalls)}..${Math.max(...shadowPassCalls)} draw calls`,
 );
 
+// --- materials: the surface read --------------------------------------------
+// Measured here, on the same pinned frame the shadow gate uses, for the same
+// reason: after the walk the ground under the camera depends on how much wall
+// clock a shared box gave the input pump.
+//
+// Assertion 13 — the material system is wired, and its channels are real
+// channels. Cheap and structural, and it exists so 14's and 15's failures are
+// diagnosable: "the field paints nothing" means something very different when
+// the ground is still a Lambert material.
+const mat = await A.page.evaluate(() => globalThis.__gatesDebug.materials);
+if (!mat) fail(`tab A: __gatesDebug.materials missing — the scene publishes no material state`);
+if (mat.terrain.type !== "MeshStandardMaterial") {
+  fail(`tab A: the ground is a ${mat.terrain.type} — roughness is not a channel it has`);
+}
+if (mat.terrain.patched !== true) {
+  fail(`tab A: the terrain material carries no splat uniforms — onBeforeCompile did not install`);
+}
+if (mat.identities.length !== 4) {
+  fail(`tab A: ${mat.identities.length} terrain identities (${mat.identities}) — TERRAIN.md §4 specifies four sets`);
+}
+// Roughness and bump per identity, not one number applied to everything: the
+// procedural-materials failure list's "roughness is a scalar afterthought".
+const distinct = (xs) => new Set(xs.map((v) => v.toFixed(4))).size;
+if (distinct(mat.identityRoughness) < 3) {
+  fail(`tab A: only ${distinct(mat.identityRoughness)} distinct identity roughness values in [${mat.identityRoughness}] — sand, grass, litter and rock answer light the same way`);
+}
+if (distinct(mat.identityBump) < 3) {
+  fail(`tab A: only ${distinct(mat.identityBump)} distinct identity bump amplitudes in [${mat.identityBump}]`);
+}
+if (!(mat.breakup > 0)) fail(`tab A: splat break-up amplitude is ${mat.breakup} — biome boundaries stay smooth ramps`);
+if (!(mat.specAA > 0)) fail(`tab A: specular-AA gain is ${mat.specAA} — the perturbed normal is unfiltered`);
+if (!(mat.fadeMicroM[1] > mat.fadeMicroM[0] && mat.fadeMicroM[0] > 0)) {
+  fail(`tab A: micro-octave footprint fade is [${mat.fadeMicroM}] — detail below a pixel is not being faded out`);
+}
+// The tier read (bases.webp): wood, stone and metal must not answer the key
+// light identically, and metal must actually be a conductor.
+const tierRough = mat.tiers.map((t) => t[1]);
+if (mat.tiers.some((t) => t[0] !== "MeshStandardMaterial")) {
+  fail(`tab A: build tiers are [${mat.tiers.map((t) => t[0])}] — a tier with no roughness cannot read as its material`);
+}
+if (distinct(tierRough) !== 3) fail(`tab A: build tiers share roughness [${tierRough}] — wood, stone and metal read alike`);
+if (!(mat.tiers[2][2] > 0.5)) fail(`tab A: the metal tier has metalness ${mat.tiers[2][2]} — it is a grey dielectric`);
+if (mat.tiers[0][2] !== 0 || mat.tiers[1][2] !== 0) {
+  fail(`tab A: wood/stone tiers have metalness [${mat.tiers[0][2]}, ${mat.tiers[1][2]}] — only metal is a conductor`);
+}
+if (!(mat.water[0] < 0.3)) fail(`tab A: water roughness is ${mat.water[0]} — the sun leaves no track on it`);
+// Scatter: every pool authored, colour-baked and per-instance tinted. One
+// solid green cone pool (what this slice replaced) shows up as tint 0 or a
+// missing instance colour buffer.
+if (!Array.isArray(mat.scatter) || mat.scatter.length < 7) {
+  fail(`tab A: ${mat.scatter?.length} scatter pools published — sim-core scatters seven archetypes`);
+}
+for (const p of mat.scatter) {
+  if (p.type !== "MeshStandardMaterial") fail(`tab A: scatter archetype ${p.arch} is a ${p.type}`);
+  if (!p.vertexColors) fail(`tab A: scatter archetype ${p.arch} has no baked vertex colours — it is one flat colour`);
+  if (!p.instanceColor) fail(`tab A: scatter archetype ${p.arch} has no per-instance colour buffer — every instance is identical`);
+  if (!(p.tint > 0)) fail(`tab A: scatter archetype ${p.arch} has tint amplitude ${p.tint} — a forest of one green`);
+}
+if (!mat.scatter.some((p) => p.metalness > 0)) {
+  fail(`tab A: no scatter archetype is metallic — the ore nodes read as painted rock`);
+}
+if (!mat.scatter.some((p) => p.count > 0)) {
+  fail(`tab A: every scatter pool is empty — nothing was streamed, so nothing above was measured on real instances`);
+}
+
+// Assertion 14 — the splat weights are a field, not a constant. The shader
+// below can blend four identities perfectly and still paint one, if what it
+// is fed is uniform or one-hot; no pixel probe can tell those apart from a
+// well-blended world, so count the attribute itself.
+const censusHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.splatCensus);
+if (censusHook !== "function") {
+  fail(`tab A: __gatesDebug.splatCensus is ${censusHook} on a dev shard — the splat gate cannot run`);
+}
+const census = await A.page.evaluate(() => globalThis.__gatesDebug.splatCensus());
+if (!(census.vertices > 0)) fail(`tab A: splat census saw ${census.vertices} vertices — the near ring never streamed`);
+console.log(
+  `  splat: ${census.vertices} vertices over ${census.chunks} chunks (${mat.identities.join("/")}) · ` +
+    `dominant ${census.dominantFraction.map((f) => (f * 100).toFixed(1) + "%").join("/")} · ` +
+    `present ${census.presentFraction.map((f) => (f * 100).toFixed(1) + "%").join("/")} · ` +
+    `spread ${census.spread.map((f) => f.toFixed(2)).join("/")} · ` +
+    `${(census.mixedFraction * 100).toFixed(1)}% blended, deepest second identity ` +
+    `${census.maxSecond.toFixed(2)}`,
+);
+// Spread, not biome membership: which biomes the pinned spawn's 320 m ring
+// happens to contain is a worldgen fact (the moisture channel's feature size
+// is ~700 m, so one ring is often one biome). What must be true of the
+// ATTRIBUTE anywhere is that it varies — a constant or a stuck weight vector
+// reads zero spread on every channel no matter where the ring is.
+const varying = census.spread.filter((s) => s >= SPLAT_MIN_SPREAD).length;
+if (varying < SPLAT_MIN_IDENTITIES) {
+  fail(
+    `tab A: only ${varying} of 4 identity weights vary by ≥ ${SPLAT_MIN_SPREAD} over the near ring ` +
+      `(spreads ${census.spread.map((s) => s.toFixed(3)).join(" ")}) — the splat attribute is not a ` +
+      `field derived from the world, so the shader is blending a constant`,
+  );
+}
+const held = census.presentFraction.filter((f) => f >= SPLAT_IDENTITY_SHARE).length;
+if (held < SPLAT_MIN_IDENTITIES) {
+  fail(
+    `tab A: ${held} of 4 identities contribute to ≥ ${(SPLAT_IDENTITY_SHARE * 100).toFixed(0)}% of the ` +
+      `near ring (${census.presentFraction.map((f) => (f * 100).toFixed(1) + "%").join(" ")}) — ` +
+      `the ground is one material wearing a four-slot attribute`,
+  );
+}
+// How gradually they meet. Also location-independent: it needs one boundary
+// vertex anywhere in the ring, and the check above guarantees one exists.
+// A hard threshold hands each vertex wholly to one identity, so the deepest
+// second weight it can ever reach is the cliff mask's — not a biome ramp's.
+if (census.maxSecond < SPLAT_MIN_SECOND) {
+  fail(
+    `tab A: the deepest any second identity gets on the near ring is ${census.maxSecond.toFixed(3)} ` +
+      `(floor ${SPLAT_MIN_SECOND}) — two identities never genuinely share a vertex, so the biome ` +
+      `bands are hard thresholds and the boundary is a seam on the vertex grid`,
+  );
+}
+if (census.mixedFraction < SPLAT_MIN_MIXED) {
+  fail(
+    `tab A: only ${(census.mixedFraction * 100).toFixed(2)}% of ${census.vertices} near-ring vertices ` +
+      `are a real blend of two identities (floor ${(SPLAT_MIN_MIXED * 100).toFixed(2)}%) — the ` +
+      `transition is one row of vertices wide, which is a seam with extra steps`,
+  );
+}
+
+// Assertion 15 — the procedural field REACHES THE FRAME. Everything above can
+// be true while the ground is a flat wash: a field scaled into one lattice
+// cell, uniforms never bound, a bump term cancelled by its own footprint
+// fade. The probe renders the live scene twice per yaw with the field on and
+// off and counts the pixels that moved, by direction. Held fixed across the
+// pair: the vertex splat weights, the four authored identities, and the
+// causal modifiers. Removed: every contribution of the noise field — the
+// weight break-up, the mottling, the roughness variation, the bump.
+const surfaceHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.surfaceProbe);
+if (surfaceHook !== "function") {
+  fail(`tab A: __gatesDebug.surfaceProbe is ${surfaceHook} on a dev shard — the surface gate cannot run`);
+}
+const surf = await A.page.evaluate(
+  ([yaws, pitch, minDelta]) => globalThis.__gatesDebug.surfaceProbe(yaws, pitch, minDelta),
+  [SURFACE_PROBE_YAWS, SURFACE_PROBE_PITCH, SURFACE_PROBE_MIN_DELTA],
+);
+if (!surf) fail(`tab A: surfaceProbe returned null — the scene never took the terrain material's uniforms`);
+const surfDetail = () =>
+  surf.samples
+    .map(
+      (s) =>
+        `    yaw ${s.yaw.toFixed(2)}: ${(s.fraction * 100).toFixed(2)}% moved ` +
+        `(+${(s.upFraction * 100).toFixed(2)}% / −${(s.downFraction * 100).toFixed(2)}%), ` +
+        `mean Δluma ${s.meanDelta.toFixed(1)}, max ${s.maxDelta}`,
+    )
+    .join("\n");
+const surfFraction = surf.changed / surf.pixels;
+if (surfFraction < SURFACE_MIN_FRACTION) {
+  fail(
+    `tab A: the procedural surface moved ${(surfFraction * 100).toFixed(3)}% of ${surf.pixels} probed ` +
+      `pixels across ${surf.samples.length} yaws — below ${(SURFACE_MIN_FRACTION * 100).toFixed(2)}%. ` +
+      `The material is configured and paints nothing.\n${surfDetail()}`,
+  );
+}
+const flatYaws = surf.samples.filter((s) => s.fraction < SURFACE_MIN_FRACTION_PER_YAW);
+if (flatYaws.length) {
+  fail(
+    `tab A: ${flatYaws.length} of ${surf.samples.length} probed directions are flat ground ` +
+      `(floor ${(SURFACE_MIN_FRACTION_PER_YAW * 100).toFixed(1)}% per yaw).\n${surfDetail()}`,
+  );
+}
+// Two-sided: a uniform change can only move the frame one way.
+const oneSided = surf.samples.filter(
+  (s) => s.upFraction < SURFACE_MIN_DIRECTIONAL || s.downFraction < SURFACE_MIN_DIRECTIONAL,
+);
+if (oneSided.length) {
+  fail(
+    `tab A: ${oneSided.length} of ${surf.samples.length} directions moved the frame only one way ` +
+      `(floor ${(SURFACE_MIN_DIRECTIONAL * 100).toFixed(1)}% up AND down per yaw). Microstructure ` +
+      `lightens some pixels and darkens others; a global tint or exposure shift cannot.\n${surfDetail()}`,
+  );
+}
+console.log(
+  `  surface: ${(surfFraction * 100).toFixed(2)}% of ${surf.pixels} probed pixels moved by the ` +
+    `procedural field, per yaw ` +
+    surf.samples
+      .map(
+        (s) =>
+          `${(s.fraction * 100).toFixed(1)}%(+${(s.upFraction * 100).toFixed(1)}/−${(s.downFraction * 100).toFixed(1)})`,
+      )
+      .join(" "),
+);
 
 // Play: A walks forward, B walks backward — opposite headings off the shared
 // point. The terrain worker only builds once a player moves, so the window
@@ -597,9 +824,11 @@ const publicSetView = await P.page.evaluate(() => typeof globalThis.__gatesDebug
 if (publicSetView !== "undefined") {
   fail(`public tab: __gatesDebug.setView is ${publicSetView} on a shard with no dev override — a dev affordance shipped to a public shard`);
 }
-const publicProbe = await P.page.evaluate(() => typeof globalThis.__gatesDebug.shadowProbe);
-if (publicProbe !== "undefined") {
-  fail(`public tab: __gatesDebug.shadowProbe is ${publicProbe} on a shard with no dev override — a dev affordance shipped to a public shard`);
+for (const hook of ["shadowProbe", "surfaceProbe", "splatCensus"]) {
+  const t = await P.page.evaluate((h) => typeof globalThis.__gatesDebug[h], hook);
+  if (t !== "undefined") {
+    fail(`public tab: __gatesDebug.${hook} is ${t} on a shard with no dev override — a dev affordance shipped to a public shard`);
+  }
 }
 if (P.errors.length) {
   fail(`public tab: ${P.errors.length} page error(s):\n` + P.errors.slice(0, 8).map((e) => `    ${e}`).join("\n"));

@@ -4,6 +4,7 @@
 // vectors — no allocations, no closures in the RAF path (L8).
 
 import * as THREE from "three";
+import { materialFacts, surfaceMaterial } from "./materials.js";
 
 const EYE_HEIGHT = 1.6; // cosmetic (DECISIONS.md §open, client cosmetics)
 const YAW_TO_RAD = (Math.PI * 2) / 65536;
@@ -72,17 +73,22 @@ const LIFT = 0.3; // collide.rs PIECE_LIFT_M
 const SLAB = 0.3; // plane-piece thickness (cosmetic)
 const WALL_T = 0.24; // collide.rs WALL_THICKNESS_M
 const TIER_COLORS = [0x8a6a45, 0x84837c, 0x5f6a72]; // wood · stone · metal
+// …and the response that makes the tier read at a distance, before any of
+// them has a texture: wood is matte, stone is matte-but-tighter, metal is
+// a conductor with a real specular lobe (materials v0). The reference
+// frames' tier read is as much sheen as colour (`bases.webp`).
+const TIER_SURFACES = ["wood", "stone", "metal"];
 // Deployable stand-ins by archetype code (sim deploy.rs order: bag,
-// hearth, box, fire, furnace, workbench, door): [w, h, d, color].
+// hearth, box, fire, furnace, workbench, door): [w, h, d, color, surface].
 // Cosmetics (DECISIONS.md §open, client cosmetics row).
 const DEPLOY_STYLE = [
-  [1.2, 0.25, 0.7, 0x7a9c4e], // bag
-  [0.9, 0.9, 0.9, 0x8c3b2e], // hearth
-  [1.0, 0.7, 1.0, 0x7a5c3a], // box
-  [0.7, 0.4, 0.7, 0xd07030], // fire
-  [1.1, 1.5, 1.1, 0x4f4a45], // furnace
-  [1.6, 0.9, 0.9, 0xa1793f], // workbench
-  [0.12, 2.1, 0.9, 0x6b4a2b], // door (thickness, height, width)
+  [1.2, 0.25, 0.7, 0x7a9c4e, "cloth"], // bag
+  [0.9, 0.9, 0.9, 0x8c3b2e, "stone"], // hearth
+  [1.0, 0.7, 1.0, 0x7a5c3a, "wood"], // box
+  [0.7, 0.4, 0.7, 0xd07030, "stone"], // fire
+  [1.1, 1.5, 1.1, 0x4f4a45, "stone"], // furnace
+  [1.6, 0.9, 0.9, 0xa1793f, "wood"], // workbench
+  [0.12, 2.1, 0.9, 0x6b4a2b, "wood"], // door (thickness, height, width)
 ];
 // A locked door reads as banded iron over the wood — the one bit of door
 // state a passer-by can see, and the thing they'd have to break.
@@ -214,9 +220,11 @@ export class GameScene {
     // One translucent plane at sea level; nothing simulates (TERRAIN.md §4).
     // It neither casts nor receives: a transparent sheet in the shadow pass
     // buys artefacts, not depth.
+    // Smooth, so the low sun leaves a specular track on it — the one thing
+    // that separates water from a blue plane before it animates.
     const water = new THREE.Mesh(
       new THREE.PlaneGeometry(6144, 6144),
-      new THREE.MeshLambertMaterial({
+      surfaceMaterial("water", {
         color: 0x2b5d7d,
         transparent: true,
         opacity: 0.62,
@@ -225,15 +233,14 @@ export class GameScene {
     water.rotation.x = -Math.PI / 2;
     water.position.set(1024, 0.0, 1024);
     this.scene.add(water);
+    this.water = water;
 
     this.remotes = new Map(); // id -> { group, stamp }
     this._capsuleGeo = new THREE.CapsuleGeometry(0.4, 1.0, 3, 10);
     this._noseGeo = new THREE.ConeGeometry(0.12, 0.34, 8);
     this._noseGeo.rotateX(Math.PI / 2); // apex points +Z (the yaw forward)
-    this._remoteMat = new THREE.MeshLambertMaterial({ color: 0xc8a072 });
-    this._remoteFrozenMat = new THREE.MeshLambertMaterial({
-      color: 0x8a8a8a,
-    });
+    this._remoteMat = surfaceMaterial("cloth", { color: 0xc8a072 });
+    this._remoteFrozenMat = surfaceMaterial("cloth", { color: 0x8a8a8a });
 
     // The weak-spot glint (DESIGN.md §2 "the Rust juice"): one unlit
     // octahedron parked on the marked node's flank; hidden when no mark.
@@ -256,8 +263,8 @@ export class GameScene {
     this._postGeo = new THREE.BoxGeometry(WALL_T, LEVEL_H, 0.9);
     this._lintelGeo = new THREE.BoxGeometry(WALL_T, 0.9, CELL - 0.04 - 1.8);
     this._stairsGeo = new THREE.BoxGeometry(CELL - 0.04, SLAB, 4.15);
-    this._tierMats = TIER_COLORS.map(
-      (c) => new THREE.MeshLambertMaterial({ color: c }),
+    this._tierMats = TIER_COLORS.map((c, i) =>
+      surfaceMaterial(TIER_SURFACES[i], { color: c }),
     );
     // The placement ghost: one wireframe box, rescaled to the aimed
     // piece's shape each frame build mode is on.
@@ -408,14 +415,18 @@ export class GameScene {
     const key = `${cx},${cz},${level},${loc}`;
     const old = this.deploys.get(key);
     if (old) this.scene.remove(old);
-    const [w, h, d, color] = DEPLOY_STYLE[arch] || DEPLOY_STYLE[2];
+    const [w, h, d, color, surface] = DEPLOY_STYLE[arch] || DEPLOY_STYLE[2];
     // Two materials for the door archetype, one for everything else;
-    // both cached, because this runs on every door swing.
+    // both cached, because this runs on every door swing. The locked leaf
+    // takes the metal response with the iron colour — the band is what a
+    // passer-by sees, the sheen is what tells them it is not wood.
     const ironclad = arch === 6 && locked;
     const matKey = ironclad ? "door-locked" : arch;
     let mat = this._deployMats.get(matKey);
     if (!mat) {
-      mat = new THREE.MeshLambertMaterial({ color: ironclad ? DOOR_LOCKED_COLOR : color });
+      mat = ironclad
+        ? surfaceMaterial("metal", { color: DOOR_LOCKED_COLOR })
+        : surfaceMaterial(surface, { color });
       this._deployMats.set(matKey, mat);
     }
     const obj = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -531,6 +542,122 @@ export class GameScene {
     const r = this.renderer.info.render;
     this.stats.calls = r.calls;
     this.stats.triangles = r.triangles;
+  }
+
+  /**
+   * The ground's material is built by Terrain (it owns the worker that feeds
+   * it); the scene borrows its uniforms so the surface probe has one handle
+   * on the whole splat system. Called once at boot.
+   */
+  attachTerrainMaterial(material) {
+    this._terrainMat = material;
+    this._terrainUniforms = material.userData.uniforms || null;
+  }
+
+  /**
+   * Dev-only: does the procedural surface actually reach the frame?
+   *
+   * Same shape as shadowProbe and for the same reason. Every structural
+   * fact about a material can be right — standard material, splat weights
+   * on the geometry, four authored identities, a shader that compiled —
+   * while the image is a flat wash: a field scaled into a single lattice
+   * cell, a break-up amplitude of zero, uniforms never bound, a bump term
+   * cancelled by its own footprint fade. So this renders the live scene
+   * twice per yaw with `uSurface` at 1 and at 0 and counts the pixels that
+   * moved, separately by direction.
+   *
+   * What the toggle holds fixed is the vertex splat weights, the four
+   * authored identities and the causal modifiers (wetness, snow, cliff);
+   * what it removes is every contribution of the noise field — the weight
+   * break-up, the albedo mottling, the roughness variation and the bump.
+   * So the delta is the field, and nothing else.
+   *
+   * The direction split is the part that is hard to fake: microstructure
+   * lightens some pixels and darkens others, and any uniform change (an
+   * exposure slip, a global tint) can only move them one way.
+   *
+   * Allocates and renders 2N frames; never call it from the RAF path.
+   */
+  surfaceProbe(yaws, pitchRad, minDelta) {
+    const u = this._terrainUniforms;
+    if (!u) return null;
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const full = new Uint8Array(w * h * 4);
+    const flat = new Uint8Array(w * h * 4);
+    const keepQ = this.camera.quaternion.clone();
+    const pos = this.camera.position;
+    const samples = [];
+    let changed = 0;
+    for (let i = 0; i < yaws.length; i++) {
+      const cp = Math.cos(pitchRad);
+      this._dir.set(
+        Math.sin(yaws[i]) * cp,
+        Math.sin(pitchRad),
+        Math.cos(yaws[i]) * cp,
+      );
+      this._target.copy(pos).add(this._dir);
+      this.camera.lookAt(this._target);
+      u.uSurface.value = 1;
+      this.renderer.render(this.scene, this.camera);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, full);
+      u.uSurface.value = 0;
+      this.renderer.render(this.scene, this.camera);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, flat);
+      let up = 0;
+      let down = 0;
+      let sum = 0;
+      let max = 0;
+      for (let p = 0; p < full.length; p += 4) {
+        const a = (full[p] * 2 + full[p + 1] * 5 + full[p + 2]) >> 3;
+        const b = (flat[p] * 2 + flat[p + 1] * 5 + flat[p + 2]) >> 3;
+        const d = a - b;
+        const m = d < 0 ? -d : d;
+        if (m > minDelta) {
+          if (d > 0) up++;
+          else down++;
+          sum += m;
+          if (m > max) max = m;
+        }
+      }
+      const n = up + down;
+      samples.push({
+        yaw: yaws[i],
+        up,
+        down,
+        changed: n,
+        fraction: n / (w * h),
+        upFraction: up / (w * h),
+        downFraction: down / (w * h),
+        meanDelta: n > 0 ? sum / n : 0,
+        maxDelta: max,
+      });
+      changed += n;
+    }
+    u.uSurface.value = 1;
+    this.camera.quaternion.copy(keepQ);
+    this.renderer.render(this.scene, this.camera);
+    return { width: w, height: h, pixels: w * h * yaws.length, changed, samples };
+  }
+
+  /** The material system's structural facts, for the browser gate. */
+  materials() {
+    const m = this._terrainMat;
+    return {
+      ...materialFacts(),
+      terrain: {
+        type: m ? m.type : null,
+        // The splat shader is a patch on a stock standard material; the
+        // uniforms it hands back are the proof the patch is installed.
+        patched: !!this._terrainUniforms,
+        surface: this._terrainUniforms ? this._terrainUniforms.uSurface.value : null,
+        roughness: m ? m.roughness : null,
+      },
+      tiers: this._tierMats.map((t) => [t.type, t.roughness, t.metalness]),
+      water: [this.water.material.roughness, this.water.material.metalness],
+      remote: [this._remoteMat.roughness, this._remoteMat.metalness],
+    };
   }
 
   /** The structural facts about the rig, for the browser gate to assert. */

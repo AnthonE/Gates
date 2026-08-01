@@ -101,14 +101,28 @@ point: **terrain life is just chunk events over a generated backdrop.**
   is a later nicety). Heights + normals generated in a **worker** from the
   shared wasm, meshes built off the main thread, uploaded once — a chunk
   is static geometry until a terrain event says otherwise.
-- **Material**: one splat shader, four texture sets (beach/meadow/forest
+- **Material**: one splat shader, four sets (beach/meadow/forest
   rock/highland), blended **in-shader from height, slope, and a noise
   channel recomputed in GLSL** — no splatmap textures, no extra bandwidth,
   and the blend math mirrors the biome function. Cliff mask forces rock.
   Far ring fades into fog + a low-res horizon mesh.
+  Shipped (materials v0, `DECISIONS.md` §open) with **no textures at
+  all**: the four sets are authored PBR identities (colour + roughness +
+  bump strength), their weights ride the geometry as a 4-byte `splat`
+  attribute the worker derives from the sim's own (height, moisture,
+  slope) — soft ramps centred on `biome()`'s own edges — and one shared
+  three-octave value-noise field, sampled in GLSL, breaks the weights up,
+  mottles albedo, varies roughness and drives a footprint-faded
+  surface-gradient bump. Wetness at the waterline, snow on high rock and
+  cliff darkening are causal modifiers on top, each moving colour and
+  roughness together. Texture sets are still the art pass; the *system*
+  is not waiting on them.
 - **Scatter rendering**: per chunk, one `InstancedMesh` per archetype
   filled from the slot list (minus harvested), frustum-culled per chunk.
-  Trees get two LODs (mesh / billboard cross) **(knob: distances)**.
+  Trees get two LODs (mesh / billboard cross) **(knob: distances)**; each
+  archetype carries an authored PBR response, baked vertex colours and a
+  per-instance tint hashed from its own cell, so variation costs no draw
+  calls (materials v0).
   Grass: cheap camera-ring patches, purely cosmetic, off on low tier
   **(knob)**.
 - **Water**: a single animated plane at sea level with depth-fade alpha

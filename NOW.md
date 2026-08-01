@@ -4,23 +4,23 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **Materials and the surface read.** Lighting v0 landed (key + bounded
-   texel-snapped shadow map + tone map, `DECISIONS.md` §open), so the world
-   now has shape. What it has no *surface*: everything is
-   `MeshLambertMaterial` at a flat colour: no roughness, no normal detail,
-   no splat blend on the terrain (`TERRAIN.md` §5 already specifies
-   height/slope/noise blending in-shader), and the scatter pines are one
-   solid green. `threejs-procedural-materials` and
-   `threejs-procedural-fields` are in `.claude/skills/` (MIT, Scott Sun —
-   credited in `CLAUDE.md`). Same rails: constants into `DECISIONS.md`
-   §open, stay inside the `DESIGN.md` §9 budget the browser gate now
-   asserts, no fps quoted from this box.
-2. **Shadows past 80 m.** The single map is bounded at an 80 m radius by
+1. **Shadows past 80 m.** The single map is bounded at an 80 m radius by
    design, so a hill or a base further out casts nothing. The clipmap in
    `threejs-shadow-systems` is the fix (concentric levels, committed
    centres, cached coarse updates); the near level already snaps, so this
    is adding levels, not rewriting. Wants the draw-call budget watched —
    the gate reports 58 of 300 today.
+2. **The surface, second pass.** Materials v0 landed (four authored
+   identities, one shared noise field, every channel from the same
+   causes — `DECISIONS.md` §open), so the ground has a surface and the
+   forest is a forest. What it still has no *texture*: the identities are
+   analytic, so at arm's length the ground is smooth-shaded mottling with
+   no grain. `threejs-procedural-materials` (triplanar, atlas filtering)
+   and `threejs-procedural-vegetation` are in `.claude/skills/` (MIT,
+   Scott Sun — credited in `CLAUDE.md`). Same rails: constants into
+   `DECISIONS.md` §open, stay inside the `DESIGN.md` §9 budget the browser
+   gate asserts (58/300 calls, 492 k/1.5 M tris today), no fps quoted
+   from this box.
 3. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
    solid (slice 13: chat — two channels on the reliable lane, local at
