@@ -67,6 +67,10 @@ export class Terrain {
       );
       mesh.count = 0;
       mesh.frustumCulled = false; // instances span the near ring
+      // A forest that casts nothing is the whole reason the ground reads
+      // flat; one InstancedMesh casts for every instance in it.
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       scene.add(mesh);
       this.pools.push(mesh);
       this.owners.push([]);
@@ -114,6 +118,13 @@ export class Terrain {
     geo.setAttribute("color", new THREE.BufferAttribute(msg.colors, 3));
     geo.setIndex(new THREE.BufferAttribute(msg.indices, 1));
     const mesh = new THREE.Mesh(geo, this.material);
+    // Shadows: the near ring both casts and receives. The far mesh only
+    // receives — it is the 8 m LOD of the SAME ground the near ring already
+    // casts from, so letting it cast would put two disagreeing silhouettes
+    // in one map (self-shadow acne along the whole near↔far boundary) and
+    // spend 131 k triangles a frame doing it.
+    mesh.receiveShadow = true;
+    mesh.castShadow = msg.key !== "far";
     if (msg.key === "far") {
       mesh.position.set(0, -0.15, 0);
       this.farBuilt = true;

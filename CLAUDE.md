@@ -103,3 +103,11 @@ cargo run -p server --bin replay -- --wal <file>
 ./web/dev.sh                        # vite + wasm-pack watch
 ./ci/gates.sh                       # exactly what CI runs — run it before merge
 ```
+
+## Third-party credit
+
+- `.claude/skills/threejs-*` — the Three.js graphics skill pack, MIT,
+  © 2026 Scott Sun (`THREEJS_GRAPHICS_SKILLS_LICENSE`). `threejs-shadow-systems`
+  is the source of the client's light-space texel snapping and texel-scaled
+  normal bias (`DECISIONS.md` §open, lighting v0). Guidance only — no code
+  from the pack ships in this repo.

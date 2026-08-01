@@ -34,6 +34,17 @@
 // SECOND shard with no dev override — a public shard's config — and asserts the
 // hook is absent there and present, aiming, on the dev one.
 //
+// It is also where the LIGHTING rig is gated, for the same reason: a shadow map
+// only exists inside a renderer. The flags (map enabled, key casting, a tone
+// map that is not NoToneMapping) are the cheap half; the assertion that matters
+// renders the live scene twice per sample yaw — key light casting, then not —
+// reads both frames back off the drawing buffer and requires the shadow pass to
+// have actually taken pixels down. Every flag can be true while the image is
+// unchanged: a bias that pushes every sample past its caster, a coverage box
+// parked somewhere else, casters that never got castShadow. Only a frame knows.
+// The same two renders also count the shadow pass's draw calls, which is what
+// makes DESIGN §9's < 300 calls / < 1.5 M tris budget assertable here at all.
+//
 // Any missing dependency is a loud failure, never a silent skip.
 
 import { spawn } from "node:child_process";
@@ -75,6 +86,43 @@ const MOVE_MIN_M = 2;
 const AIM_YAW = Math.PI / 2;
 const AIM_PITCH = -0.3;
 const AIM_EPS = 1e-3;
+// --- the lighting gate (DECISIONS.md §open, "lighting v0") ------------------
+// The shadow probe sweeps four yaws so the assertion does not depend on the
+// player having walked to a spot with a caster in one particular direction,
+// and looks slightly down so the ground the shadows land on fills the frame.
+const SHADOW_PROBE_YAWS = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2];
+const SHADOW_PROBE_PITCH = -0.45;
+// The near ring streams one chunk at a time; probing before it lands would
+// score a frame with most of its casters missing.
+const SHADOW_SETTLE_MS = Number(process.env.BROWSER_SMOKE_SHADOW_SETTLE_MS || 4000);
+// A pixel counts as shadowed when the shadow pass took its luma down by more
+// than this out of 255 — comfortably above SwiftShader's dither/AA noise
+// between two renders of an identical frame, well below a real shadow (whose
+// mean delta on this scene runs in the tens).
+const SHADOW_PROBE_MIN_DELTA = 6;
+// Floor on the darkened share of the sweep. The pinned spawn measures ~9%
+// (worst single yaw ~3%), so this leaves ~6x of headroom for a chunk that
+// has not streamed yet, while the failure it guards — a rig that darkens
+// NOTHING — scores exactly 0.
+const SHADOW_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_SHADOW_MIN || 0.015);
+// And a floor on EVERY yaw, which is the assertion that actually pins the
+// WORLD as a caster. Dropping castShadow from the terrain and the scatter
+// pools still cleared the aggregate above: the other tab's avatar stands on
+// the shared spawn point and, under a 21° sun, throws a long enough shadow
+// across a downward-pitched frame to score 6% on its own — from two of the
+// four yaws, with the other two at exactly 0.0%. Worst real yaw is 2.8%.
+const SHADOW_MIN_FRACTION_PER_YAW = Number(process.env.BROWSER_SMOKE_SHADOW_MIN_YAW || 0.01);
+// Same failure from the other side, counted rather than sampled: the seven
+// scatter pools are frustumCulled=false, so a rig where the world casts
+// submits at least them to the shadow pass. That mutation submitted 2 (the
+// avatar's two meshes); the intact rig submits 25.
+const SHADOW_PASS_MIN_CALLS = Number(process.env.BROWSER_SMOKE_SHADOW_MIN_CALLS || 8);
+const SHADOW_MIN_MAP_PX = 1024;
+// DESIGN §9's client budget, gated for the first time here. Both counts are
+// per rendered frame and INCLUDE the shadow pass, which is the point: a
+// second pass over every caster is the obvious way to eat this budget.
+const DRAW_CALL_BUDGET = 300;
+const TRIANGLE_BUDGET = 1_500_000;
 
 const fail = (msg) => {
   console.error(`GATE FAIL: ${msg}`);
@@ -293,6 +341,103 @@ const heardLocalA = await waitForLine(A, LOCAL_LINE);
 if (!heardLocalA) fail(`tab A never got its own echo — the delivery receipt is missing`);
 console.log(`  chat: A's local line reached B, and A's own echo came back`);
 
+// --- lighting: the key light and the shadow map -----------------------------
+// Measured HERE, before the walk, on purpose: tab A is still standing on
+// `dev_spawn` at a pinned seed, so the frames the probe scores are the same
+// frames every pass. After the walk the position depends on how much wall
+// clock a shared box gave the input pump, and the floor below would be
+// scoring a different place each run.
+//
+// Assertion 9 — the rig is wired. Cheap and structural, and it exists so that
+// assertion 10's failure is diagnosable: "no darkening" means something very
+// different when the shadow map was never enabled in the first place.
+await A.page.waitForTimeout(SHADOW_SETTLE_MS); // the near ring streams in
+const lit = await A.page.evaluate(() => globalThis.__gatesDebug.lighting);
+if (!lit) fail(`tab A: __gatesDebug.lighting missing — the scene publishes no lighting state`);
+if (lit.shadowMap !== true) fail(`tab A: renderer.shadowMap.enabled is ${lit.shadowMap}`);
+if (lit.sunCasts !== true) fail(`tab A: the key light has castShadow=${lit.sunCasts}`);
+if (!(lit.mapSize >= SHADOW_MIN_MAP_PX)) {
+  fail(`tab A: shadow map is ${lit.mapSize} px — below ${SHADOW_MIN_MAP_PX}, silhouettes cannot resolve`);
+}
+if (!(lit.radiusM > 0)) fail(`tab A: shadow coverage radius is ${lit.radiusM} m`);
+if (!(lit.normalBias > 0)) fail(`tab A: shadow normalBias is ${lit.normalBias} — acne is not being biased away`);
+// Tone mapping is the other half of "grade toward a darker edge": 0 is
+// THREE.NoToneMapping, i.e. nothing owns the highlight roll-off.
+if (!(lit.toneMapping > 0)) fail(`tab A: renderer.toneMapping is NoToneMapping — nothing owns the transfer`);
+if (!(lit.exposure > 0)) fail(`tab A: toneMappingExposure is ${lit.exposure}`);
+// The fill must not be able to wash the key out; a fill at or above the key
+// is the flat-hemisphere state this work exists to end.
+if (!(lit.sunIntensity > lit.fillIntensity)) {
+  fail(
+    `tab A: key ${lit.sunIntensity} is not above fill ${lit.fillIntensity} — ` +
+      `a fill that strong flattens every shadow the map draws`,
+  );
+}
+
+// Assertion 10 — the shadow map DARKENS PIXELS. A flag says the renderer was
+// asked for shadows; only a frame says it got any. The dev-only probe renders
+// the live scene twice per yaw — shadow pass on, then off — and counts pixels
+// the shadow pass took down. Everything else about this rig (bias, radius,
+// caster flags, the light's own position) can be individually wrong in a way
+// that leaves every flag above true and the image unchanged.
+const probeHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.shadowProbe);
+if (probeHook !== "function") {
+  fail(`tab A: __gatesDebug.shadowProbe is ${probeHook} on a dev shard — the shadow gate cannot run`);
+}
+const probe = await A.page.evaluate(
+  ([yaws, pitch, minDelta]) => globalThis.__gatesDebug.shadowProbe(yaws, pitch, minDelta),
+  [SHADOW_PROBE_YAWS, SHADOW_PROBE_PITCH, SHADOW_PROBE_MIN_DELTA],
+);
+const litFraction = probe.darkened / probe.pixels;
+if (litFraction < SHADOW_MIN_FRACTION) {
+  fail(
+    `tab A: the shadow pass darkened ${(litFraction * 100).toFixed(3)}% of ` +
+      `${probe.pixels} probed pixels across ${probe.samples.length} yaws — ` +
+      `below ${(SHADOW_MIN_FRACTION * 100).toFixed(2)}%. Shadows are enabled but nothing is ` +
+      `casting into the frame.\n` +
+      probe.samples
+        .map(
+          (s) =>
+            `    yaw ${s.yaw.toFixed(2)}: ${s.darkened} px, mean Δluma ${s.meanDelta.toFixed(1)}, ` +
+            `max ${s.maxDelta}, frame luma ${s.litMean.toFixed(1)} unshadowed / ${s.shadowedMean.toFixed(1)} shadowed`,
+        )
+        .join("\n"),
+  );
+}
+// Per-yaw floor. The aggregate above can be carried by one direction, and it
+// was: see SHADOW_MIN_FRACTION_PER_YAW. Shadows in every direction can only
+// come from the world casting, not from whatever happens to be next to you.
+const thin = probe.samples.filter((s) => s.fraction < SHADOW_MIN_FRACTION_PER_YAW);
+if (thin.length) {
+  fail(
+    `tab A: ${thin.length} of ${probe.samples.length} probed directions have almost no ` +
+      `shadow in them (floor ${(SHADOW_MIN_FRACTION_PER_YAW * 100).toFixed(1)}% per yaw). ` +
+      `Something near the camera is casting and the world is not.\n` +
+      probe.samples
+        .map((s) => `    yaw ${s.yaw.toFixed(2)}: ${(s.fraction * 100).toFixed(2)}% (${s.darkened} px)`)
+        .join("\n"),
+  );
+}
+
+// The shadow pass is extra DRAW CALLS, not just an extra texture lookup, and
+// the budget below is asserted on a count that includes them. Prove that from
+// the same two renders rather than asserting it in a comment — and require
+// enough of them that the terrain and the scatter pools must be among them.
+const shadowPassCalls = probe.samples.map((s) => s.callsShadowed - s.callsUnshadowed);
+if (!shadowPassCalls.every((d) => d >= SHADOW_PASS_MIN_CALLS)) {
+  fail(
+    `tab A: the shadow pass submitted [${shadowPassCalls}] draw calls, below ` +
+      `${SHADOW_PASS_MIN_CALLS} — either it is drawing nothing (so the budget assertion ` +
+      `is not counting it either) or the world's meshes are not casters`,
+  );
+}
+console.log(
+  `  shadows: ${(litFraction * 100).toFixed(2)}% of ${probe.pixels} probed pixels darkened by the ` +
+    `shadow pass (${probe.samples.map((s) => (s.fraction * 100).toFixed(1) + "%").join(" ")}), ` +
+    `+${Math.min(...shadowPassCalls)}..${Math.max(...shadowPassCalls)} draw calls`,
+);
+
+
 // Play: A walks forward, B walks backward — opposite headings off the shared
 // point. The terrain worker only builds once a player moves, so the window
 // where bug 2 fires is AFTER the first snapshot.
@@ -428,13 +573,33 @@ if (dx < MOVE_MIN_M || Math.abs(dz) > dx) {
 }
 console.log(`  dev hook: aimed to [${view.map((v) => v.toFixed(2))}], walked +X ${dx.toFixed(1)} m (dz ${dz.toFixed(1)})`);
 
-// Assertion 9 — the gate itself. A shard with no dev override is exactly a
+// Assertion 11 — DESIGN §9's draw budget, which had no gate until the shadow
+// pass gave it teeth: a second full pass over every caster is exactly the kind
+// of change that eats it. Counted and structural, so it means the same here as
+// on the reference box; timing still does not. Read HERE, at the end, rather
+// than off the same snapshot as assertion 9: by now both tabs have walked, so
+// the near ring has streamed and torn down and the scene is at its fullest.
+const budget = await A.page.evaluate(() => globalThis.__gatesDebug.lighting);
+if (!(budget.calls > 0)) fail(`tab A: renderer reported ${budget.calls} draw calls — the stats are not being read`);
+if (budget.calls >= DRAW_CALL_BUDGET) {
+  fail(`tab A: ${budget.calls} draw calls (main + shadow pass) — DESIGN §9 budgets < ${DRAW_CALL_BUDGET}`);
+}
+if (budget.triangles >= TRIANGLE_BUDGET) {
+  fail(`tab A: ${budget.triangles} triangles (main + shadow pass) — DESIGN §9 budgets < ${TRIANGLE_BUDGET}`);
+}
+console.log(`  budget: ${budget.calls} draw calls, ${budget.triangles} triangles (both passes)`);
+
+// Assertion 12 — the gate itself. A shard with no dev override is exactly a
 // public shard's config, and its client must have no dev surface at all.
 const P = await join("public tab", PUBLIC_WIRE_PORT, publicCertHash);
 if (P.dbg.dev !== false) fail(`public tab: shard without dev_spawn welcomed with dev=${P.dbg.dev}`);
 const publicSetView = await P.page.evaluate(() => typeof globalThis.__gatesDebug.setView);
 if (publicSetView !== "undefined") {
   fail(`public tab: __gatesDebug.setView is ${publicSetView} on a shard with no dev override — a dev affordance shipped to a public shard`);
+}
+const publicProbe = await P.page.evaluate(() => typeof globalThis.__gatesDebug.shadowProbe);
+if (publicProbe !== "undefined") {
+  fail(`public tab: __gatesDebug.shadowProbe is ${publicProbe} on a shard with no dev override — a dev affordance shipped to a public shard`);
 }
 if (P.errors.length) {
   fail(`public tab: ${P.errors.length} page error(s):\n` + P.errors.slice(0, 8).map((e) => `    ${e}`).join("\n"));
