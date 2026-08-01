@@ -125,8 +125,12 @@ function instanceTint(cellKey, amp, out) {
 }
 
 export class Terrain {
-  constructor(scene, seed, ex, wasmUrl) {
+  constructor(scene, seed, ex, wasmUrl, clipmap) {
     this.scene = scene;
+    // The shadow clipmap caches its coarse levels, so a chunk that streams in
+    // or out has to say so or it casts nothing until the cache ages out
+    // (shadows.js `invalidate`, the reference's "streamed terrain arrival").
+    this.clipmap = clipmap || null;
     this.seed = seed;
     this.ex = ex; // main-thread wasm: slot queries only (fast, tiny)
     this.material = makeTerrainMaterial();
@@ -237,9 +241,29 @@ export class Terrain {
         entry.pending = false;
         entry.mesh = mesh;
         this._addScatter(msg.key, msg.x0, msg.z0);
+        this._invalidateShadows(mesh);
       }
     }
     this._kick();
+  }
+
+  /**
+   * Tell the clipmap a chunk's worth of casters arrived or left. The sphere
+   * is the geometry's own bounding sphere in world space — measured, not a
+   * guessed radius, and the scatter standing on the chunk shares its
+   * footprint. Stream-in/out only: never the steady-state RAF path.
+   */
+  _invalidateShadows(mesh) {
+    if (!this.clipmap) return;
+    const geo = mesh.geometry;
+    if (!geo.boundingSphere) geo.computeBoundingSphere();
+    const s = geo.boundingSphere;
+    this.clipmap.invalidate(
+      mesh.position.x + s.center.x,
+      mesh.position.y + s.center.y,
+      mesh.position.z + s.center.z,
+      s.radius,
+    );
   }
 
   _addScatter(key, x0, z0) {
@@ -386,6 +410,7 @@ export class Terrain {
     if (key) {
       const entry = this.chunks.get(key);
       if (entry && entry.mesh) {
+        this._invalidateShadows(entry.mesh);
         this.scene.remove(entry.mesh);
         entry.mesh.geometry.dispose();
         this._removeScatter(key);

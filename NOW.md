@@ -4,12 +4,15 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **Shadows past 80 m.** The single map is bounded at an 80 m radius by
-   design, so a hill or a base further out casts nothing. The clipmap in
-   `threejs-shadow-systems` is the fix (concentric levels, committed
-   centres, cached coarse updates); the near level already snaps, so this
-   is adding levels, not rewriting. Wants the draw-call budget watched —
-   the gate reports 58 of 300 today.
+1. **The horizon still casts nothing.** The shadow clipmap landed (two
+   levels, 80 m and 240 m, committed centres, cached coarse updates —
+   `DECISIONS.md` §open), so shadows now reach the edge of what *casts*:
+   the 5×5 near ring, ±192 m. Past that the far mesh receives and never
+   casts, by lighting v0's call — two disagreeing LODs of one hillside in
+   one map is acne — so a mountain at 400 m is still lit flat. Fixing it
+   is a terrain job before it is a shadow one (a skirt, or a shadow-only
+   proxy at the near↔far seam); then the level table takes one constant.
+   Budget headroom: the gate reports peak 101 of 300 calls today.
 2. **The surface, second pass.** Materials v0 landed (four authored
    identities, one shared noise field, every channel from the same
    causes — `DECISIONS.md` §open), so the ground has a surface and the

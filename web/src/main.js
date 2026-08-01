@@ -121,7 +121,9 @@ const MAX_LEVEL = 7;
 function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLeftover, dev) {
   const canvas = $("gl");
   const scene = new GameScene(canvas);
-  const terrain = new Terrain(scene.scene, seed, ex, WASM_URL);
+  // The clipmap rides along so a chunk streaming in or out can force the
+  // cached coarse shadow levels to redraw (shadow clipmap v0).
+  const terrain = new Terrain(scene.scene, seed, ex, WASM_URL, scene.clipmap);
   // The ground's material lives with the terrain that feeds it; the scene
   // borrows its uniforms so the surface probe has one handle (materials v0).
   scene.attachTerrainMaterial(terrain.material);
@@ -783,6 +785,12 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
 
   let last = performance.now();
   let stamp = 0;
+  // A smoothed frame time, for the debug snapshot only. It is a TIMED number
+  // and therefore never a claim about reference hardware — it exists as a
+  // same-box regression signal, because the client is a hot path too (L8) and
+  // a change that halves the frame rate is otherwise invisible to every gate
+  // here. One number, one multiply-add, no allocation.
+  let frameMs = 0;
 
   // The dev-only camera hook (DECISIONS.md §open "dev view hook"), bound
   // ONCE here — the 250 ms timer republishes this same function object
@@ -803,12 +811,20 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     ? (yaws, pitch, minDelta) => scene.surfaceProbe(yaws, pitch, minDelta)
     : null;
   const devSplatCensus = dev ? () => terrain.splatCensus() : null;
+  // Shadow clipmap v0's probe: the same difference shape, but the thing it
+  // holds fixed is the frame and the thing it removes is every level past the
+  // near one — so what it counts is shadow that only exists past 80 m.
+  const devFarShadowProbe = dev
+    ? (yaws, pitch, minDelta, nearM, fov, heightM) =>
+        scene.farShadowProbe(yaws, pitch, minDelta, nearM, fov, heightM)
+    : null;
 
   function frame(now) {
     if (closed) return;
     requestAnimationFrame(frame);
     const dt = now - last;
     last = now;
+    frameMs += (dt - frameMs) * 0.05;
 
     ex.client_set_input(
       input.buttons(),
@@ -913,6 +929,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       // (DESIGN §9's < 300 calls / < 1.5 M tris). Read off the scene, not
       // recomputed — what the gate asserts is what the renderer did.
       lighting: scene.lighting(),
+      frameMs,
       // The material system's structural facts (materials v0): the ground's
       // patched splat material, the authored per-surface responses, and how
       // the scatter pools are tinted.
@@ -922,6 +939,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (devShadowProbe) debug.shadowProbe = devShadowProbe;
     if (devSurfaceProbe) debug.surfaceProbe = devSurfaceProbe;
     if (devSplatCensus) debug.splatCensus = devSplatCensus;
+    if (devFarShadowProbe) debug.farShadowProbe = devFarShadowProbe;
     globalThis.__gatesDebug = debug;
   }, 250);
 }
