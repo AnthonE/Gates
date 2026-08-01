@@ -26,6 +26,19 @@ fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32
 }
 
+/// Put every join on one real beach spawn. `dev_spawn` is the documented
+/// override for exactly this — "it exists so a test can put two clients
+/// inside AOI range on demand" (DECISIONS.md §open, dev spawn override).
+/// Until the beach spawn ring landed, these two ids happened to hash
+/// within AOI of each other; that was luck, and what this gate is about
+/// is the client loop, not where the world puts a fresh player. The point
+/// is the one the ring itself picked for client 0, so it stays a real
+/// spawn on a real shore that no worldgen change can sink.
+fn pin_together(core: &mut ShardCore) {
+    let p = core.world.spawn_pos(id_of(0));
+    core.world.dev_spawn = Some(p);
+}
+
 fn server_body(core: &ShardCore, id: u32) -> Body {
     core.world
         .players
@@ -100,6 +113,7 @@ fn pump(
 fn clean_delivery_predicts_bit_exact() {
     let stats = ShardStats::default();
     let mut core = ShardCore::new(SEED);
+    pin_together(&mut core);
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));
     let mut clients = vec![
@@ -196,6 +210,7 @@ fn loss_corrects_and_reconverges() {
 fn churn_removes_remotes() {
     let stats = ShardStats::default();
     let mut core = ShardCore::new(SEED);
+    pin_together(&mut core);
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));
     let mut clients = vec![

@@ -17,11 +17,54 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-/// Regenerated this commit: upgrade-in-place landed — the piece fixture
-/// gained the stone rung its wall shape was missing (so the random place
-/// script's out-of-range row moved with it), and this script now climbs a
-/// second wall to that rung and is refused both ways off it.
-const GOLDEN_FINAL_HASH: u64 = 0x5D8A_C52A_352A_B4D0;
+/// Regenerated this commit: the beach spawn ring landed, so every `Join`
+/// in this script puts its player on a different point of the world — the
+/// sim change — and the kitted bots are now walked up off the sand before
+/// the scripted arc runs (`walk_up_the_beach`), which moves eight more
+/// bodies. Every hash downstream of either moves with them.
+const GOLDEN_FINAL_HASH: u64 = 0x5E14_85BF_ABE8_CB78;
+
+/// Stand a kitted bot on ground that will hold a foundation.
+///
+/// The beach spawn ring puts a fresh player at ~1.2 m and a foundation
+/// wants 1.5 m (`build::FOUNDATION_MIN_H_M`), so before this the whole
+/// scripted build/deploy/door/lock/upgrade arc below depended on where a
+/// five-second random walk happened to stop — which held at this seed and
+/// collapsed to one placement at `SEED ^ 1`. Stepping inland along the ray
+/// to island center until the cell center is buildable is what a player
+/// does at a fresh spawn, done deterministically: same seed, same result,
+/// and the same `foundation_terrain_ok` the sim refuses on, so the fixture
+/// cannot drift away from the rule.
+///
+/// A fixture arrangement, like the inventory grants beside it — applied
+/// identically on both runs, so the replay contract is untouched.
+fn walk_up_the_beach(world: &mut World, seed: u64, slot: usize) {
+    let b = world.players[slot].body;
+    let mut x = b.qx as f32 * sim_core::movement::POS_XZ_Q;
+    let mut z = b.qz as f32 * sim_core::movement::POS_XZ_Q;
+    let c = sim_core::terrain::ISLAND_SIZE * 0.5;
+    let (mut dx, mut dz) = (c - x, c - z);
+    let d = (dx * dx + dz * dz).sqrt();
+    if d <= 0.0 {
+        return;
+    }
+    dx /= d;
+    dz /= d;
+    // Bounded: 200 steps of 3 m is 600 m, more than the beach-to-center
+    // distance, so the loop is a search and never a walk to nowhere.
+    for _ in 0..200 {
+        let cx = sim_core::build::build_cell_of(x);
+        let cz = sim_core::build::build_cell_of(z);
+        let ax = (cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
+        let az = (cz as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
+        if sim_core::build::foundation_terrain_ok(seed, ax, az) {
+            break;
+        }
+        x += dx * sim_core::build::BUILD_CELL_M;
+        z += dz * sim_core::build::BUILD_CELL_M;
+    }
+    world.players[slot].body = sim_core::movement::Body::at(seed, x, z);
+}
 
 fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut world = World::new(seed);
@@ -149,6 +192,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     {
                         world.players[w].inv[20 + k] = sim_core::gather::ItemStack { item, count };
                     }
+                    walk_up_the_beach(&mut world, seed, w);
                 }
             }
         }
@@ -308,17 +352,27 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     }
     // Counted from events, not the final stores: decay legitimately
     // removes early placements before the run ends.
+    // Floors, not `> 0`: a script that lands one placement exercises the
+    // build path about as well as one that lands none — and that is
+    // exactly what the beach ring did to `SEED ^ 1` before
+    // `walk_up_the_beach` staged the kitted bots, while `> 0` stayed
+    // green. Measured this commit at placed 8 / deployed 50 / decayed 28
+    // at `SEED` and 5 / 34 / 18 at `SEED ^ 1`; the floors sit under both,
+    // where thinning stops being incidental and becomes a lost gate.
     assert!(
-        placed > 0,
-        "the script placed nothing — the build success path fell out of the replay surface"
+        placed >= 4,
+        "the script placed {placed} pieces — the build success path is falling out \
+         of the replay surface"
     );
     assert!(
-        deployed > 0,
-        "the script deployed nothing — the deploy success path fell out of the replay surface"
+        deployed >= 16,
+        "the script deployed {deployed} — the deploy success path is falling out \
+         of the replay surface"
     );
     assert!(
-        decayed > 0,
-        "nothing decayed away — the removal path fell out of the replay surface"
+        decayed >= 8,
+        "only {decayed} decayed away — the removal path is falling out of the \
+         replay surface"
     );
     assert!(
         doors >= 4,

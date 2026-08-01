@@ -7,6 +7,7 @@
 use crate::build::{self, BuildContent, Pieces};
 use crate::craft::{self, CraftContent, CraftJob};
 use crate::deploy::{self, DeployContent, Deploys};
+use crate::fmath::floor_i32;
 use crate::gather::{self, GatherContent, ItemStack, SlotLives, NO_CELL};
 use crate::input::InputFrame;
 use crate::limits::{
@@ -16,10 +17,36 @@ use crate::limits::{
 use crate::movement::{self, Body};
 use crate::rng::cell_hash;
 use crate::terrain::{self, ScatterTable};
+use crate::yaw_lut::yaw_dir;
 use xxhash_rust::xxh3::Xxh3;
 
 /// Noise channel reserved for spawn-point selection.
 const CH_SPAWN: u32 = 96;
+
+/// Beach spawn ring (DECISIONS.md §open, "beach spawn ring"). Every number
+/// here is a documented default, none of them spoken.
+///
+/// The ray bracket is geometry, not taste: the continent falloff puts the
+/// coastline at `CONTINENT_RADIUS` ± wobble with a 160 m edge, so land is
+/// solid well inside 640 m and the sea floor is below the target well
+/// before 1024 m — which is also the largest radius that keeps every
+/// bearing's outer probe inside the 2048 m island square (an axis bearing
+/// lands exactly on its edge).
+const SPAWN_CANDIDATES: i32 = 48;
+const SPAWN_RAY_INNER: f32 = 640.0;
+const SPAWN_RAY_OUTER: f32 = 1024.0;
+/// Where on the beach to stand: above `movement::WADE_GROUND_MAX` (0.4 m,
+/// so a fresh spawn is on sand and not wading) and below the 2 m beach mask.
+const SPAWN_TARGET_H: f32 = 1.2;
+/// 384 m of bracket halved 12 times = under 10 cm of shoreline resolution.
+const SPAWN_BISECT_ITERS: i32 = 12;
+/// The walkability shape used by foundations and the old placeholder alike.
+const SPAWN_MAX_SLOPE: f32 = 1.0;
+/// Clearance from any scatter slot center. The widest archetype the client
+/// draws is the tree cone at radius 1.7 m × 1.1 max scale ≈ 1.9 m; add the
+/// 0.4 m capsule and 4 m leaves a spawn standing clear of it, not merely
+/// outside it.
+const SPAWN_CLEAR_M: f32 = 4.0;
 
 /// Integer event codes (CLAUDE.md wall 3) — the sim's outbound facts, one
 /// ring per tick, drained by the server after `tick` returns.
@@ -307,25 +334,110 @@ impl World {
         }
     }
 
-    /// Deterministic spawn: hashed candidates over the island interior,
-    /// first walkable one wins; island center as the total-miss fallback.
-    /// The beach spawn ring proper is a later worldgen slice.
+    /// The beach spawn ring (TERRAIN.md §1 stage 6 — **beach** is the spawn
+    /// zone; DESIGN.md §2 — "spawn naked on a beach of a seeded island").
+    ///
+    /// One candidate = one hashed bearing off the island center, then a
+    /// bisection along that ray for the shoreline crossing at
+    /// `SPAWN_TARGET_H`. The crossing lands in the beach band by
+    /// construction, and the beach band sits *below* the forest band, so a
+    /// spawn there is clear of trees structurally — not by rejection-
+    /// sampling a forest, which is what the placeholder did and why fresh
+    /// spawns stood inside scatter.
+    ///
+    /// What still gets rejected is local: a cliff shore (slope), and the
+    /// beach's own scatter — barrels wash up, bushes and rocks sit there
+    /// (TERRAIN.md §1's beach row), and a neighbouring cell one metre
+    /// uphill is already meadow or forest and may hold a tree.
+    ///
+    /// Bounded and allocation-free: at most `SPAWN_CANDIDATES` bearings,
+    /// each a fixed `SPAWN_BISECT_ITERS` halvings and a fixed 3×3 scatter
+    /// scan. Two documented fallbacks, both gated as unreachable by
+    /// `spawn_ring_lands_on_a_clear_beach`: the first merely-walkable shore
+    /// point if every candidate's ground is occupied, and the island center
+    /// if no bearing brackets a shore at all.
     pub fn spawn_pos(&self, id: u32) -> (f32, f32) {
         if let Some(p) = self.dev_spawn {
             return p;
         }
+        let c = terrain::ISLAND_SIZE * 0.5;
+        let mut relaxed: Option<(f32, f32)> = None;
         let mut attempt = 0i32;
-        while attempt < 96 {
+        while attempt < SPAWN_CANDIDATES {
             let h = cell_hash(self.seed, id as i32, attempt, CH_SPAWN);
-            let x = 224.0 + (h % 1600) as f32;
-            let z = 224.0 + ((h >> 32) % 1600) as f32;
+            attempt += 1;
+            // Index the 256-entry yaw LUT: a bearing, no trig (wall 1).
+            // `yaw_dir` indexes by the high byte, so shift the draw up.
+            let (dx, dz) = yaw_dir(((h & 0xFF) as u16) << 8);
+
+            // Bracket the crossing, or this bearing has no shore in range:
+            // inland must be above the target and the outer radius below it.
+            let mut lo = SPAWN_RAY_INNER;
+            let mut hi = SPAWN_RAY_OUTER;
+            if terrain::height(self.seed, c + dx * lo, c + dz * lo) <= SPAWN_TARGET_H
+                || terrain::height(self.seed, c + dx * hi, c + dz * hi) > SPAWN_TARGET_H
+            {
+                continue;
+            }
+            let mut i = 0i32;
+            while i < SPAWN_BISECT_ITERS {
+                let mid = (lo + hi) * 0.5;
+                if terrain::height(self.seed, c + dx * mid, c + dz * mid) > SPAWN_TARGET_H {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+                i += 1;
+            }
+
+            // `lo` is the landward side of the crossing: above the target,
+            // within a bisection width of it. A gentle shore therefore
+            // lands just inside the beach band; a cliff shore overshoots
+            // it, and the slope check is what refuses that.
+            let x = c + dx * lo;
+            let z = c + dz * lo;
             let hy = terrain::height(self.seed, x, z);
-            if (1.5..45.0).contains(&hy) && terrain::slope(self.seed, x, z) < 1.0 {
+            if hy >= terrain::BEACH_MAX_H || terrain::slope(self.seed, x, z) >= SPAWN_MAX_SLOPE {
+                continue;
+            }
+            if relaxed.is_none() {
+                relaxed = Some((x, z));
+            }
+            if self.scatter_clear(x, z) {
                 return (x, z);
             }
-            attempt += 1;
         }
-        (terrain::ISLAND_SIZE * 0.5, terrain::ISLAND_SIZE * 0.5)
+        relaxed.unwrap_or((c, c))
+    }
+
+    /// True if no scatter slot stands within `SPAWN_CLEAR_M` of (x, z).
+    ///
+    /// Scans the 3×3 cell block around the point, which is conservative
+    /// for any clearance under 9 m: a slot two cells out has its center at
+    /// least 2·`CELL_SIZE` = 16 m from this cell's center, the point sits
+    /// at most half a cell (4 m) from that center, and jitter moves a slot
+    /// at most 3 m — so 16 − 4 − 3 = 9 m of unavoidable distance.
+    fn scatter_clear(&self, x: f32, z: f32) -> bool {
+        let cx = floor_i32(x / terrain::CELL_SIZE);
+        let cz = floor_i32(z / terrain::CELL_SIZE);
+        let mut ox = -1i32;
+        while ox <= 1 {
+            let mut oz = -1i32;
+            while oz <= 1 {
+                let s = terrain::scatter(self.seed, &self.scatter, cx + ox, cz + oz);
+                oz += 1;
+                if s.occupant == terrain::Occupant::None {
+                    continue;
+                }
+                let sx = s.x - x;
+                let sz = s.z - z;
+                if sx * sx + sz * sz < SPAWN_CLEAR_M * SPAWN_CLEAR_M {
+                    return false;
+                }
+            }
+            ox += 1;
+        }
+        true
     }
 
     fn slot_of(&self, id: u32) -> Option<usize> {
@@ -694,6 +806,78 @@ mod tests {
         let a = w2.players[0].body;
         let b = w2.players[1].body;
         assert!(a.qx != b.qx || a.qz != b.qz);
+    }
+
+    /// The slice's whole point (NOW.md): a fresh spawn is **clear of
+    /// scatter**, not merely walkable. Nothing here calls the selector's
+    /// own predicate — it re-derives the facts from terrain, and scans a
+    /// 5×5 cell block where `scatter_clear` scans 3×3, so a clearance
+    /// radius that outgrew the scanned block would fail here rather than
+    /// pass silently.
+    ///
+    /// Also gates both fallbacks: the island-center miss is forest (biome
+    /// assert), and the relaxed merely-walkable one is by definition
+    /// occupied (clearance assert). Neither can fire without reddening.
+    #[test]
+    fn spawn_ring_lands_on_a_clear_beach() {
+        // 32 islands × 64 joins. Measured on the way in: the worst spawn
+        // over 400 seeds × 64 ids took 7 of the 48 candidates, so the
+        // sweep is nowhere near the fallback and a regression that starts
+        // exhausting candidates shows up here as a failed assert, not as
+        // a quietly worse spawn.
+        for i in 0..32u64 {
+            let seed = if i == 0 { SMOKE_SEED } else { i * 7919 + 3 };
+            let w = World::new(seed);
+            let mut quadrants = [0u32; 4];
+            for id in 1..=64u32 {
+                let (x, z) = w.spawn_pos(id);
+                let h = terrain::height(seed, x, z);
+                let m = terrain::moisture(seed, x, z);
+                assert_eq!(
+                    terrain::biome(h, m),
+                    terrain::Biome::Beach,
+                    "seed {seed} id {id}: spawn ({x},{z}) height {h} is not beach"
+                );
+                assert!(
+                    h > movement::WADE_GROUND_MAX,
+                    "seed {seed} id {id}: spawn ({x},{z}) height {h} is in the wade band"
+                );
+                let s = terrain::slope(seed, x, z);
+                assert!(s < 1.0, "seed {seed} id {id}: spawn ({x},{z}) slope {s}");
+
+                for ox in -2..=2 {
+                    for oz in -2..=2 {
+                        let cx = crate::fmath::floor_i32(x / terrain::CELL_SIZE) + ox;
+                        let cz = crate::fmath::floor_i32(z / terrain::CELL_SIZE) + oz;
+                        let slot = terrain::scatter(seed, &w.scatter, cx, cz);
+                        if slot.occupant == terrain::Occupant::None {
+                            continue;
+                        }
+                        let (dx, dz) = (slot.x - x, slot.z - z);
+                        let d2 = dx * dx + dz * dz;
+                        assert!(
+                            d2 >= SPAWN_CLEAR_M * SPAWN_CLEAR_M,
+                            "seed {seed} id {id}: spawn ({x},{z}) stands {} m from a {:?} \
+                             at ({},{})",
+                            d2.sqrt(),
+                            slot.occupant,
+                            slot.x,
+                            slot.z
+                        );
+                    }
+                }
+
+                let c = terrain::ISLAND_SIZE * 0.5;
+                quadrants[(usize::from(x > c)) | (usize::from(z > c) << 1)] += 1;
+            }
+            // A ring, not a lucky cove: 64 ids reach every quadrant of the
+            // coast. (The old placeholder would pass every assert above at
+            // one point on one beach.)
+            assert!(
+                quadrants.iter().all(|&n| n > 0),
+                "seed {seed}: spawns are not distributed around the ring: {quadrants:?}"
+            );
+        }
     }
 
     #[test]
