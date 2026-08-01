@@ -25,21 +25,23 @@
 //! suite flips bits to prove it.
 
 pub mod bits;
+pub mod chat;
 pub mod event;
 pub mod goldens;
 
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
+pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
-    decode_event, encode_event_build_refused, encode_event_catalog, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_gather, encode_event_inv, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_sync, encode_event_recipes, encode_event_removed,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_weak_mark,
-    EventMsg, InvSlot, ItemCatalog, CATALOG_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
-    SLOT_SYNC_BATCH,
+    decode_event, encode_event_build_refused, encode_event_catalog, encode_event_chat,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_gather, encode_event_inv,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, CATALOG_BATCH,
+    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
+    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -69,8 +71,12 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// the upgrade action (address + the target material), which fills the
 /// last code the 3-bit action subtype field had left. No S→C layout
 /// moved — an upgrade re-rows an address, which is what the piece-placed
-/// broadcast already says. Fixtures are keyed `v9_*`.
-pub const PROTO_VER: u16 = 9;
+/// broadcast already says. v10 added the chat lane: `KIND_CHAT` C→S (the
+/// last code the 3-bit kind field had left) and the chat event subtype
+/// S→C — chat is player-authored text, not a sim command, so it gets a
+/// kind of its own rather than an action subtype it could not have had
+/// anyway. Fixtures are keyed `v10_*`.
+pub const PROTO_VER: u16 = 10;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -89,6 +95,14 @@ pub const KIND_EVENT: u32 = 5;
 /// the event lane, riding the same bidi stream in length-prefixed frames
 /// (the server's 64 B `read_frame` acceptance).
 pub const KIND_ACTION: u32 = 6;
+/// C→S chat lines (`chat.rs`), on the same bidi stream in the same
+/// length-prefixed frames. Chat is player-authored text, never a sim
+/// command, so it rides its own kind instead of the action lane's
+/// subtype space — which had no code left for it regardless. This is the
+/// last code the 3-bit kind field holds: an eighth lane costs a width
+/// bump, and that bump would widen every input datagram and every
+/// snapshot, so the next lane should subtype an existing kind.
+pub const KIND_CHAT: u32 = 7;
 
 /// Longest stream-lane message payload the handshake accepts. Overflow
 /// policy: refuse (`Malformed`) — a hello has no business being big.

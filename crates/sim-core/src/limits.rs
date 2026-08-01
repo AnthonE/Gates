@@ -133,6 +133,23 @@ pub const CRAFT_COUNT_MAX: u16 = 99;
 /// wire row).
 pub const ACTION_RING_CAP: usize = 8;
 
+/// Per-connection inbound ring of decoded C→S chat lines. Overflow
+/// policy: **drop newest**, counted — the opposite of the action ring,
+/// and deliberately. An action is a transaction the client is owed; a
+/// chat line is not, and backpressuring the shared stream on chat would
+/// let one spammer stall their own build and craft lane behind their own
+/// typing. The reader rate-limits ahead of this, so a full ring means a
+/// burst that the limiter already judged legal — dropping its tail is
+/// honest. Proposed default, DECISIONS.md §open (chat v0).
+pub const CHAT_RING_CAP: usize = 4;
+
+/// Local-chat radius in centimeters: 20 m planar (DECISIONS.md §open,
+/// "local chat | on, 20 m"). Centimeters so distance² compares stay in
+/// exact i64, same as the AOI radii above — and well inside the AOI
+/// enter radius, so anyone who can hear you is already an entity you can
+/// see.
+pub const CHAT_LOCAL_CM: i64 = 2_000;
+
 /// Sparse slot-life store (harvested/damaged scatter slots). Sized past
 /// the ~8–12 k live slots a seed produces (TERRAIN.md §6) so harvested
 /// entries always fit. Overflow policy: **evict** — standing-damage

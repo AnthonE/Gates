@@ -10,7 +10,9 @@ use crate::clock::ClientClock;
 use crate::interp::Interp;
 use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
-use protocol::{decode_event, encode_input, EventMsg, InputDatagram, ItemCatalog, WireError};
+use protocol::{
+    decode_event, encode_input, ChatText, EventMsg, InputDatagram, ItemCatalog, WireError,
+};
 use sim_core::build::{BuildContent, PieceRec};
 use sim_core::collide::ColIndex;
 use sim_core::craft::CraftContent;
@@ -27,6 +29,11 @@ pub const TOAST_RING: usize = 8;
 
 /// Craft refusal reasons buffered for the HUD (drop-oldest, cosmetic).
 pub const REFUSAL_RING: usize = 4;
+
+/// Chat lines buffered for the log (drop-oldest). Deeper than the toast
+/// ring because the pump drains it every event, not every frame, and a
+/// dropped line is the one loss a player would actually notice.
+pub const CHAT_RING: usize = 16;
 
 /// What one event-lane message changed, as bit flags the bridge hands JS.
 pub const APPLIED_INV: u32 = 1 << 0;
@@ -66,6 +73,8 @@ pub const APPLIED_STOCK: u32 = 1 << 18;
 pub const APPLIED_PIECE_REMOVED: u32 = 1 << 19;
 /// Decay removed a deployable (`removed_addr()` names the address).
 pub const APPLIED_DEPLOY_REMOVED: u32 = 1 << 20;
+/// A chat line arrived (`pop_chat` has it).
+pub const APPLIED_CHAT: u32 = 1 << 21;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -424,6 +433,10 @@ pub struct ClientCore {
     refusals: [u8; REFUSAL_RING],
     refusal_head: usize,
     refusal_len: usize,
+    /// Chat lines as received: (speaker id, global, text).
+    chats: [(u32, bool, ChatText); CHAT_RING],
+    chat_head: usize,
+    chat_len: usize,
     /// The placed-piece mirror (address-keyed; the renderer's truth).
     pub pieces: PieceSet,
     /// Piece records the last `on_stream` call added or replaced.
@@ -505,6 +518,9 @@ impl ClientCore {
             craft_toast_head: 0,
             craft_toast_len: 0,
             refusals: [0; REFUSAL_RING],
+            chats: [(0, false, ChatText::EMPTY); CHAT_RING],
+            chat_head: 0,
+            chat_len: 0,
             refusal_head: 0,
             refusal_len: 0,
             pieces: PieceSet::new(),
@@ -826,6 +842,17 @@ impl ClientCore {
                     flags |= APPLIED_DEPLOYS;
                 }
             }
+            EventMsg::Chat { from, global, text } => {
+                // Drop-oldest: a chat log that stalls on the oldest line
+                // is worse than one that loses it.
+                if self.chat_len == CHAT_RING {
+                    self.chat_head = (self.chat_head + 1) % CHAT_RING;
+                    self.chat_len -= 1;
+                }
+                self.chats[(self.chat_head + self.chat_len) % CHAT_RING] = (from, global, text);
+                self.chat_len += 1;
+                flags |= APPLIED_CHAT;
+            }
             EventMsg::Stock {
                 cx,
                 cz,
@@ -1022,6 +1049,17 @@ impl ClientCore {
         self.craft_toast_head = (self.craft_toast_head + 1) % TOAST_RING;
         self.craft_toast_len -= 1;
         Some(t)
+    }
+
+    /// Oldest buffered chat line: (speaker id, global, text).
+    pub fn pop_chat(&mut self) -> Option<(u32, bool, ChatText)> {
+        if self.chat_len == 0 {
+            return None;
+        }
+        let c = self.chats[self.chat_head];
+        self.chat_head = (self.chat_head + 1) % CHAT_RING;
+        self.chat_len -= 1;
+        Some(c)
     }
 
     /// Oldest buffered craft refusal reason (`sim_core::craft::REFUSE_*`).

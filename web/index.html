@@ -129,6 +129,67 @@
         border-color: #7fa8c9;
         background: rgba(28, 44, 58, 0.7);
       }
+      /* Chat: log bottom-left (the reference's kill/contacts feed sits
+         there), composer directly under it. Plain DOM, outside the RAF
+         path like every other panel. */
+      #chatlog {
+        position: fixed;
+        left: 12px;
+        bottom: 66px;
+        max-width: min(520px, 52vw);
+        display: none;
+        z-index: 5;
+        pointer-events: none;
+        font: 12px monospace;
+        color: #c8d4de;
+        text-shadow: 0 1px 3px #000;
+      }
+      .chatline {
+        animation: chat-fade 12s linear forwards;
+        word-break: break-word;
+      }
+      #chatlog.held .chatline {
+        animation: none;
+        opacity: 1;
+      }
+      .chatline .who {
+        color: #7d8fa0;
+      }
+      .chatline.global .who {
+        color: #d9b96f;
+      }
+      .chatline.own .who {
+        color: #a9cf8f;
+      }
+      @keyframes chat-fade {
+        0% {
+          opacity: 1;
+        }
+        85% {
+          opacity: 1;
+        }
+        100% {
+          opacity: 0;
+        }
+      }
+      #chat {
+        position: fixed;
+        left: 12px;
+        bottom: 40px;
+        width: min(520px, 52vw);
+        display: none;
+        z-index: 7;
+      }
+      #chatinput {
+        width: 100%;
+        background: rgba(10, 15, 20, 0.88);
+        border: 1px solid #3a5064;
+        border-radius: 4px;
+        color: #dbe3ea;
+        padding: 5px 7px;
+        font: 12px monospace;
+        outline: none;
+      }
       #toasts {
         position: fixed;
         right: 24px;
@@ -270,6 +331,16 @@
     <div id="craftq"></div>
     <div id="craft"></div>
     <div id="toasts"></div>
+    <div id="chatlog"></div>
+    <div id="chat">
+      <input
+        id="chatinput"
+        maxlength="48"
+        spellcheck="false"
+        autocomplete="off"
+        placeholder="say something · /g for global · esc cancels"
+      />
+    </div>
     <div id="start">
       <h1>GATES</h1>
       <label
@@ -287,7 +358,8 @@
         WASD move · shift sprint · click to look around · hold left mouse to
         gather · 1–6 select hotbar · C craft (click a recipe; shift ×5;
         click a queued job to cancel) · B build (wheel picks the piece,
-        R/F the level, right-click places)
+        R/F the level, right-click places) · T or enter to chat (20 m
+        local; prefix <code>/g </code> for global)
       </p>
     </div>
     <script type="module" src="/src/main.js"></script>

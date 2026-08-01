@@ -32,6 +32,7 @@ export class WasmViews {
     this.deployChanges = null; // Uint32Array over client_deploy_changes_ptr
     this.deployDefs = null; // Uint16Array over client_deploy_defs_ptr (4-word rows)
     this.stock = null; // Uint32Array over client_stock_ptr (item,units pairs)
+    this.chat = null; // Uint8Array over client_chat_ptr (id, global, len, text)
     this.inCap = ex.client_in_cap();
     this.refresh();
   }
@@ -58,6 +59,7 @@ export class WasmViews {
     const deployChangesPtr = ex.client_deploy_changes_ptr();
     const deployDefsPtr = ex.client_deploy_defs_ptr();
     const stockPtr = ex.client_stock_ptr();
+    const chatPtr = ex.client_chat_ptr();
 
     const buf = ex.memory.buffer;
     if (buf === this.buffer) return;
@@ -83,5 +85,7 @@ export class WasmViews {
     this.deployDefs = new Uint16Array(buf, deployDefsPtr, 16 * 4);
     // 4 hearth stock rows × (item, units).
     this.stock = new Uint32Array(buf, stockPtr, 4 * 2);
+    // One popped chat line: id (4 LE bytes), global, length, 48 text bytes.
+    this.chat = new Uint8Array(buf, chatPtr, 6 + 48);
   }
 }

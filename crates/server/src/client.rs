@@ -11,7 +11,7 @@
 //! overflow all fall to the same zero-state path — recovery is not a
 //! special case.
 
-use protocol::{ActionMsg, EntityState, Nudge};
+use protocol::{ActionMsg, ChatMsg, EntityState, Nudge};
 use sim_core::craft::CraftJob;
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
@@ -134,6 +134,11 @@ pub struct ClientNetState {
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
+    /// One decoded C→S chat line awaiting its fan-out. Unlike the action
+    /// hand this is never deferred: chat is not a transaction, so a line
+    /// that can't be said this tick is dropped rather than held (the
+    /// fan-out always takes it — see `ShardCore::pump_chat`).
+    pub pending_chat: Option<ChatMsg>,
     /// Craft queue as last successfully queued to this client; the sim
     /// diffs the world's copy each tick, like `last_inv`.
     pub last_jobs: [CraftJob; CRAFT_QUEUE],
@@ -174,6 +179,7 @@ impl ClientNetState {
             deploy_sync_cursor: 0,
             deploy_sync_reset: true,
             pending_action: None,
+            pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
             last_done_at: 0,
         }

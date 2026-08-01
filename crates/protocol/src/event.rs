@@ -12,6 +12,7 @@
 //! the client decodes server bytes, the server encodes on the sim thread.
 
 use crate::bits::{BitReader, BitWriter, WireError};
+use crate::chat::{read_text, write_text, ChatText};
 use crate::{
     expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, DEPLOY_ROW_BITS,
     KIND_BITS, KIND_EVENT, PIECE_ROW_BITS,
@@ -86,6 +87,7 @@ const SUB_PIECE_REMOVED: u32 = 19;
 const SUB_DEPLOY_REMOVED: u32 = 20;
 const SUB_STOCK: u32 = 21;
 const SUB_DOOR: u32 = 22;
+const SUB_CHAT: u32 = 23;
 
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
@@ -311,6 +313,17 @@ pub enum EventMsg {
         level: u8,
         rows: [(u16, u32); HEARTH_STOCK_ROWS],
         count: u8,
+    },
+    /// One chat line, relayed (`chat.rs`). `from` is the speaker's player
+    /// id — there are no names yet, and the sender's own line comes back
+    /// through this same path, so the echo is the delivery receipt.
+    /// `global` is which channel it arrived on; the server has already
+    /// decided this recipient is entitled to hear it, so the bit is a
+    /// label for the client to render, never a filter for it to apply.
+    Chat {
+        from: u32,
+        global: bool,
+        text: ChatText,
     },
 }
 
@@ -802,6 +815,22 @@ pub fn encode_event_door(
     Ok(w.finish())
 }
 
+/// Relay one chat line to one recipient. The text is already sanitized
+/// (`ChatText` has no other constructor), so this cannot put a line on
+/// the wire the C→S decoder would have refused.
+pub fn encode_event_chat(
+    from: u32,
+    global: bool,
+    text: &ChatText,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_CHAT)?;
+    w.write(from, 32)?;
+    w.write_bit(global)?;
+    write_text(&mut w, text)?;
+    Ok(w.finish())
+}
+
 /// Total decode of one event-lane message: arbitrary bytes in, `Ok` or a
 /// `WireError` out, never a panic — same contract as the datagrams.
 pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
@@ -1128,6 +1157,18 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             open: r.read_bit()?,
             locked: r.read_bit()?,
         },
+        // The relay is held to the sender's own rule: `read_text`
+        // sanitizes or refuses, so a client never renders a line the
+        // server would not have accepted.
+        SUB_CHAT => {
+            let from = r.read(32)?;
+            let global = r.read_bit()?;
+            EventMsg::Chat {
+                from,
+                global,
+                text: read_text(&mut r)?,
+            }
+        }
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;
@@ -1682,10 +1723,11 @@ mod tests {
             Err(WireError::Malformed),
             "spare byte after a valid message must fail the strict tail"
         );
-        // kind EVENT + subtype 23: unknown (the first unused subtype).
+        // kind EVENT + subtype 24: unknown (the first unused subtype —
+        // 23 became chat, so this moves up with every new subtype).
         let raw = [
-            (KIND_EVENT | (23 << KIND_BITS)) as u8,
-            (23 >> (8 - KIND_BITS)) as u8,
+            (KIND_EVENT | (24 << KIND_BITS)) as u8,
+            (24 >> (8 - KIND_BITS)) as u8,
         ];
         assert_eq!(decode_event(&raw[..2]), Err(WireError::Malformed));
     }

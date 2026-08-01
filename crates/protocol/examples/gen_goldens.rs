@@ -8,8 +8,8 @@
 
 use protocol::{
     encode_action_cancel, encode_action_craft, encode_action_deploy, encode_action_feed,
-    encode_action_lock, encode_action_place, encode_action_upgrade, encode_action_use,
-    encode_event_build_refused, encode_event_catalog, encode_event_craft_done,
+    encode_action_lock, encode_action_place, encode_action_upgrade, encode_action_use, encode_chat,
+    encode_event_build_refused, encode_event_catalog, encode_event_chat, encode_event_craft_done,
     encode_event_craft_q, encode_event_craft_refused, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_gather, encode_event_inv, encode_event_piece_defs,
@@ -173,4 +173,12 @@ fn main() {
     let (cx, cz, level, loc, material) = goldens::action_upgrade();
     let len = encode_action_upgrade(cx, cz, level, loc, material, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[38], &buf[..len]);
+
+    let (text, global) = goldens::chat();
+    let len = encode_chat(text.as_bytes(), global, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[39], &buf[..len]);
+
+    let (from, global, text) = goldens::event_chat();
+    let len = encode_event_chat(from, global, &text, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[40], &buf[..len]);
 }

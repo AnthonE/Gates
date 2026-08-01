@@ -7,6 +7,12 @@
 const TOAST_MS = 1600;
 const TOAST_CAP = 8;
 
+/** Chat log: lines kept on screen, and how long a line stays visible once
+ * the composer is closed (cosmetic — the reference's kill/contacts feed
+ * fades the same way). Open the composer and the whole log holds. */
+const CHAT_CAP = 8;
+const CHAT_FADE_MS = 12000;
+
 export class Hud {
   constructor() {
     this.el = document.getElementById("hud");
@@ -14,6 +20,24 @@ export class Hud {
     this.hotbar = document.getElementById("hotbar");
     this.toasts = document.getElementById("toasts");
     this.craft = document.getElementById("craft");
+    this.chat = document.getElementById("chat");
+    this.chatlog = document.getElementById("chatlog");
+    this.chatinput = document.getElementById("chatinput");
+    this.chatOpen = false;
+    /** Set by main.js: (raw line) → bool sent. */
+    this.onChatSend = () => false;
+    this.chatinput.addEventListener("keydown", (e) => {
+      // The composer swallows every key while it is open, so a "w" is a
+      // letter and not a step forward.
+      e.stopPropagation();
+      if (e.code === "Enter" || e.code === "NumpadEnter") {
+        const raw = this.chatinput.value.trim();
+        if (raw) this.onChatSend(raw);
+        this.closeChat();
+      } else if (e.code === "Escape") {
+        this.closeChat();
+      }
+    });
     this.craftq = document.getElementById("craftq");
     this.build = document.getElementById("build");
     this.craftOpen = false;
@@ -40,6 +64,7 @@ export class Hud {
     this.cross.style.display = "block";
     this.hotbar.style.display = "flex";
     this.toasts.style.display = "block";
+    this.chatlog.style.display = "block";
   }
 
   /** Toggle the craft panel; returns whether it is now open. */
@@ -142,6 +167,43 @@ export class Hud {
     if (this.selected >= 0) this.cellDivs[this.selected].classList.remove("sel");
     this.selected = sel;
     if (sel >= 0 && sel < 6) this.cellDivs[sel].classList.add("sel");
+  }
+
+  /** Open the chat composer; the caller drops pointer lock. */
+  openChat() {
+    this.chatOpen = true;
+    this.chat.style.display = "flex";
+    this.chatlog.classList.add("held");
+    this.chatinput.value = "";
+    this.chatinput.focus();
+  }
+
+  closeChat() {
+    this.chatOpen = false;
+    this.chat.style.display = "none";
+    this.chatlog.classList.remove("held");
+    this.chatinput.blur();
+  }
+
+  /** One received line. `own` marks your own echo, which is the receipt
+   * that the server actually relayed it — the client never renders a
+   * line on faith. Names don't exist yet, so the speaker is their id. */
+  chatLine(from, global, text, own) {
+    while (this.chatlog.childElementCount >= CHAT_CAP) {
+      this.chatlog.removeChild(this.chatlog.firstChild);
+    }
+    const div = document.createElement("div");
+    div.className = `chatline${global ? " global" : ""}${own ? " own" : ""}`;
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = `${global ? "[g] " : ""}#${from}`;
+    div.appendChild(who);
+    // textContent, never innerHTML: the line is another player's bytes.
+    div.appendChild(document.createTextNode(` ${text}`));
+    this.chatlog.appendChild(div);
+    setTimeout(() => {
+      if (div.parentNode === this.chatlog) this.chatlog.removeChild(div);
+    }, CHAT_FADE_MS);
   }
 
   /** One floating "+N Thing" line; oldest evicted past the cap. */

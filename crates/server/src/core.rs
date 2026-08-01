@@ -7,23 +7,24 @@
 use crate::client::ClientNetState;
 use crate::stats::ShardStats;
 use protocol::{
-    encode_event_build_refused, encode_event_catalog, encode_event_craft_done,
+    encode_event_build_refused, encode_event_catalog, encode_event_chat, encode_event_craft_done,
     encode_event_craft_q, encode_event_craft_refused, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_gather, encode_event_inv, encode_event_piece_defs,
     encode_event_piece_placed, encode_event_piece_sync, encode_event_recipes, encode_event_removed,
     encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_weak_mark,
-    ActionMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader,
-    WireError, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder,
+    SnapshotHeader, WireError, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
 use sim_core::deploy::DeployRec;
 use sim_core::gather::ItemStack;
 use sim_core::limits::{
-    AOI_ENTER_CM, AOI_EXIT_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS,
-    MAX_COMMANDS_PER_TICK, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS,
-    STALENESS_CEILING, SYNC_SCAN_PER_TICK,
+    AOI_ENTER_CM, AOI_EXIT_CM, CHAT_LOCAL_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES,
+    HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
+    SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK,
 };
 use sim_core::world::{
     Command, Player, World, EV_BUILD_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEPLOY_PLACED,
@@ -157,6 +158,18 @@ impl ShardCore {
         }
     }
 
+    /// Hand one decoded chat line to this client's pending slot. The line
+    /// is said next tick or not at all — a second line arriving in the
+    /// same tick replaces the first, which cannot happen through the net
+    /// path (it pops one per tick) and is the right answer if it ever
+    /// does: chat is not owed delivery the way an action is.
+    pub fn push_chat(&mut self, slot: usize, chat: ChatMsg) {
+        let c = &mut self.clients[slot];
+        if c.connected {
+            c.pending_chat = Some(chat);
+        }
+    }
+
     /// One fixed tick: queued joins/leaves + one consumed input per client
     /// → `World::tick`, then interest/priority accrual, then the event
     /// lane (sim events routed + per-client sync/catalog/inventory drips),
@@ -277,6 +290,7 @@ impl ShardCore {
             }
         }
 
+        self.pump_chat(stats, &mut send);
         self.pump_events(stats, &mut send);
 
         if self.world.tick.is_multiple_of(SNAPSHOT_INTERVAL_TICKS) {
@@ -287,6 +301,82 @@ impl ShardCore {
                 if let Some(len) = self.encode_snapshot(slot, stats) {
                     ShardStats::bump(&stats.snap_sent);
                     send(Lane::Snapshot, slot, &self.dg_buf[..len]);
+                }
+            }
+        }
+    }
+
+    /// This client's live world slot, or None while its join command is
+    /// still queued. `update_interest` refreshes the cache every tick, so
+    /// this is a validated read of it, never a scan — chat routing is
+    /// O(recipients), not O(recipients × players).
+    fn live_wslot(&self, slot: usize) -> Option<usize> {
+        let c = &self.clients[slot];
+        let w = c.own_wslot;
+        if w == usize::MAX {
+            return None;
+        }
+        let p = &self.world.players[w];
+        (p.active && p.id == c.id).then_some(w)
+    }
+
+    /// Chat's whole fan-out (ALPHA.md §1: "global text + 20 m local").
+    /// Runs after the sim step and before the event pump, on the
+    /// positions this tick just produced.
+    ///
+    /// Chat never entered `World` — it is not sim state, not a `Command`,
+    /// not in the WAL — so this is the only place a line exists on the
+    /// server, and it exists for exactly one tick. `global` reaches every
+    /// connected client; local reaches everyone within `CHAT_LOCAL_CM`
+    /// planar of the speaker, the speaker included: the echo is the
+    /// delivery receipt, so a client never renders its own line on faith.
+    fn pump_chat(&mut self, stats: &ShardStats, send: &mut impl FnMut(Lane, usize, &[u8]) -> bool) {
+        for from_slot in 0..MAX_PLAYERS {
+            let Some(msg) = self.clients[from_slot].pending_chat.take() else {
+                continue;
+            };
+            if !self.clients[from_slot].connected {
+                continue;
+            }
+            let from_id = self.clients[from_slot].id;
+            // No position ⇒ nothing to measure a radius from. A line
+            // typed inside the one-tick window between the welcome and
+            // the join command landing is dropped, not guessed at.
+            let Some(from_w) = self.live_wslot(from_slot) else {
+                ShardStats::bump(&stats.chat_undelivered);
+                continue;
+            };
+            let own = self.world.players[from_w].body;
+            let len = match encode_event_chat(from_id, msg.global, &msg.text, &mut self.ev_buf) {
+                Ok(len) => len,
+                Err(_) => {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    continue;
+                }
+            };
+            for to_slot in 0..MAX_PLAYERS {
+                if !self.clients[to_slot].connected {
+                    continue;
+                }
+                if !msg.global {
+                    let Some(to_w) = self.live_wslot(to_slot) else {
+                        continue;
+                    };
+                    let p = self.world.players[to_w].body;
+                    let dx = (p.qx - own.qx) as i64 * 3;
+                    let dz = (p.qz - own.qz) as i64 * 3;
+                    if dx * dx + dz * dz > CHAT_LOCAL_CM * CHAT_LOCAL_CM {
+                        continue;
+                    }
+                }
+                if send(Lane::Event, to_slot, &self.ev_buf[..len]) {
+                    ShardStats::bump(&stats.ev_sent);
+                } else {
+                    // Deliberately no `ev_resync` here, unlike every other
+                    // event: a resync restarts the harvested/piece/deploy
+                    // walks, and none of them would bring this line back.
+                    // The line is gone; say so in a counter and move on.
+                    ShardStats::bump(&stats.chat_undelivered);
                 }
             }
         }

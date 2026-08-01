@@ -10,7 +10,7 @@
 //!   handles), sim→accept graveyard ring (returns them, so the sim thread
 //!   never deallocates — L2 outlives the tick).
 
-use protocol::{ActionMsg, InputDatagram, MAX_EVENT_MSG_BYTES};
+use protocol::{ActionMsg, ChatMsg, InputDatagram, MAX_EVENT_MSG_BYTES};
 use rtrb::{Consumer, Producer};
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -141,6 +141,11 @@ pub struct Link {
     /// C→S reliable actions (craft requests). The sim drains at most one
     /// per tick; a full ring backpressures the stream reader (limits.rs).
     pub actions: Consumer<ActionMsg>,
+    /// C→S chat lines, off the same stream as the actions. The sim drains
+    /// at most one per tick; a full ring drops the newest line (limits.rs
+    /// — chat never backpressures the shared stream, or a spammer would
+    /// stall their own transactions behind their own typing).
+    pub chats: Consumer<ChatMsg>,
     pub snaps: Producer<SnapMsg>,
     pub events: Producer<EvMsg>,
 }
