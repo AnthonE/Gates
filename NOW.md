@@ -4,18 +4,22 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **The surface, second pass.** Materials v0 landed (four authored
-   identities, one shared noise field, every channel from the same
-   causes — `DECISIONS.md` §open), so the ground has a surface and the
-   forest is a forest. What it still has no *texture*: the identities are
-   analytic, so at arm's length the ground is smooth-shaded mottling with
-   no grain. `threejs-procedural-materials` (triplanar, atlas filtering)
-   and `threejs-procedural-vegetation` are in `.claude/skills/` (MIT,
-   Scott Sun — credited in `CLAUDE.md`). Same rails: constants into
-   `DECISIONS.md` §open, stay inside the `DESIGN.md` §9 budget the browser
-   gate asserts (peak 147/300 calls, 1.05 M/1.5 M tris today — the horizon
-   casting spent most of the headroom the last two slices had), no fps
-   quoted from this box.
+1. **The scatter is still analytic, and so is everything off the ground.**
+   Materials v1 landed (grain at arm's length, projected on the surface,
+   gated by neighbour contrast — `DECISIONS.md` §open), so the GROUND now
+   has texture at every distance. Nothing else does: the pines are a
+   merged trunk/skirt/crown with baked vertex ramps and a per-instance
+   tint, the rocks are dodecahedra, and none of them carries a surface
+   field at all — a boulder at 2 m is a flat-shaded facet. The same
+   machinery ports (`threejs-procedural-materials` for a world-space field
+   on a closed mesh, `threejs-procedural-vegetation` for leaf cards and
+   trunk detail; both MIT, Scott Sun, credited in `CLAUDE.md`). Same
+   rails: constants into `DECISIONS.md` §open, stay inside the `DESIGN.md`
+   §9 budget the browser gate asserts (peak 147/300 calls, 1.05 M/1.5 M
+   tris today — the horizon casting spent most of the headroom), and
+   watch the fragment bill: the gate box runs three tabs on a software
+   rasterizer, and materials v1 had to buy its grain back out of the micro
+   octave to keep them all alive.
 2. **Nothing casts past 720 m, and nothing out there has a silhouette.**
    The horizon casts now (`DECISIONS.md` §open) but two limits are stated
    rather than solved: the coarsest clipmap level stops at 720 m because

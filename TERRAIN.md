@@ -128,6 +128,17 @@ point: **terrain life is just chunk events over a generated backdrop.**
   cliff darkening are causal modifiers on top, each moving colour and
   roughness together. Texture sets are still the art pass; the *system*
   is not waiting on them.
+  A **fourth octave — grain** (materials v1, same row) gives the surface a
+  read at arm's length that a 1.7 m finest octave never could: one sample
+  at a wavelength the identity picks (4 cm of sand, 12 cm of grass tuft),
+  with a per-identity shape and contrast, retired by pixel footprint in
+  **cycles per pixel** so each identity dies at its own distance and none
+  survives its own Nyquist limit. It is the one octave sampled
+  **triplanar** rather than on world XZ: the structural octaves answer
+  "where in the world is this" and may stay horizontal, but at 6 cm the
+  1/upness stretch on a slope is a hillside in vertical stripes. On level
+  ground the triplanar weights are (0,1,0) exactly and it reduces to the
+  world-XZ sample, so the two agree wherever the ground is flat.
 - **Scatter rendering**: per chunk, one `InstancedMesh` per archetype
   filled from the slot list (minus harvested), frustum-culled per chunk.
   Trees get two LODs (mesh / billboard cross) **(knob: distances)**; each

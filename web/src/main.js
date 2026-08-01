@@ -828,6 +828,30 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     ? (yaws, pitch, minDelta, heightM) =>
         scene.horizonProbe(yaws, pitch, minDelta, heightM)
     : null;
+  // Materials v1's: the contrast probe needs viewpoints in world space, and
+  // this is the scope that holds the camera. A view is the player's own
+  // position, optionally lifted, aimed by (yaw, pitch) — the near one is
+  // grain's home ground, the lifted one is where grain must already be gone.
+  const devGrainProbe = dev
+    ? (uniformName, specs, minDelta) => {
+        const views = [];
+        for (const s of specs) {
+          const p = scene.camera.position;
+          const y = p.y + (s.lift || 0);
+          const cp = Math.cos(s.pitch);
+          views.push({
+            label: s.label,
+            eye: [p.x, y, p.z],
+            at: [
+              p.x + Math.sin(s.yaw) * cp,
+              y + Math.sin(s.pitch),
+              p.z + Math.cos(s.yaw) * cp,
+            ],
+          });
+        }
+        return scene.contrastProbe(views, uniformName, minDelta);
+      }
+    : null;
 
   function frame(now) {
     if (closed) return;
@@ -954,6 +978,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (devSplatCensus) debug.splatCensus = devSplatCensus;
     if (devFarShadowProbe) debug.farShadowProbe = devFarShadowProbe;
     if (devHorizonProbe) debug.horizonProbe = devHorizonProbe;
+    if (devGrainProbe) debug.grainProbe = devGrainProbe;
     globalThis.__gatesDebug = debug;
   }, 250);
 }

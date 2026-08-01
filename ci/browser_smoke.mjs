@@ -247,6 +247,42 @@ const SPLAT_MIN_SECOND = Number(process.env.BROWSER_SMOKE_SPLAT_MIN_SECOND || 0.
 // moisture channel's features are ~700 m across, so a ring is often one
 // biome) — this floor is set from the pinned spawn's measured 1.5%.
 const SPLAT_MIN_MIXED = Number(process.env.BROWSER_SMOKE_SPLAT_MIN_MIXED || 0.005);
+// --- the grain gate (DECISIONS.md §open, "materials v1") --------------------
+// `surfaceProbe` above answers "does the field paint at all", by counting
+// pixels the field moved. That question cannot see this pass: a wash moves
+// pixels, a tint moves pixels, an exposure slip moves pixels, and none of them
+// is TEXTURE. So the probe here measures neighbour-to-neighbour contrast over
+// the pixels the toggle moved, in both states — grain is by definition the
+// thing that changes between one pixel and the next, and a wash cannot raise
+// that number at all.
+//
+// Two viewpoints, because the pass makes two separable claims:
+//   near — grain reaches the frame at arm's length. Pitched steeply down so
+//          the ground in frame is the few metres that are grain's whole range
+//          at this resolution.
+//   far  — and is GONE at distance. The same eye lifted 60 m and pitched at
+//          the ground ~140 m out, where the footprint filter must have
+//          retired every octave of it. This is the anti-aliasing wall under
+//          a gate: no normal survives below a pixel.
+const GRAIN_PROBE_MIN_DELTA = 6;
+const GRAIN_NEAR_PITCH = -1.05;
+const GRAIN_FAR_PITCH = -0.42;
+const GRAIN_FAR_LIFT_M = 60;
+const GRAIN_VIEWS = [
+  { mode: "eye", label: "near", yaw: 0, pitch: GRAIN_NEAR_PITCH },
+  { mode: "eye", label: "far", yaw: 0, pitch: GRAIN_FAR_PITCH, lift: GRAIN_FAR_LIFT_M },
+];
+// MEASURED at the pinned spawn, bit-stable across runs.
+const GRAIN_NEAR_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_GRAIN_MIN || 0.05);
+// The assertion that says grain and not wash. 1.0 is "the toggle changed the
+// brightness of a region"; anything above it is detail that was not there.
+const GRAIN_MIN_CONTRAST_RATIO = Number(process.env.BROWSER_SMOKE_GRAIN_MIN_RATIO || 2.0);
+// Two-sided, same reason as SURFACE_MIN_DIRECTIONAL: a signed field lightens
+// some pixels and darkens others.
+const GRAIN_MIN_DIRECTIONAL = Number(process.env.BROWSER_SMOKE_GRAIN_MIN_DIR || 0.005);
+// The ceiling at 140 m. Grain that survives out there is grain that aliases,
+// and it is the failure the whole cycles-per-pixel fade exists to prevent.
+const GRAIN_FAR_MAX_FRACTION = Number(process.env.BROWSER_SMOKE_GRAIN_FAR_MAX || 0.005);
 
 const fail = (msg) => {
   console.error(`GATE FAIL: ${msg}`);
@@ -365,6 +401,28 @@ try {
 // isolation two real players have.
 const join = async (label, port = WIRE_PORT, cert = certHash) => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  // The join report, pushed from the page (see the long note below). Both
+  // halves go in before the page exists, so neither can be starved by a
+  // renderer that is busy: `exposeBinding` and `addInitScript` are applied at
+  // document start, not evaluated on demand.
+  let announce;
+  const joined = new Promise((r) => (announce = r));
+  await context.exposeBinding("__gatesJoined", (_src, payload) => announce(payload));
+  await context.addInitScript(() => {
+    const t = setInterval(() => {
+      const err = document.getElementById("starterr")?.textContent || "";
+      if (err) {
+        clearInterval(t);
+        globalThis.__gatesJoined({ err }); // where boot() puts failures
+        return;
+      }
+      const d = globalThis.__gatesDebug;
+      if (d && d.inWorld && d.snapshots > 0) {
+        clearInterval(t);
+        globalThis.__gatesJoined({ ok: true });
+      }
+    }, 250);
+  });
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
@@ -377,25 +435,50 @@ const join = async (label, port = WIRE_PORT, cert = certHash) => {
 
   // Assertion 1 — the client reaches the world. Catches bug 1, and any
   // handshake, ring, AOI or delta-encoder break along the way.
+  //
+  // The condition and the 60 s budget are unchanged. What changed is who
+  // does the asking.
+  //
+  // This used to be a `page.evaluate` poll from node every 250 ms, and on a
+  // loaded box that primitive measures the POLLER, not the client: every call
+  // is a CDP round trip that has to be scheduled on the page's main thread,
+  // behind a RAF loop that owns it for most of a frame. Measured here with
+  // three tabs live, the third tab's join got **2 polls in 60 seconds** — one
+  // evaluate alone took 7.1 s — and failed a client that was in the world
+  // with 940 snapshots by then. Moving the predicate into the page with
+  // `waitForFunction` was not enough either: installing that poller is itself
+  // a round trip, so it inherited the same latency and never ran at all (the
+  // predicate `inWorld && snapshots > 0` was already TRUE at the client's
+  // first publish, and the waiter still timed out).
+  //
+  // So the page tells node, instead of node asking the page. The binding and
+  // the poller are installed on the CONTEXT before `newPage()`, which makes
+  // them init scripts rather than runtime evaluations — no round trip exists
+  // to be starved — and the report travels renderer → browser → node as an
+  // event. A false red on a shared box is how a real one gets explained away;
+  // this is the same assertion with the harness taken out of the measurement.
+  //
+  // Nothing is loosened: same predicate, same 60 s, same loud failure, and
+  // the clock starts at page creation rather than after the connect click, so
+  // the budget is if anything tighter.
   const t0 = Date.now();
-  let dbg = null;
-  while (Date.now() - t0 < JOIN_TIMEOUT_MS) {
-    dbg = await page.evaluate(() => globalThis.__gatesDebug || null);
-    if (dbg && dbg.inWorld && dbg.snapshots > 0) break;
-    const err = await page.evaluate(() => document.getElementById("starterr")?.textContent || "");
-    if (err) fail(`${label}: client refused to boot: ${err}`); // #starterr, where boot() puts failures
-    await page.waitForTimeout(250);
-  }
-  if (!dbg || !dbg.inWorld) {
-    // Say WHY. "never reached the world" alone is the same message for a
-    // handshake that never landed, a shard that died, and a client whose
-    // debug publisher threw on its first tick — three very different bugs.
+  const outcome = await Promise.race([
+    joined,
+    new Promise((r) => setTimeout(() => r(null), JOIN_TIMEOUT_MS)),
+  ]);
+  if (outcome && outcome.err) fail(`${label}: client refused to boot: ${outcome.err}`);
+  // Say WHY. "never reached the world" alone is the same message for a
+  // handshake that never landed, a shard that died, and a client whose
+  // debug publisher threw on its first tick — three very different bugs.
+  const dbg = await page.evaluate(() => globalThis.__gatesDebug || null);
+  if (!outcome || !dbg || !dbg.inWorld) {
     fail(
       `${label}: never reached the world in ${JOIN_TIMEOUT_MS}ms ` +
         `(__gatesDebug ${dbg ? `present, inWorld=${dbg.inWorld}, snapshots=${dbg.snapshots}` : "never published"})` +
         (errors.length ? `\n` + errors.slice(0, 8).map((e) => `    ${e}`).join("\n") : "\n    no page errors"),
     );
   }
+  console.log(`  ${label}: joined in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   console.log(`  ${label}: in world as player ${dbg.playerId} at [${dbg.own.map((v) => v.toFixed(1))}]`);
   return { label, page, errors, playerId: dbg.playerId, dbg };
 };
@@ -1114,6 +1197,117 @@ console.log(
       .join(" "),
 );
 
+// Assertion 16 — the surface has GRAIN, the grain goes away, and the field it
+// is drawn from follows the surface it is on.
+//
+// Assertion 15 cannot see any of that. It counts pixels the field moved, and
+// every one of this pass's failure modes moves pixels: a grain octave scaled
+// so coarse it is a second mottle, a fade that never retires so the horizon
+// crawls, a projection that stripes every cliff. The measure that separates
+// them is neighbour-to-neighbour contrast — the defining property of grain is
+// that it changes between one pixel and the next.
+const grainHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.grainProbe);
+if (grainHook !== "function") {
+  fail(`tab A: __gatesDebug.grainProbe is ${grainHook} on a dev shard — the grain gate cannot run`);
+}
+// The structural half first, so 16's pixel failures are diagnosable: a grain
+// wavelength that is not finer than the micro octave's cannot be grain, and
+// four identical numbers are one grain wearing four names.
+if (!(mat.terrain.grain === 1)) {
+  fail(`tab A: the terrain ships with uGrain = ${mat.terrain.grain} — the surface has no grain at all`);
+}
+if (distinct(mat.grainScale) < 3) {
+  fail(`tab A: only ${distinct(mat.grainScale)} distinct grain wavelengths in [${mat.grainScale}] /m — sand and rock wear the same grain`);
+}
+if (distinct(mat.grainRidge) < 3) {
+  fail(`tab A: only ${distinct(mat.grainRidge)} distinct grain shapes in [${mat.grainRidge}] — every identity gets the same stipple`);
+}
+const coarseGrain = mat.grainScale.filter((s) => s <= mat.microScale * 4);
+if (coarseGrain.length) {
+  fail(
+    `tab A: grain scales [${coarseGrain}] /m are not meaningfully finer than the micro octave's ` +
+      `${mat.microScale.toFixed(3)} /m — that is a fourth mottle, not a grain`,
+  );
+}
+if (!(mat.grainFadeCpp[1] > mat.grainFadeCpp[0] && mat.grainFadeCpp[1] <= 1)) {
+  fail(
+    `tab A: the grain footprint fade is [${mat.grainFadeCpp}] cycles/pixel — it must rise and it must ` +
+      `retire at or before one cycle per pixel, or the finest octave outlives its own Nyquist limit`,
+  );
+}
+
+const grainDetail = (r) =>
+  r.samples
+    .map(
+      (s) =>
+        `    ${s.label}: ${(s.movedFraction * 100).toFixed(2)}% moved ` +
+        `(+${(s.upFraction * 100).toFixed(2)}% / −${(s.downFraction * 100).toFixed(2)}%), ` +
+        `mean Δluma ${s.meanDelta.toFixed(1)}, contrast ${s.contrastOn.toFixed(2)} vs ` +
+        `${s.contrastOff.toFixed(2)} (×${s.contrastRatio.toFixed(3)}), control noise ${s.noise}`,
+    )
+    .join("\n");
+
+const gr = await A.page.evaluate(
+  ([views, minDelta]) => globalThis.__gatesDebug.grainProbe("uGrain", views, minDelta),
+  [GRAIN_VIEWS, GRAIN_PROBE_MIN_DELTA],
+);
+if (!gr) fail(`tab A: grainProbe("uGrain") returned null — the scene never took the terrain material's uniforms`);
+// The zero point, measured rather than argued — and this probe needs it more
+// than any before it, because half of what it asserts is a CEILING. Two
+// renders of one identical state must differ nowhere; if they do, the far
+// view's "grain is gone" is the rasterizer agreeing with itself by luck.
+for (const s of [...gr.samples]) {
+  if (s.noise !== 0) {
+    fail(
+      `tab A: the grain probe's control differs from its own frame on ${s.noise} pixels at view ` +
+        `"${s.label}" — two renders of one state are not identical, so every count below is ` +
+        `partly the rasterizer.\n${grainDetail(gr)}`,
+    );
+  }
+}
+const grainNear = gr.samples.find((s) => s.label === "near");
+const grainFar = gr.samples.find((s) => s.label === "far");
+if (!grainNear || !grainFar) fail(`tab A: grain probe returned labels [${gr.samples.map((s) => s.label)}] — expected near and far`);
+if (grainNear.movedFraction < GRAIN_NEAR_MIN_FRACTION) {
+  fail(
+    `tab A: grain moved ${(grainNear.movedFraction * 100).toFixed(3)}% of ${grainNear.scored} pixels at arm's ` +
+      `length — below ${(GRAIN_NEAR_MIN_FRACTION * 100).toFixed(1)}%. The octave is configured and ` +
+      `reaches nothing.\n${grainDetail(gr)}`,
+  );
+}
+if (grainNear.upFraction < GRAIN_MIN_DIRECTIONAL || grainNear.downFraction < GRAIN_MIN_DIRECTIONAL) {
+  fail(
+    `tab A: grain moved the near frame only one way (+${(grainNear.upFraction * 100).toFixed(2)}% / ` +
+      `−${(grainNear.downFraction * 100).toFixed(2)}%, floor ${(GRAIN_MIN_DIRECTIONAL * 100).toFixed(1)}% ` +
+      `each). A signed octave lightens some pixels and darkens others; a tint cannot.\n${grainDetail(gr)}`,
+  );
+}
+// The assertion this whole probe exists for.
+if (grainNear.contrastRatio < GRAIN_MIN_CONTRAST_RATIO) {
+  fail(
+    `tab A: grain raised neighbour contrast from ${grainNear.contrastOff.toFixed(2)} to ` +
+      `${grainNear.contrastOn.toFixed(2)} luma/pixel over the ${grainNear.moved} pixels it moved — a ratio of ` +
+      `${grainNear.contrastRatio.toFixed(3)} against a floor of ${GRAIN_MIN_CONTRAST_RATIO}. It moved the ` +
+      `pixels without adding detail between them, which is a wash and not a grain.\n${grainDetail(gr)}`,
+  );
+}
+// And the other half of the same claim: detail that cannot be resolved is
+// gone, not aliasing.
+if (grainFar.movedFraction > GRAIN_FAR_MAX_FRACTION) {
+  fail(
+    `tab A: grain still moves ${(grainFar.movedFraction * 100).toFixed(3)}% of the frame from ` +
+      `${GRAIN_FAR_LIFT_M} m up (ceiling ${(GRAIN_FAR_MAX_FRACTION * 100).toFixed(1)}%) — a ` +
+      `centimetre-scale octave surviving at a hundred metres is aliasing, and the ` +
+      `cycles-per-pixel fade exists to retire it.\n${grainDetail(gr)}`,
+  );
+}
+console.log(
+  `  grain: near ${(grainNear.movedFraction * 100).toFixed(2)}% moved ` +
+    `(+${(grainNear.upFraction * 100).toFixed(2)}/−${(grainNear.downFraction * 100).toFixed(2)}), contrast ` +
+    `${grainNear.contrastOff.toFixed(2)} → ${grainNear.contrastOn.toFixed(2)} luma/px (×${grainNear.contrastRatio.toFixed(2)}) · ` +
+    `far ${(grainFar.movedFraction * 100).toFixed(3)}% moved · control noise ${grainNear.noise}/${grainFar.noise}`,
+);
+
 // Play: A walks forward, B walks backward — opposite headings off the shared
 // point. The terrain worker only builds once a player moves, so the window
 // where bug 2 fires is AFTER the first snapshot.
@@ -1291,7 +1485,14 @@ const publicSetView = await P.page.evaluate(() => typeof globalThis.__gatesDebug
 if (publicSetView !== "undefined") {
   fail(`public tab: __gatesDebug.setView is ${publicSetView} on a shard with no dev override — a dev affordance shipped to a public shard`);
 }
-for (const hook of ["shadowProbe", "farShadowProbe", "surfaceProbe", "splatCensus", "horizonProbe"]) {
+for (const hook of [
+  "shadowProbe",
+  "farShadowProbe",
+  "surfaceProbe",
+  "splatCensus",
+  "horizonProbe",
+  "grainProbe",
+]) {
   const t = await P.page.evaluate((h) => typeof globalThis.__gatesDebug[h], hook);
   if (t !== "undefined") {
     fail(`public tab: __gatesDebug.${hook} is ${t} on a shard with no dev override — a dev affordance shipped to a public shard`);
