@@ -104,6 +104,42 @@ cargo run -p server --bin replay -- --wal <file>
 ./ci/gates.sh                       # exactly what CI runs — run it before merge
 ```
 
+## The loop that builds this repo
+
+Most commits here are written by an autonomous loop, not typed. It lives at
+`/data/apps/gates-loop` — **outside this repo, deliberately.** The builder is
+told not to touch it and the rubrics are checksummed between passes; if the
+harness lived in here, an agent would have write access to the criteria it is
+scored against, and a checksum would be the only thing in the way.
+
+| you want | do |
+|---|---|
+| start it | `tmux new -s gatesloop '/data/apps/gates-loop/gates-loop.sh'` |
+| stop it | `touch /data/apps/gates-loop/STOP` — finishes the pass, then exits |
+| what it is doing | `/data/apps/gates-loop/loop-status.sh` |
+| the frames it captured | `/data/apps/gates-loop/gallery.py`, then `ssh -L 8899:localhost:8899` |
+| why a pass failed | `/data/apps/gates-loop/findings/pass-<id>-{judge,visual}.md` |
+| undo a whole run | `git reset --hard gates-anchor-<stamp>` |
+| `ci/gates.sh` is red on a clean tree | `GATES_FIX_RED=1 /data/apps/gates-loop/gates-loop.sh` — one pass, wall only |
+
+Two judges score every pass and neither is the builder: one holds
+`judge/RUBRIC.md` (ten procedural checks — the merge gate) and one holds
+`art/RUBRIC.md` (ten visual criteria against `Rust Images/`). Both end in a
+`## Ranked gaps` section, and those gaps — not `NOW.md` — are where the loop's
+direction is supposed to come from. Read the newest pair before you steer.
+
+**`git push` is blocked** by a `pre-push` hook the runner installs. Publishing
+is an operator act: read the diff, then `git push --no-verify`.
+
+**A gate that waits on a clock is not a gate on this box.** Four cores, load
+routinely at 4–5, running a cargo release build and three Chromium tabs against
+its own shard. On 2026-08-01 three runs of identical code failed on two
+different assertions, and the recovery pass found the cause: the third tab was
+racing two live renderers. Assert on observable state (`inWorld`, `snapshots >
+n`) and never on elapsed milliseconds — the failure that started it reported
+`inWorld=true` and timed out anyway. Widening a timeout is not a fix; it is the
+same bug with a longer fuse.
+
 ## Third-party credit
 
 - `.claude/skills/threejs-*` — the Three.js graphics skill pack, MIT,
