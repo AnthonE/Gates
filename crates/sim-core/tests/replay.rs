@@ -212,11 +212,15 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 }),
                 // Then the upgrade verb's own arc on a second wall: a
                 // wood wall at the north edge, climbed to the fixture's
-                // stone rung, then asked back down (refused) and asked
-                // for by a hand the hearth does not answer to (refused
-                // on the claim) — the re-row and both bounces on the
-                // replayed surface. All of it before the feeds, which
-                // hand the builder's whole stock to the hearth.
+                // stone rung, then asked back down (the tier refusal),
+                // then asked for by a second bot — which bounces on
+                // **reach**, not on the hearth's claim: the two have
+                // wandered ~90 m apart by now and the reach test comes
+                // first. The claim refusal is `build::tests::
+                // upgrade_answers_to_a_foreign_claim`'s to assert; what
+                // rides here is the re-row and two of the bounces. All
+                // of it before the feeds, which hand the builder's whole
+                // stock to the hearth.
                 159 => cmds.push(Command::Place {
                     id,
                     row: 1,
