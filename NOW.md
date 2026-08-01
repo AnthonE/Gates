@@ -4,7 +4,32 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
+1. **Spawn ring — the beach, as already specified.** `TERRAIN.md` §1 names
+   **beach** the spawn zone (the beach mask is height within ~2 m of sea
+   level) and `DESIGN.md` §2 says "spawn naked on a beach of a seeded island".
+   The shipped `spawn placeholder` knob instead picks the **interior
+   224–1,824 m** — the forest band — so fresh spawns land *inside trees*.
+   Measured, not guessed: every frame of `gates-loop/art/shots/01-baseline` is
+   30–45% occluded by scatter the camera is standing in.
+   Build the spawn ring against the beach mask, **delete the placeholder knob**
+   from `DECISIONS.md` §open, and extend `sim-core world::tests` to assert a
+   chosen spawn is **clear of scatter**, not merely walkable — the scatter
+   table is deterministic, so the test needs no client. Beach spawn fixes this
+   structurally rather than by rejection-sampling: the beach mask sits below
+   the forest band, so it is clear by construction.
+   **Leave `dev_spawn` alone** — it is an override and the browser smoke's
+   two-tab AOI assertion depends on it.
+2. **Lighting: a real key light and shadows.** There is no shadow map anywhere
+   in the client (`grep shadowMap|castShadow|receiveShadow` → nothing) and the
+   `HemisphereLight` fill sits at 0.95, so nothing casts, nothing receives, and
+   no object has contact darkening. That is the single largest reason the world
+   reads as untextured shapes — it is a lighting problem, not a texture one.
+   `threejs-shadow-systems` and `threejs-exposure-color-grading` are in
+   `.claude/skills/` (MIT, Scott Sun — credit in `CLAUDE.md` if used). Grade
+   toward the spoken direction: **"Rust with a darker edge"**. Register every
+   new constant in `DECISIONS.md` §open and stay inside the `DESIGN.md` §9
+   budget (<300 draw calls, <1.5 M tris). Do **not** quote fps from this box.
+3. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
    solid (slice 13: chat — two channels on the reliable lane, local at
    20 m and global, sanitized at both edges and rate-limited per
@@ -20,13 +45,13 @@ Done items are deleted, not checked — history lives in git and
    there) · piece damage (M2's raid lane: hp exists and decays, nothing
    attacks it yet) · nametags (chat names a speaker by id today, because
    nothing has a name yet).
-2. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
+4. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
-3. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
+5. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
    admin lane · backups · status page · error capture · `bench_transport`.
-4. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
+6. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
    then tune content bands from what the anomaly log and the replays say.
-5. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
+7. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
 
