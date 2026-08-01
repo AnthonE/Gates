@@ -61,8 +61,12 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// wire grew its open bit — so a v5 deploy record parses off-by-one from
 /// here on, the hello gate refuses the pair. v7 added the welcome's `dev`
 /// bit: the shard states whether it is a dev shard, which is what gates
-/// the client's dev affordances. Fixtures are keyed `v7_*`.
-pub const PROTO_VER: u16 = 7;
+/// the client's dev affordances. v8 added the lock lane: the lock action
+/// (address + the absolute bit), the door event grew its locked bit, and
+/// every placed-deployable record on the wire grew one too — so a v7
+/// deploy record parses off-by-one from here on, exactly like v6's open
+/// bit, and the hello gate refuses the pair. Fixtures are keyed `v8_*`.
+pub const PROTO_VER: u16 = 8;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -233,6 +237,7 @@ const ACT_PLACE: u32 = 2;
 const ACT_DEPLOY: u32 = 3;
 const ACT_FEED: u32 = 4;
 const ACT_USE: u32 = 5;
+const ACT_LOCK: u32 = 6;
 /// Cancel index width mirrors the queue (`CRAFT_QUEUE` = 4 fits 3 bits);
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
@@ -290,6 +295,17 @@ pub enum ActionMsg {
         cz: u16,
         level: u8,
         loc: u8,
+    },
+    /// Set the lock bit of the door at the address (lock v0). This one
+    /// *does* carry state, and for the same reason `Use` doesn't: a lock
+    /// press is a deliberate setting, so two racing presses must agree on
+    /// the result rather than swap it. Owner-only is the sim's verdict.
+    Lock {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        locked: bool,
     },
 }
 
@@ -413,6 +429,32 @@ pub fn encode_action_use(
     Ok(w.finish())
 }
 
+pub fn encode_action_lock(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    locked: bool,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || loc > sim_core::build::LOC_EDGE_N
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_LOCK, ACTION_SUB_BITS)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    w.write_bit(locked)?;
+    Ok(w.finish())
+}
+
 /// Total decode of one C→S action frame — client-driven bytes, so the
 /// same never-panic contract as the input datagrams.
 pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
@@ -480,6 +522,15 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             cz: r.read(BUILD_CELL_BITS)? as u16,
             level: r.read(BUILD_LEVEL_BITS)? as u8,
             loc: r.read(BUILD_LOC_BITS)? as u8,
+        },
+        // Same: address + one bit, every width exact. Whether the sender
+        // owns the door is the sim's verdict, not the wire's.
+        ACT_LOCK => ActionMsg::Lock {
+            cx: r.read(BUILD_CELL_BITS)? as u16,
+            cz: r.read(BUILD_CELL_BITS)? as u16,
+            level: r.read(BUILD_LEVEL_BITS)? as u8,
+            loc: r.read(BUILD_LOC_BITS)? as u8,
+            locked: r.read_bit()?,
         },
         _ => return Err(WireError::Malformed),
     };

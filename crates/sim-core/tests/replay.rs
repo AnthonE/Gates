@@ -17,11 +17,10 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-/// Regenerated this commit: door open/close landed — the build fixture
-/// gained its doorway row, deploy records carry (and hash) door state,
-/// and this script now places a door and toggles it, so bodies collide
-/// with a sealed doorway they used to walk through.
-const GOLDEN_FINAL_HASH: u64 = 0x8844_041C_A50F_D3B3;
+/// Regenerated this commit: door locks landed — deploy records carry (and
+/// hash) a lock bit, doors place locked to their placer, and this script
+/// now locks and unlocks the door it was already toggling.
+const GOLDEN_FINAL_HASH: u64 = 0x754A_E9E2_1A7C_8EA4;
 
 fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut world = World::new(seed);
@@ -34,6 +33,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut joined: u32 = 0;
     let mut hashes = Vec::new();
     let (mut placed, mut deployed, mut decayed, mut doors) = (0u32, 0u32, 0u32, 0u32);
+    let (mut locked_seen, mut unlocked_seen) = (false, false);
     let mut hearth_cell = (0u16, 0u16);
 
     for t in 0..TICKS {
@@ -158,7 +158,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
             };
             hearth_cell = (cell(b.qx), cell(b.qz));
         }
-        if (150..=157).contains(&t) {
+        if (150..=160).contains(&t) {
             let (cx, cz) = hearth_cell;
             let id = world.players[0].id;
             match t {
@@ -179,9 +179,10 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     loc: 0,
                 }),
                 // A doorway on the same cell's west edge, a door in it,
-                // then two uses: the door verb's whole arc — placement
-                // seals the edge, one toggle opens it, the next reseals —
-                // rides the replayed surface, and the bodies that walk
+                // then the door verbs' whole arc — placement seals the
+                // edge locked, its owner's toggles open and reseal it,
+                // and the lock verb rides both ways (a stranger's lock
+                // attempt in between, refused) — so the bodies that walk
                 // that edge afterwards feel each state. All of it before
                 // the feeds, which hand the same wood to the hearth.
                 152 => cmds.push(Command::Place {
@@ -200,12 +201,22 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_W,
                 }),
-                154 | 155 => cmds.push(Command::Use {
+                154 | 157 => cmds.push(Command::Use {
                     id,
                     cx,
                     cz,
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_W,
+                }),
+                155 | 156 | 158 => cmds.push(Command::Lock {
+                    // 156 is a hand that does not own this door — the
+                    // refusal path, on the replayed surface too.
+                    id: if t == 156 { world.players[1].id } else { id },
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: sim_core::build::LOC_EDGE_W,
+                    locked: t == 158,
                 }),
                 _ => cmds.push(Command::Feed {
                     id,
@@ -230,7 +241,14 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 sim_core::world::EV_PIECE_REMOVED | sim_core::world::EV_DEPLOY_REMOVED => {
                     decayed += 1
                 }
-                sim_core::world::EV_DOOR => doors += 1,
+                sim_core::world::EV_DOOR => {
+                    doors += 1;
+                    if e.b & 2 == 0 {
+                        unlocked_seen = true;
+                    } else {
+                        locked_seen = true;
+                    }
+                }
                 _ => {}
             }
         }
@@ -253,8 +271,13 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         "nothing decayed away — the removal path fell out of the replay surface"
     );
     assert!(
-        doors >= 2,
+        doors >= 4,
         "the scripted door never toggled — the use verb fell out of the replay surface"
+    );
+    assert!(
+        locked_seen && unlocked_seen,
+        "the scripted door never changed hands both ways — the lock verb fell out \
+         of the replay surface"
     );
     (hashes, world.state_hash())
 }

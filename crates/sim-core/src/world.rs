@@ -56,9 +56,10 @@ pub const EV_DEPLOY_REMOVED: u8 = 12;
 /// EV_STOCK: a = feeder player id, b = hearth cell key, c = level — the
 /// feed ack; the wire reads the hearth's stock from the world at encode.
 pub const EV_STOCK: u8 = 13;
-/// EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | open (1 =
-/// open), c = the toggling player id. Broadcast — door state is a world
-/// fact like a placement.
+/// EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | locked << 1
+/// | open, c = the player whose action changed it. The door's whole state,
+/// absolute, whether the toggle or the lock moved (lock v0). Broadcast —
+/// door state is a world fact like a placement.
 pub const EV_DOOR: u8 = 14;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -220,6 +221,16 @@ pub enum Command {
         cz: u16,
         level: u8,
         loc: u8,
+    },
+    /// Set the lock bit of the door at the address (owner-only; absolute,
+    /// never a toggle — deploy.rs validates and refuses by event).
+    Lock {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        locked: bool,
     },
 }
 
@@ -454,6 +465,28 @@ impl World {
                     );
                 }
             }
+            Command::Lock {
+                id,
+                cx,
+                cz,
+                level,
+                loc,
+                locked,
+            } => {
+                if let Some(slot) = self.slot_of(id) {
+                    deploy::set_lock(
+                        &self.deploy,
+                        &mut self.deploys,
+                        &self.players[slot],
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        locked,
+                        &mut self.events,
+                    );
+                }
+            }
         }
     }
 
@@ -568,7 +601,7 @@ impl World {
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {
-            let mut buf = [0u8; 16];
+            let mut buf = [0u8; 17];
             buf[0..2].copy_from_slice(&d.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&d.cz.to_le_bytes());
             buf[4] = d.level;
@@ -578,6 +611,7 @@ impl World {
             buf[9..11].copy_from_slice(&d.uh.to_le_bytes());
             buf[11..15].copy_from_slice(&d.owner.to_le_bytes());
             buf[15] = d.open as u8;
+            buf[16] = d.locked as u8;
             h.update(&buf);
         }
         h.update(&(self.deploys.hearths().len() as u64).to_le_bytes());

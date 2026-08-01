@@ -78,6 +78,7 @@ const REQUIRED = [
   "client_action_deploy",
   "client_action_feed",
   "client_action_use",
+  "client_action_lock",
   "client_predict_door",
   "client_deploy_changes_ptr",
   "client_deploy_changes_len",
@@ -139,18 +140,18 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 7, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 8, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
 // --- handshake parse: the welcome's dev bit reaches JS --------------------
-// The canonical v7 welcome fixture, driven through the same entry the
+// The canonical v8 welcome fixture, driven through the same entry the
 // browser boot uses. That word is the ONLY gate on the page's dev
 // affordances (`__gatesDebug.setView`), so a bridge that dropped it would
 // either ship them to every public shard or withhold them from the capture
 // harness — and neither shows up anywhere else in this suite.
 const welcomeGolden = readFileSync(
-  join(root, "crates/protocol/tests/golden/v7_welcome.bin"),
+  join(root, "crates/protocol/tests/golden/v8_welcome.bin"),
 );
 const parseHandshake = (bytes) => {
   // ptr first, buffer second: a getter may grow memory and detach a
@@ -296,6 +297,10 @@ const useLen = ex.client_action_use(341, 341, 0, 2);
 check(useLen === 4, `use action length odd: ${useLen}`);
 check(ex.client_action_use(341, 341, 8, 2) === 0, "level past the grid must refuse");
 check(ex.client_action_use(341, 341, 0, 4) === 0, "loc past the four must refuse");
+const lockLen = ex.client_action_lock(341, 341, 0, 2, 1);
+check(lockLen === 4, `lock action length odd: ${lockLen}`);
+check(ex.client_action_lock(1024, 341, 0, 2, 1) === 0, "cx past the grid must refuse");
+check(ex.client_action_lock(341, 341, 0, 4, 0) === 0, "loc past the four must refuse");
 
 // Hand-framed deploy-placed: kind EVENT(5) · subtype DEPLOY_PLACED(15, 5
 // bits) · cx=341 (10) · cz=682 (10) · level=1 (3) · loc=0 (2) · row=3 (4).
@@ -311,16 +316,20 @@ check(dchange[1] === ((1 << 16) | 3), `deploy change info odd: ${dchange[1]}`);
 
 // Hand-framed door announcement for that same address: kind EVENT(5) ·
 // subtype DOOR(22, 5 bits) · cx=341 (10) · cz=682 (10) · level=1 (3) ·
-// loc=0 (2) · open=1 (1). The mirror flips and re-emits the record with
-// its open bit set — bit 24 of the packed change word.
+// loc=0 (2) · open=1 (1) · locked=1 (1). The mirror flips and re-emits
+// the record with both state bits set — 24 (open) and 25 (locked) of the
+// packed change word.
 new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
-  0xb5, 0x55, 0xa9, 0x1a, 0x02,
+  0xb5, 0x55, 0xa9, 0x1a, 0x06,
 ]);
 const doorFlags = ex.client_on_stream(5);
 check(doorFlags === 16384, `door should apply with the deploy flag: ${doorFlags}`);
 check(ex.client_deploy_changes_len() === 1, "one deploy change expected for the door");
 const dopen = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
-check(dopen[1] === ((1 << 24) | (1 << 16) | 3), `door change info odd: ${dopen[1]}`);
+check(
+  dopen[1] === ((1 << 25) | (1 << 24) | (1 << 16) | 3),
+  `door change info odd: ${dopen[1]}`,
+);
 
 // Optimistic toggle (NETCODE.md §6.1): row 3 has no def dripped here, so
 // the client cannot know it is a door and must decline to predict —
@@ -368,11 +377,16 @@ new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 8).set([
   0x95, 0x01, 0x84, 0xe7, 0x01, 0x20, 0x00, 0x00,
 ]);
 check(ex.client_on_stream(8) === 131072, "deploy defs should apply with their flag");
-// Hand-framed deploy-placed: cx=100 · cz=200 · level=0 · loc=2 · row=0 · open=0.
+// Hand-framed deploy-placed: cx=100 · cz=200 · level=0 · loc=2 · row=0 ·
+// open=0 · locked=1 (a door places locked, lock v0).
 new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
-  0x7d, 0x64, 0x20, 0x03, 0x01,
+  0x7d, 0x64, 0x20, 0x03, 0x41,
 ]);
 check(ex.client_on_stream(5) === 16384, "door placement should apply");
+const dplaced = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
+check((dplaced[1] >>> 25) === 1, `placed door must read locked: ${dplaced[1]}`);
+// The press still predicts: whether the door answers to this hand is the
+// server's verdict, and a refusal rolls the leaf back below.
 check(ex.client_predict_door(100, 200, 0, 2) === 1, "the press must swing your own door");
 // Hand-framed deploy-refused, reason 11 (REFUSE_D_DOOR).
 new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x8d, 0x0b]);
@@ -384,7 +398,8 @@ check(
 check(ex.client_deploy_refusal_pop() === 11, "refusal reason should be 11");
 check(ex.client_deploy_changes_len() === 1, "the rolled-back record must ride the changes");
 const drolled = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
-check((drolled[1] >>> 24) === 0, `rolled-back door must read closed: ${drolled[1]}`);
+check(((drolled[1] >>> 24) & 1) === 0, `rolled-back door must read closed: ${drolled[1]}`);
+check((drolled[1] >>> 25) === 1, `a rolled-back leaf must keep its lock: ${drolled[1]}`);
 
 // Garbage on the stream must be refused with the error bit, not trap.
 new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 3).set([0xff, 0xff, 0xff]);

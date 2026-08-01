@@ -25,45 +25,46 @@ use sim_core::limits::{
 };
 use sim_core::rng::Pcg32;
 
-/// Fixture file names, keyed by wire version (`PROTO_VER` 7 ⇒ `v7_*`).
-pub const FIXTURES: [&str; 37] = [
-    "v7_input_acks_only.bin",
-    "v7_input_full.bin",
-    "v7_snapshot_keyframe.bin",
-    "v7_snapshot_delta.bin",
-    "v7_snapshot_cap.bin",
-    "v7_hello.bin",
-    "v7_welcome.bin",
-    "v7_refuse_full.bin",
-    "v7_event_gather.bin",
-    "v7_event_inv.bin",
-    "v7_event_slot_harvested.bin",
-    "v7_event_slot_respawned.bin",
-    "v7_event_slot_sync.bin",
-    "v7_event_catalog.bin",
-    "v7_event_weak_mark.bin",
-    "v7_event_craft_q.bin",
-    "v7_event_craft_done.bin",
-    "v7_event_craft_refused.bin",
-    "v7_event_recipes.bin",
-    "v7_action_craft.bin",
-    "v7_action_cancel.bin",
-    "v7_action_place.bin",
-    "v7_event_piece_placed.bin",
-    "v7_event_piece_sync.bin",
-    "v7_event_build_refused.bin",
-    "v7_event_piece_defs.bin",
-    "v7_action_deploy.bin",
-    "v7_action_feed.bin",
-    "v7_event_deploy_placed.bin",
-    "v7_event_deploy_sync.bin",
-    "v7_event_deploy_refused.bin",
-    "v7_event_deploy_defs.bin",
-    "v7_event_piece_removed.bin",
-    "v7_event_deploy_removed.bin",
-    "v7_event_stock.bin",
-    "v7_action_use.bin",
-    "v7_event_door.bin",
+/// Fixture file names, keyed by wire version (`PROTO_VER` 8 ⇒ `v8_*`).
+pub const FIXTURES: [&str; 38] = [
+    "v8_input_acks_only.bin",
+    "v8_input_full.bin",
+    "v8_snapshot_keyframe.bin",
+    "v8_snapshot_delta.bin",
+    "v8_snapshot_cap.bin",
+    "v8_hello.bin",
+    "v8_welcome.bin",
+    "v8_refuse_full.bin",
+    "v8_event_gather.bin",
+    "v8_event_inv.bin",
+    "v8_event_slot_harvested.bin",
+    "v8_event_slot_respawned.bin",
+    "v8_event_slot_sync.bin",
+    "v8_event_catalog.bin",
+    "v8_event_weak_mark.bin",
+    "v8_event_craft_q.bin",
+    "v8_event_craft_done.bin",
+    "v8_event_craft_refused.bin",
+    "v8_event_recipes.bin",
+    "v8_action_craft.bin",
+    "v8_action_cancel.bin",
+    "v8_action_place.bin",
+    "v8_event_piece_placed.bin",
+    "v8_event_piece_sync.bin",
+    "v8_event_build_refused.bin",
+    "v8_event_piece_defs.bin",
+    "v8_action_deploy.bin",
+    "v8_action_feed.bin",
+    "v8_event_deploy_placed.bin",
+    "v8_event_deploy_sync.bin",
+    "v8_event_deploy_refused.bin",
+    "v8_event_deploy_defs.bin",
+    "v8_event_piece_removed.bin",
+    "v8_event_deploy_removed.bin",
+    "v8_event_stock.bin",
+    "v8_action_use.bin",
+    "v8_action_lock.bin",
+    "v8_event_door.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -448,8 +449,9 @@ pub fn action_feed() -> (u16, u16, u8) {
 }
 
 /// The deployable record behind the placed broadcast (owner/hp/uh are
-/// sim-side and never cross — the fixture keeps their defaults). The
-/// open bit is set so the wire's newest bit is pinned at 1 somewhere.
+/// sim-side and never cross — the fixture keeps their defaults). Open and
+/// locked are both set so the wire's two newest bits are pinned at 1
+/// somewhere, and set differently below so their order is pinned too.
 pub fn event_deploy_placed() -> DeployRec {
     DeployRec {
         cx: 341,
@@ -458,6 +460,7 @@ pub fn event_deploy_placed() -> DeployRec {
         loc: sim_core::build::LOC_PLANE,
         row: 9,
         open: true,
+        locked: true,
         ..DeployRec::default()
     }
 }
@@ -472,6 +475,7 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
         loc: rng.next_bounded(4) as u8,
         row: rng.next_bounded(16) as u8,
         open: rng.next_bounded(2) == 0,
+        locked: rng.next_bounded(2) == 0,
         ..DeployRec::default()
     });
     (true, recs)
@@ -482,9 +486,19 @@ pub fn action_use() -> (u16, u16, u8, u8) {
     (341, 682, 0, sim_core::build::LOC_EDGE_W)
 }
 
-/// A door announcement: the same address, now open.
-pub fn event_door() -> (u16, u16, u8, u8, bool) {
+/// A lock request: the same address, being locked. The bit is **1** on
+/// purpose — at 0 the frame is byte-identical to one whose encoder never
+/// wrote the field at all (`bool::default()` is false, and the padding
+/// absorbs the width), so the only new C→S field on wire v8 would cross
+/// the golden gate ungated.
+pub fn action_lock() -> (u16, u16, u8, u8, bool) {
     (341, 682, 0, sim_core::build::LOC_EDGE_W, true)
+}
+
+/// A door announcement: the same address, now open and still locked (the
+/// state its owner sees after swinging their own door).
+pub fn event_door() -> (u16, u16, u8, u8, bool, bool) {
+    (341, 682, 0, sim_core::build::LOC_EDGE_W, true, true)
 }
 
 /// A refusal carrying `sim_core::deploy::REFUSE_D_CLAIM`.

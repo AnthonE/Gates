@@ -31,6 +31,20 @@ fn id_of(slot: usize) -> u32 {
 
 /// One lockstep pump (the build_wire shape). Returns per-slot APPLIED flags.
 fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientCore)]) -> [u32; 4] {
+    pump_seen(core, stats, clients, &mut Vec::new())
+}
+
+/// The same pump, keeping every event message the server sent this tick,
+/// decoded from the bytes it actually put on the lane. A client mirror
+/// can agree with the world for reasons the *encoder* never earned (the
+/// sync walk re-sends what a broadcast got wrong), so anything the wire
+/// alone is responsible for gets asserted here, on `seen`.
+fn pump_seen(
+    core: &mut ShardCore,
+    stats: &ShardStats,
+    clients: &mut [(usize, ClientCore)],
+    seen: &mut Vec<(usize, protocol::EventMsg)>,
+) -> [u32; 4] {
     let mut buf = [0u8; 1100];
     for (slot, c) in clients.iter_mut() {
         c.advance(1000.0 / 30.0);
@@ -52,6 +66,10 @@ fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientC
     });
     let mut flags = [0u32; 4];
     for (slot, bytes) in events {
+        seen.push((
+            slot,
+            protocol::decode_event(&bytes).expect("server events decode"),
+        ));
         if let Some(c) = clients.iter_mut().find(|(s, _)| *s == slot).map(|(_, c)| c) {
             flags[slot] |= c.on_stream(&bytes).expect("server events decode");
         }
@@ -361,7 +379,26 @@ fn doors_toggle_across_the_wire() {
             loc: LOC_EDGE_W,
         },
     );
-    let flags = pump(&mut core, &stats, &mut clients);
+    let mut seen = Vec::new();
+    let flags = pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    // The *broadcast* itself must carry the lock — not merely the sync
+    // walk riding behind it, which would repair a wrong record and hide
+    // an encoder that dropped the bit.
+    let placed: Vec<_> = seen
+        .iter()
+        .filter_map(|(slot, m)| match m {
+            protocol::EventMsg::DeployPlaced { rec } if rec.loc == LOC_EDGE_W => Some((slot, rec)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(placed.len(), 2, "the placement must reach both clients");
+    for (slot, rec) in placed {
+        assert!(
+            rec.locked,
+            "the placed-door broadcast to {slot} lost its lock"
+        );
+        assert!(!rec.open, "and it must announce the leaf shut");
+    }
     assert_ne!(flags[0] & APPLIED_DEPLOYS, 0, "owner never saw the door");
     assert_ne!(flags[1] & APPLIED_DEPLOYS, 0, "broadcast missed bystander");
     for (_, c) in &clients {
@@ -372,12 +409,42 @@ fn doors_toggle_across_the_wire() {
             .find(|r| r.loc == LOC_EDGE_W)
             .expect("door in the mirror");
         assert!(!rec.open, "doors place closed");
+        assert!(rec.locked, "doors place locked (lock v0), and say so");
         assert_eq!(
             c.pieces.cols().get(CX, CZ).shut_w & 1,
             1,
             "a closed door must seal the doorway the predictor walks"
         );
     }
+
+    // The bystander's hand bounces off it: locked, and not theirs. The
+    // refusal is the sender's alone, and the door never moves.
+    act(
+        &mut core,
+        1,
+        ActionMsg::Use {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+        },
+    );
+    let flags = pump(&mut core, &stats, &mut clients);
+    assert_ne!(flags[1] & APPLIED_DEPLOY_REFUSED, 0);
+    assert_eq!(
+        clients[1].1.pop_deploy_refusal(),
+        Some(sim_core::deploy::REFUSE_D_OWNER as u8)
+    );
+    assert_eq!(clients[0].1.pop_deploy_refusal(), None, "refusal leaked");
+    assert!(
+        !core
+            .world
+            .deploys
+            .find(CX, CZ, 0, LOC_EDGE_W)
+            .expect("door in the world")
+            .open,
+        "a refused use must not swing the door"
+    );
 
     // The use action opens it — for everyone, including the bystander.
     act(
@@ -390,9 +457,26 @@ fn doors_toggle_across_the_wire() {
             loc: LOC_EDGE_W,
         },
     );
-    let flags = pump(&mut core, &stats, &mut clients);
+    seen.clear();
+    let flags = pump_seen(&mut core, &stats, &mut clients, &mut seen);
     assert_ne!(flags[0] & APPLIED_DEPLOYS, 0, "toggler never heard back");
     assert_ne!(flags[1] & APPLIED_DEPLOYS, 0, "door state is a broadcast");
+    // Absolute, and the whole door: the announcement carries the leaf it
+    // just swung AND the lock it did not touch.
+    assert_eq!(
+        seen.iter()
+            .filter(|(_, m)| matches!(
+                m,
+                protocol::EventMsg::Door {
+                    open: true,
+                    locked: true,
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "the door announcement must reach both clients open and still locked"
+    );
     assert!(
         core.world
             .deploys
@@ -418,9 +502,22 @@ fn doors_toggle_across_the_wire() {
     // A late joiner reads the open door off the sync walk.
     assert!(core.connect(2, id_of(2)));
     clients.push((2usize, ClientCore::new(SEED, id_of(2), 0)));
+    seen.clear();
     for _ in 0..5 {
-        pump(&mut core, &stats, &mut clients);
+        pump_seen(&mut core, &stats, &mut clients, &mut seen);
     }
+    // The walk's own bytes, not just what the mirror settled on.
+    assert!(
+        seen.iter().any(|(slot, m)| matches!(
+            m,
+            protocol::EventMsg::DeploySync { recs, count, .. }
+                if *slot == 2
+                    && recs[..*count as usize]
+                        .iter()
+                        .any(|r| r.loc == LOC_EDGE_W && r.open && r.locked)
+        )),
+        "the sync walk must carry the door's open AND locked bits"
+    );
     let late = &clients[2].1;
     let rec = late
         .deploys
@@ -429,11 +526,82 @@ fn doors_toggle_across_the_wire() {
         .find(|r| r.loc == LOC_EDGE_W)
         .expect("late joiner missed the door");
     assert!(rec.open, "the walk carried the door shut");
+    assert!(rec.locked, "the walk lost the door's lock bit");
     assert_eq!(
         late.pieces.cols().get(CX, CZ).shut_w & 1,
         0,
         "late joiner's predictor sealed a door that stands open"
     );
+
+    // The owner unlocks it: everyone hears, and the leaf does not move.
+    act(
+        &mut core,
+        0,
+        ActionMsg::Lock {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+            locked: false,
+        },
+    );
+    seen.clear();
+    let flags = pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    for (slot, f) in flags.iter().enumerate().take(clients.len()) {
+        assert_ne!(
+            f & APPLIED_DEPLOYS,
+            0,
+            "client {slot} missed the lock change"
+        );
+    }
+    assert_eq!(
+        seen.iter()
+            .filter(|(_, m)| matches!(
+                m,
+                protocol::EventMsg::Door {
+                    open: true,
+                    locked: false,
+                    ..
+                }
+            ))
+            .count(),
+        3,
+        "the unlock must cross to all three clients with the leaf untouched"
+    );
+    for (_, c) in &clients {
+        let rec = c
+            .deploys
+            .entries()
+            .iter()
+            .find(|r| r.loc == LOC_EDGE_W)
+            .expect("door in the mirror");
+        assert!(!rec.locked, "the unlock never crossed");
+        assert!(rec.open, "unlocking must not move the leaf");
+    }
+
+    // And now any hand in reach shuts it — door v0's behavior, kept for
+    // the doors their owners choose to leave public.
+    act(
+        &mut core,
+        1,
+        ActionMsg::Use {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+    assert!(
+        !core
+            .world
+            .deploys
+            .find(CX, CZ, 0, LOC_EDGE_W)
+            .expect("door in the world")
+            .open,
+        "an unlocked door takes any hand in reach"
+    );
+    assert_eq!(clients[1].1.pop_deploy_refusal(), None, "a use was refused");
 
     // Using something that is not a door bounces, and only at the sender.
     act(

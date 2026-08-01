@@ -6,11 +6,14 @@ Done items are deleted, not checked — history lives in git and
 
 1. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
-   solid (slice 9: doors — a door places closed and seals its doorway,
-   the use action toggles it, wire v6 carries the action, the
-   announcement and the open bit on every deploy record; E is the
-   client's use key and your own door swings on the press, NETCODE §6.1).
-   Next: door locks (any hand in reach toggles today) · upgrade-in-place
+   solid (slice 11: door locks — a door places locked to its placer and
+   answers only to its owner, the lock action sets the bit absolutely,
+   wire v8 carries it on the action, the announcement and every deploy
+   record; L is the client's lock key and a locked leaf wears iron).
+   Next: **shared access** — one owner id gates a door and a hearth
+   today, so two friends cannot share a base; whether that arrives as a
+   code lock, a hearth auth list doors inherit, or crews needs the
+   operator's word (`DECISIONS.md` §open, lock v0 row) · upgrade-in-place
    · chat · death/backpack/respawn-on-bag (bags place + cap now; the
    anchor lands there).
 2. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
