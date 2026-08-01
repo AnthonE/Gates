@@ -11,7 +11,7 @@ use client_wasm::core::{
 use protocol::{ActionMsg, ItemCatalog};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
-use sim_core::build::{BuildContent, LOC_EDGE_W, LOC_PLANE, REFUSE_B_SPOT};
+use sim_core::build::{BuildContent, LOC_EDGE_W, LOC_PLANE, REFUSE_B_SPOT, REFUSE_B_TIER};
 use sim_core::gather::GatherContent;
 
 const SEED: u64 = 20_260_731;
@@ -210,5 +210,135 @@ fn build_rides_the_wire() {
     }
 
     // Nothing in this run tripped an encoder range check.
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// The upgrade lane end to end: a wood wall re-rows into stone on the
+/// wire, for the upgrader and for a bystander, without becoming a second
+/// piece — and a rung that isn't above the wall's own bounces back to the
+/// asker alone. The client mirror's collision index must follow the row,
+/// since a stone wall blocks exactly what the wood one did.
+#[test]
+fn upgrade_rides_the_wire() {
+    let fixture = BuildContent::probe_fixture();
+    let stats = ShardStats::default();
+    let mut core = ShardCore::new(SEED);
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = fixture;
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].inv[0] = sim_core::gather::ItemStack { item: 0, count: 20 };
+    core.world.players[w0].inv[1] = sim_core::gather::ItemStack { item: 1, count: 10 };
+    for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+        act(
+            &mut core,
+            0,
+            ActionMsg::Place {
+                row,
+                cx: CX,
+                cz: CZ,
+                level: 0,
+                loc,
+            },
+        );
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(core.world.pieces.len(), 2);
+    let sealed = clients[0].1.pieces.cols().get(CX, CZ);
+
+    // Row 4 is the fixture's stone rung for the wall shape.
+    act(
+        &mut core,
+        0,
+        ActionMsg::Upgrade {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+            material: sim_core::build::MAT_STONE,
+        },
+    );
+    let flags = pump(&mut core, &stats, &mut clients);
+    assert_ne!(
+        flags[0] & APPLIED_PIECES,
+        0,
+        "upgrader never saw the re-row"
+    );
+    assert_ne!(
+        flags[1] & APPLIED_PIECES,
+        0,
+        "the re-row missed the bystander"
+    );
+    assert_eq!(core.world.pieces.len(), 2, "an upgrade added a piece");
+    assert_eq!(
+        core.world
+            .pieces
+            .find(CX, CZ, 0, LOC_EDGE_W)
+            .expect("wall stands")
+            .row,
+        4
+    );
+    assert_eq!(
+        sim_core::craft::inv_count(&core.world.players[w0].inv, 1),
+        6,
+        "the stone rung's cost went unpaid"
+    );
+    for (slot, c) in &clients {
+        assert_eq!(c.pieces.len(), 2, "a mirror grew a second piece");
+        let rec = c
+            .pieces
+            .entries()
+            .iter()
+            .find(|r| r.loc == LOC_EDGE_W)
+            .unwrap_or_else(|| panic!("slot {slot} lost the wall"));
+        assert_eq!(rec.row, 4, "slot {slot} still mirrors the wood row");
+        assert_eq!(
+            c.pieces.cols().get(CX, CZ),
+            sealed,
+            "slot {slot}: the shape held, so the collision masks must too"
+        );
+    }
+
+    // Asking for wood back bounces, to the asker alone, and changes
+    // nothing.
+    act(
+        &mut core,
+        0,
+        ActionMsg::Upgrade {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+            material: sim_core::build::MAT_WOOD,
+        },
+    );
+    let flags = pump(&mut core, &stats, &mut clients);
+    assert_ne!(flags[0] & APPLIED_BUILD_REFUSED, 0, "no refusal arrived");
+    assert_eq!(
+        clients[0].1.pop_build_refusal(),
+        Some(REFUSE_B_TIER as u8),
+        "wrong refusal reason"
+    );
+    assert_eq!(
+        clients[1].1.pop_build_refusal(),
+        None,
+        "refusal leaked to a bystander"
+    );
+    assert_eq!(
+        core.world.pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row,
+        4
+    );
+
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }

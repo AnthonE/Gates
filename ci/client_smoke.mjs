@@ -79,6 +79,7 @@ const REQUIRED = [
   "client_action_feed",
   "client_action_use",
   "client_action_lock",
+  "client_action_upgrade",
   "client_predict_door",
   "client_deploy_changes_ptr",
   "client_deploy_changes_len",
@@ -140,18 +141,18 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 8, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 9, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
 // --- handshake parse: the welcome's dev bit reaches JS --------------------
-// The canonical v8 welcome fixture, driven through the same entry the
+// The canonical v9 welcome fixture, driven through the same entry the
 // browser boot uses. That word is the ONLY gate on the page's dev
 // affordances (`__gatesDebug.setView`), so a bridge that dropped it would
 // either ship them to every public shard or withhold them from the capture
 // harness — and neither shows up anywhere else in this suite.
 const welcomeGolden = readFileSync(
-  join(root, "crates/protocol/tests/golden/v8_welcome.bin"),
+  join(root, "crates/protocol/tests/golden/v9_welcome.bin"),
 );
 const parseHandshake = (bytes) => {
   // ptr first, buffer second: a getter may grow memory and detach a
@@ -301,6 +302,10 @@ const lockLen = ex.client_action_lock(341, 341, 0, 2, 1);
 check(lockLen === 4, `lock action length odd: ${lockLen}`);
 check(ex.client_action_lock(1024, 341, 0, 2, 1) === 0, "cx past the grid must refuse");
 check(ex.client_action_lock(341, 341, 0, 4, 0) === 0, "loc past the four must refuse");
+const upgradeLen = ex.client_action_upgrade(341, 341, 0, 2, 2);
+check(upgradeLen === 5, `upgrade action length odd: ${upgradeLen}`);
+check(ex.client_action_upgrade(341, 341, 0, 2, 3) === 0, "a fourth material must refuse");
+check(ex.client_action_upgrade(1024, 341, 0, 2, 1) === 0, "cx past the grid must refuse");
 
 // Hand-framed deploy-placed: kind EVENT(5) · subtype DEPLOY_PLACED(15, 5
 // bits) · cx=341 (10) · cz=682 (10) · level=1 (3) · loc=0 (2) · row=3 (4).

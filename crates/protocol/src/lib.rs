@@ -65,8 +65,12 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// (address + the absolute bit), the door event grew its locked bit, and
 /// every placed-deployable record on the wire grew one too — so a v7
 /// deploy record parses off-by-one from here on, exactly like v6's open
-/// bit, and the hello gate refuses the pair. Fixtures are keyed `v8_*`.
-pub const PROTO_VER: u16 = 8;
+/// bit, and the hello gate refuses the pair. v9 added the upgrade lane:
+/// the upgrade action (address + the target material), which fills the
+/// last code the 3-bit action subtype field had left. No S→C layout
+/// moved — an upgrade re-rows an address, which is what the piece-placed
+/// broadcast already says. Fixtures are keyed `v9_*`.
+pub const PROTO_VER: u16 = 9;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -238,6 +242,7 @@ const ACT_DEPLOY: u32 = 3;
 const ACT_FEED: u32 = 4;
 const ACT_USE: u32 = 5;
 const ACT_LOCK: u32 = 6;
+const ACT_UPGRADE: u32 = 7;
 /// Cancel index width mirrors the queue (`CRAFT_QUEUE` = 4 fits 3 bits);
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
@@ -252,6 +257,10 @@ pub(crate) const PIECE_ROW_BITS: u32 = 8;
 /// Deployable rows cross in 4 bits — exactly `MAX_DEPLOY_DEFS`, so the
 /// width itself is the range check.
 pub(crate) const DEPLOY_ROW_BITS: u32 = 4;
+/// The upgrade action's target material (build.rs `MAT_*`: wood, stone,
+/// metal). Three values in two bits, so the fourth is forgeable and the
+/// decoder refuses it — the same posture as the hotbar selector.
+const BUILD_MAT_BITS: u32 = 2;
 
 /// One decoded C→S action. The wire enforces shape (recipe inside the
 /// sim's table, a live index, a nonzero count); meaning — does the recipe
@@ -306,6 +315,17 @@ pub enum ActionMsg {
         level: u8,
         loc: u8,
         locked: bool,
+    },
+    /// Upgrade the piece at the address into `material` — the rung, not a
+    /// step, for the same reason `Lock` carries state: two presses racing
+    /// must agree on the result. Whether that rung is above the piece's
+    /// own, and whether the sender can pay, are the sim's verdict.
+    Upgrade {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        material: u8,
     },
 }
 
@@ -455,6 +475,33 @@ pub fn encode_action_lock(
     Ok(w.finish())
 }
 
+pub fn encode_action_upgrade(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    material: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || loc > sim_core::build::LOC_EDGE_N
+        || material > sim_core::build::MAT_METAL
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_UPGRADE, ACTION_SUB_BITS)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    w.write(material as u32, BUILD_MAT_BITS)?;
+    Ok(w.finish())
+}
+
 /// Total decode of one C→S action frame — client-driven bytes, so the
 /// same never-panic contract as the input datagrams.
 pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
@@ -532,6 +579,24 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             loc: r.read(BUILD_LOC_BITS)? as u8,
             locked: r.read_bit()?,
         },
+        ACT_UPGRADE => {
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            let material = r.read(BUILD_MAT_BITS)? as u8;
+            // Two bits hold three materials, so the fourth is forgeable.
+            if material > sim_core::build::MAT_METAL {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Upgrade {
+                cx,
+                cz,
+                level,
+                loc,
+                material,
+            }
+        }
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;

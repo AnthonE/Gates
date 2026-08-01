@@ -94,6 +94,7 @@ const BUILD_REFUSE_TEXT = [
   "missing materials",
   "world is full",
   "claimed by a hearth",
+  "nothing to upgrade into",
 ];
 // sim-core deploy.rs REFUSE_D_* order.
 const DEPLOY_REFUSE_TEXT = [
@@ -296,7 +297,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     hud.setBuild(
       `build: ${what} · L${build.level} · ${costs}` +
         ` — wheel piece · R/F level · right-click place · E use door / feed hearth` +
-        ` · L lock door · B close`,
+        ` · L lock door · U upgrade · B close`,
     );
   };
   // Feed the nearest hearth within reach of the feet (the authoritative
@@ -359,6 +360,57 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       return;
     }
     const len = ex.client_action_lock(best.cx, best.cz, best.level, best.loc, best.locked ? 0 : 1);
+    views.refresh();
+    if (len > 0) actions.send(views.output, len);
+  };
+  // The nearest piece within reach of the feet, measured to the same
+  // anchor the sim gates on: a cell center for planes and stairs, the
+  // edge's midpoint for walls and doorways (sim-core build.rs `anchor`).
+  const nearestPiece = () => {
+    const R = views.render;
+    let best = null;
+    let bestD = REACH * REACH;
+    for (const rec of pieceRecs.values()) {
+      const x0 = rec.cx * BUILD_CELL;
+      const z0 = rec.cz * BUILD_CELL;
+      const h = BUILD_CELL / 2;
+      const ax = rec.loc === 2 ? x0 : x0 + h;
+      const az = rec.loc === 3 ? z0 : z0 + h;
+      const dx = ax - R[1];
+      const dz = az - R[3];
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD) {
+        bestD = d2;
+        best = rec;
+      }
+    }
+    return best;
+  };
+  // U climbs the nearest piece one rung: wood → stone → metal. The wire
+  // carries the rung, not the step, so the client only has to know what
+  // the piece is made of today — and whether that rung exists, and who
+  // may pay for it, stays the server's verdict, back as a toast. Nothing
+  // is predicted: an upgrade never moves collision.
+  const tryUpgrade = () => {
+    const best = nearestPiece();
+    if (!best) {
+      hud.toast("no building in reach");
+      return;
+    }
+    // The def rows drip separately from the pieces that reference them,
+    // so a piece can be on screen before its material is known — asking
+    // then would send a rung picked out of an empty table.
+    const pieceDefsHave = (ex.client_piece_defs_state() >>> 0) & 0xffff;
+    if (best.row >= pieceDefsHave) {
+      hud.toast("still loading that piece");
+      return;
+    }
+    const material = views.pieceDefs[best.row * 8 + 1] + 1;
+    if (material > 2) {
+      hud.toast("already metal");
+      return;
+    }
+    const len = ex.client_action_upgrade(best.cx, best.cz, best.level, best.loc, material);
     views.refresh();
     if (len > 0) actions.send(views.output, len);
   };
@@ -449,6 +501,9 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       e.preventDefault();
     } else if (e.code === "KeyL") {
       tryLock();
+      e.preventDefault();
+    } else if (e.code === "KeyU") {
+      tryUpgrade();
       e.preventDefault();
     }
   });

@@ -25,46 +25,47 @@ use sim_core::limits::{
 };
 use sim_core::rng::Pcg32;
 
-/// Fixture file names, keyed by wire version (`PROTO_VER` 8 ⇒ `v8_*`).
-pub const FIXTURES: [&str; 38] = [
-    "v8_input_acks_only.bin",
-    "v8_input_full.bin",
-    "v8_snapshot_keyframe.bin",
-    "v8_snapshot_delta.bin",
-    "v8_snapshot_cap.bin",
-    "v8_hello.bin",
-    "v8_welcome.bin",
-    "v8_refuse_full.bin",
-    "v8_event_gather.bin",
-    "v8_event_inv.bin",
-    "v8_event_slot_harvested.bin",
-    "v8_event_slot_respawned.bin",
-    "v8_event_slot_sync.bin",
-    "v8_event_catalog.bin",
-    "v8_event_weak_mark.bin",
-    "v8_event_craft_q.bin",
-    "v8_event_craft_done.bin",
-    "v8_event_craft_refused.bin",
-    "v8_event_recipes.bin",
-    "v8_action_craft.bin",
-    "v8_action_cancel.bin",
-    "v8_action_place.bin",
-    "v8_event_piece_placed.bin",
-    "v8_event_piece_sync.bin",
-    "v8_event_build_refused.bin",
-    "v8_event_piece_defs.bin",
-    "v8_action_deploy.bin",
-    "v8_action_feed.bin",
-    "v8_event_deploy_placed.bin",
-    "v8_event_deploy_sync.bin",
-    "v8_event_deploy_refused.bin",
-    "v8_event_deploy_defs.bin",
-    "v8_event_piece_removed.bin",
-    "v8_event_deploy_removed.bin",
-    "v8_event_stock.bin",
-    "v8_action_use.bin",
-    "v8_action_lock.bin",
-    "v8_event_door.bin",
+/// Fixture file names, keyed by wire version (`PROTO_VER` 9 ⇒ `v9_*`).
+pub const FIXTURES: [&str; 39] = [
+    "v9_input_acks_only.bin",
+    "v9_input_full.bin",
+    "v9_snapshot_keyframe.bin",
+    "v9_snapshot_delta.bin",
+    "v9_snapshot_cap.bin",
+    "v9_hello.bin",
+    "v9_welcome.bin",
+    "v9_refuse_full.bin",
+    "v9_event_gather.bin",
+    "v9_event_inv.bin",
+    "v9_event_slot_harvested.bin",
+    "v9_event_slot_respawned.bin",
+    "v9_event_slot_sync.bin",
+    "v9_event_catalog.bin",
+    "v9_event_weak_mark.bin",
+    "v9_event_craft_q.bin",
+    "v9_event_craft_done.bin",
+    "v9_event_craft_refused.bin",
+    "v9_event_recipes.bin",
+    "v9_action_craft.bin",
+    "v9_action_cancel.bin",
+    "v9_action_place.bin",
+    "v9_event_piece_placed.bin",
+    "v9_event_piece_sync.bin",
+    "v9_event_build_refused.bin",
+    "v9_event_piece_defs.bin",
+    "v9_action_deploy.bin",
+    "v9_action_feed.bin",
+    "v9_event_deploy_placed.bin",
+    "v9_event_deploy_sync.bin",
+    "v9_event_deploy_refused.bin",
+    "v9_event_deploy_defs.bin",
+    "v9_event_piece_removed.bin",
+    "v9_event_deploy_removed.bin",
+    "v9_event_stock.bin",
+    "v9_action_use.bin",
+    "v9_action_lock.bin",
+    "v9_event_door.bin",
+    "v9_action_upgrade.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -493,6 +494,21 @@ pub fn action_use() -> (u16, u16, u8, u8) {
 /// the golden gate ungated.
 pub fn action_lock() -> (u16, u16, u8, u8, bool) {
     (341, 682, 0, sim_core::build::LOC_EDGE_W, true)
+}
+
+/// An upgrade request: the same address again, climbing to metal. The
+/// material is **2** on purpose — at 0 the frame would be byte-identical
+/// to one whose encoder never wrote the field (the padding absorbs the
+/// width), so wire v9's only new C→S field would cross the golden gate
+/// ungated.
+pub fn action_upgrade() -> (u16, u16, u8, u8, u8) {
+    (
+        341,
+        682,
+        0,
+        sim_core::build::LOC_EDGE_W,
+        sim_core::build::MAT_METAL,
+    )
 }
 
 /// A door announcement: the same address, now open and still locked (the
