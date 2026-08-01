@@ -209,6 +209,20 @@ fn band_breaks_refused() {
     );
 }
 
+/// The upgrade ladder is whole: every shape that has a stone or metal rung
+/// has the rung below it (sim-core build.rs climbs shape by shape, so a
+/// hole is a piece nothing can ever be upgraded into). Take the wood roof
+/// out and the set must refuse to load.
+#[test]
+fn upgrade_ladder_must_be_whole() {
+    refuses(
+        "building.toml",
+        "[[piece]]\nid = \"build.roof_wood\"\nshape = \"roof\"\nmaterial = \"wood\"\nhp = 750\ncost = [{ item = \"item.wood\", count = 350 }]\n",
+        "",
+        "upgrade ladder must be whole",
+    );
+}
+
 #[test]
 fn door_must_stay_weaker_than_wall() {
     refuses(

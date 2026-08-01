@@ -13,9 +13,9 @@
 use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_craft, encode_action_deploy,
-    encode_action_feed, encode_action_lock, encode_action_place, encode_action_use, encode_hello,
-    peek_kind, Hello, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES,
-    PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
+    encode_action_feed, encode_action_lock, encode_action_place, encode_action_upgrade,
+    encode_action_use, encode_hello, peek_kind, Hello, DEPLOY_SYNC_BATCH, KIND_REFUSE,
+    KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_DEPLOY_DEFS,
@@ -491,6 +491,33 @@ pub extern "C" fn client_action_lock(cx: u32, cz: u32, level: u32, loc: u32, loc
             level as u8,
             loc as u8,
             locked != 0,
+            &mut b.out_buf,
+        )
+        .map(|n| n as u32)
+        .unwrap_or(0)
+    })
+}
+
+/// Encode an upgrade request (re-row the piece at the address into a
+/// higher material) into the out buffer; returns its length, or 0 when
+/// the arguments are outside the wire's domain. Nothing is predicted: an
+/// upgrade never moves collision, so there is nothing for the predictor
+/// to be wrong about, and the announcement re-rows the mirror.
+#[no_mangle]
+pub extern "C" fn client_action_upgrade(
+    cx: u32,
+    cz: u32,
+    level: u32,
+    loc: u32,
+    material: u32,
+) -> u32 {
+    with(|b| {
+        encode_action_upgrade(
+            cx as u16,
+            cz as u16,
+            level as u8,
+            loc as u8,
+            material as u8,
             &mut b.out_buf,
         )
         .map(|n| n as u32)

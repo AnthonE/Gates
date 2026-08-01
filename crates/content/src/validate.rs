@@ -179,6 +179,15 @@ pub fn structural(c: &Content) -> Result<(), String> {
                     ));
                 }
             }
+            // The ladder has no holes: upgrade-in-place climbs shape by
+            // shape (sim-core build.rs), so a stone rung with no wood one
+            // under it is a piece nothing can ever be upgraded into.
+            if piece_hp(p.shape, hi).is_some() && piece_hp(p.shape, lo).is_none() {
+                return Err(format!(
+                    "building `{}`: {:?} has a {:?} rung but no {:?} — the upgrade ladder must be whole",
+                    p.id, p.shape, hi, lo
+                ));
+            }
         }
     }
 

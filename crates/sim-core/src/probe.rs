@@ -74,7 +74,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 id: 2,
                 index: (t % 5) as u16,
             };
-            // Bot 1 also pokes the build verb at its own feet: row 4 is
+            // Bot 1 also pokes the build verb at its own feet: row 5 is
             // out of range and the loc cycle mismatches most shapes, so
             // placement successes AND every refusal reason ride the
             // parity/replay/alloc surface once inventories fill —
@@ -88,7 +88,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
             // t ≡ 11 (mod 16) on every place tick, so cycle on t/16.
             let place = Command::Place {
                 id: 1,
-                row: ((t / 16) % 5) as u16,
+                row: ((t / 16) % 6) as u16,
                 cx: own_cell.0,
                 cz: own_cell.1,
                 level: ((t / 32) % 2) as u8,
@@ -148,7 +148,27 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 ]);
                 continue;
             }
-            if t % 16 == 7 {
+            if t % 16 == 5 {
+                // Bot 1 also pokes the upgrade verb at the same addresses
+                // it builds on, cycling the whole ladder: wood is the
+                // sideways/downward refusal, stone the one rung the
+                // fixture holds (so real re-rows, payments, and damage
+                // carry ride the surface), metal the missing-rung
+                // refusal — plus every empty address and empty purse in
+                // between.
+                world.tick(&[
+                    Command::Input { id: 1, frame: f1 },
+                    Command::Input { id: 2, frame: f2 },
+                    Command::Upgrade {
+                        id: 1,
+                        cx: own_cell.0,
+                        cz: own_cell.1,
+                        level: ((t / 32) % 2) as u8,
+                        loc: ((t / 16) % 4) as u8,
+                        material: ((t / 16) % 3) as u8,
+                    },
+                ]);
+            } else if t % 16 == 7 {
                 world.tick(&[
                     Command::Input { id: 1, frame: f1 },
                     Command::Input { id: 2, frame: f2 },

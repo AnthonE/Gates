@@ -251,6 +251,20 @@ impl ShardCore {
                         loc,
                         locked,
                     },
+                    ActionMsg::Upgrade {
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        material,
+                    } => Command::Upgrade {
+                        id: c.id,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        material,
+                    },
                 };
                 n += 1;
             }

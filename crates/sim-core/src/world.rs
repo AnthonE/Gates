@@ -232,6 +232,17 @@ pub enum Command {
         loc: u8,
         locked: bool,
     },
+    /// Upgrade the piece at the address into `material` — same shape, same
+    /// address, a rung up the ladder (build.rs validates and refuses by
+    /// event, never by panic).
+    Upgrade {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        material: u8,
+    },
 }
 
 pub struct World {
@@ -483,6 +494,29 @@ impl World {
                         level,
                         loc,
                         locked,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Upgrade {
+                id,
+                cx,
+                cz,
+                level,
+                loc,
+                material,
+            } => {
+                if let Some(slot) = self.slot_of(id) {
+                    build::upgrade(
+                        &self.build,
+                        &self.deploys,
+                        &mut self.pieces,
+                        &mut self.players[slot],
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        material,
                         &mut self.events,
                     );
                 }

@@ -1463,7 +1463,7 @@ mod tests {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
-        assert_eq!(took, 4, "fixture has 4 rows, all fit one batch");
+        assert_eq!(took, 5, "fixture has 5 rows, all fit one batch");
         match decode_event(&buf[..len]).unwrap() {
             EventMsg::PieceDefs {
                 total,
@@ -1471,14 +1471,14 @@ mod tests {
                 count,
                 rows,
             } => {
-                assert_eq!((total, first, count), (4, 0, 4));
+                assert_eq!((total, first, count), (5, 0, 5));
                 assert_eq!(rows[0], bc.pieces[0], "decode rebuilds the sim row");
-                assert_eq!(rows[3], bc.pieces[3]);
+                assert_eq!(rows[4], bc.pieces[4]);
             }
             other => panic!("wrong variant: {other:?}"),
         }
         assert_eq!(
-            encode_event_piece_defs(&bc, 4, &mut buf),
+            encode_event_piece_defs(&bc, 5, &mut buf),
             Err(WireError::Range),
             "cursor past the table refuses"
         );

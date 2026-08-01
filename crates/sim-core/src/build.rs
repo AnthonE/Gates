@@ -22,8 +22,11 @@
 //! under one of its four sides; stairs need the plane they stand on.
 //! Hearth privilege gates placement (deploy.rs: a foreign hearth's radius
 //! refuses with `REFUSE_B_CLAIM`), and pieces carry hp + an upkeep clock
-//! for the decay sweep (deploy.rs `upkeep_sweep`). Upgrade-in-place and
-//! piece collision are the next slice (NOW.md).
+//! for the decay sweep (deploy.rs `upkeep_sweep`).
+//!
+//! Upgrade-in-place (`upgrade`) moves a standing piece up the material
+//! ladder without tearing it down: same shape, same address, same
+//! collision, a higher material's hp and upkeep. Piece damage is M2.
 
 use crate::craft::{inv_count, inv_take};
 use crate::deploy::{Deploys, UPKEEP_PERIOD_TICKS};
@@ -66,6 +69,9 @@ pub const REFUSE_B_REACH: u32 = 4;
 pub const REFUSE_B_COST: u32 = 5;
 pub const REFUSE_B_FULL: u32 = 6;
 pub const REFUSE_B_CLAIM: u32 = 7;
+/// The upgrade verb's own refusal: the named material is not a rung above
+/// this piece's, or the table holds no such rung for its shape.
+pub const REFUSE_B_TIER: u32 = 8;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
 /// Proposed default, DECISIONS.md §open ("build grid v0").
@@ -123,10 +129,13 @@ impl BuildContent {
     /// Synthetic table for the parity/replay/alloc gates, over the gather
     /// probe fixture's items (fixture, not game content). Row 2 costs a
     /// different item so multi-material inventories are inside the gates;
-    /// row 3 is the doorway a door deployable needs (the door slice).
+    /// row 3 is the doorway a door deployable needs (the door slice);
+    /// row 4 is row 1's stone rung, so the upgrade verb has somewhere to
+    /// climb to (the upgrade slice) — and it costs the second item, so an
+    /// upgrade's payment is distinguishable from the wall's own.
     pub fn probe_fixture() -> Self {
         let mut b = Self::EMPTY;
-        b.piece_count = 4;
+        b.piece_count = 5;
         b.pieces[0] = PieceDef {
             shape: SHAPE_FOUNDATION,
             material: MAT_WOOD,
@@ -154,6 +163,13 @@ impl BuildContent {
             hp: 100,
             n_costs: 1,
             costs: [(0, 3), (0, 0)],
+        };
+        b.pieces[4] = PieceDef {
+            shape: SHAPE_WALL,
+            material: MAT_STONE,
+            hp: 200,
+            n_costs: 1,
+            costs: [(1, 4), (0, 0)],
         };
         b
     }
@@ -222,6 +238,24 @@ impl Pieces {
         self.entries[..self.len]
             .iter()
             .find(|p| p.cx == cx && p.cz == cz && p.level == level && p.loc == loc)
+    }
+
+    /// The store index of the piece at an address — what a write needs
+    /// (`find` hands out a reference the borrow checker won't let a
+    /// mutation follow).
+    fn find_index(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<usize> {
+        self.entries[..self.len]
+            .iter()
+            .position(|p| p.cx == cx && p.cz == cz && p.level == level && p.loc == loc)
+    }
+
+    /// Re-row entry `i` in place (the upgrade verb's write). The address
+    /// and the shape are unchanged by construction, so the column index
+    /// and any door sealing that address are deliberately untouched —
+    /// upgrading a doorway must not drop the door standing in it.
+    fn set_row(&mut self, i: usize, row: u8, hp: u16) {
+        self.entries[i].row = row;
+        self.entries[i].hp = hp;
     }
 
     /// Append a record. False ⇒ store full (the caller refuses the
@@ -427,6 +461,105 @@ pub fn place(
     for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
         inv_take(&mut p.inv, item, units as u32);
     }
+    events.push(
+        EV_PIECE_PLACED,
+        crate::gather::cell_key(cx, cz),
+        ((level as u32) << 16) | ((loc as u32) << 8) | row as u32,
+        0,
+    );
+}
+
+/// The baked row for a shape in a material, if the table holds one.
+/// Linear over `MAX_PIECE_DEFS` (32) — the table is tiny and the scan
+/// keeps the ladder a property of the content, not of row ordering.
+fn row_of(bc: &BuildContent, shape: u8, material: u8) -> Option<u16> {
+    bc.pieces
+        .iter()
+        .take(bc.piece_count as usize)
+        .position(|d| d.hp != 0 && d.shape == shape && d.material == material)
+        .map(|i| i as u16)
+}
+
+/// Apply one upgrade request (`Command::Upgrade`): the piece standing at
+/// the address becomes the same shape in `material`, a rung further up the
+/// wood → stone → metal ladder. `material` names the rung, not a step, so
+/// wood → metal in one press is legal where the table holds the row; a
+/// sideways or downward material refuses, because a raid must not be
+/// answerable by re-skinning a wall in something cheaper.
+///
+/// Price is the target row's whole build cost — content says so
+/// (`content/building.toml`: `cost` is the direct build cost *and* the
+/// upgrade-into cost). Damage carries across as a fraction rather than
+/// healing: a wall standing at half hp becomes a stone wall at half hp,
+/// so an upgrade is never a free repair mid-raid. The upkeep clock is
+/// left where it stood — an unpaid period is still owed.
+///
+/// The shape never changes, so collision never moves and the door in an
+/// upgraded doorway keeps its leaf, its lock, and its seal.
+#[allow(clippy::too_many_arguments)]
+pub fn upgrade(
+    bc: &BuildContent,
+    deploys: &Deploys,
+    pieces: &mut Pieces,
+    p: &mut Player,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    material: u8,
+    events: &mut EventQueue,
+) {
+    let Some(i) = pieces.find_index(cx, cz, level, loc) else {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
+        return;
+    };
+    let rec = pieces.entries()[i];
+    // A record's row was validated at placement; re-checking it here is
+    // what keeps a content table swapped under a live store from indexing
+    // out of bounds (the sim never panics on state, wall 5).
+    if rec.row as u16 >= bc.piece_count {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
+        return;
+    }
+    let cur = bc.pieces[rec.row as usize];
+    let (ax, az) = anchor(cx, cz, loc);
+    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
+        return;
+    }
+    if deploys.foreign_claim(ax, az, p.id) {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
+        return;
+    }
+    if material <= cur.material {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TIER, 0);
+        return;
+    }
+    let Some(row) = row_of(bc, cur.shape, material) else {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TIER, 0);
+        return;
+    };
+    let def = bc.pieces[row as usize];
+    for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
+        if inv_count(&p.inv, item) < units as u32 {
+            events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_COST, 0);
+            return;
+        }
+    }
+    for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
+        inv_take(&mut p.inv, item, units as u32);
+    }
+    // Damage rides the ladder as a fraction, never below one hit of life
+    // (cur.hp is nonzero: the inert row is refused at placement).
+    let carried = (rec.hp as u32 * def.hp as u32) / cur.hp as u32;
+    let hp = carried.clamp(1, def.hp as u32) as u16;
+    pieces.set_row(i, row as u8, hp);
+    // Announced as a placement: the address now holds a different row,
+    // which is exactly what EV_PIECE_PLACED says, and every mirror
+    // downstream already upserts by address.
     events.push(
         EV_PIECE_PLACED,
         crate::gather::cell_key(cx, cz),
@@ -760,6 +893,325 @@ mod tests {
         );
         assert_eq!(last(&ev).2, REFUSE_B_FULL);
         assert_eq!(inv_count(&p.inv, 0), 100, "nothing paid on a full store");
+    }
+
+    /// Stand a wood wall at the smoke cell's west edge and hand back the
+    /// player who built it (foundation + wall paid from `items`).
+    fn walled(items: &[(u16, u16)]) -> (BuildContent, Pieces, Deploys, EventQueue, Player) {
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell_center(items);
+        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+            place(
+                SEED,
+                &bc,
+                &nod,
+                &mut pieces,
+                &mut p,
+                0,
+                row,
+                CX,
+                CZ,
+                0,
+                loc,
+                &mut ev,
+            );
+            assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        }
+        (bc, pieces, nod, ev, p)
+    }
+
+    #[test]
+    fn upgrade_pays_re_rows_in_place_and_carries_damage() {
+        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 20), (1, 10)]);
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        // Standing damage: half the wall's life is gone (the decay sweep
+        // is what does this in the live sim).
+        pieces.set_upkeep(i, 50, 0);
+        let before = pieces.len();
+
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (
+                crate::world::EV_PIECE_PLACED,
+                crate::gather::cell_key(CX, CZ),
+                ((LOC_EDGE_W as u32) << 8) | 4
+            ),
+            "the upgrade announces the address's new row"
+        );
+        assert_eq!(inv_count(&p.inv, 1), 6, "the stone rung's whole cost paid");
+        assert_eq!(inv_count(&p.inv, 0), 12, "the wood cost was not re-paid");
+        assert_eq!(pieces.len(), before, "an upgrade is not a placement");
+        let rec = *pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        assert_eq!(rec.row, 4, "the address holds the stone row now");
+        assert_eq!(rec.hp, 100, "half a 100 hp wall is half a 200 hp wall");
+        assert_eq!(rec.uh, 0, "the upkeep clock is not reset by an upgrade");
+    }
+
+    #[test]
+    fn upgrade_refuses_sideways_downward_and_missing_rungs() {
+        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100), (1, 100)]);
+        // Same material, and a material the ladder has no rung for.
+        for mat in [MAT_WOOD, MAT_METAL] {
+            upgrade(
+                &bc,
+                &nod,
+                &mut pieces,
+                &mut p,
+                CX,
+                CZ,
+                0,
+                LOC_EDGE_W,
+                mat,
+                &mut ev,
+            );
+            assert_eq!(
+                last(&ev),
+                (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_TIER)
+            );
+        }
+        // The foundation's shape has no stone rung in the fixture either.
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_TIER);
+        // Downward: climb to stone, then ask for wood back.
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            MAT_WOOD,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_TIER);
+        assert_eq!(
+            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row,
+            4,
+            "a refused downgrade left the stone standing"
+        );
+    }
+
+    #[test]
+    fn upgrade_refuses_empty_air_distance_and_an_empty_purse() {
+        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100), (1, 2)]);
+        // Nothing at the north edge.
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_SPOT);
+
+        // The wall is there, the stone is not (2 units against a cost of 4).
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_COST);
+        assert_eq!(inv_count(&p.inv, 1), 2, "a refusal charged nothing");
+        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row, 1);
+
+        // Rich, but standing 20 m off.
+        let mut far = player_at_cell_center(&[(1, 100)]);
+        far.body = Body::at(
+            SEED,
+            (CX as f32 + 7.5) * BUILD_CELL_M,
+            (CZ as f32 + 0.5) * BUILD_CELL_M,
+        );
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut far,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_REACH);
+        assert_eq!(inv_count(&far.inv, 1), 100, "a refusal charged nothing");
+    }
+
+    #[test]
+    fn upgrade_never_moves_collision() {
+        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100), (1, 100)]);
+        // A doorway beside the wall, sealed the way a placed door seals it.
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        pieces.set_door(CX, CZ, 0, LOC_EDGE_N, true);
+        let before = pieces.cols().get(CX, CZ);
+
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        assert_eq!(
+            pieces.cols().get(CX, CZ),
+            before,
+            "the shape never changed, so no mask may have"
+        );
+    }
+
+    #[test]
+    fn upgrade_answers_to_a_foreign_claim() {
+        let bc = BuildContent::probe_fixture();
+        let dc = crate::deploy::DeployContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut owner = player_at_cell_center(&[(0, 100), (1, 100), (2, 100), (3, 100)]);
+        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+            place(
+                SEED,
+                &bc,
+                &deploys,
+                &mut pieces,
+                &mut owner,
+                0,
+                row,
+                CX,
+                CZ,
+                0,
+                loc,
+                &mut ev,
+            );
+            assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        }
+        // The fixture's hearth row, planted on the owner's foundation.
+        let hearth = (0..dc.def_count)
+            .find(|&r| dc.defs[r as usize].arch == crate::deploy::ARCH_HEARTH)
+            .expect("fixture holds a hearth");
+        crate::deploy::place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            0,
+            hearth,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED, "hearth stands");
+
+        let mut stranger = player_at_cell_center(&[(1, 100)]);
+        stranger.id = 9;
+        upgrade(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 9, REFUSE_B_CLAIM)
+        );
+        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row, 1);
+
+        // The hearth's owner may still climb their own wall's ladder.
+        upgrade(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut owner,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
     }
 
     #[test]
