@@ -114,7 +114,9 @@ const SHADOW_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_SHADOW_MIN || 0.15)
 // pools still cleared the aggregate above: the other tab's avatar stands on
 // the shared spawn point and, under a 21° sun, throws a long enough shadow
 // across a downward-pitched frame to score 6% on its own — from two of the
-// four yaws, with the other two at exactly 0.0%. Worst real yaw is 2.8%.
+// four yaws, with the other two at exactly 0.0%. Worst real yaw was 2.8% then
+// and is 20.4% now that the ground itself casts, which is what let the floor
+// below move from 1% to 10%.
 const SHADOW_MIN_FRACTION_PER_YAW = Number(process.env.BROWSER_SMOKE_SHADOW_MIN_YAW || 0.1);
 // Same failure from the other side, counted rather than sampled: the seven
 // scatter pools are frustumCulled=false, so a rig where the world casts
