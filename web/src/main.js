@@ -830,12 +830,36 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     : null;
   // And the cost probe (NOW.md item 1): the only one that answers what a
   // term COSTS rather than whether it reaches the image. It compiles the
-  // ground four ways, so the variants it needs — and the swapper that wears
+  // ground six ways, so the variants it needs — and the swapper that wears
   // them — are handed to the scene here and nowhere else. On a public shard
   // this line does not run, so the variant programs are never built at all.
   const devCostProbe = dev
     ? (yaw, pitch, scales, frames, reps) =>
         scene.costProbe(yaw, pitch, scales, frames, reps)
+    : null;
+  // Materials v1's: the contrast probe needs viewpoints in WORLD space, and
+  // this is the scope that holds the camera. A view is the player's own
+  // position, optionally lifted, aimed by (yaw, pitch) — the near one is
+  // grain's home ground, the lifted one is where grain must already be gone.
+  const devGrainProbe = dev
+    ? (uniformName, specs, minDelta) => {
+        const views = [];
+        for (const s of specs) {
+          const p = scene.camera.position;
+          const y = p.y + (s.lift || 0);
+          const cp = Math.cos(s.pitch);
+          views.push({
+            label: s.label,
+            eye: [p.x, y, p.z],
+            at: [
+              p.x + Math.sin(s.yaw) * cp,
+              y + Math.sin(s.pitch),
+              p.z + Math.cos(s.yaw) * cp,
+            ],
+          });
+        }
+        return scene.contrastProbe(views, uniformName, minDelta);
+      }
     : null;
   if (dev) {
     scene.attachTerrainCost({
@@ -970,6 +994,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (devFarShadowProbe) debug.farShadowProbe = devFarShadowProbe;
     if (devHorizonProbe) debug.horizonProbe = devHorizonProbe;
     if (devCostProbe) debug.costProbe = devCostProbe;
+    if (devGrainProbe) debug.grainProbe = devGrainProbe;
     globalThis.__gatesDebug = debug;
   }, 250);
 }

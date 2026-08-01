@@ -65,6 +65,14 @@ const WIRE_PORT = Number(process.env.BROWSER_SMOKE_WIRE_PORT || 4433);
 // The public-config shard (no dev_spawn) the dev-gate check joins.
 const PUBLIC_WIRE_PORT = Number(process.env.BROWSER_SMOKE_PUBLIC_WIRE_PORT || WIRE_PORT + 1);
 const JOIN_TIMEOUT_MS = Number(process.env.BROWSER_SMOKE_TIMEOUT_MS || 60000);
+// How the join is WATCHED inside that window — the instrument, not the budget.
+// A look is a `page.evaluate`, which has to be scheduled on the tab's own main
+// thread; with three tabs live on this box one measured 20 s. So up to 4 may be
+// outstanding instead of each waiting for the last to come back, and 250 ms is
+// the FLOOR on the gap between launches — not a cadence, since a look settling
+// also frees a slot immediately. See `join()`.
+const JOIN_POLL_MS = 250;
+const JOIN_POLL_INFLIGHT = 4;
 const PLAY_MS = Number(process.env.BROWSER_SMOKE_PLAY_MS || 6000);
 // Separation the chat assertion walks the two tabs to before claiming a local
 // line is out of earshot. Comfortably past the 20 m radius (DECISIONS.md
@@ -247,6 +255,38 @@ const SPLAT_MIN_SECOND = Number(process.env.BROWSER_SMOKE_SPLAT_MIN_SECOND || 0.
 // moisture channel's features are ~700 m across, so a ring is often one
 // biome) — this floor is set from the pinned spawn's measured 1.5%.
 const SPLAT_MIN_MIXED = Number(process.env.BROWSER_SMOKE_SPLAT_MIN_MIXED || 0.005);
+// --- the grain gate (DECISIONS.md §open, "materials v1") --------------------
+// Assertion 15 counts pixels that MOVED, which cannot tell a fourth octave
+// from a fourth tint: a wash moves every pixel it touches, and so does an
+// exposure slip. What the second pass added is TEXTURE. So the probe here
+// measures neighbour-to-neighbour contrast over the pixels the toggle moved,
+// in both states — grain is by definition the thing that changes between one
+// pixel and the next — and it does it at two views:
+//
+//   near — grain reaches the frame at arm's length. Pitched steeply down so
+//          the ground in frame is the few metres that are grain's whole range.
+//   far  — and it is GONE out there. Lifted 60 m and pitched shallow, so the
+//          ground in frame is 100–200 m off, well past the cycles-per-pixel
+//          fade. An octave that survives that view is an octave that aliases.
+const GRAIN_PROBE_MIN_DELTA = 6;
+const GRAIN_NEAR_PITCH = -1.05;
+const GRAIN_FAR_PITCH = -0.42;
+const GRAIN_FAR_LIFT_M = 60;
+const GRAIN_VIEWS = [
+  { label: "near", yaw: 0, pitch: GRAIN_NEAR_PITCH },
+  { label: "far", yaw: 0, pitch: GRAIN_FAR_PITCH, lift: GRAIN_FAR_LIFT_M },
+];
+// How much of the near frame grain must reach.
+const GRAIN_NEAR_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_GRAIN_MIN || 0.05);
+// The assertion that says grain and not wash. 1.0 is "the toggle changed the
+// pixels without changing the detail between them"; 2.0 is a doubling.
+const GRAIN_MIN_CONTRAST_RATIO = Number(process.env.BROWSER_SMOKE_GRAIN_MIN_RATIO || 2.0);
+// Signed both ways, per view: a tint can only move the frame one direction.
+const GRAIN_MIN_DIRECTIONAL = Number(process.env.BROWSER_SMOKE_GRAIN_MIN_DIR || 0.005);
+// The ceiling from 60 m up. Grain that survives out there is grain that
+// aliases, which is the failure the cycles-per-pixel fade exists to prevent.
+const GRAIN_FAR_MAX_FRACTION = Number(process.env.BROWSER_SMOKE_GRAIN_FAR_MAX || 0.005);
+
 // --- the fragment budget (DECISIONS.md §open, "fragment budget v0") ---------
 // DESIGN §9 budgets the frame by DRAW CALLS and TRIANGLES, and the gate has
 // asserted both since lighting v0. Neither says anything about what a single
@@ -266,10 +306,11 @@ const SPLAT_MIN_MIXED = Number(process.env.BROWSER_SMOKE_SPLAT_MIN_MIXED || 0.00
 // that goes back to being the most expensive thing in the shader.
 const DEPTH_FETCH_BUDGET = Number(process.env.BROWSER_SMOKE_DEPTH_FETCHES || 24);
 // The compiled terrain fragment program, in characters of GLSL with three's
-// `#include`s expanded: 80,563 today, of which 73,375 is three's stock
-// MeshStandardMaterial as it was handed over and 7,188 (8.9%) is everything
-// this repo added to the ground. The cap is ~19% over, which survives a three
-// minor bump and still catches a program that doubled.
+// `#include`s expanded: 81,520 today, of which 73,375 is three's stock
+// MeshStandardMaterial as it was handed over and 8,145 (10.0%) is everything
+// this repo added to the ground — the grain octave being 638 of it. The cap is
+// ~18% over, which survives a three minor bump and still catches a program
+// that doubled.
 const TERRAIN_FRAGMENT_BUDGET = Number(process.env.BROWSER_SMOKE_FRAG_CHARS || 96000);
 // Where the cost probe aims and how it sweeps. The bearing is the surface
 // probe's steepest yaw at its own pitch — the view with the most ground in
@@ -286,9 +327,10 @@ const COST_PROBE_SCALES = [1, 0.5, 0.25];
 const COST_PROBE_FRAMES = 1;
 const COST_PROBE_REPS = 4;
 // Two separately compiled programs may schedule identical arithmetic in a
-// different order, so the `nofield` variant is required to land on the
-// `uSurface = 0` image within one luma step rather than bit-exactly. Stated
-// before the run, not fitted to it.
+// different order, so the `nofield` and `nograin` variants are required to
+// land on their uniform-zeroed image (`uSurface = 0` and `uGrain = 0`
+// respectively) within one luma step rather than bit-exactly. Stated before
+// the run, not fitted to it.
 const COST_IDENTITY_MAX_DELTA = 1;
 // How much of a timed frame must be the GPU rather than JS draw submission,
 // as a ratio. A check on the instrument, not on this box's speed: the broken
@@ -430,26 +472,121 @@ const join = async (label, port = WIRE_PORT, cert = certHash) => {
 
   // Assertion 1 — the client reaches the world. Catches bug 1, and any
   // handshake, ring, AOI or delta-encoder break along the way.
+  //
+  // The poll is shaped like this on purpose. It used to make TWO
+  // `page.evaluate` round trips per iteration — the whole `__gatesDebug`
+  // object, then `#starterr` — and the first of those grew every time a slice
+  // added facts to the debug publisher (the lighting rig, the clipmap's
+  // per-level facts, the material system's identities and program stats, the
+  // scatter pools). On this box the third live tab's renderer gets a fraction
+  // of a core, an evaluate queues behind whatever frame it lands in, and the
+  // measured result was **2 polls in 62.6 seconds**: the gate spent its whole
+  // 60 s window asking, and asked twice.
+  //
+  // That is an instrument failure and it reads exactly like a client that
+  // never joined. It is what killed the first grain attempt, and the page
+  // state printed on failure below is what finally said so — form hidden,
+  // `__gatesDebug` present, client in the world, nobody looking.
+  //
+  // Two repairs, and neither touches what is asserted or how long it is
+  // allowed to take:
+  //
+  //   1. ONE round trip per look, carrying only the fields the join condition
+  //      is written against instead of every fact the client publishes. The
+  //      refusal check rides along in it rather than paying for its own.
+  //   2. The looks do not QUEUE BEHIND EACH OTHER. Serialized, a look costs
+  //      its own latency before the next one starts, so a 20 s round trip
+  //      buys three looks in a minute no matter how early the client was
+  //      ready. With up to JOIN_POLL_INFLIGHT outstanding the answer arrives
+  //      when the renderer next has a slice for it, so the join is observed
+  //      within one round trip of becoming true instead of within one round
+  //      trip of the next poll's turn. JOIN_POLL_MS is a FLOOR on the gap
+  //      between launches, not a cadence: the race also wakes on every look
+  //      that settles, so a fast tab launches its four immediately and a
+  //      starved one paces itself at 250 ms until the window is full.
+  //
+  // The full object is fetched once, after the wait, for the caller.
   const t0 = Date.now();
-  let dbg = null;
-  while (Date.now() - t0 < JOIN_TIMEOUT_MS) {
-    dbg = await page.evaluate(() => globalThis.__gatesDebug || null);
-    if (dbg && dbg.inWorld && dbg.snapshots > 0) break;
-    const err = await page.evaluate(() => document.getElementById("starterr")?.textContent || "");
-    if (err) fail(`${label}: client refused to boot: ${err}`); // #starterr, where boot() puts failures
-    await page.waitForTimeout(250);
+  const look = () =>
+    page.evaluate(() => {
+      const d = globalThis.__gatesDebug;
+      return {
+        inWorld: d ? d.inWorld : null,
+        snapshots: d ? d.snapshots : 0,
+        starterr: document.getElementById("starterr")?.textContent || "",
+      };
+    });
+  const inflight = new Set();
+  let brief = null;
+  let ready = null;
+  let polls = 0;
+  while (Date.now() - t0 < JOIN_TIMEOUT_MS && !ready) {
+    if (inflight.size < JOIN_POLL_INFLIGHT) {
+      polls++;
+      const p = look()
+        .then((r) => {
+          brief = r;
+          if (r.inWorld && r.snapshots > 0) ready = r;
+          return r;
+        })
+        // A page that went away mid-look is not a signal; the loop's own
+        // deadline and the diagnostic below are what report that.
+        .catch(() => null)
+        .finally(() => inflight.delete(p));
+      inflight.add(p);
+    }
+    await Promise.race([
+      ...inflight,
+      new Promise((r) => setTimeout(r, JOIN_POLL_MS)),
+    ]);
+    // #starterr, where boot() puts failures. A refusal is permanent, so
+    // seeing it once is enough.
+    if (brief && brief.starterr) fail(`${label}: client refused to boot: ${brief.starterr}`);
   }
+  const dbg = ready ? await page.evaluate(() => globalThis.__gatesDebug || null) : null;
   if (!dbg || !dbg.inWorld) {
     // Say WHY. "never reached the world" alone is the same message for a
     // handshake that never landed, a shard that died, and a client whose
     // debug publisher threw on its first tick — three very different bugs.
+    //
+    // And say WHERE, which is the part this cost two passes. `boot()` hides
+    // the #start form as its last act before calling `run()`, and `run()`
+    // registers the 250 ms publisher — so the form's own display property is
+    // a boot-stage marker that has been sitting in the DOM all along, needing
+    // no debug hook and no change to the shipped client. Still visible means
+    // boot is stuck in wasm load, connect or handshake; already hidden means
+    // the client is in the world and its main thread is too busy to publish.
+    // The poll count separates both from the third reading — a gate whose own
+    // `page.evaluate` starved and never asked (NOW.md item 1: one tab got two
+    // polls in sixty seconds).
+    const post = await page
+      .evaluate(() => ({
+        ready: document.readyState,
+        formShown: (document.getElementById("start")?.style.display || "") !== "none",
+        starterr: document.getElementById("starterr")?.textContent || "",
+        hasDebug: typeof globalThis.__gatesDebug,
+      }))
+      .catch((e) => ({ evaluateFailed: String(e && e.message ? e.message : e) }));
     fail(
       `${label}: never reached the world in ${JOIN_TIMEOUT_MS}ms ` +
-        `(__gatesDebug ${dbg ? `present, inWorld=${dbg.inWorld}, snapshots=${dbg.snapshots}` : "never published"})` +
+        `(__gatesDebug ${
+          brief && brief.inWorld !== null
+            ? `present, inWorld=${brief.inWorld}, snapshots=${brief.snapshots}`
+            : "never published"
+        })` +
+        `\n    ${polls} looks launched in ${((Date.now() - t0) / 1000).toFixed(1)}s, ` +
+        `${inflight.size} still outstanding · ` +
+        `page state ${JSON.stringify(post)}` +
         (errors.length ? `\n` + errors.slice(0, 8).map((e) => `    ${e}`).join("\n") : "\n    no page errors"),
     );
   }
-  console.log(`  ${label}: in world as player ${dbg.playerId} at [${dbg.own.map((v) => v.toFixed(1))}]`);
+  // The look count rides along on the PASSING path too, because the instrument
+  // starving is a slow failure and a run that squeaked in on its third look is
+  // one slice away from a run that never looks at all.
+  console.log(
+    `  ${label}: in world as player ${dbg.playerId} at [${dbg.own.map((v) => v.toFixed(1))}] ` +
+      `(seen ${((Date.now() - t0) / 1000).toFixed(1)}s in, ${polls} looks launched)`,
+  );
   return { label, page, errors, playerId: dbg.playerId, dbg };
 };
 
@@ -1167,6 +1304,130 @@ console.log(
       .join(" "),
 );
 
+// Assertion 15b — the surface has GRAIN, and the grain goes away.
+//
+// 15 proves the field reaches the frame by counting pixels that moved, and
+// that is exactly the measure this pass cannot use: every one of grain's
+// failure modes moves pixels. A grain octave scaled into one lattice cell is
+// a wash. A contrast that survives to 200 m is an aliasing wash. A per-
+// identity trio that collapsed to one number is a wash with four names. What
+// separates all of them from grain is neighbour-to-neighbour contrast — the
+// defining property of grain is that it changes between one pixel and the
+// next — so that is what the probe scores, over the pixels the toggle moved
+// and in both states, against a same-state control render that must differ
+// nowhere.
+const grainHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.grainProbe);
+if (grainHook !== "function") {
+  fail(`tab A: __gatesDebug.grainProbe is ${grainHook} on a dev shard — the grain gate cannot run`);
+}
+// The structural half first, so the pixel failures below are diagnosable: a
+// grain wavelength that is not finer than the micro octave's cannot be grain,
+// and four identical numbers are one grain wearing four names.
+if (!(mat.terrain.grain === 1)) {
+  fail(`tab A: the terrain ships with uGrain = ${mat.terrain.grain} — the surface has no grain at all`);
+}
+if (distinct(mat.grainScale) < 3) {
+  fail(
+    `tab A: only ${distinct(mat.grainScale)} distinct grain wavelengths in [${mat.grainScale}] /m — ` +
+      `sand and rock wear the same grain`,
+  );
+}
+if (distinct(mat.grainRidge) < 3) {
+  fail(
+    `tab A: only ${distinct(mat.grainRidge)} distinct grain shapes in [${mat.grainRidge}] — every ` +
+      `identity gets the same stipple`,
+  );
+}
+const coarseGrain = mat.grainScale.filter((s) => s <= mat.microScale * 4);
+if (coarseGrain.length) {
+  fail(
+    `tab A: grain scales [${coarseGrain}] /m are not meaningfully finer than the micro octave's ` +
+      `${mat.microScale.toFixed(3)} /m — that is a fourth mottle, not a grain`,
+  );
+}
+if (!(mat.grainFadeCpp[1] > mat.grainFadeCpp[0] && mat.grainFadeCpp[1] <= 1)) {
+  fail(
+    `tab A: the grain footprint fade is [${mat.grainFadeCpp}] cycles/pixel — it must rise and it ` +
+      `must retire the octave at or before one cycle per pixel, which is where it starts aliasing`,
+  );
+}
+const grainDetail = (r) =>
+  r.samples
+    .map(
+      (s) =>
+        `    ${s.label}: ${(s.movedFraction * 100).toFixed(3)}% of ${s.scored} moved ` +
+        `(+${(s.upFraction * 100).toFixed(2)}/−${(s.downFraction * 100).toFixed(2)}), ` +
+        `mean Δluma ${s.meanDelta.toFixed(1)}, contrast ${s.contrastOn.toFixed(2)} vs ` +
+        `${s.contrastOff.toFixed(2)} (×${s.contrastRatio.toFixed(3)}), control noise ${s.noise}`,
+    )
+    .join("\n");
+const gr = await A.page.evaluate(
+  ([views, minDelta]) => globalThis.__gatesDebug.grainProbe("uGrain", views, minDelta),
+  [GRAIN_VIEWS, GRAIN_PROBE_MIN_DELTA],
+);
+if (!gr) {
+  fail(`tab A: grainProbe("uGrain") returned null — the scene never took the terrain material's uniforms`);
+}
+// The probe's own zero point, before anything is read off it: two renders of
+// the SAME state must differ nowhere, or the far view's "grain is gone" is
+// the rasterizer agreeing with itself by luck.
+for (const s of gr.samples) {
+  if (s.noise !== 0) {
+    fail(
+      `tab A: the grain probe's control differs from its own frame on ${s.noise} pixels at view ` +
+        `"${s.label}" — two renders of one state are not identical, so every ceiling below is ` +
+        `partly the rasterizer.\n${grainDetail(gr)}`,
+    );
+  }
+}
+const grainNear = gr.samples.find((s) => s.label === "near");
+const grainFar = gr.samples.find((s) => s.label === "far");
+if (!grainNear || !grainFar) {
+  fail(`tab A: grain probe returned labels [${gr.samples.map((s) => s.label)}] — expected near and far`);
+}
+if (grainNear.movedFraction < GRAIN_NEAR_MIN_FRACTION) {
+  fail(
+    `tab A: grain moved ${(grainNear.movedFraction * 100).toFixed(3)}% of ${grainNear.scored} pixels ` +
+      `at arm's length — below ${(GRAIN_NEAR_MIN_FRACTION * 100).toFixed(1)}%. The octave is ` +
+      `configured and reaches nothing.\n${grainDetail(gr)}`,
+  );
+}
+if (grainNear.upFraction < GRAIN_MIN_DIRECTIONAL || grainNear.downFraction < GRAIN_MIN_DIRECTIONAL) {
+  fail(
+    `tab A: grain moved the near frame only one way (+${(grainNear.upFraction * 100).toFixed(2)}% / ` +
+      `−${(grainNear.downFraction * 100).toFixed(2)}%, floor ${(GRAIN_MIN_DIRECTIONAL * 100).toFixed(1)}% ` +
+      `each). A signed octave lightens some pixels and darkens others; a tint cannot.\n${grainDetail(gr)}`,
+  );
+}
+// The assertion this probe exists for. Everything above is also true of a
+// fourth mottle; only this separates detail from a wash.
+if (grainNear.contrastRatio < GRAIN_MIN_CONTRAST_RATIO) {
+  fail(
+    `tab A: grain raised neighbour contrast from ${grainNear.contrastOff.toFixed(2)} to ` +
+      `${grainNear.contrastOn.toFixed(2)} luma/pixel over the ${grainNear.moved} pixels it moved — a ` +
+      `ratio of ${grainNear.contrastRatio.toFixed(3)} against a floor of ${GRAIN_MIN_CONTRAST_RATIO}. It ` +
+      `moved the pixels without adding detail between them, which is a wash and not a ` +
+      `grain.\n${grainDetail(gr)}`,
+  );
+}
+// And the ceiling: an octave whose whole justification is arm's length must
+// not still be paying for itself, or aliasing in, at 100+ m.
+if (grainFar.movedFraction > GRAIN_FAR_MAX_FRACTION) {
+  fail(
+    `tab A: grain still moves ${(grainFar.movedFraction * 100).toFixed(3)}% of the frame from ` +
+      `${GRAIN_FAR_LIFT_M} m up (ceiling ${(GRAIN_FAR_MAX_FRACTION * 100).toFixed(1)}%) — a 4 cm ` +
+      `octave that reaches the horizon is an aliasing pattern, which is what the cycles-per-pixel ` +
+      `fade exists to retire.\n${grainDetail(gr)}`,
+  );
+}
+console.log(
+  `  grain: near ${(grainNear.movedFraction * 100).toFixed(2)}% moved ` +
+    `(+${(grainNear.upFraction * 100).toFixed(2)}/−${(grainNear.downFraction * 100).toFixed(2)}), contrast ` +
+    `${grainNear.contrastOff.toFixed(2)} → ${grainNear.contrastOn.toFixed(2)} luma/px ` +
+    `(×${grainNear.contrastRatio.toFixed(2)}) · far ${(grainFar.movedFraction * 100).toFixed(3)}% moved · ` +
+    `control noise ${grainNear.noise}/${grainFar.noise}`,
+);
+
 // Assertion 16 — THE FRAGMENT BUDGET. Assertions 9–15 all prove a system
 // reaches the image; none of them can say what it costs, because all of them
 // work by weighting a term to zero with a uniform, and a uniform removes no
@@ -1266,7 +1527,7 @@ const cost = await A.page.evaluate(
 );
 if (!cost) fail(`tab A: costProbe returned null — the scene never took the terrain cost variants`);
 const byName = Object.fromEntries(cost.variants.map((v) => [v.variant, v]));
-for (const want of ["ship", "nofield", "near1", "noshadow", "noskip", "control"]) {
+for (const want of ["ship", "nofield", "nograin", "near1", "noshadow", "noskip", "control"]) {
   if (!byName[want]) fail(`tab A: costProbe measured no "${want}" variant — it measured [${Object.keys(byName)}]`);
 }
 // Each variant must have swept every scale, or its fit is a line through one
@@ -1351,6 +1612,47 @@ if (!(nofield.vsShipped.changed > 0)) {
   fail(
     `tab A: the "nofield" variant renders the shipped frame pixel for pixel — the field it was ` +
       `built without is not reaching the image at all`,
+  );
+}
+// Attribution 1a — "nograin" removed the fourth octave's INSTRUCTIONS and
+// nothing else. Same argument as `nofield`, one uniform down: every grain term
+// is multiplied by `uGrain`, so a program compiled without the octave must
+// render the frame `uGrain = 0` renders. This is what makes the millisecond
+// delta printed below grain's cost rather than an unrelated edit's — and it is
+// the whole point of the variant. Grain's first attempt rejected itself on a
+// ~9% frame delta with no control in the run, and 9% turned out to be inside
+// this box's noise.
+const nograin = byName.nograin;
+if (nograin.grainOn !== false || byName.ship.grainOn !== true) {
+  fail(
+    `tab A: the "nograin" variant reports grainOn=${nograin.grainOn} and the shipped one ` +
+      `${byName.ship.grainOn} — they are not the pair this check needs`,
+  );
+}
+if (nograin.vsFlatGrain.maxDelta > COST_IDENTITY_MAX_DELTA) {
+  fail(
+    `tab A: the "nograin" variant differs from the shipped program at uGrain=0 by up to ` +
+      `${nograin.vsFlatGrain.maxDelta}/255 luma over ${nograin.vsFlatGrain.changed} pixels (tolerance ` +
+      `${COST_IDENTITY_MAX_DELTA}). It was supposed to compile the octave OUT, not change it, so ` +
+      `whatever it costs is not grain's cost.`,
+  );
+}
+if (!(nograin.vsShipped.changed > 0)) {
+  fail(
+    `tab A: the "nograin" variant renders the shipped frame pixel for pixel — the grain octave it ` +
+      `was built without is not reaching the cost probe's view at all`,
+  );
+}
+if (!(nograin.noiseSamples < byName.ship.noiseSamples)) {
+  fail(
+    `tab A: "nograin" reports ${nograin.noiseSamples} noise sample sites against the shipped ` +
+      `${byName.ship.noiseSamples} — removing the octave removed no sample`,
+  );
+}
+if (!(nograin.resolvedFragmentChars < byName.ship.resolvedFragmentChars)) {
+  fail(
+    `tab A: the "nograin" program is ${nograin.resolvedFragmentChars} chars against the shipped ` +
+      `${byName.ship.resolvedFragmentChars} — removing the grain octave removed no source`,
   );
 }
 // Attribution 1b — the micro octave is now SKIPPED where its own footprint
@@ -1443,8 +1745,10 @@ console.log(
     `is three's unpatched standard material, ${repoAdded} ` +
     `(${pct(repoAdded, ship.resolvedFragmentChars)}%) is this repo's — of which the clipmap ` +
     `shadow GLSL is ${ship.resolvedFragmentChars - noshadow.resolvedFragmentChars} and the field's ` +
-    `three sample lines ${ship.resolvedFragmentChars - nofield.resolvedFragmentChars} ` +
-    `(the field's shared helper and its consumers stay in every variant)` +
+    `four sample lines ${ship.resolvedFragmentChars - nofield.resolvedFragmentChars} ` +
+    `(of which the grain octave ${ship.resolvedFragmentChars - nograin.resolvedFragmentChars}; ` +
+    `the field's shared helper and its consumers stay in every variant)` +
+    ` · ${ship.noiseSamples} noise sample sites/fragment, ${nograin.noiseSamples} without grain` +
     ` · micro-octave skip is image-identical (${noskip.vsShipped.changed} px differ, max ` +
     `${noskip.vsShipped.maxDelta}/255)`,
 );
@@ -1465,7 +1769,9 @@ console.log(
   `    shadow term ${readAs(ship.fullFrameMs - noshadow.fullFrameMs)}\n` +
     `    level 0's ${cm.levels[0].filterTaps}-fetch PCF ` +
     `${readAs(ship.fullFrameMs - byName.near1.fullFrameMs)}\n` +
-    `    noise field ${readAs(ship.fullFrameMs - nofield.fullFrameMs)}`,
+    `    noise field ${readAs(ship.fullFrameMs - nofield.fullFrameMs)}\n` +
+    `    grain octave ${readAs(ship.fullFrameMs - nograin.fullFrameMs)}` +
+    `  <- NOW.md item 1's question, paired with a control at last`,
 );
 console.log(
   `    instrument: ${(ship.fullFrameMs / Math.max(ship.submitMs, 1e-9)).toFixed(0)}x of a timed ` +
@@ -1662,8 +1968,9 @@ for (const hook of [
   "surfaceProbe",
   "splatCensus",
   "horizonProbe",
+  "grainProbe",
   // The cost probe is the one dev affordance that also BUILDS something: its
-  // variants are three extra terrain programs. A public tab must neither have
+  // variants are five extra terrain programs. A public tab must neither have
   // the hook nor the compiles behind it.
   "costProbe",
 ]) {

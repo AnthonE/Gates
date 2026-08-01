@@ -128,6 +128,19 @@ point: **terrain life is just chunk events over a generated backdrop.**
   cliff darkening are causal modifiers on top, each moving colour and
   roughness together. Texture sets are still the art pass; the *system*
   is not waiting on them.
+  A **fourth octave — grain** (materials v1) makes the ground read at
+  arm's length, where 1.7 m is already too coarse to be texture. It is
+  one more tap of the same field at a wavelength the *identity* chooses
+  (4 cm of sand, 12 cm of grass), with a per-identity ridge fold and
+  contrast, and it drives albedo, bump and roughness like every octave
+  above it. Two things about it are the parts worth keeping: it is
+  retired by pixel footprint in **cycles per pixel** rather than metres,
+  because four wavelengths cannot share one metre threshold — so each
+  identity's grain dies at its own distance on one curve — and its fade
+  reads the **world** footprint, not the horizontal one, because a pixel
+  on a steep face barely moves in XZ while covering metres of surface.
+  It is still projected on world XZ, so on a slope it combs downhill;
+  sampling the grain alone triplanar is the next surface item.
 - **Scatter rendering**: per chunk, one `InstancedMesh` per archetype
   filled from the slot list (minus harvested), frustum-culled per chunk.
   Trees get two LODs (mesh / billboard cross) **(knob: distances)**; each
