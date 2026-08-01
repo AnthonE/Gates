@@ -40,6 +40,7 @@
 // pixels that moved — the only proof a material reaches the image.
 
 import * as THREE from "three";
+import { installClipmapShadows } from "./shadows.js";
 
 // --- the four identities (TERRAIN.md §4's four sets) ------------------------
 // Colours are the retired vertex palette's, unchanged, so this slice changes
@@ -276,9 +277,13 @@ export function makeTerrainMaterial() {
         `,
       );
   };
+  // The ground is the biggest shadow RECEIVER in the frame, so it takes the
+  // clipmap patch like everything else (shadow clipmap v0). Installed after
+  // the splat patch above; it composes with it rather than replacing it.
+  installClipmapShadows(material);
   // One program for every chunk: without this three re-runs onBeforeCompile
   // per material-instance key and can compile the same shader repeatedly.
-  material.customProgramCacheKey = () => "gates-terrain-splat-v0";
+  material.customProgramCacheKey = () => "gates-terrain-splat-v1-clipmap";
   material.userData.uniforms = uniforms;
   return material;
 }
@@ -298,15 +303,26 @@ export const SURFACES = {
   water: { roughness: 0.14, metalness: 0.0 },
 };
 
-/** A MeshStandardMaterial with one of the authored responses above. */
+/**
+ * A MeshStandardMaterial with one of the authored responses above, wired to
+ * the shadow clipmap.
+ *
+ * Every standard material in the scene goes through here, which is the point:
+ * the clipmap replaces three's one-map-per-light shadow term, so a material
+ * that skipped this patch would be lit by N lights and shadowed by none of
+ * them. `installClipmapShadows` hands each of them the same onBeforeCompile
+ * source, so they still share one compiled program.
+ */
 export function surfaceMaterial(surface, opts = {}) {
   const s = SURFACES[surface];
   if (!s) throw new Error(`unknown surface identity: ${surface}`);
-  return new THREE.MeshStandardMaterial({
-    roughness: s.roughness,
-    metalness: s.metalness,
-    ...opts,
-  });
+  return installClipmapShadows(
+    new THREE.MeshStandardMaterial({
+      roughness: s.roughness,
+      metalness: s.metalness,
+      ...opts,
+    }),
+  );
 }
 
 /** The material system's structural facts, for the browser gate to assert. */

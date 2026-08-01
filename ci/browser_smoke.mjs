@@ -118,6 +118,47 @@ const SHADOW_MIN_FRACTION_PER_YAW = Number(process.env.BROWSER_SMOKE_SHADOW_MIN_
 // avatar's two meshes); the intact rig submits 25.
 const SHADOW_PASS_MIN_CALLS = Number(process.env.BROWSER_SMOKE_SHADOW_MIN_CALLS || 8);
 const SHADOW_MIN_MAP_PX = 1024;
+// --- the clipmap gate (DECISIONS.md §open, "shadow clipmap v0") -------------
+// Two probes, because the slice makes two separate claims: that the coarse
+// levels DARKEN pixels the near level cannot reach, and that those pixels are
+// genuinely outside the near level's box rather than just far-ish.
+//
+// The camera is aimed perpendicular to the sun's bearing, read off the scene
+// rather than pinned here. Light-space X is the horizontal axis across the
+// sun, and it is the only axis on which the near level's 80 m half-width is
+// 80 m of GROUND: along the sun's bearing the same box reaches 80/sin(21°) ≈
+// 227 m, so a "past 80 m" claim measured there would be worth nothing.
+// Lift the viewpoint and pitch it down, so the far band is most of the frame
+// rather than a strip under the horizon (from eye height the same probe
+// measured 0.10% — real shadow, at 27 mean Δluma, on almost no pixels). The
+// clipmap's centre stays on the player, so the lift changes the sample size
+// and nothing else.
+const FAR_SHADOW_HEIGHT_M = 80;
+const FAR_SHADOW_PROBE_PITCH = -0.42;
+// Push the near plane out and narrow the frame, so nothing inside the near
+// level's reach is drawn at all. The probe then MEASURES the resulting
+// distance (min |light-space x − centre| over all eight frustum corners) and
+// hands it back; the assertion below is on the measurement, not on these.
+const FAR_SHADOW_NEAR_M = 120;
+const FAR_SHADOW_FOV_DEG = 28;
+const FAR_SHADOW_MIN_DELTA = 6;
+// Floors on the share of that far-only frame the coarse levels darken. The
+// pinned spawn measures 0.78% (per yaw 1.3 / 0.3), so these leave ~3x of
+// headroom; the failure they guard — a rig whose shadows stop at the near
+// box, which is exactly what shipped before this slice — scores 0.00%, and
+// that zero is measured rather than assumed (see the control below).
+// Small in absolute terms because most of a downward frame at this range is
+// lit ground: what is asserted is that the shadow is THERE, and the mean
+// Δluma the failure message prints (~29 of 255) says it is not noise.
+const FAR_SHADOW_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_FAR_SHADOW_MIN || 0.0025);
+const FAR_SHADOW_MIN_FRACTION_PER_YAW = Number(
+  process.env.BROWSER_SMOKE_FAR_SHADOW_MIN_YAW || 0.001,
+);
+// A coarse level may only ever REMOVE light. Any pixel the clipmap makes
+// BRIGHTER means the extra levels are lighting the scene instead of
+// shadowing it — the failure a zero-intensity level exists to prevent, and
+// the one that would otherwise show up as a washed-out frame nobody gates.
+const FAR_SHADOW_MAX_LIFTED_FRACTION = 1e-4;
 // DESIGN §9's client budget, gated for the first time here. Both counts are
 // per rendered frame and INCLUDE the shadow pass, which is the point: a
 // second pass over every caster is the obvious way to eat this budget.
@@ -304,7 +345,16 @@ const join = async (label, port = WIRE_PORT, cert = certHash) => {
     if (err) fail(`${label}: client refused to boot: ${err}`); // #starterr, where boot() puts failures
     await page.waitForTimeout(250);
   }
-  if (!dbg || !dbg.inWorld) fail(`${label}: never reached the world in ${JOIN_TIMEOUT_MS}ms`);
+  if (!dbg || !dbg.inWorld) {
+    // Say WHY. "never reached the world" alone is the same message for a
+    // handshake that never landed, a shard that died, and a client whose
+    // debug publisher threw on its first tick — three very different bugs.
+    fail(
+      `${label}: never reached the world in ${JOIN_TIMEOUT_MS}ms ` +
+        `(__gatesDebug ${dbg ? `present, inWorld=${dbg.inWorld}, snapshots=${dbg.snapshots}` : "never published"})` +
+        (errors.length ? `\n` + errors.slice(0, 8).map((e) => `    ${e}`).join("\n") : "\n    no page errors"),
+    );
+  }
   console.log(`  ${label}: in world as player ${dbg.playerId} at [${dbg.own.map((v) => v.toFixed(1))}]`);
   return { label, page, errors, playerId: dbg.playerId, dbg };
 };
@@ -416,6 +466,98 @@ if (!(lit.sunIntensity > lit.fillIntensity)) {
   );
 }
 
+// Assertion 9b — the clipmap is a clipmap. Structural, and it exists for the
+// same reason as 9: so 11b's failure is diagnosable. Every check here is on a
+// property the reference names — concentric levels, a real guard band, bias
+// scaled BY texel width rather than shared across levels, and exactly one
+// level carrying the key's energy.
+const cm = lit.clipmap;
+if (!cm) fail(`tab A: lighting publishes no clipmap state — the levels are not wired`);
+if (!(cm.levelCount >= 2)) {
+  fail(`tab A: the shadow clipmap has ${cm.levelCount} level(s) — nothing past the near box casts`);
+}
+if (cm.levels.length !== cm.levelCount) {
+  fail(`tab A: clipmap says ${cm.levelCount} levels but published ${cm.levels.length}`);
+}
+if (cm.activeLevels !== cm.levelCount) {
+  fail(
+    `tab A: ${cm.activeLevels} of ${cm.levelCount} clipmap levels are contributing — ` +
+      `a probe left the scene with levels switched off`,
+  );
+}
+if (cm.levels[0].halfWidthM !== lit.radiusM) {
+  fail(`tab A: level 0 is ${cm.levels[0].halfWidthM} m but lighting reports radius ${lit.radiusM} m`);
+}
+// One bias in texels across every level, which is what "scale normal bias by
+// world texel width" means in a number: same texel count, different metres.
+const biasTexels = cm.levels.map((L) => L.normalBias / L.texelM);
+for (let i = 0; i < cm.levels.length; i++) {
+  const L = cm.levels[i];
+  if (i > 0 && !(L.halfWidthM > cm.levels[i - 1].halfWidthM)) {
+    fail(`tab A: clipmap level ${i} (${L.halfWidthM} m) does not contain level ${i - 1}`);
+  }
+  if (i > 0 && !(L.texelM > cm.levels[i - 1].texelM)) {
+    fail(`tab A: clipmap level ${i} texel ${L.texelM} m is not coarser than level ${i - 1}`);
+  }
+  if (!(L.sampledHalfWidthM < L.halfWidthM)) {
+    fail(`tab A: clipmap level ${i} samples its full ${L.halfWidthM} m — no guard band, so a PCF tap can leave the map`);
+  }
+  if (L.casts !== true) fail(`tab A: clipmap level ${i} does not cast — it has no depth texture`);
+  if (!(L.mapPx >= SHADOW_MIN_MAP_PX)) {
+    fail(`tab A: clipmap level ${i} is ${L.mapPx} px — below ${SHADOW_MIN_MAP_PX}, silhouettes cannot resolve`);
+  }
+  if (!L.valid || !(L.renders > 0)) {
+    fail(`tab A: clipmap level ${i} has never rendered (valid=${L.valid}, renders=${L.renders})`);
+  }
+  // Exactly one level lights the scene. Two would double the key.
+  const wantsIntensity = i === 0;
+  if (wantsIntensity !== L.intensity > 0) {
+    fail(
+      `tab A: clipmap level ${i} has intensity ${L.intensity} — only level 0 may carry the key, ` +
+        `or N levels light the scene N times over`,
+    );
+  }
+  if (Math.abs(biasTexels[i] - biasTexels[0]) > 1e-6) {
+    fail(
+      `tab A: clipmap level ${i}'s normal bias is ${biasTexels[i].toFixed(3)} texels against level 0's ` +
+        `${biasTexels[0].toFixed(3)} — one metre value across ${cm.levels[0].texelM.toFixed(3)} m and ` +
+        `${L.texelM.toFixed(3)} m texels is not a coherent bias`,
+    );
+  }
+}
+// The coarse levels are CACHED, not redrawn every frame — the whole reason
+// the draw budget survives adding them. Counted over the session, not
+// asserted from a flag: level 0 is dynamic and redraws every frame, so a
+// coarse level that matched it would be uncached.
+for (let i = 1; i < cm.levels.length; i++) {
+  if (!(cm.levels[i].renders < cm.levels[0].renders)) {
+    fail(
+      `tab A: clipmap level ${i} has rendered ${cm.levels[i].renders} times against level 0's ` +
+        `${cm.levels[0].renders} — the coarse level is not being cached at all`,
+    );
+  }
+}
+// Frame time is reported, never asserted: this box shares four cores with
+// nineteen other services and the gate's renderer is a software rasterizer,
+// so the number is a same-box regression signal and not a claim about the
+// reference VPS. It is printed because the clipmap is the kind of change that
+// pays for coverage with fill rate, and a doubled frame time should be
+// visible to whoever reads this log rather than only to the flaky assertions
+// it would eventually start tripping.
+const frameA = await A.page.evaluate(() => globalThis.__gatesDebug.frameMs);
+console.log(
+  `  clipmap: ${cm.levelCount} levels ` +
+    cm.levels
+      .map(
+        (L) =>
+          `[${L.halfWidthM}m/${L.texelM.toFixed(3)}m px @${L.mapPx}, bias ${L.normalBias.toFixed(3)}m, ` +
+          `${L.filterTaps} taps, ${L.renders} renders]`,
+      )
+      .join(" ") +
+    `, budget ${cm.updateBudget}/frame, max age ${cm.maxCacheAge}` +
+    ` · frame ~${frameA.toFixed(1)} ms (shared box, software GL — a trend, not a claim)`,
+);
+
 // Assertion 10 — the shadow map DARKENS PIXELS. A flag says the renderer was
 // asked for shadows; only a frame says it got any. The dev-only probe renders
 // the live scene twice per yaw — shadow pass on, then off — and counts pixels
@@ -477,6 +619,101 @@ console.log(
   `  shadows: ${(litFraction * 100).toFixed(2)}% of ${probe.pixels} probed pixels darkened by the ` +
     `shadow pass (${probe.samples.map((s) => (s.fraction * 100).toFixed(1) + "%").join(" ")}), ` +
     `+${Math.min(...shadowPassCalls)}..${Math.max(...shadowPassCalls)} draw calls`,
+);
+
+// Assertion 11b — SHADOWS PAST THE NEAR BOX. The point of the slice, and the
+// one thing no flag above can show: lighting v0 passed every assertion in
+// this file with a hill at 100 m casting nothing.
+//
+// The probe renders the same frame with the whole clipmap and with only level
+// 0 — which IS lighting v0's reach — and counts what the coarse levels took
+// down. Two things make that a claim about DISTANCE. The camera's near plane
+// is pushed past the near level so no close geometry is drawn at all; and the
+// probe measures the resulting frustum's distance from the near level's
+// committed centre along light-space X, so the assertion below is on a number
+// read out of the actual camera matrices, not on the two constants that
+// produced it.
+const farHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.farShadowProbe);
+if (farHook !== "function") {
+  fail(`tab A: __gatesDebug.farShadowProbe is ${farHook} on a dev shard — the clipmap gate cannot run`);
+}
+const farYaws = [lit.sunAzimuth + Math.PI / 2, lit.sunAzimuth - Math.PI / 2];
+const far = await A.page.evaluate(
+  ([yaws, pitch, minDelta, nearM, fov, heightM]) =>
+    globalThis.__gatesDebug.farShadowProbe(yaws, pitch, minDelta, nearM, fov, heightM),
+  [
+    farYaws,
+    FAR_SHADOW_PROBE_PITCH,
+    FAR_SHADOW_MIN_DELTA,
+    FAR_SHADOW_NEAR_M,
+    FAR_SHADOW_FOV_DEG,
+    FAR_SHADOW_HEIGHT_M,
+  ],
+);
+// First: is the frame actually outside the near level? If this does not hold
+// the darkening below could be ordinary near-level shadow and the whole
+// measurement is void, so it is checked before anything is read from it.
+if (!(far.minLightXm > far.nearLevelHalfWidthM)) {
+  fail(
+    `tab A: the far-shadow probe's frustum comes within ${far.minLightXm.toFixed(1)} m of the near ` +
+      `level's centre along light-space X, inside its ${far.nearLevelHalfWidthM} m half-width — ` +
+      `the frame is not past the near box and nothing it measures is a claim about distance`,
+  );
+}
+// Second: the probe's zero point, measured. Each yaw also renders the
+// near-only state TWICE and counts pixels that moved between two identical
+// frames. Anything but zero means the counts below are partly the software
+// rasterizer talking, and every floor in this block is calibrated against
+// noise instead of shadow.
+const noisy = far.samples.filter((s) => s.noise > 0);
+if (noisy.length) {
+  fail(
+    `tab A: the far-shadow probe's control renders disagree — ` +
+      noisy.map((s) => `yaw ${s.yaw.toFixed(2)}: ${s.noise} px`).join(", ") +
+      `. Two renders of the same state moved pixels by > ${FAR_SHADOW_MIN_DELTA}/255, so the ` +
+      `darkening measured below cannot be attributed to the clipmap`,
+  );
+}
+const farFraction = far.darkened / far.pixels;
+if (farFraction < FAR_SHADOW_MIN_FRACTION) {
+  fail(
+    `tab A: past the near level's box (every pixel ≥ ${far.minLightXm.toFixed(0)} m out along ` +
+      `light-space X) the coarse clipmap levels darkened ${(farFraction * 100).toFixed(3)}% of ` +
+      `${far.pixels} pixels — below ${(FAR_SHADOW_MIN_FRACTION * 100).toFixed(2)}%. The levels ` +
+      `exist and render, but nothing out there casts into the frame.\n` +
+      far.samples
+        .map(
+          (s) =>
+            `    yaw ${s.yaw.toFixed(2)}: ${s.darkened} px, mean Δluma ${s.meanDelta.toFixed(1)}, ` +
+            `max ${s.maxDelta}, frustum reach ${s.reachM.toFixed(1)} m`,
+        )
+        .join("\n"),
+  );
+}
+const farThin = far.samples.filter((s) => s.fraction < FAR_SHADOW_MIN_FRACTION_PER_YAW);
+if (farThin.length) {
+  fail(
+    `tab A: ${farThin.length} of ${far.samples.length} far directions have almost no shadow ` +
+      `(floor ${(FAR_SHADOW_MIN_FRACTION_PER_YAW * 100).toFixed(2)}% per yaw). Both are perpendicular ` +
+      `to the sun, so one carrying the aggregate means the coverage is one-sided.\n` +
+      far.samples
+        .map((s) => `    yaw ${s.yaw.toFixed(2)}: ${(s.fraction * 100).toFixed(2)}% (${s.darkened} px)`)
+        .join("\n"),
+  );
+}
+const liftedWorst = Math.max(...far.samples.map((s) => s.liftedFraction));
+if (liftedWorst > FAR_SHADOW_MAX_LIFTED_FRACTION) {
+  fail(
+    `tab A: turning the coarse clipmap levels on BRIGHTENED ${(liftedWorst * 100).toFixed(3)}% of a ` +
+      `frame — they are contributing light, not shadow. A level past the first must have zero ` +
+      `intensity or the key is counted once per level`,
+  );
+}
+console.log(
+  `  far shadows: ${(farFraction * 100).toFixed(2)}% of ${far.pixels} pixels darkened by levels ` +
+    `past the near box (${far.samples.map((s) => (s.fraction * 100).toFixed(1) + "%").join(" ")}), ` +
+    `frame ≥ ${far.minLightXm.toFixed(0)} m out vs a ${far.nearLevelHalfWidthM} m near level, ` +
+    `lifted ${(liftedWorst * 100).toFixed(4)}%`,
 );
 
 // --- materials: the surface read --------------------------------------------
@@ -806,15 +1043,33 @@ console.log(`  dev hook: aimed to [${view.map((v) => v.toFixed(2))}], walked +X 
 // on the reference box; timing still does not. Read HERE, at the end, rather
 // than off the same snapshot as assertion 9: by now both tabs have walked, so
 // the near ring has streamed and torn down and the scene is at its fullest.
+//
+// Asserted on the PEAK across every frame since boot, not on whichever frame
+// this line happened to catch. The clipmap made that distinction real: a
+// cached coarse level draws on some frames and not others, so a last-frame
+// count can miss the expensive one entirely. The budget is what the GPU was
+// ever asked to draw.
 const budget = await A.page.evaluate(() => globalThis.__gatesDebug.lighting);
 if (!(budget.calls > 0)) fail(`tab A: renderer reported ${budget.calls} draw calls — the stats are not being read`);
-if (budget.calls >= DRAW_CALL_BUDGET) {
-  fail(`tab A: ${budget.calls} draw calls (main + shadow pass) — DESIGN §9 budgets < ${DRAW_CALL_BUDGET}`);
+if (!(budget.peakCalls >= budget.calls)) {
+  fail(`tab A: peak ${budget.peakCalls} draw calls is below this frame's ${budget.calls} — the peak is not being tracked`);
 }
-if (budget.triangles >= TRIANGLE_BUDGET) {
-  fail(`tab A: ${budget.triangles} triangles (main + shadow pass) — DESIGN §9 budgets < ${TRIANGLE_BUDGET}`);
+if (budget.peakCalls >= DRAW_CALL_BUDGET) {
+  fail(
+    `tab A: peak ${budget.peakCalls} draw calls (main + every shadow level, worst frame; ` +
+      `${budget.calls} this frame) — DESIGN §9 budgets < ${DRAW_CALL_BUDGET}`,
+  );
 }
-console.log(`  budget: ${budget.calls} draw calls, ${budget.triangles} triangles (both passes)`);
+if (budget.peakTriangles >= TRIANGLE_BUDGET) {
+  fail(
+    `tab A: peak ${budget.peakTriangles} triangles (main + every shadow level, worst frame; ` +
+      `${budget.triangles} this frame) — DESIGN §9 budgets < ${TRIANGLE_BUDGET}`,
+  );
+}
+console.log(
+  `  budget: ${budget.calls} draw calls / ${budget.triangles} triangles this frame, ` +
+    `peak ${budget.peakCalls} / ${budget.peakTriangles} (all passes)`,
+);
 
 // Assertion 12 — the gate itself. A shard with no dev override is exactly a
 // public shard's config, and its client must have no dev surface at all.
@@ -824,7 +1079,7 @@ const publicSetView = await P.page.evaluate(() => typeof globalThis.__gatesDebug
 if (publicSetView !== "undefined") {
   fail(`public tab: __gatesDebug.setView is ${publicSetView} on a shard with no dev override — a dev affordance shipped to a public shard`);
 }
-for (const hook of ["shadowProbe", "surfaceProbe", "splatCensus"]) {
+for (const hook of ["shadowProbe", "farShadowProbe", "surfaceProbe", "splatCensus"]) {
   const t = await P.page.evaluate((h) => typeof globalThis.__gatesDebug[h], hook);
   if (t !== "undefined") {
     fail(`public tab: __gatesDebug.${hook} is ${t} on a shard with no dev override — a dev affordance shipped to a public shard`);

@@ -5,6 +5,12 @@
 
 import * as THREE from "three";
 import { materialFacts, surfaceMaterial } from "./materials.js";
+import {
+  LEVEL_COUNT,
+  ShadowClipmap,
+  clipmapActiveLevels,
+  setClipmapActiveLevels,
+} from "./shadows.js";
 
 const EYE_HEIGHT = 1.6; // cosmetic (DECISIONS.md §open, client cosmetics)
 const YAW_TO_RAD = (Math.PI * 2) / 65536;
@@ -45,23 +51,10 @@ const SKY_ZENITH = 0x2c4463;
 const SKY_CURVE = 0.62; // horizon→zenith ramp; <1 lifts the gradient early
 const SKY_RADIUS = 10;
 
-// The shadow map covers a bounded square around the player and nothing
-// else — the one case `threejs-shadow-systems` allows a single map. Casters
-// outside SHADOW_RADIUS_M do not shadow; the cascade/clipmap that would fix
-// that is a later slice, and until then this bound is the honest statement
-// of what the rig does.
-const SHADOW_RADIUS_M = 80;
-const SHADOW_MAP_PX = 2048;
-const SHADOW_BACK_M = 260; // how far back along the sun ray the light sits
-const SHADOW_FAR_M = 520; // ortho depth range; relief is ~90 m (TERRAIN §6)
-const SHADOW_NEAR_M = 1;
-// Normal bias in texels, not metres: the acne it fixes is a texel-footprint
-// artefact, so the metre value has to move with the footprint.
-const SHADOW_NORMAL_BIAS_TEXELS = 1.2;
-const SHADOW_TEXEL_M = (SHADOW_RADIUS_M * 2) / SHADOW_MAP_PX;
-// Z is quantized coarsely on purpose: it moves depth coverage, not the
-// projected texel grid (clipmap reference §4).
-const SHADOW_Z_QUANTUM_M = SHADOW_RADIUS_M * 0.5;
+// Shadow coverage is a clipmap now — concentric light-space levels, each
+// snapped to its own texel grid, coarse ones cached (shadows.js owns the
+// levels, their knobs and the shader patch). Lighting v0's single 80 m map is
+// level 0 of it, unchanged, so nothing about the near frame moved.
 
 // Build-grid render dimensions. Cell/level sizes are the sim's grid
 // (DECISIONS.md §open, build grid v0). LIFT and WALL_T (and the doorway
@@ -93,6 +86,11 @@ const DEPLOY_STYLE = [
 // A locked door reads as banded iron over the wood — the one bit of door
 // state a passer-by can see, and the thing they'd have to break.
 const DOOR_LOCKED_COLOR = 0x3c3f44;
+
+// A conservative world radius for one placed piece or deployable, derived
+// from the grid it sits on rather than picked: no piece spans more than a
+// cell across or a level tall, so this sphere contains any of them.
+const PIECE_RADIUS_M = Math.sqrt(CELL * CELL + LEVEL_H * LEVEL_H + CELL * CELL);
 
 /** Mark an object (and a group's children) as both caster and receiver. */
 function shadowed(obj) {
@@ -179,43 +177,26 @@ export class GameScene {
     this.scene.add(fill);
     this.fill = fill;
 
-    // The key. Its shadow box follows the player, snapped to its own texel
-    // grid every frame (see updateSun) so the map does not crawl.
-    this.sun = new THREE.DirectionalLight(SUN_COLOR, SUN_INTENSITY);
-    this.sun.castShadow = true;
-    const sh = this.sun.shadow;
-    sh.mapSize.set(SHADOW_MAP_PX, SHADOW_MAP_PX);
-    sh.camera.left = -SHADOW_RADIUS_M;
-    sh.camera.right = SHADOW_RADIUS_M;
-    sh.camera.top = SHADOW_RADIUS_M;
-    sh.camera.bottom = -SHADOW_RADIUS_M;
-    sh.camera.near = SHADOW_NEAR_M;
-    sh.camera.far = SHADOW_FAR_M;
-    sh.bias = 0;
-    sh.normalBias = SHADOW_NORMAL_BIAS_TEXELS * SHADOW_TEXEL_M;
-    sh.camera.updateProjectionMatrix();
-    this.scene.add(this.sun);
-    this.scene.add(this.sun.target); // or its matrixWorld never updates
-
-    // World-space unit vector pointing AT the sun, and the light-space
-    // basis derived from it once — the sun does not move in v0, so this is
-    // built here and only read in the RAF path.
+    // World-space unit vector pointing AT the sun. The sun does not move in
+    // v0, so the light-space basis it defines is built once, inside the
+    // clipmap, and only read in the RAF path.
     const ce = Math.cos(SUN_ELEVATION);
     this._toSun = new THREE.Vector3(
       ce * Math.sin(SUN_AZIMUTH),
       Math.sin(SUN_ELEVATION),
       ce * Math.cos(SUN_AZIMUTH),
     ).normalize();
-    // Matrix4.lookAt puts +Z along (eye − target): with the eye at the sun
-    // and the target at the origin, that is the shadow camera's own basis.
-    this._lightToWorld = new THREE.Matrix4().lookAt(
+    // The key. It is level 0 of the clipmap — the only level carrying any
+    // intensity — so "the sun" and "the near shadow map" are one object, and
+    // the coarse levels exist purely as depth.
+    this.clipmap = new ShadowClipmap(
+      this.scene,
+      SUN_COLOR,
+      SUN_INTENSITY,
       this._toSun,
-      new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(0, 1, 0),
     );
-    this._worldToLight = this._lightToWorld.clone().transpose(); // pure rotation
-    this._sunCenter = new THREE.Vector3(); // committed, snapped, world space
-    this._sunProbe = new THREE.Vector3();
+    this.sun = this.clipmap.key;
+    this._corner = new THREE.Vector3();
 
     // One translucent plane at sea level; nothing simulates (TERRAIN.md §4).
     // It neither casts nor receives: a transparent sheet in the shadow pass
@@ -277,8 +258,12 @@ export class GameScene {
 
     this._dir = new THREE.Vector3();
     this._target = new THREE.Vector3();
-    // Last frame's draw counts (DESIGN §9's budget), refreshed in render().
-    this.stats = { calls: 0, triangles: 0 };
+    // Last frame's draw counts (DESIGN §9's budget), refreshed in render(),
+    // plus the running peak. The peak is what the clipmap made necessary: a
+    // cached coarse level draws on SOME frames, so the frame the gate happens
+    // to read is not the expensive one. The budget is what the GPU was ever
+    // asked to draw, not what it was asked on a lucky frame.
+    this.stats = { calls: 0, triangles: 0, peakCalls: 0, peakTriangles: 0 };
 
     window.addEventListener("resize", () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
@@ -297,32 +282,7 @@ export class GameScene {
     this._target.copy(c.position).add(this._dir);
     c.lookAt(this._target);
     this.sky.position.copy(c.position);
-    this.updateSun(x, y, z);
-  }
-
-  /**
-   * Park the shadow box on the player, snapped to its own texel grid.
-   *
-   * A directional shadow map that simply tracks the camera crawls: the
-   * projected texel grid slides under the geometry and every silhouette
-   * edge shimmers. The fix (threejs-shadow-systems) is to quantize the box
-   * centre in LIGHT space by the world width of one texel, so the grid is
-   * nailed to the world and the box moves in whole-texel steps. Z is
-   * quantized far more coarsely — it changes depth coverage, not the
-   * projected grid.
-   *
-   * Scalar math on three preallocated vectors; no allocation, no closure.
-   */
-  updateSun(x, y, z) {
-    const p = this._sunProbe.set(x, y, z).applyMatrix4(this._worldToLight);
-    p.x = Math.round(p.x / SHADOW_TEXEL_M) * SHADOW_TEXEL_M;
-    p.y = Math.round(p.y / SHADOW_TEXEL_M) * SHADOW_TEXEL_M;
-    p.z = Math.round(p.z / SHADOW_Z_QUANTUM_M) * SHADOW_Z_QUANTUM_M;
-    p.applyMatrix4(this._lightToWorld);
-    if (p.equals(this._sunCenter)) return; // same texel cell: nothing moved
-    this._sunCenter.copy(p);
-    this.sun.target.position.copy(p);
-    this.sun.position.copy(p).addScaledVector(this._toSun, SHADOW_BACK_M);
+    this.clipmap.update(x, y, z);
   }
 
   /** Park the weak-spot glint at a world position, or hide it. */
@@ -383,11 +343,31 @@ export class GameScene {
     }
     shadowed(obj);
     this.scene.add(obj);
+    this._invalidateShadows(obj);
     this.pieces.set(key, obj);
   }
 
+  /**
+   * A caster appeared or vanished here: force every cached clipmap level
+   * whose box reaches it to redraw. Without this a base going up 150 m away
+   * casts nothing until the coarse level's age expires — the reference's
+   * "important streamed geometry remains unshadowed". Placement events only;
+   * the RAF path never calls it.
+   */
+  _invalidateShadows(obj) {
+    this.clipmap.invalidate(
+      obj.position.x,
+      obj.position.y,
+      obj.position.z,
+      PIECE_RADIUS_M,
+    );
+  }
+
   clearPieces() {
-    for (const obj of this.pieces.values()) this.scene.remove(obj);
+    for (const obj of this.pieces.values()) {
+      this._invalidateShadows(obj);
+      this.scene.remove(obj);
+    }
     this.pieces.clear();
   }
 
@@ -395,6 +375,7 @@ export class GameScene {
     const key = `${cx},${cz},${level},${loc}`;
     const obj = this.pieces.get(key);
     if (obj) {
+      this._invalidateShadows(obj);
       this.scene.remove(obj);
       this.pieces.delete(key);
     }
@@ -452,6 +433,7 @@ export class GameScene {
     }
     shadowed(obj);
     this.scene.add(obj);
+    this._invalidateShadows(obj);
     this.deploys.set(key, obj);
   }
 
@@ -459,13 +441,17 @@ export class GameScene {
     const key = `${cx},${cz},${level},${loc}`;
     const obj = this.deploys.get(key);
     if (obj) {
+      this._invalidateShadows(obj);
       this.scene.remove(obj);
       this.deploys.delete(key);
     }
   }
 
   clearDeploys() {
-    for (const obj of this.deploys.values()) this.scene.remove(obj);
+    for (const obj of this.deploys.values()) {
+      this._invalidateShadows(obj);
+      this.scene.remove(obj);
+    }
     this.deploys.clear();
   }
 
@@ -542,6 +528,8 @@ export class GameScene {
     const r = this.renderer.info.render;
     this.stats.calls = r.calls;
     this.stats.triangles = r.triangles;
+    if (r.calls > this.stats.peakCalls) this.stats.peakCalls = r.calls;
+    if (r.triangles > this.stats.peakTriangles) this.stats.peakTriangles = r.triangles;
   }
 
   /**
@@ -662,20 +650,31 @@ export class GameScene {
 
   /** The structural facts about the rig, for the browser gate to assert. */
   lighting() {
+    const near = this.clipmap.levels[0];
     return {
       shadowMap: this.renderer.shadowMap.enabled,
       shadowType: this.renderer.shadowMap.type,
       sunCasts: this.sun.castShadow,
-      mapSize: this.sun.shadow.mapSize.x,
-      radiusM: SHADOW_RADIUS_M,
-      texelM: SHADOW_TEXEL_M,
-      normalBias: this.sun.shadow.normalBias,
+      mapSize: near.light.shadow.mapSize.x,
+      // The near level's numbers keep the names lighting v0 published: it IS
+      // the map that shipped, so the assertions written against it still mean
+      // the same thing. What the clipmap adds is reported under `clipmap`.
+      radiusM: near.halfWidth,
+      texelM: near.texelM,
+      normalBias: near.light.shadow.normalBias,
+      clipmap: this.clipmap.facts(),
+      // Where the sun is, so a probe can aim relative to it instead of
+      // hardcoding a bearing that a lighting change would silently rot.
+      sunAzimuth: SUN_AZIMUTH,
+      sunElevation: SUN_ELEVATION,
       toneMapping: this.renderer.toneMapping,
       exposure: this.renderer.toneMappingExposure,
       fillIntensity: this.fill.intensity,
       sunIntensity: this.sun.intensity,
       calls: this.stats.calls,
       triangles: this.stats.triangles,
+      peakCalls: this.stats.peakCalls,
+      peakTriangles: this.stats.peakTriangles,
     };
   }
 
@@ -683,14 +682,28 @@ export class GameScene {
    * Dev-only: does the shadow map actually darken the frame?
    *
    * A flag says the renderer was ASKED for shadows. This measures whether
-   * any pixel got one. Per sample yaw it renders the live scene twice —
-   * shadow pass on, then off — reads the drawing buffer back both times
-   * and counts pixels the shadow pass took down by more than `minDelta`
-   * of luma. It restores the camera, the shadow state and the frame
-   * before returning, so a probe leaves nothing behind.
+   * any pixel got one. Per sample yaw it renders the live scene three times
+   * and reads the drawing buffer back twice:
    *
-   * Allocates, recompiles two programs, and renders 2N frames: never call
-   * it from the RAF path. It exists for ci/browser_smoke.mjs.
+   *   1. every level forced to redraw, all levels contributing — the frame
+   *      as it ships, and the draw count INCLUDING every shadow pass;
+   *   2. the identical frame with `needsUpdate` already consumed, so three
+   *      skips the shadow passes and redraws nothing but the main one. The
+   *      pixels are bit-identical (the maps did not change); the difference
+   *      in draw calls IS the shadow passes, exactly;
+   *   3. `uClipLevels = 0`, which gives every level zero containment weight
+   *      and resolves the whole factor to unshadowed. Same programs, same
+   *      maps, same geometry — the ONLY thing removed is the shadow term.
+   *
+   * Splitting it that way is why this measures more than the old two-render
+   * flip did: that one toggled `castShadow`, which changed the lights-state
+   * version, recompiled every program and moved the draw count and the
+   * pixels together. Here each number comes from a frame that differs in one
+   * respect. It restores the camera, the level count and the frame before
+   * returning, so a probe leaves nothing behind.
+   *
+   * Allocates and renders 3N frames: never call it from the RAF path. It
+   * exists for ci/browser_smoke.mjs.
    */
   shadowProbe(yaws, pitchRad, minDelta) {
     const gl = this.renderer.getContext();
@@ -711,22 +724,22 @@ export class GameScene {
       );
       this._target.copy(pos).add(this._dir);
       this.camera.lookAt(this._target);
-      // Toggle the LIGHT, not renderer.shadowMap.enabled: three only
-      // recompiles a material when the lights-state version moves, and
-      // flipping castShadow changes the shadow count that version is
-      // hashed from. Flipping shadowMap.enabled alone leaves every already
-      // compiled program shadowing exactly as before — two identical
-      // frames and a probe that always reads zero.
-      this.sun.castShadow = true;
+      setClipmapActiveLevels(LEVEL_COUNT);
+      for (const L of this.clipmap.levels) L.light.shadow.needsUpdate = true;
       this.renderer.info.reset();
       this.renderer.render(this.scene, this.camera);
       const callsShadowed = this.renderer.info.render.calls;
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, shad);
-      this.sun.castShadow = false;
+      // three cleared needsUpdate on every level it just drew, and every
+      // level owns autoUpdate=false, so this frame skips the shadow passes.
       this.renderer.info.reset();
       this.renderer.render(this.scene, this.camera);
       const callsUnshadowed = this.renderer.info.render.calls;
+      setClipmapActiveLevels(0);
+      this.renderer.info.reset();
+      this.renderer.render(this.scene, this.camera);
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, lit);
+      setClipmapActiveLevels(LEVEL_COUNT);
       let n = 0;
       let sum = 0;
       let max = 0;
@@ -764,9 +777,168 @@ export class GameScene {
       });
       darkened += n;
     }
-    this.sun.castShadow = true;
     this.camera.quaternion.copy(keepQ);
     this.renderer.render(this.scene, this.camera);
     return { width: w, height: h, pixels: w * h * yaws.length, darkened, samples };
+  }
+
+  /**
+   * Dev-only: does anything past the NEAR level's box cast a shadow?
+   *
+   * The whole claim of this slice. Per sample yaw it renders the live scene
+   * twice — the whole clipmap, then `uClipLevels = 1`, which is exactly
+   * lighting v0's reach (level 0 alone, everything else resolving to
+   * unshadowed) — and counts pixels the coarse levels took DOWN.
+   *
+   * The part that makes it a claim about distance rather than about darkness
+   * is the camera. The probe lifts it `heightM` above the player, pitches it
+   * down, pushes the near plane out to `nearM` and narrows the FOV, so no
+   * fragment nearer than that is drawn at all, and then it measures — it does
+   * not assume — how far the frame is from the near level's box: it
+   * unprojects all eight frustum corners, transforms them into light space,
+   * and returns the smallest |x − centre| among them.
+   *
+   * The lift is why it is worth doing at all. From eye height a near plane at
+   * 130 m leaves the distant ground as a few-pixel strip under the horizon —
+   * the shadows are there and they are strong, but almost nothing is sampled.
+   * From 80 m up the same band is most of the frame. The clipmap's centre
+   * stays on the PLAYER either way, so lifting the viewpoint cannot change
+   * which level covers what; it only changes how much of that we get to see.
+   * Light-space X is the horizontal axis perpendicular to the sun's bearing,
+   * and a linear function on a convex hull takes its extremes at the
+   * vertices, so when every corner sits on the same side of the centre that
+   * minimum bounds the WHOLE frustum. If it exceeds the near level's
+   * half-width, every pixel in the frame is outside the near box, and every
+   * pixel that moved was shadowed by a coarser level.
+   *
+   * That axis is chosen, not incidental. Light-space Y mixes the sun-bearing
+   * ground distance with height (at a 21° sun, ×0.35 and ×0.94), so the near
+   * box already reaches ~227 m along the sun's bearing and a claim there
+   * would be weak. X is the direction where the 80 m bound is tight.
+   *
+   * Allocates and renders 2N frames; never call it from the RAF path.
+   */
+  farShadowProbe(yaws, pitchRad, minDelta, nearM, fovDeg, heightM) {
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const full = new Uint8Array(w * h * 4);
+    const nearOnly = new Uint8Array(w * h * 4);
+    // The probe's own zero point. Two renders of the SAME near-only state
+    // must differ nowhere, or the counts below are partly the rasterizer
+    // talking (dither, AA, an undrawn frame) and the floor is guarding
+    // nothing. Measured rather than argued, on every yaw.
+    const control = new Uint8Array(w * h * 4);
+    const cam = this.camera;
+    const keepQ = cam.quaternion.clone();
+    const keepPos = cam.position.clone();
+    const keepNear = cam.near;
+    const keepFov = cam.fov;
+    cam.position.y += heightM;
+    this.sky.position.copy(cam.position); // or the dome is left below us
+    const pos = cam.position;
+    cam.near = nearM;
+    cam.fov = fovDeg;
+    cam.updateProjectionMatrix();
+    const samples = [];
+    let darkened = 0;
+    let minLightXm = Infinity;
+    for (let i = 0; i < yaws.length; i++) {
+      const cp = Math.cos(pitchRad);
+      this._dir.set(
+        Math.sin(yaws[i]) * cp,
+        Math.sin(pitchRad),
+        Math.cos(yaws[i]) * cp,
+      );
+      this._target.copy(pos).add(this._dir);
+      cam.lookAt(this._target);
+      cam.updateMatrixWorld(true);
+
+      // How far this frustum is from the near level's committed centre,
+      // along the axis where the near box is 80 m and not 227.
+      const centerX = this.clipmap.levels[0].cx;
+      let lo = Infinity;
+      let sawPos = false;
+      let sawNeg = false;
+      for (let c = 0; c < 8; c++) {
+        this._corner
+          .set((c & 1 ? 1 : -1), (c & 2 ? 1 : -1), (c & 4 ? 1 : -1))
+          .applyMatrix4(cam.projectionMatrixInverse)
+          .applyMatrix4(cam.matrixWorld);
+        const dx = this.clipmap.toLight(this._corner).x - centerX;
+        if (dx > 0) sawPos = true;
+        else sawNeg = true;
+        if (Math.abs(dx) < lo) lo = Math.abs(dx);
+      }
+      // The frustum straddles the centre plane: no bound holds, and the
+      // sample must not be able to claim one.
+      const reach = sawPos && sawNeg ? 0 : lo;
+      if (reach < minLightXm) minLightXm = reach;
+
+      setClipmapActiveLevels(LEVEL_COUNT);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, full);
+      setClipmapActiveLevels(1);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, nearOnly);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, control);
+      setClipmapActiveLevels(LEVEL_COUNT);
+
+      let n = 0;
+      let sum = 0;
+      let max = 0;
+      let lifted = 0;
+      let noise = 0;
+      for (let p = 0; p < full.length; p += 4) {
+        const a = (nearOnly[p] * 2 + nearOnly[p + 1] * 5 + nearOnly[p + 2]) >> 3;
+        const b = (full[p] * 2 + full[p + 1] * 5 + full[p + 2]) >> 3;
+        const c = (control[p] * 2 + control[p + 1] * 5 + control[p + 2]) >> 3;
+        const cd = a - c;
+        if (cd > minDelta || cd < -minDelta) noise++;
+        const d = a - b;
+        if (d > minDelta) {
+          n++;
+          sum += d;
+          if (d > max) max = d;
+        } else if (d < -minDelta) {
+          // A coarse level can only ever REMOVE light out here. Anything
+          // brighter would mean the extra levels are lighting the scene
+          // rather than shadowing it — the exact bug a zero-intensity level
+          // is there to avoid — so it is counted and asserted on.
+          lifted++;
+        }
+      }
+      samples.push({
+        yaw: yaws[i],
+        darkened: n,
+        lifted,
+        noise,
+        fraction: n / (w * h),
+        liftedFraction: lifted / (w * h),
+        meanDelta: n > 0 ? sum / n : 0,
+        maxDelta: max,
+        reachM: reach,
+      });
+      darkened += n;
+    }
+    cam.near = keepNear;
+    cam.fov = keepFov;
+    cam.updateProjectionMatrix();
+    cam.quaternion.copy(keepQ);
+    cam.position.copy(keepPos);
+    this.sky.position.copy(keepPos);
+    this.renderer.render(this.scene, cam);
+    return {
+      width: w,
+      height: h,
+      pixels: w * h * yaws.length,
+      darkened,
+      minLightXm,
+      heightM,
+      nearLevelHalfWidthM: this.clipmap.levels[0].halfWidth,
+      activeLevels: clipmapActiveLevels(),
+      samples,
+    };
   }
 }
