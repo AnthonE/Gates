@@ -28,11 +28,13 @@ Done items are deleted, not checked — history lives in git and
    is a third view aimed at a measured face plus the existing level-ground
    one as the control.
 
-   **Do not re-run the cost question on this box.** Four runs of
-   `costProbe`'s `nograin` variant against the same run's control:
-   +14 ms (0.3× the floor), −74 (1.7×), −64 (1.3×), −110 (2.2×) — three
-   of four the wrong sign, less work measured slower. Grain lands exactly
-   where level 0's PCF landed, inside a floor that itself swings 44–89 ms.
+   **Do not re-run the cost question on this box.** Every run of the gate
+   takes it again; the six taken while this slice was built read +14 ms
+   (0.3× the floor), −74 (1.7×), −64 (1.3×), −110 (2.2×), −104 (8.2×),
+   −62 (0.1×) — five of six the wrong sign, less work measured slower.
+   Grain lands exactly where level 0's PCF landed, inside a floor that is
+   a one-sample estimate itself and swung 13–603 ms across those same six
+   runs. A seventh reading is not a tiebreak.
    The counted budget is the one that answers: 81,520/96,000 chars (the
    octave is 638), 4 noise sample sites/fragment, 18/24 depth fetches.
    Triplanar's ~9% claim from the old branch is inside the same noise, so

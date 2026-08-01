@@ -367,9 +367,25 @@ function fieldGlsl(field) {
  * horizontal footprint is still what guards the block, because it is a lower
  * bound on the world one — conservative in the right direction.
  *
- * Nothing inside takes a derivative, and the fade it is cut on is already zero
- * at the cut, so `gmH` stays continuous across the boundary and the `dFdx(gmH)`
- * below sees no step.
+ * The fade it is cut on is already zero at the cut — `gmFw3 >= gmFw` because a
+ * vector's length bounds its own xz sub-vector's, and `gmGScale >=
+ * GRAIN_SCALE_MIN` because the weights are convex and normalized — so wherever
+ * the guard skips, the `smoothstep` inside would have returned exactly 1 and
+ * the fade exactly 0. `gmH` therefore stays continuous across the boundary and
+ * the `dFdx(gmH)` below sees no step.
+ *
+ * The one derivative inside is `fwidth(vGmPos)`, and it is inside on purpose,
+ * which is a hazard worth naming rather than a claim of safety: GLSL leaves
+ * derivatives in non-uniform control flow undefined, and this branch is
+ * per-fragment. It is admissible here because the quantity is a screen-space
+ * FOOTPRINT — a filter width, not a value that reaches the image — so a wrong
+ * one on a quad straddling the boundary can only fade an octave that is
+ * already at zero amplitude there. The gate is what holds that: the far view
+ * measures 0.000% of the frame moved and the same-state control differs on 0
+ * pixels, at the very distances where quads straddle it. Every derivative that
+ * DOES reach the image (`fwidth(gmXZ)`, `dFdx(vGmPos)`, `dFdx(gmH)`, the
+ * specular-AA pair) is taken outside this branch, which is why the two fades
+ * above are computed above the field rather than below it.
  */
 function grainGlsl(grain) {
   if (grain === "off") {

@@ -67,9 +67,10 @@ const PUBLIC_WIRE_PORT = Number(process.env.BROWSER_SMOKE_PUBLIC_WIRE_PORT || WI
 const JOIN_TIMEOUT_MS = Number(process.env.BROWSER_SMOKE_TIMEOUT_MS || 60000);
 // How the join is WATCHED inside that window — the instrument, not the budget.
 // A look is a `page.evaluate`, which has to be scheduled on the tab's own main
-// thread; with three tabs live on this box one measured 20 s. So a look is
-// launched every 250 ms and up to 4 may be outstanding, instead of each one
-// waiting for the last to come back. See `join()`.
+// thread; with three tabs live on this box one measured 20 s. So up to 4 may be
+// outstanding instead of each waiting for the last to come back, and 250 ms is
+// the FLOOR on the gap between launches — not a cadence, since a look settling
+// also frees a slot immediately. See `join()`.
 const JOIN_POLL_MS = 250;
 const JOIN_POLL_INFLIGHT = 4;
 const PLAY_MS = Number(process.env.BROWSER_SMOKE_PLAY_MS || 6000);
@@ -496,10 +497,13 @@ const join = async (label, port = WIRE_PORT, cert = certHash) => {
   //   2. The looks do not QUEUE BEHIND EACH OTHER. Serialized, a look costs
   //      its own latency before the next one starts, so a 20 s round trip
   //      buys three looks in a minute no matter how early the client was
-  //      ready. Launched on JOIN_POLL_MS with up to JOIN_POLL_INFLIGHT
-  //      outstanding, the answer arrives when the renderer next has a slice
-  //      for it — and the join is observed within one round trip of being
-  //      true instead of within one round trip of the next poll's turn.
+  //      ready. With up to JOIN_POLL_INFLIGHT outstanding the answer arrives
+  //      when the renderer next has a slice for it, so the join is observed
+  //      within one round trip of becoming true instead of within one round
+  //      trip of the next poll's turn. JOIN_POLL_MS is a FLOOR on the gap
+  //      between launches, not a cadence: the race also wakes on every look
+  //      that settles, so a fast tab launches its four immediately and a
+  //      starved one paces itself at 250 ms until the window is full.
   //
   // The full object is fetched once, after the wait, for the caller.
   const t0 = Date.now();
