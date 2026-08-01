@@ -1,8 +1,17 @@
 // Terrain mesh worker (TERRAIN.md §4): heights and normals from the
 // shared wasm worldgen, meshes built off the main thread, transferred
-// back. Biome coloring is per-vertex from (height, moisture, slope) —
-// the splat-shader-with-textures upgrade is an art pass, not a worldgen
-// change; the bands below mirror sim-core terrain.rs biome().
+// back. What rides with them is the SPLAT WEIGHT attribute — four
+// identity weights per vertex derived from (height, moisture, slope),
+// the same three channels sim-core terrain.rs biome() decides on. The
+// colour is no longer computed here: materials.js blends the four
+// authored identities from these weights and does every causal modifier
+// (waterline wetness, snow, cliff darkening) in the shader, where the
+// noise that breaks up the boundaries lives too.
+//
+// Weights are soft ramps CENTRED ON THE OLD HARD EDGES (beach 2 m,
+// highland 52 m, forest moisture 0.05) rather than the thresholds
+// themselves: a one-hot attribute would put a hard biome seam on the
+// vertex grid that no amount of in-shader noise can hide.
 
 import { loadWasm } from "./wasm.js";
 
@@ -47,47 +56,53 @@ self.onmessage = async (e) => {
     self.postMessage({ type: "built", ...built }, [
       built.positions.buffer,
       built.normals.buffer,
-      built.colors.buffer,
+      built.splat.buffer,
       built.indices.buffer,
     ]);
   }
 };
 
-// Palette (v0 vertex colors; DECISIONS.md §open, client cosmetics).
-const C_SEAFLOOR = [0.5, 0.47, 0.36];
-const C_BEACH = [0.78, 0.71, 0.52];
-const C_MEADOW = [0.35, 0.49, 0.23];
-const C_FOREST = [0.15, 0.33, 0.16];
-const C_HIGHLAND = [0.55, 0.55, 0.58];
-const C_PEAK = [0.72, 0.72, 0.75];
-const C_CLIFF = [0.46, 0.44, 0.4];
+// The band edges, each the retired palette's hard threshold with a ramp
+// hung around it (DECISIONS.md §open, materials v0).
+const BEACH_BAND = [1.0, 3.0]; // was: beach below h 2.0
+const ALPINE_BAND = [44.0, 60.0]; // was: highland above h 52.0
+const MOIST_BAND = [0.01, 0.09]; // was: forest above moisture 0.05
 const CLIFF_SLOPE = 1.19; // tan(50°), the sim's cliff threshold
+const CLIFF_BAND = [CLIFF_SLOPE * 0.8, CLIFF_SLOPE * 1.2];
 
-function biomeColor(h, moist, slope, out) {
-  let c;
-  if (h < 0.6) c = C_SEAFLOOR;
-  else if (h < 2.0) c = C_BEACH;
-  else if (h > 52.0) {
-    const t = Math.min((h - 52.0) / 28.0, 1.0);
-    out[0] = C_HIGHLAND[0] + (C_PEAK[0] - C_HIGHLAND[0]) * t;
-    out[1] = C_HIGHLAND[1] + (C_PEAK[1] - C_HIGHLAND[1]) * t;
-    out[2] = C_HIGHLAND[2] + (C_PEAK[2] - C_HIGHLAND[2]) * t;
-    c = out;
-  } else if (moist > 0.05) c = C_FOREST;
-  else c = C_MEADOW;
-  // Cliff mask forces rock (TERRAIN.md §4), blended in from 80% slope.
-  const ct = Math.max(0, Math.min((slope - CLIFF_SLOPE * 0.8) / (CLIFF_SLOPE * 0.4), 1));
-  out[0] = c[0] + (C_CLIFF[0] - c[0]) * ct;
-  out[1] = c[1] + (C_CLIFF[1] - c[1]) * ct;
-  out[2] = c[2] + (C_CLIFF[2] - c[2]) * ct;
-  return out;
+function ramp(lo, hi, v) {
+  const t = Math.max(0, Math.min((v - lo) / (hi - lo), 1));
+  return t * t * (3 - 2 * t);
 }
 
-/** Deterministic tiny per-vertex tint so flats don't read as plastic. */
-function jitter(i, j) {
-  let h = (i * 374761393 + j * 668265263) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return (((h ^ (h >>> 16)) & 0xff) / 255 - 0.5) * 0.07;
+/**
+ * Four identity weights — sand · grass · forest litter · rock — from the
+ * three channels the sim's biome() decides on. Written as bytes: these are
+ * a blend, and 1/255 of a weight is far below what the shader's break-up
+ * moves them by.
+ */
+function splatWeights(h, moist, slope, out, o) {
+  const sand = 1 - ramp(BEACH_BAND[0], BEACH_BAND[1], h);
+  const alpine = ramp(ALPINE_BAND[0], ALPINE_BAND[1], h);
+  const wood = ramp(MOIST_BAND[0], MOIST_BAND[1], moist);
+  const cliff = ramp(CLIFF_BAND[0], CLIFF_BAND[1], slope);
+  const land = 1 - sand;
+  let w0 = sand;
+  let w1 = land * (1 - alpine) * (1 - wood);
+  let w2 = land * (1 - alpine) * wood;
+  let w3 = land * alpine;
+  // The cliff mask forces rock (TERRAIN.md §4) — the one veto that
+  // overrides the biome rather than blending with it.
+  w0 += (0 - w0) * cliff;
+  w1 += (0 - w1) * cliff;
+  w2 += (0 - w2) * cliff;
+  w3 += (1 - w3) * cliff;
+  const sum = w0 + w1 + w2 + w3 || 1;
+  const k = 255 / sum;
+  out[o] = (w0 * k + 0.5) | 0;
+  out[o + 1] = (w1 * k + 0.5) | 0;
+  out[o + 2] = (w2 * k + 0.5) | 0;
+  out[o + 3] = (w3 * k + 0.5) | 0;
 }
 
 /**
@@ -103,9 +118,8 @@ function build({ key, x0, z0, n, step }) {
 
   const positions = new Float32Array(n * n * 3);
   const normals = new Float32Array(n * n * 3);
-  const colors = new Float32Array(n * n * 3);
+  const splat = new Uint8Array(n * n * 4);
   const indices = new Uint32Array((n - 1) * (n - 1) * 6);
-  const col = [0, 0, 0];
   const inv2s = 1 / (2 * step);
 
   for (let j = 0; j < n; j++) {
@@ -125,11 +139,7 @@ function build({ key, x0, z0, n, step }) {
 
       const moist = ex.terrain_moisture_at(seed, x0 + i * step, z0 + j * step);
       const slope = Math.sqrt(dhdx * dhdx + dhdz * dhdz);
-      biomeColor(h, moist, slope, col);
-      const jt = jitter(x0 + i * step, z0 + j * step);
-      colors[v * 3] = Math.max(0, Math.min(1, col[0] + jt));
-      colors[v * 3 + 1] = Math.max(0, Math.min(1, col[1] + jt));
-      colors[v * 3 + 2] = Math.max(0, Math.min(1, col[2] + jt));
+      splatWeights(h, moist, slope, splat, v * 4);
     }
   }
 
@@ -149,5 +159,5 @@ function build({ key, x0, z0, n, step }) {
     }
   }
 
-  return { key, x0, z0, positions, normals, colors, indices };
+  return { key, x0, z0, positions, normals, splat, indices };
 }
