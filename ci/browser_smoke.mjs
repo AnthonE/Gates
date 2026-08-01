@@ -100,18 +100,24 @@ const SHADOW_SETTLE_MS = Number(process.env.BROWSER_SMOKE_SHADOW_SETTLE_MS || 40
 // between two renders of an identical frame, well below a real shadow (whose
 // mean delta on this scene runs in the tens).
 const SHADOW_PROBE_MIN_DELTA = 6;
-// Floor on the darkened share of the sweep. The pinned spawn measures ~9%
-// (worst single yaw ~3%), so this leaves ~6x of headroom for a chunk that
-// has not streamed yet, while the failure it guards — a rig that darkens
-// NOTHING — scores exactly 0.
-const SHADOW_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_SHADOW_MIN || 0.015);
+// Floor on the darkened share of the sweep. Raised from 0.015 by the slice
+// that made the GROUND cast: with the terrain culled out of every depth pass
+// (three casts a FrontSide material from its back face, and a heightfield has
+// none turned at the sky) the pinned spawn measured 10.5%, worst yaw 3.6% —
+// all of it from the scatter and the other tab's avatar. With hills casting it
+// measures 24.0%, worst yaw 20.4%, stable across runs. So these floors now
+// bite on the real failure and not only on the total absence of a rig: a
+// terrain material that forgets `shadowSide` scores 10.5% and 3.6%.
+const SHADOW_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_SHADOW_MIN || 0.15);
 // And a floor on EVERY yaw, which is the assertion that actually pins the
 // WORLD as a caster. Dropping castShadow from the terrain and the scatter
 // pools still cleared the aggregate above: the other tab's avatar stands on
 // the shared spawn point and, under a 21° sun, throws a long enough shadow
 // across a downward-pitched frame to score 6% on its own — from two of the
-// four yaws, with the other two at exactly 0.0%. Worst real yaw is 2.8%.
-const SHADOW_MIN_FRACTION_PER_YAW = Number(process.env.BROWSER_SMOKE_SHADOW_MIN_YAW || 0.01);
+// four yaws, with the other two at exactly 0.0%. Worst real yaw was 2.8% then
+// and is 20.4% now that the ground itself casts, which is what let the floor
+// below move from 1% to 10%.
+const SHADOW_MIN_FRACTION_PER_YAW = Number(process.env.BROWSER_SMOKE_SHADOW_MIN_YAW || 0.1);
 // Same failure from the other side, counted rather than sampled: the seven
 // scatter pools are frustumCulled=false, so a rig where the world casts
 // submits at least them to the shadow pass. That mutation submitted 2 (the
@@ -159,6 +165,41 @@ const FAR_SHADOW_MIN_FRACTION_PER_YAW = Number(
 // shadowing it — the failure a zero-intensity level exists to prevent, and
 // the one that would otherwise show up as a washed-out frame nobody gates.
 const FAR_SHADOW_MAX_LIFTED_FRACTION = 1e-4;
+// --- the horizon-caster gate (DECISIONS.md §open, "the horizon casts") ------
+// Everything that cast before this slice lived in the near ring: the 5x5x64 m
+// chunk box, its scatter, pieces and players. What this slice adds is the far
+// mesh, casting everywhere the ring is NOT — so the measurement that proves it
+// is not a camera pushed out to some distance, it is the caster taken away.
+// The horizon probe's own sweep: four yaws, lifted so the ground past the ring
+// is most of the frame rather than a strip under the horizon, and pitched down
+// like the other two. There is no near-plane trick here and none is needed —
+// the caster it removes is, by construction, only outside the ring.
+const HORIZON_PROBE_YAWS = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2];
+const HORIZON_PROBE_PITCH = -0.42;
+const HORIZON_PROBE_HEIGHT_M = 80;
+// Floors from the measurement with the usual headroom; the failure they guard
+// — a far mesh that receives and never casts, which is what shipped before
+// this slice — scores exactly 0, and the probe's control says its zero point
+// is a real zero. Measured 0.54% of the sweep at mean Δluma 45-48 (which is
+// not a marginal darkening: it is the same order as the near shadows).
+const HORIZON_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_HORIZON_MIN || 0.0015);
+// Deliberately NOT a floor on every yaw, unlike the near shadow probe. Past
+// the ring the only caster is the ground itself — the scatter stops at the
+// ring's edge — so a direction casts only where the island has relief steep
+// enough to shade at a 21° sun, and which side of the spawn that is, is
+// worldgen's fact and not the caster's. Measured 1.57% / 0.57% on two of the
+// four yaws and ~0 on the other two. So: how many directions show it, with
+// room for one of the two real ones to be a thin frame.
+const HORIZON_MIN_DIRECTIONS = 2;
+const HORIZON_MIN_FRACTION_PER_YAW = Number(process.env.BROWSER_SMOKE_HORIZON_MIN_YAW || 0.001);
+// The island is this wide (TERRAIN.md §4), so a hole half-extent at or past it
+// is not a ring footprint — it is the probe's own suppression left behind.
+const ISLAND_M = 2048;
+// three's FrontSide. The ground must name its shadow side: three's default for
+// a FrontSide material is to cast from the BACK face — the right answer for a
+// closed solid and the wrong one for a heightfield, which has no back face
+// pointed at the sky and is therefore culled out of the depth pass entirely.
+const THREE_FRONT_SIDE = 0;
 // DESIGN §9's client budget, gated for the first time here. Both counts are
 // per rendered frame and INCLUDE the shadow pass, which is the point: a
 // second pass over every caster is the obvious way to eat this budget.
@@ -499,6 +540,22 @@ for (let i = 0; i < cm.levels.length; i++) {
   if (i > 0 && !(L.texelM > cm.levels[i - 1].texelM)) {
     fail(`tab A: clipmap level ${i} texel ${L.texelM} m is not coarser than level ${i - 1}`);
   }
+  // The ortho frustum has to contain the ground its own box covers. A level
+  // bounds light-space X and Y; how much light-space DEPTH the ground inside
+  // those bounds spans is set by how low the sun is — half·cot(elevation) each
+  // way, which at a 21° sun is 2.66 m per metre of half-width. A flat depth
+  // (lighting v0 carried 260 m below the centre for every level) is right for
+  // one size and clips the far half of every larger one: level 2's 720 m box
+  // needs 1913 m. Nothing used to live out there, so nothing showed it.
+  const boxDepthM = 2 * L.halfWidthM * (Math.cos(lit.sunElevation) / Math.sin(lit.sunElevation));
+  if (!(L.farM >= boxDepthM)) {
+    fail(
+      `tab A: clipmap level ${i}'s ortho depth is ${L.farM.toFixed(0)} m against the ` +
+        `${boxDepthM.toFixed(0)} m its own ${L.halfWidthM} m box spans along the light at a ` +
+        `${((lit.sunElevation * 180) / Math.PI).toFixed(0)}° sun — the far half of the level ` +
+        `clips out and casts nothing`,
+    );
+  }
   if (!(L.sampledHalfWidthM < L.halfWidthM)) {
     fail(`tab A: clipmap level ${i} samples its full ${L.halfWidthM} m — no guard band, so a PCF tap can leave the map`);
   }
@@ -714,6 +771,161 @@ console.log(
     `past the near box (${far.samples.map((s) => (s.fraction * 100).toFixed(1) + "%").join(" ")}), ` +
     `frame ≥ ${far.minLightXm.toFixed(0)} m out vs a ${far.nearLevelHalfWidthM} m near level, ` +
     `lifted ${(liftedWorst * 100).toFixed(4)}%`,
+);
+
+// Assertion 11c — the GROUND casts, and the two LODs of it are kept apart.
+// Structural, cheap, and here so 11d's failure is diagnosable: "the horizon
+// darkens nothing" means something very different when the ground is still
+// being culled out of every depth pass it is submitted to.
+const fc = await A.page.evaluate(() => globalThis.__gatesDebug.farCaster);
+if (!fc) fail(`tab A: the client publishes no far-caster state — the horizon is not wired`);
+if (fc.shadowSide !== THREE_FRONT_SIDE) {
+  fail(
+    `tab A: the ground's material has shadowSide ${fc.shadowSide}, not FrontSide ` +
+      `(${THREE_FRONT_SIDE}). three derives the depth pass from this: for a FrontSide ` +
+      `material it flips to BackSide, and a heightfield has no back face turned at the ` +
+      `sky — every terrain triangle is culled and hills cast nothing, near or far`,
+  );
+}
+if (!fc.built) fail(`tab A: the far mesh has not been built — nothing can be asserted about the horizon`);
+if (fc.casts !== true) fail(`tab A: the far mesh does not cast — the horizon is still lit flat`);
+if (fc.customDepth !== true) {
+  fail(
+    `tab A: the far mesh casts with no custom depth material — nothing punches the near ` +
+      `ring out of it, so both LODs of one hillside are in the same map`,
+  );
+}
+if (!(fc.sinkM > 0)) {
+  fail(`tab A: the far caster's seam skirt is ${fc.sinkM} m — the two LODs meet with no offset at all`);
+}
+if (!(fc.triangles > 0)) fail(`tab A: the far caster has ${fc.triangles} triangles`);
+// The hole must actually track the ring. Two independent ways of being wrong:
+// a hole frozen at the origin (the uniform never written), and a hole that has
+// stopped containing the chunks that cast into it.
+if (!(fc.nearChunks > 0)) fail(`tab A: no near chunks are loaded — the hole has nothing to track`);
+const holeChunksX = (fc.holeHalf[0] * 2) / fc.chunkM;
+const holeChunksZ = (fc.holeHalf[1] * 2) / fc.chunkM;
+if (!(holeChunksX >= 1 && holeChunksZ >= 1)) {
+  fail(
+    `tab A: the far caster's hole is ${fc.holeHalf} m against ${fc.nearChunks} loaded near ` +
+      `chunks — the near ring's footprint is never written, so the far mesh casts straight ` +
+      `through it and every hillside in the ring has two silhouettes in one map`,
+  );
+}
+if (holeChunksX * holeChunksZ < fc.nearChunks) {
+  fail(
+    `tab A: the hole is ${holeChunksX}x${holeChunksZ} chunks but ${fc.nearChunks} are loaded ` +
+      `and casting — a chunk outside the hole is a double caster against the far mesh`,
+  );
+}
+const ownA = await A.page.evaluate(() => globalThis.__gatesDebug.own);
+if (
+  Math.abs(ownA[0] - fc.holeCenter[0]) > fc.holeHalf[0] ||
+  Math.abs(ownA[2] - fc.holeCenter[1]) > fc.holeHalf[1]
+) {
+  fail(
+    `tab A: the player is at [${ownA[0].toFixed(0)}, ${ownA[2].toFixed(0)}] but the hole is ` +
+      `centred on [${fc.holeCenter.map((v) => v.toFixed(0))}] ±[${fc.holeHalf}] — the hole is ` +
+      `not following the ring`,
+  );
+}
+// And the per-level split that pays for the third level: the two LODs are not
+// both submitted to every map.
+if (!(fc.farMinLevel >= 1)) {
+  fail(`tab A: the far mesh casts from level ${fc.farMinLevel} — level 0's box is inside the hole, so that is a whole map's fill discarded`);
+}
+if (!(fc.nearMaxLevel < cm.levelCount - 1)) {
+  fail(
+    `tab A: the near ring casts up to level ${fc.nearMaxLevel} of ${cm.levelCount} — the ` +
+      `coarsest level is read only by pixels the ring cannot reach, so that is ${fc.nearChunks} ` +
+      `draw calls of caster nothing samples`,
+  );
+}
+console.log(
+  `  far caster: ${fc.triangles} tris, shadowSide ${fc.shadowSide} (FrontSide), skirt ${fc.sinkM} m, ` +
+    `hole ${holeChunksX}x${holeChunksZ} chunks over ${fc.nearChunks} loaded, ` +
+    `near ring in levels 0..${fc.nearMaxLevel}, far mesh in ${fc.farMinLevel}..`,
+);
+
+// Assertion 11d — the HORIZON casts, measured by removing it.
+//
+// 11b's probe proves the coarse levels reach past the near LEVEL's box. It
+// cannot prove the horizon casts, and never could: until this slice the near
+// ring WAS the caster set, and a frame 97 m out is deep inside it.
+//
+// This one holds the frame fixed and removes the caster. The far mesh casts
+// through a depth material that discards the near ring's footprint; opening
+// that hole to swallow the world discards all of it, which is exactly the
+// state that shipped before this slice. The difference between the two frames
+// is the horizon — and it is a claim about DISTANCE for free, because the hole
+// means every pixel it darkens was cast by geometry more than the ring's own
+// footprint away. No camera geometry has to be argued.
+const horizonHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.horizonProbe);
+if (horizonHook !== "function") {
+  fail(`tab A: __gatesDebug.horizonProbe is ${horizonHook} on a dev shard — the horizon gate cannot run`);
+}
+const horizon = await A.page.evaluate(
+  ([yaws, pitch, minDelta, heightM]) =>
+    globalThis.__gatesDebug.horizonProbe(yaws, pitch, minDelta, heightM),
+  [HORIZON_PROBE_YAWS, HORIZON_PROBE_PITCH, FAR_SHADOW_MIN_DELTA, HORIZON_PROBE_HEIGHT_M],
+);
+if (!horizon) fail(`tab A: the horizon probe found no far caster to toggle`);
+// The probe must have scored the LIVE ring footprint, not a leftover: a hole
+// already swallowing the world would make both its frames identical and the
+// measurement below vacuously zero in a way the floor would blame on casting.
+if (!(horizon.holeHalf[0] > 0) || horizon.holeHalf[0] > ISLAND_M) {
+  fail(`tab A: the horizon probe ran with a hole half-extent of ${horizon.holeHalf} m — not the live ring footprint`);
+}
+const horizonNoisy = horizon.samples.filter((s) => s.noise > 0);
+if (horizonNoisy.length) {
+  fail(
+    `tab A: the horizon probe's control renders disagree — ` +
+      horizonNoisy.map((s) => `yaw ${s.yaw.toFixed(2)}: ${s.noise} px`).join(", ") +
+      `. Two renders of the same state moved pixels by > ${FAR_SHADOW_MIN_DELTA}/255, so what ` +
+      `the toggle below measures cannot be attributed to the far caster`,
+  );
+}
+const horizonFraction = horizon.darkened / horizon.pixels;
+if (horizonFraction < HORIZON_MIN_FRACTION) {
+  fail(
+    `tab A: suppressing the far mesh's shadow changed ${(horizonFraction * 100).toFixed(3)}% of ` +
+      `${horizon.pixels} swept pixels — below ${(HORIZON_MIN_FRACTION * 100).toFixed(2)}%. The ` +
+      `horizon receives and does not cast, which is exactly the state this slice exists to end.\n` +
+      horizon.samples
+        .map(
+          (s) =>
+            `    yaw ${s.yaw.toFixed(2)}: ${s.darkened} px, mean Δluma ${s.meanDelta.toFixed(1)}, max ${s.maxDelta}`,
+        )
+        .join("\n"),
+  );
+}
+const horizonLive = horizon.samples.filter((s) => s.fraction >= HORIZON_MIN_FRACTION_PER_YAW);
+if (horizonLive.length < HORIZON_MIN_DIRECTIONS) {
+  fail(
+    `tab A: only ${horizonLive.length} of ${horizon.samples.length} directions lose anything when ` +
+      `the far caster is suppressed (floor ${(HORIZON_MIN_FRACTION_PER_YAW * 100).toFixed(2)}% per ` +
+      `yaw, ${HORIZON_MIN_DIRECTIONS} required) — one direction carrying the whole aggregate is a ` +
+      `fluke of where the camera happened to be pointed, not a horizon that casts\n` +
+      horizon.samples
+        .map((s) => `    yaw ${s.yaw.toFixed(2)}: ${(s.fraction * 100).toFixed(2)}% (${s.darkened} px)`)
+        .join("\n"),
+  );
+}
+const horizonLifted = Math.max(...horizon.samples.map((s) => s.liftedFraction));
+if (horizonLifted > FAR_SHADOW_MAX_LIFTED_FRACTION) {
+  fail(
+    `tab A: removing the far caster DARKENED ${(horizonLifted * 100).toFixed(3)}% of a frame — a ` +
+      `caster cannot add light, so the hole is inverted and the far mesh is casting inside the ` +
+      `near ring instead of outside it`,
+  );
+}
+console.log(
+  `  horizon: suppressing the far caster moved ${(horizonFraction * 100).toFixed(2)}% of ` +
+    `${horizon.pixels} swept pixels ` +
+    `(${horizon.samples.map((s) => (s.fraction * 100).toFixed(1) + "%").join(" ")}), ` +
+    `${horizonLive.length}/${horizon.samples.length} directions, mean Δluma ` +
+    `${(horizonLive.reduce((a, s) => a + s.meanDelta, 0) / Math.max(1, horizonLive.length)).toFixed(1)}, ` +
+    `hole ±${horizon.holeHalf[0]} m, lifted ${(horizonLifted * 100).toFixed(4)}%`,
 );
 
 // --- materials: the surface read --------------------------------------------
@@ -1079,7 +1291,7 @@ const publicSetView = await P.page.evaluate(() => typeof globalThis.__gatesDebug
 if (publicSetView !== "undefined") {
   fail(`public tab: __gatesDebug.setView is ${publicSetView} on a shard with no dev override — a dev affordance shipped to a public shard`);
 }
-for (const hook of ["shadowProbe", "farShadowProbe", "surfaceProbe", "splatCensus"]) {
+for (const hook of ["shadowProbe", "farShadowProbe", "surfaceProbe", "splatCensus", "horizonProbe"]) {
   const t = await P.page.evaluate((h) => typeof globalThis.__gatesDebug[h], hook);
   if (t !== "undefined") {
     fail(`public tab: __gatesDebug.${hook} is ${t} on a shard with no dev override — a dev affordance shipped to a public shard`);

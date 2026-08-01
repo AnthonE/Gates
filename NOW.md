@@ -4,17 +4,7 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **The horizon still casts nothing.** The shadow clipmap landed (two
-   levels, 80 m and 240 m, committed centres, cached coarse updates —
-   `DECISIONS.md` §open), so shadows now reach the edge of what *casts*:
-   the 5×5 near ring, ±192 m on each world axis (its diagonal corners fall
-   outside level 1 and fade rather than cut). Past that the far mesh receives and never
-   casts, by lighting v0's call — two disagreeing LODs of one hillside in
-   one map is acne — so a mountain at 400 m is still lit flat. Fixing it
-   is a terrain job before it is a shadow one (a skirt, or a shadow-only
-   proxy at the near↔far seam); then the level table takes one constant.
-   Budget headroom: the gate reports peak 101 of 300 calls today.
-2. **The surface, second pass.** Materials v0 landed (four authored
+1. **The surface, second pass.** Materials v0 landed (four authored
    identities, one shared noise field, every channel from the same
    causes — `DECISIONS.md` §open), so the ground has a surface and the
    forest is a forest. What it still has no *texture*: the identities are
@@ -23,8 +13,18 @@ Done items are deleted, not checked — history lives in git and
    and `threejs-procedural-vegetation` are in `.claude/skills/` (MIT,
    Scott Sun — credited in `CLAUDE.md`). Same rails: constants into
    `DECISIONS.md` §open, stay inside the `DESIGN.md` §9 budget the browser
-   gate asserts (58/300 calls, 492 k/1.5 M tris today), no fps quoted
-   from this box.
+   gate asserts (peak 147/300 calls, 1.05 M/1.5 M tris today — the horizon
+   casting spent most of the headroom the last two slices had), no fps
+   quoted from this box.
+2. **Nothing casts past 720 m, and nothing out there has a silhouette.**
+   The horizon casts now (`DECISIONS.md` §open) but two limits are stated
+   rather than solved: the coarsest clipmap level stops at 720 m because
+   fog closes at 1000 m, and past the near ring the only caster is the
+   8 m ground itself — the scatter stops at the ring's edge, so a forest
+   at 400 m casts nothing and the gate measures the horizon on 2 of 4
+   yaws for exactly that reason. A scatter LOD (billboard crosses,
+   `TERRAIN.md` §4's "trees get two LODs") is the fix and it is a terrain
+   job, not a shadow one.
 3. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
    solid (slice 13: chat — two channels on the reliable lane, local at

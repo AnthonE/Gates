@@ -543,6 +543,142 @@ export class GameScene {
   }
 
   /**
+   * The far mesh's depth uniforms, borrowed the same way and for the same
+   * reason: `horizonProbe` needs one handle on the horizon's caster, and
+   * Terrain owns it because Terrain owns the mesh. Called once at boot.
+   */
+  attachFarCaster(uniforms) {
+    this._farHole = uniforms.uNearHole;
+  }
+
+  /** Force every clipmap level to redraw on the next render. Probes only. */
+  _redrawShadows() {
+    for (const L of this.clipmap.levels) L.light.shadow.needsUpdate = true;
+  }
+
+  /**
+   * Dev-only: does the HORIZON cast?
+   *
+   * The near ring casts and always did. What this slice adds is the far mesh —
+   * the 8 m LOD of the whole island — casting everywhere the ring is not, and
+   * no pixel count on its own can separate the two: a frame full of shadow is
+   * a frame full of shadow whether a pine at 30 m or a ridge at 500 m drew it.
+   *
+   * So this toggles the caster rather than the camera. The far mesh casts
+   * through a depth material that discards the near ring's footprint; opening
+   * that hole to swallow the world discards ALL of it, which is exactly the
+   * state that shipped before this slice — the ring casting, the horizon
+   * receiving and never casting. Two renders of one frame, and the difference
+   * is the horizon, by construction rather than by argument: the hole means
+   * every pixel counted here was darkened by geometry more than the ring's own
+   * footprint away.
+   *
+   * It is a uniform toggle and nothing else. Same programs, same geometry, the
+   * same levels forced to redraw for both — which is what makes the difference
+   * attributable (flipping `castShadow` instead would move the lights-state
+   * version, recompile every program, and change the draw counts too).
+   *
+   * Allocates and renders 3N frames: never the RAF path. For the browser gate.
+   */
+  horizonProbe(yaws, pitchRad, minDelta, heightM) {
+    if (!this._farHole) return null;
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const casting = new Uint8Array(w * h * 4);
+    const suppressed = new Uint8Array(w * h * 4);
+    // The zero point, measured on every yaw: two renders of the SAME state,
+    // both with their levels re-drawn, must differ nowhere. Anything else and
+    // the counts below are partly the rasterizer talking.
+    const control = new Uint8Array(w * h * 4);
+    const cam = this.camera;
+    const keepQ = cam.quaternion.clone();
+    const keepPos = cam.position.clone();
+    const hole = this._farHole.value;
+    const keepHole = hole.clone();
+    cam.position.y += heightM;
+    this.sky.position.copy(cam.position);
+    const samples = [];
+    let darkened = 0;
+    for (let i = 0; i < yaws.length; i++) {
+      const cp = Math.cos(pitchRad);
+      this._dir.set(
+        Math.sin(yaws[i]) * cp,
+        Math.sin(pitchRad),
+        Math.cos(yaws[i]) * cp,
+      );
+      this._target.copy(cam.position).add(this._dir);
+      cam.lookAt(this._target);
+
+      this._redrawShadows();
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, casting);
+      this._redrawShadows();
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, control);
+      // The hole eats the world: every far-mesh fragment is discarded and the
+      // horizon casts nothing at all.
+      hole.set(keepHole.x, keepHole.y, 1e7, 1e7);
+      this._redrawShadows();
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, suppressed);
+      hole.copy(keepHole);
+
+      let n = 0;
+      let sum = 0;
+      let max = 0;
+      let lifted = 0;
+      let noise = 0;
+      for (let p = 0; p < casting.length; p += 4) {
+        const a = (suppressed[p] * 2 + suppressed[p + 1] * 5 + suppressed[p + 2]) >> 3;
+        const b = (casting[p] * 2 + casting[p + 1] * 5 + casting[p + 2]) >> 3;
+        const c = (control[p] * 2 + control[p + 1] * 5 + control[p + 2]) >> 3;
+        const cd = b - c;
+        if (cd > minDelta || cd < -minDelta) noise++;
+        const d = a - b;
+        if (d > minDelta) {
+          n++;
+          sum += d;
+          if (d > max) max = d;
+        } else if (d < -minDelta) {
+          // A caster can only remove light. Brighter with it than without it
+          // would mean the hole is inverted — the far mesh casting INSIDE the
+          // ring and nowhere else, which is the acne case wearing a disguise.
+          lifted++;
+        }
+      }
+      samples.push({
+        yaw: yaws[i],
+        darkened: n,
+        lifted,
+        noise,
+        fraction: n / (w * h),
+        liftedFraction: lifted / (w * h),
+        meanDelta: n > 0 ? sum / n : 0,
+        maxDelta: max,
+      });
+      darkened += n;
+    }
+    hole.copy(keepHole);
+    this._redrawShadows();
+    cam.quaternion.copy(keepQ);
+    cam.position.copy(keepPos);
+    this.sky.position.copy(keepPos);
+    this.renderer.render(this.scene, cam);
+    return {
+      width: w,
+      height: h,
+      pixels: w * h * yaws.length,
+      darkened,
+      heightM,
+      // What the hole was while the frames were scored — the gate checks this
+      // is the live ring footprint and not a probe leftover.
+      holeHalf: [keepHole.z, keepHole.w],
+      samples,
+    };
+  }
+
+  /**
    * Dev-only: does the procedural surface actually reach the frame?
    *
    * Same shape as shadowProbe and for the same reason. Every structural

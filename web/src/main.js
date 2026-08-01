@@ -127,6 +127,9 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // The ground's material lives with the terrain that feeds it; the scene
   // borrows its uniforms so the surface probe has one handle (materials v0).
   scene.attachTerrainMaterial(terrain.material);
+  // …and the far mesh's depth uniforms, so the horizon probe has one handle
+  // on the horizon's caster (the horizon casts).
+  scene.attachFarCaster(terrain.farDepth.userData.uniforms);
   const input = new InputTracker(canvas);
   const hud = new Hud();
   hud.show();
@@ -818,6 +821,13 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     ? (yaws, pitch, minDelta, nearM, fov, heightM) =>
         scene.farShadowProbe(yaws, pitch, minDelta, nearM, fov, heightM)
     : null;
+  // And this slice's: the same difference shape again, but what it removes is
+  // the far mesh's whole contribution as a CASTER — so what it counts is
+  // shadow that only exists because the horizon casts.
+  const devHorizonProbe = dev
+    ? (yaws, pitch, minDelta, heightM) =>
+        scene.horizonProbe(yaws, pitch, minDelta, heightM)
+    : null;
 
   function frame(now) {
     if (closed) return;
@@ -934,12 +944,16 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       // patched splat material, the authored per-surface responses, and how
       // the scatter pools are tinted.
       materials: { ...scene.materials(), scatter: terrain.scatterFacts() },
+      // The horizon's caster: whether the far mesh casts, which side the
+      // ground casts from, and the hole the near ring punches in it.
+      farCaster: terrain.farCasterFacts(),
     };
     if (devSetView) debug.setView = devSetView;
     if (devShadowProbe) debug.shadowProbe = devShadowProbe;
     if (devSurfaceProbe) debug.surfaceProbe = devSurfaceProbe;
     if (devSplatCensus) debug.splatCensus = devSplatCensus;
     if (devFarShadowProbe) debug.farShadowProbe = devFarShadowProbe;
+    if (devHorizonProbe) debug.horizonProbe = devHorizonProbe;
     globalThis.__gatesDebug = debug;
   }, 250);
 }
