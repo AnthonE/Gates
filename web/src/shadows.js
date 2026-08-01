@@ -12,19 +12,21 @@
 // texel width, and a containment cross-fade so a level boundary is a ramp
 // rather than an edge.
 //
-// ## Why two levels and not six
+// ## Why three levels
 //
-// The reference builds levels out to 2000 m. Here the caster set stops long
-// before that, by an earlier decision: the far mesh (the 8 m LOD of the whole
-// island) does NOT cast — it is the same ground the 1 m near ring already
-// casts from, and putting two disagreeing silhouettes of one hillside in one
-// map buys self-shadow acne along the whole boundary (terrain.js). So the
-// only casters that exist are the 5×5×64 m near ring, its scatter, placed
-// pieces, deployables and players — all inside ±192 m of the player on each
-// world axis. A third level would render that identical set at a third of the
-// resolution and darken not one new pixel. The level table is generated from
-// (firstHalfWidth, scaleFactor, maxHalfWidth), so the day the horizon starts
-// casting, the levels arrive from a constant.
+// The clipmap shipped with two, and said why: nothing past ±192 m cast, so a
+// third level would have redrawn an identical caster set at a third of the
+// resolution and darkened not one new pixel. That bound was the far mesh being
+// kept out of the map — and the level table was generated from
+// (firstHalfWidth, scaleFactor, maxHalfWidth) precisely so that the day the
+// horizon started casting, the levels would arrive from a constant.
+//
+// It does now (see `makeFarCasterDepthMaterial` below and terrain.js), so the
+// constant moved: 240 m → 720 m, and the generator hands back 80 / 240 / 720.
+// It stops at 720 because that is where the frame stops: fog is opaque by
+// 1000 m (scene.js FOG_FAR), and 720 m of light-space half-width already
+// reaches ~2000 m of ground along the sun's own bearing. A fourth level would
+// be depth nobody can see through the fog.
 //
 // ## How it reaches the image, in WebGL
 //
@@ -37,9 +39,12 @@
 //     key intensity; levels 1.. carry ZERO, so they light nothing and exist
 //     only for their depth texture.
 //   * A patch on every receiving material that replaces the stock per-light
-//     `getShadow(...)` call with `gatesClipmapShadow()` — one factor computed
-//     from ALL levels, applied to every directional light. The zero-intensity
-//     levels multiply nothing; the key light gets the clipmap.
+//     `getShadow(...)` with one `gatesClipmapShadow()` — a single factor read
+//     from ALL levels, hoisted out of three's unrolled directional loop and
+//     multiplied in. The same patch selects that loop down to its first
+//     iteration, because levels 1.. carry no energy and evaluating a
+//     reflectance model for them costs a full GGX lobe to add zero
+//     (`patchedLightsChunk`).
 //   * `shadow.autoUpdate = false` on every level. three then skips both the
 //     map render AND `shadow.updateMatrices()` for a level it does not
 //     refresh — which is exactly the reference's "publish the centre from the
@@ -55,11 +60,12 @@
 // Three deliberate deviations from the reference, all stated rather than
 // silent:
 //
-//   1. Depth range. The reference's `far = margin + 2·half` leaves only
-//      `half` of coverage BELOW the level centre; at level 0 that is 80 m,
-//      under the island's ~90 m relief (TERRAIN.md §6), so a valley floor
-//      would fall past the far plane and go unshadowed. Lighting v0 carried
-//      260 m below and this keeps it, as an explicit term.
+//   1. Depth range, derived rather than flat. The reference's
+//      `far = margin + 2·half` leaves `half` of coverage below the centre,
+//      which is neither enough at level 0 (80 m, under the island's ~90 m
+//      relief — TERRAIN.md §6) nor anywhere near enough at level 2, where the
+//      box's own ground spans `half·cot(21°)` = 1913 m of light-space depth.
+//      Both terms are written out at `_depthPerHalf`, where the geometry is.
 //   2. No light-direction epsilon. The sun does not move in v0 (lighting v0
 //      is a fixed azimuth/elevation), so the refresh-on-direction-change path
 //      would be code no frame can reach. Day/night is M2's; the rule it must
@@ -77,32 +83,47 @@
 import * as THREE from "three";
 
 // --- the knobs (DECISIONS.md §open, "shadow clipmap v0") --------------------
-// FIRST_HALF_M is lighting v0's SHADOW_RADIUS_M, unchanged: level 0 IS the
-// map that shipped, so nothing about the near frame moves in this slice.
+// FIRST_HALF_M is lighting v0's SHADOW_RADIUS_M, unchanged: level 0 still
+// covers exactly the box that shipped. What it holds changed — the ground
+// casts now, so the map it fills is no longer nearly empty (see MAP_PX).
 const FIRST_HALF_M = 80;
 const SCALE_FACTOR = 3;
-// Holds the near ring's casters, which reach ±192 m on each world axis. Its
-// diagonal corners reach ~271 m in light-space X and fall outside this box;
-// there the cross-fade below retires the shadow smoothly instead of cutting
-// it, which is the behaviour the guard band exists to give.
-const MAX_HALF_M = 240;
-// Per level, finest first; short entries repeat the last. Level 0 keeps
-// lighting v0's 2048 px exactly. The coarse levels are HALF that, and it is
-// not a cosmetic saving: a level's map is re-rendered whenever the player
-// crosses one of its texels, so halving the resolution both quarters the
-// fragments rasterized and halves how often that happens. At full 2048 the
-// coarse level cost enough per frame to starve a third browser tab of CPU on
-// the gate box (shared, software GL — not a reference-hardware claim, and no
-// number here rides on it). 0.469 m texels still put six across a pine's
-// shadow at 150 m, which is what that level is for.
-const MAP_PX = [2048, 1024];
-// How far past the level box, along the sun ray, the light sits — the depth
-// the map has for casters ABOVE the receivers.
+// The horizon casts now, so this is no longer sized to the near ring — it is
+// sized to the frame. Fog closes at 1000 m and 720 m of light-space half-width
+// already covers ~2000 m of ground along the sun's bearing (720/sin 21°); the
+// island itself is 2048 m across. Ground past this box fades out through the
+// cross-fade rather than cutting, which is what the guard band is for.
+const MAX_HALF_M = 720;
+// Per level, finest first; short entries repeat the last. One size now, where
+// lighting v0 gave level 0 twice the rest.
+//
+// 2048 was sized against a caster set that did not include the ground: with
+// the terrain culled out of the depth pass, level 0's map was nearly empty and
+// its resolution was free. Now that the ground casts, level 0 is a map that
+// gets FILLED, every frame, by the only level that redraws every frame — and
+// 2048² is 4.2 M depth fragments a frame where 1024² is 1.05 M. That is not a
+// main-thread number the loop rules would tell you to ignore: on a software
+// rasterizer the fill lands on other threads, and at 2048 it starved a third
+// browser tab of enough CPU to keep it from completing a WebTransport
+// handshake in 60 s (gate box, shared, software GL — the ratio is the claim,
+// not the milliseconds).
+//
+// And the resolution was never buying anything at that size. A level's map
+// cannot resolve detail its CASTERS do not have, and the finest caster in this
+// world is a 1 m terrain grid and a 0.32 m pine trunk. At 1024 px level 0's
+// texel is 0.156 m: six across the trunk and six per metre of ground, still
+// far finer than the geometry it is sampling. The coarse levels are unchanged
+// at 1024 (0.469 m and 1.406 m).
+const MAP_PX = [1024];
+// Slack past the ground the level's own box reaches, along the sun ray, at
+// both ends: headroom for anything standing on that ground (a pine, a tower)
+// and for the height the island's relief adds.
 const LIGHT_MARGIN_M = 100;
-// …and how much depth it keeps BELOW the level centre (deviation 1 above).
-const DEPTH_BELOW_M = 260;
+// The island's vertical relief, which is the other thing the depth has to
+// carry (TERRAIN.md §6).
+const RELIEF_M = 90;
 const NEAR_M = 1;
-const FAR_CAP_M = 3000;
+const FAR_CAP_M = 8000;
 // Sampled half-width is `halfWidth * (1 - GUARD_BAND)`: the outermost texels
 // are rendered but never sampled, so a PCF tap near the edge cannot reach
 // outside the map. BLEND_RATIO is the fraction of the sampled half-width the
@@ -120,6 +141,9 @@ const MAX_CACHE_AGE = 64;
 // scaled per level, which is the reference's whole point: one metre value
 // across a 0.078 m texel and a 0.469 m texel is not a coherent bias.
 const NORMAL_BIAS_TEXELS = 1.2;
+// How far the far mesh's DEPTH is sunk below its own surface when it casts
+// (argued at makeFarCasterDepthMaterial). Metres.
+const FAR_CASTER_SINK_M = 3;
 
 /** Half-widths, finest first; the last is exactly MAX_HALF_M. */
 function levelHalfWidths() {
@@ -244,17 +268,87 @@ const STOCK_DIRECTIONAL_GET_SHADOW =
   "directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, " +
   "directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] )";
 
-function patchedLightsChunk() {
-  const stock = THREE.ShaderChunk.lights_fragment_begin;
-  const hits = stock.split(STOCK_DIRECTIONAL_GET_SHADOW).length - 1;
+// The directional section of that chunk, and the two edges of its unrolled
+// loop. three replaces `UNROLLED_LOOP_INDEX` with the literal index when it
+// unrolls, so a preprocessor test on it selects one iteration at compile time.
+const DIR_SECTION_HEAD = "#if ( NUM_DIR_LIGHTS > 0 ) && defined( RE_Direct )";
+const DIR_LOOP_HEAD = "for ( int i = 0; i < NUM_DIR_LIGHTS; i ++ ) {";
+const DIR_LOOP_TAIL = "\n\t}\n\t#pragma unroll_loop_end";
+
+/**
+ * Replace `find` inside `src` exactly once, or throw naming `what`.
+ *
+ * Every shader patch in this file goes through here. A three upgrade that
+ * renames a chunk must fail at boot, loudly, rather than quietly shipping a
+ * scene lit once per level or a far mesh that casts through the near ring.
+ */
+function once(src, find, replacement, what) {
+  const hits = src.split(find).length - 1;
   if (hits !== 1) {
     throw new Error(
-      `shadow clipmap: three ${THREE.REVISION}'s lights_fragment_begin has ` +
-        `${hits} directional getShadow calls, expected 1 — the clipmap patch ` +
-        `no longer applies and every light would sample its own level`,
+      `shadow patch (${what}): three ${THREE.REVISION}'s shader source has ` +
+        `${hits} of it, expected 1 — the patch no longer applies`,
     );
   }
-  return stock.split(STOCK_DIRECTIONAL_GET_SHADOW).join("gatesClipmapShadow()");
+  return src.split(find).join(replacement);
+}
+
+/**
+ * three's per-light shadow term, replaced by the clipmap — and the rest of the
+ * directional loop, collapsed onto the one light that carries the key.
+ *
+ * Two separate wins, both of which the level count multiplies, which is why
+ * they are here rather than in a later pass:
+ *
+ *   1. `gatesClipmapShadow()` is evaluated once per FRAGMENT, not once per
+ *      light. The stock call site is inside the directional loop and the loop
+ *      is unrolled, so substituting the clipmap in place made every fragment
+ *      read every level once per LEVEL — N² depth samples where N are needed.
+ *      At two levels that was 74 fetches a fragment where 37 would do; the
+ *      third would have made it 114.
+ *   2. Levels 1.. are depth textures, not lights: they carry zero intensity
+ *      by construction, so `directLight.color` is zero and `RE_Direct` adds
+ *      exactly nothing — after running the whole GGX lobe, Fresnel and
+ *      geometry term for every one of them, on every fragment. Selecting
+ *      iteration 0 at compile time makes the reflectance model cost one light
+ *      no matter how many levels the table generates.
+ *
+ * That second one changes what the gate's "only level 0 may carry intensity"
+ * assertion is worth: the shader no longer DEPENDS on it. It stays, because a
+ * level that was given intensity would now be silently ignored, and a light
+ * configured to do something it cannot do is still a bug worth failing on.
+ */
+function patchedLightsChunk() {
+  const stock = THREE.ShaderChunk.lights_fragment_begin;
+  const head = stock.indexOf(DIR_SECTION_HEAD);
+  const tail = stock.indexOf(DIR_LOOP_TAIL, head);
+  if (head < 0 || tail < 0) {
+    throw new Error(
+      `shadow clipmap: three ${THREE.REVISION}'s lights_fragment_begin has no ` +
+        `unrolled directional-light loop — the clipmap patch no longer applies`,
+    );
+  }
+  const end = tail + DIR_LOOP_TAIL.length;
+  let section = stock.slice(head, end);
+  section = once(section, STOCK_DIRECTIONAL_GET_SHADOW, "gcClipFactor", "getShadow(…)");
+  section = once(
+    section,
+    DIR_LOOP_HEAD,
+    `${DIR_LOOP_HEAD}\n\t\t#if UNROLLED_LOOP_INDEX == 0`,
+    DIR_LOOP_HEAD,
+  );
+  section = once(
+    section,
+    DIR_LOOP_TAIL,
+    `\n\t\t#endif${DIR_LOOP_TAIL}`,
+    "unroll_loop_end",
+  );
+  return (
+    /* glsl */ `float gcClipFactor = gatesClipmapShadow();\n` +
+    stock.slice(0, head) +
+    section +
+    stock.slice(end)
+  );
 }
 
 let cachedChunk = null;
@@ -288,6 +382,171 @@ export function installClipmapShadows(material) {
   return material;
 }
 
+// --- the far caster, and the seam it shares with the near ring --------------
+// The far mesh is the 8 m LOD of the WHOLE island, and until this slice it did
+// not cast. The reason given was sound about the part it was about: the near
+// ring is the same ground at 1 m, and two disagreeing LODs of one hillside in
+// one shadow map is self-shadow acne along the entire boundary. But that
+// argument covers the OVERLAP and nothing else — outside the near ring there
+// is no second LOD to disagree with, and outside the near ring is where the
+// horizon lives. So a mountain at 400 m was lit flat, which is the whole of
+// `NOW.md` item 1.
+//
+// The far mesh casts here, through a depth material that removes exactly the
+// overlap and nothing more: a fragment whose world XZ lands inside the near
+// ring's CURRENT footprint is discarded, so every XZ column of the world has
+// exactly one caster — the 1 m mesh inside the ring, the 8 m mesh outside it.
+// terrain.js owns the footprint (it owns the ring) and writes it here; a zero
+// half-extent means "no hole", which is what boot looks like before a single
+// near chunk has streamed and the far mesh is the only ground there is.
+//
+// ## The skirt
+//
+// A hole leaves a seam, and the seam is the one place the two LODs still meet.
+// The 8 m surface stands above its own 1 m self by up to a couple of metres on
+// rough ground, and at a 21° sun one metre of disagreement is 2.6 m of shadow
+// — so an 8 m hillside just outside the hole would paint a dark band along the
+// hole's edge, and that band would slide with the player. `TERRAIN.md` §4 has
+// always wanted a skirt at this seam; this is it, in the only place a shadow
+// can see one: the caster is sunk FAR_CASTER_SINK_M below its own surface.
+//
+// A sunk caster can cast LATE — its shadow starts sink/tan(21°) ≈ 8 m further
+// along the sun ray — but it cannot invent a shadow that is not there. At the
+// ranges this mesh is the caster for (≥ 128 m, and mostly 300 m+) 8 m is under
+// a degree, and it is the error that hides rather than the one that crawls.
+// The sink is constant rather than ramped at the seam on purpose: a ramp is
+// another edge, and this one has nothing to buy — the far caster is never the
+// close caster.
+//
+// ## Which level gets which caster
+//
+// A shadow travels along the light ray, so a caster and everything it darkens
+// share the same light-space X and Y. A receiver reads the finest level that
+// contains it. Put those together and a caster is only worth submitting to
+// level i if some pixel that READS level i shares its light-space column —
+// which makes the caster set per level, not global. Three levels, two LODs of
+// one island and a scatter pool that only exists near the player is exactly
+// the case where that matters, and it is measured: submitting everything to
+// everything cost 1.48 M triangles a frame against DESIGN §9's 1.5 M budget,
+// with the whole increase in work nothing could see.
+//
+//   * The near ring and its scatter stop at level 1. They span ±192 m, so
+//     every pixel they can darken is inside level 1's box; level 2 is read
+//     only by pixels past 204 m of light-space X, where the ring cannot
+//     reach. (Its diagonal corners do poke to ~226 m — a sliver where a level
+//     2 receiver loses the ring's trees. The far mesh covers that ground.)
+//   * The far mesh starts at level 1. Level 0's box is ±80 m, entirely inside
+//     the hole, so the far mesh would have filled a 2048² map only to discard
+//     nearly all of it. What that costs is a whole map's fill per frame; what
+//     it buys is the band from the hole edge out to 227 m along the sun's
+//     bearing (level 0's frustum is deep, and light-space Y moves 0.35 m per
+//     metre of ground at this sun) darkening pixels within 68 m of the player.
+//     The near ring already casts over most of that band, and every pixel
+//     past 68 m reads level 1, which has the far mesh. So it is dropped, and
+//     that is the one thing here that trades an image for a budget.
+//
+// The hole stays on in EVERY level, including the one the near ring does not
+// cast into. It leaves level 2 without a caster over the ring's footprint,
+// which is correct rather than merely cheap: a level-2 receiver is more than
+// 204 m out in light-space X and the footprint reaches 226 m, so all that goes
+// missing is a sliver at the box's diagonal corners.
+
+/**
+ * The depth material the far mesh casts through. Returns a MeshDepthMaterial
+ * carrying `userData.uniforms`; terrain.js writes `uNearHole` and nothing else
+ * touches it.
+ *
+ * `getDepthMaterial` in three copies `side` onto whatever it hands back, from
+ * the source material's `shadowSide` — which materials.js sets to FrontSide
+ * for the ground, because a heightfield has no back faces to render and three's
+ * default (cast from the BACK face, the closed-mesh answer to acne) culls it
+ * out of the map entirely.
+ */
+export function makeFarCasterDepthMaterial() {
+  const uniforms = {
+    // xy = the near ring footprint's world centre, zw = its half extent in
+    // world X and Z. zw == 0 is "no hole".
+    uNearHole: { value: new THREE.Vector4(0, 0, 0, 0) },
+    uCasterSink: { value: FAR_CASTER_SINK_M },
+  };
+  const material = new THREE.MeshDepthMaterial({
+    depthPacking: THREE.RGBADepthPacking,
+  });
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = once(
+      shader.vertexShader,
+      "#include <common>",
+      /* glsl */ `#include <common>
+uniform float uCasterSink;
+varying vec3 vGatesFarPos;`,
+      "far caster (vertex pars)",
+    );
+    shader.vertexShader = once(
+      shader.vertexShader,
+      "#include <begin_vertex>",
+      /* glsl */ `#include <begin_vertex>
+  // World XZ is read BEFORE the sink so the hole is a footprint and not a
+  // function of how far the caster was pushed down.
+  vGatesFarPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+  transformed.y -= uCasterSink;`,
+      "far caster (sink)",
+    );
+    shader.fragmentShader = once(
+      shader.fragmentShader,
+      "#include <common>",
+      /* glsl */ `#include <common>
+uniform vec4 uNearHole;
+varying vec3 vGatesFarPos;`,
+      "far caster (fragment pars)",
+    );
+    shader.fragmentShader = once(
+      shader.fragmentShader,
+      "#include <clipping_planes_fragment>",
+      /* glsl */ `#include <clipping_planes_fragment>
+  // The near ring owns this column of the world. Discarding rather than
+  // clipping the geometry keeps the hole a uniform: it moves with the player
+  // every time the ring re-centres, and no buffer is rebuilt for it.
+  if ( all( lessThan( abs( vGatesFarPos.xz - uNearHole.xy ), uNearHole.zw ) ) ) discard;`,
+      "far caster (hole)",
+    );
+  };
+  material.userData.uniforms = uniforms;
+  return material;
+}
+
+// The caster/level policy argued above, as two numbers.
+export const NEAR_CASTER_MAX_LEVEL = 1;
+export const FAR_CASTER_MIN_LEVEL = 1;
+
+/**
+ * Submit `object` to the shadow pass only for clipmap levels in
+ * [minLevel, maxLevel]; outside that range its draw is emptied.
+ *
+ * three has no per-light caster filter — `castShadow` is one flag for every
+ * shadow map in the scene — so this rides `onBeforeShadow`/`onAfterShadow`,
+ * which three calls around each object's depth draw and hands the shadow
+ * camera. Collapsing the geometry's draw range to nothing leaves the call in
+ * the list (a bound program and zero triangles) and takes every vertex and
+ * fragment out of it, which is the half that costs. The range is restored on
+ * the way out, so the main pass — which draws after the whole shadow pass —
+ * always sees the full mesh.
+ *
+ * Both callbacks are per-object and allocation-free; a shadow camera that
+ * carries no level tag (anything not ours) always draws.
+ */
+export function castInLevels(object, minLevel, maxLevel) {
+  const geo = object.geometry;
+  object.onBeforeShadow = (renderer, obj, camera, shadowCamera) => {
+    const i = shadowCamera.userData.gatesClipLevel;
+    if (i !== undefined && (i < minLevel || i > maxLevel)) geo.setDrawRange(0, 0);
+  };
+  object.onAfterShadow = () => {
+    geo.setDrawRange(0, Infinity);
+  };
+  return object;
+}
+
 /**
  * The concentric levels themselves: the lights, their committed centres, and
  * the update policy that decides which of them redraws this frame.
@@ -309,6 +568,26 @@ export class ShadowClipmap {
       new THREE.Vector3(0, 1, 0),
     );
     this._worldToLight = this._lightToWorld.clone().transpose();
+    // How much light-space DEPTH a level's own box costs, per metre of
+    // half-width. A level bounds light-space X and Y; the ground inside those
+    // bounds is a slab, and how long that slab is along the light ray is set
+    // by how low the sun is. Level-space y and world ground trade at sin(el)
+    // (720 m of Y is 2 km of ground at a 21° sun), and that ground carries
+    // cos(el) of depth with it — so the box's own half-depth is
+    // half·cos/sin = half·cot(el), and at this sun that is 2.66 m of depth per
+    // metre of half-width.
+    //
+    // Lighting v0 carried a flat 260 m below the centre, which was right for
+    // the 80 m map it shipped and quietly wrong for anything larger: level 2's
+    // 720 m box needs 1913 m and had 260, so its ortho frustum could not
+    // contain the ground it was drawn for and the far half of every level
+    // clipped out along the sun's bearing. The far mesh casting made that
+    // visible for the first time — nothing used to live out there.
+    //
+    // Relief is the second term and it is not scaled: the island is ~90 m tall
+    // (TERRAIN.md §6) and height buys depth at 1/sin(el).
+    this._depthPerHalf = Math.sqrt(1 - toSun.y * toSun.y) / toSun.y; // cot(el)
+    this._depthRelief = RELIEF_M / toSun.y;
     this._probe = new THREE.Vector3();
     this._place = new THREE.Vector3();
     this._first = true;
@@ -323,11 +602,11 @@ export class ShadowClipmap {
       sh.camera.right = halfWidth;
       sh.camera.top = halfWidth;
       sh.camera.bottom = -halfWidth;
+      // Half the depth this level's own box costs, plus relief and slack.
+      const zReach =
+        halfWidth * this._depthPerHalf + this._depthRelief + LIGHT_MARGIN_M;
       sh.camera.near = NEAR_M;
-      sh.camera.far = Math.max(
-        NEAR_M + 1,
-        Math.min(FAR_CAP_M, halfWidth + LIGHT_MARGIN_M + DEPTH_BELOW_M),
-      );
+      sh.camera.far = Math.max(NEAR_M + 1, Math.min(FAR_CAP_M, 2 * zReach));
       sh.bias = 0;
       const texelM = (halfWidth * 2) / px;
       sh.normalBias = NORMAL_BIAS_TEXELS * texelM;
@@ -336,6 +615,10 @@ export class ShadowClipmap {
       // the same test, which is what freezes the committed centre).
       sh.autoUpdate = false;
       sh.needsUpdate = false;
+      // three hands the shadow camera to onBeforeShadow and nothing else that
+      // identifies the level; tagging it here is what makes castInLevels()
+      // above a lookup rather than a search.
+      sh.camera.userData.gatesClipLevel = i;
       sh.camera.updateProjectionMatrix();
       scene.add(light);
       scene.add(light.target); // or its matrixWorld never updates
@@ -343,6 +626,9 @@ export class ShadowClipmap {
         light,
         halfWidth,
         texelM,
+        // Where the light sits along the sun ray, relative to the committed
+        // centre: half the frustum's depth, so the box is centred in it.
+        zReach,
         // Committed light-space centre. Parked far away and marked invalid
         // until the level's first render, so containment can never select a
         // level whose map holds nothing.
@@ -417,7 +703,7 @@ export class ShadowClipmap {
       L.age = 0;
       L.renders++;
       this._place
-        .set(dx, dy, dz + L.halfWidth + LIGHT_MARGIN_M)
+        .set(dx, dy, dz + L.zReach)
         .applyMatrix4(this._lightToWorld);
       L.light.position.copy(this._place);
       this._place.set(dx, dy, dz).applyMatrix4(this._lightToWorld);

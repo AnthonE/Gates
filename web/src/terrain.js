@@ -6,6 +6,12 @@
 // crack; the far mesh sits 0.15 m under the near ring to cover the
 // near↔far boundary until the LOD-skirt pass.
 //
+// Shadows: BOTH meshes cast. The far mesh casts through the depth material
+// in shadows.js, which discards the near ring's own footprint, so each XZ
+// column of the world has exactly one caster and the two LODs never put
+// disagreeing silhouettes of one hillside into the same map. This file owns
+// the footprint, because it owns the ring.
+//
 // Scatter: per-archetype InstancedMesh pools filled from the shared slot
 // list (sim-core scatter via the wasm bridge) — a forest is instances,
 // not draw calls (DESIGN.md §9).
@@ -19,6 +25,12 @@
 
 import * as THREE from "three";
 import { makeTerrainMaterial, surfaceMaterial } from "./materials.js";
+import {
+  castInLevels,
+  makeFarCasterDepthMaterial,
+  FAR_CASTER_MIN_LEVEL,
+  NEAR_CASTER_MAX_LEVEL,
+} from "./shadows.js";
 
 const CHUNK = 64;
 const NEAR_N = 65; // 64 m at 1 m + shared edge
@@ -139,6 +151,13 @@ export class Terrain {
     this.inFlight = false;
     this.teardown = [];
     this.farBuilt = false;
+    this.farMesh = null;
+    // The horizon's depth pass. `uNearHole` is the near ring's footprint,
+    // republished by _updateHole() whenever the ring gains or loses a chunk;
+    // the Vector4 is held directly so the update writes four numbers and
+    // allocates nothing.
+    this.farDepth = makeFarCasterDepthMaterial();
+    this.farHole = this.farDepth.userData.uniforms.uNearHole.value;
     // The desired-set scan runs only on chunk-boundary crossings, so the
     // steady-state RAF path builds no key strings (DESIGN.md L8).
     this.lastCcx = -1000;
@@ -171,6 +190,9 @@ export class Terrain {
       // flat; one InstancedMesh casts for every instance in it.
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      // A pine only exists inside the near ring, so every pixel it can darken
+      // is inside level 1's box (shadows.js, "which level gets which caster").
+      castInLevels(mesh, 0, NEAR_CASTER_MAX_LEVEL);
       scene.add(mesh);
       this.pools.push(mesh);
       this.owners.push([]);
@@ -220,28 +242,34 @@ export class Terrain {
     geo.setAttribute("splat", new THREE.BufferAttribute(msg.splat, 4, true));
     geo.setIndex(new THREE.BufferAttribute(msg.indices, 1));
     const mesh = new THREE.Mesh(geo, this.material);
-    // Shadows: the near ring both casts and receives. The far mesh only
-    // receives — it is the 8 m LOD of the SAME ground the near ring already
-    // casts from, so letting it cast would put two disagreeing silhouettes
-    // in one map (self-shadow acne along the whole near↔far boundary) and
-    // spend 131 k triangles a frame doing it.
+    // Shadows: both LODs cast and both receive. The far mesh pays for it with
+    // a custom depth material that discards the near ring's footprint, so the
+    // 131 k triangles it costs a shadow level buy the horizon rather than a
+    // second, disagreeing copy of ground the near ring already casts.
     mesh.receiveShadow = true;
-    mesh.castShadow = msg.key !== "far";
+    mesh.castShadow = true;
     if (msg.key === "far") {
       mesh.position.set(0, -0.15, 0);
+      mesh.customDepthMaterial = this.farDepth;
+      castInLevels(mesh, FAR_CASTER_MIN_LEVEL, Infinity);
       this.farBuilt = true;
+      this.farMesh = mesh;
       this.scene.add(mesh);
+      // The horizon just appeared in the coarse levels' caster set.
+      this._invalidateShadows(mesh);
     } else {
       const entry = this.chunks.get(msg.key);
       if (!entry || !entry.pending) {
         geo.dispose(); // unloaded while building
       } else {
         mesh.position.set(msg.x0, 0, msg.z0);
+        castInLevels(mesh, 0, NEAR_CASTER_MAX_LEVEL);
         this.scene.add(mesh);
         entry.pending = false;
         entry.mesh = mesh;
         this._addScatter(msg.key, msg.x0, msg.z0);
         this._invalidateShadows(mesh);
+        this._updateHole();
       }
     }
     this._kick();
@@ -264,6 +292,95 @@ export class Terrain {
       mesh.position.z + s.center.z,
       s.radius,
     );
+  }
+
+  /**
+   * Republish the near ring's footprint to the far caster, and tell the
+   * clipmap that the horizon's silhouette moved.
+   *
+   * The hole is the box of the near chunks that are actually LOADED, not the
+   * ones that have been asked for. Two reasons, and they pull opposite ways,
+   * which is why it is the loaded set and not either bound:
+   *
+   *   * A chunk still in the build queue casts nothing. Punching its column
+   *     out of the far mesh the moment it is queued would leave that ground
+   *     unshadowed for as long as the queue takes — the one gap direction
+   *     that shows.
+   *   * Stream-out runs on a radius+1 hysteresis, so chunks live one ring
+   *     past the desired set and every one of them casts. If the hole were
+   *     the desired 5x5, that outer ring would be a double caster against the
+   *     far mesh — the exact acne this whole arrangement exists to avoid.
+   *
+   * The loaded box satisfies both by construction: every caster the ring has
+   * is inside it, and nothing inside it is missing a caster except the few
+   * frames a corner chunk is in flight.
+   *
+   * Called on chunk arrival and teardown only, never the steady-state RAF
+   * path: the box cannot move while the ring does not change. Writes four
+   * numbers into a held Vector4 and allocates nothing (L8).
+   */
+  _updateHole() {
+    let minCx = Infinity;
+    let minCz = Infinity;
+    let maxCx = -Infinity;
+    let maxCz = -Infinity;
+    for (const entry of this.chunks.values()) {
+      if (!entry.mesh) continue;
+      if (entry.cx < minCx) minCx = entry.cx;
+      if (entry.cz < minCz) minCz = entry.cz;
+      if (entry.cx > maxCx) maxCx = entry.cx;
+      if (entry.cz > maxCz) maxCz = entry.cz;
+    }
+    let cx = 0;
+    let cz = 0;
+    let hx = 0;
+    let hz = 0;
+    if (minCx <= maxCx) {
+      hx = ((maxCx - minCx + 1) * CHUNK) / 2;
+      hz = ((maxCz - minCz + 1) * CHUNK) / 2;
+      cx = minCx * CHUNK + hx;
+      cz = minCz * CHUNK + hz;
+    }
+    const h = this.farHole;
+    if (h.x === cx && h.y === cz && h.z === hx && h.w === hz) return;
+    h.set(cx, cz, hx, hz);
+    // A cached coarse level is holding the far mesh drawn against the OLD
+    // hole, which is now wrong over the whole box. The per-chunk
+    // invalidation above covers the chunk that arrived; this covers the
+    // shape the arrival changed, which is a different thing.
+    if (this.clipmap && hx > 0) {
+      this.clipmap.invalidate(cx, 0, cz, Math.sqrt(hx * hx + hz * hz));
+    }
+  }
+
+  /**
+   * The far caster's state, for the browser gate: whether the horizon casts
+   * at all, which side the ground casts from, and the hole + skirt that keep
+   * the two LODs out of each other's map.
+   */
+  farCasterFacts() {
+    const h = this.farHole;
+    let loaded = 0;
+    for (const entry of this.chunks.values()) if (entry.mesh) loaded++;
+    return {
+      built: this.farBuilt,
+      casts: !!(this.farMesh && this.farMesh.castShadow),
+      customDepth: !!(this.farMesh && this.farMesh.customDepthMaterial),
+      // FrontSide (0). three's default for a FrontSide material is to cast
+      // from the BACK face, which culls a heightfield out of the depth pass
+      // entirely — the ground cast nothing at all before this slice.
+      shadowSide: this.material.shadowSide,
+      triangles: this.farMesh ? this.farMesh.geometry.index.count / 3 : 0,
+      sinkM: this.farDepth.userData.uniforms.uCasterSink.value,
+      holeCenter: [h.x, h.y],
+      holeHalf: [h.z, h.w],
+      nearChunks: loaded,
+      chunkM: CHUNK,
+      // The per-level caster policy, so the gate can assert the two LODs are
+      // split across the levels rather than both submitted to all of them.
+      farMinLevel: FAR_CASTER_MIN_LEVEL,
+      nearMaxLevel: NEAR_CASTER_MAX_LEVEL,
+    };
   }
 
   _addScatter(key, x0, z0) {
@@ -415,6 +532,7 @@ export class Terrain {
         entry.mesh.geometry.dispose();
         this._removeScatter(key);
         this.chunks.delete(key);
+        this._updateHole();
       }
     }
     this._kick();

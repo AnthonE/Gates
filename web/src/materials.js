@@ -281,6 +281,19 @@ export function makeTerrainMaterial() {
   // clipmap patch like everything else (shadow clipmap v0). Installed after
   // the splat patch above; it composes with it rather than replacing it.
   installClipmapShadows(material);
+  // …and it is the biggest CASTER, which it was not until this line existed.
+  //
+  // three derives the shadow pass's material from this one and, for a
+  // FrontSide material, flips the side: `shadowSide[FrontSide] = BackSide`.
+  // That default is the closed-mesh answer to acne — render the far side of a
+  // solid so the near side never self-shadows — and it is exactly wrong for a
+  // heightfield, which has one side. Every terrain triangle faces the sky,
+  // the sun is in the sky, so every one of them was culled out of the depth
+  // pass: hills cast NOTHING, near or far, and the only shadows in the frame
+  // came from the closed geometry (scatter, pieces, players). Naming the side
+  // explicitly is the fix; the acne the default was avoiding is what the
+  // per-level normal bias above is for.
+  material.shadowSide = THREE.FrontSide;
   // One program for every chunk: without this three re-runs onBeforeCompile
   // per material-instance key and can compile the same shader repeatedly.
   material.customProgramCacheKey = () => "gates-terrain-splat-v1-clipmap";

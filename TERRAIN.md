@@ -101,6 +101,17 @@ point: **terrain life is just chunk events over a generated backdrop.**
   is a later nicety). Heights + normals generated in a **worker** from the
   shared wasm, meshes built off the main thread, uploaded once — a chunk
   is static geometry until a terrain event says otherwise.
+- **Shadow casting** (the horizon casts, `DECISIONS.md` §open): both LODs
+  cast, and the ground names its `shadowSide` — three casts a FrontSide
+  material from its BACK face, which is right for a closed solid and
+  culls a heightfield out of the depth pass entirely. The near ring casts
+  its own 1 m surface; the far mesh casts everywhere else, through a
+  depth material that **discards the near ring's current footprint**, so
+  every XZ column of the world has exactly one caster and the two LODs
+  never put disagreeing silhouettes of one hillside in one map. The
+  **skirt this section wants lives there**: the far caster is sunk a
+  fixed 3 m below its own surface, so where the LODs disagree at the seam
+  it casts late rather than painting a band along the hole's edge.
 - **Material**: one splat shader, four sets (beach/meadow/forest
   rock/highland), blended **in-shader from height, slope, and a noise
   channel recomputed in GLSL** — no splatmap textures, no extra bandwidth,
