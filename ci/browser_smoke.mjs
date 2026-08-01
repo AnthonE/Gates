@@ -55,6 +55,11 @@ const WIRE_PORT = Number(process.env.BROWSER_SMOKE_WIRE_PORT || 4433);
 const PUBLIC_WIRE_PORT = Number(process.env.BROWSER_SMOKE_PUBLIC_WIRE_PORT || WIRE_PORT + 1);
 const JOIN_TIMEOUT_MS = Number(process.env.BROWSER_SMOKE_TIMEOUT_MS || 60000);
 const PLAY_MS = Number(process.env.BROWSER_SMOKE_PLAY_MS || 6000);
+// Separation the chat assertion walks the two tabs to before claiming a local
+// line is out of earshot. Comfortably past the 20 m radius (DECISIONS.md
+// §open, "local chat") so interpolation lag on a shared box can't put the
+// listener back inside it.
+const CHAT_APART_M = Number(process.env.BROWSER_SMOKE_CHAT_APART_M || 30);
 // Seed and point are guarded natively: sim-core world::tests asserts this
 // exact spawn is walkable at this exact seed, so worldgen drift fails there
 // first, with a message, instead of here as a mystery.
@@ -238,6 +243,56 @@ const seenA = await waitForRemote(A, B.playerId); // A sees B
 const seenB = await waitForRemote(B, A.playerId); // B sees A
 console.log(`  mutual AOI: A sees ${B.playerId}, B sees ${A.playerId}`);
 
+// --- chat, part 1: heard at the spawn --------------------------------------
+// Assertion 2 — a line typed into the real composer in one browser reaches
+// the other browser's log. Driven entirely through the UI (T, type, Enter)
+// and read back off the DOM: no test-only hook, so what passes here is the
+// path a player uses. Said HERE, before the walk, because the walk carries
+// the two tabs past the 20 m local radius — which part 2 then relies on.
+const chatlog = (tab) =>
+  tab.page.evaluate(() => document.getElementById("chatlog").textContent || "");
+
+const say = async (tab, text) => {
+  await tab.page.keyboard.press("KeyT");
+  await tab.page.keyboard.type(text);
+  await tab.page.keyboard.press("Enter");
+};
+
+// `want` in the log within the window, or null. Polls, because the line
+// crosses a real network and a real tick.
+const waitForLine = async (tab, want, ms = 5000) => {
+  const until = Date.now() + ms;
+  for (;;) {
+    const log = await chatlog(tab);
+    if (log.includes(want)) return log;
+    if (Date.now() > until) return null;
+    await tab.page.waitForTimeout(250);
+  }
+};
+
+const ownXZ = async (tab) => {
+  const own = await tab.page.evaluate(() => globalThis.__gatesDebug.own);
+  return [own[0], own[2]];
+};
+const apartNow = async () => {
+  const [ax, az] = await ownXZ(A);
+  const [bx, bz] = await ownXZ(B);
+  return Math.hypot(bx - ax, bz - az);
+};
+
+const LOCAL_LINE = "stone at the ridge";
+await say(A, LOCAL_LINE);
+const heardLocalB = await waitForLine(B, LOCAL_LINE);
+if (!heardLocalB) {
+  fail(`tab B never heard A's local line from ${(await apartNow()).toFixed(1)} m away`);
+}
+if (!heardLocalB.includes(`#${A.playerId}`)) {
+  fail(`tab B heard the line but not from #${A.playerId}: ${heardLocalB.trim()}`);
+}
+const heardLocalA = await waitForLine(A, LOCAL_LINE);
+if (!heardLocalA) fail(`tab A never got its own echo — the delivery receipt is missing`);
+console.log(`  chat: A's local line reached B, and A's own echo came back`);
+
 // Play: A walks forward, B walks backward — opposite headings off the shared
 // point. The terrain worker only builds once a player moves, so the window
 // where bug 2 fires is AFTER the first snapshot.
@@ -252,7 +307,7 @@ const finalB = await remoteOf(B, A.playerId);
 const dbgA = await A.page.evaluate(() => globalThis.__gatesDebug);
 const dbgB = await B.page.evaluate(() => globalThis.__gatesDebug);
 
-// Assertion 2 — nothing threw on either page. Catches bug 2, which is
+// Assertion 3 — nothing threw on either page. Catches bug 2, which is
 // invisible in a frame.
 for (const tab of [A, B]) {
   if (tab.errors.length) {
@@ -262,14 +317,14 @@ for (const tab of [A, B]) {
     );
   }
 }
-// Assertion 3 — the wire actually moved on both sessions.
+// Assertion 4 — the wire actually moved on both sessions.
 if (!(dbgA.snapshots > 0)) fail(`tab A: no snapshots received`);
 if (!(dbgB.snapshots > 0)) fail(`tab B: no snapshots received`);
-// Assertion 4 — CLAUDE.md's trap: an oversize browser datagram silently sends
+// Assertion 5 — CLAUDE.md's trap: an oversize browser datagram silently sends
 // nothing. Zero is the only acceptable count.
 if (dbgA.oversize !== 0) fail(`tab A: ${dbgA.oversize} oversize datagram(s) — clamp against the live maxDatagramSize`);
 if (dbgB.oversize !== 0) fail(`tab B: ${dbgB.oversize} oversize datagram(s) — clamp against the live maxDatagramSize`);
-// Assertion 5 — the M0 exit condition: each tab watched the OTHER walk. A
+// Assertion 6 — the M0 exit condition: each tab watched the OTHER walk. A
 // frozen remote (dead interp, stalled input pump, throttled RAF) fails here.
 const planar = (a, b) => Math.hypot(b[1] - a[1], b[3] - a[3]);
 const moveA = finalA ? planar(seenA, finalA) : 0; // B's walk, seen from A
@@ -282,8 +337,56 @@ if (moveB < MOVE_MIN_M) fail(`tab B watched player ${A.playerId} move ${moveB.to
 console.log(`  snapshots A ${dbgA.snapshots} B ${dbgB.snapshots} · oversize 0 · page errors 0`);
 console.log(`  mutual movement: A saw B walk ${moveA.toFixed(1)} m, B saw A walk ${moveB.toFixed(1)} m`);
 
+// --- chat, part 2: silent out of earshot ------------------------------------
+// Assertion 7 — the 20 m local radius is a real edge, not a constant nobody
+// applies. The radius itself is pinned to the quantum natively in
+// server/tests/chat_wire.rs; what only a browser can prove is that the keys,
+// the encoder, the stream, the fan-out and the log are one chain that also
+// knows how to stay quiet.
+//
+// Walk them apart first. Bounded rounds, and a loud failure if they never
+// separate — never a skipped assertion.
+let apart = await apartNow();
+for (let round = 0; round < 5 && apart < CHAT_APART_M; round++) {
+  await A.page.keyboard.down("KeyW");
+  await B.page.keyboard.down("KeyS");
+  await A.page.waitForTimeout(3000);
+  await A.page.keyboard.up("KeyW");
+  await B.page.keyboard.up("KeyS");
+  await A.page.waitForTimeout(400);
+  apart = await apartNow();
+}
+if (apart < CHAT_APART_M) {
+  fail(
+    `tabs only walked ${apart.toFixed(1)} m apart in 5 rounds — the local-radius ` +
+      `assertion needs ≥ ${CHAT_APART_M} m of separation to mean anything`,
+  );
+}
+
+const FAR_LOCAL = "cannot hear this";
+const GLOBAL_LINE = "wipe is at six";
+await say(A, FAR_LOCAL);
+await say(A, `/g ${GLOBAL_LINE}`);
+const heardGlobalB = await waitForLine(B, GLOBAL_LINE);
+if (!heardGlobalB) fail(`tab B never heard A's global line at ${apart.toFixed(1)} m`);
+if (heardGlobalB.includes(FAR_LOCAL)) {
+  fail(
+    `tab B heard a LOCAL line from ${apart.toFixed(1)} m away — the 20 m radius ` +
+      `is not being applied`,
+  );
+}
+for (const tab of [A, B]) {
+  if (tab.errors.length) {
+    fail(
+      `${tab.label}: ${tab.errors.length} page error(s) during chat:\n` +
+        tab.errors.slice(0, 8).map((e) => `    ${e}`).join("\n"),
+    );
+  }
+}
+console.log(`  chat: local silent at ${apart.toFixed(1)} m, global heard through`);
+
 // --- the dev view hook ------------------------------------------------------
-// Assertion 6 — on a DEV shard the hook exists and actually aims. Headless
+// Assertion 8 — on a DEV shard the hook exists and actually aims. Headless
 // pointer lock yields no movementX (gates-loop/art/probe-pointerlock.mjs), so
 // this is the only path that can point the camera, and a hook that silently
 // did nothing would leave the capture harness shooting spawn yaw every pass
@@ -325,7 +428,7 @@ if (dx < MOVE_MIN_M || Math.abs(dz) > dx) {
 }
 console.log(`  dev hook: aimed to [${view.map((v) => v.toFixed(2))}], walked +X ${dx.toFixed(1)} m (dz ${dz.toFixed(1)})`);
 
-// Assertion 7 — the gate itself. A shard with no dev override is exactly a
+// Assertion 9 — the gate itself. A shard with no dev override is exactly a
 // public shard's config, and its client must have no dev surface at all.
 const P = await join("public tab", PUBLIC_WIRE_PORT, publicCertHash);
 if (P.dbg.dev !== false) fail(`public tab: shard without dev_spawn welcomed with dev=${P.dbg.dev}`);

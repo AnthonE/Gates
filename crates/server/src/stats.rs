@@ -50,6 +50,24 @@ pub struct ShardStats {
     /// C→S action frames that failed to decode — client-driven bytes on
     /// the reliable lane, so the session drops (framing trust is gone).
     pub actions_bad: AtomicU64,
+    /// C→S chat lines decoded and ringed.
+    pub chat_ok: AtomicU64,
+    /// C→S chat frames refused by the decoder — bad UTF-8, a control
+    /// character, a forged length, a non-canonical line. Counted, never a
+    /// dropped session: chat text is the one payload a *client bug* can
+    /// plausibly malform, and killing the connection over a stray byte
+    /// would be a worse outcome than swallowing it.
+    pub chat_bad: AtomicU64,
+    /// Chat lines the per-connection rate limiter refused (ALPHA.md §1:
+    /// "rate-limited server-side"). The sender is not told; the line is
+    /// simply not said.
+    pub chat_rate_limited: AtomicU64,
+    /// Chat lines dropped by a full inbound ring (limits.rs policy).
+    pub chat_ring_drops: AtomicU64,
+    /// Chat relays a recipient's event ring refused. Chat has no sync
+    /// walk to restart, so unlike every other event this does not force
+    /// an `ev_resync` — the line is simply lost, and counted.
+    pub chat_undelivered: AtomicU64,
 }
 
 impl ShardStats {

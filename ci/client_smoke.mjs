@@ -90,6 +90,9 @@ const REQUIRED = [
   "client_removed_info",
   "client_stock_ptr",
   "client_stock_count",
+  "client_action_chat",
+  "client_chat_pop",
+  "client_chat_ptr",
 ];
 
 let failed = 0;
@@ -141,7 +144,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 9, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 10, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
@@ -152,7 +155,7 @@ check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 // either ship them to every public shard or withhold them from the capture
 // harness — and neither shows up anywhere else in this suite.
 const welcomeGolden = readFileSync(
-  join(root, "crates/protocol/tests/golden/v9_welcome.bin"),
+  join(root, "crates/protocol/tests/golden/v10_welcome.bin"),
 );
 const parseHandshake = (bytes) => {
   // ptr first, buffer second: a getter may grow memory and detach a
@@ -405,6 +408,58 @@ check(ex.client_deploy_changes_len() === 1, "the rolled-back record must ride th
 const drolled = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
 check(((drolled[1] >>> 24) & 1) === 0, `rolled-back door must read closed: ${drolled[1]}`);
 check((drolled[1] >>> 25) === 1, `a rolled-back leaf must keep its lock: ${drolled[1]}`);
+
+// --- chat surface: encode out of the in buffer, relay in ------------------
+// The one player-authored payload, so both directions get checked here:
+// the encoder must refuse what the server would, and a relayed line must
+// come back through the pop view byte-exact.
+const chatEnc = new TextEncoder();
+const writeIn = (bytes) =>
+  new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), bytes.length).set(bytes);
+
+const say = chatEnc.encode("wall's at 4 — bring stone");
+writeIn(say);
+const chatLen = ex.client_action_chat(say.length, 0);
+check(chatLen > 0 && chatLen <= 64, `chat frame length odd: ${chatLen}`);
+check((new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 1)[0] & 7) === 7,
+  "a chat frame must carry KIND_CHAT (7) in its low 3 bits");
+
+writeIn(chatEnc.encode("   "));
+check(ex.client_action_chat(3, 0) === 0, "a blank line must refuse");
+writeIn(chatEnc.encode("two\nlines"));
+check(ex.client_action_chat(9, 0) === 0, "a control character must refuse");
+writeIn(new Uint8Array(49).fill(0x61));
+check(ex.client_action_chat(49, 1) === 0, "a line past the 48 B cap must refuse");
+writeIn(new Uint8Array(48).fill(0x61));
+check(ex.client_action_chat(48, 1) > 0, "a line exactly at the cap must encode");
+
+check(ex.client_chat_pop() === 0, "no line has arrived yet");
+// Hand-framed relay: kind EVENT(5, 3 bits LSB-first) · subtype CHAT(23,
+// 5 bits) · from=7 (32 bits) · global=1 (1 bit) · len=2 (6 bits) · "hi".
+{
+  const bits = [];
+  const push = (v, n) => { for (let i = 0; i < n; i++) bits.push((v >>> i) & 1); };
+  push(5, 3);
+  push(23, 5);
+  push(7, 32);
+  push(1, 1);
+  push(2, 6);
+  push(0x68, 8);
+  push(0x69, 8);
+  const frame = new Uint8Array(Math.ceil(bits.length / 8));
+  bits.forEach((b, i) => { if (b) frame[i >> 3] |= 1 << (i & 7); });
+  writeIn(frame);
+  const chatFlags = ex.client_on_stream(frame.length);
+  check(chatFlags === 2097152, `chat event should apply with CHAT flag: ${chatFlags}`);
+  check(ex.client_chat_pop() === 1, "the relayed line must pop");
+  const view = new Uint8Array(ex.memory.buffer, ex.client_chat_ptr(), 54);
+  const from = (view[0] | (view[1] << 8) | (view[2] << 16) | (view[3] << 24)) >>> 0;
+  check(from === 7, `speaker id mismatch: ${from}`);
+  check(view[4] === 1, "the global flag must survive the relay");
+  check(view[5] === 2, `length mismatch: ${view[5]}`);
+  check(view[6] === 0x68 && view[7] === 0x69, "the line's bytes drifted");
+  check(ex.client_chat_pop() === 0, "the ring must be empty again");
+}
 
 // Garbage on the stream must be refused with the error bit, not trap.
 new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 3).set([0xff, 0xff, 0xff]);

@@ -14,8 +14,9 @@ use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_craft, encode_action_deploy,
     encode_action_feed, encode_action_lock, encode_action_place, encode_action_upgrade,
-    encode_action_use, encode_hello, peek_kind, Hello, DEPLOY_SYNC_BATCH, KIND_REFUSE,
-    KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
+    encode_action_use, encode_chat, encode_hello, peek_kind, Hello, CHAT_MAX_BYTES,
+    DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_DEPLOY_DEFS,
@@ -46,6 +47,9 @@ const SLOTS_MAX_CELLS: usize = 8;
 const SLOT_FLOATS: usize = 8;
 /// Catalog view row: length byte + name bytes.
 const CATALOG_ROW: usize = 1 + MAX_ITEM_NAME_BYTES;
+/// Chat view: speaker id (4 LE bytes), global flag, length, then the
+/// line's UTF-8 bytes. One popped line at a time, like the toasts.
+const CHAT_VIEW_BYTES: usize = 6 + CHAT_MAX_BYTES;
 /// Recipe view row, u16 words: output, out_count, ticks lo, ticks hi,
 /// station, n_inputs, then (item, count) per input slot.
 const RECIPE_ROW_WORDS: usize = 6 + 2 * MAX_RECIPE_INPUTS;
@@ -93,6 +97,8 @@ struct Bridge {
     deploy_defs: Box<[u16; MAX_DEPLOY_DEFS * DEPLOY_DEF_ROW_WORDS]>,
     /// Last stock ack: [item, units] u32 pairs (rows live in the core).
     stock: [u32; HEARTH_STOCK_ROWS * 2],
+    /// Last popped chat line, in the `CHAT_VIEW_BYTES` layout.
+    chat: [u8; CHAT_VIEW_BYTES],
 }
 
 impl Bridge {
@@ -119,6 +125,7 @@ impl Bridge {
             deploy_changes_len: 0,
             deploy_defs: Box::new([0; MAX_DEPLOY_DEFS * DEPLOY_DEF_ROW_WORDS]),
             stock: [0; HEARTH_STOCK_ROWS * 2],
+            chat: [0; CHAT_VIEW_BYTES],
         }
     }
 }
@@ -679,6 +686,56 @@ pub extern "C" fn client_action_cancel(index: u32) -> u32 {
             .map(|n| n as u32)
             .unwrap_or(0)
     })
+}
+
+/// Encode a chat line for the bidi lane. The text is read from the in
+/// buffer — JS writes it there and calls straight through, the same
+/// synchronous write-then-call the incoming path uses, so nothing else
+/// can be mid-flight in that buffer. Returns the frame's length, or 0
+/// when the line is empty, over-long, not UTF-8, or carries a control
+/// character (`ChatText::sanitize`): a refusal here is the client
+/// declining to send, not the server declining to relay.
+#[no_mangle]
+pub extern "C" fn client_action_chat(len: u32, global: u32) -> u32 {
+    with(|b| {
+        let len = len as usize;
+        if len > IN_CAP {
+            return 0;
+        }
+        // Split the borrow: the source is the in buffer, the target the
+        // out buffer, and they are distinct fields.
+        let Bridge {
+            in_buf, out_buf, ..
+        } = b;
+        encode_chat(&in_buf[..len], global != 0, out_buf)
+            .map(|n| n as u32)
+            .unwrap_or(0)
+    })
+}
+
+/// Pop one received chat line into the chat view; 1 if one was there, 0
+/// if the ring is empty. Layout at `client_chat_ptr()`: speaker id as 4
+/// LE bytes, then the global flag, then the byte length, then the line.
+#[no_mangle]
+pub extern "C" fn client_chat_pop() -> u32 {
+    with(|b| {
+        let Some(core) = b.core.as_mut() else {
+            return 0;
+        };
+        let Some((from, global, text)) = core.pop_chat() else {
+            return 0;
+        };
+        b.chat[..4].copy_from_slice(&from.to_le_bytes());
+        b.chat[4] = global as u8;
+        b.chat[5] = text.len() as u8;
+        b.chat[6..6 + text.len()].copy_from_slice(text.as_bytes());
+        1
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn client_chat_ptr() -> *const u8 {
+    with(|b| b.chat.as_ptr())
 }
 
 /// Pairs of (cell key, harvested 0/1) from the last stream message.

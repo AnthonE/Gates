@@ -10,8 +10,8 @@
 //! catch.
 
 use crate::{
-    EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse, SnapshotHeader,
-    Welcome, DEPLOY_SYNC_BATCH, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse,
+    SnapshotHeader, Welcome, DEPLOY_SYNC_BATCH, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::craft::{
@@ -25,47 +25,49 @@ use sim_core::limits::{
 };
 use sim_core::rng::Pcg32;
 
-/// Fixture file names, keyed by wire version (`PROTO_VER` 9 ⇒ `v9_*`).
-pub const FIXTURES: [&str; 39] = [
-    "v9_input_acks_only.bin",
-    "v9_input_full.bin",
-    "v9_snapshot_keyframe.bin",
-    "v9_snapshot_delta.bin",
-    "v9_snapshot_cap.bin",
-    "v9_hello.bin",
-    "v9_welcome.bin",
-    "v9_refuse_full.bin",
-    "v9_event_gather.bin",
-    "v9_event_inv.bin",
-    "v9_event_slot_harvested.bin",
-    "v9_event_slot_respawned.bin",
-    "v9_event_slot_sync.bin",
-    "v9_event_catalog.bin",
-    "v9_event_weak_mark.bin",
-    "v9_event_craft_q.bin",
-    "v9_event_craft_done.bin",
-    "v9_event_craft_refused.bin",
-    "v9_event_recipes.bin",
-    "v9_action_craft.bin",
-    "v9_action_cancel.bin",
-    "v9_action_place.bin",
-    "v9_event_piece_placed.bin",
-    "v9_event_piece_sync.bin",
-    "v9_event_build_refused.bin",
-    "v9_event_piece_defs.bin",
-    "v9_action_deploy.bin",
-    "v9_action_feed.bin",
-    "v9_event_deploy_placed.bin",
-    "v9_event_deploy_sync.bin",
-    "v9_event_deploy_refused.bin",
-    "v9_event_deploy_defs.bin",
-    "v9_event_piece_removed.bin",
-    "v9_event_deploy_removed.bin",
-    "v9_event_stock.bin",
-    "v9_action_use.bin",
-    "v9_action_lock.bin",
-    "v9_event_door.bin",
-    "v9_action_upgrade.bin",
+/// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
+pub const FIXTURES: [&str; 41] = [
+    "v10_input_acks_only.bin",
+    "v10_input_full.bin",
+    "v10_snapshot_keyframe.bin",
+    "v10_snapshot_delta.bin",
+    "v10_snapshot_cap.bin",
+    "v10_hello.bin",
+    "v10_welcome.bin",
+    "v10_refuse_full.bin",
+    "v10_event_gather.bin",
+    "v10_event_inv.bin",
+    "v10_event_slot_harvested.bin",
+    "v10_event_slot_respawned.bin",
+    "v10_event_slot_sync.bin",
+    "v10_event_catalog.bin",
+    "v10_event_weak_mark.bin",
+    "v10_event_craft_q.bin",
+    "v10_event_craft_done.bin",
+    "v10_event_craft_refused.bin",
+    "v10_event_recipes.bin",
+    "v10_action_craft.bin",
+    "v10_action_cancel.bin",
+    "v10_action_place.bin",
+    "v10_event_piece_placed.bin",
+    "v10_event_piece_sync.bin",
+    "v10_event_build_refused.bin",
+    "v10_event_piece_defs.bin",
+    "v10_action_deploy.bin",
+    "v10_action_feed.bin",
+    "v10_event_deploy_placed.bin",
+    "v10_event_deploy_sync.bin",
+    "v10_event_deploy_refused.bin",
+    "v10_event_deploy_defs.bin",
+    "v10_event_piece_removed.bin",
+    "v10_event_deploy_removed.bin",
+    "v10_event_stock.bin",
+    "v10_action_use.bin",
+    "v10_action_lock.bin",
+    "v10_event_door.bin",
+    "v10_action_upgrade.bin",
+    "v10_chat.bin",
+    "v10_event_chat.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -515,6 +517,23 @@ pub fn action_upgrade() -> (u16, u16, u8, u8, u8) {
 /// state its owner sees after swinging their own door).
 pub fn event_door() -> (u16, u16, u8, u8, bool, bool) {
     (341, 682, 0, sim_core::build::LOC_EDGE_W, true, true)
+}
+
+/// A chat line the sanitizer keeps whole: multi-byte UTF-8 (an em dash
+/// and an apostrophe) and interior spaces, so the golden pins that the
+/// wire carries bytes and not ASCII.
+pub fn chat_line() -> ChatText {
+    ChatText::sanitize("wall's at 4 — bring stone".as_bytes()).expect("a clean line")
+}
+
+/// The C→S frame: local channel (the default one a player speaks on).
+pub fn chat() -> (ChatText, bool) {
+    (chat_line(), false)
+}
+
+/// The S→C relay of that line, on the global channel from player 7.
+pub fn event_chat() -> (u32, bool, ChatText) {
+    (7, true, chat_line())
 }
 
 /// A refusal carrying `sim_core::deploy::REFUSE_D_CLAIM`.

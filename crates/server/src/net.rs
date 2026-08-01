@@ -11,14 +11,14 @@ use crate::slot::{
 };
 use crate::stats::ShardStats;
 use protocol::{
-    decode_action, decode_hello, decode_input, encode_refuse, encode_welcome, peek_kind, ActionMsg,
-    ItemCatalog, Refuse, Welcome, KIND_INPUT, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES, PROTO_VER,
-    REFUSE_FULL, REFUSE_VERSION,
+    decode_action, decode_chat, decode_hello, decode_input, encode_refuse, encode_welcome,
+    peek_kind, ActionMsg, ChatMsg, ItemCatalog, Refuse, Welcome, KIND_CHAT, KIND_INPUT,
+    MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES, PROTO_VER, REFUSE_FULL, REFUSE_VERSION,
 };
 use rtrb::RingBuffer;
 use sim_core::limits::{
-    ACTION_RING_CAP, CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP, INPUT_RING_CAP,
-    MAX_PLAYERS, SNAPSHOT_RING_CAP, TICK_HZ,
+    ACTION_RING_CAP, CHAT_RING_CAP, CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP,
+    INPUT_RING_CAP, MAX_PLAYERS, SNAPSHOT_RING_CAP, TICK_HZ,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,6 +39,59 @@ const WRITER_POLL: Duration = Duration::from_millis(2);
 /// Sim thread abandons backlog beyond this many ticks (a debugger pause,
 /// a VM freeze) instead of sprinting to catch up.
 const MAX_TICK_BACKLOG: u32 = 8;
+
+/// Chat rate limit (ALPHA.md §1: "rate-limited server-side"), a token
+/// bucket per connection: `CHAT_BURST` lines may go back to back, then
+/// one more every `CHAT_REFILL` — a sustained ~30 lines/min with room to
+/// answer a question fast. Proposed defaults, DECISIONS.md §open
+/// ("chat v0"). Refused lines are counted, not announced: the limiter is
+/// the shard's business, not a conversation with the spammer.
+const CHAT_BURST: u32 = 3;
+const CHAT_REFILL: Duration = Duration::from_secs(2);
+
+/// One connection's chat token bucket. Lives in the reader task, so it is
+/// per stream — a reconnect buys a fresh bucket, and the handshake costs
+/// far more than the three lines that would buy.
+struct ChatLimiter {
+    tokens: u32,
+    /// When the bucket was last accounted; None until the first line.
+    last: Option<Instant>,
+}
+
+impl ChatLimiter {
+    fn new() -> Self {
+        Self {
+            tokens: CHAT_BURST,
+            last: None,
+        }
+    }
+
+    /// Spend a token if one has accrued. `now` is a parameter, not a
+    /// `Instant::now()` call inside, so the policy is testable without
+    /// sleeping.
+    fn allow(&mut self, now: Instant) -> bool {
+        let last = *self.last.get_or_insert(now);
+        let steps = now.saturating_duration_since(last).as_nanos() / CHAT_REFILL.as_nanos();
+        if steps >= CHAT_BURST as u128 {
+            // Idle long enough to fill the bucket. The clock restarts
+            // here on purpose: leaving `last` in the deep past would hand
+            // out a full bucket on every call from then on — a limiter
+            // that stops limiting, which is the failure mode worth
+            // naming.
+            self.tokens = CHAT_BURST;
+            self.last = Some(now);
+        } else if steps > 0 {
+            let steps = steps as u32;
+            self.tokens = (self.tokens + steps).min(CHAT_BURST);
+            self.last = Some(last + CHAT_REFILL * steps);
+        }
+        if self.tokens == 0 {
+            return false;
+        }
+        self.tokens -= 1;
+        true
+    }
+}
 
 pub struct ShardHandle {
     pub local_addr: SocketAddr,
@@ -275,12 +328,14 @@ async fn install(
 
     let (input_tx, input_rx) = RingBuffer::new(INPUT_RING_CAP);
     let (action_tx, action_rx) = RingBuffer::<ActionMsg>::new(ACTION_RING_CAP);
+    let (chat_tx, chat_rx) = RingBuffer::<ChatMsg>::new(CHAT_RING_CAP);
     let (snap_tx, snap_rx) = RingBuffer::<SnapMsg>::new(SNAPSHOT_RING_CAP);
     let (ev_tx, ev_rx) = RingBuffer::<EvMsg>::new(EVENT_RING_CAP);
     let link = Link {
         generation,
         input: input_rx,
         actions: action_rx,
+        chats: chat_rx,
         snaps: snap_tx,
         events: ev_tx,
     };
@@ -310,10 +365,12 @@ async fn install(
         generation,
     ));
     // The bidi recv half stays open for the connection's life: after the
-    // hello it is the C→S action lane (craft requests).
+    // hello it is the C→S action lane (craft requests) and the chat lane,
+    // demultiplexed by kind.
     tokio::spawn(action_reader_task(
         recv,
         action_tx,
+        chat_tx,
         slots.clone(),
         stats.clone(),
         slot,
@@ -368,20 +425,62 @@ async fn reader_task(
     slots.mark_leaving(slot, generation);
 }
 
-/// Reads length-prefixed C→S action frames off the bidi stream for the
-/// connection's life. A full ring backpressures: the task stops reading
-/// until the sim drains, and QUIC flow control holds the client (limits.rs
-/// `ACTION_RING_CAP` policy — the reliable lane never drops). A frame
-/// that fails to decode drops the session: framing trust is gone, and
-/// client-driven bytes never panic, only count (`actions_bad`).
+/// Reads length-prefixed C→S frames off the bidi stream for the
+/// connection's life and demultiplexes them by kind: actions to the
+/// action ring, chat to the chat ring.
+///
+/// The two lanes have deliberately opposite pressure policies. A full
+/// **action** ring backpressures: the task stops reading until the sim
+/// drains, and QUIC flow control holds the client (limits.rs
+/// `ACTION_RING_CAP` — the reliable lane never drops a transaction). A
+/// full **chat** ring drops the line, because backpressuring the shared
+/// stream on chat would stall the sender's own transactions behind their
+/// own typing — the spammer's punishment would land on their building.
+///
+/// An action frame that fails to decode drops the session: framing trust
+/// is gone. A *chat* frame that fails to decode does not — chat text is
+/// the one payload a client bug can plausibly malform, and it is counted
+/// and swallowed instead (`chat_bad`). Neither ever panics.
+/// The chat half of that demux, split out of the async task so the
+/// **wiring** — decode, then limiter, then ring, then which counter moves
+/// — is reachable by a test without a socket. A limiter that is never
+/// called is a limiter that stopped limiting, and that is not something a
+/// unit test of the bucket alone can notice.
+fn accept_chat(
+    frame: &[u8],
+    limiter: &mut ChatLimiter,
+    now: Instant,
+    chat_tx: &mut rtrb::Producer<ChatMsg>,
+    stats: &ShardStats,
+) {
+    let Ok(chat) = decode_chat(frame) else {
+        ShardStats::bump(&stats.chat_bad);
+        return;
+    };
+    if !limiter.allow(now) {
+        ShardStats::bump(&stats.chat_rate_limited);
+        return;
+    }
+    if chat_tx.push(chat).is_err() {
+        ShardStats::bump(&stats.chat_ring_drops);
+        return;
+    }
+    // Counted only once it is actually ringed — `chat_ok` says "decoded
+    // and ringed", so a dropped line must not also read as an accepted
+    // one.
+    ShardStats::bump(&stats.chat_ok);
+}
+
 async fn action_reader_task(
     mut recv: RecvStream,
     mut action_tx: rtrb::Producer<ActionMsg>,
+    mut chat_tx: rtrb::Producer<ChatMsg>,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     slot: usize,
     generation: u32,
 ) {
+    let mut limiter = ChatLimiter::new();
     loop {
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
@@ -390,6 +489,16 @@ async fn action_reader_task(
         let Some((buf, len)) = read_frame(&mut recv).await else {
             break; // stream closed or oversize frame: the session is done
         };
+        if peek_kind(&buf[..len]) == Ok(KIND_CHAT) {
+            accept_chat(
+                &buf[..len],
+                &mut limiter,
+                Instant::now(),
+                &mut chat_tx,
+                &stats,
+            );
+            continue;
+        }
         match decode_action(&buf[..len]) {
             Ok(mut act) => {
                 ShardStats::bump(&stats.actions_ok);
@@ -645,6 +754,13 @@ fn sim_thread(
                         core.push_action(slot, act);
                     }
                 }
+                // Chat drains unconditionally, one line per client per
+                // tick: the fan-out always takes the line (it is said or
+                // it is lost), so unlike an action there is no hand to
+                // check for room.
+                if let Ok(chat) = link.chats.pop() {
+                    core.push_chat(slot, chat);
+                }
             }
         }
         // Tick + publish.
@@ -691,5 +807,113 @@ fn sim_thread(
                 next = now;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The chat limiter is the only wall between one client and everyone
+    /// else's screen, so its shape is pinned: a burst of `CHAT_BURST`
+    /// goes, the next is refused, and tokens come back one per
+    /// `CHAT_REFILL` — never faster, and never *all at once* after a long
+    /// silence, which is the bug a naive "top up from `last`" writes.
+    #[test]
+    fn chat_limiter_spends_a_burst_then_drips() {
+        let t0 = Instant::now();
+        let mut lim = ChatLimiter::new();
+        for i in 0..CHAT_BURST {
+            assert!(lim.allow(t0), "burst line {i} refused");
+        }
+        assert!(!lim.allow(t0), "the line past the burst must be refused");
+
+        // Half a refill buys nothing.
+        assert!(!lim.allow(t0 + CHAT_REFILL / 2));
+        // A whole one buys exactly one.
+        assert!(lim.allow(t0 + CHAT_REFILL));
+        assert!(!lim.allow(t0 + CHAT_REFILL));
+
+        // A long silence fills the bucket and no further — and, crucially,
+        // the next long-silence check does not refill it again from a
+        // stale timestamp.
+        let quiet = t0 + CHAT_REFILL * 1_000;
+        for i in 0..CHAT_BURST {
+            assert!(lim.allow(quiet), "post-silence line {i} refused");
+        }
+        assert!(
+            !lim.allow(quiet),
+            "a stale accounting timestamp is a limiter that stopped limiting"
+        );
+        assert!(!lim.allow(quiet + CHAT_REFILL / 2));
+    }
+
+    /// And the limiter is actually *wired*: the reader's chat path runs
+    /// decode → limit → ring in that order, and each refusal moves its own
+    /// counter. Deleting the limiter call would leave the bucket test above
+    /// green and this one red, which is the point of testing the wiring
+    /// rather than the struct.
+    #[test]
+    fn accept_chat_decodes_then_limits_then_rings() {
+        let stats = ShardStats::default();
+        let mut limiter = ChatLimiter::new();
+        let (mut tx, mut rx) = RingBuffer::<ChatMsg>::new(CHAT_RING_CAP);
+        let t0 = Instant::now();
+        let mut frame = [0u8; MAX_STREAM_MSG_BYTES];
+        let n = protocol::encode_chat(b"hearth is up", false, &mut frame).expect("encodes");
+        // The demux itself: this frame is chat, and an action frame is not.
+        assert_eq!(peek_kind(&frame[..n]), Ok(KIND_CHAT));
+        let mut act = [0u8; MAX_STREAM_MSG_BYTES];
+        let an = protocol::encode_action_cancel(0, &mut act).expect("encodes");
+        assert_eq!(peek_kind(&act[..an]), Ok(protocol::KIND_ACTION));
+
+        // The burst is accepted and ringed; everything past it is refused
+        // by the limiter, not by the ring.
+        for _ in 0..CHAT_BURST {
+            accept_chat(&frame[..n], &mut limiter, t0, &mut tx, &stats);
+        }
+        assert_eq!(ShardStats::get(&stats.chat_ok), CHAT_BURST as u64);
+        assert_eq!(ShardStats::get(&stats.chat_rate_limited), 0);
+        for _ in 0..5 {
+            accept_chat(&frame[..n], &mut limiter, t0, &mut tx, &stats);
+        }
+        assert_eq!(
+            ShardStats::get(&stats.chat_ok),
+            CHAT_BURST as u64,
+            "a line past the burst was ringed — the limiter is not wired in"
+        );
+        assert_eq!(ShardStats::get(&stats.chat_rate_limited), 5);
+
+        // Nothing but the burst reached the ring.
+        let mut ringed = 0;
+        while rx.pop().is_ok() {
+            ringed += 1;
+        }
+        assert_eq!(ringed, CHAT_BURST as usize);
+
+        // A full ring drops the line and counts it as dropped, never as ok.
+        let (mut full_tx, _full_rx) = RingBuffer::<ChatMsg>::new(CHAT_RING_CAP);
+        let mut fresh = ChatLimiter::new();
+        let ok_before = ShardStats::get(&stats.chat_ok);
+        for i in 0..CHAT_RING_CAP + 2 {
+            accept_chat(
+                &frame[..n],
+                &mut fresh,
+                t0 + CHAT_REFILL * i as u32,
+                &mut full_tx,
+                &stats,
+            );
+        }
+        assert_eq!(
+            ShardStats::get(&stats.chat_ok) - ok_before,
+            CHAT_RING_CAP as u64
+        );
+        assert_eq!(ShardStats::get(&stats.chat_ring_drops), 2);
+
+        // Bytes that fail the text rules are counted and swallowed — the
+        // session is not dropped the way a bad action frame drops it.
+        let bad = [KIND_CHAT as u8 | 0x08, 0xff, 0xff];
+        accept_chat(&bad, &mut fresh, t0, &mut tx, &stats);
+        assert_eq!(ShardStats::get(&stats.chat_bad), 1);
     }
 }

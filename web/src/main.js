@@ -153,6 +153,21 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     views.refresh();
     if (len > 0) actions.send(views.output, len);
   };
+  // Chat: JS writes the UTF-8 into the wasm in-buffer and calls straight
+  // through, so nothing else can be mid-flight in it. A 0 length back is
+  // the client declining to send (empty, over-long, or a control
+  // character) — the server never sees it.
+  const chatEncoder = new TextEncoder();
+  const sendChat = (text, global) => {
+    views.refresh();
+    const bytes = chatEncoder.encode(text);
+    if (bytes.length === 0 || bytes.length > views.inCap) return false;
+    views.input.set(bytes);
+    const len = ex.client_action_chat(bytes.length, global ? 1 : 0);
+    views.refresh();
+    if (len === 0) return false;
+    return actions.send(views.output, len);
+  };
   const sendFeed = (cx, cz, level) => {
     const len = ex.client_action_feed(cx, cz, level);
     views.refresh();
@@ -478,8 +493,28 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     hud.setCraftQueue(jobs, sendCancel);
   };
 
+  // The composer owns the keyboard while it is open: no walking, no
+  // building, no swinging on a key that is meant to be a letter. Escape
+  // always closes it, Enter sends. A line starting with `/g ` goes
+  // global; local (20 m) is the default channel.
+  hud.onChatSend = (raw) => {
+    const global = raw.startsWith("/g ");
+    if (sendChat(global ? raw.slice(3) : raw, global)) return true;
+    // The cap is 48 UTF-8 BYTES, which the composer's maxlength (UTF-16
+    // code units) only approximates — a line of multi-byte characters can
+    // fit the box and still be refused. Say so rather than swallowing it.
+    hud.toast("line not sent — 48 bytes max, no control characters");
+    return false;
+  };
   document.addEventListener("keydown", (e) => {
     if (closed) return;
+    if (hud.chatOpen) return; // the composer's own handler has it
+    if (e.code === "KeyT" || e.code === "Enter") {
+      hud.openChat();
+      document.exitPointerLock();
+      e.preventDefault();
+      return;
+    }
     if (e.code === "KeyC") {
       if (hud.toggleCraft()) {
         document.exitPointerLock();
@@ -683,6 +718,18 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
           const r = ex.client_deploy_refusal_pop() >>> 0;
           if (r === 0xffffffff) break;
           hud.toast(`can't place: ${DEPLOY_REFUSE_TEXT[r] || `code ${r}`}`);
+        }
+      }
+      if (flags & 2097152 /* CHAT */) {
+        for (;;) {
+          if ((ex.client_chat_pop() >>> 0) === 0) break;
+          views.refresh();
+          const c = views.chat;
+          const from =
+            (c[0] | (c[1] << 8) | (c[2] << 16) | (c[3] << 24)) >>> 0;
+          const global = c[4] === 1;
+          const text = textDecoder.decode(c.subarray(6, 6 + c[5]));
+          hud.chatLine(from, global, text, from === playerId);
         }
       }
       if (flags & 262144 /* STOCK */) {
