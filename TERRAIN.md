@@ -156,4 +156,8 @@ The reads a survival map must produce, and which stage buys each:
   shelf area, ≥ N slots per biome, spawn ring has ≥ 24 valid spawns. A
   seed that fails is a bug in the generator, not a reroll: wipes must be
   able to trust any seed.
+  The spawn-ring half of it has landed early as sim-core
+  `world::tests::spawn_ring_lands_on_a_clear_beach`: 32 seeds × 64 joins,
+  each spawn asserted beach biome, above the wade line, off a cliff, and
+  4 m clear of every scatter slot. The rest waits on the road and the pad.
 - Chunk-build time and instancing counts ride the client perf harness.

@@ -336,6 +336,14 @@ pub fn build_cell_of(v: f32) -> i32 {
     floor_i32(v / BUILD_CELL_M)
 }
 
+/// Will this ground hold a foundation? One definition — `place` refuses on
+/// it, and a fixture that needs buildable ground finds it with it, so the
+/// two can never drift apart.
+pub fn foundation_terrain_ok(seed: u64, ax: f32, az: f32) -> bool {
+    terrain::height(seed, ax, az) >= FOUNDATION_MIN_H_M
+        && terrain::slope(seed, ax, az) < FOUNDATION_MAX_SLOPE
+}
+
 /// Whether `loc` is the kind of slot `shape` occupies.
 fn loc_fits_shape(shape: u8, loc: u8) -> bool {
     match shape {
@@ -428,12 +436,9 @@ pub fn place(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
         return;
     }
-    if def.shape == SHAPE_FOUNDATION {
-        let h = terrain::height(seed, ax, az);
-        if h < FOUNDATION_MIN_H_M || terrain::slope(seed, ax, az) >= FOUNDATION_MAX_SLOPE {
-            events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TERRAIN, 0);
-            return;
-        }
+    if def.shape == SHAPE_FOUNDATION && !foundation_terrain_ok(seed, ax, az) {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TERRAIN, 0);
+        return;
     }
     if !supported(pieces, def.shape, cx, cz, level, loc) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);

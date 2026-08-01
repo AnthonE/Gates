@@ -174,8 +174,13 @@ pub enum Biome {
     Highland = 3,
 }
 
+/// The beach mask (TERRAIN.md §1 stage 5): height within ~2 m of sea
+/// level. One definition — `biome` classifies by it and `World::spawn_pos`
+/// spawns into it, so the spawn zone cannot drift away from the biome.
+pub const BEACH_MAX_H: f32 = SEA_LEVEL + 2.0;
+
 pub fn biome(h: f32, moist: f32) -> Biome {
-    if h < 2.0 {
+    if h < BEACH_MAX_H {
         Biome::Beach
     } else if h > 52.0 {
         Biome::Highland
