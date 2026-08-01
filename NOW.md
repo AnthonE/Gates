@@ -4,17 +4,24 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **Lighting: a real key light and shadows.** There is no shadow map anywhere
-   in the client (`grep shadowMap|castShadow|receiveShadow` → nothing) and the
-   `HemisphereLight` fill sits at 0.95, so nothing casts, nothing receives, and
-   no object has contact darkening. That is the single largest reason the world
-   reads as untextured shapes — it is a lighting problem, not a texture one.
-   `threejs-shadow-systems` and `threejs-exposure-color-grading` are in
-   `.claude/skills/` (MIT, Scott Sun — credit in `CLAUDE.md` if used). Grade
-   toward the spoken direction: **"Rust with a darker edge"**. Register every
-   new constant in `DECISIONS.md` §open and stay inside the `DESIGN.md` §9
-   budget (<300 draw calls, <1.5 M tris). Do **not** quote fps from this box.
-2. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
+1. **Materials and the surface read.** Lighting v0 landed (key + bounded
+   texel-snapped shadow map + tone map, `DECISIONS.md` §open), so the world
+   now has shape. What it has no *surface*: everything is
+   `MeshLambertMaterial` at a flat colour: no roughness, no normal detail,
+   no splat blend on the terrain (`TERRAIN.md` §5 already specifies
+   height/slope/noise blending in-shader), and the scatter pines are one
+   solid green. `threejs-procedural-materials` and
+   `threejs-procedural-fields` are in `.claude/skills/` (MIT, Scott Sun —
+   credited in `CLAUDE.md`). Same rails: constants into `DECISIONS.md`
+   §open, stay inside the `DESIGN.md` §9 budget the browser gate now
+   asserts, no fps quoted from this box.
+2. **Shadows past 80 m.** The single map is bounded at an 80 m radius by
+   design, so a hill or a base further out casts nothing. The clipmap in
+   `threejs-shadow-systems` is the fix (concentric levels, committed
+   centres, cached coarse updates); the near level already snaps, so this
+   is adding levels, not rewriting. Wants the draw-call budget watched —
+   the gate reports 58 of 300 today.
+3. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
    solid (slice 13: chat — two channels on the reliable lane, local at
    20 m and global, sanitized at both edges and rate-limited per
@@ -30,13 +37,13 @@ Done items are deleted, not checked — history lives in git and
    there) · piece damage (M2's raid lane: hp exists and decays, nothing
    attacks it yet) · nametags (chat names a speaker by id today, because
    nothing has a name yet).
-3. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
+4. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
-4. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
+5. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
    admin lane · backups · status page · error capture · `bench_transport`.
-5. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
+6. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
    then tune content bands from what the anomaly log and the replays say.
-6. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
+7. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
 

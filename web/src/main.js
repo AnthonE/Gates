@@ -787,6 +787,12 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // at all. Null on a public shard, where `setView` is then not a property
   // that exists.
   const devSetView = dev ? (yaw, pitch) => input.setView(yaw, pitch) : null;
+  // Same shape, same reason (bound once, republished): the shadow probe
+  // renders 2N extra frames and reads the drawing buffer back, so it is a
+  // dev affordance and never ships to a public shard.
+  const devShadowProbe = dev
+    ? (yaws, pitch, minDelta) => scene.shadowProbe(yaws, pitch, minDelta)
+    : null;
 
   function frame(now) {
     if (closed) return;
@@ -893,8 +899,13 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       pieces: scene.pieces.size,
       deployDefs: (ex.client_deploy_defs_state() >>> 0) & 0xffff,
       deploys: scene.deploys.size,
+      // The lighting rig's structural facts plus last frame's draw counts
+      // (DESIGN §9's < 300 calls / < 1.5 M tris). Read off the scene, not
+      // recomputed — what the gate asserts is what the renderer did.
+      lighting: scene.lighting(),
     };
     if (devSetView) debug.setView = devSetView;
+    if (devShadowProbe) debug.shadowProbe = devShadowProbe;
     globalThis.__gatesDebug = debug;
   }, 250);
 }

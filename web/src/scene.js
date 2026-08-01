@@ -6,8 +6,61 @@
 import * as THREE from "three";
 
 const EYE_HEIGHT = 1.6; // cosmetic (DECISIONS.md §open, client cosmetics)
-const SKY = 0x8fb4d6;
 const YAW_TO_RAD = (Math.PI * 2) / 65536;
+
+// --- lighting v0 (DECISIONS.md §open, "lighting v0") ------------------------
+// One key, one fill, one bounded shadow map, one tone map. The register is
+// the spoken art direction — "Rust with a darker edge": a low warm sun so
+// everything rakes, and a cold fill deliberately kept under the key so a
+// shadow stays a shadow. Nothing here is a post stack; the only stages are
+// light ratios → tone map → sRGB output.
+//
+// The tone map is Khronos PBR Neutral, not ACES, and that was measured
+// rather than chosen: ACES's toe put the dark-albedo scatter (the 0x2f6b33
+// pine) at ~20/255 on its shaded side, which is a crushed image, not a dark
+// one. Neutral is identity below ~0.8 linear and only rolls the highlights
+// off, so what darkens this scene is the shadow map, not the transfer.
+
+// Where the sun sits. Azimuth is the compass bearing of the sun itself
+// (0 = +Z, increasing toward +X, matching the sim's yaw); elevation is
+// its angle above the horizon. Low, so shadows are long and read as shape.
+const SUN_AZIMUTH = 2.35;
+const SUN_ELEVATION = 0.36;
+const SUN_COLOR = 0xffe1b8;
+const SUN_INTENSITY = 3.0;
+// The fill is sky-above / earth-below, cold over warm, and it is the whole
+// ambient budget: a shadow lit only by this reads blue and stays dark.
+const FILL_SKY = 0xa9c3e2;
+const FILL_GROUND = 0x6b5f4a;
+const FILL_INTENSITY = 1.15;
+// One tone map, owned by the renderer. No material sets its own.
+const EXPOSURE = 0.8;
+// Fog and the sky dome share a horizon colour, so the seam is exact by
+// construction rather than by tuning two numbers against each other.
+const FOG_COLOR = 0x808f9c;
+const FOG_NEAR = 180;
+const FOG_FAR = 1000;
+const SKY_ZENITH = 0x2c4463;
+const SKY_CURVE = 0.62; // horizon→zenith ramp; <1 lifts the gradient early
+const SKY_RADIUS = 10;
+
+// The shadow map covers a bounded square around the player and nothing
+// else — the one case `threejs-shadow-systems` allows a single map. Casters
+// outside SHADOW_RADIUS_M do not shadow; the cascade/clipmap that would fix
+// that is a later slice, and until then this bound is the honest statement
+// of what the rig does.
+const SHADOW_RADIUS_M = 80;
+const SHADOW_MAP_PX = 2048;
+const SHADOW_BACK_M = 260; // how far back along the sun ray the light sits
+const SHADOW_FAR_M = 520; // ortho depth range; relief is ~90 m (TERRAIN §6)
+const SHADOW_NEAR_M = 1;
+// Normal bias in texels, not metres: the acne it fixes is a texel-footprint
+// artefact, so the metre value has to move with the footprint.
+const SHADOW_NORMAL_BIAS_TEXELS = 1.2;
+const SHADOW_TEXEL_M = (SHADOW_RADIUS_M * 2) / SHADOW_MAP_PX;
+// Z is quantized coarsely on purpose: it moves depth coverage, not the
+// projected texel grid (clipmap reference §4).
+const SHADOW_Z_QUANTUM_M = SHADOW_RADIUS_M * 0.5;
 
 // Build-grid render dimensions. Cell/level sizes are the sim's grid
 // (DECISIONS.md §open, build grid v0). LIFT and WALL_T (and the doorway
@@ -35,13 +88,62 @@ const DEPLOY_STYLE = [
 // state a passer-by can see, and the thing they'd have to break.
 const DOOR_LOCKED_COLOR = 0x3c3f44;
 
+/** Mark an object (and a group's children) as both caster and receiver. */
+function shadowed(obj) {
+  obj.castShadow = true;
+  obj.receiveShadow = true;
+  for (let i = 0; i < obj.children.length; i++) {
+    obj.children[i].castShadow = true;
+    obj.children[i].receiveShadow = true;
+  }
+  return obj;
+}
+
+/**
+ * The sky dome's geometry: a sphere whose vertex colours ramp from the fog
+ * colour at and below the horizon to SKY_ZENITH overhead. Colours are
+ * written in the working (linear) space THREE.Color converts the sRGB hex
+ * into — the same conversion the fog colour gets — so the horizon ring
+ * matches the fog exactly before either is tone-mapped.
+ */
+function skyDomeGeometry() {
+  const geo = new THREE.SphereGeometry(SKY_RADIUS, 24, 16);
+  const pos = geo.attributes.position;
+  const horizon = new THREE.Color(FOG_COLOR);
+  const zenith = new THREE.Color(SKY_ZENITH);
+  const colors = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i) / SKY_RADIUS;
+    const t = y <= 0 ? 0 : Math.pow(y, SKY_CURVE);
+    c.copy(horizon).lerp(zenith, t);
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  return geo;
+}
+
 export class GameScene {
   constructor(canvas) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setClearColor(SKY);
+    // Single tone-map ownership: the renderer maps, materials do not, and
+    // nothing re-encodes sRGB downstream. The clear colour is the only
+    // surface the tone mapper never sees, which is exactly why the sky is
+    // geometry below — the clear is a fallback that the dome always covers.
+    this.renderer.setClearColor(FOG_COLOR);
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = EXPOSURE;
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // three resets renderer.info AFTER the shadow pass and before the main
+    // one, so the default counters silently exclude every shadow draw — the
+    // exact half of the budget this rig just added. Own the reset instead.
+    this.renderer.info.autoReset = false;
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.Fog(SKY, 250, 900);
+    this.scene.fog = new THREE.Fog(FOG_COLOR, FOG_NEAR, FOG_FAR);
     this.camera = new THREE.PerspectiveCamera(
       75,
       window.innerWidth / window.innerHeight,
@@ -49,13 +151,69 @@ export class GameScene {
       1500,
     );
 
-    const hemi = new THREE.HemisphereLight(0xcfe5ff, 0x4a4436, 0.95);
-    this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xfff2d8, 1.15);
-    sun.position.set(0.6, 1.0, 0.35);
-    this.scene.add(sun);
+    // The sky is a dome, not a clear colour, for one reason: fog is shaded
+    // and therefore tone-mapped, a clear colour is not. Painting the sky as
+    // geometry puts both through the same tone map, so the horizon seam is
+    // exact instead of tuned. Its horizon ring IS the fog colour.
+    this.sky = new THREE.Mesh(
+      skyDomeGeometry(),
+      new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        side: THREE.BackSide,
+        fog: false,
+        depthWrite: false,
+        depthTest: false,
+      }),
+    );
+    this.sky.renderOrder = -1;
+    this.sky.frustumCulled = false;
+    this.scene.add(this.sky);
+
+    const fill = new THREE.HemisphereLight(FILL_SKY, FILL_GROUND, FILL_INTENSITY);
+    this.scene.add(fill);
+    this.fill = fill;
+
+    // The key. Its shadow box follows the player, snapped to its own texel
+    // grid every frame (see updateSun) so the map does not crawl.
+    this.sun = new THREE.DirectionalLight(SUN_COLOR, SUN_INTENSITY);
+    this.sun.castShadow = true;
+    const sh = this.sun.shadow;
+    sh.mapSize.set(SHADOW_MAP_PX, SHADOW_MAP_PX);
+    sh.camera.left = -SHADOW_RADIUS_M;
+    sh.camera.right = SHADOW_RADIUS_M;
+    sh.camera.top = SHADOW_RADIUS_M;
+    sh.camera.bottom = -SHADOW_RADIUS_M;
+    sh.camera.near = SHADOW_NEAR_M;
+    sh.camera.far = SHADOW_FAR_M;
+    sh.bias = 0;
+    sh.normalBias = SHADOW_NORMAL_BIAS_TEXELS * SHADOW_TEXEL_M;
+    sh.camera.updateProjectionMatrix();
+    this.scene.add(this.sun);
+    this.scene.add(this.sun.target); // or its matrixWorld never updates
+
+    // World-space unit vector pointing AT the sun, and the light-space
+    // basis derived from it once — the sun does not move in v0, so this is
+    // built here and only read in the RAF path.
+    const ce = Math.cos(SUN_ELEVATION);
+    this._toSun = new THREE.Vector3(
+      ce * Math.sin(SUN_AZIMUTH),
+      Math.sin(SUN_ELEVATION),
+      ce * Math.cos(SUN_AZIMUTH),
+    ).normalize();
+    // Matrix4.lookAt puts +Z along (eye − target): with the eye at the sun
+    // and the target at the origin, that is the shadow camera's own basis.
+    this._lightToWorld = new THREE.Matrix4().lookAt(
+      this._toSun,
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 1, 0),
+    );
+    this._worldToLight = this._lightToWorld.clone().transpose(); // pure rotation
+    this._sunCenter = new THREE.Vector3(); // committed, snapped, world space
+    this._sunProbe = new THREE.Vector3();
 
     // One translucent plane at sea level; nothing simulates (TERRAIN.md §4).
+    // It neither casts nor receives: a transparent sheet in the shadow pass
+    // buys artefacts, not depth.
     const water = new THREE.Mesh(
       new THREE.PlaneGeometry(6144, 6144),
       new THREE.MeshLambertMaterial({
@@ -112,6 +270,8 @@ export class GameScene {
 
     this._dir = new THREE.Vector3();
     this._target = new THREE.Vector3();
+    // Last frame's draw counts (DESIGN §9's budget), refreshed in render().
+    this.stats = { calls: 0, triangles: 0 };
 
     window.addEventListener("resize", () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
@@ -129,6 +289,33 @@ export class GameScene {
     this._dir.set(Math.sin(yawRad) * cp, Math.sin(pitchRad), Math.cos(yawRad) * cp);
     this._target.copy(c.position).add(this._dir);
     c.lookAt(this._target);
+    this.sky.position.copy(c.position);
+    this.updateSun(x, y, z);
+  }
+
+  /**
+   * Park the shadow box on the player, snapped to its own texel grid.
+   *
+   * A directional shadow map that simply tracks the camera crawls: the
+   * projected texel grid slides under the geometry and every silhouette
+   * edge shimmers. The fix (threejs-shadow-systems) is to quantize the box
+   * centre in LIGHT space by the world width of one texel, so the grid is
+   * nailed to the world and the box moves in whole-texel steps. Z is
+   * quantized far more coarsely — it changes depth coverage, not the
+   * projected grid.
+   *
+   * Scalar math on three preallocated vectors; no allocation, no closure.
+   */
+  updateSun(x, y, z) {
+    const p = this._sunProbe.set(x, y, z).applyMatrix4(this._worldToLight);
+    p.x = Math.round(p.x / SHADOW_TEXEL_M) * SHADOW_TEXEL_M;
+    p.y = Math.round(p.y / SHADOW_TEXEL_M) * SHADOW_TEXEL_M;
+    p.z = Math.round(p.z / SHADOW_Z_QUANTUM_M) * SHADOW_Z_QUANTUM_M;
+    p.applyMatrix4(this._lightToWorld);
+    if (p.equals(this._sunCenter)) return; // same texel cell: nothing moved
+    this._sunCenter.copy(p);
+    this.sun.target.position.copy(p);
+    this.sun.position.copy(p).addScaledVector(this._toSun, SHADOW_BACK_M);
   }
 
   /** Park the weak-spot glint at a world position, or hide it. */
@@ -187,6 +374,7 @@ export class GameScene {
       obj = new THREE.Mesh(this._planeGeo, mat);
       obj.position.set(cxm, baseY - SLAB / 2, czm);
     }
+    shadowed(obj);
     this.scene.add(obj);
     this.pieces.set(key, obj);
   }
@@ -251,6 +439,7 @@ export class GameScene {
     } else {
       obj.position.set(cx * CELL + CELL / 2, baseY + h / 2, cz * CELL + CELL / 2);
     }
+    shadowed(obj);
     this.scene.add(obj);
     this.deploys.set(key, obj);
   }
@@ -307,6 +496,7 @@ export class GameScene {
       nose.position.set(0, 1.45, 0.42);
       group.add(body);
       group.add(nose);
+      shadowed(group);
       this.scene.add(group);
       r = { group, body, nose, stamp: 0 };
       this.remotes.set(id, r);
@@ -332,6 +522,124 @@ export class GameScene {
   }
 
   render() {
+    // Reset before, not after: with autoReset off these counts then cover
+    // BOTH passes — the budget in DESIGN §9 is what the GPU was asked to
+    // draw, not what is in view once. Copied into plain numbers so the
+    // debug snapshot can be read without holding a live renderer object.
+    this.renderer.info.reset();
     this.renderer.render(this.scene, this.camera);
+    const r = this.renderer.info.render;
+    this.stats.calls = r.calls;
+    this.stats.triangles = r.triangles;
+  }
+
+  /** The structural facts about the rig, for the browser gate to assert. */
+  lighting() {
+    return {
+      shadowMap: this.renderer.shadowMap.enabled,
+      shadowType: this.renderer.shadowMap.type,
+      sunCasts: this.sun.castShadow,
+      mapSize: this.sun.shadow.mapSize.x,
+      radiusM: SHADOW_RADIUS_M,
+      texelM: SHADOW_TEXEL_M,
+      normalBias: this.sun.shadow.normalBias,
+      toneMapping: this.renderer.toneMapping,
+      exposure: this.renderer.toneMappingExposure,
+      fillIntensity: this.fill.intensity,
+      sunIntensity: this.sun.intensity,
+      calls: this.stats.calls,
+      triangles: this.stats.triangles,
+    };
+  }
+
+  /**
+   * Dev-only: does the shadow map actually darken the frame?
+   *
+   * A flag says the renderer was ASKED for shadows. This measures whether
+   * any pixel got one. Per sample yaw it renders the live scene twice —
+   * shadow pass on, then off — reads the drawing buffer back both times
+   * and counts pixels the shadow pass took down by more than `minDelta`
+   * of luma. It restores the camera, the shadow state and the frame
+   * before returning, so a probe leaves nothing behind.
+   *
+   * Allocates, recompiles two programs, and renders 2N frames: never call
+   * it from the RAF path. It exists for ci/browser_smoke.mjs.
+   */
+  shadowProbe(yaws, pitchRad, minDelta) {
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const lit = new Uint8Array(w * h * 4);
+    const shad = new Uint8Array(w * h * 4);
+    const keepQ = this.camera.quaternion.clone();
+    const pos = this.camera.position;
+    const samples = [];
+    let darkened = 0;
+    for (let i = 0; i < yaws.length; i++) {
+      const cp = Math.cos(pitchRad);
+      this._dir.set(
+        Math.sin(yaws[i]) * cp,
+        Math.sin(pitchRad),
+        Math.cos(yaws[i]) * cp,
+      );
+      this._target.copy(pos).add(this._dir);
+      this.camera.lookAt(this._target);
+      // Toggle the LIGHT, not renderer.shadowMap.enabled: three only
+      // recompiles a material when the lights-state version moves, and
+      // flipping castShadow changes the shadow count that version is
+      // hashed from. Flipping shadowMap.enabled alone leaves every already
+      // compiled program shadowing exactly as before — two identical
+      // frames and a probe that always reads zero.
+      this.sun.castShadow = true;
+      this.renderer.info.reset();
+      this.renderer.render(this.scene, this.camera);
+      const callsShadowed = this.renderer.info.render.calls;
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, shad);
+      this.sun.castShadow = false;
+      this.renderer.info.reset();
+      this.renderer.render(this.scene, this.camera);
+      const callsUnshadowed = this.renderer.info.render.calls;
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, lit);
+      let n = 0;
+      let sum = 0;
+      let max = 0;
+      let litSum = 0;
+      let shadSum = 0;
+      for (let p = 0; p < lit.length; p += 4) {
+        // Rec.601-ish integer luma; the absolute scale does not matter,
+        // only the difference between two renders of the same pixel.
+        const a = (lit[p] * 2 + lit[p + 1] * 5 + lit[p + 2]) >> 3;
+        const b = (shad[p] * 2 + shad[p + 1] * 5 + shad[p + 2]) >> 3;
+        litSum += a;
+        shadSum += b;
+        const d = a - b;
+        if (d > minDelta) {
+          n++;
+          sum += d;
+          if (d > max) max = d;
+        }
+      }
+      samples.push({
+        yaw: yaws[i],
+        darkened: n,
+        fraction: n / (w * h),
+        meanDelta: n > 0 ? sum / n : 0,
+        maxDelta: max,
+        // Whole-frame means, so a probe that reads back nothing at all is
+        // distinguishable from a rig that casts nothing.
+        litMean: litSum / (w * h),
+        shadowedMean: shadSum / (w * h),
+        // The same frame drawn with and without the shadow pass. The
+        // difference IS the shadow pass, which is how the draw budget below
+        // is shown to be counting it.
+        callsShadowed,
+        callsUnshadowed,
+      });
+      darkened += n;
+    }
+    this.sun.castShadow = true;
+    this.camera.quaternion.copy(keepQ);
+    this.renderer.render(this.scene, this.camera);
+    return { width: w, height: h, pixels: w * h * yaws.length, darkened, samples };
   }
 }
