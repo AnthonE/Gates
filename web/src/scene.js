@@ -688,6 +688,128 @@ export class GameScene {
   }
 
   /**
+   * Dev-only: does the surface have GRAIN, and does the grain go away?
+   *
+   * `surfaceProbe` counts pixels that moved, which is the right question for
+   * "is the field painting at all" and the wrong one for grain. A uniform
+   * wash moves every pixel it touches; so does a tint; so does an exposure
+   * slip. None of them is texture. What separates grain from all three is
+   * that grain is HIGH FREQUENCY — it changes between one pixel and the next
+   * — so this measures neighbour-to-neighbour contrast and not just delta.
+   *
+   * Three renders per view, not two:
+   *   - the toggled uniform at 1,
+   *   - the same state again, which is the CONTROL. Two renders of one state
+   *     must differ nowhere, or every ceiling below is partly the rasterizer
+   *     talking — and half the claims this probe exists for are ceilings
+   *     ("grain is gone at 140 m"), which a noisy zero point would pass for
+   *     free.
+   *   - the toggled uniform at 0.
+   *
+   * Metrics per view: how many pixels moved and which way (the surfaceProbe
+   * measure, kept because a contrast ratio on an empty mask means nothing),
+   * and the mean contrast of both frames over the SAME pixel set — the set
+   * the toggle moved. Same set for both states, so the ratio is honest: it
+   * asks whether what the toggle added was detail or a wash.
+   *
+   * Views are (eye, target) pairs in world space, resolved by the caller
+   * because this class holds the camera and not the terrain. It moves the
+   * camera, which surfaceProbe does not, so the sky dome rides along and
+   * everything is restored at the end.
+   *
+   * Allocates and renders 3N frames; never call it from the RAF path.
+   */
+  contrastProbe(views, uniformName, minDelta) {
+    const u = this._terrainUniforms;
+    if (!u || !u[uniformName]) return null;
+    const knob = u[uniformName];
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const on = new Uint8Array(w * h * 4);
+    const control = new Uint8Array(w * h * 4);
+    const off = new Uint8Array(w * h * 4);
+    const luma = (buf, p) => (buf[p] * 2 + buf[p + 1] * 5 + buf[p + 2]) >> 3;
+    const cam = this.camera;
+    const keepQ = cam.quaternion.clone();
+    const keepPos = cam.position.clone();
+    const keepVal = knob.value;
+    const samples = [];
+    for (const view of views) {
+      cam.position.set(view.eye[0], view.eye[1], view.eye[2]);
+      this.sky.position.copy(cam.position);
+      this._target.set(view.at[0], view.at[1], view.at[2]);
+      cam.lookAt(this._target);
+
+      knob.value = 1;
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, on);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, control);
+      knob.value = 0;
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, off);
+
+      let up = 0;
+      let down = 0;
+      let sum = 0;
+      let noise = 0;
+      let mask = 0;
+      let cOn = 0;
+      let cOff = 0;
+      // Stop one row and one column short: the contrast measure reads the
+      // right and lower neighbour of every pixel it scores.
+      for (let y = 0; y < h - 1; y++) {
+        for (let x = 0; x < w - 1; x++) {
+          const p = (y * w + x) * 4;
+          const a = luma(on, p);
+          const b = luma(off, p);
+          const c = luma(control, p);
+          const cd = a - c;
+          if (cd > minDelta || cd < -minDelta) noise++;
+          const d = a - b;
+          if (d > minDelta) up++;
+          else if (d < -minDelta) down++;
+          else continue;
+          sum += d < 0 ? -d : d;
+          mask++;
+          const right = p + 4;
+          const below = p + w * 4;
+          const aR = luma(on, right) - a;
+          const aB = luma(on, below) - a;
+          const bR = luma(off, right) - b;
+          const bB = luma(off, below) - b;
+          cOn += (aR < 0 ? -aR : aR) + (aB < 0 ? -aB : aB);
+          cOff += (bR < 0 ? -bR : bR) + (bB < 0 ? -bB : bB);
+        }
+      }
+      const scored = (w - 1) * (h - 1);
+      samples.push({
+        label: view.label || "",
+        scored,
+        up,
+        down,
+        moved: mask,
+        noise,
+        movedFraction: mask / scored,
+        upFraction: up / scored,
+        downFraction: down / scored,
+        meanDelta: mask > 0 ? sum / mask : 0,
+        // Mean neighbour contrast over the moved set, in luma per pixel step.
+        contrastOn: mask > 0 ? cOn / (2 * mask) : 0,
+        contrastOff: mask > 0 ? cOff / (2 * mask) : 0,
+        contrastRatio: cOff > 0 ? cOn / cOff : 0,
+      });
+    }
+    knob.value = keepVal;
+    cam.quaternion.copy(keepQ);
+    cam.position.copy(keepPos);
+    this.sky.position.copy(keepPos);
+    this.renderer.render(this.scene, cam);
+    return { width: w, height: h, uniform: uniformName, samples };
+  }
+
+  /**
    * Dev-only: does the procedural surface actually reach the frame?
    *
    * Same shape as shadowProbe and for the same reason. Every structural
@@ -785,7 +907,7 @@ export class GameScene {
    * because both work by weighting a term to zero with a uniform and a
    * uniform cannot remove an instruction.
    *
-   * So this compiles the ground four ways (materials.js TERRAIN_VARIANTS) and
+   * So this compiles the ground six ways (materials.js TERRAIN_VARIANTS) and
    * measures each one:
    *
    *   1. **Compile.** The first render through a variant pays its compile and
@@ -833,6 +955,7 @@ export class GameScene {
     const shipped = this._terrainMat;
     const ref = new Uint8Array(w * h * 4);
     const flat = new Uint8Array(w * h * 4);
+    const flatGrain = new Uint8Array(w * h * 4);
     const shot = new Uint8Array(w * h * 4);
     // The GPU sync. `gl.finish()` alone measured 0.2 ms for a 1280x720 frame
     // on a software rasterizer that needs two orders of magnitude more than
@@ -857,14 +980,20 @@ export class GameScene {
     this._target.copy(this.camera.position).add(this._dir);
     this.camera.lookAt(this._target);
 
-    // The two reference frames, both from the SHIPPED program, so a variant's
-    // image is compared against the thing it is a variant of.
+    // The three reference frames, all from the SHIPPED program, so a variant's
+    // image is compared against the thing it is a variant of. One per uniform
+    // handle a variant has a compiled partner for: `uSurface = 0` is what
+    // `nofield` must land on, `uGrain = 0` is what `nograin` must land on.
     this.renderer.render(this.scene, this.camera);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, ref);
     u.uSurface.value = 0;
     this.renderer.render(this.scene, this.camera);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, flat);
     u.uSurface.value = 1;
+    u.uGrain.value = 0;
+    this.renderer.render(this.scene, this.camera);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, flatGrain);
+    u.uGrain.value = 1;
 
     const luma = (b, p) => (b[p] * 2 + b[p + 1] * 5 + b[p + 2]) >> 3;
     const compare = (a, b) => {
@@ -990,11 +1119,13 @@ export class GameScene {
         points,
         vsShipped: compare(shot, ref),
         vsFlat: compare(shot, flat),
+        vsFlatGrain: compare(shot, flatGrain),
       });
     }
 
     hooks.use(shipped);
     u.uSurface.value = 1;
+    u.uGrain.value = 1;
     this.camera.quaternion.copy(keepQ);
     this.renderer.render(this.scene, this.camera);
     return {
@@ -1021,6 +1152,11 @@ export class GameScene {
         // uniforms it hands back are the proof the patch is installed.
         patched: !!this._terrainUniforms,
         surface: this._terrainUniforms ? this._terrainUniforms.uSurface.value : null,
+        // The second pass's handle, read off the LIVE uniform: it is a probe
+        // input and it must ship armed, so a probe that forgets to put it back
+        // — or a merge that lands it at 0 — is a gate failure and not an
+        // invisible loss of the surface.
+        grain: this._terrainUniforms ? this._terrainUniforms.uGrain.value : null,
         roughness: m ? m.roughness : null,
         // What the shipped ground program costs per fragment and how big its
         // source is — counted, so quotable anywhere (the fill times next to

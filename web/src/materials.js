@@ -38,6 +38,44 @@
 // handle: at 1 the field paints, at 0 it does not and the same frame renders
 // with flat identities. ci/browser_smoke.mjs renders both and counts the
 // pixels that moved — the only proof a material reaches the image.
+//
+// --- second pass: grain, the octave that only exists at arm's length --------
+//
+// What v0 shipped had no TEXTURE. Its finest octave is 1.7 m across, so from
+// standing height the ground is smooth-shaded mottling and at arm's length it
+// is nothing at all — a hillside reads, a footprint's worth of sand does not.
+//
+// So a fourth octave, at a wavelength the IDENTITY chooses (4 cm of sand,
+// 12 cm of grass clump), with a per-identity shape (a soft stipple for sand,
+// a ridged crystalline speckle for rock) and a per-identity contrast. One
+// sample, not four: the scale, the shape and the contrast are each a dot
+// product against the same splat weights, so they morph continuously across a
+// biome boundary instead of cross-fading two grains. Like every octave above
+// it, it is sampled on world XZ.
+//
+// `uGrain` is its own probe handle, separate from `uSurface`, because "the
+// field paints" and "the surface has grain" fail differently and a gate that
+// cannot separate them cannot name what broke. And unlike `uSurface` it has a
+// COMPILED partner: `nograin` is the shipped program with the octave's
+// instructions gone rather than weighted to zero, so `costProbe` can price the
+// octave against its own run's floor. That pairing is the whole reason this
+// landed on the second attempt — the first rejected grain on a ~9% frame delta
+// that nothing had calibrated, and 9% turned out to be inside this box's noise.
+//
+// WHAT THIS PASS DELIBERATELY DOES NOT DO, and why it is written here rather
+// than discovered again: at 4 cm the world-XZ projection is wrong on a slope.
+// A world-XZ field on a face of upness u is stretched by 1/u along the slope,
+// which at 1.7 m is a smear nobody reads as wrong and at 4 cm is a hillside
+// combed downhill. The fix is to sample the grain — and only the grain —
+// triplanar, and it was built and measured on the abandoned first attempt
+// (`loop/m1-surface-grain`, unmerged) before being taken back out: on a 47°
+// face it moved the slope-to-contour contrast ratio from 1.100 to 1.078, at
+// ×1.00 overall contrast, once the ridge fold is applied per plane and the
+// blend deviation restored by `1/|w|`; on level ground the weights are
+// (0,1,0) exactly, so it changes nothing at all. Neither half survives in any
+// tree — rebuilding it means rebuilding it, and that shape is the one that
+// worked. It is `NOW.md`'s next surface item, not a line of half-built shader
+// carried in the dark.
 
 import * as THREE from "three";
 import {
@@ -56,11 +94,44 @@ import {
 // 5.6× apart in wavelength, so one amplitude in metres cannot serve both
 // (0.06 m over a 9.5 m wave is a slope of 0.006 — a surface nobody can see).
 // The metres live per octave, below, and this scales them.
+//
+// `grain` is the second pass's per-identity trio, and the three numbers are
+// what make one shared octave read as four different surfaces:
+//   scale    cycles per metre of the identity's own grain — 25 /m is a 4 cm
+//            sand clump, 8.3 /m a 12 cm tuft of grass.
+//   contrast how far it swings albedo, ±, at full strength.
+//   ridge    0 is the raw smooth field (a soft stipple), 1 is `1-|2g-1|`
+//            (a ridged, crystalline speckle). Rock is nearly all ridge;
+//            sand is nearly none.
 export const IDENTITIES = [
-  { name: "sand", color: [0.78, 0.71, 0.52], roughness: 0.92, bump: 0.35 },
-  { name: "grass", color: [0.35, 0.49, 0.23], roughness: 0.82, bump: 0.6 },
-  { name: "litter", color: [0.15, 0.33, 0.16], roughness: 0.88, bump: 0.9 },
-  { name: "rock", color: [0.5, 0.48, 0.46], roughness: 0.7, bump: 2.2 },
+  {
+    name: "sand",
+    color: [0.78, 0.71, 0.52],
+    roughness: 0.92,
+    bump: 0.35,
+    grain: { scale: 25.0, contrast: 0.1, ridge: 0.15 },
+  },
+  {
+    name: "grass",
+    color: [0.35, 0.49, 0.23],
+    roughness: 0.82,
+    bump: 0.6,
+    grain: { scale: 8.3, contrast: 0.2, ridge: 0.55 },
+  },
+  {
+    name: "litter",
+    color: [0.15, 0.33, 0.16],
+    roughness: 0.88,
+    bump: 0.9,
+    grain: { scale: 11.0, contrast: 0.22, ridge: 0.45 },
+  },
+  {
+    name: "rock",
+    color: [0.5, 0.48, 0.46],
+    roughness: 0.7,
+    bump: 2.2,
+    grain: { scale: 16.7, contrast: 0.14, ridge: 0.8 },
+  },
 ];
 
 // Field scales, in cycles per metre — one field, three octaves, shared by
@@ -85,6 +156,30 @@ const AMP_MESO_M = 0.55;
 const AMP_MICRO_M = 0.09;
 const FADE_MESO = [2.0, 7.0];
 const FADE_MICRO = [0.3, 1.1];
+// Grain's own bump amplitude in metres and roughness swing. 0.008 m against
+// the identities' 4–12 cm wavelengths is a surface slope of 0.07 (sand, bump
+// 0.35) to 0.29 (rock, bump 2.2) — the same 0.03–0.25 band the two octaves
+// above were chosen against, which is the band where a normal reads without
+// turning into a relief map.
+const AMP_GRAIN_M = 0.008;
+const GRAIN_ROUGH = 0.1;
+// Grain's footprint fade, in CYCLES PER PIXEL rather than metres, because its
+// wavelength is a per-identity number and one metre threshold cannot serve
+// four of them; every identity's grain dies on one curve, each at its own
+// distance. Retiring at 0.09 under this `length(fwidth())` convention is ~11
+// pixels per cycle — well inside Nyquist, so the octave is gone while it is
+// still comfortably resolved rather than at the moment it stops being. That is
+// deliberate on both counts: an octave that dies early cannot alias, and grain
+// is the only octave whose cost scales with how far it reaches.
+const FADE_GRAIN_CPP = [0.03, 0.09];
+// The smallest grain scale any identity carries. Grain's own fade needs the
+// WORLD footprint and the blended scale, both of which cost real work on
+// every fragment in the frame; the horizontal footprint is a lower bound on
+// the world one (xz is a subset of xyz), so `gmFw * this >= fade end` proves
+// every identity's grain is already retired and the whole block can be
+// skipped before any of it is computed. Conservative in the right direction:
+// a steep face may enter the block and find the fade zero anyway.
+const GRAIN_SCALE_MIN = Math.min(...IDENTITIES.map((i) => i.grain.scale));
 // Specular-AA gain on the perturbed normal's variance (three already adds
 // its own term from the *unperturbed* normal; this covers what we added).
 const SPEC_AA = 0.5;
@@ -133,7 +228,7 @@ varying vec3 vGmPos;
 varying vec3 vGmNorm;
 `;
 
-const TERRAIN_FRAG_PARS = /* glsl */ `
+const TERRAIN_FRAG_PARS_HEAD = /* glsl */ `
 varying vec4 vGmSplat;
 varying vec3 vGmPos;
 varying vec3 vGmNorm;
@@ -146,8 +241,30 @@ uniform vec3 uMottle;
 uniform vec4 uFade;
 uniform vec2 uOct;
 uniform vec3 uSnowColor;
+uniform float uGrain;
+uniform vec4 uGrainScale;
+uniform vec4 uGrainContrast;
+uniform vec4 uGrainRidge;
+uniform vec2 uGrainFade;
+uniform vec2 uGrainAmp;
 ${FIELD_GLSL}
 `;
+
+// Grain's own sample: the shared field, folded toward its ridge by the
+// identity's own ridge amount, returned SIGNED (±0.5) so a soft stipple and a
+// crystalline speckle sit on the same midpoint and neither biases the albedo
+// it multiplies. Emitted only into the variants that carry grain — a helper
+// nothing calls is still source the driver compiles, and program size is a
+// budget this gate asserts.
+const GRAIN_GLSL = /* glsl */ `
+float gmGrainTap(vec2 uv, float s, float ridge) {
+  float g = gmNoise(uv * s);
+  return mix(g, 1.0 - abs(2.0 * g - 1.0), ridge) - 0.5;
+}
+`;
+
+const terrainFragPars = (grain) =>
+  grain === "on" ? TERRAIN_FRAG_PARS_HEAD + GRAIN_GLSL : TERRAIN_FRAG_PARS_HEAD;
 
 // --- the cost variants (NOW.md item 1) --------------------------------------
 // A uniform cannot remove an instruction. `uSurface` weights every field term
@@ -168,25 +285,38 @@ ${FIELD_GLSL}
 //                    the surface probe's toggle removes, and the time between
 //                    them is then attributable to the field's instructions.
 //   shadow: "near1"/"off" — shadows.js' variants, same argument.
+//   grain: "off"   — the fourth octave gone: its helper, its block, its tap.
+//                    Its image is the frame `uGrain = 0` produces (every grain
+//                    term is multiplied by uGrain), so the same check the field
+//                    gets applies to it, and the time between the two programs
+//                    is then the octave's own. This is the variant `NOW.md`
+//                    item 1 asked for by name: grain's first attempt rejected
+//                    itself on a ~9% frame delta measured against nothing, and
+//                    the control run in the same sweep is what turns a delta
+//                    into a measurement or into "under the floor".
 //
 // Nothing the player sees is ever built from one: `makeTerrainMaterial()`
 // with no argument is the shipped program, and the gate asserts its variant
 // name is "ship".
-// A fifth is not about cost at all. `noskip` compiles the micro octave
+// A sixth is not about cost at all. `noskip` compiles the micro octave
 // UNCONDITIONALLY — the field exactly as materials v0 shipped it, before this
 // slice made the sample conditional on its own footprint fade. The skip is
 // bit-exact by construction (every use of that octave is multiplied by a fade
 // that is exactly zero wherever the branch skips, and 0 × finite is 0), and an
 // argument like that is worth precisely as much as the gate behind it. So the
 // gate renders both and requires the same frame.
-const TERRAIN_VARIANTS = ["ship", "nofield", "near1", "noshadow", "noskip"];
+const TERRAIN_VARIANTS = ["ship", "nofield", "nograin", "near1", "noshadow", "noskip"];
 
 const VARIANT_CONFIG = {
-  ship: { field: "full", shadow: "ship" },
-  nofield: { field: "off", shadow: "ship" },
-  near1: { field: "full", shadow: "near1" },
-  noshadow: { field: "full", shadow: "off" },
-  noskip: { field: "always", shadow: "ship" },
+  ship: { field: "full", grain: "on", shadow: "ship" },
+  // The field is one field: taking its instructions out takes the fourth
+  // octave's with them, or `nofield` would be "the field minus three of its
+  // four octaves" and its timing would be attributed to the wrong thing.
+  nofield: { field: "off", grain: "off", shadow: "ship" },
+  nograin: { field: "full", grain: "off", shadow: "ship" },
+  near1: { field: "full", grain: "on", shadow: "near1" },
+  noshadow: { field: "full", grain: "on", shadow: "off" },
+  noskip: { field: "always", grain: "on", shadow: "ship" },
 };
 
 /** The three samples of the shared field, or the constants that replace it. */
@@ -222,6 +352,50 @@ function fieldGlsl(field) {
 }
 
 /**
+ * The grain octave, or the constants that replace it.
+ *
+ * Grain's scale, shape and contrast are each a dot product against the same
+ * splat weights, so a biome boundary morphs one grain into another rather than
+ * cross-fading two of them.
+ *
+ * The whole block sits behind one multiply and one compare, because everything
+ * in it — a second fwidth, the blended scale, the fade, the tap — is work the
+ * far field would throw away. Its footprint is the WORLD one, not gmXZ's: a
+ * pixel on a steep face barely moves in XZ while covering metres of surface,
+ * and filtering on the horizontal footprint alone would keep a 4 cm octave
+ * live at any distance on exactly the faces it reads worst on. The cheap
+ * horizontal footprint is still what guards the block, because it is a lower
+ * bound on the world one — conservative in the right direction.
+ *
+ * Nothing inside takes a derivative, and the fade it is cut on is already zero
+ * at the cut, so `gmH` stays continuous across the boundary and the `dFdx(gmH)`
+ * below sees no step.
+ */
+function grainGlsl(grain) {
+  if (grain === "off") {
+    // Both terms are the additive identity of what they feed (albedo swing and
+    // a signed bump/roughness offset), so this variant lands on the `uGrain=0`
+    // image exactly and the gate can check that it did.
+    return /* glsl */ `
+        float gmGrain = 0.0;
+        float gmGrainSwing = 0.0;`;
+  }
+  return /* glsl */ `
+        float gmGrain = 0.0;
+        float gmGrainSwing = 0.0;
+        if (gmFw * ${GRAIN_SCALE_MIN.toFixed(4)} < uGrainFade.y) {
+          float gmFw3 = max(length(fwidth(vGmPos)), 1e-5);
+          float gmGScale = dot(uGrainScale, gmW);
+          float gmFadeGrain = 1.0 - smoothstep(uGrainFade.x, uGrainFade.y, gmFw3 * gmGScale);
+          if (gmFadeGrain > 0.0) {
+            gmGrain = gmGrainTap(gmXZ, gmGScale, dot(uGrainRidge, gmW))
+                    * 2.0 * gmFadeGrain * uSurface * uGrain;
+            gmGrainSwing = gmGrain * dot(uGrainContrast, gmW);
+          }
+        }`;
+}
+
+/**
  * The terrain material. One instance serves every chunk and the far mesh,
  * so the uniforms below (including the probe's `uSurface`) are the scene's
  * single handle on the ground's surface.
@@ -249,6 +423,15 @@ export function makeTerrainMaterial(variantName = "ship") {
     uFade: { value: new THREE.Vector4(FADE_MESO[0], FADE_MESO[1], FADE_MICRO[0], FADE_MICRO[1]) },
     uOct: { value: new THREE.Vector2(AMP_MESO_M, AMP_MICRO_M) },
     uSnowColor: { value: new THREE.Vector3(...SNOW_COLOR) },
+    // The second pass's handle, and the four vectors the grain octave reads
+    // its identity off. It ships at 1: a probe input, not a quality setting,
+    // and the gate reads the live value back to prove it.
+    uGrain: { value: 1 },
+    uGrainScale: { value: new THREE.Vector4(...IDENTITIES.map((i) => i.grain.scale)) },
+    uGrainContrast: { value: new THREE.Vector4(...IDENTITIES.map((i) => i.grain.contrast)) },
+    uGrainRidge: { value: new THREE.Vector4(...IDENTITIES.map((i) => i.grain.ridge)) },
+    uGrainFade: { value: new THREE.Vector2(...FADE_GRAIN_CPP) },
+    uGrainAmp: { value: new THREE.Vector2(AMP_GRAIN_M, GRAIN_ROUGH) },
   };
 
   material.onBeforeCompile = (shader) => {
@@ -279,7 +462,7 @@ export function makeTerrainMaterial(variantName = "ship") {
     // and leaves two locals (gmRough, gmH) for the roughness and normal
     // stages below — three's chunks run in one main(), so they carry.
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", `#include <common>\n${TERRAIN_FRAG_PARS}`)
+      .replace("#include <common>", `#include <common>\n${terrainFragPars(variant.grain)}`)
       .replace(
         "#include <color_fragment>",
         /* glsl */ `
@@ -318,18 +501,22 @@ ${fieldGlsl(variant.field)}
         gmRough = mix(gmRough, ${SNOW_ROUGH.toFixed(3)}, gmSnow);
         gmAlbedo *= mix(1.0, ${WET_DARKEN.toFixed(3)}, gmWet);
         gmRough = mix(gmRough, ${WET_ROUGH.toFixed(3)}, gmWet);
+${grainGlsl(variant.grain)}
 
         gmAlbedo *= 1.0 + uSurface * (
             (gmMacro - 0.5) * uMottle.x
           + (gmMeso - 0.5) * uMottle.y * gmFadeMeso
-          + (gmMicro - 0.5) * uMottle.z * gmFadeMicro);
+          + (gmMicro - 0.5) * uMottle.z * gmFadeMicro)
+          + gmGrainSwing;
         gmRough = clamp(
-          gmRough + uSurface * (gmMicro - 0.5) * ${ROUGH_VAR.toFixed(3)} * gmFadeMicro,
+          gmRough + uSurface * (gmMicro - 0.5) * ${ROUGH_VAR.toFixed(3)} * gmFadeMicro
+                  + gmGrain * uGrainAmp.y,
           0.04, 1.0);
 
-        float gmH = gmBump * uSurface * (
+        float gmH = gmBump * (uSurface * (
             (gmMeso - 0.5) * 2.0 * uOct.x * gmFadeMeso
-          + (gmMicro - 0.5) * 2.0 * uOct.y * gmFadeMicro);
+          + (gmMicro - 0.5) * 2.0 * uOct.y * gmFadeMicro)
+          + gmGrain * uGrainAmp.x);
 
         diffuseColor.rgb *= max(gmAlbedo, 0.0);
         `,
@@ -389,7 +576,7 @@ ${fieldGlsl(variant.field)}
   // per material-instance key and can compile the same shader repeatedly.
   // The variant is part of the key or the probe's programs would collide with
   // the shipped one and it would time the same shader four times.
-  material.customProgramCacheKey = () => `gates-terrain-splat-v1-clipmap-${variantName}`;
+  material.customProgramCacheKey = () => `gates-terrain-splat-v2-grain-clipmap-${variantName}`;
   material.userData.uniforms = uniforms;
   // What this program costs, counted. `programStats` (the compiled source's
   // size) is filled by installClipmapShadows on first compile — it is the
@@ -397,12 +584,18 @@ ${fieldGlsl(variant.field)}
   material.userData.cost = {
     variant: variantName,
     field: variant.field,
+    grain: variant.grain,
     shadow: variant.shadow,
     // Depth fetches and noise samples per shaded fragment: the two things
-    // `NOW.md` item 1 is trying to buy headroom from, both counted.
+    // `NOW.md` item 1 is trying to buy headroom from, both counted. The count
+    // is SITES in the program, not evaluations — two of the four are behind
+    // their own footprint fade, so a near fragment pays four and a far one
+    // pays two. It is an upper bound, which is what a budget wants.
     depthFetches: clipmapFetches(variant.shadow),
-    noiseSamples: variant.field === "off" ? 0 : 3,
+    noiseSamples:
+      variant.field === "off" ? 0 : 3 + (variant.grain === "on" ? 1 : 0),
     microSkipped: variant.field === "full",
+    grainOn: variant.grain === "on",
   };
   return material;
 }
@@ -461,5 +654,14 @@ export function materialFacts() {
     breakup: BLEND_BREAKUP,
     specAA: SPEC_AA,
     fadeMicroM: FADE_MICRO,
+    // The second pass. Scales in cycles/m, so the gate can check they are
+    // genuinely finer than the micro octave (0.588 /m) as well as distinct.
+    grainScale: IDENTITIES.map((i) => i.grain.scale),
+    grainContrast: IDENTITIES.map((i) => i.grain.contrast),
+    grainRidge: IDENTITIES.map((i) => i.grain.ridge),
+    grainFadeCpp: FADE_GRAIN_CPP,
+    grainAmpM: AMP_GRAIN_M,
+    grainRough: GRAIN_ROUGH,
+    microScale: SCALE_MICRO,
   };
 }
