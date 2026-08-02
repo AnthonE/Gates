@@ -861,9 +861,32 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         return scene.contrastProbe(views, uniformName, minDelta);
       }
     : null;
+  // Materials v1's third pass: the projection probe takes views in WORLD space
+  // like the contrast one, but the caller aims them at a FACE rather than by
+  // (yaw, pitch) — a combed grain is only combed on a slope, so the gate finds
+  // one first and computes the eye from what it found.
+  const devProjectionProbe = dev
+    ? (views, minDelta) => scene.projectionProbe(views, minDelta)
+    : null;
+  // …and the face-finder itself. Terrain owns the chunks, so Terrain scans
+  // them; the camera's own xz is the centre because the gate's other views are
+  // taken from there too.
+  const devSteepestFace = dev
+    ? (radiusM, binM, minVerts, sun, minLit) => {
+        const p = scene.camera.position;
+        // The eye rides along because the probe's control views are taken from
+        // it — the same vantage 15b's near and far views use, so the level and
+        // retired frames are comparable to the ones already in the log.
+        return {
+          eye: [p.x, p.y, p.z],
+          ...terrain.steepestFace(p.x, p.z, radiusM, binM, minVerts, sun, minLit),
+        };
+      }
+    : null;
   if (dev) {
     scene.attachTerrainCost({
       variants: () => terrain.costVariants(),
+      projection: () => terrain.projectionVariant(),
       use: (m) => terrain.useMaterial(m),
     });
   }
@@ -995,6 +1018,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (devHorizonProbe) debug.horizonProbe = devHorizonProbe;
     if (devCostProbe) debug.costProbe = devCostProbe;
     if (devGrainProbe) debug.grainProbe = devGrainProbe;
+    if (devProjectionProbe) debug.projectionProbe = devProjectionProbe;
+    if (devSteepestFace) debug.steepestFace = devSteepestFace;
     globalThis.__gatesDebug = debug;
   }, 250);
 }

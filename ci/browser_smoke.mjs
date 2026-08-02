@@ -337,6 +337,122 @@ const GRAIN_MIN_DIRECTIONAL = Number(process.env.BROWSER_SMOKE_GRAIN_MIN_DIR || 
 // aliases, which is the failure the cycles-per-pixel fade exists to prevent.
 const GRAIN_FAR_MAX_FRACTION = Number(process.env.BROWSER_SMOKE_GRAIN_FAR_MAX || 0.005);
 
+// --- the projection gate (DECISIONS.md §open, "materials v1", third pass) ---
+// 15b proves the surface has grain. It cannot prove the grain is on the
+// SURFACE: a world-XZ field stretched 1/u along a slope has exactly the same
+// neighbour contrast, the same moved fraction, the same signed split. What is
+// wrong with it is directional, so the gate has to be directional too.
+//
+// The instrument is `projectionProbe`: the shipped program and `flatgrain` (the
+// same program carrying materials v1's world-XZ tap) rendered from ONE camera
+// in ONE run, each toggled at `uGrain`, each scored on its own difference image
+// along both screen axes. Nothing below is a threshold on an absolute number —
+// every assertion is one program against the other in the same frame, which is
+// the only kind of measurement this box earns the right to make.
+//
+// The face it is aimed at is FOUND, not written down. A seed change that moved
+// the pinned spawn onto a meadow would otherwise aim the probe at level ground
+// and every assertion here would pass by default, which is the failure mode the
+// repo's trap list calls the worst bug class.
+const PROJ_FACE_RADIUS_M = 150;
+const PROJ_FACE_BIN_M = 4;
+const PROJ_FACE_MIN_VERTS = 8;
+// A face has to be a face. `upness` is the bin's mean normal's y (1.0 is
+// level); `coherence` is that mean normal's LENGTH, which is 1 only if every
+// vertex in the bin agreed and collapses on a ridge line or a crumpled patch.
+// Both are floors on the EVIDENCE, not on the fix: a run that cannot find a
+// slope near spawn must say so loudly rather than score a meadow.
+const PROJ_FACE_MAX_UPNESS = Number(process.env.BROWSER_SMOKE_PROJ_MAX_UPNESS || 0.9);
+const PROJ_FACE_MIN_COHERENCE = Number(process.env.BROWSER_SMOKE_PROJ_MIN_COH || 0.9);
+// …and it has to be LIT. The grain octave reaches the image as a swing in
+// albedo, so on a face turned away from a 21°-elevation key light the swing
+// lands under the probe's own luma threshold and there is nothing to measure:
+// the unfiltered search picked exactly such a face here and the probe scored
+// 0.3% of the frame. 0.35 is the lambert term level ground itself gets from
+// this sun (sin 0.36 = 0.352), so it asks a face for no more light than the
+// meadow beside it already has.
+const PROJ_FACE_MIN_LIT = Number(process.env.BROWSER_SMOKE_PROJ_MIN_LIT || 0.35);
+// Where the eye goes: straight out along the face's own NORMAL, looking back
+// down it, and the same distance straight down at level ground for the pair's
+// control. Two perpendicular views of two differently-tilted patches is the
+// whole instrument, and the reason it is built this way is worth stating,
+// because two earlier cuts of this gate were built on measures that turned out
+// not to mean what they looked like:
+//
+//   · Aiming down the FALL LINE measured at 74° incidence — 4% of the frame
+//     carrying grain, and both screen axes foreshortened by unequal amounts.
+//   · Reading the screen-axis split `gradX/gradY` at the face looked like the
+//     directional measure a directional defect deserves, and is not one. The
+//     flat control settles it: level ground scores 1.11 (both programs agree
+//     to 0.001, as they must), and the FACE scores 0.39–0.42 in BOTH programs.
+//     A 2.5x screen-axis bias that both programs share is the view's own —
+//     terrain curvature across a 107° horizontal frustum — and it swamps the
+//     1.456x the projection is worth. It stays in the log as evidence; it is
+//     not what is asserted.
+//
+// What IS asserted survives all of that, because every one of those confounds
+// is common to both programs at one camera: the grain's own DETAIL, direction-
+// averaged and divided by its amplitude — `(gradX + gradY) / (2·amp)`, an
+// inverse characteristic length in pixels — measured at the face and at level
+// ground, per program. `detail(flat)/detail(face)` is then how much that
+// program's grain coarsens when the surface tilts, and a projection stamped
+// from above coarsens by `1/upness` while one laid on the surface does not.
+// View distance, fade, splat identity, lighting, curvature and mask selection
+// all sit in both programs' numerator and denominator alike.
+//
+// 1 m out at a 75° vertical fov is a frame ~1.5 m of face tall — well inside a
+// 4 m bin — and the distance is set by the FADE, not by framing: a steep face
+// wears the rock identity, whose grain is 6 cm, and 2 m out that octave is
+// already past its cycles-per-pixel retirement (measured: 0.3% of the frame).
+const PROJ_EYE_DIST_M = 1.0;
+// Grain must actually reach the face view in BOTH programs, or the anisotropy
+// below is a ratio of two zeroes.
+const PROJ_MIN_MOVED = Number(process.env.BROWSER_SMOKE_PROJ_MIN_MOVED || 0.02);
+// The flat control's own floor, lower because a straight-down view from eye
+// height covers more ground per pixel than a 1 m look at a face, so more of it
+// sits past the octave's cycles-per-pixel fade (measured: 2.4–2.7%).
+const PROJ_MIN_MOVED_FLAT = Number(process.env.BROWSER_SMOKE_PROJ_MIN_FLAT || 0.01);
+// THE assertion this slice exists for: how much less the shipped projection's
+// grain coarsens across a tilt than the one it replaces. Both programs are
+// measured at the same two cameras in the same run, so the number is a ratio of
+// two ratios and nothing about this box, this seed or this face survives into
+// it. Measured on the 46.6° face this spawn offers: world XZ coarsens ×2.02
+// from level ground to the face, triplanar ×1.40 — a gain of ×1.44 against the
+// ×1.456 stretch a stamped-from-above projection has to eat in full. The floor
+// is 1.15: a program that lost the fix scores 1.00 exactly, and what is left
+// over is margin for a seed that offers a gentler face than this one.
+const PROJ_MIN_STRETCH_GAIN = Number(process.env.BROWSER_SMOKE_PROJ_MIN_GAIN || 1.15);
+// The flat control's own bar. On ground that is not tilted the two projections
+// are the same arithmetic and must measure the same grain; they land 6.7% apart
+// here because "level" near this spawn is up to 6° of slope, not 0°.
+const PROJ_FLAT_MAX_SPREAD = Number(process.env.BROWSER_SMOKE_PROJ_FLAT_SPREAD || 0.15);
+// …and it did not buy that by blending the octave into mush, which is what a
+// stock triplanar blend does when the deviation is not restored by 1/|w| (the
+// abandoned first attempt measured x0.56 the contrast that way — an isotropy
+// win bought by deleting the grain). Amplitude is the mean |Δluma| the octave
+// contributes over the pixels it moved.
+const PROJ_MIN_AMP_RATIO = Number(process.env.BROWSER_SMOKE_PROJ_MIN_AMP || 0.9);
+// The confinement ceiling, where the octave is already retired and the two
+// programs therefore have nothing to disagree about. Not zero, for the reason
+// `COST_IDENTITY_MAX_DELTA` is not zero: separately compiled programs schedule
+// the same arithmetic differently and a last-bit difference flips a fragment at
+// a smoothstep knee or a silhouette.
+const PROJ_RETIRED_MAX_FRACTION = Number(process.env.BROWSER_SMOKE_PROJ_RETIRED_MAX || 0.0002);
+// How much more of the octave's own amplitude the projection must move on a
+// real face than on near-level ground — a second, independent way for the tap
+// to be caught not reading the normal. A blend on anything constant changes
+// every grain pixel in the frame and changes them by the same amount whatever
+// the ground is doing, which scores exactly 1.00 here.
+//
+// The floor is 1.5 — half again — against a measured 1.95 on this spawn's
+// 46.6° face, and the margin is deliberately generous because the denominator
+// is not zero and cannot be made zero: the flat control's ground is up to 6° of
+// slope, not 0°, so it carries a real effect (2.494 of the octave's amplitude
+// against the face's 4.867) that a steeper spawn would shrink and a flatter one
+// would grow. What the floor has to separate is 1.00 from "grows with slope",
+// and 1.5 does that without being a bet on which meadow the seed hands over.
+const PROJ_MIN_SLOPE_RATIO = Number(process.env.BROWSER_SMOKE_PROJ_SLOPE_RATIO || 1.5);
+
 // --- the fragment budget (DECISIONS.md §open, "fragment budget v0") ---------
 // DESIGN §9 budgets the frame by DRAW CALLS and TRIANGLES, and the gate has
 // asserted both since lighting v0. Neither says anything about what a single
@@ -362,6 +478,15 @@ const DEPTH_FETCH_BUDGET = Number(process.env.BROWSER_SMOKE_DEPTH_FETCHES || 24)
 // ~18% over, which survives a three minor bump and still catches a program
 // that doubled.
 const TERRAIN_FRAGMENT_BUDGET = Number(process.env.BROWSER_SMOKE_FRAG_CHARS || 96000);
+// Noise sample sites per shaded ground fragment: 6 today — three field octaves
+// plus the grain octave's three triplanar taps — where materials v1 paid 4 on
+// one world-XZ tap. Each site is four `gmHash` evaluations, so this is the
+// arithmetic axis the ground's shading actually lives on, and it is the axis
+// `NOW.md` item 1 says to price the projection in ("sample sites and program
+// chars — not in ms") after six cost-probe runs read five of six the wrong
+// sign. The cap is one octave of headroom over what ships and fails a program
+// that went triplanar on the whole field, which would be 12.
+const NOISE_SAMPLE_BUDGET = Number(process.env.BROWSER_SMOKE_NOISE_SAMPLES || 8);
 // Where the cost probe aims and how it sweeps. The bearing is the surface
 // probe's steepest yaw at its own pitch — the view with the most ground in
 // it, which is the view a fill measurement should be made from. Three scales
@@ -1502,6 +1627,279 @@ console.log(
     `control noise ${grainNear.noise}/${grainFar.noise}`,
 );
 
+// Assertion 15c — the grain is laid ON the surface, not stamped through it.
+//
+// 15b's every measure is blind to this. A grain combed downhill moves the same
+// pixels, by the same amount, in both directions, at the same neighbour
+// contrast as one lying on the slope — the two frames differ in the SHAPE of
+// the detail and in nothing 15b counts. So this scores the shipped program
+// against `flatgrain` (materials v1's world-XZ tap, everything else identical)
+// from one camera aimed down a real slope's fall line, on the grain's own
+// difference image, along both screen axes.
+const projHook = await A.page.evaluate(() => [
+  typeof globalThis.__gatesDebug.projectionProbe,
+  typeof globalThis.__gatesDebug.steepestFace,
+]);
+if (projHook[0] !== "function" || projHook[1] !== "function") {
+  fail(
+    `tab A: __gatesDebug.projectionProbe is ${projHook[0]} and steepestFace is ${projHook[1]} on a ` +
+      `dev shard — the projection gate cannot run`,
+  );
+}
+// The structural half: the shipped program must SAY it is triplanar and the
+// partner must say it is not, or the two frames below are one program measured
+// twice and every ratio is 1.000 for free.
+if (mat.grainProjection !== "triplanar") {
+  fail(
+    `tab A: the shipped ground samples its grain on "${mat.grainProjection}" — the octave is still ` +
+      `projected from above, so a slope is combed downhill`,
+  );
+}
+if (mat.flatGrainProjection !== "xz") {
+  fail(
+    `tab A: the projection partner samples its grain on "${mat.flatGrainProjection}", not "xz" — ` +
+      `the gate below would be comparing the shipped program against itself`,
+  );
+}
+if (!(mat.grainTaps === 3)) {
+  fail(
+    `tab A: the shipped grain takes ${mat.grainTaps} noise taps — a triplanar tap is three, one per ` +
+      `world plane, and the facts do not match the program`,
+  );
+}
+// Find the slope. Nothing here is hardcoded: a worldgen change that moved the
+// pinned spawn onto flat ground fails loudly instead of scoring a meadow, and
+// the sun direction the search is filtered by is read off the live rig rather
+// than written down, so a lighting change cannot silently aim the probe into
+// shadow (which is where the unfiltered search put it).
+const sunDir = [
+  Math.cos(lit.sunElevation) * Math.sin(lit.sunAzimuth),
+  Math.sin(lit.sunElevation),
+  Math.cos(lit.sunElevation) * Math.cos(lit.sunAzimuth),
+];
+const face = await A.page.evaluate(
+  ([r, b, m, sun, lit]) => globalThis.__gatesDebug.steepestFace(r, b, m, sun, lit),
+  [PROJ_FACE_RADIUS_M, PROJ_FACE_BIN_M, PROJ_FACE_MIN_VERTS, sunDir, PROJ_FACE_MIN_LIT],
+);
+if (!face || !face.found) {
+  fail(
+    `tab A: no ground face of ${PROJ_FACE_MIN_VERTS}+ vertices within ${PROJ_FACE_RADIUS_M} m of ` +
+      `spawn (${JSON.stringify(face)}) — the near ring never streamed, so the projection has ` +
+      `nothing to be measured on`,
+  );
+}
+if (!(face.upness <= PROJ_FACE_MAX_UPNESS)) {
+  fail(
+    `tab A: the steepest coherent face within ${PROJ_FACE_RADIUS_M} m of spawn is ` +
+      `${face.slopeDeg.toFixed(1)}° (upness ${face.upness.toFixed(3)}, ceiling ` +
+      `${PROJ_FACE_MAX_UPNESS}) across ${face.candidates} lit candidate bins (${face.unlit} more ` +
+      `rejected as facing away from the sun). A world-XZ grain is ` +
+      `stretched by 1/upness, so on ground this level there is no comb to measure and this gate ` +
+      `would pass by default`,
+  );
+}
+if (!(face.coherence >= PROJ_FACE_MIN_COHERENCE)) {
+  fail(
+    `tab A: the face at ${face.key} has coherence ${face.coherence.toFixed(3)} over ${face.verts} ` +
+      `vertices (floor ${PROJ_FACE_MIN_COHERENCE}) — its normals disagree, so it is a ridge or a ` +
+      `crumple and not a face with one fall line`,
+  );
+}
+// The eye: straight out along the face's own normal, looking back down it.
+const fn = face.normal;
+const PROJ_VIEWS = [
+  {
+    label: "face",
+    eye: [
+      face.center[0] + fn[0] * PROJ_EYE_DIST_M,
+      face.center[1] + fn[1] * PROJ_EYE_DIST_M,
+      face.center[2] + fn[2] * PROJ_EYE_DIST_M,
+    ],
+    at: face.center,
+  },
+  // The control the face is measured against: the SAME probe, straight down at
+  // ground that is not tilted, from the player's own eye. Everything the pair
+  // shares — the octave, the fade, the light, the instrument — cancels between
+  // them; what does not is the tilt.
+  {
+    label: "flat",
+    eye: face.eye,
+    at: [face.eye[0], face.eye[1] - 1, face.eye[2]],
+  },
+  {
+    label: "retired",
+    eye: [face.eye[0], face.eye[1] + GRAIN_FAR_LIFT_M, face.eye[2]],
+    at: [
+      face.eye[0] + Math.sin(0) * Math.cos(GRAIN_FAR_PITCH),
+      face.eye[1] + GRAIN_FAR_LIFT_M + Math.sin(GRAIN_FAR_PITCH),
+      face.eye[2] + Math.cos(0) * Math.cos(GRAIN_FAR_PITCH),
+    ],
+  },
+];
+const pr = await A.page.evaluate(
+  ([views, minDelta]) => globalThis.__gatesDebug.projectionProbe(views, minDelta),
+  [PROJ_VIEWS, GRAIN_PROBE_MIN_DELTA],
+);
+if (!pr) {
+  fail(
+    `tab A: projectionProbe returned null — the scene never took the terrain's cost hooks, so the ` +
+      `projection partner was never built`,
+  );
+}
+const projDetail = (r) =>
+  r.samples
+    .map(
+      (s) =>
+        `    ${s.label}/${s.program}: ${(s.movedFraction * 100).toFixed(2)}% moved, amp ` +
+        `${s.amp.toFixed(2)} luma, grad ${s.gradX.toFixed(3)}x/${s.gradY.toFixed(3)}y ` +
+        `(anisotropy ${s.anisotropy.toFixed(4)}), control noise ${s.noise}` +
+        (s.vsFirst
+          ? `, vs triplanar ${s.vsFirst.changed} px (max ${s.vsFirst.maxDelta}/255, mean ` +
+            `${s.vsFirst.meanAbsMasked.toFixed(2)} over the grain mask)`
+          : ""),
+    )
+    .join("\n");
+// The probe's own zero point, before anything is read off it.
+for (const s of pr.samples) {
+  if (s.noise !== 0) {
+    fail(
+      `tab A: the projection probe's control differs from its own frame on ${s.noise} pixels at ` +
+        `"${s.label}/${s.program}" — two renders of one state are not identical, so every ratio ` +
+        `below is partly the rasterizer.\n${projDetail(pr)}`,
+    );
+  }
+}
+const projAt = (label, program) =>
+  pr.samples.find((s) => s.label === label && s.program === program);
+const faceTri = projAt("face", "triplanar");
+const faceXZ = projAt("face", "xz");
+const flatTri = projAt("flat", "triplanar");
+const flatXZ = projAt("flat", "xz");
+const retiredXZ = projAt("retired", "xz");
+if (!faceTri || !faceXZ || !flatTri || !flatXZ || !retiredXZ) {
+  fail(
+    `tab A: the projection probe returned [${pr.samples.map((s) => `${s.label}/${s.program}`)}] — ` +
+      `expected face, flat and retired in both programs`,
+  );
+}
+if (faceTri.movedFraction < PROJ_MIN_MOVED || faceXZ.movedFraction < PROJ_MIN_MOVED) {
+  fail(
+    `tab A: grain reaches ${(faceTri.movedFraction * 100).toFixed(2)}% (triplanar) and ` +
+      `${(faceXZ.movedFraction * 100).toFixed(2)}% (xz) of the face view, floor ` +
+      `${(PROJ_MIN_MOVED * 100).toFixed(1)}% — the eye is too far off the face for the octave to be ` +
+      `live there, so every ratio below is taken over two nothings.\n${projDetail(pr)}`,
+  );
+}
+if (flatTri.movedFraction < PROJ_MIN_MOVED_FLAT || flatXZ.movedFraction < PROJ_MIN_MOVED_FLAT) {
+  fail(
+    `tab A: grain reaches ${(flatTri.movedFraction * 100).toFixed(2)}% (triplanar) and ` +
+      `${(flatXZ.movedFraction * 100).toFixed(2)}% (xz) of the flat control view, floor ` +
+      `${(PROJ_MIN_MOVED_FLAT * 100).toFixed(1)}% — the control the face is measured against ` +
+      `carries no octave.\n${projDetail(pr)}`,
+  );
+}
+// The grain's own DETAIL: direction-averaged so the view's screen-axis bias
+// drops out, and divided by the octave's amplitude so a louder grain does not
+// read as a finer one. It is an inverse characteristic length in pixels.
+const detail = (s) => (s.gradX + s.gradY) / (2 * Math.max(s.amp, 1e-6));
+// How much each program's grain coarsens when the ground tilts under it. This
+// is the defect, stated as a number: a field stamped from above is stretched by
+// 1/upness along the fall line and therefore coarsens; a field laid on the
+// surface does not know the surface tilted.
+const stretchXZ = detail(flatXZ) / Math.max(detail(faceXZ), 1e-9);
+const stretchTri = detail(flatTri) / Math.max(detail(faceTri), 1e-9);
+const stretchGain = stretchXZ / Math.max(stretchTri, 1e-9);
+// The flat control first: with no tilt there is nothing for the two
+// projections to disagree about, and a control that disagrees with itself
+// cannot calibrate the face.
+const flatSpread = Math.abs(detail(flatTri) / Math.max(detail(flatXZ), 1e-9) - 1);
+if (!(flatSpread <= PROJ_FLAT_MAX_SPREAD)) {
+  fail(
+    `tab A: on the flat control the two projections measure grain detail ` +
+      `${detail(flatTri).toFixed(5)} (triplanar) and ${detail(flatXZ).toFixed(5)} (xz) — ` +
+      `${(flatSpread * 100).toFixed(1)}% apart against a ${(PROJ_FLAT_MAX_SPREAD * 100).toFixed(0)}% ` +
+      `ceiling. Level ground is where the blend weights are (0,1,0) and the two programs are the ` +
+      `same arithmetic; a control that disagrees with itself cannot calibrate the ` +
+      `face.\n${projDetail(pr)}`,
+  );
+}
+// THE assertion. Every confound the face view carries — its distance, its
+// splat identity, its fade, its lighting, the terrain's curvature across a
+// 107° frustum, the mask's own selection bias — is in both programs' flat and
+// face numbers alike, so it cancels twice over. What is left is the projection.
+if (!(stretchGain >= PROJ_MIN_STRETCH_GAIN)) {
+  fail(
+    `tab A: tilting the ground to ${face.slopeDeg.toFixed(1)}° (upness ${face.upness.toFixed(3)}, a ` +
+      `x${(1 / face.upness).toFixed(3)} stretch down the fall line) coarsens the shipped grain by ` +
+      `x${stretchTri.toFixed(3)} and the world-XZ grain by x${stretchXZ.toFixed(3)} — a gain of ` +
+      `x${stretchGain.toFixed(3)} against a floor of ${PROJ_MIN_STRETCH_GAIN}. The octave is still ` +
+      `stamped through the surface from above rather than laid on it.\n${projDetail(pr)}`,
+  );
+}
+// …and it was not bought by deleting the grain.
+const ampRatio = faceXZ.amp > 0 ? faceTri.amp / faceXZ.amp : 0;
+if (!(ampRatio >= PROJ_MIN_AMP_RATIO)) {
+  fail(
+    `tab A: the shipped grain contributes ${faceTri.amp.toFixed(2)} luma per moved pixel on the ` +
+      `face against the world-XZ program's ${faceXZ.amp.toFixed(2)} — x${ampRatio.toFixed(3)}, ` +
+      `floor ${PROJ_MIN_AMP_RATIO}. A triplanar blend without the 1/|w| deviation restore wins the ` +
+      `check above by fading the octave out on exactly the faces it was reprojected ` +
+      `for.\n${projDetail(pr)}`,
+  );
+}
+// The confinement half. From 60 m up the cycles-per-pixel fade has already
+// retired the octave entirely (15b asserts 0.000% of that frame moves), so the
+// only instructions the two programs disagree about contribute nothing — and
+// the frames must land on each other. Not bit-exactly: two separately compiled
+// programs may schedule identical arithmetic in a different order, and a
+// last-bit difference at a silhouette or a smoothstep knee flips whole
+// fragments. That is the same allowance `COST_IDENTITY_MAX_DELTA` already makes
+// for `nofield` and `nograin`, and the ceiling here is tight enough that a
+// projection leaking outside the grain block cannot hide under it.
+if (retiredXZ.vsFirst.changedFraction > PROJ_RETIRED_MAX_FRACTION) {
+  fail(
+    `tab A: with grain retired at ${GRAIN_FAR_LIFT_M} m up, the triplanar and world-XZ programs ` +
+      `still differ on ${retiredXZ.vsFirst.changed} pixels — ` +
+      `${(retiredXZ.vsFirst.changedFraction * 100).toFixed(4)}% of the frame, over the ` +
+      `${(PROJ_RETIRED_MAX_FRACTION * 100).toFixed(4)}% ceiling, max ` +
+      `${retiredXZ.vsFirst.maxDelta}/255. The projection change is not confined to the grain ` +
+      `octave.\n${projDetail(pr)}`,
+  );
+}
+// …and confinement to SLOPES, which is what the claim "level ground is
+// unchanged" is really about. Counting changed pixels cannot see it: the
+// triplanar tap reads different lattice cells the moment any weight leaves the
+// XZ plane, so 6° of slope already moves nearly every grain pixel and 46° moves
+// the same nearly-every. What does scale is the SIZE of the difference, read in
+// units of the octave itself — how far the two programs' frames sit apart over
+// the grain's own pixels, divided by what the grain contributes there.
+const faceEffect = faceXZ.vsFirst.meanAbsMasked / Math.max(faceXZ.amp, 1e-6);
+const flatEffect = flatXZ.vsFirst.meanAbsMasked / Math.max(flatXZ.amp, 1e-6);
+if (!(faceEffect >= flatEffect * PROJ_MIN_SLOPE_RATIO)) {
+  fail(
+    `tab A: the projection moves the frame by ${faceEffect.toFixed(3)} of the octave's own ` +
+      `amplitude on a ${face.slopeDeg.toFixed(1)}° face against ${flatEffect.toFixed(3)} on the flat ` +
+      `control, over ground no steeper than 6° — a ratio of ` +
+      `${(faceEffect / Math.max(flatEffect, 1e-6)).toFixed(2)} against a floor of ` +
+      `${PROJ_MIN_SLOPE_RATIO}. The tap is not blending on the surface normal: its effect does not ` +
+      `grow with slope.\n${projDetail(pr)}`,
+  );
+}
+console.log(
+  `  grain projection: triplanar, ${mat.terrain.cost.noiseSamples} noise sites/fragment · face ` +
+    `${face.slopeDeg.toFixed(1)}° (upness ${face.upness.toFixed(3)}, lit ${face.lit.toFixed(3)}, ` +
+    `coherence ${face.coherence.toFixed(3)}, ${face.verts} verts, ${face.candidates} lit / ` +
+    `${face.unlit} unlit of ${face.bins} bins in ${face.radiusM} m; albedo channel only)\n` +
+    `${projDetail(pr)}\n` +
+    `  grain projection cont: tilting to ${face.slopeDeg.toFixed(1)}° (x` +
+    `${(1 / face.upness).toFixed(3)} stretch) coarsens the grain x${stretchXZ.toFixed(3)} on world ` +
+    `XZ and x${stretchTri.toFixed(3)} triplanar — gain x${stretchGain.toFixed(3)} over ` +
+    `${PROJ_MIN_STRETCH_GAIN}, at x${ampRatio.toFixed(3)} amplitude; flat control agrees to ` +
+    `${(flatSpread * 100).toFixed(1)}%; effect ${faceEffect.toFixed(3)} of the octave on the face ` +
+    `vs ${flatEffect.toFixed(3)} flat (x${(faceEffect / Math.max(flatEffect, 1e-6)).toFixed(2)}); ` +
+    `${retiredXZ.vsFirst.changed} px where the octave is retired`,
+);
+
 // Assertion 16 — THE FRAGMENT BUDGET. Assertions 9–15 all prove a system
 // reaches the image; none of them can say what it costs, because all of them
 // work by weighting a term to zero with a uniform, and a uniform removes no
@@ -1581,6 +1979,19 @@ if (fragProgram.resolvedFragmentChars > TERRAIN_FRAGMENT_BUDGET) {
     `tab A: the terrain fragment program is ${fragProgram.resolvedFragmentChars} chars of GLSL, ` +
       `over the ${TERRAIN_FRAGMENT_BUDGET} budget. Program size is the other half of what a ` +
       `software rasterizer charges a joining tab (NOW.md item 1).`,
+  );
+}
+// The third counted axis, and the one the triplanar projection actually spends
+// in: noise SAMPLE SITES per shaded fragment. `NOW.md` item 1 rules the timed
+// question out by name on this box — six runs of the cost probe read five of
+// six the wrong sign — and says to price the projection counted instead. This
+// is that price, asserted rather than printed.
+if (fragCost.noiseSamples > NOISE_SAMPLE_BUDGET) {
+  fail(
+    `tab A: every shaded ground fragment takes ${fragCost.noiseSamples} noise sample sites ` +
+      `(${fragCost.noiseSamples - fragCost.grainTaps} field + ${fragCost.grainTaps} grain, ` +
+      `projection "${fragCost.grainProjection}"), over the ${NOISE_SAMPLE_BUDGET} budget. Each site ` +
+      `is four hash evaluations, and this is the axis a projection change is spent on.`,
   );
 }
 

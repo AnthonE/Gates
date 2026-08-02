@@ -810,6 +810,236 @@ export class GameScene {
   }
 
   /**
+   * Dev-only: is the grain laid ON the surface, or stamped through it?
+   *
+   * Every probe above scores whether a term REACHES the image. This one scores
+   * a term's PROJECTION, which no amount of "did it move pixels" can see: a
+   * grain combed downhill and a grain lying on the slope move the same pixels
+   * by the same amount, and `contrastProbe` scores both at the same ratio. The
+   * defect is anisotropy — a world-XZ field on a face of upness `u` is
+   * stretched by `1/u` along the slope and untouched across it — so the
+   * measurement has to be anisotropy too.
+   *
+   * Three things make that measurable rather than arguable:
+   *
+   *   1. **Two compiled programs, one camera, one run.** `flatgrain` is the
+   *      shipped program with materials v1's world-XZ tap in place of the
+   *      triplanar one. Both are rendered from the same eye at the same
+   *      instant, so everything that is not the projection — the terrain, the
+   *      light, the fog, the rasterizer, this box's weather — is common mode
+   *      and cancels. Nothing here is a threshold on an absolute number.
+   *   2. **The grain's OWN difference image.** `d = luma(uGrain 1) −
+   *      luma(uGrain 0)` is what the octave contributed and nothing else. The
+   *      frame's own gradients — a shadow edge, a biome boundary, the albedo
+   *      ramp — are in both terms and subtract out, so scoring `d` rather than
+   *      the lit frame is what stops a hill's silhouette being counted as
+   *      grain.
+   *   3. **Both axes, over the mask only.** `gradX` is the mean step of `d`
+   *      between horizontal neighbours and `gradY` between vertical ones, and
+   *      a pair is only scored when BOTH its pixels are pixels the octave
+   *      moved — otherwise the mask's own boundary would be scored as a step
+   *      the size of the whole octave.
+   *   4. **The octave's ALBEDO channel alone.** `uGrainAmp` is held at zero for
+   *      the duration, so grain drives its colour swing and neither its bump
+   *      nor its roughness. This one is not a nicety. A bump reaches the image
+   *      through `−∇h·L`, so its screen anisotropy is set by where the SUN is
+   *      relative to the face — at 21° elevation that term dominated the
+   *      difference image and buried the projection under it (measured: both
+   *      programs scored 0.37–0.41 where an isotropic field must score 1.00,
+   *      and their ORDER was the reverse of the geometry's). Albedo has no
+   *      such preferred direction: it is the field, multiplied by a shading
+   *      term that is smooth across a pixel. `uGrain` is restored at the end
+   *      and 15b is what proves the full octave — bump included — reaches the
+   *      frame at all.
+   *
+   * The camera is the caller's, and so is the comparison. What the browser
+   * gate builds out of these numbers is `(gradX + gradY) / (2·amp)` — the
+   * octave's detail, direction-averaged and normalised by its own amplitude,
+   * an inverse characteristic length in pixels — at a perpendicular view of a
+   * TILTED patch and of a LEVEL one, per program. The ratio between those two
+   * is how much that program's grain coarsens when the ground tilts under it,
+   * which is the defect stated as a number.
+   *
+   * The screen-axis split is reported and is NOT the measure, which is worth
+   * writing down because it looks like it should be. Measured here: the level
+   * control scores `gradX/gradY` 1.11 in both programs (they agree to 0.001,
+   * as level ground requires) and the 46.6° face scores 0.39–0.42 in both. A
+   * 2.5x screen-axis bias that both programs share belongs to the view — a
+   * 107° horizontal frustum over curved terrain — and it is four times the
+   * 1.456x the projection is worth. Direction-averaging drops it; asserting on
+   * it would have been asserting on the frustum.
+   *
+   * `amp` is reported for its own reason: the cheap way to win any isotropy
+   * contest is to blend the octave into mush — which is exactly what a
+   * triplanar blend does if the deviation is not restored by `1/|w|` — and a
+   * gate that read only a shape measure would score that a fix.
+   *
+   * `vsFirst` compares a later program's lit frame against the first's over
+   * the whole view, which is the identity half: on ground that is level the
+   * two projections are the same program and this must be 0.
+   *
+   * Renders 3 frames per (program, view) and allocates four framebuffer-sized
+   * byte buffers plus two per-pixel scratch arrays: never the RAF path.
+   */
+  projectionProbe(views, minDelta) {
+    const hooks = this._terrainCost;
+    if (!hooks || !hooks.projection) return null;
+    const shipped = this._terrainMat;
+    if (!shipped) return null;
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const on = new Uint8Array(w * h * 4);
+    const control = new Uint8Array(w * h * 4);
+    const off = new Uint8Array(w * h * 4);
+    const first = new Uint8Array(w * h * 4);
+    const diff = new Int16Array(w * h);
+    const mask = new Uint8Array(w * h);
+    const luma = (b, p) => (b[p] * 2 + b[p + 1] * 5 + b[p + 2]) >> 3;
+    const cam = this.camera;
+    const keepQ = cam.quaternion.clone();
+    const keepPos = cam.position.clone();
+
+    const programs = [
+      { program: "triplanar", material: shipped },
+      { program: "xz", material: hooks.projection() },
+    ];
+    const samples = [];
+    for (let pi = 0; pi < programs.length; pi++) {
+      const { program, material } = programs[pi];
+      hooks.use(material);
+      const u = material.userData.uniforms;
+      const keepGrain = u.uGrain.value;
+      // Albedo only, for the duration (see the note above): the bump's screen
+      // anisotropy belongs to the sun, not to the projection.
+      const keepAmp = u.uGrainAmp.value.clone();
+      u.uGrainAmp.value.set(0, 0);
+      for (const view of views) {
+        cam.position.set(view.eye[0], view.eye[1], view.eye[2]);
+        this.sky.position.copy(cam.position);
+        this._target.set(view.at[0], view.at[1], view.at[2]);
+        cam.lookAt(this._target);
+
+        u.uGrain.value = 1;
+        this.renderer.render(this.scene, cam);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, on);
+        this.renderer.render(this.scene, cam);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, control);
+        u.uGrain.value = 0;
+        this.renderer.render(this.scene, cam);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, off);
+        u.uGrain.value = 1;
+
+        // Pass one: the octave's own contribution, and which pixels carry it.
+        let moved = 0;
+        let noise = 0;
+        let amp = 0;
+        for (let i = 0; i < w * h; i++) {
+          const p = i * 4;
+          const a = luma(on, p);
+          const cd = a - luma(control, p);
+          if (cd > minDelta || cd < -minDelta) noise++;
+          const d = a - luma(off, p);
+          diff[i] = d;
+          const m = d < 0 ? -d : d;
+          if (m > minDelta) {
+            mask[i] = 1;
+            moved++;
+            amp += m;
+          } else {
+            mask[i] = 0;
+          }
+        }
+        // Pass two: how fast that contribution changes along each screen axis,
+        // over pairs that are both inside the mask.
+        let gx = 0;
+        let gy = 0;
+        let nx = 0;
+        let ny = 0;
+        for (let y = 0; y < h - 1; y++) {
+          for (let x = 0; x < w - 1; x++) {
+            const i = y * w + x;
+            if (!mask[i]) continue;
+            if (mask[i + 1]) {
+              const s = diff[i + 1] - diff[i];
+              gx += s < 0 ? -s : s;
+              nx++;
+            }
+            if (mask[i + w]) {
+              const s = diff[i + w] - diff[i];
+              gy += s < 0 ? -s : s;
+              ny++;
+            }
+          }
+        }
+        // The confinement half: the first program's lit frame is kept and every
+        // later one compared against it, pixel for pixel.
+        //
+        // `changed` saturates — the moment any weight off the XZ plane is
+        // nonzero the two taps read DIFFERENT lattice cells, so 6° of slope
+        // already moves nearly every grain pixel and the count says the same
+        // thing at 6° as at 46°. `meanAbsMasked` is the one that does not: the
+        // mean difference between the two programs over the grain's own pixels,
+        // which the caller divides by `amp` to read the projection's effect in
+        // units of the octave it is a projection OF.
+        let vsFirst = null;
+        if (pi === 0) {
+          first.set(on);
+        } else {
+          let changed = 0;
+          let max = 0;
+          let sum = 0;
+          let n = 0;
+          for (let i = 0; i < w * h; i++) {
+            const p = i * 4;
+            const d = luma(on, p) - luma(first, p);
+            if (d !== 0) changed++;
+            const m = d < 0 ? -d : d;
+            if (m > max) max = m;
+            if (mask[i]) {
+              sum += m;
+              n++;
+            }
+          }
+          vsFirst = {
+            changed,
+            changedFraction: changed / (w * h),
+            maxDelta: max,
+            meanAbsMasked: n > 0 ? sum / n : 0,
+          };
+        }
+        const gradX = nx > 0 ? gx / nx : 0;
+        const gradY = ny > 0 ? gy / ny : 0;
+        samples.push({
+          program,
+          label: view.label || "",
+          scored: w * h,
+          moved,
+          movedFraction: moved / (w * h),
+          noise,
+          amp: moved > 0 ? amp / moved : 0,
+          gradX,
+          gradY,
+          pairsX: nx,
+          pairsY: ny,
+          // Above 1 the octave changes faster across the screen than down it,
+          // which on a view aimed down a fall line is the comb.
+          anisotropy: gradY > 0 ? gradX / gradY : 0,
+          vsFirst,
+        });
+      }
+      u.uGrain.value = keepGrain;
+      u.uGrainAmp.value.copy(keepAmp);
+    }
+    hooks.use(shipped);
+    cam.quaternion.copy(keepQ);
+    cam.position.copy(keepPos);
+    this.sky.position.copy(keepPos);
+    this.renderer.render(this.scene, cam);
+    return { width: w, height: h, minDelta, samples };
+  }
+
+  /**
    * Dev-only: does the procedural surface actually reach the frame?
    *
    * Same shape as shadowProbe and for the same reason. Every structural
