@@ -4,7 +4,40 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **Nothing that is not the ground has a surface.** *(Gap pass. From the
+1. **The lighting iteration — one owner, the whole coupled set, spoken.**
+   *(Operator, 2026-08-02, closing the loop the evidence opened: prop albedo
+   v1 reproduced the visual judge's darkest pixel — canopy underside RGB
+   (2,6,0) — from the light rig's constants alone, and showed that at 3× the
+   authored albedo it is still (5,17,3). The materials lane is blocked on
+   light by arithmetic, not taste. CLAUDE.md's coupled-lighting law applies:
+   sky, sun, fill, exposure, tonemap, fog and shadow move together in ONE
+   pass or not at all.)*
+
+   The one iteration owns, together: the sun's register (the reference bar
+   is MIDDAY — `art/RUBRIC.md`'s frames, not the current low-sun murk), a
+   sky that reads as a sky lit by that sun, a hemisphere fill that gives
+   down-facing surfaces credible ambient (inherit the arithmetic in
+   `DECISIONS.md` §open "prop albedo v1" — the (2,6,1) row is the input),
+   water specular agreeing with the same sun, exposure/tonemap re-metered
+   for the new register, fog that matches the sky at the horizon seam, and
+   the shadow rig re-biased if the new sun angle needs it.
+
+   Acceptance, from the panel's own reports: the sun no longer "contradicts
+   itself between sky, water, and shadows" (every report so far); a
+   down-facing prop face lands in a range where its surface field is
+   VISIBLE (then write the p05 wall prop albedo v1 deliberately left
+   unwritten); the frames' register sits with the reference set's midday,
+   not beside it. Re-measure assertion 15's directional margins and the
+   albedo band after — the register change moves both, and the numbers in
+   `DECISIONS.md` §open get re-derived, not left stale (the knob-registry
+   gate will catch you if you forget).
+
+   Everything else in the materials lane (needle cards, granite structure,
+   undergrowth, the coarse-octave re-place) WAITS behind this — it will all
+   read differently under the new light, and re-tuning it twice is the
+   three-parallel-rounds mistake the trap list already paid for.
+
+2. **Nothing that is not the ground has a surface.** *(Gap pass. From the
    visual judge's ranked gap 1 in
    `findings/pass-20260802-163821-02-visual.md` — "rock, wood and canopy are
    each one flat colour per facet, literally the rubric's own disqualifier",
@@ -95,7 +128,7 @@ Done items are deleted, not checked — history lives in git and
      shader in the client and has neither. `propFacts().noiseSamples` publishes
      6; the wall is not written.
 
-2. **The world reads untextured and shows its mesh — and both halves turned
+3. **The world reads untextured and shows its mesh — and both halves turned
    out to be arithmetic, not missing art.** *(Gap pass. From the visual
    judge's ranked gap 1 in
    `findings/pass-20260802-050932-01-visual.md`, which returned FAIL on all
@@ -238,7 +271,7 @@ Done items are deleted, not checked — history lives in git and
    `CLAUDE.md`'s coupled-lighting law — sky, water specular, shadows and
    exposure move together or not at all.
 
-3. **A base can be broken into now, but it cannot be repaired, and a
+4. **A base can be broken into now, but it cannot be repaired, and a
    raid still ends in a shrug.**
    *(From the merge-gate judge's ranked gap 1 in
    `findings/archive-prestamp/pass-20260802-035930-01-judge.md`, and its
@@ -282,7 +315,7 @@ Done items are deleted, not checked — history lives in git and
    C→S verb — a repair, a throw — is an action subtype, and there are
    seven.
 
-4. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
+5. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
    The projection half of this item landed (materials v1 third pass,
    `DECISIONS.md` §open): the grain — and only the grain — is sampled
    triplanar, ridge-folded per plane before the blend and the blend's
@@ -316,7 +349,7 @@ Done items are deleted, not checked — history lives in git and
    fragment, 18/24 depth fetches. Price `gmHash4` there too — hash
    evaluations and program chars — not in ms.
 
-5. **A tab that boots beside another live tab takes 34 s to reach the
+6. **A tab that boots beside another live tab takes 34 s to reach the
    world. Nobody knows where those seconds go.**
    The third-tab version of this went red on 2026-08-01 16:26 (`inWorld`
    at 61.6 s of a 60 s window) and the recovery pass closed it, but by
@@ -342,7 +375,7 @@ Done items are deleted, not checked — history lives in git and
    terrain program costs ~3 s to compile here, and a fresh tab compiles
    more than one.
 
-6. **Nothing casts past 720 m, and nothing out there has a silhouette.**
+7. **Nothing casts past 720 m, and nothing out there has a silhouette.**
    The horizon casts now (`DECISIONS.md` §open) but two limits are stated
    rather than solved: the coarsest clipmap level stops at 720 m because
    fog closes at 1000 m, and past the near ring the only caster is the
@@ -351,7 +384,7 @@ Done items are deleted, not checked — history lives in git and
    yaws for exactly that reason. A scatter LOD (billboard crosses,
    `TERRAIN.md` §4's "trees get two LODs") is the fix and it is a terrain
    job, not a shadow one.
-7. **A capture the same twice is a gate; a capture that drifts is a vibe.**
+8. **A capture the same twice is a gate; a capture that drifts is a vibe.**
    Deterministic capture mode (operator, 2026-08-02, `DECISIONS.md` — the
    Claude-of-Duty adoption row): the client animates off the sim tick / an
    injected fixed-step clock in capture mode — today the RAF loop steps off
@@ -370,7 +403,7 @@ Done items are deleted, not checked — history lives in git and
    (must switch to the engine clock in capture mode), or UI-only (excluded
    from shots). Settle by tick count, never by time.
 
-8. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
+9. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
    solid (slice 13: chat — two channels on the reliable lane, local at
    20 m and global, sanitized at both edges and rate-limited per
@@ -386,17 +419,17 @@ Done items are deleted, not checked — history lives in git and
    there) · piece damage (M2's raid lane: hp exists and decays, nothing
    attacks it yet) · nametags (chat names a speaker by id today, because
    nothing has a name yet).
-9. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
+10. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
-10. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
+11. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
    admin lane · backups · status page · error capture · `bench_transport`.
-11. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
+12. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
    then tune content bands from what the anomaly log and the replays say.
-12. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
+13. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
 
-13. **`cargo test --workspace` overflows a debug thread's stack; only
+14. **`cargo test --workspace` overflows a debug thread's stack; only
     `--release` (what CI runs) is green.** Pre-existing, not new: verified
     on `main` at `25f6ec8` before the backpack slice, where
     `snapshot_budget` aborts the same way. The cause is size, not logic —
