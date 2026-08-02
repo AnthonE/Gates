@@ -233,6 +233,17 @@ pub const EVENT_RING_CAP: usize = 64;
 /// default, DECISIONS.md §open (gather wire row).
 pub const SYNC_SCAN_PER_TICK: usize = 256;
 
+/// Death backpacks standing at once (backpack.rs). Sized past the worst
+/// honest case: `MAX_PLAYERS` bodies each holding a bag, plus headroom
+/// for the churn a long fight leaves behind while the timers run down.
+/// Overflow policy: **evict** the bag nearest its own despawn —
+/// NETCODE.md §6.4's "overflow despawns oldest-lowest-tier first",
+/// collapsed into the one key that already encodes both, and counted by
+/// the `BAG_GONE_EVICTED` removal event. Never **refuse**: a death that
+/// silently kept the inventory would make the cap a way to dodge the
+/// loss. Proposed default, DECISIONS.md §open (death backpack v0).
+pub const MAX_BACKPACKS: usize = 256;
+
 /// Sim event ring, cleared every tick — the sim's only output channel
 /// besides state itself (integer codes, CLAUDE.md wall 3). Overflow
 /// policy: **drop newest**, counted; the late-join slot sync (the wire

@@ -354,5 +354,26 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // The backpack despawn ladder: a base that exists, and multipliers
+    // that rise strictly with rarity. Without the strict rise a rarer
+    // item could make a bag despawn *sooner* than a common one — the
+    // exact inversion NETCODE.md §6.4's tier shape exists to prevent.
+    let bp = &c.balance.backpack;
+    if bp.despawn_base_min == 0 {
+        return Err("backpack: despawn_base_min must be ≥ 1 minute".to_string());
+    }
+    let mults = bp.mults();
+    if mults[0] == 0 {
+        return Err("backpack: mult_common must be ≥ 1".to_string());
+    }
+    for w in mults.windows(2) {
+        if w[1] <= w[0] {
+            return Err(format!(
+                "backpack: despawn multipliers must rise strictly with rarity ({:?})",
+                mults
+            ));
+        }
+    }
+
     Ok(())
 }

@@ -278,6 +278,33 @@ pub struct Bands {
     pub upkeep_solo_daily_max_min: u32,
 }
 
+/// The death backpack's despawn ladder (`content/balance.toml`
+/// `[backpack]`; NETCODE.md §6.4 — one base constant × a rarity
+/// multiplier). Lifetime = base × the multiplier of the rarest item the
+/// bag holds; an empty bag rides the base.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Backpack {
+    pub despawn_base_min: u32,
+    pub mult_common: u32,
+    pub mult_uncommon: u32,
+    pub mult_rare: u32,
+    pub mult_very_rare: u32,
+}
+
+impl Backpack {
+    /// The ladder in `Rarity::canon()` order — the one place the four
+    /// named fields become an indexable row.
+    pub fn mults(&self) -> [u32; 4] {
+        [
+            self.mult_common,
+            self.mult_uncommon,
+            self.mult_rare,
+            self.mult_very_rare,
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PieceCount {
@@ -301,4 +328,5 @@ pub struct Balance {
     pub bands: Bands,
     pub banded_nodes: Vec<NodeArchetype>,
     pub starter_base: StarterBase,
+    pub backpack: Backpack,
 }

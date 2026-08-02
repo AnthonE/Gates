@@ -4,6 +4,7 @@
 //! applied in submission order, then players step in slot order — the fixed
 //! order determinism requires.
 
+use crate::backpack::{BackpackContent, Backpacks};
 use crate::build::{self, BuildContent, Pieces};
 use crate::combat::{self, CombatContent};
 use crate::craft::{self, CraftContent, CraftJob};
@@ -52,6 +53,10 @@ const SPAWN_CLEAR_M: f32 = 4.0;
 /// Integer event codes (CLAUDE.md wall 3) — the sim's outbound facts, one
 /// ring per tick, drained by the server after `tick` returns.
 /// EV_GATHER: a = player id, b = item index << 16 | units actually added.
+/// Read it as "these units entered your inventory", not as "a node paid":
+/// looting a backpack (backpack.rs) announces its take the same way, and
+/// deliberately — the client's `+N Item` toast is the right feedback for
+/// both, and loot pays in the currency gathering already pays in.
 pub const EV_GATHER: u8 = 1;
 /// EV_SLOT_HARVESTED: a = cell key (cx << 16 | cz), b = gatherable index.
 pub const EV_SLOT_HARVESTED: u8 = 2;
@@ -100,6 +105,15 @@ pub const EV_HEALTH: u8 = 16;
 /// (equal to `a` if that ever becomes possible; today nothing but another
 /// hand can kill). Broadcast — a death is a world fact like a placement.
 pub const EV_DEATH: u8 = 17;
+/// EV_BAG_DROPPED: a = backpack id, b = the player whose body it came
+/// off. Broadcast — a bag on the ground is a world fact like a placement;
+/// the wire reads its position out of the store at encode, the way a
+/// hearth's stock is read (backpack.rs).
+pub const EV_BAG_DROPPED: u8 = 18;
+/// EV_BAG_REMOVED: a = backpack id, b = `backpack::BAG_GONE_*` (despawn,
+/// emptied, evicted). Broadcast, and it restarts in-progress bag sync
+/// walks the same way a piece/deploy removal does.
+pub const EV_BAG_REMOVED: u8 = 19;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SimEvent {
@@ -291,6 +305,12 @@ pub enum Command {
         loc: u8,
         material: u8,
     },
+    /// Take everything that fits from the nearest backpack in reach
+    /// (backpack.rs). No target crosses: the pick is the sim's, the same
+    /// shape a swing's is.
+    Loot {
+        id: u32,
+    },
 }
 
 pub struct World {
@@ -313,10 +333,21 @@ pub struct World {
     /// Baked melee rows + max hp (combat.rs). Construction input too; the
     /// inert default leaves the world unable to hurt anyone.
     pub combat: CombatContent,
+    /// Baked backpack despawn ladder (backpack.rs). Construction input
+    /// too; the inert default means death destroys instead of dropping.
+    pub backpack: BackpackContent,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
     pub deploys: Deploys,
+    /// Death backpacks standing on the ground — sim state, hashed.
+    /// Boxed, and for one reason: the store is 38 kB of fixed capacity and
+    /// `World` is built on the stack (`ShardCore::new`, every wire test),
+    /// where it was already within ~600 kB of a 2 MB thread limit. One
+    /// construction-time allocation — the same posture `ShardCore` takes
+    /// for its client array — keeps `World`'s stack footprint where this
+    /// slice found it. Nothing here allocates in the tick (wall 2).
+    pub backpacks: Box<Backpacks>,
     /// Upkeep/decay sweep cursors (deploy.rs) — sim state, hashed.
     pub sweep_piece: u32,
     pub sweep_deploy: u32,
@@ -348,8 +379,10 @@ impl World {
             build: BuildContent::EMPTY,
             deploy: DeployContent::EMPTY,
             combat: CombatContent::EMPTY,
+            backpack: BackpackContent::EMPTY,
             pieces: Pieces::new(),
             deploys: Deploys::new(),
+            backpacks: Box::new(Backpacks::new()),
             sweep_piece: 0,
             sweep_deploy: 0,
             slot_lives: SlotLives::new(),
@@ -479,24 +512,34 @@ impl World {
         self.players.iter().position(|p| p.active && p.id == id)
     }
 
-    /// Death, v0: you wake up naked on a different beach. The kill has
+    /// Death, v1: you wake up naked on a different beach, and what you
+    /// were carrying is **still lying where you fell**. The kill has
     /// already been counted and announced (combat.rs); this is the
-    /// consequence — a fresh body at the next generation of the spawn
-    /// ring, full hp, and **everything you carried is gone**: inventory,
-    /// craft queue, the weak-spot chase you were partway through. The
-    /// backpack that will one day catch that inventory is a container the
-    /// world does not have yet (`DECISIONS.md` §open, "melee combat v0");
-    /// until it does, destruction is the honest reading of "you lost it",
-    /// not a silent teleport home with your loot.
+    /// consequence — the whole inventory into one backpack at the body's
+    /// position (backpack.rs), then a fresh body at the next generation
+    /// of the spawn ring, full hp, and nothing in hand.
+    ///
+    /// The craft queue and the weak-spot chase are still destroyed, and
+    /// deliberately: a queued craft is a promise to a body that no longer
+    /// exists, and its inputs were already spent when it was queued —
+    /// refunding them into the bag would pay the killer twice for one
+    /// farm. Only carried items drop, which is what DESIGN.md §2 says.
+    ///
+    /// Content that never armed the ladder (`base_ticks == 0`) still
+    /// destroys the inventory outright, which is what this did before the
+    /// backpack existed — an inert table can add a rule but must never
+    /// silently change one.
     ///
     /// The input frame survives on purpose: it is the client's, not the
     /// world's, and resetting `seq` would lie to prediction about which
     /// input the sim last executed.
     fn respawn(&mut self, slot: usize) {
-        let (id, deaths, frame) = {
-            let p = &self.players[slot];
-            (p.id, p.deaths, p.frame)
-        };
+        // A copy of the body as it fell: the bag is built from it after
+        // the slot is already being written, and `Player` is `Copy`.
+        let body = self.players[slot];
+        self.backpacks
+            .drop_for(&self.backpack, &body, self.tick, &mut self.events);
+        let (id, deaths, frame) = (body.id, body.deaths, body.frame);
         let (x, z) = self.spawn_pos_n(id, deaths as u32);
         let hp = self.combat.player_hp;
         self.players[slot] = Player {
@@ -709,6 +752,15 @@ impl World {
                     );
                 }
             }
+            Command::Loot { id } => {
+                if let Some(slot) = self.slot_of(id) {
+                    self.backpacks.loot_nearest(
+                        &self.gather,
+                        &mut self.players[slot],
+                        &mut self.events,
+                    );
+                }
+            }
         }
     }
 
@@ -758,6 +810,10 @@ impl World {
             }
         }
         self.slot_lives.respawn_due(tick, &mut self.events);
+        // Bags time out on the sim's clock, before the tick advances, so
+        // a bag dropped at tick T with a lifetime of L is gone the tick
+        // its own `expires` names and not one later.
+        self.backpacks.expire_due(tick, &mut self.events);
         deploy::upkeep_sweep(
             &self.deploy,
             &self.build,
@@ -869,6 +925,28 @@ impl World {
                 h.update(&s.to_le_bytes());
             }
         }
+        h.update(&(self.backpacks.len() as u64).to_le_bytes());
+        for b in self.backpacks.entries() {
+            let mut buf = [0u8; 28];
+            buf[0..4].copy_from_slice(&b.id.to_le_bytes());
+            buf[4..8].copy_from_slice(&b.qx.to_le_bytes());
+            buf[8..12].copy_from_slice(&b.qy.to_le_bytes());
+            buf[12..16].copy_from_slice(&b.qz.to_le_bytes());
+            buf[16..20].copy_from_slice(&b.owner.to_le_bytes());
+            buf[20..28].copy_from_slice(&b.expires.to_le_bytes());
+            h.update(&buf);
+            for s in b.items.iter() {
+                let mut sb = [0u8; 4];
+                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
+                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                h.update(&sb);
+            }
+        }
+        // The id counter is state, not a cursor: a replay that reused an
+        // id the first run retired would name two different bags the same
+        // thing, and every downstream client keyed on it would agree with
+        // neither.
+        h.update(&self.backpacks.next_id().to_le_bytes());
         h.update(&self.sweep_piece.to_le_bytes());
         h.update(&self.sweep_deploy.to_le_bytes());
         h.digest()

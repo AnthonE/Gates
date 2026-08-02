@@ -5,6 +5,7 @@
 //! native (server truth) and wasm32 (client prediction + shared worldgen).
 //! The clippy walls for this crate live in `clippy.toml` next door.
 
+pub mod backpack;
 pub mod bots;
 pub mod build;
 pub mod collide;
