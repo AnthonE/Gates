@@ -47,17 +47,49 @@ Done items are deleted, not checked — history lives in git and
      a wash scores **exactly** 0 there and the ship-vs-flat ratio it replaced
      is bounded by whatever facet detail the mesh already had.
 
+   **Landed the pass after** (`DECISIONS.md` §open, "prop albedo v1"): the
+   value the surface is delivered into — and the gate that has a unit in it.
+
+   - **Every prop assertion was a ratio, and a ratio is scale-free.**
+     `contrastRatio` is `(baseline+added)/baseline`, `diffStructure` is step
+     over magnitude, `chromaRatio` is spread over spread — so a field swinging
+     ±0.8 of a level on a surface delivering luma 6 scores *exactly* what the
+     same field swinging ±17 levels on a surface delivering 120 scores. That is
+     how v0 shipped green through all three while the visual judge, measuring
+     the merged frames, found "a solid" (residual 1.23/255 over 7,800 px) and
+     named the amplitude rather than the absence. `propProbe` now returns the
+     delivered value as a p05/p50/p95 histogram beside `diffMean`, the field's
+     own amplitude, both in 8-bit luma, and 15g walls the median and the
+     amplitude at 24 and 2.2 against shipped 48/59 and 4.86/8.47.
+   - **`ALBEDO_LUMA_BAND = [0.05, 0.55]`**, the linear luminance every authored
+     dielectric albedo sits in, asserted over all seven archetypes at both ends
+     of every ramp, derived through the renderer's own sRGB conversion rather
+     than restated beside the hex. Two of nine bands were under the floor —
+     pine trunk ×1.887, pine skirt ×1.106 — and were rescaled in linear, both
+     ends together, so hue and ramp shape are exact.
+   - **The shaded half is measured, and it is the light rig's, not albedo's.**
+     A down-facing prop face receives only `FILL_GROUND × FILL_INTENSITY`, so
+     it lands at `groundColor × 1.15 × albedo ÷ π × EXPOSURE` — for the pine
+     skirt, **RGB (2,6,1) against the visual judge's measured (2,6,0)** on
+     `03-canopy-up`, reproduced from the constants alone. At 3× the authored
+     albedo it is still (5,17,3). The §open row is the arithmetic the lighting
+     owner inherits; `p05` is deliberately left unwalled until then.
+
    **What this item still wants:**
 
    - **Bark and canopy are still one mesh each.** The field gives them a
      surface; it does not give the pine needle cards, a second species, or the
      trunk/bough separation the report asks for, and there is no undergrowth,
      no bushes and no grass instances anywhere on the ground.
-   - **The rock and bark rebuild** the older item below still names: granite's
-     value range (this pass gave the ground's rock identity granite's HUE and
-     left the crevice darkening; the props now have crevice darkening and no
-     authored albedo), the dirt-ring base blended flush instead of reading as
-     a pedestal.
+   - **The rock and bark rebuild.** Granite's value range is now walled but not
+     authored: rock carries the ground identity's HUE, the field's crevice
+     darkening and a band-checked albedo, and still no albedo *structure* — no
+     two-mineral granite, no vertical bark ridge. The dirt-ring base is still a
+     pedestal rather than blended flush.
+   - **Five of seven classes have no rendered coverage.** 15g's structural half
+     scores all seven; its pixel half photographs `rock` and `foliage`, the two
+     the probe can reliably find near the pinned spawn. `wood`, `stone`,
+     `metal`, `ore` and `cloth` are asserted structurally and never seen.
    - **A prop-program budget.** The ground's fragment program is walled at
      96,000 chars and 8 noise sites; the prop program is now the second-biggest
      shader in the client and has neither. `propFacts().noiseSamples` publishes
