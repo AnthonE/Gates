@@ -1215,11 +1215,10 @@ export function makeTerrainProjectionVariant() {
 //      taps. It cannot be quad-locked: there is no derivative in it.
 //   3. **Two octaves, and each retires on the sampling law**
 //      (`FADE_OCTAVE_CPP`, cycles per pixel — the law wall 1 of the octave
-//      table is written against). The bump retires on a stricter band than the
-//      albedo it rides on, because a normal is one derivative up from the value
-//      that generates it: a field resolved at N cycles per pixel has a gradient
-//      whose own visible structure is at 2N, so halving the band is the same
-//      statement as the albedo's, made about the derivative.
+//      table is written against). Bump and albedo retire on the SAME band, and
+//      `browser_smoke` 15f fails the build if they ever differ; the argument
+//      for halving the bump's band was made, measured and rejected, and it is
+//      recorded where the constant is (`PROP_BUMP_FADE_CPP` below).
 //
 // What separates a rock from a log here is STRUCTURE, not amplitude — the
 // point of the gap. `ridge` folds the field toward its own ridge line
@@ -1288,6 +1287,55 @@ const lumaNeutral = (v) => {
   const l = devLuma(v);
   return [v[0] - l, v[1] - l, v[2] - l];
 };
+
+// --- prop albedo v1: the band an authored colour has to sit in ---------------
+//
+// Prop surfaces v0 gave every class a field. It multiplies: the shader's own
+// term is `diffuseColor.rgb * (1 + gpV * contrast) * (1 - crevice)`, so what
+// the field is WORTH in the delivered image is a share of whatever the surface
+// was already delivering. On a face delivering luma 120 a +-14% swing is +-17
+// levels and reads as granite; on a face delivering luma 6 the identical field
+// is +-0.8 levels and reads as nothing. The visual judge measured the second
+// case on the merged frames and named it precisely — "the amplitude is the bug,
+// not the absence", best-fit-plane residual 1.23/255 over 7,800 px — while
+// every gate this repo had scored the first, because every prop assertion in
+// `browser_smoke` is a RATIO and a ratio cannot tell those two apart.
+//
+// Half of that delivery is the light rig and is not this file's (see the
+// §open row, "prop albedo v1", for the arithmetic and who owns the rest). The
+// half that IS this file's is the authored albedo, and two of the scatter
+// table's parts sat below the band where any light this scene has can carry a
+// field at all:
+//
+//   pine trunk  linear luminance 0.0265 -> 0.0570
+//   pine skirt                   0.0453 -> 0.1344
+//
+// Dry conifer bark measures 8-12% visible reflectance and conifer needles
+// 6-15%; 0.0265 is charcoal, and nothing in a forest is charcoal. The floor
+// is therefore not a taste, it is the bottom of the dielectric band that real
+// outdoor materials occupy, and the ceiling is its top (fresh gypsum sand and
+// white paint are the brightest natural things outdoors at ~0.55; snow is out
+// of scope until there is a snow biome). Both are stated in `DECISIONS.md`
+// §open rather than invented here.
+//
+// The correction is applied by SCALING the part in linear, both ends of its
+// ramp together, so hue and the ramp's shape are preserved exactly — a scalar
+// multiply leaves chromaticity where it found it, which is the same arithmetic
+// `TINT_LUMA_NEUTRAL` is written against, used in the other direction.
+export const ALBEDO_LUMA_BAND = [0.05, 0.55];
+
+const _albedo = new THREE.Color();
+/**
+ * The linear luminance an authored sRGB hex actually reaches the shader with.
+ *
+ * `setHex(…, SRGBColorSpace)` is the renderer's own conversion — the same one
+ * every material colour and the sky dome get — so this is what the fragment
+ * multiplies, not an approximation of it.
+ */
+export function albedoLuma(hex) {
+  _albedo.setHex(hex, THREE.SRGBColorSpace);
+  return 0.2126 * _albedo.r + 0.7152 * _albedo.g + 0.0722 * _albedo.b;
+}
 
 // --- authored identities for everything that is not the ground -------------
 // Per-surface roughness/metalness bundles, so a stone wall, a wooden door and
@@ -1746,6 +1794,12 @@ export function propFacts() {
     // its own unit.
     noiseSamples: 6,
     toggle: propToggle.value,
+    // Prop albedo v1's law, published for the gate to assert the scatter
+    // table against. It lives on the prop facts and not on the scatter facts
+    // because it is a statement about the MATERIAL system — the field this
+    // module adds is multiplicative, so the band is the condition under which
+    // that field is worth anything.
+    albedoBand: ALBEDO_LUMA_BAND,
   };
 }
 

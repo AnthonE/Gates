@@ -25,6 +25,7 @@
 
 import * as THREE from "three";
 import {
+  albedoLuma,
   makeTerrainCostVariants,
   makeTerrainMaterial,
   makeTerrainProjectionVariant,
@@ -145,6 +146,22 @@ function raggedCone(geo, seed) {
   return geo;
 }
 
+// The pine's three colour bands, hoisted out of the geometry builder so the
+// albedo law can be asserted over them (`scatterFacts`) instead of over a hex
+// buried in a call argument. Trunk and skirt were rescaled by prop albedo v1 —
+// both sat under `ALBEDO_LUMA_BAND`'s floor, the trunk by 1.9x — and the
+// rescale is a linear multiply of both ends of each ramp, so every hue and
+// every ramp shape here is the one materials v0 authored.
+const PINE_BANDS = [
+  { part: "trunk", lo: 0x503b2b, hi: 0x70583f, y0: 0, y1: 1.7 },
+  // The skirt's lo is one green level above the exact rescale: 0x204725 is
+  // 0.0495 after 8-bit quantization and the band's floor is 0.05, so the
+  // authored hex — not the arithmetic that produced it — is what has to clear
+  // it. The gate scores the hex.
+  { part: "skirt", lo: 0x204825, hi: 0x3c783d, y0: 1.1, y1: 4.2 },
+  { part: "crown", lo: 0x2c5c2c, hi: 0x4d8845, y0: 2.7, y1: 5.2 },
+];
+
 function pineGeometry() {
   const trunk = new THREE.CylinderGeometry(0.16, 0.24, 1.7, 6, 1, true);
   trunk.translate(0, 0.85, 0);
@@ -160,11 +177,8 @@ function pineGeometry() {
   skirt.translate(0, 2.65, 0);
   const crown = new THREE.ConeGeometry(1.15, 2.5, 9);
   crown.translate(0, 3.95, 0);
-  return bakedGeometry([
-    { geo: trunk, lo: 0x3a2a1e, hi: 0x53402d, y0: 0, y1: 1.7 },
-    { geo: raggedCone(skirt, 0x51ed270b), lo: 0x1e4423, hi: 0x39733a, y0: 1.1, y1: 4.2 },
-    { geo: raggedCone(crown, 0x2545f491), lo: 0x2c5c2c, hi: 0x4d8845, y0: 2.7, y1: 5.2 },
-  ]);
+  const geos = [trunk, raggedCone(skirt, 0x51ed270b), raggedCone(crown, 0x2545f491)];
+  return bakedGeometry(PINE_BANDS.map((b, i) => ({ ...b, geo: geos[i] })));
 }
 
 // Scatter archetypes, indexed by sim-core Occupant (1..7). `surface` names
@@ -180,6 +194,19 @@ const ARCHETYPES = [
   { geo: () => new THREE.DodecahedronGeometry(1.5), surface: "rock", lo: 0x75726d, lift: 0.55, tint: 0.12 },
   { geo: () => new THREE.CylinderGeometry(0.45, 0.45, 0.95, 10), surface: "metal", lo: 0x5e6b78, lift: 0.5, tint: 0.08 },
 ];
+/**
+ * Every authored colour band an archetype bakes, as `{part, lo, hi}`.
+ *
+ * The pine is the only archetype built from more than one part, and its bands
+ * live in `PINE_BANDS` because the geometry builder and the albedo gate both
+ * need them. Everything else carries its ramp on the archetype row itself.
+ */
+function albedoParts(k) {
+  const a = ARCHETYPES[k];
+  if (!a) return [];
+  return a.geo === pineGeometry ? PINE_BANDS : [{ part: a.surface, lo: a.lo, hi: a.hi }];
+}
+
 const POOL_CAP = 4096;
 const YAW8_TO_RAD = (Math.PI * 2) / 256;
 
@@ -854,6 +881,18 @@ export class Terrain {
         instanceColor: pool.instanceColor !== null,
         tint: ARCHETYPES[k].tint,
         count: pool.count,
+        // Prop albedo v1. Every authored colour this archetype bakes into its
+        // vertices, as the linear luminance the FRAGMENT multiplies — derived
+        // through the renderer's own sRGB conversion rather than restated, so
+        // a hex edited in the table above cannot pass by agreeing with a
+        // number written beside it. The pine publishes three bands; everything
+        // else is one part, and `hi` defaults to `lo` exactly as
+        // `bakedGeometry` reads it.
+        albedo: albedoParts(k).map((p) => ({
+          part: p.part,
+          lo: albedoLuma(p.lo),
+          hi: albedoLuma(p.hi === undefined ? p.lo : p.hi),
+        })),
       });
     }
     return out;

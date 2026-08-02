@@ -558,9 +558,9 @@ const PROP_MIN_DIRECTIONAL = Number(process.env.BROWSER_SMOKE_PROP_MIN_DIR || 0.
 // the mesh's facet edges, its baked vertex-colour ramp, the shadow map — none
 // of which the toggle removes, so the ratio is bounded by
 // (baseline + added)/baseline and a prop with structure of its own can never
-// score what a smooth heightfield does. Measured: one field, x1.91 on a pale
-// faceted boulder (baseline 0.32 luma/px) and x1.26 on a dark canopy whose
-// baseline is 0.23 with facets and a colour ramp already in it. The sharp
+// score what a smooth heightfield does. Measured: one field, x1.62 on a pale
+// faceted boulder and x1.26 on a dark canopy whose baseline has facets and a
+// colour ramp already in it. The sharp
 // assertion is the next one down, which has no baseline at all.
 const PROP_MIN_CONTRAST_RATIO = Number(process.env.BROWSER_SMOKE_PROP_MIN_RATIO || 1.15);
 // THE assertion, and the one with no baseline in it: neighbour-to-neighbour
@@ -595,6 +595,58 @@ const PROP_MIN_STRUCTURE = Number(process.env.BROWSER_SMOKE_PROP_MIN_STRUCT || 0
 // see the difference between a boulder with two minerals in it and a boulder
 // with one at forty brightnesses.
 const PROP_MIN_CHROMA_RATIO = Number(process.env.BROWSER_SMOKE_PROP_MIN_CHROMA || 1.1);
+// --- 15g, the pixel half: the two numbers above that are NOT ratios ---------
+//
+// Every prop assertion above this line divides the field by itself or by what
+// it was laid on. `contrastRatio` is (baseline + added)/baseline,
+// `diffStructure` is step/magnitude of the difference image, `chromaRatio` is
+// spread over spread. All three are scale-free by construction — which is the
+// point, for the questions they ask, and a hole for the question they do not.
+//
+// A field swinging ±0.8 of a level on a surface delivering luma 6 scores
+// EXACTLY what the same field swinging ±17 levels on a surface delivering 120
+// scores: same ratio, same structure, same chroma spread. Prop surfaces v0
+// shipped green through all three (structure 0.050 and 0.041 against a 0.02
+// floor) and the visual judge, measuring the merged frames, found "a solid" —
+// best-fit-plane residual 1.23/255 over 7,800 px — and named the amplitude
+// rather than the absence as the defect. Both readings are correct. The gate
+// simply had no number with a unit in it.
+//
+// So: two absolute floors, in 8-bit luma, on the same mask.
+//
+// `lumaP50` is the class's delivered median. Its failure is a surface
+// delivered into a range an 8-bit framebuffer cannot carry a texture in —
+// whatever the cause, authored albedo or the light on it.
+//
+// Both are plain constants with no `BROWSER_SMOKE_*` env override, unlike the
+// five floors above them. That is deliberate and it is the direction this
+// should travel: an environment variable that can lower a wall is a way to
+// weaken a gate without editing a file anyone reviews. It also lets
+// `ci/knob_registry.mjs` pin both to their `DECISIONS.md` §open declarations,
+// which it cannot do through a `Number(process.env… || x)` initializer.
+const PROP_MIN_VALUE = 24;
+// `diffMean` is the mean magnitude of the field's own difference image, in
+// those same levels: what the surface is WORTH where it is delivered. Its
+// failure is the measured one — a field that is real, structured and
+// invisible.
+const PROP_MIN_AMP = 2.2;
+// Where both come from, calibrated against a measured pair and not modelled,
+// which is `PROP_MIN_STRUCTURE`'s own discipline (and its recorded lesson: the
+// model it was first derived from was wrong by 8x). At this gate's spawn the
+// shipped material measures value p05/p50/p95 and amplitude:
+//
+//   rock  29/59/123  amp 8.47        pine  12/48/74  amp 4.86
+//
+// (before prop albedo v1's rescale: rock 27/59/123 amp 8.43, pine 11/46/74
+// amp 4.72 — the pine moved because two of its three bands did.)
+//
+// The floors sit at roughly half the worse of the two — the same margin
+// `PROP_MIN_STRUCTURE` takes — and an infinite distance above what the failure
+// they guard reaches, which is 1-6 levels of delivered value and under one
+// level of amplitude. p05 is deliberately NOT walled: the dark tail of these
+// masks is the shaded side of the prop, and the light rig owns it (§open,
+// "prop albedo v1"). Walling a number this pass cannot move would be a gate
+// that fails for a reason its owner cannot act on.
 // The control's ceiling, `ALIAS_MAX_NOISE`'s argument verbatim: two renders of
 // one state, differing on at most this share of the frame.
 const PROP_MAX_NOISE = 0.001;
@@ -1878,6 +1930,53 @@ if (!mat.scatter.some((p) => p.metalness > 0)) {
 if (!mat.scatter.some((p) => p.count > 0)) {
   fail(`tab A: every scatter pool is empty — nothing was streamed, so nothing above was measured on real instances`);
 }
+// …and prop albedo v1: every authored band sits inside the dielectric
+// luminance range, in the linear space the fragment multiplies in.
+//
+// This is the structural half of 15g. It is here rather than beside the pixel
+// half because it needs no camera and no instance in frame: it scores all
+// SEVEN archetypes, where the rendered probe below can only photograph the two
+// the gate is able to reliably find near the pinned spawn. A class whose
+// albedo is re-darkened out of band goes red on the whole table.
+//
+// The floor is what makes it a wall. Below `ALBEDO_LUMA_BAND[0]` the surface
+// is delivered into a range where the prop field cannot be carried by an 8-bit
+// framebuffer under any light this scene has: measured on the merged frames,
+// the pine skirt's authored 0.0453 reached the canopy underside at RGB (2,6,1)
+// and the field's ±14% on it is ±0.8 of a level. Both ends of every ramp are
+// scored, because the dark end is where a surface stops being one.
+const band = mat.props.albedoBand;
+if (!Array.isArray(band) || !(band[0] > 0) || !(band[1] > band[0])) {
+  fail(`tab A: the client published albedo band ${JSON.stringify(band)} — 15g's structural half has no law to assert`);
+}
+let albedoParts = 0;
+for (const p of mat.scatter) {
+  if (!Array.isArray(p.albedo) || p.albedo.length === 0) {
+    fail(`tab A: scatter archetype ${p.arch} published no albedo bands — the albedo law cannot be scored on it`);
+  }
+  for (const a of p.albedo) {
+    for (const [end, y] of [["lo", a.lo], ["hi", a.hi]]) {
+      albedoParts++;
+      if (!(y >= band[0] && y <= band[1])) {
+        fail(
+          `tab A: scatter archetype ${p.arch} (${p.surface}) part "${a.part}" has a ${end} albedo of ` +
+            `${y.toFixed(4)} linear luminance, outside the dielectric band [${band[0]}, ${band[1]}] — ` +
+            `${y < band[0]
+              ? `darker than charcoal, and the prop field on it is multiplicative, so whatever surface ` +
+                `this class was given is worth a fraction of a level wherever it is not in direct sun`
+              : `brighter than any natural outdoor material, so it will clip before the tone map sees it`}`,
+        );
+      }
+    }
+  }
+}
+console.log(
+  `  prop albedo: ${albedoParts} authored band ends over ${mat.scatter.length} archetypes, all inside ` +
+    `[${band[0]}, ${band[1]}] linear luminance · ` +
+    mat.scatter
+      .map((p) => `${p.surface}#${p.arch} ${p.albedo.map((a) => `${a.part} ${a.lo.toFixed(3)}→${a.hi.toFixed(3)}`).join(", ")}`)
+      .join(" · "),
+);
 
 // Assertion 14 — the splat weights are a field, not a constant. The shader
 // below can blend four identities perfectly and still paint one, if what it
@@ -2576,8 +2675,11 @@ if (props.samples.length !== PROP_VIEWS.length) {
   );
 }
 const propDetail = (s) =>
-  `      ${s.label} (${s.surface}): nearest instance ${(s.distance || 0).toFixed(1)} m away of ` +
-  `${s.instances} in its pool, eye [${(s.eye || []).map((v) => v.toFixed(1)).join(", ")}]\n` +
+  `      ${s.label} (${s.surface}): framed at ${(s.viewDistance || 0).toFixed(1)} m; nearest instance ` +
+  `${(s.distance || 0).toFixed(1)} m from spawn of ${s.instances} in its pool, eye ` +
+  `[${(s.eye || []).map((v) => v.toFixed(1)).join(", ")}]\n` +
+  `      ${s.label} (${s.surface}): value ${s.lumaP05}/${s.lumaP50}/${s.lumaP95} (p05/p50/p95), field ` +
+  `amplitude ${s.diffMean.toFixed(2)} luma\n` +
   `      ${s.label} (${s.surface}): mask ${(s.maskFraction * 100).toFixed(2)}% · up ` +
   `${(s.upFraction * 100).toFixed(2)}% / down ${(s.downFraction * 100).toFixed(2)}% · contrast ` +
   `${s.contrastFlat.toFixed(2)} -> ${s.contrastShip.toFixed(2)} (x${s.contrastRatio.toFixed(2)}) · structure ` +
@@ -2628,16 +2730,36 @@ for (const s of props.samples) {
         `field is moving brightness only, so the class is still one hue at N values.\n${propDetail(s)}`,
     );
   }
+  // 15g's pixel half. The two above with a unit in them.
+  if (!(s.lumaP50 >= PROP_MIN_VALUE)) {
+    fail(
+      `tab A: the ${s.label} class is delivered at median luma ${s.lumaP50} of 255 (floor ` +
+        `${PROP_MIN_VALUE}), spanning ${s.lumaP05}..${s.lumaP95} — an 8-bit framebuffer cannot carry a ` +
+        `texture down there, so every RATIO above can be green while the surface is invisible. Either the ` +
+        `authored albedo went under the dielectric band or the light on it did.\n${propDetail(s)}`,
+    );
+  }
+  if (!(s.diffMean >= PROP_MIN_AMP)) {
+    fail(
+      `tab A: the ${s.label} field is worth ${s.diffMean.toFixed(2)} levels of 255 where it is delivered ` +
+        `(floor ${PROP_MIN_AMP}), on a class whose median value is ${s.lumaP50} — the field is real, it is ` +
+        `structured (${s.diffStructure.toFixed(3)}), and it is invisible. This is the assertion prop ` +
+        `surfaces v0 did not have: its three ratios score a ±0.8-level swing on a base of 6 exactly as ` +
+        `they score a ±17-level swing on a base of 120.\n${propDetail(s)}`,
+    );
+  }
 }
 console.log(
   `  prop probe: ` +
     props.samples
       .map(
         (s) =>
-          `${s.label} at ${(s.distance || 0).toFixed(1)} m: mask ${(s.maskFraction * 100).toFixed(2)}% · ` +
+          `${s.label} framed at ${(s.viewDistance || 0).toFixed(1)} m (nearest instance ` +
+          `${(s.distance || 0).toFixed(1)} m from spawn): mask ${(s.maskFraction * 100).toFixed(2)}% · ` +
           `±${(s.upFraction * 100).toFixed(2)}/${(s.downFraction * 100).toFixed(2)}% · contrast ` +
           `x${s.contrastRatio.toFixed(2)} · structure ${s.diffStructure.toFixed(3)} · chroma ` +
-          `x${s.chromaRatio.toFixed(2)} · noise ${s.noise}`,
+          `x${s.chromaRatio.toFixed(2)} · value ${s.lumaP05}/${s.lumaP50}/${s.lumaP95} ` +
+          `(amp ${s.diffMean.toFixed(2)}) · noise ${s.noise}`,
       )
       .join(" · "),
 );

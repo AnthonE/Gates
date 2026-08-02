@@ -1599,7 +1599,7 @@ export class GameScene {
     // mesh's facet edges, its vertex-colour ramp and the shadow map, none of
     // which the toggle removes. That makes the ratio a statement about the
     // object as much as about the material: measured, the same field scores
-    // x1.91 on a pale faceted boulder and x1.26 on a dark canopy whose baseline
+    // x1.62 on a pale faceted boulder and x1.26 on a dark canopy whose baseline
     // already has structure in it. This one has no baseline. A constant offset
     // — a wash, a tint, an exposure slip — has zero neighbour variation in the
     // difference image and scores exactly 0, by construction and not by
@@ -1664,6 +1664,48 @@ export class GameScene {
       return Math.sqrt(acc / n);
     };
 
+    // The delivered VALUE the class occupies, as a histogram over the same
+    // mask — and the one measure above that is not a ratio.
+    //
+    // Every other number this probe returns is scale-free, and that is a hole
+    // rather than a virtue. `contrastRatio`, `diffStructure` and `chromaRatio`
+    // all divide the field by itself or by what it was laid on, so a field
+    // that swings +-1 luma on a base of 10 scores EXACTLY what the same field
+    // swinging +-20 on a base of 120 scores. That is how prop surfaces v0
+    // shipped green — structure 0.050 and 0.041, well clear of every floor —
+    // while the visual judge measuring the merged frames found "a solid",
+    // best-fit-plane residual 1.23/255 over 7,800 px, and named the amplitude
+    // rather than the absence as the bug.
+    //
+    // So: percentiles rather than a mean, because the question is a RANGE. A
+    // class a player can name is one whose lit face and whose shaded face are
+    // both recognisably that material, which is the visual rubric's criterion
+    // 2 and its exact sentence for our failure — "the same rock asset reads
+    // L=78 warm beige in 01/03 and L=10 near-black in 05, so stone has no
+    // recognisable value range to identify it by".
+    const band = (buf) => {
+      const hist = new Int32Array(256);
+      let n = 0;
+      for (let i = 0; i < w * h; i++) {
+        if (!mask[i]) continue;
+        hist[luma(buf, i * 4)]++;
+        n++;
+      }
+      if (n === 0) return { p05: 0, p50: 0, p95: 0, mean: 0 };
+      const at = (q) => {
+        let acc = 0;
+        const want = q * n;
+        for (let l = 0; l < 256; l++) {
+          acc += hist[l];
+          if (acc >= want) return l;
+        }
+        return 255;
+      };
+      let sum = 0;
+      for (let l = 0; l < 256; l++) sum += l * hist[l];
+      return { p05: at(0.05), p50: at(0.5), p95: at(0.95), mean: sum / n };
+    };
+
     for (const view of views) {
       cam.position.set(view.eye[0], view.eye[1], view.eye[2]);
       this.sky.position.copy(cam.position);
@@ -1703,12 +1745,22 @@ export class GameScene {
       const kShip = chroma(ship);
       const kFlat = chroma(flat);
       const ds = diffStructure();
+      const bShip = band(ship);
       samples.push({
         label: view.label,
         surface: view.surface || null,
         // Carried through from the caller so a failure can say whether the
         // probe photographed the wrong thing or the right thing badly.
+        // `distance` is SPAWN-to-instance — how far the probe had to search —
+        // and `viewDistance` is eye-to-target, which is the framing every
+        // measure below is actually taken at. The merge-gate judge caught the
+        // summary line reporting the first while reading as the second.
         distance: view.distance,
+        viewDistance: Math.hypot(
+          view.eye[0] - view.at[0],
+          view.eye[1] - view.at[1],
+          view.eye[2] - view.at[2],
+        ),
         instances: view.instances,
         eye: view.eye,
         masked,
@@ -1725,6 +1777,13 @@ export class GameScene {
         chromaShip: kShip,
         chromaFlat: kFlat,
         chromaRatio: kFlat > 1e-9 ? kShip / kFlat : 0,
+        // Delivered value, in 8-bit luma, over the same mask. `diffMean` is
+        // the field's own amplitude in those same units — the pair answers
+        // "is this surface visible", which no ratio above can.
+        lumaP05: bShip.p05,
+        lumaP50: bShip.p50,
+        lumaP95: bShip.p95,
+        lumaMean: bShip.mean,
       });
     }
 
