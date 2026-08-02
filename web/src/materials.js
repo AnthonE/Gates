@@ -171,9 +171,20 @@ export const IDENTITIES = [
 ];
 
 // Field scales, in cycles per metre — one field, three octaves, shared by
-// every channel below. Wavelengths ~48 m / ~9.5 m / ~1.7 m.
+// every channel below. Wavelengths ~48 m / ~4 m / ~1.7 m.
+//
+// The meso octave moved 9.5 m → 4 m this pass, and the reason is what the
+// visual judge's frames showed rather than a preference. Every octave here
+// retires at a footprint (below), so the band a player actually sees at
+// mid distance is bounded above by the coarsest octave that survives it. At
+// 9.5 m the surviving octave completed a third of a cycle inside a typical
+// 8 m ground framing — a gradient across the whole frame, which reads as one
+// flat hue and was measured as one ("no surface in any vantage is a single
+// flat hue" was the acceptance). 4 m completes two cycles in the same frame
+// and still retires at 0.36 m/px, far beyond any footprint this world
+// produces. Its amplitude moved with it, by the rule already stated below.
 const SCALE_MACRO = 1 / 48;
-const SCALE_MESO = 1 / 9.5;
+const SCALE_MESO = 1 / 4.0;
 const SCALE_MICRO = 1 / 1.7;
 // How far the field may push the identity weights around before they are
 // sharpened and renormalized. This is what turns a smooth biome ramp into a
@@ -185,13 +196,45 @@ const MOTTLE = [0.16, 0.11, 0.07];
 // Roughness variation from the micro octave (±).
 const ROUGH_VAR = 0.18;
 // Bump amplitude per octave, in metres, at identity strength 1. Chosen
-// against each octave's own wavelength (9.5 m and 1.7 m) so both land in
-// the 0.03–0.25 surface-slope band where a normal actually reads; the
-// footprint fades below then retire each one as it stops resolving.
-const AMP_MESO_M = 0.55;
+// against each octave's own wavelength (4 m and 1.7 m) so both land in
+// the 0.03–0.25 surface-slope band where a normal actually reads — the
+// convention being `amp / (wavelength / 4)`, a quarter-cycle rise. Meso is
+// 0.23 because its wavelength moved to 4 m and the SLOPE is what the band
+// is stated in: 0.55/2.375 = 0.232 at 9.5 m, 0.23/1.0 = 0.230 at 4 m. The
+// same surface, re-derived, not a new one. The footprint fades below then
+// retire each one as it stops resolving.
+const AMP_MESO_M = 0.23;
 const AMP_MICRO_M = 0.09;
-const FADE_MESO = [2.0, 7.0];
-const FADE_MICRO = [0.3, 1.1];
+// Every octave retires on ONE law, and it is the law the grain octave was
+// already written against (`FADE_OCTAVE_CPP` below): cycles per pixel, not
+// metres. Metres cannot express "resolved" — a 1.1 m/px footprint is
+// comfortable for a 48 m octave and two thirds of a cycle per pixel for a
+// 1.7 m one — so a metre threshold has to be re-derived by hand per octave,
+// and the two hand-derived ones were both wrong in the same direction.
+//
+// Measured on pass 20260802-050932-01's `04-ground-down.png`, in the grass:
+// the high-pass signal's autocorrelation was 0.53 at one pixel and 0.05 at
+// two — a two-pixel period, which is aliasing at exactly Nyquist — and the
+// dark and bright pixels were one hue at two luminances, so it was the
+// BUMP, not the albedo. The cause is arithmetic: the retired thresholds
+// were `meso [2.0, 7.0]` and `micro [0.3, 1.1]` m/px, which against their
+// own wavelengths are 0.74 and 0.65 cycles per pixel — both PAST the 0.5
+// Nyquist limit, so each octave was still being sampled after it stopped
+// being representable. What reaches the image is not the octave but its
+// alias, and an aliased height field has a per-pixel-random gradient, which
+// `normal_fragment_maps` below divides by the pixel footprint.
+//
+// Deriving the metres from the octave's own scale instead removes the class:
+// `fade_m = cycles_per_pixel / scale`, one line, no per-octave judgement.
+const FADE_OCTAVE_CPP = [0.03, 0.09];
+// The sampling limit itself — half a cycle per pixel. Not a knob: a signal
+// sampled above this is indistinguishable from a lower-frequency one, which
+// is what the grass was doing. Every fade above must retire below it, and
+// the browser gate asserts exactly that over the whole octave table.
+const NYQUIST_CPP = 0.5;
+const fadeMetres = (scale) => FADE_OCTAVE_CPP.map((cpp) => cpp / scale);
+const FADE_MESO = fadeMetres(SCALE_MESO);
+const FADE_MICRO = fadeMetres(SCALE_MICRO);
 // Grain's own bump amplitude in metres and roughness swing. 0.008 m against
 // the identities' 4–12 cm wavelengths is a surface slope of 0.07 (sand, bump
 // 0.35) to 0.29 (rock, bump 2.2) — the same 0.03–0.25 band the two octaves
@@ -207,7 +250,12 @@ const GRAIN_ROUGH = 0.1;
 // still comfortably resolved rather than at the moment it stops being. That is
 // deliberate on both counts: an octave that dies early cannot alias, and grain
 // is the only octave whose cost scales with how far it reaches.
-const FADE_GRAIN_CPP = [0.03, 0.09];
+//
+// It is now the SAME array the structural octaves fade on, and that is the
+// whole point of this pass: grain was the only octave written against the
+// sampling rate, and it was the only octave that never aliased. The law is
+// not grain's, it is the field's.
+const FADE_GRAIN_CPP = FADE_OCTAVE_CPP;
 // The smallest grain scale any identity carries. Grain's own fade needs the
 // WORLD footprint and the blended scale, both of which cost real work on
 // every fragment in the frame; the horizontal footprint is a lower bound on
@@ -219,6 +267,15 @@ const GRAIN_SCALE_MIN = Math.min(...IDENTITIES.map((i) => i.grain.scale));
 // Specular-AA gain on the perturbed normal's variance (three already adds
 // its own term from the *unperturbed* normal; this covers what we added).
 const SPEC_AA = 0.5;
+// The cap on the bump's surface gradient, as a slope. The four octaves that
+// can reach gmH are each amplitude-chosen against the 0.03–0.25 slope band
+// (above), so four of them at the top of that band is 1.0 — the steepest
+// surface this material is designed to be able to make. Anything past it is
+// not a surface, it is the divide-by-footprint in `normal_fragment_maps`
+// running away on a field that stopped being resolvable; the Nyquist fades
+// are what stop that happening and this is what bounds it when something
+// else does. 1.0 is a 45° perturbation, which no octave here asks for.
+const BUMP_MAX_SLOPE = 1.0;
 // Causal modifiers. Wetness: below the waterline the surface is dark and
 // smooth, and it dries out over the first 1.6 m of beach — this is what
 // retired the separate sea-floor palette entry (0.68 × sand lands on it).
@@ -655,21 +712,79 @@ ${grainGlsl(variant.grain)}
         "#include <roughnessmap_fragment>",
         `#include <roughnessmap_fragment>\n        roughnessFactor = gmRough;`,
       )
+      // The bump, and where its gradient comes from.
+      //
+      // A procedural height gmH is turned into a normal perturbation. What
+      // shipped reconstructed the gradient over dFdx(vGmPos)/dFdy(vGmPos) —
+      // vectors spanning the TRIANGLE's flat plane — so the gradient came back
+      // tangent to whichever facet the fragment sat on. Adjacent facets of a
+      // smooth-shaded heightfield are tilted against each other while the
+      // shading normal is not, so the bump jumped at every triangle edge by
+      // (facet tilt) x (bump slope): a sawtooth locked to the mesh. Measured
+      // on pass 20260802-050932-01's `04-ground-down.png`, scanning the sand
+      // at y=500: a ~5-level ramp repeating on a ~58 px period with a hard
+      // reset at each edge. The visual judge saw "the terrain triangulation
+      // rendered as shading"; a blind reader called it "large low-poly facets
+      // readable across the surface". The heightfield was never faceted. Only
+      // the light on it was.
+      //
+      // Rebuilding the basis on the geometric normal is the textbook
+      // correction and it is NOT the fix — measured in `ci/bump_basis.mjs` it
+      // moves the seam 0.422° → 0.325°, because it still projects onto the
+      // same tilted facet. Anything that reads the triangle inherits it.
+      //
+      // So nothing reads the triangle. gmH is a function of world XZ, so its
+      // world gradient follows from the chain rule alone: solve the 2x2 system
+      // mapping world-XZ steps to screen steps and invert it. What comes back
+      // is dgmH/dx and dgmH/dz in metres per metre — the same two numbers from
+      // either side of any edge, because they are a property of the field and
+      // not of who asked. Exactly continuous (8.5e-7°), not approximately.
+      //
+      // Then the two heightfields add: the ground is y = T(x,z) and the bump
+      // is gmH(x,z), so the perturbed normal is the normal of their sum, and
+      // grad T recovers from the shading normal as -n.xz/n.y — no need to
+      // reconstruct T itself.
+      //
+      // All of that happens in WORLD space, via vGmNorm, and the last line
+      // rotates the result back. three's `normal` here is in VIEW space
+      // (`normal_fragment_begin` is `normalize(vNormal)`, and vNormal rides the
+      // normalMatrix, which is object→view). The retired block took
+      // `cross(gmDpdy, normal)` with gmDpdy in world and normal in view — a
+      // cross product between two spaces, which has no meaning and rotated the
+      // bump as the camera turned. That was the second defect in these lines.
+      // mat3(viewMatrix) is a rotation, so it cannot introduce a seam of its
+      // own, which is why `ci/bump_basis.mjs` tests the world half and stops.
       .replace(
         "#include <normal_fragment_maps>",
         /* glsl */ `
         #include <normal_fragment_maps>
-        // Surface-gradient bump: perturb the shading normal by the screen
-        // derivatives of gmH against those of world position, so the bump is
-        // in metres and needs no tangent frame or UVs (there are none).
+        // Bump: the world-XZ gradient of gmH, solved from screen derivatives,
+        // added to the ground's own heightfield. Never reads the triangle.
         {
-          vec3 gmDpdx = dFdx(vGmPos);
-          vec3 gmDpdy = dFdy(vGmPos);
-          vec3 gmR1 = cross(gmDpdy, normal);
-          vec3 gmR2 = cross(normal, gmDpdx);
-          float gmDet = dot(gmDpdx, gmR1);
-          vec3 gmGrad = sign(gmDet) * (dFdx(gmH) * gmR1 + dFdy(gmH) * gmR2);
-          normal = normalize(abs(gmDet) * normal - gmGrad);
+          vec2 gmDx = dFdx(vGmPos.xz);
+          vec2 gmDy = dFdy(vGmPos.xz);
+          float gmHx = dFdx(gmH);
+          float gmHy = dFdy(gmH);
+          float gmDet = gmDx.x * gmDy.y - gmDx.y * gmDy.x;
+          // No branch: a derivative in non-uniform control flow is undefined,
+          // so every dFdx above is taken first and this is a select. It drops
+          // the bump where the XZ footprint degenerates — a face seen exactly
+          // edge-on — which is where every octave has faded anyway.
+          float gmInvDet = abs(gmDet) > 1e-14 ? 1.0 / gmDet : 0.0;
+          vec2 gmSurf = vec2(gmHx * gmDy.y - gmHy * gmDx.y,
+                             gmHy * gmDx.x - gmHx * gmDy.x) * gmInvDet;
+          // Bounded (wall 4): a screen derivative over a screen footprint has
+          // no upper bound of its own. The cap is the top of the 0.03-0.25
+          // slope band the octave amplitudes are chosen against, times the
+          // four octaves that can sum into gmH.
+          float gmSlope = length(gmSurf);
+          gmSurf *= min(gmSlope, ${'${BUMP_MAX_SLOPE.toFixed(2)}'}) / max(gmSlope, 1e-12);
+          vec3 gmNw = normalize(vGmNorm);
+          float gmNy = max(gmNw.y, 1e-3);
+          normal = normalize(mat3(viewMatrix) * normalize(vec3(
+              gmNw.x - gmSurf.x * gmNy,
+              gmNy,
+              gmNw.z - gmSurf.y * gmNy)));
         }
         // Specular AA on what we just perturbed (procedural-materials
         // reference): variance of the shading normal widens the lobe instead
@@ -799,6 +914,20 @@ export function materialFacts() {
     breakup: BLEND_BREAKUP,
     specAA: SPEC_AA,
     fadeMicroM: FADE_MICRO,
+    // The octave table, so the gate can assert the sampling law over ALL of
+    // them rather than spot-checking the one that happened to have a fact.
+    // `scale` is cycles/m, `fadeCpp` is where the octave starts and finishes
+    // retiring in cycles per pixel, and `fadeM` is that same pair in the
+    // metres-per-pixel the shader actually compares against — derived, so a
+    // future hand-written metre threshold shows up here as a cpp past
+    // Nyquist instead of hiding as a plausible-looking distance.
+    octaves: [
+      { name: "macro", scale: SCALE_MACRO, fadeCpp: null, fadeM: null },
+      { name: "meso", scale: SCALE_MESO, fadeCpp: FADE_OCTAVE_CPP, fadeM: FADE_MESO },
+      { name: "micro", scale: SCALE_MICRO, fadeCpp: FADE_OCTAVE_CPP, fadeM: FADE_MICRO },
+    ],
+    nyquistCpp: NYQUIST_CPP,
+    bumpMaxSlope: BUMP_MAX_SLOPE,
     // The second pass. Scales in cycles/m, so the gate can check they are
     // genuinely finer than the micro octave (0.588 /m) as well as distinct.
     grainScale: IDENTITIES.map((i) => i.grain.scale),

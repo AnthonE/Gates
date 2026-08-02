@@ -47,6 +47,13 @@ grep -q '^combat ' "$native_out" || fail "probe output has no combat line — me
 echo "== gate: client wasm bridge smoke (raw C ABI, the browser's calling path)"
 $NICE node ci/client_smoke.mjs || fail "client bridge smoke"
 
+# The terrain bump's gradient reconstruction, as arithmetic. The defect it
+# holds — a heightfield rendering its own triangulation — is a discontinuity in
+# a formula, so it is evaluated on both sides of one triangle edge rather than
+# photographed. No GPU, no shard, no threshold that moves with a driver.
+echo "== gate: bump basis (world-XZ gradient is continuous across a triangle edge)"
+$NICE node ci/bump_basis.mjs || fail "bump basis"
+
 echo "== gate: web bundle (npm ci + vite build; the wasm artifact must ride along)"
 command -v npm >/dev/null || fail "npm missing — web gate cannot run"
 mkdir -p web/public

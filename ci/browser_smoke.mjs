@@ -1502,6 +1502,76 @@ if (!(mat.specAA > 0)) fail(`tab A: specular-AA gain is ${mat.specAA} — the pe
 if (!(mat.fadeMicroM[1] > mat.fadeMicroM[0] && mat.fadeMicroM[0] > 0)) {
   fail(`tab A: micro-octave footprint fade is [${mat.fadeMicroM}] — detail below a pixel is not being faded out`);
 }
+// Assertion 15a2 — EVERY octave retires while it is still resolvable.
+//
+// The check above only asks that the micro fade rises, which the shipped
+// values did while retiring the octave at 0.65 cycles per pixel — past the
+// 0.5 Nyquist limit, so the last stretch of its life was spent aliasing. It
+// reached the frame as a two-pixel-period speckle in the grass (measured on
+// pass 20260802-050932-01: autocorrelation 0.53 at one pixel, 0.05 at two,
+// one hue at two luminances, 10.2 luma/px of neighbour contrast against
+// 0.18 on the sand of the same frame), because a height field sampled past
+// Nyquist has a per-pixel-random gradient and the bump divides gradients by
+// the pixel footprint. Meso was over the line too, at 0.74.
+//
+// So the law is asserted over the table rather than per octave: a fade that
+// is not expressed in cycles per pixel cannot be checked against the
+// sampling rate, and every hand-derived metre threshold in this material
+// was wrong in the same direction.
+if (!Array.isArray(mat.octaves) || mat.octaves.length < 3) {
+  fail(`tab A: the material reports ${mat.octaves ? mat.octaves.length : "no"} octaves — the sampling law cannot be checked`);
+}
+if (!(mat.nyquistCpp > 0 && mat.nyquistCpp <= 0.5)) {
+  fail(`tab A: the material's Nyquist limit is ${mat.nyquistCpp} cycles/pixel — above 0.5 it is not Nyquist`);
+}
+const faded = mat.octaves.filter((o) => o.fadeCpp);
+const unfaded = mat.octaves.filter((o) => !o.fadeCpp);
+if (!faded.length) fail(`tab A: no octave has a footprint fade at all`);
+for (const o of faded) {
+  if (!(o.fadeCpp[1] > o.fadeCpp[0] && o.fadeCpp[0] > 0)) {
+    fail(`tab A: the ${o.name} octave's fade is [${o.fadeCpp}] cycles/pixel — a fade must rise from above zero`);
+  }
+  if (!(o.fadeCpp[1] <= mat.nyquistCpp)) {
+    fail(
+      `tab A: the ${o.name} octave retires at ${o.fadeCpp[1]} cycles/pixel, past the ${mat.nyquistCpp} ` +
+        `Nyquist limit — it is still being sampled after it stopped being representable, which reaches ` +
+        `the frame as speckle and not as detail`,
+    );
+  }
+  // …and the metres the shader actually compares against must be that same
+  // pair, or the cpp above is a decoration over a hand-written distance.
+  const want = o.fadeCpp.map((c) => c / o.scale);
+  if (o.fadeM.some((m, k) => Math.abs(m - want[k]) > 1e-9)) {
+    fail(
+      `tab A: the ${o.name} octave fades at [${o.fadeM}] m/px but its ${o.fadeCpp} cycles/pixel over a ` +
+        `scale of ${o.scale} /m is [${want}] — the shader is not comparing against the law`,
+    );
+  }
+}
+// An octave may go unfaded only if it is too coarse to alias before every
+// faded one is already gone: by the time the frame is coarse enough for it,
+// there is nothing left for it to alias against.
+const coarsestRetire = Math.max(...faded.map((o) => o.fadeCpp[1] / o.scale));
+for (const o of unfaded) {
+  const aliasAt = mat.nyquistCpp / o.scale;
+  if (!(aliasAt > coarsestRetire)) {
+    fail(
+      `tab A: the unfaded ${o.name} octave aliases at a ${aliasAt.toFixed(2)} m/px footprint, at or before ` +
+        `the ${coarsestRetire.toFixed(2)} m/px where the faded octaves retire — it needs a fade of its own`,
+    );
+  }
+}
+if (!(mat.bumpMaxSlope > 0 && mat.bumpMaxSlope <= 2)) {
+  fail(
+    `tab A: the bump's surface gradient is capped at slope ${mat.bumpMaxSlope} — a screen derivative ` +
+      `over a screen footprint is unbounded without one (wall 4)`,
+  );
+}
+console.log(
+  `  octaves: ${mat.octaves.map((o) => `${o.name} ${(1 / o.scale).toFixed(1)}m` +
+    (o.fadeCpp ? ` retires ${o.fadeCpp[1]}cpp/${(o.fadeCpp[1] / o.scale).toFixed(2)}m·px` : " unfaded")).join(" · ")} ` +
+    `· Nyquist ${mat.nyquistCpp} · bump cap ${mat.bumpMaxSlope}`,
+);
 // The tier read (bases.webp): wood, stone and metal must not answer the key
 // light identically, and metal must actually be a conductor.
 const tierRough = mat.tiers.map((t) => t[1]);
@@ -1695,10 +1765,15 @@ if (coarseGrain.length) {
       `${mat.microScale.toFixed(3)} /m — that is a fourth mottle, not a grain`,
   );
 }
-if (!(mat.grainFadeCpp[1] > mat.grainFadeCpp[0] && mat.grainFadeCpp[1] <= 1)) {
+// Grain retires on the same law as every other octave now (15a2), and against
+// the same limit. The ceiling here was one cycle per pixel, which was twice
+// too generous: aliasing starts at HALF a cycle per pixel, not one, and the
+// two structural octaves demonstrated what the slack buys by sitting in it.
+if (!(mat.grainFadeCpp[1] > mat.grainFadeCpp[0] && mat.grainFadeCpp[1] <= mat.nyquistCpp)) {
   fail(
     `tab A: the grain footprint fade is [${mat.grainFadeCpp}] cycles/pixel — it must rise and it ` +
-      `must retire the octave at or before one cycle per pixel, which is where it starts aliasing`,
+      `must retire the octave at or before the ${mat.nyquistCpp} Nyquist limit, which is where it ` +
+      `starts aliasing`,
   );
 }
 const grainDetail = (r) =>

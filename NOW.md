@@ -4,7 +4,49 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **A base can be broken into now, but it cannot be repaired, and a
+1. **The world reads untextured and shows its mesh — and both halves turned
+   out to be arithmetic, not missing art.** *(Gap pass. From the visual
+   judge's ranked gap 1 in
+   `findings/pass-20260802-050932-01-visual.md`, which returned FAIL on all
+   ten criteria with a blind reader identifying 0/6 of our frames as real.)*
+
+   **Landed this pass** (`DECISIONS.md` §open, "materials v2"): the two
+   defects the frames actually carried, both measured off
+   `04-ground-down.png` before anything was changed.
+
+   - The three structural octaves retired *past* Nyquist (meso 0.74, micro
+     0.65 cycles per pixel), so each was still being sampled after it
+     stopped being representable. Every octave now retires on the one law
+     the grain octave was already written against — cycles per pixel, with
+     the metres derived — and `browser_smoke` 15a2 asserts it over the
+     whole table.
+   - The bump reconstructed its gradient on the triangle, so a
+     smooth-shaded heightfield rendered its own facets. It is solved in
+     world XZ now, mesh-independent by construction, and gated as
+     arithmetic in `ci/bump_basis.mjs` rather than as a screenshot.
+
+   **What this item still wants**, in the order the report ranked it — none
+   of it started, and the first is the one the acceptance turns on:
+
+   - **Tiled per-class albedo.** The identities are still four flat colours
+     modulated by a shared noise field. The report asks for grass, sand,
+     rock, bark and canopy albedo at ~0.5–1 m repeat with a
+     macro-variation octave breaking the tiling. The octave ladder is now
+     safe to build on; nothing has been built on it.
+   - **Splat transitions by height/slope/noise, and a wet-sand waterline.**
+     `WET_RANGE` exists and paints; the report saw no shoreline in any
+     vantage, so either the band is too narrow to read at capture framing
+     or no vantage looks at one. Measure before tuning.
+   - **The rock and bark rebuild** (report's ranked fix 8): granite albedo
+     with granular grain and crevice darkening, the dirt-ring base blended
+     flush instead of reading as a pedestal, vertical bark ridges.
+
+   Not this item, and not to be folded into it: the lighting gap
+   (`-visual.md` ranked gap 3) is one owner, one iteration, per
+   `CLAUDE.md`'s coupled-lighting law — sky, water specular, shadows and
+   exposure move together or not at all.
+
+2. **A base can be broken into now, but it cannot be repaired, and a
    raid still ends in a shrug.**
    *(From the merge-gate judge's ranked gap 1 in
    `findings/archive-prestamp/pass-20260802-035930-01-judge.md`, and its
@@ -48,7 +90,7 @@ Done items are deleted, not checked — history lives in git and
    C→S verb — a repair, a throw — is an action subtype, and there are
    seven.
 
-2. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
+3. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
    The projection half of this item landed (materials v1 third pass,
    `DECISIONS.md` §open): the grain — and only the grain — is sampled
    triplanar, ridge-folded per plane before the blend and the blend's
@@ -82,7 +124,7 @@ Done items are deleted, not checked — history lives in git and
    fragment, 18/24 depth fetches. Price `gmHash4` there too — hash
    evaluations and program chars — not in ms.
 
-3. **A tab that boots beside another live tab takes 34 s to reach the
+4. **A tab that boots beside another live tab takes 34 s to reach the
    world. Nobody knows where those seconds go.**
    The third-tab version of this went red on 2026-08-01 16:26 (`inWorld`
    at 61.6 s of a 60 s window) and the recovery pass closed it, but by
@@ -108,7 +150,7 @@ Done items are deleted, not checked — history lives in git and
    terrain program costs ~3 s to compile here, and a fresh tab compiles
    more than one.
 
-4. **Nothing casts past 720 m, and nothing out there has a silhouette.**
+5. **Nothing casts past 720 m, and nothing out there has a silhouette.**
    The horizon casts now (`DECISIONS.md` §open) but two limits are stated
    rather than solved: the coarsest clipmap level stops at 720 m because
    fog closes at 1000 m, and past the near ring the only caster is the
@@ -117,7 +159,7 @@ Done items are deleted, not checked — history lives in git and
    yaws for exactly that reason. A scatter LOD (billboard crosses,
    `TERRAIN.md` §4's "trees get two LODs") is the fix and it is a terrain
    job, not a shadow one.
-5. **A capture the same twice is a gate; a capture that drifts is a vibe.**
+6. **A capture the same twice is a gate; a capture that drifts is a vibe.**
    Deterministic capture mode (operator, 2026-08-02, `DECISIONS.md` — the
    Claude-of-Duty adoption row): the client animates off the sim tick / an
    injected fixed-step clock in capture mode — today the RAF loop steps off
