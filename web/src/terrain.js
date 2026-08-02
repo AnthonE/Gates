@@ -27,6 +27,7 @@ import * as THREE from "three";
 import {
   makeTerrainCostVariants,
   makeTerrainMaterial,
+  makeTerrainProjectionVariant,
   surfaceMaterial,
 } from "./materials.js";
 import {
@@ -152,6 +153,8 @@ export class Terrain {
     this.material = makeTerrainMaterial();
     // Built on the cost probe's first ask and never on a public shard.
     this._costVariants = null;
+    // …and the projection probe's partner, on the same terms.
+    this._projectionVariant = null;
     this.chunks = new Map(); // "cx,cz" -> { cx, cz, mesh? , pending? }
     this.queue = [];
     this.inFlight = false;
@@ -378,6 +381,143 @@ export class Terrain {
       );
     }
     return this._costVariants;
+  }
+
+  /**
+   * The grain octave's projection partner, built on first ask (materials v1,
+   * third pass). Same ownership argument as `costVariants()` and the same
+   * dev-only-by-construction guarantee: nothing but `projectionProbe` calls
+   * this and the probe is not installed on a public shard.
+   */
+  projectionVariant() {
+    if (!this._projectionVariant) {
+      this._projectionVariant = makeTerrainProjectionVariant();
+    }
+    return this._projectionVariant;
+  }
+
+  /**
+   * The steepest coherent FACE of ground near (px, pz) — dev-only, and the
+   * thing the projection probe has to be aimed at.
+   *
+   * A grain that is combed downhill is only combed on a slope, so the gate
+   * that measures it needs a slope to measure ON, and "the slope near spawn"
+   * is a worldgen fact nobody may hardcode: a seed change would silently aim
+   * the probe at a meadow and every measurement after it would pass by
+   * default. So this finds one, and reports enough about what it found that
+   * the gate can refuse a face that is not steep enough to be evidence.
+   *
+   * Vertices inside `radiusM` are binned on a `binM` world grid and each bin's
+   * position and normal are averaged. A bin is a FACE and not a spike because
+   * of two reported numbers the gate asserts on: `verts`, how many vertices
+   * agreed to make it, and `coherence` — the mean normal's LENGTH, which is 1
+   * only if every normal in the bin pointed the same way and collapses toward
+   * 0 on a ridge line or a crumpled patch.
+   *
+   * Deterministic on purpose. Chunks stream in in whatever order the worker
+   * finishes them, so the accumulation walks them in sorted key order, and
+   * candidate bins are ranked with their key as the tie-break — otherwise the
+   * face the gate lands on could differ between two runs of one build, which
+   * is the class of flake this box has already paid for twice.
+   *
+   * `sun` and `minLit` are a third requirement, and not a cosmetic one: a face
+   * is only evidence if the frame taken of it carries the octave, and the
+   * octave reaches the image as a swing in ALBEDO. On a face turned away from a
+   * 21°-elevation key light that swing falls under the probe's own luma
+   * threshold and the measurement is taken over a few hundred stray pixels —
+   * which is what the steepest face near this spawn turned out to be, and it
+   * cost a run to find out. So a candidate must face the light by `minLit`
+   * (`dot(n, sun)`, the lambert term), and the steepest of the ones that do is
+   * what comes back.
+   *
+   * Allocates a Map and scans every near vertex: never the RAF path.
+   */
+  steepestFace(px, pz, radiusM, binM, minVerts, sun, minLit) {
+    const bins = new Map();
+    const r2 = radiusM * radiusM;
+    let scanned = 0;
+    let chunks = 0;
+    for (const key of [...this.chunks.keys()].sort()) {
+      const entry = this.chunks.get(key);
+      if (!entry || !entry.mesh) continue;
+      chunks++;
+      const geo = entry.mesh.geometry;
+      const pos = geo.getAttribute("position");
+      const nor = geo.getAttribute("normal");
+      if (!pos || !nor) continue;
+      const ox = entry.mesh.position.x;
+      const oy = entry.mesh.position.y;
+      const oz = entry.mesh.position.z;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i) + ox;
+        const z = pos.getZ(i) + oz;
+        const dx = x - px;
+        const dz = z - pz;
+        if (dx * dx + dz * dz > r2) continue;
+        scanned++;
+        const bk = `${Math.floor(x / binM)},${Math.floor(z / binM)}`;
+        let b = bins.get(bk);
+        if (!b) {
+          b = { key: bk, n: 0, x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0 };
+          bins.set(bk, b);
+        }
+        b.n++;
+        b.x += x;
+        b.y += pos.getY(i) + oy;
+        b.z += z;
+        b.nx += nor.getX(i);
+        b.ny += nor.getY(i);
+        b.nz += nor.getZ(i);
+      }
+    }
+    const cands = [];
+    let unlit = 0;
+    for (const b of bins.values()) {
+      if (b.n < minVerts) continue;
+      const len = Math.hypot(b.nx, b.ny, b.nz);
+      if (len <= 0) continue;
+      const n = [b.nx / len, b.ny / len, b.nz / len];
+      const lit = sun ? n[0] * sun[0] + n[1] * sun[1] + n[2] * sun[2] : 1;
+      if (lit < (minLit || 0)) {
+        unlit++;
+        continue;
+      }
+      cands.push({
+        key: b.key,
+        center: [b.x / b.n, b.y / b.n, b.z / b.n],
+        normal: n,
+        upness: n[1],
+        lit,
+        coherence: len / b.n,
+        verts: b.n,
+      });
+    }
+    cands.sort((a, c) => a.upness - c.upness || (a.key < c.key ? -1 : 1));
+    const best = cands[0] || null;
+    return {
+      found: !!best,
+      chunks,
+      scanned,
+      bins: bins.size,
+      candidates: cands.length,
+      unlit,
+      radiusM,
+      binM,
+      minVerts,
+      minLit: minLit || 0,
+      ...(best
+        ? {
+            key: best.key,
+            center: best.center,
+            normal: best.normal,
+            upness: best.upness,
+            slopeDeg: (Math.acos(Math.min(1, Math.max(-1, best.upness))) * 180) / Math.PI,
+            lit: best.lit,
+            coherence: best.coherence,
+            verts: best.verts,
+          }
+        : {}),
+    };
   }
 
   /**

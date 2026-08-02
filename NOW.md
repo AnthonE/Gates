@@ -4,48 +4,39 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **The grain is projected on world XZ, so a slope combs downhill.**
-   Grain landed (materials v1, `DECISIONS.md` §open): a fourth octave at a
-   per-identity wavelength, ridge-folded and contrasted per identity,
-   driving albedo, roughness and bump, retired by pixel footprint in
-   cycles-per-pixel against the **world** footprint. The gate measures it
-   as CONTRAST rather than moved pixels — 10.01% of the near frame moved,
-   0.17 → 1.02 luma/px (×6.12), 0.000% from 60 m up, control noise 0 at
-   both views.
+1. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
+   The projection half of this item landed (materials v1 third pass,
+   `DECISIONS.md` §open): the grain — and only the grain — is sampled
+   triplanar, ridge-folded per plane before the blend and the blend's
+   deviation restored by `1/|w|`. Measured on the 46.6° face this spawn
+   offers: tilting the ground coarsens the world-XZ grain ×2.017 and the
+   shipped one ×1.397, a gain of ×1.444 against a ×1.456 stretch, at
+   ×1.044 amplitude. The gate for it (`browser_smoke` 15c) is a within-run
+   comparison against a compiled `flatgrain` partner at two square-on
+   cameras, and it goes red — ×1.000 — the moment the tap stops reading
+   the normal.
 
-   What is left is the projection. A world-XZ field on a face of upness
-   `u` is stretched by `1/u` along the slope: at 1.7 m that is a smear
-   nobody reads as wrong, at 4 cm it is a hillside combed downhill. The
-   fix is to sample **the grain and only the grain** triplanar. It was
-   built and measured on `loop/m1-surface-grain` (unmerged, and it
-   survives in no tree — rebuilding it means rebuilding it), and the shape
-   that worked is: **ridge fold applied per plane BEFORE the blend, and
-   the blend's deviation restored by `1/|w|`**. Without both, a 47° face
-   measured ×0.56 the contrast of the same face on world XZ. With both:
-   slope-to-contour contrast 1.100 → 1.078 on a 47° face at ×1.00 overall
-   contrast, and exact identity on level ground (the weights are (0,1,0)
-   there). `contrastProbe` takes arbitrary world views, so the gate for it
-   is a third view aimed at a measured face plus the existing level-ground
-   one as the control.
+   What is left of the old branch is `gmHash4`: the four lattice corners
+   of a noise sample evaluated in one `vec4` body instead of four inlined
+   scalar ones. It is image-identical by construction, and it has never
+   been gated on its own — the pattern to copy is `noskip`: compile a
+   `noh4` variant with materials v0's scalar hash and require the same
+   frame. It matters more after the projection than before it, because
+   grain now takes three noise samples where it took one, so the ground
+   pays 6 sample sites per fragment against 4 — and a sample site is four
+   hash evaluations.
 
    **Do not re-run the cost question on this box.** Every run of the gate
-   takes it again; the six taken while this slice was built read +14 ms
+   takes it again; the six taken while grain was built read +14 ms
    (0.3× the floor), −74 (1.7×), −64 (1.3×), −110 (2.2×), −104 (8.2×),
    −62 (0.1×) — five of six the wrong sign, less work measured slower.
    Grain lands exactly where level 0's PCF landed, inside a floor that is
    a one-sample estimate itself and swung 13–603 ms across those same six
    runs. A seventh reading is not a tiebreak.
-   The counted budget is the one that answers: 81,520/96,000 chars (the
-   octave is 638), 4 noise sample sites/fragment, 18/24 depth fetches.
-   Triplanar's ~9% claim from the old branch is inside the same noise, so
-   price it counted too — sample sites and program chars — not in ms.
-
-   Also unfinished, and separately gateable: **`gmHash4`**, the four
-   lattice corners of a noise sample evaluated in one `vec4` body instead
-   of four inlined scalar ones. It is on the old branch, it is image-
-   identical by construction, and it has never been gated on its own — the
-   pattern to copy is `noskip`: compile a `noh4` variant with materials
-   v0's scalar hash and require the same frame.
+   The counted budget is the one that answers, and it now has three axes,
+   all asserted: 81,820/96,000 program chars, 6/8 noise sample sites per
+   fragment, 18/24 depth fetches. Price `gmHash4` there too — hash
+   evaluations and program chars — not in ms.
 
 2. **A tab that boots beside another live tab takes 34 s to reach the
    world. Nobody knows where those seconds go.**

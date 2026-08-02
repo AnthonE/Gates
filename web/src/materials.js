@@ -62,20 +62,56 @@
 // landed on the second attempt — the first rejected grain on a ~9% frame delta
 // that nothing had calibrated, and 9% turned out to be inside this box's noise.
 //
-// WHAT THIS PASS DELIBERATELY DOES NOT DO, and why it is written here rather
-// than discovered again: at 4 cm the world-XZ projection is wrong on a slope.
-// A world-XZ field on a face of upness u is stretched by 1/u along the slope,
-// which at 1.7 m is a smear nobody reads as wrong and at 4 cm is a hillside
-// combed downhill. The fix is to sample the grain — and only the grain —
-// triplanar, and it was built and measured on the abandoned first attempt
-// (`loop/m1-surface-grain`, unmerged) before being taken back out: on a 47°
-// face it moved the slope-to-contour contrast ratio from 1.100 to 1.078, at
-// ×1.00 overall contrast, once the ridge fold is applied per plane and the
-// blend deviation restored by `1/|w|`; on level ground the weights are
-// (0,1,0) exactly, so it changes nothing at all. Neither half survives in any
-// tree — rebuilding it means rebuilding it, and that shape is the one that
-// worked. It is `NOW.md`'s next surface item, not a line of half-built shader
-// carried in the dark.
+// --- third pass: the projection (DECISIONS.md §open, "materials v1") --------
+//
+// The two passes above sample every octave on world XZ, and at 1.7 m that is
+// a smear nobody reads as wrong. At 4 cm it is a hillside combed downhill: a
+// world-XZ field on a face of upness `u` is stretched by `1/u` ALONG the
+// slope and left alone across it, so a 47° face wears a grain 1.5× longer
+// downhill than it is wide. Every other octave is coarse enough to get away
+// with it. Grain is not, and grain is the only octave a player ever sees at
+// arm's length — which is the whole reason it exists.
+//
+// So the grain — and ONLY the grain — is sampled triplanar. The shape is not
+// stock, and both halves of it are load-bearing:
+//
+//   1. **The ridge fold is applied per plane, BEFORE the blend.** Folding
+//      after the blend folds a value that is already three fields averaged,
+//      and the average of three ridged fields is not the ridge of an average:
+//      the crystalline speckle rock is built from turns into a soft one, and
+//      the octave's whole per-identity `ridge` knob stops meaning anything on
+//      any face that is not axis-aligned.
+//   2. **The blend's deviation is restored by `1/|w|`.** Blending three
+//      INDEPENDENT fields with convex weights `w` shrinks the deviation to
+//      `|w|` of one field's — 1.0 on an axis, 0.577 at the 45-45-45 corner —
+//      so a stock triplanar blend does not just reproject the grain, it fades
+//      it out on exactly the faces it was reprojected for.
+//
+// Without both, a 47° face measured ×0.56 the contrast of the same face on
+// world XZ: the fix would have cost more contrast than the smear it removed.
+// With both, measured by the browser gate on the 46.6° face this seed's spawn
+// offers, tilting the ground coarsens the world-XZ grain by ×2.02 and this one
+// by ×1.40 — ×1.44 of the ×1.456 stretch taken back — at ×1.04 amplitude.
+//
+// On level ground the weights are `(0,1,0)` EXACTLY — a heightfield's flat
+// vertices carry an exactly-vertical normal and the interpolant of three of
+// them is exactly vertical — so `|w|` is exactly 1, the x and z taps are
+// multiplied by exactly 0, and the result is bit-for-bit the world-XZ tap
+// this replaces. The change is confined to slopes by construction.
+//
+// `flatgrain` is the compiled partner that makes all of that a gate rather
+// than a paragraph: the shipped program with materials v1's world-XZ tap in
+// place of the triplanar one, nothing else touched. `projectionProbe` renders
+// both programs at two cameras — one square-on to a slope, one square-on to
+// level ground — and measures how much each program's grain COARSENS between
+// them. Everything that is not the projection is in both programs' numerator
+// and denominator alike, which is what makes the number quotable on a box that
+// cannot be trusted with a millisecond.
+//
+// The price is counted, per `NOW.md`'s instruction not to re-run the cost
+// question in milliseconds on this box: grain's noise sample sites go 1 → 3,
+// so the ground's total goes 4 → 6 per fragment, and the program grows by the
+// triplanar helper. Both are asserted against a budget by the browser gate.
 
 import * as THREE from "three";
 import {
@@ -263,8 +299,46 @@ float gmGrainTap(vec2 uv, float s, float ridge) {
 }
 `;
 
-const terrainFragPars = (grain) =>
-  grain === "on" ? TERRAIN_FRAG_PARS_HEAD + GRAIN_GLSL : TERRAIN_FRAG_PARS_HEAD;
+// The projection (third pass). Three taps of the same tap function, one per
+// world plane, blended by the face's own normal — so the grain is laid ON the
+// surface instead of stamped through it from above.
+//
+// `w` is the raw `|n|` normalized to sum 1. No sharpening exponent: that is a
+// knob nobody has spoken, and the two corrections below are the ones the
+// measurement said were load-bearing.
+//
+//   · the fold is inside `gmGrainTap`, so it happens PER PLANE, before the
+//     blend — a ridged field averaged three ways is not a ridged field.
+//   · `/ length(w)` restores the deviation the blend removed. Three
+//     independent fields blended with convex weights have `|w|` of one
+//     field's spread; dividing by `|w|` puts it back, and `|w|` is exactly 1
+//     wherever one plane owns the fragment, which is what makes level ground
+//     bit-identical to the world-XZ tap this replaces.
+//
+// The mean rides along with the deviation (the fold's output is not centred
+// on 0.5 for a bell-shaped field, so the tap is not exactly zero-mean), which
+// is deliberate: it is the same bias materials v1 shipped, scaled by the same
+// factor as the signal it sits on, rather than a second correction nobody has
+// measured.
+const GRAIN_TRI_GLSL = /* glsl */ `
+float gmGrainTri(vec3 p, vec3 nrm, float s, float ridge) {
+  vec3 w = abs(nrm);
+  w /= max(w.x + w.y + w.z, 1e-4);
+  float t = gmGrainTap(p.zy, s, ridge) * w.x
+          + gmGrainTap(p.xz, s, ridge) * w.y
+          + gmGrainTap(p.xy, s, ridge) * w.z;
+  return t / max(length(w), 1e-4);
+}
+`;
+
+// A helper nothing calls is still source the driver compiles, and program size
+// is a budget this gate asserts — so each variant carries exactly the taps it
+// uses and no more.
+const terrainFragPars = (grain) => {
+  if (grain === "on") return TERRAIN_FRAG_PARS_HEAD + GRAIN_GLSL + GRAIN_TRI_GLSL;
+  if (grain === "xz") return TERRAIN_FRAG_PARS_HEAD + GRAIN_GLSL;
+  return TERRAIN_FRAG_PARS_HEAD;
+};
 
 // --- the cost variants (NOW.md item 1) --------------------------------------
 // A uniform cannot remove an instruction. `uSurface` weights every field term
@@ -305,7 +379,29 @@ const terrainFragPars = (grain) =>
 // that is exactly zero wherever the branch skips, and 0 × finite is 0), and an
 // argument like that is worth precisely as much as the gate behind it. So the
 // gate renders both and requires the same frame.
-const TERRAIN_VARIANTS = ["ship", "nofield", "nograin", "near1", "noshadow", "noskip"];
+//
+// A seventh is not about cost either, and it is not in the sweep. `flatgrain`
+// compiles the grain octave on WORLD XZ — materials v1's projection, exactly
+// as it shipped — with every other instruction in the program unchanged. It
+// exists so `projectionProbe` can render the combed grain and the triplanar
+// one from one camera in one run and score the difference, which is the only
+// form of that measurement this box can be trusted with. It is built on the
+// projection probe's first ask rather than with the cost variants, because a
+// seventh compile in the cost sweep would cost the sweep a seventh of its time
+// to time a program the sweep is not asking about.
+const TERRAIN_VARIANTS = [
+  "ship",
+  "nofield",
+  "nograin",
+  "near1",
+  "noshadow",
+  "noskip",
+  "flatgrain",
+];
+// The six the cost sweep wears. `flatgrain` answers a different question and
+// is built by `makeTerrainProjectionVariant()`.
+const COST_VARIANTS = ["ship", "nofield", "nograin", "near1", "noshadow", "noskip"];
+export const PROJECTION_VARIANT = "flatgrain";
 
 const VARIANT_CONFIG = {
   ship: { field: "full", grain: "on", shadow: "ship" },
@@ -317,7 +413,14 @@ const VARIANT_CONFIG = {
   near1: { field: "full", grain: "on", shadow: "near1" },
   noshadow: { field: "full", grain: "on", shadow: "off" },
   noskip: { field: "always", grain: "on", shadow: "ship" },
+  flatgrain: { field: "full", grain: "xz", shadow: "ship" },
 };
+
+/** What a variant's `grain` setting is called in the facts the gate reads. */
+const projectionName = (grain) =>
+  grain === "on" ? "triplanar" : grain === "xz" ? "xz" : "none";
+/** Noise taps the grain octave costs per fragment under each setting. */
+const grainTaps = (grain) => (grain === "on" ? 3 : grain === "xz" ? 1 : 0);
 
 /** The three samples of the shared field, or the constants that replace it. */
 function fieldGlsl(field) {
@@ -358,6 +461,11 @@ function fieldGlsl(field) {
  * splat weights, so a biome boundary morphs one grain into another rather than
  * cross-fading two of them.
  *
+ * The tap itself is three taps in the shipped program — one per world plane,
+ * blended by the face's own normal (`GRAIN_TRI_GLSL`) — which is why the guard
+ * below matters more after the third pass than it did before it: what it skips
+ * is now three noise samples, not one.
+ *
  * The whole block sits behind one multiply and one compare, because everything
  * in it — a second fwidth, the blended scale, the fade, the tap — is work the
  * far field would throw away. Its footprint is the WORLD one, not gmXZ's: a
@@ -396,6 +504,12 @@ function grainGlsl(grain) {
         float gmGrain = 0.0;
         float gmGrainSwing = 0.0;`;
   }
+  // The one line the projection changes. `flatgrain` keeps materials v1's
+  // world-XZ tap; the shipped program lays the same tap on the surface.
+  const tap =
+    grain === "xz"
+      ? `gmGrainTap(gmXZ, gmGScale, dot(uGrainRidge, gmW))`
+      : `gmGrainTri(vGmPos, vGmNorm, gmGScale, dot(uGrainRidge, gmW))`;
   return /* glsl */ `
         float gmGrain = 0.0;
         float gmGrainSwing = 0.0;
@@ -404,7 +518,7 @@ function grainGlsl(grain) {
           float gmGScale = dot(uGrainScale, gmW);
           float gmFadeGrain = 1.0 - smoothstep(uGrainFade.x, uGrainFade.y, gmFw3 * gmGScale);
           if (gmFadeGrain > 0.0) {
-            gmGrain = gmGrainTap(gmXZ, gmGScale, dot(uGrainRidge, gmW))
+            gmGrain = ${tap}
                     * 2.0 * gmFadeGrain * uSurface * uGrain;
             gmGrainSwing = gmGrain * dot(uGrainContrast, gmW);
           }
@@ -592,7 +706,8 @@ ${grainGlsl(variant.grain)}
   // per material-instance key and can compile the same shader repeatedly.
   // The variant is part of the key or the probe's programs would collide with
   // the shipped one and it would time the same shader four times.
-  material.customProgramCacheKey = () => `gates-terrain-splat-v2-grain-clipmap-${variantName}`;
+  material.customProgramCacheKey = () =>
+    `gates-terrain-splat-v3-triplanar-grain-clipmap-${variantName}`;
   material.userData.uniforms = uniforms;
   // What this program costs, counted. `programStats` (the compiled source's
   // size) is filled by installClipmapShadows on first compile — it is the
@@ -608,17 +723,31 @@ ${grainGlsl(variant.grain)}
     // their own footprint fade, so a near fragment pays four and a far one
     // pays two. It is an upper bound, which is what a budget wants.
     depthFetches: clipmapFetches(variant.shadow),
-    noiseSamples:
-      variant.field === "off" ? 0 : 3 + (variant.grain === "on" ? 1 : 0),
+    noiseSamples: variant.field === "off" ? 0 : 3 + grainTaps(variant.grain),
     microSkipped: variant.field === "full",
-    grainOn: variant.grain === "on",
+    grainOn: variant.grain !== "off",
+    // Which projection the grain octave is sampled on, and what it costs in
+    // taps. `triplanar` is what ships; `xz` is materials v1's, kept compiled
+    // so the projection can be measured against itself rather than argued
+    // about.
+    grainProjection: projectionName(variant.grain),
+    grainTaps: grainTaps(variant.grain),
   };
   return material;
 }
 
 /** Build one of each cost variant. `costProbe` owns the lifetime. */
 export function makeTerrainCostVariants() {
-  return TERRAIN_VARIANTS.map((name) => makeTerrainMaterial(name));
+  return COST_VARIANTS.map((name) => makeTerrainMaterial(name));
+}
+
+/**
+ * Build the projection partner. `projectionProbe` owns the lifetime, and it
+ * is built on that probe's first ask — never on a public shard, and never in
+ * the cost sweep, which is asking a different question.
+ */
+export function makeTerrainProjectionVariant() {
+  return makeTerrainMaterial(PROJECTION_VARIANT);
 }
 
 // --- authored identities for everything that is not the ground -------------
@@ -679,5 +808,12 @@ export function materialFacts() {
     grainAmpM: AMP_GRAIN_M,
     grainRough: GRAIN_ROUGH,
     microScale: SCALE_MICRO,
+    // The third pass. Read off the shipped variant's own config rather than
+    // written down beside it, so the fact cannot drift from the program: if
+    // `ship` ever goes back to world XZ, this says so and the gate fails.
+    grainProjection: projectionName(VARIANT_CONFIG.ship.grain),
+    grainTaps: grainTaps(VARIANT_CONFIG.ship.grain),
+    // …and what the partner it is measured against is sampled on.
+    flatGrainProjection: projectionName(VARIANT_CONFIG[PROJECTION_VARIANT].grain),
   };
 }
