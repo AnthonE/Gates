@@ -479,6 +479,36 @@ pub extern "C" fn client_removed_info() -> u32 {
     })
 }
 
+/// The last raid hit's address: cx << 16 | cz (pair with
+/// `client_struct_hit_info` and `client_struct_hit_hp`; valid while
+/// `APPLIED_STRUCT_HIT` is set).
+#[no_mangle]
+pub extern "C" fn client_struct_hit_key() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => ((core.struct_hit.0 as u32) << 16) | core.struct_hit.1 as u32,
+        None => 0,
+    })
+}
+
+/// The last raid hit's level << 8 | loc.
+#[no_mangle]
+pub extern "C" fn client_struct_hit_info() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => ((core.struct_hit.2 as u32) << 8) | core.struct_hit.3 as u32,
+        None => 0,
+    })
+}
+
+/// The last raid hit's hp: left << 16 | max. `max == 0` means the def
+/// table for that row has not arrived — draw nothing, not a full bar.
+#[no_mangle]
+pub extern "C" fn client_struct_hit_hp() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => ((core.struct_hit.4 as u32) << 16) | core.struct_hit.5 as u32,
+        None => 0,
+    })
+}
+
 /// Last stock ack: [item, units] u32 pairs, `client_stock_count` rows.
 #[no_mangle]
 pub extern "C" fn client_stock_ptr() -> *const u32 {

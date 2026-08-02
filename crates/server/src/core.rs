@@ -14,9 +14,10 @@ use protocol::{
     encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
     encode_event_inv, encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
     encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
-    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
-    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_stock, encode_event_struct_hit, encode_event_weak_mark, ActionMsg, ChatMsg,
+    EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag,
+    WireError, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
@@ -31,7 +32,7 @@ use sim_core::world::{
     Command, Player, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
     EV_GATHER, EV_HEALTH, EV_HIT, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_STOCK, EV_WEAK_MARK,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
@@ -688,6 +689,43 @@ impl ShardCore {
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
                     match encode_event_door(cx, cz, level, loc, open, locked, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_STRUCT_HIT => {
+                    // A structure still standing after a raid swing: the
+                    // address, what it took, what is left. Broadcast like
+                    // a placement — the wall is a world fact, and anyone
+                    // in earshot of the base should see it come apart. No
+                    // sync walk moves: nothing left the store.
+                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let deploy = ev.b & STRUCT_DEPLOY_BIT != 0;
+                    let (level, loc, row) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8, ev.b as u8);
+                    let (damage, left) = ((ev.c >> 16) as u16, ev.c as u16);
+                    match encode_event_struct_hit(
+                        deploy,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        row,
+                        damage,
+                        left,
+                        &mut self.ev_buf,
+                    ) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {

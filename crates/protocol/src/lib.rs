@@ -40,9 +40,10 @@ pub use event::{
     encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
     encode_event_inv, encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
     encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
-    BAG_SYNC_BATCH, CATALOG_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_stock, encode_event_struct_hit, encode_event_weak_mark, EventMsg, InvSlot,
+    ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -89,9 +90,17 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// so **every C→S action message moved by one bit** — and three event
 /// subtypes (bag dropped, join sync, removed). No datagram layout moved:
 /// a bag is class-S furniture on the reliable lane, not a snapshot
-/// entity, for the same reason a placed deployable is. Fixtures are keyed
-/// `v12_*`.
-pub const PROTO_VER: u16 = 12;
+/// entity, for the same reason a placed deployable is. v13 added the raid
+/// lane: the struct-hit event subtype, the 31st — which is why the same
+/// bump **widened the event subtype field 5 → 6 bits, moving every S→C
+/// event message by one bit.** Taking the widening here rather than at 32
+/// is deliberate: it costs one bit in a commit already regenerating every
+/// golden, where taking it later costs the same bit in a commit that also
+/// has to be about something else, and stopping at 31 would leave the
+/// unknown-subtype probe with nothing unused to probe. No datagram layout
+/// moved — a wall's hp is not on the snapshot, for melee v0's reason: it
+/// changes on a swing, not on a tick. Fixtures are keyed `v13_*`.
+pub const PROTO_VER: u16 = 13;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;

@@ -87,7 +87,19 @@ raid tool. Everything else is reachable-by-schema without touching sim.
    farm-minutes, computed from data (satchel chain vs piece hp): target
    **≈ 1.5× for a starter, rising with wall tier**. Below ~1.0 nobody
    builds; above ~3 nobody raids. `test_content` computes it and asserts
-   the band.
+   the band. The divisor is `weapons.toml`'s `structure` column — every
+   weapon's damage against a piece or a deployable, its own number and
+   never `damage` scaled.
+
+   **The melee face of the same anchor**, in swings (integer-exact out of
+   the data; minutes would drag the sim's swing cadence into a content
+   assert): the weakest door falls to the best melee weapon inside
+   `bands.door_breach_swings` — the door is the intended breach point and
+   must stay openable by hand — while every wall at every material sits
+   above `bands.wall_breach_swings_min` and the ladder rises with tier.
+   Two ordering laws carry no number: no weapon's `structure` may exceed
+   its own `damage`, and the throwable raid tool's must strictly exceed
+   every melee weapon's. `test_content` asserts all of it.
 2. **TTK bands** (body hits, no armor): melee 3–5 · bow 3–4 · revolver
    4–6; headshot × 2. Armor may add at most +2 hits. Asserted from data.
 3. **Farm rate** — one node ≈ 300 units over ~10 swings; a full wood wall

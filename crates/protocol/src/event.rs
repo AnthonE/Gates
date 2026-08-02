@@ -71,7 +71,12 @@ pub const BAG_SYNC_BATCH: usize = 16;
 /// it (content names are short by construction — CONTENT.md §2).
 pub const MAX_ITEM_NAME_BYTES: usize = 24;
 
-const SUB_BITS: u32 = 5;
+/// Widened 5 → 6 with `PROTO_VER` 13 (piece damage v0): the struct-hit
+/// subtype was the 31st of the 32 a 5-bit field holds, which left one code
+/// and no room for the unknown-subtype probe to have anything to probe.
+/// One bit on every event message, taken while the goldens were being
+/// regenerated anyway — the cheapest moment there will ever be.
+const SUB_BITS: u32 = 6;
 const SUB_GATHER: u32 = 0;
 const SUB_INV: u32 = 1;
 const SUB_SLOT_HARVESTED: u32 = 2;
@@ -102,6 +107,7 @@ const SUB_DEATH: u32 = 26;
 const SUB_BAG_DROPPED: u32 = 27;
 const SUB_BAG_SYNC: u32 = 28;
 const SUB_BAG_REMOVED: u32 = 29;
+const SUB_STRUCT_HIT: u32 = 30;
 
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
@@ -292,8 +298,25 @@ pub enum EventMsg {
         count: u8,
         rows: [DeployDef; DEPLOY_DEFS_BATCH],
     },
-    /// Decay removed the piece at the address (broadcast; in-progress
-    /// piece walks restart server-side).
+    /// A structure at the address took damage and is still standing
+    /// (broadcast). `deploy` picks the store the address names — the door
+    /// in a doorway and the doorway itself share one address. `left` is
+    /// the hp remaining, absolute like `Health` and for the same reason:
+    /// a client that misses one hit hears the whole truth from the next.
+    /// Destruction never arrives here; it arrives as `PieceRemoved` /
+    /// `DeployRemoved`, so a client that only learns removals still ends
+    /// in the right state.
+    StructHit {
+        deploy: bool,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        damage: u16,
+        left: u16,
+    },
+    /// Decay or a raid removed the piece at the address (broadcast;
+    /// in-progress piece walks restart server-side).
     PieceRemoved {
         cx: u16,
         cz: u16,
@@ -777,7 +800,49 @@ pub fn encode_event_deploy_defs(
     Ok((w.finish(), count))
 }
 
-/// A decay removal at a grid address — `piece` picks which store.
+/// One landed raid swing: the address, what it took, and what is left.
+/// `deploy` picks which store the address names.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_event_struct_hit(
+    deploy: bool,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    row: u8,
+    damage: u16,
+    left: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let row_bits = if deploy {
+        DEPLOY_ROW_BITS
+    } else {
+        PIECE_ROW_BITS
+    };
+    if cx as usize >= MAX_BUILD_COORD
+        || cz as usize >= MAX_BUILD_COORD
+        || level as usize >= MAX_BUILD_LEVELS
+        || loc > LOC_EDGE_N
+        || (row as u32) >= (1 << row_bits)
+        || left == 0
+    {
+        // `left == 0` is out of range on purpose: a structure at zero hp
+        // is a removal, and removals ride their own subtype.
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_STRUCT_HIT)?;
+    w.write_bit(deploy)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    w.write(row as u32, row_bits)?;
+    w.write(damage as u32, 16)?;
+    w.write(left as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// A decay or raid removal at a grid address — `piece` picks which store.
 pub fn encode_event_removed(
     piece: bool,
     cx: u16,
@@ -1280,6 +1345,32 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 first: first as u8,
                 count: count as u8,
                 rows,
+            }
+        }
+        SUB_STRUCT_HIT => {
+            let deploy = r.read_bit()?;
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            let _row = r.read(if deploy {
+                DEPLOY_ROW_BITS
+            } else {
+                PIECE_ROW_BITS
+            })?;
+            let damage = r.read(16)? as u16;
+            let left = r.read(16)? as u16;
+            if loc > LOC_EDGE_N || left == 0 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::StructHit {
+                deploy,
+                cx,
+                cz,
+                level,
+                loc,
+                damage,
+                left,
             }
         }
         sub @ (SUB_PIECE_REMOVED | SUB_DEPLOY_REMOVED) => {
@@ -1900,6 +1991,52 @@ mod tests {
             Err(WireError::Range)
         );
 
+        // The raid's progress message, both stores (the row field is a
+        // different width in each), and every out-of-range face of it.
+        for deploy in [false, true] {
+            let row = if deploy { 15 } else { 31 };
+            let len =
+                encode_event_struct_hit(deploy, 341, 682, 2, LOC_EDGE_N, row, 40, 710, &mut buf)
+                    .unwrap();
+            assert_eq!(
+                decode_event(&buf[..len]).unwrap(),
+                EventMsg::StructHit {
+                    deploy,
+                    cx: 341,
+                    cz: 682,
+                    level: 2,
+                    loc: LOC_EDGE_N,
+                    damage: 40,
+                    left: 710,
+                }
+            );
+        }
+        assert_eq!(
+            encode_event_struct_hit(false, 1024, 0, 0, 0, 0, 1, 1, &mut buf),
+            Err(WireError::Range),
+            "cell past the grid"
+        );
+        assert_eq!(
+            encode_event_struct_hit(false, 0, 0, MAX_BUILD_LEVELS as u8, 0, 0, 1, 1, &mut buf),
+            Err(WireError::Range),
+            "level past the grid"
+        );
+        assert_eq!(
+            encode_event_struct_hit(false, 0, 0, 0, LOC_EDGE_N + 1, 0, 1, 1, &mut buf),
+            Err(WireError::Range),
+            "loc past the four"
+        );
+        assert_eq!(
+            encode_event_struct_hit(true, 0, 0, 0, 0, 16, 1, 1, &mut buf),
+            Err(WireError::Range),
+            "a deploy row past the 4-bit field"
+        );
+        assert_eq!(
+            encode_event_struct_hit(false, 0, 0, 0, 0, 0, 40, 0, &mut buf),
+            Err(WireError::Range),
+            "zero hp left is a removal, and removals have their own subtype"
+        );
+
         // Stock at the row cap round-trips; past it refuses.
         let rows = [(0u16, 2_000u32), (5, 0), (9, 123_456), (63, u32::MAX)];
         let len = encode_event_stock(341, 682, 0, &rows, &mut buf).unwrap();
@@ -1933,12 +2070,23 @@ mod tests {
             Err(WireError::Malformed),
             "spare byte after a valid message must fail the strict tail"
         );
-        // kind EVENT + subtype 30: unknown (the first unused subtype —
-        // 29 became bag-removed, so this moves up with every new subtype,
-        // and there are exactly two codes left before SUB_BITS widens).
+        // kind EVENT + subtype 31: unknown (the first unused subtype —
+        // 30 became struct-hit, so this moves up with every new subtype).
+        // The 5 → 6 widening at v13 leaves 33 codes free after it, so the
+        // probe has a code of its own for a long time.
+        const UNUSED_SUB: u32 = SUB_STRUCT_HIT + 1;
+        const { assert!(UNUSED_SUB < 1 << SUB_BITS, "the probe must fit the field") };
         let raw = [
-            (KIND_EVENT | (30 << KIND_BITS)) as u8,
-            (30 >> (8 - KIND_BITS)) as u8,
+            (KIND_EVENT | (UNUSED_SUB << KIND_BITS)) as u8,
+            (UNUSED_SUB >> (8 - KIND_BITS)) as u8,
+        ];
+        assert_eq!(decode_event(&raw[..2]), Err(WireError::Malformed));
+        // And the top of the widened field is unknown too — a decoder that
+        // masked the new bit off would fall into a live subtype here.
+        let top = (1u32 << SUB_BITS) - 1;
+        let raw = [
+            (KIND_EVENT | (top << KIND_BITS)) as u8,
+            (top >> (8 - KIND_BITS)) as u8,
         ];
         assert_eq!(decode_event(&raw[..2]), Err(WireError::Malformed));
     }

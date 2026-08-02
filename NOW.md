@@ -4,25 +4,32 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **A kill pays, but a base still defends nothing.**
+1. **A base can be broken into now, but it cannot be repaired, and a
+   raid still ends in a shrug.**
    *(From the merge-gate judge's ranked gap 1 in
-   `findings/archive-prestamp/pass-20260802-025624-01-judge.md`, and its
-   predecessor's, both rounds.)*
+   `findings/archive-prestamp/pass-20260802-035930-01-judge.md`, and its
+   two predecessors'.)*
 
-   Melee v0 landed (`sim-core/combat.rs`, wire v11), and the death
-   backpack landed on top of it (`sim-core/backpack.rs`, wire v12): what
-   you carried stays where you fell, the bag despawns on
-   `content/balance.toml`'s rarity ladder, and the nearest bag in reach
-   opens with E. Both `DECISIONS.md` §open rows hold every bound and every
-   deliberate omission.
+   Melee v0, the death backpack, and piece damage all landed
+   (`sim-core/combat.rs`, wire v11 → v13): a kill drops what you carried,
+   and a swing that finds no node and no player breaks the wall, the
+   doorway or the door in front of it. `content/weapons.toml`'s
+   `structure` column says how much, `content/balance.toml`'s breach
+   bands hold the door as the way in, and the three `DECISIONS.md` §open
+   rows hold every bound and every deliberate omission.
 
-   What the gap still wants, in the order it is worth doing:
-   - **Piece damage** — the raid lane, and now the whole of it. A locked
-     door still cannot be breached by force, so the raid bands in
-     `CONTENT.md` remain data nothing plays. `weapons.toml` carries no
-     melee-vs-structure column and inventing one would move the raid
-     ratio `test_content` asserts, so it needs a content column and a
-     re-derived anchor, not a code constant.
+   What the lane still wants, in the order it is worth doing:
+   - **A repair verb, and the hammer that swings it.** Damage is now
+     one-way: a chipped wall stays chipped until it decays away or falls.
+     Every base in the genre is a repair loop, and without it the first
+     raid a base survives still ends it. Content shape: a repair rate
+     per material against the piece's own build cost, banded in
+     `balance.toml` next to the breach bands.
+   - **Throwables — the satchel has a price and no verb.** The raid
+     ratio is computed from a weapon nobody can use; melee is the only
+     armed raid tool, which is why the wall floor has to be so high.
+     A throw needs an arc the sim can integrate and the client can
+     predict, so it is M2's ballistic work, not a slice of its own.
    - **A container UI, and per-slot looting.** The take is all-that-fits
      today, which is honest but blunt: nobody can see what is in a bag
      before opening it, or leave the stone and take the gunpowder. The
@@ -35,10 +42,11 @@ Done items are deleted, not checked — history lives in git and
      the overflow — now that a ground container exists, that loss has
      somewhere honest to go.
 
-   Two counters worth watching before the next wire slice: the event
-   subtype field is **30 of 32** used, and the action subtype field is
-   **9 of 16** (widened 3 → 4 bits by the loot action). The next S→C fact
-   past two more costs a `SUB_BITS` bump, which moves every event message.
+   The wire counters, both moved this pass: the event subtype field is
+   **31 of 64** used (v13 widened it 5 → 6 bits, which is why there is
+   room again), and the action subtype field is **9 of 16**. The next
+   C→S verb — a repair, a throw — is an action subtype, and there are
+   seven.
 
 2. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
    The projection half of this item landed (materials v1 third pass,

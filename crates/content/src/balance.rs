@@ -20,6 +20,10 @@ pub struct Anchors {
     pub starter_minutes: f64,
     /// Satchel cost to break one wall over starter cost: wood, stone, metal.
     pub raid_ratio: [f64; 3],
+    /// Melee swings to break the weakest door with the best melee weapon.
+    pub door_breach_swings: u32,
+    /// Melee swings to break a wall, best melee weapon: wood, stone, metal.
+    pub wall_breach_swings: [u32; 3],
     pub upkeep_daily_minutes: f64,
     pub wood_wall_minutes: f64,
 }
@@ -182,7 +186,7 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
         .enumerate()
     {
         let (hp, _) = wall_cost(material)?;
-        let satchels = hp.div_ceil(satchel.damage);
+        let satchels = hp.div_ceil(satchel.structure);
         anchors.raid_ratio[i] = f64::from(satchels) * anchors.satchel_minutes / starter;
     }
     let [wood, stone, metal] = anchors.raid_ratio;
@@ -197,6 +201,83 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
     if !(wood < stone && stone < metal) {
         return Err(format!(
             "band break: raid ratio must rise with tier, got {wood:.2} / {stone:.2} / {metal:.2}"
+        ));
+    }
+
+    // Anchor 1's melee face — the raid lane by hand (`content/weapons.toml`
+    // `structure`). Two laws first, both pure ordering, no number to speak:
+    // a weapon is never better against a wall than against a person, and
+    // the throwable raid tool out-damages every melee weapon on structure.
+    let mut best_melee: Option<&Weapon> = None;
+    for w in &c.weapons {
+        if w.structure > w.damage {
+            return Err(format!(
+                "band break: `{}` structure {} exceeds its own body damage {} — a weapon may not be better against a wall than a person",
+                w.id, w.structure, w.damage
+            ));
+        }
+        if w.kind != WeaponKind::Melee {
+            continue;
+        }
+        if w.structure >= satchel.structure {
+            return Err(format!(
+                "band break: melee `{}` structure {} reaches the raid tool's {} — the raid tool stays the raid tool",
+                w.id, w.structure, satchel.structure
+            ));
+        }
+        if best_melee.is_none_or(|b| w.structure > b.structure) {
+            best_melee = Some(w);
+        }
+    }
+    let best = best_melee.ok_or("no melee weapon in weapons.toml to price a hand raid with")?;
+    if best.structure == 0 {
+        return Err(format!(
+            "band break: best melee `{}` deals no structure damage — nothing can be breached by hand",
+            best.id
+        ));
+    }
+
+    // The door is the breach point: band the weakest one, so it stays
+    // openable by hand and never becomes a formality.
+    let weakest_door = c
+        .deployables
+        .iter()
+        .filter(|d| d.archetype == DeployArchetype::Door)
+        .min_by_key(|d| d.hp)
+        .ok_or("no door in deployables.toml to price a hand raid against")?;
+    anchors.door_breach_swings = weakest_door.hp.div_ceil(best.structure);
+    in_band(
+        anchors.door_breach_swings,
+        bands.door_breach_swings,
+        &format!("door breach swings `{}` by `{}`", weakest_door.id, best.id),
+    )?;
+
+    // Walls are what the satchel is for: every material sits above the
+    // floor, and the ladder rises.
+    for (i, material) in [Material::Wood, Material::Stone, Material::Metal]
+        .into_iter()
+        .enumerate()
+    {
+        let (hp, _) = wall_cost(material)?;
+        let swings = hp.div_ceil(best.structure);
+        if swings < bands.wall_breach_swings_min {
+            return Err(format!(
+                "band break: {material:?} wall breaches in {swings} melee swings by `{}`, floor {}",
+                best.id, bands.wall_breach_swings_min
+            ));
+        }
+        anchors.wall_breach_swings[i] = swings;
+    }
+    let [w_sw, s_sw, m_sw] = anchors.wall_breach_swings;
+    if !(w_sw < s_sw && s_sw < m_sw) {
+        return Err(format!(
+            "band break: melee wall breach must rise with tier, got {w_sw} / {s_sw} / {m_sw}"
+        ));
+    }
+    if anchors.door_breach_swings >= w_sw {
+        return Err(format!(
+            "band break: the door ({} swings) is no weaker than the wood wall ({w_sw}) — the breach point must be the door",
+            anchors.door_breach_swings
         ));
     }
 

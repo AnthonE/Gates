@@ -27,55 +27,57 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 48] = [
-    "v12_input_acks_only.bin",
-    "v12_input_full.bin",
-    "v12_snapshot_keyframe.bin",
-    "v12_snapshot_delta.bin",
-    "v12_snapshot_cap.bin",
-    "v12_hello.bin",
-    "v12_welcome.bin",
-    "v12_refuse_full.bin",
-    "v12_event_gather.bin",
-    "v12_event_inv.bin",
-    "v12_event_slot_harvested.bin",
-    "v12_event_slot_respawned.bin",
-    "v12_event_slot_sync.bin",
-    "v12_event_catalog.bin",
-    "v12_event_weak_mark.bin",
-    "v12_event_craft_q.bin",
-    "v12_event_craft_done.bin",
-    "v12_event_craft_refused.bin",
-    "v12_event_recipes.bin",
-    "v12_action_craft.bin",
-    "v12_action_cancel.bin",
-    "v12_action_place.bin",
-    "v12_event_piece_placed.bin",
-    "v12_event_piece_sync.bin",
-    "v12_event_build_refused.bin",
-    "v12_event_piece_defs.bin",
-    "v12_action_deploy.bin",
-    "v12_action_feed.bin",
-    "v12_event_deploy_placed.bin",
-    "v12_event_deploy_sync.bin",
-    "v12_event_deploy_refused.bin",
-    "v12_event_deploy_defs.bin",
-    "v12_event_piece_removed.bin",
-    "v12_event_deploy_removed.bin",
-    "v12_event_stock.bin",
-    "v12_action_use.bin",
-    "v12_action_lock.bin",
-    "v12_event_door.bin",
-    "v12_action_upgrade.bin",
-    "v12_chat.bin",
-    "v12_event_chat.bin",
-    "v12_event_hit.bin",
-    "v12_event_health.bin",
-    "v12_event_death.bin",
-    "v12_action_loot.bin",
-    "v12_event_bag_dropped.bin",
-    "v12_event_bag_sync.bin",
-    "v12_event_bag_removed.bin",
+pub const FIXTURES: [&str; 50] = [
+    "v13_input_acks_only.bin",
+    "v13_input_full.bin",
+    "v13_snapshot_keyframe.bin",
+    "v13_snapshot_delta.bin",
+    "v13_snapshot_cap.bin",
+    "v13_hello.bin",
+    "v13_welcome.bin",
+    "v13_refuse_full.bin",
+    "v13_event_gather.bin",
+    "v13_event_inv.bin",
+    "v13_event_slot_harvested.bin",
+    "v13_event_slot_respawned.bin",
+    "v13_event_slot_sync.bin",
+    "v13_event_catalog.bin",
+    "v13_event_weak_mark.bin",
+    "v13_event_craft_q.bin",
+    "v13_event_craft_done.bin",
+    "v13_event_craft_refused.bin",
+    "v13_event_recipes.bin",
+    "v13_action_craft.bin",
+    "v13_action_cancel.bin",
+    "v13_action_place.bin",
+    "v13_event_piece_placed.bin",
+    "v13_event_piece_sync.bin",
+    "v13_event_build_refused.bin",
+    "v13_event_piece_defs.bin",
+    "v13_action_deploy.bin",
+    "v13_action_feed.bin",
+    "v13_event_deploy_placed.bin",
+    "v13_event_deploy_sync.bin",
+    "v13_event_deploy_refused.bin",
+    "v13_event_deploy_defs.bin",
+    "v13_event_piece_removed.bin",
+    "v13_event_deploy_removed.bin",
+    "v13_event_stock.bin",
+    "v13_action_use.bin",
+    "v13_action_lock.bin",
+    "v13_event_door.bin",
+    "v13_action_upgrade.bin",
+    "v13_chat.bin",
+    "v13_event_chat.bin",
+    "v13_event_hit.bin",
+    "v13_event_health.bin",
+    "v13_event_death.bin",
+    "v13_action_loot.bin",
+    "v13_event_bag_dropped.bin",
+    "v13_event_bag_sync.bin",
+    "v13_event_bag_removed.bin",
+    "v13_event_struct_hit_piece.bin",
+    "v13_event_struct_hit_deploy.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -595,6 +597,20 @@ pub fn event_bag_sync() -> (bool, [WireBag; BAG_SYNC_BATCH]) {
 /// them apart.
 pub fn event_bag_removed() -> (u32, u8) {
     (9_001, sim_core::backpack::BAG_GONE_EMPTIED as u8)
+}
+
+/// A raid swing landing on a wall that is still standing. Two fixtures,
+/// one per store, because the row field is a different width in each
+/// (`PIECE_ROW_BITS` vs `DEPLOY_ROW_BITS`) — a single-store fixture would
+/// pin only half the layout. Every field is nonzero and distinct: a zero
+/// or a repeat anywhere would let a decoder reading the wrong field pass.
+/// `(deploy, cx, cz, level, loc, row, damage, left)`.
+pub fn event_struct_hit_piece() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
+    (false, 341, 347, 3, sim_core::build::LOC_EDGE_N, 7, 4, 1_746)
+}
+
+pub fn event_struct_hit_deploy() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
+    (true, 512, 128, 1, sim_core::build::LOC_EDGE_W, 5, 3, 197)
 }
 
 /// A refusal carrying `sim_core::deploy::REFUSE_D_CLAIM`.

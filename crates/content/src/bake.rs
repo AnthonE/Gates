@@ -363,6 +363,11 @@ impl Content {
     /// `anchors()` divides by for the TTK band, so the band the data
     /// declares and the band the sim plays cannot drift apart.
     ///
+    /// Both damage columns cross: body `damage` and `structure`. A melee
+    /// row with a zero in either is refused rather than baked inert — a
+    /// weapon that silently cannot raid is the bug the column exists to
+    /// prevent.
+    ///
     /// Only melee crosses in v0. Bow, firearm and throwable rows are
     /// deliberately dropped here rather than half-baked: a projectile the
     /// sim can read but not fire is a number that looks armed and is not
@@ -410,10 +415,19 @@ impl Content {
             if reach_cm == 0 {
                 return Err(format!("bake: melee `{}` has no reach", w.id));
             }
+            let structure = u16::try_from(w.structure)
+                .map_err(|_| format!("bake: `{}` structure {} overflows u16", w.id, w.structure))?;
+            if structure == 0 {
+                return Err(format!("bake: melee `{}` deals no structure damage", w.id));
+            }
             if cc.melee[idx].damage != 0 {
                 return Err(format!("bake: duplicate weapon row for `{}`", w.id));
             }
-            cc.melee[idx] = MeleeDef { damage, reach_cm };
+            cc.melee[idx] = MeleeDef {
+                damage,
+                structure,
+                reach_cm,
+            };
         }
         Ok(cc)
     }

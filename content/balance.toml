@@ -41,6 +41,15 @@ wood_wall_minutes = [5, 9]
 # nobody raids. Percent (100 = 1.0×) so the file stays integer-only.
 # Wood and metal ratios must rise strictly with tier.
 raid_ratio_stone_pct = [100, 300]
+# Anchor 1's melee face — the raid lane by hand. Swings, not minutes:
+# swings are integer-exact out of the data (piece hp ÷ the best melee
+# weapon's `structure`), where minutes would drag the sim's swing cadence
+# into a content assert. The door is the intended breach point and must
+# stay openable by hand; every wall, at every material, must cost at least
+# the floor, so a spear never undercuts the satchel.
+# Proposed defaults, DECISIONS.md §open ("piece damage v0").
+door_breach_swings = [30, 80]
+wall_breach_swings_min = 150
 # Anchor 3 — a solo starter's daily upkeep ceiling, farm-minutes.
 upkeep_solo_daily_max_min = 15
 

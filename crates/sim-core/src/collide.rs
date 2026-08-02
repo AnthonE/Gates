@@ -322,7 +322,7 @@ impl Default for ColIndex {
 /// A column's level-0 base: the renderer's `groundY + LIFT` (scene.js),
 /// sampled at the cell center — no piece height ever rides the wire.
 #[inline]
-fn col_base_y(seed: u64, cx: u16, cz: u16) -> f32 {
+pub(crate) fn col_base_y(seed: u64, cx: u16, cz: u16) -> f32 {
     let half = BUILD_CELL_M * 0.5;
     terrain::height(
         seed,

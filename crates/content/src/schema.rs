@@ -145,8 +145,12 @@ pub struct Weapon {
     /// Item id this row arms — weapons are items first.
     pub id: String,
     pub kind: WeaponKind,
-    /// Damage per body hit; for the satchel, structure damage.
+    /// Damage per body hit.
     pub damage: u32,
+    /// Damage per hit against a building piece or a deployable — its own
+    /// column, never `damage` scaled (weapons.toml's header states the two
+    /// laws that hold it; balance.rs asserts them).
+    pub structure: u32,
     pub headshot_mult: u32,
     pub rate_per_min: u32,
     pub range_m: u32,
@@ -275,6 +279,13 @@ pub struct Bands {
     pub wood_wall_minutes: [u32; 2],
     /// Percent so the file stays integer-only: [100, 300] = 1.0×–3.0×.
     pub raid_ratio_stone_pct: [u32; 2],
+    /// Melee swings to break the weakest door with the best melee weapon.
+    /// The door is the intended breach point, so this band is the one
+    /// place a hand raid is *meant* to be possible.
+    pub door_breach_swings: [u32; 2],
+    /// Floor on melee swings to break *any* wall at any material — the
+    /// wall is what the satchel is for, and melee must never undercut it.
+    pub wall_breach_swings_min: u32,
     pub upkeep_solo_daily_max_min: u32,
 }
 

@@ -114,6 +114,18 @@ pub const EV_BAG_DROPPED: u8 = 18;
 /// emptied, evicted). Broadcast, and it restarts in-progress bag sync
 /// walks the same way a piece/deploy removal does.
 pub const EV_BAG_REMOVED: u8 = 19;
+/// EV_STRUCT_HIT: a = build cell key, b = `STRUCT_DEPLOY_BIT` | level << 16
+/// | loc << 8 | row, c = damage dealt << 16 | hp left. The raid's progress
+/// bar — a wall that shows nothing under thirty swings reads as an
+/// invulnerable wall, so this is the one place a structure's hp crosses
+/// the wire (build.rs otherwise keeps hp sim-only). Destruction still
+/// arrives as EV_PIECE_REMOVED / EV_DEPLOY_REMOVED; this never carries it.
+pub const EV_STRUCT_HIT: u8 = 20;
+
+/// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
+/// (a door, a box) rather than the piece store. Level, loc and row are all
+/// 8-bit fields below it, so bit 24 is the first free one.
+pub const STRUCT_DEPLOY_BIT: u32 = 1 << 24;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SimEvent {
@@ -155,7 +167,7 @@ impl EventQueue {
         self.len == 0
     }
 
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.len = 0;
         self.dropped = 0;
     }
@@ -802,10 +814,23 @@ impl World {
                 &mut self.events,
             );
             if free {
-                if let Some(victim) =
-                    combat::strike(&self.combat, i, &mut self.players, &mut self.events)
-                {
-                    self.respawn(victim);
+                // node → player → structure: the arm passes on only what
+                // nothing nearer absorbed.
+                match combat::strike(&self.combat, i, &mut self.players, &mut self.events) {
+                    combat::Strike::Killed(victim) => self.respawn(victim),
+                    combat::Strike::Hit => {}
+                    combat::Strike::Missed => {
+                        combat::raid(
+                            &self.combat,
+                            &self.build,
+                            &self.deploy,
+                            seed,
+                            &self.players[i],
+                            &mut self.pieces,
+                            &mut self.deploys,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
         }

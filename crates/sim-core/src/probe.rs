@@ -46,7 +46,11 @@ pub extern "C" fn probe_terrain(seed: u64) -> u64 {
 /// per-sequence state hashes fold into one digest (DESIGN.md §4: 10,000
 /// sequences through both builds). Bots hold the primary button in
 /// bursts and the world carries the synthetic gather fixture, so slot
-/// life, yields, and inventories are inside the parity surface.
+/// life, yields, and inventories are inside the parity surface. It also
+/// carries `CombatContent::raid_fixture()` — a table that cannot fight
+/// and can chip a wall — so the raid scan, the structure-damage write and
+/// the removal path ride parity here without a brawl emptying the
+/// inventories the rest of this probe's coverage depends on.
 #[no_mangle]
 pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> u64 {
     let mut h = Xxh3::new();
@@ -57,6 +61,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
         world.craft = crate::craft::CraftContent::probe_fixture();
         world.build = crate::build::BuildContent::probe_fixture();
         world.deploy = crate::deploy::DeployContent::probe_fixture();
+        world.combat = crate::combat::CombatContent::raid_fixture();
         world.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
         let mut rng = Pcg32::new(seq_seed, 7);
         let mut yaws = [0u16; 2];

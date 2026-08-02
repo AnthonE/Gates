@@ -243,7 +243,7 @@ impl Pieces {
     /// The store index of the piece at an address — what a write needs
     /// (`find` hands out a reference the borrow checker won't let a
     /// mutation follow).
-    fn find_index(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<usize> {
+    pub(crate) fn find_index(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<usize> {
         self.entries[..self.len]
             .iter()
             .position(|p| p.cx == cx && p.cz == cz && p.level == level && p.loc == loc)
@@ -277,6 +277,13 @@ impl Pieces {
         self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
         self.len -= 1;
         self.entries[i] = self.entries[self.len];
+    }
+
+    /// Write entry `i`'s hp alone — the raid verb's write (deploy.rs
+    /// `damage_piece`). The upkeep clock is deliberately untouched: taking
+    /// damage is not paying rent.
+    pub(crate) fn set_hp(&mut self, i: usize, hp: u16) {
+        self.entries[i].hp = hp;
     }
 
     /// Update entry `i`'s upkeep state (the decay sweep's write-back).
@@ -319,7 +326,9 @@ fn edge_neighbors(cx: u16, cz: u16, loc: u8) -> ((u16, u16), Option<(u16, u16)>)
 }
 
 /// The planar anchor point of an address — what reach is measured to.
-fn anchor(cx: u16, cz: u16, loc: u8) -> (f32, f32) {
+/// Placement measures build reach to it; a raid swing measures weapon
+/// reach to the same point, so what you can build you can break.
+pub(crate) fn anchor(cx: u16, cz: u16, loc: u8) -> (f32, f32) {
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
     let half = BUILD_CELL_M * 0.5;
