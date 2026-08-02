@@ -62,7 +62,46 @@ Done items are deleted, not checked — history lives in git and
      chromaticity and asserts spread up, centre still, mean luma still, and
      warm and cool both present, at two views.
 
-   **What this item still wants**, in the order the report ranked it:
+   **Landed this pass** (`DECISIONS.md` §open, "the quad-constant gradient"):
+   the dither is measured, bisected and gated as arithmetic — and the fix is
+   blocked on the coarse-octave slice below, which is now the top want for a
+   second, independent reason.
+
+   - The newest visual report's ranked gap 1 ("either a flat colour wash or a
+     per-pixel dither") is **quad-locked**: measured on its own
+     `05-held-level.png`, 1.9 luma/px of neighbour contrast inside each 2×2
+     quad against 21.4 across quad boundaries. Only a screen derivative can do
+     that — `dFdx`/`dFdy` are differences across the quad, so anything built
+     from one is constant inside it. The splat wobble the report's ranked fix 1
+     blamed reaches albedo per fragment and cannot produce that signal at all.
+   - `scene.aliasProbe` (new, four states off existing uniforms) bisects it:
+     zeroing gmH takes the ratio 6.15 → 1.01, and zeroing **grain's bump
+     alone** does the same. Grain is the only octave whose fade band falls in
+     the near field — 33 → 11 px per cycle is 1–4 m from the eye for a 12 cm
+     tuft, where meso's equivalent is 165 m out and micro's 30 m.
+   - The fix is a second sampling law: a reconstructed gradient is quad-constant,
+     so an octave must retire as a BUMP before it retires as a colour. It was
+     built and measured — ×1.01 at both vantages with within-quad detail
+     unchanged — and **it is not in this commit**, because it reddens assertion
+     15: at yaws 0 and 4.71 the surface probe finds 21% and 24% of the frame
+     moved and *not one pixel brighter*, since the only thing the field
+     brightened there was the mosaic. Three unblocks were built and measured
+     and none is enough; the §open row has all six numbers.
+   - **A textbook cause was tried, measured and removed**: `vGmPos.xz` is a
+     world coordinate in the high hundreds, so a float32 varying reaches the
+     fragment quantized to ~1.2e-4 m against a ~2e-3 m pixel — a 6% staircase on
+     `dFdx`. Camera-relative coordinates for the Jacobian moved the ratio
+     6.16 → 6.15. Not the cause here; the record is in the §open row.
+   - **Still open and arithmetic**: the file states bump slope as
+     `amp × bump / wavelength`, and a sinusoid's peak slope is 2π times that.
+     Every per-octave slope in the comments and in the materials v2 §open row is
+     6.3× understated, so `BUMP_MAX_SLOPE` at 0.55 is not the sum it is
+     documented as — it is a bound the octaves exceed, and it clips. Re-deriving
+     the amplitudes in the right convention is its own slice: it changes how
+     much relief the ground has, so it wants the visual judge on it.
+
+   **What this item still wants**, in the order the report ranked it — and the
+   first one now blocks the bump law as well as the tint:
 
    - **Re-place the meso octave — tried, backed out, and now with a second
      reason to want it.** At 9.5 m the coarsest surviving octave completes a
@@ -78,6 +117,15 @@ Done items are deleted, not checked — history lives in git and
      margin there. A coarse octave that varies inside a frame would fix both.
      Do it as its own slice, with 15c's 46.6° face re-measured alongside it,
      because the coupling is the reason it is not a one-constant change.
+     **This pass added the second reason and measured the third.** The bump's
+     sampling law cannot land until this does: with the mosaic gone, yaws 0 and
+     4.71 of `surfaceProbe` brighten *nothing*, because the field there is a
+     macro cast and the artefact. Fading macro on the DUAL of the sampling law
+     — cycles per FRAME, so an octave too coarse to vary inside the frame stops
+     being a cast — was built and measured at +0.17% on yaw 4.71 against a 0.2%
+     floor (from +0.04%) and +0.01% on yaw 0, applied to the albedo multiply
+     and to the splat wobble alike. That is the shape of the fix and not enough
+     of it; a coarse octave that genuinely varies inside an 8–25 m frame is.
    - **Splat transitions by height/slope/noise, and a wet-sand waterline.**
      `WET_RANGE` exists and paints; the report saw no shoreline in any
      vantage, so either the band is too narrow to read at capture framing
