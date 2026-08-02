@@ -130,6 +130,12 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // …and the far mesh's depth uniforms, so the horizon probe has one handle
   // on the horizon's caster (the horizon casts).
   scene.attachFarCaster(terrain.farDepth.userData.uniforms);
+  // Compile every color program the session can wear, now, while the player
+  // is still watching the connect screen — the depth half finishes over the
+  // first in-world frames (see the RAF path and scene.prewarm's comment).
+  // Terrain hands in the families a plain dummy cannot reach: the instanced
+  // scatter pools and the far caster's custom depth.
+  scene.prewarm(terrain.prewarmObjects());
   const input = new InputTracker(canvas);
   const hud = new Hud();
   hud.show();
@@ -794,6 +800,37 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // a change that halves the frame rate is otherwise invisible to every gate
   // here. One number, one multiply-add, no allocation.
   let frameMs = 0;
+  // Its distribution over the last ~4 s, same status (reported, never
+  // asserted): the smoothed number hides exactly the stall class the prewarm
+  // trap is about — a 90 fps median can carry 700 ms worst-frames. The ring
+  // is preallocated and written in the RAF path without allocation; the
+  // percentiles are computed (and allocate) only in the 250 ms timer below.
+  const frameRing = new Float32Array(240);
+  const framePct = () => {
+    const n = Math.min(stamp, frameRing.length);
+    if (n < 30) return null;
+    const a = Array.from(frameRing.subarray(0, n)).sort((x, y) => x - y);
+    return {
+      p50: a[(n * 0.5) | 0],
+      p95: a[Math.min(n - 1, (n * 0.95) | 0)],
+      p99: a[Math.min(n - 1, (n * 0.99) | 0)],
+      worst: a[n - 1],
+    };
+  };
+  // The prewarm gate's two numbers (see scene.prewarm): programs linked when
+  // the snapshot below was taken, and -1 until it is. The first in-world
+  // frames park the prewarm dummies at the player so the shadow pass links
+  // the depth program, then the dummies go and the count is pinned — from
+  // that frame on, a program link means a material prewarm missed.
+  let programsAtInWorld = -1;
+  let programKeysAtInWorld = null;
+  let prewarmFrames = -1;
+  let pinStamp = -1;
+  // Every frame where the live program count CHANGED, as [stamp, count]
+  // pairs — a link is the anomaly this whole rig hunts, so writing on one is
+  // not a hot-path allocation. Capped; 32 links means something is broken.
+  const programLog = [];
+  let lastProgCount = -1;
 
   // The dev-only camera hook (DECISIONS.md §open "dev view hook"), bound
   // ONCE here — the 250 ms timer republishes this same function object
@@ -897,6 +934,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     const dt = now - last;
     last = now;
     frameMs += (dt - frameMs) * 0.05;
+    frameRing[stamp % frameRing.length] = dt;
 
     ex.client_set_input(
       input.buttons(),
@@ -918,6 +956,24 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (R[0] === 1) {
       scene.setCamera(R[1], R[2], R[3], input.yaw, input.pitch);
       terrain.update(R[1], R[3]);
+      // Prewarm, depth half: the first in-world frame parks the casting
+      // dummies at the player (the clipmap's first update draws every level,
+      // so they are in that pass), two frames later they go and the program
+      // count is pinned. Scalar checks on the steady path; the three calls
+      // run a total of twice per session.
+      if (programsAtInWorld < 0) {
+        if (prewarmFrames < 0) {
+          scene.prewarmAt(R[1], R[2] - 1.5, R[3]);
+          prewarmFrames = 0;
+        } else if (++prewarmFrames >= 3) {
+          scene.prewarmDone();
+          programsAtInWorld = scene.renderer.info.programs.length;
+          programKeysAtInWorld = scene.renderer.info.programs.map(
+            (p) => p.cacheKey,
+          );
+          pinStamp = stamp;
+        }
+      }
       if (build.on) {
         // Scalar math into a reused object + one mesh transform.
         const t = buildTarget();
@@ -938,6 +994,10 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     }
     scene.sweepRemotes(stamp);
     scene.render();
+    if (scene.renderer.info.programs.length !== lastProgCount && programLog.length < 64) {
+      lastProgCount = scene.renderer.info.programs.length;
+      programLog.push([stamp, lastProgCount]);
+    }
   }
   requestAnimationFrame(frame);
 
@@ -1002,6 +1062,23 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       // recomputed — what the gate asserts is what the renderer did.
       lighting: scene.lighting(),
       frameMs,
+      // The distribution behind that number, and the prewarm gate's pair —
+      // all three the same class of fact: counts and times off the renderer,
+      // reported so the gate (and whoever reads the log) sees them.
+      framePct: framePct(),
+      programs: scene.renderer.info.programs.length,
+      programsAtInWorld,
+      // The programs that linked after the pin, by cache key — names are
+      // empty on this three build, but the key carries the shader id and
+      // every define, which is what identifies the missed material.
+      latePrograms: programKeysAtInWorld
+        ? scene.renderer.info.programs
+            .filter((p) => !programKeysAtInWorld.includes(p.cacheKey))
+            .map((p) => p.cacheKey)
+        : null,
+      pinnedPrograms: programKeysAtInWorld,
+      programLog,
+      pinStamp,
       // The material system's structural facts (materials v0): the ground's
       // patched splat material, the authored per-surface responses, and how
       // the scatter pools are tinted.

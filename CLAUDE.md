@@ -77,6 +77,21 @@ do not rediscover)
   nonzero in CI — a pass it didn't earn is the worst bug class.
 - Never start a line of a commit body with `Operator, YYYY-MM-DD:` unless
   the same commit updates `DECISIONS.md`.
+- **Median fps hides shader-compile stalls.** A static benchmark can read
+  90+ fps while lazy WebGL program links cost 700 ms+ worst-frames in real
+  play. Prewarm every program at boot; the gate is a COUNT (no program
+  links after `inWorld`, asserted in `browser_smoke`), never a frame-time
+  threshold.
+- **A judge names the symptom; fix the cause.** Optimizing the judge's
+  literal sentence is how a loop circles for three passes — elsewhere,
+  "untextured" was really diffuse contrast crushed by an earlier fix for
+  "too bright", and the correct change was the opposite of the feedback's
+  direction. Diagnose the mechanism before acting on a ranked gap.
+- **Tonemap, sky, exposure, and fog are one owner.** Split across parallel
+  passes they break each other's assumptions faster than they improve
+  (measured elsewhere: three parallel rounds worsened visual defects
+  60→66; one sequential owner over the coupled set cut them to 26). The
+  lighting gap, when attacked, is a single iteration's single ownership.
 
 ## The loop discipline
 
@@ -116,24 +131,30 @@ scored against, and a checksum would be the only thing in the way.
 |---|---|
 | start it | `tmux new -s gatesloop '/mnt/hive-data/gates-loop/gates-loop.sh'` |
 | stop it | `touch /mnt/hive-data/gates-loop/STOP` — finishes the pass, then exits |
+| stop it sooner | `touch /mnt/hive-data/gates-loop/YIELD` — the builder lands a coherent partial slice at its next boundary, it is judged as usual, then the runner exits |
 | what it is doing | `/mnt/hive-data/gates-loop/loop-status.sh` |
 | the frames it captured | `/mnt/hive-data/gates-loop/gallery.py`, then `ssh -L 8899:localhost:8899` |
 | why a pass failed | `/mnt/hive-data/gates-loop/findings/pass-<id>-{judge,visual}.md` |
 | undo a whole run | `git reset --hard gates-anchor-<stamp>` |
 | `ci/gates.sh` is red on a clean tree | `GATES_FIX_RED=1 /mnt/hive-data/gates-loop/gates-loop.sh` — one pass, wall only |
 
-Two judges score every pass and neither is the builder: one holds
-`judge/RUBRIC.md` (ten procedural checks — the merge gate) and one holds
-`art/RUBRIC.md` (ten visual criteria against `Rust Images/`). Both end in a
-`## Ranked gaps` section, and those gaps — not `NOW.md` — are where the loop's
-direction is supposed to come from. Read the newest pair before you steer.
+Two judges score every pass and neither is the builder — and since harness v2
+(operator, 2026-08-02) neither is even *spawned* by the builder: the builder
+ends its pass on its branch, gates green and unmerged; the runner spawns the
+judge holding `judge/RUBRIC.md` (ten procedural checks — the merge gate) and
+performs the merge itself on a PASS, then captures and spawns the visual judge
+holding `art/RUBRIC.md` (ten visual criteria against `Rust Images/`). Both
+reports end in a `## Ranked gaps` section, and those gaps — not `NOW.md` — are
+where the loop's direction is supposed to come from. Read the newest pair
+before you steer.
 
 **`git push` is blocked** by a `pre-push` hook the runner installs. Publishing
 is an operator act: read the diff, then `git push --no-verify`.
 
-**A gate that waits on a clock is not a gate on this box.** Four cores, load
-routinely at 4–5, running a cargo release build and three Chromium tabs against
-its own shard. On 2026-08-01 three runs of identical code failed on two
+**A gate that waits on a clock is not a gate on this box.** Eight cores here —
+the rule was learned on the morr box's four at load 4–5, running a cargo
+release build and three Chromium tabs against its own shard, and headroom does
+not repeal it. On 2026-08-01 three runs of identical code failed on two
 different assertions, and the recovery pass found the cause: the third tab was
 racing two live renderers. Assert on observable state (`inWorld`, `snapshots >
 n`) and never on elapsed milliseconds — the failure that started it reported
@@ -147,3 +168,8 @@ same bug with a longer fuse.
   is the source of the client's light-space texel snapping and texel-scaled
   normal bias (`DECISIONS.md` §open, lighting v0). Guidance only — no code
   from the pack ships in this repo.
+- `Claude-of-Duty` (github.com/mshumer/Claude-of-Duty, MIT, © 2026 mshumer)
+  — source of the shader-prewarm trap, the bit-identical-capture discipline
+  (fresh page per shot; engine clock, not `performance.now()`), and the
+  coupled-lighting single-owner datum, all from its postmortem. Guidance
+  only — no code from it ships in this repo.
