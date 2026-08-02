@@ -1,0 +1,64 @@
+name: nightly
+
+# The builder, not the gate. Every night: run the gates against main,
+# then build the release server and the wasm client and upload both as
+# artifacts. Before M0 lands it reports "nothing to build yet" and exits
+# green — a builder with nothing to build is a fact, not a failure. (The
+# test gate, ci/gates.sh, is the one that is never allowed to skip-pass.)
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: workspace check
+        id: ws
+        run: |
+          if [[ -f Cargo.toml ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::nothing to build yet — the workspace does not exist; M0 (NOW.md #1) is the current work"
+          fi
+      - name: toolchain
+        if: steps.ws.outputs.exists == 'true'
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup target add wasm32-unknown-unknown
+      - name: cache cargo
+        if: steps.ws.outputs.exists == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: nightly-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: gates first
+        if: steps.ws.outputs.exists == 'true'
+        run: ./ci/gates.sh
+      - name: build server (release)
+        if: steps.ws.outputs.exists == 'true'
+        run: cargo build --release -p server
+      - name: build web client
+        if: steps.ws.outputs.exists == 'true'
+        run: |
+          if [[ -x web/build.sh ]]; then web/build.sh
+          else echo "::notice::web/build.sh not present yet — server-only nightly"; fi
+      - name: upload artifacts
+        if: steps.ws.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gates-nightly-${{ github.run_id }}
+          retention-days: 14
+          path: |
+            target/release/shard
+            web/dist/**
+          if-no-files-found: warn

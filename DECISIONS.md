@@ -1,4 +1,4 @@
-# ashfall · DECISIONS.md — spoken, and waiting to be spoken
+# Gates · DECISIONS.md — spoken, and waiting to be spoken
 
 Two lists. **Spoken** is append-only: date, the call, the operator's own
 words, a pointer. **Open** is the knob registry — every **(knob)** in the
@@ -14,12 +14,15 @@ invented into code that isn't on this page.
 | 2026-07-30 | **The stack**: Rust server, three.js client, WebTransport/QUIC, no-blocking/no-alloc server discipline (*"backend is in rust, frontend three.js… no allocations in the hotpath… it should be a great game to build upon if we ace the skeleton"*). | `DESIGN.md` · `NETCODE.md` |
 | 2026-07-30 | **The coins**: OBOL is the in-world working coin; SCRY and MYRRH price skins, cosmetic only (*"how might we manage to get obol into the mix? Scry and Myrhh can be the premium currency for skins"*). Never-table stands as a wall. | `DESIGN.md` §3 |
 | 2026-07-30 | **Built by a loop system** (*"we are going to use a loop system we have to build this out"*). Loop discipline in `CLAUDE.md`; this file + `NOW.md` are the steering. | `CLAUDE.md` |
+| 2026-08-01 | **The name is GATES** (*"we are going to start with 'Gates' Rust game clone, make it open source then have agents build it"*; the README header already read `# Gates`). The `ashfall` codename retires; headers updated. ⚠ "gate" also means a CI wall in this repo — in prose, **Gates** capitalized is the game, lowercase **gates** are the walls. | `README.md` · scry `docs/GATES.md` |
+| 2026-08-01 | **Open source, agent-built, nightly** (*"make it open source then have agents build it. Nightly builds? … lets work out the agent aide and ace it so any harnass can come help"*). Any harness contributes through `AGENTS.md`; CI runs `./ci/gates.sh` on code PRs; a nightly workflow builds server + wasm artifacts from `main`. Making the repo public is an operator act on GitHub, as is branch protection on `main`. Merge stays a human act. The bar, spoken in the same breath: *"not any ai slop but the best here"* — gates green is the floor, review is the bar. | `AGENTS.md` · `.github/workflows/` |
+| 2026-08-01 | **The platform frame is Greenlight-era Steam, not a launchpad** (*"this isnt a launchpad its like steam BEFORE they got rid of steam greenlight"*), and the cascade after Gates is the operator's **MMO, FPS, minecraft clone, and MOBA** — open-source multiplayer titles on the one reserve economy. Platform design of record lives scry-side. | scry `docs/GATES.md` · scry `docs/SENTENCES.md` 2026-08-01 |
+| 2026-08-01 | **Agents play the games, and training them is paid work** (*"im fine with agents playing even this FPS that should be a big goal we pay for is agent training maybe we can use pufferlib"*). The deterministic sim-core doubles as an RL environment by construction — pure core, fixed tick, replayable WAL — so walls 1, 2 and 5 pay a second time as a training substrate. pufferlib is the named candidate harness. A training bounty is a board lane **when sized and spoken**, not before; nothing here arms A2/A3 or bends the never-table — an agent player pays the same doors and earns the same coins as a human. Thematic note from the same breath: scry's agent-survival doctrine (AINARCHY-COOKBOOK) and this survival game are one story told twice — keep the rhyme in naming, keep instructions plain. | scry `docs/SENTENCES.md` 2026-08-01 · `AGENTS.md` |
 
 ## Open (defaults ship until spoken)
 
 | knob | default | doc |
 |---|---|---|
-| the name | `ashfall` (codename) | DESIGN §14 |
 | shard cap / reference box | 100 / 4-core VPS | DESIGN §14 |
 | wipe cadence · BP survival | monthly · BPs one extra cycle | DESIGN §2 |
 | island size | 2,048 m | TERRAIN §6 |

@@ -1,4 +1,4 @@
-# CLAUDE.md — ashfall
+# CLAUDE.md — Gates
 
 The operating manual for anyone — human or agent loop — working this repo.
 Read this first, every iteration. It is deliberately bounded: no dated
@@ -12,6 +12,12 @@ authoritative server, three.js client, WebTransport/QUIC. A separate
 product that orbits scry — sold through its Great Work board, coins from
 its economy — importing none of its code. **The skeleton is the product**:
 determinism, netcode, and the hot-path laws outrank every feature.
+
+**Agents are first-class on both sides.** They build it — `AGENTS.md` is
+the door for any harness — and they will play it: the deterministic core
+doubles as an RL training environment (a stated goal, `DECISIONS.md`
+2026-08-01), which is one more reason the walls never bend. An agent player
+pays the same doors and earns the same coins as a human.
 
 ## The docs, and which wins
 

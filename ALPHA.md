@@ -85,8 +85,7 @@ replay — the deterministic replay is the dupe investigation tool.
 
 ## 4 · Product & launch
 
-- **The name** — still `ashfall` placeholder; the operator names it
-  before anything public **(operator)**.
+- **The name** — **Gates**, spoken 2026-08-01 (`DECISIONS.md`).
 - **Landing page**: one static page on the game domain — what it is, the
   never-table (what money can't buy, verbatim from DESIGN §3.3), wipe
   clock, "play" button, browser requirements line (iOS < 26.4 honestly

@@ -1,4 +1,4 @@
-# ashfall · NOW.md — what next
+# Gates · NOW.md — what next
 
 The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
