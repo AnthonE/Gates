@@ -1350,6 +1350,181 @@ export class GameScene {
   }
 
   /**
+   * Dev-only: is a screen DERIVATIVE reaching the image as noise?
+   *
+   * Every other probe in this file asks whether a term reaches the frame.
+   * This one asks whether something reaches it that should not, and it can
+   * name the class exactly, because the artefact has a fingerprint no
+   * material can forge: **it is constant inside a 2x2 quad.**
+   *
+   * `dFdx`/`dFdy`/`fwidth` are differences taken across the rasterizer's 2x2
+   * quad, so any quantity derived from one is the SAME for all four fragments
+   * of that quad and unrelated to the next quad's. Albedo is not — a noise
+   * field evaluated per fragment varies between the two pixels of a quad
+   * exactly as much as it varies across the quad boundary. So comparing
+   * neighbour steps WITHIN a quad against neighbour steps ACROSS a quad
+   * boundary separates the two sources with no threshold on brightness,
+   * contrast or detail:
+   *
+   *   ratio ~ 1     whatever high frequency is there came from the field
+   *   ratio >> 1    a derivative is in the image, and it is noise
+   *
+   * That ratio is why this is a gate and not a screenshot: it is scale-free
+   * and it cannot be satisfied by flattening the material. A flat wash scores
+   * 1, and so does a correctly filtered one — the two are separated by the
+   * contrast probes (15/15b) and the chroma one (15d), which fail on a wash.
+   * Passing all of them at once requires detail that is actually resolved.
+   *
+   * Measured on the visual judge's own frames (pass 20260802-163821-01,
+   * `05-held-level.png` x 1000-1270 y 560-700): mean |dLuma| of 1.9 within
+   * quads against 21.4 across them, a ratio of 11.3, which is the "literal
+   * checkerboard" the report and a blind reader both named.
+   *
+   * Four states per view, each a use of an existing uniform, so nothing is
+   * compiled or branched for the probe's benefit:
+   *   `ship`    what a player sees.
+   *   `nobump`  the two bump amplitudes and grain's zeroed (`uOct`,
+   *             `uGrainAmp.x`) — gmH is then identically zero, so the bump
+   *             solve and the specular-AA pass that follows it contribute
+   *             nothing, while every albedo term is untouched. This is the
+   *             bisection: if the artefact is gone here it came through the
+   *             gradient solve, and if it survives it came from the wobble.
+   *             It is also the instrument's FLOOR — the same scene with no
+   *             derivative in it at all, which is what "ratio 1" looks like
+   *             on this frame rather than in theory.
+   *   `nograinbump` only `uGrainAmp.x` zeroed, so the two structural octaves
+   *             keep their bump. Names the octave when this goes red.
+   *   `flat`    `uSurface = 0` — the whole field gone, which is also where
+   *             the ground mask below comes from.
+   *
+   * The mask is `|luma(ship) - luma(flat)| > minDelta`: the pixels the field
+   * actually paints. Both endpoints of a step must be in it, so the sky, the
+   * scatter and the far ground the fades have already retired cannot dilute
+   * the ratio in either direction.
+   *
+   * A control render per view (the same state twice) must differ nowhere, for
+   * the same reason `contrastProbe` takes one: a rasterizer with any noise of
+   * its own would show up here as quad-locked energy that no shader wrote.
+   *
+   * Allocates and renders 5N frames; never call it from the RAF path.
+   */
+  aliasProbe(views, minDelta) {
+    const u = this._terrainUniforms;
+    if (!u) return null;
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const ship = new Uint8Array(w * h * 4);
+    const control = new Uint8Array(w * h * 4);
+    const nobump = new Uint8Array(w * h * 4);
+    const flat = new Uint8Array(w * h * 4);
+    const nograin = new Uint8Array(w * h * 4);
+    const luma = (buf, p) => (buf[p] * 2 + buf[p + 1] * 5 + buf[p + 2]) >> 3;
+    const cam = this.camera;
+    const keepQ = cam.quaternion.clone();
+    const keepPos = cam.position.clone();
+    const keepOct = u.uOct.value.clone();
+    const keepGrainAmp = u.uGrainAmp.value.clone();
+    const mask = new Uint8Array(w * h);
+    const samples = [];
+
+    // The quad statistic over one frame, restricted to `mask`. Steps are
+    // bucketed by the parity of the lower coordinate: a step from an even x to
+    // its odd neighbour stays inside a quad, a step from an odd x to the next
+    // even one crosses into the next one. `readPixels` row 0 is GL's bottom
+    // row and the quad grid is aligned to it, so the same parity argument
+    // holds vertically without a flip.
+    const quadStat = (buf) => {
+      let inSum = 0;
+      let inN = 0;
+      let outSum = 0;
+      let outN = 0;
+      for (let y = 0; y < h; y++) {
+        const row = y * w;
+        for (let x = 0; x < w; x++) {
+          const i = row + x;
+          if (!mask[i]) continue;
+          const l = luma(buf, i * 4);
+          if (x + 1 < w && mask[i + 1]) {
+            const d = Math.abs(luma(buf, (i + 1) * 4) - l);
+            if (x & 1) { outSum += d; outN++; } else { inSum += d; inN++; }
+          }
+          if (y + 1 < h && mask[i + w]) {
+            const d = Math.abs(luma(buf, (i + w) * 4) - l);
+            if (y & 1) { outSum += d; outN++; } else { inSum += d; inN++; }
+          }
+        }
+      }
+      const within = inN > 0 ? inSum / inN : 0;
+      const across = outN > 0 ? outSum / outN : 0;
+      return {
+        within,
+        across,
+        steps: inN + outN,
+        // Guarded so an empty or perfectly flat mask reports 1 (no quad
+        // structure) rather than an infinity that would read as a failure.
+        ratio: within > 1e-6 ? across / within : 1,
+      };
+    };
+
+    for (const view of views) {
+      cam.position.set(view.eye[0], view.eye[1], view.eye[2]);
+      this.sky.position.copy(cam.position);
+      this._target.set(view.at[0], view.at[1], view.at[2]);
+      cam.lookAt(this._target);
+
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, ship);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, control);
+      u.uOct.value.set(0, 0);
+      u.uGrainAmp.value.setX(0);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, nobump);
+      u.uOct.value.copy(keepOct);
+      u.uGrainAmp.value.copy(keepGrainAmp);
+      u.uGrainAmp.value.setX(0);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, nograin);
+      u.uGrainAmp.value.copy(keepGrainAmp);
+      u.uSurface.value = 0;
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, flat);
+      u.uSurface.value = 1;
+
+      let masked = 0;
+      let noise = 0;
+      for (let i = 0; i < w * h; i++) {
+        const p = i * 4;
+        const a = luma(ship, p);
+        if (a !== luma(control, p)) noise++;
+        const m = Math.abs(a - luma(flat, p)) > minDelta ? 1 : 0;
+        mask[i] = m;
+        masked += m;
+      }
+      samples.push({
+        label: view.label,
+        masked,
+        maskFraction: masked / (w * h),
+        noise,
+        ship: quadStat(ship),
+        nobump: quadStat(nobump),
+        nograinbump: quadStat(nograin),
+        flat: quadStat(flat),
+      });
+    }
+
+    u.uOct.value.copy(keepOct);
+    u.uGrainAmp.value.copy(keepGrainAmp);
+    u.uSurface.value = 1;
+    cam.position.copy(keepPos);
+    this.sky.position.copy(cam.position);
+    cam.quaternion.copy(keepQ);
+    this.renderer.render(this.scene, cam);
+    return { width: w, height: h, samples };
+  }
+
+  /**
    * Dev-only: where does the ground's fragment budget actually go?
    *
    * `NOW.md` item 1 is a cost question. Grain measured well and did not merge

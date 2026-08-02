@@ -290,6 +290,121 @@ check(
     `footprint changed — the bump is reading the camera and not the surface`,
 );
 
+// --- the SECOND defect in these lines: a quad-constant gradient -------------
+//
+// Everything above is about continuity across a triangle edge, and the shipped
+// solve is exact there. It is still reconstructed from `dFdx`/`dFdy`, and those
+// are differences taken across the rasterizer's 2x2 quad — so the perturbed
+// normal is CONSTANT over each quad and can only change at a quad boundary. No
+// formulation fixes that; it is the technique.
+//
+// What it costs depends entirely on how fast the height field turns over. Over
+// the 2 px between quad centres a wave of wavelength L advances `2h/L` of a
+// cycle — `4*PI*cpp` radians of phase — so the reconstructed gradient lands
+// that far along its own cycle each quad, and successive values differ by
+// `2*sin(phase/2)` of the gradient's own amplitude. Below a few degrees that
+// reads as relief. Approaching 60 degrees the gradient changes by more than
+// the whole of itself between neighbours, and the ground renders a 2x2 mosaic
+// — which is what the visual judge's pass 20260802-163821-01 called "a literal
+// checkerboard alternating dark teal and khaki", measured on its own
+// `05-held-level.png` at 1.9 luma/px of neighbour contrast within quads
+// against 21.4 across them.
+//
+// So this builds the reconstruction — sample gmH at real quad corners, take
+// the one-pixel difference each quad actually gets, and compare neighbours —
+// and asserts the shipped band is inside the bound while the ALBEDO band, the
+// one the bump was faded on before `FADE_BUMP_CPP`, is not. Same discipline as
+// the retired formulations above: a suite that cannot still show the defect
+// has not proved it would catch it.
+const FOUR_PI = 4 * Math.PI;
+// The jump between adjacent quads' reconstructed gradients, as a fraction of
+// the true gradient's own amplitude, for a unit sinusoid sampled at `cpp`
+// cycles per pixel. Built, not assumed: quads start at even pixels, each takes
+// the fine difference across its own two columns, and the worst neighbouring
+// pair over a full cycle is what is reported.
+function quadJump(cpp) {
+  const lambda = 1;
+  const h = cpp * lambda; // pixel footprint in the wave's own units
+  const wave = (x) => Math.sin((2 * Math.PI * x) / lambda);
+  const amp = (2 * Math.PI) / lambda; // peak |d wave / dx|
+  // The quad grid is not aligned to the wave, so the answer is the worst any
+  // alignment gives — swept, not assumed, because a coarse grid at one lucky
+  // offset can miss the peak by a lot and would understate the defect.
+  const quads = Math.max(8, Math.ceil(lambda / (2 * h)) + 2);
+  let worst = 0;
+  for (let o = 0; o < 2048; o++) {
+    const off = (o / 2048) * 2 * h;
+    let prev = null;
+    for (let k = 0; k < quads; k++) {
+      const x0 = off + 2 * k * h;
+      const g = (wave(x0 + h) - wave(x0)) / h;
+      if (prev !== null) worst = Math.max(worst, Math.abs(g - prev));
+      prev = g;
+    }
+  }
+  return worst / amp;
+}
+// The closed form `materials.js` states, so the prose is pinned to the
+// arithmetic rather than sitting beside it. Two factors, and both are the
+// derivation: `2·sin(2π·cpp)` is how far apart two samples of a wave a phase
+// of `4π·cpp` apart can be, and `sinc(cpp)` is the attenuation the one-pixel
+// finite difference applies to the gradient it recovers.
+const closedForm = (cpp) =>
+  2 * Math.sin(2 * Math.PI * cpp) * (Math.sin(Math.PI * cpp) / (Math.PI * cpp));
+for (const cpp of [0.005, 0.0208, 0.05, 0.09]) {
+  const built = quadJump(cpp);
+  const closed = closedForm(cpp);
+  check(
+    Math.abs(built - closed) <= 1e-4 * closed,
+    `at ${cpp} cycles/pixel the built quad-to-quad gradient jump is ${built.toFixed(6)} of amplitude ` +
+      `against the ${closed.toFixed(6)} that 2·sin(2π·cpp)·sinc(cpp) predicts — the derivation in ` +
+      `materials.js no longer describes what the reconstruction does`,
+  );
+}
+// What the two ends of the ladder cost, so the number that names the defect is
+// derived here rather than asserted from a screenshot. The albedo band's end
+// is read off the material — it is what gmH is faded on TODAY — and the bound
+// a bump needs is stated as a phase per quad, in degrees, which is the unit
+// the fix will carry.
+const matSrc = fs.readFileSync(path.join(ROOT, "web/src/materials.js"), "utf8");
+const albedoEndM = matSrc.match(/\bconst\s+FADE_OCTAVE_CPP\s*=\s*([^;]+);/);
+if (!albedoEndM) fail("web/src/materials.js has no const FADE_OCTAVE_CPP — this gate reads the shipped law from it");
+const albedoEnd = JSON.parse(albedoEndM[1].replace(/\s+/g, ""))[1];
+// Hold the gradient's phase step under 15° per quad and it jumps ~26% of its
+// own amplitude between neighbours — relief. This is the bound `NOW.md` item 1
+// carries as the fix; it is asserted here as arithmetic so the number cannot
+// drift while the prose stays.
+const BUMP_PHASE_BOUND_DEG = 15;
+const bumpEnd = ((BUMP_PHASE_BOUND_DEG * Math.PI) / 180) / FOUR_PI;
+const boundedJump = quadJump(bumpEnd);
+const albedoJump = quadJump(albedoEnd);
+check(
+  bumpEnd < albedoEnd,
+  `a ${BUMP_PHASE_BOUND_DEG}° phase bound puts the bump's retirement at ${bumpEnd.toFixed(4)} cycles/pixel ` +
+    `and the albedo's is ${albedoEnd} — if the bound were the looser of the two there would be nothing to fix`,
+);
+check(
+  boundedJump <= 0.3,
+  `at the ${BUMP_PHASE_BOUND_DEG}° bound the reconstructed gradient still jumps ` +
+    `${(boundedJump * 100).toFixed(1)}% of its own amplitude between adjacent quads — over 30% and the quad ` +
+    `grid is what the player sees, so the bound is not a bound`,
+);
+// The defect, reproduced as arithmetic: gmH is faded on the ALBEDO band today,
+// and at that band's end the gradient changes by more than the whole of itself
+// between neighbouring quads. That is the 2x2 mosaic the visual judge named on
+// pass 20260802-163821-01 and `scene.aliasProbe` measures at x3.12/x6.15.
+check(
+  albedoJump >= 1.0,
+  `at the albedo band's end the quad-to-quad gradient jump is only ${(albedoJump * 100).toFixed(1)}% of ` +
+    `amplitude — this suite no longer reproduces the defect that makes the bump need a band of its own, so ` +
+    `the bound above is unmotivated and its pass means nothing`,
+);
+check(
+  albedoJump > boundedJump * 3,
+  `the two bands' quad jumps are ${boundedJump.toFixed(3)} and ${albedoJump.toFixed(3)} — not decisively ` +
+    `apart, so splitting the laws would buy nothing`,
+);
+
 // --- the mirror is pinned to the shader -------------------------------------
 const src = fs.readFileSync(path.join(ROOT, "web/src/materials.js"), "utf8");
 // Comments stripped first, and not as a tidiness measure: the block above is
@@ -328,5 +443,8 @@ console.log(
   `bump basis: exact-derivative seam — retired ${oldSeam.toFixed(3)}°, geometric-normal ` +
     `${geoSeam.toFixed(3)}° (not a fix), shipped ${newSeam.toExponential(2)}° · one-pixel finite ` +
     `difference ${oldSeamFd.toFixed(3)}° → ${newSeamFd.toFixed(3)}° · footprint invariance ` +
-    `${angleBetween(zoomA, zoomB).toFixed(3)}° · ${checks} checks passed`,
+    `${angleBetween(zoomA, zoomB).toFixed(3)}° · quad-constant gradient: jump ` +
+    `${(boundedJump * 100).toFixed(1)}% of amplitude at a ${BUMP_PHASE_BOUND_DEG}°/quad bound ` +
+    `(${bumpEnd.toFixed(4)} cpp) against ${(albedoJump * 100).toFixed(1)}% at the albedo band's ` +
+    `${albedoEnd}, which is what gmH is faded on today · ${checks} checks passed`,
 );

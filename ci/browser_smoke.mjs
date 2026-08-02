@@ -450,6 +450,53 @@ const TINT_MAX_MEAN_LUMA = Number(process.env.BROWSER_SMOKE_TINT_MAX_LUMA || 1.0
 // on every one and fails here.
 const TINT_MAX_DEV_PARALLEL = Number(process.env.BROWSER_SMOKE_TINT_MAX_PAR || 0.5);
 
+// --- the alias gate (DECISIONS.md §open, "the bump's sampling law") ---------
+// Where the quad statistic is taken, and against what.
+//
+// Two vantages, and they are the capture harness's own 01 and 04 (yaw 0 pitch
+// 0, yaw 0 pitch −0.8) because that is where the defect was scored. 04 is the
+// worse of the pair and the near-ground one; 01 carries the mid distance, so
+// between them the mask covers the footprint band grain's fade actually lives
+// in. The probe takes them from the player's own position, like 15b's.
+const ALIAS_VIEWS = [
+  { label: "level", yaw: 0, pitch: 0 },
+  { label: "down", yaw: 0, pitch: -0.8 },
+];
+// A pixel joins the ground mask when the field moved it by more than this,
+// which is 15b's own `GRAIN_MIN_DELTA` argument: one 8-bit step separates a
+// pixel the material painted from one it did not.
+const ALIAS_MIN_DELTA = 1;
+// The ceiling on quad-locked energy, as a ratio of across-quad neighbour
+// contrast to within-quad. Scale-free, so it says nothing about how much
+// detail the ground carries — only about where that detail's edges fall.
+//
+// Where the number comes from: the probe's `nobump` leg is the floor — the
+// identical scene with gmH identically zero, so no screen derivative reaches
+// the image at all — and it measures 1.00–1.01 at both vantages. `nograinbump`
+// (grain's bump alone removed, both structural octaves' bump left in) measures
+// 1.02–1.03. 1.35 sits ~30% above both and 2.3× below the ×3.12/×6.15 the
+// SHIPPED material scores, which is the defect this pass measured and did not
+// land the fix for — see the §open row. Those two legs are asserted; the ship
+// leg is reported and not yet walled, because a ceiling calibrated to let the
+// defect through is worse than no ceiling.
+const ALIAS_MAX_RATIO = Number(process.env.BROWSER_SMOKE_ALIAS_MAX || 1.35);
+// How much of the frame the field must paint for the ratio to mean anything.
+// A mask that collapsed would make a flat wash score a clean 1.00 for the
+// wrong reason, so this is a floor on the sample and not on the material.
+//
+// Measured AT THIS GATE'S OWN SPAWN, which is the one that matters: the dev
+// shard pins the player to 1024,1024 at y = 12.3 m, so the level vantage is
+// mostly sky and paints 21–25% (195–229 k pixels) while the down one paints
+// 57%. The capture harness's beach spawn stands at y = 1.2 m and the same two
+// vantages paint 83% and 100% there — the reason to state the box the number
+// came off, the same way the timed block in this file does.
+const ALIAS_MIN_MASK = 0.15;
+// The control's ceiling: two renders of one state, differing on at most this
+// share of the frame. Not zero — the two live renders on this box have been
+// seen to differ on ~11 px of 921,600 — but four orders of magnitude below
+// anything that could move the statistic.
+const ALIAS_MAX_NOISE = 0.001;
+
 // --- the projection gate (DECISIONS.md §open, "materials v1", third pass) ---
 // 15b proves the surface has grain. It cannot prove the grain is on the
 // SURFACE: a world-XZ field stretched 1/u along a slope has exactly the same
@@ -1691,6 +1738,7 @@ console.log(
     (o.fadeCpp ? ` retires ${o.fadeCpp[1]}cpp/${(o.fadeCpp[1] / o.scale).toFixed(2)}m·px` : " unfaded")).join(" · ")} ` +
     `· Nyquist ${mat.nyquistCpp} · bump cap ${mat.bumpMaxSlope}`,
 );
+
 // The tier read (bases.webp): wood, stone and metal must not answer the key
 // light identically, and metal must actually be a conductor.
 const tierRough = mat.tiers.map((t) => t[1]);
@@ -2176,6 +2224,102 @@ console.log(
     `(×${tintLevel.chromaRatio.toFixed(2)} chroma, centre +${tintLevel.chromaShift.toFixed(5)} on ` +
     `+${(tintLevel.chromaOn - tintLevel.chromaOff).toFixed(5)} spread) · control noise ` +
     `${tintNear.noise}/${tintLevel.noise}`,
+);
+
+// Assertion 15e — the instrument for a defect this material still has.
+//
+// 15/15b/15d all ask whether something reaches the image. This asks whether
+// something reaches it that should not, and it can name the class exactly:
+// `dFdx`/`dFdy`/`fwidth` are differences across the rasterizer's 2x2 quad, so
+// anything derived from one is constant inside a quad and unrelated to the
+// next quad's, while a noise field evaluated per fragment varies inside a quad
+// exactly as much as it varies across the boundary. Comparing the two
+// separates them with no threshold on brightness, contrast or detail — which
+// is why this can be a wall and not a screenshot. See `scene.aliasProbe`.
+//
+// What it found, and what is asserted. The ground scores x3.12 and x6.15 here
+// — the "literal checkerboard" the visual judge named on pass
+// 20260802-163821-01 and a blind reader named on four of six frames — and the
+// probe bisects it onto the bump's gradient solve, and inside that onto the
+// GRAIN octave alone (`DECISIONS.md` §open, "the quad-constant gradient"). The
+// fix is a second sampling law and it is NOT in this commit, because removing
+// grain's bump takes assertion 15's two-sidedness with it at two of four yaws
+// — the field there is a macro-octave cast plus this artefact and nothing
+// else, so the wall above has been passing on the defect below.
+//
+// So the two legs that are TRUE today are walls, and the ship leg is reported
+// and not walled. A ceiling set where the defect fits is worse than none:
+//   `nobump`      gmH identically zero -> no derivative in the image at all.
+//   `nograinbump` grain's bump alone removed -> the structural octaves' bump
+//                 must not put quad-locked energy in the frame either.
+// Both must stay under the ceiling the ship leg will be held to once the law
+// lands, so the day it lands the wall is already calibrated.
+const aliasHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.aliasProbe);
+if (aliasHook !== "function") {
+  fail(`tab A: __gatesDebug.aliasProbe is ${aliasHook} on a dev shard — the alias gate cannot run`);
+}
+const alias = await A.page.evaluate(
+  ([v, d]) => globalThis.__gatesDebug.aliasProbe(v, d),
+  [ALIAS_VIEWS, ALIAS_MIN_DELTA],
+);
+if (!alias || !alias.samples || alias.samples.length !== ALIAS_VIEWS.length) {
+  fail(`tab A: the alias probe returned ${JSON.stringify(alias)} — it did not run`);
+}
+const aliasDetail = (s) =>
+  `      ${s.label}: ship ${s.ship.within.toFixed(2)}/${s.ship.across.toFixed(2)} = ` +
+  `x${s.ship.ratio.toFixed(2)} · nobump x${s.nobump.ratio.toFixed(2)} · nograinbump ` +
+  `x${s.nograinbump.ratio.toFixed(2)} · mask ${(s.maskFraction * 100).toFixed(1)}% · control noise ${s.noise}`;
+for (const s of alias.samples) {
+  // The instrument first, in the order that makes a failure readable.
+  if (!(s.maskFraction >= ALIAS_MIN_MASK)) {
+    fail(
+      `tab A: the alias probe's ${s.label} ground mask is ${(s.maskFraction * 100).toFixed(1)}% of the frame ` +
+        `(floor ${ALIAS_MIN_MASK * 100}%) — the field paints too little of this view for a quad ratio over it ` +
+        `to mean anything.\n${aliasDetail(s)}`,
+    );
+  }
+  if (!(s.noise / (alias.width * alias.height) <= ALIAS_MAX_NOISE)) {
+    fail(
+      `tab A: two renders of ONE state differ on ${s.noise} pixels of the ${s.label} frame — the rasterizer ` +
+        `has noise of its own and every ratio below is partly it talking.\n${aliasDetail(s)}`,
+    );
+  }
+  // …and the two walls.
+  if (!(s.nobump.ratio <= ALIAS_MAX_RATIO)) {
+    fail(
+      `tab A: the ${s.label} frame carries x${s.nobump.ratio.toFixed(2)} of quad-locked energy with gmH ` +
+        `identically zero (ceiling x${ALIAS_MAX_RATIO}) — something OTHER than the bump is putting a screen ` +
+        `derivative in the image, and this probe's whole bisection is wrong.\n${aliasDetail(s)}`,
+    );
+  }
+  if (!(s.nograinbump.ratio <= ALIAS_MAX_RATIO)) {
+    fail(
+      `tab A: with grain's bump removed the ${s.label} frame still carries x${s.nograinbump.ratio.toFixed(2)} ` +
+        `of quad-locked energy (ceiling x${ALIAS_MAX_RATIO}) — a structural octave's bump has started ` +
+        `rendering the quad grid too, which is a second instance of the defect grain already has.` +
+        `\n${aliasDetail(s)}`,
+    );
+  }
+  // The ship leg: reported, loudly, and not walled — see the block comment.
+  if (s.ship.ratio > ALIAS_MAX_RATIO) {
+    console.log(
+      `  alias: KNOWN DEFECT, unwalled — ${s.label} scores x${s.ship.ratio.toFixed(2)} against the ` +
+        `x${ALIAS_MAX_RATIO} this will be held to (${s.ship.within.toFixed(2)} luma/px within quads, ` +
+        `${s.ship.across.toFixed(2)} across). Bisection says ` +
+        `${s.nograinbump.ratio < s.ship.ratio * 0.6 ? "the GRAIN octave's bump" : "NOT grain's bump"}.`,
+    );
+  }
+}
+console.log(
+  `  alias: ` +
+    alias.samples
+      .map(
+        (s) =>
+          `${s.label} ship x${s.ship.ratio.toFixed(2)} (within ${s.ship.within.toFixed(2)}, across ` +
+          `${s.ship.across.toFixed(2)}) · floor x${s.nobump.ratio.toFixed(2)} · no-grain-bump ` +
+          `x${s.nograinbump.ratio.toFixed(2)} · mask ${(s.maskFraction * 100).toFixed(1)}% · noise ${s.noise}`,
+      )
+      .join(" · ") + ` · walled legs ≤ x${ALIAS_MAX_RATIO}`,
 );
 
 // Assertion 15c — the grain is laid ON the surface, not stamped through it.

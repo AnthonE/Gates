@@ -956,6 +956,30 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         return scene.contrastProbe(views, uniformName, minDelta, minChroma);
       }
     : null;
+  // The alias probe: the same world-space view shape the contrast probe takes,
+  // because it asks its question at the capture vantages and those are aimed,
+  // not derived. What it measures is not whether a term reaches the image but
+  // whether a screen DERIVATIVE does — see `scene.aliasProbe`.
+  const devAliasProbe = dev
+    ? (specs, minDelta) => {
+        const views = [];
+        for (const s of specs) {
+          const p = scene.camera.position;
+          const y = p.y + (s.lift || 0);
+          const cp = Math.cos(s.pitch);
+          views.push({
+            label: s.label,
+            eye: [p.x, y, p.z],
+            at: [
+              p.x + Math.sin(s.yaw) * cp,
+              y + Math.sin(s.pitch),
+              p.z + Math.cos(s.yaw) * cp,
+            ],
+          });
+        }
+        return scene.aliasProbe(views, minDelta);
+      }
+    : null;
   // Materials v1's third pass: the projection probe takes views in WORLD space
   // like the contrast one, but the caller aims them at a FACE rather than by
   // (yaw, pitch) — a combed grain is only combed on a slope, so the gate finds
@@ -1162,6 +1186,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (devCostProbe) debug.costProbe = devCostProbe;
     if (devGrainProbe) debug.grainProbe = devGrainProbe;
     if (devProjectionProbe) debug.projectionProbe = devProjectionProbe;
+    if (devAliasProbe) debug.aliasProbe = devAliasProbe;
     if (devSteepestFace) debug.steepestFace = devSteepestFace;
     globalThis.__gatesDebug = debug;
   }, 250);
