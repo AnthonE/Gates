@@ -42,6 +42,7 @@ $NICE node ci/parity.mjs > "$wasm_out" || fail "wasm probe"
 diff -u "$native_out" "$wasm_out" \
   || fail "test_parity_wasm: native and wasm digests differ"
 grep -q '^parity ' "$native_out" || fail "probe output empty — parity not exercised"
+grep -q '^combat ' "$native_out" || fail "probe output has no combat line — melee not exercised"
 
 echo "== gate: client wasm bridge smoke (raw C ABI, the browser's calling path)"
 $NICE node ci/client_smoke.mjs || fail "client bridge smoke"

@@ -88,6 +88,9 @@ const SUB_DEPLOY_REMOVED: u32 = 20;
 const SUB_STOCK: u32 = 21;
 const SUB_DOOR: u32 = 22;
 const SUB_CHAT: u32 = 23;
+const SUB_HIT: u32 = 24;
+const SUB_HEALTH: u32 = 25;
+const SUB_DEATH: u32 = 26;
 
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
@@ -325,6 +328,21 @@ pub enum EventMsg {
         global: bool,
         text: ChatText,
     },
+    /// Your swing landed on `victim` for `damage` (combat.rs). The
+    /// attacker's fact and the attacker's alone — a hitmarker, not a
+    /// health readout; the victim's own `Health` is the truth about the
+    /// victim, and it goes only to them.
+    Hit { victim: u32, damage: u16 },
+    /// Your hp after something changed it, and the max it is measured
+    /// against. Absolute, never a delta: a client that misses one hears
+    /// the whole truth from the next, exactly like `Door`.
+    Health { hp: u16, max: u16 },
+    /// `victim` was killed by `killer` — broadcast, because a death is a
+    /// world fact like a placement, and the kill feed the reference frames
+    /// carry bottom-left is built from exactly this. No cause, no weapon,
+    /// no position: what the world may know about a death is who and by
+    /// whom.
+    Death { victim: u32, killer: u32 },
 }
 
 fn begin(buf: &mut [u8], subtype: u32) -> Result<BitWriter<'_>, WireError> {
@@ -815,6 +833,34 @@ pub fn encode_event_door(
     Ok(w.finish())
 }
 
+/// The attacker's hitmarker: `damage` landed on `victim`.
+pub fn encode_event_hit(victim: u32, damage: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_HIT)?;
+    w.write(victim, 32)?;
+    w.write(damage as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// The owner's health, absolute. `hp > max` is a server bug surfacing —
+/// refused here rather than rendered as an over-full bar.
+pub fn encode_event_health(hp: u16, max: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if hp > max {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_HEALTH)?;
+    w.write(hp as u32, 16)?;
+    w.write(max as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// A death, broadcast.
+pub fn encode_event_death(victim: u32, killer: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_DEATH)?;
+    w.write(victim, 32)?;
+    w.write(killer, 32)?;
+    Ok(w.finish())
+}
+
 /// Relay one chat line to one recipient. The text is already sanitized
 /// (`ChatText` has no other constructor), so this cannot put a line on
 /// the wire the C→S decoder would have refused.
@@ -1169,6 +1215,22 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 text: read_text(&mut r)?,
             }
         }
+        SUB_HIT => EventMsg::Hit {
+            victim: r.read(32)?,
+            damage: r.read(16)? as u16,
+        },
+        SUB_HEALTH => {
+            let hp = r.read(16)? as u16;
+            let max = r.read(16)? as u16;
+            if hp > max {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Health { hp, max }
+        }
+        SUB_DEATH => EventMsg::Death {
+            victim: r.read(32)?,
+            killer: r.read(32)?,
+        },
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;
@@ -1723,11 +1785,11 @@ mod tests {
             Err(WireError::Malformed),
             "spare byte after a valid message must fail the strict tail"
         );
-        // kind EVENT + subtype 24: unknown (the first unused subtype —
-        // 23 became chat, so this moves up with every new subtype).
+        // kind EVENT + subtype 27: unknown (the first unused subtype —
+        // 26 became death, so this moves up with every new subtype).
         let raw = [
-            (KIND_EVENT | (24 << KIND_BITS)) as u8,
-            (24 >> (8 - KIND_BITS)) as u8,
+            (KIND_EVENT | (27 << KIND_BITS)) as u8,
+            (27 >> (8 - KIND_BITS)) as u8,
         ];
         assert_eq!(decode_event(&raw[..2]), Err(WireError::Malformed));
     }

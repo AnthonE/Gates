@@ -4,7 +4,29 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
+1. **Nothing in the game can be hurt, so nothing can be lost.**
+   *(Gap pass, from the merge-gate judge's ranked gap 1 in
+   `findings/pass-20260802-001255-01-judge.md`, both rounds.)*
+
+   Melee v0 landed: `sim-core/combat.rs`, `content/weapons.toml`'s melee
+   rows baked, wire v11 (hit · health · death). The swing that fells a
+   tree now lands on a person, three spear hits kill, and death is a
+   different beach with empty pockets. `DECISIONS.md` §open, "melee
+   combat v0", holds every bound and every deliberate omission.
+
+   What the gap still wants, in the order it is worth doing:
+   - **The backpack.** Death destroys the inventory today because the
+     world has no ground container; until it does, a kill pays nothing.
+     This is the next slice of this item, and it is what makes killing
+     someone a reason rather than a mood.
+   - **Piece damage** — the raid lane. `weapons.toml` carries no
+     melee-vs-structure column and inventing one would move the raid
+     ratio `test_content` asserts, so it needs a content column and a
+     re-derived anchor, not a code constant.
+   - **Armor and headshots.** `armor.toml` bakes into nothing; aim is
+     planar, so there is no head. Both wait on M2's rewound raycasts.
+
+2. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
    The projection half of this item landed (materials v1 third pass,
    `DECISIONS.md` §open): the grain — and only the grain — is sampled
    triplanar, ridge-folded per plane before the blend and the blend's
@@ -38,7 +60,7 @@ Done items are deleted, not checked — history lives in git and
    fragment, 18/24 depth fetches. Price `gmHash4` there too — hash
    evaluations and program chars — not in ms.
 
-2. **A tab that boots beside another live tab takes 34 s to reach the
+3. **A tab that boots beside another live tab takes 34 s to reach the
    world. Nobody knows where those seconds go.**
    The third-tab version of this went red on 2026-08-01 16:26 (`inWorld`
    at 61.6 s of a 60 s window) and the recovery pass closed it, but by
@@ -63,7 +85,8 @@ Done items are deleted, not checked — history lives in git and
    handshake, first compile and first chunk. The cost probe already says a
    terrain program costs ~3 s to compile here, and a fresh tab compiles
    more than one.
-3. **Nothing casts past 720 m, and nothing out there has a silhouette.**
+
+4. **Nothing casts past 720 m, and nothing out there has a silhouette.**
    The horizon casts now (`DECISIONS.md` §open) but two limits are stated
    rather than solved: the coarsest clipmap level stops at 720 m because
    fog closes at 1000 m, and past the near ring the only caster is the
@@ -72,7 +95,7 @@ Done items are deleted, not checked — history lives in git and
    yaws for exactly that reason. A scatter LOD (billboard crosses,
    `TERRAIN.md` §4's "trees get two LODs") is the fix and it is a terrain
    job, not a shadow one.
-4. **A capture the same twice is a gate; a capture that drifts is a vibe.**
+5. **A capture the same twice is a gate; a capture that drifts is a vibe.**
    Deterministic capture mode (operator, 2026-08-02, `DECISIONS.md` — the
    Claude-of-Duty adoption row): the client animates off the sim tick / an
    injected fixed-step clock in capture mode — today the RAF loop steps off
@@ -91,7 +114,7 @@ Done items are deleted, not checked — history lives in git and
    (must switch to the engine clock in capture mode), or UI-only (excluded
    from shots). Settle by tick count, never by time.
 
-5. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
+6. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
    solid (slice 13: chat — two channels on the reliable lane, local at
    20 m and global, sanitized at both edges and rate-limited per
@@ -107,13 +130,13 @@ Done items are deleted, not checked — history lives in git and
    there) · piece damage (M2's raid lane: hp exists and decays, nothing
    attacks it yet) · nametags (chat names a speaker by id today, because
    nothing has a name yet).
-6. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
+7. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
-7. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
+8. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
    admin lane · backups · status page · error capture · `bench_transport`.
-8. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
+9. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
    then tune content bands from what the anomaly log and the replays say.
-9. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
+10. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
 

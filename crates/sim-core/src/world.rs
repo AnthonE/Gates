@@ -5,6 +5,7 @@
 //! order determinism requires.
 
 use crate::build::{self, BuildContent, Pieces};
+use crate::combat::{self, CombatContent};
 use crate::craft::{self, CraftContent, CraftJob};
 use crate::deploy::{self, DeployContent, Deploys};
 use crate::fmath::floor_i32;
@@ -88,6 +89,17 @@ pub const EV_STOCK: u8 = 13;
 /// absolute, whether the toggle or the lock moved (lock v0). Broadcast —
 /// door state is a world fact like a placement.
 pub const EV_DOOR: u8 = 14;
+/// EV_HIT: a = attacker player id, b = victim player id, c = damage dealt.
+/// The attacker's fact — the hitmarker, not the truth; EV_HEALTH is what
+/// the victim's bar reads (combat.rs).
+pub const EV_HIT: u8 = 15;
+/// EV_HEALTH: a = player id, b = hp after the change, c = max hp. Own-fact,
+/// absolute: a client that misses one hears the whole truth from the next.
+pub const EV_HEALTH: u8 = 16;
+/// EV_DEATH: a = the player who died, b = the player who killed them
+/// (equal to `a` if that ever becomes possible; today nothing but another
+/// hand can kill). Broadcast — a death is a world fact like a placement.
+pub const EV_DEATH: u8 = 17;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SimEvent {
@@ -166,6 +178,13 @@ pub struct Player {
     pub jobs: [CraftJob; CRAFT_QUEUE],
     /// Tick the head job's current unit completes at; 0 = idle.
     pub craft_done_at: u64,
+    /// Hit points. A join grants `CombatContent::player_hp`, so inert
+    /// content leaves this 0 and nothing can be killed (combat.rs).
+    pub hp: u16,
+    /// How many times this player has died. Sim state, and not only a
+    /// counter: it walks the spawn ring's candidate sequence forward, so
+    /// two deaths are two different beaches (`spawn_pos_n`).
+    pub deaths: u16,
 }
 
 impl Default for Player {
@@ -181,6 +200,8 @@ impl Default for Player {
             ws_hits: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
             craft_done_at: 0,
+            hp: 0,
+            deaths: 0,
         }
     }
 }
@@ -289,6 +310,9 @@ pub struct World {
     /// Baked deployable rules + upkeep globals (deploy.rs). Construction
     /// input too.
     pub deploy: DeployContent,
+    /// Baked melee rows + max hp (combat.rs). Construction input too; the
+    /// inert default leaves the world unable to hurt anyone.
+    pub combat: CombatContent,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
@@ -323,6 +347,7 @@ impl World {
             craft: CraftContent::EMPTY,
             build: BuildContent::EMPTY,
             deploy: DeployContent::EMPTY,
+            combat: CombatContent::EMPTY,
             pieces: Pieces::new(),
             deploys: Deploys::new(),
             sweep_piece: 0,
@@ -357,14 +382,24 @@ impl World {
     /// point if every candidate's ground is occupied, and the island center
     /// if no bearing brackets a shore at all.
     pub fn spawn_pos(&self, id: u32) -> (f32, f32) {
+        self.spawn_pos_n(id, 0)
+    }
+
+    /// The spawn ring at generation `gen` — `gen` 0 is the join, and each
+    /// death walks it forward one. The generation shifts which candidate
+    /// bearings are drawn (`gen · SPAWN_CANDIDATES` further along the same
+    /// hashed sequence), so waking up after a death is a different beach
+    /// without a second selector, a second constant, or a second ring.
+    pub fn spawn_pos_n(&self, id: u32, gen: u32) -> (f32, f32) {
         if let Some(p) = self.dev_spawn {
             return p;
         }
         let c = terrain::ISLAND_SIZE * 0.5;
+        let base = (gen as i32).wrapping_mul(SPAWN_CANDIDATES);
         let mut relaxed: Option<(f32, f32)> = None;
         let mut attempt = 0i32;
         while attempt < SPAWN_CANDIDATES {
-            let h = cell_hash(self.seed, id as i32, attempt, CH_SPAWN);
+            let h = cell_hash(self.seed, id as i32, base.wrapping_add(attempt), CH_SPAWN);
             attempt += 1;
             // Index the 256-entry yaw LUT: a bearing, no trig (wall 1).
             // `yaw_dir` indexes by the high byte, so shift the draw up.
@@ -444,6 +479,38 @@ impl World {
         self.players.iter().position(|p| p.active && p.id == id)
     }
 
+    /// Death, v0: you wake up naked on a different beach. The kill has
+    /// already been counted and announced (combat.rs); this is the
+    /// consequence — a fresh body at the next generation of the spawn
+    /// ring, full hp, and **everything you carried is gone**: inventory,
+    /// craft queue, the weak-spot chase you were partway through. The
+    /// backpack that will one day catch that inventory is a container the
+    /// world does not have yet (`DECISIONS.md` §open, "melee combat v0");
+    /// until it does, destruction is the honest reading of "you lost it",
+    /// not a silent teleport home with your loot.
+    ///
+    /// The input frame survives on purpose: it is the client's, not the
+    /// world's, and resetting `seq` would lie to prediction about which
+    /// input the sim last executed.
+    fn respawn(&mut self, slot: usize) {
+        let (id, deaths, frame) = {
+            let p = &self.players[slot];
+            (p.id, p.deaths, p.frame)
+        };
+        let (x, z) = self.spawn_pos_n(id, deaths as u32);
+        let hp = self.combat.player_hp;
+        self.players[slot] = Player {
+            id,
+            active: true,
+            body: Body::at(self.seed, x, z),
+            frame,
+            hp,
+            deaths,
+            ..Player::default()
+        };
+        self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
+    }
+
     fn apply(&mut self, cmd: &Command) {
         match *cmd {
             Command::Join { id } => {
@@ -452,12 +519,21 @@ impl World {
                 }
                 if let Some(slot) = self.players.iter().position(|p| !p.active) {
                     let (x, z) = self.spawn_pos(id);
+                    let hp = self.combat.player_hp;
                     self.players[slot] = Player {
                         id,
                         active: true,
                         body: Body::at(self.seed, x, z),
+                        hp,
                         ..Player::default()
                     };
+                    // Say it at the door. Health is only ever announced
+                    // when it changes, so without this a fresh player has
+                    // no vitals until the first thing that hurts them —
+                    // which is the one moment a bar is no use.
+                    if hp > 0 {
+                        self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
+                    }
                 }
                 // No free slot: refuse silently here; the accept path
                 // already hard-caps at the shard limit (limits.rs).
@@ -647,19 +723,38 @@ impl World {
         }
         let seed = self.seed;
         let tick = self.tick;
-        for p in self.players.iter_mut() {
-            if p.active {
-                movement::step(seed, self.pieces.cols(), &mut p.body, &p.frame);
-                gather::swing(
-                    seed,
-                    tick,
-                    &self.gather,
-                    &self.scatter,
-                    &mut self.slot_lives,
-                    &mut self.events,
-                    p,
-                );
-                craft::step(&self.craft, &self.gather, tick, p, &mut self.events);
+        // Slot order, and inside a slot: move, swing, craft. The swing is
+        // one arm — `gather::swing` gets first claim on it (a tree in
+        // reach is always the nearer target) and hands it on only when
+        // nothing standing absorbed it.
+        for i in 0..MAX_PLAYERS {
+            if !self.players[i].active {
+                continue;
+            }
+            let frame = self.players[i].frame;
+            movement::step(seed, self.pieces.cols(), &mut self.players[i].body, &frame);
+            let free = gather::swing(
+                seed,
+                tick,
+                &self.gather,
+                &self.scatter,
+                &mut self.slot_lives,
+                &mut self.events,
+                &mut self.players[i],
+            );
+            craft::step(
+                &self.craft,
+                &self.gather,
+                tick,
+                &mut self.players[i],
+                &mut self.events,
+            );
+            if free {
+                if let Some(victim) =
+                    combat::strike(&self.combat, i, &mut self.players, &mut self.events)
+                {
+                    self.respawn(victim);
+                }
             }
         }
         self.slot_lives.respawn_due(tick, &mut self.events);
@@ -709,6 +804,8 @@ impl World {
             buf[37] = p.frame.sel;
             buf[38..42].copy_from_slice(&p.ws_cell.to_le_bytes());
             buf[42..44].copy_from_slice(&p.ws_hits.to_le_bytes());
+            buf[44..46].copy_from_slice(&p.hp.to_le_bytes());
+            buf[46..48].copy_from_slice(&p.deaths.to_le_bytes());
             h.update(&buf);
             for s in p.inv.iter() {
                 let mut sb = [0u8; 4];

@@ -349,6 +349,12 @@ pub fn weak_mark8(seed: u64, cx: u16, cz: u16, pid: u32, n: u16) -> u8 {
 /// One player's swing gate + target pick + payout. Called every tick for
 /// every active player, after movement — bounded: 3×3 scatter cells
 /// scanned only on a swing tick.
+///
+/// Returns **true when a swing was taken and no node absorbed it** — the
+/// cadence is paid and the arm is still moving, so the caller hands it to
+/// `combat::strike`. False means either no swing this tick (button up, or
+/// still on cooldown) or a node took the hit: one arm, one target, and a
+/// tree is always the nearer claim on it.
 #[allow(clippy::too_many_arguments)]
 pub fn swing(
     seed: u64,
@@ -358,9 +364,9 @@ pub fn swing(
     lives: &mut SlotLives,
     events: &mut EventQueue,
     p: &mut Player,
-) {
+) -> bool {
     if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {
-        return;
+        return false;
     }
     p.next_swing = tick + SWING_INTERVAL_TICKS;
 
@@ -404,15 +410,15 @@ pub fn swing(
         dz_cell += 1;
     }
     let Some((d2, ox, oz, cx, cz, ni)) = best else {
-        return; // whiff — the cooldown is already paid
+        return true; // whiff — the cooldown is paid, the arm is free
     };
 
     let def = &gc.nodes[ni];
     if def.output == NO_ITEM || def.output as usize >= MAX_ITEM_DEFS {
-        return; // inert content (or a table the bake would have refused)
+        return true; // inert content (or a table the bake would have refused)
     }
     let Some(life) = lives.find_or_insert(cx, cz) else {
-        return; // store exhausted by harvested entries — refuse the hit
+        return true; // store exhausted by harvested entries — refuse the hit
     };
     life.hits += 1;
     let exhausted = life.hits >= def.hits;
@@ -472,6 +478,7 @@ pub fn swing(
             ((weak_hit as u32) << 8) | next as u32,
         );
     }
+    false // the node took it
 }
 
 #[cfg(test)]

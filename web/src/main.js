@@ -642,6 +642,29 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
           hud.toast(`+${t & 0xffff} ${itemName(t >>> 16)}`);
         }
       }
+      if (flags & (1 << 23) /* HIT */) {
+        for (;;) {
+          const d = ex.client_hit_pop() >>> 0;
+          if (d === 0xffffffff) break;
+          hud.toast(`hit −${d}`);
+        }
+      }
+      if (flags & (1 << 24) /* DEATH */) {
+        for (;;) {
+          const victim = ex.client_death_pop() >>> 0;
+          if (victim === 0xffffffff) break;
+          const killer = ex.client_death_killer() >>> 0;
+          // The kill feed, in the chat log until a feed of its own
+          // exists. Names don't exist yet, so ids stand in — the same
+          // stand-in chat already uses.
+          hud.chatLine(
+            killer,
+            true,
+            victim === playerId ? `killed you` : `killed #${victim}`,
+            victim === playerId,
+          );
+        }
+      }
       if (flags & 128 /* CRAFT_DONE */) {
         for (;;) {
           const t = ex.client_craft_pop() >>> 0;
@@ -1024,6 +1047,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     }
     hud.setHotbar(hotbar);
     hud.setSelected(input.sel);
+    const health = ex.client_health() >>> 0;
+    hud.setVitals(health >>> 16, health & 0xffff);
     // The craft views rebuild on change, or every timer tick while the
     // panel or queue is visible (the ETA countdown text).
     const qCount = (ex.client_craft_q() >>> 0) >>> 16;

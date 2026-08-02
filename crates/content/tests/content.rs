@@ -484,3 +484,101 @@ fn bake_deployables_refuses_out_of_cap_rows() {
     let err = c.bake_deployables().expect_err("70000-hp deployable baked");
     assert!(err.contains("overflows u16"), "{err}");
 }
+
+/// The combat table bakes from the shipped weapons, and — the point of
+/// the test — **the band the data declares is the band the sim plays.**
+/// `anchors()` asserts TTK from `weapons.toml` ÷ `balance.toml`; this
+/// re-derives the same hits-to-kill from the *baked* rows the sim will
+/// actually run on, so a bake that silently rounded, truncated, or keyed
+/// a row to the wrong item would show up here rather than as a fight that
+/// takes one more hit than the doc says.
+#[test]
+fn bake_combat_plays_the_band_the_data_declares() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped weapons must bake");
+    assert_eq!(
+        cc.player_hp as u32, c.balance.globals.player_hp,
+        "max hp is balance.toml's, not a code constant"
+    );
+
+    let [lo, hi] = c.balance.bands.ttk_melee;
+    let mut melee_rows = 0;
+    for w in &c.weapons {
+        let idx = c.item_index(&w.id).expect("weapon arms an item") as usize;
+        let baked = cc.melee[idx];
+        if w.kind != content::schema::WeaponKind::Melee {
+            assert_eq!(
+                baked.damage, 0,
+                "`{}` is not melee and must not be armed in v0",
+                w.id
+            );
+            continue;
+        }
+        melee_rows += 1;
+        assert_eq!(baked.damage as u32, w.damage, "`{}` damage", w.id);
+        assert_eq!(
+            baked.reach_cm as u32,
+            w.range_m * 100,
+            "`{}` reach in cm",
+            w.id
+        );
+        // Hits to kill, computed the way the sim computes it: whole
+        // swings, each removing `damage` from `player_hp`.
+        let mut hp = cc.player_hp;
+        let mut hits = 0u32;
+        while hp > 0 {
+            hp -= baked.damage.min(hp);
+            hits += 1;
+        }
+        assert!(
+            (lo..=hi).contains(&hits),
+            "`{}` kills in {hits} swings, outside the declared melee TTK band {lo}..={hi}",
+            w.id
+        );
+    }
+    assert!(
+        melee_rows >= 2,
+        "the shipped set must arm more than one melee weapon or this test proves nothing"
+    );
+}
+
+/// A melee row that deals nothing or reaches nowhere never reaches the
+/// sim: it is refused, and it does not matter to this test whether the
+/// refusal comes from validation or from the bake — what matters is that
+/// no boot path exists that hands the world a weapon which cannot work.
+/// Asserting the *stage* would gate the plumbing; asserting the outcome
+/// gates the rule.
+#[test]
+fn a_melee_row_that_cannot_work_never_reaches_the_sim() {
+    for patch in ["damage = 0", "range_m = 0"] {
+        let mut srcs = sources();
+        let entry = srcs.iter_mut().find(|(n, _)| *n == "weapons.toml").unwrap();
+        let field = patch.split(' ').next().unwrap();
+        // Rewrite the first matching field rather than appending a row:
+        // an appended row would be a second definition, not a broken one.
+        let mut out = String::new();
+        let mut patched = false;
+        for line in entry.1.lines() {
+            if !patched && line.starts_with(&format!("{field} = ")) {
+                out.push_str(patch);
+                patched = true;
+            } else {
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+        assert!(patched, "weapons.toml has no `{field}` line to break");
+        entry.1 = out;
+        let refused = match build(&srcs) {
+            Err(e) => e,
+            Ok(c) => c
+                .bake_combat()
+                .err()
+                .unwrap_or_else(|| panic!("`{patch}` armed the sim anyway")),
+        };
+        assert!(
+            !refused.is_empty(),
+            "`{patch}` was refused without saying why"
+        );
+    }
+}

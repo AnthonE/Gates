@@ -123,15 +123,17 @@ pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
 
 /// Boot a shard: bind, spawn the sim thread and the accept loop, return.
 /// The caller owns process lifetime; `shutdown` stops the sim thread.
-/// `gather`, `craft`, `build`, and `catalog` are the content bake
-/// (CLAUDE.md wall 7) — data the world runs on, handed over before the
-/// first tick like the seed.
+/// `gather`, `craft`, `build`, `deploy`, `combat`, and `catalog` are the
+/// content bake (CLAUDE.md wall 7) — data the world runs on, handed over
+/// before the first tick like the seed.
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_shard(
     cfg: ShardConfig,
     gather: sim_core::gather::GatherContent,
     craft: sim_core::craft::CraftContent,
     build: sim_core::build::BuildContent,
     deploy: sim_core::deploy::DeployContent,
+    combat: sim_core::combat::CombatContent,
     catalog: ItemCatalog,
 ) -> Result<ShardHandle, String> {
     let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])
@@ -179,8 +181,8 @@ pub async fn spawn_shard(
             .name("sim".into())
             .spawn(move || {
                 sim_thread(
-                    seed, dev_spawn, gather, craft, build, deploy, catalog, ctrl_rx, grave_tx,
-                    slots, stats, shutdown,
+                    seed, dev_spawn, gather, craft, build, deploy, combat, catalog, ctrl_rx,
+                    grave_tx, slots, stats, shutdown,
                 )
             })
             .map_err(|e| format!("sim thread spawn: {e}"))?;
@@ -676,6 +678,7 @@ fn sim_thread(
     craft: sim_core::craft::CraftContent,
     build: sim_core::build::BuildContent,
     deploy: sim_core::deploy::DeployContent,
+    combat: sim_core::combat::CombatContent,
     catalog: ItemCatalog,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut grave_tx: rtrb::Producer<Link>,
@@ -689,6 +692,7 @@ fn sim_thread(
     core.world.craft = craft;
     core.world.build = build;
     core.world.deploy = deploy;
+    core.world.combat = combat;
     core.catalog = catalog;
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_PLAYERS);
     links.resize_with(MAX_PLAYERS, || None);

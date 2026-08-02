@@ -38,6 +38,10 @@ export class Hud {
         this.closeChat();
       }
     });
+    this.vitals = document.getElementById("vitals");
+    this.vitalsFill = null;
+    this.vitalsNum = null;
+    this.lastVitals = "";
     this.craftq = document.getElementById("craftq");
     this.build = document.getElementById("build");
     this.craftOpen = false;
@@ -65,6 +69,39 @@ export class Hud {
     this.hotbar.style.display = "flex";
     this.toasts.style.display = "block";
     this.chatlog.style.display = "block";
+  }
+
+  /**
+   * The vitals stack. `max === 0` means the server has stated no health
+   * at all — a shard whose content disarms combat — and the stack stays
+   * hidden rather than drawing an empty bar for someone who cannot be
+   * hurt. Slow-timer only, and only a changed reading touches the DOM.
+   */
+  setVitals(hp, max) {
+    const key = max === 0 ? "" : `${hp}/${max}`;
+    if (key === this.lastVitals) return;
+    this.lastVitals = key;
+    if (!key) {
+      this.vitals.style.display = "none";
+      return;
+    }
+    if (!this.vitalsFill) {
+      const row = document.createElement("div");
+      row.className = "vrow";
+      const bar = document.createElement("div");
+      bar.className = "vbar";
+      this.vitalsFill = document.createElement("div");
+      this.vitalsFill.className = "vfill";
+      bar.appendChild(this.vitalsFill);
+      this.vitalsNum = document.createElement("span");
+      this.vitalsNum.className = "vnum";
+      row.appendChild(bar);
+      row.appendChild(this.vitalsNum);
+      this.vitals.appendChild(row);
+    }
+    this.vitals.style.display = "block";
+    this.vitalsFill.style.width = `${Math.max(0, Math.min(100, (hp / max) * 100))}%`;
+    this.vitalsNum.textContent = String(hp);
   }
 
   /** Toggle the craft panel; returns whether it is now open. */
