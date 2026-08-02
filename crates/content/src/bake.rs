@@ -7,12 +7,15 @@
 //! Boot path only: allocation and `String` errors are fine here; nothing
 //! in this module runs on the sim thread.
 
-use crate::schema::{DeployArchetype, Material, NodeArchetype, Placement, Shape, Station};
+use crate::schema::{
+    DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, WeaponKind,
+};
 use crate::Content;
 use sim_core::build::{
     BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
     SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
 };
+use sim_core::combat::{CombatContent, MeleeDef};
 use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
@@ -352,5 +355,65 @@ impl Content {
                 )
             })?;
         Ok(dc)
+    }
+
+    /// The combat table: every `kind = "melee"` weapon row keyed by the
+    /// item it arms, plus `globals.player_hp` — the same number
+    /// `anchors()` divides by for the TTK band, so the band the data
+    /// declares and the band the sim plays cannot drift apart.
+    ///
+    /// Only melee crosses in v0. Bow, firearm and throwable rows are
+    /// deliberately dropped here rather than half-baked: a projectile the
+    /// sim can read but not fire is a number that looks armed and is not
+    /// (combat.rs's scope note; `DECISIONS.md` §open, "melee combat v0").
+    pub fn bake_combat(&self) -> Result<CombatContent, String> {
+        if self.items.len() > MAX_ITEM_DEFS {
+            return Err(format!(
+                "bake: {} items exceed the sim's {MAX_ITEM_DEFS}-def table",
+                self.items.len()
+            ));
+        }
+        let mut cc = CombatContent::EMPTY;
+        cc.player_hp = u16::try_from(self.balance.globals.player_hp).map_err(|_| {
+            format!(
+                "bake: player_hp {} overflows u16",
+                self.balance.globals.player_hp
+            )
+        })?;
+        if cc.player_hp == 0 {
+            return Err("bake: player_hp 0 would disarm combat entirely".to_string());
+        }
+        for w in &self.weapons {
+            if w.kind != WeaponKind::Melee {
+                continue;
+            }
+            let idx = self
+                .item_index(&w.id)
+                .ok_or_else(|| format!("bake: weapon `{}` arms no item", w.id))?
+                as usize;
+            let damage = u16::try_from(w.damage)
+                .map_err(|_| format!("bake: `{}` damage {} overflows u16", w.id, w.damage))?;
+            if damage == 0 {
+                return Err(format!("bake: melee `{}` deals no damage", w.id));
+            }
+            let reach_cm = w
+                .range_m
+                .checked_mul(100)
+                .and_then(|cm| u16::try_from(cm).ok())
+                .ok_or_else(|| {
+                    format!(
+                        "bake: `{}` range {} m overflows the cm reach",
+                        w.id, w.range_m
+                    )
+                })?;
+            if reach_cm == 0 {
+                return Err(format!("bake: melee `{}` has no reach", w.id));
+            }
+            if cc.melee[idx].damage != 0 {
+                return Err(format!("bake: duplicate weapon row for `{}`", w.id));
+            }
+            cc.melee[idx] = MeleeDef { damage, reach_cm };
+        }
+        Ok(cc)
     }
 }

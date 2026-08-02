@@ -8,14 +8,14 @@ use crate::client::ClientNetState;
 use crate::stats::ShardStats;
 use protocol::{
     encode_event_build_refused, encode_event_catalog, encode_event_chat, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_deploy_defs,
+    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_gather, encode_event_inv, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_sync, encode_event_recipes, encode_event_removed,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_weak_mark,
-    ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder,
-    SnapshotHeader, WireError, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
+    encode_event_inv, encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
+    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireError, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
@@ -27,9 +27,10 @@ use sim_core::limits::{
     SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK,
 };
 use sim_core::world::{
-    Command, Player, World, EV_BUILD_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEPLOY_PLACED,
-    EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_GATHER, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_WEAK_MARK,
+    Command, Player, World, EV_BUILD_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH,
+    EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_GATHER, EV_HEALTH, EV_HIT,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
+    EV_WEAK_MARK,
 };
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
@@ -561,6 +562,58 @@ impl ShardCore {
                                     ShardStats::bump(&stats.ev_sent);
                                 } else {
                                     // The deploy walk re-derives it.
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_HIT | EV_HEALTH => {
+                    // Both are own-facts and the audience is the same
+                    // shape: the hit goes to the hand that landed it, the
+                    // health to the body that took it. A client that
+                    // misses either is not left holding half a truth —
+                    // health is absolute, so the next one repairs it, and
+                    // a hitmarker is cosmetic.
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // that player left this tick
+                    };
+                    let enc = if ev.code == EV_HIT {
+                        encode_event_hit(ev.b, ev.c as u16, &mut self.ev_buf)
+                    } else {
+                        encode_event_health(ev.b as u16, ev.c as u16, &mut self.ev_buf)
+                    };
+                    match enc {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_DEATH => {
+                    // Broadcast, like a door: a death is a world fact, and
+                    // it is what a kill feed is made of. Not AOI'd — the
+                    // reference frames' feed reports kills nobody saw.
+                    match encode_event_death(ev.a, ev.b, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    // Nothing re-derives a death: it is an
+                                    // instant, not a state. The resync
+                                    // still costs nothing and repairs
+                                    // whatever else that client lost.
                                     self.clients[slot].ev_resync();
                                     ShardStats::bump(&stats.ev_resyncs);
                                 }

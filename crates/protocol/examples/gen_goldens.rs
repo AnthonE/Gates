@@ -10,12 +10,13 @@ use protocol::{
     encode_action_cancel, encode_action_craft, encode_action_deploy, encode_action_feed,
     encode_action_lock, encode_action_place, encode_action_upgrade, encode_action_use, encode_chat,
     encode_event_build_refused, encode_event_catalog, encode_event_chat, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_deploy_defs,
+    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_gather, encode_event_inv, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_sync, encode_event_recipes, encode_event_removed,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_weak_mark,
-    encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
+    encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
+    encode_event_inv, encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_weak_mark, encode_hello, encode_input, encode_refuse,
+    encode_snapshot, encode_welcome, goldens,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -181,4 +182,16 @@ fn main() {
     let (from, global, text) = goldens::event_chat();
     let len = encode_event_chat(from, global, &text, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[40], &buf[..len]);
+
+    let (victim, damage) = goldens::event_hit();
+    let len = encode_event_hit(victim, damage, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[41], &buf[..len]);
+
+    let (hp, max) = goldens::event_health();
+    let len = encode_event_health(hp, max, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[42], &buf[..len]);
+
+    let (victim, killer) = goldens::event_death();
+    let len = encode_event_death(victim, killer, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[43], &buf[..len]);
 }

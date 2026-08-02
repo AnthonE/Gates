@@ -75,6 +75,12 @@ pub const APPLIED_PIECE_REMOVED: u32 = 1 << 19;
 pub const APPLIED_DEPLOY_REMOVED: u32 = 1 << 20;
 /// A chat line arrived (`pop_chat` has it).
 pub const APPLIED_CHAT: u32 = 1 << 21;
+/// Own health changed (`EventMsg::Health`).
+pub const APPLIED_HEALTH: u32 = 1 << 22;
+/// This client's swing landed (`EventMsg::Hit`).
+pub const APPLIED_HIT: u32 = 1 << 23;
+/// Someone died (`EventMsg::Death`) — broadcast, not necessarily you.
+pub const APPLIED_DEATH: u32 = 1 << 24;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -437,6 +443,23 @@ pub struct ClientCore {
     chats: [(u32, bool, ChatText); CHAT_RING],
     chat_head: usize,
     chat_len: usize,
+    /// Own health, absolute as the server last stated it. `hp_max` 0 means
+    /// no `Health` has arrived yet — a shard whose content disarms combat
+    /// never sends one, and the HUD must not draw an empty bar for a
+    /// player who simply cannot be hurt.
+    pub hp: u16,
+    pub hp_max: u16,
+    /// Own landed hits, oldest first: damage dealt. The hitmarker ring.
+    hits: [u16; TOAST_RING],
+    hit_head: usize,
+    hit_len: usize,
+    /// Deaths as broadcast, oldest first: (victim, killer) — the kill feed.
+    deaths: [(u32, u32); TOAST_RING],
+    death_head: usize,
+    death_len: usize,
+    /// Killer of the death `pop_death` returned last, so one pop hands the
+    /// caller a whole line (the `removed_key`/`removed_info` pattern).
+    pub last_death_killer: u32,
     /// The placed-piece mirror (address-keyed; the renderer's truth).
     pub pieces: PieceSet,
     /// Piece records the last `on_stream` call added or replaced.
@@ -521,6 +544,15 @@ impl ClientCore {
             chats: [(0, false, ChatText::EMPTY); CHAT_RING],
             chat_head: 0,
             chat_len: 0,
+            hp: 0,
+            hp_max: 0,
+            hits: [0; TOAST_RING],
+            hit_head: 0,
+            hit_len: 0,
+            deaths: [(0, 0); TOAST_RING],
+            death_head: 0,
+            death_len: 0,
+            last_death_killer: 0,
             refusal_head: 0,
             refusal_len: 0,
             pieces: PieceSet::new(),
@@ -842,6 +874,35 @@ impl ClientCore {
                     flags |= APPLIED_DEPLOYS;
                 }
             }
+            EventMsg::Health { hp, max } => {
+                // Absolute, so a missed one repairs itself. Max travels
+                // with every reading: the bar never has to guess its
+                // denominator from content it does not have.
+                self.hp = hp;
+                self.hp_max = max;
+                flags |= APPLIED_HEALTH;
+            }
+            EventMsg::Hit { victim, damage } => {
+                let _ = victim; // v0 marks the hit, not who took it
+                if self.hit_len == TOAST_RING {
+                    self.hit_head = (self.hit_head + 1) % TOAST_RING;
+                    self.hit_len -= 1;
+                }
+                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = damage;
+                self.hit_len += 1;
+                flags |= APPLIED_HIT;
+            }
+            EventMsg::Death { victim, killer } => {
+                // Drop-oldest, like chat: a feed that stalls on the oldest
+                // kill is worse than one that loses it.
+                if self.death_len == TOAST_RING {
+                    self.death_head = (self.death_head + 1) % TOAST_RING;
+                    self.death_len -= 1;
+                }
+                self.deaths[(self.death_head + self.death_len) % TOAST_RING] = (victim, killer);
+                self.death_len += 1;
+                flags |= APPLIED_DEATH;
+            }
             EventMsg::Chat { from, global, text } => {
                 // Drop-oldest: a chat log that stalls on the oldest line
                 // is worse than one that loses it.
@@ -1027,6 +1088,30 @@ impl ClientCore {
         self.build_refusal_head = (self.build_refusal_head + 1) % REFUSAL_RING;
         self.build_refusal_len -= 1;
         Some(r)
+    }
+
+    /// Oldest buffered hitmarker, if any: damage this client's swing dealt.
+    pub fn pop_hit(&mut self) -> Option<u16> {
+        if self.hit_len == 0 {
+            return None;
+        }
+        let d = self.hits[self.hit_head];
+        self.hit_head = (self.hit_head + 1) % TOAST_RING;
+        self.hit_len -= 1;
+        Some(d)
+    }
+
+    /// Oldest buffered death, if any: the victim's id, with the killer
+    /// left in `last_death_killer` so one pop yields a whole feed line.
+    pub fn pop_death(&mut self) -> Option<u32> {
+        if self.death_len == 0 {
+            return None;
+        }
+        let (victim, killer) = self.deaths[self.death_head];
+        self.death_head = (self.death_head + 1) % TOAST_RING;
+        self.death_len -= 1;
+        self.last_death_killer = killer;
+        Some(victim)
     }
 
     /// Oldest buffered gather toast, if any: (item index, units added).

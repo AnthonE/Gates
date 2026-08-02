@@ -93,6 +93,10 @@ const REQUIRED = [
   "client_action_chat",
   "client_chat_pop",
   "client_chat_ptr",
+  "client_health",
+  "client_hit_pop",
+  "client_death_pop",
+  "client_death_killer",
 ];
 
 let failed = 0;
@@ -144,7 +148,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 10, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 11, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
@@ -155,7 +159,7 @@ check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 // either ship them to every public shard or withhold them from the capture
 // harness — and neither shows up anywhere else in this suite.
 const welcomeGolden = readFileSync(
-  join(root, "crates/protocol/tests/golden/v10_welcome.bin"),
+  join(root, "crates/protocol/tests/golden/v11_welcome.bin"),
 );
 const parseHandshake = (bytes) => {
   // ptr first, buffer second: a getter may grow memory and detach a
@@ -459,6 +463,49 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   check(view[5] === 2, `length mismatch: ${view[5]}`);
   check(view[6] === 0x68 && view[7] === 0x69, "the line's bytes drifted");
   check(ex.client_chat_pop() === 0, "the ring must be empty again");
+}
+
+// The combat lane through the raw C ABI (wire v11). Hand-framed, so this
+// asserts the client's decoder and not the server's encoder: a layout
+// that drifted on either side shows up as a wrong value here, and
+// `test_protocol_golden` holds the byte shape these frames copy.
+{
+  const frame = (parts) => {
+    const bits = [];
+    for (const [v, n] of parts) for (let i = 0; i < n; i++) bits.push((v >>> i) & 1);
+    const out = new Uint8Array(Math.ceil(bits.length / 8));
+    bits.forEach((b, i) => { if (b) out[i >> 3] |= 1 << (i & 7); });
+    return out;
+  };
+  check(ex.client_health() === 0, "no health reading has arrived yet");
+
+  // Health: kind EVENT(5) · sub 25 · hp 25 · max 100.
+  let f = frame([[5, 3], [25, 5], [25, 16], [100, 16]]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === 4194304, "health must apply with the HEALTH flag");
+  check((ex.client_health() >>> 0) === ((25 << 16) | 100), "health readout mismatch");
+
+  // Hit: kind EVENT(5) · sub 24 · victim 4242 · damage 25.
+  check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring starts empty");
+  f = frame([[5, 3], [24, 5], [4242, 32], [25, 16]]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === 8388608, "a hit must apply with the HIT flag");
+  check((ex.client_hit_pop() >>> 0) === 25, "hitmarker damage mismatch");
+  check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring must drain");
+
+  // Death: kind EVENT(5) · sub 26 · victim 4242 · killer 7.
+  f = frame([[5, 3], [26, 5], [4242, 32], [7, 32]]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === 16777216, "a death must apply with the DEATH flag");
+  check((ex.client_death_pop() >>> 0) === 4242, "death victim mismatch");
+  check((ex.client_death_killer() >>> 0) === 7, "death killer mismatch");
+  check(ex.client_death_pop() >>> 0 === 0xffffffff, "the death ring must drain");
+
+  // hp > max is a server bug, not a bar to render: refused, error bit set.
+  f = frame([[5, 3], [25, 5], [101, 16], [100, 16]]);
+  writeIn(f);
+  check((ex.client_on_stream(f.length) & 0x80000000) !== 0, "hp past max must be refused");
+  check((ex.client_health() >>> 0) === ((25 << 16) | 100), "a refused reading must not land");
 }
 
 // Garbage on the stream must be refused with the error bit, not trap.

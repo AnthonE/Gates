@@ -9,8 +9,10 @@ use sim_core::bots::bot_frame;
 use sim_core::build::{
     BuildContent, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, MAT_METAL, MAT_STONE, MAT_WOOD,
 };
+use sim_core::combat::CombatContent;
 use sim_core::craft::CraftContent;
 use sim_core::gather::{GatherContent, ItemStack};
+use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::MAX_PLAYERS;
 use sim_core::rng::Pcg32;
 use sim_core::world::{Command, World};
@@ -124,6 +126,9 @@ fn test_alloc_zero() {
     world.gather = GatherContent::probe_fixture();
     world.craft = CraftContent::probe_fixture();
     world.build = BuildContent::probe_fixture();
+    // The combat fixture puts the target scan, the damage write, and the
+    // death/respawn path inside the counted window (see the duel below).
+    world.combat = CombatContent::probe_fixture();
     let mut rng = Pcg32::new(0xA110C, 3);
     let mut yaws = [0u16; MAX_PLAYERS];
 
@@ -143,6 +148,16 @@ fn test_alloc_zero() {
         item: 1,
         count: 60_000,
     };
+    // The duel: bots 3 and 4, armed in the hand they hold. Deliberately
+    // not bot 1 — the builder must keep its stock and its own cell, and a
+    // death would empty both. Their frames are overridden every counted
+    // tick (below) to stand still and swing, so the pair stay coincident
+    // and trade until one dies: three fixture hits at 34, a swing every
+    // 38 ticks, so the kill lands around tick 76 of the 300 — the assert
+    // at the end is what holds that claim, not this comment.
+    for i in [2usize, 3] {
+        world.players[i].inv[0] = ItemStack { item: 0, count: 1 };
+    }
     // Bot 1's own build cell, so place and upgrade always have reach.
     let builder_cell = |w: &World| {
         let b = &w.players[0].body;
@@ -168,13 +183,31 @@ fn test_alloc_zero() {
     let rung_count = |w: &World| w.pieces.entries().iter().filter(|p| p.row == 4).count();
     let placed_before = world.pieces.len();
     let rung_before = rung_count(&world);
+    // Stand bot 4 inside bot 3 as the window opens: point-blank has no
+    // bearing to test, so the aim cone cannot make this arrangement flaky.
+    world.players[3].body = world.players[2].body;
+    let deaths_before = world.players[2].deaths + world.players[3].deaths;
     for t in 0..300u16 {
-        let cmds = tick_cmds(
+        let mut cmds = tick_cmds(
             &mut rng,
             &mut yaws,
             t.wrapping_add(30),
             builder_cell(&world),
         );
+        for i in [2usize, 3] {
+            cmds[i] = Command::Input {
+                id: i as u32 + 1,
+                frame: InputFrame {
+                    seq: t,
+                    buttons: BTN_PRIMARY,
+                    yaw: 0,
+                    pitch: 128,
+                    move_x: 0,
+                    move_z: 0,
+                    sel: 0,
+                },
+            };
+        }
         world.tick(&cmds);
     }
     // The hash path must be allocation-free too.
@@ -197,6 +230,11 @@ fn test_alloc_zero() {
         rung_count(&world) > rung_before,
         "nothing reached the fixture's stone rung inside the counted window — \
          the upgrade write path fell out of the alloc gate"
+    );
+    assert!(
+        world.players[2].deaths + world.players[3].deaths > deaths_before,
+        "nobody died inside the counted window — the damage, death and \
+         respawn paths fell out of the alloc gate"
     );
     assert_eq!(
         (alloc_delta, free_delta),

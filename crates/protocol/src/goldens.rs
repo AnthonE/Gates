@@ -26,48 +26,51 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 41] = [
-    "v10_input_acks_only.bin",
-    "v10_input_full.bin",
-    "v10_snapshot_keyframe.bin",
-    "v10_snapshot_delta.bin",
-    "v10_snapshot_cap.bin",
-    "v10_hello.bin",
-    "v10_welcome.bin",
-    "v10_refuse_full.bin",
-    "v10_event_gather.bin",
-    "v10_event_inv.bin",
-    "v10_event_slot_harvested.bin",
-    "v10_event_slot_respawned.bin",
-    "v10_event_slot_sync.bin",
-    "v10_event_catalog.bin",
-    "v10_event_weak_mark.bin",
-    "v10_event_craft_q.bin",
-    "v10_event_craft_done.bin",
-    "v10_event_craft_refused.bin",
-    "v10_event_recipes.bin",
-    "v10_action_craft.bin",
-    "v10_action_cancel.bin",
-    "v10_action_place.bin",
-    "v10_event_piece_placed.bin",
-    "v10_event_piece_sync.bin",
-    "v10_event_build_refused.bin",
-    "v10_event_piece_defs.bin",
-    "v10_action_deploy.bin",
-    "v10_action_feed.bin",
-    "v10_event_deploy_placed.bin",
-    "v10_event_deploy_sync.bin",
-    "v10_event_deploy_refused.bin",
-    "v10_event_deploy_defs.bin",
-    "v10_event_piece_removed.bin",
-    "v10_event_deploy_removed.bin",
-    "v10_event_stock.bin",
-    "v10_action_use.bin",
-    "v10_action_lock.bin",
-    "v10_event_door.bin",
-    "v10_action_upgrade.bin",
-    "v10_chat.bin",
-    "v10_event_chat.bin",
+pub const FIXTURES: [&str; 44] = [
+    "v11_input_acks_only.bin",
+    "v11_input_full.bin",
+    "v11_snapshot_keyframe.bin",
+    "v11_snapshot_delta.bin",
+    "v11_snapshot_cap.bin",
+    "v11_hello.bin",
+    "v11_welcome.bin",
+    "v11_refuse_full.bin",
+    "v11_event_gather.bin",
+    "v11_event_inv.bin",
+    "v11_event_slot_harvested.bin",
+    "v11_event_slot_respawned.bin",
+    "v11_event_slot_sync.bin",
+    "v11_event_catalog.bin",
+    "v11_event_weak_mark.bin",
+    "v11_event_craft_q.bin",
+    "v11_event_craft_done.bin",
+    "v11_event_craft_refused.bin",
+    "v11_event_recipes.bin",
+    "v11_action_craft.bin",
+    "v11_action_cancel.bin",
+    "v11_action_place.bin",
+    "v11_event_piece_placed.bin",
+    "v11_event_piece_sync.bin",
+    "v11_event_build_refused.bin",
+    "v11_event_piece_defs.bin",
+    "v11_action_deploy.bin",
+    "v11_action_feed.bin",
+    "v11_event_deploy_placed.bin",
+    "v11_event_deploy_sync.bin",
+    "v11_event_deploy_refused.bin",
+    "v11_event_deploy_defs.bin",
+    "v11_event_piece_removed.bin",
+    "v11_event_deploy_removed.bin",
+    "v11_event_stock.bin",
+    "v11_action_use.bin",
+    "v11_action_lock.bin",
+    "v11_event_door.bin",
+    "v11_action_upgrade.bin",
+    "v11_chat.bin",
+    "v11_event_chat.bin",
+    "v11_event_hit.bin",
+    "v11_event_health.bin",
+    "v11_event_death.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -534,6 +537,23 @@ pub fn chat() -> (ChatText, bool) {
 /// The S→C relay of that line, on the global channel from player 7.
 pub fn event_chat() -> (u32, bool, ChatText) {
     (7, true, chat_line())
+}
+
+/// A landed melee hit: the wooden spear's 25 on another player.
+pub fn event_hit() -> (u32, u16) {
+    (4_242, 25)
+}
+
+/// A health readout partway down the shipped 100-hp bar — three spear
+/// hits taken, one left before the fourth ends it.
+pub fn event_health() -> (u16, u16) {
+    (25, 100)
+}
+
+/// A kill: victim and killer, both real ids, neither zero (a zero would
+/// let a decoder's default pass for a value).
+pub fn event_death() -> (u32, u32) {
+    (4_242, 7)
 }
 
 /// A refusal carrying `sim_core::deploy::REFUSE_D_CLAIM`.

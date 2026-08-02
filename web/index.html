@@ -190,6 +190,44 @@
         font: 12px monospace;
         outline: none;
       }
+      /* Vitals — bottom-right above the hotbar, the place the reference
+         frames put them. One row for now (health); food and water land
+         with the hunger timer. */
+      #vitals {
+        position: fixed;
+        right: 16px;
+        bottom: 92px;
+        display: none;
+        z-index: 5;
+        pointer-events: none;
+        font: 13px monospace;
+        color: #e8efe0;
+        text-shadow: 0 1px 2px #000;
+      }
+      .vrow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+      .vbar {
+        position: relative;
+        width: 132px;
+        height: 10px;
+        background: #1a1d18cc;
+        border: 1px solid #000a;
+      }
+      .vfill {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        background: #c8402f;
+      }
+      .vnum {
+        min-width: 30px;
+        text-align: right;
+      }
       #toasts {
         position: fixed;
         right: 24px;
@@ -330,6 +368,7 @@
     <div id="build"></div>
     <div id="craftq"></div>
     <div id="craft"></div>
+    <div id="vitals"></div>
     <div id="toasts"></div>
     <div id="chatlog"></div>
     <div id="chat">

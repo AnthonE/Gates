@@ -338,6 +338,8 @@ mod tests {
             ws_hits: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
             craft_done_at: 0,
+            hp: 0,
+            deaths: 0,
         };
         for (i, &(item, count)) in inv0.iter().enumerate() {
             p.inv[i] = ItemStack { item, count };

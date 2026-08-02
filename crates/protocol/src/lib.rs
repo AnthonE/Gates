@@ -34,14 +34,14 @@ use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     decode_event, encode_event_build_refused, encode_event_catalog, encode_event_chat,
-    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_gather, encode_event_inv,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, CATALOG_BATCH,
-    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
-    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_deploy_sync, encode_event_door, encode_event_gather, encode_event_health,
+    encode_event_hit, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_weak_mark, EventMsg, InvSlot,
+    ItemCatalog, CATALOG_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
+    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -75,8 +75,16 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// last code the 3-bit kind field had left) and the chat event subtype
 /// S→C — chat is player-authored text, not a sim command, so it gets a
 /// kind of its own rather than an action subtype it could not have had
-/// anyway. Fixtures are keyed `v10_*`.
-pub const PROTO_VER: u16 = 10;
+/// anyway. v11 added the combat lane: three event subtypes (hit, health,
+/// death) for melee v0 — no datagram layout moved, because a player's hp
+/// is not on the snapshot. That is deliberate and it is the cheap half of
+/// the choice: hp is an own-fact for the player it belongs to and a
+/// one-shot broadcast when it reaches zero, so it rides the reliable lane
+/// at the moment it changes instead of costing every entity record a
+/// field on every tick. When remote health bars or a downed state need it
+/// continuously, that is a snapshot-widening bump of its own, not a
+/// retrofit of this one. Fixtures are keyed `v11_*`.
+pub const PROTO_VER: u16 = 11;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;

@@ -655,6 +655,48 @@ pub extern "C" fn client_craft_pop() -> u32 {
     )
 }
 
+/// Own health as `hp << 16 | max`. `max == 0` means no health reading has
+/// arrived — a shard whose content disarms combat never sends one, and the
+/// HUD reads that as "no vitals to draw", not as "dead".
+#[no_mangle]
+pub extern "C" fn client_health() -> u32 {
+    with(|b| {
+        b.core
+            .as_ref()
+            .map(|c| ((c.hp as u32) << 16) | c.hp_max as u32)
+            .unwrap_or(0)
+    })
+}
+
+/// Oldest buffered hitmarker (damage this client's swing dealt);
+/// `u32::MAX` when none.
+#[no_mangle]
+pub extern "C" fn client_hit_pop() -> u32 {
+    with(|b| match b.core.as_mut().and_then(|c| c.pop_hit()) {
+        Some(damage) => damage as u32,
+        None => u32::MAX,
+    })
+}
+
+/// Oldest buffered death's victim id; `u32::MAX` when none. The killer of
+/// the death this call returned is then in `client_death_killer` — one pop
+/// hands the caller a whole feed line.
+#[no_mangle]
+pub extern "C" fn client_death_pop() -> u32 {
+    with(|b| {
+        b.core
+            .as_mut()
+            .and_then(|c| c.pop_death())
+            .unwrap_or(u32::MAX)
+    })
+}
+
+/// Killer of the death `client_death_pop` returned last.
+#[no_mangle]
+pub extern "C" fn client_death_killer() -> u32 {
+    with(|b| b.core.as_ref().map(|c| c.last_death_killer).unwrap_or(0))
+}
+
 /// Oldest buffered craft refusal reason; `u32::MAX` when none.
 #[no_mangle]
 pub extern "C" fn client_craft_refusal_pop() -> u32 {

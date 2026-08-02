@@ -821,6 +821,45 @@ const seenA = await waitForRemote(A, B.playerId); // A sees B
 const seenB = await waitForRemote(B, A.playerId); // B sees A
 console.log(`  mutual AOI: A sees ${B.playerId}, B sees ${A.playerId}`);
 
+// --- vitals: the bar the shard states at the door --------------------------
+// Assertion 2a — a fresh spawn's health reaches the DOM, and the number it
+// shows is the one in `content/balance.toml`, read here rather than typed:
+// the whole chain content → bake → sim → wire v11 → wasm → HUD is what this
+// asserts, and a gate that hardcoded 100 would keep passing after a balance
+// pass moved it. Observable state, polled — never an elapsed-ms bar.
+{
+  const balance = fs.readFileSync(path.join(root, "content/balance.toml"), "utf8");
+  const wantHp = Number(/^player_hp\s*=\s*(\d+)/m.exec(balance)?.[1]);
+  if (!Number.isFinite(wantHp) || wantHp <= 0) {
+    fail("content/balance.toml states no player_hp — the vitals assertion cannot run");
+  }
+  const vitals = (tab) =>
+    tab.page.evaluate(() => {
+      const el = document.getElementById("vitals");
+      return {
+        shown: !!el && el.style.display === "block",
+        text: el ? el.textContent.trim() : "",
+      };
+    });
+  for (const tab of [A, B]) {
+    let v = await vitals(tab);
+    for (let i = 0; i < 40 && !v.shown; i++) {
+      await tab.page.waitForTimeout(250);
+      v = await vitals(tab);
+    }
+    if (!v.shown) {
+      fail(`tab ${tab.playerId}: the vitals stack never appeared — no health reached the HUD`);
+    }
+    if (v.text !== String(wantHp)) {
+      fail(
+        `tab ${tab.playerId}: vitals read "${v.text}", content says ${wantHp} — ` +
+          "the number the shard plays is not the number the data declares",
+      );
+    }
+  }
+  console.log(`  vitals: both tabs read ${wantHp} hp, straight from content/balance.toml`);
+}
+
 // --- chat, part 1: heard at the spawn --------------------------------------
 // Assertion 2 — a line typed into the real composer in one browser reaches
 // the other browser's log. Driven entirely through the UI (T, type, Enter)

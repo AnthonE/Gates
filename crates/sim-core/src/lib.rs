@@ -8,6 +8,7 @@
 pub mod bots;
 pub mod build;
 pub mod collide;
+pub mod combat;
 pub mod craft;
 pub mod deploy;
 pub mod fmath;

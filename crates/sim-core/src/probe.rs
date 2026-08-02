@@ -6,6 +6,8 @@
 //! (TERRAIN.md §0).
 
 use crate::bots::bot_frame;
+use crate::gather::ItemStack;
+use crate::limits::HOTBAR_SLOTS;
 use crate::rng::{splitmix64, Pcg32};
 use crate::terrain::{self, ScatterTable};
 use crate::world::{Command, World};
@@ -214,6 +216,65 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                     Command::Input { id: 2, frame: f2 },
                 ]);
             }
+        }
+        h.update(&world.state_hash().to_le_bytes());
+    }
+    h.digest()
+}
+
+/// Combat parity: `sequences` independent three-bot brawls, each a fresh
+/// world × `ticks` ticks, folded into one digest — the melee half of
+/// `test_parity_wasm`.
+///
+/// It is a probe of its own rather than three more lines inside
+/// `probe_parity` because the two want opposite worlds. `probe_parity`'s
+/// bots must stay alive to fill inventories, stand pieces, feed a hearth
+/// and reach the upgrade rung; a brawl empties their pockets every few
+/// seconds and would quietly hollow out the coverage that probe exists
+/// for. So combat gets a world shaped for it: `dev_spawn` pinned to bot
+/// 1's own ring point, which puts all three on the same sand at join —
+/// and puts every respawn back there too, so the fight restarts instead
+/// of ending — and a weapon in every hotbar slot, so the held-item read
+/// is armed whichever slot a bot's wandering `sel` lands on. Hits, kills,
+/// respawns and the whiff scan all ride the surface, native and wasm.
+#[no_mangle]
+pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> u64 {
+    let mut h = Xxh3::new();
+    for s in 0..sequences {
+        let seq_seed = splitmix64(master_seed ^ (s as u64));
+        let mut world = World::new(seq_seed);
+        world.gather = crate::gather::GatherContent::probe_fixture();
+        world.combat = crate::combat::CombatContent::probe_fixture();
+        world.dev_spawn = Some(world.spawn_pos(1));
+        world.tick(&[
+            Command::Join { id: 1 },
+            Command::Join { id: 2 },
+            Command::Join { id: 3 },
+        ]);
+        // Fixture arrangement, like the wire tests' server-side grants:
+        // a weapon in hand whichever hotbar slot the bot frame selects.
+        // Item 1 (12 damage) on the odd slots and item 0 (34) on the even
+        // ones, so both a long trade and a three-hit kill are reachable.
+        for p in world.players.iter_mut().take(3) {
+            for (slot, s) in p.inv.iter_mut().take(HOTBAR_SLOTS).enumerate() {
+                *s = ItemStack {
+                    item: (slot % 2) as u16,
+                    count: 1,
+                };
+            }
+        }
+        let mut rng = Pcg32::new(seq_seed, 11);
+        let mut yaws = [0u16; 3];
+        for t in 0..ticks {
+            let f1 = bot_frame(&mut rng, yaws[0], t as u16);
+            let f2 = bot_frame(&mut rng, yaws[1], t as u16);
+            let f3 = bot_frame(&mut rng, yaws[2], t as u16);
+            yaws = [f1.yaw, f2.yaw, f3.yaw];
+            world.tick(&[
+                Command::Input { id: 1, frame: f1 },
+                Command::Input { id: 2, frame: f2 },
+                Command::Input { id: 3, frame: f3 },
+            ]);
         }
         h.update(&world.state_hash().to_le_bytes());
     }
