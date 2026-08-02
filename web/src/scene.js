@@ -824,6 +824,25 @@ export class GameScene {
    * the toggle moved. Same set for both states, so the ratio is honest: it
    * asks whether what the toggle added was detail or a wash.
    *
+   * Since materials v3 it carries a SECOND, parallel track with its own mask,
+   * because luma cannot see a luminance-neutral octave at all. Every octave
+   * this material had before the tint multiplied albedo by a scalar, and a
+   * scalar multiply leaves chromaticity exactly where it found it — so the
+   * luma track above is blind to hue, and the tint octave is deliberately
+   * blind to value (`materials.js`, `TINT_LUMA_NEUTRAL`). Neither track can
+   * score the other's octave, which is the point of having two.
+   *
+   * The chroma track masks on |Δchromaticity| > `minChroma` instead of
+   * |Δluma| > `minDelta`, and over THAT mask reports:
+   *   chromaOn/chromaOff  the RMS spread of the chromaticity cloud per state
+   *   chromaShift         how far the cloud's centre moved
+   *   chromaUp/chromaDown the signed split on the red-chromaticity axis
+   *   chromaMoved         the mask's own size
+   * plus `lumaOn`/`lumaOff`, the whole frame's mean luma in each state, over
+   * every scored pixel rather than either mask. Together they separate three
+   * things one number blurs: a texture (spread up, centre still), a cast
+   * (centre moves), and an exposure slip (mean luma moves).
+   *
    * Views are (eye, target) pairs in world space, resolved by the caller
    * because this class holds the camera and not the terrain. It moves the
    * camera, which surfaceProbe does not, so the sky dome rides along and
@@ -831,7 +850,7 @@ export class GameScene {
    *
    * Allocates and renders 3N frames; never call it from the RAF path.
    */
-  contrastProbe(views, uniformName, minDelta) {
+  contrastProbe(views, uniformName, minDelta, minChroma = 0) {
     const u = this._terrainUniforms;
     if (!u || !u[uniformName]) return null;
     const knob = u[uniformName];
@@ -869,6 +888,28 @@ export class GameScene {
       let mask = 0;
       let cOn = 0;
       let cOff = 0;
+      // The chroma track: its OWN mask, and moments over it. `luma` above
+      // cannot see the difference between a surface that gained a texture and
+      // one that gained a brightness pattern — multiplying an RGB triple by a
+      // scalar leaves its chromaticity exactly where it was — and it equally
+      // cannot see an octave that moved hue at constant brightness, which is
+      // what the tint is. Chromaticity is `(r, g) / (r + g + b)`, and the +1
+      // is for the black pixels a sky or a shadow contributes.
+      let cMask = 0;
+      let cUp = 0;
+      let cDown = 0;
+      let xOn = 0;
+      let yOn = 0;
+      let xxOn = 0;
+      let yyOn = 0;
+      let xOff = 0;
+      let yOff = 0;
+      let xxOff = 0;
+      let yyOff = 0;
+      // Whole-frame luma, both states, summed over every scored pixel and not
+      // just the mask — see `lumaOn`/`lumaOff` below.
+      let lOn = 0;
+      let lOff = 0;
       // Stop one row and one column short: the contrast measure reads the
       // right and lower neighbour of every pixel it scores.
       for (let y = 0; y < h - 1; y++) {
@@ -877,8 +918,37 @@ export class GameScene {
           const a = luma(on, p);
           const b = luma(off, p);
           const c = luma(control, p);
+          lOn += a;
+          lOff += b;
           const cd = a - c;
           if (cd > minDelta || cd < -minDelta) noise++;
+          // The chroma track, scored over every pixel and masked on its own
+          // threshold — it cannot ride the luma mask, because the octave it
+          // exists for moves no luma and would find that mask empty.
+          if (minChroma > 0) {
+            const sA = on[p] + on[p + 1] + on[p + 2] + 1;
+            const sB = off[p] + off[p + 1] + off[p + 2] + 1;
+            const sC = control[p] + control[p + 1] + control[p + 2] + 1;
+            const xA = on[p] / sA;
+            const yA = on[p + 1] / sA;
+            const xB = off[p] / sB;
+            const yB = off[p + 1] / sB;
+            if (Math.hypot(xA - control[p] / sC, yA - control[p + 1] / sC) > minChroma) noise++;
+            const dx = xA - xB;
+            if (Math.hypot(dx, yA - yB) > minChroma) {
+              cMask++;
+              if (dx > 0) cUp++;
+              else if (dx < 0) cDown++;
+              xOn += xA;
+              yOn += yA;
+              xxOn += xA * xA;
+              yyOn += yA * yA;
+              xOff += xB;
+              yOff += yB;
+              xxOff += xB * xB;
+              yyOff += yB * yB;
+            }
+          }
           const d = a - b;
           if (d > minDelta) up++;
           else if (d < -minDelta) down++;
@@ -896,6 +966,15 @@ export class GameScene {
         }
       }
       const scored = (w - 1) * (h - 1);
+      // Spread, not range: the RMS deviation of the chromaticity cloud, which
+      // is what a field that moves hue raises and a field that moves only
+      // brightness does not.
+      const spread = (sx, sy, sxx, syy, n) => {
+        if (n <= 1) return 0;
+        const mx = sx / n;
+        const my = sy / n;
+        return Math.sqrt(Math.max(0, sxx / n - mx * mx) + Math.max(0, syy / n - my * my));
+      };
       samples.push({
         label: view.label || "",
         scored,
@@ -911,6 +990,28 @@ export class GameScene {
         contrastOn: mask > 0 ? cOn / (2 * mask) : 0,
         contrastOff: mask > 0 ? cOff / (2 * mask) : 0,
         contrastRatio: cOff > 0 ? cOn / cOff : 0,
+        // …and the chroma track, over its own mask. `chromaShift` is how far
+        // the cloud's CENTRE moved, which separates "the surface gained colour
+        // variation" from "the frame was tinted": a cast moves the centre and
+        // leaves the spread, a texture does the opposite.
+        chromaMoved: cMask,
+        chromaMovedFraction: cMask / scored,
+        chromaUpFraction: cUp / scored,
+        chromaDownFraction: cDown / scored,
+        chromaOn: spread(xOn, yOn, xxOn, yyOn, cMask),
+        chromaOff: spread(xOff, yOff, xxOff, yyOff, cMask),
+        chromaRatio:
+          spread(xOff, yOff, xxOff, yyOff, cMask) > 0
+            ? spread(xOn, yOn, xxOn, yyOn, cMask) / spread(xOff, yOff, xxOff, yyOff, cMask)
+            : 0,
+        chromaShift:
+          cMask > 0 ? Math.hypot(xOn / cMask - xOff / cMask, yOn / cMask - yOff / cMask) : 0,
+        // The frame's own mean luma, both states, over the whole scored area
+        // rather than the mask — the claim this octave makes is that it
+        // changes the ground's VARIANCE and not its average, and an average
+        // taken only over the pixels that moved cannot test that.
+        lumaOn: lOn / scored,
+        lumaOff: lOff / scored,
       });
     }
     knob.value = keepVal;
@@ -1509,6 +1610,9 @@ export class GameScene {
         // — or a merge that lands it at 0 — is a gate failure and not an
         // invisible loss of the surface.
         grain: this._terrainUniforms ? this._terrainUniforms.uGrain.value : null,
+        // The fourth pass's handle, read off the live uniform for the same
+        // reason: it ships armed or the ground goes back to four flat hues.
+        tint: this._terrainUniforms ? this._terrainUniforms.uTint.value : null,
         roughness: m ? m.roughness : null,
         // What the shipped ground program costs per fragment and how big its
         // source is — counted, so quotable anywhere (the fill times next to

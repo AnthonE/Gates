@@ -337,6 +337,119 @@ const GRAIN_MIN_DIRECTIONAL = Number(process.env.BROWSER_SMOKE_GRAIN_MIN_DIR || 
 // aliases, which is the failure the cycles-per-pixel fade exists to prevent.
 const GRAIN_FAR_MAX_FRACTION = Number(process.env.BROWSER_SMOKE_GRAIN_FAR_MAX || 0.005);
 
+// --- the tint gate (DECISIONS.md §open, "materials v3") ---------------------
+// Assertions 15 and 15b share a blind spot, and it is the one the visual judge
+// wrote its gap 1 about. Both read LUMA. Every octave this material had before
+// the tint multiplied albedo by a scalar, and `k·(r,g,b)` has exactly the
+// chromaticity of `(r,g,b)` — so a ground that is one green at forty
+// brightnesses and a ground that is forty greens score the same moved
+// fraction, the same signed split, and the same neighbour contrast. Both
+// gates were green on all six frames a blind reader called "a single
+// untextured green sheet".
+//
+// So this one measures the chromaticity cloud instead: its RMS spread over
+// the pixels the toggle moved, in both states, plus how far its centre moved
+// and how far the whole frame's mean luma moved. Three numbers, three
+// different failures:
+//
+//   spread up      — the surface gained colour variation. This is the claim.
+//   centre still   — it is not a tint. A wash moves the centre and leaves the
+//                    spread; that is the failure this octave could most
+//                    plausibly be mistaken for.
+//   mean luma still— it is not an exposure slip, and the identities' authored
+//                    colours are still their MEANS. The deviation is signed
+//                    and added for exactly this reason, so the claim is
+//                    checkable rather than a comment.
+//
+// The two views are this octave's own, and NOT grain's, for a reason worth
+// stating because grain's pair is right there and was tried first:
+//
+//   near   grain's own arm's-length view (pitch −1.05 from eye height, so the
+//          ground in frame is 1–4 m off). This is where the tile octave lives
+//          and where the SPREAD claim is measured.
+//   level  a standing look, pitch −0.25, so the frame runs from ~3 m of
+//          ground to the fog line — the vantage a player actually spends the
+//          game in, and the one that would catch an octave that only exists
+//          under the camera's feet.
+//
+// Both views carry the "variance, not a wash" ceilings, and that pair is what
+// deleted a term from this octave rather than being written around it: two
+// cuts of the tint carried a coarse bias (macro, then meso) meant to break
+// tiling, and each read as a colour cast — six times more centre movement
+// than spread on the standing view. See `materials.js`, "what is NOT here".
+//
+// Grain's 60-m-up "far" view is deliberately absent. It is grain's CEILING —
+// an octave that survives out there aliases — and inverting it into a floor
+// for the tint measured 0.000% of the frame moved in both states: at 0.2 m/px
+// the tile has retired exactly as the sampling law says it must, and what a
+// coarse term would leave behind out there is the cast this octave no longer
+// has. Asserting on that view would be asserting on the instrument's noise
+// floor. Distance is the splat's job (macro drives `gmWob`, so a far hillside
+// changes IDENTITY rather than being one identity tinted) and the lighting
+// owner's.
+//
+// The probe's own two thresholds. The luma one is grain's and is here only to
+// keep the control render honest; the CHROMA one is what this octave is masked
+// on, because a luminance-neutral swing puts nothing in a luma mask. 0.004 of
+// chromaticity is what one 8-bit code step is worth on a mid-grey pixel
+// (1/255 over a sum of three channels near 128 × 3), so it is the finest
+// difference an 8-bit readback can be said to have resolved at all.
+const TINT_PROBE_MIN_DELTA = 6;
+const TINT_PROBE_MIN_CHROMA = 0.004;
+const TINT_NEAR_PITCH = GRAIN_NEAR_PITCH;
+const TINT_LEVEL_PITCH = -0.25;
+const TINT_VIEWS = [
+  { label: "near", yaw: 0, pitch: TINT_NEAR_PITCH },
+  { label: "level", yaw: 0, pitch: TINT_LEVEL_PITCH },
+];
+// How much of each frame the octave must reach, in CHROMATICALLY moved pixels.
+// Measured 76.4% near, 26.2% level — the floors sit ~2.5x under both.
+const TINT_NEAR_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_TINT_MIN || 0.3);
+const TINT_LEVEL_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_TINT_LEVEL_MIN || 0.1);
+// Signed both ways on the red-chromaticity axis, per view — the axis all four
+// deviations move along, warm at `+dev` and cool at `−dev`. A cast can only go
+// one way. Measured warm/cool 27.6/48.8 near and 12.6/13.6 level.
+const TINT_MIN_DIRECTIONAL = Number(process.env.BROWSER_SMOKE_TINT_MIN_DIR || 0.05);
+// THE assertion. 1.00 is what a scalar octave scores — the chromaticity of a
+// pixel is invariant under multiplication, so a brightness pattern cannot move
+// this at all except through the tone map's own curvature. Measured ×1.390
+// near and ×1.385 level, against an off-state spread that is not flat to begin
+// with (shadowed ground is bluer than lit ground under this rig, and the splat
+// already varies), so a 39% gain on top of all of that is the octave's alone.
+const TINT_MIN_CHROMA_RATIO = Number(process.env.BROWSER_SMOKE_TINT_MIN_CHROMA || 1.2);
+// …and the "variance, not a cast" ceiling: how far the chromaticity cloud's
+// CENTRE moved, as a share of the cloud's own width in the on state.
+//
+// The denominator is the width and not the width GAINED, and the difference
+// matters enough to write down because the gained form was tried first and
+// scored 1.03 against a 0.5 ceiling on ground that is demonstrably not a cast.
+// Chromaticity is `(r,g)/(r+g+b)` on tone-mapped 8-bit output — a nonlinear
+// coordinate — so the mean of the deviated frame is not the deviation of the
+// mean, and a strictly zero-mean, luminance-neutral swing still moves the
+// measured centre by a Jensen term. Measuring that term against the small
+// difference of two large spreads scores the curve, not the cast.
+//
+// Against the width it is a real bar, and it was exercised rather than argued:
+// compiling `gmTile` to a constant — a genuine cast of this octave's own
+// typical magnitude — measured a centre shift of 0.04020 against a spread of
+// 0.04162, a share of 0.966, and took the spread ratio DOWN to ×0.840 and the
+// cool side to 0.00% at the same time. Three of this assertion's measures fire
+// on one mutation. What ships measures 0.29 near and 0.12 level.
+const TINT_MAX_CENTRE_SHARE = Number(process.env.BROWSER_SMOKE_TINT_MAX_CENTRE || 0.5);
+// The whole frame's mean luma, in luma steps out of 255. Near zero for a
+// reason and not by luck: the deviations are luminance-neutral by
+// construction, so this octave has no brightness to spend. Measured 77.43 →
+// 77.17 near and 67.35 → 67.36 level, and the probe's own luma mask — six
+// steps, the one grain lives on — catches 0.000% of either frame.
+const TINT_MAX_MEAN_LUMA = Number(process.env.BROWSER_SMOKE_TINT_MAX_LUMA || 1.0);
+// Structural: how parallel an identity's chromatic deviation may be to its own
+// colour. 1.0 is exactly parallel, which is a brightness multiply wearing a
+// texture's name — the state this octave exists to leave. Measured: grass
+// +0.152 (the closest), rock −0.047, sand −0.036, litter −0.118. Exercised:
+// re-authoring all four as a fixed fraction of their own colour scores 1.0000
+// on every one and fails here.
+const TINT_MAX_DEV_PARALLEL = Number(process.env.BROWSER_SMOKE_TINT_MAX_PAR || 0.5);
+
 // --- the projection gate (DECISIONS.md §open, "materials v1", third pass) ---
 // 15b proves the surface has grain. It cannot prove the grain is on the
 // SURFACE: a world-XZ field stretched 1/u along a slope has exactly the same
@@ -485,14 +598,20 @@ const DEPTH_FETCH_BUDGET = Number(process.env.BROWSER_SMOKE_DEPTH_FETCHES || 24)
 // ~18% over, which survives a three minor bump and still catches a program
 // that doubled.
 const TERRAIN_FRAGMENT_BUDGET = Number(process.env.BROWSER_SMOKE_FRAG_CHARS || 96000);
-// Noise sample sites per shaded ground fragment: 6 today — three field octaves
-// plus the grain octave's three triplanar taps — where materials v1 paid 4 on
-// one world-XZ tap. Each site is four `gmHash` evaluations, so this is the
-// arithmetic axis the ground's shading actually lives on, and it is the axis
-// `NOW.md` item 1 says to price the projection in ("sample sites and program
-// chars — not in ms") after six cost-probe runs read five of six the wrong
-// sign. The cap is one octave of headroom over what ships and fails a program
-// that went triplanar on the whole field, which would be 12.
+// Noise sample sites per shaded ground fragment: 7 today — three field octaves,
+// the grain octave's three triplanar taps, and materials v3's one tile tap —
+// where materials v1 paid 4 on one world-XZ tap. Each site is four `gmHash`
+// evaluations, so this is the arithmetic axis the ground's shading actually
+// lives on, and it is the axis `NOW.md` item 1 says to price the projection in
+// ("sample sites and program chars — not in ms") after six cost-probe runs read
+// five of six the wrong sign. The cap fails a program that went triplanar on
+// the whole field, which would be 12+.
+//
+// The cap is NOT moved by this pass, and that is deliberate: the tile octave
+// spends the headroom it was holding rather than widening the budget to fit,
+// which is the shape a gate rots into. What is left is one site. The next
+// octave that wants one has to justify itself against that, and an octave that
+// wants triplanar taps has nowhere to put them.
 const NOISE_SAMPLE_BUDGET = Number(process.env.BROWSER_SMOKE_NOISE_SAMPLES || 8);
 // Where the cost probe aims and how it sweeps. The bearing is the surface
 // probe's steepest yaw at its own pitch — the view with the most ground in
@@ -1853,6 +1972,212 @@ console.log(
     `control noise ${grainNear.noise}/${grainFar.noise}`,
 );
 
+// Assertion 15d — the ground has a HUE that varies, not one hue at forty
+// brightnesses.
+//
+// The structural half first, so a pixel failure below is diagnosable.
+if (!(mat.terrain.tint === 1)) {
+  fail(`tab A: the terrain ships with uTint = ${mat.terrain.tint} — the ground is back to four flat hues`);
+}
+if (!Array.isArray(mat.tintDev) || mat.tintDev.length !== 4) {
+  fail(`tab A: the material publishes ${mat.tintDev?.length} chromatic deviations — one per identity is four`);
+}
+// Not parallel to its own colour. This is the check that stops the octave
+// quietly becoming a fourth mottle: a deviation proportional to `color` is a
+// brightness multiply, and every measure 15 and 15b take would still pass.
+const cosine = (a, b) => {
+  const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const na = Math.hypot(...a);
+  const nb = Math.hypot(...b);
+  return na > 0 && nb > 0 ? dot / (na * nb) : 1;
+};
+const parallel = mat.tintDev
+  .map((d, i) => ({ name: mat.identities[i], cos: cosine(d, mat.identityColor[i]), dev: d }))
+  .filter((r) => r.cos > TINT_MAX_DEV_PARALLEL);
+if (parallel.length) {
+  fail(
+    `tab A: ${parallel.map((r) => `${r.name} (cos ${r.cos.toFixed(4)}, dev [${r.dev}])`).join(", ")} — ` +
+      `the chromatic deviation is parallel to the identity's own colour (ceiling ` +
+      `${TINT_MAX_DEV_PARALLEL}), so the "tint" is a brightness multiply and the surface is still ` +
+      `one hue at a range of luminances, which is the state this octave exists to leave`,
+  );
+}
+// …and the four axes are not one axis. Blue-over-red is the hue coordinate
+// that separates them (sand +0.20, grass −0.30, litter −0.17, rock +0.43).
+const hueAxis = mat.tintDev.map((d) => (d[0] !== 0 ? d[2] / d[0] : 0));
+if (distinct(hueAxis) < 3) {
+  fail(
+    `tab A: only ${distinct(hueAxis)} distinct hue axes in the four deviations [${hueAxis.map((h) => h.toFixed(3))}] — ` +
+      `the identities swing along one colour direction, which is one tint wearing four names`,
+  );
+}
+// The ladder: this octave fills the gap between the micro octave and the
+// finest grain, or it is a duplicate of one of them.
+if (distinct(mat.tintScale) < 3) {
+  fail(`tab A: only ${distinct(mat.tintScale)} distinct tile wavelengths in [${mat.tintScale}] /m — sand and rock tile alike`);
+}
+const tintMax = Math.max(...mat.tintScale);
+const tintMin = Math.min(...mat.tintScale);
+if (!(tintMin > mat.microScale)) {
+  fail(
+    `tab A: the coarsest tile octave is ${tintMin} /m against the micro octave's ` +
+      `${mat.microScale.toFixed(3)} /m — it is not finer than the octave above it, so it is a second micro`,
+  );
+}
+if (!(tintMax < Math.min(...mat.grainScale))) {
+  fail(
+    `tab A: the finest tile octave is ${tintMax} /m against the coarsest grain's ` +
+      `${Math.min(...mat.grainScale)} /m — it is not coarser than the octave below it, so it is a second grain`,
+  );
+}
+if (!(mat.tintFadeCpp[1] > mat.tintFadeCpp[0] && mat.tintFadeCpp[1] <= mat.nyquistCpp)) {
+  fail(
+    `tab A: the tile footprint fade is [${mat.tintFadeCpp}] cycles/pixel — it must rise and retire the ` +
+      `octave at or before the ${mat.nyquistCpp} Nyquist limit (15a2's law, which is the whole reason ` +
+      `the last pass existed)`,
+  );
+}
+// The gain that makes the authored poles reachable. Without it the field's own
+// deviation (0.2262, measured) puts every square metre at a third of its
+// deviation and the `dev` column above describes a colour the ground never is.
+if (!(mat.tintGain > 2)) {
+  fail(
+    `tab A: the tile octave's gain is ${mat.tintGain} — at or below 2 it maps the field's NOMINAL ` +
+      `[0,1] onto the deviation, and a value-noise field does not visit its nominal range: the ` +
+      `authored poles become a place the material never goes`,
+  );
+}
+// Luminance neutrality, the division of labour this octave is built on: three
+// scalar octaves and a per-identity grain already move VALUE, at four scales.
+// Nothing moved HUE, which is the defect the visual judge named. A deviation
+// that leans on brightness is doing the half already done, and — measured this
+// pass — it does it by spending assertion 15's directional margin, which at
+// this spawn's yaw 0 is 0.5% against a 0.2% floor before anything is added.
+const leaning = mat.tintLumaResidual
+  .map((r, i) => ({ name: mat.identities[i], r }))
+  .filter((x) => Math.abs(x.r) > mat.tintLumaNeutral);
+if (leaning.length) {
+  fail(
+    `tab A: ${leaning.map((x) => `${x.name} ${x.r.toFixed(4)}`).join(", ")} — the chromatic deviation ` +
+      `carries luminance (ceiling ${mat.tintLumaNeutral} of its own length, Rec.709 in the linear ` +
+      `working space). This octave is the material's HUE channel; value is the three scalar octaves' ` +
+      `and the grain's, and a deviation that brightens or darkens is both duplicating them and ` +
+      `spending assertion 15's two-sidedness on a frame the bump already darkens.`,
+  );
+}
+const tintDetail = (r) =>
+  r.samples
+    .map(
+      (s) =>
+        `    ${s.label}: ${(s.chromaMovedFraction * 100).toFixed(3)}% of ${s.scored} moved ` +
+        `chromatically (warm +${(s.chromaUpFraction * 100).toFixed(2)}/cool ` +
+        `−${(s.chromaDownFraction * 100).toFixed(2)}), spread ${s.chromaOff.toFixed(5)} → ` +
+        `${s.chromaOn.toFixed(5)} (×${s.chromaRatio.toFixed(3)}), centre moved ` +
+        `${s.chromaShift.toFixed(5)}, mean luma ${s.lumaOff.toFixed(2)} → ${s.lumaOn.toFixed(2)}, ` +
+        `luma-moved ${(s.movedFraction * 100).toFixed(3)}%, control noise ${s.noise}`,
+    )
+    .join("\n");
+const tn = await A.page.evaluate(
+  ([views, minDelta, minChroma]) =>
+    globalThis.__gatesDebug.grainProbe("uTint", views, minDelta, minChroma),
+  [TINT_VIEWS, TINT_PROBE_MIN_DELTA, TINT_PROBE_MIN_CHROMA],
+);
+if (!tn) fail(`tab A: grainProbe("uTint") returned null — the terrain material has no tint uniform`);
+for (const s of tn.samples) {
+  if (s.noise !== 0) {
+    fail(
+      `tab A: the tint probe's control differs from its own frame on ${s.noise} pixels at view ` +
+        `"${s.label}" — two renders of one state are not identical, so nothing below is a ` +
+        `measurement.\n${tintDetail(tn)}`,
+    );
+  }
+}
+const tintNear = tn.samples.find((s) => s.label === "near");
+const tintLevel = tn.samples.find((s) => s.label === "level");
+if (!tintNear || !tintLevel) {
+  fail(`tab A: tint probe returned labels [${tn.samples.map((s) => s.label)}] — expected near and level`);
+}
+if (tintNear.chromaMovedFraction < TINT_NEAR_MIN_FRACTION) {
+  fail(
+    `tab A: the tint moved the chromaticity of ${(tintNear.chromaMovedFraction * 100).toFixed(3)}% of ` +
+      `${tintNear.scored} pixels at arm's length — below ${(TINT_NEAR_MIN_FRACTION * 100).toFixed(1)}%. ` +
+      `The octave is configured and reaches nothing.\n${tintDetail(tn)}`,
+  );
+}
+// …and it is not only a footprint effect: the standing view is the one a
+// player spends the game in, and it is where the acceptance's "no surface in
+// any vantage" lands.
+if (tintLevel.chromaMovedFraction < TINT_LEVEL_MIN_FRACTION) {
+  fail(
+    `tab A: the tint moved only ${(tintLevel.chromaMovedFraction * 100).toFixed(3)}% of the standing ` +
+      `frame (floor ${(TINT_LEVEL_MIN_FRACTION * 100).toFixed(1)}%) — it reaches the ground under the ` +
+      `camera and nothing a player is actually looking at.\n${tintDetail(tn)}`,
+  );
+}
+for (const s of [tintNear, tintLevel]) {
+  if (
+    s.chromaUpFraction < TINT_MIN_DIRECTIONAL ||
+    s.chromaDownFraction < TINT_MIN_DIRECTIONAL
+  ) {
+    fail(
+      `tab A: the tint moved the ${s.label} frame only one way on the red-chromaticity axis ` +
+        `(warm +${(s.chromaUpFraction * 100).toFixed(2)}% / cool −${(s.chromaDownFraction * 100).toFixed(2)}%, ` +
+        `floor ${(TINT_MIN_DIRECTIONAL * 100).toFixed(1)}% each). A signed deviation makes some ground ` +
+        `warmer and some cooler; a cast cannot.\n${tintDetail(tn)}`,
+    );
+  }
+}
+// The assertion this probe exists for. Everything above is also true of a
+// fourth scalar mottle; only this separates a hue from a brightness.
+if (tintNear.chromaRatio < TINT_MIN_CHROMA_RATIO) {
+  fail(
+    `tab A: the tint raised the chromaticity spread from ${tintNear.chromaOff.toFixed(5)} to ` +
+      `${tintNear.chromaOn.toFixed(5)} over the ${tintNear.chromaMoved} pixels it moved — a ratio of ` +
+      `${tintNear.chromaRatio.toFixed(3)} against a floor of ${TINT_MIN_CHROMA_RATIO}. A scalar octave ` +
+      `scores 1.00 here because multiplying an RGB triple leaves its chromaticity alone, so this is ` +
+      `the measure that says the ground has a hue that varies rather than one hue at a range of ` +
+      `luminances.\n${tintDetail(tn)}`,
+  );
+}
+// …and it bought that as VARIANCE, not as a cast — at BOTH views, which is a
+// bar this pass had to delete a term to clear. Two cuts of this octave carried
+// a coarse bias meant to break tiling, one off macro and one off meso; each
+// read as a cast, because an octave wider than the frame is a constant inside
+// it. See `materials.js`, "what is NOT here". A tint that comes back with a
+// coarse offset fails right here.
+for (const s of [tintNear, tintLevel]) {
+  if (!(s.chromaOn > s.chromaOff) || s.chromaShift > s.chromaOn * TINT_MAX_CENTRE_SHARE) {
+    fail(
+      `tab A: the tint moved the ${s.label} frame's chromaticity CENTRE by ${s.chromaShift.toFixed(5)} ` +
+        `against a cloud ${s.chromaOn.toFixed(5)} wide (ceiling ${TINT_MAX_CENTRE_SHARE} of the width) — ` +
+        `that is a colour cast over the whole ground and not a per-class albedo. The identities' ` +
+        `authored colours are supposed to be their MEANS, which is why the deviation is signed and ` +
+        `added rather than lerped to.\n${tintDetail(tn)}`,
+    );
+  }
+  const lumaShift = Math.abs(s.lumaOn - s.lumaOff);
+  if (lumaShift > TINT_MAX_MEAN_LUMA) {
+    fail(
+      `tab A: the tint moved the ${s.label} frame's mean luma by ${lumaShift.toFixed(2)} steps (ceiling ` +
+        `${TINT_MAX_MEAN_LUMA}) — a signed deviation added around an unchanged mean cannot brighten or ` +
+        `darken the frame, so this is an exposure slip riding in on a texture.\n${tintDetail(tn)}`,
+    );
+  }
+}
+console.log(
+  `  tint: tiles ${mat.tintScale.map((s) => (1 / s).toFixed(2) + "m").join("/")} · deviations off-colour ` +
+    `${mat.tintDev.map((d, i) => cosine(d, mat.identityColor[i]).toFixed(3)).join("/")} · gain ` +
+    `${mat.tintGain} · luma residual ${mat.tintLumaResidual.map((r) => r.toFixed(4)).join("/")} · near ` +
+    `${(tintNear.chromaMovedFraction * 100).toFixed(2)}% moved ` +
+    `(warm +${(tintNear.chromaUpFraction * 100).toFixed(2)}/cool −${(tintNear.chromaDownFraction * 100).toFixed(2)}), spread ` +
+    `${tintNear.chromaOff.toFixed(5)} → ${tintNear.chromaOn.toFixed(5)} (×${tintNear.chromaRatio.toFixed(2)}), ` +
+    `centre +${tintNear.chromaShift.toFixed(5)}, luma ${tintNear.lumaOff.toFixed(2)} → ` +
+    `${tintNear.lumaOn.toFixed(2)} · level ${(tintLevel.chromaMovedFraction * 100).toFixed(2)}% moved ` +
+    `(×${tintLevel.chromaRatio.toFixed(2)} chroma, centre +${tintLevel.chromaShift.toFixed(5)} on ` +
+    `+${(tintLevel.chromaOn - tintLevel.chromaOff).toFixed(5)} spread) · control noise ` +
+    `${tintNear.noise}/${tintLevel.noise}`,
+);
+
 // Assertion 15c — the grain is laid ON the surface, not stamped through it.
 //
 // 15b's every measure is blind to this. A grain combed downhill moves the same
@@ -2230,7 +2555,8 @@ if (fragProgram.resolvedFragmentChars > TERRAIN_FRAGMENT_BUDGET) {
 if (fragCost.noiseSamples > NOISE_SAMPLE_BUDGET) {
   fail(
     `tab A: every shaded ground fragment takes ${fragCost.noiseSamples} noise sample sites ` +
-      `(${fragCost.noiseSamples - fragCost.grainTaps} field + ${fragCost.grainTaps} grain, ` +
+      `(${fragCost.noiseSamples - fragCost.grainTaps - fragCost.tintTaps} field + ` +
+      `${fragCost.grainTaps} grain + ${fragCost.tintTaps} tint, ` +
       `projection "${fragCost.grainProjection}"), over the ${NOISE_SAMPLE_BUDGET} budget. Each site ` +
       `is four hash evaluations, and this is the axis a projection change is spent on.`,
   );
@@ -2471,7 +2797,7 @@ console.log(
     `is three's unpatched standard material, ${repoAdded} ` +
     `(${pct(repoAdded, ship.resolvedFragmentChars)}%) is this repo's — of which the clipmap ` +
     `shadow GLSL is ${ship.resolvedFragmentChars - noshadow.resolvedFragmentChars} and the field's ` +
-    `four sample lines ${ship.resolvedFragmentChars - nofield.resolvedFragmentChars} ` +
+    `${fragCost.noiseSamples} sample sites ${ship.resolvedFragmentChars - nofield.resolvedFragmentChars} ` +
     `(of which the grain octave ${ship.resolvedFragmentChars - nograin.resolvedFragmentChars}; ` +
     `the field's shared helper and its consumers stay in every variant)` +
     ` · ${ship.noiseSamples} noise sample sites/fragment, ${nograin.noiseSamples} without grain` +

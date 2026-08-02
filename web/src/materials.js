@@ -112,6 +112,68 @@
 // question in milliseconds on this box: grain's noise sample sites go 1 → 3,
 // so the ground's total goes 4 → 6 per fragment, and the program grows by the
 // triplanar helper. Both are asserted against a budget by the browser gate.
+//
+// --- fourth pass: the tint, per class (DECISIONS.md §open, "materials v3") ---
+//
+// Everything above is ONE COLOUR PER IDENTITY multiplied by a scalar. Read the
+// channels: `MOTTLE` multiplies albedo, `ROUGH_VAR` offsets roughness, the
+// grain's swing multiplies albedo again. A multiply by a scalar cannot move a
+// hue — `k·(r,g,b)` has the same chromaticity as `(r,g,b)` — so every square
+// metre of grass in this world was, exactly, one green at a range of
+// brightnesses, and so was every square metre of sand, litter and rock. That
+// is what the visual judge's blind reader named on five of six frames in its
+// own words: "a single untextured green sheet", "flat-shaded", "hue-only". The
+// pass before this one found the two arithmetic defects underneath that
+// sentence (an aliasing bump, a gradient reconstructed on the triangle) and
+// fixed both. This is the sentence itself.
+//
+// So each identity gets a second axis: a signed chromatic DEVIATION it swings
+// along, and a tiling octave in the 0.5–1 m band to swing it with.
+//
+//   sand    pale bleached quartz  <-> darker, browner mineral
+//   grass   sun-dried straw-green <-> lush blue-green
+//   litter  needle-brown duff     <-> moss
+//   rock    warm pale feldspar    <-> dark neutral mica
+//
+// Four properties are load-bearing, and each is a thing that could have been
+// done the easy way instead:
+//
+//   1. **The deviation is SIGNED and added, not a second colour lerped to.**
+//      `albedo += dev · t` with `t` in [−1, 1] leaves the identity's mean
+//      colour exactly where the palette put it — this slice changes the
+//      VARIANCE of the ground and not its average, so it cannot be an
+//      exposure slip or an art-direction change wearing a texture's name.
+//      The gate asserts that directly (mean luma and mean chromaticity hold
+//      while the spread rises), which a base→alt lerp could not have offered.
+//   2. **`dev` is not parallel to `color`.** A deviation proportional to the
+//      identity's own colour is a brightness multiply with extra steps, and
+//      would score 1.00 on the chromatic ratio the gate measures. All four
+//      sit 16°–45° off their own colour, and the four hue axes are not one
+//      axis — both asserted, so "hue-only" cannot come back through a
+//      well-meaning re-balance.
+//   3. **The tile scale is the IDENTITY's**, like grain's — one octave, one
+//      sample, four surfaces, morphing continuously across a biome boundary
+//      because the scale is a dot product against the same splat weights.
+//      It fills the gap the octave ladder actually had: macro 48 m, meso
+//      9.5 m, micro 1.7 m, then nothing until grain at 4–12 cm.
+//   4. **Nothing biases it.** The report also asked for "a low-frequency
+//      macro-variation octave to break tiling", and this pass built that term
+//      off macro, measured it, rebuilt it off meso, measured it again, and
+//      deleted it — both times it was a colour cast over the whole ground and
+//      not a variation, because an octave wider than the frame is a constant
+//      inside it. The premise came with the words: value noise on world XZ
+//      does not repeat, so there is no tiling to break. The measurements and
+//      the reasoning are kept in full below, under "what is NOT here".
+//
+// `uTint` is its probe handle, on the pattern `uSurface` and `uGrain` set. It
+// gets no compiled partner, and that is a decision rather than an omission:
+// `nograin` and `flatgrain` exist to price an octave in milliseconds and to
+// compare two projections that no uniform can select between, and neither
+// question is asked here — `NOW.md` says not to re-run the cost question on
+// this box, and "did the albedo become chromatic" is a property of one
+// program's own two states. What the uniform cannot express is folded into
+// the FIELD instead: `nofield` takes the tile octave out with the other three,
+// because the field is one field.
 
 import * as THREE from "three";
 import {
@@ -139,6 +201,28 @@ import {
 //   ridge    0 is the raw smooth field (a soft stipple), 1 is `1-|2g-1|`
 //            (a ridged, crystalline speckle). Rock is nearly all ridge;
 //            sand is nearly none.
+//
+// `tint` is the fourth pass's pair, and it is the only thing in this table
+// that can move a HUE. `color` stays the identity's MEAN — the deviation is
+// signed, so the palette above is unchanged and what this adds is variance:
+//   dev    the chromatic axis the identity swings along, ±, in the same
+//          working-space (linear) triple `color` is written in. Two properties
+//          it has by construction, both asserted:
+//            · **not parallel to `color`** — a parallel deviation is a
+//              brightness multiply, which is what every octave above already
+//              was. Measured cosines: −0.036 / 0.152 / −0.118 / −0.047.
+//            · **luminance-neutral** — `0.2126·r + 0.7152·g + 0.0722·b` is
+//              zero to within 0.3% of the deviation's own length, so the
+//              swing is pure hue at constant brightness. That is the whole
+//              division of labour of this material: three scalar octaves and
+//              a grain already do VALUE, and nothing did HUE, which is the
+//              defect stated as arithmetic. It is also load-bearing for a
+//              gate this pass had to earn — see `TINT_LUMA_NEUTRAL`.
+//   scale  cycles per metre of the identity's own tiling — 1.7 /m is a 59 cm
+//          sand ripple, 1.0 /m a metre of forest floor. All four land in the
+//          0.5–1 m band the visual report asked for, and the whole set sits
+//          between the micro octave (0.588 /m) and the finest grain (8.3 /m),
+//          which is the hole in the ladder this octave exists to fill.
 export const IDENTITIES = [
   {
     name: "sand",
@@ -146,6 +230,11 @@ export const IDENTITIES = [
     roughness: 0.92,
     bump: 0.35,
     grain: { scale: 25.0, contrast: 0.1, ridge: 0.15 },
+    // Warm damp/mineral gold (+) to cool bleached grey-quartz (−) — the
+    // waterline read `WET_DARKEN` does by value, done by hue, so a dry dune
+    // and a tide line differ in colour and not only in brightness.
+    // + [0.85, 0.699, 0.42] · − [0.71, 0.721, 0.62].
+    tint: { dev: [0.07, -0.011, -0.1], scale: 1.7 },
   },
   {
     name: "grass",
@@ -153,6 +242,12 @@ export const IDENTITIES = [
     roughness: 0.82,
     bump: 0.6,
     grain: { scale: 8.3, contrast: 0.2, ridge: 0.55 },
+    // Sun-dried straw-olive (+) to lush blue-green (−) — the largest swing of
+    // the four, because grass is the identity that owns 99% of the near ring
+    // at this spawn and the one the blind reader called a single green sheet.
+    // + [0.47, 0.46, 0.17] · − [0.23, 0.52, 0.29]: two greens a viewer would
+    // name differently, at the same brightness.
+    tint: { dev: [0.12, -0.03, -0.06], scale: 1.1 },
   },
   {
     name: "litter",
@@ -160,6 +255,11 @@ export const IDENTITIES = [
     roughness: 0.88,
     bump: 0.9,
     grain: { scale: 11.0, contrast: 0.22, ridge: 0.45 },
+    // Needle-brown duff (+) to deep moss (−). The same sign pattern as grass
+    // on a different axis (b/r −0.90 against grass's −0.50), so the two greens
+    // of the forest floor and the meadow do not swing as one colour.
+    // + [0.24, 0.311, 0.079] · − [0.06, 0.349, 0.241].
+    tint: { dev: [0.09, -0.019, -0.081], scale: 1.0 },
   },
   {
     name: "rock",
@@ -167,6 +267,12 @@ export const IDENTITIES = [
     roughness: 0.7,
     bump: 2.2,
     grain: { scale: 16.7, contrast: 0.14, ridge: 0.8 },
+    // Warm buff feldspar (+) to cool blue-grey biotite (−). Granite's VALUE
+    // range is wide and this octave deliberately does not spend it: the value
+    // is the grain octave's (ridge 0.8, the crystalline speckle) and the
+    // crevice darkening the rock rebuild will add. What this adds is the
+    // mineral hue. + [0.58, 0.464, 0.38] · − [0.42, 0.496, 0.54].
+    tint: { dev: [0.08, -0.016, -0.08], scale: 1.4 },
   },
 ];
 
@@ -268,6 +374,109 @@ const FADE_GRAIN_CPP = FADE_OCTAVE_CPP;
 // skipped before any of it is computed. Conservative in the right direction:
 // a steep face may enter the block and find the fade zero anyway.
 const GRAIN_SCALE_MIN = Math.min(...IDENTITIES.map((i) => i.grain.scale));
+// --- the tint octave (fourth pass) -----------------------------------------
+// It retires on the same law as everything else — `FADE_OCTAVE_CPP`, in cycles
+// per pixel, because its wavelength is a per-identity number and one metre
+// threshold cannot serve four of them (grain's argument, verbatim). At 0.09
+// cpp the coarsest tile (1.0 /m) retires at a 0.09 m/px footprint and the
+// finest (1.7 /m) at 0.053 — roughly 60 m and 36 m out at this frustum, past
+// which the macro bias below is what carries the identity's colour variation.
+const FADE_TINT_CPP = FADE_OCTAVE_CPP;
+// The smallest tile scale any identity carries, for the same early-out
+// argument `GRAIN_SCALE_MIN` carries: `gmFw * this >= fade end` proves every
+// identity's tile is already retired before the blended scale is computed.
+const TINT_SCALE_MIN = Math.min(...IDENTITIES.map((i) => i.tint.scale));
+// --- what is NOT here: a coarse bias on the tint ----------------------------
+//
+// The visual report's ask was "tiled albedo … with a low-frequency
+// macro-variation octave to break tiling", and this pass built that term
+// twice — once off macro (48 m), once off meso (9.5 m) — and measured it out
+// both times. The record is worth keeping, because the next reader will want
+// to add it back:
+//
+//   · **Macro.** 48 m is wider than any frame, so `gmMacro` is ONE NUMBER
+//     across everything visible and an additive bias off it is not a
+//     variation at all — it is a cast. Assertion 15 said so before this
+//     octave's own gate existed: +0.10% of a yaw lightened against −19.80%
+//     darkened, on a floor of 0.2% each. The field could only darken.
+//   · **Meso.** 9.5 m completes cycles inside a standing frame's mid-ground
+//     and the theory was that this would centre it. Measured on the standing
+//     view: +0.01% up against −3.64% down, the chromaticity centre moved
+//     0.061 while the spread gained 0.009 — six times more cast than
+//     variance. Most of a standing frame's ground pixels are past 50 m, where
+//     the tile has retired and the bias is all that is left, so the frame
+//     inherits whatever one number the coarse octave holds there.
+//
+// The premise was wrong, and it was inherited from the report's own words
+// rather than checked: **there is no tiling here to break.** A tiled albedo
+// map repeats, and a repeat needs a macro octave to hide it. This octave is
+// value noise on world XZ — it does not repeat, and 160,000 samples of it
+// have no period to find. So the term was solving a problem this material
+// does not have, and paying for it in the one currency the visual read cannot
+// afford: a colour cast over the whole ground.
+//
+// What varies the ground's colour past the tile's ~55 m retirement is
+// therefore the splat weights (the macro octave already drives `gmWob`, which
+// moves which IDENTITY owns a face — four different colours, not one colour
+// biased) and, when the lighting gap is taken, aerial perspective. Both are
+// somebody else's slice, and both are the right owner for a distance effect.
+//
+// How much of its authored deviation a square metre actually wears.
+//
+// `dev` above is written as the POLE — "bleached quartz", "lush blue-green" —
+// so the field that drives it has to be able to reach the pole, and the
+// obvious mapping cannot. `(g - 0.5) * 2` takes the field's NOMINAL [0, 1]
+// range onto [−1, 1], but a value-noise field does not spend its time at its
+// nominal range: measured over 160,000 samples of this exact `gmNoise`, its
+// deviation about the midpoint is 0.2262, so at a gain of 2 the mean |tint| is
+// 0.379 and the pole is reached on 0.00% of the ground. The authored numbers
+// would then describe a place the material never goes.
+//
+// 2.5 is the gain at which the mean is 0.468 — about half the pole, which is
+// what "the pole" should mean — and 6.2% of the ground saturates against the
+// clamp, so the extremes are real ground and not an asymptote. 3.0 saturates
+// 15.6%, which starts flattening the tails into patches of constant colour.
+const TINT_GAIN = 2.5;
+// Luminance, in the linear working space these colours are written in
+// (Rec. 709 — the primaries three's tone map and output transform assume).
+// It is here so the four deviations' luminance-neutrality is a NUMBER the
+// gate reads rather than a claim in a comment.
+const LUMA_709 = [0.2126, 0.7152, 0.0722];
+const devLuma = (d) => LUMA_709[0] * d[0] + LUMA_709[1] * d[1] + LUMA_709[2] * d[2];
+// How far a deviation may lean on brightness, as a share of its own length.
+// Measured on the four: 0.0017 / 0.0020 / 0.0025 / 0.0019 — zero to three
+// decimal places, because each was solved for it rather than eyeballed.
+//
+// This is a design law and not a tolerance, and the pass earned it the hard
+// way. The first two cuts of this octave swung value AND hue, and the value
+// half cost the material a gate it already held: assertion 15 requires the
+// procedural field to lighten some pixels and darken others on every probed
+// yaw, and at this spawn's yaw 0 the field already darkens 95% of what it
+// touches (the bump against a 21° sun, plus the macro octave's ±0.16
+// multiply, which is itself a cast at any framing narrower than 48 m). Main
+// cleared the 0.2% floor there with 0.5%. A tint that darkened as well took
+// it to 0.14% — the octave was not adding a defect, it was SPENDING a margin
+// that a pre-existing one had already nearly used up, and no amount of tuning
+// its amplitude changes the sign of what it spends.
+//
+// Neutrality is not a way around that. It is the correct division of labour,
+// and reading it off the material makes that obvious: three scalar octaves
+// and a per-identity grain already move VALUE, four ways, at four scales.
+// Nothing moved HUE. The defect the visual judge named — "one hue at two
+// luminances", "a single untextured green sheet" — is that sentence exactly.
+// So this octave does the missing half and none of the half already done,
+// and the ground ends up varying in both because the material is the sum.
+const TINT_LUMA_NEUTRAL = 0.02;
+// The tint's roughness swing, on the file's law that a modifier drives colour
+// AND roughness or it is a channel on its own. Sign follows the deviation: the
+// `+dev` pole is the warm/dry one for all four identities — damp gold sand,
+// straw grass, brown duff, buff feldspar — and dry is matte. It is also the
+// one place this octave is allowed to touch brightness, and it does so
+// causally (through the light response) rather than by moving albedo.
+// 0.06 against a ±1 field is ±0.06, two thirds of what the micro octave's
+// `ROUGH_VAR` 0.18 contributes over its own ±0.5 field — the same band,
+// neither dominating.
+const TINT_ROUGH = 0.06;
 // Specular-AA gain on the perturbed normal's variance (three already adds
 // its own term from the *unperturbed* normal; this covers what we added).
 const SPEC_AA = 0.5;
@@ -360,6 +569,10 @@ uniform vec4 uGrainContrast;
 uniform vec4 uGrainRidge;
 uniform vec2 uGrainFade;
 uniform vec2 uGrainAmp;
+uniform float uTint;
+uniform vec3 uIdentDev[4];
+uniform vec4 uTintScale;
+uniform vec2 uTintFade;
 ${FIELD_GLSL}
 `;
 
@@ -481,16 +694,21 @@ const COST_VARIANTS = ["ship", "nofield", "nograin", "near1", "noshadow", "noski
 export const PROJECTION_VARIANT = "flatgrain";
 
 const VARIANT_CONFIG = {
-  ship: { field: "full", grain: "on", shadow: "ship" },
-  // The field is one field: taking its instructions out takes the fourth
-  // octave's with them, or `nofield` would be "the field minus three of its
-  // four octaves" and its timing would be attributed to the wrong thing.
-  nofield: { field: "off", grain: "off", shadow: "ship" },
-  nograin: { field: "full", grain: "off", shadow: "ship" },
-  near1: { field: "full", grain: "on", shadow: "near1" },
-  noshadow: { field: "full", grain: "on", shadow: "off" },
-  noskip: { field: "always", grain: "on", shadow: "ship" },
-  flatgrain: { field: "full", grain: "xz", shadow: "ship" },
+  ship: { field: "full", grain: "on", tint: "on", shadow: "ship" },
+  // The field is one field: taking its instructions out takes the fourth and
+  // fifth octaves' with them, or `nofield` would be "the field minus three of
+  // its five octaves" and its timing would be attributed to the wrong thing.
+  // It is also what keeps this variant's IMAGE equal to the `uSurface = 0`
+  // one, which is the check that makes its timing mean anything: the tile
+  // sample sits behind its own footprint guard and not behind `uSurface`, so
+  // a variant that zeroed the field and left the tile compiled would still
+  // paint a chromatic swing the uniform-zeroed frame does not have.
+  nofield: { field: "off", grain: "off", tint: "off", shadow: "ship" },
+  nograin: { field: "full", grain: "off", tint: "on", shadow: "ship" },
+  near1: { field: "full", grain: "on", tint: "on", shadow: "near1" },
+  noshadow: { field: "full", grain: "on", tint: "on", shadow: "off" },
+  noskip: { field: "always", grain: "on", tint: "on", shadow: "ship" },
+  flatgrain: { field: "full", grain: "xz", tint: "on", shadow: "ship" },
 };
 
 /** What a variant's `grain` setting is called in the facts the gate reads. */
@@ -498,6 +716,8 @@ const projectionName = (grain) =>
   grain === "on" ? "triplanar" : grain === "xz" ? "xz" : "none";
 /** Noise taps the grain octave costs per fragment under each setting. */
 const grainTaps = (grain) => (grain === "on" ? 3 : grain === "xz" ? 1 : 0);
+/** …and the tint octave's, which is one tap or none. */
+const tintTaps = (tint) => (tint === "on" ? 1 : 0);
 
 /** The three samples of the shared field, or the constants that replace it. */
 function fieldGlsl(field) {
@@ -603,6 +823,60 @@ function grainGlsl(grain) {
 }
 
 /**
+ * The tint octave, or the constants that replace it.
+ *
+ * One noise sample, at the identity's own tile scale, signed to ±1 and biased
+ * by the macro octave. What it multiplies is `gmDev` — the identities' four
+ * chromatic deviations blended by the same splat weights — so what reaches
+ * albedo is a colour that moves in a DIRECTION, which is the one thing the
+ * three scalar octaves above this could not do.
+ *
+ * Three things about the shape are deliberate:
+ *
+ *   · **The guard is a plain compare and the sample is inside it.** Unlike
+ *     grain's block this takes no derivative of its own — `gmFw` is computed
+ *     once above the field and `gmNoise` differentiates nothing — so the
+ *     branch carries none of grain's non-uniform-control-flow hazard and needs
+ *     none of its argument. `TINT_SCALE_MIN` is a lower bound on the blended
+ *     scale (the weights are convex and normalized), so wherever the guard
+ *     skips, the `smoothstep` inside would have returned exactly 1 and the
+ *     fade exactly 0.
+ *   · **The fade is applied to the SAMPLE, not to the result.** `gmTile` sits
+ *     at exactly 0.5 wherever the octave has retired, including everywhere the
+ *     guard skips, so the tint is exactly zero out there and continuous across
+ *     the guard's own boundary. Fading the result instead would have been the
+ *     same arithmetic here and is not the same arithmetic the moment anything
+ *     is added to it — which is how the coarse-bias term below survived its
+ *     own fade and reached the far field as a constant.
+ *   · **The clamp exists because `TINT_GAIN` makes it reachable.** The
+ *     deviations are authored as poles, not as midpoints to be exceeded, and
+ *     6.2% of the ground lands on one.
+ */
+function tintGlsl(tint) {
+  if (tint === "off") {
+    // Both are the additive identity of what they feed, so this variant lands
+    // on the `uTint = 0` image — and, since every other field term is already
+    // multiplied by `uSurface`, on the `uSurface = 0` image too.
+    return /* glsl */ `
+        float gmTint = 0.0;
+        vec3 gmDev = vec3(0.0);`;
+  }
+  return /* glsl */ `
+        vec3 gmDev = uIdentDev[0] * gmW.x + uIdentDev[1] * gmW.y
+                   + uIdentDev[2] * gmW.z + uIdentDev[3] * gmW.w;
+        float gmTScale = dot(uTintScale, gmW);
+        float gmTile = 0.5;
+        if (gmFw * ${TINT_SCALE_MIN.toFixed(4)} < uTintFade.y) {
+          float gmFadeTint = 1.0 - smoothstep(uTintFade.x, uTintFade.y, gmFw * gmTScale);
+          if (gmFadeTint > 0.0) {
+            gmTile = 0.5 + (gmNoise(gmXZ * gmTScale) - 0.5) * gmFadeTint;
+          }
+        }
+        float gmTint = clamp((gmTile - 0.5) * ${TINT_GAIN.toFixed(3)},
+                             -1.0, 1.0) * uSurface * uTint;`;
+}
+
+/**
  * The terrain material. One instance serves every chunk and the far mesh,
  * so the uniforms below (including the probe's `uSurface`) are the scene's
  * single handle on the ground's surface.
@@ -639,6 +913,13 @@ export function makeTerrainMaterial(variantName = "ship") {
     uGrainRidge: { value: new THREE.Vector4(...IDENTITIES.map((i) => i.grain.ridge)) },
     uGrainFade: { value: new THREE.Vector2(...FADE_GRAIN_CPP) },
     uGrainAmp: { value: new THREE.Vector2(AMP_GRAIN_M, GRAIN_ROUGH) },
+    // The fourth pass's handle and the three vectors the tint octave reads.
+    // Ships at 1 for the same reason `uGrain` does: a probe input, not a
+    // quality setting, and the gate reads the live value back to prove it.
+    uTint: { value: 1 },
+    uIdentDev: { value: IDENTITIES.map((i) => new THREE.Vector3(...i.tint.dev)) },
+    uTintScale: { value: new THREE.Vector4(...IDENTITIES.map((i) => i.tint.scale)) },
+    uTintFade: { value: new THREE.Vector2(...FADE_TINT_CPP) },
   };
 
   material.onBeforeCompile = (shader) => {
@@ -698,6 +979,13 @@ ${fieldGlsl(variant.field)}
                       + uIdentColor[2] * gmW.z + uIdentColor[3] * gmW.w;
         float gmRough = dot(uIdentRough, gmW);
         float gmBump = dot(uIdentBump, gmW);
+${tintGlsl(variant.tint)}
+        // The tint is part of the IDENTITY, so it lands before the causal
+        // modifiers below and not after them: wet sand darkens the sand this
+        // metre actually is, and snow covers whatever was under it. It is
+        // signed and ADDED, so the identity's mean colour is exactly the
+        // palette entry above and what changes is the spread around it.
+        gmAlbedo += gmDev * gmTint;
 
         // Causal modifiers — each drives colour and roughness together.
         float gmWet = 1.0 - smoothstep(${WET_RANGE[0].toFixed(2)}, ${WET_RANGE[1].toFixed(2)}, vGmPos.y);
@@ -717,7 +1005,8 @@ ${grainGlsl(variant.grain)}
           + gmGrainSwing;
         gmRough = clamp(
           gmRough + uSurface * (gmMicro - 0.5) * ${ROUGH_VAR.toFixed(3)} * gmFadeMicro
-                  + gmGrain * uGrainAmp.y,
+                  + gmGrain * uGrainAmp.y
+                  + gmTint * ${TINT_ROUGH.toFixed(3)},
           0.04, 1.0);
 
         float gmH = gmBump * (uSurface * (
@@ -851,6 +1140,7 @@ ${grainGlsl(variant.grain)}
     variant: variantName,
     field: variant.field,
     grain: variant.grain,
+    tint: variant.tint,
     shadow: variant.shadow,
     // Depth fetches and noise samples per shaded fragment: the two things
     // `NOW.md` item 1 is trying to buy headroom from, both counted. The count
@@ -858,9 +1148,12 @@ ${grainGlsl(variant.grain)}
     // their own footprint fade, so a near fragment pays four and a far one
     // pays two. It is an upper bound, which is what a budget wants.
     depthFetches: clipmapFetches(variant.shadow),
-    noiseSamples: variant.field === "off" ? 0 : 3 + grainTaps(variant.grain),
+    noiseSamples:
+      variant.field === "off" ? 0 : 3 + grainTaps(variant.grain) + tintTaps(variant.tint),
     microSkipped: variant.field === "full",
     grainOn: variant.grain !== "off",
+    tintOn: variant.tint !== "off",
+    tintTaps: tintTaps(variant.tint),
     // Which projection the grain octave is sampled on, and what it costs in
     // taps. `triplanar` is what ships; `xz` is materials v1's, kept compiled
     // so the projection can be measured against itself rather than argued
@@ -957,6 +1250,24 @@ export function materialFacts() {
     grainAmpM: AMP_GRAIN_M,
     grainRough: GRAIN_ROUGH,
     microScale: SCALE_MICRO,
+    // The fourth pass. Scales in cycles/m so the gate can place this octave in
+    // the ladder — coarser than every grain, finer than the micro octave —
+    // rather than take "0.5–1 m" on the comment's word; `tintDev` so it can
+    // check the four deviations are neither parallel to their own colours (a
+    // brightness multiply wearing a texture's name) nor to each other.
+    tintScale: IDENTITIES.map((i) => i.tint.scale),
+    tintDev: IDENTITIES.map((i) => i.tint.dev),
+    tintFadeCpp: FADE_TINT_CPP,
+    tintGain: TINT_GAIN,
+    tintRough: TINT_ROUGH,
+    // Each deviation's luminance, as a share of its own length. Published
+    // rather than asserted here so the gate owns the bar; the ceiling it is
+    // checked against is `TINT_LUMA_NEUTRAL`.
+    tintLumaResidual: IDENTITIES.map(
+      (i) => devLuma(i.tint.dev) / Math.hypot(...i.tint.dev),
+    ),
+    tintLumaNeutral: TINT_LUMA_NEUTRAL,
+    identityColor: IDENTITIES.map((i) => i.color),
     // The third pass. Read off the shipped variant's own config rather than
     // written down beside it, so the fact cannot drift from the program: if
     // `ship` ever goes back to world XZ, this says so and the gate fails.
