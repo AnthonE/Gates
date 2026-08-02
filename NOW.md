@@ -36,31 +36,63 @@ Done items are deleted, not checked — history lives in git and
      constant that actually ships — Rust and JS alike, unresolved and
      ambiguous names failing as loudly as a mismatch.
 
-   **What this item still wants**, in the order the report ranked it — none
-   of it started, and the first is the one the acceptance turns on:
+   **Landed the pass after** (`DECISIONS.md` §open, "materials v3"): the
+   ground has a HUE that varies, and a gate that can see one.
 
-   - **Tiled per-class albedo.** The identities are still four flat colours
-     modulated by a shared noise field. The report asks for grass, sand,
-     rock, bark and canopy albedo at ~0.5–1 m repeat with a
-     macro-variation octave breaking the tiling. The octave ladder is now
-     safe to build on; nothing has been built on it.
-   - **Re-place the meso octave — tried this pass and backed out.** At
-     9.5 m the coarsest surviving octave completes a third of a cycle
-     inside a typical 8 m ground framing, which is the flat hue the
-     acceptance names; 4 m completes two and still retires far past any
-     footprint this world produces. It went red on `browser_smoke` 15c,
-     and not on the arithmetic: the splat wobble is driven by gmMeso, so
-     moving it moves which identity owns a face, and grain reads its
-     scale, contrast and ridge off those same weights. Do it *with* the
-     albedo work and re-measure 15c's 46.6° face alongside it — the
-     coupling is the reason this is not a one-constant change.
+   - **Per-class chromatic albedo, tiled at 0.5–1 m.** One noise sample at a
+     per-identity tile scale (sand 0.59 m, rock 0.71 m, grass 0.91 m, litter
+     1.00 m) driving a signed chromatic deviation per identity, added rather
+     than lerped to, so each identity's authored colour stays its exact mean
+     and what changed is the variance. Cost 6 → 7 of the 8 budgeted noise
+     sample sites, and the budget was not widened to fit.
+   - **The deviations are luminance-neutral, and that is a law rather than a
+     taste.** Three scalar octaves and a per-identity grain already moved
+     VALUE at four scales; nothing moved HUE, which is the defect stated as
+     arithmetic (`k·(r,g,b)` has the chromaticity of `(r,g,b)`). Two earlier
+     cuts swung both and each one spent assertion 15's directional margin,
+     which at this spawn's yaw 0 is 0.5% against a 0.2% floor before anything
+     is added.
+   - **The report's "macro-variation octave to break tiling" was built twice
+     and deleted twice**, off macro and then off meso, because an octave
+     wider than the frame is a constant inside it and both read as a colour
+     cast. The premise came with the words: value noise on world XZ does not
+     repeat, so there was no tiling to break.
+   - **A second measurement track**, because the luma probe every gate in
+     this file used is structurally blind to a hue-only octave. 15d masks on
+     chromaticity and asserts spread up, centre still, mean luma still, and
+     warm and cool both present, at two views.
+
+   **What this item still wants**, in the order the report ranked it:
+
+   - **Re-place the meso octave — tried, backed out, and now with a second
+     reason to want it.** At 9.5 m the coarsest surviving octave completes a
+     third of a cycle inside a typical 8 m ground framing; 4 m completes two
+     and still retires far past any footprint this world produces. It went
+     red on `browser_smoke` 15c, and not on the arithmetic: the splat wobble
+     is driven by gmMeso, so moving it moves which identity owns a face, and
+     grain reads its scale, contrast and ridge off those same weights. The
+     second reason arrived with the tint: **the macro octave's own ±0.16
+     albedo multiply is a cast, not a variation**, at every framing narrower
+     than 48 m — measured, it is most of why the field darkens 95% of what it
+     touches at yaw 0 and why assertion 15's two-sidedness has only 2.5× of
+     margin there. A coarse octave that varies inside a frame would fix both.
+     Do it as its own slice, with 15c's 46.6° face re-measured alongside it,
+     because the coupling is the reason it is not a one-constant change.
    - **Splat transitions by height/slope/noise, and a wet-sand waterline.**
      `WET_RANGE` exists and paints; the report saw no shoreline in any
      vantage, so either the band is too narrow to read at capture framing
      or no vantage looks at one. Measure before tuning.
    - **The rock and bark rebuild** (report's ranked fix 8): granite albedo
      with granular grain and crevice darkening, the dirt-ring base blended
-     flush instead of reading as a pedestal, vertical bark ridges.
+     flush instead of reading as a pedestal, vertical bark ridges. Note that
+     the ground's rock identity now carries granite's HUE range (buff
+     feldspar ↔ blue-grey biotite) and deliberately not its value range —
+     that half was left for this slice's crevice darkening.
+   - **Bark and canopy are still outside all of this.** Materials v0–v3 are
+     the ground's splat material; the scatter pools are `surfaceMaterial()`
+     bundles with baked vertex colours and a per-instance tint. The report
+     asked for bark and canopy albedo in the same breath as grass and sand,
+     and nothing in the tint octave reaches them.
 
    Not this item, and not to be folded into it: the lighting gap
    (`-visual.md` ranked gap 3) is one owner, one iteration, per

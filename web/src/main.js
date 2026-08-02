@@ -933,8 +933,11 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // this is the scope that holds the camera. A view is the player's own
   // position, optionally lifted, aimed by (yaw, pitch) — the near one is
   // grain's home ground, the lifted one is where grain must already be gone.
+  // `minChroma` is materials v3's: 0 leaves the chroma track off (grain's
+  // call), and a positive value arms the second mask the tint octave needs
+  // because it moves no luma for a luma mask to find.
   const devGrainProbe = dev
-    ? (uniformName, specs, minDelta) => {
+    ? (uniformName, specs, minDelta, minChroma = 0) => {
         const views = [];
         for (const s of specs) {
           const p = scene.camera.position;
@@ -950,7 +953,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
             ],
           });
         }
-        return scene.contrastProbe(views, uniformName, minDelta);
+        return scene.contrastProbe(views, uniformName, minDelta, minChroma);
       }
     : null;
   // Materials v1's third pass: the projection probe takes views in WORLD space
