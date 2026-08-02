@@ -4,7 +4,7 @@
 // vectors — no allocations, no closures in the RAF path (L8).
 
 import * as THREE from "three";
-import { materialFacts, surfaceMaterial } from "./materials.js";
+import { materialFacts, propToggle, surfaceMaterial } from "./materials.js";
 import {
   LEVEL_COUNT,
   ShadowClipmap,
@@ -1517,6 +1517,218 @@ export class GameScene {
     u.uOct.value.copy(keepOct);
     u.uGrainAmp.value.copy(keepGrainAmp);
     u.uSurface.value = 1;
+    cam.position.copy(keepPos);
+    this.sky.position.copy(cam.position);
+    cam.quaternion.copy(keepQ);
+    this.renderer.render(this.scene, cam);
+    return { width: w, height: h, samples };
+  }
+
+  /**
+   * Dev-only: do the PROPS have a surface, or only a silhouette?
+   *
+   * Every probe above this one asks its question of the ground. The visual
+   * judge's ranked gap 1 is about everything else — "rock, wood and canopy are
+   * each one flat colour per facet", a 4,386-pixel boulder facet at luma sd
+   * 0.96 — so this one holds the frame fixed, toggles the prop field off at
+   * `propToggle`, and measures what the difference is made of.
+   *
+   * Three measures per view, because the first two have both been shown
+   * elsewhere in this file not to bite on their own:
+   *
+   *   · **moved** — how much of the frame the field reaches, and which way. A
+   *     field that darkens everything is a wash, not a surface (assertion 15's
+   *     lesson, and the mutation that taught it collapsed the noise scales and
+   *     sailed past a fraction floor).
+   *   · **contrast** — mean neighbour-to-neighbour luma step INSIDE the moved
+   *     set, in both states. Texture is by definition what changes between one
+   *     pixel and the next; a tint moves the pixels without moving the detail
+   *     between them (assertion 15b's argument, applied to props).
+   *   · **chroma** — the spread of chromaticity over the moved set, in both
+   *     states. Every prop term before this one multiplied albedo by a scalar,
+   *     and `k*(r,g,b)` has the chromaticity of `(r,g,b)`, so a luma-only
+   *     measure is structurally blind to the deviation that gives a granite
+   *     boulder its two minerals (assertion 15d's argument, same).
+   *
+   * Plus a control render — the same state twice — which must differ nowhere,
+   * so a measurement can never be renderer noise wearing a verdict.
+   */
+  propProbe(views, minDelta) {
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const ship = new Uint8Array(w * h * 4);
+    const control = new Uint8Array(w * h * 4);
+    const flat = new Uint8Array(w * h * 4);
+    const mask = new Uint8Array(w * h);
+    const diff = new Float32Array(w * h);
+    const luma = (buf, p) => (buf[p] * 2 + buf[p + 1] * 5 + buf[p + 2]) >> 3;
+    const cam = this.camera;
+    const keepQ = cam.quaternion.clone();
+    const keepPos = cam.position.clone();
+    const samples = [];
+
+    // Mean |ΔL| between neighbouring pixels, both of which are in the mask.
+    const contrast = (buf) => {
+      let sum = 0;
+      let n = 0;
+      for (let y = 0; y < h; y++) {
+        const row = y * w;
+        for (let x = 0; x < w; x++) {
+          const i = row + x;
+          if (!mask[i]) continue;
+          const l = luma(buf, i * 4);
+          if (x + 1 < w && mask[i + 1]) {
+            sum += Math.abs(luma(buf, (i + 1) * 4) - l);
+            n++;
+          }
+          if (y + 1 < h && mask[i + w]) {
+            sum += Math.abs(luma(buf, (i + w) * 4) - l);
+            n++;
+          }
+        }
+      }
+      return n > 0 ? sum / n : 0;
+    };
+
+    // The same neighbour statistic taken on the field's OWN difference image
+    // (ship − flat), normalised by that image's magnitude — so it says what the
+    // field is made of and nothing about what it was laid on.
+    //
+    // `contrast` above compares two states, and its denominator carries the
+    // mesh's facet edges, its vertex-colour ramp and the shadow map, none of
+    // which the toggle removes. That makes the ratio a statement about the
+    // object as much as about the material: measured, the same field scores
+    // x1.91 on a pale faceted boulder and x1.26 on a dark canopy whose baseline
+    // already has structure in it. This one has no baseline. A constant offset
+    // — a wash, a tint, an exposure slip — has zero neighbour variation in the
+    // difference image and scores exactly 0, by construction and not by
+    // calibration.
+    const diffStructure = () => {
+      let mag = 0;
+      let magN = 0;
+      let step = 0;
+      let stepN = 0;
+      for (let y = 0; y < h; y++) {
+        const row = y * w;
+        for (let x = 0; x < w; x++) {
+          const i = row + x;
+          if (!mask[i]) continue;
+          mag += Math.abs(diff[i]);
+          magN++;
+          if (x + 1 < w && mask[i + 1]) {
+            step += Math.abs(diff[i + 1] - diff[i]);
+            stepN++;
+          }
+          if (y + 1 < h && mask[i + w]) {
+            step += Math.abs(diff[i + w] - diff[i]);
+            stepN++;
+          }
+        }
+      }
+      if (magN === 0 || stepN === 0) return { mag: 0, step: 0, ratio: 0 };
+      const m = mag / magN;
+      const s = step / stepN;
+      return { mag: m, step: s, ratio: m > 1e-6 ? s / m : 0 };
+    };
+
+    // Chromaticity spread over the mask: r/(r+g+b), b/(r+g+b), which is
+    // brightness-free by construction, so a term that only moved value scores
+    // exactly the same in both states.
+    const chroma = (buf) => {
+      let sr = 0;
+      let sb = 0;
+      let n = 0;
+      for (let i = 0; i < w * h; i++) {
+        if (!mask[i]) continue;
+        const p = i * 4;
+        const s = buf[p] + buf[p + 1] + buf[p + 2];
+        if (s < 12) continue; // near-black carries no usable chromaticity
+        sr += buf[p] / s;
+        sb += buf[p + 2] / s;
+        n++;
+      }
+      if (n === 0) return 0;
+      const mr = sr / n;
+      const mb = sb / n;
+      let acc = 0;
+      for (let i = 0; i < w * h; i++) {
+        if (!mask[i]) continue;
+        const p = i * 4;
+        const s = buf[p] + buf[p + 1] + buf[p + 2];
+        if (s < 12) continue;
+        const dr = buf[p] / s - mr;
+        const db = buf[p + 2] / s - mb;
+        acc += dr * dr + db * db;
+      }
+      return Math.sqrt(acc / n);
+    };
+
+    for (const view of views) {
+      cam.position.set(view.eye[0], view.eye[1], view.eye[2]);
+      this.sky.position.copy(cam.position);
+      this._target.set(view.at[0], view.at[1], view.at[2]);
+      cam.lookAt(this._target);
+
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, ship);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, control);
+      propToggle.value = 0;
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, flat);
+      propToggle.value = 1;
+
+      let masked = 0;
+      let noise = 0;
+      let up = 0;
+      let down = 0;
+      for (let i = 0; i < w * h; i++) {
+        const p = i * 4;
+        const a = luma(ship, p);
+        if (a !== luma(control, p)) noise++;
+        const d = a - luma(flat, p);
+        const m = Math.abs(d) > minDelta ? 1 : 0;
+        mask[i] = m;
+        diff[i] = d;
+        masked += m;
+        if (m) {
+          if (d > 0) up++;
+          else down++;
+        }
+      }
+      const px = w * h;
+      const cShip = contrast(ship);
+      const cFlat = contrast(flat);
+      const kShip = chroma(ship);
+      const kFlat = chroma(flat);
+      const ds = diffStructure();
+      samples.push({
+        label: view.label,
+        surface: view.surface || null,
+        // Carried through from the caller so a failure can say whether the
+        // probe photographed the wrong thing or the right thing badly.
+        distance: view.distance,
+        instances: view.instances,
+        eye: view.eye,
+        masked,
+        maskFraction: masked / px,
+        noise,
+        upFraction: up / px,
+        downFraction: down / px,
+        contrastShip: cShip,
+        contrastFlat: cFlat,
+        contrastRatio: cFlat > 1e-6 ? cShip / cFlat : 0,
+        diffMean: ds.mag,
+        diffStep: ds.step,
+        diffStructure: ds.ratio,
+        chromaShip: kShip,
+        chromaFlat: kFlat,
+        chromaRatio: kFlat > 1e-9 ? kShip / kFlat : 0,
+      });
+    }
+
+    propToggle.value = 1;
     cam.position.copy(keepPos);
     this.sky.position.copy(cam.position);
     cam.quaternion.copy(keepQ);
