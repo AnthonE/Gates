@@ -438,20 +438,27 @@ const PROJ_MIN_AMP_RATIO = Number(process.env.BROWSER_SMOKE_PROJ_MIN_AMP || 0.9)
 // the same arithmetic differently and a last-bit difference flips a fragment at
 // a smoothstep knee or a silhouette.
 const PROJ_RETIRED_MAX_FRACTION = Number(process.env.BROWSER_SMOKE_PROJ_RETIRED_MAX || 0.0002);
-// How much more of the octave's own amplitude the projection must move on a
-// real face than on near-level ground — a second, independent way for the tap
-// to be caught not reading the normal. A blend on anything constant changes
-// every grain pixel in the frame and changes them by the same amount whatever
-// the ground is doing, which scores exactly 1.00 here.
+// The confinement pair: how far apart the two projections put the frame, over
+// the grain's own pixels, in units of what the grain contributes there. Two
+// bars, not one ratio, because each names a different failure and a ratio names
+// neither — a tap that ignores the normal entirely makes the two programs
+// identical, so both sides go to zero and any ratio bar passes 0 >= 0.
 //
-// The floor is 1.5 — half again — against a measured 1.95 on this spawn's
-// 46.6° face, and the margin is deliberately generous because the denominator
-// is not zero and cannot be made zero: the flat control's ground is up to 6° of
-// slope, not 0°, so it carries a real effect (2.494 of the octave's amplitude
-// against the face's 4.867) that a steeper spawn would shrink and a flatter one
-// would grow. What the floor has to separate is 1.00 from "grows with slope",
-// and 1.5 does that without being a bet on which meadow the seed hands over.
-const PROJ_MIN_SLOPE_RATIO = Number(process.env.BROWSER_SMOKE_PROJ_SLOPE_RATIO || 1.5);
+//   floor on the FACE — the projection has to actually do something where the
+//   ground is tilted. A neutered tap scores 0.000 here. Measured 0.534 on this
+//   spawn's 46.6° face; the floor is 0.15, and it is a floor on the evidence
+//   this seed happens to offer, so a gentler face would lower the measurement
+//   while `PROJ_FACE_MAX_UPNESS` keeps it above 25.8° of slope.
+//
+//   ceiling on LEVEL ground — and next to nothing where it is not. This is the
+//   "level ground is unchanged" claim, measured rather than asserted from the
+//   algebra: on the flat control the two programs differ by at most 1/255 luma
+//   over 14.1% of the frame, which is 0.022 of the octave's own amplitude
+//   against the face's 0.534. The ceiling is 0.10 — under a fifth of the face's
+//   reading, and five times the measurement, because "level" near this spawn is
+//   up to 6° of slope and another seed's meadow may be steeper.
+const PROJ_MIN_FACE_EFFECT = Number(process.env.BROWSER_SMOKE_PROJ_MIN_FACE_EFF || 0.15);
+const PROJ_MAX_FLAT_EFFECT = Number(process.env.BROWSER_SMOKE_PROJ_MAX_FLAT_EFF || 0.1);
 
 // --- the fragment budget (DECISIONS.md §open, "fragment budget v0") ---------
 // DESIGN §9 budgets the frame by DRAW CALLS and TRIANGLES, and the gate has
@@ -1866,23 +1873,36 @@ if (retiredXZ.vsFirst.changedFraction > PROJ_RETIRED_MAX_FRACTION) {
       `octave.\n${projDetail(pr)}`,
   );
 }
-// …and confinement to SLOPES, which is what the claim "level ground is
-// unchanged" is really about. Counting changed pixels cannot see it: the
-// triplanar tap reads different lattice cells the moment any weight leaves the
-// XZ plane, so 6° of slope already moves nearly every grain pixel and 46° moves
-// the same nearly-every. What does scale is the SIZE of the difference, read in
-// units of the octave itself — how far the two programs' frames sit apart over
-// the grain's own pixels, divided by what the grain contributes there.
+// …and confinement to SLOPES, which is what "level ground is unchanged" means
+// once it is measured instead of derived. The algebra says the tap is bit-exact
+// where the normal is exactly vertical, and no frame contains such a fragment —
+// a heightfield's noise is continuous, so exactly-level is measure-zero. What a
+// frame CAN show is the two projections landing within one luma step of each
+// other over near-level ground and pulling apart on a face, and that is what
+// these two bars hold. Note the size to expect: the difference is bounded by
+// the octave itself, so a correctly paired reading cannot exceed ~2 — the pass
+// that first shipped this assertion read 4.867 and 2.494 because the probe was
+// comparing each frame against another CAMERA's, which is the bug the per-view
+// reference array in `scene.js` now prevents.
 const faceEffect = faceXZ.vsFirst.meanAbsMasked / Math.max(faceXZ.amp, 1e-6);
 const flatEffect = flatXZ.vsFirst.meanAbsMasked / Math.max(flatXZ.amp, 1e-6);
-if (!(faceEffect >= flatEffect * PROJ_MIN_SLOPE_RATIO)) {
+if (!(faceEffect >= PROJ_MIN_FACE_EFFECT)) {
   fail(
-    `tab A: the projection moves the frame by ${faceEffect.toFixed(3)} of the octave's own ` +
-      `amplitude on a ${face.slopeDeg.toFixed(1)}° face against ${flatEffect.toFixed(3)} on the flat ` +
-      `control, over ground no steeper than 6° — a ratio of ` +
-      `${(faceEffect / Math.max(flatEffect, 1e-6)).toFixed(2)} against a floor of ` +
-      `${PROJ_MIN_SLOPE_RATIO}. The tap is not blending on the surface normal: its effect does not ` +
-      `grow with slope.\n${projDetail(pr)}`,
+    `tab A: the two projections put the frame only ${faceEffect.toFixed(3)} of the octave's own ` +
+      `amplitude apart on a ${face.slopeDeg.toFixed(1)}° face (floor ${PROJ_MIN_FACE_EFFECT}, max ` +
+      `${faceXZ.vsFirst.maxDelta}/255 over ${faceXZ.vsFirst.changed} px). On a face this steep the ` +
+      `triplanar tap reads mostly OTHER planes than XZ, so the two programs cannot agree this ` +
+      `closely unless the tap is not reading the surface normal at all.\n${projDetail(pr)}`,
+  );
+}
+if (!(flatEffect <= PROJ_MAX_FLAT_EFFECT)) {
+  fail(
+    `tab A: the two projections put the frame ${flatEffect.toFixed(3)} of the octave's own ` +
+      `amplitude apart on the flat control (ceiling ${PROJ_MAX_FLAT_EFFECT}, max ` +
+      `${flatXZ.vsFirst.maxDelta}/255 over ${flatXZ.vsFirst.changed} px), against ` +
+      `${faceEffect.toFixed(3)} on the ${face.slopeDeg.toFixed(1)}° face. Where the ground is level ` +
+      `the blend weights are (0,1,0) and the triplanar tap IS the world-XZ tap; a projection that ` +
+      `moves level ground this far is not blending on the surface normal.\n${projDetail(pr)}`,
   );
 }
 console.log(
@@ -1895,8 +1915,10 @@ console.log(
     `${(1 / face.upness).toFixed(3)} stretch) coarsens the grain x${stretchXZ.toFixed(3)} on world ` +
     `XZ and x${stretchTri.toFixed(3)} triplanar — gain x${stretchGain.toFixed(3)} over ` +
     `${PROJ_MIN_STRETCH_GAIN}, at x${ampRatio.toFixed(3)} amplitude; flat control agrees to ` +
-    `${(flatSpread * 100).toFixed(1)}%; effect ${faceEffect.toFixed(3)} of the octave on the face ` +
-    `vs ${flatEffect.toFixed(3)} flat (x${(faceEffect / Math.max(flatEffect, 1e-6)).toFixed(2)}); ` +
+    `${(flatSpread * 100).toFixed(1)}%; the two projections sit ${faceEffect.toFixed(3)} of the ` +
+    `octave apart on the face (floor ${PROJ_MIN_FACE_EFFECT}, max ${faceXZ.vsFirst.maxDelta}/255) ` +
+    `and ${flatEffect.toFixed(3)} on level ground (ceiling ${PROJ_MAX_FLAT_EFFECT}, max ` +
+    `${flatXZ.vsFirst.maxDelta}/255) — x${(faceEffect / Math.max(flatEffect, 1e-6)).toFixed(1)}; ` +
     `${retiredXZ.vsFirst.changed} px where the octave is retired`,
 );
 
@@ -2554,10 +2576,15 @@ for (const hook of [
   "splatCensus",
   "horizonProbe",
   "grainProbe",
-  // The cost probe is the one dev affordance that also BUILDS something: its
-  // variants are five extra terrain programs. A public tab must neither have
-  // the hook nor the compiles behind it.
+  // The cost probe is not the only dev affordance that BUILDS something — its
+  // variants are five extra terrain programs and the projection probe compiles
+  // a sixth. A public tab must have neither the hooks nor the compiles behind
+  // them.
   "costProbe",
+  "projectionProbe",
+  // …and this one is not a probe at all: it walks every near vertex in a 150 m
+  // radius, which is a frame's worth of work handed to anyone who asks.
+  "steepestFace",
 ]) {
   const t = await P.page.evaluate((h) => typeof globalThis.__gatesDebug[h], hook);
   if (t !== "undefined") {

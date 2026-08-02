@@ -892,7 +892,13 @@ export class GameScene {
     const on = new Uint8Array(w * h * 4);
     const control = new Uint8Array(w * h * 4);
     const off = new Uint8Array(w * h * 4);
-    const first = new Uint8Array(w * h * 4);
+    // One reference frame PER VIEW, not one for the probe. A single buffer
+    // reused across the view loop leaves every later program compared against
+    // the LAST view of the first one — a different camera — and the comparison
+    // then reports the difference between two landscapes as the difference
+    // between two projections. That bug shipped once and was caught in judging;
+    // the array is the fix and this note is why it is an array.
+    const first = views.map(() => new Uint8Array(w * h * 4));
     const diff = new Int16Array(w * h);
     const mask = new Uint8Array(w * h);
     const luma = (b, p) => (b[p] * 2 + b[p + 1] * 5 + b[p + 2]) >> 3;
@@ -914,7 +920,8 @@ export class GameScene {
       // anisotropy belongs to the sun, not to the projection.
       const keepAmp = u.uGrainAmp.value.clone();
       u.uGrainAmp.value.set(0, 0);
-      for (const view of views) {
+      for (let vi = 0; vi < views.length; vi++) {
+        const view = views[vi];
         cam.position.set(view.eye[0], view.eye[1], view.eye[2]);
         this.sky.position.copy(cam.position);
         this._target.set(view.at[0], view.at[1], view.at[2]);
@@ -972,27 +979,30 @@ export class GameScene {
             }
           }
         }
-        // The confinement half: the first program's lit frame is kept and every
-        // later one compared against it, pixel for pixel.
+        // The confinement half: the first program's frame at THIS view is kept
+        // and every later program's frame at the same view is compared against
+        // it, pixel for pixel.
         //
-        // `changed` saturates — the moment any weight off the XZ plane is
-        // nonzero the two taps read DIFFERENT lattice cells, so 6° of slope
-        // already moves nearly every grain pixel and the count says the same
-        // thing at 6° as at 46°. `meanAbsMasked` is the one that does not: the
-        // mean difference between the two programs over the grain's own pixels,
+        // `changed` counts any difference at all, including a single luma step,
+        // so it runs ahead of the magnitude: on near-level ground the two
+        // projections differ on 14% of the frame and by at most 1/255, which
+        // the count cannot tell from a real disagreement. `meanAbsMasked` is
+        // the one that can — the mean difference over the grain's own pixels,
         // which the caller divides by `amp` to read the projection's effect in
-        // units of the octave it is a projection OF.
+        // units of the octave it is a projection OF. Both are reported; only
+        // the second is worth asserting on.
         let vsFirst = null;
         if (pi === 0) {
-          first.set(on);
+          first[vi].set(on);
         } else {
+          const ref = first[vi];
           let changed = 0;
           let max = 0;
           let sum = 0;
           let n = 0;
           for (let i = 0; i < w * h; i++) {
             const p = i * 4;
-            const d = luma(on, p) - luma(first, p);
+            const d = luma(on, p) - luma(ref, p);
             if (d !== 0) changed++;
             const m = d < 0 ? -d : d;
             if (m > max) max = m;
