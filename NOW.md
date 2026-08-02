@@ -72,7 +72,26 @@ Done items are deleted, not checked — history lives in git and
    yaws for exactly that reason. A scatter LOD (billboard crosses,
    `TERRAIN.md` §4's "trees get two LODs") is the fix and it is a terrain
    job, not a shadow one.
-4. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
+4. **A capture the same twice is a gate; a capture that drifts is a vibe.**
+   Deterministic capture mode (operator, 2026-08-02, `DECISIONS.md` — the
+   Claude-of-Duty adoption row): the client animates off the sim tick / an
+   injected fixed-step clock in capture mode — today the RAF loop steps off
+   `performance.now()` (`main.js`), so boot-time noise shifts every pixel —
+   with a fixed seed, the existing `__gatesDebug.setView` shots, and ONE
+   fresh page per shot (state leaks between shots on a shared page:
+   exposure-like accumulators, particle age). Then a pixel-diff tool
+   against blessed per-box goldens, exit nonzero on any moved pixel, used
+   two ways: refactor/optimization passes assert zero diff; feature passes
+   regenerate goldens in the same commit — `test_protocol_golden`'s
+   discipline, wall 6, applied to frames. v1 scope: solo shard, camera-only
+   shots, no remotes in frame. v2, if wanted later: render-from-WAL-replay
+   (wall 5 already guarantees the state side). The clock conversion is the
+   prerequisite, not the diff tool — grep every `performance.now()` and
+   RAF-timestamp use in `web/src` and sort each into sim-driven, cosmetic
+   (must switch to the engine clock in capture mode), or UI-only (excluded
+   from shots). Settle by tick count, never by time.
+
+5. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
    solid (slice 13: chat — two channels on the reliable lane, local at
    20 m and global, sanitized at both edges and rate-limited per
@@ -88,13 +107,13 @@ Done items are deleted, not checked — history lives in git and
    there) · piece damage (M2's raid lane: hp exists and decays, nothing
    attacks it yet) · nametags (chat names a speaker by id today, because
    nothing has a name yet).
-5. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
+6. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
-6. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
+7. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
    admin lane · backups · status page · error capture · `bench_transport`.
-7. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
+8. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
    then tune content bands from what the anomaly log and the replays say.
-8. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
+9. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
 
