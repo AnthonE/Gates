@@ -33,6 +33,16 @@ Done items are deleted, not checked — history lives in git and
      rock, bark and canopy albedo at ~0.5–1 m repeat with a
      macro-variation octave breaking the tiling. The octave ladder is now
      safe to build on; nothing has been built on it.
+   - **Re-place the meso octave — tried this pass and backed out.** At
+     9.5 m the coarsest surviving octave completes a third of a cycle
+     inside a typical 8 m ground framing, which is the flat hue the
+     acceptance names; 4 m completes two and still retires far past any
+     footprint this world produces. It went red on `browser_smoke` 15c,
+     and not on the arithmetic: the splat wobble is driven by gmMeso, so
+     moving it moves which identity owns a face, and grain reads its
+     scale, contrast and ridge off those same weights. Do it *with* the
+     albedo work and re-measure 15c's 46.6° face alongside it — the
+     coupling is the reason this is not a one-constant change.
    - **Splat transitions by height/slope/noise, and a wet-sand waterline.**
      `WET_RANGE` exists and paints; the report saw no shoreline in any
      vantage, so either the band is too narrow to read at capture framing

@@ -171,20 +171,28 @@ export const IDENTITIES = [
 ];
 
 // Field scales, in cycles per metre — one field, three octaves, shared by
-// every channel below. Wavelengths ~48 m / ~4 m / ~1.7 m.
+// every channel below. Wavelengths ~48 m / ~9.5 m / ~1.7 m.
 //
-// The meso octave moved 9.5 m → 4 m this pass, and the reason is what the
-// visual judge's frames showed rather than a preference. Every octave here
-// retires at a footprint (below), so the band a player actually sees at
-// mid distance is bounded above by the coarsest octave that survives it. At
-// 9.5 m the surviving octave completed a third of a cycle inside a typical
-// 8 m ground framing — a gradient across the whole frame, which reads as one
-// flat hue and was measured as one ("no surface in any vantage is a single
-// flat hue" was the acceptance). 4 m completes two cycles in the same frame
-// and still retires at 0.36 m/px, far beyond any footprint this world
-// produces. Its amplitude moved with it, by the rule already stated below.
+// Re-placing the meso octave was tried this pass and backed out, which is
+// worth the note because the reason to try it stands. Every octave retires at
+// a footprint (below), so the coarsest one that survives mid distance sets the
+// texture a player actually sees, and at 9.5 m that octave completes a third
+// of a cycle inside a typical 8 m ground framing — a gradient across the whole
+// frame, which is exactly the "single flat hue" the visual judge's acceptance
+// names. 4 m completes two cycles and still retires far beyond any footprint
+// this world produces.
+//
+// What stopped it is a coupling, not the arithmetic: the splat break-up wobble
+// (`gmWob`, below) is driven by gmMacro and gmMeso, so moving meso moves which
+// identity owns a given face — and the grain octave takes its scale, contrast
+// and ridge as dot products against those same weights. `browser_smoke` 15c,
+// which measures the grain's projection on the 46.6° face this spawn offers,
+// went red on the changed mix (gain x0.864 against its x1.15 floor). The
+// octave ladder is safe to build on now; re-placing meso is part of the albedo
+// work on `NOW.md` item 1 and needs 15c's face re-measured with it, not a
+// constant changed underneath it.
 const SCALE_MACRO = 1 / 48;
-const SCALE_MESO = 1 / 4.0;
+const SCALE_MESO = 1 / 9.5;
 const SCALE_MICRO = 1 / 1.7;
 // How far the field may push the identity weights around before they are
 // sharpened and renormalized. This is what turns a smooth biome ramp into a
@@ -196,14 +204,10 @@ const MOTTLE = [0.16, 0.11, 0.07];
 // Roughness variation from the micro octave (±).
 const ROUGH_VAR = 0.18;
 // Bump amplitude per octave, in metres, at identity strength 1. Chosen
-// against each octave's own wavelength (4 m and 1.7 m) so both land in
-// the 0.03–0.25 surface-slope band where a normal actually reads — the
-// convention being `amp / (wavelength / 4)`, a quarter-cycle rise. Meso is
-// 0.23 because its wavelength moved to 4 m and the SLOPE is what the band
-// is stated in: 0.55/2.375 = 0.232 at 9.5 m, 0.23/1.0 = 0.230 at 4 m. The
-// same surface, re-derived, not a new one. The footprint fades below then
-// retire each one as it stops resolving.
-const AMP_MESO_M = 0.23;
+// against each octave's own wavelength (9.5 m and 1.7 m) so both land in
+// the 0.03–0.25 surface-slope band where a normal actually reads; the
+// footprint fades below then retire each one as it stops resolving.
+const AMP_MESO_M = 0.55;
 const AMP_MICRO_M = 0.09;
 // Every octave retires on ONE law, and it is the law the grain octave was
 // already written against (`FADE_OCTAVE_CPP` below): cycles per pixel, not
@@ -267,15 +271,30 @@ const GRAIN_SCALE_MIN = Math.min(...IDENTITIES.map((i) => i.grain.scale));
 // Specular-AA gain on the perturbed normal's variance (three already adds
 // its own term from the *unperturbed* normal; this covers what we added).
 const SPEC_AA = 0.5;
-// The cap on the bump's surface gradient, as a slope. The four octaves that
-// can reach gmH are each amplitude-chosen against the 0.03–0.25 slope band
-// (above), so four of them at the top of that band is 1.0 — the steepest
-// surface this material is designed to be able to make. Anything past it is
-// not a surface, it is the divide-by-footprint in `normal_fragment_maps`
-// running away on a field that stopped being resolvable; the Nyquist fades
-// are what stop that happening and this is what bounds it when something
-// else does. 1.0 is a 45° perturbation, which no octave here asks for.
-const BUMP_MAX_SLOPE = 1.0;
+// The cap on the bump's surface gradient, as a slope — the sum of what the
+// three bump octaves and the grain actually ask for, on the identity that
+// asks for most (rock, bump 2.2), in the file's own `amp x bump / wavelength`
+// convention (the one the grain block states its 0.07–0.29 range in):
+//
+//   meso   0.55 x 2.2 / 9.5    = 0.127
+//   micro  0.09 x 2.2 / 1.7    = 0.117
+//   grain  0.008 x 2.2 / 0.060 = 0.294
+//                                -----
+//                                0.538  -> 0.55
+//
+// So every surface this material is DESIGNED to make passes through
+// untouched, with the cap holding only what arithmetic cannot justify.
+//
+// The first cut of this pass put it at 1.0 by summing four octaves at the top
+// of the 0.03–0.25 band, and 1.0 is a 45° perturbation. That is not a bound,
+// it is a licence: with the gradient reconstruction fixed the bump reaches
+// the frame at full strength for the first time (the retired space-mixed
+// formula was silently attenuating it, which is what the octave amplitudes
+// were unknowingly calibrated against), and at 45° against a sun 21° above
+// the horizon most of the ground turns away from the key light. The shadow
+// gate caught it immediately and correctly: direct light had nowhere to land,
+// so toggling the shadow map moved 0.131% of the frame against a 15% floor.
+const BUMP_MAX_SLOPE = 0.55;
 // Causal modifiers. Wetness: below the waterline the surface is dark and
 // smooth, and it dries out over the first 1.6 m of beach — this is what
 // retired the separate sea-floor palette entry (0.68 × sand lands on it).
@@ -778,7 +797,7 @@ ${grainGlsl(variant.grain)}
           // slope band the octave amplitudes are chosen against, times the
           // four octaves that can sum into gmH.
           float gmSlope = length(gmSurf);
-          gmSurf *= min(gmSlope, ${'${BUMP_MAX_SLOPE.toFixed(2)}'}) / max(gmSlope, 1e-12);
+          gmSurf *= min(gmSlope, ${BUMP_MAX_SLOPE.toFixed(2)}) / max(gmSlope, 1e-12);
           vec3 gmNw = normalize(vGmNorm);
           float gmNy = max(gmNw.y, 1e-3);
           normal = normalize(mat3(viewMatrix) * normalize(vec3(
