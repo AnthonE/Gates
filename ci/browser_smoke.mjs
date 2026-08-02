@@ -644,7 +644,8 @@ try {
 // How many of these are ALIVE AT ONCE is load-bearing on this box and is
 // tracked, not assumed. Every tab rasterizes in software (SwiftShader, no
 // GPU here or on the reference VPS), each renderer runs its own worker
-// threads, and there are four cores shared with nineteen other services. The
+// threads, and the cores are shared with a live game stack (eight here; the
+// numbers below were measured on the morr box's four and still bind). The
 // join time is monotonic in the count, measured over this gate's own history:
 // one live tab joins in 0.4 s, two in 34-36 s, three in 55-61 s. The third
 // reading is the one that went over the 60 s window on 2026-08-01 16:26 and
@@ -990,8 +991,8 @@ for (let i = 1; i < cm.levels.length; i++) {
     );
   }
 }
-// Frame time is reported, never asserted: this box shares four cores with
-// nineteen other services and the gate's renderer is a software rasterizer,
+// Frame time is reported, never asserted: this box shares its eight cores
+// with a live game stack and the gate's renderer is a software rasterizer,
 // so the number is a same-box regression signal and not a claim about the
 // reference VPS. It is printed because the clipmap is the kind of change that
 // pays for coverage with fill rate, and a doubled frame time should be
@@ -1010,6 +1011,61 @@ console.log(
     `, budget ${cm.updateBudget}/frame, max age ${cm.maxCacheAge}` +
     ` · frame ~${frameA.toFixed(1)} ms (shared box, software GL — a trend, not a claim)`,
 );
+
+// The distribution behind that number, same status (reported, never
+// asserted): the smoothed frame time is exactly the instrument that hides
+// compile stalls, so the log carries the tail too.
+const pctA = await A.page.evaluate(() => globalThis.__gatesDebug.framePct);
+if (pctA)
+  console.log(
+    `  frame dist: p50 ${pctA.p50.toFixed(1)} · p95 ${pctA.p95.toFixed(1)} · ` +
+      `p99 ${pctA.p99.toFixed(1)} · worst ${pctA.worst.toFixed(1)} ms over the last 240 frames`,
+  );
+
+// --- shader prewarm: nothing links after the snapshot ------------------------
+// CLAUDE.md trap (Claude-of-Duty postmortem): median frame time hides shader
+// compile stalls — elsewhere, 30+ lazy links cost 700 ms+ worst-frames behind
+// a 90+ fps benchmark. The client prewarms every program it can wear
+// (scene.prewarm(): color programs at boot, the depth program over the first
+// in-world frames), and this asserts the result as a COUNT on observable
+// state, never a clock. The window: by HERE both tabs have joined, walked,
+// seen a remote enter the AOI, and chatted — real play — and every section
+// BELOW this line compiles gate instruments on purpose (flatgrain, the cost
+// variants), so the assert seam closes exactly here, after play and before
+// the first instrument.
+for (const [tab, name] of [
+  [A, "tab A"],
+  [B, "tab B"],
+]) {
+  const p = await tab.page.evaluate(() => [
+    globalThis.__gatesDebug.programs,
+    globalThis.__gatesDebug.programsAtInWorld,
+    globalThis.__gatesDebug.latePrograms,
+    globalThis.__gatesDebug.pinnedPrograms,
+    globalThis.__gatesDebug.pinStamp,
+    globalThis.__gatesDebug.programLog,
+  ]);
+  if (!Number.isFinite(p[0]) || !Number.isFinite(p[1]))
+    fail(`${name}: __gatesDebug carries no program counts — the prewarm gate cannot run`);
+  if (p[1] < 0)
+    fail(
+      `${name}: programsAtInWorld was never pinned — the client reached this point ` +
+        `without three in-world frames, which no walking tab can do`,
+    );
+  if (p[0] !== p[1])
+    fail(
+      `${name}: ${p[0] - p[1]} program(s) linked AFTER the in-world snapshot ` +
+        `(${p[1]} pinned, ${p[0]} now) — some material's first draw came mid-play; ` +
+        `add it to scene.prewarm(). Late cache keys:\n` +
+        (p[2] || []).map((k) => `    LATE ${k.slice(0, 300)}`).join("\n") +
+        `\n  pinned depth-family keys for comparison:\n` +
+        (p[3] || [])
+          .map((k) => `    PIN  ${k.slice(0, 240)}`)
+          .join("\n") +
+        `\n  link log [stamp, programs], pin at stamp ${p[4]}: ${JSON.stringify(p[5])}`,
+    );
+}
+console.log(`  prewarm: 0 program links after the in-world snapshot, both tabs`);
 
 // Assertion 10 — the shadow map DARKENS PIXELS. A flag says the renderer was
 // asked for shadows; only a frame says it got any. The dev-only probe renders

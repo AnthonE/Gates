@@ -167,6 +167,19 @@ export class Terrain {
     // allocates nothing.
     this.farDepth = makeFarCasterDepthMaterial();
     this.farHole = this.farDepth.userData.uniforms.uNearHole.value;
+    // The near chunks' depth material, explicit for the same reason the far
+    // mesh's is: three hands every plain caster ONE shared MeshDepthMaterial
+    // and sets `side` per object — but its recompile check never looks at
+    // `side`, so whichever caster renders first owns the program and the
+    // ground's FrontSide fix (materials.js — a heightfield has no back
+    // faces) only takes effect when an unrelated invalidation forces a
+    // relink. Until that race resolves, chunks shadow-render FLIPPED and
+    // hills cast nothing. An owned instance never flips, compiles once, and
+    // is prewarmable (prewarmObjects below).
+    this.nearDepth = new THREE.MeshDepthMaterial({
+      depthPacking: THREE.RGBADepthPacking,
+      side: THREE.FrontSide,
+    });
     // The desired-set scan runs only on chunk-boundary crossings, so the
     // steady-state RAF path builds no key strings (DESIGN.md L8).
     this.lastCcx = -1000;
@@ -208,6 +221,46 @@ export class Terrain {
     }
     this.chunkSlots = new Map(); // key -> [{arch, idx, key, cellKey, …}]
     this.cellIndex = new Map(); // cellKey (cx<<16|cz) -> entry
+    // The two program families this terrain otherwise links MID-PLAY, built
+    // as dummies for the scene's prewarm group (scene.prewarm): a count-1
+    // instanced sample — the pools above boot at count 0, never enter a
+    // render list, and so defeat their own pre-allocated colour buffer until
+    // the first tree streams in — and a far-caster sample wearing the custom
+    // depth material, which otherwise links when the far mesh first casts.
+    // The group carries them through boot and the first in-world shadow
+    // pass, then disposes them.
+    this.prewarmObjects = () => {
+      const objs = [];
+      const pool = this.pools.find(Boolean);
+      if (pool) {
+        const m = new THREE.InstancedMesh(
+          new THREE.PlaneGeometry(0.02, 0.02),
+          pool.material,
+          1,
+        );
+        m.setColorAt(0, this._c.setRGB(1, 1, 1));
+        m.castShadow = true;
+        m.frustumCulled = false;
+        objs.push(m);
+      }
+      const far = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.02, 0.02),
+        this.material,
+      );
+      far.customDepthMaterial = this.farDepth;
+      far.castShadow = true;
+      far.frustumCulled = false;
+      objs.push(far);
+      const near = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.02, 0.02),
+        this.material,
+      );
+      near.customDepthMaterial = this.nearDepth;
+      near.castShadow = true;
+      near.frustumCulled = false;
+      objs.push(near);
+      return objs;
+    };
     this._m4 = new THREE.Matrix4();
     this._q = new THREE.Quaternion();
     this._e = new THREE.Euler();
@@ -272,6 +325,7 @@ export class Terrain {
         geo.dispose(); // unloaded while building
       } else {
         mesh.position.set(msg.x0, 0, msg.z0);
+        mesh.customDepthMaterial = this.nearDepth;
         castInLevels(mesh, 0, NEAR_CASTER_MAX_LEVEL);
         this.scene.add(mesh);
         entry.pending = false;

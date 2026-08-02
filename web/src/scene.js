@@ -543,6 +543,73 @@ export class GameScene {
   }
 
   /**
+   * Compile every program this session can wear before play (CLAUDE.md trap:
+   * median fps hides shader-compile stalls — a program that links mid-play is
+   * a 100 ms-class hitch the sim never sees). Two halves, because programs
+   * come from two places:
+   *
+   * COLOR programs — `renderer.compile()` builds them for everything in the
+   * scene graph, so materials whose first draw is late (the terrain, attached
+   * before any chunk mesh exists; remotes, first drawn when a player enters
+   * the AOI; pieces, first placement) each ride a hidden dummy mesh into the
+   * call. Door and deployable materials share these programs (same feature
+   * set), so the samples here cover them.
+   *
+   * DEPTH programs — the shadow pass builds those, and no shadow pass exists
+   * before `inWorld` (the clipmap only updates from `setCamera`). So the
+   * dummies STAY, casting, and the caller parks them at the player for the
+   * first in-world frames (`prewarmAt`), then removes them (`prewarmDone`)
+   * once the depth program has linked. `browser_smoke` asserts the sum of
+   * both halves: zero program links after its snapshot.
+   */
+  prewarm(extras = []) {
+    const mats = [this._remoteMat, this._remoteFrozenMat, ...this._tierMats];
+    if (this._terrainMat) mats.push(this._terrainMat);
+    const geo = new THREE.PlaneGeometry(0.02, 0.02);
+    const group = new THREE.Group();
+    for (let i = 0; i < mats.length; i++) {
+      // Each material twice: straight, and mirrored (scale.x = -1). A
+      // negative-determinant transform flips which side the shadow pass
+      // renders, and `flipSided` is a PROGRAM define — the depth variant a
+      // mirrored (or shadowSide-set) caster wears is a separate link.
+      for (const sx of [1, -1]) {
+        const m = new THREE.Mesh(geo, mats[i]);
+        m.castShadow = true;
+        m.frustumCulled = false;
+        m.position.y = i * 0.06 + (sx < 0 ? 0.03 : 0);
+        m.scale.x = sx;
+        group.add(m);
+      }
+    }
+    // Callers hand in dummies for program families a plain plane cannot
+    // reach — instanced pools, custom depth materials (terrain.prewarmObjects).
+    for (const o of extras) group.add(o);
+    group.position.set(0, -40, 0);
+    this.scene.add(group);
+    this._prewarmGroup = group;
+    this._prewarmGeo = geo;
+    this.renderer.compile(this.scene, this.camera);
+    return this.renderer.info.programs.length;
+  }
+
+  /** Park the prewarm dummies where the first shadow pass will see them. */
+  prewarmAt(x, y, z) {
+    if (this._prewarmGroup) this._prewarmGroup.position.set(x, y, z);
+  }
+
+  /** Depth programs linked — the dummies have no further job. */
+  prewarmDone() {
+    if (!this._prewarmGroup) return;
+    this.scene.remove(this._prewarmGroup);
+    this._prewarmGroup.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.instanceMatrix) o.dispose(); // InstancedMesh owns GPU buffers
+    });
+    this._prewarmGroup = null;
+    this._prewarmGeo = null;
+  }
+
+  /**
    * The far mesh's depth uniforms, borrowed the same way and for the same
    * reason: `horizonProbe` needs one handle on the horizon's caster, and
    * Terrain owns it because Terrain owns the mesh. Called once at boot.
