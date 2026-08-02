@@ -33,14 +33,15 @@ pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
-    decode_event, encode_event_build_refused, encode_event_catalog, encode_event_chat,
-    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
-    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_weak_mark, EventMsg, InvSlot,
-    ItemCatalog, CATALOG_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
+    decode_event, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
+    encode_event_build_refused, encode_event_catalog, encode_event_chat, encode_event_craft_done,
+    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
+    encode_event_inv, encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
+    BAG_SYNC_BATCH, CATALOG_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
     MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
@@ -83,8 +84,14 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// at the moment it changes instead of costing every entity record a
 /// field on every tick. When remote health bars or a downed state need it
 /// continuously, that is a snapshot-widening bump of its own, not a
-/// retrofit of this one. Fixtures are keyed `v11_*`.
-pub const PROTO_VER: u16 = 11;
+/// retrofit of this one. v12 added the death-backpack lane: the loot
+/// action — the ninth, which widened the action subtype field 3 → 4 bits,
+/// so **every C→S action message moved by one bit** — and three event
+/// subtypes (bag dropped, join sync, removed). No datagram layout moved:
+/// a bag is class-S furniture on the reliable lane, not a snapshot
+/// entity, for the same reason a placed deployable is. Fixtures are keyed
+/// `v12_*`.
+pub const PROTO_VER: u16 = 12;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -256,7 +263,12 @@ pub fn decode_refuse(buf: &[u8]) -> Result<Refuse, WireError> {
 // Action messages (C→S, the reliable bidi lane)
 // ---------------------------------------------------------------------------
 
-const ACTION_SUB_BITS: u32 = 3;
+/// Widened 3 → 4 in wire v12: `ACT_LOOT` is the ninth action and eight
+/// was the ceiling. Every action message therefore moved by one bit —
+/// the goldens are regenerated in the same commit (CLAUDE.md wall 6),
+/// and the C→S action lane is the only lane affected (no datagram
+/// layout, no S→C event, moved).
+const ACTION_SUB_BITS: u32 = 4;
 const ACT_CRAFT: u32 = 0;
 const ACT_CANCEL: u32 = 1;
 const ACT_PLACE: u32 = 2;
@@ -265,6 +277,7 @@ const ACT_FEED: u32 = 4;
 const ACT_USE: u32 = 5;
 const ACT_LOCK: u32 = 6;
 const ACT_UPGRADE: u32 = 7;
+const ACT_LOOT: u32 = 8;
 /// Cancel index width mirrors the queue (`CRAFT_QUEUE` = 4 fits 3 bits);
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
@@ -349,6 +362,21 @@ pub enum ActionMsg {
         loc: u8,
         material: u8,
     },
+    /// Open the nearest death backpack in reach and take what fits
+    /// (backpack.rs). **Payload-free, and deliberately**: every other
+    /// action names a grid address because the thing it acts on has one,
+    /// and a bag does not — it lies wherever a body fell. The sim picks
+    /// the nearest bag inside the same reach a feed and a door use, so
+    /// there is no id here to forge, no address to aim past a wall, and
+    /// no way to loot something the sender is not standing on.
+    Loot,
+}
+
+pub fn encode_action_loot(buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_LOOT, ACTION_SUB_BITS)?;
+    Ok(w.finish())
 }
 
 pub fn encode_action_craft(recipe: u16, count: u16, buf: &mut [u8]) -> Result<usize, WireError> {
@@ -619,6 +647,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 material,
             }
         }
+        ACT_LOOT => ActionMsg::Loot,
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;

@@ -17,12 +17,15 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-/// Regenerated this commit: the beach spawn ring landed, so every `Join`
-/// in this script puts its player on a different point of the world — the
-/// sim change — and the kitted bots are now walked up off the sand before
-/// the scripted arc runs (`walk_up_the_beach`), which moves eight more
-/// bodies. Every hash downstream of either moves with them.
-const GOLDEN_FINAL_HASH: u64 = 0x5E14_85BF_ABE8_CB78;
+/// Regenerated this commit: the death backpack landed, and `state_hash`
+/// grew the ground-container store — its length, every standing bag, and
+/// the id counter. **This script arms no combat**, so it drops no bags
+/// and the store it hashes is empty; what moved the number is the two
+/// new zero-length fields entering the digest, not any behaviour in this
+/// script. The backpack's own determinism is covered where the fight is:
+/// `probe_combat` (`test_parity_wasm`, native and wasm byte-identical)
+/// brawls three bots and has them loot each other every tick.
+const GOLDEN_FINAL_HASH: u64 = 0x5671_7CB1_989B_98A4;
 
 /// Stand a kitted bot on ground that will hold a foundation.
 ///

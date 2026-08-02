@@ -860,6 +860,55 @@ console.log(`  mutual AOI: A sees ${B.playerId}, B sees ${A.playerId}`);
   console.log(`  vitals: both tabs read ${wantHp} hp, straight from content/balance.toml`);
 }
 
+// --- the backpack lane: wired, and reconciling from zero --------------------
+// Assertion 2b — the death-backpack lane is present in a real browser and the
+// interact key runs its loot path without throwing. Scope, stated plainly:
+// nobody dies in this gate (the shipped content arms no weapon a fresh spawn
+// holds), so this asserts the WIRING — the client's bag set exists, the
+// renderer's mesh map exists, the two agree at zero, and pressing E walks
+// `tryLoot` in the real RAF/keydown path. What a bag DOES is asserted where
+// it can be: `backpack_wire` drives kill → drop → loot → removal through real
+// encoded bytes, and `client_smoke` hand-frames all three subtypes into the
+// raw C ABI. A JS throw on that path is what this catches and they cannot.
+{
+  for (const tab of [A, B]) {
+    const before = await tab.page.evaluate(() => {
+      const d = globalThis.__gatesDebug;
+      return d ? { known: d.bagsKnown, drawn: d.bags } : null;
+    });
+    if (!before) fail(`tab ${tab.playerId}: __gatesDebug vanished before the backpack check`);
+    if (before.known !== 0 || before.drawn !== 0) {
+      fail(
+        `tab ${tab.playerId}: a fresh shard has ${before.known} bags known and ` +
+          `${before.drawn} drawn — nobody has died`,
+      );
+    }
+    await tab.page.keyboard.press("KeyE");
+    // Settle on observable state, never a clock: the debug snapshot
+    // republishes on its own timer, so poll it until it moves past the
+    // press rather than sleeping a guessed number of milliseconds.
+    let after = null;
+    for (let i = 0; i < 40; i++) {
+      after = await tab.page.evaluate(() => {
+        const d = globalThis.__gatesDebug;
+        return d ? { known: d.bagsKnown, drawn: d.bags, inWorld: d.inWorld } : null;
+      });
+      if (after && after.inWorld) break;
+      await tab.page.waitForTimeout(100);
+    }
+    if (!after || !after.inWorld) {
+      fail(`tab ${tab.playerId}: the loot key took the tab out of the world`);
+    }
+    if (after.known !== 0 || after.drawn !== 0) {
+      fail(
+        `tab ${tab.playerId}: pressing loot with nothing in reach conjured ` +
+          `${after.known} known / ${after.drawn} drawn bags`,
+      );
+    }
+  }
+  console.log("  backpack: the loot key runs and the bag set holds at zero in both tabs");
+}
+
 // --- chat, part 1: heard at the spawn --------------------------------------
 // Assertion 2 — a line typed into the real composer in one browser reaches
 // the other browser's log. Driven entirely through the UI (T, type, Enter)

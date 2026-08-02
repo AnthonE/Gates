@@ -83,6 +83,13 @@ const DEPLOY_STYLE = [
   [1.6, 0.9, 0.9, 0xa1793f, "wood"], // workbench
   [0.12, 2.1, 0.9, 0x6b4a2b, "wood"], // door (thickness, height, width)
 ];
+// The death backpack (backpack.rs): a low canvas bundle on the ground
+// where a body fell, in the same cloth surface the sleeping bag wears, so
+// it shares that program family and links nothing new after `inWorld`
+// (the prewarm trap, CLAUDE.md). Cosmetics (DECISIONS.md §open, client
+// cosmetics row).
+const BAG_STYLE = [0.6, 0.35, 0.45, 0xa06a3c, "cloth"];
+
 // A locked door reads as banded iron over the wood — the one bit of door
 // state a passer-by can see, and the thing they'd have to break.
 const DOOR_LOCKED_COLOR = 0x3c3f44;
@@ -238,6 +245,8 @@ export class GameScene {
     // the RAF path) and swept only by a piece-set reset.
     this.pieces = new Map(); // "cx,cz,level,loc" -> Object3D
     this.deploys = new Map(); // "cx,cz,level,loc" -> Object3D
+    this.bags = new Map(); // backpack id -> Object3D
+    this._bagMat = null; // shared: every bag is the same bundle
     this._deployMats = new Map(); // arch -> material (shared per kind)
     this._planeGeo = new THREE.BoxGeometry(CELL - 0.04, SLAB, CELL - 0.04);
     this._wallGeo = new THREE.BoxGeometry(WALL_T, LEVEL_H, CELL - 0.04);
@@ -435,6 +444,42 @@ export class GameScene {
     this.scene.add(obj);
     this._invalidateShadows(obj);
     this.deploys.set(key, obj);
+  }
+
+  /**
+   * Reconcile the standing death backpacks against the client's whole set
+   * (`client_bag_ids_ptr` / `client_bags_ptr`). The client hands the set,
+   * not a delta, so this adds what is new and removes what is gone —
+   * ≤ MAX_BACKPACKS entries and only on an `APPLIED_BAGS` message, which
+   * is a death or a loot, not a frame.
+   *
+   * `ids` and `pos` are wasm-memory views; `n` is the live count, because
+   * the views are sized for the cap.
+   */
+  setBags(ids, pos, n) {
+    const [w, h, d, color, surface] = BAG_STYLE;
+    if (!this._bagMat) this._bagMat = surfaceMaterial(surface, { color });
+    const live = new Set();
+    for (let i = 0; i < n; i++) {
+      const id = ids[i];
+      live.add(id);
+      if (this.bags.has(id)) continue; // a bag never moves
+      const obj = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), this._bagMat);
+      // The sim drops it at the body's feet, so lift by half its height
+      // to stand it on the ground rather than half-sunk in it.
+      obj.position.set(pos[i * 3], pos[i * 3 + 1] + h / 2, pos[i * 3 + 2]);
+      shadowed(obj);
+      this.scene.add(obj);
+      this._invalidateShadows(obj);
+      this.bags.set(id, obj);
+    }
+    for (const [id, obj] of this.bags) {
+      if (live.has(id)) continue;
+      this._invalidateShadows(obj);
+      this.scene.remove(obj);
+      obj.geometry.dispose();
+      this.bags.delete(id);
+    }
   }
 
   removeDeploy(cx, cz, level, loc) {

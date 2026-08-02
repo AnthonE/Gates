@@ -8,15 +8,16 @@
 
 use protocol::{
     encode_action_cancel, encode_action_craft, encode_action_deploy, encode_action_feed,
-    encode_action_lock, encode_action_place, encode_action_upgrade, encode_action_use, encode_chat,
-    encode_event_build_refused, encode_event_catalog, encode_event_chat, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
-    encode_event_inv, encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_weak_mark, encode_hello, encode_input, encode_refuse,
-    encode_snapshot, encode_welcome, goldens,
+    encode_action_lock, encode_action_loot, encode_action_place, encode_action_upgrade,
+    encode_action_use, encode_chat, encode_event_bag_dropped, encode_event_bag_removed,
+    encode_event_bag_sync, encode_event_build_refused, encode_event_catalog, encode_event_chat,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_gather, encode_event_health,
+    encode_event_hit, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_weak_mark, encode_hello, encode_input,
+    encode_refuse, encode_snapshot, encode_welcome, goldens,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -194,4 +195,19 @@ fn main() {
     let (victim, killer) = goldens::event_death();
     let len = encode_event_death(victim, killer, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[43], &buf[..len]);
+
+    let len = encode_action_loot(&mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[44], &buf[..len]);
+
+    let bag = goldens::event_bag_dropped();
+    let len = encode_event_bag_dropped(&bag, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[45], &buf[..len]);
+
+    let (reset, recs) = goldens::event_bag_sync();
+    let len = encode_event_bag_sync(reset, &recs, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[46], &buf[..len]);
+
+    let (id, why) = goldens::event_bag_removed();
+    let len = encode_event_bag_removed(id, why, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[47], &buf[..len]);
 }

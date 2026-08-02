@@ -75,6 +75,13 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    let backpack = match content.bake_backpack() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("shard: content bake refused: {e}");
+            std::process::exit(1);
+        }
+    };
     let catalog = match server::net::bake_catalog(&content) {
         Ok(c) => c,
         Err(e) => {
@@ -98,13 +105,14 @@ async fn main() {
         a.upkeep_daily_minutes
     );
     let seed = cfg.seed;
-    let handle = match spawn_shard(cfg, gather, craft, build, deploy, combat, catalog).await {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("shard: {e}");
-            std::process::exit(1);
-        }
-    };
+    let handle =
+        match spawn_shard(cfg, gather, craft, build, deploy, combat, backpack, catalog).await {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("shard: {e}");
+                std::process::exit(1);
+            }
+        };
     println!("shard up on {} (seed {seed})", handle.local_addr);
     println!("dev cert sha256 {}", handle.cert_hash);
 

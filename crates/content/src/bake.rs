@@ -11,6 +11,7 @@ use crate::schema::{
     DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, WeaponKind,
 };
 use crate::Content;
+use sim_core::backpack::BackpackContent;
 use sim_core::build::{
     BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
     SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
@@ -415,5 +416,54 @@ impl Content {
             cc.melee[idx] = MeleeDef { damage, reach_cm };
         }
         Ok(cc)
+    }
+
+    /// The backpack despawn ladder: `[backpack]`'s base minutes and the
+    /// per-rarity multipliers, resolved against every item's declared
+    /// rarity into one lifetime-in-ticks row per item index. The sim then
+    /// never sees a rarity, a minute, or a multiplier — only "this item
+    /// keeps a bag alive this many ticks", which is the whole reason the
+    /// max-over-contents rule is two comparisons and no table lookup
+    /// chain (CLAUDE.md wall 7).
+    ///
+    /// `validate::structural` has already refused a zero base and a
+    /// ladder that does not rise strictly with rarity; what this adds is
+    /// the arithmetic refusal — a product that overflows the sim's u32
+    /// tick field is a content bug, not a saturated bag.
+    pub fn bake_backpack(&self) -> Result<BackpackContent, String> {
+        if self.items.len() > MAX_ITEM_DEFS {
+            return Err(format!(
+                "bake: {} items exceed the sim's {MAX_ITEM_DEFS}-def table",
+                self.items.len()
+            ));
+        }
+        let bp = &self.balance.backpack;
+        let base_ticks = bp
+            .despawn_base_min
+            .checked_mul(60)
+            .and_then(|s| s.checked_mul(TICK_HZ))
+            .ok_or_else(|| {
+                format!(
+                    "bake: backpack base {} min overflows the tick field",
+                    bp.despawn_base_min
+                )
+            })?;
+        if base_ticks == 0 {
+            return Err("bake: a zero backpack base would disarm the drop".to_string());
+        }
+        let mults = bp.mults();
+        let mut bc = BackpackContent::EMPTY;
+        bc.base_ticks = base_ticks;
+        for item in &self.items {
+            let idx = self.item_index(&item.id).expect("own id") as usize;
+            let mult = mults[item.rarity.canon() as usize];
+            bc.despawn_ticks[idx] = base_ticks.checked_mul(mult).ok_or_else(|| {
+                format!(
+                    "bake: `{}` lifetime ({base_ticks} ticks × {mult}) overflows the tick field",
+                    item.id
+                )
+            })?;
+        }
+        Ok(bc)
     }
 }

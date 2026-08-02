@@ -15,8 +15,9 @@ use crate::bits::{BitReader, BitWriter, WireError};
 use crate::chat::{read_text, write_text, ChatText};
 use crate::{
     expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, DEPLOY_ROW_BITS,
-    KIND_BITS, KIND_EVENT, PIECE_ROW_BITS,
+    KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, POS_XZ_BITS, POS_Y_BIAS, POS_Y_BITS,
 };
+use sim_core::backpack::BackpackRec;
 use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_ROOF};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
 use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_DOOR, PLACE_ANY};
@@ -59,6 +60,13 @@ pub const DEPLOY_SYNC_BATCH: usize = 24;
 /// Deploy-def rows one defs message carries (a full row is ~5 B).
 pub const DEPLOY_DEFS_BATCH: usize = 8;
 
+/// Death-backpack records one sync message carries (a record is 80 bits
+/// — id + the three position quanta; 16 keep the batch ≈ 162 B, well
+/// under the message cap). The join walk is drip-fed like the deploy
+/// sync, and for the same reason: a bag standing when you arrive must be
+/// there when you look, without a burst at the door.
+pub const BAG_SYNC_BATCH: usize = 16;
+
 /// Longest item display name on the wire; the catalog bake refuses past
 /// it (content names are short by construction — CONTENT.md §2).
 pub const MAX_ITEM_NAME_BYTES: usize = 24;
@@ -91,6 +99,9 @@ const SUB_CHAT: u32 = 23;
 const SUB_HIT: u32 = 24;
 const SUB_HEALTH: u32 = 25;
 const SUB_DEATH: u32 = 26;
+const SUB_BAG_DROPPED: u32 = 27;
+const SUB_BAG_SYNC: u32 = 28;
+const SUB_BAG_REMOVED: u32 = 29;
 
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
@@ -119,6 +130,9 @@ const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
 const ARCH_BITS: u32 = 3;
 const PLACEMENT_BITS: u32 = 2;
 const STOCK_COUNT_BITS: u32 = 3;
+const BAG_SYNC_COUNT_BITS: u32 = 5;
+/// Why a bag left: `sim_core::backpack::BAG_GONE_*`, three values today.
+const BAG_GONE_BITS: u32 = 2;
 
 /// One changed inventory slot on the wire.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -343,6 +357,26 @@ pub enum EventMsg {
     /// no position: what the world may know about a death is who and by
     /// whom.
     Death { victim: u32, killer: u32 },
+    /// A death backpack landed at a world position — broadcast, because a
+    /// bag on the ground is a world fact like a placement. What is inside
+    /// is deliberately absent: v0 has no container UI, the take is
+    /// all-that-fits, and shipping every stack to every client would put
+    /// the whole shard's loot on every wire for a thing most of them will
+    /// never reach.
+    BagDropped { id: u32, qx: i32, qy: i32, qz: i32 },
+    /// One batch of the standing-bag walk (join sync / event-lane
+    /// resync). `reset` clears the client's bag set first.
+    BagSync {
+        reset: bool,
+        recs: [WireBag; BAG_SYNC_BATCH],
+        count: u8,
+    },
+    /// The bag is gone, and why (`sim_core::backpack::BAG_GONE_*`):
+    /// despawned, emptied by a take, or evicted by a full store. The
+    /// reason is on the wire so the client can tell "someone got there
+    /// first" from "you were too slow" — the same information the kill
+    /// feed gives about a death.
+    BagRemoved { id: u32, why: u8 },
 }
 
 fn begin(buf: &mut [u8], subtype: u32) -> Result<BitWriter<'_>, WireError> {
@@ -834,6 +868,91 @@ pub fn encode_event_door(
 }
 
 /// The attacker's hitmarker: `damage` landed on `victim`.
+/// One standing backpack as the wire carries it: identity and where it
+/// is, nothing else. Owner, expiry and contents stay sim-side — the
+/// client needs to draw it and reach for it, and knowing whose it was or
+/// how long it has left would be information the sim never promised.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WireBag {
+    pub id: u32,
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+}
+
+impl WireBag {
+    /// The sim's record, narrowed to what crosses.
+    pub fn of(b: &BackpackRec) -> Self {
+        Self {
+            id: b.id,
+            qx: b.qx,
+            qy: b.qy,
+            qz: b.qz,
+        }
+    }
+}
+
+/// A bag's position must sit inside the same windows an entity's does —
+/// they are the same quanta, and a bag outside the island is a server bug
+/// surfacing, refused here rather than wrapped into someone's base.
+fn write_bag(w: &mut BitWriter, b: &WireBag) -> Result<(), WireError> {
+    if !(0..(1i64 << POS_XZ_BITS)).contains(&(b.qx as i64))
+        || !(0..(1i64 << POS_XZ_BITS)).contains(&(b.qz as i64))
+        || !(0..(1i64 << POS_Y_BITS)).contains(&(b.qy as i64 + POS_Y_BIAS as i64))
+    {
+        return Err(WireError::Range);
+    }
+    w.write(b.id, 32)?;
+    w.write(b.qx as u32, POS_XZ_BITS)?;
+    w.write((b.qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
+    w.write(b.qz as u32, POS_XZ_BITS)?;
+    Ok(())
+}
+
+fn read_bag(r: &mut BitReader) -> Result<WireBag, WireError> {
+    Ok(WireBag {
+        id: r.read(32)?,
+        qx: r.read(POS_XZ_BITS)? as i32,
+        qy: r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS,
+        qz: r.read(POS_XZ_BITS)? as i32,
+    })
+}
+
+pub fn encode_event_bag_dropped(b: &WireBag, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_BAG_DROPPED)?;
+    write_bag(&mut w, b)?;
+    Ok(w.finish())
+}
+
+/// A batch may be empty only with `reset` — the same contract as the
+/// piece and deploy syncs.
+pub fn encode_event_bag_sync(
+    reset: bool,
+    recs: &[WireBag],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if recs.len() > BAG_SYNC_BATCH || (recs.is_empty() && !reset) {
+        return Err(WireError::Cap);
+    }
+    let mut w = begin(buf, SUB_BAG_SYNC)?;
+    w.write_bit(reset)?;
+    w.write(recs.len() as u32, BAG_SYNC_COUNT_BITS)?;
+    for b in recs {
+        write_bag(&mut w, b)?;
+    }
+    Ok(w.finish())
+}
+
+pub fn encode_event_bag_removed(id: u32, why: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if (why as u32) >= (1 << BAG_GONE_BITS) {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_BAG_REMOVED)?;
+    w.write(id, 32)?;
+    w.write(why as u32, BAG_GONE_BITS)?;
+    Ok(w.finish())
+}
+
 pub fn encode_event_hit(victim: u32, damage: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_HIT)?;
     w.write(victim, 32)?;
@@ -1230,6 +1349,35 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_DEATH => EventMsg::Death {
             victim: r.read(32)?,
             killer: r.read(32)?,
+        },
+        SUB_BAG_DROPPED => {
+            let b = read_bag(&mut r)?;
+            EventMsg::BagDropped {
+                id: b.id,
+                qx: b.qx,
+                qy: b.qy,
+                qz: b.qz,
+            }
+        }
+        SUB_BAG_SYNC => {
+            let reset = r.read_bit()?;
+            let count = r.read(BAG_SYNC_COUNT_BITS)? as usize;
+            if count > BAG_SYNC_BATCH || (count == 0 && !reset) {
+                return Err(WireError::Malformed);
+            }
+            let mut recs = [WireBag::default(); BAG_SYNC_BATCH];
+            for rec in recs.iter_mut().take(count) {
+                *rec = read_bag(&mut r)?;
+            }
+            EventMsg::BagSync {
+                reset,
+                recs,
+                count: count as u8,
+            }
+        }
+        SUB_BAG_REMOVED => EventMsg::BagRemoved {
+            id: r.read(32)?,
+            why: r.read(BAG_GONE_BITS)? as u8,
         },
         _ => return Err(WireError::Malformed),
     };
@@ -1785,11 +1933,12 @@ mod tests {
             Err(WireError::Malformed),
             "spare byte after a valid message must fail the strict tail"
         );
-        // kind EVENT + subtype 27: unknown (the first unused subtype —
-        // 26 became death, so this moves up with every new subtype).
+        // kind EVENT + subtype 30: unknown (the first unused subtype —
+        // 29 became bag-removed, so this moves up with every new subtype,
+        // and there are exactly two codes left before SUB_BITS widens).
         let raw = [
-            (KIND_EVENT | (27 << KIND_BITS)) as u8,
-            (27 >> (8 - KIND_BITS)) as u8,
+            (KIND_EVENT | (30 << KIND_BITS)) as u8,
+            (30 >> (8 - KIND_BITS)) as u8,
         ];
         assert_eq!(decode_event(&raw[..2]), Err(WireError::Malformed));
     }

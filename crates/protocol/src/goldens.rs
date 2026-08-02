@@ -11,7 +11,8 @@
 
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse,
-    SnapshotHeader, Welcome, DEPLOY_SYNC_BATCH, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    SnapshotHeader, Welcome, WireBag, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH, PIECE_SYNC_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::craft::{
@@ -26,51 +27,55 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 44] = [
-    "v11_input_acks_only.bin",
-    "v11_input_full.bin",
-    "v11_snapshot_keyframe.bin",
-    "v11_snapshot_delta.bin",
-    "v11_snapshot_cap.bin",
-    "v11_hello.bin",
-    "v11_welcome.bin",
-    "v11_refuse_full.bin",
-    "v11_event_gather.bin",
-    "v11_event_inv.bin",
-    "v11_event_slot_harvested.bin",
-    "v11_event_slot_respawned.bin",
-    "v11_event_slot_sync.bin",
-    "v11_event_catalog.bin",
-    "v11_event_weak_mark.bin",
-    "v11_event_craft_q.bin",
-    "v11_event_craft_done.bin",
-    "v11_event_craft_refused.bin",
-    "v11_event_recipes.bin",
-    "v11_action_craft.bin",
-    "v11_action_cancel.bin",
-    "v11_action_place.bin",
-    "v11_event_piece_placed.bin",
-    "v11_event_piece_sync.bin",
-    "v11_event_build_refused.bin",
-    "v11_event_piece_defs.bin",
-    "v11_action_deploy.bin",
-    "v11_action_feed.bin",
-    "v11_event_deploy_placed.bin",
-    "v11_event_deploy_sync.bin",
-    "v11_event_deploy_refused.bin",
-    "v11_event_deploy_defs.bin",
-    "v11_event_piece_removed.bin",
-    "v11_event_deploy_removed.bin",
-    "v11_event_stock.bin",
-    "v11_action_use.bin",
-    "v11_action_lock.bin",
-    "v11_event_door.bin",
-    "v11_action_upgrade.bin",
-    "v11_chat.bin",
-    "v11_event_chat.bin",
-    "v11_event_hit.bin",
-    "v11_event_health.bin",
-    "v11_event_death.bin",
+pub const FIXTURES: [&str; 48] = [
+    "v12_input_acks_only.bin",
+    "v12_input_full.bin",
+    "v12_snapshot_keyframe.bin",
+    "v12_snapshot_delta.bin",
+    "v12_snapshot_cap.bin",
+    "v12_hello.bin",
+    "v12_welcome.bin",
+    "v12_refuse_full.bin",
+    "v12_event_gather.bin",
+    "v12_event_inv.bin",
+    "v12_event_slot_harvested.bin",
+    "v12_event_slot_respawned.bin",
+    "v12_event_slot_sync.bin",
+    "v12_event_catalog.bin",
+    "v12_event_weak_mark.bin",
+    "v12_event_craft_q.bin",
+    "v12_event_craft_done.bin",
+    "v12_event_craft_refused.bin",
+    "v12_event_recipes.bin",
+    "v12_action_craft.bin",
+    "v12_action_cancel.bin",
+    "v12_action_place.bin",
+    "v12_event_piece_placed.bin",
+    "v12_event_piece_sync.bin",
+    "v12_event_build_refused.bin",
+    "v12_event_piece_defs.bin",
+    "v12_action_deploy.bin",
+    "v12_action_feed.bin",
+    "v12_event_deploy_placed.bin",
+    "v12_event_deploy_sync.bin",
+    "v12_event_deploy_refused.bin",
+    "v12_event_deploy_defs.bin",
+    "v12_event_piece_removed.bin",
+    "v12_event_deploy_removed.bin",
+    "v12_event_stock.bin",
+    "v12_action_use.bin",
+    "v12_action_lock.bin",
+    "v12_event_door.bin",
+    "v12_action_upgrade.bin",
+    "v12_chat.bin",
+    "v12_event_chat.bin",
+    "v12_event_hit.bin",
+    "v12_event_health.bin",
+    "v12_event_death.bin",
+    "v12_action_loot.bin",
+    "v12_event_bag_dropped.bin",
+    "v12_event_bag_sync.bin",
+    "v12_event_bag_removed.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -554,6 +559,42 @@ pub fn event_health() -> (u16, u16) {
 /// let a decoder's default pass for a value).
 pub fn event_death() -> (u32, u32) {
     (4_242, 7)
+}
+
+/// A death backpack standing in the island interior, in the same quanta
+/// an entity's position uses. Nonzero on every axis and a nonzero id: a
+/// zero anywhere would let a decoder's default pass for a value.
+pub fn event_bag_dropped() -> WireBag {
+    WireBag {
+        id: 9_001,
+        qx: 34_133,
+        qy: 512,
+        qz: 22_050,
+    }
+}
+
+/// A full standing-bag batch: `BAG_SYNC_BATCH` bags spread across the
+/// island, `reset` set — the shape a join walk's first message takes,
+/// and the widest this subtype gets.
+pub fn event_bag_sync() -> (bool, [WireBag; BAG_SYNC_BATCH]) {
+    let mut rng = Pcg32::new(0x0042_4147_5359, 21);
+    let mut recs = [WireBag::default(); BAG_SYNC_BATCH];
+    for (i, r) in recs.iter_mut().enumerate() {
+        *r = WireBag {
+            id: 500 + i as u32,
+            qx: 10_000 + rng.next_bounded(50_000) as i32,
+            qy: -1_200 + rng.next_bounded(7_000) as i32,
+            qz: 10_000 + rng.next_bounded(50_000) as i32,
+        };
+    }
+    (true, recs)
+}
+
+/// A bag that someone else emptied before you got there — the reason
+/// that is not "it timed out", so the fixture pins the field that tells
+/// them apart.
+pub fn event_bag_removed() -> (u32, u8) {
+    (9_001, sim_core::backpack::BAG_GONE_EMPTIED as u8)
 }
 
 /// A refusal carrying `sim_core::deploy::REFUSE_D_CLAIM`.

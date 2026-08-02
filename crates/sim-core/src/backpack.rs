@@ -1,0 +1,453 @@
+//! The death backpack — the container that makes a kill pay (DESIGN.md
+//! §2: "death drops your whole inventory where you fell; bags despawn on
+//! a timer"; NETCODE.md §6.4 is the shape).
+//!
+//! Melee v0 gave the world a way to take a life and nothing to take off
+//! the body: `world::respawn` destroyed the inventory outright, because
+//! the world had no ground container to catch it. This module is that
+//! container, and it is deliberately **one entity, not thirty** — exactly
+//! Rust's shipped consolidation (ragdoll, then collapse to a single
+//! backpack; Facepunch's stated reason was cost), minus the ragdoll,
+//! which is a cosmetic mesh and content for later.
+//!
+//! Despawn is content's, not code's (CLAUDE.md wall 7): one base constant
+//! × the rarity multiplier of the rarest item inside, baked per item into
+//! `BackpackContent::despawn_ticks` from `content/balance.toml`'s
+//! `[backpack]` table and `content/items.toml`'s rarity column — the
+//! column that file has always said "drives the despawn multiplier". An
+//! empty ladder (`base_ticks == 0`) is the inert default and disarms the
+//! module entirely: death destroys, exactly as it did before this slice.
+//!
+//! Pure and fixed-capacity like the rest of the crate. Every sweep is one
+//! pass over at most `MAX_BACKPACKS` live entries, the store never
+//! allocates, and both mutating paths (drop, loot) are integer-and-`f32`
+//! arithmetic on the restricted operator set.
+//!
+//! **What v0 deliberately does not do**, registered in `DECISIONS.md`
+//! §open ("death backpack v0"): no per-slot looting (the take is
+//! all-that-fits, because a container UI is its own slice and a
+//! half-container that can only be emptied is honest where a broken grid
+//! is not), no id-targeted loot (the pick is the nearest bag in reach,
+//! the same shape `gather::swing` and `combat::strike` use, so nothing
+//! spoofable crosses the wire), no bag hp and so no destroying one
+//! without opening it, and no ground drops from a full inventory —
+//! `gather::inv_add` still loses that overflow, and the drop-what-won't-
+//! fit lane is its own item.
+
+use crate::gather::{inv_add, GatherContent, ItemStack};
+use crate::limits::{INV_SLOTS, MAX_BACKPACKS, MAX_ITEM_DEFS};
+use crate::movement::POS_XZ_Q;
+use crate::world::{EventQueue, Player, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_GATHER};
+
+/// Reach for opening a bag: the same arm every other world interaction
+/// uses (`build::BUILD_REACH_M`, which a hearth feed, a door and a lock
+/// already share). Not a new knob — deliberately the same one.
+pub use crate::build::BUILD_REACH_M as LOOT_REACH_M;
+
+/// Why a bag left the world — the `b` field of `EV_BAG_REMOVED`.
+pub const BAG_GONE_DESPAWN: u32 = 0;
+pub const BAG_GONE_EMPTIED: u32 = 1;
+/// The store was full when someone died: the bag nearest its own despawn
+/// made room. NETCODE.md §6.4's "overflow despawns oldest-lowest-tier
+/// first" — one key does both, because a bag's expiry already encodes its
+/// age *and* its best tier.
+pub const BAG_GONE_EVICTED: u32 = 2;
+
+/// The despawn ladder the sim knows, baked from content.
+#[derive(Clone, Copy, Debug)]
+pub struct BackpackContent {
+    /// Per item index: how long a bag holding this item lives, in ticks.
+    /// A bag's own lifetime is the max over what it holds.
+    pub despawn_ticks: [u32; MAX_ITEM_DEFS],
+    /// Lifetime floor, in ticks — `despawn_base_min` at the tick rate.
+    /// **Zero disarms the whole module**: no bag is ever created, and
+    /// death destroys the inventory as it did before this slice.
+    pub base_ticks: u32,
+}
+
+impl BackpackContent {
+    pub const EMPTY: Self = Self {
+        despawn_ticks: [0; MAX_ITEM_DEFS],
+        base_ticks: 0,
+    };
+
+    /// Synthetic ladder for the parity/replay/alloc gates, on the same
+    /// pattern as the gather and combat fixtures. Short lifetimes on
+    /// purpose: 90 ticks (3 s) base so a probe run of a few hundred ticks
+    /// actually walks a bag through spawn → loot → despawn instead of
+    /// leaving every bag it makes standing at the end.
+    pub fn probe_fixture() -> Self {
+        let mut c = Self::EMPTY;
+        c.base_ticks = 90;
+        let mut i = 0;
+        while i < MAX_ITEM_DEFS {
+            // Items 0..3 are the fixture's "rare" half: four times the
+            // floor, so the max-over-contents rule has something to pick.
+            c.despawn_ticks[i] = if i < 4 { 360 } else { 90 };
+            i += 1;
+        }
+        c
+    }
+
+    /// How long a bag holding `items` lives, in ticks: the base, raised
+    /// to the longest-lived thing inside. An empty bag never gets made,
+    /// so the base is a floor, not a common case.
+    pub fn lifetime_ticks(&self, items: &[ItemStack; INV_SLOTS]) -> u32 {
+        let mut life = self.base_ticks;
+        for s in items.iter() {
+            if s.count == 0 || s.item as usize >= MAX_ITEM_DEFS {
+                continue;
+            }
+            let t = self.despawn_ticks[s.item as usize];
+            if t > life {
+                life = t;
+            }
+        }
+        life
+    }
+}
+
+impl Default for BackpackContent {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+/// One bag on the ground. Position is the dead body's quantized position
+/// verbatim (`movement.rs` quanta) — the sim sims on the values it
+/// transmits, so the wire carries these ints and the client never rounds
+/// a bag somewhere the sim will not open it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BackpackRec {
+    /// Shard-unique, monotonic from 1. Zero is "no bag".
+    pub id: u32,
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+    /// Who died. Sim-side only — the wire carries address and id, never
+    /// whose it was, the same posture a deployable's owner takes.
+    pub owner: u32,
+    /// Tick at which the bag despawns.
+    pub expires: u64,
+    pub items: [ItemStack; INV_SLOTS],
+}
+
+impl Default for BackpackRec {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            qx: 0,
+            qy: 0,
+            qz: 0,
+            owner: 0,
+            expires: 0,
+            items: [ItemStack::default(); INV_SLOTS],
+        }
+    }
+}
+
+impl BackpackRec {
+    /// True once nothing is left inside — the moment the bag is done.
+    pub fn is_empty(&self) -> bool {
+        self.items.iter().all(|s| s.count == 0)
+    }
+}
+
+/// The ground-container store: dense, insertion-ordered, fixed capacity.
+/// Removal swap-removes (like `Deploys`), so the wire layer restarts an
+/// in-progress sync walk on any removal — the same contract the piece and
+/// deploy walks already carry.
+pub struct Backpacks {
+    entries: [BackpackRec; MAX_BACKPACKS],
+    len: usize,
+    /// Next bag id. Sim state, hashed: two replays of the same WAL must
+    /// name the same bag the same thing.
+    next_id: u32,
+}
+
+impl Backpacks {
+    pub fn new() -> Self {
+        Self {
+            entries: [BackpackRec::default(); MAX_BACKPACKS],
+            len: 0,
+            next_id: 1,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn entries(&self) -> &[BackpackRec] {
+        &self.entries[..self.len]
+    }
+
+    pub fn next_id(&self) -> u32 {
+        self.next_id
+    }
+
+    pub fn find(&self, id: u32) -> Option<&BackpackRec> {
+        self.entries[..self.len].iter().find(|b| b.id == id)
+    }
+
+    /// Swap-remove index `i`, announcing why.
+    fn remove(&mut self, i: usize, why: u32, events: &mut EventQueue) {
+        let id = self.entries[i].id;
+        self.len -= 1;
+        self.entries[i] = self.entries[self.len];
+        self.entries[self.len] = BackpackRec::default();
+        events.push(EV_BAG_REMOVED, id, why, 0);
+    }
+
+    /// Drop `items` where a body fell. Returns the new bag's id, or
+    /// `None` when nothing was dropped — an inert ladder (content that
+    /// never armed the module) and an empty inventory both take this
+    /// exit, so a naked spawn dying leaves no litter.
+    ///
+    /// Overflow policy: **evict** the bag nearest its own despawn, which
+    /// is NETCODE.md §6.4's "oldest-lowest-tier first" collapsed into the
+    /// one key that already encodes both. Ties break on the lowest index,
+    /// so the choice is a pure function of state.
+    pub fn drop_for(
+        &mut self,
+        bc: &BackpackContent,
+        body: &Player,
+        tick: u64,
+        events: &mut EventQueue,
+    ) -> Option<u32> {
+        if bc.base_ticks == 0 {
+            return None; // inert content: the module is disarmed
+        }
+        let items = &body.inv;
+        if items.iter().all(|s| s.count == 0) {
+            return None; // nothing to catch
+        }
+        if self.len == MAX_BACKPACKS {
+            let mut worst = 0usize;
+            for i in 1..self.len {
+                if self.entries[i].expires < self.entries[worst].expires {
+                    worst = i;
+                }
+            }
+            self.remove(worst, BAG_GONE_EVICTED, events);
+        }
+        let id = self.next_id;
+        // Ids are for one shard's lifetime; wrapping past the wire's
+        // field would collide, so the store saturates instead and the
+        // last id is reused rather than aliasing an early one.
+        self.next_id = self.next_id.saturating_add(1);
+        let i = self.len;
+        self.entries[i] = BackpackRec {
+            id,
+            qx: body.body.qx,
+            qy: body.body.qy + BAG_Y_OFFSET_Q,
+            qz: body.body.qz,
+            owner: body.id,
+            expires: tick + bc.lifetime_ticks(items) as u64,
+            items: *items,
+        };
+        self.len += 1;
+        events.push(EV_BAG_DROPPED, id, body.id, 0);
+        Some(id)
+    }
+
+    /// Retire every bag whose timer ran out. One pass over the live
+    /// entries (≤ `MAX_BACKPACKS`), taken every tick; the swap-remove is
+    /// why the index does not advance on a hit.
+    pub fn expire_due(&mut self, tick: u64, events: &mut EventQueue) {
+        let mut i = 0;
+        while i < self.len {
+            if self.entries[i].expires <= tick {
+                self.remove(i, BAG_GONE_DESPAWN, events);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Take everything that fits from the nearest bag within reach.
+    /// Returns the looted bag's id when one was opened.
+    ///
+    /// The pick is nearest-in-reach, planar, exactly like the build/feed/
+    /// door reach test — no id crosses the wire, so nothing here can be
+    /// aimed at a bag the looter is not standing on. What does not fit
+    /// stays in the bag, which is the whole reason a partly-looted bag
+    /// keeps standing; a bag emptied by the take leaves immediately.
+    ///
+    /// Each moved slot announces itself with `EV_GATHER` — "these items
+    /// entered your inventory", which is the event the client's `+N Item`
+    /// toast already reads. Loot pays in the same currency gathering does,
+    /// on purpose.
+    pub fn loot_nearest(
+        &mut self,
+        gc: &GatherContent,
+        p: &mut Player,
+        events: &mut EventQueue,
+    ) -> Option<u32> {
+        let px = p.body.qx as f32 * POS_XZ_Q;
+        let pz = p.body.qz as f32 * POS_XZ_Q;
+        let mut best: Option<(f32, usize)> = None;
+        for i in 0..self.len {
+            let dx = self.entries[i].qx as f32 * POS_XZ_Q - px;
+            let dz = self.entries[i].qz as f32 * POS_XZ_Q - pz;
+            let d2 = dx * dx + dz * dz;
+            if d2 > LOOT_REACH_M * LOOT_REACH_M {
+                continue;
+            }
+            if best.is_none_or(|(bd2, _)| d2 < bd2) {
+                best = Some((d2, i));
+            }
+        }
+        let (_, i) = best?;
+        let id = self.entries[i].id;
+        for s in 0..INV_SLOTS {
+            let stack = self.entries[i].items[s];
+            if stack.count == 0 {
+                continue;
+            }
+            let cap = if (stack.item as usize) < MAX_ITEM_DEFS {
+                gc.stack_max[stack.item as usize]
+            } else {
+                0
+            };
+            if cap == 0 {
+                continue; // an item the ladder cannot stack cannot be taken
+            }
+            let took = inv_add(&mut p.inv, stack.item, stack.count, cap);
+            if took == 0 {
+                continue;
+            }
+            self.entries[i].items[s].count -= took;
+            if self.entries[i].items[s].count == 0 {
+                self.entries[i].items[s].item = 0; // canonical empty
+            }
+            events.push(
+                EV_GATHER,
+                p.id,
+                ((stack.item as u32) << 16) | took as u32,
+                0,
+            );
+        }
+        if self.entries[i].is_empty() {
+            self.remove(i, BAG_GONE_EMPTIED, events);
+        }
+        Some(id)
+    }
+}
+
+impl Default for Backpacks {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Vertical offset from the body position to where the bag rests, in the
+/// y quantum. A body's position is its feet (`movement.rs`), so a bag
+/// dropped verbatim sits on the ground already — this is zero and stated
+/// rather than absent, so the client and the sim agree on it in one
+/// place if it ever moves.
+pub const BAG_Y_OFFSET_Q: i32 = 0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stacks(rows: &[(u16, u16)]) -> [ItemStack; INV_SLOTS] {
+        let mut inv = [ItemStack::default(); INV_SLOTS];
+        for (i, &(item, count)) in rows.iter().enumerate() {
+            inv[i] = ItemStack { item, count };
+        }
+        inv
+    }
+
+    /// A body at the origin carrying `rows` — everything `drop_for`
+    /// reads off a player and nothing it does not.
+    fn body(id: u32, rows: &[(u16, u16)]) -> Player {
+        Player {
+            id,
+            active: true,
+            inv: stacks(rows),
+            ..Player::default()
+        }
+    }
+
+    #[test]
+    fn lifetime_is_the_rarest_thing_inside() {
+        let bc = BackpackContent::probe_fixture();
+        assert_eq!(
+            bc.lifetime_ticks(&stacks(&[])),
+            90,
+            "an empty bag rides base"
+        );
+        assert_eq!(bc.lifetime_ticks(&stacks(&[(7, 5)])), 90);
+        assert_eq!(
+            bc.lifetime_ticks(&stacks(&[(7, 5), (2, 1)])),
+            360,
+            "one long-lived item raises the whole bag"
+        );
+    }
+
+    #[test]
+    fn an_inert_ladder_never_makes_a_bag() {
+        let mut bags = Backpacks::new();
+        let mut ev = EventQueue::default();
+        assert_eq!(
+            bags.drop_for(&BackpackContent::EMPTY, &body(7, &[(1, 5)]), 0, &mut ev),
+            None
+        );
+        assert!(bags.is_empty());
+        assert!(ev.is_empty());
+    }
+
+    #[test]
+    fn an_empty_body_leaves_no_litter() {
+        let mut bags = Backpacks::new();
+        let mut ev = EventQueue::default();
+        assert_eq!(
+            bags.drop_for(&BackpackContent::probe_fixture(), &body(7, &[]), 0, &mut ev),
+            None
+        );
+        assert!(bags.is_empty());
+    }
+
+    #[test]
+    fn a_full_store_evicts_the_bag_nearest_its_own_despawn() {
+        let bc = BackpackContent::probe_fixture();
+        let mut bags = Backpacks::new();
+        let mut ev = EventQueue::default();
+        // Fill: bag k expires at 90 + k, so bag 0 is nearest its end.
+        for k in 0..MAX_BACKPACKS {
+            bags.drop_for(&bc, &body(1, &[(7, 1)]), k as u64, &mut ev)
+                .expect("fill");
+        }
+        assert_eq!(bags.len(), MAX_BACKPACKS);
+        let doomed = bags.entries()[0].id;
+        let mut ev = EventQueue::default(); // only the overflow's own events
+        let fresh = bags
+            .drop_for(&bc, &body(2, &[(7, 1)]), 1_000, &mut ev)
+            .expect("the death still drops");
+        assert_eq!(bags.len(), MAX_BACKPACKS, "the cap held");
+        assert!(bags.find(doomed).is_none(), "the nearest-gone bag left");
+        assert!(bags.find(fresh).is_some());
+        let codes: Vec<(u8, u32, u32)> = ev.entries().iter().map(|e| (e.code, e.a, e.b)).collect();
+        assert_eq!(codes[0], (EV_BAG_REMOVED, doomed, BAG_GONE_EVICTED));
+        assert_eq!(codes[1].0, EV_BAG_DROPPED);
+    }
+
+    #[test]
+    fn ids_never_repeat_across_removals() {
+        let bc = BackpackContent::probe_fixture();
+        let mut bags = Backpacks::new();
+        let mut ev = EventQueue::default();
+        let a = bags.drop_for(&bc, &body(1, &[(7, 1)]), 0, &mut ev).unwrap();
+        bags.expire_due(1_000, &mut ev);
+        let b = bags
+            .drop_for(&bc, &body(1, &[(7, 1)]), 1_000, &mut ev)
+            .unwrap();
+        assert_ne!(a, b, "a freed slot must not resurrect a retired id");
+    }
+}

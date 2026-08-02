@@ -5,6 +5,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use sim_core::backpack::{BackpackContent, BAG_GONE_EMPTIED};
 use sim_core::bots::bot_frame;
 use sim_core::build::{
     BuildContent, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, MAT_METAL, MAT_STONE, MAT_WOOD,
@@ -15,7 +16,7 @@ use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::MAX_PLAYERS;
 use sim_core::rng::Pcg32;
-use sim_core::world::{Command, World};
+use sim_core::world::{Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED};
 
 /// One tick's commands: every bot's input plus a craft enqueue, a cancel,
 /// a place, and an upgrade, so the craft and build verbs sit inside the
@@ -129,6 +130,11 @@ fn test_alloc_zero() {
     // The combat fixture puts the target scan, the damage write, and the
     // death/respawn path inside the counted window (see the duel below).
     world.combat = CombatContent::probe_fixture();
+    // The backpack fixture puts the drop, the nearest-in-reach scan, the
+    // take, the emptied-bag removal and the despawn sweep in there too:
+    // the duelists stand inside each other, so every death lands a bag at
+    // the survivor's feet and the loot commands below open it.
+    world.backpack = BackpackContent::probe_fixture();
     let mut rng = Pcg32::new(0xA110C, 3);
     let mut yaws = [0u16; MAX_PLAYERS];
 
@@ -187,6 +193,8 @@ fn test_alloc_zero() {
     // bearing to test, so the aim cone cannot make this arrangement flaky.
     world.players[3].body = world.players[2].body;
     let deaths_before = world.players[2].deaths + world.players[3].deaths;
+    let mut bags_dropped = 0u32;
+    let mut bags_emptied = 0u32;
     for t in 0..300u16 {
         let mut cmds = tick_cmds(
             &mut rng,
@@ -208,7 +216,22 @@ fn test_alloc_zero() {
                 },
             };
         }
-        world.tick(&cmds);
+        // Both duelists reach for a bag every tick. The command array
+        // grows by two on the stack rather than stealing a bot's input
+        // slot — `MAX_COMMANDS_PER_TICK` is 256, so 102 still all apply,
+        // and copying `Command`s allocates nothing.
+        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 6];
+        all[..MAX_PLAYERS + 4].copy_from_slice(&cmds);
+        all[MAX_PLAYERS + 4] = Command::Loot { id: 3 };
+        all[MAX_PLAYERS + 5] = Command::Loot { id: 4 };
+        world.tick(&all);
+        for ev in world.events.entries() {
+            if ev.code == EV_BAG_DROPPED {
+                bags_dropped += 1;
+            } else if ev.code == EV_BAG_REMOVED && ev.b == BAG_GONE_EMPTIED {
+                bags_emptied += 1;
+            }
+        }
     }
     // The hash path must be allocation-free too.
     let h = world.state_hash();
@@ -235,6 +258,16 @@ fn test_alloc_zero() {
         world.players[2].deaths + world.players[3].deaths > deaths_before,
         "nobody died inside the counted window — the damage, death and \
          respawn paths fell out of the alloc gate"
+    );
+    assert!(
+        bags_dropped > 0,
+        "no backpack was dropped inside the counted window — the death-drop \
+         path fell out of the alloc gate"
+    );
+    assert!(
+        bags_emptied > 0,
+        "no backpack was looted empty inside the counted window — the take \
+         path fell out of the alloc gate"
     );
     assert_eq!(
         (alloc_delta, free_delta),

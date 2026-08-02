@@ -582,3 +582,93 @@ fn a_melee_row_that_cannot_work_never_reaches_the_sim() {
         );
     }
 }
+
+/// The backpack despawn ladder bakes from the shipped balance table and
+/// the rarity column `items.toml` has always declared drives it — and,
+/// the point of the test, **the sim's lifetime is content's arithmetic,
+/// never a code constant.** A bake that dropped the multiplier, keyed a
+/// row to the wrong item, or read minutes as ticks would show up here as
+/// a bag that outlives or undercuts what the file says.
+#[test]
+fn bake_backpack_walks_the_rarity_ladder_the_data_declares() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let bc = c.bake_backpack().expect("shipped balance must bake");
+    let bp = &c.balance.backpack;
+    let tick_hz = sim_core::limits::TICK_HZ;
+
+    assert_eq!(
+        bc.base_ticks,
+        bp.despawn_base_min * 60 * tick_hz,
+        "the floor is balance.toml's minutes at the sim's rate"
+    );
+    let mults = bp.mults();
+    let mut seen = [false; 4];
+    for item in &c.items {
+        let idx = c.item_index(&item.id).expect("own id") as usize;
+        let r = item.rarity.canon() as usize;
+        seen[r] = true;
+        assert_eq!(
+            bc.despawn_ticks[idx],
+            bc.base_ticks * mults[r],
+            "`{}` ({:?}) must live base × its own multiplier",
+            item.id,
+            item.rarity
+        );
+    }
+    assert!(seen[0], "the shipped set must exercise at least `common`");
+
+    // A bag holding the rarest thing the set ships lives longest, and a
+    // bag of nothing but the commonest rides the floor — the two ends of
+    // `lifetime_ticks`, computed from the shipped table, not a fixture.
+    let rarest = c
+        .items
+        .iter()
+        .max_by_key(|i| i.rarity.canon())
+        .expect("the set is non-empty");
+    let commonest = c
+        .items
+        .iter()
+        .min_by_key(|i| i.rarity.canon())
+        .expect("the set is non-empty");
+    let mut inv = [sim_core::gather::ItemStack::default(); sim_core::limits::INV_SLOTS];
+    inv[0] = sim_core::gather::ItemStack {
+        item: c.item_index(&commonest.id).unwrap(),
+        count: 1,
+    };
+    assert_eq!(bc.lifetime_ticks(&inv), bc.base_ticks);
+    inv[1] = sim_core::gather::ItemStack {
+        item: c.item_index(&rarest.id).unwrap(),
+        count: 1,
+    };
+    assert_eq!(
+        bc.lifetime_ticks(&inv),
+        bc.base_ticks * mults[rarest.rarity.canon() as usize],
+        "one rare thing raises the whole bag"
+    );
+}
+
+/// The ladder's two failure modes are refused at the boot edge: a base
+/// nobody set, and a ladder that does not rise. A falling ladder would
+/// make a rarer bag despawn *sooner* than a common one — the exact
+/// inversion NETCODE.md §6.4's tier shape exists to prevent.
+#[test]
+fn a_backpack_ladder_that_does_not_rise_is_refused() {
+    refuses(
+        "balance.toml",
+        "mult_uncommon = 4",
+        "mult_uncommon = 1",
+        "rise strictly",
+    );
+    refuses(
+        "balance.toml",
+        "despawn_base_min = 5",
+        "despawn_base_min = 0",
+        "≥ 1 minute",
+    );
+    refuses(
+        "balance.toml",
+        "mult_common = 1",
+        "mult_common = 0",
+        "mult_common must be ≥ 1",
+    );
+}

@@ -372,10 +372,31 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   };
   // E is the use key: the nearest door within reach toggles, and only
   // when there is none does E fall through to feeding a hearth.
+  // Loot the nearest death backpack in reach. The action carries no
+  // target — the sim picks, inside the same reach a feed and a door use
+  // (backpack.rs) — so this checks reach only to give an honest local
+  // answer when there is nothing there, and never to aim.
+  const tryLoot = () => {
+    const R = views.render;
+    const n = ex.client_bags_len();
+    for (let i = 0; i < n; i++) {
+      const dx = views.bagPos[i * 3] - R[1];
+      const dz = views.bagPos[i * 3 + 2] - R[3];
+      if (dx * dx + dz * dz > REACH * REACH) continue;
+      const len = ex.client_action_loot();
+      views.refresh();
+      if (len > 0) actions.send(views.output, len);
+      return true;
+    }
+    return false;
+  };
+  // E is the one interact key, and its order is deliberate: a door is
+  // aimed at, a bag is stood on, and a hearth is the thing you meant if
+  // neither is there.
   const tryUse = () => {
     const best = nearestDoor();
     if (best) sendUse(best.cx, best.cz, best.level, best.loc);
-    else tryFeed();
+    else if (!tryLoot()) tryFeed();
   };
   // L locks or unlocks it. Whether the door is yours is the server's
   // verdict — the wire carries the lock bit but never the owner — so the
@@ -792,6 +813,9 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
           deployRecs.delete(key * 4096 + ((level << 8) | loc));
         }
       }
+      if (flags & 33554432 /* BAGS */) {
+        scene.setBags(views.bagIds, views.bagPos, ex.client_bags_len());
+      }
       if (flags & 32 /* MARK */) {
         const cell = ex.client_weak_mark_cell() >>> 0;
         const entry = cell === 0xffffffff ? null : terrain.cellEntry(cell);
@@ -1082,6 +1106,12 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       pieces: scene.pieces.size,
       deployDefs: (ex.client_deploy_defs_state() >>> 0) & 0xffff,
       deploys: scene.deploys.size,
+      // Death backpacks: what the client has been told stands, and what
+      // the renderer actually has meshes for. Two numbers, because a
+      // renderer that quietly stopped reconciling would still report a
+      // healthy set from the first.
+      bagsKnown: ex.client_bags_len(),
+      bags: scene.bags.size,
       // The lighting rig's structural facts plus last frame's draw counts
       // (DESIGN §9's < 300 calls / < 1.5 M tris). Read off the scene, not
       // recomputed — what the gate asserts is what the renderer did.

@@ -13,16 +13,17 @@
 use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_craft, encode_action_deploy,
-    encode_action_feed, encode_action_lock, encode_action_place, encode_action_upgrade,
-    encode_action_use, encode_chat, encode_hello, peek_kind, Hello, CHAT_MAX_BYTES,
-    DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER,
-    SLOT_SYNC_BATCH,
+    encode_action_feed, encode_action_lock, encode_action_loot, encode_action_place,
+    encode_action_upgrade, encode_action_use, encode_chat, encode_hello, peek_kind, Hello,
+    CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES,
+    PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
-    CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_DEPLOY_DEFS,
-    MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
-    MAX_SNAPSHOT_ENTITIES,
+    CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS,
+    MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
+    MAX_RECIPE_INPUTS, MAX_SNAPSHOT_ENTITIES,
 };
+use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain::{self, ScatterTable};
 use std::cell::RefCell;
 
@@ -93,6 +94,14 @@ struct Bridge {
     /// | row].
     deploy_changes: [u32; DEPLOY_SYNC_BATCH * 2],
     deploy_changes_len: u32,
+    /// The whole standing-bag set, refreshed on `APPLIED_BAGS`: ids in
+    /// one buffer, world-metre positions (x, y, z) in another. Two
+    /// buffers rather than one interleaved: an id past 2^24 does not
+    /// survive an f32, and a shard that runs long enough to mint one
+    /// must not start drawing bags on top of each other.
+    bag_ids: Box<[u32]>,
+    bag_pos: Box<[f32]>,
+    bags_len: u32,
     /// Deploy-def table view: `DEPLOY_DEF_ROW_WORDS` u16s per row.
     deploy_defs: Box<[u16; MAX_DEPLOY_DEFS * DEPLOY_DEF_ROW_WORDS]>,
     /// Last stock ack: [item, units] u32 pairs (rows live in the core).
@@ -123,6 +132,9 @@ impl Bridge {
             piece_defs: Box::new([0; MAX_PIECE_DEFS * PIECE_DEF_ROW_WORDS]),
             deploy_changes: [0; DEPLOY_SYNC_BATCH * 2],
             deploy_changes_len: 0,
+            bag_ids: vec![0; MAX_BACKPACKS].into_boxed_slice(),
+            bag_pos: vec![0.0; MAX_BACKPACKS * 3].into_boxed_slice(),
+            bags_len: 0,
             deploy_defs: Box::new([0; MAX_DEPLOY_DEFS * DEPLOY_DEF_ROW_WORDS]),
             stock: [0; HEARTH_STOCK_ROWS * 2],
             chat: [0; CHAT_VIEW_BYTES],
@@ -260,6 +272,9 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             piece_defs,
             deploy_changes,
             deploy_changes_len,
+            bag_ids,
+            bag_pos,
+            bags_len,
             deploy_defs,
             stock,
             ..
@@ -350,6 +365,19 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             }
             *deploy_changes_len = ch.len() as u32;
         }
+        if flags & crate::core::APPLIED_BAGS != 0 {
+            // The whole set, every time: bags are few, they never move,
+            // and a full re-read cannot drift out of step with the
+            // server the way an applied delta can.
+            let bags = core.bags.entries();
+            for (i, b) in bags.iter().enumerate() {
+                bag_ids[i] = b.id;
+                bag_pos[i * 3] = b.qx as f32 * POS_XZ_Q;
+                bag_pos[i * 3 + 1] = b.qy as f32 * POS_Y_Q;
+                bag_pos[i * 3 + 2] = b.qz as f32 * POS_XZ_Q;
+            }
+            *bags_len = bags.len() as u32;
+        }
         if flags & crate::core::APPLIED_DEPLOY_DEFS != 0 {
             for i in 0..(core.deploy_defs_have as usize).min(MAX_DEPLOY_DEFS) {
                 let def = &core.deploy_defs.defs[i];
@@ -381,6 +409,38 @@ pub extern "C" fn client_deploy_changes_ptr() -> *const u32 {
 #[no_mangle]
 pub extern "C" fn client_deploy_changes_len() -> u32 {
     with(|b| b.deploy_changes_len)
+}
+
+/// Standing death backpacks: one u32 id per bag, `client_bags_len()`
+/// of them, parallel to `client_bags_ptr`. Refreshed by
+/// `client_on_stream` whenever `APPLIED_BAGS` is set.
+#[no_mangle]
+pub extern "C" fn client_bag_ids_ptr() -> *const u32 {
+    with(|b| b.bag_ids.as_ptr())
+}
+
+/// Standing death backpacks as world metres: three f32 (x, y, z) per bag,
+/// in the same order as `client_bag_ids_ptr`.
+#[no_mangle]
+pub extern "C" fn client_bags_ptr() -> *const f32 {
+    with(|b| b.bag_pos.as_ptr())
+}
+
+#[no_mangle]
+pub extern "C" fn client_bags_len() -> u32 {
+    with(|b| b.bags_len)
+}
+
+/// Encode a loot request into the out buffer for the bidi lane; returns
+/// its length. Payload-free — the sim picks the nearest bag in reach, so
+/// there is nothing here for the client to aim (backpack.rs).
+#[no_mangle]
+pub extern "C" fn client_action_loot() -> u32 {
+    with(|b| {
+        encode_action_loot(&mut b.out_buf)
+            .map(|n| n as u32)
+            .unwrap_or(0)
+    })
 }
 
 /// Deploy-def table view: `DEPLOY_DEF_ROW_WORDS` u16 words per row

@@ -7,6 +7,7 @@
 use crate::client::ClientNetState;
 use crate::stats::ShardStats;
 use protocol::{
+    encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_chat, encode_event_craft_done,
     encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
@@ -14,8 +15,8 @@ use protocol::{
     encode_event_inv, encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
     encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
     encode_event_stock, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
-    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireError, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
+    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
@@ -27,10 +28,10 @@ use sim_core::limits::{
     SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK,
 };
 use sim_core::world::{
-    Command, Player, World, EV_BUILD_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH,
-    EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_GATHER, EV_HEALTH, EV_HIT,
-    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
-    EV_WEAK_MARK,
+    Command, Player, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CRAFT_DONE,
+    EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
+    EV_GATHER, EV_HEALTH, EV_HIT, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_SLOT_HARVESTED,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_WEAK_MARK,
 };
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
@@ -279,6 +280,7 @@ impl ShardCore {
                         loc,
                         material,
                     },
+                    ActionMsg::Loot => Command::Loot { id: c.id },
                 };
                 n += 1;
             }
@@ -622,6 +624,61 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_BAG_DROPPED => {
+                    // Broadcast, like a placement: a bag on the ground is
+                    // a world fact, and unlike the death that made it, it
+                    // is a thing that stays. Position is read out of the
+                    // store at encode — the event carries identity only,
+                    // the same shape the hearth's stock ack takes.
+                    let Some(bag) = self.world.backpacks.find(ev.a).map(WireBag::of) else {
+                        continue; // looted or despawned inside the same tick
+                    };
+                    match encode_event_bag_dropped(&bag, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    // The bag walk re-derives it.
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_BAG_REMOVED => {
+                    // Same posture as a piece/deploy removal, including
+                    // the walk restart: the store swap-removes, so a
+                    // cursor inside the shrunken store is now pointing at
+                    // an entry it already sent.
+                    let store_len = self.world.backpacks.len();
+                    match encode_event_bag_removed(ev.a, ev.b as u8, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                let c = &mut self.clients[slot];
+                                if c.bag_sync_cursor > 0 && c.bag_sync_cursor <= store_len {
+                                    c.bag_sync_cursor = 0;
+                                    c.bag_sync_reset = true;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_DOOR => {
                     // A door's state is a world fact: broadcast, not
                     // AOI'd, like the placement that put it there. A
@@ -929,6 +986,33 @@ impl ShardCore {
                         let c = &mut self.clients[slot];
                         c.deploy_sync_reset = false;
                         c.deploy_sync_cursor = at + n;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Standing-backpack walk (join sync / resync), drip-fed like the
+        // deploy walk. A loot or a despawn mid-walk restarts it
+        // (pump_events), for the same swap-remove reason.
+        let c = &self.clients[slot];
+        let n_bags = self.world.backpacks.len();
+        if c.bag_sync_reset || c.bag_sync_cursor < n_bags {
+            let at = c.bag_sync_cursor.min(n_bags);
+            let n = BAG_SYNC_BATCH.min(n_bags - at);
+            let mut batch = [WireBag::default(); BAG_SYNC_BATCH];
+            for (i, b) in self.world.backpacks.entries()[at..][..n].iter().enumerate() {
+                batch[i] = WireBag::of(b);
+            }
+            match encode_event_bag_sync(c.bag_sync_reset, &batch[..n], &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        let c = &mut self.clients[slot];
+                        c.bag_sync_reset = false;
+                        c.bag_sync_cursor = at + n;
                     } else {
                         return;
                     }

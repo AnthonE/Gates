@@ -245,6 +245,7 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
         let mut world = World::new(seq_seed);
         world.gather = crate::gather::GatherContent::probe_fixture();
         world.combat = crate::combat::CombatContent::probe_fixture();
+        world.backpack = crate::backpack::BackpackContent::probe_fixture();
         world.dev_spawn = Some(world.spawn_pos(1));
         world.tick(&[
             Command::Join { id: 1 },
@@ -270,10 +271,17 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
             let f2 = bot_frame(&mut rng, yaws[1], t as u16);
             let f3 = bot_frame(&mut rng, yaws[2], t as u16);
             yaws = [f1.yaw, f2.yaw, f3.yaw];
+            // One bot reaches for a bag every tick, in rotation. The
+            // brawl drops them at everyone's feet and every respawn puts
+            // the fight back on the same sand, so this is not a hopeful
+            // gesture: the nearest-in-reach scan, the partial take, the
+            // emptied-bag removal and the despawn sweep all land inside
+            // the digest, native and wasm.
             world.tick(&[
                 Command::Input { id: 1, frame: f1 },
                 Command::Input { id: 2, frame: f2 },
                 Command::Input { id: 3, frame: f3 },
+                Command::Loot { id: (t % 3) + 1 },
             ]);
         }
         h.update(&world.state_hash().to_le_bytes());
