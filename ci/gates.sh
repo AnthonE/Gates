@@ -14,6 +14,16 @@ fail() {
   exit 1
 }
 
+# Cheapest gate in the file — pure text, no build — so it runs first: a knob
+# that disagrees with its registry entry should not cost a ten-minute compile
+# to discover. `CLAUDE.md` calls `DECISIONS.md` authoritative on every knob,
+# and on 2026-08-02 `BUMP_MAX_SLOPE` shipped at 0.55 while its §open row still
+# read 1.0 — nine gates green over the disagreement, caught only by a judge
+# reading the diff. This is that reading, mechanized.
+echo "== gate: knob registry (DECISIONS.md §open declares what the code ships)"
+command -v node >/dev/null || fail "node missing — knob registry gate cannot run"
+$NICE node ci/knob_registry.mjs || fail "knob registry"
+
 echo "== gate: rustfmt"
 $NICE cargo fmt --all --check || fail "rustfmt"
 
@@ -46,6 +56,13 @@ grep -q '^combat ' "$native_out" || fail "probe output has no combat line — me
 
 echo "== gate: client wasm bridge smoke (raw C ABI, the browser's calling path)"
 $NICE node ci/client_smoke.mjs || fail "client bridge smoke"
+
+# The terrain bump's gradient reconstruction, as arithmetic. The defect it
+# holds — a heightfield rendering its own triangulation — is a discontinuity in
+# a formula, so it is evaluated on both sides of one triangle edge rather than
+# photographed. No GPU, no shard, no threshold that moves with a driver.
+echo "== gate: bump basis (world-XZ gradient is continuous across a triangle edge)"
+$NICE node ci/bump_basis.mjs || fail "bump basis"
 
 echo "== gate: web bundle (npm ci + vite build; the wasm artifact must ride along)"
 command -v npm >/dev/null || fail "npm missing — web gate cannot run"
