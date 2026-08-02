@@ -33,6 +33,8 @@ export class WasmViews {
     this.deployDefs = null; // Uint16Array over client_deploy_defs_ptr (4-word rows)
     this.stock = null; // Uint32Array over client_stock_ptr (item,units pairs)
     this.chat = null; // Uint8Array over client_chat_ptr (id, global, len, text)
+    this.bagIds = null; // Uint32Array over client_bag_ids_ptr
+    this.bagPos = null; // Float32Array over client_bags_ptr (x,y,z per bag)
     this.inCap = ex.client_in_cap();
     this.refresh();
   }
@@ -60,6 +62,8 @@ export class WasmViews {
     const deployDefsPtr = ex.client_deploy_defs_ptr();
     const stockPtr = ex.client_stock_ptr();
     const chatPtr = ex.client_chat_ptr();
+    const bagIdsPtr = ex.client_bag_ids_ptr();
+    const bagPosPtr = ex.client_bags_ptr();
 
     const buf = ex.memory.buffer;
     if (buf === this.buffer) return;
@@ -87,5 +91,8 @@ export class WasmViews {
     this.stock = new Uint32Array(buf, stockPtr, 4 * 2);
     // One popped chat line: id (4 LE bytes), global, length, 48 text bytes.
     this.chat = new Uint8Array(buf, chatPtr, 6 + 48);
+    // 256 standing death backpacks: ids here, world-metre x/y/z there.
+    this.bagIds = new Uint32Array(buf, bagIdsPtr, 256);
+    this.bagPos = new Float32Array(buf, bagPosPtr, 256 * 3);
   }
 }

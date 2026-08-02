@@ -4,27 +4,41 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **Nothing in the game can be hurt, so nothing can be lost.**
-   *(Gap pass, from the merge-gate judge's ranked gap 1 in
-   `findings/pass-20260802-001255-01-judge.md`, both rounds.)*
+1. **A kill pays, but a base still defends nothing.**
+   *(From the merge-gate judge's ranked gap 1 in
+   `findings/archive-prestamp/pass-20260802-025624-01-judge.md`, and its
+   predecessor's, both rounds.)*
 
-   Melee v0 landed: `sim-core/combat.rs`, `content/weapons.toml`'s melee
-   rows baked, wire v11 (hit · health · death). The swing that fells a
-   tree now lands on a person, three spear hits kill, and death is a
-   different beach with empty pockets. `DECISIONS.md` §open, "melee
-   combat v0", holds every bound and every deliberate omission.
+   Melee v0 landed (`sim-core/combat.rs`, wire v11), and the death
+   backpack landed on top of it (`sim-core/backpack.rs`, wire v12): what
+   you carried stays where you fell, the bag despawns on
+   `content/balance.toml`'s rarity ladder, and the nearest bag in reach
+   opens with E. Both `DECISIONS.md` §open rows hold every bound and every
+   deliberate omission.
 
    What the gap still wants, in the order it is worth doing:
-   - **The backpack.** Death destroys the inventory today because the
-     world has no ground container; until it does, a kill pays nothing.
-     This is the next slice of this item, and it is what makes killing
-     someone a reason rather than a mood.
-   - **Piece damage** — the raid lane. `weapons.toml` carries no
+   - **Piece damage** — the raid lane, and now the whole of it. A locked
+     door still cannot be breached by force, so the raid bands in
+     `CONTENT.md` remain data nothing plays. `weapons.toml` carries no
      melee-vs-structure column and inventing one would move the raid
      ratio `test_content` asserts, so it needs a content column and a
      re-derived anchor, not a code constant.
+   - **A container UI, and per-slot looting.** The take is all-that-fits
+     today, which is honest but blunt: nobody can see what is in a bag
+     before opening it, or leave the stone and take the gunpowder. The
+     inventory screen in `inventory.jpeg` is the shape; a bag panel beside
+     it is the slice. `EventMsg::BagRemoved` already carries *why* a bag
+     went, so "someone got there first" has a feed line waiting for it.
    - **Armor and headshots.** `armor.toml` bakes into nothing; aim is
      planar, so there is no head. Both wait on M2's rewound raycasts.
+   - **Ground drops for a full inventory.** `gather::inv_add` still loses
+     the overflow — now that a ground container exists, that loss has
+     somewhere honest to go.
+
+   Two counters worth watching before the next wire slice: the event
+   subtype field is **30 of 32** used, and the action subtype field is
+   **9 of 16** (widened 3 → 4 bits by the loot action). The next S→C fact
+   past two more costs a `SUB_BITS` bump, which moves every event message.
 
 2. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
    The projection half of this item landed (materials v1 third pass,
@@ -139,6 +153,18 @@ Done items are deleted, not checked — history lives in git and
 10. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
+
+11. **`cargo test --workspace` overflows a debug thread's stack; only
+    `--release` (what CI runs) is green.** Pre-existing, not new: verified
+    on `main` at `25f6ec8` before the backpack slice, where
+    `snapshot_budget` aborts the same way. The cause is size, not logic —
+    `World` is ~416 kB of fixed capacity and `ShardCore::new` builds it on
+    the stack, so an unoptimized frame holds two or three copies against a
+    2 MB limit. It bites anyone who types the obvious command. The fix is
+    the one this slice already used for its own store: box the big
+    fixed-capacity members (`Pieces`, `Deploys`, `SlotLives`) at
+    construction, the way `ShardCore` already boxes its client array —
+    one allocation at boot, none in the tick.
 
 Standing rule: anything a playtest breaks jumps this queue; anything a
 wall catches jumps the playtest.

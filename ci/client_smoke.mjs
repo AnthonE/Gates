@@ -97,6 +97,10 @@ const REQUIRED = [
   "client_hit_pop",
   "client_death_pop",
   "client_death_killer",
+  "client_bag_ids_ptr",
+  "client_bags_ptr",
+  "client_bags_len",
+  "client_action_loot",
 ];
 
 let failed = 0;
@@ -148,7 +152,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 11, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 12, "proto ver drifted without this gate hearing");
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
@@ -159,7 +163,7 @@ check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 // either ship them to every public shard or withhold them from the capture
 // harness — and neither shows up anywhere else in this suite.
 const welcomeGolden = readFileSync(
-  join(root, "crates/protocol/tests/golden/v11_welcome.bin"),
+  join(root, "crates/protocol/tests/golden/v12_welcome.bin"),
 );
 const parseHandshake = (bytes) => {
   // ptr first, buffer second: a getter may grow memory and detach a
@@ -306,7 +310,9 @@ check(useLen === 4, `use action length odd: ${useLen}`);
 check(ex.client_action_use(341, 341, 8, 2) === 0, "level past the grid must refuse");
 check(ex.client_action_use(341, 341, 0, 4) === 0, "loc past the four must refuse");
 const lockLen = ex.client_action_lock(341, 341, 0, 2, 1);
-check(lockLen === 4, `lock action length odd: ${lockLen}`);
+// 5 B since wire v12: the action subtype field widened 3 → 4 bits for
+// the loot action, and the lock frame was exactly on a byte boundary.
+check(lockLen === 5, `lock action length odd: ${lockLen}`);
 check(ex.client_action_lock(1024, 341, 0, 2, 1) === 0, "cx past the grid must refuse");
 check(ex.client_action_lock(341, 341, 0, 4, 0) === 0, "loc past the four must refuse");
 const upgradeLen = ex.client_action_upgrade(341, 341, 0, 2, 2);
@@ -465,7 +471,8 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   check(ex.client_chat_pop() === 0, "the ring must be empty again");
 }
 
-// The combat lane through the raw C ABI (wire v11). Hand-framed, so this
+// The combat and backpack lanes through the raw C ABI (wire v12).
+// Hand-framed, so this
 // asserts the client's decoder and not the server's encoder: a layout
 // that drifted on either side shows up as a wrong value here, and
 // `test_protocol_golden` holds the byte shape these frames copy.
@@ -500,6 +507,74 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   check((ex.client_death_pop() >>> 0) === 4242, "death victim mismatch");
   check((ex.client_death_killer() >>> 0) === 7, "death killer mismatch");
   check(ex.client_death_pop() >>> 0 === 0xffffffff, "the death ring must drain");
+
+  // The death backpack, hand-framed end to end (wire v12). Positions are
+  // the same quanta an entity's are: x/z 17 bits unsigned, y 14 bits
+  // biased by POS_Y_BIAS = 2048. 34133 quanta x = 1024.0 m at the 3 cm
+  // x/z quantum, which is the smoke shard's own spawn point.
+  const BAGS = 33554432; // APPLIED_BAGS = 1 << 25
+  check(ex.client_bags_len() === 0, "no bag has been announced yet");
+
+  // Bag dropped: kind EVENT(5) · sub 27 · id 9001 · qx · qy+bias · qz.
+  f = frame([[5, 3], [27, 5], [9001, 32], [34133, 17], [512 + 2048, 14], [22050, 17]]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === BAGS, "a dropped bag must apply with the BAGS flag");
+  check(ex.client_bags_len() === 1, "the bag set must hold it");
+  {
+    const ids = new Uint32Array(ex.memory.buffer, ex.client_bag_ids_ptr(), 1);
+    const pos = new Float32Array(ex.memory.buffer, ex.client_bags_ptr(), 3);
+    check(ids[0] === 9001, "bag id mismatch");
+    check(Math.abs(pos[0] - 34133 * 0.03) < 1e-3, "bag x mismatch");
+    check(Math.abs(pos[1] - 512 * 0.01) < 1e-3, "bag y mismatch");
+    check(Math.abs(pos[2] - 22050 * 0.03) < 1e-3, "bag z mismatch");
+  }
+
+  // The same bag again must be a no-op, not a second mesh: a bag never
+  // moves, so identity is the id and a repeat carries nothing new.
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === 0, "a repeated bag must apply nothing");
+  check(ex.client_bags_len() === 1, "and must not double the set");
+
+  // Bag sync: kind EVENT(5) · sub 28 · reset 1 · count 2 · two records.
+  // The reset clears what the broadcast left, so the set is the walk's.
+  f = frame([
+    [5, 3], [28, 5], [1, 1], [2, 5],
+    [17, 32], [1000, 17], [100 + 2048, 14], [2000, 17],
+    [18, 32], [1100, 17], [110 + 2048, 14], [2100, 17],
+  ]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === BAGS, "a bag sync must apply with the BAGS flag");
+  check(ex.client_bags_len() === 2, "the walk replaces the set it resets");
+  {
+    const ids = new Uint32Array(ex.memory.buffer, ex.client_bag_ids_ptr(), 2);
+    check(ids[0] === 17 && ids[1] === 18, "synced bag ids mismatch");
+  }
+
+  // Bag removed: kind EVENT(5) · sub 29 · id 17 · why 1 (emptied).
+  f = frame([[5, 3], [29, 5], [17, 32], [1, 2]]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === BAGS, "a removal must apply with the BAGS flag");
+  check(ex.client_bags_len() === 1, "the removed bag must leave the set");
+  {
+    const ids = new Uint32Array(ex.memory.buffer, ex.client_bag_ids_ptr(), 1);
+    check(ids[0] === 18, "the wrong bag was removed");
+  }
+
+  // A removal for a bag nobody knows about changes nothing and must not
+  // trap — the client can miss a drop and still hear its removal.
+  f = frame([[5, 3], [29, 5], [999, 32], [0, 2]]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === 0, "an unknown removal must apply nothing");
+  check(ex.client_bags_len() === 1, "and must not disturb the set");
+
+  // The loot action: payload-free by design — kind ACTION(6) in three
+  // bits and sub 8 in four is exactly one byte, and nothing else.
+  {
+    const n = ex.client_action_loot();
+    check(n === 1, `loot frame must be one byte, got ${n}`);
+    const out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 1);
+    check(out[0] === (6 | (8 << 3)), `loot frame byte mismatch: ${out[0]}`);
+  }
 
   // hp > max is a server bug, not a bar to render: refused, error bit set.
   f = frame([[5, 3], [25, 5], [101, 16], [100, 16]]);

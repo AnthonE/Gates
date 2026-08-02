@@ -131,6 +131,11 @@ pub struct ClientNetState {
     pub deploy_sync_cursor: usize,
     /// The next deploy batch carries the reset bit.
     pub deploy_sync_reset: bool,
+    /// Standing-backpack walk cursor, restart semantics like the pieces'
+    /// — a bag looted or despawned mid-walk swap-removes under it.
+    pub bag_sync_cursor: usize,
+    /// The next bag batch carries the reset bit.
+    pub bag_sync_reset: bool,
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
@@ -178,6 +183,8 @@ impl ClientNetState {
             deploy_defs_cursor: 0,
             deploy_sync_cursor: 0,
             deploy_sync_reset: true,
+            bag_sync_cursor: 0,
+            bag_sync_reset: true,
             pending_action: None,
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -202,6 +209,8 @@ impl ClientNetState {
         self.deploy_defs_cursor = 0;
         self.deploy_sync_cursor = 0;
         self.deploy_sync_reset = true;
+        self.bag_sync_cursor = 0;
+        self.bag_sync_reset = true;
         self.last_done_at = u64::MAX;
     }
 

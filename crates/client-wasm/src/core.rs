@@ -11,7 +11,7 @@ use crate::interp::Interp;
 use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
 use protocol::{
-    decode_event, encode_input, ChatText, EventMsg, InputDatagram, ItemCatalog, WireError,
+    decode_event, encode_input, ChatText, EventMsg, InputDatagram, ItemCatalog, WireBag, WireError,
 };
 use sim_core::build::{BuildContent, PieceRec};
 use sim_core::collide::ColIndex;
@@ -20,8 +20,8 @@ use sim_core::deploy::{DeployContent, DeployRec, ARCH_DOOR};
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
 use sim_core::limits::{
-    CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_DEPLOYS, MAX_PIECES,
-    MAX_SLOT_LIVES,
+    CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_DEPLOYS,
+    MAX_PIECES, MAX_SLOT_LIVES,
 };
 
 /// Gather toasts buffered for the HUD (drop-oldest — a toast is cosmetic).
@@ -81,6 +81,12 @@ pub const APPLIED_HEALTH: u32 = 1 << 22;
 pub const APPLIED_HIT: u32 = 1 << 23;
 /// Someone died (`EventMsg::Death`) — broadcast, not necessarily you.
 pub const APPLIED_DEATH: u32 = 1 << 24;
+/// The standing-backpack set changed (dropped, synced, or removed). One
+/// flag for all three because the client holds the whole set, not a
+/// delta: the renderer re-reads `client_bags_ptr` and is done. A bag is
+/// one small mesh at a point, so re-reading ≤ `MAX_BACKPACKS` of them is
+/// cheaper than the bookkeeping a delta would need.
+pub const APPLIED_BAGS: u32 = 1 << 25;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -272,6 +278,64 @@ impl PieceSet {
 
 /// The client's mirror of the placed-deployable set — the same bounded,
 /// address-keyed posture as `PieceSet` (`MAX_DEPLOYS`).
+/// The client's mirror of the standing death backpacks (backpack.rs).
+/// Bounded exactly like the server's store; a server-driven insert past
+/// capacity is dropped, and the next join sync repairs it — the same
+/// bounded staleness every other mirrored set here accepts.
+pub struct BagSet {
+    recs: Box<[WireBag]>,
+    len: usize,
+}
+
+impl BagSet {
+    fn new() -> Self {
+        Self {
+            recs: vec![WireBag::default(); MAX_BACKPACKS].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn entries(&self) -> &[WireBag] {
+        &self.recs[..self.len]
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// True if the set changed. Identity is the bag id, and a bag never
+    /// moves, so a repeat is a no-op rather than an update.
+    fn insert(&mut self, rec: WireBag) -> bool {
+        if self.recs[..self.len].iter().any(|r| r.id == rec.id) {
+            return false;
+        }
+        if self.len == self.recs.len() {
+            return false;
+        }
+        self.recs[self.len] = rec;
+        self.len += 1;
+        true
+    }
+
+    fn remove(&mut self, id: u32) -> bool {
+        if let Some(i) = self.recs[..self.len].iter().position(|r| r.id == id) {
+            self.len -= 1;
+            self.recs[i] = self.recs[self.len];
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub struct DeploySet {
     recs: Box<[DeployRec]>,
     len: usize,
@@ -474,6 +538,9 @@ pub struct ClientCore {
     build_refusal_len: usize,
     /// The placed-deployable mirror (address-keyed; the renderer's truth).
     pub deploys: DeploySet,
+    /// Standing death backpacks, server truth (no prediction: a bag
+    /// appears when a body falls, which the client cannot foresee).
+    pub bags: BagSet,
     /// Deployable records the last `on_stream` call added or replaced.
     deploy_changes: [DeployRec; protocol::DEPLOY_SYNC_BATCH],
     n_deploy_changes: usize,
@@ -564,6 +631,7 @@ impl ClientCore {
             build_refusal_head: 0,
             build_refusal_len: 0,
             deploys: DeploySet::new(),
+            bags: BagSet::new(),
             deploy_changes: [DeployRec::default(); protocol::DEPLOY_SYNC_BATCH],
             n_deploy_changes: 0,
             deploy_defs: DeployContent::EMPTY,
@@ -793,6 +861,29 @@ impl ClientCore {
                         self.push_deploy_change(rec);
                         flags |= APPLIED_DEPLOYS;
                     }
+                }
+            }
+            EventMsg::BagDropped { id, qx, qy, qz } => {
+                if self.bags.insert(WireBag { id, qx, qy, qz }) {
+                    flags |= APPLIED_BAGS;
+                }
+            }
+            EventMsg::BagSync { reset, recs, count } => {
+                if reset {
+                    self.bags.clear();
+                    flags |= APPLIED_BAGS;
+                }
+                for &rec in recs.iter().take(count as usize) {
+                    if self.bags.insert(rec) {
+                        flags |= APPLIED_BAGS;
+                    }
+                }
+            }
+            EventMsg::BagRemoved { id, why: _ } => {
+                // The reason is on the wire for a feed line the HUD does
+                // not have yet; the set only cares that it is gone.
+                if self.bags.remove(id) {
+                    flags |= APPLIED_BAGS;
                 }
             }
             EventMsg::DeployRefused { reason } => {
