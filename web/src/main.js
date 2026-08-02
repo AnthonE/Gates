@@ -1002,6 +1002,45 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         };
       }
     : null;
+  // Prop surfaces v0: the same difference shape again, but what it toggles is
+  // the field on everything that is NOT the ground. Terrain owns where the
+  // props are, so it finds them; this scope owns the camera, so it computes the
+  // eye.
+  //
+  // `off` is a metre offset from the instance's own origin, scaled by its
+  // instance scale, and `aim` is the height on it the camera looks at — a fixed
+  // offset rather than a bearing, so the frame is the same one every run at a
+  // pinned spawn. Both views look DOWN at their prop from well above the
+  // surrounding ground, and that is not framing taste: the first cut placed the
+  // eye level with the trunk 7.5 m out and photographed a hillside, scoring
+  // 0.00% on a class whose field is the strongest in the table. A prop is
+  // wherever worldgen put it, and the only thing between an eye and a prop that
+  // a probe cannot predict is terrain.
+  const devPropProbe = dev
+    ? (specs, minDelta, radiusM) => {
+        const p = scene.camera.position;
+        const found = terrain.nearestProps(p.x, p.z, radiusM);
+        const views = [];
+        for (const s of specs) {
+          const hit = found.find((f) => f.surface === s.surface);
+          if (!hit) continue;
+          const k = hit.scale || 1;
+          views.push({
+            label: s.label,
+            surface: s.surface,
+            distance: hit.distance,
+            instances: hit.count,
+            eye: [
+              hit.pos[0] + s.off[0] * k,
+              hit.pos[1] + s.off[1] * k,
+              hit.pos[2] + s.off[2] * k,
+            ],
+            at: [hit.pos[0], hit.pos[1] + s.aim * k, hit.pos[2]],
+          });
+        }
+        return { views, found, ...scene.propProbe(views, minDelta) };
+      }
+    : null;
   if (dev) {
     scene.attachTerrainCost({
       variants: () => terrain.costVariants(),
@@ -1188,6 +1227,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (devProjectionProbe) debug.projectionProbe = devProjectionProbe;
     if (devAliasProbe) debug.aliasProbe = devAliasProbe;
     if (devSteepestFace) debug.steepestFace = devSteepestFace;
+    if (devPropProbe) debug.propProbe = devPropProbe;
     globalThis.__gatesDebug = debug;
   }, 250);
 }

@@ -1178,20 +1178,441 @@ export function makeTerrainProjectionVariant() {
   return makeTerrainMaterial(PROJECTION_VARIANT);
 }
 
+// --- prop surfaces v0: the ladder, extended off the ground -------------------
+//
+// Everything above this line is the GROUND's material. Every other object in
+// the world — the boulder, the trunk, the canopy, the wall, the door — went
+// through `surfaceMaterial` below and got a roughness, a metalness and a flat
+// colour, and nothing else. The visual judge's pass 20260802-163821-02 named
+// exactly that as its ranked gap 1 and measured it: a 4,386-pixel boulder facet
+// in `05-held-level.png` at luma sd 0.96, four widely separated sample points
+// across two frames all returning the identical byte triple, against
+// `spawnedrock.jpg`'s rock interior at sd 26.31 and `gameplayfoundbase.jpeg`'s
+// log wall at 18.18 — 27x and 20x our spread on the same objects at the same
+// apparent size. Its sentence for the consequence is the one that matters:
+// *you cannot tell our wood from our stone by surface, only by silhouette and
+// hue*, and "no amount of further terrain work reaches criterion 2 without
+// this".
+//
+// So the field the ground already has is extended to them. Three things are
+// deliberately NOT copied from the ground's version:
+//
+//   1. **Triplanar, not world-XZ.** A prop has no UVs and is not a
+//      heightfield; a boulder's overhang and a trunk's flank are exactly the
+//      faces a top-down projection smears. Same three-tap blend the grain
+//      octave already uses (`gmGrainTri`), same `/length(w)` restoration of
+//      the deviation the convex blend removes.
+//   2. **The gradient is ANALYTIC, not reconstructed.** The ground solves its
+//      bump gradient out of `dFdx`/`dFdy`, and the pass before this one proved
+//      what that costs: `dFdx` is a difference ACROSS the rasterizer's 2x2
+//      quad, so a reconstructed gradient is constant inside a quad by
+//      construction and steps at the boundary — measured at 1.9 luma/px of
+//      neighbour contrast within a quad against 21.4 across one, which is the
+//      per-pixel dither the blind reader called out in 5 of 6 frames
+//      (`DECISIONS.md` §open, "the quad-constant gradient"). Value noise with a
+//      quintic fade has an exact derivative and the four corner hashes are
+//      already in hand, so this field carries its own gradient out of the same
+//      taps. It cannot be quad-locked: there is no derivative in it.
+//   3. **Two octaves, and each retires on the sampling law**
+//      (`FADE_OCTAVE_CPP`, cycles per pixel — the law wall 1 of the octave
+//      table is written against). The bump retires on a stricter band than the
+//      albedo it rides on, because a normal is one derivative up from the value
+//      that generates it: a field resolved at N cycles per pixel has a gradient
+//      whose own visible structure is at 2N, so halving the band is the same
+//      statement as the albedo's, made about the derivative.
+//
+// What separates a rock from a log here is STRUCTURE, not amplitude — the
+// point of the gap. `ridge` folds the field toward its own ridge line
+// (`1 - |2n-1|`), which turns a blob field into a crack network; `crevice`
+// darkens the low side of that fold, so the cracks read as depth rather than
+// as paint; and `scale` is a per-axis vec3, so wood's field is stretched along
+// world Y and its fissures run UP the trunk the way bark does.
+const PROP_FADE_CPP = FADE_OCTAVE_CPP;
+// The bump's band is the ALBEDO's band, and that is one law rather than two.
+//
+// The first cut of this pass halved it, on the argument that a normal is one
+// derivative up from the value that generates it. It is a real argument and it
+// is not this material's problem: measured on the gate's own pine view at
+// 4.9 m, the halved band retired the detail octave's RELIEF to 7% of strength
+// while its albedo was still at 90%, and the frame's neighbour contrast came
+// back x1.13 against the x1.30 floor — a canopy whose colour varied and whose
+// surface did not. Per-pixel detail at arm's length IS the relief; retiring it
+// at half the distance the colour survives is retiring the thing this pass
+// exists to add.
+//
+// What handles the sparkle the halved band was insurance against is the same
+// thing that handles it on the ground: `SPEC_AA`, which rolls the shading
+// normal's own variance into roughness (Toksvig) and is applied to exactly the
+// perturbation this field adds. The ground's bump runs the full band under it
+// and does not sparkle.
+//
+// It is also materials v2's own lesson, which unified every ground octave onto
+// one cycles-per-pixel law after two hand-derived metre thresholds were both
+// wrong in the same direction: "the law is not grain's, it is the field's".
+// Two bands is two thresholds to get wrong.
+const PROP_BUMP_FADE_CPP = FADE_OCTAVE_CPP;
+// The detail octave is the coarse one times this. 4.0 is two octaves of
+// separation — far enough that the two do not beat against each other, close
+// enough that the detail is still gone at a distance the coarse one survives
+// (it retires at exactly a quarter of the coarse octave's footprint).
+const PROP_DETAIL_MUL = 4.0;
+// How much of the coarse octave's amplitude the detail octave carries.
+const PROP_DETAIL_SHARE = 0.6;
+// The field's nominal [0,1] maps to a signed swing through this gain, the same
+// argument `TINT_GAIN` carries: value noise does not spend its time at its
+// nominal range (measured deviation about the midpoint 0.2262), so a gain of 2
+// would make the authored contrast a place the material never goes. 2.5 puts
+// the mean at about half the authored pole.
+const PROP_GAIN = 2.5;
+// A chromatic deviation is authored as a direction and then has its luminance
+// projected OUT, so it is exactly neutral by construction rather than neutral
+// to three decimal places by hand.
+//
+// Its MAGNITUDE is set against what the deviation actually reaches: it lands as
+// `dev * gpV * gpBase`, where `gpBase` is the surface's own luminance (so a
+// dark canopy and a pale rock each get a deviation proportionate to what they
+// are, rather than the canopy getting a wash). At rock's linear albedo of
+// ~0.27 and the field's measured |gpV| of ~0.55, a |dev| of 0.08 moves
+// chromaticity by ~3%, and the first cut of this pass shipped exactly that and
+// measured it: the prop probe's chroma spread went x1.09 against a x1.10 floor
+// — a hue octave that had to be looked for. The authored lengths are ~0.2, the
+// band the ground's four identities already sit in (off-colour 0.036–0.152),
+// which puts the deviation at ~11% of albedo and the measured spread at x1.4.
+//
+// Materials v3 earned the neutrality law on the ground
+
+// (`TINT_LUMA_NEUTRAL`): three scalar octaves already move VALUE, nothing moved
+// HUE, and a hue octave that also swings value spends the surface probe's
+// two-sidedness. Same division of labour here.
+const lumaNeutral = (v) => {
+  const l = devLuma(v);
+  return [v[0] - l, v[1] - l, v[2] - l];
+};
+
 // --- authored identities for everything that is not the ground -------------
 // Per-surface roughness/metalness bundles, so a stone wall, a wooden door and
 // a metal sheet answer the same key light differently. Boxes and cones until
-// there are models; the RESPONSE is what makes the tier read (bases.webp).
+// there are models; the RESPONSE is what makes the tier read (bases.webp) —
+// and now `field`, which is what makes the SURFACE read.
+//
+// Every `field` number is authored against one of two bands the file already
+// uses. Peak bump slope is `2*PI * amp * scale` (a sinusoid's peak slope, the
+// convention the quad-constant-gradient row records the ground's table as
+// understating by that same 2*PI), and every class lands inside the 0.03–0.25
+// band the ground's octaves were chosen against.
+//
+// `scale` is in cycles per metre per world axis, so `1/scale` is the feature's
+// own size — and the law for picking it is the OBJECT's size, not the ground's.
+// The coarse octave's wavelength is about a third of the thing it sits on (a
+// 1.0 m crack network on a 3 m canopy, a 0.8 m plate on a 2.5 m boulder, a
+// 0.5 m bark fissure around a 0.4 m trunk), and the detail octave is a quarter
+// of that. Both halves of that are load-bearing and the first cut of this pass
+// got them wrong in the same direction:
+//
+//   · A field authored at the ground's frequencies — foliage at 5.5 /m, rock
+//     at 3.1 /m — retires at `0.09 / scale` metres per pixel, which at this
+//     frustum is **7.7 m for the canopy**. Measured, not reasoned: the gate's
+//     own pine view sits 10 m out and scored 0.00% of the frame moved, on the
+//     class with the strongest field in the table. A prop is looked at from
+//     across a clearing; the ground is looked at from underfoot. Same law,
+//     different distances, so different frequencies.
+//   · An octave one third of its object also *varies inside* the object, which
+//     the terrain's own macro octave does not and which cost materials v3 two
+//     rebuilt terms: a wavelength wider than the frame is a colour cast, not a
+//     variation. Here the frame is the prop.
+//
+// The retirement distances that fall out, at 75° vFOV / 720 rows: canopy 42 m,
+// boulder 34 m, bark 21 m, ore 28 m. That is the band the visual report is
+// about — "simplified cards in the mid-ground and dark specks on the far
+// ridge" — rather than arm's length.
+//
+// `field: null` is the deliberate absence — water owns its own look and is the
+// one surface here that is not a solid. The shader branches on it, so the
+// ocean plane pays none of this.
 export const SURFACES = {
-  wood: { roughness: 0.95, metalness: 0.0 },
-  stone: { roughness: 0.88, metalness: 0.0 },
-  metal: { roughness: 0.42, metalness: 0.8 },
-  foliage: { roughness: 0.86, metalness: 0.0 },
-  rock: { roughness: 0.85, metalness: 0.0 },
-  ore: { roughness: 0.55, metalness: 0.45 },
-  cloth: { roughness: 0.78, metalness: 0.0 },
-  water: { roughness: 0.14, metalness: 0.0 },
+  // Bark: fissures across the grain at ~0.38 m, running 4.7x that far up the
+  // trunk. The strongest ridge in the table — a bark fissure is a crease.
+  wood: {
+    roughness: 0.95,
+    metalness: 0.0,
+    field: {
+      scale: [2.0, 0.42, 2.0],
+      ridge: 0.85,
+      contrast: 0.26,
+      crevice: 0.35,
+      bump: 0.0143,
+      rough: 0.16,
+      dev: lumaNeutral([0.145, 0.03, -0.12]),
+    },
+  },
+  // Built stone: coarser and blockier than a boulder, because a wall is
+  // courses and a boulder is one lump.
+  stone: {
+    roughness: 0.88,
+    metalness: 0.0,
+    field: {
+      scale: [1.0, 1.0, 1.0],
+      ridge: 0.55,
+      contrast: 0.2,
+      crevice: 0.28,
+      bump: 0.0223,
+      rough: 0.12,
+      dev: lumaNeutral([0.11, 0.0, -0.13]),
+    },
+  },
+  metal: {
+    roughness: 0.42,
+    metalness: 0.8,
+    field: {
+      scale: [1.2, 1.2, 1.2],
+      ridge: 0.25,
+      contrast: 0.1,
+      crevice: 0.12,
+      bump: 0.008,
+      rough: 0.1,
+      dev: lumaNeutral([0.095, 0.0, -0.095]),
+    },
+  },
+  // Canopy: the highest contrast in the table and nearly the finest scale.
+  // A cone reads as a cone because its surface is one value; needle clumping
+  // is the cheapest thing that stops it, and it is albedo, not geometry.
+  foliage: {
+    roughness: 0.86,
+    metalness: 0.0,
+    field: {
+      scale: [1.0, 1.0, 1.0],
+      ridge: 0.35,
+      contrast: 0.34,
+      crevice: 0.5,
+      bump: 0.0239,
+      rough: 0.08,
+      dev: lumaNeutral([0.13, 0.06, -0.22]),
+    },
+  },
+  // Granite: a crack network with dark pits. Highest crevice in the table —
+  // `spawnedrock.jpg`'s rock is mostly holes.
+  rock: {
+    roughness: 0.85,
+    metalness: 0.0,
+    field: {
+      scale: [1.25, 1.25, 1.25],
+      ridge: 0.7,
+      contrast: 0.24,
+      crevice: 0.42,
+      bump: 0.0229,
+      rough: 0.14,
+      dev: lumaNeutral([0.12, 0.0, -0.15]),
+    },
+  },
+  // Ore: rock's structure at a finer scale with a metallic fleck — the
+  // contrast is high and the ridge is low, so it reads as inclusions rather
+  // than as cracks.
+  ore: {
+    roughness: 0.55,
+    metalness: 0.45,
+    field: {
+      scale: [1.5, 1.5, 1.5],
+      ridge: 0.45,
+      contrast: 0.3,
+      crevice: 0.3,
+      bump: 0.0191,
+      rough: 0.18,
+      dev: lumaNeutral([0.17, -0.02, -0.12]),
+    },
+  },
+  cloth: {
+    roughness: 0.78,
+    metalness: 0.0,
+    field: {
+      scale: [2.0, 2.0, 2.0],
+      ridge: 0.2,
+      contrast: 0.12,
+      crevice: 0.1,
+      bump: 0.008,
+      rough: 0.06,
+      dev: lumaNeutral([0.07, 0.0, -0.07]),
+    },
+  },
+  water: { roughness: 0.14, metalness: 0.0, field: null },
 };
+
+// The probe's handle on the whole prop field, shared by every material the
+// factory below builds — one uniform OBJECT, the way `activeLevels` is shared
+// across every clipmap patch, so the toggle moves the whole scene in one write
+// and no two props can disagree about whether they have a surface. It ships at
+// 1: a probe input, not a quality setting, and the gate reads the live value
+// back to prove it.
+export const propToggle = { value: 1 };
+
+// Value noise with its exact derivative, from the four corner hashes the value
+// already costs. `u` is the quintic fade the ground's `gmNoise` uses and `du`
+// is its derivative, so this returns the SAME field — `gpNoiseD(p).x` is
+// `gmNoise(p)` to the bit — plus the two partials that come free with it.
+//
+// This is the whole reason a prop's bump is not the ground's dither: nothing
+// here is a screen derivative, so nothing here can be constant across a 2x2
+// quad.
+const PROP_NOISE_GLSL = /* glsl */ `
+vec3 gpNoiseD(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  vec2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+  float a = gmHash(i);
+  float b = gmHash(i + vec2(1.0, 0.0));
+  float c = gmHash(i + vec2(0.0, 1.0));
+  float d = gmHash(i + vec2(1.0, 1.0));
+  float k1 = b - a;
+  float k2 = c - a;
+  float k3 = a - b - c + d;
+  return vec3(a + k1 * u.x + k2 * u.y + k3 * u.x * u.y,
+              (k1 + k3 * u.y) * du.x,
+              (k2 + k3 * u.x) * du.y);
+}
+// The ridge fold, carried through to the derivative: r = 1 - |2n-1| has
+// dr = -2*sign(2n-1)*dn everywhere except the ridge line itself, which is a
+// measure-zero set the rasterizer never lands on exactly.
+vec3 gpFold(vec3 n, float ridge) {
+  float s = (2.0 * n.x - 1.0) >= 0.0 ? 1.0 : -1.0;
+  return vec3(mix(n.x, 1.0 - abs(2.0 * n.x - 1.0), ridge),
+              mix(n.y, -2.0 * s * n.y, ridge),
+              mix(n.z, -2.0 * s * n.z, ridge));
+}
+// Three planar taps blended by the face's own normal, returning the signed
+// value and its WORLD gradient. Each plane's 2D partials are lifted into the
+// two world axes that plane spans, and the whole thing is multiplied by the
+// per-axis scale on the way out (chain rule: the taps are taken in q = p * s).
+//
+// The fold happens per plane, before the blend — a ridged field averaged three
+// ways is not a ridged field — and /length(w) restores the deviation the
+// convex blend removed, both for the same reasons gmGrainTri states them.
+vec4 gpTri(vec3 p, vec3 w, vec3 s, float ridge) {
+  vec3 q = p * s;
+  vec3 g = vec3(0.0);
+  float v = 0.0;
+  vec3 t = gpFold(gpNoiseD(q.zy), ridge);
+  v += t.x * w.x;
+  g += vec3(0.0, t.z, t.y) * w.x;
+  t = gpFold(gpNoiseD(q.xz), ridge);
+  v += t.x * w.y;
+  g += vec3(t.y, 0.0, t.z) * w.y;
+  t = gpFold(gpNoiseD(q.xy), ridge);
+  v += t.x * w.z;
+  g += vec3(t.y, t.z, 0.0) * w.z;
+  float inv = 1.0 / max(length(w), 1e-4);
+  return vec4((v - 0.5) * inv, g * s * inv);
+}
+`;
+
+const PROP_VERT_PARS = /* glsl */ `
+varying vec3 vGpPos;
+varying vec3 vGpNrm;
+`;
+
+// The world position and world normal this field is a function of. Both are
+// computed here rather than borrowed from three's `worldPosition` (which only
+// exists behind a `#if defined(USE_SHADOWMAP) || ...` this file does not own)
+// and both apply `instanceMatrix` by hand, because three applies it inside
+// `project_vertex` and `defaultnormal_vertex` and neither leaves a world-space
+// result behind. Every scatter pool is an InstancedMesh, so a patch that
+// forgot this would give all 4,096 trees in a pool the same square metre of
+// bark.
+const PROP_VERT_GLSL = /* glsl */ `
+  vec3 gpNrm = normal;
+  vec4 gpWp = vec4(transformed, 1.0);
+  #ifdef USE_INSTANCING
+    gpNrm = mat3(instanceMatrix) * gpNrm;
+    gpWp = instanceMatrix * gpWp;
+  #endif
+  vGpNrm = normalize(mat3(modelMatrix) * gpNrm);
+  vGpPos = (modelMatrix * gpWp).xyz;
+`;
+
+const PROP_FRAG_PARS = /* glsl */ `
+varying vec3 vGpPos;
+varying vec3 vGpNrm;
+uniform float uProp;
+uniform vec3 uPropScale;
+uniform vec4 uPropShape;
+uniform vec3 uPropBump;
+uniform vec3 uPropDev;
+uniform vec4 uPropFade;
+${FIELD_GLSL}
+${PROP_NOISE_GLSL}
+`;
+
+// The field, evaluated once per fragment and left in `gpV` (signed value) and
+// `gpGrad` (world gradient) for the roughness and normal stages below — three
+// runs its chunks in one main(), so locals carry.
+//
+// The whole block sits behind a UNIFORM branch, which is coherent across every
+// fragment of a draw call: water skips it entirely, and the probe's `uProp = 0`
+// state costs what a material without a field costs rather than what a
+// material with a zeroed one does. The one derivative in the patch —
+// `fwidth(vGpPos)`, the pixel footprint every fade is measured in — is taken
+// OUTSIDE it, because a derivative in non-uniform control flow is undefined
+// and a uniform branch is only uniform until someone edits the condition.
+const PROP_FRAG_GLSL = /* glsl */ `
+  float gpV = 0.0;
+  vec3 gpGrad = vec3(0.0);
+  float gpFw = max(length(fwidth(vGpPos)), 1e-5);
+  vec3 gpN = normalize(vGpNrm);
+  if (uProp * uPropShape.y > 0.0) {
+    vec3 gpW = abs(gpN);
+    gpW /= max(gpW.x + gpW.y + gpW.z, 1e-4);
+    // Cycles per pixel, off the coarsest axis of the scale: an anisotropic
+    // field resolves as badly as its finest direction, so the fade is driven
+    // by the largest component and the stretched axis rides along.
+    float gpCpp = gpFw * max(max(uPropScale.x, uPropScale.y), uPropScale.z);
+    float gpAlbC = 1.0 - smoothstep(uPropFade.x, uPropFade.y, gpCpp);
+    float gpAlbD = 1.0 - smoothstep(uPropFade.x, uPropFade.y, gpCpp * ${PROP_DETAIL_MUL.toFixed(1)});
+    float gpBmpC = 1.0 - smoothstep(uPropFade.z, uPropFade.w, gpCpp);
+    float gpBmpD = 1.0 - smoothstep(uPropFade.z, uPropFade.w, gpCpp * ${PROP_DETAIL_MUL.toFixed(1)});
+    vec4 gpC = gpTri(vGpPos, gpW, uPropScale, uPropShape.x);
+    vec4 gpD = gpTri(vGpPos, gpW, uPropScale * ${PROP_DETAIL_MUL.toFixed(1)}, uPropShape.x);
+    gpV = (gpC.x * gpAlbC + gpD.x * uPropShape.z * gpAlbD) * ${PROP_GAIN.toFixed(2)};
+    gpGrad = (gpC.yzw * gpBmpC + gpD.yzw * uPropShape.z * gpBmpD) * uPropBump.x;
+
+    // Albedo. Two terms and they do different jobs: a scalar swing that moves
+    // VALUE, and a luminance-neutral deviation that moves HUE — the division
+    // materials v3 established on the ground. The crevice is the ridge fold's
+    // low side and only ever darkens, which is what makes a crack read as
+    // depth; it is scaled by the coarse octave's own fade so a distant prop
+    // does not keep a paint-on crack after the geometry that justified it has
+    // gone.
+    float gpBase = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float gpCrev = clamp(-gpV, 0.0, 1.0) * uPropShape.w * gpAlbC;
+    diffuseColor.rgb = max(
+      diffuseColor.rgb * ((1.0 + gpV * uPropShape.y) * (1.0 - gpCrev))
+        + uPropDev * (gpV * gpBase),
+      0.0);
+  }
+`;
+
+// Bounded (wall 4): a gradient has no upper bound of its own, and the cap is
+// the ground's — same convention, same arithmetic, and no prop class in the
+// table above asks for a tenth of it, so it holds only what a future edit
+// cannot justify. The perturbation is the tangential part of the height
+// gradient, which is the surface-gradient form of a bump on an arbitrary
+// surface: a heightfield's `-grad h` is the special case where the surface
+// normal is +Y.
+const PROP_NORMAL_GLSL = /* glsl */ `
+  {
+    vec3 gpS = gpGrad - dot(gpGrad, gpN) * gpN;
+    float gpLen = length(gpS);
+    gpS *= min(gpLen, ${BUMP_MAX_SLOPE.toFixed(2)}) / max(gpLen, 1e-12);
+    normal = normalize(normal - mat3(viewMatrix) * gpS);
+    // Specular AA on what we just perturbed, the same term and the same gain
+    // the ground's bump carries: variance of the shading normal widens the
+    // lobe instead of letting a boulder sparkle at 40 m.
+    vec3 gpNx = dFdx(normal);
+    vec3 gpNy = dFdy(normal);
+    float gpVar = max(dot(gpNx, gpNx), dot(gpNy, gpNy));
+    roughnessFactor = clamp(
+      sqrt(roughnessFactor * roughnessFactor + ${SPEC_AA.toFixed(2)} * gpVar),
+      0.04, 1.0);
+  }
+`;
 
 /**
  * A MeshStandardMaterial with one of the authored responses above, wired to
@@ -1206,13 +1627,126 @@ export const SURFACES = {
 export function surfaceMaterial(surface, opts = {}) {
   const s = SURFACES[surface];
   if (!s) throw new Error(`unknown surface identity: ${surface}`);
-  return installClipmapShadows(
-    new THREE.MeshStandardMaterial({
-      roughness: s.roughness,
-      metalness: s.metalness,
-      ...opts,
-    }),
-  );
+  const material = new THREE.MeshStandardMaterial({
+    roughness: s.roughness,
+    metalness: s.metalness,
+    ...opts,
+  });
+  // Prop surfaces v0. One patch source for every class — the per-class table
+  // arrives as UNIFORMS, never as generated GLSL — because three keys its
+  // program cache on `onBeforeCompile.toString()`, so a patch that differed
+  // per class would compile one program per class and every one of them would
+  // be a mid-play link the prewarm gate is written to catch. Water carries
+  // `field: null` and still takes the patch: it is the same source, the same
+  // program, and `uPropShape.y = 0` closes the branch at zero cost.
+  const f = s.field;
+  const uniforms = {
+    uProp: propToggle,
+    uPropScale: { value: new THREE.Vector3(...(f ? f.scale : [1, 1, 1])) },
+    uPropShape: {
+      value: new THREE.Vector4(
+        f ? f.ridge : 0,
+        f ? f.contrast : 0,
+        PROP_DETAIL_SHARE,
+        f ? f.crevice : 0,
+      ),
+    },
+    uPropBump: { value: new THREE.Vector3(f ? f.bump : 0, f ? f.rough : 0, 0) },
+    uPropDev: { value: new THREE.Vector3(...(f ? f.dev : [0, 0, 0])) },
+    uPropFade: {
+      value: new THREE.Vector4(
+        PROP_FADE_CPP[0],
+        PROP_FADE_CPP[1],
+        PROP_BUMP_FADE_CPP[0],
+        PROP_BUMP_FADE_CPP[1],
+      ),
+    },
+  };
+  material.userData.propUniforms = uniforms;
+  material.userData.propSurface = surface;
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", `#include <common>\n${PROP_VERT_PARS}`)
+      .replace(
+        "#include <project_vertex>",
+        `#include <project_vertex>\n${PROP_VERT_GLSL}`,
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", `#include <common>\n${PROP_FRAG_PARS}`)
+      // AFTER the include, never instead of it: a prop's vertex colours are
+      // its trunk/skirt/crown ramp and its per-instance tint, and the field
+      // multiplies what the object already is.
+      .replace(
+        "#include <color_fragment>",
+        `#include <color_fragment>\n${PROP_FRAG_GLSL}`,
+      )
+      .replace(
+        "#include <roughnessmap_fragment>",
+        `#include <roughnessmap_fragment>
+        roughnessFactor = clamp(roughnessFactor + gpV * uPropBump.y, 0.04, 1.0);`,
+      )
+      .replace(
+        "#include <normal_fragment_maps>",
+        `#include <normal_fragment_maps>\n${PROP_NORMAL_GLSL}`,
+      );
+  };
+  return installClipmapShadows(material);
+}
+
+/**
+ * The prop field's structural facts, for the browser gate to assert. Derived
+ * from the table rather than restated beside it, so a class that gains a row
+ * or loses a fade cannot pass by agreeing with a copy of itself.
+ */
+export function propFacts() {
+  const classes = Object.entries(SURFACES).map(([name, s]) => {
+    const f = s.field;
+    if (!f) return { name, field: false };
+    const sMax = Math.max(...f.scale);
+    return {
+      name,
+      field: true,
+      scale: f.scale,
+      // Cycles per metre on the coarsest axis, and the finest feature the
+      // material carries — the detail octave's own.
+      scaleMax: sMax,
+      detailScaleMax: sMax * PROP_DETAIL_MUL,
+      ridge: f.ridge,
+      contrast: f.contrast,
+      crevice: f.crevice,
+      bumpM: f.bump,
+      roughSwing: f.rough,
+      dev: f.dev,
+      // A sinusoid's peak slope, which is the convention every slope claim in
+      // this file is supposed to be in (the quad-constant-gradient row records
+      // the ground's table as 2*PI off it).
+      peakSlope: 2 * Math.PI * f.bump * sMax,
+      // Zero by construction — the deviation has its luminance projected out.
+      // Published so the gate reads a number instead of trusting the sentence.
+      devLumaResidual: Math.hypot(...f.dev) > 0 ? devLuma(f.dev) / Math.hypot(...f.dev) : 0,
+    };
+  });
+  return {
+    classes,
+    fadeCpp: PROP_FADE_CPP,
+    bumpFadeCpp: PROP_BUMP_FADE_CPP,
+    detailMul: PROP_DETAIL_MUL,
+    detailShare: PROP_DETAIL_SHARE,
+    gain: PROP_GAIN,
+    nyquistCpp: NYQUIST_CPP,
+    bumpMaxSlope: BUMP_MAX_SLOPE,
+    lumaNeutral: TINT_LUMA_NEUTRAL,
+    // The AA term that pays for running the bump to the full fade band. The
+    // two are one decision, so the gate asserts them together.
+    specAA: SPEC_AA,
+    // Taps per shaded prop fragment: two octaves, three planar taps each.
+    // Priced in the same currency the ground's budget is (`NOISE_SAMPLE_BUDGET`
+    // in the browser gate) so the two are comparable rather than each having
+    // its own unit.
+    noiseSamples: 6,
+    toggle: propToggle.value,
+  };
 }
 
 /** The material system's structural facts, for the browser gate to assert. */
@@ -1224,6 +1758,7 @@ export function materialFacts() {
     surfaces: Object.fromEntries(
       Object.entries(SURFACES).map(([k, v]) => [k, [v.roughness, v.metalness]]),
     ),
+    props: propFacts(),
     breakup: BLEND_BREAKUP,
     specAA: SPEC_AA,
     fadeMicroM: FADE_MICRO,

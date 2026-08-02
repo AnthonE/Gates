@@ -94,18 +94,76 @@ function bakedGeometry(parts) {
   return geo;
 }
 
-/** A conifer: bare trunk, dark lower skirt, lighter crown. */
+// How far a canopy ring may be pulled IN toward the trunk, as a share of its
+// own radius. The visual judge's ranked gap 1(c): "the silhouette is a clean
+// polygon edge with no needle cards, no alpha detail, no sub-branch break-up",
+// and a blind reader named "flat-shaded cones stacked on a cylinder trunk with
+// visible facet edges and no sub-branch silhouette" in 3 of the 3 frames that
+// show a tree. This is the cheapest thing that breaks that edge: each ring of
+// each cone gets a deterministic per-vertex radial pull, so the outline is a
+// ragged whorl instead of a circle, at zero extra vertices and zero extra
+// draw calls.
+//
+// It only ever pulls IN, never out, and that is load-bearing rather than
+// tasteful: the beach-spawn clearance in `DECISIONS.md` §open derives its 4 m
+// from "the widest archetype the client draws is the tree cone at r 1.7 m x
+// 1.1 max scale ~= 1.9 m", so a canopy that could grow would invalidate a
+// spoken sim number from the renderer. A canopy that can only shrink cannot.
+const PINE_RAGGED = 0.34;
+
+/**
+ * A conifer: bare trunk, dark lower skirt, lighter crown — the cones' rings
+ * pulled in per vertex so the outline is a whorl and not a circle.
+ *
+ * Deterministic by construction (the hash is over the vertex's own integer ring
+ * and segment index), so every pine in the world is this pine and a chunk that
+ * streams out and back is bit-identical — the same discipline `instanceTint`
+ * carries for colour.
+ */
+function raggedCone(geo, seed) {
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+    const r = Math.hypot(x, z);
+    if (r < 1e-4) continue; // the apex and the cap centre stay put
+    // A hash over the vertex's quantized angle and height, so the two vertices
+    // a shared edge is built from get the same pull and the seam cannot open.
+    const th = Math.atan2(z, x);
+    const a = Math.round(((th < 0 ? th + Math.PI * 2 : th) / (Math.PI * 2)) * 4096) % 4096;
+    const y = Math.round(pos.getY(i) * 512);
+    let hh = Math.imul(a ^ (y * 0x9e3779b9) ^ seed, 0x85ebca6b);
+    hh ^= hh >>> 13;
+    hh = Math.imul(hh, 0xc2b2ae35);
+    hh ^= hh >>> 16;
+    const k = 1 - ((hh >>> 8) & 0x3ff) / 1023 * PINE_RAGGED;
+    pos.setX(i, x * k);
+    pos.setZ(i, z * k);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
 function pineGeometry() {
   const trunk = new THREE.CylinderGeometry(0.16, 0.24, 1.7, 6, 1, true);
   trunk.translate(0, 0.85, 0);
-  const skirt = new THREE.ConeGeometry(1.7, 3.1, 7);
+  // Nine segments, up from seven, and still ONE height ring. Nine gives the
+  // pull nine independent silhouette events per cone where seven gives seven;
+  // a second ring would give it more, and costs triangles this frame does not
+  // have. `browser_smoke` asserts DESIGN §9's 1.5 M over the main pass plus
+  // every shadow level, and the peak measured before this pass was 1.06 M —
+  // 29% of headroom, which a canopy tessellation is not the right thing to
+  // spend. 40 -> 48 triangles a pine is what this costs; three height rings
+  // would have been 108.
+  const skirt = new THREE.ConeGeometry(1.7, 3.1, 9);
   skirt.translate(0, 2.65, 0);
-  const crown = new THREE.ConeGeometry(1.15, 2.5, 7);
+  const crown = new THREE.ConeGeometry(1.15, 2.5, 9);
   crown.translate(0, 3.95, 0);
   return bakedGeometry([
     { geo: trunk, lo: 0x3a2a1e, hi: 0x53402d, y0: 0, y1: 1.7 },
-    { geo: skirt, lo: 0x1e4423, hi: 0x39733a, y0: 1.1, y1: 4.2 },
-    { geo: crown, lo: 0x2c5c2c, hi: 0x4d8845, y0: 2.7, y1: 5.2 },
+    { geo: raggedCone(skirt, 0x51ed270b), lo: 0x1e4423, hi: 0x39733a, y0: 1.1, y1: 4.2 },
+    { geo: raggedCone(crown, 0x2545f491), lo: 0x2c5c2c, hi: 0x4d8845, y0: 2.7, y1: 5.2 },
   ]);
 }
 
@@ -797,6 +855,50 @@ export class Terrain {
         tint: ARCHETYPES[k].tint,
         count: pool.count,
       });
+    }
+    return out;
+  }
+
+  /**
+   * Dev-only: the nearest live instance of each scatter archetype to a point.
+   *
+   * The prop-surface probe has to photograph a PROP, and where the props are
+   * is a worldgen fact this class owns — the gate cannot aim at one from a
+   * hardcoded bearing without silently rotting the day the scatter weights
+   * move. Terrain scans, the caller computes the eye, exactly the split
+   * `steepestFace` already uses.
+   *
+   * ~4 k matrix reads per pool, so it is a gate hook and never a frame one.
+   */
+  nearestProps(px, pz, maxR) {
+    const out = [];
+    const m = new THREE.Matrix4();
+    for (let k = 1; k < ARCHETYPES.length; k++) {
+      const pool = this.pools[k];
+      if (!pool || pool.count === 0) continue;
+      let best = null;
+      let bestD = maxR * maxR;
+      for (let i = 0; i < pool.count; i++) {
+        pool.getMatrixAt(i, m);
+        const e = m.elements;
+        const dx = e[12] - px;
+        const dz = e[14] - pz;
+        const d = dx * dx + dz * dz;
+        if (d < bestD) {
+          bestD = d;
+          best = { pos: [e[12], e[13], e[14]], scale: m.getMaxScaleOnAxis() };
+        }
+      }
+      if (best) {
+        out.push({
+          arch: k,
+          surface: ARCHETYPES[k].surface,
+          pos: best.pos,
+          scale: best.scale,
+          distance: Math.sqrt(bestD),
+          count: pool.count,
+        });
+      }
     }
     return out;
   }

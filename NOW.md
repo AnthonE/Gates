@@ -4,7 +4,66 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **The world reads untextured and shows its mesh — and both halves turned
+1. **Nothing that is not the ground has a surface.** *(Gap pass. From the
+   visual judge's ranked gap 1 in
+   `findings/pass-20260802-163821-02-visual.md` — "rock, wood and canopy are
+   each one flat colour per facet, literally the rubric's own disqualifier",
+   and "no amount of further terrain work reaches criterion 2 without this".
+   Its gap 2 — the four artifact classes — is the terrain's, and is blocked on
+   the coarse-octave slice item 2 already names, so this pass took the half
+   that is not.)*
+
+   **Landed this pass** (`DECISIONS.md` §open, "prop surfaces v0"): the field
+   the ground has, extended to everything else.
+
+   - **A triplanar two-octave field on every `surfaceMaterial`** — boulder,
+     trunk, canopy, wall, door, ore, body. Triplanar because a prop has no UVs
+     and is not a heightfield; the same three-tap normal blend and the same
+     `/length(w)` deviation restoration `gmGrainTri` already uses.
+   - **The gradient is analytic, so this bump cannot be the ground's dither.**
+     Value noise with a quintic fade has an exact derivative out of the four
+     corner hashes the value already costs. There is no screen derivative
+     anywhere in the patch, so nothing in it can be constant across a 2×2 quad
+     — the defect the pass before this one measured and could not fix on the
+     terrain (`§open`, "the quad-constant gradient").
+   - **Structure is what separates a rock from a log**, not amplitude: a ridge
+     fold (`1 − |2n−1|`) turns a blob field into a crack network, a crevice
+     term darkens the fold's low side so a crack reads as depth, and `scale` is
+     a per-axis vec3 so wood's fissures run UP the trunk. Seven classes, seven
+     distinct structures, asserted.
+   - **The octave frequencies are set by the OBJECT, not by the ground.** The
+     first cut used the ground's frequencies and measured 0.00% of the pine
+     frame moved at 10 m: at 5.5 /m the canopy's field retires at 7.7 m. The
+     coarse octave is now about a third of the object it sits on (canopy 1.0 m,
+     boulder 0.8 m, bark 0.5 m across the grain), which retires at 21–42 m —
+     the band the report is about.
+   - **The pine's silhouette is ragged**, per-vertex and deterministic, pulling
+     canopy rings IN only (a canopy that could grow would invalidate the spoken
+     4 m beach-spawn clearance from the renderer). 40 → 48 triangles a pine;
+     the measured frame peak did not move.
+   - **The gate**: `browser_smoke` 15f, structural half plus a two-view probe
+     aimed at instances terrain finds. Its sharp assertion is the field's own
+     difference image — neighbour variation as a share of magnitude — because
+     a wash scores **exactly** 0 there and the ship-vs-flat ratio it replaced
+     is bounded by whatever facet detail the mesh already had.
+
+   **What this item still wants:**
+
+   - **Bark and canopy are still one mesh each.** The field gives them a
+     surface; it does not give the pine needle cards, a second species, or the
+     trunk/bough separation the report asks for, and there is no undergrowth,
+     no bushes and no grass instances anywhere on the ground.
+   - **The rock and bark rebuild** the older item below still names: granite's
+     value range (this pass gave the ground's rock identity granite's HUE and
+     left the crevice darkening; the props now have crevice darkening and no
+     authored albedo), the dirt-ring base blended flush instead of reading as
+     a pedestal.
+   - **A prop-program budget.** The ground's fragment program is walled at
+     96,000 chars and 8 noise sites; the prop program is now the second-biggest
+     shader in the client and has neither. `propFacts().noiseSamples` publishes
+     6; the wall is not written.
+
+2. **The world reads untextured and shows its mesh — and both halves turned
    out to be arithmetic, not missing art.** *(Gap pass. From the visual
    judge's ranked gap 1 in
    `findings/pass-20260802-050932-01-visual.md`, which returned FAIL on all
@@ -147,7 +206,7 @@ Done items are deleted, not checked — history lives in git and
    `CLAUDE.md`'s coupled-lighting law — sky, water specular, shadows and
    exposure move together or not at all.
 
-2. **A base can be broken into now, but it cannot be repaired, and a
+3. **A base can be broken into now, but it cannot be repaired, and a
    raid still ends in a shrug.**
    *(From the merge-gate judge's ranked gap 1 in
    `findings/archive-prestamp/pass-20260802-035930-01-judge.md`, and its
@@ -191,7 +250,7 @@ Done items are deleted, not checked — history lives in git and
    C→S verb — a repair, a throw — is an action subtype, and there are
    seven.
 
-3. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
+4. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
    The projection half of this item landed (materials v1 third pass,
    `DECISIONS.md` §open): the grain — and only the grain — is sampled
    triplanar, ridge-folded per plane before the blend and the blend's
@@ -225,7 +284,7 @@ Done items are deleted, not checked — history lives in git and
    fragment, 18/24 depth fetches. Price `gmHash4` there too — hash
    evaluations and program chars — not in ms.
 
-4. **A tab that boots beside another live tab takes 34 s to reach the
+5. **A tab that boots beside another live tab takes 34 s to reach the
    world. Nobody knows where those seconds go.**
    The third-tab version of this went red on 2026-08-01 16:26 (`inWorld`
    at 61.6 s of a 60 s window) and the recovery pass closed it, but by
@@ -251,7 +310,7 @@ Done items are deleted, not checked — history lives in git and
    terrain program costs ~3 s to compile here, and a fresh tab compiles
    more than one.
 
-5. **Nothing casts past 720 m, and nothing out there has a silhouette.**
+6. **Nothing casts past 720 m, and nothing out there has a silhouette.**
    The horizon casts now (`DECISIONS.md` §open) but two limits are stated
    rather than solved: the coarsest clipmap level stops at 720 m because
    fog closes at 1000 m, and past the near ring the only caster is the
@@ -260,7 +319,7 @@ Done items are deleted, not checked — history lives in git and
    yaws for exactly that reason. A scatter LOD (billboard crosses,
    `TERRAIN.md` §4's "trees get two LODs") is the fix and it is a terrain
    job, not a shadow one.
-6. **A capture the same twice is a gate; a capture that drifts is a vibe.**
+7. **A capture the same twice is a gate; a capture that drifts is a vibe.**
    Deterministic capture mode (operator, 2026-08-02, `DECISIONS.md` — the
    Claude-of-Duty adoption row): the client animates off the sim tick / an
    injected fixed-step clock in capture mode — today the RAF loop steps off
@@ -279,7 +338,7 @@ Done items are deleted, not checked — history lives in git and
    (must switch to the engine clock in capture mode), or UI-only (excluded
    from shots). Settle by tick count, never by time.
 
-6. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
+8. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
    solid (slice 13: chat — two channels on the reliable lane, local at
    20 m and global, sanitized at both edges and rate-limited per
@@ -295,17 +354,17 @@ Done items are deleted, not checked — history lives in git and
    there) · piece damage (M2's raid lane: hp exists and decays, nothing
    attacks it yet) · nametags (chat names a speaker by id today, because
    nothing has a name yet).
-7. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
+9. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
-8. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
+10. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
    admin lane · backups · status page · error capture · `bench_transport`.
-9. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
+11. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
    then tune content bands from what the anomaly log and the replays say.
-10. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
+12. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
 
-11. **`cargo test --workspace` overflows a debug thread's stack; only
+13. **`cargo test --workspace` overflows a debug thread's stack; only
     `--release` (what CI runs) is green.** Pre-existing, not new: verified
     on `main` at `25f6ec8` before the backpack slice, where
     `snapshot_budget` aborts the same way. The cause is size, not logic —

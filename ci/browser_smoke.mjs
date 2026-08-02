@@ -497,6 +497,115 @@ const ALIAS_MIN_MASK = 0.15;
 // anything that could move the statistic.
 const ALIAS_MAX_NOISE = 0.001;
 
+// --- the prop-surface gate (DECISIONS.md §open, "prop surfaces v0") ---------
+// Assertions 15 through 15e are all about the GROUND. The visual judge's pass
+// 20260802-163821-02 put its ranked gap 1 on everything else: "rock, wood and
+// canopy are each one flat colour per facet — literally the rubric's own
+// disqualifier", a 4,386-pixel boulder facet at luma sd 0.96 returning the
+// identical byte triple at four widely separated sample points, against
+// `spawnedrock.jpg`'s rock at sd 26.31. So this gate photographs a PROP.
+//
+// Two views, each aimed at a real instance the terrain found rather than at a
+// bearing — a rock, because it is the class the report measured, and a pine,
+// because it is the class a blind reader named in 3 of the 3 frames that show
+// one. `off` is a metre offset from the instance's own origin, scaled by its
+// instance scale, and `aim` is the height on it the camera looks at, so a big
+// pine and a small one frame the same way.
+//
+// Both look down from above the surrounding ground rather than across it. That
+// is the instrument, not the composition: the first cut of this gate put the
+// eye level with the trunk 7.5 m out and photographed a hillside, and a view
+// with no prop in it scores a perfectly clean 0.00% on a class whose field is
+// the strongest in the table.
+// Both stand inside 5 m, which is a statement about the material and not about
+// composition: the detail octave is the coarse one times `detailMul` and
+// therefore retires at a quarter of its distance, so a view that frames the
+// prop but stands outside the detail band measures the coarse octave alone and
+// scores a neighbour-contrast ratio of ~1.0 by construction. Measured on the
+// way here: the same pine at 10 m scored x1.07, at 5 m it is a different
+// number about a different octave.
+const PROP_VIEWS = [
+  { label: "rock", surface: "rock", off: [2.6, 2.6, 1.6], aim: 0.5 },
+  { label: "pine", surface: "foliage", off: [1.8, 3.6, 2.8], aim: 2.6 },
+];
+// How far out to look for one. The near ring is 5x5 64 m chunks, so anything
+// inside 150 m of the player is streamed and instanced.
+const PROP_SEARCH_M = 150;
+// One 8-bit step separates a pixel the field painted from one it did not —
+// `GRAIN_MIN_DELTA`'s argument, and `ALIAS_MIN_DELTA`'s.
+const PROP_MIN_DELTA = 1;
+// How much of the frame the field must reach, per view. A prop at these
+// framings is a large object seen close, so this is a floor on the INSTRUMENT
+// (did the probe actually find and frame a prop) as much as on the material;
+// the failure it guards — a class whose field contributes nothing — scores
+// exactly 0.
+const PROP_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_PROP_MIN || 0.02);
+// Signed both ways, per view, and this is the assertion that separates a
+// SURFACE from a wash. Assertion 15 learned it the hard way on the ground: a
+// mutation that collapsed the noise scales moved 66–96% of the pixels — a
+// uniform darkening — and sailed past every fraction floor there was.
+// Microstructure lightens some pixels and darkens others; a tint, an exposure
+// slip and a global darkening cannot.
+const PROP_MIN_DIRECTIONAL = Number(process.env.BROWSER_SMOKE_PROP_MIN_DIR || 0.002);
+// …and the assertion that separates TEXTURE from a colour change, which is
+// 15b's argument applied to props: mean neighbour-to-neighbour luma step over
+// the moved set, shipped against flat. 1.0 is "the field moved the pixels
+// without changing the detail between them", which is exactly what a flat
+// facet with a different colour on it would score.
+//
+// The floor is 1.15 and not higher, and the reason is a limit of THIS measure
+// rather than a concession: its denominator is the flat state's own detail —
+// the mesh's facet edges, its baked vertex-colour ramp, the shadow map — none
+// of which the toggle removes, so the ratio is bounded by
+// (baseline + added)/baseline and a prop with structure of its own can never
+// score what a smooth heightfield does. Measured: one field, x1.91 on a pale
+// faceted boulder (baseline 0.32 luma/px) and x1.26 on a dark canopy whose
+// baseline is 0.23 with facets and a colour ramp already in it. The sharp
+// assertion is the next one down, which has no baseline at all.
+const PROP_MIN_CONTRAST_RATIO = Number(process.env.BROWSER_SMOKE_PROP_MIN_RATIO || 1.15);
+// THE assertion, and the one with no baseline in it: neighbour-to-neighbour
+// variation of the field's OWN difference image (ship − flat), as a share of
+// that image's magnitude. It asks what the field is MADE of.
+//
+// A constant offset — a wash, a global tint, an exposure slip, a per-facet
+// colour change — has zero neighbour variation in the difference image and
+// scores exactly 0. Not approximately: by construction, which is what makes a
+// floor here worth setting at all.
+//
+// Where 0.02 comes from, and it is calibration against a measured pair rather
+// than a model: the shipped field scores **0.050** at the boulder view and
+// **0.041** at the pine, both AT THIS GATE'S OWN SPAWN (the dev shard pins the
+// player to 1024,1024, and the nearest boulder is 17 m out, the nearest pine
+// 2.3 m — the reason to state the box a number came off, the same way the
+// timed block in this file does). A wash scores 0. 0.02 sits 2x below the
+// worse of the two and an infinite distance above what the failure it guards
+// can reach, which is `ALIAS_MAX_RATIO`'s shape.
+//
+// The first cut of this floor was 0.1, derived from a sinusoid model that
+// predicted ~0.4 — wrong by 8x, because the difference image's MAGNITUDE is
+// dominated by the coarse octave while its neighbour STEP comes almost
+// entirely from the detail one, so the ratio is roughly `share * 2*PI / (px per
+// cycle)` and not the per-octave figure the model gave. The measurement is
+// kept here rather than the model, because the model was checked and failed.
+const PROP_MIN_STRUCTURE = Number(process.env.BROWSER_SMOKE_PROP_MIN_STRUCT || 0.02);
+// …and the assertion that separates HUE from VALUE, which is 15d's argument
+// applied to props: chromaticity spread over the moved set, shipped against
+// flat. Every prop term before this pass multiplied albedo by a scalar, and
+// `k*(r,g,b)` has the chromaticity of `(r,g,b)`, so a luma-only measure cannot
+// see the difference between a boulder with two minerals in it and a boulder
+// with one at forty brightnesses.
+const PROP_MIN_CHROMA_RATIO = Number(process.env.BROWSER_SMOKE_PROP_MIN_CHROMA || 1.1);
+// The control's ceiling, `ALIAS_MAX_NOISE`'s argument verbatim: two renders of
+// one state, differing on at most this share of the frame.
+const PROP_MAX_NOISE = 0.001;
+// The structural half, asserted off `propFacts()` rather than off pixels.
+// How many classes must carry a field at all, and how many DISTINCT structures
+// the table must hold — the gap is "you cannot tell our wood from our stone by
+// surface", so a table with one row copied seven times would satisfy every
+// pixel assertion above and none of the ask.
+const PROP_MIN_CLASSES = 6;
+const PROP_MIN_DISTINCT = 5;
+
 // --- the projection gate (DECISIONS.md §open, "materials v1", third pass) ---
 // 15b proves the surface has grain. It cannot prove the grain is on the
 // SURFACE: a world-XZ field stretched 1/u along a slope has exactly the same
@@ -2320,6 +2429,217 @@ console.log(
           `x${s.nograinbump.ratio.toFixed(2)} · mask ${(s.maskFraction * 100).toFixed(1)}% · noise ${s.noise}`,
       )
       .join(" · ") + ` · walled legs ≤ x${ALIAS_MAX_RATIO}`,
+);
+
+// Assertion 15f — the props have a SURFACE, not only a silhouette.
+//
+// Two halves, and the structural one runs first because it can say WHY the
+// pixel half failed: a class that lost its field, a fade that stopped
+// retiring, a deviation that started swinging brightness.
+const propFacts = mat.props;
+if (!propFacts || !Array.isArray(propFacts.classes)) {
+  fail(
+    `tab A: scene.materials() published no prop field facts (${JSON.stringify(propFacts)}) — the ` +
+      `prop-surface gate cannot run`,
+  );
+}
+if (propFacts.toggle !== 1) {
+  fail(
+    `tab A: the prop field ships at uProp=${propFacts.toggle}. It is a probe input, not a quality ` +
+      `setting — a probe that forgot to put it back, or a merge that landed it at 0, is every prop ` +
+      `in the world silently losing its surface`,
+  );
+}
+const withField = propFacts.classes.filter((c) => c.field);
+if (withField.length < PROP_MIN_CLASSES) {
+  fail(
+    `tab A: only ${withField.length} of ${propFacts.classes.length} surface classes carry a field ` +
+      `(floor ${PROP_MIN_CLASSES}) — ${propFacts.classes.filter((c) => !c.field).map((c) => c.name).join(", ")} ` +
+      `have none`,
+  );
+}
+// Distinct STRUCTURE, not distinct amplitude: two classes with the same ridge
+// and the same crevice at different contrasts are one material at two
+// brightnesses, which is the defect being fixed, one level up.
+const structures = new Set(
+  withField.map((c) => `${c.scaleMax}|${c.ridge}|${c.crevice}|${c.scale.join(",")}`),
+);
+if (structures.size < PROP_MIN_DISTINCT) {
+  fail(
+    `tab A: the ${withField.length} prop fields hold only ${structures.size} distinct structures ` +
+      `(floor ${PROP_MIN_DISTINCT}) — the gap this gate exists for is "you cannot tell our wood from ` +
+      `our stone by surface", and a table with one row copied cannot`,
+  );
+}
+for (const c of withField) {
+  // Every octave retires below Nyquist — the octave table's own law
+  // (assertion 15a2), asked of the prop ladder. Both octaves retire on the
+  // same band measured in THEIR OWN cycles (the shader scales the footprint by
+  // `detailMul` before comparing), so one comparison covers the ladder, and
+  // `detailMul > 1` is what makes the second octave a second octave.
+  if (!(propFacts.fadeCpp[1] < propFacts.nyquistCpp)) {
+    fail(
+      `tab A: the prop ladder retires at ${propFacts.fadeCpp[1]} cycles per pixel, at or past the ` +
+        `${propFacts.nyquistCpp} Nyquist limit — an octave sampled above it is indistinguishable from a ` +
+        `lower-frequency one, which is what aliases (class "${c.name}")`,
+    );
+  }
+  if (!(propFacts.detailMul > 1)) {
+    fail(
+      `tab A: the prop ladder's detail octave is the coarse one times ${propFacts.detailMul} — at or ` +
+        `below 1 it is not a second octave, it is the first one twice`,
+    );
+  }
+  // ONE law for the whole field: the bump retires on the same band as the
+  // albedo it rides on, and both are in cycles per pixel. This is materials
+  // v2's finding asserted rather than restated — the ground carried two
+  // hand-derived metre thresholds and both were wrong in the same direction,
+  // past Nyquist, which is what made it alias. A second band here would be a
+  // second threshold to get wrong, and the first cut of this pass had one: it
+  // retired the detail octave's relief at half the distance its colour
+  // survived, and the pine measured x1.13 neighbour contrast against a x1.30
+  // floor. What covers the sparkle a bump at full band could cause is spec AA,
+  // which is applied to this exact perturbation.
+  if (
+    propFacts.bumpFadeCpp[0] !== propFacts.fadeCpp[0] ||
+    propFacts.bumpFadeCpp[1] !== propFacts.fadeCpp[1]
+  ) {
+    fail(
+      `tab A: the prop bump retires on [${propFacts.bumpFadeCpp}] cycles per pixel and its albedo on ` +
+        `[${propFacts.fadeCpp}] — two bands is two hand-derived thresholds to get wrong, which is exactly ` +
+        `how the ground came to sample two octaves past Nyquist (materials v2)`,
+    );
+  }
+  if (!(propFacts.specAA > 0)) {
+    fail(
+      `tab A: the prop field runs its bump to the full fade band with a spec-AA gain of ` +
+        `${propFacts.specAA} — the band and the AA term are one decision, and dropping the AA leaves the ` +
+        `normal's own variance to sparkle`,
+    );
+  }
+  // Bounded (wall 4), in the convention this file's slope claims are supposed
+  // to be in: a sinusoid's peak slope.
+  if (!(c.peakSlope > 0.03 && c.peakSlope < 0.25)) {
+    fail(
+      `tab A: prop class "${c.name}" asks for a peak bump slope of ${c.peakSlope.toFixed(3)}, outside ` +
+        `the 0.03–0.25 band every octave in materials.js is authored against — below it a normal does ` +
+        `not read, above it the surface becomes a relief map`,
+    );
+  }
+  if (!(c.peakSlope <= propFacts.bumpMaxSlope)) {
+    fail(
+      `tab A: prop class "${c.name}" asks for ${c.peakSlope.toFixed(3)} against the ` +
+        `${propFacts.bumpMaxSlope} cap the shader clamps at — the material is designed past its own bound`,
+    );
+  }
+  // The chromatic deviation carries no brightness. Zero by construction here
+  // (the luminance is projected out), so the bar is the ground's and the
+  // measurement is the proof, not the comment.
+  if (!(Math.abs(c.devLumaResidual) <= propFacts.lumaNeutral)) {
+    fail(
+      `tab A: prop class "${c.name}"'s deviation leans ${c.devLumaResidual.toFixed(4)} of its own length ` +
+        `on brightness (ceiling ${propFacts.lumaNeutral}) — three scalar terms already move VALUE on this ` +
+        `material; the deviation's job is the half nothing else does`,
+    );
+  }
+}
+console.log(
+  `  prop surfaces: ${withField.length}/${propFacts.classes.length} classes, ${structures.size} distinct ` +
+    `structures, ${propFacts.noiseSamples} noise sites/fragment · albedo retires ` +
+    `[${propFacts.fadeCpp}] cpp, bump [${propFacts.bumpFadeCpp}] · ` +
+    withField
+      .map((c) => `${c.name} ${c.scaleMax}/m ridge ${c.ridge} slope ${c.peakSlope.toFixed(3)}`)
+      .join(" · "),
+);
+
+const propHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.propProbe);
+if (propHook !== "function") {
+  fail(`tab A: __gatesDebug.propProbe is ${propHook} on a dev shard — the prop-surface gate cannot run`);
+}
+const props = await A.page.evaluate(
+  ([v, d, r]) => globalThis.__gatesDebug.propProbe(v, d, r),
+  [PROP_VIEWS, PROP_MIN_DELTA, PROP_SEARCH_M],
+);
+if (!props || !props.samples) {
+  fail(`tab A: the prop probe returned ${JSON.stringify(props)} — it did not run`);
+}
+// A view that found no instance is a SKIP, and a skip is the worst bug class
+// in this file. The probe reports what it found; if a class the gate asked for
+// is not in the world, the gate goes red rather than scoring the classes that
+// happened to be there.
+if (props.samples.length !== PROP_VIEWS.length) {
+  fail(
+    `tab A: the prop probe framed ${props.samples.length} of ${PROP_VIEWS.length} views — it found ` +
+      `${JSON.stringify((props.found || []).map((f) => `${f.surface}@${f.distance.toFixed(0)}m`))} within ` +
+      `${PROP_SEARCH_M} m, so a class this gate asserts is not in the streamed world and the assertion ` +
+      `below would have passed by measuring nothing`,
+  );
+}
+const propDetail = (s) =>
+  `      ${s.label} (${s.surface}): nearest instance ${(s.distance || 0).toFixed(1)} m away of ` +
+  `${s.instances} in its pool, eye [${(s.eye || []).map((v) => v.toFixed(1)).join(", ")}]\n` +
+  `      ${s.label} (${s.surface}): mask ${(s.maskFraction * 100).toFixed(2)}% · up ` +
+  `${(s.upFraction * 100).toFixed(2)}% / down ${(s.downFraction * 100).toFixed(2)}% · contrast ` +
+  `${s.contrastFlat.toFixed(2)} -> ${s.contrastShip.toFixed(2)} (x${s.contrastRatio.toFixed(2)}) · structure ` +
+  `${s.diffStep.toFixed(2)}/${s.diffMean.toFixed(2)} = ${s.diffStructure.toFixed(3)} · chroma ` +
+  `${s.chromaFlat.toFixed(4)} -> ${s.chromaShip.toFixed(4)} (x${s.chromaRatio.toFixed(2)}) · noise ${s.noise}`;
+for (const s of props.samples) {
+  if (!(s.noise / (props.width * props.height) <= PROP_MAX_NOISE)) {
+    fail(
+      `tab A: two renders of ONE state differ on ${s.noise} pixels of the ${s.label} frame — the ` +
+        `rasterizer has noise of its own and every measure below is partly it talking.\n${propDetail(s)}`,
+    );
+  }
+  if (!(s.maskFraction >= PROP_MIN_FRACTION)) {
+    fail(
+      `tab A: the prop field reaches ${(s.maskFraction * 100).toFixed(2)}% of the ${s.label} frame ` +
+        `(floor ${PROP_MIN_FRACTION * 100}%) — either the ${s.surface} class contributes nothing, or the ` +
+        `probe framed no prop.\n${propDetail(s)}`,
+    );
+  }
+  if (!(s.upFraction >= PROP_MIN_DIRECTIONAL && s.downFraction >= PROP_MIN_DIRECTIONAL)) {
+    fail(
+      `tab A: the ${s.label} frame moved ${(s.upFraction * 100).toFixed(2)}% up and ` +
+        `${(s.downFraction * 100).toFixed(2)}% down (floor ${PROP_MIN_DIRECTIONAL * 100}% each) — a field ` +
+        `that only darkens is a wash, and a wash is what this class already had.\n${propDetail(s)}`,
+    );
+  }
+  if (!(s.contrastRatio >= PROP_MIN_CONTRAST_RATIO)) {
+    fail(
+      `tab A: the ${s.label} frame's neighbour contrast went ${s.contrastFlat.toFixed(2)} -> ` +
+        `${s.contrastShip.toFixed(2)} luma/px, x${s.contrastRatio.toFixed(2)} (floor ` +
+        `x${PROP_MIN_CONTRAST_RATIO}) — the field moved these pixels without changing the detail between ` +
+        `them, which is a colour change wearing a texture's name.\n${propDetail(s)}`,
+    );
+  }
+  if (!(s.diffStructure >= PROP_MIN_STRUCTURE)) {
+    fail(
+      `tab A: the ${s.label} field's own difference image varies ${s.diffStep.toFixed(2)} luma between ` +
+        `neighbours against a magnitude of ${s.diffMean.toFixed(2)} — a structure of ` +
+        `${s.diffStructure.toFixed(3)} (floor ${PROP_MIN_STRUCTURE}). A wash scores exactly 0 and this is ` +
+        `nearly one: whatever the toggle changed, it changed it the same amount everywhere.` +
+        `\n${propDetail(s)}`,
+    );
+  }
+  if (!(s.chromaRatio >= PROP_MIN_CHROMA_RATIO)) {
+    fail(
+      `tab A: the ${s.label} frame's chromaticity spread went ${s.chromaFlat.toFixed(4)} -> ` +
+        `${s.chromaShip.toFixed(4)}, x${s.chromaRatio.toFixed(2)} (floor x${PROP_MIN_CHROMA_RATIO}) — the ` +
+        `field is moving brightness only, so the class is still one hue at N values.\n${propDetail(s)}`,
+    );
+  }
+}
+console.log(
+  `  prop probe: ` +
+    props.samples
+      .map(
+        (s) =>
+          `${s.label} at ${(s.distance || 0).toFixed(1)} m: mask ${(s.maskFraction * 100).toFixed(2)}% · ` +
+          `±${(s.upFraction * 100).toFixed(2)}/${(s.downFraction * 100).toFixed(2)}% · contrast ` +
+          `x${s.contrastRatio.toFixed(2)} · structure ${s.diffStructure.toFixed(3)} · chroma ` +
+          `x${s.chromaRatio.toFixed(2)} · noise ${s.noise}`,
+      )
+      .join(" · "),
 );
 
 // Assertion 15c — the grain is laid ON the surface, not stamped through it.
