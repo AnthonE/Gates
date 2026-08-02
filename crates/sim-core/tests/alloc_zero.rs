@@ -16,7 +16,9 @@ use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::MAX_PLAYERS;
 use sim_core::rng::Pcg32;
-use sim_core::world::{Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED};
+use sim_core::world::{
+    Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_PIECE_REMOVED, EV_STRUCT_HIT,
+};
 
 /// One tick's commands: every bot's input plus a craft enqueue, a cancel,
 /// a place, and an upgrade, so the craft and build verbs sit inside the
@@ -118,9 +120,12 @@ unsafe impl GlobalAlloc for CountingAlloc {
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 
+/// The world seed, named so the raider below can rebuild a body on it.
+const SEED: u64 = 0xA110C;
+
 #[test]
 fn test_alloc_zero() {
-    let mut world = World::new(0xA110C);
+    let mut world = World::new(SEED);
     // The gather fixture puts swings, yields, slot-life writes, and the
     // respawn sweep inside the counted window; the craft fixture adds
     // enqueues, unit completions, refusals, and cancels.
@@ -189,6 +194,28 @@ fn test_alloc_zero() {
     let rung_count = |w: &World| w.pieces.entries().iter().filter(|p| p.row == 4).count();
     let placed_before = world.pieces.len();
     let rung_before = rung_count(&world);
+    // Bot 5 is the raider: stood on a plane piece the warmup actually
+    // left standing, holding fixture item 0 (34 structure damage) and
+    // swinging every tick. A plane's anchor is its cell center, so the
+    // raider is exactly on it — point-blank has no bearing to test, the
+    // same reason the duel below stands the pair coincident. 100 hp at 34
+    // a swing fells it in three, so the damage write AND the removal path
+    // both land inside the counted window. It targets a piece the builder
+    // has already walked away from, so bot 1's own asserts stay clear.
+    let target = *world
+        .pieces
+        .entries()
+        .iter()
+        .find(|p| p.loc == LOC_PLANE)
+        .expect("the warmup must leave a plane piece for the raider");
+    world.players[4].body = sim_core::movement::Body::at(
+        SEED,
+        (target.cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
+        (target.cz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
+    );
+    world.players[4].inv[0] = ItemStack { item: 0, count: 1 };
+    let mut struct_hits = 0u32;
+    let mut struct_falls = 0u32;
     // Stand bot 4 inside bot 3 as the window opens: point-blank has no
     // bearing to test, so the aim cone cannot make this arrangement flaky.
     world.players[3].body = world.players[2].body;
@@ -202,7 +229,7 @@ fn test_alloc_zero() {
             t.wrapping_add(30),
             builder_cell(&world),
         );
-        for i in [2usize, 3] {
+        for i in [2usize, 3, 4] {
             cmds[i] = Command::Input {
                 id: i as u32 + 1,
                 frame: InputFrame {
@@ -230,6 +257,10 @@ fn test_alloc_zero() {
                 bags_dropped += 1;
             } else if ev.code == EV_BAG_REMOVED && ev.b == BAG_GONE_EMPTIED {
                 bags_emptied += 1;
+            } else if ev.code == EV_STRUCT_HIT {
+                struct_hits += 1;
+            } else if ev.code == EV_PIECE_REMOVED {
+                struct_falls += 1;
             }
         }
     }
@@ -267,6 +298,16 @@ fn test_alloc_zero() {
     assert!(
         bags_emptied > 0,
         "no backpack was looted empty inside the counted window — the take \
+         path fell out of the alloc gate"
+    );
+    assert!(
+        struct_hits > 0,
+        "no structure took a raid hit inside the counted window — the piece \
+         damage write fell out of the alloc gate"
+    );
+    assert!(
+        struct_falls > 0,
+        "no structure was broken inside the counted window — the raid removal \
          path fell out of the alloc gate"
     );
     assert_eq!(

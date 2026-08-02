@@ -72,6 +72,18 @@ fn test_content() {
     assert!(a.raid_ratio[0] < a.raid_ratio[1] && a.raid_ratio[1] < a.raid_ratio[2]);
     assert!(a.upkeep_daily_minutes <= 15.0);
     assert!(!a.ttk.is_empty());
+    // The raid lane by hand: the door is breachable, every wall is not,
+    // and the ladder rises. Same shape-pinning as the ratio above.
+    assert!(a.door_breach_swings >= 30 && a.door_breach_swings <= 80);
+    assert!(a.wall_breach_swings[0] >= 150);
+    assert!(
+        a.wall_breach_swings[0] < a.wall_breach_swings[1]
+            && a.wall_breach_swings[1] < a.wall_breach_swings[2]
+    );
+    assert!(
+        a.door_breach_swings < a.wall_breach_swings[0],
+        "the door must stay the cheapest way in"
+    );
 }
 
 #[test]
@@ -179,12 +191,38 @@ fn band_breaks_refused() {
         "kind = \"melee\"\ndamage = 5",
         "band break: ttk",
     );
-    // Raid ratio: a 100-damage satchel needs 18 to open stone — past 3×.
+    // Raid ratio: a 100-structure satchel needs 18 to open stone — past
+    // 3×. The ratio divides by the `structure` column, not `damage`.
     refuses(
         "weapons.toml",
-        "kind = \"throwable\"\ndamage = 500",
-        "kind = \"throwable\"\ndamage = 100",
+        "structure = 500",
+        "structure = 100",
         "band break: stone raid ratio",
+    );
+    // A weapon better against a wall than a person is refused outright,
+    // no band consulted: the spear that kills in 25 cannot chip 99.
+    refuses(
+        "weapons.toml",
+        "damage = 25\nstructure = 3",
+        "damage = 25\nstructure = 99",
+        "exceeds its own body damage",
+    );
+    // Door breach: a 20-structure spear opens the wood door in 10 swings,
+    // under the band's 30 — the breach point stops being a raid.
+    refuses(
+        "weapons.toml",
+        "damage = 30\nstructure = 4",
+        "damage = 30\nstructure = 20",
+        "band break: door breach swings",
+    );
+    // Wall floor: at 6 the door still lands in band (34 swings) but the
+    // wood wall falls in 125, under the 150 floor — a spear undercutting
+    // the satchel is exactly what the floor is for.
+    refuses(
+        "weapons.toml",
+        "damage = 30\nstructure = 4",
+        "damage = 30\nstructure = 6",
+        "melee swings",
     );
     // Farm rate: a 3-per-hit tier-1 hatchet starves the tree band.
     refuses(

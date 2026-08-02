@@ -71,7 +71,7 @@ use crate::limits::{
 use crate::terrain;
 use crate::world::{
     EventQueue, Player, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_PIECE_REMOVED, EV_STOCK,
+    EV_PIECE_REMOVED, EV_STOCK, EV_STRUCT_HIT, STRUCT_DEPLOY_BIT,
 };
 
 /// Archetype codes (schema order: CONTENT.md §1 deployable).
@@ -708,6 +708,127 @@ fn decay_of(max_hp: u16) -> u16 {
     ((max_hp as u32 * DECAY_PCT_PER_PERIOD) / 100).max(1) as u16
 }
 
+/// Remove the piece at store index `i` and the deployable standing at the
+/// exact same address (the door in the doorway, the box on the floor),
+/// broadcasting both removals. **The one removal path**: decay reaches it
+/// through the sweep, a raid through `damage_piece`, and neither can grow
+/// a cascade the other lacks.
+fn drop_piece(
+    dc: &DeployContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    i: usize,
+    shape: u8,
+    events: &mut EventQueue,
+) {
+    let rec = pieces.entries()[i];
+    pieces.remove_at(i, shape);
+    events.push(
+        EV_PIECE_REMOVED,
+        crate::gather::cell_key(rec.cx, rec.cz),
+        ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
+        0,
+    );
+    if let Some(di) = deploys.entries[..deploys.len]
+        .iter()
+        .position(|d| d.cx == rec.cx && d.cz == rec.cz && d.level == rec.level && d.loc == rec.loc)
+    {
+        drop_deploy(dc, pieces, deploys, di, events);
+    }
+}
+
+/// Remove the deployable at store index `di`, unsealing its doorway if it
+/// was a door, and broadcast the removal. The other half of the one
+/// removal path.
+fn drop_deploy(
+    dc: &DeployContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    di: usize,
+    events: &mut EventQueue,
+) {
+    let rec = deploys.entries[di];
+    deploys.remove_at(di, dc);
+    if dc.defs[rec.row as usize].arch == ARCH_DOOR {
+        pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, false);
+    }
+    events.push(
+        EV_DEPLOY_REMOVED,
+        crate::gather::cell_key(rec.cx, rec.cz),
+        ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
+        0,
+    );
+}
+
+/// Take `amount` hp off the piece at store index `i` — the raid verb's
+/// write (combat.rs picks the target, this owns the store). Broadcasts
+/// `EV_STRUCT_HIT` with the hp left, then removes through `drop_piece` at
+/// zero. Returns true when the piece fell.
+///
+/// hp is otherwise sim-only (build.rs) — a raid is the one case where the
+/// number has to cross, because a wall that shows no progress under thirty
+/// swings reads as an invulnerable wall.
+pub fn damage_piece(
+    dc: &DeployContent,
+    bc: &BuildContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    i: usize,
+    amount: u16,
+    events: &mut EventQueue,
+) -> bool {
+    let rec = pieces.entries()[i];
+    let left = rec.hp.saturating_sub(amount);
+    let dealt = rec.hp - left;
+    events.push(
+        EV_STRUCT_HIT,
+        crate::gather::cell_key(rec.cx, rec.cz),
+        ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
+        ((dealt as u32) << 16) | left as u32,
+    );
+    if left == 0 {
+        drop_piece(
+            dc,
+            pieces,
+            deploys,
+            i,
+            bc.pieces[rec.row as usize].shape,
+            events,
+        );
+        return true;
+    }
+    pieces.set_hp(i, left);
+    false
+}
+
+/// Take `amount` hp off the deployable at store index `di`. The deployable
+/// half of `damage_piece`, `STRUCT_DEPLOY_BIT` set on the wire so a client
+/// knows which store the address names.
+pub fn damage_deploy(
+    dc: &DeployContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    di: usize,
+    amount: u16,
+    events: &mut EventQueue,
+) -> bool {
+    let rec = deploys.entries[di];
+    let left = rec.hp.saturating_sub(amount);
+    let dealt = rec.hp - left;
+    events.push(
+        EV_STRUCT_HIT,
+        crate::gather::cell_key(rec.cx, rec.cz),
+        STRUCT_DEPLOY_BIT | ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
+        ((dealt as u32) << 16) | left as u32,
+    );
+    if left == 0 {
+        drop_deploy(dc, pieces, deploys, di, events);
+        return true;
+    }
+    deploys.entries[di].hp = left;
+    false
+}
+
 /// One tick of the upkeep/decay sweep: advance each store's cursor by
 /// `UPKEEP_SWEEP_PER_TICK` entries, processing due periods per entry
 /// (charge from a covering hearth or decay; removal at 0 hp). Bounded
@@ -794,31 +915,9 @@ pub fn upkeep_sweep(
             uh = h_now; // bounded catch-up: the missed hours are forgiven
         }
         if removed {
-            pieces.remove_at(i, def.shape);
+            // Same removal path a raid takes — cascade included.
+            drop_piece(dc, pieces, deploys, i, def.shape, events);
             *piece_cursor = (i as u32).min(pieces.len().saturating_sub(1) as u32);
-            events.push(
-                EV_PIECE_REMOVED,
-                crate::gather::cell_key(rec.cx, rec.cz),
-                ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
-                0,
-            );
-            // The deployable standing on (or in) the removed piece.
-            if let Some(di) = deploys.entries[..deploys.len].iter().position(|d| {
-                d.cx == rec.cx && d.cz == rec.cz && d.level == rec.level && d.loc == rec.loc
-            }) {
-                let drec = deploys.entries[di];
-                deploys.remove_at(di, dc);
-                if dc.defs[drec.row as usize].arch == ARCH_DOOR {
-                    // The door goes with its doorway; unseal the edge.
-                    pieces.set_door(drec.cx, drec.cz, drec.level, drec.loc, false);
-                }
-                events.push(
-                    EV_DEPLOY_REMOVED,
-                    crate::gather::cell_key(drec.cx, drec.cz),
-                    ((drec.level as u32) << 16) | ((drec.loc as u32) << 8) | drec.row as u32,
-                    0,
-                );
-            }
         } else {
             pieces.set_upkeep(i, hp, uh);
         }
@@ -859,18 +958,8 @@ pub fn upkeep_sweep(
             uh = h_now;
         }
         if removed {
-            deploys.remove_at(i, dc);
+            drop_deploy(dc, pieces, deploys, i, events);
             *deploy_cursor = (i as u32).min(deploys.len.saturating_sub(1) as u32);
-            if def.arch == ARCH_DOOR {
-                // A decayed door stops sealing its doorway.
-                pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, false);
-            }
-            events.push(
-                EV_DEPLOY_REMOVED,
-                crate::gather::cell_key(rec.cx, rec.cz),
-                ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
-                0,
-            );
         } else {
             deploys.entries[i].hp = hp;
             deploys.entries[i].uh = uh;

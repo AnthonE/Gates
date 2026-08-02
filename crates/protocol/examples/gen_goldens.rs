@@ -16,8 +16,8 @@ use protocol::{
     encode_event_deploy_sync, encode_event_door, encode_event_gather, encode_event_health,
     encode_event_hit, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_weak_mark, encode_hello, encode_input,
-    encode_refuse, encode_snapshot, encode_welcome, goldens,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_weak_mark,
+    encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -210,4 +210,17 @@ fn main() {
     let (id, why) = goldens::event_bag_removed();
     let len = encode_event_bag_removed(id, why, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[47], &buf[..len]);
+
+    for (i, case) in [
+        goldens::event_struct_hit_piece(),
+        goldens::event_struct_hit_deploy(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (deploy, cx, cz, level, loc, row, damage, left) = case;
+        let len = encode_event_struct_hit(deploy, cx, cz, level, loc, row, damage, left, &mut buf)
+            .unwrap();
+        write_fixture(goldens::FIXTURES[48 + i], &buf[..len]);
+    }
 }

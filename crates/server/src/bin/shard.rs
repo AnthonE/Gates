@@ -104,6 +104,13 @@ async fn main() {
         a.starter_minutes,
         a.upkeep_daily_minutes
     );
+    println!(
+        "content anchors: melee breach — door {} swings · wall w/s/m {}/{}/{}",
+        a.door_breach_swings,
+        a.wall_breach_swings[0],
+        a.wall_breach_swings[1],
+        a.wall_breach_swings[2]
+    );
     let seed = cfg.seed;
     let handle =
         match spawn_shard(cfg, gather, craft, build, deploy, combat, backpack, catalog).await {

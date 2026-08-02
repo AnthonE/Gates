@@ -152,7 +152,35 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 12, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 13, "proto ver drifted without this gate hearing");
+
+// Every hand-framed S->C event below is built here, from the field widths
+// `protocol/src/event.rs` declares — never from a byte literal. Wire v13
+// widened the subtype field 5 -> 6 bits, which moved every one of these by
+// a bit; a literal would have made that a nineteen-line hand edit with no
+// way to tell a typo from a real drift. `test_protocol_golden` still owns
+// the byte shape; this owns the client's decoder reading it.
+const KIND_EVENT = 5;
+const KIND_BITS = 3;
+const EV_SUB_BITS = 6;
+const bitsToBytes = (bits) => {
+  const out = new Uint8Array(Math.ceil(bits.length / 8));
+  bits.forEach((b, i) => { if (b) out[i >> 3] |= 1 << (i & 7); });
+  return out;
+};
+/// LSB-first bit packing, the writer's own order (protocol/src/bits.rs).
+const packed = (parts) => {
+  const bits = [];
+  for (const [v, n] of parts) for (let i = 0; i < n; i++) bits.push((v >>> i) & 1);
+  return bitsToBytes(bits);
+};
+const evFrame = (sub, parts) =>
+  packed([[KIND_EVENT, KIND_BITS], [sub, EV_SUB_BITS], ...parts]);
+/// Write a frame into the client's inbox and hand it to the stream path.
+const onEvent = (f) => {
+  new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), f.length).set(f);
+  return ex.client_on_stream(f.length);
+};
 const helloLen = ex.client_hello();
 check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 
@@ -163,7 +191,7 @@ check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 // either ship them to every public shard or withhold them from the capture
 // harness — and neither shows up anywhere else in this suite.
 const welcomeGolden = readFileSync(
-  join(root, "crates/protocol/tests/golden/v12_welcome.bin"),
+  join(root, "crates/protocol/tests/golden/v13_welcome.bin"),
 );
 const parseHandshake = (bytes) => {
   // ptr first, buffer second: a getter may grow memory and detach a
@@ -202,11 +230,9 @@ check(render[0] === 0, "not started before the first own snapshot");
 check(render[10] >= 100, `client tick should run ahead of 100: ${render[10]}`);
 
 // --- event lane: a hand-framed harvest event through the stream path ------
-// kind EVENT(5, 3 bits LSB-first) · subtype SLOT_HARVESTED(2, 5 bits) ·
-// cx=1 (16 bits) · cz=2 (16 bits) — protocol/src/event.rs v5 layout.
+// subtype SLOT_HARVESTED(2) · cx=1 (16) · cz=2 (16).
 check(ex.client_cell_harvested(1, 2) === 0, "cell must start standing");
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([0x15, 0x01, 0x00, 0x02, 0x00]);
-const evFlags = ex.client_on_stream(5);
+const evFlags = onEvent(evFrame(2, [[1, 16], [2, 16]]));
 check(evFlags === 2, `harvest event should apply with SLOTS flag: ${evFlags}`);
 check(ex.client_slot_changes_len() === 1, "one cell change expected");
 const change = new Uint32Array(ex.memory.buffer, ex.client_slot_changes_ptr(), 2);
@@ -217,12 +243,9 @@ check(ex.client_cell_harvested(1, 2) === 1, "cell must read harvested now");
 check(ex.client_toast_pop() >>> 0 === 0xffffffff, "no toast should be buffered");
 check(ex.client_weak_mark_cell() >>> 0 === 0xffffffff, "no weak mark should be up");
 
-// A hand-framed weak-mark event: kind EVENT(5) · subtype WEAK_MARK(6, 5 bits) ·
-// cx=1 (16) · cz=2 (16) · mark8=0x40 (8) · weak_hit=1 (1 bit).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 7).set([
-  0x35, 0x01, 0x00, 0x02, 0x00, 0x40, 0x01,
-]);
-const markFlags = ex.client_on_stream(7);
+// subtype WEAK_MARK(6) · cx=1 (16) · cz=2 (16) · mark8=0x40 (8) ·
+// weak_hit=1 (1).
+const markFlags = onEvent(evFrame(6, [[1, 16], [2, 16], [0x40, 8], [1, 1]]));
 check(markFlags === 32, `weak-mark event should apply with MARK flag: ${markFlags}`);
 check(ex.client_weak_mark_cell() >>> 0 === ((1 << 16) | 2), "mark cell mismatch");
 check(ex.client_weak_mark_info() === ((1 << 8) | 0x40), "mark info mismatch");
@@ -238,12 +261,8 @@ const cancelLen = ex.client_action_cancel(1);
 check(cancelLen > 0 && cancelLen <= 2, `cancel action length odd: ${cancelLen}`);
 check(ex.client_action_cancel(4) === 0, "index past the queue must refuse");
 
-// Hand-framed craft-done: kind EVENT(5, 3 bits LSB-first) · subtype
-// CRAFT_DONE(8, 5 bits) · item=9 (16 bits) · added=2 (16 bits).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
-  0x45, 0x09, 0x00, 0x02, 0x00,
-]);
-const doneFlags = ex.client_on_stream(5);
+// subtype CRAFT_DONE(8) · item=9 (16) · added=2 (16).
+const doneFlags = onEvent(evFrame(8, [[9, 16], [2, 16]]));
 check(doneFlags === 128, `craft-done should apply with CRAFT_DONE flag: ${doneFlags}`);
 check(
   (ex.client_craft_pop() >>> 0) === ((9 << 16) | 2),
@@ -251,10 +270,8 @@ check(
 );
 check(ex.client_craft_pop() >>> 0 === 0xffffffff, "craft toast ring should drain");
 
-// Hand-framed craft-refused: kind EVENT(5) · subtype CRAFT_REFUSED(9, 5 bits) ·
-// reason=4 (8 bits).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x4d, 0x04]);
-const refusedFlags = ex.client_on_stream(2);
+// subtype CRAFT_REFUSED(9) · reason=4 (8).
+const refusedFlags = onEvent(evFrame(9, [[4, 8]]));
 check(
   refusedFlags === 256,
   `craft-refused should apply with CRAFT_REFUSED flag: ${refusedFlags}`,
@@ -271,28 +288,20 @@ check(ex.client_action_place(32, 0, 0, 0, 0) === 0, "row past the table must ref
 check(ex.client_action_place(0, 1024, 0, 0, 0) === 0, "cx past the grid must refuse");
 check(ex.client_action_place(0, 0, 0, 8, 0) === 0, "level past the cap must refuse");
 
-// Hand-framed piece-placed: kind EVENT(5, 3 bits LSB-first) · subtype
-// PIECE_PLACED(11, 5 bits) · cx=341 (10) · cz=682 (10) · level=3 (3) ·
-// loc=3 (2) · row=17 (8) — protocol/src/event.rs v5 layout.
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 6).set([
-  0x5d, 0x55, 0xa9, 0xba, 0x23, 0x00,
-]);
-const pieceFlags = ex.client_on_stream(6);
+// subtype PIECE_PLACED(11) · cx=341 (10) · cz=682 (10) · level=3 (3) ·
+// loc=3 (2) · row=17 (8).
+const placedPiece = evFrame(11, [[341, 10], [682, 10], [3, 3], [3, 2], [17, 8]]);
+const pieceFlags = onEvent(placedPiece);
 check(pieceFlags === 1024, `piece-placed should apply with PIECES flag: ${pieceFlags}`);
 check(ex.client_piece_changes_len() === 1, "one piece change expected");
 const pchange = new Uint32Array(ex.memory.buffer, ex.client_piece_changes_ptr(), 2);
 check(pchange[0] === ((341 << 16) | 682), `piece change key odd: ${pchange[0]}`);
 check(pchange[1] === ((3 << 16) | (3 << 8) | 17), `piece change info odd: ${pchange[1]}`);
 // The same record again is a duplicate, not a change.
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 6).set([
-  0x5d, 0x55, 0xa9, 0xba, 0x23, 0x00,
-]);
-check(ex.client_on_stream(6) === 0, "duplicate piece must not re-flag");
+check(onEvent(placedPiece) === 0, "duplicate piece must not re-flag");
 
-// Hand-framed build-refused: kind EVENT(5) · subtype BUILD_REFUSED(13, 5 bits)
-// · reason=2 (8 bits).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x6d, 0x02]);
-const bRefused = ex.client_on_stream(2);
+// subtype BUILD_REFUSED(13) · reason=2 (8).
+const bRefused = onEvent(evFrame(13, [[2, 8]]));
 check(bRefused === 4096, `build-refused should apply with its flag: ${bRefused}`);
 check(ex.client_build_refusal_pop() === 2, "build refusal reason should be 2");
 check(ex.client_build_refusal_pop() >>> 0 === 0xffffffff, "build refusal ring should drain");
@@ -320,27 +329,24 @@ check(upgradeLen === 5, `upgrade action length odd: ${upgradeLen}`);
 check(ex.client_action_upgrade(341, 341, 0, 2, 3) === 0, "a fourth material must refuse");
 check(ex.client_action_upgrade(1024, 341, 0, 2, 1) === 0, "cx past the grid must refuse");
 
-// Hand-framed deploy-placed: kind EVENT(5) · subtype DEPLOY_PLACED(15, 5
-// bits) · cx=341 (10) · cz=682 (10) · level=1 (3) · loc=0 (2) · row=3 (4).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
-  0x7d, 0x55, 0xa9, 0x1a, 0x06,
-]);
-const deployFlags = ex.client_on_stream(5);
+// subtype DEPLOY_PLACED(15) · cx=341 (10) · cz=682 (10) · level=1 (3) ·
+// loc=0 (2) · row=3 (4) · open=0 (1) · locked=0 (1).
+const deployFlags = onEvent(
+  evFrame(15, [[341, 10], [682, 10], [1, 3], [0, 2], [3, 4], [0, 1], [0, 1]]),
+);
 check(deployFlags === 16384, `deploy-placed should apply with its flag: ${deployFlags}`);
 check(ex.client_deploy_changes_len() === 1, "one deploy change expected");
 const dchange = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
 check(dchange[0] === ((341 << 16) | 682), `deploy change key odd: ${dchange[0]}`);
 check(dchange[1] === ((1 << 16) | 3), `deploy change info odd: ${dchange[1]}`);
 
-// Hand-framed door announcement for that same address: kind EVENT(5) ·
-// subtype DOOR(22, 5 bits) · cx=341 (10) · cz=682 (10) · level=1 (3) ·
-// loc=0 (2) · open=1 (1) · locked=1 (1). The mirror flips and re-emits
-// the record with both state bits set — 24 (open) and 25 (locked) of the
-// packed change word.
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
-  0xb5, 0x55, 0xa9, 0x1a, 0x06,
-]);
-const doorFlags = ex.client_on_stream(5);
+// The door announcement for that same address: subtype DOOR(22) ·
+// cx=341 (10) · cz=682 (10) · level=1 (3) · loc=0 (2) · open=1 (1) ·
+// locked=1 (1). The mirror flips and re-emits the record with both state
+// bits set — 24 (open) and 25 (locked) of the packed change word.
+const doorFlags = onEvent(
+  evFrame(22, [[341, 10], [682, 10], [1, 3], [0, 2], [1, 1], [1, 1]]),
+);
 check(doorFlags === 16384, `door should apply with the deploy flag: ${doorFlags}`);
 check(ex.client_deploy_changes_len() === 1, "one deploy change expected for the door");
 const dopen = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
@@ -361,25 +367,18 @@ check(
   "predicted a toggle at an address holding nothing",
 );
 
-// Hand-framed piece-removed: kind EVENT(5) · subtype PIECE_REMOVED(19, 5
-// bits) · the piece placed above (cx=341 · cz=682 · level=3 · loc=3).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
-  0x9d, 0x55, 0xa9, 0xba, 0x01,
-]);
-const rmFlags = ex.client_on_stream(5);
+// subtype PIECE_REMOVED(19) · the piece placed above (cx=341 · cz=682 ·
+// level=3 · loc=3).
+const removedPiece = evFrame(19, [[341, 10], [682, 10], [3, 3], [3, 2]]);
+const rmFlags = onEvent(removedPiece);
 check(rmFlags === 524288, `piece-removed should apply with its flag: ${rmFlags}`);
 check(ex.client_removed_key() === ((341 << 16) | 682), "removed key mismatch");
 check(ex.client_removed_info() === ((3 << 8) | 3), "removed info mismatch");
 // Removing it again names no known address: no flag.
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
-  0x9d, 0x55, 0xa9, 0xba, 0x01,
-]);
-check(ex.client_on_stream(5) === 0, "unknown removal must not flag");
+check(onEvent(removedPiece) === 0, "unknown removal must not flag");
 
-// Hand-framed deploy-refused: kind EVENT(5) · subtype DEPLOY_REFUSED(17,
-// 5 bits) · reason=7 (claim).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x8d, 0x07]);
-const dRefused = ex.client_on_stream(2);
+// subtype DEPLOY_REFUSED(17) · reason=7 (claim).
+const dRefused = onEvent(evFrame(17, [[7, 8]]));
 check(dRefused === 65536, `deploy-refused should apply with its flag: ${dRefused}`);
 check(ex.client_deploy_refusal_pop() === 7, "deploy refusal reason should be 7");
 check(ex.client_deploy_refusal_pop() >>> 0 === 0xffffffff, "deploy refusal ring should drain");
@@ -389,26 +388,28 @@ check(ex.client_stock_count() === 0, "no stock ack yet");
 // With a door archetype dripped and a door placed, the press predicts —
 // and a refusal must roll it back all the way out to the renderer, since
 // the sim's state never moved and no announcement is ever coming.
-// Hand-framed deploy-defs: total=1 · first=0 · count=1 · row 0 =
-// (arch DOOR 6, placement DOORWAY 3, hp 60, item 4).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 8).set([
-  0x95, 0x01, 0x84, 0xe7, 0x01, 0x20, 0x00, 0x00,
-]);
-check(ex.client_on_stream(8) === 131072, "deploy defs should apply with their flag");
-// Hand-framed deploy-placed: cx=100 · cz=200 · level=0 · loc=2 · row=0 ·
+// subtype DEPLOY_DEFS(18) · total=1 (5) · first=0 (5) · count=1 (4) ·
+// row 0 = (arch DOOR 6 (3), placement DOORWAY 3 (2), hp 60 (16),
+// item 4 (16)).
+check(
+  onEvent(evFrame(18, [[1, 5], [0, 5], [1, 4], [6, 3], [3, 2], [60, 16], [4, 16]])) ===
+    131072,
+  "deploy defs should apply with their flag",
+);
+// subtype DEPLOY_PLACED(15) · cx=100 · cz=200 · level=0 · loc=2 · row=0 ·
 // open=0 · locked=1 (a door places locked, lock v0).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 5).set([
-  0x7d, 0x64, 0x20, 0x03, 0x41,
-]);
-check(ex.client_on_stream(5) === 16384, "door placement should apply");
+check(
+  onEvent(evFrame(15, [[100, 10], [200, 10], [0, 3], [2, 2], [0, 4], [0, 1], [1, 1]])) ===
+    16384,
+  "door placement should apply",
+);
 const dplaced = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
 check((dplaced[1] >>> 25) === 1, `placed door must read locked: ${dplaced[1]}`);
 // The press still predicts: whether the door answers to this hand is the
 // server's verdict, and a refusal rolls the leaf back below.
 check(ex.client_predict_door(100, 200, 0, 2) === 1, "the press must swing your own door");
-// Hand-framed deploy-refused, reason 11 (REFUSE_D_DOOR).
-new Uint8Array(ex.memory.buffer, ex.client_in_ptr(), 2).set([0x8d, 0x0b]);
-const rolled = ex.client_on_stream(2);
+// subtype DEPLOY_REFUSED(17) · reason 11 (REFUSE_D_DOOR).
+const rolled = onEvent(evFrame(17, [[11, 8]]));
 check(
   (rolled & 16384) !== 0 && (rolled & 65536) !== 0,
   `a refused use must roll back AND reach the renderer: ${rolled}`,
@@ -444,22 +445,12 @@ writeIn(new Uint8Array(48).fill(0x61));
 check(ex.client_action_chat(48, 1) > 0, "a line exactly at the cap must encode");
 
 check(ex.client_chat_pop() === 0, "no line has arrived yet");
-// Hand-framed relay: kind EVENT(5, 3 bits LSB-first) · subtype CHAT(23,
-// 5 bits) · from=7 (32 bits) · global=1 (1 bit) · len=2 (6 bits) · "hi".
 {
-  const bits = [];
-  const push = (v, n) => { for (let i = 0; i < n; i++) bits.push((v >>> i) & 1); };
-  push(5, 3);
-  push(23, 5);
-  push(7, 32);
-  push(1, 1);
-  push(2, 6);
-  push(0x68, 8);
-  push(0x69, 8);
-  const frame = new Uint8Array(Math.ceil(bits.length / 8));
-  bits.forEach((b, i) => { if (b) frame[i >> 3] |= 1 << (i & 7); });
-  writeIn(frame);
-  const chatFlags = ex.client_on_stream(frame.length);
+  // The relay: subtype CHAT(23) · from=7 (32) · global=1 (1) ·
+  // len=2 (6) · "hi".
+  const chatFlags = onEvent(
+    evFrame(23, [[7, 32], [1, 1], [2, 6], [0x68, 8], [0x69, 8]]),
+  );
   check(chatFlags === 2097152, `chat event should apply with CHAT flag: ${chatFlags}`);
   check(ex.client_chat_pop() === 1, "the relayed line must pop");
   const view = new Uint8Array(ex.memory.buffer, ex.client_chat_ptr(), 54);
@@ -471,52 +462,44 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   check(ex.client_chat_pop() === 0, "the ring must be empty again");
 }
 
-// The combat and backpack lanes through the raw C ABI (wire v12).
-// Hand-framed, so this
-// asserts the client's decoder and not the server's encoder: a layout
-// that drifted on either side shows up as a wrong value here, and
-// `test_protocol_golden` holds the byte shape these frames copy.
+// The combat, backpack and raid lanes through the raw C ABI (wire v13).
+// Hand-framed, so this asserts the client's decoder and not the server's
+// encoder: a layout that drifted on either side shows up as a wrong value
+// here, and `test_protocol_golden` holds the byte shape these frames copy.
 {
-  const frame = (parts) => {
-    const bits = [];
-    for (const [v, n] of parts) for (let i = 0; i < n; i++) bits.push((v >>> i) & 1);
-    const out = new Uint8Array(Math.ceil(bits.length / 8));
-    bits.forEach((b, i) => { if (b) out[i >> 3] |= 1 << (i & 7); });
-    return out;
-  };
   check(ex.client_health() === 0, "no health reading has arrived yet");
 
-  // Health: kind EVENT(5) · sub 25 · hp 25 · max 100.
-  let f = frame([[5, 3], [25, 5], [25, 16], [100, 16]]);
+  // Health: sub 25 · hp 25 · max 100.
+  let f = evFrame(25, [[25, 16], [100, 16]]);
   writeIn(f);
   check(ex.client_on_stream(f.length) === 4194304, "health must apply with the HEALTH flag");
   check((ex.client_health() >>> 0) === ((25 << 16) | 100), "health readout mismatch");
 
-  // Hit: kind EVENT(5) · sub 24 · victim 4242 · damage 25.
+  // Hit: sub 24 · victim 4242 · damage 25.
   check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring starts empty");
-  f = frame([[5, 3], [24, 5], [4242, 32], [25, 16]]);
+  f = evFrame(24, [[4242, 32], [25, 16]]);
   writeIn(f);
   check(ex.client_on_stream(f.length) === 8388608, "a hit must apply with the HIT flag");
   check((ex.client_hit_pop() >>> 0) === 25, "hitmarker damage mismatch");
   check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring must drain");
 
-  // Death: kind EVENT(5) · sub 26 · victim 4242 · killer 7.
-  f = frame([[5, 3], [26, 5], [4242, 32], [7, 32]]);
+  // Death: sub 26 · victim 4242 · killer 7.
+  f = evFrame(26, [[4242, 32], [7, 32]]);
   writeIn(f);
   check(ex.client_on_stream(f.length) === 16777216, "a death must apply with the DEATH flag");
   check((ex.client_death_pop() >>> 0) === 4242, "death victim mismatch");
   check((ex.client_death_killer() >>> 0) === 7, "death killer mismatch");
   check(ex.client_death_pop() >>> 0 === 0xffffffff, "the death ring must drain");
 
-  // The death backpack, hand-framed end to end (wire v12). Positions are
+  // The death backpack, hand-framed end to end. Positions are
   // the same quanta an entity's are: x/z 17 bits unsigned, y 14 bits
   // biased by POS_Y_BIAS = 2048. 34133 quanta x = 1024.0 m at the 3 cm
   // x/z quantum, which is the smoke shard's own spawn point.
   const BAGS = 33554432; // APPLIED_BAGS = 1 << 25
   check(ex.client_bags_len() === 0, "no bag has been announced yet");
 
-  // Bag dropped: kind EVENT(5) · sub 27 · id 9001 · qx · qy+bias · qz.
-  f = frame([[5, 3], [27, 5], [9001, 32], [34133, 17], [512 + 2048, 14], [22050, 17]]);
+  // Bag dropped: sub 27 · id 9001 · qx · qy+bias · qz.
+  f = evFrame(27, [[9001, 32], [34133, 17], [512 + 2048, 14], [22050, 17]]);
   writeIn(f);
   check(ex.client_on_stream(f.length) === BAGS, "a dropped bag must apply with the BAGS flag");
   check(ex.client_bags_len() === 1, "the bag set must hold it");
@@ -535,10 +518,10 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   check(ex.client_on_stream(f.length) === 0, "a repeated bag must apply nothing");
   check(ex.client_bags_len() === 1, "and must not double the set");
 
-  // Bag sync: kind EVENT(5) · sub 28 · reset 1 · count 2 · two records.
+  // Bag sync: sub 28 · reset 1 · count 2 · two records.
   // The reset clears what the broadcast left, so the set is the walk's.
-  f = frame([
-    [5, 3], [28, 5], [1, 1], [2, 5],
+  f = evFrame(28, [
+    [1, 1], [2, 5],
     [17, 32], [1000, 17], [100 + 2048, 14], [2000, 17],
     [18, 32], [1100, 17], [110 + 2048, 14], [2100, 17],
   ]);
@@ -550,8 +533,8 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
     check(ids[0] === 17 && ids[1] === 18, "synced bag ids mismatch");
   }
 
-  // Bag removed: kind EVENT(5) · sub 29 · id 17 · why 1 (emptied).
-  f = frame([[5, 3], [29, 5], [17, 32], [1, 2]]);
+  // Bag removed: sub 29 · id 17 · why 1 (emptied).
+  f = evFrame(29, [[17, 32], [1, 2]]);
   writeIn(f);
   check(ex.client_on_stream(f.length) === BAGS, "a removal must apply with the BAGS flag");
   check(ex.client_bags_len() === 1, "the removed bag must leave the set");
@@ -562,10 +545,54 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
 
   // A removal for a bag nobody knows about changes nothing and must not
   // trap — the client can miss a drop and still hear its removal.
-  f = frame([[5, 3], [29, 5], [999, 32], [0, 2]]);
+  f = evFrame(29, [[999, 32], [0, 2]]);
   writeIn(f);
   check(ex.client_on_stream(f.length) === 0, "an unknown removal must apply nothing");
   check(ex.client_bags_len() === 1, "and must not disturb the set");
+
+  // The raid lane (wire v13): a structure takes a hit and the client
+  // reads how much of it is left. The address is the door placed above
+  // (cx=100 · cz=200 · level=0 · loc=2 · row=0), whose def row this
+  // gate already dripped with hp 60 — so `client_struct_hit_hp` must
+  // resolve a real max out of the client's own def table, not zero.
+  // sub 30 · deploy=1 (1) · cx (10) · cz (10) · level (3) · loc (2) ·
+  // row (4 for the deploy store, 8 for the piece store) · damage (16) ·
+  // left (16).
+  const STRUCT_HIT = 67108864; // APPLIED_STRUCT_HIT = 1 << 26
+  const HIT = 8388608;
+  f = evFrame(30, [
+    [1, 1], [100, 10], [200, 10], [0, 3], [2, 2], [0, 4], [26, 16], [34, 16],
+  ]);
+  writeIn(f);
+  const raidFlags = ex.client_on_stream(f.length);
+  check(
+    (raidFlags & STRUCT_HIT) !== 0 && (raidFlags & HIT) !== 0,
+    `a raid hit must raise STRUCT_HIT and the hitmarker: ${raidFlags}`,
+  );
+  check((ex.client_hit_pop() >>> 0) === 26, "the raid must feed the hitmarker ring");
+  check(ex.client_hit_pop() >>> 0 === 0xffffffff, "and drain it");
+  check(
+    ex.client_struct_hit_key() === ((100 << 16) | 200),
+    "struct-hit address mismatch",
+  );
+  check(ex.client_struct_hit_info() === ((0 << 8) | 2), "struct-hit info mismatch");
+  check(
+    (ex.client_struct_hit_hp() >>> 0) === ((34 << 16) | 60),
+    `struct-hit hp must read left 34 of the dripped max 60: ${ex.client_struct_hit_hp() >>> 0}`,
+  );
+  // A piece the client has never heard of: the hit still lands (the
+  // hitmarker is the attacker's own fact) but max reads 0, which is the
+  // signal the HUD uses to draw nothing rather than a bar off a guess.
+  f = evFrame(30, [
+    [0, 1], [900, 10], [900, 10], [0, 3], [0, 2], [0, 8], [7, 16], [93, 16],
+  ]);
+  writeIn(f);
+  check((ex.client_on_stream(f.length) & STRUCT_HIT) !== 0, "an unknown address still marks");
+  check(
+    (ex.client_struct_hit_hp() >>> 0) === ((93 << 16) | 0),
+    "an unknown row must report max 0, never a guess",
+  );
+  check((ex.client_hit_pop() >>> 0) === 7, "and still feed the hitmarker");
 
   // The loot action: payload-free by design — kind ACTION(6) in three
   // bits and sub 8 in four is exactly one byte, and nothing else.
@@ -577,7 +604,7 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   }
 
   // hp > max is a server bug, not a bar to render: refused, error bit set.
-  f = frame([[5, 3], [25, 5], [101, 16], [100, 16]]);
+  f = evFrame(25, [[101, 16], [100, 16]]);
   writeIn(f);
   check((ex.client_on_stream(f.length) & 0x80000000) !== 0, "hp past max must be refused");
   check((ex.client_health() >>> 0) === ((25 << 16) | 100), "a refused reading must not land");

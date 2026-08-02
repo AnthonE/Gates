@@ -670,6 +670,14 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
           hud.toast(`hit −${d}`);
         }
       }
+      if (flags & (1 << 26) /* STRUCT_HIT */) {
+        // The breach readout: what is left of the thing being broken.
+        // max 0 means its def row hasn't arrived — say nothing rather
+        // than draw a bar off a number we don't have.
+        const hp = ex.client_struct_hit_hp() >>> 0;
+        const max = hp & 0xffff;
+        if (max > 0) hud.toast(`breaching ${hp >>> 16}/${max}`);
+      }
       if (flags & (1 << 24) /* DEATH */) {
         for (;;) {
           const victim = ex.client_death_pop() >>> 0;

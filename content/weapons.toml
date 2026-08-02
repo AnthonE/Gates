@@ -1,13 +1,21 @@
 # Gates · content/weapons.toml — combat rows (CONTENT.md §1). Damage is
 # per body hit; TTK bands in balance.toml assert hits-to-kill (CONTENT §4
 # anchor 2). `ballistic` present = projectile (M2 consumes speed/drop);
-# absent on a firearm = hitscan. The satchel's damage is structure damage —
-# the raid-ratio anchor divides wall hp by it.
+# absent on a firearm = hitscan.
+#
+# `structure` is the second damage column: what one hit takes off a
+# building piece or a deployable. It is its own number, never `damage`
+# scaled — a spear that kills a man in four hits must not open a wall in
+# four. Two laws hold it (balance.rs, anchor 1): no weapon's `structure`
+# may exceed its own `damage`, and the throwable raid tool's must strictly
+# exceed every melee weapon's — the raid tool stays the raid tool. The
+# raid-ratio anchor divides wall hp by the satchel's `structure`.
 
 [[weapon]]
 id = "item.spear_wood"
 kind = "melee"
 damage = 25
+structure = 3
 headshot_mult = 2
 rate_per_min = 48
 range_m = 2
@@ -16,6 +24,7 @@ range_m = 2
 id = "item.spear_metal"
 kind = "melee"
 damage = 30
+structure = 4
 headshot_mult = 2
 rate_per_min = 48
 range_m = 2
@@ -24,6 +33,7 @@ range_m = 2
 id = "item.bow"
 kind = "bow"
 damage = 30
+structure = 1
 headshot_mult = 2
 rate_per_min = 30
 range_m = 60
@@ -37,6 +47,7 @@ drop_mps2 = 20
 id = "item.crossbow"
 kind = "bow"
 damage = 35
+structure = 1
 headshot_mult = 2
 rate_per_min = 20
 range_m = 80
@@ -50,6 +61,7 @@ drop_mps2 = 20
 id = "item.revolver"
 kind = "firearm"
 damage = 20
+structure = 1
 headshot_mult = 2
 rate_per_min = 150
 range_m = 50
@@ -59,6 +71,7 @@ ammo = "item.pistol_ammo"
 id = "item.satchel_charge"
 kind = "throwable"
 damage = 500
+structure = 500
 headshot_mult = 1
 rate_per_min = 10
 range_m = 10

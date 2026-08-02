@@ -92,6 +92,7 @@ pub fn hash(c: &Content) -> u64 {
         h.s(&w.id);
         h.u(w.kind as u32);
         h.u(w.damage);
+        h.u(w.structure);
         h.u(w.headshot_mult);
         h.u(w.rate_per_min);
         h.u(w.range_m);
@@ -183,12 +184,14 @@ pub fn hash(c: &Content) -> u64 {
         b.node_hits,
         b.wood_wall_minutes,
         b.raid_ratio_stone_pct,
+        b.door_breach_swings,
     ] {
         h.u(pair[0]);
         h.u(pair[1]);
     }
     h.u(b.headshot_mult);
     h.u(b.armor_extra_hits_max);
+    h.u(b.wall_breach_swings_min);
     h.u(b.upkeep_solo_daily_max_min);
     h.u(c.balance.banded_nodes.len() as u32);
     for n in &c.balance.banded_nodes {

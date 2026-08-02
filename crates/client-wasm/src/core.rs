@@ -87,6 +87,10 @@ pub const APPLIED_DEATH: u32 = 1 << 24;
 /// one small mesh at a point, so re-reading ≤ `MAX_BACKPACKS` of them is
 /// cheaper than the bookkeeping a delta would need.
 pub const APPLIED_BAGS: u32 = 1 << 25;
+/// A structure took a raid hit and is still standing (`EventMsg::StructHit`).
+/// `struct_hit` names the address and how much of it is left. Always set
+/// alongside `APPLIED_HIT`, which is what drains the hitmarker ring.
+pub const APPLIED_STRUCT_HIT: u32 = 1 << 26;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -564,6 +568,12 @@ pub struct ClientCore {
     /// The last removal's grid address (valid while the flags say a
     /// removal was applied this message).
     pub removed_addr: (u16, u16, u8, u8),
+    /// The last structure hit: (cx, cz, level, loc, hp left, hp max).
+    /// `max` is resolved from the def table the client already holds, so
+    /// the HUD can draw a fraction without the wire carrying one; a hit on
+    /// a row the defs have not arrived for yet reports `max = 0`, and the
+    /// caller draws nothing rather than a lie.
+    pub struct_hit: (u16, u16, u8, u8, u16, u16),
     /// The last stock ack: hearth address, rows, live row count.
     pub stock_addr: (u16, u16, u8),
     pub stock: [(u16, u32); HEARTH_STOCK_ROWS],
@@ -641,6 +651,7 @@ impl ClientCore {
             deploy_refusal_len: 0,
             pending_door: None,
             removed_addr: (0, 0, 0, 0),
+            struct_hit: (0, 0, 0, 0, 0, 0),
             stock_addr: (0, 0, 0),
             stock: [(0, 0); HEARTH_STOCK_ROWS],
             stock_count: 0,
@@ -921,6 +932,47 @@ impl ClientCore {
                 // the new rows may say they are doors.
                 self.apply_doors();
                 flags |= APPLIED_DEPLOY_DEFS;
+            }
+            EventMsg::StructHit {
+                deploy,
+                cx,
+                cz,
+                level,
+                loc,
+                damage,
+                left,
+            } => {
+                // The raid's own hitmarker: the same ring a body hit uses,
+                // because "my swing landed for N" is the same fact.
+                if self.hit_len == TOAST_RING {
+                    self.hit_head = (self.hit_head + 1) % TOAST_RING;
+                    self.hit_len -= 1;
+                }
+                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = damage;
+                self.hit_len += 1;
+                let addressed =
+                    |r: &(u16, u16, u8, u8)| r.0 == cx && r.1 == cz && r.2 == level && r.3 == loc;
+                let max = if deploy {
+                    self.deploys
+                        .entries()
+                        .iter()
+                        .find(|r| addressed(&(r.cx, r.cz, r.level, r.loc)))
+                        .filter(|r| (r.row as u16) < self.deploy_defs_have)
+                        .map(|r| self.deploy_defs.defs[r.row as usize].hp)
+                } else {
+                    self.pieces
+                        .entries()
+                        .iter()
+                        .find(|r| addressed(&(r.cx, r.cz, r.level, r.loc)))
+                        .filter(|r| (r.row as u16) < self.piece_defs_have)
+                        .map(|r| self.piece_defs.pieces[r.row as usize].hp)
+                };
+                self.struct_hit = (cx, cz, level, loc, left, max.unwrap_or(0));
+                // Both flags on purpose: `HIT` is the hitmarker fact and
+                // owns draining the ring, `STRUCT_HIT` adds where it
+                // landed. One flag would either strand the ring or make
+                // every caller of the marker learn about addresses.
+                flags |= APPLIED_HIT | APPLIED_STRUCT_HIT;
             }
             EventMsg::PieceRemoved { cx, cz, level, loc } => {
                 if self
