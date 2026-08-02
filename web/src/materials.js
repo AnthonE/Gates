@@ -272,8 +272,9 @@ const GRAIN_SCALE_MIN = Math.min(...IDENTITIES.map((i) => i.grain.scale));
 // its own term from the *unperturbed* normal; this covers what we added).
 const SPEC_AA = 0.5;
 // The cap on the bump's surface gradient, as a slope — the sum of what the
-// three bump octaves and the grain actually ask for, on the identity that
-// asks for most (rock, bump 2.2), in the file's own `amp x bump / wavelength`
+// three octaves that reach gmH (meso, micro and grain) actually ask for, on
+// the identity that asks most (rock, bump 2.2); macro drives the splat
+// weights only and never the height. In the file's own `amp x bump / wavelength`
 // convention (the one the grain block states its 0.07–0.29 range in):
 //
 //   meso   0.55 x 2.2 / 9.5    = 0.127
@@ -793,9 +794,9 @@ ${grainGlsl(variant.grain)}
           vec2 gmSurf = vec2(gmHx * gmDy.y - gmHy * gmDx.y,
                              gmHy * gmDx.x - gmHx * gmDy.x) * gmInvDet;
           // Bounded (wall 4): a screen derivative over a screen footprint has
-          // no upper bound of its own. The cap is the top of the 0.03-0.25
-          // slope band the octave amplitudes are chosen against, times the
-          // four octaves that can sum into gmH.
+          // no upper bound of its own. The cap is the sum of what the three
+          // octaves that reach gmH (meso + micro + grain) ask for on the
+          // identity that asks most; BUMP_MAX_SLOPE carries the arithmetic.
           float gmSlope = length(gmSurf);
           gmSurf *= min(gmSlope, ${BUMP_MAX_SLOPE.toFixed(2)}) / max(gmSlope, 1e-12);
           vec3 gmNw = normalize(vGmNorm);

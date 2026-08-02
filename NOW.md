@@ -24,6 +24,17 @@ Done items are deleted, not checked — history lives in git and
      smooth-shaded heightfield rendered its own facets. It is solved in
      world XZ now, mesh-independent by construction, and gated as
      arithmetic in `ci/bump_basis.mjs` rather than as a screenshot.
+   - **The knob registry drifted, and the drift is now gated.** The first
+     cut of this work proposed `BUMP_MAX_SLOPE = 1.0`; measuring it (a 45°
+     perturbation against a 21° key light) sent 0.55 to the shader while
+     the `DECISIONS.md` §open row kept saying 1.0 — nine gates green over
+     the disagreement, and the merge-gate judge caught it by reading
+     (`findings/pass-20260802-050932-02-judge.md`, checks 4 and 9). The row
+     now records the shipped value and its derivation, the same stale
+     derivation is corrected in the shader comment that also carried it,
+     and `ci/knob_registry.mjs` pins every §open knob declaration to the
+     constant that actually ships — Rust and JS alike, unresolved and
+     ambiguous names failing as loudly as a mismatch.
 
    **What this item still wants**, in the order the report ranked it — none
    of it started, and the first is the one the acceptance turns on:

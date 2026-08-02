@@ -14,6 +14,16 @@ fail() {
   exit 1
 }
 
+# Cheapest gate in the file — pure text, no build — so it runs first: a knob
+# that disagrees with its registry entry should not cost a ten-minute compile
+# to discover. `CLAUDE.md` calls `DECISIONS.md` authoritative on every knob,
+# and on 2026-08-02 `BUMP_MAX_SLOPE` shipped at 0.55 while its §open row still
+# read 1.0 — nine gates green over the disagreement, caught only by a judge
+# reading the diff. This is that reading, mechanized.
+echo "== gate: knob registry (DECISIONS.md §open declares what the code ships)"
+command -v node >/dev/null || fail "node missing — knob registry gate cannot run"
+$NICE node ci/knob_registry.mjs || fail "knob registry"
+
 echo "== gate: rustfmt"
 $NICE cargo fmt --all --check || fail "rustfmt"
 
