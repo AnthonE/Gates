@@ -24,30 +24,43 @@ Done items are deleted, not checked — history lives in git and
    noise octaves have not moved it. A 1K photographed albedo carries that
    detail by construction.
 
-   **Slice 1 — the ground.** Load the four ground identities' albedo/normal/
-   roughness (`grass`, `rock`, `sand`, `litter` — plus `gravel` if a scree
-   identity earns one) and sample them in the splat shader at the tile scales
-   the identities already declare. Keep every existing layer: the splat blend,
-   the per-identity tint and chroma (which is also how an off-band source is
-   pulled into §3's measured band — the `rock` pick needs exactly this), the
-   grain octave, the triplanar projection, the Nyquist-correct retirement.
-   **The octaves become variation on top of measured detail, not a substitute
-   for it** — delete none of them, re-tune their amplitudes against the new
-   base. Anisotropic filtering on, mipmaps on, `colorSpace` right (albedo is
-   sRGB, normal and roughness are linear — getting this wrong is the classic
-   and it will read as washed-out).
+   **Slice 1 — the ground — LANDED** (`DECISIONS.md` §open, "ground base maps
+   v0"). Albedo/normal/roughness for all four identities, at each identity's
+   own declared tile, under every existing layer rather than instead of them.
+   The mean is preserved by construction — each layer's linear mean is measured
+   at load and divided out, so the palette keeps the mean and the photograph
+   contributes the variance, which is also what pulls the off-band `rock` pick
+   into §3's band without editing the file (measured gain span ×5.72, exactly
+   as `MANIFEST.md` predicted). Gated at `browser_smoke` **15h**, the first
+   assertion in that file whose sharp number is an absolute rather than a
+   ratio: **6.00 luma/px at the level vantage and 8.59 near-ground, against
+   0.41–0.47 from the octaves alone**, with §3's 6.3 printed beside it every
+   run. Three texture units, ≤12 fetches/fragment, 3.1 MB of §7's 12 MB.
 
-   **Slice 2 — the props.** Same maps through `surfaceMaterial()` for bark,
-   wood, stone, metal, cloth, ore. Props have no UVs, so they go through the
-   triplanar path that already exists — this is why that work was worth doing.
+   Two things fell out of it, both recorded in the §open row: the octave probes
+   (15b/15c/15d) now hold `uBase` at 0 across every leg, because a ratio cannot
+   answer "what did this octave add" once something two orders of magnitude
+   larger is in the denominator — their floors are untouched and 15b now scores
+   ×8.65 against ×2.0. And **15e's ship leg is a wall now**, at the unchanged
+   ×1.35: the quad-locked mosaic reads ×1.00 against ×3.12/×6.15. That is
+   dilution, not a fix — see item 7's first want, which is unchanged.
 
-   **The gates.** `browser_smoke` 15/15f/15g already measure exactly what this
-   should move: neighbour variation, delivered value histograms, chroma. Raise
-   the floors to what the new base actually delivers, and add ART §3's 6.3 as
-   the stated target the near-ground floor is walking toward. Budget: texture
-   payload under 12 MB (§7), draw calls and triangles unchanged, and the
-   prewarm gate still asserts zero program links after `inWorld` — a texture
-   arriving late is a program relink, so load them all at boot.
+   **Slice 2 — the props — NEXT, and it is what this item still wants.** Same
+   maps through `surfaceMaterial()` for bark, wood, stone, metal, cloth, ore.
+   Props have no UVs, so they go through the triplanar path that already
+   exists — this is why that work was worth doing. Three fetches per plane per
+   map is nine, so the unit budget (3 of 16 today) and the fetch ceiling are
+   the first thing to design against, not the last; `propProbe`'s 15f/15g
+   floors are the ones to re-measure, the way 15b's were here.
+
+   **Also left, and cheap:** the base tile is 0.59–1.00 m, which is what item 1
+   asked for and is fine at the near-ground framings 15h measures — but it is
+   a ~1 m repeat, and nothing yet measures whether it READS as one at 10–20 m.
+   The visual judge is the right instrument for that; do not pre-tune it.
+   Second, the base retires on `FADE_OCTAVE_CPP` (~36–60 m out) and that fade
+   is doing double duty as the cost control on this box. If the far ground
+   reads flat in a captured frame, the fade is where to look, and the honest
+   fix is a cheaper far path rather than a wider fade.
 
    **Then, and only then, the trees.** Pines are four primitives
    (`terrain.js`, `pineGeometry`). `.claude/skills/threejs-procedural-vegetation`
@@ -81,7 +94,20 @@ Done items are deleted, not checked — history lives in git and
 
    **What this item still wants**, in the order it is worth doing:
 
-   - **The death screen and the choice.** `ALPHA.md` §1's respawn flow is
+   - **The death screen and the choice — BUILT, JUDGED FAIL, PARKED on
+     `loop/death-screen` at `6eca08c`.** Nine of ten checks passed; check 9
+     (doc/code truth) failed on a real one, and it is worth reading before
+     rebasing: `crates/server/src/core.rs:711–719` documents a client-side
+     reconciliation that does not exist, for a reachable failure — `EV_RESPAWN`
+     is droppable at `MAX_EVENTS_PER_TICK`, and it is the only thing in the
+     system that can close the screen, so losing it leaves a live body behind
+     an overlay with its inputs zeroed. The judge's ranked fix 1 is to
+     implement the clause (clear `ClientCore::dead` on an own-body snapshot
+     that cannot be reconciled with a corpse, gateable in `client_smoke.mjs`)
+     rather than delete it. Report:
+     `findings/archive-prestamp/pass-20260803-121954-02-judge.md`. The rest of
+     this bullet is that branch's original scope:
+     `ALPHA.md` §1's respawn flow is
      "who/what killed you — range and weapon, no map position — choose beach
      or a bag, spawn with nothing". Today the sim picks the nearest bag for
      you. The choice is the action subtype and the S→C screen this pass

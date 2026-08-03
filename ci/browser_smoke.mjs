@@ -581,6 +581,68 @@ const ALIAS_MIN_MASK = 0.15;
 // anything that could move the statistic.
 const ALIAS_MAX_NOISE = 0.001;
 
+// --- the base-map gate, 15h (ART.md §7, "the CC0 working set") -------------
+// The number this whole slice is aimed at, and the only one in this file taken
+// off the reference images rather than off our own frames: `ART.md` §3
+// measured the near-ground neighbour contrast of `Rust Images/` at **6.3 luma
+// per pixel** against **0.26** in ours. It is stated here as a TARGET and not
+// as the floor, because a floor set to a number the tree has never reached is
+// a gate that fails on merge day and gets widened on the next one — which is
+// the same weakening, taken slowly. The floor below is what the maps actually
+// deliver on this box; the target is what it is walking toward, and the gap
+// between them is printed on every run so it cannot quietly stop closing.
+const ART_NEAR_GROUND_TARGET = 6.3;
+// Two vantages, and they are `ALIAS_VIEWS`' — the capture harness's own 01 and
+// 04 shapes, taken from the player's eye. Reusing them is deliberate: the
+// alias gate's numbers were measured at these two framings, this gate's are
+// about the same pixels, and a third aim would have made the two sets of
+// measurements incomparable for no gain.
+const BASE_VIEWS = [
+  { label: "level", yaw: 0, pitch: 0 },
+  { label: "down", yaw: 0, pitch: -0.8 },
+];
+// One 8-bit step separates a pixel the maps painted from one they did not —
+// `GRAIN_PROBE_MIN_DELTA`'s argument, `ALIAS_MIN_DELTA`'s and `PROP_MIN_DELTA`'s.
+const BASE_MIN_DELTA = 1;
+// The control's ceiling, `ALIAS_MAX_NOISE`'s value and its argument: two
+// renders of one state on this box have been seen to differ on ~11 px of
+// 921,600, four orders of magnitude below anything that moves the statistic.
+const BASE_MAX_NOISE = 0.001;
+// How much of the frame the maps must reach. A photograph differs from a flat
+// swatch nearly everywhere it is laid, so unlike the octave gates' fraction
+// floors this one is a floor on the INSTRUMENT: it is what stops the contrast
+// numbers below from being computed over a cherry-picked handful of pixels.
+// Measured AT THIS GATE'S OWN SPAWN, the way `ALIAS_MIN_MASK` states its own:
+// the dev shard pins the player to 1024,1024 at y = 12.3 m, and the maps reach
+// **9.7%** of the level frame and **58.9%** of the down one. The level number
+// is small for a stated reason rather than a worrying one — at pitch 0 most of
+// that frame is sky and ground past the base's own footprint retirement — so
+// the floor sits ~2x below the worse of the two, which is `PROP_MIN_STRUCTURE`'s
+// construction. The failure it guards (the maps not arriving at all) scores 0.
+const BASE_MIN_MASK = Number(process.env.BROWSER_SMOKE_BASE_MIN_MASK || 0.05);
+// Two-sided, per view. `SURFACE_MIN_DIRECTIONAL`'s argument applied to the
+// base: the single most plausible way to move a contrast number without
+// adding detail is to lift the ground, and a lift moves every pixel one way.
+const BASE_MIN_DIRECTIONAL = Number(process.env.BROWSER_SMOKE_BASE_MIN_DIR || 0.005);
+// THE floor, in 8-bit luma per neighbouring pixel, on the SHIPPED frame.
+//
+// Measured: **6.00** at the level vantage and **8.59** at the near-ground one,
+// against **0.41-0.47** from the procedural octaves alone at the same two
+// framings — which is the 0.26 `ART.md` §3 recorded, re-measured by a
+// different instrument at a different spawn and landing in the same place.
+// The near-ground vantage is already past §3's 6.3 reference target; the level
+// one is not, and the gap is printed on every run rather than rounded away.
+//
+// The floor is 4.0: 1.5x below the worse of the two, and 8.5x above what the
+// failure it guards — the maps silently not reaching the ground — scores.
+const BASE_MIN_CONTRAST = Number(process.env.BROWSER_SMOKE_BASE_MIN_CONTRAST || 4.0);
+// …and the lift over the procedural ground, which is the half that says the
+// photograph is reaching the image as DETAIL rather than as a colour. A base
+// that delivered its mean and nothing else — the exact thing the footprint
+// retirement converges to, so the exact thing a fade set too aggressively
+// would ship — scores x1. Measured x12.75 and x20.69; the floor is x5.
+const BASE_MIN_CONTRAST_RATIO = Number(process.env.BROWSER_SMOKE_BASE_MIN_RATIO || 5.0);
+
 // --- the prop-surface gate (DECISIONS.md §open, "prop surfaces v0") ---------
 // Assertions 15 through 15e are all about the GROUND. The visual judge's pass
 // 20260802-163821-02 put its ranked gap 1 on everything else: "rock, wood and
@@ -2802,13 +2864,24 @@ console.log(
 // — the field there is a macro-octave cast plus this artefact and nothing
 // else, so the wall above has been passing on the defect below.
 //
-// So the two legs that are TRUE today are walls, and the ship leg is reported
-// and not walled. A ceiling set where the defect fits is worse than none:
+// **The ship leg is a wall now, and the base maps are why.** It is measured at
+// x1.00 at both vantages against the x3.12/x6.15 above, and the mechanism is
+// not a fix anybody wrote: a `textureGrad` fetch is evaluated per FRAGMENT, so
+// the detail it delivers varies inside a quad exactly as much as it varies
+// across one, and it is now the dominant term in the near ground's contrast
+// (15h: 6.00 and 8.59 luma/px, against 0.41-0.47 from the octaves alone).
+// The quad-locked energy did not go away; it was diluted by two orders of
+// magnitude of energy that is not quad-locked. That distinction matters and it
+// is why the ceiling below is left exactly where it was rather than tightened
+// onto the new reading: the defect `DECISIONS.md` §open ("the quad-constant
+// gradient") describes is still IN the shader, still reachable the moment
+// something retires the base maps out of a frame, and the sampling law that
+// bench measured is still the actual fix. What the wall buys is that the
+// dilution cannot silently stop.
 //   `nobump`      gmH identically zero -> no derivative in the image at all.
 //   `nograinbump` grain's bump alone removed -> the structural octaves' bump
 //                 must not put quad-locked energy in the frame either.
-// Both must stay under the ceiling the ship leg will be held to once the law
-// lands, so the day it lands the wall is already calibrated.
+//   `ship`        what the player sees, held to the same ceiling since 15h.
 const aliasHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.aliasProbe);
 if (aliasHook !== "function") {
   fail(`tab A: __gatesDebug.aliasProbe is ${aliasHook} on a dev shard — the alias gate cannot run`);
@@ -2855,7 +2928,17 @@ for (const s of alias.samples) {
         `\n${aliasDetail(s)}`,
     );
   }
-  // The ship leg: reported, loudly, and not walled — see the block comment.
+  // The ship leg — a wall since the base maps landed (see the block comment).
+  if (!(s.ship.ratio <= ALIAS_MAX_RATIO)) {
+    fail(
+      `tab A: the shipped ${s.label} frame carries x${s.ship.ratio.toFixed(2)} of quad-locked energy ` +
+        `(ceiling x${ALIAS_MAX_RATIO}, ${s.ship.within.toFixed(2)} luma/px within quads vs ` +
+        `${s.ship.across.toFixed(2)} across). Bisection says ` +
+        `${s.nograinbump.ratio < s.ship.ratio * 0.6 ? "the GRAIN octave's bump" : "NOT grain's bump"}.` +
+        `\n${aliasDetail(s)}`,
+    );
+  }
+  // …and still reported loudly if it ever climbs back toward the ceiling.
   if (s.ship.ratio > ALIAS_MAX_RATIO) {
     console.log(
       `  alias: KNOWN DEFECT, unwalled — ${s.label} scores x${s.ship.ratio.toFixed(2)} against the ` +
@@ -2875,6 +2958,193 @@ console.log(
           `x${s.nograinbump.ratio.toFixed(2)} · mask ${(s.maskFraction * 100).toFixed(1)}% · noise ${s.noise}`,
       )
       .join(" · ") + ` · walled legs ≤ x${ALIAS_MAX_RATIO}`,
+);
+
+// Assertion 15h — the ground samples REAL DETAIL, and it delivers it.
+//
+// Two halves. The structural one asks whether the base maps arrived, are the
+// right shape, and are wired to the identity they belong to; the pixel one
+// asks the only question `ART.md` §3 actually poses, in the units it poses it
+// in — 8-bit luma per neighbouring pixel, 6.3 in the reference set and 0.26 in
+// ours across eight passes of procedural octaves.
+//
+// It is the first assertion in this file whose sharp number is an ABSOLUTE.
+// 15b, 15c, 15d, 15e and 15f are all ratios, and 15g exists because a ratio is
+// scale-free: it cannot tell a field swinging ±0.8 of a level from the same
+// field swinging ±17. The base maps are aimed squarely at that hole, so the
+// gate that holds them has to have a unit in it.
+const baseFacts = mat.base;
+if (!baseFacts || baseFacts.loaded !== true) {
+  fail(
+    `tab A: the client published base maps ${JSON.stringify(baseFacts)} — ART.md §7's working set ` +
+      `never reached the ground, and every number 15h reports below would be about the octaves alone`,
+  );
+}
+if (baseFacts.layers.join(",") !== mat.identities.join(",")) {
+  fail(
+    `tab A: base layer order [${baseFacts.layers}] is not identity order [${mat.identities}] — ` +
+      `the splat weight and the array layer are the same index, so this delivers sand's photograph ` +
+      `under grass's weight and nothing but a picture would say so`,
+  );
+}
+// The tile is the identity's own declared scale, not a number of its own.
+if (baseFacts.scale.join(",") !== mat.tintScale.join(",")) {
+  fail(
+    `tab A: base tile scales [${baseFacts.scale}] /m have drifted from the identities' declared ` +
+      `[${mat.tintScale}] /m — NOW.md item 1 says the base is laid at the scales the identities ` +
+      `already declare, and a second table is a second thing to keep true`,
+  );
+}
+// Three maps, four layers, and the unit count that actually has a hard limit.
+if (baseFacts.units > baseFacts.unitBudget) {
+  fail(
+    `tab A: the ground binds ${baseFacts.units} texture units against a ${baseFacts.unitBudget} ` +
+      `budget — the terrain program already carries five shadow maps`,
+  );
+}
+if (baseFacts.fetchesMax !== 3 * baseFacts.layers.length) {
+  fail(
+    `tab A: base fetch ceiling ${baseFacts.fetchesMax} is not three maps x ${baseFacts.layers.length} layers`,
+  );
+}
+for (const [k, size] of [
+  ["albedo", baseFacts.albedoSize],
+  ["normal", baseFacts.normalSize],
+  ["rough", baseFacts.roughSize],
+]) {
+  if (!(size[0] >= 512 && size[1] >= 512)) {
+    fail(`tab A: base ${k} map is ${size[0]}x${size[1]} — below the 512 the manifest ships`);
+  }
+}
+// Anisotropy: the near ground at a grazing angle is the case this whole slice
+// is aimed at, and an isotropic mip chain over-blurs exactly it back into the
+// wash. A capability, not a knob — so the assertion is that it was ASKED for.
+// A capability the material ASKS for, capped: the ask is `BASE_ANISOTROPY_MAX`
+// and the delivered value is `min(ask, device max)`, so this asserts both that
+// the ask reached the texture and that the cap was not quietly exceeded.
+if (!(baseFacts.anisotropy >= 2)) {
+  fail(
+    `tab A: base maps ship at anisotropy ${baseFacts.anisotropy} (device max ` +
+      `${baseFacts.anisotropyDeviceMax}) — nothing was applied, so a 0.6–1 m tile seen along the ` +
+      `ground is filtered back to a flat colour`,
+  );
+}
+if (baseFacts.anisotropy > Math.min(baseFacts.anisotropyMax, baseFacts.anisotropyDeviceMax)) {
+  fail(
+    `tab A: base maps ship at anisotropy ${baseFacts.anisotropy} over a cap of ` +
+      `${baseFacts.anisotropyMax} and a device max of ${baseFacts.anisotropyDeviceMax} — the cap is ` +
+      `what keeps twelve filtered fetches a fragment affordable`,
+  );
+}
+// The hybrid policy as arithmetic. `albedoGain` is `identity colour / measured
+// mean of the layer`, so a gain of exactly 1 in all three channels would mean
+// the measurement never happened, and a wild gain means a source far off
+// `ART.md` §3's band being pulled onto it — which `MANIFEST.md` predicts by
+// name for `rock` (cliff_side, "hue ~25° and far more saturated than granite").
+// Both ends are checked because both are real failures.
+const gainSpan = baseFacts.albedoGain.map((g) => Math.max(...g) / Math.max(Math.min(...g), 1e-6));
+for (let i = 0; i < baseFacts.layers.length; i++) {
+  const g = baseFacts.albedoGain[i];
+  if (!g.every((v) => Number.isFinite(v) && v > 0.05 && v < 40)) {
+    fail(
+      `tab A: base layer ${baseFacts.layers[i]} has albedo gain [${g.map((v) => v.toFixed(2))}] — ` +
+        `off any scale a mean-preserving gain can reach, so either the mean was measured in the ` +
+        `wrong space or the layer is not the file the manifest names`,
+    );
+  }
+  if (!(baseFacts.albedoSd[i] > 0.005)) {
+    fail(
+      `tab A: base layer ${baseFacts.layers[i]} has linear-luma sd ${baseFacts.albedoSd[i].toFixed(5)} ` +
+        `over its own texels — that is a swatch, not a photograph, and it is the one thing this ` +
+        `slice buys that a noise field could not`,
+    );
+  }
+}
+if (mat.terrain.base !== 1) {
+  fail(`tab A: uBase ships at ${mat.terrain.base} — a probe put the base maps back wrong, or a merge landed them off`);
+}
+console.log(
+  `  base maps: ${baseFacts.layers.length} layers, ${baseFacts.units} units, ` +
+    `≤${baseFacts.fetchesMax} fetches/frag, aniso ${baseFacts.anisotropy} of ${baseFacts.anisotropyDeviceMax} (cap ${baseFacts.anisotropyMax}), ` +
+    `albedo ${baseFacts.albedoSize.join("x")} · normal ${baseFacts.normalSize.join("x")} · ` +
+    `rough ${baseFacts.roughSize.join("x")} · ` +
+    baseFacts.layers
+      .map(
+        (n, i) =>
+          `${n} sd ${baseFacts.albedoSd[i].toFixed(3)} gain x${gainSpan[i].toFixed(2)} span`,
+      )
+      .join(" · "),
+);
+
+// …and the pixel half.
+const baseHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.baseProbe);
+if (baseHook !== "function") {
+  fail(`tab A: __gatesDebug.baseProbe is ${baseHook} on a dev shard — 15h's pixel half cannot run`);
+}
+const base = await A.page.evaluate(
+  ([views, minDelta]) => globalThis.__gatesDebug.baseProbe(views, minDelta),
+  [BASE_VIEWS, BASE_MIN_DELTA],
+);
+if (!base) fail(`tab A: baseProbe returned null — the scene never took the terrain material's uniforms`);
+const baseDetail = () =>
+  base.samples
+    .map(
+      (s) =>
+        `    ${s.label}: ship ${s.contrastShip.toFixed(2)} luma/px vs flat ${s.contrastFlat.toFixed(2)} ` +
+        `(x${s.contrastRatio.toFixed(2)}), mask ${(s.maskFraction * 100).toFixed(1)}% ` +
+        `(+${(s.upFraction * 100).toFixed(1)}/−${(s.downFraction * 100).toFixed(1)}), noise ${s.noise}`,
+    )
+    .join("\n");
+for (const s of base.samples) {
+  if (s.noise > base.width * base.height * BASE_MAX_NOISE) {
+    fail(
+      `tab A: base probe control differs from its own state on ${s.noise} pixels at ${s.label} — ` +
+        `two renders of one scene, so nothing measured from this pair is about the material\n${baseDetail()}`,
+    );
+  }
+  if (s.maskFraction < BASE_MIN_MASK) {
+    fail(
+      `tab A: the base maps reach ${(s.maskFraction * 100).toFixed(2)}% of the ${s.label} frame ` +
+        `(floor ${(BASE_MIN_MASK * 100).toFixed(0)}%) — a photograph differs from a flat swatch ` +
+        `nearly everywhere it is laid, so this is the maps not arriving at the ground\n${baseDetail()}`,
+    );
+  }
+  // Two-sided, and this is the assertion that separates real detail from a
+  // gain. Lifting the ground raises a contrast number without adding a single
+  // edge, and it moves every pixel the same way.
+  if (s.upFraction < BASE_MIN_DIRECTIONAL || s.downFraction < BASE_MIN_DIRECTIONAL) {
+    fail(
+      `tab A: at ${s.label} the base maps moved the frame only one way (floor ` +
+        `${(BASE_MIN_DIRECTIONAL * 100).toFixed(1)}% up AND down) — a photograph brightens some ` +
+        `pixels and darkens others; a gain cannot\n${baseDetail()}`,
+    );
+  }
+  // THE number. Absolute, in ART.md §3's own units.
+  if (s.contrastShip < BASE_MIN_CONTRAST) {
+    fail(
+      `tab A: near-ground neighbour contrast at ${s.label} is ${s.contrastShip.toFixed(2)} luma/px ` +
+        `against a floor of ${BASE_MIN_CONTRAST} and ART.md §3's reference target of ` +
+        `${ART_NEAR_GROUND_TARGET}. The octaves alone delivered ${s.contrastFlat.toFixed(2)} here.\n${baseDetail()}`,
+    );
+  }
+  if (s.contrastRatio < BASE_MIN_CONTRAST_RATIO) {
+    fail(
+      `tab A: the base maps lifted ${s.label}'s neighbour contrast only x${s.contrastRatio.toFixed(2)} ` +
+        `over the procedural ground (floor x${BASE_MIN_CONTRAST_RATIO}) — the photograph is being ` +
+        `sampled but is not reaching the image as detail\n${baseDetail()}`,
+    );
+  }
+}
+console.log(
+  `  base detail: ` +
+    base.samples
+      .map(
+        (s) =>
+          `${s.label} ${s.contrastShip.toFixed(2)} luma/px (was ${s.contrastFlat.toFixed(2)}, ` +
+          `x${s.contrastRatio.toFixed(2)}) mask ${(s.maskFraction * 100).toFixed(0)}%`,
+      )
+      .join(" · ") +
+    ` · floor ${BASE_MIN_CONTRAST}, ART.md §3 target ${ART_NEAR_GROUND_TARGET}`,
 );
 
 // Assertion 15f — the props have a SURFACE, not only a silhouette.
