@@ -292,6 +292,13 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
     }
 
     if died {
+        // A death is counted where it happens — the same rule `combat` keeps
+        // at its own kill site, and the reason it is one line here rather
+        // than one in the caller. Without it a clock death is invisible to
+        // `spawn_pos_n(id, deaths)`, so a body that starved was put back on
+        // the *identical* beach to starve on the same ground; the count is
+        // also what the scoreboard and the wire's `deaths` field read.
+        p.deaths = p.deaths.saturating_add(1);
         // Self-inflicted by the world: victim and killer are the same id,
         // which `EV_DEATH`'s own doc comment already anticipated ("equal to
         // `a` if that ever becomes possible"). This is that.
