@@ -298,6 +298,14 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
             // full pair — all ride the digest too. The fixture's item 0
             // is food and a weapon at once, which is why the slots the
             // brawl fills are also the slots this reaches into.
+            // And every bot presses drink, every tick. That is deliberate
+            // over-pressing: the verb's answer is a *float* comparison
+            // against `terrain::height` at five taps, which is exactly the
+            // kind of arithmetic that goes different ways on two targets,
+            // and the fixture's drink is lethal in five mouthfuls — so the
+            // digest carries the dry refusal, the landed drink, the full
+            // refusal, and the salt death with its respawn, on both
+            // targets or on neither.
             world.tick(&[
                 Command::Input { id: 1, frame: f1 },
                 Command::Input { id: 2, frame: f2 },
@@ -307,6 +315,7 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
                     id: (t % 3) + 1,
                     slot: (t % 8) as u8,
                 },
+                Command::Drink { id: (t % 3) + 1 },
             ]);
         }
         h.update(&world.state_hash().to_le_bytes());

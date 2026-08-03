@@ -579,6 +579,16 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       views.refresh();
       if (len > 0) actions.send(views.output, len);
       e.preventDefault();
+    } else if (e.code === "KeyH") {
+      // Drink from the water at your feet. H because G is already the
+      // eat and the two are the same gesture from the player's side —
+      // adjacent keys, one hand. Payload-free: the sim reads the
+      // heightfield under the body, so there is nothing to aim and no
+      // reach for the client to guess (survival.rs).
+      const len = ex.client_action_drink();
+      views.refresh();
+      if (len > 0) actions.send(views.output, len);
+      e.preventDefault();
     } else if (e.code === "KeyL") {
       tryLock();
       e.preventDefault();
@@ -689,7 +699,16 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         const reason = c >>> 24;
         if (reason === 0) hud.toast(`ate ${itemName(c & 0xffff)}`);
         else if (reason === 2) hud.toast("already full");
+        else if (reason === 3) hud.toast("no water in reach");
         else hud.toast("not food");
+      }
+      if (flags & (1 << 29) /* DRANK */) {
+        // The sea is salt, so the toast names both halves: a health drop
+        // with no cause on screen is the thing `EV_DRANK` exists to
+        // prevent (survival.rs).
+        const d = ex.client_drank() >>> 0;
+        const cost = d & 0xffff;
+        hud.toast(cost > 0 ? `drank +${d >>> 16} −${cost} hp` : `drank +${d >>> 16}`);
       }
       if (flags & (1 << 26) /* STRUCT_HIT */) {
         // The breach readout: what is left of the thing being broken.

@@ -34,6 +34,8 @@ const ex = instance.exports;
 const REQUIRED = [
   "memory",
   "client_proto_ver",
+  "client_action_drink",
+  "client_drank",
   "client_in_ptr",
   "client_in_cap",
   "client_out_ptr",
@@ -156,7 +158,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 14, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 15, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -195,7 +197,7 @@ check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 // either ship them to every public shard or withhold them from the capture
 // harness — and neither shows up anywhere else in this suite.
 const welcomeGolden = readFileSync(
-  join(root, "crates/protocol/tests/golden/v14_welcome.bin"),
+  join(root, "crates/protocol/tests/golden/v15_welcome.bin"),
 );
 const parseHandshake = (bytes) => {
   // ptr first, buffer second: a getter may grow memory and detach a
@@ -510,6 +512,37 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   // not — the width IS the range check (protocol/src/lib.rs).
   check(ex.client_action_consume(3) > 0, "the eat verb must encode a real slot");
   check(ex.client_action_consume(30) === 0, "a slot past INV_SLOTS must not encode");
+
+  // Drank: sub 34 · water 25 · hp cost 2 (wire v15). The pair is what the
+  // subtype exists for — the HUD names the cost, and `Health` alone
+  // could not (survival.rs).
+  const DRANK = 536870912; // APPLIED_DRANK = 1 << 29
+  check(ex.client_drank() >>> 0 === 0, "no drink has landed yet");
+  f = evFrame(34, [[25, 16], [2, 16]]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === DRANK, "a drink must apply with the DRANK flag");
+  check((ex.client_drank() >>> 0) === ((25 << 16) | 2), "drink readout mismatch");
+  // A drink that restored nothing and cost nothing is not a drink — the
+  // decoder refuses the all-zero pair rather than reporting a no-op, the
+  // same posture as a refusal with reason 0.
+  f = evFrame(34, [[0, 16], [0, 16]]);
+  writeIn(f);
+  check(
+    (ex.client_on_stream(f.length) & 0x80000000) !== 0,
+    "an empty drink must be refused, not reported as a no-op",
+  );
+  check((ex.client_drank() >>> 0) === ((25 << 16) | 2), "the refused frame must not overwrite");
+
+  // A refused drink rides the eat readout — one refusal channel for the
+  // whole survival module. Reason 3 is REFUSE_C_NO_WATER.
+  f = evFrame(33, [[3, 4]]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === 268435456, "a dry press must apply with the CONSUME flag");
+  check((ex.client_consume() >>> 0) >>> 24 === 3, "no-water refusal reason mismatch");
+
+  // And the drink verb crosses C->S. Payload-free, so there is no forged
+  // variant to test — the absence of a payload IS the range check.
+  check(ex.client_action_drink() > 0, "the drink verb must encode");
 
   // Hit: sub 24 · victim 4242 · damage 25.
   check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring starts empty");

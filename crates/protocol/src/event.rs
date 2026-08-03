@@ -115,9 +115,16 @@ const SUB_STRUCT_HIT: u32 = 30;
 const SUB_VITALS: u32 = 31;
 const SUB_CONSUMED: u32 = 32;
 const SUB_CONSUME_REFUSED: u32 = 33;
+/// The drink verb's acknowledgement (wire v15, survival.rs). Its refusal
+/// rides `SUB_CONSUME_REFUSED` — one refusal channel for the whole
+/// survival module, because the HUD's answer to every one of them is the
+/// same line — but the acknowledgement is its own subtype: a drink from a
+/// salt sea *costs* hp, and `SUB_HEALTH` is absolute, so a client that
+/// only heard the new hp could not name what took it.
+const SUB_DRANK: u32 = 34;
 
-/// Consume-refusal reason width (`survival::REFUSE_C_*`: two codes today,
-/// and zero is reserved as "no reason", which the codec refuses).
+/// Consume-refusal reason width (`survival::REFUSE_C_*`: three codes
+/// today, and zero is reserved as "no reason", which the codec refuses).
 const REFUSE_C_BITS: u32 = 4;
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
@@ -399,7 +406,15 @@ pub enum EventMsg {
     /// whether a press landed.
     Consumed { item: u16, slot: u8 },
     /// The eat did nothing, and why (`sim_core::survival::REFUSE_C_*`).
+    /// A refused *drink* arrives here too — one refusal channel for the
+    /// whole survival module.
     ConsumeRefused { reason: u8 },
+    /// You drank, `water` units went into the meter, and `hp_cost` came
+    /// out of your health for it. Own-fact, and the pair is what makes it
+    /// worth a subtype: the meter and the hp both travel absolutely on
+    /// their own events, so this one exists to say *why* they moved
+    /// together (survival.rs).
+    Drank { water: u16, hp_cost: u16 },
     /// `victim` was killed by `killer` — broadcast, because a death is a
     /// world fact like a placement, and the kill feed the reference frames
     /// carry bottom-left is built from exactly this. No cause, no weapon,
@@ -1109,6 +1124,21 @@ pub fn encode_event_consume_refused(reason: u8, buf: &mut [u8]) -> Result<usize,
     Ok(w.finish())
 }
 
+/// The drink acknowledgement. A drink that moved no water and cost no hp
+/// is not a drink — it is the refusal path, which has its own event — so
+/// the encoder refuses the all-zero pair for `encode_event_consume_refused`'s
+/// reason: an acknowledgement that acknowledges nothing is the silence
+/// these events exist to replace.
+pub fn encode_event_drank(water: u16, hp_cost: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if water == 0 && hp_cost == 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_DRANK)?;
+    w.write(water as u32, 16)?;
+    w.write(hp_cost as u32, 16)?;
+    Ok(w.finish())
+}
+
 /// A death, broadcast.
 pub fn encode_event_death(victim: u32, killer: u32, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_DEATH)?;
@@ -1538,6 +1568,14 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             EventMsg::ConsumeRefused { reason }
+        }
+        SUB_DRANK => {
+            let water = r.read(16)? as u16;
+            let hp_cost = r.read(16)? as u16;
+            if water == 0 && hp_cost == 0 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Drank { water, hp_cost }
         }
         SUB_DEATH => EventMsg::Death {
             victim: r.read(32)?,
@@ -2172,12 +2210,12 @@ mod tests {
             Err(WireError::Malformed),
             "spare byte after a valid message must fail the strict tail"
         );
-        // kind EVENT + the first unused subtype — 30 became struct-hit and
-        // 31–33 became the survival clock's three, so this moves up with
-        // every new subtype, exactly as intended. The 5 → 6 widening at
-        // v13 leaves 30 codes free after it, so the probe keeps a code of
-        // its own for a long time.
-        const UNUSED_SUB: u32 = SUB_CONSUME_REFUSED + 1;
+        // kind EVENT + the first unused subtype — 30 became struct-hit,
+        // 31–33 the survival clock's three and 34 the drink, so this moves
+        // up with every new subtype, exactly as intended. The 5 → 6
+        // widening at v13 leaves 29 codes free after it, so the probe
+        // keeps a code of its own for a long time.
+        const UNUSED_SUB: u32 = SUB_DRANK + 1;
         const { assert!(UNUSED_SUB < 1 << SUB_BITS, "the probe must fit the field") };
         let raw = [
             (KIND_EVENT | (UNUSED_SUB << KIND_BITS)) as u8,

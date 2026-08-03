@@ -361,6 +361,13 @@ pub struct Survival {
     /// Hit points a minute while the matching meter reads zero.
     pub starve_hp_per_min: u32,
     pub dehydrate_hp_per_min: u32,
+    /// The drink verb (wire v15, `survival::drink`): water units one
+    /// mouthful of the sea restores, and the hit points swallowing it
+    /// costs. The sea is salt — that is the design, not a tax. Zero
+    /// `drink_water` disarms the verb, and `validate::structural` then
+    /// requires a gatherable to answer thirst instead.
+    pub drink_water: u32,
+    pub drink_hp_cost: u32,
 }
 
 /// The declared bands + globals the anchors compute against

@@ -81,6 +81,22 @@ mult_very_rare = 12
 # ~40 minutes before the first point of damage and dies around the
 # 60-minute mark — long enough that gathering and building are still the
 # session, short enough that standing still is never free.
+#
+# `drink_*` is the drink verb (wire v15, `survival::drink`) — thirst's real
+# answer, and the reason a player spawned beside an ocean is no longer
+# looking at scenery. **The sea is salt**: a mouthful restores
+# `drink_water` and costs `drink_hp_cost`, so the ocean is the answer that
+# is always there and never free.
+#
+# The pair is derived against the answers that already ship, not picked:
+# a bush pays 5 berries at 5 water each = 25 water, which is 10 minutes of
+# the 40-minute meter, plus 10 cloth. So one mouthful is set to **one
+# bush's worth of thirst in one press, with no walk and no bush** — and
+# costs 2 hp for it. Living entirely off the sea therefore runs 4 drinks
+# an hour = 8 hp an hour against a 100 hp body, and the repair is on the
+# same shelf: a bandage is 20 cloth = 2 bushes = 20 hp = ten mouthfuls.
+# Ten bushes of drinking, or two bushes of bandaging: the sea is 5× the
+# farm time cheaper and bleeds, which is the trade the genre makes.
 [survival]
 max_food = 100
 max_water = 100
@@ -88,6 +104,8 @@ food_minutes_to_empty = 60
 water_minutes_to_empty = 40
 starve_hp_per_min = 3
 dehydrate_hp_per_min = 5
+drink_water = 25
+drink_hp_cost = 2
 
 # The starter base the raid ratio prices (CONTENT §3: "2×1 stone, door,
 # bag, hearth, box"): 2 foundations, 5 walls, 1 doorway, 2 roofs, plus

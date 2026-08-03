@@ -134,6 +134,13 @@ pub const EV_CONSUMED: u8 = 22;
 /// that eats the input and says nothing is indistinguishable from a broken
 /// one, so every refusal is announced (craft/build/deploy's posture).
 pub const EV_CONSUME_REFUSED: u8 = 23;
+/// EV_DRANK: a = player id, b = water units restored, c = hp the drink
+/// cost. Own-fact, and it exists for the cost: `EV_HEALTH` is absolute and
+/// states the new number without naming what took it, so a client that
+/// heard only the health drop could not tell a mouthful of sea from a
+/// knife (survival.rs). A refused drink rides `EV_CONSUME_REFUSED` — one
+/// refusal channel for the whole module.
+pub const EV_DRANK: u8 = 24;
 
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
@@ -374,6 +381,12 @@ pub enum Command {
     Consume {
         id: u32,
         slot: u8,
+    },
+    /// Drink from the water under your own feet (survival.rs). No target
+    /// and no position: the heightfield is a pure function of the seed,
+    /// so the sim asks it where the body already is.
+    Drink {
+        id: u32,
     },
 }
 
@@ -841,6 +854,25 @@ impl World {
                         &mut self.players[slot],
                         &mut self.events,
                     );
+                }
+            }
+            Command::Drink { id } => {
+                if let Some(slot) = self.slot_of(id) {
+                    // The one verb that can kill the player who pressed it.
+                    // Handled exactly as a clock death and a combat death
+                    // are — the callee counts it and announces it, the
+                    // caller walks the spawn ring — because `respawn` needs
+                    // the whole world and the verb needs one player.
+                    let seed = self.seed;
+                    if survival::drink(
+                        &self.survival,
+                        seed,
+                        &mut self.players[slot],
+                        &mut self.events,
+                    ) == survival::Step::Died
+                    {
+                        self.respawn(slot);
+                    }
                 }
             }
             Command::Loot { id } => {

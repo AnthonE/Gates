@@ -13,10 +13,11 @@
 use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_consume,
-    encode_action_craft, encode_action_deploy, encode_action_feed, encode_action_lock,
-    encode_action_loot, encode_action_place, encode_action_upgrade, encode_action_use, encode_chat,
-    encode_hello, peek_kind, Hello, CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME,
-    MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
+    encode_action_craft, encode_action_deploy, encode_action_drink, encode_action_feed,
+    encode_action_lock, encode_action_loot, encode_action_place, encode_action_upgrade,
+    encode_action_use, encode_chat, encode_hello, peek_kind, Hello, CHAT_MAX_BYTES,
+    DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS,
@@ -446,6 +447,20 @@ pub extern "C" fn client_action_consume(slot: u32) -> u32 {
     })
 }
 
+/// Encode a drink request into the out buffer; returns its length.
+/// Payload-free — the sim reads the heightfield under the sender's own
+/// feet, so there is nothing here for the client to aim and nothing for it
+/// to get wrong (survival.rs). Whether there is water there, and whether
+/// the meter has room, are the sim's verdict; both come back as events.
+#[no_mangle]
+pub extern "C" fn client_action_drink() -> u32 {
+    with(|b| {
+        encode_action_drink(&mut b.out_buf)
+            .map(|n| n as u32)
+            .unwrap_or(0)
+    })
+}
+
 /// Encode a loot request into the out buffer for the bidi lane; returns
 /// its length. Payload-free — the sim picks the nearest bag in reach, so
 /// there is nothing here for the client to aim (backpack.rs).
@@ -798,6 +813,15 @@ pub extern "C" fn client_consume() -> u32 {
             })
             .unwrap_or(0)
     })
+}
+
+/// The last drink: `water restored << 16 | hp it cost`. Zero means none
+/// has landed this session. A *refused* drink is not here — it arrives on
+/// the eat readout with a `REFUSE_C_*` code, one refusal channel for the
+/// whole survival module (survival.rs).
+#[no_mangle]
+pub extern "C" fn client_drank() -> u32 {
+    with(|b| b.core.as_ref().map(|c| c.last_drink).unwrap_or(0))
 }
 
 /// Own health as `hp << 16 | max`. `max == 0` means no health reading has

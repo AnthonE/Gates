@@ -38,13 +38,13 @@ pub use event::{
     encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
     encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
-    encode_event_inv, encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
-    EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH, DEPLOY_DEFS_BATCH,
-    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH,
-    PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
+    encode_event_hit, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
+    encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH,
+    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
+    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -109,8 +109,19 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// moved: the meter pair is an own-fact on the reliable lane like hp, not
 /// a snapshot field, and for the same reason — it changes on a drain
 /// step, and a client that misses one hears the whole truth from the
-/// next. Fixtures are keyed `v14_*`.
-pub const PROTO_VER: u16 = 14;
+/// next. v15 gave thirst its real answer (survival.rs `drink`): the drink
+/// action — the eleventh, which fits the field v12 widened, so **no
+/// action message moved** — and one event subtype, `drank`, the 35th,
+/// which fits the field v13 widened, so **no event message moved
+/// either.** The drink action is payload-free for `Loot`'s reason: the
+/// sim reads the heightfield under the sender's own feet, so there is no
+/// target here to forge and no way to drink from an ocean you are not
+/// standing at. `Drank` is its own subtype rather than a `Consumed` with
+/// an empty item, because the sea is salt and costs hp: `Health` is
+/// absolute and states the number without the cause, so a client that
+/// only heard the health drop could not tell a drink from a knife.
+/// Fixtures are keyed `v15_*`.
+pub const PROTO_VER: u16 = 15;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -300,6 +311,9 @@ const ACT_LOOT: u32 = 8;
 /// The eat verb (wire v14, survival.rs). Tenth of the sixteen a 4-bit
 /// field holds, so no width moved for it.
 const ACT_CONSUME: u32 = 9;
+/// The drink verb (wire v15, survival.rs). Eleventh of the sixteen, so
+/// no width moved for it either — five action codes remain.
+const ACT_DRINK: u32 = 10;
 /// Cancel index width mirrors the queue (`CRAFT_QUEUE` = 4 fits 3 bits);
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
@@ -402,6 +416,21 @@ pub enum ActionMsg {
     /// wood, and a full pair of meters all come back as a consume-refused
     /// event rather than as a wire error.
     Consume { slot: u8 },
+    /// Drink from the water at your feet (survival.rs). **Payload-free
+    /// for `Loot`'s reason, and a stronger one**: the only thing a drink
+    /// acts on is the heightfield, which is a pure function of the seed
+    /// both sides already hold, so the sim asks it directly under the
+    /// sender's own body. There is no position here to forge, no reach to
+    /// stretch, and no way to drink an ocean from a hilltop.
+    Drink,
+}
+
+/// The drink verb. No payload — see `ActionMsg::Drink`.
+pub fn encode_action_drink(buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_DRINK, ACTION_SUB_BITS)?;
+    Ok(w.finish())
 }
 
 /// The eat verb. `slot` rides the inventory-slot width the event lane
@@ -700,6 +729,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
             ActionMsg::Consume { slot }
         }
+        ACT_DRINK => ActionMsg::Drink,
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;

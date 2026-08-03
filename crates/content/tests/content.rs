@@ -937,13 +937,58 @@ fn a_clock_with_no_answer_is_refused() {
         "\n",
         "the clock has no answer",
     );
-    // And the thirst half: berries that feed but do not water leave the
-    // shorter fuse unanswerable.
+    // And the thirst half. It takes **both** answers off the island now:
+    // the drink verb (wire v15) is the second way to answer thirst, so
+    // berries that feed but do not water are no longer enough on their own
+    // to leave the shorter fuse unanswerable — which is the widening, and
+    // the case below is what pins it.
+    let mut srcs = sources();
+    for (name, text) in srcs.iter_mut() {
+        if *name == "consumables.toml" {
+            *text = text.replace(
+                "id = \"item.berries\"\nhealth = 0\nfood = 15\nwater = 5",
+                "id = \"item.berries\"\nhealth = 0\nfood = 15\nwater = 0",
+            );
+        }
+    }
+    build(&srcs).expect(
+        "a bush that pays no water but an armed drink verb answers thirst — \
+         that is exactly what wire v15 widened the wall for",
+    );
+    // Disarm the drink as well and the island is dry: no gatherable pays
+    // water and no verb draws it, so the clock has no answer again.
+    for (name, text) in srcs.iter_mut() {
+        if *name == "balance.toml" {
+            // Both to zero: a cost with no water is its own refusal one
+            // check earlier, and it would answer for the wrong reason.
+            *text = text.replace(
+                "drink_water = 25\ndrink_hp_cost = 2",
+                "drink_water = 0\ndrink_hp_cost = 0",
+            );
+        }
+    }
+    let err = build(&srcs).expect_err("a dry island with a disarmed drink must be refused");
+    assert!(
+        err.contains("the clock has no answer"),
+        "expected the unanswerable-clock refusal, got: {err}"
+    );
+}
+
+/// The drink's own bounds. Both would ship a verb that is worse than not
+/// having one — a cost with no purchase, and a mouthful that kills.
+#[test]
+fn a_drink_that_is_not_a_trade_is_refused() {
     refuses(
-        "consumables.toml",
-        "id = \"item.berries\"\nhealth = 0\nfood = 15\nwater = 5",
-        "id = \"item.berries\"\nhealth = 0\nfood = 15\nwater = 0",
-        "`water` — the clock has no answer",
+        "balance.toml",
+        "drink_water = 25\ndrink_hp_cost = 2",
+        "drink_water = 0\ndrink_hp_cost = 2",
+        "restores no water",
+    );
+    refuses(
+        "balance.toml",
+        "drink_water = 25\ndrink_hp_cost = 2",
+        "drink_water = 25\ndrink_hp_cost = 100",
+        "the sea is salt, not lethal",
     );
 }
 
