@@ -361,12 +361,7 @@ pub fn announce_vitals(sc: &SurvivalContent, p: &Player, events: &mut EventQueue
 /// The slot is the *sender's claim*; this function is the sim's verdict, so
 /// a forged slot index, an empty hand and a stack of wood all land on the
 /// same refusal path rather than on an inventory write.
-pub fn consume(
-    sc: &SurvivalContent,
-    slot: usize,
-    p: &mut Player,
-    events: &mut EventQueue,
-) -> bool {
+pub fn consume(sc: &SurvivalContent, slot: usize, p: &mut Player, events: &mut EventQueue) -> bool {
     if !sc.armed() || slot >= p.inv.len() {
         events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NOT_FOOD, 0);
         return false;
@@ -383,7 +378,8 @@ pub fn consume(
     // Refuse a consume that could not do anything: a full pair and no heal
     // would destroy the item for nothing. A row that heals is always
     // allowed — hp is the one meter a player may top up deliberately.
-    let would_feed = (def.food > 0 && p.food < sc.max_food) || (def.water > 0 && p.water < sc.max_water);
+    let would_feed =
+        (def.food > 0 && p.food < sc.max_food) || (def.water > 0 && p.water < sc.max_water);
     if def.health == 0 && !would_feed {
         events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_FULL, 0);
         return false;
@@ -464,7 +460,10 @@ mod tests {
                 break;
             }
         }
-        assert!(died, "an untended body dies inside a minute at fixture rates");
+        assert!(
+            died,
+            "an untended body dies inside a minute at fixture rates"
+        );
         assert_eq!(p.hp, 0);
     }
 

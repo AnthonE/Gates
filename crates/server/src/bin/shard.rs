@@ -119,18 +119,17 @@ async fn main() {
         a.wall_breach_swings[2]
     );
     let seed = cfg.seed;
-    let handle =
-        match spawn_shard(
-            cfg, gather, craft, build, deploy, combat, backpack, survival, catalog,
-        )
-        .await
-        {
-            Ok(h) => h,
-            Err(e) => {
-                eprintln!("shard: {e}");
-                std::process::exit(1);
-            }
-        };
+    let handle = match spawn_shard(
+        cfg, gather, craft, build, deploy, combat, backpack, survival, catalog,
+    )
+    .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("shard: {e}");
+            std::process::exit(1);
+        }
+    };
     println!("shard up on {} (seed {seed})", handle.local_addr);
     println!("dev cert sha256 {}", handle.cert_hash);
 

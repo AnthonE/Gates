@@ -94,6 +94,10 @@ const REQUIRED = [
   "client_chat_pop",
   "client_chat_ptr",
   "client_health",
+  "client_vitals",
+  "client_vitals_max",
+  "client_consume",
+  "client_action_consume",
   "client_hit_pop",
   "client_death_pop",
   "client_death_killer",
@@ -152,7 +156,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 13, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 14, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -191,7 +195,7 @@ check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 // either ship them to every public shard or withhold them from the capture
 // harness — and neither shows up anywhere else in this suite.
 const welcomeGolden = readFileSync(
-  join(root, "crates/protocol/tests/golden/v13_welcome.bin"),
+  join(root, "crates/protocol/tests/golden/v14_welcome.bin"),
 );
 const parseHandshake = (bytes) => {
   // ptr first, buffer second: a getter may grow memory and detach a
@@ -474,6 +478,38 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   writeIn(f);
   check(ex.client_on_stream(f.length) === 4194304, "health must apply with the HEALTH flag");
   check((ex.client_health() >>> 0) === ((25 << 16) | 100), "health readout mismatch");
+
+  // The survival clock's three (wire v14). Vitals: sub 31 · food 62 ·
+  // water 38 · max 100/100 — the same four distinct numbers the golden
+  // fixture carries, so a transposed pair cannot pass either gate.
+  check(ex.client_vitals_max() === 0, "no meter reading has arrived yet");
+  f = evFrame(31, [[62, 16], [38, 16], [100, 16], [100, 16]]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === 134217728, "vitals must apply with the VITALS flag");
+  check((ex.client_vitals() >>> 0) === ((62 << 16) | 38), "meter readout mismatch");
+  check(
+    (ex.client_vitals_max() >>> 0) === ((100 << 16) | 100),
+    "meter ceilings mismatch",
+  );
+
+  // Consumed: sub 32 · item 11 · slot 3 (5-bit slot field).
+  f = evFrame(32, [[11, 16], [3, 5]]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === 268435456, "an eat must apply with the CONSUME flag");
+  check((ex.client_consume() >>> 0) === ((3 << 16) | 11), "eat readout mismatch");
+
+  // ConsumeRefused: sub 33 · reason 2 (REFUSE_C_FULL), 4-bit field. The
+  // refusal must be distinguishable from the landed eat above, which is
+  // the whole reason the reason rides the high byte.
+  f = evFrame(33, [[2, 4]]);
+  writeIn(f);
+  check(ex.client_on_stream(f.length) === 268435456, "a refusal must apply with the CONSUME flag");
+  check((ex.client_consume() >>> 0) >>> 24 === 2, "refusal reason mismatch");
+
+  // And the eat verb crosses C->S: a real slot encodes, a forged one does
+  // not — the width IS the range check (protocol/src/lib.rs).
+  check(ex.client_action_consume(3) > 0, "the eat verb must encode a real slot");
+  check(ex.client_action_consume(30) === 0, "a slot past INV_SLOTS must not encode");
 
   // Hit: sub 24 · victim 4242 · damage 25.
   check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring starts empty");

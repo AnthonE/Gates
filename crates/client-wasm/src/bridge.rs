@@ -12,12 +12,11 @@
 
 use crate::core::ClientCore;
 use protocol::{
-    decode_refuse, decode_welcome, encode_action_cancel, encode_action_craft, encode_action_deploy,
-    encode_action_consume, encode_action_feed, encode_action_lock, encode_action_loot,
-    encode_action_place,
-    encode_action_upgrade, encode_action_use, encode_chat, encode_hello, peek_kind, Hello,
-    CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES,
-    PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
+    decode_refuse, decode_welcome, encode_action_cancel, encode_action_consume,
+    encode_action_craft, encode_action_deploy, encode_action_feed, encode_action_lock,
+    encode_action_loot, encode_action_place, encode_action_upgrade, encode_action_use, encode_chat,
+    encode_hello, peek_kind, Hello, CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME,
+    MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS,

@@ -184,8 +184,7 @@ pub async fn spawn_shard(
             .spawn(move || {
                 sim_thread(
                     seed, dev_spawn, gather, craft, build, deploy, combat, backpack, survival,
-                    catalog,
-                    ctrl_rx, grave_tx, slots, stats, shutdown,
+                    catalog, ctrl_rx, grave_tx, slots, stats, shutdown,
                 )
             })
             .map_err(|e| format!("sim thread spawn: {e}"))?;
