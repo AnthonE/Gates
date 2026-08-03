@@ -1433,6 +1433,72 @@ const heardLocalA = await waitForLine(A, LOCAL_LINE);
 if (!heardLocalA) fail(`tab A never got its own echo — the delivery receipt is missing`);
 console.log(`  chat: A's local line reached B, and A's own echo came back`);
 
+// --- the death screen: built, wired, and closed while you are standing -----
+//
+// Assertion 17. Structural, and the limit is worth stating rather than
+// implying: **no gate on this box drives a browser death.** The two ways a
+// body can die are another player's hand, which needs a weapon neither tab
+// can gather inside this suite, and the sea — and the sea refuses a drink
+// into a full meter (survival.rs), so salt suicide runs at the speed thirst
+// drains, which is minutes. What the sim does with a death is owned
+// natively (`bag_respawn.rs`, `alloc_zero`, `test_replay`); what the wire
+// carries is owned by `test_protocol_golden`; what the client's decoder
+// does with those bytes is owned by `client_smoke.mjs`, which hand-frames a
+// Death naming its own player id and reads the screen back out of the C
+// ABI. The one link none of those three can see is this one: that the
+// overlay exists in the shipped page, that it is *closed* while the player
+// is alive, and that the action its buttons send encodes through the real
+// bridge in a real browser.
+const death = await A.page.evaluate(() => {
+  const el = document.getElementById("death");
+  if (!el) return null;
+  const style = getComputedStyle(el);
+  return {
+    display: style.display,
+    // The two buttons and the cause line, by id — a screen that lost one
+    // of them is a screen a dead player cannot answer.
+    bag: !!document.getElementById("respawnbag"),
+    beach: !!document.getElementById("respawnbeach"),
+    cause: !!document.getElementById("deathcause"),
+    // The client's own view of it, and the wasm encoder behind the buttons.
+    open: globalThis.__gatesDebug.deathOpen,
+    bagLen: globalThis.__gatesDebug.encodeRespawn(1),
+    beachLen: globalThis.__gatesDebug.encodeRespawn(0),
+    bagByte: globalThis.__gatesDebug.encodeRespawnByte(1),
+    beachByte: globalThis.__gatesDebug.encodeRespawnByte(0),
+  };
+});
+if (!death) fail("tab A: no #death overlay in the page — the death screen never shipped");
+if (!(death.bag && death.beach && death.cause)) {
+  fail(
+    `tab A: the death screen is missing a part (bag=${death.bag} beach=${death.beach} ` +
+      `cause=${death.cause}) — a dead player could not answer it`,
+  );
+}
+if (death.display !== "none") {
+  fail(`tab A: the death screen is showing at display=${death.display} on a live body`);
+}
+if (death.open !== false) fail(`tab A: the client thinks a standing body is dead`);
+// ACTION(6) in three bits, sub 11 in four, the choice bit at 7 — one byte
+// either way, and the two answers must differ in exactly that bit.
+if (death.bagLen !== 1 || death.beachLen !== 1) {
+  fail(
+    `tab A: respawn action is ${death.bagLen}/${death.beachLen} bytes, not 1 — ` +
+      `the browser's encoder disagrees with the wire`,
+  );
+}
+const wantBeach = 6 | (11 << 3);
+if (death.beachByte !== wantBeach || death.bagByte !== (wantBeach | 0x80)) {
+  fail(
+    `tab A: respawn bytes are ${death.beachByte}/${death.bagByte}, want ` +
+      `${wantBeach}/${wantBeach | 0x80} — the choice bit is not on the wire`,
+  );
+}
+console.log(
+  `  death screen: built, closed on a live body, and both answers encode ` +
+    `(${death.beachByte} beach / ${death.bagByte} bag)`,
+);
+
 // --- lighting: the key light and the shadow map -----------------------------
 // Measured HERE, before the walk, on purpose: tab A is still standing on
 // `dev_spawn` at a pinned seed, so the frames the probe scores are the same

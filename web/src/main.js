@@ -541,9 +541,32 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     hud.toast("line not sent — 48 bytes max, no control characters");
     return false;
   };
+  // The death screen's two buttons. The action is one bit — the sim picks
+  // which of your bags is nearest and whether it is ready, so there is no
+  // id here to forge and no bag list the client has to keep honest
+  // (world.rs). `askedForBag` is remembered so the wake can say "no bag
+  // ready, you woke on a beach" instead of leaving the player to work it
+  // out from the scenery.
+  let askedForBag = false;
+  hud.onRespawn = (onBag) => {
+    askedForBag = onBag;
+    const len = ex.client_action_respawn(onBag ? 1 : 0);
+    views.refresh();
+    if (len > 0) actions.send(views.output, len);
+  };
   document.addEventListener("keydown", (e) => {
     if (closed) return;
     if (hud.chatOpen) return; // the composer's own handler has it
+    if (hud.deathOpen) {
+      // A corpse does not walk, build, chat or swing — the sim refuses all
+      // of it anyway (`live_slot_of`), and a client that kept sending
+      // would be predicting a body the server is not moving. The two keys
+      // that mean something here are the two buttons.
+      if (e.code === "Digit1" || e.code === "KeyF") hud.answerDeath(true);
+      else if (e.code === "Digit2" || e.code === "KeyG") hud.answerDeath(false);
+      e.preventDefault();
+      return;
+    }
     if (e.code === "KeyT" || e.code === "Enter") {
       hud.openChat();
       document.exitPointerLock();
@@ -717,6 +740,28 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         const hp = ex.client_struct_hit_hp() >>> 0;
         const max = hp & 0xffff;
         if (max > 0) hud.toast(`breaching ${hp >>> 16}/${max}`);
+      }
+      if (flags & (1 << 30) /* RESPAWN — the death screen opened or closed */) {
+        // One flag, two events: `client_death_screen` says which. Packed
+        // `dead << 24 | woke_on_bag << 16 | cause` (bridge.rs), so one call
+        // across the wasm boundary answers the whole question.
+        const screen = ex.client_death_screen() >>> 0;
+        if (screen >>> 24) {
+          const killer = ex.client_death_by() >>> 0;
+          const w = ex.client_death_weapon() >>> 0;
+          const item = w >>> 16;
+          hud.showDeath(
+            screen & 0xff,
+            killer,
+            item === 0xffff ? null : itemName(item),
+            (w & 0xffff) / 100,
+            killer === playerId,
+          );
+          document.exitPointerLock();
+        } else {
+          hud.hideDeath(((screen >>> 16) & 1) === 1, askedForBag);
+          askedForBag = false;
+        }
       }
       if (flags & (1 << 24) /* DEATH */) {
         for (;;) {
@@ -1104,12 +1149,19 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     frameMs += (dt - frameMs) * 0.05;
     frameRing[stamp % frameRing.length] = dt;
 
+    // A corpse takes no input. The server zeroes the frame it steps a dead
+    // body with (world.rs) rather than skipping the step, so the predictor
+    // has to zero the same three fields or every tick spent on the death
+    // screen is a mispredict against a body that is not moving. Yaw and
+    // pitch survive: they are the camera's, not the world's, and freezing
+    // them would lock the view on the frame the player died.
+    const dead = hud.deathOpen;
     ex.client_set_input(
-      input.buttons(),
+      dead ? 0 : input.buttons(),
       input.yawU16(),
       input.pitchU8(),
-      input.moveX(),
-      input.moveZ(),
+      dead ? 0 : input.moveX(),
+      dead ? 0 : input.moveZ(),
       input.sel,
     );
     ex.client_advance(dt);
@@ -1258,6 +1310,17 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         const m = ex.client_vitals_max() >>> 0;
         return [h >>> 16, h & 0xffff, v >>> 16, m >>> 16, v & 0xffff, m & 0xffff];
       })(),
+      // The death screen: whether the overlay is up, and the two bytes its
+      // buttons put on the wire. The encoders are exposed rather than the
+      // send, because a gate that sent one would be answering a screen
+      // nobody raised — and `world::apply` would rightly ignore it.
+      deathOpen: hud.deathOpen,
+      encodeRespawn: (onBag) => ex.client_action_respawn(onBag),
+      encodeRespawnByte: (onBag) => {
+        const len = ex.client_action_respawn(onBag);
+        views.refresh();
+        return len > 0 ? views.output[0] : -1;
+      },
       frameMs,
       // The distribution behind that number, and the prewarm gate's pair —
       // all three the same class of fact: counts and times off the renderer,

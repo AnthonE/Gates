@@ -40,11 +40,11 @@ pub use event::{
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
     encode_event_hit, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH,
-    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
-    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_respawn,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
+    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
+    BAG_SYNC_BATCH, CATALOG_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
+    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -120,8 +120,22 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// an empty item, because the sea is salt and costs hp: `Health` is
 /// absolute and states the number without the cause, so a client that
 /// only heard the health drop could not tell a drink from a knife.
-/// Fixtures are keyed `v15_*`.
-pub const PROTO_VER: u16 = 15;
+/// v16 gave death a screen and a choice (ALPHA.md §1's respawn flow). The
+/// body no longer wakes by itself, so three things moved and all three fit
+/// fields earlier versions widened: the respawn action — the **twelfth**,
+/// inside v12's 4-bit field, so no action message moved — carrying one bit
+/// for the choice (beach or your own bag); the `respawn` event, the
+/// **36th** subtype, inside v13's 6-bit field, so no other event message
+/// moved either; and `Death`, which widened from (victim, killer) to carry
+/// the cause, the weapon and the range. That last one is the only layout
+/// change in the version, and it is the whole point of it: ALPHA.md §1
+/// specifies "who/what killed you — **range and weapon**, no map
+/// position", and a kill feed that can only say *who* cannot say it. The
+/// three extra fields are read off the victim's own record at encode, the
+/// way a bag's position is — the corpse is still in its slot until the
+/// player answers, which is what makes that safe. Fixtures are keyed
+/// `v16_*`.
+pub const PROTO_VER: u16 = 16;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -314,6 +328,9 @@ const ACT_CONSUME: u32 = 9;
 /// The drink verb (wire v15, survival.rs). Eleventh of the sixteen, so
 /// no width moved for it either — five action codes remain.
 const ACT_DRINK: u32 = 10;
+/// The respawn verb (wire v16, world.rs). Twelfth of the sixteen, so no
+/// width moved for it either — four action codes remain.
+const ACT_RESPAWN: u32 = 11;
 /// Cancel index width mirrors the queue (`CRAFT_QUEUE` = 4 fits 3 bits);
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
@@ -423,6 +440,27 @@ pub enum ActionMsg {
     /// sender's own body. There is no position here to forge, no reach to
     /// stretch, and no way to drink an ocean from a hilltop.
     Drink,
+    /// Answer the death screen: `on_bag` asks to wake on the nearest of
+    /// your own ready sleeping bags, false asks for a beach (ALPHA.md §1,
+    /// "choose beach or a bag").
+    ///
+    /// One bit, and no bag id — the same posture `Loot` takes, for the same
+    /// reason and one more. A bag has no grid address to name, the sim
+    /// already picks the nearest ready one from where the body fell, and a
+    /// forgeable id here would let a client wake on somebody else's bag.
+    /// What the bit *does* buy is the only half of the choice a client can
+    /// hold an opinion about: whether to go back to the fight you just lost
+    /// or leave it. Sent by a live body it does nothing (world.rs).
+    Respawn { on_bag: bool },
+}
+
+/// Answer the death screen — see `ActionMsg::Respawn`.
+pub fn encode_action_respawn(on_bag: bool, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_RESPAWN, ACTION_SUB_BITS)?;
+    w.write_bit(on_bag)?;
+    Ok(w.finish())
 }
 
 /// The drink verb. No payload — see `ActionMsg::Drink`.
@@ -730,6 +768,9 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             ActionMsg::Consume { slot }
         }
         ACT_DRINK => ActionMsg::Drink,
+        ACT_RESPAWN => ActionMsg::Respawn {
+            on_bag: r.read_bit()?,
+        },
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;

@@ -20,7 +20,10 @@ use protocol::{
     encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
     encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
 };
-use protocol::{encode_action_consume, encode_action_drink, encode_event_drank};
+use protocol::{
+    encode_action_consume, encode_action_drink, encode_action_respawn, encode_event_drank,
+    encode_event_respawn,
+};
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
 fn write_fixture(name: &str, bytes: &[u8]) {
@@ -194,8 +197,8 @@ fn main() {
     let len = encode_event_health(hp, max, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[42], &buf[..len]);
 
-    let (victim, killer) = goldens::event_death();
-    let len = encode_event_death(victim, killer, &mut buf).unwrap();
+    let (victim, killer, cause, item, range_cm) = goldens::event_death();
+    let len = encode_event_death(victim, killer, cause, item, range_cm, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[43], &buf[..len]);
 
     let len = encode_action_loot(&mut buf).unwrap();
@@ -246,4 +249,10 @@ fn main() {
 
     let len = encode_action_drink(&mut buf).unwrap();
     write_fixture(goldens::FIXTURES[55], &buf[..len]);
+
+    let len = encode_event_respawn(goldens::event_respawn(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[56], &buf[..len]);
+
+    let len = encode_action_respawn(goldens::action_respawn(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[57], &buf[..len]);
 }

@@ -14,26 +14,26 @@ use protocol::{
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
     encode_event_hit, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog,
-    SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_respawn,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
+    encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
+    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
+    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
 use sim_core::deploy::DeployRec;
-use sim_core::gather::ItemStack;
+use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, CHAT_LOCAL_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES,
     HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
     SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK,
 };
 use sim_core::world::{
-    Command, Player, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CONSUMED,
-    EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED,
+    Command, Player, World, DEATH_BY_CLOCK, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
+    EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED,
     EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT,
-    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
     EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 
@@ -286,6 +286,7 @@ impl ShardCore {
                     ActionMsg::Loot => Command::Loot { id: c.id },
                     ActionMsg::Consume { slot } => Command::Consume { id: c.id, slot },
                     ActionMsg::Drink => Command::Drink { id: c.id },
+                    ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
                 };
                 n += 1;
             }
@@ -642,7 +643,24 @@ impl ShardCore {
                     // Broadcast, like a door: a death is a world fact, and
                     // it is what a kill feed is made of. Not AOI'd — the
                     // reference frames' feed reports kills nobody saw.
-                    match encode_event_death(ev.a, ev.b, &mut self.ev_buf) {
+                    //
+                    // Cause, weapon and range are read off the victim's own
+                    // record rather than carried on the event, exactly as a
+                    // bag's position is read out of the backpack store: the
+                    // sim's three event fields are spent, and the corpse is
+                    // still in its slot because the death screen is waiting
+                    // on it (world.rs `die`). A victim who is somehow gone
+                    // is still worth a feed line, so the fallback is the
+                    // world's own cause and no weapon — never a dropped
+                    // death.
+                    let (cause, item, range_cm) = self
+                        .world
+                        .players
+                        .iter()
+                        .find(|p| p.active && p.id == ev.a)
+                        .map(|p| (p.death_cause, p.death_item, p.death_range_cm))
+                        .unwrap_or((DEATH_BY_CLOCK, NO_ITEM, 0));
+                    match encode_event_death(ev.a, ev.b, cause, item, range_cm, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
@@ -685,6 +703,30 @@ impl ShardCore {
                                     self.clients[slot].ev_resync();
                                     ShardStats::bump(&stats.ev_resyncs);
                                 }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_RESPAWN => {
+                    // Own-fact, `EV_HEALTH`'s audience and posture: the one
+                    // body that woke is the only one this concerns, and the
+                    // world already learns where it stands from the next
+                    // snapshot. What this closes is the death screen, so a
+                    // client that missed it would sit behind an overlay
+                    // over a world it can see — which is why the client
+                    // also drops the screen on any own-position snapshot it
+                    // cannot reconcile with a corpse (`client-wasm`).
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // that player left this tick
+                    };
+                    match encode_event_respawn(ev.b != 0, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
                             }
                         }
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),

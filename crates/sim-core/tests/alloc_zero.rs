@@ -413,6 +413,12 @@ fn test_alloc_zero() {
     let mut bag_wakes = 0u32;
     let mut ring_wakes = 0u32;
     let mut woke_off_the_bag = 0u32;
+    // Since wire v16 a death is a body on the death screen, so the window
+    // has to *answer* one for a respawn to happen at all. Two counters
+    // hold that half: how many slot-ticks were spent dead (the screen's
+    // own state exists and is reached), and whether any of them acted.
+    let mut screen_ticks = 0u32;
+    let mut corpse_acted = 0u32;
     for t in 0..300u16 {
         let mut cmds = tick_cmds(
             &mut rng,
@@ -434,15 +440,52 @@ fn test_alloc_zero() {
                 },
             };
         }
+        // Bot 6 stands still. It is the body staged to starve on top of its
+        // own bag, and `woke_off_the_bag` below reads its position at the
+        // end of the tick its respawn landed on — since v16 the wake is a
+        // command, applied before the player loop, so a walking frame would
+        // step the body off the cell inside the same tick and the check
+        // would be measuring the bot script rather than the scan.
+        cmds[5] = Command::Input {
+            id: 6,
+            frame: InputFrame {
+                seq: t,
+                ..InputFrame::default()
+            },
+        };
         // Both duelists reach for a bag every tick. The command array
         // grows by two on the stack rather than stealing a bot's input
-        // slot — `MAX_COMMANDS_PER_TICK` is 256, so 107 still all apply,
+        // slot — `MAX_COMMANDS_PER_TICK` is 256, so 111 still all apply,
         // and copying `Command`s allocates nothing.
-        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 8];
+        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 12];
         all[..MAX_PLAYERS + 5].copy_from_slice(&cmds);
         all[MAX_PLAYERS + 5] = Command::Loot { id: 3 };
         all[MAX_PLAYERS + 6] = Command::Loot { id: 4 };
         all[MAX_PLAYERS + 7] = Command::Drink { id: 7 };
+        // …and every body that can die in this window answers its own
+        // death screen every tick. Unconditional because a respawn from a
+        // standing body is a no-op by design (world.rs), so this is the
+        // whole of the verb — including the press that does nothing —
+        // inside the counted window. The choice is the *point*: bot 6 is
+        // the one with a bag and asks for it, and the three that have none
+        // ask for a beach, so `bag_wakes` and `ring_wakes` below count two
+        // different decisions rather than one path's two outcomes.
+        all[MAX_PLAYERS + 8] = Command::Respawn {
+            id: 6,
+            on_bag: true,
+        };
+        all[MAX_PLAYERS + 9] = Command::Respawn {
+            id: 3,
+            on_bag: false,
+        };
+        all[MAX_PLAYERS + 10] = Command::Respawn {
+            id: 4,
+            on_bag: false,
+        };
+        all[MAX_PLAYERS + 11] = Command::Respawn {
+            id: 7,
+            on_bag: false,
+        };
         world.tick(&all);
         events_dropped += world.events.dropped;
         for ev in world.events.entries() {
@@ -489,6 +532,17 @@ fn test_alloc_zero() {
                     }
                 } else {
                     ring_wakes += 1;
+                }
+            }
+        }
+        // The screen's own state, read after the tick that answers it: a
+        // body still dead here is one whose answer has not landed yet, and
+        // a dead body with anything in its hands is one that acted.
+        for p in world.players.iter() {
+            if p.active && p.dead {
+                screen_ticks += 1;
+                if p.hp > 0 || p.inv.iter().any(|s| s.count > 0) || p.craft_done_at > 0 {
+                    corpse_acted += 1;
                 }
             }
         }
@@ -571,6 +625,17 @@ fn test_alloc_zero() {
         world.players[5].food > 0,
         "the starved body's meters were never granted again — the respawn \
          grant fell out of the alloc gate"
+    );
+    assert!(
+        screen_ticks > 0,
+        "no body was ever on the death screen inside the counted window — \
+         `World::die` fell out of the alloc gate, or death is still an \
+         immediate respawn and the choice is not reachable"
+    );
+    assert_eq!(
+        corpse_acted, 0,
+        "a body on the death screen was carrying hp, items or a craft job — \
+         `live_slot_of` is not holding, and a corpse is playing the game"
     );
     // The drink verb's three outcomes, each read off the thing it moves.
     // A verb whose only coverage was "it was in the command array" would be

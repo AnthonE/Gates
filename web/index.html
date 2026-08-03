@@ -172,6 +172,62 @@
           opacity: 0;
         }
       }
+      /* The death screen (ALPHA.md §1's respawn flow). Not a fullscreen
+         opaque menu: the reference's own screens render over the live
+         world, and the body is still lying there in it. */
+      #death {
+        position: fixed;
+        inset: 0;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        background: rgba(8, 6, 6, 0.62);
+        z-index: 9;
+      }
+      #deathtitle {
+        margin: 0;
+        letter-spacing: 0.42em;
+        font-size: 34px;
+        font-weight: 300;
+        color: #c07a70;
+        text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8);
+      }
+      #deathcause {
+        margin: 0;
+        color: #cbd5de;
+        font-size: 15px;
+        text-align: center;
+        max-width: min(520px, 84vw);
+      }
+      #deathbuttons {
+        display: flex;
+        gap: 12px;
+        margin-top: 6px;
+      }
+      #deathbuttons button {
+        padding: 9px 22px;
+        background: #1d2b3a;
+        border: 1px solid #3a5064;
+        color: #dbe3ea;
+        border-radius: 4px;
+        cursor: pointer;
+        font: 13px/1 system-ui, sans-serif;
+      }
+      #deathbuttons button:hover {
+        background: #24374b;
+      }
+      #deathbuttons button:disabled {
+        opacity: 0.42;
+        cursor: default;
+      }
+      #deathnote {
+        margin: 0;
+        color: #7d8b98;
+        font-size: 12px;
+        min-height: 1em;
+      }
       #chat {
         position: fixed;
         left: 12px;
@@ -392,6 +448,15 @@
         autocomplete="off"
         placeholder="say something · /g for global · esc cancels"
       />
+    </div>
+    <div id="death">
+      <p id="deathtitle">YOU DIED</p>
+      <p id="deathcause"></p>
+      <div id="deathbuttons">
+        <button id="respawnbag">respawn on your bag</button>
+        <button id="respawnbeach">respawn on a beach</button>
+      </div>
+      <p id="deathnote"></p>
     </div>
     <div id="start">
       <h1>GATES</h1>

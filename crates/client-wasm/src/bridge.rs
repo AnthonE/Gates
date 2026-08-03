@@ -14,10 +14,10 @@ use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_consume,
     encode_action_craft, encode_action_deploy, encode_action_drink, encode_action_feed,
-    encode_action_lock, encode_action_loot, encode_action_place, encode_action_upgrade,
-    encode_action_use, encode_chat, encode_hello, peek_kind, Hello, CHAT_MAX_BYTES,
-    DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER,
-    SLOT_SYNC_BATCH,
+    encode_action_lock, encode_action_loot, encode_action_place, encode_action_respawn,
+    encode_action_upgrade, encode_action_use, encode_chat, encode_hello, peek_kind, Hello,
+    CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES,
+    PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS,
@@ -864,6 +864,65 @@ pub extern "C" fn client_death_pop() -> u32 {
 #[no_mangle]
 pub extern "C" fn client_death_killer() -> u32 {
     with(|b| b.core.as_ref().map(|c| c.last_death_killer).unwrap_or(0))
+}
+
+/// The death screen, packed: `dead << 24 | woke_on_bag << 16 | cause`.
+/// Zero means alive and never yet woken — which is also what a client with
+/// no core reads, so the overlay is closed by default and only an actual
+/// `Death` can open it.
+///
+/// Packed rather than four calls for the reason every readout here is:
+/// this is polled from the RAF loop on a flag, and one `u32` across the
+/// wasm boundary is one call instead of four. The killer, the weapon and
+/// the range are the rest of the sentence and ride their own two calls
+/// below — `client_death_killer` already existed for the feed, and reusing
+/// it here would have coupled the screen to the ring's pop cursor.
+#[no_mangle]
+pub extern "C" fn client_death_screen() -> u32 {
+    with(|b| {
+        b.core
+            .as_ref()
+            .map(|c| {
+                ((c.dead as u32) << 24) | ((c.woke_on_bag as u32) << 16) | c.own_death_cause as u32
+            })
+            .unwrap_or(0)
+    })
+}
+
+/// Who killed the body this client is driving, for the death screen. Not
+/// `client_death_killer`: that one moves with the kill feed's pop cursor,
+/// and the screen must not change its sentence because a stranger died.
+#[no_mangle]
+pub extern "C" fn client_death_by() -> u32 {
+    with(|b| b.core.as_ref().map(|c| c.own_death_killer).unwrap_or(0))
+}
+
+/// The rest of the sentence: `item << 16 | range_cm`. `item` is
+/// `NO_ITEM` (0xffff) when the world did it rather than a hand, which is
+/// the same sentinel the inventory and catalog already use.
+#[no_mangle]
+pub extern "C" fn client_death_weapon() -> u32 {
+    with(|b| {
+        b.core
+            .as_ref()
+            .map(|c| ((c.own_death_item as u32) << 16) | c.own_death_range_cm as u32)
+            .unwrap_or(0)
+    })
+}
+
+/// Encode an answer to the death screen into the out buffer; returns its
+/// length. `on_bag` nonzero asks for the nearest of your own ready bags,
+/// zero asks for a beach (ALPHA.md §1, "choose beach or a bag"). Whether a
+/// bag of yours is ready is the sim's verdict, and it comes back as the
+/// `Respawn` event's own `on_bag` bit — so a client that asked for a bag
+/// and got a beach is told, rather than left to guess from a coordinate.
+#[no_mangle]
+pub extern "C" fn client_action_respawn(on_bag: u32) -> u32 {
+    with(|b| {
+        encode_action_respawn(on_bag != 0, &mut b.out_buf)
+            .map(|n| n as u32)
+            .unwrap_or(0)
+    })
 }
 
 /// Oldest buffered craft refusal reason; `u32::MAX` when none.

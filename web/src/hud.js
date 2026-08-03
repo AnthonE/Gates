@@ -38,6 +38,21 @@ export class Hud {
         this.closeChat();
       }
     });
+    // The death screen (ALPHA.md §1: "death screen (who/what killed you —
+    // range and weapon, no map position), choose beach or a bag"). Plain
+    // DOM outside the render loop like the rest of the HUD, and built
+    // once at construction — a screen that allocated its own buttons on
+    // the frame a player died would do it at the worst possible moment.
+    this.death = document.getElementById("death");
+    this.deathCause = document.getElementById("deathcause");
+    this.deathNote = document.getElementById("deathnote");
+    this.respawnBag = document.getElementById("respawnbag");
+    this.respawnBeach = document.getElementById("respawnbeach");
+    this.deathOpen = false;
+    /** Set by main.js: (onBag: bool) → void. */
+    this.onRespawn = () => {};
+    this.respawnBag.addEventListener("click", () => this.answerDeath(true));
+    this.respawnBeach.addEventListener("click", () => this.answerDeath(false));
     this.vitals = document.getElementById("vitals");
     this.vitalsRows = null;
     this.lastVitals = "";
@@ -267,6 +282,62 @@ export class Hud {
     setTimeout(() => {
       if (div.parentNode === this.chatlog) this.chatlog.removeChild(div);
     }, CHAT_FADE_MS);
+  }
+
+  /**
+   * Raise the death screen. `cause` is a `world::DEATH_BY_*` code, `killer`
+   * the id that did it, `weapon` its display name (null for the world's own
+   * kills), `range` metres.
+   *
+   * No position anywhere in the sentence, and that is the rule rather than
+   * an omission (ALPHA.md §1, "no map position"): a screen that told you
+   * where you fell would hand the raider standing over you a pin to the
+   * base they just cleared. Who, with what, from how far.
+   */
+  showDeath(cause, killer, weapon, range, own) {
+    // 0 = another player's hand, 1 = the survival clock, 2 = the sea.
+    let line;
+    if (cause === 1) {
+      line = "you ran out";
+    } else if (cause === 2) {
+      line = "the sea is salt";
+    } else if (own) {
+      line = "you did it to yourself";
+    } else {
+      const with_ = weapon ? ` with ${weapon}` : "";
+      line = `#${killer} killed you${with_} from ${range.toFixed(1)} m`;
+    }
+    this.deathCause.textContent = line;
+    this.deathNote.textContent = "";
+    this.respawnBag.disabled = false;
+    this.respawnBeach.disabled = false;
+    this.death.style.display = "flex";
+    this.deathOpen = true;
+  }
+
+  /** The answer, once. The buttons disable on the click rather than on the
+   * wake, so a second press cannot send a second action into a screen the
+   * server has already closed — the sim ignores it (world.rs), and the
+   * player should not be left wondering whether the first one took. */
+  answerDeath(onBag) {
+    if (!this.deathOpen || this.respawnBag.disabled) return;
+    this.respawnBag.disabled = true;
+    this.respawnBeach.disabled = true;
+    this.deathNote.textContent = "waking…";
+    this.onRespawn(onBag);
+  }
+
+  /** The wake landed. `onBag` is which anchor actually answered — asking
+   * for a bag inside its cooldown gets a beach, and a player who is not
+   * told that has no way to learn it except by looking around. */
+  hideDeath(onBag, askedForBag) {
+    this.death.style.display = "none";
+    this.deathOpen = false;
+    if (askedForBag && !onBag) {
+      this.toast("no bag ready — you woke on a beach");
+    } else if (onBag) {
+      this.toast("you woke on your bag");
+    }
   }
 
   /** One floating "+N Thing" line; oldest evicted past the cap. */

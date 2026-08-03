@@ -102,6 +102,16 @@ pub const APPLIED_CONSUME: u32 = 1 << 28;
 /// would leave the HUD holding two readouts and no way to know which of
 /// them this frame's flag was about.
 pub const APPLIED_DRANK: u32 = 1 << 29;
+/// The death screen opened or closed — `EventMsg::Death` naming *you*, or
+/// the `EventMsg::Respawn` that answers it. One flag for both because the
+/// HUD's response to either is to re-read `client_death_screen`, which
+/// says which it was; the same shape `APPLIED_CONSUME` takes.
+///
+/// Not `APPLIED_DEATH`'s bit, and the distinction is the whole point of a
+/// separate flag: `Death` is broadcast, so most of them are somebody
+/// else's and belong in the kill feed. This one only ever fires for the
+/// body this client is driving.
+pub const APPLIED_RESPAWN: u32 = 1 << 30;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -554,6 +564,23 @@ pub struct ClientCore {
     /// Killer of the death `pop_death` returned last, so one pop hands the
     /// caller a whole line (the `removed_key`/`removed_info` pattern).
     pub last_death_killer: u32,
+    /// The death screen, own-body only. `dead` is set by the `Death` whose
+    /// victim is `player_id` and cleared by the `Respawn` that answers it;
+    /// the four beside it are the sentence the screen says (ALPHA.md §1:
+    /// "who/what killed you — range and weapon, no map position"), held
+    /// rather than ringed because there is only ever one of them and the
+    /// screen is up until it is answered.
+    ///
+    /// `woke_on_bag` is the last respawn's anchor, and it outlives `dead`
+    /// on purpose: a player who asked for a bag and got a beach is told so
+    /// *after* the screen closes, which is the only moment the fact is
+    /// worth anything.
+    pub dead: bool,
+    pub own_death_killer: u32,
+    pub own_death_cause: u8,
+    pub own_death_item: u16,
+    pub own_death_range_cm: u16,
+    pub woke_on_bag: bool,
     /// The placed-piece mirror (address-keyed; the renderer's truth).
     pub pieces: PieceSet,
     /// Piece records the last `on_stream` call added or replaced.
@@ -663,6 +690,12 @@ impl ClientCore {
             death_head: 0,
             death_len: 0,
             last_death_killer: 0,
+            dead: false,
+            own_death_killer: 0,
+            own_death_cause: 0,
+            own_death_item: sim_core::gather::NO_ITEM,
+            own_death_range_cm: 0,
+            woke_on_bag: false,
             refusal_head: 0,
             refusal_len: 0,
             pieces: PieceSet::new(),
@@ -1096,7 +1129,13 @@ impl ClientCore {
                 self.hit_len += 1;
                 flags |= APPLIED_HIT;
             }
-            EventMsg::Death { victim, killer } => {
+            EventMsg::Death {
+                victim,
+                killer,
+                cause,
+                item,
+                range_cm,
+            } => {
                 // Drop-oldest, like chat: a feed that stalls on the oldest
                 // kill is worse than one that loses it.
                 if self.death_len == TOAST_RING {
@@ -1106,6 +1145,24 @@ impl ClientCore {
                 self.deaths[(self.death_head + self.death_len) % TOAST_RING] = (victim, killer);
                 self.death_len += 1;
                 flags |= APPLIED_DEATH;
+                // …and if it was this body, the screen. Held outside the
+                // feed ring because the ring is drop-oldest and a death
+                // screen that could be dropped by two strangers dying
+                // nearby would strand the player behind an overlay with no
+                // sentence on it.
+                if victim == self.player_id {
+                    self.dead = true;
+                    self.own_death_killer = killer;
+                    self.own_death_cause = cause;
+                    self.own_death_item = item;
+                    self.own_death_range_cm = range_cm;
+                    flags |= APPLIED_RESPAWN;
+                }
+            }
+            EventMsg::Respawn { on_bag } => {
+                self.dead = false;
+                self.woke_on_bag = on_bag;
+                flags |= APPLIED_RESPAWN;
             }
             EventMsg::Chat { from, global, text } => {
                 // Drop-oldest: a chat log that stalls on the oldest line

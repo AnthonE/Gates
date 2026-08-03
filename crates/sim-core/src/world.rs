@@ -10,7 +10,7 @@ use crate::combat::{self, CombatContent};
 use crate::craft::{self, CraftContent, CraftJob};
 use crate::deploy::{self, DeployContent, Deploys};
 use crate::fmath::floor_i32;
-use crate::gather::{self, GatherContent, ItemStack, SlotLives, NO_CELL};
+use crate::gather::{self, GatherContent, ItemStack, SlotLives, NO_CELL, NO_ITEM};
 use crate::input::InputFrame;
 use crate::limits::{
     CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS,
@@ -143,19 +143,38 @@ pub const EV_CONSUME_REFUSED: u8 = 23;
 pub const EV_DRANK: u8 = 24;
 /// EV_RESPAWN: a = player id, b = 1 if the body woke on its own sleeping
 /// bag, 0 if the spawn ring answered instead. Own-fact, announced by
-/// `World::respawn` on every death without exception, so "where did I wake
+/// `World::wake` on every respawn without exception, so "where did I wake
 /// and why" is a fact the sim states rather than one a reader infers by
 /// comparing a position against a bag list.
 ///
-/// **Not on the wire yet, and that is deliberate rather than unfinished.**
-/// The client already learns the new position from the next snapshot, so
-/// nothing about the mechanic waits on a packet; what a wire subtype would
-/// buy is the *respawn screen* — the pick-your-bag choice — which is its
-/// own slice with its own action, and spending a subtype here before that
-/// design exists would pin a layout to a guess (wall 6). Until then the
-/// server's event walk ignores it through the catch-all it already has,
-/// and the three walls below read it directly.
+/// On the wire since v16, and the reason it is worth a subtype is the
+/// death screen: the body no longer wakes by itself, so this is the one
+/// message that says the screen may close. It still carries no position —
+/// the snapshot does that, as it always did — only which anchor answered,
+/// because "the bag was spent, you are on a beach" is a fact the player
+/// needs and cannot read off a coordinate.
 pub const EV_RESPAWN: u8 = 25;
+
+/// Why a body fell (`Player::death_cause`). Sim state on the record rather
+/// than fields on `EV_DEATH`, whose three are already spent — the server
+/// reads the cause, the weapon and the range back out of the store when it
+/// encodes the death, exactly the way a bag's position is read out of the
+/// backpack store at encode (`EV_BAG_DROPPED`). The deferred respawn is
+/// what makes that safe: the corpse is still in its slot until the player
+/// answers the screen, so the facts are always there to read.
+///
+/// Another player's hand. `death_by` is the killer, `death_item` the
+/// weapon they held, `death_range_cm` how far the blow landed from —
+/// ALPHA.md §1's "who/what killed you — range and weapon, no map position".
+pub const DEATH_BY_HAND: u8 = 0;
+/// The survival clock finished the job: starving, dried out, or both
+/// stacked (survival.rs). `death_by` is the player's own id.
+pub const DEATH_BY_CLOCK: u8 = 1;
+/// A mouthful of sea water on the last points of health (survival.rs).
+/// Its own cause and not the clock's, for `EV_DRANK`'s reason: a death the
+/// player *pressed a key for* is a different sentence from one that
+/// happened to them.
+pub const DEATH_BY_SALT: u8 = 2;
 
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
@@ -268,6 +287,25 @@ pub struct Player {
     pub heal_total: u16,
     pub heal_span: u32,
     pub heal_acc: u32,
+    /// The death screen. `true` between the tick this body fell and the
+    /// `Command::Respawn` that answers — ALPHA.md §1's respawn flow is a
+    /// *choice* ("choose beach or a bag"), and a choice needs somewhere to
+    /// wait. A dead body keeps its slot, its position and its death, and
+    /// nothing else: it takes no input, runs no clock, swings at nothing,
+    /// crafts nothing and cannot be hit again (`combat::strike` already
+    /// skips `hp == 0`). It is not a timer — no clock releases it, because
+    /// the one thing this state is for is that the player decides.
+    ///
+    /// `hp == 0` would nearly serve as the predicate and deliberately does
+    /// not: inert content grants `player_hp == 0` at the door, so every
+    /// body in an unarmed world would read as a corpse.
+    pub dead: bool,
+    /// What the death screen says. Written once at the death site, read by
+    /// the server at encode and cleared by the wake — see `DEATH_BY_HAND`.
+    pub death_by: u32,
+    pub death_cause: u8,
+    pub death_item: u16,
+    pub death_range_cm: u16,
 }
 
 impl Default for Player {
@@ -295,6 +333,11 @@ impl Default for Player {
             heal_total: 0,
             heal_span: 0,
             heal_acc: 0,
+            dead: false,
+            death_by: 0,
+            death_cause: 0,
+            death_item: NO_ITEM,
+            death_range_cm: 0,
         }
     }
 }
@@ -402,6 +445,16 @@ pub enum Command {
     /// so the sim asks it where the body already is.
     Drink {
         id: u32,
+    },
+    /// Answer the death screen (ALPHA.md §1: "choose beach or a bag").
+    /// `on_bag` asks for the nearest of the sender's own ready sleeping
+    /// bags; the ring answers when it is false, and also when it is true
+    /// and no bag of theirs is ready — a request the world cannot fill is
+    /// a beach, never a refusal, because a player stuck on a death screen
+    /// has left the game. From a live body it does nothing at all.
+    Respawn {
+        id: u32,
+        on_bag: bool,
     },
 }
 
@@ -609,12 +662,71 @@ impl World {
         self.players.iter().position(|p| p.active && p.id == id)
     }
 
-    /// Death, v2: you wake up naked **on your own bag if you placed one**,
-    /// and on a different beach if you did not — and what you were
-    /// carrying is still lying where you fell. The kill has already been
-    /// counted and announced (combat.rs); this is the consequence — the
-    /// whole inventory into one backpack at the body's position
-    /// (backpack.rs), then a fresh body, full hp, and nothing in hand.
+    /// The slot of a player who is **standing**. A corpse keeps its slot
+    /// while the death screen waits on it, so every verb that acts on the
+    /// world resolves through this instead of `slot_of` — otherwise a body
+    /// on the death screen could still craft, build, feed a hearth, lock a
+    /// door and drink, which is a dead player playing the game.
+    ///
+    /// Two commands deliberately use `slot_of` instead: `Respawn`, which
+    /// only a corpse may send, and `Input`, which is the client's own
+    /// frame and keeps flowing so prediction and the server agree about a
+    /// body that is standing still (the tick zeroes what it acts on).
+    fn live_slot_of(&self, id: u32) -> Option<usize> {
+        self.slot_of(id).filter(|&s| !self.players[s].dead)
+    }
+
+    /// Death, v3: the body falls **and stays down**. What you were carrying
+    /// is lying where you fell, the kill is already counted and announced
+    /// (combat.rs, survival.rs), and the consequence splits in two — this
+    /// half drops the backpack and puts the body on the death screen;
+    /// `wake` is the other half and only a `Command::Respawn` reaches it.
+    ///
+    /// **The wait is the feature.** ALPHA.md §1's respawn flow is "death
+    /// screen (who/what killed you — range and weapon, no map position),
+    /// choose beach or a bag" — three nouns, and a *choice*. v2 wired the
+    /// bag and picked for the player: the nearest ready one always won, so
+    /// a body killed at its own doorstep by the raider still standing in it
+    /// woke up in that raider's reach with nothing in hand, over and over,
+    /// until the bag's cooldown ran out. Choosing the beach is how you
+    /// leave a fight you have already lost, and it is the whole reason the
+    /// screen has two buttons rather than one.
+    ///
+    /// No timer releases this state. A body waiting on the screen costs
+    /// exactly what a standing one costs — its slot, bounded by
+    /// `MAX_PLAYERS` like everything else — and inventing a "you have been
+    /// dead long enough" span would be inventing a knob nobody spoke.
+    ///
+    /// What the corpse keeps is its id, its death count, its position, its
+    /// facing and the five facts the screen is made of. Everything else is
+    /// `Player::default()` — the inventory went into the bag, and the craft
+    /// queue, the heal and the weak-spot chase are destroyed here for the
+    /// reasons `wake` records below.
+    fn die(&mut self, slot: usize, by: u32, cause: u8, item: u16, range_cm: u16) {
+        // A copy of the body as it fell: the bag is built from it after
+        // the slot is already being written, and `Player` is `Copy`.
+        let body = self.players[slot];
+        self.backpacks
+            .drop_for(&self.backpack, &body, self.tick, &mut self.events);
+        self.players[slot] = Player {
+            id: body.id,
+            active: true,
+            body: body.body,
+            frame: body.frame,
+            hp: 0,
+            hp_max: body.hp_max,
+            deaths: body.deaths,
+            dead: true,
+            death_by: by,
+            death_cause: cause,
+            death_item: item,
+            death_range_cm: range_cm,
+            ..Player::default()
+        };
+    }
+
+    /// The other half: you wake up naked **on your own bag if you asked for
+    /// one and one of yours is ready**, and on a different beach otherwise.
     ///
     /// **Where that body stands is the difference between building a base
     /// and having one.** Before this, `deploy.rs` placed sleeping bags,
@@ -632,11 +744,12 @@ impl World {
     /// still honours a bag its player placed, which is the behaviour the
     /// player would report a bug about otherwise.
     ///
-    /// The craft queue and the weak-spot chase are still destroyed, and
-    /// deliberately: a queued craft is a promise to a body that no longer
-    /// exists, and its inputs were already spent when it was queued —
-    /// refunding them into the bag would pay the killer twice for one
-    /// farm. Only carried items drop, which is what DESIGN.md §2 says.
+    /// The craft queue and the weak-spot chase are destroyed at the death
+    /// and stay destroyed here, deliberately: a queued craft is a promise
+    /// to a body that no longer exists, and its inputs were already spent
+    /// when it was queued — refunding them into the bag would pay the
+    /// killer twice for one farm. Only carried items drop, which is what
+    /// DESIGN.md §2 says.
     ///
     /// Content that never armed the ladder (`base_ticks == 0`) still
     /// destroys the inventory outright, which is what this did before the
@@ -646,23 +759,25 @@ impl World {
     /// The input frame survives on purpose: it is the client's, not the
     /// world's, and resetting `seq` would lie to prediction about which
     /// input the sim last executed.
-    fn respawn(&mut self, slot: usize) {
-        // A copy of the body as it fell: the bag is built from it after
-        // the slot is already being written, and `Player` is `Copy`.
+    fn wake(&mut self, slot: usize, on_bag: bool) {
         let body = self.players[slot];
-        self.backpacks
-            .drop_for(&self.backpack, &body, self.tick, &mut self.events);
         let (id, deaths, frame) = (body.id, body.deaths, body.frame);
         // Nearest own ready bag to where the body fell; the scan spends it
         // for `BAG_COOLDOWN_TICKS`, so a chain of deaths inside one
-        // cooldown walks the player's other bags and then the ring.
-        let bag = self.deploys.claim_bag(
-            &self.deploy,
-            id,
-            body.body.qx as f32 * movement::POS_XZ_Q,
-            body.body.qz as f32 * movement::POS_XZ_Q,
-            self.tick,
-        );
+        // cooldown walks the player's other bags and then the ring. Asked
+        // only when the player asked: a bag the beach button did not want
+        // must not be spent, or the choice would cost the same either way.
+        let bag = if on_bag {
+            self.deploys.claim_bag(
+                &self.deploy,
+                id,
+                body.body.qx as f32 * movement::POS_XZ_Q,
+                body.body.qz as f32 * movement::POS_XZ_Q,
+                self.tick,
+            )
+        } else {
+            None
+        };
         let (x, z) = match bag {
             Some(p) => p,
             None => self.spawn_pos_n(id, deaths as u32),
@@ -737,7 +852,7 @@ impl World {
                 }
             }
             Command::Craft { id, recipe, count } => {
-                if let Some(slot) = self.slot_of(id) {
+                if let Some(slot) = self.live_slot_of(id) {
                     craft::enqueue(
                         &self.craft,
                         &self.deploy,
@@ -751,7 +866,7 @@ impl World {
                 }
             }
             Command::CraftCancel { id, index } => {
-                if let Some(slot) = self.slot_of(id) {
+                if let Some(slot) = self.live_slot_of(id) {
                     craft::cancel(
                         &self.craft,
                         &self.gather,
@@ -769,7 +884,7 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.slot_of(id) {
+                if let Some(slot) = self.live_slot_of(id) {
                     build::place(
                         self.seed,
                         &self.build,
@@ -794,7 +909,7 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.slot_of(id) {
+                if let Some(slot) = self.live_slot_of(id) {
                     deploy::place_deploy(
                         self.seed,
                         &self.deploy,
@@ -813,7 +928,7 @@ impl World {
                 }
             }
             Command::Feed { id, cx, cz, level } => {
-                if let Some(slot) = self.slot_of(id) {
+                if let Some(slot) = self.live_slot_of(id) {
                     deploy::feed(
                         &self.deploy,
                         &mut self.deploys,
@@ -832,7 +947,7 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.slot_of(id) {
+                if let Some(slot) = self.live_slot_of(id) {
                     deploy::use_door(
                         &self.deploy,
                         &mut self.pieces,
@@ -854,7 +969,7 @@ impl World {
                 loc,
                 locked,
             } => {
-                if let Some(slot) = self.slot_of(id) {
+                if let Some(slot) = self.live_slot_of(id) {
                     deploy::set_lock(
                         &self.deploy,
                         &mut self.deploys,
@@ -876,7 +991,7 @@ impl World {
                 loc,
                 material,
             } => {
-                if let Some(slot) = self.slot_of(id) {
+                if let Some(slot) = self.live_slot_of(id) {
                     build::upgrade(
                         &self.build,
                         &self.deploys,
@@ -892,7 +1007,7 @@ impl World {
                 }
             }
             Command::Consume { id, slot: inv } => {
-                if let Some(slot) = self.slot_of(id) {
+                if let Some(slot) = self.live_slot_of(id) {
                     survival::consume(
                         &self.survival,
                         inv as usize,
@@ -902,13 +1017,14 @@ impl World {
                 }
             }
             Command::Drink { id } => {
-                if let Some(slot) = self.slot_of(id) {
+                if let Some(slot) = self.live_slot_of(id) {
                     // The one verb that can kill the player who pressed it.
                     // Handled exactly as a clock death and a combat death
                     // are — the callee counts it and announces it, the
-                    // caller walks the spawn ring — because `respawn` needs
-                    // the whole world and the verb needs one player.
+                    // caller lays the body down — because `die` needs the
+                    // whole world and the verb needs one player.
                     let seed = self.seed;
+                    let id = self.players[slot].id;
                     if survival::drink(
                         &self.survival,
                         seed,
@@ -916,17 +1032,30 @@ impl World {
                         &mut self.events,
                     ) == survival::Step::Died
                     {
-                        self.respawn(slot);
+                        self.die(slot, id, DEATH_BY_SALT, NO_ITEM, 0);
                     }
                 }
             }
             Command::Loot { id } => {
-                if let Some(slot) = self.slot_of(id) {
+                if let Some(slot) = self.live_slot_of(id) {
                     self.backpacks.loot_nearest(
                         &self.gather,
                         &mut self.players[slot],
                         &mut self.events,
                     );
+                }
+            }
+            Command::Respawn { id, on_bag } => {
+                // `slot_of`, not `live_slot_of`: this is the one verb only
+                // a corpse may send, and the `dead` test below is the whole
+                // of its authority. A press from a standing body — a
+                // duplicate, a forged one, a second click on a screen that
+                // already closed — does nothing at all rather than moving a
+                // live player to a beach.
+                if let Some(slot) = self.slot_of(id) {
+                    if self.players[slot].dead {
+                        self.wake(slot, on_bag);
+                    }
                 }
             }
         }
@@ -951,14 +1080,32 @@ impl World {
             if !self.players[i].active {
                 continue;
             }
+            // A body on the death screen is still a body: it falls and it
+            // settles, so a player killed off a roof lands on the ground
+            // the screen's next respawn will not be measured from. What it
+            // does not do is act — the frame is zeroed rather than the step
+            // skipped, and that ordering is what keeps the client's own
+            // predictor in agreement about a corpse it can still see.
+            if self.players[i].dead {
+                let frame = InputFrame {
+                    seq: self.players[i].frame.seq,
+                    yaw: self.players[i].frame.yaw,
+                    pitch: self.players[i].frame.pitch,
+                    sel: self.players[i].frame.sel,
+                    ..InputFrame::default()
+                };
+                movement::step(seed, self.pieces.cols(), &mut self.players[i].body, &frame);
+                continue;
+            }
             // The clock runs before the arm. A body that starves this tick
             // does not also get to swing on it — and running the clock
-            // first is what makes the respawn below the tick's last word
+            // first is what makes the death below the tick's last word
             // about this slot, exactly as a combat death is.
             if survival::step(&self.survival, &mut self.players[i], &mut self.events)
                 == survival::Step::Died
             {
-                self.respawn(i);
+                let id = self.players[i].id;
+                self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
                 continue;
             }
             let frame = self.players[i].frame;
@@ -983,7 +1130,14 @@ impl World {
                 // node → player → structure: the arm passes on only what
                 // nothing nearer absorbed.
                 match combat::strike(&self.combat, i, &mut self.players, &mut self.events) {
-                    combat::Strike::Killed(victim) => self.respawn(victim),
+                    combat::Strike::Killed {
+                        victim,
+                        item,
+                        range_cm,
+                    } => {
+                        let by = self.players[i].id;
+                        self.die(victim, by, DEATH_BY_HAND, item, range_cm);
+                    }
                     combat::Strike::Hit => {}
                     combat::Strike::Missed => {
                         combat::raid(
@@ -1072,6 +1226,20 @@ impl World {
             hb[0..4].copy_from_slice(&p.heal_span.to_le_bytes());
             hb[4..8].copy_from_slice(&p.heal_acc.to_le_bytes());
             h.update(&hb);
+            // The death screen, in its own buffer for the survival clock's
+            // reason: every byte is sim state. `dead` most obviously — two
+            // shards that disagree about whether a body is standing
+            // disagree about everything downstream of it — but the four
+            // facts too, because the wire encodes them off this record and
+            // a replay that reproduced the position while inventing the
+            // weapon would put a different sentence on a player's screen.
+            let mut db = [0u8; 10];
+            db[0..4].copy_from_slice(&p.death_by.to_le_bytes());
+            db[4] = p.dead as u8;
+            db[5] = p.death_cause;
+            db[6..8].copy_from_slice(&p.death_item.to_le_bytes());
+            db[8..10].copy_from_slice(&p.death_range_cm.to_le_bytes());
+            h.update(&db);
             for s in p.inv.iter() {
                 let mut sb = [0u8; 4];
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());
