@@ -448,12 +448,19 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     decayed += 1
                 }
                 sim_core::world::EV_CONSUMED => eaten += 1,
-                sim_core::world::EV_CONSUME_REFUSED => {
-                    eat_refused += 1;
-                    if e.a == 21 {
-                        drink_refused += 1;
-                    }
-                }
+                // One refusal code, two verbs — so the counters partition
+                // by the body that pressed. Ids 2 and 4 are the only ones
+                // the eat script addresses, 21 the only drinker. Counting
+                // the union would sink the eat floor below: bot 21 presses
+                // every 7 ticks from t=180 and most of those find a full
+                // meter, so its refusals alone clear `eat_refused >= 8`
+                // and the assert stops being able to fail on the verb its
+                // own message names.
+                sim_core::world::EV_CONSUME_REFUSED => match e.a {
+                    2 | 4 => eat_refused += 1,
+                    21 => drink_refused += 1,
+                    _ => {}
+                },
                 sim_core::world::EV_DRANK => drank += 1,
                 sim_core::world::EV_DOOR => {
                     doors += 1;

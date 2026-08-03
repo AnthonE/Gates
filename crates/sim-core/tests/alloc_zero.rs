@@ -379,8 +379,18 @@ fn test_alloc_zero() {
             } else if ev.code == EV_CONSUMED {
                 ate += 1;
             } else if ev.code == EV_CONSUME_REFUSED {
-                eat_refused += 1;
-                if ev.a == 7 && ev.b == REFUSE_C_NO_WATER {
+                // Two verbs announce their refusals on this one code, so
+                // the counters partition by the body that pressed rather
+                // than sharing the branch: bot 1 is the only id the eat
+                // script addresses and bot 7 the only one that drinks.
+                // Counting the union here would let one verb's refusals
+                // satisfy the other's floor — `eat_refused > 0` below
+                // would be implied by the drinker alone, and the assert
+                // would go on reading as if it still guarded eating while
+                // the whole eat refusal path could be deleted under it.
+                if ev.a == 1 {
+                    eat_refused += 1;
+                } else if ev.a == 7 && ev.b == REFUSE_C_NO_WATER {
                     dry_presses += 1;
                 }
             } else if ev.code == EV_DRANK {
