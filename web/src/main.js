@@ -16,6 +16,7 @@ import { InputTracker } from "./input.js";
 import { GameScene } from "./scene.js";
 import { Terrain } from "./terrain.js";
 import { Hud } from "./hud.js";
+import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
 
 const WASM_URL = "/client_wasm.wasm";
 const REFUSE_REASONS = ["protocol version mismatch", "shard is full"];
@@ -40,7 +41,12 @@ async function boot(url, certHex) {
   localStorage.setItem("gates.url", url);
   localStorage.setItem("gates.cert", certHex);
 
-  const ex = await loadWasm(WASM_URL);
+  // The base maps ride alongside the wasm fetch rather than behind it: both
+  // are boot-time payload with no dependency on each other, and both must be
+  // in hand before `run()` builds a material. Awaited here and not later
+  // because a texture that arrives after the first frame is a program relink,
+  // and the prewarm gate counts links after `inWorld` (CLAUDE.md's trap list).
+  const [ex] = await Promise.all([loadWasm(WASM_URL), loadGroundTextures()]);
   const wt = await connect(url, certHex);
 
   // Handshake: wasm encodes/decodes; JS only frames bytes on the stream.
@@ -123,6 +129,12 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   const scene = new GameScene(canvas);
   // The clipmap rides along so a chunk streaming in or out can force the
   // cached coarse shadow levels to redraw (shadow clipmap v0).
+  // Anisotropy is the renderer's to state, not this file's — and it has to be
+  // on the texture before the first upload, which is why it lands between the
+  // renderer existing and the ground being built. A 0.9 m tile at a grazing
+  // angle is the exact case an isotropic mip chain blurs back into the wash
+  // this slice is here to remove.
+  setGroundAnisotropy(scene.renderer.capabilities.getMaxAnisotropy());
   const terrain = new Terrain(scene.scene, seed, ex, WASM_URL, scene.clipmap);
   // The ground's material lives with the terrain that feeds it; the scene
   // borrows its uniforms so the surface probe has one handle (materials v0).
@@ -1027,6 +1039,11 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         return scene.aliasProbe(views, minDelta);
       }
     : null;
+  // The base-map probe (ART.md §7). Takes (yaw, pitch) from the player's own
+  // eye like the surface and grain probes do, because the number it is aimed
+  // at — ART.md §3's near-ground neighbour contrast — is a statement about
+  // what the ground looks like from standing height and not at a world point.
+  const devBaseProbe = dev ? (views, minDelta) => scene.baseProbe(views, minDelta) : null;
   // Materials v1's third pass: the projection probe takes views in WORLD space
   // like the contrast one, but the caller aims them at a FACE rather than by
   // (yaw, pitch) — a combed grain is only combed on a slope, so the gate finds
@@ -1297,6 +1314,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (devAliasProbe) debug.aliasProbe = devAliasProbe;
     if (devSteepestFace) debug.steepestFace = devSteepestFace;
     if (devPropProbe) debug.propProbe = devPropProbe;
+    if (devBaseProbe) debug.baseProbe = devBaseProbe;
     globalThis.__gatesDebug = debug;
   }, 250);
 }

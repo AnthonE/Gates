@@ -181,6 +181,7 @@ import {
   installClipmapShadows,
   resolvedGlslChars,
 } from "./shadows.js";
+import { GROUND_LAYERS, groundTextures } from "./textures.js";
 
 // --- the four identities (TERRAIN.md §4's four sets) ------------------------
 // Colours are the retired vertex palette's, unchanged, so this slice changes
@@ -522,6 +523,73 @@ const SNOW_ROUGH = 0.55;
 const CLIFF_UPNESS = [0.6, 0.78];
 const CLIFF_DARKEN = 0.86;
 
+// --- the base maps (ART.md §7) ----------------------------------------------
+// The tile the photograph is laid at, in cycles per metre, and it is not a new
+// number: it is each identity's OWN declared tile scale — the tint octave's,
+// the 0.5–1 m band the visual report asked for and the one place in the ladder
+// where a per-identity tiling frequency is already spoken for. `NOW.md` item 1
+// says "at the tile scales the identities already declare", and this is the
+// declaration it means. Reading it off `IDENTITIES` rather than restating it
+// means the two can never disagree.
+const BASE_SCALE = IDENTITIES.map((i) => i.tint.scale);
+// The most a photographed normal may tilt the shading normal, as a surface
+// slope (rise over run). NOT the procedural cap below it — this bounds the
+// base map's own contribution BEFORE it is added to gmH's gradient, and
+// `BUMP_MAX_SLOPE` then bounds the sum, so the two are nested rather than
+// additive. Wall 4: the tap it bounds is `|n.xy| / n.z`, which diverges as a
+// tangent normal approaches horizontal.
+//
+// The value is this file's own existing derivation applied to a new octave
+// rather than a fresh judgement: 0.03–0.25 is the band `AMP_MESO_M`,
+// `AMP_MICRO_M` and `AMP_GRAIN_M` were each chosen against, stated three times
+// above as "where a normal actually reads without turning into a relief map".
+// The base map is now the finest thing in that ladder and the one carrying the
+// most slope, so it takes the top of the band and not a number of its own.
+const BASE_NORMAL_MAX_SLOPE = 0.25;
+// Texture fetches per fragment at the worst case — three maps on all four
+// identities. The budget's ceiling, not its typical: the exact zero-weight
+// skip means a fragment inside one biome takes three. One `sampler2DArray`
+// per map is what keeps the UNIT count at three, which is the number that
+// actually has a hard limit (16 on the software rasterizer the browser gate
+// runs, and the terrain program already binds five shadow maps).
+const BASE_FETCHES_MAX = 3 * GROUND_LAYERS.length;
+const BASE_TEX_UNIT_BUDGET = 16;
+// The base maps retire on the SAME law as every octave in this file — cycles
+// per pixel, `FADE_OCTAVE_CPP` — and the argument for it here is stronger than
+// it is for any of them, which is why it is the same array and not a new one.
+//
+// An octave retires because a reconstructed field cannot be filtered and an
+// unfiltered field past Nyquist reaches the image as its alias. A texture does
+// not have that problem: the mip chain filters it correctly at any footprint.
+// What a texture has instead is a LIMIT — its own mean — and the gain in
+// `uBaseAlbGain` is built so that mean is exactly `IDENTITIES[i].color`, which
+// is exactly what the flat path already delivers. So past the fade the three
+// fetches return an answer this shader already has written down, and skipping
+// them is not an approximation of the image: `mix(a, b, 0.0)` is `a`.
+//
+// It is also the cost decision, and it is stated as one rather than buried:
+// twelve fetches with anisotropic filtering is the most expensive thing in the
+// ground program, and the far field — where the answer is already known — is
+// most of the screen at any framing that is not pointed at the player's feet.
+// Measured on this box, that is the difference between a second browser tab
+// reaching the world and not.
+const FADE_BASE_CPP = FADE_OCTAVE_CPP;
+// The smallest tile any identity carries, for the early-out `GRAIN_SCALE_MIN`
+// and `TINT_SCALE_MIN` both carry: the weights are convex and normalized, so
+// this is a lower bound on the blended scale, and wherever the guard skips the
+// `smoothstep` inside would have returned exactly 1 and the fade exactly 0.
+const BASE_SCALE_MIN = Math.min(...BASE_SCALE);
+// Layer order is splat order is `IDENTITIES` order. Asserted rather than
+// commented, because the failure it prevents — sand's photograph delivered
+// under grass's weight — is a silent one that looks like a worldgen bug.
+if (GROUND_LAYERS.length !== IDENTITIES.length ||
+    GROUND_LAYERS.some((n, i) => n !== IDENTITIES[i].name)) {
+  throw new Error(
+    `base texture layers [${GROUND_LAYERS}] do not match identities ` +
+      `[${IDENTITIES.map((i) => i.name)}] — the splat weight and the layer index are the same number`,
+  );
+}
+
 // --- the shared field, in GLSL ---------------------------------------------
 // Hash-without-sine (Dave Hoskins' hash12): four hashes per noise sample,
 // three samples per pixel. No textures, no trig, no dependent texture reads.
@@ -573,8 +641,102 @@ uniform float uTint;
 uniform vec3 uIdentDev[4];
 uniform vec4 uTintScale;
 uniform vec2 uTintFade;
+uniform sampler2DArray uBaseAlb;
+uniform sampler2DArray uBaseNrm;
+uniform sampler2DArray uBaseRgh;
+uniform float uBase;
+uniform vec4 uBaseScale;
+uniform vec2 uBaseFade;
+uniform vec3 uBaseAlbGain[4];
+uniform vec4 uBaseRghGain;
 ${FIELD_GLSL}
 `;
+
+// One identity's base tap: three array fetches at that identity's own tile,
+// accumulated by its splat weight.
+//
+// Three things about the shape:
+//
+//   · **`texture2DGradEXT`, not `texture2D`.** three maps it to ES 3.00's
+//     `textureGrad`, and an explicit-gradient fetch is the one form that is
+//     DEFINED inside non-uniform control flow — which is what lets the four
+//     call sites sit behind a per-fragment weight test. The gradients are
+//     taken once, above the branches, from the same `gmXZ` every octave in
+//     this file is a function of.
+//   · **The normals are blended before they are divided, not after.** Each
+//     tap adds `n.xy` and the slope is taken once from the convex sum, so a
+//     single layer with a near-horizontal normal cannot dominate the blend
+//     through a divide that has already diverged. z is reconstructed rather
+//     than stored (`textures.js` ships RG), which is exact for a unit vector.
+//   · **The albedo gain is per identity and per channel.** It arrives as
+//     `IDENTITIES[i].color / measured mean of layer i`, so the photograph
+//     contributes its variance and the palette keeps its mean — `ART.md` §7's
+//     "hybrid, not replacement", and its "an off-band source is tinted, not
+//     tolerated", as one multiply.
+const BASE_TAP_GLSL = /* glsl */ `
+void gmBaseTap(float lyr, float w, vec3 ag, float rg, vec2 uv, vec2 dx, vec2 dy,
+               inout vec3 alb, inout vec2 nrm, inout float rgh) {
+  vec3 p = vec3(uv, lyr);
+  alb += texture2DGradEXT(uBaseAlb, p, dx, dy).rgb * ag * w;
+  nrm += (texture2DGradEXT(uBaseNrm, p, dx, dy).rg * 2.0 - 1.0) * w;
+  rgh += texture2DGradEXT(uBaseRgh, p, dx, dy).r * rg * w;
+}
+`;
+
+/**
+ * The four call sites, unrolled.
+ *
+ * The guard is `> 0.0` and it is EXACT, not a threshold: `gmW` is
+ * `max(splat + wobble, 0.0)` squared and renormalized, so an identity this
+ * metre does not contain arrives as exactly zero, and `0.0 * finite` is
+ * exactly `0.0`. Skipping it removes three fetches and changes no bit of the
+ * image — the same argument the micro octave's skip carries, applied to the
+ * only thing in this program that costs a memory round trip.
+ *
+ * Unrolled rather than looped because ES 3.00 requires a sampler array index
+ * to be a constant expression; the layer here is a `sampler2DArray` LAYER
+ * (a float coordinate, dynamic by design) but the four tiles, gains and
+ * weights are still four different swizzles, so the loop would have unrolled
+ * anyway.
+ */
+function baseGlsl() {
+  let body = "";
+  for (let i = 0; i < 4; i++) {
+    const c = "xyzw"[i];
+    body += /* glsl */ `
+        if (gmW.${c} > 0.0) gmBaseTap(${i}.0, gmW.${c}, uBaseAlbGain[${i}], uBaseRghGain.${c},
+            gmXZ * uBaseScale.${c}, gmBdx * uBaseScale.${c}, gmBdy * uBaseScale.${c},
+            gmBaseA, gmBaseN, gmBaseR);`;
+  }
+  return /* glsl */ `
+        vec3 gmBaseA = vec3(0.0);
+        vec2 gmBaseN = vec2(0.0);
+        float gmBaseR = 0.0;
+        float gmFadeBase = 0.0;
+        // Two derivatives, taken ABOVE the guard for the reason every other
+        // derivative in this shader is: GLSL leaves them undefined in
+        // non-uniform control flow, and these ones reach the image (they are
+        // the gradient the fetches filter on, not a footprint that only fades
+        // something already at zero).
+        vec2 gmBdx = dFdx(gmXZ);
+        vec2 gmBdy = dFdy(gmXZ);
+        if (gmFw * ${BASE_SCALE_MIN.toFixed(4)} < uBaseFade.y) {
+          float gmBScale = dot(uBaseScale, gmW);
+          gmFadeBase = 1.0 - smoothstep(uBaseFade.x, uBaseFade.y, gmFw * gmBScale);
+        }
+        if (gmFadeBase > 0.0) {${body}
+        }
+        // The blended tangent normal as a world-XZ SLOPE, which is the unit
+        // gmSurf below already speaks — so the photograph's relief and the
+        // procedural octaves' add as two terms of one gradient instead of two
+        // normals fighting over one shading normal. v maps to world +z, which
+        // is the frame textures.js' flipY pair was chosen to deliver.
+        vec2 gmBaseSlope = -gmBaseN / max(sqrt(max(1.0 - dot(gmBaseN, gmBaseN), 0.0)), 1e-3);
+        float gmBaseMag = length(gmBaseSlope);
+        float gmBaseAmt = uBase * gmFadeBase;
+        gmBaseSlope *= gmBaseAmt * min(gmBaseMag, ${BASE_NORMAL_MAX_SLOPE.toFixed(3)})
+                     / max(gmBaseMag, 1e-12);`;
+}
 
 // Grain's own sample: the shared field, folded toward its ridge by the
 // identity's own ridge amount, returned SIGNED (±0.5) so a soft stipple and a
@@ -625,9 +787,17 @@ float gmGrainTri(vec3 p, vec3 nrm, float s, float ridge) {
 // is a budget this gate asserts — so each variant carries exactly the taps it
 // uses and no more.
 const terrainFragPars = (grain) => {
-  if (grain === "on") return TERRAIN_FRAG_PARS_HEAD + GRAIN_GLSL + GRAIN_TRI_GLSL;
-  if (grain === "xz") return TERRAIN_FRAG_PARS_HEAD + GRAIN_GLSL;
-  return TERRAIN_FRAG_PARS_HEAD;
+  // The base tap is in EVERY variant, including `nofield`. That is what keeps
+  // `nofield`'s image equal to the `uSurface = 0` one — the property the whole
+  // cost sweep's meaning rests on — because the base maps are not part of the
+  // field and are not multiplied by `uSurface`: both frames carry them, so the
+  // difference between the two is still the field's instructions and nothing
+  // else. `uBase` is the handle that removes them, and like `uGrain` and
+  // `uTint` it is a probe input, not a quality setting.
+  const head = TERRAIN_FRAG_PARS_HEAD + BASE_TAP_GLSL;
+  if (grain === "on") return head + GRAIN_GLSL + GRAIN_TRI_GLSL;
+  if (grain === "xz") return head + GRAIN_GLSL;
+  return head;
 };
 
 // --- the cost variants (NOW.md item 1) --------------------------------------
@@ -889,6 +1059,17 @@ export function makeTerrainMaterial(variantName = "ship") {
     throw new Error(`unknown terrain material variant: ${variantName}`);
   }
   const variant = VARIANT_CONFIG[variantName];
+  // Loud, not quiet. A ground with no base maps is not a degraded mode worth
+  // shipping behind a fallback — it is the material this slice exists to
+  // replace, and a client that silently rendered it would be indistinguishable
+  // from one where the assets 404'd. `boot()` awaits `loadGroundTextures()`
+  // before anything reaches this line.
+  const base = groundTextures();
+  if (!base) {
+    throw new Error(
+      "makeTerrainMaterial: base textures not loaded — await loadGroundTextures() before building the ground",
+    );
+  }
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 1.0,
@@ -920,6 +1101,35 @@ export function makeTerrainMaterial(variantName = "ship") {
     uIdentDev: { value: IDENTITIES.map((i) => new THREE.Vector3(...i.tint.dev)) },
     uTintScale: { value: new THREE.Vector4(...IDENTITIES.map((i) => i.tint.scale)) },
     uTintFade: { value: new THREE.Vector2(...FADE_TINT_CPP) },
+    // The fifth pass, and the first thing in this material that was measured
+    // by a camera rather than derived. Ships at 1, same argument as `uGrain`
+    // and `uTint`: a probe input, not a quality setting.
+    uBase: { value: 1 },
+    uBaseAlb: { value: base.albedo },
+    uBaseNrm: { value: base.normal },
+    uBaseRgh: { value: base.rough },
+    uBaseScale: { value: new THREE.Vector4(...BASE_SCALE) },
+    uBaseFade: { value: new THREE.Vector2(...FADE_BASE_CPP) },
+    // color / measured mean, per channel per identity — the gain that makes
+    // the palette entry the delivered MEAN and the photograph the variance.
+    uBaseAlbGain: {
+      value: IDENTITIES.map(
+        (id, i) =>
+          new THREE.Vector3(
+            id.color[0] / Math.max(base.meanLinear[i][0], 1e-4),
+            id.color[1] / Math.max(base.meanLinear[i][1], 1e-4),
+            id.color[2] / Math.max(base.meanLinear[i][2], 1e-4),
+          ),
+      ),
+    },
+    // …and the same trick on roughness, so `uIdentRough`'s four authored
+    // answers-to-light stay each layer's mean and what the map adds is where
+    // that layer is polished and where it is matte.
+    uBaseRghGain: {
+      value: new THREE.Vector4(
+        ...IDENTITIES.map((id, i) => id.roughness / Math.max(base.meanRough[i], 1e-4)),
+      ),
+    },
   };
 
   material.onBeforeCompile = (shader) => {
@@ -979,6 +1189,14 @@ ${fieldGlsl(variant.field)}
                       + uIdentColor[2] * gmW.z + uIdentColor[3] * gmW.w;
         float gmRough = dot(uIdentRough, gmW);
         float gmBump = dot(uIdentBump, gmW);
+${baseGlsl()}
+        // The base lands HERE — after the identity is decided and before
+        // anything modifies it — because it IS the identity's surface, not a
+        // layer over one. At uBase = 0 both mixes return the authored constant
+        // and the ground is bit-for-bit the material that shipped before this
+        // slice, which is what makes the toggle an instrument.
+        gmAlbedo = mix(gmAlbedo, gmBaseA, gmBaseAmt);
+        gmRough = mix(gmRough, gmBaseR, gmBaseAmt);
 ${tintGlsl(variant.tint)}
         // The tint is part of the IDENTITY, so it lands before the causal
         // modifiers below and not after them: wet sand darkens the sand this
@@ -1014,7 +1232,13 @@ ${grainGlsl(variant.grain)}
           + (gmMicro - 0.5) * 2.0 * uOct.y * gmFadeMicro)
           + gmGrain * uGrainAmp.x);
 
-        diffuseColor.rgb *= max(gmAlbedo, 0.0);
+        // Clamped at 1.0 as well as at 0.0, which it was not before the base
+        // maps: an albedo is a reflectance and cannot exceed unity, and a
+        // photograph's bright grains delivered through a mean-preserving gain
+        // reach for it in a way four multiplicative octaves around an authored
+        // constant never did. Physical, not a taste — and it bounds the one
+        // quantity in this shader whose upper end is now set by a JPEG.
+        diffuseColor.rgb *= clamp(gmAlbedo, 0.0, 1.0);
         `,
       )
       .replace(
@@ -1082,6 +1306,13 @@ ${grainGlsl(variant.grain)}
           float gmInvDet = abs(gmDet) > 1e-14 ? 1.0 / gmDet : 0.0;
           vec2 gmSurf = vec2(gmHx * gmDy.y - gmHy * gmDx.y,
                              gmHy * gmDx.x - gmHx * gmDy.x) * gmInvDet;
+          // …plus the photograph's own slope, already bounded by
+          // BASE_NORMAL_MAX_SLOPE and already zero at uBase = 0. It is added
+          // to the gradient rather than blended into the normal because both
+          // are the same quantity in the same frame — dgmH/dx and dgmH/dz in
+          // metres per metre — so the sum is the gradient of the sum, and the
+          // bound below then holds for the pair the way it held for the one.
+          gmSurf += gmBaseSlope;
           // Bounded (wall 4): a screen derivative over a screen footprint has
           // no upper bound of its own. The cap is the sum of what the three
           // octaves that reach gmH (meso + micro + grain) ask for on the
@@ -1160,6 +1391,14 @@ ${grainGlsl(variant.grain)}
     // about.
     grainProjection: projectionName(variant.grain),
     grainTaps: grainTaps(variant.grain),
+    // The third counted axis, and the new one. Texture fetches per shaded
+    // fragment: three maps x four identities, an UPPER bound the way the noise
+    // count is one, because the exact `gmW > 0.0` skip means a fragment inside
+    // one biome pays three. Counted and not timed, deliberately — `NOW.md`
+    // item 9 records six cost-sweep runs on this box that came back the wrong
+    // sign five times, and a seventh reading is not a tiebreak.
+    baseTexFetches: BASE_FETCHES_MAX,
+    baseTexUnits: 3,
   };
   return material;
 }
@@ -1864,5 +2103,42 @@ export function materialFacts() {
     grainTaps: grainTaps(VARIANT_CONFIG.ship.grain),
     // …and what the partner it is measured against is sampled on.
     flatGrainProjection: projectionName(VARIANT_CONFIG[PROJECTION_VARIANT].grain),
+    // The fifth pass (ART.md §7). `loaded` is false rather than absent when
+    // the maps did not arrive, so the gate asserts a fact instead of failing
+    // to find one — the difference between a wall and a wall that passes by
+    // matching nothing.
+    base: baseFacts(),
+  };
+}
+
+/**
+ * What the base maps are and what they deliver, for the gate to assert.
+ *
+ * `albedoGain` is the whole hybrid policy as four numbers: it is
+ * `IDENTITIES[i].color / measured mean`, so a gain far from 1 is a source
+ * sitting off `ART.md` §3's band being pulled onto it — `MANIFEST.md` predicts
+ * exactly that for `rock`, and this is where the prediction becomes checkable.
+ */
+export function baseFacts() {
+  const tex = groundTextures();
+  if (!tex) {
+    return { loaded: false, layers: GROUND_LAYERS.slice(), scale: BASE_SCALE };
+  }
+  return {
+    loaded: true,
+    ...tex.facts,
+    scale: BASE_SCALE,
+    // Read off IDENTITIES the same way the uniform is, so a fact and a uniform
+    // cannot disagree about what the shader was handed.
+    albedoGain: IDENTITIES.map((id, i) =>
+      id.color.map((c, ch) => c / Math.max(tex.meanLinear[i][ch], 1e-4)),
+    ),
+    roughGain: IDENTITIES.map((id, i) => id.roughness / Math.max(tex.meanRough[i], 1e-4)),
+    normalMaxSlope: BASE_NORMAL_MAX_SLOPE,
+    fadeCpp: FADE_BASE_CPP,
+    fadeM: FADE_BASE_CPP.map((cpp) => BASE_SCALE.map((s) => cpp / s)),
+    fetchesMax: BASE_FETCHES_MAX,
+    units: 3,
+    unitBudget: BASE_TEX_UNIT_BUDGET,
   };
 }

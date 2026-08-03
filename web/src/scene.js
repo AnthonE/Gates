@@ -1173,12 +1173,32 @@ export class GameScene {
    * camera, which surfaceProbe does not, so the sky dome rides along and
    * everything is restored at the end.
    *
+   * **The base maps are held OFF for both legs** (ART.md §7), and that is a
+   * statement about what this probe is for rather than a concession to it.
+   * Every number here is a RATIO of one state to another, so whatever both
+   * states share sits in the denominator. Before the base maps that shared
+   * part was the mesh and the light rig; now it would be a photograph
+   * delivering ~10.7 luma/px of neighbour contrast, against which grain's own
+   * ±0.2 albedo swing scores ×1.02 — not because grain stopped working but
+   * because the question "how much did this octave add to what was already
+   * there" stops being answerable the moment something much larger is also
+   * there. Holding the base off asks the question this probe has always
+   * asked, of the same octave, against the same baseline, at the same floors.
+   *
+   * What the base maps DO deliver is not measured by a ratio at all and is not
+   * this probe's job: 15h measures it as an absolute, in `ART.md` §3's own
+   * units, on the shipped frame. That division — ratio for the octave that
+   * varies a surface, absolute for the surface itself — is 15g's lesson about
+   * props, applied to the ground before it had to be learned twice.
+   *
    * Allocates and renders 3N frames; never call it from the RAF path.
    */
   contrastProbe(views, uniformName, minDelta, minChroma = 0) {
     const u = this._terrainUniforms;
     if (!u || !u[uniformName]) return null;
     const knob = u[uniformName];
+    const keepBase = u.uBase.value;
+    u.uBase.value = 0;
     const gl = this.renderer.getContext();
     const w = gl.drawingBufferWidth;
     const h = gl.drawingBufferHeight;
@@ -1340,11 +1360,15 @@ export class GameScene {
       });
     }
     knob.value = keepVal;
+    u.uBase.value = keepBase;
     cam.quaternion.copy(keepQ);
     cam.position.copy(keepPos);
     this.sky.position.copy(keepPos);
     this.renderer.render(this.scene, cam);
-    return { width: w, height: h, uniform: uniformName, samples };
+    // `baseHeld` is published so the gate prints the state its numbers were
+    // taken in rather than the reader having to know. A probe that quietly
+    // changed what it measures is worse than one that changed it loudly.
+    return { width: w, height: h, uniform: uniformName, baseHeld: 0, samples };
   }
 
   /**
@@ -1424,6 +1448,19 @@ export class GameScene {
     if (!hooks || !hooks.projection) return null;
     const shipped = this._terrainMat;
     if (!shipped) return null;
+    // The base maps are held off across every leg, `contrastProbe`'s argument
+    // verbatim: this probe's whole output is a ratio of one grain projection's
+    // difference image to another's, and a photograph common to both states
+    // sits in both numerator and denominator without being either projection.
+    //
+    // It is held off PER PROGRAM, below, and not once on the shipped material.
+    // `flatgrain` is a separately compiled material with its own uniform
+    // object, so zeroing the shipped one alone renders the triplanar leg
+    // without the photograph and the xz leg with it — the two legs then differ
+    // by a texture rather than by a projection, and the flat control that
+    // exists to prove they are the same arithmetic on level ground goes red
+    // saying so. It did, on the way here, at 65.8% apart against a 15%
+    // ceiling: the gate caught the probe, which is what a control is for.
     const gl = this.renderer.getContext();
     const w = gl.drawingBufferWidth;
     const h = gl.drawingBufferHeight;
@@ -1454,6 +1491,8 @@ export class GameScene {
       hooks.use(material);
       const u = material.userData.uniforms;
       const keepGrain = u.uGrain.value;
+      const keepBase = u.uBase.value;
+      u.uBase.value = 0;
       // Albedo only, for the duration (see the note above): the bump's screen
       // anisotropy belongs to the sun, not to the projection.
       const keepAmp = u.uGrainAmp.value.clone();
@@ -1578,13 +1617,14 @@ export class GameScene {
       }
       u.uGrain.value = keepGrain;
       u.uGrainAmp.value.copy(keepAmp);
+      u.uBase.value = keepBase;
     }
     hooks.use(shipped);
     cam.quaternion.copy(keepQ);
     cam.position.copy(keepPos);
     this.sky.position.copy(keepPos);
     this.renderer.render(this.scene, cam);
-    return { width: w, height: h, minDelta, samples };
+    return { width: w, height: h, minDelta, baseHeld: 0, samples };
   }
 
   /**
@@ -2102,6 +2142,136 @@ export class GameScene {
     u.uSurface.value = 1;
     cam.position.copy(keepPos);
     this.sky.position.copy(cam.position);
+    cam.quaternion.copy(keepQ);
+    this.renderer.render(this.scene, cam);
+    return { width: w, height: h, samples };
+  }
+
+  /**
+   * Dev-only: what does the PHOTOGRAPH deliver that the field could not?
+   *
+   * `ART.md` §3 measured the reference set's near-ground neighbour contrast at
+   * **6.3 luma per pixel** and ours at **0.26**, and eight passes of
+   * procedural octaves did not move the second number. So the question this
+   * probe asks is deliberately not the one every probe above it asks. Those
+   * are ratios — a term against itself, or against what it was laid on — and a
+   * ratio cannot tell 0.26 from 6.3. This one is an ABSOLUTE, in the same
+   * 8-bit luma per pixel step `ART.md` §3 stated its two numbers in, taken on
+   * the shipped frame rather than on a difference of two.
+   *
+   * `uBase` toggles the base maps off — both mixes return the authored
+   * constant, so the flat leg is bit-for-bit the ground that shipped before
+   * this slice — and that gives three things at once:
+   *
+   *   · **the mask.** Pixels the base moved: a photograph differs from a flat
+   *     swatch nearly everywhere it is laid, so this is the ground, and the
+   *     mask fraction floor is what stops it from quietly becoming a
+   *     cherry-picked subset of it.
+   *   · **the absolute.** Mean neighbour |ΔL| inside the mask, in each state.
+   *     `contrastShip` is the number `ART.md` §3's 6.3 is the target for;
+   *     `contrastFlat` is what the octaves alone were delivering at this
+   *     framing, so the pair is also the honest before/after.
+   *   · **the two-sidedness.** A photograph brightens some pixels and darkens
+   *     others. A gain that merely lifted the ground — the single most
+   *     plausible way to move a contrast number without adding detail — moves
+   *     it one way, and assertion 15 learned on the ground exactly how far a
+   *     one-way change can sail past a fraction floor.
+   *
+   * The control leg is the same argument the alias probe's carries: two
+   * renders of one state, so a statistic that moved because this box's
+   * rasterizer is not deterministic is visible as itself.
+   *
+   * Allocates and renders 3N frames; never call it from the RAF path.
+   */
+  baseProbe(views, minDelta) {
+    const u = this._terrainUniforms;
+    if (!u) return null;
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const ship = new Uint8Array(w * h * 4);
+    const control = new Uint8Array(w * h * 4);
+    const flat = new Uint8Array(w * h * 4);
+    const mask = new Uint8Array(w * h);
+    const luma = (buf, p) => (buf[p] * 2 + buf[p + 1] * 5 + buf[p + 2]) >> 3;
+    const cam = this.camera;
+    const keepQ = cam.quaternion.clone();
+    const pos = cam.position;
+    const samples = [];
+
+    // Mean |ΔL| between neighbouring pixels, both inside the mask — the same
+    // statistic `propProbe` uses, in the same units, so the two are readable
+    // against each other.
+    const contrast = (buf) => {
+      let sum = 0;
+      let n = 0;
+      for (let y = 0; y < h; y++) {
+        const row = y * w;
+        for (let x = 0; x < w; x++) {
+          const i = row + x;
+          if (!mask[i]) continue;
+          const l = luma(buf, i * 4);
+          if (x + 1 < w && mask[i + 1]) {
+            sum += Math.abs(luma(buf, (i + 1) * 4) - l);
+            n++;
+          }
+          if (y + 1 < h && mask[i + w]) {
+            sum += Math.abs(luma(buf, (i + w) * 4) - l);
+            n++;
+          }
+        }
+      }
+      return n > 0 ? sum / n : 0;
+    };
+
+    for (const view of views) {
+      const cp = Math.cos(view.pitch);
+      this._dir.set(Math.sin(view.yaw) * cp, Math.sin(view.pitch), Math.cos(view.yaw) * cp);
+      this._target.copy(pos).add(this._dir);
+      cam.lookAt(this._target);
+
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, ship);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, control);
+      u.uBase.value = 0;
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, flat);
+      u.uBase.value = 1;
+
+      let masked = 0;
+      let noise = 0;
+      let up = 0;
+      let down = 0;
+      for (let i = 0; i < w * h; i++) {
+        const p = i * 4;
+        const a = luma(ship, p);
+        if (a !== luma(control, p)) noise++;
+        const d = a - luma(flat, p);
+        const m = Math.abs(d) > minDelta ? 1 : 0;
+        mask[i] = m;
+        if (m) {
+          masked++;
+          if (d > 0) up++;
+          else down++;
+        }
+      }
+      const cShip = contrast(ship);
+      const cFlat = contrast(flat);
+      samples.push({
+        label: view.label,
+        masked,
+        maskFraction: masked / (w * h),
+        noise,
+        upFraction: up / (w * h),
+        downFraction: down / (w * h),
+        contrastShip: cShip,
+        contrastFlat: cFlat,
+        contrastRatio: cFlat > 1e-6 ? cShip / cFlat : 0,
+      });
+    }
+
+    u.uBase.value = 1;
     cam.quaternion.copy(keepQ);
     this.renderer.render(this.scene, cam);
     return { width: w, height: h, samples };
@@ -2642,6 +2812,10 @@ export class GameScene {
         // The fourth pass's handle, read off the live uniform for the same
         // reason: it ships armed or the ground goes back to four flat hues.
         tint: this._terrainUniforms ? this._terrainUniforms.uTint.value : null,
+        // The fifth pass's handle (ART.md §7), live for the same reason: it
+        // ships armed or the ground goes back to a noise field over four flat
+        // hues, and a probe that forgot to put it back is a gate failure.
+        base: this._terrainUniforms ? this._terrainUniforms.uBase.value : null,
         roughness: m ? m.roughness : null,
         // What the shipped ground program costs per fragment and how big its
         // source is — counted, so quotable anywhere (the fill times next to
