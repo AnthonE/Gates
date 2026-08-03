@@ -68,6 +68,27 @@ mult_uncommon = 4
 mult_rare = 8
 mult_very_rare = 12
 
+# The survival clock (DESIGN §2: "hunger/thirst minimal — a slow health
+# drain past a timer, food to reset it"). Two meters that only ever fall,
+# and food that puts them back; a meter at zero costs hp per minute, and
+# both empty stack. Minutes here, ticks in the sim — `bake_survival` does
+# the conversion once so the sim never multiplies a clock.
+#
+# Proposed defaults, DECISIONS.md §open "survival clock v0". The shape,
+# not the exact numbers, is what is being claimed: water is the shorter
+# fuse and the harsher penalty (thirst kills faster than hunger in every
+# game in this tradition and in life), and an untended fresh spawn has
+# ~40 minutes before the first point of damage and dies around the
+# 60-minute mark — long enough that gathering and building are still the
+# session, short enough that standing still is never free.
+[survival]
+max_food = 100
+max_water = 100
+food_minutes_to_empty = 60
+water_minutes_to_empty = 40
+starve_hp_per_min = 3
+dehydrate_hp_per_min = 5
+
 # The starter base the raid ratio prices (CONTENT §3: "2×1 stone, door,
 # bag, hearth, box"): 2 foundations, 5 walls, 1 doorway, 2 roofs, plus
 # the deployed kit.

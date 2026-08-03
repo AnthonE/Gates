@@ -8,8 +8,9 @@ use sim_core::bots::bot_frame;
 use sim_core::build::BuildContent;
 use sim_core::craft::CraftContent;
 use sim_core::gather::GatherContent;
-use sim_core::limits::STATE_HASH_INTERVAL;
+use sim_core::limits::{STATE_HASH_INTERVAL, TICK_HZ};
 use sim_core::rng::Pcg32;
+use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World};
 
 const SEED: u64 = 0x0047_4154_4553; // "GATES"
@@ -17,15 +18,20 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-/// Regenerated this commit: the death backpack landed, and `state_hash`
-/// grew the ground-container store — its length, every standing bag, and
-/// the id counter. **This script arms no combat**, so it drops no bags
-/// and the store it hashes is empty; what moved the number is the two
-/// new zero-length fields entering the digest, not any behaviour in this
-/// script. The backpack's own determinism is covered where the fight is:
-/// `probe_combat` (`test_parity_wasm`, native and wasm byte-identical)
-/// brawls three bots and has them loot each other every tick.
-const GOLDEN_FINAL_HASH: u64 = 0x5671_7CB1_989B_98A4;
+///
+/// Regenerated this commit: **the survival clock now runs on this
+/// surface.** The previous regeneration, one commit earlier, was the same
+/// module's fields entering `state_hash` while the script left them all
+/// zero — content parsed but never installed, so `survival::step` returned
+/// on its first line and the hash moved only because the digest got wider.
+/// That is the coverage this replaces: the script installs the clock, 64
+/// bodies drain every tick, two of them eat, and the number below is now a
+/// function of the drain arithmetic rather than of its absence. Change a
+/// numerator, a denominator or the drain→hurt→heal order and this reddens.
+///
+/// The regeneration before those two, for a structural reason like the
+/// first, was the death backpack's two zero-length store fields.
+const GOLDEN_FINAL_HASH: u64 = 0x6C79_767B_F15A_AC1E;
 
 /// Stand a kitted bot on ground that will hold a foundation.
 ///
@@ -75,12 +81,31 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     world.craft = CraftContent::probe_fixture();
     world.build = BuildContent::probe_fixture();
     world.deploy = sim_core::deploy::DeployContent::probe_fixture();
+    // The clock, on the replayed surface: meters granted at join, drained
+    // every tick by the rational accumulator, and eaten back up by the
+    // scripted consumes below — so a change to `survival::step`'s
+    // arithmetic moves the pinned hash instead of passing unnoticed.
+    //
+    // The spans are widened off the fixture's seconds, and the reason is
+    // this script rather than the ring: at 10 s / 8 s every body on the
+    // island empties inside the first 240 ticks and starts dying of it
+    // around tick 440, and a body that dies wakes up somewhere else —
+    // which would quietly move the builder, the hearth's feeder and the
+    // door's owner off the arc this script exists to pin. Wider than the
+    // 900 ticks it runs, nobody empties, nobody starves, and every body
+    // the script addresses is still standing where the script left it.
+    // The meter floor at the end is what holds that claim.
+    let mut survival = SurvivalContent::probe_fixture();
+    survival.food_span_ticks = 90 * TICK_HZ;
+    survival.water_span_ticks = 72 * TICK_HZ;
+    world.survival = survival;
     let mut rng = Pcg32::new(seed, 11);
     let mut yaws = [0u16; 64];
     let mut joined: u32 = 0;
     let mut hashes = Vec::new();
     let (mut placed, mut deployed, mut decayed, mut doors) = (0u32, 0u32, 0u32, 0u32);
     let (mut locked_seen, mut unlocked_seen, mut upgraded_seen) = (false, false, false);
+    let (mut eaten, mut eat_refused) = (0u32, 0u32);
     let mut hearth_cell = (0u16, 0u16);
 
     for t in 0..TICKS {
@@ -179,6 +204,20 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                 });
+            }
+            // The eat verb rides the log too, on two of the eight bots the
+            // kit at t=149 reaches and neither of the two the hearth arc
+            // addresses: id 2 eats slot 20, which that kit fills with
+            // fixture item 0 — the one item the survival fixture makes food
+            // — and id 4 reaches for slot 21, which it fills with item 1,
+            // which is not. The landed consume and the announced refusal,
+            // both on the replayed surface; before t=149 both slots are
+            // empty, so the early ticks ride the refusal too.
+            if id == 2 && (t + id as u64).is_multiple_of(41) {
+                cmds.push(Command::Consume { id, slot: 20 });
+            }
+            if id == 4 && (t + id as u64).is_multiple_of(43) {
+                cmds.push(Command::Consume { id, slot: 21 });
             }
         }
         // A scripted hearth: grant a kit to the first eight bots (a
@@ -338,6 +377,8 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 sim_core::world::EV_PIECE_REMOVED | sim_core::world::EV_DEPLOY_REMOVED => {
                     decayed += 1
                 }
+                sim_core::world::EV_CONSUMED => eaten += 1,
+                sim_core::world::EV_CONSUME_REFUSED => eat_refused += 1,
                 sim_core::world::EV_DOOR => {
                     doors += 1;
                     if e.b & 2 == 0 {
@@ -390,6 +431,41 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         locked_seen && unlocked_seen,
         "the scripted door never changed hands both ways — the lock verb fell out \
          of the replay surface"
+    );
+    // The clock's own three claims on this surface, each read off the thing
+    // it moves. Content installed and never exercised would hash the same
+    // as content that ran, which is the whole failure this block forecloses.
+    let witness = &world.players[9]; // joins at t=81, eats nothing, is addressed by no scripted arm
+                                     // Strictly inside the ceiling at both ends, and both ends matter: at the
+                                     // ceiling means nothing drained, at zero means the meter was never
+                                     // granted — which is exactly the state inert content leaves, and the
+                                     // state the previous commit's script hashed while claiming coverage.
+    assert!(
+        witness.food > 0
+            && witness.food < survival.max_food
+            && witness.water > 0
+            && witness.water < survival.max_water,
+        "the drain witness reads food {} water {} against a ceiling of {} / {} \
+         — a meter at its ceiling never drained and a meter at zero was never \
+         granted; either way survival::step is not on the replay surface",
+        witness.food,
+        witness.water,
+        survival.max_food,
+        survival.max_water
+    );
+    assert!(
+        world
+            .players
+            .iter()
+            .all(|p| !p.active || (p.food > 0 && p.water > 0)),
+        "a body ran its meters dry inside the script — the widened spans above \
+         no longer hold, and a starvation respawn is about to move a body the \
+         build arc depends on"
+    );
+    assert!(
+        eaten >= 8 && eat_refused >= 8,
+        "the script landed {eaten} consumes and {eat_refused} refusals — the eat \
+         verb is falling out of the replay surface"
     );
     (hashes, world.state_hash())
 }

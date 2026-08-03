@@ -18,6 +18,7 @@ use crate::limits::{
 };
 use crate::movement::{self, Body};
 use crate::rng::cell_hash;
+use crate::survival::{self, SurvivalContent};
 use crate::terrain::{self, ScatterTable};
 use crate::yaw_lut::yaw_dir;
 use xxhash_rust::xxh3::Xxh3;
@@ -121,6 +122,18 @@ pub const EV_BAG_REMOVED: u8 = 19;
 /// the wire (build.rs otherwise keeps hp sim-only). Destruction still
 /// arrives as EV_PIECE_REMOVED / EV_DEPLOY_REMOVED; this never carries it.
 pub const EV_STRUCT_HIT: u8 = 20;
+/// EV_VITALS: a = player id, b = food << 16 | water, c = max food << 16 |
+/// max water. Own-fact and absolute, for exactly `EV_HEALTH`'s reason — a
+/// client that misses one hears the whole truth from the next, so no
+/// client-side meter can drift away from the sim's (survival.rs).
+pub const EV_VITALS: u8 = 21;
+/// EV_CONSUMED: a = player id, b = item index << 16 | inventory slot. The
+/// eat acknowledgement — own-fact, and the client's cue to play the ramp.
+pub const EV_CONSUMED: u8 = 22;
+/// EV_CONSUME_REFUSED: a = player id, b = `survival::REFUSE_C_*`. A button
+/// that eats the input and says nothing is indistinguishable from a broken
+/// one, so every refusal is announced (craft/build/deploy's posture).
+pub const EV_CONSUME_REFUSED: u8 = 23;
 
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
@@ -207,10 +220,32 @@ pub struct Player {
     /// Hit points. A join grants `CombatContent::player_hp`, so inert
     /// content leaves this 0 and nothing can be killed (combat.rs).
     pub hp: u16,
+    /// The hp this body was granted at join — the ceiling a heal clamps to
+    /// (survival.rs). Carried on the player rather than read back out of
+    /// `CombatContent` so a heal is correct without the survival module
+    /// having to learn the combat table.
+    pub hp_max: u16,
     /// How many times this player has died. Sim state, and not only a
     /// counter: it walks the spawn ring's candidate sequence forward, so
     /// two deaths are two different beaches (`spawn_pos_n`).
     pub deaths: u16,
+    /// The survival clock (survival.rs). Food and water only ever fall;
+    /// eating puts them back. `*_acc` are the rational accumulators that
+    /// make each rate exact — sim state, because a replay that resumed
+    /// mid-span with a zeroed remainder would drift.
+    pub food: u16,
+    pub water: u16,
+    pub food_acc: u32,
+    pub water_acc: u32,
+    /// Starvation damage accumulator, cleared the moment either meter is
+    /// refilled — a partial minute is forgiven, never banked.
+    pub hurt_acc: u32,
+    /// The in-flight heal from a consumed row: hp still owed, the total the
+    /// rate is computed from, the span in ticks, and the accumulator.
+    pub heal_rem: u16,
+    pub heal_total: u16,
+    pub heal_span: u32,
+    pub heal_acc: u32,
 }
 
 impl Default for Player {
@@ -227,7 +262,17 @@ impl Default for Player {
             jobs: [CraftJob::default(); CRAFT_QUEUE],
             craft_done_at: 0,
             hp: 0,
+            hp_max: 0,
             deaths: 0,
+            food: 0,
+            water: 0,
+            food_acc: 0,
+            water_acc: 0,
+            hurt_acc: 0,
+            heal_rem: 0,
+            heal_total: 0,
+            heal_span: 0,
+            heal_acc: 0,
         }
     }
 }
@@ -323,6 +368,13 @@ pub enum Command {
     Loot {
         id: u32,
     },
+    /// Eat what is in inventory slot `slot` (survival.rs). The slot is the
+    /// sender's claim and the sim is the verdict: a forged index, an empty
+    /// hand and a stack of wood all land on the same announced refusal.
+    Consume {
+        id: u32,
+        slot: u8,
+    },
 }
 
 pub struct World {
@@ -348,6 +400,10 @@ pub struct World {
     /// Baked backpack despawn ladder (backpack.rs). Construction input
     /// too; the inert default means death destroys instead of dropping.
     pub backpack: BackpackContent,
+    /// Baked survival meters + consumable rows (survival.rs). Construction
+    /// input too; the inert default leaves the world without a clock, which
+    /// is the game that existed before the module.
+    pub survival: SurvivalContent,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
@@ -392,6 +448,7 @@ impl World {
             deploy: DeployContent::EMPTY,
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
+            survival: SurvivalContent::EMPTY,
             pieces: Pieces::new(),
             deploys: Deploys::new(),
             backpacks: Box::new(Backpacks::new()),
@@ -560,10 +617,14 @@ impl World {
             body: Body::at(self.seed, x, z),
             frame,
             hp,
+            hp_max: hp,
             deaths,
             ..Player::default()
         };
+        // A player who starved does not respawn already starving.
+        survival::grant(&self.survival, &mut self.players[slot]);
         self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
+        survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
     }
 
     fn apply(&mut self, cmd: &Command) {
@@ -580,15 +641,23 @@ impl World {
                         active: true,
                         body: Body::at(self.seed, x, z),
                         hp,
+                        hp_max: hp,
                         ..Player::default()
                     };
+                    survival::grant(&self.survival, &mut self.players[slot]);
                     // Say it at the door. Health is only ever announced
                     // when it changes, so without this a fresh player has
                     // no vitals until the first thing that hurts them —
-                    // which is the one moment a bar is no use.
+                    // which is the one moment a bar is no use. The meters
+                    // are announced at the door for the same reason.
                     if hp > 0 {
                         self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
                     }
+                    survival::announce_vitals(
+                        &self.survival,
+                        &self.players[slot],
+                        &mut self.events,
+                    );
                 }
                 // No free slot: refuse silently here; the accept path
                 // already hard-caps at the shard limit (limits.rs).
@@ -764,6 +833,16 @@ impl World {
                     );
                 }
             }
+            Command::Consume { id, slot: inv } => {
+                if let Some(slot) = self.slot_of(id) {
+                    survival::consume(
+                        &self.survival,
+                        inv as usize,
+                        &mut self.players[slot],
+                        &mut self.events,
+                    );
+                }
+            }
             Command::Loot { id } => {
                 if let Some(slot) = self.slot_of(id) {
                     self.backpacks.loot_nearest(
@@ -793,6 +872,16 @@ impl World {
         // nothing standing absorbed it.
         for i in 0..MAX_PLAYERS {
             if !self.players[i].active {
+                continue;
+            }
+            // The clock runs before the arm. A body that starves this tick
+            // does not also get to swing on it — and running the clock
+            // first is what makes the respawn below the tick's last word
+            // about this slot, exactly as a combat death is.
+            if survival::step(&self.survival, &mut self.players[i], &mut self.events)
+                == survival::Step::Died
+            {
+                self.respawn(i);
                 continue;
             }
             let frame = self.players[i].frame;
@@ -888,6 +977,24 @@ impl World {
             buf[44..46].copy_from_slice(&p.hp.to_le_bytes());
             buf[46..48].copy_from_slice(&p.deaths.to_le_bytes());
             h.update(&buf);
+            // The survival clock, in its own buffer rather than widening
+            // the one above — every byte of it is sim state (the
+            // accumulators included: a replay resuming mid-span with a
+            // zeroed remainder would drift, which is wall 5's whole point).
+            let mut sv = [0u8; 24];
+            sv[0..2].copy_from_slice(&p.hp_max.to_le_bytes());
+            sv[2..4].copy_from_slice(&p.food.to_le_bytes());
+            sv[4..6].copy_from_slice(&p.water.to_le_bytes());
+            sv[6..10].copy_from_slice(&p.food_acc.to_le_bytes());
+            sv[10..14].copy_from_slice(&p.water_acc.to_le_bytes());
+            sv[14..18].copy_from_slice(&p.hurt_acc.to_le_bytes());
+            sv[18..20].copy_from_slice(&p.heal_rem.to_le_bytes());
+            sv[20..22].copy_from_slice(&p.heal_total.to_le_bytes());
+            h.update(&sv);
+            let mut hb = [0u8; 8];
+            hb[0..4].copy_from_slice(&p.heal_span.to_le_bytes());
+            hb[4..8].copy_from_slice(&p.heal_acc.to_le_bytes());
+            h.update(&hb);
             for s in p.inv.iter() {
                 let mut sb = [0u8; 4];
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());

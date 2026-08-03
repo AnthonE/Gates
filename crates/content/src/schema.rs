@@ -330,6 +330,25 @@ pub struct StarterBase {
     pub items: Vec<Stack>,
 }
 
+/// The survival clock (`content/balance.toml` `[survival]`; DESIGN.md §2
+/// "hunger/thirst minimal — a slow health drain past a timer, food to reset
+/// it"). Minutes and per-minute rates, because those are the units the
+/// design speaks; `bake_survival` converts them to ticks once so the sim
+/// never multiplies a clock. Proposed defaults, DECISIONS.md §open
+/// ("survival clock v0").
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Survival {
+    pub max_food: u32,
+    pub max_water: u32,
+    /// Minutes from a full meter to an empty one, at rest.
+    pub food_minutes_to_empty: u32,
+    pub water_minutes_to_empty: u32,
+    /// Hit points a minute while the matching meter reads zero.
+    pub starve_hp_per_min: u32,
+    pub dehydrate_hp_per_min: u32,
+}
+
 /// The declared bands + globals the anchors compute against
 /// (`content/balance.toml`; DECISIONS.md §open "balance bands").
 #[derive(Debug, Clone, Deserialize)]
@@ -340,4 +359,5 @@ pub struct Balance {
     pub banded_nodes: Vec<NodeArchetype>,
     pub starter_base: StarterBase,
     pub backpack: Backpack,
+    pub survival: Survival,
 }

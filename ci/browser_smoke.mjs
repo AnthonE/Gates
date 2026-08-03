@@ -1148,43 +1148,82 @@ const seenA = await waitForRemote(A, B.playerId); // A sees B
 const seenB = await waitForRemote(B, A.playerId); // B sees A
 console.log(`  mutual AOI: A sees ${B.playerId}, B sees ${A.playerId}`);
 
-// --- vitals: the bar the shard states at the door --------------------------
-// Assertion 2a — a fresh spawn's health reaches the DOM, and the number it
-// shows is the one in `content/balance.toml`, read here rather than typed:
-// the whole chain content → bake → sim → wire v11 → wasm → HUD is what this
-// asserts, and a gate that hardcoded 100 would keep passing after a balance
-// pass moved it. Observable state, polled — never an elapsed-ms bar.
+// --- vitals: the three bars the shard states at the door -------------------
+// Assertion 2a — a fresh spawn's health AND its two survival meters reach the
+// DOM, and every number they show is the one in `content/balance.toml`, read
+// here rather than typed: the whole chain content → bake → sim → wire v14 →
+// wasm → HUD is what this asserts, and a gate that hardcoded 100 would keep
+// passing after a balance pass moved it. Observable state, polled — never an
+// elapsed-ms bar.
+//
+// Three rows now, keyed off the fill class rather than row order, so a HUD
+// that reordered the stack still has to put the right number in the right
+// meter. The clock's spans are tens of minutes, so a fresh spawn's meters are
+// still at their ceilings when this runs — which is the point: what is being
+// asserted is that the sim GRANTED and ANNOUNCED them at the door, not that
+// they drain (the drain is exact integer arithmetic and is gated as such in
+// sim-core, where it does not need a browser or a clock).
 {
   const balance = fs.readFileSync(path.join(root, "content/balance.toml"), "utf8");
-  const wantHp = Number(/^player_hp\s*=\s*(\d+)/m.exec(balance)?.[1]);
-  if (!Number.isFinite(wantHp) || wantHp <= 0) {
-    fail("content/balance.toml states no player_hp — the vitals assertion cannot run");
-  }
+  const num = (re, what) => {
+    const v = Number(re.exec(balance)?.[1]);
+    if (!Number.isFinite(v) || v <= 0) {
+      fail(`content/balance.toml states no ${what} — the vitals assertion cannot run`);
+    }
+    return v;
+  };
+  const want = {
+    health: num(/^player_hp\s*=\s*(\d+)/m, "player_hp"),
+    water: num(/^max_water\s*=\s*(\d+)/m, "max_water"),
+    food: num(/^max_food\s*=\s*(\d+)/m, "max_food"),
+  };
   const vitals = (tab) =>
     tab.page.evaluate(() => {
       const el = document.getElementById("vitals");
-      return {
-        shown: !!el && el.style.display === "block",
-        text: el ? el.textContent.trim() : "",
-      };
+      if (!el || el.style.display !== "block") return { shown: false, rows: {} };
+      const rows = {};
+      for (const row of el.querySelectorAll(".vrow")) {
+        if (row.style.display === "none") continue;
+        const fill = row.querySelector(".vfill");
+        const num = row.querySelector(".vnum");
+        if (!fill || !num) continue;
+        const kind = fill.classList.contains("water")
+          ? "water"
+          : fill.classList.contains("food")
+            ? "food"
+            : "health";
+        rows[kind] = num.textContent.trim();
+      }
+      return { shown: true, rows };
     });
   for (const tab of [A, B]) {
     let v = await vitals(tab);
-    for (let i = 0; i < 40 && !v.shown; i++) {
+    for (let i = 0; i < 40 && Object.keys(v.rows).length < 3; i++) {
       await tab.page.waitForTimeout(250);
       v = await vitals(tab);
     }
     if (!v.shown) {
       fail(`tab ${tab.playerId}: the vitals stack never appeared — no health reached the HUD`);
     }
-    if (v.text !== String(wantHp)) {
-      fail(
-        `tab ${tab.playerId}: vitals read "${v.text}", content says ${wantHp} — ` +
-          "the number the shard plays is not the number the data declares",
-      );
+    for (const kind of ["health", "water", "food"]) {
+      if (v.rows[kind] === undefined) {
+        fail(
+          `tab ${tab.playerId}: the vitals stack has no ${kind} row — ` +
+            "the shard never stated that meter at the door",
+        );
+      }
+      if (v.rows[kind] !== String(want[kind])) {
+        fail(
+          `tab ${tab.playerId}: ${kind} reads "${v.rows[kind]}", content says ` +
+            `${want[kind]} — the number the shard plays is not the number the data declares`,
+        );
+      }
     }
   }
-  console.log(`  vitals: both tabs read ${wantHp} hp, straight from content/balance.toml`);
+  console.log(
+    `  vitals: both tabs read ${want.health} hp · ${want.water} water · ` +
+      `${want.food} food, straight from content/balance.toml`,
+  );
 }
 
 // --- the backpack lane: wired, and reconciling from zero --------------------

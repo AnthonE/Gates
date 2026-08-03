@@ -14,15 +14,18 @@ use sim_core::combat::CombatContent;
 use sim_core::craft::CraftContent;
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::limits::MAX_PLAYERS;
+use sim_core::limits::{INV_SLOTS, MAX_PLAYERS};
 use sim_core::rng::Pcg32;
+use sim_core::survival::SurvivalContent;
 use sim_core::world::{
-    Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_PIECE_REMOVED, EV_STRUCT_HIT,
+    Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH,
+    EV_PIECE_REMOVED, EV_STRUCT_HIT,
 };
 
 /// One tick's commands: every bot's input plus a craft enqueue, a cancel,
-/// a place, and an upgrade, so the craft and build verbs sit inside the
-/// counted window. Fixed-size — the test itself must not allocate.
+/// a place, an upgrade, and an eat, so the craft, build and survival verbs
+/// sit inside the counted window. Fixed-size — the test itself must not
+/// allocate.
 ///
 /// `cell` is bot 1's own build cell, recomputed every tick by the caller,
 /// so the place and upgrade requests are always inside the 5 m reach and
@@ -36,12 +39,22 @@ use sim_core::world::{
 /// fixture holds (`row_of`, the cost loop, `set_row`), and the
 /// missing-rung refusal — plus the empty-address refusal on every tick
 /// the wall is not standing yet.
+///
+/// The eat rides bot 1's own stock on a 3-tick cycle: slot 20 holds
+/// fixture item 0, which the survival fixture makes food, so that arm is
+/// the landed consume — the stack decrement, the meter clamp, the heal
+/// ramp start and the announcement. Slot 21 holds item 1, which is not
+/// food, and the third arm asks for twice `INV_SLOTS`, which is past the
+/// inventory entirely: the two refusal shapes, so the window counts what
+/// the verb does when it says no as
+/// well as when it says yes. Bot 1 carries 60 000 of each, so 100 units
+/// eaten over the window cannot bounce a placement on cost.
 fn tick_cmds(
     rng: &mut Pcg32,
     yaws: &mut [u16; MAX_PLAYERS],
     t: u16,
     cell: (u16, u16),
-) -> [Command; MAX_PLAYERS + 4] {
+) -> [Command; MAX_PLAYERS + 5] {
     core::array::from_fn(|i| {
         if i < MAX_PLAYERS {
             let f = bot_frame(rng, yaws[i], t);
@@ -80,7 +93,7 @@ fn tick_cmds(
                 level,
                 loc,
             }
-        } else {
+        } else if i == MAX_PLAYERS + 3 {
             Command::Upgrade {
                 id: 1,
                 cx: cell.0,
@@ -91,6 +104,15 @@ fn tick_cmds(
                     0 => MAT_WOOD,
                     1 => MAT_STONE,
                     _ => MAT_METAL,
+                },
+            }
+        } else {
+            Command::Consume {
+                id: 1,
+                slot: match t % 3 {
+                    0 => 20,                  // fixture item 0: food
+                    1 => 21,                  // fixture item 1: not food
+                    _ => INV_SLOTS as u8 * 2, // past the inventory entirely
                 },
             }
         }
@@ -140,6 +162,22 @@ fn test_alloc_zero() {
     // the duelists stand inside each other, so every death lands a bag at
     // the survivor's feet and the loot commands below open it.
     world.backpack = BackpackContent::probe_fixture();
+    // The survival fixture puts the drain, the announcement, the eat and
+    // the clock's own death and respawn-grant inside the counted window.
+    // Its spans are seconds, so a hundred bodies drain all the way to
+    // empty and take the hp per minute an empty pair costs — the pressure
+    // paths run on the whole shard here, not on one arranged body.
+    //
+    // It is the loudest fixture in this file and deliberately so: a meter
+    // step announces `EV_VITALS` + `EV_HEALTH`, and measured this commit
+    // the tick's event ring peaks at 210 of `MAX_EVENTS_PER_TICK`'s 256
+    // with it installed. That is 46 slots of headroom on a drop-*newest*
+    // ring whose late pushes are exactly the raid, bag and eat events the
+    // asserts below count — so the drop counter is asserted at the end
+    // rather than trusted. Widening the spans to buy headroom would trade
+    // this gate's real coverage for a comfortable number; the assert is
+    // the honest version of the same worry.
+    world.survival = SurvivalContent::probe_fixture();
     let mut rng = Pcg32::new(0xA110C, 3);
     let mut yaws = [0u16; MAX_PLAYERS];
 
@@ -214,8 +252,32 @@ fn test_alloc_zero() {
         (target.cz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
     );
     world.players[4].inv[0] = ItemStack { item: 0, count: 1 };
+    // Bot 6 is the starving body: both meters emptied as the window opens,
+    // deliberately not a bot the duel, the raid or the build script uses.
+    // The shard's own meters do not run dry until ~tick 240 and a full body
+    // then needs another ~200 ticks to die of it, which is past the 300 this
+    // window counts — so the clock's own death is *staged* rather than waited
+    // for. At the fixture's rates a dry pair costs 600 + 900 hp a minute, so
+    // a 100 hp body has ~120 ticks to live: the hurt path, the `EV_DEATH`
+    // whose victim and killer are the same id, and the respawn's
+    // `survival::grant` all land inside the window. The asserts at the end
+    // are what hold that, not this comment — with the staging removed, the
+    // grant assert is the one that fires.
+    world.players[5].food = 0;
+    world.players[5].water = 0;
+    // Bot 2's meters are the drain witness: it neither duels, raids,
+    // builds nor eats, so nothing but the clock moves them.
+    let witness_food = world.players[1].food;
+    let witness_water = world.players[1].water;
+    let witness_deaths = world.players[1].deaths;
     let mut struct_hits = 0u32;
     let mut struct_falls = 0u32;
+    let mut starved = 0u32;
+    let mut ate = 0u32;
+    let mut eat_refused = 0u32;
+    // `EventQueue::dropped` is cleared every tick, so the total is the sum
+    // — see the assert at the end for why this gate reads it at all.
+    let mut events_dropped = 0u32;
     // Stand bot 4 inside bot 3 as the window opens: point-blank has no
     // bearing to test, so the aim cone cannot make this arrangement flaky.
     world.players[3].body = world.players[2].body;
@@ -245,13 +307,14 @@ fn test_alloc_zero() {
         }
         // Both duelists reach for a bag every tick. The command array
         // grows by two on the stack rather than stealing a bot's input
-        // slot — `MAX_COMMANDS_PER_TICK` is 256, so 102 still all apply,
+        // slot — `MAX_COMMANDS_PER_TICK` is 256, so 107 still all apply,
         // and copying `Command`s allocates nothing.
-        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 6];
-        all[..MAX_PLAYERS + 4].copy_from_slice(&cmds);
-        all[MAX_PLAYERS + 4] = Command::Loot { id: 3 };
-        all[MAX_PLAYERS + 5] = Command::Loot { id: 4 };
+        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 7];
+        all[..MAX_PLAYERS + 5].copy_from_slice(&cmds);
+        all[MAX_PLAYERS + 5] = Command::Loot { id: 3 };
+        all[MAX_PLAYERS + 6] = Command::Loot { id: 4 };
         world.tick(&all);
+        events_dropped += world.events.dropped;
         for ev in world.events.entries() {
             if ev.code == EV_BAG_DROPPED {
                 bags_dropped += 1;
@@ -261,6 +324,14 @@ fn test_alloc_zero() {
                 struct_hits += 1;
             } else if ev.code == EV_PIECE_REMOVED {
                 struct_falls += 1;
+            } else if ev.code == EV_DEATH && ev.a == ev.b {
+                // Victim and killer equal is the clock's own signature; a
+                // combat kill always names two different bodies.
+                starved += 1;
+            } else if ev.code == EV_CONSUMED {
+                ate += 1;
+            } else if ev.code == EV_CONSUME_REFUSED {
+                eat_refused += 1;
             }
         }
     }
@@ -309,6 +380,60 @@ fn test_alloc_zero() {
         struct_falls > 0,
         "no structure was broken inside the counted window — the raid removal \
          path fell out of the alloc gate"
+    );
+    // The survival clock's paths, each read off the thing it moves rather
+    // than off the fact that content was installed. A fixture
+    // assigned but never exercised is the same defect one level down —
+    // which is exactly what this block exists to make impossible.
+    assert_eq!(
+        world.players[1].deaths, witness_deaths,
+        "the drain witness died inside the counted window — pick a quieter \
+         slot; its meters no longer measure the drain alone"
+    );
+    assert!(
+        world.players[1].food < witness_food && world.players[1].water < witness_water,
+        "the drain witness's meters did not fall inside the counted window \
+         (food {} of {witness_food}, water {} of {witness_water}) — \
+         survival::step fell out of the alloc gate",
+        world.players[1].food,
+        world.players[1].water
+    );
+    assert_eq!(
+        (world.players[1].food, world.players[1].water),
+        (0, 0),
+        "the drain witness's pair never ran dry inside the counted window — \
+         the empty-meter hurt path is only in this gate while it does"
+    );
+    assert!(
+        starved > 0,
+        "nobody starved inside the counted window — the hurt path and the \
+         clock's own death fell out of the alloc gate"
+    );
+    assert!(
+        world.players[5].food > 0,
+        "the starved body's meters were never granted again — the respawn \
+         grant fell out of the alloc gate"
+    );
+    assert!(
+        ate > 0 && eat_refused > 0,
+        "the eat verb landed {ate} consumes and {eat_refused} refusals inside \
+         the counted window — both paths must be in the alloc gate"
+    );
+    assert!(
+        world.players[0].inv[20].count < 60_000,
+        "no stack shrank inside the counted window — the consume write path \
+         fell out of the alloc gate"
+    );
+    // The bag, raid, starve and eat counters above are all read off the
+    // event ring, so a saturated ring would let them go quiet for a reason
+    // that has nothing to do with the path they name — the drop policy is
+    // newest-first, and those pushes sit late in a tick's push order. This
+    // is the assert that keeps them honest. (The meter asserts are read off
+    // player state and do not need it.)
+    assert_eq!(
+        events_dropped, 0,
+        "the event ring overflowed {events_dropped} times inside the counted \
+         window: the counters above are no longer reading what they claim to"
     );
     assert_eq!(
         (alloc_delta, free_delta),

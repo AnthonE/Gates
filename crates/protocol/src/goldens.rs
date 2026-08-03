@@ -27,57 +27,61 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 50] = [
-    "v13_input_acks_only.bin",
-    "v13_input_full.bin",
-    "v13_snapshot_keyframe.bin",
-    "v13_snapshot_delta.bin",
-    "v13_snapshot_cap.bin",
-    "v13_hello.bin",
-    "v13_welcome.bin",
-    "v13_refuse_full.bin",
-    "v13_event_gather.bin",
-    "v13_event_inv.bin",
-    "v13_event_slot_harvested.bin",
-    "v13_event_slot_respawned.bin",
-    "v13_event_slot_sync.bin",
-    "v13_event_catalog.bin",
-    "v13_event_weak_mark.bin",
-    "v13_event_craft_q.bin",
-    "v13_event_craft_done.bin",
-    "v13_event_craft_refused.bin",
-    "v13_event_recipes.bin",
-    "v13_action_craft.bin",
-    "v13_action_cancel.bin",
-    "v13_action_place.bin",
-    "v13_event_piece_placed.bin",
-    "v13_event_piece_sync.bin",
-    "v13_event_build_refused.bin",
-    "v13_event_piece_defs.bin",
-    "v13_action_deploy.bin",
-    "v13_action_feed.bin",
-    "v13_event_deploy_placed.bin",
-    "v13_event_deploy_sync.bin",
-    "v13_event_deploy_refused.bin",
-    "v13_event_deploy_defs.bin",
-    "v13_event_piece_removed.bin",
-    "v13_event_deploy_removed.bin",
-    "v13_event_stock.bin",
-    "v13_action_use.bin",
-    "v13_action_lock.bin",
-    "v13_event_door.bin",
-    "v13_action_upgrade.bin",
-    "v13_chat.bin",
-    "v13_event_chat.bin",
-    "v13_event_hit.bin",
-    "v13_event_health.bin",
-    "v13_event_death.bin",
-    "v13_action_loot.bin",
-    "v13_event_bag_dropped.bin",
-    "v13_event_bag_sync.bin",
-    "v13_event_bag_removed.bin",
-    "v13_event_struct_hit_piece.bin",
-    "v13_event_struct_hit_deploy.bin",
+pub const FIXTURES: [&str; 54] = [
+    "v14_input_acks_only.bin",
+    "v14_input_full.bin",
+    "v14_snapshot_keyframe.bin",
+    "v14_snapshot_delta.bin",
+    "v14_snapshot_cap.bin",
+    "v14_hello.bin",
+    "v14_welcome.bin",
+    "v14_refuse_full.bin",
+    "v14_event_gather.bin",
+    "v14_event_inv.bin",
+    "v14_event_slot_harvested.bin",
+    "v14_event_slot_respawned.bin",
+    "v14_event_slot_sync.bin",
+    "v14_event_catalog.bin",
+    "v14_event_weak_mark.bin",
+    "v14_event_craft_q.bin",
+    "v14_event_craft_done.bin",
+    "v14_event_craft_refused.bin",
+    "v14_event_recipes.bin",
+    "v14_action_craft.bin",
+    "v14_action_cancel.bin",
+    "v14_action_place.bin",
+    "v14_event_piece_placed.bin",
+    "v14_event_piece_sync.bin",
+    "v14_event_build_refused.bin",
+    "v14_event_piece_defs.bin",
+    "v14_action_deploy.bin",
+    "v14_action_feed.bin",
+    "v14_event_deploy_placed.bin",
+    "v14_event_deploy_sync.bin",
+    "v14_event_deploy_refused.bin",
+    "v14_event_deploy_defs.bin",
+    "v14_event_piece_removed.bin",
+    "v14_event_deploy_removed.bin",
+    "v14_event_stock.bin",
+    "v14_action_use.bin",
+    "v14_action_lock.bin",
+    "v14_event_door.bin",
+    "v14_action_upgrade.bin",
+    "v14_chat.bin",
+    "v14_event_chat.bin",
+    "v14_event_hit.bin",
+    "v14_event_health.bin",
+    "v14_event_death.bin",
+    "v14_action_loot.bin",
+    "v14_event_bag_dropped.bin",
+    "v14_event_bag_sync.bin",
+    "v14_event_bag_removed.bin",
+    "v14_event_struct_hit_piece.bin",
+    "v14_event_struct_hit_deploy.bin",
+    "v14_event_vitals.bin",
+    "v14_event_consumed.bin",
+    "v14_event_consume_refused.bin",
+    "v14_action_consume.bin",
 ];
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
@@ -561,6 +565,32 @@ pub fn event_health() -> (u16, u16) {
 /// let a decoder's default pass for a value).
 pub fn event_death() -> (u32, u32) {
     (4_242, 7)
+}
+
+/// A meter pair partway down the shipped 100/100 ceilings, with food and
+/// water at *different* values and both below their maxima — four distinct
+/// numbers, so a codec that transposed a pair or echoed a ceiling could
+/// not produce these bytes.
+pub fn event_vitals() -> (u16, u16, u16, u16) {
+    (62, 38, 100, 100)
+}
+
+/// An eat: a real item index out of a hotbar slot that is neither 0 nor
+/// the last, so an off-by-one on either end shows.
+pub fn event_consumed() -> (u16, u8) {
+    (11, 3)
+}
+
+/// A refusal carrying `survival::REFUSE_C_FULL` — the nonzero reason the
+/// codec insists on.
+pub fn event_consume_refused() -> u8 {
+    2
+}
+
+/// The eat verb aimed at a backpack slot rather than the belt, so the
+/// five-bit width is exercised past the six hotbar slots.
+pub fn action_consume() -> u8 {
+    19
 }
 
 /// A death backpack standing in the island interior, in the same quanta

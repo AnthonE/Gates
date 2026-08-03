@@ -191,8 +191,7 @@
         outline: none;
       }
       /* Vitals — bottom-right above the hotbar, the place the reference
-         frames put them. One row for now (health); food and water land
-         with the hunger timer. */
+         frames put them. Three rows: health, hydration, calories. */
       #vitals {
         position: fixed;
         right: 16px;
@@ -223,6 +222,20 @@
         top: 0;
         bottom: 0;
         background: #c8402f;
+      }
+      /* The stack's three rows, top to bottom as the reference frames
+         order them: health, hydration, calories. */
+      .vfill.water {
+        background: #3d86c6;
+      }
+      .vfill.food {
+        background: #d1943a;
+      }
+      /* A meter at zero is the one reading the player must not miss, so
+         it stops being a quiet bar and says so. */
+      .vrow.empty .vnum {
+        color: #ff6a5a;
+        font-weight: bold;
       }
       .vnum {
         min-width: 30px;

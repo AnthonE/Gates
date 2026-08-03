@@ -34,16 +34,17 @@ use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     decode_event, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_build_refused, encode_event_catalog, encode_event_chat, encode_event_craft_done,
+    encode_event_build_refused, encode_event_catalog, encode_event_chat,
+    encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
     encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
     encode_event_inv, encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
     encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_weak_mark, EventMsg, InvSlot,
-    ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
+    EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH, DEPLOY_DEFS_BATCH,
+    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH,
+    PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -99,8 +100,17 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// has to be about something else, and stopping at 31 would leave the
 /// unknown-subtype probe with nothing unused to probe. No datagram layout
 /// moved — a wall's hp is not on the snapshot, for melee v0's reason: it
-/// changes on a swing, not on a tick. Fixtures are keyed `v13_*`.
-pub const PROTO_VER: u16 = 13;
+/// changes on a swing, not on a tick. v14 added the survival clock
+/// (survival.rs): the eat action — the tenth, which fits the field v12
+/// widened, so **no action message moved** — and three event subtypes,
+/// vitals / consumed / consume-refused, the 32nd through 34th, which fit
+/// the field v13 widened, so **no event message moved either.** That is
+/// the whole return on taking both widenings early. No datagram layout
+/// moved: the meter pair is an own-fact on the reliable lane like hp, not
+/// a snapshot field, and for the same reason — it changes on a drain
+/// step, and a client that misses one hears the whole truth from the
+/// next. Fixtures are keyed `v14_*`.
+pub const PROTO_VER: u16 = 14;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -287,6 +297,9 @@ const ACT_USE: u32 = 5;
 const ACT_LOCK: u32 = 6;
 const ACT_UPGRADE: u32 = 7;
 const ACT_LOOT: u32 = 8;
+/// The eat verb (wire v14, survival.rs). Tenth of the sixteen a 4-bit
+/// field holds, so no width moved for it.
+const ACT_CONSUME: u32 = 9;
 /// Cancel index width mirrors the queue (`CRAFT_QUEUE` = 4 fits 3 bits);
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
@@ -305,6 +318,10 @@ pub(crate) const DEPLOY_ROW_BITS: u32 = 4;
 /// metal). Three values in two bits, so the fourth is forgeable and the
 /// decoder refuses it — the same posture as the hotbar selector.
 const BUILD_MAT_BITS: u32 = 2;
+/// Inventory-slot width on the action lane — `INV_SLOTS` is 30, so five
+/// bits hold it and the two forgeable values above it refuse at decode,
+/// the same posture as the hotbar selector.
+const ACTION_SLOT_BITS: u32 = 5;
 
 /// One decoded C→S action. The wire enforces shape (recipe inside the
 /// sim's table, a live index, a nonzero count); meaning — does the recipe
@@ -379,6 +396,25 @@ pub enum ActionMsg {
     /// there is no id here to forge, no address to aim past a wall, and
     /// no way to loot something the sender is not standing on.
     Loot,
+    /// Eat what is in inventory slot `slot` (survival.rs). The slot is
+    /// shape-checked here — past the sim's array it does not decode — and
+    /// everything else is the sim's verdict: an empty hand, a stack of
+    /// wood, and a full pair of meters all come back as a consume-refused
+    /// event rather than as a wire error.
+    Consume { slot: u8 },
+}
+
+/// The eat verb. `slot` rides the inventory-slot width the event lane
+/// already uses, so the width itself is the range check.
+pub fn encode_action_consume(slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_CONSUME, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    Ok(w.finish())
 }
 
 pub fn encode_action_loot(buf: &mut [u8]) -> Result<usize, WireError> {
@@ -657,6 +693,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
         }
         ACT_LOOT => ActionMsg::Loot,
+        ACT_CONSUME => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            if slot as usize >= sim_core::limits::INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Consume { slot }
+        }
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;

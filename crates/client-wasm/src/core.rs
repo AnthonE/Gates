@@ -91,6 +91,12 @@ pub const APPLIED_BAGS: u32 = 1 << 25;
 /// `struct_hit` names the address and how much of it is left. Always set
 /// alongside `APPLIED_HIT`, which is what drains the hitmarker ring.
 pub const APPLIED_STRUCT_HIT: u32 = 1 << 26;
+/// Own food/water changed (`EventMsg::Vitals`).
+pub const APPLIED_VITALS: u32 = 1 << 27;
+/// An eat landed or was refused (`EventMsg::Consumed` /
+/// `EventMsg::ConsumeRefused`). One flag: the HUD's response to both is to
+/// re-read the eat readout, which says which it was.
+pub const APPLIED_CONSUME: u32 = 1 << 28;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -517,6 +523,18 @@ pub struct ClientCore {
     /// player who simply cannot be hurt.
     pub hp: u16,
     pub hp_max: u16,
+    /// Own food and water, absolute as the server last stated them.
+    /// `max_food` 0 means no `Vitals` has arrived — a shard whose content
+    /// has no `[survival]` section never sends one, and the HUD reads that
+    /// as "no meters to draw" rather than as "starving".
+    pub food: u16,
+    pub water: u16,
+    pub max_food: u16,
+    pub max_water: u16,
+    /// The last eat: item << 16 | slot, and the refusal reason (0 = the
+    /// eat landed). Read together by `client_consume`.
+    pub last_eat: u32,
+    pub last_eat_refused: u8,
     /// Own landed hits, oldest first: damage dealt. The hitmarker ring.
     hits: [u16; TOAST_RING],
     hit_head: usize,
@@ -623,6 +641,12 @@ impl ClientCore {
             chat_len: 0,
             hp: 0,
             hp_max: 0,
+            food: 0,
+            water: 0,
+            max_food: 0,
+            max_water: 0,
+            last_eat: 0,
+            last_eat_refused: 0,
             hits: [0; TOAST_RING],
             hit_head: 0,
             hit_len: 0,
@@ -1016,6 +1040,30 @@ impl ClientCore {
                     self.push_deploy_change(rec);
                     flags |= APPLIED_DEPLOYS;
                 }
+            }
+            EventMsg::Vitals {
+                food,
+                water,
+                max_food,
+                max_water,
+            } => {
+                // Absolute like `Health`, and for the same reason — a
+                // missed reading repairs itself on the next one, so the
+                // HUD never runs its own drain timer.
+                self.food = food;
+                self.water = water;
+                self.max_food = max_food;
+                self.max_water = max_water;
+                flags |= APPLIED_VITALS;
+            }
+            EventMsg::Consumed { item, slot } => {
+                self.last_eat = ((item as u32) << 16) | slot as u32;
+                self.last_eat_refused = 0;
+                flags |= APPLIED_CONSUME;
+            }
+            EventMsg::ConsumeRefused { reason } => {
+                self.last_eat_refused = reason;
+                flags |= APPLIED_CONSUME;
             }
             EventMsg::Health { hp, max } => {
                 // Absolute, so a missed one repairs itself. Max travels

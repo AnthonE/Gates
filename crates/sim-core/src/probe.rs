@@ -251,6 +251,16 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
         world.gather = crate::gather::GatherContent::probe_fixture();
         world.combat = crate::combat::CombatContent::probe_fixture();
         world.backpack = crate::backpack::BackpackContent::probe_fixture();
+        // The survival clock, on the probe with hp and respawns: its
+        // fixture spans are seconds, so meters drain, empty, starve and
+        // are granted again inside this window. What that buys is exactly
+        // one gate and it is worth naming precisely: `test_parity_wasm`,
+        // which folds this digest native and wasm and asserts the two are
+        // byte-identical. `test_alloc_zero` and `test_replay` cover the
+        // clock too, but they do it by installing the content in their own
+        // fixtures — this probe is not what puts it there, and reading it
+        // as though it were is how a coverage claim outruns its code.
+        world.survival = crate::survival::SurvivalContent::probe_fixture();
         world.dev_spawn = Some(world.spawn_pos(1));
         world.tick(&[
             Command::Join { id: 1 },
@@ -282,11 +292,21 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
             // gesture: the nearest-in-reach scan, the partial take, the
             // emptied-bag removal and the despawn sweep all land inside
             // the digest, native and wasm.
+            // And one bot eats, in the same rotation and one slot behind
+            // it, so the eat verb's three outcomes — a landed consume, a
+            // refusal on an empty or non-food slot, and a refusal on a
+            // full pair — all ride the digest too. The fixture's item 0
+            // is food and a weapon at once, which is why the slots the
+            // brawl fills are also the slots this reaches into.
             world.tick(&[
                 Command::Input { id: 1, frame: f1 },
                 Command::Input { id: 2, frame: f2 },
                 Command::Input { id: 3, frame: f3 },
                 Command::Loot { id: (t % 3) + 1 },
+                Command::Consume {
+                    id: (t % 3) + 1,
+                    slot: (t % 8) as u8,
+                },
             ]);
         }
         h.update(&world.state_hash().to_le_bytes());

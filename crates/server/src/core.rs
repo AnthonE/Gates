@@ -8,16 +8,17 @@ use crate::client::ClientNetState;
 use crate::stats::ShardStats;
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_build_refused, encode_event_catalog, encode_event_chat, encode_event_craft_done,
+    encode_event_build_refused, encode_event_catalog, encode_event_chat,
+    encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
     encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
     encode_event_inv, encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
     encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_weak_mark, ActionMsg, ChatMsg,
-    EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag,
-    WireError, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
+    ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder,
+    SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
+    PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
@@ -29,10 +30,11 @@ use sim_core::limits::{
     SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK,
 };
 use sim_core::world::{
-    Command, Player, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CRAFT_DONE,
-    EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_GATHER, EV_HEALTH, EV_HIT, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    Command, Player, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CONSUMED,
+    EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED,
+    EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_GATHER, EV_HEALTH, EV_HIT, EV_PIECE_PLACED,
+    EV_PIECE_REMOVED, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS,
+    EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
@@ -282,6 +284,7 @@ impl ShardCore {
                         material,
                     },
                     ActionMsg::Loot => Command::Loot { id: c.id },
+                    ActionMsg::Consume { slot } => Command::Consume { id: c.id, slot },
                 };
                 n += 1;
             }
@@ -568,6 +571,39 @@ impl ShardCore {
                                     self.clients[slot].ev_resync();
                                     ShardStats::bump(&stats.ev_resyncs);
                                 }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_VITALS | EV_CONSUMED | EV_CONSUME_REFUSED => {
+                    // The survival clock's three, all own-facts to the one
+                    // body they are about — same audience shape as health,
+                    // and absolute for the same reason: a client that
+                    // misses one hears the whole truth from the next.
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // that player left this tick
+                    };
+                    let enc = match ev.code {
+                        EV_VITALS => encode_event_vitals(
+                            (ev.b >> 16) as u16,
+                            ev.b as u16,
+                            (ev.c >> 16) as u16,
+                            ev.c as u16,
+                            &mut self.ev_buf,
+                        ),
+                        EV_CONSUMED => {
+                            encode_event_consumed((ev.b >> 16) as u16, ev.b as u8, &mut self.ev_buf)
+                        }
+                        _ => encode_event_consume_refused(ev.b as u8, &mut self.ev_buf),
+                    };
+                    match enc {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
                             }
                         }
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
