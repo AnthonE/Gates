@@ -130,6 +130,13 @@ pub const STOCK_MAX: u32 = 2_000;
 /// Bags one player may have placed (ALPHA.md §1 knob, DECISIONS.md §open
 /// "bag cooldown · cap": 8).
 pub const BAG_CAP: usize = 8;
+/// Ticks a bag sleeps for after a body wakes on it — the other half of the
+/// same spoken knob (ALPHA.md §1, DECISIONS.md §open "bag cooldown · cap":
+/// **5 min**), in the only unit the sim owns. 5 × 60 × `TICK_HZ` = 9 000 at
+/// the 30 Hz tick, written as the literal it evaluates to because the knob
+/// registry gate pins declarations, not expressions;
+/// `the_cooldown_is_five_minutes_of_ticks` is what holds the arithmetic.
+pub const BAG_COOLDOWN_TICKS: u64 = 9_000;
 /// Hour-steps one sweep visit processes at most (bounded catch-up; the
 /// sweep revisits every entry far inside one period, so >1 only happens
 /// after a tick-jump). Bounded-work constant, not a knob.
@@ -264,6 +271,19 @@ pub struct HearthRec {
 pub struct Deploys {
     entries: [DeployRec; MAX_DEPLOYS],
     len: usize,
+    /// Bag respawn cooldowns, index-aligned to `entries`: the first tick
+    /// `entries[i]` may be woken on again. Meaningless for every archetype
+    /// that is not `ARCH_BAG`, and zero for a fresh one — `0` is "ready from
+    /// the first tick", not a sentinel.
+    ///
+    /// A parallel array rather than a field on `DeployRec`, and that is a
+    /// wire decision rather than a layout preference: `DeployRec` is the
+    /// struct the deploy-sync packet mirrors, so eight bytes of sim-only
+    /// timer on it would ride 24-deep in `EventMsg::DeploySync` and grow the
+    /// client's event enum by 192 bytes it can never read. The client draws
+    /// a bag; it does not adjudicate one. Kept aligned by `insert` and by
+    /// `remove_at`, whose swap-remove moves both halves together.
+    bag_ready: [u64; MAX_DEPLOYS],
     hearths: [HearthRec; MAX_HEARTHS],
     hearth_count: usize,
 }
@@ -273,6 +293,7 @@ impl Deploys {
         Self {
             entries: [DeployRec::default(); MAX_DEPLOYS],
             len: 0,
+            bag_ready: [0; MAX_DEPLOYS],
             hearths: [HearthRec::default(); MAX_HEARTHS],
             hearth_count: 0,
         }
@@ -290,6 +311,13 @@ impl Deploys {
         &self.entries[..self.len]
     }
 
+    /// The live half of `bag_ready`, index-aligned to `entries()`. Read by
+    /// `state_hash` (it is sim state) and by the gates that assert a bag was
+    /// actually spent.
+    pub fn bag_ready(&self) -> &[u64] {
+        &self.bag_ready[..self.len]
+    }
+
     pub fn hearths(&self) -> &[HearthRec] {
         &self.hearths[..self.hearth_count]
     }
@@ -305,6 +333,8 @@ impl Deploys {
             return false;
         }
         self.entries[self.len] = rec;
+        // A bag is born ready: place one and the next death is answered.
+        self.bag_ready[self.len] = 0;
         self.len += 1;
         true
     }
@@ -315,6 +345,9 @@ impl Deploys {
         let rec = self.entries[i];
         self.len -= 1;
         self.entries[i] = self.entries[self.len];
+        // Both halves move together or the cooldown array stops describing
+        // the record it is indexed against.
+        self.bag_ready[i] = self.bag_ready[self.len];
         if dc.defs[rec.row as usize].arch == ARCH_HEARTH {
             if let Some(h) = self.hearths[..self.hearth_count]
                 .iter()
@@ -374,6 +407,56 @@ impl Deploys {
             .iter()
             .filter(|d| d.owner == owner && dc.defs[d.row as usize].arch == ARCH_BAG)
             .count()
+    }
+
+    /// The bag a dying player wakes on, and the cooldown that spends it.
+    ///
+    /// Scans `owner`'s own ready bags and returns the planar cell center of
+    /// the one **nearest the point given** — the body's position as it
+    /// fell, so a death defending a compound wakes on the bag inside that
+    /// compound rather than on one across the island. Ties go to the
+    /// earlier entry, which is the store's insertion order and therefore
+    /// the same on every replay of the same log.
+    ///
+    /// The chosen bag is *spent*: its `bag_ready` entry moves to
+    /// `tick + BAG_COOLDOWN_TICKS`, and until then every scan skips it. So
+    /// a player killed twice inside the cooldown wakes on a second bag if
+    /// they placed one and back on the spawn ring if they did not — which
+    /// is the whole reason the cooldown exists, and the reason `BAG_CAP`
+    /// bounds how many answers a defender can stack.
+    ///
+    /// `None` means exactly one thing: no bag of this owner's is ready.
+    /// The caller falls back to the ring on it.
+    ///
+    /// Bounded and allocation-free — one pass of the store, squared planar
+    /// distance (monotone in distance, so no `sqrt` and no trig), and no
+    /// iteration order that is not the store's own (wall 1).
+    pub fn claim_bag(
+        &mut self,
+        dc: &DeployContent,
+        owner: u32,
+        x: f32,
+        z: f32,
+        tick: u64,
+    ) -> Option<(f32, f32)> {
+        let mut best: Option<(usize, f32)> = None;
+        for (i, d) in self.entries[..self.len].iter().enumerate() {
+            if d.owner != owner
+                || dc.defs[d.row as usize].arch != ARCH_BAG
+                || self.bag_ready[i] > tick
+            {
+                continue;
+            }
+            let (bx, bz) = cell_center(d.cx, d.cz);
+            let (dx, dz) = (bx - x, bz - z);
+            let d2 = dx * dx + dz * dz;
+            if best.is_none_or(|(_, b)| d2 < b) {
+                best = Some((i, d2));
+            }
+        }
+        let (i, _) = best?;
+        self.bag_ready[i] = tick.saturating_add(BAG_COOLDOWN_TICKS);
+        Some(cell_center(self.entries[i].cx, self.entries[i].cz))
     }
 }
 
@@ -1385,6 +1468,175 @@ mod tests {
         }
         assert_eq!(placed, BAG_CAP);
         assert_eq!(last(&ev).2, REFUSE_D_BAG_CAP);
+        // Every one of them places ready: the cap is how many answers a
+        // player may stack, and a stack that had to warm up would make the
+        // cap mean something else on the first death after a build.
+        assert!(
+            deploys.bag_ready().iter().all(|&r| r == 0),
+            "a freshly placed bag must be ready for the next death"
+        );
+    }
+
+    /// The knob is spoken in minutes (ALPHA §1 / DECISIONS §open, "bag
+    /// cooldown · cap": 5 min) and the sim only owns ticks, so the literal
+    /// the registry gate pins is checked against the arithmetic it stands
+    /// for. Change `TICK_HZ` and this fires — which is the point: a
+    /// cooldown that silently became eight minutes because the tick rate
+    /// moved is a knob nobody spoke.
+    #[test]
+    fn the_cooldown_is_five_minutes_of_ticks() {
+        assert_eq!(
+            BAG_COOLDOWN_TICKS,
+            5 * 60 * crate::limits::TICK_HZ as u64,
+            "BAG_COOLDOWN_TICKS is no longer the 5 minutes DECISIONS.md §open declares"
+        );
+    }
+
+    /// Three bags of one owner, and the scan takes the nearest to the body
+    /// — then refuses to take it twice. Bag geometry, at the level the
+    /// world cannot see: `World::respawn` only ever asks this one question
+    /// and this is where the answer is made.
+    #[test]
+    fn the_nearest_ready_bag_answers_and_is_then_spent() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(5, 20)]);
+        // Three bags in a row along +x, placed near-then-far so "nearest"
+        // cannot be satisfied by "first in the store".
+        for k in [0u16, 2, 4] {
+            p.body = Body::at(
+                SEED,
+                (CX + k) as f32 * crate::build::BUILD_CELL_M + 1.5,
+                CZ as f32 * crate::build::BUILD_CELL_M + 1.5,
+            );
+            place_deploy(
+                SEED,
+                &dc,
+                &bc,
+                &mut pieces,
+                &mut deploys,
+                &mut p,
+                0,
+                3,
+                CX + k,
+                CZ,
+                0,
+                LOC_PLANE,
+                &mut ev,
+            );
+            assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        }
+        assert_eq!(deploys.len(), 3);
+        let center = |cx: u16| cell_center(cx, CZ);
+
+        // Die beside the far bag: the far bag answers, not the first one.
+        let (fx, fz) = center(CX + 4);
+        assert_eq!(
+            deploys.claim_bag(&dc, 7, fx, fz, 100),
+            Some((fx, fz)),
+            "the scan did not take the bag nearest the body"
+        );
+        // …and it is spent for exactly the cooldown, so the same death
+        // point now walks to the next-nearest instead.
+        let (mx, mz) = center(CX + 2);
+        assert_eq!(
+            deploys.claim_bag(&dc, 7, fx, fz, 100),
+            Some((mx, mz)),
+            "a bag answered twice inside its own cooldown"
+        );
+        // One tick before it wakes it is still spent; on its own tick it
+        // answers again. Off-by-one on a five-minute timer is the kind of
+        // bug that only ever shows up in someone's raid.
+        let ready = 100 + BAG_COOLDOWN_TICKS;
+        assert_eq!(
+            deploys.claim_bag(&dc, 7, fx, fz, ready - 1),
+            Some(center(CX)),
+            "the far bag woke early"
+        );
+        assert_eq!(
+            deploys.claim_bag(&dc, 7, fx, fz, ready),
+            Some((fx, fz)),
+            "the far bag did not wake on the tick its cooldown named"
+        );
+    }
+
+    /// Someone else's bag is not an answer, and neither is nothing. Both
+    /// verdicts are `None`, which is what puts the body back on the ring.
+    #[test]
+    fn a_foreign_bag_is_not_your_bag() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let (x, z) = cell_center(CX, CZ);
+
+        // Nothing placed at all.
+        assert_eq!(deploys.claim_bag(&dc, 7, x, z, 0), None);
+
+        let mut p = player_at_cell(CX, CZ, &[(5, 20)]);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        assert_eq!(
+            deploys.claim_bag(&dc, 8, x, z, 0),
+            None,
+            "a stranger woke on someone else's bag — the owner check is the \
+             whole of base ownership here"
+        );
+        // The refused scan must not have spent the owner's bag either.
+        assert_eq!(deploys.claim_bag(&dc, 7, x, z, 0), Some((x, z)));
+    }
+
+    /// A workbench is not a bed. Every other archetype is invisible to the
+    /// scan, so a base full of boxes still wakes you on the ring.
+    #[test]
+    fn only_a_bag_answers_a_death() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        // Row 1 is the workbench (PLACE_ANY, so bare ground holds it).
+        let mut p = player_at_cell(CX, CZ, &[(3, 5)]);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        let (x, z) = cell_center(CX, CZ);
+        assert_eq!(
+            deploys.claim_bag(&dc, 7, x, z, 0),
+            None,
+            "a workbench answered a death"
+        );
     }
 
     #[test]

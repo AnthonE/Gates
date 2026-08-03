@@ -227,6 +227,132 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
     h.digest()
 }
 
+/// Respawn-on-bag parity: `sequences` independent worlds, each three bots
+/// standing on buildable ground with bags in their packs and a clock fast
+/// enough to kill them several times over, folded into one digest — the
+/// bag half of `test_parity_wasm`.
+///
+/// A probe of its own rather than three more lines in `probe_combat`, and
+/// the reason is that probe's own arrangement: it pins `dev_spawn` to a
+/// *shoreline* point so the drink verb has sea inside reach, and a bag is
+/// ground-class — it wants 1.5 m of height where the beach ring stands at
+/// ~1.2. Moving that pin to buy bag coverage would have taken the landed
+/// drink and the salt death out of the digest, which is trading one gate's
+/// coverage for another's. This world walks inland instead, and gives up
+/// the drink it never had.
+///
+/// **The return value carries a count as well as a digest**, packed
+/// `wakes << 32 | (digest & 0xFFFF_FFFF)`, and that is deliberate: two
+/// targets agreeing on the digest of a path that never ran is exactly the
+/// shape of a pass nobody earned. `ci/gates.sh` reads the high half and
+/// fails on zero, so the claim "the bag scan is inside `test_parity_wasm`"
+/// is asserted rather than asserted-about. The count saturates rather than
+/// wrapping, so it can never be zero for having been large.
+#[no_mangle]
+pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u64 {
+    let mut h = Xxh3::new();
+    let mut wakes: u32 = 0;
+    for s in 0..sequences {
+        let seq_seed = splitmix64(master_seed ^ (s as u64));
+        let mut world = World::new(seq_seed);
+        world.combat = crate::combat::CombatContent::probe_fixture();
+        // Seconds-long spans: a body empties, starves, dies and wakes
+        // several times inside one sequence, which is what puts the scan,
+        // the cooldown and the ring fallback all on this surface.
+        world.survival = crate::survival::SurvivalContent::probe_fixture();
+        world.deploy = crate::deploy::DeployContent::probe_fixture();
+        world.dev_spawn = Some(buildable_near(seq_seed, world.spawn_pos(1)));
+        world.tick(&[
+            Command::Join { id: 1 },
+            Command::Join { id: 2 },
+            Command::Join { id: 3 },
+        ]);
+        // Fixture arrangement: `BAG_CAP` bags each, so the cap, the
+        // cooldown walk to a *second* bag, and the fallback to the ring
+        // when every one of them is spent all ride the digest.
+        for p in world.players.iter_mut().take(3) {
+            p.inv[10] = ItemStack {
+                item: 5, // the fixture's bag item (deploy row 3)
+                count: crate::deploy::BAG_CAP as u16,
+            };
+        }
+        let mut rng = Pcg32::new(seq_seed, 13);
+        let mut yaws = [0u16; 3];
+        for t in 0..ticks {
+            let f1 = bot_frame(&mut rng, yaws[0], t as u16);
+            let f2 = bot_frame(&mut rng, yaws[1], t as u16);
+            let f3 = bot_frame(&mut rng, yaws[2], t as u16);
+            yaws = [f1.yaw, f2.yaw, f3.yaw];
+            // One bot plants a bag at its own feet every tick, in
+            // rotation. They wander, so most requests land on terrain a
+            // ground deploy refuses and the successes spread the bags out
+            // — which is the only arrangement under which "nearest" is a
+            // question with a wrong answer.
+            let placer = (t % 3) as usize;
+            let (cx, cz) = {
+                let b = &world.players[placer].body;
+                let cell = |q: i32| {
+                    crate::build::build_cell_of(q as f32 * crate::movement::POS_XZ_Q).clamp(0, 1023)
+                        as u16
+                };
+                (cell(b.qx), cell(b.qz))
+            };
+            world.tick(&[
+                Command::Input { id: 1, frame: f1 },
+                Command::Input { id: 2, frame: f2 },
+                Command::Input { id: 3, frame: f3 },
+                Command::PlaceDeploy {
+                    id: placer as u32 + 1,
+                    row: 3,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: crate::build::LOC_PLANE,
+                },
+            ]);
+            for e in world.events.entries() {
+                if e.code == crate::world::EV_RESPAWN && e.b == 1 {
+                    wakes = wakes.saturating_add(1);
+                }
+            }
+        }
+        h.update(&world.state_hash().to_le_bytes());
+    }
+    ((wakes as u64) << 32) | (h.digest() & 0xFFFF_FFFF)
+}
+
+/// The first cell center at or inland of `(x, z)` that will hold a
+/// ground-class deployable, stepping toward the island center. Bounded at
+/// 200 steps of one build cell — 600 m, further than beach-to-center — so
+/// it is a search and never a walk to nowhere. No trig and no `sqrt`: the
+/// step direction is normalized by its own largest component, which is a
+/// division (wall 1) and moves along the same ray.
+fn buildable_near(seed: u64, (x, z): (f32, f32)) -> (f32, f32) {
+    let c = terrain::ISLAND_SIZE * 0.5;
+    let (mut dx, mut dz) = (c - x, c - z);
+    let m = if dx < 0.0 { -dx } else { dx }.max(if dz < 0.0 { -dz } else { dz });
+    if m <= 0.0 {
+        return (x, z);
+    }
+    dx /= m;
+    dz /= m;
+    let (mut px, mut pz) = (x, z);
+    let mut i = 0;
+    while i < 200 {
+        let cx = crate::build::build_cell_of(px);
+        let cz = crate::build::build_cell_of(pz);
+        let ax = (cx as f32 + 0.5) * crate::build::BUILD_CELL_M;
+        let az = (cz as f32 + 0.5) * crate::build::BUILD_CELL_M;
+        if crate::build::foundation_terrain_ok(seed, ax, az) {
+            return (ax, az);
+        }
+        px += dx * crate::build::BUILD_CELL_M;
+        pz += dz * crate::build::BUILD_CELL_M;
+        i += 1;
+    }
+    (x, z)
+}
+
 /// Combat parity: `sequences` independent three-bot brawls, each a fresh
 /// world × `ticks` ticks, folded into one digest — the melee half of
 /// `test_parity_wasm`.

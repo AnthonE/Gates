@@ -53,6 +53,15 @@ diff -u "$native_out" "$wasm_out" \
   || fail "test_parity_wasm: native and wasm digests differ"
 grep -q '^parity ' "$native_out" || fail "probe output empty — parity not exercised"
 grep -q '^combat ' "$native_out" || fail "probe output has no combat line — melee not exercised"
+grep -q '^bags ' "$native_out" || fail "probe output has no bags line — respawn-on-bag not exercised"
+# The bags line carries a COUNT before its digest, and this reads it. Two
+# targets can agree byte-for-byte about a path that never ran on either —
+# a digest is only evidence of parity, never of coverage. `probe_bags`
+# counts the deaths that woke on a bag; zero means the fixture stopped
+# reaching the scan and the parity claim above it is empty.
+bag_wakes="$(awk '/^bags /{print $5}' "$native_out")"
+[ -n "$bag_wakes" ] && [ "$bag_wakes" -gt 0 ] \
+  || fail "test_parity_wasm: the bags probe woke nobody on a bag (count '$bag_wakes') — the respawn scan is not actually on the parity surface"
 
 echo "== gate: client wasm bridge smoke (raw C ABI, the browser's calling path)"
 $NICE node ci/client_smoke.mjs || fail "client bridge smoke"

@@ -12,6 +12,7 @@ use sim_core::build::{
 };
 use sim_core::combat::CombatContent;
 use sim_core::craft::CraftContent;
+use sim_core::deploy::DeployContent;
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{INV_SLOTS, MAX_PLAYERS};
@@ -19,7 +20,7 @@ use sim_core::rng::Pcg32;
 use sim_core::survival::{SurvivalContent, REFUSE_C_NO_WATER};
 use sim_core::world::{
     Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH,
-    EV_DRANK, EV_PIECE_REMOVED, EV_STRUCT_HIT,
+    EV_DRANK, EV_PIECE_REMOVED, EV_RESPAWN, EV_STRUCT_HIT,
 };
 
 /// One tick's commands: every bot's input plus a craft enqueue, a cancel,
@@ -148,6 +149,40 @@ fn shoreline(seed: u64) -> (f32, f32) {
     panic!("this island has no coast — the generator changed under this gate");
 }
 
+fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
+    (
+        (cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
+        (cz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
+    )
+}
+
+/// A cell that will hold a ground-class deployable: buildable terrain with
+/// no plane piece already on it. Scanned outward in rings from a start
+/// cell, for the same reason `shoreline` scans — a coordinate that held at
+/// one seed is a fixture that stops meaning what it says the moment the
+/// generator moves. The rule asked is `build::foundation_terrain_ok`, which
+/// is the terrain half of `deploy::ground_ok` verbatim.
+fn buildable_cell(w: &World, seed: u64, cx0: u16, cz0: u16) -> (u16, u16) {
+    for r in 0..64i32 {
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dz.abs() != r {
+                    continue; // ring, not disc
+                }
+                let cx = (cx0 as i32 + dx).clamp(0, 1023) as u16;
+                let cz = (cz0 as i32 + dz).clamp(0, 1023) as u16;
+                let (x, z) = cell_center(cx, cz);
+                if sim_core::build::foundation_terrain_ok(seed, x, z)
+                    && w.pieces.find(cx, cz, 0, LOC_PLANE).is_none()
+                {
+                    return (cx, cz);
+                }
+            }
+        }
+    }
+    panic!("no buildable cell within 64 cells — the generator changed under this gate");
+}
+
 struct CountingAlloc;
 
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
@@ -207,6 +242,13 @@ fn test_alloc_zero() {
     // this gate's real coverage for a comfortable number; the assert is
     // the honest version of the same worry.
     world.survival = SurvivalContent::probe_fixture();
+    // The deploy fixture, for the one path in it this gate has to reach:
+    // the respawn's bag scan. A death now walks the deploy store looking
+    // for the dying player's own bag before it walks the spawn ring, and a
+    // scan is per-tick work like any other — bounded, but only actually
+    // *counted* while a bag exists for it to find. Bot 6's is placed below,
+    // through the real verb.
+    world.deploy = DeployContent::probe_fixture();
     let mut rng = Pcg32::new(0xA110C, 3);
     let mut yaws = [0u16; MAX_PLAYERS];
 
@@ -254,6 +296,39 @@ fn test_alloc_zero() {
     // work and not the sim's — the window must count the tick, not the
     // fixture. Pure float reads of the same heightfield the verb asks.
     let shore = shoreline(SEED);
+
+    // Bot 6 — the body staged to starve below — gets a bag to wake up on,
+    // placed through the real verb on a cell scanned for the same terrain
+    // rule `deploy::ground_ok` applies. So the death inside the window is
+    // not just a death: it is the bag scan finding an answer, stamping the
+    // cooldown onto the store, and putting the body somewhere the spawn
+    // ring never would. Placed here rather than after the counters open
+    // because a placement is the fixture's work; the *respawn* is the
+    // sim's, and that is the half this window counts.
+    let bag_cell = buildable_cell(&world, SEED, 341, 341);
+    let bag_at = {
+        let (x, z) = cell_center(bag_cell.0, bag_cell.1);
+        let b = sim_core::movement::Body::at(SEED, x, z);
+        (b.qx, b.qz)
+    };
+    world.players[5].body = {
+        let (x, z) = cell_center(bag_cell.0, bag_cell.1);
+        sim_core::movement::Body::at(SEED, x, z)
+    };
+    world.players[5].inv[10] = ItemStack { item: 5, count: 1 };
+    world.tick(&[Command::PlaceDeploy {
+        id: 6,
+        row: 3, // the fixture's ground-class bag
+        cx: bag_cell.0,
+        cz: bag_cell.1,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(
+        world.deploys.len(),
+        1,
+        "the staged bag did not place — the fixture, not the gate"
+    );
 
     let a0 = ALLOCS.load(Ordering::SeqCst);
     let f0 = FREES.load(Ordering::SeqCst);
@@ -331,6 +406,13 @@ fn test_alloc_zero() {
     let deaths_before = world.players[2].deaths + world.players[3].deaths;
     let mut bags_dropped = 0u32;
     let mut bags_emptied = 0u32;
+    // Two counters, not one: `bag_wakes` is the scan finding bot 6's bag,
+    // `ring_wakes` is every other body still falling through to the spawn
+    // ring. A window that only counted the first would go green on a
+    // respawn path that had quietly stopped having a fallback at all.
+    let mut bag_wakes = 0u32;
+    let mut ring_wakes = 0u32;
+    let mut woke_off_the_bag = 0u32;
     for t in 0..300u16 {
         let mut cmds = tick_cmds(
             &mut rng,
@@ -395,6 +477,19 @@ fn test_alloc_zero() {
                 }
             } else if ev.code == EV_DRANK {
                 drank += 1;
+            } else if ev.code == EV_RESPAWN {
+                if ev.b == 1 {
+                    bag_wakes += 1;
+                    // Read on the tick the respawn landed, before the next
+                    // step of movement can smear it: the bag's cell, or the
+                    // scan answered with a position it did not choose.
+                    let b = &world.players[ev.a as usize - 1].body;
+                    if (b.qx, b.qz) != bag_at {
+                        woke_off_the_bag += 1;
+                    }
+                } else {
+                    ring_wakes += 1;
+                }
             }
         }
     }
@@ -502,6 +597,29 @@ fn test_alloc_zero() {
         "the starved body's death was never counted — a clock death that does \
          not move `deaths` respawns the body on the identical beach, and the \
          increment fell out of the alloc gate"
+    );
+    // Respawn-on-bag, both halves. The bag scan runs on every death in the
+    // window; these say it ran to both of its verdicts, and that neither
+    // allocated.
+    assert!(
+        bag_wakes > 0,
+        "nobody woke on a bag inside the counted window — the respawn's bag \
+         scan, the cooldown stamp and the store write fell out of the alloc gate"
+    );
+    assert_eq!(
+        woke_off_the_bag, 0,
+        "{woke_off_the_bag} respawns announced a bag and then put the body \
+         somewhere else"
+    );
+    assert!(
+        ring_wakes > 0,
+        "every death in the counted window found a bag — the spawn-ring \
+         fallback is no longer in this gate"
+    );
+    assert!(
+        world.deploys.bag_ready()[0] > 0,
+        "the bag was woken on but never stamped — a cooldown that is not \
+         written is a bag that answers every death in a raid"
     );
     assert!(
         ate > 0 && eat_refused > 0,

@@ -22,6 +22,8 @@ const PARITY_SEQUENCES = 10000;
 const PARITY_TICKS = 16;
 const COMBAT_SEQUENCES = 500;
 const COMBAT_TICKS = 256;
+const BAGS_SEQUENCES = 24;
+const BAGS_TICKS = 600;
 
 let bytes;
 try {
@@ -33,11 +35,13 @@ try {
 }
 
 const { instance } = await WebAssembly.instantiate(bytes, {});
-const { probe_terrain, probe_parity, probe_combat } = instance.exports;
+const { probe_terrain, probe_parity, probe_combat, probe_bags } =
+  instance.exports;
 if (
   typeof probe_terrain !== "function" ||
   typeof probe_parity !== "function" ||
-  typeof probe_combat !== "function"
+  typeof probe_combat !== "function" ||
+  typeof probe_bags !== "function"
 ) {
   console.error("GATE FAIL: probe exports missing from sim_core.wasm");
   process.exit(1);
@@ -60,4 +64,14 @@ const c = BigInt.asUintN(
 );
 console.log(
   `combat ${hex(PARITY_MASTER_SEED)} ${COMBAT_SEQUENCES} ${COMBAT_TICKS} ${hex(c)}`,
+);
+// Packed `wakes << 32 | digest32` (see probe.rs) — split into the same two
+// fields examples/probe.rs prints, so gates.sh can read the count.
+const b = BigInt.asUintN(
+  64,
+  probe_bags(PARITY_MASTER_SEED, BAGS_SEQUENCES, BAGS_TICKS),
+);
+const bagsHex = "0x" + (b & 0xffffffffn).toString(16).padStart(8, "0");
+console.log(
+  `bags ${hex(PARITY_MASTER_SEED)} ${BAGS_SEQUENCES} ${BAGS_TICKS} ${b >> 32n} ${bagsHex}`,
 );
