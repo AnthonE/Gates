@@ -174,6 +174,14 @@ function parseValue(raw) {
 
 function scalar(s) {
   s = s.trim();
+  // A colour, in the `0xRRGGBB` form both languages here write one in. Added
+  // when the daylight register landed four of them in one row: they had been
+  // falling into the "not a numeric knob" bucket, which is printed but not
+  // pinned, so `DECISIONS.md` could have claimed one sky and the client could
+  // have shipped another with the registry gate green over the disagreement.
+  // That is the exact failure this file was written for, and the colours are
+  // the knobs a lighting row is mostly MADE of.
+  if (/^0x[0-9a-fA-F]+$/.test(s)) return Number(s);
   if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
   // A knob written as a ratio, e.g. `1 / 9.5`.
   const div = s.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)$/);

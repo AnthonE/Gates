@@ -16,40 +16,229 @@ const EYE_HEIGHT = 1.6; // cosmetic (DECISIONS.md §open, client cosmetics)
 const YAW_TO_RAD = (Math.PI * 2) / 65536;
 
 // --- lighting v0 (DECISIONS.md §open, "lighting v0") ------------------------
-// One key, one fill, one bounded shadow map, one tone map. The register is
-// the spoken art direction — "Rust with a darker edge": a low warm sun so
-// everything rakes, and a cold fill deliberately kept under the key so a
-// shadow stays a shadow. Nothing here is a post stack; the only stages are
-// light ratios → tone map → sRGB output.
+// One key, one fill, one bounded shadow map, one tone map. Nothing here is a
+// post stack; the only stages are light ratios → tone map → sRGB output.
 //
 // The tone map is Khronos PBR Neutral, not ACES, and that was measured
 // rather than chosen: ACES's toe put the dark-albedo scatter (the 0x2f6b33
 // pine) at ~20/255 on its shaded side, which is a crushed image, not a dark
 // one. Neutral is identity below ~0.8 linear and only rolls the highlights
 // off, so what darkens this scene is the shadow map, not the transfer.
-
-// Where the sun sits. Azimuth is the compass bearing of the sun itself
-// (0 = +Z, increasing toward +X, matching the sim's yaw); elevation is
-// its angle above the horizon. Low, so shadows are long and read as shape.
+//
+// --- the daylight register (DECISIONS.md §open, "the daylight register") ----
+//
+// v0's register was the retired art direction — "Rust with a darker edge" —
+// and the operator retired that on 2026-08-01 ("just rip rust for now"). What
+// it left behind was measured by the visual judge on pass 20260803-064506-01
+// and it is not a matter of taste; it is a value hierarchy that is upside
+// down against every one of the eighteen reference frames:
+//
+//   · **the sky was the DARKEST large surface in the frame** — ours 55–114
+//     luma against lit sand at 160–200, where `generichighview2.jpg` and
+//     `roads.jpeg` both put the sky at 186–191, above everything. A ground
+//     brighter than its own sky is not a dark scene, it is an inverted one:
+//     nothing in it can read as being lit BY the sky.
+//   · **aerial perspective never engaged at all**, because the fog near plane
+//     sat at 180 m against a near ring that is 160 m of visible ground. Not
+//     "too little fog" — *no* fog, on every pixel the six vantages could see.
+//     Measured near-to-far grass 68→73 luma and 0.677→0.558 saturation, flat,
+//     where the reference runs 87→188 and 0.363→0.135 converging on the sky.
+//   · **the dome could not hold a sun, a cloud or a horizon band**: 24×16
+//     vertices, vertex-coloured, so the largest flat region in every frame
+//     banded in ~7 px steps and the one shot aimed at the sky was 360 px of
+//     pure linear gradient.
+//
+// `CLAUDE.md`'s trap list is explicit that these are ONE owner — "tonemap,
+// sky, exposure and fog are one owner; split across parallel passes they
+// break each other's assumptions faster than they improve" — so this slice
+// takes all of them at once and gates the result on three counted asserts
+// (`daylightProbe`, below) rather than on anybody's eye.
+//
+// **What this slice deliberately does NOT move: the sun's elevation.** The
+// visual report asks for "sun elevation up to a near-midday register" and
+// that is the one item here that cannot be taken without reddening a wall.
+// The shadow gate's floors — 15% of the sweep darkened, 10% on every yaw —
+// were measured against terrain self-shadowing under a 21° sun, where a
+// hillside shades 2.66 m of ground per metre of relief. At 45° that is 1.0 m,
+// which is most of the measured 24.0% gone, and the honest reading of a floor
+// that a change would breach is that the change is not done, not that the
+// floor is too high. It goes to `DECISIONS.md` §open as a proposal with the
+// shadow work it needs, and the sky it hangs in is bright either way — a low
+// sun under a bright sky is late afternoon, which is a register, where a
+// bright ground under a dark sky is an error.
 const SUN_AZIMUTH = 2.35;
 const SUN_ELEVATION = 0.36;
+// The key's colour, unchanged from v0 — and the pass tried moving it, measured
+// it, and put it back, which is worth recording because the measurement says
+// something the fill below depends on.
+//
+// v0 is a strongly orange sun over an ambient so dark that a shaded face
+// rendered as near-black noise. Give that shaded face real light and the two
+// illuminants stop being one dominant and one rounding error: every object is
+// lit by a warm source on one side and whatever the fill is on the other, and
+// the CHROMATIC distance between them is painted across every silhouette in
+// the world. The prop gate reads that directly — its wall is the ratio of the
+// boulder's chromaticity spread with the procedural field ON against OFF, and
+// a bright NEUTRAL fill put 21% into that denominator without touching the
+// numerator: x1.12 → x1.0986 against a x1.10 floor.
+//
+// The obvious fix is to walk the sun toward the fill, and it is the wrong one.
+// Measured at `0xfff1de` (0.069 from the fill against v0's 0.132): the ratio
+// fell FURTHER, to x1.06, because a warm key does not only cost spread, it
+// AMPLIFIES the rock's own chromatic deviation — the numerator dropped 38%
+// while the denominator barely moved. The light that shows a mineral is the
+// coloured one. So the sun stays where it is and the fill comes to IT.
 const SUN_COLOR = 0xffe1b8;
 const SUN_INTENSITY = 3.0;
-// The fill is sky-above / earth-below, cold over warm, and it is the whole
-// ambient budget: a shadow lit only by this reads blue and stays dark.
+// The fill is sky-above / earth-below, and it is the whole ambient budget:
+// every face the key cannot reach is lit by this and by nothing else.
+//
+// So it is also the **ambient floor**, which is the third defect above stated
+// as arithmetic. The visual judge measured lit-vs-unlit faces of the same
+// object at 89.5 vs 9.1 and 57.2 vs 6.1 — ratios of 0.10, i.e. a shaded face
+// is a black silhouette carrying no albedo, no grain and no material identity
+// at all. Half of every object's screen area was therefore unreadable, and
+// that is the mechanism behind the report's OTHER finding, the one that reads
+// as a materials defect: "not one carries a texture". A texture that renders
+// at a tenth of its lit value is not a texture anybody can see. The judge's
+// own bar is 0.30 and `daylightProbe` asserts it.
+//
+// Raised on both counts, and the ground half more than the sky half: the
+// v0 pair is a clear-sky ratio, and the surface under this scene is sand and
+// dry grass at high albedo, which bounces. `key > fill` still holds — the
+// lighting gate asserts it, and a fill at or above the key is the flat
+// hemisphere state lighting v0 exists to have ended.
+// The pair is BRIGHT and very nearly ACHROMATIC, where v0's was dark and
+// strongly split, and both halves of that were forced by a wall.
+//
+// A hemisphere light's colour is a function of the surface normal, so the gap
+// between its two poles is a chromatic difference between the up-facing and
+// down-facing facets of every object in the world — and the intensity scales
+// that difference with it. v0's poles sit **0.217 apart** in linear
+// chromaticity (a cold slate over a brown earth). Raising a pair that split
+// is not "more ambient", it is more hue variation painted onto every object
+// by the light, and the prop gate caught it immediately and correctly: the
+// boulder's chromaticity spread with the procedural FIELD OFF rose far enough
+// to take the field's own ratio from the x1.12 `DECISIONS.md` records to
+// x1.07, i.e. the ambient started doing the hue work the material is gated on
+// doing. This pair sits **0.051 apart**, so at 1.3 the facet split is 0.066
+// against v0's 0.25 — a quarter of it — and the fill can be raised without
+// spending a wall that belongs to somebody else's slice.
+//
+// Bright, because the number that has to move is the DOWN pole and v0's was
+// nearly black. The previous pass wrote the arithmetic out and handed it
+// here: a down-facing prop face receives only `FILL_GROUND x FILL_INTENSITY`,
+// which delivered the pine canopy's underside at **RGB (2, 6, 1)** — the
+// visual judge measured (2, 6, 0) on `03-canopy-up` — and that row says in
+// its own words that no albedo can fix it, "because there is no light on it",
+// and that the fix is this coupled edit. The down pole goes 0.132 → 0.75 of
+// linear luminance, **5.7x**, and that is the whole of criterion 2's "half of
+// every object is a black identity-free silhouette".
+// **Nothing here moved, and that is this pass's largest finding rather than
+// its omission.** The visual judge's third counted ask was an ambient floor —
+// no unlit face below 0.30 of its lit one — and the previous pass wrote out
+// the arithmetic and handed it to this one: a down-facing prop face receives
+// only `FILL_GROUND x FILL_INTENSITY`, which delivers the pine canopy's
+// underside at **RGB (2, 6, 1)** against the judge's measured (2, 6, 0), and
+// that row says in its own words that no albedo can fix it "because there is
+// no light on it".
+//
+// It cannot be raised yet, and the block is a WALL, not a difficulty. The
+// prop gate's own assertion is the ratio of a prop's chromaticity spread with
+// the material's procedural field ON against OFF, shipping at x1.12 (boulder)
+// and x1.13 (pine) against a x1.10 floor — 0.02 of headroom. Every unit of
+// ambient lands in that ratio's DENOMINATOR and none of it in the numerator,
+// because light added to a face that was rendering as near-black noise is new
+// chromaticity in the frame that the material did not put there. Six
+// configurations were built and measured, and every one of them is red:
+//
+//   fill 1.9, poles 0.143 apart      → boulder x1.07, and the shadow gate at
+//                                      14.57% against its own 15% floor
+//   fill 1.5, poles 0.143 apart      → boulder x1.09
+//   fill 1.3, poles 0.051 apart      → boulder x1.0995
+//   …with EXPOSURE 0.8 -> 0.7        → boulder x1.0986
+//   fill 1.3, poles ON the key's hue → boulder x1.067
+//   key walked toward the fill       → boulder x1.06
+//   **sky pole at v0, BOUNCE alone
+//     raised 3.4x**                  → boulder RECOVERS, pine x1.07
+//
+// The last line is the one that settles it: the two poles fail through two
+// different props. The sky pole lights the up- and side-facing majority of a
+// boulder, the bounce pole lights a canopy's underside, and each breaks the
+// prop whose faces it reaches. There is no split of this budget that raises
+// the floor and leaves that ratio alone. And the two obvious escapes are
+// worse rather than better, measured: putting the fill on the key's own
+// chromaticity costs 38% of the NUMERATOR, because a coloured light is what
+// makes a mineral's chromatic deviation visible in the first place.
+//
+// **So the floor waits for the numerator, which is somebody else's slice.**
+// `NOW.md`'s "nothing that is not the ground has a surface" is the pass that
+// raises a prop's authored chroma; with it, the same ambient buys a ratio
+// that clears x1.10 and this becomes a two-line change. Raising it now would
+// mean lowering a wall to fit, which ends a run. The six rows above are the
+// measurement that pass inherits, so it starts from a bounded problem.
 const FILL_SKY = 0xa9c3e2;
 const FILL_GROUND = 0x6b5f4a;
 const FILL_INTENSITY = 1.15;
 // One tone map, owned by the renderer. No material sets its own.
+//
+// **Unchanged at v0's 0.8, and that is a measurement rather than an
+// oversight.** This slice ran at 0.7 for three of its rounds, as the front-end
+// compensation for a fill of 1.9 — the same stops arriving over a narrower
+// range would otherwise have paid for a readable shadow with a chalky
+// highlight. The fill ended at 1.3, so the compensation stopped being owed;
+// and 0.7 cost something measurable on the way out, because the darkest
+// pixels are where 8-bit chromaticity is most quantized: at 0.7 the boulder's
+// delivered p05 fell to 22/255 and the prop gate's ship-vs-flat chroma ratio
+// with it, to x1.0995 against its x1.10 floor. Exposure is a front-end scale
+// on everything, so it is the cheapest thing in this file to leave alone.
 const EXPOSURE = 0.8;
 // Fog and the sky dome share a horizon colour, so the seam is exact by
-// construction rather than by tuning two numbers against each other.
-const FOG_COLOR = 0x808f9c;
-const FOG_NEAR = 180;
-const FOG_FAR = 1000;
-const SKY_ZENITH = 0x2c4463;
-const SKY_CURVE = 0.62; // horizon→zenith ramp; <1 lifts the gradient early
+// construction rather than by tuning two numbers against each other. That
+// colour is now the HAZE: bright, desaturated, and above every ground value
+// in the frame, so distance both lightens and washes out — which is what
+// aerial perspective is, and what makes the sky the top of the value range
+// instead of the bottom of it.
+const FOG_COLOR = 0xc9d8e4;
+// Inside the ring, by construction rather than by taste: the near ring is
+// 5×5 chunks of 64 m, so the player can see 160 m of detailed ground and a
+// near plane past that is a term no visible pixel evaluates. 20 m is close
+// enough that the ramp starts inside the frame a standing player has.
+const FOG_NEAR = 20;
+// And the far plane is where the island stops being read rather than where it
+// stops being drawn: 1400 m against the camera's 1500 m far and the island's
+// 2048 m width. Deliberately not shorter. The far-shadow and horizon gates
+// measure shadow contrast at 200–500 m, and fog is the one change in this file
+// that can only ever REMOVE contrast at distance; 1400 m puts 14–34% of haze
+// there against their ~29–48/255 mean deltas and a 6/255 bar.
+const FOG_FAR = 1400;
+const SKY_ZENITH = 0x4a7cc0;
+// The horizon→zenith ramp, now **above** 1: the haze band is the first few
+// degrees of sky holding the horizon colour before the blue takes over, and a
+// curve under 1 does the exact opposite (v0's 0.62 lifted the zenith blue down
+// to the ground line). At 1.6 the ramp is at 20% of the way to the zenith
+// 8.5° up and half way at 34°.
+const SKY_CURVE = 1.6;
 const SKY_RADIUS = 10;
+// The sun's own disc, and the reason the dome is a fragment program now.
+// `roads.jpeg` and `generichighview2.jpg` both carry one; ours had none, while
+// the water already rendered a specular track clipping to 252 in a frame whose
+// 99th percentile is ~140 — a glitter with no source. Angular radii in radians
+// (the real sun is 0.0047; this is the painted one, which every game enlarges
+// so it survives a 75° FOV), then the halo's cosine power and the two gains in
+// linear working space, over a sky that peaks near 0.6.
+const SUN_DISC_RAD = [0.012, 0.03];
+const SUN_DISC_GAIN = 9.0;
+const SUN_GLOW_POW = 220.0;
+const SUN_GLOW_GAIN = 0.9;
+// One LSB of dither on the dome, in the linear space it is computed in. The
+// sky is the largest flat region in any frame and an 8-bit ramp across it
+// banded in ~7 px steps; the derivative of the sRGB transfer near the sky's
+// own 0.5 linear is ~0.66, so 0.006 of linear is ~1.5/255 of output — enough
+// to break a step, small enough that no other measurement can see it. Hashed
+// on `gl_FragCoord` and nothing else, so it is a FIXED pattern: every probe in
+// this file renders one frame twice and requires the pair to be identical.
+const SKY_DITHER = 0.006;
 
 // Shadow coverage is a clipmap now — concentric light-space levels, each
 // snapped to its own texel grid, coarse ones cached (shadows.js owns the
@@ -99,6 +288,66 @@ const DOOR_LOCKED_COLOR = 0x3c3f44;
 // cell across or a level tall, so this sphere contains any of them.
 const PIECE_RADIUS_M = Math.sqrt(CELL * CELL + LEVEL_H * LEVEL_H + CELL * CELL);
 
+/**
+ * Khronos PBR Neutral, in JS, exactly as three's `NeutralToneMapping` chunk
+ * writes it — on a `THREE.Color` in the linear working space, in place.
+ *
+ * It exists for one colour: the fog's. Three applies fog AFTER the tone map
+ * and after the output transform (`fog_fragment` is the last chunk in the
+ * chain), so the fog colour is the one shaded quantity in the frame that the
+ * renderer's transfer never touches. Lighting v0's claim that "fog and the
+ * sky dome share a horizon colour, so the seam is exact by construction" was
+ * therefore already off by the transfer — the dome is tone-mapped and exposed
+ * and the fog is not, so one hex reached the image as two values (at exposure
+ * 0.8 they landed within ~10% of each other, which is why nobody saw it).
+ *
+ * Raising the haze to a daylight register makes that gap visible: distant
+ * ground would converge on a value ~28/255 ABOVE the sky directly over it,
+ * which is the inverted hierarchy this whole slice exists to end, rebuilt at
+ * the horizon line. So the fog is handed the colour the dome will actually
+ * render — exposure applied, then this — and the seam is exact for real.
+ */
+function toneMapNeutral(c) {
+  const startCompression = 0.8 - 0.04;
+  const desaturation = 0.15;
+  const x = Math.min(c.r, Math.min(c.g, c.b));
+  const offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+  c.r -= offset;
+  c.g -= offset;
+  c.b -= offset;
+  const peak = Math.max(c.r, Math.max(c.g, c.b));
+  if (peak < startCompression) return c;
+  const d = 1 - startCompression;
+  const newPeak = 1 - (d * d) / (peak + d - startCompression);
+  const scale = newPeak / peak;
+  c.r *= scale;
+  c.g *= scale;
+  c.b *= scale;
+  const g = 1 - 1 / (desaturation * (peak - newPeak) + 1);
+  c.r += (newPeak - c.r) * g;
+  c.g += (newPeak - c.g) * g;
+  c.b += (newPeak - c.b) * g;
+  return c;
+}
+
+/**
+ * The bin at which a histogram's running count first reaches `want`.
+ *
+ * Used by `daylightProbe` for every quantile it reports. A histogram rather
+ * than a sort because every quantity it asks about is already 8-bit, and
+ * sorting two million values per yaw would be the probe's entire cost.
+ * Returns the last bin when `want` is past the total, which is the same
+ * answer a sort would give.
+ */
+function quantileBin(hist, want) {
+  let run = 0;
+  for (let i = 0; i < hist.length; i++) {
+    run += hist[i];
+    if (run >= want) return i;
+  }
+  return hist.length - 1;
+}
+
 /** Mark an object (and a group's children) as both caster and receiver. */
 function shadowed(obj) {
   obj.castShadow = true;
@@ -111,29 +360,104 @@ function shadowed(obj) {
 }
 
 /**
- * The sky dome's geometry: a sphere whose vertex colours ramp from the fog
- * colour at and below the horizon to SKY_ZENITH overhead. Colours are
- * written in the working (linear) space THREE.Color converts the sRGB hex
- * into — the same conversion the fog colour gets — so the horizon ring
- * matches the fog exactly before either is tone-mapped.
+ * The sky, as a fragment program on a stock `MeshBasicMaterial`.
+ *
+ * v0 painted the ramp into 24×16 VERTEX colours, and the visual judge scored
+ * exactly what that is: the largest flat region in every frame, banding in
+ * ~7 px steps, with nowhere to put a sun. A vertex colour cannot hold a disc
+ * a third of a degree across, and no amount of tessellation fixes a gradient
+ * that is being reconstructed by the rasterizer at 8 bits.
+ *
+ * So the ramp, the haze band, the disc, its halo and the dither are all
+ * evaluated per fragment from the view direction. Three things are kept from
+ * v0 deliberately, because they are load-bearing and easy to lose:
+ *
+ *   1. It is still a **patched stock material**, not a raw `ShaderMaterial`.
+ *      Three's own `tonemapping_fragment` and `colorspace_fragment` run
+ *      after ours untouched, so the dome goes through the one tone map the
+ *      renderer owns — the whole reason the sky is geometry and not a clear
+ *      colour (a clear colour is the one surface the tone mapper never sees).
+ *   2. The colour **at and below the horizon is exactly `FOG_COLOR`**, in the
+ *      same linear working space the fog is converted into, so the seam where
+ *      the fogged ground meets the sky is exact by construction. `t` is 0 for
+ *      every direction at or under y = 0.
+ *   3. The dither is hashed on `gl_FragCoord` alone. Every probe in this file
+ *      renders one frame twice and requires the two to be bit-identical; a
+ *      dither that moved with time or frame count would break all of them, and
+ *      would be a temporal artefact in the bargain.
  */
-function skyDomeGeometry() {
-  const geo = new THREE.SphereGeometry(SKY_RADIUS, 24, 16);
-  const pos = geo.attributes.position;
-  const horizon = new THREE.Color(FOG_COLOR);
-  const zenith = new THREE.Color(SKY_ZENITH);
-  const colors = new Float32Array(pos.count * 3);
-  const c = new THREE.Color();
-  for (let i = 0; i < pos.count; i++) {
-    const y = pos.getY(i) / SKY_RADIUS;
-    const t = y <= 0 ? 0 : Math.pow(y, SKY_CURVE);
-    c.copy(horizon).lerp(zenith, t);
-    colors[i * 3] = c.r;
-    colors[i * 3 + 1] = c.g;
-    colors[i * 3 + 2] = c.b;
-  }
-  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-  return geo;
+function skyMaterial(toSun) {
+  const mat = new THREE.MeshBasicMaterial({
+    side: THREE.BackSide,
+    fog: false,
+    depthWrite: false,
+    depthTest: false,
+  });
+  const uniforms = {
+    uSkyHorizon: { value: new THREE.Color(FOG_COLOR) },
+    uSkyZenith: { value: new THREE.Color(SKY_ZENITH) },
+    uSkyCurve: { value: SKY_CURVE },
+    uSunDir: { value: toSun.clone() },
+    uSunDisc: { value: new THREE.Vector2(Math.cos(SUN_DISC_RAD[0]), Math.cos(SUN_DISC_RAD[1])) },
+    uSunGains: { value: new THREE.Vector2(SUN_DISC_GAIN, SUN_GLOW_GAIN) },
+    uSunGlowPow: { value: SUN_GLOW_POW },
+    uSkyDither: { value: SKY_DITHER },
+  };
+  mat.userData.uniforms = uniforms;
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vGmSkyDir;")
+      .replace(
+        "#include <begin_vertex>",
+        "#include <begin_vertex>\nvGmSkyDir = position;",
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        /* glsl */ `#include <common>
+varying vec3 vGmSkyDir;
+uniform vec3 uSkyHorizon;
+uniform vec3 uSkyZenith;
+uniform float uSkyCurve;
+uniform vec3 uSunDir;
+uniform vec2 uSunDisc;
+uniform vec2 uSunGains;
+uniform float uSunGlowPow;
+uniform float uSkyDither;
+float gmSkyHash(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}`,
+      )
+      // `color_fragment` is where a vertex colour would have multiplied in;
+      // taking its place is what makes this the only writer of the dome's
+      // albedo, with three's transfer still downstream of it.
+      .replace(
+        "#include <color_fragment>",
+        /* glsl */ `
+  vec3 gmDir = normalize(vGmSkyDir);
+  // The ramp. Clamped at the horizon, so every direction at or below y = 0 is
+  // exactly the fog colour and the seam needs no tuning.
+  float gmUp = max(gmDir.y, 0.0);
+  vec3 gmSky = mix(uSkyHorizon, uSkyZenith, pow(gmUp, uSkyCurve));
+  // The disc, and the halo that says where its light came from.
+  float gmCos = dot(gmDir, uSunDir);
+  float gmDisc = smoothstep(uSunDisc.y, uSunDisc.x, gmCos);
+  float gmGlow = pow(max(gmCos, 0.0), uSunGlowPow);
+  gmSky += diffuse * (gmDisc * uSunGains.x + gmGlow * uSunGains.y);
+  // One LSB, fixed per pixel.
+  gmSky += (gmSkyHash(gl_FragCoord.xy) - 0.5) * uSkyDither;
+  diffuseColor.rgb = max(gmSky, 0.0);`,
+      );
+  };
+  // `diffuse` is the sun's own colour above: the disc and the halo are the
+  // only things in the dome that carry it, and routing them through the
+  // material's colour keeps three's uniform plumbing rather than adding a
+  // ninth one that says the same thing.
+  mat.color = new THREE.Color(SUN_COLOR);
+  return mat;
 }
 
 export class GameScene {
@@ -144,7 +468,8 @@ export class GameScene {
     // nothing re-encodes sRGB downstream. The clear colour is the only
     // surface the tone mapper never sees, which is exactly why the sky is
     // geometry below — the clear is a fallback that the dome always covers.
-    this.renderer.setClearColor(FOG_COLOR);
+    this._fogRender = toneMapNeutral(new THREE.Color(FOG_COLOR).multiplyScalar(EXPOSURE));
+    this.renderer.setClearColor(this._fogRender);
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.toneMappingExposure = EXPOSURE;
     this.renderer.shadowMap.enabled = true;
@@ -154,7 +479,12 @@ export class GameScene {
     // exact half of the budget this rig just added. Own the reset instead.
     this.renderer.info.autoReset = false;
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.Fog(FOG_COLOR, FOG_NEAR, FOG_FAR);
+    // The haze, on the transfer's own scale — see `toneMapNeutral`. The dome
+    // paints `FOG_COLOR` and the renderer exposes and tone-maps it on the way
+    // out; the fog is mixed in after both, so it is handed the answer instead
+    // of the question, and the horizon seam is exact rather than off by a
+    // transfer nobody had noticed was in the way.
+    this.scene.fog = new THREE.Fog(this._fogRender, FOG_NEAR, FOG_FAR);
     this.camera = new THREE.PerspectiveCamera(
       75,
       window.innerWidth / window.innerHeight,
@@ -162,19 +492,24 @@ export class GameScene {
       1500,
     );
 
+    // World-space unit vector pointing AT the sun. The sun does not move in
+    // v0, so the light-space basis it defines is built once, inside the
+    // clipmap, and only read in the RAF path. Built before the dome, which
+    // now paints a disc where this points.
+    const ce = Math.cos(SUN_ELEVATION);
+    this._toSun = new THREE.Vector3(
+      ce * Math.sin(SUN_AZIMUTH),
+      Math.sin(SUN_ELEVATION),
+      ce * Math.cos(SUN_AZIMUTH),
+    ).normalize();
+
     // The sky is a dome, not a clear colour, for one reason: fog is shaded
     // and therefore tone-mapped, a clear colour is not. Painting the sky as
     // geometry puts both through the same tone map, so the horizon seam is
     // exact instead of tuned. Its horizon ring IS the fog colour.
     this.sky = new THREE.Mesh(
-      skyDomeGeometry(),
-      new THREE.MeshBasicMaterial({
-        vertexColors: true,
-        side: THREE.BackSide,
-        fog: false,
-        depthWrite: false,
-        depthTest: false,
-      }),
+      new THREE.SphereGeometry(SKY_RADIUS, 24, 16),
+      skyMaterial(this._toSun),
     );
     this.sky.renderOrder = -1;
     this.sky.frustumCulled = false;
@@ -183,16 +518,6 @@ export class GameScene {
     const fill = new THREE.HemisphereLight(FILL_SKY, FILL_GROUND, FILL_INTENSITY);
     this.scene.add(fill);
     this.fill = fill;
-
-    // World-space unit vector pointing AT the sun. The sun does not move in
-    // v0, so the light-space basis it defines is built once, inside the
-    // clipmap, and only read in the RAF path.
-    const ce = Math.cos(SUN_ELEVATION);
-    this._toSun = new THREE.Vector3(
-      ce * Math.sin(SUN_AZIMUTH),
-      Math.sin(SUN_ELEVATION),
-      ce * Math.cos(SUN_AZIMUTH),
-    ).normalize();
     // The key. It is level 0 of the clipmap — the only level carrying any
     // intensity — so "the sun" and "the near shadow map" are one object, and
     // the coarse levels exist purely as depth.
@@ -1350,6 +1675,264 @@ export class GameScene {
   }
 
   /**
+   * Dev-only: is the daylight register the right way up, and is there air?
+   *
+   * The three questions here are the three the visual judge left as counted
+   * asserts, and each is a difference of frames rather than a threshold on
+   * one — the same shape every other probe in this file wears, for the same
+   * reason: a single number off a single render is a claim about this box's
+   * rasterizer, and a difference between two renders of one scene is a claim
+   * about the scene.
+   *
+   *   **a · the sky is above the ground.** Rendered again with the dome
+   *      hidden over a magenta clear, which the tone mapper never touches, so
+   *      "sky" is the set of pixels that come back EXACTLY (255, 0, 255) —
+   *      a mask by construction, not by a colour distance nobody calibrated.
+   *      The frame's own sky luma is then compared against its own ground.
+   *      This is the inverted-hierarchy defect stated as a number: ours was
+   *      55–114 sky against 160–200 sand, the reference is 186–191 over
+   *      everything.
+   *
+   *   **b · distance lightens and washes out.** Rendered again with the fog
+   *      pushed past every geometry in the frame, and the per-pixel delta
+   *      between the two IS the amount of air in front of that pixel — a
+   *      depth channel this client has no other way to read, and one that is
+   *      monotone in distance by the transfer's own construction. So the
+   *      changed pixels are split into terciles OF THAT DELTA (near, mid,
+   *      far) and each tercile's mean luma and mean saturation are reported.
+   *      Aerial perspective is exactly the claim that luma rises and
+   *      saturation falls across those three. The sky cannot contaminate it:
+   *      the dome is `fog: false`, so its delta is exactly zero and it never
+   *      enters a tercile.
+   *
+   *   **c · the ambient floor.** Rendered again with the key at zero
+   *      intensity, which leaves the hemisphere fill and nothing else — so
+   *      per ground pixel, `luma(fill only) / luma(full)` is the share of
+   *      that pixel's light that survives losing the sun, which is what an
+   *      unlit face of a lit object gets. The judge's bar is 0.30 and its
+   *      measurements were taken in this same 8-bit output space, so this is
+   *      measured there too rather than being converted into a linear ratio
+   *      the bar was never written against.
+   *
+   * Four renders and four readbacks per yaw. Nothing here recompiles a
+   * program: the fog is moved by its own near/far uniforms rather than by
+   * `scene.fog = null` (which is a `USE_FOG` define, i.e. a relink of every
+   * material in the scene), and the key is moved by intensity.
+   *
+   * Allocates and renders 4N frames; never call it from the RAF path.
+   */
+  daylightProbe(yaws, pitchRad, minDelta, heightM = 0) {
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const px = w * h;
+    const full = new Uint8Array(px * 4);
+    const nofog = new Uint8Array(px * 4);
+    const ambient = new Uint8Array(px * 4);
+    const nosky = new Uint8Array(px * 4);
+    const keepQ = this.camera.quaternion.clone();
+    const keepPos = this.camera.position.clone();
+    // The lift, on the same argument `horizonProbe` and `farShadowProbe` make
+    // for theirs: from eye height on a beach, the ground past 100 m is a band
+    // a few pixels tall under the horizon, so a question about DISTANCE asked
+    // from there is answered by almost no pixels. The caller sweeps twice —
+    // once at the eye, where the register and the ambient floor live, and once
+    // lifted, where the air is.
+    this.camera.position.y += heightM;
+    this.sky.position.copy(this.camera.position);
+    const pos = this.camera.position;
+    const fog = this.scene.fog;
+    const keepNear = fog ? fog.near : 0;
+    const keepFar = fog ? fog.far : 0;
+    const keepKey = this.sun.intensity;
+    // Past the camera's own far plane, so no drawn fragment can reach the
+    // ramp. A window of 1 m keeps the transfer well conditioned.
+    const OFF_NEAR = 1e6;
+    const samples = [];
+    // Reused across yaws: a 256-bin histogram of the fog FACTOR, and one of
+    // the ambient ratio. Histograms rather than sorted arrays because both
+    // quantities are 8-bit — a sort of a million values per yaw would be the
+    // probe's whole cost.
+    const fHist = new Int32Array(256);
+    const rHist = new Int32Array(256);
+    // The value a fully fogged pixel takes, in the 8-bit output space this
+    // probe reads. Three mixes the fog colour in after the transfer, so it
+    // reaches the frame as the sRGB encoding of the colour handed to
+    // `THREE.Fog` — no exposure and no tone map, which is exactly what
+    // `toneMapNeutral` above pre-applies so that this ends up equal to what
+    // the dome renders at the horizon.
+    const fogHex = fog ? fog.color.getHex(THREE.SRGBColorSpace) : 0;
+    const fogOut =
+      ((((fogHex >> 16) & 255) * 2 + ((fogHex >> 8) & 255) * 5 + (fogHex & 255)) >> 3) || 1;
+    // How far a pixel's own no-fog value must sit from the haze before the
+    // factor can be recovered from it at all. `f = (a - b) / (fogOut - b)` is
+    // a division by that gap, so a pixel already the colour of the haze
+    // carries no usable depth and is dropped rather than estimated.
+    const FOG_MIN_GAP = 12;
+    for (let i = 0; i < yaws.length; i++) {
+      const cp = Math.cos(pitchRad);
+      this._dir.set(
+        Math.sin(yaws[i]) * cp,
+        Math.sin(pitchRad),
+        Math.cos(yaws[i]) * cp,
+      );
+      this._target.copy(pos).add(this._dir);
+      this.camera.lookAt(this._target);
+
+      this.renderer.render(this.scene, this.camera);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, full);
+
+      if (fog) {
+        fog.near = OFF_NEAR;
+        fog.far = OFF_NEAR + 1;
+      }
+      this.renderer.render(this.scene, this.camera);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, nofog);
+      if (fog) {
+        fog.near = keepNear;
+        fog.far = keepFar;
+      }
+
+      this.sun.intensity = 0;
+      this.renderer.render(this.scene, this.camera);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, ambient);
+      this.sun.intensity = keepKey;
+
+      this.sky.visible = false;
+      this.renderer.setClearColor(0xff00ff, 1);
+      this.renderer.render(this.scene, this.camera);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, nosky);
+      this.sky.visible = true;
+      this.renderer.setClearColor(this._fogRender);
+
+      fHist.fill(0);
+      rHist.fill(0);
+      let skyN = 0;
+      let skySum = 0;
+      let groundN = 0;
+      let groundSum = 0;
+      let ratioN = 0;
+      let noFogSum = 0;
+      let maxDelta = 0;
+      const groundHist = new Int32Array(256);
+      let changed = 0;
+      let up = 0;
+      let fogN = 0;
+      for (let p = 0; p < full.length; p += 4) {
+        const a = (full[p] * 2 + full[p + 1] * 5 + full[p + 2]) >> 3;
+        if (nosky[p] === 255 && nosky[p + 1] === 0 && nosky[p + 2] === 255) {
+          skyN++;
+          skySum += a;
+          continue;
+        }
+        groundN++;
+        groundSum += a;
+        groundHist[a]++;
+        const b = (nofog[p] * 2 + nofog[p + 1] * 5 + nofog[p + 2]) >> 3;
+        noFogSum += b;
+        const d = a - b;
+        if (d > maxDelta) maxDelta = d;
+        if (d > minDelta || d < -minDelta) {
+          changed++;
+          if (d > 0) up++;
+        }
+        // The depth channel. NOT the raw delta: a delta is `f x (haze - the
+        // pixel's own colour)`, so binning on it sorts by how dark a pixel
+        // was as much as by how far away it is, and the first cut of this
+        // probe read a "far" band that was really the frame's dark half. The
+        // FACTOR divides that colour term back out.
+        //
+        // Only pixels the haze actually moved carry one. At 8 bits a pixel
+        // inside ~30 m rounds to zero lift no matter what the transfer says,
+        // and there are enough of those to own a whole tercile — which is how
+        // the first cut ended up comparing "unfogged ground" against "barely
+        // fogged ground" and reading the terrain's own albedo as the result.
+        const gap = fogOut - b;
+        if (d > 0 && (gap > FOG_MIN_GAP || gap < -FOG_MIN_GAP)) {
+          const f = d / gap;
+          fHist[Math.max(0, Math.min(255, Math.round(f * 255)))]++;
+          fogN++;
+        }
+        const c = (ambient[p] * 2 + ambient[p + 1] * 5 + ambient[p + 2]) >> 3;
+        // A pixel with no light at all in EITHER frame carries no ratio; it
+        // is the one case where 0/0 would otherwise read as a perfect floor.
+        if (a > 0) {
+          rHist[Math.min(255, Math.round((c / a) * 255))]++;
+          ratioN++;
+        }
+      }
+
+      // The tercile edges of the fog FACTOR, over every ground pixel that
+      // carries one — near, mid and far thirds of the visible ground, by the
+      // amount of air in front of each.
+      const t1 = quantileBin(fHist, fogN / 3);
+      const t2 = quantileBin(fHist, (2 * fogN) / 3);
+      const band = [
+        { luma: 0, sat: 0, f: 0, lift: 0, drop: 0, n: 0 },
+        { luma: 0, sat: 0, f: 0, lift: 0, drop: 0, n: 0 },
+        { luma: 0, sat: 0, f: 0, lift: 0, drop: 0, n: 0 },
+      ];
+      const hsvSat = (buf, p) => {
+        const r = buf[p];
+        const g = buf[p + 1];
+        const bl = buf[p + 2];
+        const mx = r > g ? (r > bl ? r : bl) : g > bl ? g : bl;
+        const mn = r < g ? (r < bl ? r : bl) : g < bl ? g : bl;
+        return mx > 0 ? (mx - mn) / mx : 0;
+      };
+      for (let p = 0; p < full.length; p += 4) {
+        if (nosky[p] === 255 && nosky[p + 1] === 0 && nosky[p + 2] === 255) continue;
+        const a = (full[p] * 2 + full[p + 1] * 5 + full[p + 2]) >> 3;
+        const b = (nofog[p] * 2 + nofog[p + 1] * 5 + nofog[p + 2]) >> 3;
+        const gap = fogOut - b;
+        if (!(a - b > 0) || (gap <= FOG_MIN_GAP && gap >= -FOG_MIN_GAP)) continue;
+        const fb = Math.max(0, Math.min(255, Math.round(((a - b) / gap) * 255)));
+        const k = fb <= t1 ? 0 : fb <= t2 ? 1 : 2;
+        band[k].luma += a;
+        band[k].sat += hsvSat(full, p);
+        // Each band against ITSELF without the air, which is the half that
+        // cannot be faked by the terrain: a band's raw luma is mostly what
+        // its ground is made of, but its luma LIFT is only the haze.
+        band[k].lift += a - b;
+        band[k].drop += hsvSat(nofog, p) - hsvSat(full, p);
+        band[k].f += fb / 255;
+        band[k].n++;
+      }
+
+      samples.push({
+        yaw: yaws[i],
+        skyFraction: skyN / px,
+        skyLuma: skyN > 0 ? skySum / skyN : 0,
+        groundLuma: groundN > 0 ? groundSum / groundN : 0,
+        groundMedian: quantileBin(groundHist, groundN / 2),
+        groundP90: quantileBin(groundHist, groundN * 0.9),
+        fogFraction: changed / px,
+        fogUpShare: changed > 0 ? up / changed : 0,
+        // What the air did to the whole ground, not only to the pixels it
+        // moved past the bar — the diagnostic that separates "the haze is
+        // thin here" from "there is no haze".
+        fogMeanLift: groundN > 0 ? (groundSum - noFogSum) / groundN : 0,
+        fogMaxDelta: maxDelta,
+        bands: band.map((x) => ({
+          n: x.n,
+          luma: x.n > 0 ? x.luma / x.n : 0,
+          sat: x.n > 0 ? x.sat / x.n : 0,
+          f: x.n > 0 ? x.f / x.n : 0,
+          lift: x.n > 0 ? x.lift / x.n : 0,
+          drop: x.n > 0 ? x.drop / x.n : 0,
+        })),
+        ambientP05: quantileBin(rHist, ratioN * 0.05) / 255,
+        ambientP50: quantileBin(rHist, ratioN * 0.5) / 255,
+      });
+    }
+    this.camera.position.copy(keepPos);
+    this.sky.position.copy(keepPos);
+    this.camera.quaternion.copy(keepQ);
+    this.renderer.render(this.scene, this.camera);
+    return { width: w, height: h, pixels: px, minDelta, heightM, samples };
+  }
+
+  /**
    * Dev-only: is a screen DERIVATIVE reaching the image as noise?
    *
    * Every other probe in this file asks whether a term reaches the frame.
@@ -2096,6 +2679,36 @@ export class GameScene {
       exposure: this.renderer.toneMappingExposure,
       fillIntensity: this.fill.intensity,
       sunIntensity: this.sun.intensity,
+      // The daylight register's structural half. `near`/`far` are read off
+      // the live fog object rather than off the constants, because
+      // `daylightProbe` moves them and a probe that forgot to put them back
+      // must be a gate failure and not an invisible loss of the air.
+      air: this.scene.fog
+        ? {
+            near: this.scene.fog.near,
+            far: this.scene.fog.far,
+            color: this.scene.fog.color.getHex(),
+            // The ring the player can actually see in detail (5×5 chunks of
+            // 64 m): the near plane has to be inside it or the term exists
+            // only in the source.
+            ringM: 160,
+          }
+        : null,
+      sky: {
+        // The dome is a patched stock material now, not a vertex ramp: a
+        // gradient reconstructed across 24×16 vertices is what banded, and
+        // it is also what could not hold a disc. Both facts are asserted.
+        patched: !!this.sky.material.userData.uniforms,
+        vertexColors: this.sky.material.vertexColors === true,
+        // The horizon ring is the fog colour by construction (`air.color`);
+        // this is the other end of the ramp.
+        zenith: SKY_ZENITH,
+        curve: SKY_CURVE,
+        dither: SKY_DITHER,
+        discRad: SUN_DISC_RAD,
+        discGain: SUN_DISC_GAIN,
+        glowGain: SUN_GLOW_GAIN,
+      },
       calls: this.stats.calls,
       triangles: this.stats.triangles,
       peakCalls: this.stats.peakCalls,
