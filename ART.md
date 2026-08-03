@@ -180,6 +180,34 @@ The rule that replaces it:
 - **An off-band source is tinted, not tolerated.** Where a sourced albedo sits
   outside §3's measured band, pull it in with the per-identity machinery rather
   than editing the file — the file stays pristine and swappable.
+- **…and the tint is a correction, not an amplifier.** The rule above is about
+  a source's MEAN. It says nothing about what the same correction does to the
+  source's *deviation*, and that omission shipped an artifact: a per-channel
+  gain `color / mean` multiplies the whole sample, so a source dragged far
+  across channels to hit its mean has its per-channel noise dragged with it.
+  `rock` (a sandstone standing in for granite) needed **×13.45 on blue**, whose
+  source mean sits near its own JPEG noise floor, and what reached the image at
+  a grazing footprint was per-pixel rainbow speckle across four of six captured
+  frames — while every amplitude gate went *up*. So: **a sourced map's colour
+  deviation may not be stretched by more than ×1 by the correction that places
+  its mean.** Bound it per layer against that layer's own gain span; a source
+  already in band keeps its colour whole, and one that is not keeps almost none
+  of it, because almost none of what it has left is its own.
+- **The measurement that separates detail from noise is direction, not
+  amplitude.** Resolve the near ground's high-frequency residual along the
+  local mean colour (a surface lighter here, darker there — real detail, and
+  what §3's 6.3 counts) versus orthogonal to it (the hue changed between
+  neighbouring pixels). Measured over the near-ground band of the thirteen
+  `Rust Images/` frames that actually contain ground — the four UI screenshots
+  and the top-down map render cannot define a statistic about ground — the
+  references run **0.077–0.193 chroma per unit luma, median 0.120**. Above that
+  band the frame is aliasing, not texture, and no amount of extra blur or
+  anisotropy is the fix: ours ran 0.237–0.798 on the five frames showing ground
+  while the along-colour term was already inside the reference range. Measure it
+  with one estimator, not two — a reference band computed a different way than
+  the frame it judges is not a band. Gated at `browser_smoke` **15i**, whose
+  wall is where the tree actually is and whose target is this number, printed
+  side by side every run.
 - **Budget**: the working set is 6.0 MB at 1K. Keep total texture payload under
   **12 MB** before compression work; KTX2/Basis is the optimisation once the
   look is settled, not a prerequisite.

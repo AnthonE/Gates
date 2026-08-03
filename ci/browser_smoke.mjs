@@ -626,7 +626,7 @@ const BASE_MIN_MASK = Number(process.env.BROWSER_SMOKE_BASE_MIN_MASK || 0.05);
 const BASE_MIN_DIRECTIONAL = Number(process.env.BROWSER_SMOKE_BASE_MIN_DIR || 0.005);
 // THE floor, in 8-bit luma per neighbouring pixel, on the SHIPPED frame.
 //
-// Measured: **6.00** at the level vantage and **8.59** at the near-ground one,
+// Measured: **5.90** at the level vantage and **8.61** at the near-ground one,
 // against **0.41-0.47** from the procedural octaves alone at the same two
 // framings — which is the 0.26 `ART.md` §3 recorded, re-measured by a
 // different instrument at a different spawn and landing in the same place.
@@ -642,6 +642,95 @@ const BASE_MIN_CONTRAST = Number(process.env.BROWSER_SMOKE_BASE_MIN_CONTRAST || 
 // retirement converges to, so the exact thing a fade set too aggressively
 // would ship — scores x1. Measured x12.75 and x20.69; the floor is x5.
 const BASE_MIN_CONTRAST_RATIO = Number(process.env.BROWSER_SMOKE_BASE_MIN_RATIO || 5.0);
+
+// --- the chroma-artifact gate, 15i (ART.md §7, "a correction, not an
+// --- amplifier") ------------------------------------------------------------
+// 15h above is a FLOOR on how much the near ground varies from one pixel to the
+// next, and the pass that landed it cleared that floor by an order of magnitude
+// while shipping per-pixel rainbow speckle across four of six captured frames.
+// Both facts are true at once because amplitude cannot tell detail from noise.
+// This is the ceiling that can: the high-frequency residual resolved ALONG the
+// local mean colour (a surface lighter here, darker there — what 15h counts)
+// versus ORTHOGONAL to it (the hue changed between neighbouring pixels).
+//
+// The TARGET is taken off the reference images — the second number in this file
+// that is, after 15h's 6.3 — and it is measured with the probe's own estimator
+// rather than a near relative of it. That distinction is not pedantry: the
+// first cut of this gate measured the references with a 2x2-box residual while
+// the probe used a 4-neighbour-mean one, which put the reference maximum at
+// 0.336 instead of 0.193 and would have walled our 0.317 in as a pass. A
+// ceiling from a differently-computed statistic is not a ceiling.
+//
+// Restricted, too, to the thirteen frames that actually have ground in the
+// band. `crafting.png`, `inventory.jpeg`, `mapstylized.jpg` and `building.jpeg`
+// are UI screenshots and `mapraw.jpg` is a top-down map render; none of them
+// can define a statistic about ground, and two of them are the highest readings
+// in the unrestricted set. Over the thirteen that qualify:
+//
+//     median 0.120, range 0.077 (generichighview) - 0.193 (gameplayfoundbase)
+//
+// and over the six frames the visual judge scored on 2026-08-03, same
+// estimator, same band:
+//
+//     01 0.659  02 0.798  03 0.237  04 0.284  05 0.760  06 0.092
+//
+// — which is the artifact's own footprint. `06-hud.png` is the only frame with
+// no near ground in it and it is the only one inside the reference band; every
+// frame that shows ground is over the reference maximum, and the three the
+// judge called worst are 3.4-4.1x over it. Our residual ALONG colour was inside
+// the reference range the whole time, which is why the fix is a chroma bound
+// and not a blur.
+const REF_CHROMA_TARGET_MAX = 0.193;
+const REF_CHROMA_TARGET_MEDIAN = 0.12;
+// …and THE WALL is not the target, for 15h's own stated reason applied to a
+// ceiling instead of a floor: *"a floor set to a number the tree has never
+// reached is a gate that fails on merge day and gets widened on the next one —
+// which is the same weakening, taken slowly."* This pass moved the shipped
+// frame from 0.434 to 0.317 at the level vantage and 0.313 to 0.243 at the
+// near-ground one. That is a real reduction and it is **not** the references:
+// 0.317 is still 1.6x over the reference maximum, and saying so here is the
+// point of separating the two numbers. The gap is printed on every run so it
+// cannot quietly stop closing.
+//
+// 0.35 is two-sided. It is 1.10x above the worse of the two shipped readings,
+// and 1.24x BELOW the 0.434 that the per-channel gain this pass replaced scores
+// at the same vantage — so a regression to the previous behaviour goes red
+// rather than merely looking worse.
+const CHROMA_MAX_RATIO = Number(process.env.BROWSER_SMOKE_CHROMA_MAX || 0.35);
+// The same two vantages, the same one-code-value mask delta and the same
+// control ceiling as 15h — this gate is about the same pixels, and a third aim
+// would have made the two incomparable for no gain.
+const CHROMA_VIEWS = BASE_VIEWS;
+const CHROMA_MIN_DELTA = BASE_MIN_DELTA;
+const CHROMA_MAX_NOISE = BASE_MAX_NOISE;
+// The instrument's own floor: how many neighbourhoods the statistic was taken
+// over. Not a quality bar — it is what stops a ratio computed over a handful of
+// pixels from standing where one computed over the ground stands. Measured at
+// this gate's spawn: the level vantage yields tens of thousands of windows and
+// the down one hundreds of thousands.
+const CHROMA_MIN_PAIRS = Number(process.env.BROWSER_SMOKE_CHROMA_MIN_PAIRS || 5000);
+// …and the half that keeps this from being satisfiable by deleting the base
+// maps. A flat swatch has NO chroma residual and would score 0, sailing under
+// any ceiling — so the shipped frame must also still show the artifact being
+// SUPPRESSED rather than absent: the `stretch` leg (every layer's keep forced
+// to 1, which is algebraically the per-channel gain the previous pass shipped)
+// must sit above the ship leg by this factor. A build where the two agree has
+// either lost the fix or lost the base, and both should be loud.
+//
+// Measured on the shipped frame: **x1.37 at the level vantage and x1.29 at the
+// near-ground one**. The floor is 1.15 — midway between the worse of those two
+// and the 1.00 that the failure it guards scores exactly, which is the shape
+// `BASE_MIN_MASK` uses ("~2x below the worse of the two") applied to a quantity
+// whose failure value is a hard 1 rather than a 0.
+//
+// The suppression is this modest for a stated reason rather than a worrying
+// one, and the `scalar` leg is what says so: the dev shard's spawn is 99.2%
+// grass by dominant weight (see the `splat:` line above), and grass's own gain
+// span is x1.64, so its keep is 0.61 and its delivered stretch is exactly the
+// x1 ceiling. The layers the bound bites hardest on — `litter` at keep 0.26 and
+// `rock` at 0.17 — are 0.0% and 0.1% present here. This gate therefore measures
+// the fix at its WEAKEST, which is the right direction for a wall to err.
+const CHROMA_MIN_SUPPRESSION = Number(process.env.BROWSER_SMOKE_CHROMA_MIN_SUPPRESS || 1.15);
 
 // --- the prop-surface gate (DECISIONS.md §open, "prop surfaces v0") ---------
 // Assertions 15 through 15e are all about the GROUND. The visual judge's pass
@@ -2869,7 +2958,7 @@ console.log(
 // not a fix anybody wrote: a `textureGrad` fetch is evaluated per FRAGMENT, so
 // the detail it delivers varies inside a quad exactly as much as it varies
 // across one, and it is now the dominant term in the near ground's contrast
-// (15h: 6.00 and 8.59 luma/px, against 0.41-0.47 from the octaves alone).
+// (15h: 5.90 and 8.61 luma/px, against 0.42-0.47 from the octaves alone).
 // The quad-locked energy did not go away; it was diluted by two orders of
 // magnitude of energy that is not quad-locked. That distinction matters and it
 // is why the ceiling below is left exactly where it was rather than tightened
@@ -3145,6 +3234,156 @@ console.log(
       )
       .join(" · ") +
     ` · floor ${BASE_MIN_CONTRAST}, ART.md §3 target ${ART_NEAR_GROUND_TARGET}`,
+);
+
+// Assertion 15i — the near ground's variation is DETAIL, not chroma noise.
+//
+// The structural half first, because it can say why the pixel half failed.
+// `chromaKeep` is derived — `min(1, chromaStretchMax / albedoGainSpan)` per
+// layer — and the derivation is what is asserted rather than the four numbers
+// it currently produces. A keep that stopped tracking its own span would be a
+// knob that had quietly become a taste setting, and swapping a source file
+// would stop moving it.
+const chromaFacts = baseFacts;
+if (!Array.isArray(chromaFacts.chromaKeep) || !Array.isArray(chromaFacts.albedoGainSpan)) {
+  fail(
+    `tab A: baseFacts published no chroma keep / gain span ` +
+      `(${JSON.stringify(chromaFacts.chromaKeep)} / ${JSON.stringify(chromaFacts.albedoGainSpan)}) — ` +
+      `15i's structural half cannot run`,
+  );
+}
+for (let i = 0; i < chromaFacts.chromaKeep.length; i++) {
+  const span = chromaFacts.albedoGainSpan[i];
+  // The span the client publishes and the span this file computes off the raw
+  // gains are the same quantity by two routes. They agree or one of them is
+  // describing a material the other is not.
+  if (Math.abs(span - gainSpan[i]) > 1e-6) {
+    fail(
+      `tab A: layer ${baseFacts.layers[i]}'s published gain span is x${span.toFixed(4)} but its own ` +
+        `albedoGain works out to x${gainSpan[i].toFixed(4)} — the fact the chroma keep is derived ` +
+        `from is not the gain the shader was handed`,
+    );
+  }
+  const want = Math.min(1, chromaFacts.chromaStretchMax / Math.max(span, 1e-6));
+  if (Math.abs(chromaFacts.chromaKeep[i] - want) > 1e-6) {
+    fail(
+      `tab A: layer ${baseFacts.layers[i]} keeps ${chromaFacts.chromaKeep[i].toFixed(4)} of its chroma ` +
+        `but its gain span is x${span.toFixed(2)}, which derives ${want.toFixed(4)} at a stretch ceiling ` +
+        `of ${chromaFacts.chromaStretchMax} — the keep has stopped being derived from the source and is ` +
+        `now a number somebody chose`,
+    );
+  }
+  // The product IS the policy: a layer's chroma deviation may not be stretched
+  // past the ceiling, whatever its span.
+  const stretch = span * chromaFacts.chromaKeep[i];
+  if (stretch > chromaFacts.chromaStretchMax + 1e-6) {
+    fail(
+      `tab A: layer ${baseFacts.layers[i]} delivers its chroma at an effective stretch of ` +
+        `x${stretch.toFixed(3)} over a ceiling of x${chromaFacts.chromaStretchMax} — the per-channel ` +
+        `gain is amplifying the source's colour noise, not correcting its mean`,
+    );
+  }
+}
+
+// …and the pixel half.
+const chromaHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.chromaProbe);
+if (chromaHook !== "function") {
+  fail(`tab A: __gatesDebug.chromaProbe is ${chromaHook} on a dev shard — 15i's pixel half cannot run`);
+}
+const chroma = await A.page.evaluate(
+  ([views, minDelta]) => globalThis.__gatesDebug.chromaProbe(views, minDelta),
+  [CHROMA_VIEWS, CHROMA_MIN_DELTA],
+);
+if (!chroma) {
+  fail(`tab A: chromaProbe returned null — the scene never took the terrain material's uniforms`);
+}
+// A LIVE re-read, after the probe rather than from the snapshot this file took
+// before any probe ran. `chromaProbe` is the second thing in this tree to
+// mutate a shipped uniform and put it back — it holds `uBase` at 0 for one leg
+// and every layer's keep at 1 for another — and an assertion that a restore
+// happened is worth nothing if it is answered from a copy made beforehand.
+// (The pre-existing `grain`, `tint` and `base` toggle checks read that older
+// snapshot; that is inherited and is recorded in NOW.md, not fixed here.)
+const afterProbe = await A.page.evaluate(() => {
+  const d = globalThis.__gatesDebug.materials;
+  return { base: d.terrain.base, keep: d.base.chromaKeep, derived: d.base.chromaKeep };
+});
+if (afterProbe.base !== 1) {
+  fail(
+    `tab A: uBase reads ${afterProbe.base} after the chroma probe ran — the probe did not put the ` +
+      `base maps back, and every frame from here on is missing them`,
+  );
+}
+for (let i = 0; i < chromaFacts.chromaKeep.length; i++) {
+  if (Math.abs(afterProbe.keep[i] - chromaFacts.chromaKeep[i]) > 1e-6) {
+    fail(
+      `tab A: layer ${baseFacts.layers[i]}'s chroma keep reads ${afterProbe.keep[i]} after the chroma ` +
+        `probe ran, against ${chromaFacts.chromaKeep[i]} before it — the probe left the material in ` +
+        `its measurement state`,
+    );
+  }
+}
+const chromaDetail = () =>
+  chroma.samples
+    .map(
+      (s) =>
+        `    ${s.label}: ship chroma/luma ${s.ratio.toFixed(3)} (along ${s.along.toFixed(4)}, ` +
+        `chroma ${s.chroma.toFixed(4)}) vs unbounded ${s.stretchRatio.toFixed(3)} ` +
+        `(along ${s.stretchAlong.toFixed(4)}, chroma ${s.stretchChroma.toFixed(4)}) ` +
+        `vs luma-only floor ${s.scalarRatio.toFixed(3)} (along ${s.scalarAlong.toFixed(4)}, ` +
+        `chroma ${s.scalarChroma.toFixed(4)}), ` +
+        `${s.pairs} windows, mask ${(s.maskFraction * 100).toFixed(1)}%, noise ${s.noise}`,
+    )
+    .join("\n");
+for (const s of chroma.samples) {
+  if (s.noise > chroma.width * chroma.height * CHROMA_MAX_NOISE) {
+    fail(
+      `tab A: chroma probe control differs from its own state on ${s.noise} pixels at ${s.label} — ` +
+        `two renders of one scene, so nothing measured from this pair is about the material\n${chromaDetail()}`,
+    );
+  }
+  if (s.pairs < CHROMA_MIN_PAIRS) {
+    fail(
+      `tab A: the chroma statistic at ${s.label} was taken over ${s.pairs} neighbourhoods ` +
+        `(floor ${CHROMA_MIN_PAIRS}) — too few for the ratio below to be about the ground rather ` +
+        `than about a handful of pixels\n${chromaDetail()}`,
+    );
+  }
+  // THE ceiling. Absolute and dimensionless, with the reference target beside it.
+  if (s.ratio > CHROMA_MAX_RATIO) {
+    fail(
+      `tab A: at ${s.label} the near ground's high-frequency residual is ${s.ratio.toFixed(3)} ` +
+        `chroma per unit luma, over a ceiling of ${CHROMA_MAX_RATIO} (Rust Images/'s in-world ` +
+        `frames reach ${REF_CHROMA_TARGET_MAX} at worst, median ${REF_CHROMA_TARGET_MEDIAN}). ` +
+        `Neighbouring pixels are changing HUE rather than brightness, which is what per-pixel ` +
+        `rainbow speckle is; the same frame's along-colour term is ${s.along.toFixed(4)}, so this ` +
+        `is not a shortage of detail\n${chromaDetail()}`,
+    );
+  }
+  // …and the half that stops "delete the base maps" from being a way to pass.
+  const suppression = s.ratio > 1e-9 ? s.stretchRatio / s.ratio : 0;
+  if (suppression < CHROMA_MIN_SUPPRESSION) {
+    fail(
+      `tab A: at ${s.label} bounding the chroma stretch changed the frame by only ` +
+        `x${suppression.toFixed(2)} (floor x${CHROMA_MIN_SUPPRESSION}) — either the bound has stopped ` +
+        `doing anything or there is no photograph under it, and a flat swatch passes the ceiling ` +
+        `above by having no chroma residual at all\n${chromaDetail()}`,
+    );
+  }
+}
+console.log(
+  `  base chroma: ` +
+    chroma.samples
+      .map(
+        (s) =>
+          `${s.label} ${s.ratio.toFixed(3)} (unbounded ${s.stretchRatio.toFixed(3)}, ` +
+          `x${(s.stretchRatio / Math.max(s.ratio, 1e-9)).toFixed(2)} suppressed, ` +
+          `luma-only floor ${s.scalarRatio.toFixed(3)})`,
+      )
+      .join(" · ") +
+    ` · wall ${CHROMA_MAX_RATIO}, Rust Images/ in-world target ${REF_CHROMA_TARGET_MAX} max / ` +
+    `${REF_CHROMA_TARGET_MEDIAN} median · keep ` +
+    chromaFacts.chromaKeep.map((k, i) => `${baseFacts.layers[i]} ${k.toFixed(2)}`).join("/"),
 );
 
 // Assertion 15f — the props have a SURFACE, not only a silhouette.

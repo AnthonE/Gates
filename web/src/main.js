@@ -1044,6 +1044,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // at — ART.md §3's near-ground neighbour contrast — is a statement about
   // what the ground looks like from standing height and not at a world point.
   const devBaseProbe = dev ? (views, minDelta) => scene.baseProbe(views, minDelta) : null;
+  const devChromaProbe = dev ? (views, minDelta) => scene.chromaProbe(views, minDelta) : null;
   // Materials v1's third pass: the projection probe takes views in WORLD space
   // like the contrast one, but the caller aims them at a FACE rather than by
   // (yaw, pitch) — a combed grain is only combed on a slope, so the gate finds
@@ -1315,6 +1316,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (devSteepestFace) debug.steepestFace = devSteepestFace;
     if (devPropProbe) debug.propProbe = devPropProbe;
     if (devBaseProbe) debug.baseProbe = devBaseProbe;
+    if (devChromaProbe) debug.chromaProbe = devChromaProbe;
     globalThis.__gatesDebug = debug;
   }, 250);
 }
