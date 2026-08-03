@@ -435,16 +435,18 @@ function skyMaterial(toSun, horizon) {
         col += uSunSky *
           (glow * ${SUN_GLOW_GAIN.toFixed(3)} + disc * ${SUN_DISC_GAIN.toFixed(2)}) * above;
 
-        // One level of noise under the 8-bit quantizer — RELATIVE, not
-        // absolute. The chain from here to the framebuffer is toeless
-        // Neutral (installToneMap) then
-        // sRGB, and its slope varies 2.9x across this dome (measured: the
-        // zenith at linear 0.52 is nearly three times as sensitive as the
-        // horizon at 1.4). A constant linear dither is therefore a quarter of
-        // a level at one end and four at the other — invisible where it is
-        // needed and grain where it is not. Scaling with the value itself
-        // tracks the transfer closely enough to land within a level of
-        // uniform, at ~1 level peak.
+        // Noise under the 8-bit quantizer — RELATIVE, not absolute. The
+        // chain from here to the framebuffer is toeless Neutral
+        // (installToneMap) then sRGB, and its slope falls ~12x across this
+        // dome's real range (zenith 0.53 → horizon+aureole 1.29 — the
+        // shoulder past StartCompression is what costs it; ~19x at neutral
+        // grey endpoints). A constant linear dither would span a quarter of
+        // a level at one end and four at the other; scaling with the value
+        // narrows that to 0.44–2.14 levels (×4.9, peak ~2.1). Imperfect
+        // against a shoulder this hard — a transfer-aware dither could do
+        // better — but the grain stays near two levels where a constant
+        // dither's reaches four. Numbers are the round-2 judge's evaluation
+        // of this shipped GLSL (findings/pass-20260802-163821-05-judge.md).
         col *= 1.0 + (skyHash(gl_FragCoord.xy) - 0.5) * ${SKY_DITHER.toFixed(4)};
 
         gl_FragColor = vec4(max(col, 0.0), 1.0);
