@@ -1,0 +1,29 @@
+# The PUBLIC Gates shard — `cargo run -p server --bin shard -- shard-public.toml`
+#
+# Differences from shard.toml (the local dev one) and why each matters:
+#   bind      0.0.0.0, not loopback — reachable from outside this box.
+#   port 61234 — and the choice is NOT free-port arithmetic. This box sits
+#             behind a Hetzner CLOUD firewall as well as ufw, and the cloud
+#             one is outside the VM: opening a port in ufw does nothing for
+#             it. Measured 2026-08-03 by probing from morr while tcpdumping
+#             here — 4434 arrived 3/3, 4466 arrived 0/3 with ufw allowing
+#             both. The range 49152-65535/udp IS open at the cloud firewall
+#             (opened for WebRTC DataChannels; 50000/55000/60000 all arrived),
+#             so the shard lives there. 4433/4434/4455 are taken by thrml-ws,
+#             the live MMO game-server and its wt-gateway.
+#   cert_pem  a REAL Let's Encrypt chain for game.moreright.xyz (which is an
+#             A record onto this box, DNS-only — a Cloudflare-proxied name
+#             cannot carry WebTransport, which is QUIC over UDP). With a
+#             trusted cert the browser needs no `serverCertificateHashes`,
+#             which is the dev flow and requires a short-lived cert.
+#             certbot renews these; the shard reads them at boot, so a
+#             renewal needs a restart to take (the copies are refreshed by
+#             hand today — a renewal hook is worth writing before this
+#             matters).
+#   NO dev_spawn — a public shard must not land every joiner on one point
+#             (config.rs says so). This is also what browser_smoke's dev
+#             gate asserts about a public shard.
+bind = "0.0.0.0:61234"
+seed = 20260731
+cert_pem = "/home/master/gates-certs/fullchain.pem"
+key_pem = "/home/master/gates-certs/privkey.pem"

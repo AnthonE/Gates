@@ -138,8 +138,17 @@ pub async fn spawn_shard(
     survival: sim_core::survival::SurvivalContent,
     catalog: ItemCatalog,
 ) -> Result<ShardHandle, String> {
-    let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])
-        .map_err(|e| format!("self-signed identity: {e}"))?;
+    // A PUBLIC shard serves a real certificate chain and browsers trust it
+    // outright; the dev flow self-signs for loopback and the page passes the
+    // hash below through `serverCertificateHashes`. Both or neither is
+    // enforced at parse (config.rs), so one `is_some` decides it.
+    let identity = match (&cfg.cert_pem, &cfg.key_pem) {
+        (Some(cert), Some(key)) => Identity::load_pemfiles(cert, key)
+            .await
+            .map_err(|e| format!("loading {cert} / {key}: {e}"))?,
+        _ => Identity::self_signed(["localhost", "127.0.0.1", "::1"])
+            .map_err(|e| format!("self-signed identity: {e}"))?,
+    };
     let cert_hash = identity
         .certificate_chain()
         .as_slice()

@@ -18,7 +18,11 @@ import { Terrain } from "./terrain.js";
 import { Hud } from "./hud.js";
 import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
 
-const WASM_URL = "/client_wasm.wasm";
+// Resolved against the document, not the origin root: the page is served
+// from the site root in dev and from /games/gates/alpha/ in production, and
+// an absolute "/client_wasm.wasm" 404s under a subpath. Absolute by the time
+// the terrain worker receives it, which is what the worker needs.
+const WASM_URL = new URL("client_wasm.wasm", document.baseURI).href;
 const REFUSE_REASONS = ["protocol version mismatch", "shard is full"];
 const MARK_TO_RAD = (Math.PI * 2) / 256;
 
@@ -27,7 +31,35 @@ const urlInput = $("url");
 const certInput = $("cert");
 const errEl = $("starterr");
 
-urlInput.value = localStorage.getItem("gates.url") || "https://127.0.0.1:4433";
+// Served from anywhere but a dev machine, the shard is the public one —
+// a visitor should not have to know a port. Localhost keeps the dev default
+// so `./web/dev.sh` and browser_smoke behave exactly as before.
+const PUBLIC_SHARD = "https://game.moreright.xyz:61234";
+const LOCAL = ["localhost", "127.0.0.1", "[::1]", ""].includes(location.hostname);
+const DEFAULT_URL = LOCAL ? "https://127.0.0.1:4433" : PUBLIC_SHARD;
+// A REMEMBERED url is only worth remembering while it still points at a
+// shard that exists. The public shard moved ports once already (4466 ->
+// 61234, see shard-public.toml) and every browser that had touched the old
+// one kept trying it forever, because a stored value beats a changed
+// default. So: on a public page, a stored url whose ORIGIN is not the
+// current shard's is stale by construction — drop it. A deliberate override
+// to some other host survives; only the outdated copy of our own default
+// does not.
+const stored = localStorage.getItem("gates.url");
+let initial = stored || DEFAULT_URL;
+if (!LOCAL && stored) {
+  try {
+    if (new URL(stored).origin !== new URL(PUBLIC_SHARD).origin
+        && new URL(stored).hostname === new URL(PUBLIC_SHARD).hostname) {
+      localStorage.removeItem("gates.url");
+      initial = DEFAULT_URL;
+    }
+  } catch {
+    localStorage.removeItem("gates.url");
+    initial = DEFAULT_URL;
+  }
+}
+urlInput.value = initial;
 certInput.value = localStorage.getItem("gates.cert") || "";
 
 $("connect").addEventListener("click", () => {
@@ -38,7 +70,10 @@ $("connect").addEventListener("click", () => {
 });
 
 async function boot(url, certHex) {
-  localStorage.setItem("gates.url", url);
+  // Persist only a DELIBERATE override. Saving the default back means a
+  // later change to the default can never reach a returning browser.
+  if (url === DEFAULT_URL) localStorage.removeItem("gates.url");
+  else localStorage.setItem("gates.url", url);
   localStorage.setItem("gates.cert", certHex);
 
   // The base maps ride alongside the wasm fetch rather than behind it: both

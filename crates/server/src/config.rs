@@ -14,6 +14,14 @@ pub struct ShardConfig {
     /// "dev spawn override"). Unset is the shipping default; never set it
     /// on a public shard — every joiner lands on the same point.
     pub dev_spawn: Option<(f32, f32)>,
+    /// TLS identity for a PUBLIC shard: paths to a real certificate chain
+    /// and its private key. Both or neither — set, the shard serves that
+    /// identity and browsers trust it outright (no `serverCertificateHashes`,
+    /// which is the dev flow and needs a short-lived cert). Unset is the
+    /// shipping default and self-signs for loopback, which is what every
+    /// test and the local dev flow use.
+    pub cert_pem: Option<String>,
+    pub key_pem: Option<String>,
     /// Where `content/*.toml` lives (CLAUDE.md wall 7). Default `content`
     /// resolves against the CWD, which the repo commands make the repo
     /// root. The shard binary refuses to boot on invalid content.
@@ -27,6 +35,8 @@ impl ShardConfig {
             bind: "127.0.0.1:0".parse().expect("static addr"),
             seed,
             dev_spawn: None,
+            cert_pem: None,
+            key_pem: None,
             content_dir: "content".into(),
         }
     }
@@ -40,6 +50,8 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut seed: Option<u64> = None;
     let mut dev_spawn: Option<(f32, f32)> = None;
     let mut content_dir: Option<String> = None;
+    let mut cert_pem: Option<String> = None;
+    let mut key_pem: Option<String> = None;
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -90,6 +102,16 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 dev_spawn = Some((x, z));
             }
+            "cert_pem" | "key_pem" => {
+                if value.is_empty() {
+                    return Err(format!("shard.toml line {}: empty {key}", n + 1));
+                }
+                if key == "cert_pem" {
+                    cert_pem = Some(value.to_string());
+                } else {
+                    key_pem = Some(value.to_string());
+                }
+            }
             "content_dir" => {
                 if value.is_empty() {
                     return Err(format!("shard.toml line {}: empty content_dir", n + 1));
@@ -99,10 +121,17 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             other => return Err(format!("shard.toml line {}: unknown key `{other}`", n + 1)),
         }
     }
+    // Both or neither: half a TLS identity is a shard that self-signs while
+    // its operator believes it is public.
+    if cert_pem.is_some() != key_pem.is_some() {
+        return Err("shard.toml: cert_pem and key_pem must be set together".into());
+    }
     Ok(ShardConfig {
         bind: bind.ok_or("shard.toml: missing `bind`")?,
         seed: seed.ok_or("shard.toml: missing `seed`")?,
         dev_spawn,
+        cert_pem,
+        key_pem,
         content_dir: content_dir.unwrap_or_else(|| "content".into()),
     })
 }
@@ -128,6 +157,17 @@ mod tests {
         );
         assert!(parse_shard_toml("bind = \"127.0.0.1:1\"").is_err()); // missing seed
         assert!(parse_shard_toml("bind = \"127.0.0.1:1\"\nseed = 1\nwat = 2").is_err());
+        // TLS identity: both or neither, and neither may be empty.
+        let base = "bind = \"127.0.0.1:1\"\nseed = 1\n";
+        let pub_cfg = parse_shard_toml(&format!(
+            "{base}cert_pem = \"/c/fullchain.pem\"\nkey_pem = \"/c/privkey.pem\"\n"
+        ))
+        .unwrap();
+        assert_eq!(pub_cfg.cert_pem.as_deref(), Some("/c/fullchain.pem"));
+        assert_eq!(pub_cfg.key_pem.as_deref(), Some("/c/privkey.pem"));
+        assert!(parse_shard_toml(&format!("{base}cert_pem = \"/c/f.pem\"\n")).is_err());
+        assert!(parse_shard_toml(&format!("{base}key_pem = \"/c/k.pem\"\n")).is_err());
+        assert!(parse_shard_toml(&format!("{base}cert_pem = \"\"\nkey_pem = \"x\"\n")).is_err());
     }
 
     #[test]

@@ -15,5 +15,9 @@ export default defineConfig({
   // read a directory above its root.
   server: { headers: crossOriginIsolation, fs: { allow: ["..", "../assets"] } },
   preview: { headers: crossOriginIsolation },
+  // Relative asset URLs so the bundle works under ANY path — it is served
+  // from the site root in dev and from /games/gates/alpha/ on the public
+  // page, and an absolute `/assets/...` 404s under a subpath.
+  base: "./",
   build: { target: "es2022" },
 });
