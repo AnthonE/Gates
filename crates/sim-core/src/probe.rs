@@ -253,10 +253,13 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
         world.backpack = crate::backpack::BackpackContent::probe_fixture();
         // The survival clock, on the probe with hp and respawns: its
         // fixture spans are seconds, so meters drain, empty, starve and
-        // are granted again inside this window. Parity, replay and
-        // alloc-zero therefore all cover the clock — without this the
-        // module would be gated only by its own unit tests, which is
-        // exactly the coverage gap wall 5 exists to close.
+        // are granted again inside this window. What that buys is exactly
+        // one gate and it is worth naming precisely: `test_parity_wasm`,
+        // which folds this digest native and wasm and asserts the two are
+        // byte-identical. `test_alloc_zero` and `test_replay` cover the
+        // clock too, but they do it by installing the content in their own
+        // fixtures — this probe is not what puts it there, and reading it
+        // as though it were is how a coverage claim outruns its code.
         world.survival = crate::survival::SurvivalContent::probe_fixture();
         world.dev_spawn = Some(world.spawn_pos(1));
         world.tick(&[

@@ -26,6 +26,17 @@
 //! and the work per tick is constant, so `test_alloc_zero` and the tick
 //! jitter assert both hold (walls 1–3).
 //!
+//! **Where the gates actually stand on this module**, because a claim
+//! about coverage is worth nothing unless it names the file that holds it:
+//! `test_alloc_zero` installs `probe_fixture` on a hundred bodies and
+//! asserts, inside the counted window, that meters drained to empty, that
+//! a body starved and was granted a fresh pair, and that the eat verb both
+//! landed and refused. `test_replay` installs it on sixty-four and pins the
+//! resulting hash. `test_parity_wasm` runs `probe_combat`, which installs
+//! it too, and asserts the native and wasm digests are byte-identical. Each
+//! of those three arms this module in its own fixture; none of them
+//! inherits it from another.
+//!
 //! Content reaches the sim only as a baked `SurvivalContent` table (wall
 //! 7): the meters and their spans from `content/balance.toml`'s
 //! `[survival]`, the consumable rows keyed by item index from

@@ -16,11 +16,22 @@ Done items are deleted, not checked — history lives in git and
    minute, both empty stack, and eating puts them back — `DECISIONS.md`
    §open, "survival clock v0 + wire v14". Wire v14 spent the tenth action
    subtype and the 32nd–34th event subtypes, so **no field widened and no
-   message moved by a bit.** `probe_combat` installs the clock, so parity,
-   replay and alloc-zero all cover it.
+   message moved by a bit.** Three gates arm the clock, each in its own
+   fixture: `test_alloc_zero` (100 bodies, drained to empty, one starved
+   and granted again, the eat verb landed and refused), `test_replay` (64
+   bodies, two eating, hash pinned) and `test_parity_wasm` via
+   `probe_combat` (native and wasm byte-identical).
 
    **What this item still wants**, in the order it is worth doing:
 
+   - **A clock death should count as a death.** `deaths` is incremented
+     only on combat's kill path (`combat.rs`), so a body killed by the
+     clock respawns with the same count — and `spawn_pos_n(id, deaths)`
+     therefore puts it back on the *identical* beach to starve on the same
+     ground. One line to fix, but it moves sim behaviour, so it wants its
+     own commit with the replay golden regenerated in it. Found by putting
+     the clock inside `test_alloc_zero`, which is the argument for having
+     done that.
    - **Food you can actually get.** The five consumable rows are wired but
      nothing on the island drops them: `gatherables.toml`'s bush is a
      one-hit pickup that pays no berries, and there is no cooking. Until a
