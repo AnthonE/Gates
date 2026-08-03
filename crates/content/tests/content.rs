@@ -94,6 +94,22 @@ fn hash_moves_with_values() {
     items.1 = items.1.replace("stack = 1000", "stack = 999");
     let moved = build(&srcs).unwrap().hash();
     assert_ne!(base, moved, "a value change must move the content hash");
+
+    // Every value the sim reads, including the ones added last: a field
+    // that reaches the sim and not the hash lets two contents that play
+    // differently canonicalise identically, and a replay is then handed a
+    // WAL header claiming a match it does not have.
+    let mut srcs = sources();
+    let g = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "gatherables.toml")
+        .unwrap();
+    g.1 = g.1.replace("per_hit = 5", "per_hit = 4");
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the side payout's rate must move the content hash"
+    );
 }
 
 #[test]
@@ -776,6 +792,79 @@ fn bake_survival_plays_the_clock_the_data_declares() {
         s.water_minutes_to_empty >= 30,
         "a fresh spawn gets at least half an hour before the clock bites"
     );
+
+    // **The answer, priced in the clock's own units.** A validator refuses
+    // content with no food source at all; this is the arithmetic that says
+    // the source is worth walking to. One bush pickup must buy back a
+    // meaningful share of a span, or the loop is a treadmill that happens
+    // to pass a boolean.
+    let gc = c.bake_gather().expect("shipped gather table must bake");
+    let mut best_food_min = 0u32;
+    let mut best_water_min = 0u32;
+    for node in gc.nodes.iter() {
+        for (item, per_hit) in [
+            (node.output, node.hand_yield),
+            (node.secondary.0, node.secondary.1),
+        ] {
+            if item == sim_core::gather::NO_ITEM || per_hit == 0 {
+                continue;
+            }
+            let row = sc.consumable[item as usize];
+            // Units of meter one pickup pays, over units the meter loses
+            // in a minute — the ratio is minutes bought, and both sides
+            // are the file's own numbers.
+            best_food_min = best_food_min
+                .max((row.food as u32 * per_hit as u32 * s.food_minutes_to_empty) / s.max_food);
+            best_water_min = best_water_min
+                .max((row.water as u32 * per_hit as u32 * s.water_minutes_to_empty) / s.max_water);
+        }
+    }
+    assert!(
+        best_food_min >= 20,
+        "the best food a node pays buys {best_food_min} min of a \
+         {}-min hunger span — a source nobody would cross the island for",
+        s.food_minutes_to_empty
+    );
+    assert!(
+        best_water_min >= 5,
+        "the best water a node pays buys {best_water_min} min of a \
+         {}-min thirst span",
+        s.water_minutes_to_empty
+    );
+}
+
+/// The bush's side payout reaches the sim: the shipped table's berries,
+/// keyed to the berry item, at the file's rate — and no other archetype
+/// grew one by accident.
+#[test]
+fn bake_gather_carries_the_side_payout() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let gc = c.bake_gather().expect("shipped gather table must bake");
+    let mut declared = 0;
+    for g in &c.gatherables {
+        let Some(s) = &g.secondary else { continue };
+        declared += 1;
+        let idx = c.item_index(&s.output).expect("validated secondary");
+        let node = gc
+            .nodes
+            .iter()
+            .find(|n| n.secondary.0 == idx)
+            .unwrap_or_else(|| panic!("`{}` secondary never reached the sim", g.id));
+        assert_eq!(
+            node.secondary.1 as u32, s.per_hit,
+            "`{}` secondary pays the file's rate",
+            g.id
+        );
+        assert_ne!(node.secondary.0, node.output, "two payouts, two items");
+    }
+    assert_eq!(
+        declared,
+        gc.nodes
+            .iter()
+            .filter(|n| n.secondary.0 != sim_core::gather::NO_ITEM)
+            .count(),
+        "the sim has exactly as many side payouts as the files declare"
+    );
 }
 
 /// Every shape that would make the clock silently inert is refused at
@@ -822,5 +911,56 @@ fn a_clock_that_would_not_tick_is_refused() {
         "health = 20\nfood = 0\nwater = 0\nseconds = 4",
         "health = 20\nfood = 0\nwater = 0\nseconds = 0",
         "health needs a span",
+    );
+}
+
+/// The other way a clock fails silently: it ticks perfectly and the island
+/// has nothing to answer it with. That shipped — five consumable rows
+/// parsed, validated and hashed while `gather.bush` paid cloth and nothing
+/// else in the world paid a unit of food (`findings/archive-prestamp/
+/// pass-20260803-041958-02-judge.md`, ranked gap 1). Both halves are
+/// refused now, and the refusals are read off the same bush the shipped
+/// content answers them with.
+#[test]
+fn a_clock_with_no_answer_is_refused() {
+    // Take the berries off the bush: hunger drains, nothing pays food.
+    refuses(
+        "gatherables.toml",
+        "[gatherable.secondary]\noutput = \"item.berries\"",
+        "[gatherable.secondary]\noutput = \"item.cloth_UNUSED\"",
+        "is not an item",
+    );
+    // The honest version of the same defect — the row simply absent.
+    refuses(
+        "gatherables.toml",
+        "\n[gatherable.secondary]\noutput = \"item.berries\"\nper_hit = 5\n",
+        "\n",
+        "the clock has no answer",
+    );
+    // And the thirst half: berries that feed but do not water leave the
+    // shorter fuse unanswerable.
+    refuses(
+        "consumables.toml",
+        "id = \"item.berries\"\nhealth = 0\nfood = 15\nwater = 5",
+        "id = \"item.berries\"\nhealth = 0\nfood = 15\nwater = 0",
+        "`water` — the clock has no answer",
+    );
+}
+
+/// A side payout has to be a payout: no zero, no repeat of the primary,
+/// and no item that does not exist.
+#[test]
+fn a_secondary_that_pays_nothing_is_refused() {
+    refuses(
+        "gatherables.toml",
+        "output = \"item.berries\"\nper_hit = 5",
+        "output = \"item.berries\"\nper_hit = 0",
+        "pays nothing",
+    );
+    refuses(
+        "gatherables.toml",
+        "[gatherable.secondary]\noutput = \"item.berries\"",
+        "[gatherable.secondary]\noutput = \"item.cloth\"",
+        "repeats the primary output",
     );
 }

@@ -176,6 +176,77 @@ fn swing_pays_exhausts_and_replays() {
     assert_eq!(hash_a, hash_b, "gather must replay bit-identically");
 }
 
+/// The bush pays two things, and the second one is the only reason the
+/// survival clock has an answer. Both land in the inventory, both announce
+/// themselves, and the side payout is **flat** — the weak-spot bonus and
+/// the tool ladder move the primary and leave it alone.
+#[test]
+fn a_bush_pays_its_side_yield_flat_and_says_so() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Bush);
+    let fixture = GatherContent::probe_fixture();
+    let bush = &fixture.nodes[4];
+    let (sec_item, sec_pay) = bush.secondary;
+    assert_ne!(
+        sec_item, bush.output,
+        "the fixture's bush must pay two different items or this proves nothing"
+    );
+
+    let mut w = world_at(pos);
+    // A tool in hand, and the mark left armed: neither may reach the side
+    // payout. The tool row is the primary's (item 0 gathers item 1 faster),
+    // so holding it is the sharpest version of this — if the secondary read
+    // `yield_for` it would move here.
+    w.players[0].inv[0] = ItemStack {
+        item: fixture.nodes[0].tools[0].0,
+        count: 1,
+    };
+    w.tick(&[hold_primary(yaw, 0)]);
+
+    let mut primary = 0u32;
+    let mut side = 0u32;
+    for e in w.events.entries() {
+        if e.code == EV_GATHER {
+            let (item, amount) = ((e.b >> 16) as u16, e.b & 0xFFFF);
+            if item == bush.output {
+                primary += 1;
+            } else if item == sec_item {
+                assert_eq!(
+                    amount, sec_pay as u32,
+                    "the side payout is flat — no tool row, no weak-spot bonus"
+                );
+                side += 1;
+            }
+        }
+    }
+    assert_eq!(primary, 1, "one primary payout for one landed swing");
+    assert_eq!(side, 1, "one side payout for one landed swing, announced");
+
+    let held: u16 = w.players[0]
+        .inv
+        .iter()
+        .filter(|s| s.item == sec_item && s.count > 0)
+        .map(|s| s.count)
+        .sum();
+    assert_eq!(held, sec_pay, "the side yield reached the inventory");
+}
+
+/// A node with no `secondary` pays once, which is every other archetype.
+/// Without this the test above would pass on a payout that fires for
+/// everything, and every tree in the world would rain berries.
+#[test]
+fn a_tree_pays_once() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
+    let mut w = world_at(pos);
+    w.tick(&[hold_primary(yaw, 0)]);
+    let gathers = w
+        .events
+        .entries()
+        .iter()
+        .filter(|e| e.code == EV_GATHER)
+        .count();
+    assert_eq!(gathers, 1, "a node with no secondary pays exactly once");
+}
+
 #[test]
 fn harvested_node_respawns_inside_the_window() {
     let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::Tree);

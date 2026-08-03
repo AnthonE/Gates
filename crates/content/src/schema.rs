@@ -51,6 +51,17 @@ pub enum NodeArchetype {
     Bush,
 }
 
+/// A second thing one node pays, flat — the bush's berries beside its
+/// cloth (DECISIONS.md §open, "food you can get"). Flat on purpose: no
+/// tool row and no weak-spot bonus, because picking is not chopping.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Secondary {
+    pub output: String,
+    /// Units per landed swing, whatever is in the hand.
+    pub per_hit: u32,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Gatherable {
@@ -64,6 +75,9 @@ pub struct Gatherable {
     pub weak_spot_bonus_pct: u32,
     /// Tool item id (or `hand`) → units per hit. BTreeMap: canonical order.
     pub yield_per_hit: BTreeMap<String, u32>,
+    /// The optional side payout. Absent on every node that pays one thing.
+    #[serde(default)]
+    pub secondary: Option<Secondary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
