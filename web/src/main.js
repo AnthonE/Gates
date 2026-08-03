@@ -1220,6 +1220,18 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       // (DESIGN §9's < 300 calls / < 1.5 M tris). Read off the scene, not
       // recomputed — what the gate asserts is what the renderer did.
       lighting: scene.lighting(),
+      // The sim's own vitals mirror, so the HUD gate can assert display
+      // against authoritative state instead of against content's STARTING
+      // values — which the survival clock now drains on the sim's schedule,
+      // making "HUD equals content" a time-dependent (flaky) assertion.
+      // [hp, maxHp, food, maxFood, water, maxWater], same unpack as
+      // hud.setVitals above.
+      vitals: (() => {
+        const h = ex.client_health() >>> 0;
+        const v = ex.client_vitals() >>> 0;
+        const m = ex.client_vitals_max() >>> 0;
+        return [h >>> 16, h & 0xffff, v >>> 16, m >>> 16, v & 0xffff, m & 0xffff];
+      })(),
       frameMs,
       // The distribution behind that number, and the prewarm gate's pair —
       // all three the same class of fact: counts and times off the renderer,

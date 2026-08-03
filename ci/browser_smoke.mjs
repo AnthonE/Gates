@@ -1205,6 +1205,23 @@ console.log(`  mutual AOI: A sees ${B.playerId}, B sees ${A.playerId}`);
     if (!v.shown) {
       fail(`tab ${tab.playerId}: the vitals stack never appeared — no health reached the HUD`);
     }
+    // The survival clock made "HUD equals content's starting value" a
+    // TIME-DEPENDENT assertion — water drains on the sim's schedule, so the
+    // value here depended on how many ticks elapsed before this read, and on
+    // 2026-08-03 06:29 the same trunk went red then green on it with no
+    // change (the FLAKY-GATE stop this comment is the fix for). Split into
+    // the two questions it was conflating, both on observable state:
+    //   1. the HUD displays the SIM'S OWN number, exactly (__gatesDebug
+    //      .vitals is the client core's authoritative mirror) — that is the
+    //      "number the shard plays" half, sharp at any tick;
+    //   2. the played number sits inside content's declared bounds (> 0,
+    //      <= the declared start) — the "data declares" half at this gate's
+    //      altitude. That it STARTS at exactly the declared value is the
+    //      sim's own tests' job (survival unit tests + parity/replay), where
+    //      the tick is controlled and equality is deterministic.
+    const simV = await tab.page.evaluate(() => globalThis.__gatesDebug.vitals);
+    if (!simV) fail(`tab ${tab.playerId}: __gatesDebug.vitals missing — the HUD gate has no comparand`);
+    const simRows = { health: simV[0], food: simV[2], water: simV[4] };
     for (const kind of ["health", "water", "food"]) {
       if (v.rows[kind] === undefined) {
         fail(
@@ -1212,17 +1229,24 @@ console.log(`  mutual AOI: A sees ${B.playerId}, B sees ${A.playerId}`);
             "the shard never stated that meter at the door",
         );
       }
-      if (v.rows[kind] !== String(want[kind])) {
+      if (v.rows[kind] !== String(simRows[kind])) {
         fail(
-          `tab ${tab.playerId}: ${kind} reads "${v.rows[kind]}", content says ` +
-            `${want[kind]} — the number the shard plays is not the number the data declares`,
+          `tab ${tab.playerId}: ${kind} HUD reads "${v.rows[kind]}" while the sim holds ` +
+            `${simRows[kind]} — the display is not the number the shard plays`,
+        );
+      }
+      if (simRows[kind] <= 0 || simRows[kind] > want[kind]) {
+        fail(
+          `tab ${tab.playerId}: ${kind} is ${simRows[kind]} against a declared start of ` +
+            `${want[kind]} — outside content's bounds at the door`,
         );
       }
     }
   }
   console.log(
-    `  vitals: both tabs read ${want.health} hp · ${want.water} water · ` +
-      `${want.food} food, straight from content/balance.toml`,
+    `  vitals: both tabs' HUD matches the sim's own meters exactly, inside ` +
+      `content's declared bounds (${want.health} hp · ${want.water} water · ` +
+      `${want.food} food at the door; the clock may have drained a step)`,
   );
 }
 
