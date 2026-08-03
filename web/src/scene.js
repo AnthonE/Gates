@@ -2278,6 +2278,200 @@ export class GameScene {
   }
 
   /**
+   * Dev-only: is the near ground's per-pixel variation DETAIL, or is it
+   * chroma noise wearing detail's name?
+   *
+   * Every measurement above this one asks how MUCH the ground varies from one
+   * pixel to the next. 15h asks it as an absolute and the base maps answered
+   * it — and the pass that landed them shipped per-pixel rainbow speckle
+   * across four of six captured frames while every one of those numbers went
+   * up. Amplitude cannot tell the two apart, and the visual judge's blind
+   * reader named the difference on sight: *"rainbow per-pixel moire — no
+   * mipmapping/aniso, a shipped title would never expose this."*
+   *
+   * What separates them is DIRECTION. Resolve each pixel's high-frequency
+   * residual against the local mean colour:
+   *
+   *   · **along** it — the surface is lighter here and darker there. That is
+   *     what a photograph of ground measures, what a pebble looks like, and
+   *     what 15h is counting.
+   *   · **orthogonal** to it — the surface changed HUE between one pixel and
+   *     its neighbour. Real ground does this a little (lichen, a dead blade,
+   *     two minerals) and a stretched per-channel gain does it a lot.
+   *
+   * The ratio of the two is the statistic, it is dimensionless, and it has a
+   * measured reference: over the near-ground band of the thirteen
+   * `Rust Images/` frames that contain ground, they run 0.077–0.193 with a
+   * median of 0.120 (`ART.md` §7). Ours ran 0.237–0.798 on the five frames
+   * showing ground, and 0.092 on the one that shows none — while our ALONG
+   * term was inside the reference range throughout, which is the whole
+   * finding: the defect was never amplitude, so no amount of extra blur or
+   * anisotropy addresses it, and both would have cost the detail 15h asserts.
+   *
+   * Three legs per view, and the third is what makes this a diagnosis instead
+   * of a reading:
+   *
+   *   · **ship** — what a player sees.
+   *   · **flat** — `uBase = 0`, the octaves alone, so the mask covers exactly
+   *     where the base maps reach and the statistic is never taken over sky,
+   *     water or a prop that has no base on it at all.
+   *   · **stretch** — every layer's chroma keep forced to 1, which is
+   *     algebraically the per-channel gain the previous pass shipped. It is
+   *     rendered every run so the gate reports the artifact it fixed as a
+   *     live number rather than as a claim about a commit that is now
+   *     history. If the two legs ever converge, the fix has stopped working
+   *     and the ship number alone would not say so.
+   *   · **scalar** — every keep forced to 0: the base delivering luminance
+   *     structure only, and so the FLOOR this material can reach without
+   *     removing the photograph. It is what says whether a ship number close
+   *     to the ceiling has headroom left in this knob or is already sitting
+   *     on terms that belong to something else — the tint octave's deliberate
+   *     off-colour deviation (15d asserts it, at x1.43 chroma spread), the
+   *     sky's dither, the fog. Without it, "tighten the bound" is a guess.
+   *
+   * Plus a control render — the same state twice, which must differ nowhere —
+   * so a reading can never be renderer noise wearing a verdict.
+   */
+  chromaProbe(views, minDelta) {
+    const u = this._terrainUniforms;
+    if (!u) return null;
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const ship = new Uint8Array(w * h * 4);
+    const control = new Uint8Array(w * h * 4);
+    const flat = new Uint8Array(w * h * 4);
+    const stretch = new Uint8Array(w * h * 4);
+    const scalar = new Uint8Array(w * h * 4);
+    const mask = new Uint8Array(w * h);
+    const cam = this.camera;
+    const keepQ = cam.quaternion.clone();
+    const pos = cam.position;
+    const samples = [];
+
+    // The frame arrives sRGB-encoded and this statistic is a ratio of
+    // deviations, so it has to be taken in the light the deviations live in:
+    // the encode is a power curve, and a fixed step in code values is a
+    // different step in light at the bottom of the range than at the top.
+    // 256 entries, built once, the same transfer `textures.js` uses so the
+    // two sides of this material's measurement agree by construction.
+    const lin = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const c = i / 255;
+      lin[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    }
+    const luma = (buf, p) => (buf[p] * 2 + buf[p + 1] * 5 + buf[p + 2]) >> 3;
+
+    // Mean colour direction of a pixel and its four neighbours, the residual
+    // of the centre against that mean, and the residual split along and across
+    // the direction. Every pixel in the window has to be masked or the
+    // statistic would straddle a silhouette edge, where a hue step is the
+    // scene and not the material.
+    const split = (buf) => {
+      let sp = 0;
+      let so = 0;
+      let n = 0;
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          const i = y * w + x;
+          if (!mask[i] || !mask[i - 1] || !mask[i + 1] || !mask[i - w] || !mask[i + w]) continue;
+          let mr = 0;
+          let mg = 0;
+          let mb = 0;
+          for (const j of [i - 1, i + 1, i - w, i + w]) {
+            const q = j * 4;
+            mr += lin[buf[q]];
+            mg += lin[buf[q + 1]];
+            mb += lin[buf[q + 2]];
+          }
+          mr /= 4;
+          mg /= 4;
+          mb /= 4;
+          const p = i * 4;
+          const dr = lin[buf[p]] - mr;
+          const dg = lin[buf[p + 1]] - mg;
+          const db = lin[buf[p + 2]] - mb;
+          const len = Math.sqrt(mr * mr + mg * mg + mb * mb);
+          if (len < 1e-5) continue;
+          // Signed length along the local mean colour, and what is left over.
+          const par = (dr * mr + dg * mg + db * mb) / len;
+          const ox = dr - (par * mr) / len;
+          const oy = dg - (par * mg) / len;
+          const oz = db - (par * mb) / len;
+          sp += par * par;
+          so += ox * ox + oy * oy + oz * oz;
+          n++;
+        }
+      }
+      if (n === 0) return { along: 0, chroma: 0, ratio: 0, n: 0 };
+      const along = Math.sqrt(sp / n);
+      const chroma = Math.sqrt(so / n);
+      return { along, chroma, ratio: along > 1e-9 ? chroma / along : 0, n };
+    };
+
+    const keep = u.uBaseChromaKeep.value.clone();
+
+    for (const view of views) {
+      const cp = Math.cos(view.pitch);
+      this._dir.set(Math.sin(view.yaw) * cp, Math.sin(view.pitch), Math.cos(view.yaw) * cp);
+      this._target.copy(pos).add(this._dir);
+      cam.lookAt(this._target);
+
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, ship);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, control);
+      u.uBase.value = 0;
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, flat);
+      u.uBase.value = 1;
+      u.uBaseChromaKeep.value.set(1, 1, 1, 1);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, stretch);
+      u.uBaseChromaKeep.value.set(0, 0, 0, 0);
+      this.renderer.render(this.scene, cam);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, scalar);
+      u.uBaseChromaKeep.value.copy(keep);
+
+      let masked = 0;
+      let noise = 0;
+      for (let i = 0; i < w * h; i++) {
+        const p = i * 4;
+        const a = luma(ship, p);
+        if (a !== luma(control, p)) noise++;
+        const m = Math.abs(a - luma(flat, p)) > minDelta ? 1 : 0;
+        mask[i] = m;
+        if (m) masked++;
+      }
+      const s = split(ship);
+      const t = split(stretch);
+      const z = split(scalar);
+      samples.push({
+        label: view.label,
+        masked,
+        maskFraction: masked / (w * h),
+        noise,
+        pairs: s.n,
+        along: s.along,
+        chroma: s.chroma,
+        ratio: s.ratio,
+        stretchAlong: t.along,
+        stretchChroma: t.chroma,
+        stretchRatio: t.ratio,
+        scalarAlong: z.along,
+        scalarChroma: z.chroma,
+        scalarRatio: z.ratio,
+      });
+    }
+
+    u.uBase.value = 1;
+    u.uBaseChromaKeep.value.copy(keep);
+    cam.quaternion.copy(keepQ);
+    this.renderer.render(this.scene, cam);
+    return { width: w, height: h, samples };
+  }
+
+  /**
    * Dev-only: do the PROPS have a surface, or only a silhouette?
    *
    * Every probe above this one asks its question of the ground. The visual

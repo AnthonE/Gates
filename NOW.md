@@ -4,6 +4,82 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+1. **The ground's chroma noise — the artifact the last pass shipped. — LANDED**
+   *(GAP PASS, iteration 2. From `findings/pass-20260803-145507-01-visual.md`
+   ranked gap 1: "Kill the near-ground chroma confetti — it is a live render
+   artifact in four of six frames and it is a sampling bug, not an art task."
+   The report's own instruction was that nothing else in its list should be
+   attempted while a visible render bug is in half the capture.)*
+
+   **The cause was not the one the report ranked first, and the difference
+   matters.** Its three suspects were, in order, the `textureGrad` derivatives
+   across a splat discontinuity; `BASE_ANISOTROPY_MAX = 4` at ~80° incidence;
+   and the per-identity gain amplifying mip-level chroma noise. It is the
+   third, and it is arithmetic rather than sampling: the mean-placing gain is
+   `color / measured mean` PER CHANNEL and it multiplies the whole sample, so
+   a source dragged unevenly across channels has its per-channel NOISE dragged
+   with it. `rock` needs ×13.45 on blue, whose source mean (0.034 linear) sits
+   near its own JPEG chroma floor.
+
+   **The instrument is what made this decidable**, and it is the reason not to
+   act on a ranked gap's literal sentence (`CLAUDE.md`'s "a judge names the
+   symptom; fix the cause"): resolve the near-ground high-frequency residual
+   ALONG the local mean colour versus ORTHOGONAL to it. The thirteen
+   `Rust Images/` frames that actually contain ground run 0.077–0.193 (median
+   0.120); our six judged frames ran 0.659/0.798/0.237/0.284/0.760/0.092 —
+   every frame showing ground is over the reference maximum, and the only frame
+   with no near ground in it is the only one inside the band. **Our
+   along-colour term was inside the reference range the whole time.** So the
+   defect was never amplitude, and both of the report's first two suspects are
+   amplitude fixes that would have cost the detail 15h asserts.
+   `BASE_ANISOTROPY_MAX` is deliberately untouched.
+
+   Shipped: `BASE_CHROMA_STRETCH_MAX = 1.0`, applied per layer as
+   `min(1, MAX / span)` off each source's own measured gain span (sand 0.72,
+   grass 0.61, litter 0.26, rock 0.17). Mean preservation became a property of
+   the tap's shape rather than of its tuning — see `DECISIONS.md` §open. 15h is
+   unmoved (5.90/8.61 against 5.91/8.58) because the along-colour term is
+   unmoved; only chroma falls. Gated at **15i**, a CEILING, with the unbounded
+   leg rendered live every run so the suppression is a number and not a claim
+   about a commit.
+
+   **What this did NOT do, and the next pass should not be misled about it.**
+   The frame moved 0.434 → 0.317 (level) and 0.313 → 0.243 (down). **That is
+   still 1.6× over the reference maximum of 0.193.** The wall is at 0.35, which
+   is where the tree is, not where the references are — 15h's own argument for
+   splitting a target from a floor, applied to a ceiling. Two reasons it stops
+   there, and only one of them is this knob's to fix:
+   (a) the two vantages 15i measures sit at a spawn that is 99.2% grass, where
+   the bound is weakest (grass keep 0.61); `litter` and `rock`, where it bites
+   hardest, are ~absent there. So the gate measures the fix at its weakest,
+   which is the right direction for a wall but understates the fix.
+   (b) **the luma-only floor — every keep at 0 — is 0.186/0.174**, already
+   above the reference median of 0.120. Most of what remains is therefore NOT
+   the photograph: it is the tint octave's deliberate off-colour deviation
+   (15d asserts it at ×1.43), the sky dither and the fog. Tightening
+   `BASE_CHROMA_STRETCH_MAX` below 1.0 cannot reach the references on its own
+   and would start discarding measured colour the references demonstrably
+   carry. Per `CLAUDE.md`'s coupled-lighting law that remaining set has one
+   owner, and it is the lighting pass, not this one.
+
+   **A gate defect this pass found in its own first cut, recorded because it is
+   the more useful half of the lesson.** The reference band was first measured
+   with a 2×2-box residual while the probe used a 4-neighbour-mean one, giving
+   0.336 instead of 0.193 — and 0.336 would have walled our 0.317 in as a pass.
+   A ceiling computed by a different estimator than the frame it judges is not
+   a ceiling. Both are now the probe's estimator, and the reference set is
+   restricted to the thirteen frames that actually contain ground (the four UI
+   screenshots and the top-down map render were two of the five highest
+   readings in the unrestricted set).
+
+   Also cleared here, from the same pass's merge-gate judge (ranked fix 1):
+   `DECISIONS.md` §open, `NOW.md` and 15h's comment block all claimed the
+   shipped frame measures 6.00/8.59 luma/px, which was the aniso-16
+   configuration that was cut. They now say what `base detail:` prints. Its
+   ranked fix 3 (the `grain`/`tint`/`base` toggle checks reading a snapshot
+   captured before any probe ran) is NOT fixed — it is inherited convention and
+   is left for a pass that owns those three; 15i's own restore check reads live.
+
 1. **The renderer has never had real detail to sample — give it some.**
    *(Operator, 2026-08-03, `DECISIONS.md`: real assets allowed, CC0 is the bar.
    `ART.md` §7 is the policy; `assets/textures/` is the working set, already
@@ -33,7 +109,7 @@ Done items are deleted, not checked — history lives in git and
    into §3's band without editing the file (measured gain span ×5.72, exactly
    as `MANIFEST.md` predicted). Gated at `browser_smoke` **15h**, the first
    assertion in that file whose sharp number is an absolute rather than a
-   ratio: **6.00 luma/px at the level vantage and 8.59 near-ground, against
+   ratio: **5.90 luma/px at the level vantage and 8.61 near-ground, against
    0.41–0.47 from the octaves alone**, with §3's 6.3 printed beside it every
    run. Three texture units, ≤12 fetches/fragment, 3.1 MB of §7's 12 MB.
 

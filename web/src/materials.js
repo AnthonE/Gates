@@ -554,6 +554,44 @@ const BASE_NORMAL_MAX_SLOPE = 0.25;
 // runs, and the terrain program already binds five shadow maps).
 const BASE_FETCHES_MAX = 3 * GROUND_LAYERS.length;
 const BASE_TEX_UNIT_BUDGET = 16;
+// The most a per-channel palette gain may STRETCH the photograph's own colour
+// deviation. 1.0 is the identity: the source's chroma variation delivered at
+// the scale the camera measured it. Above 1 the palette correction is no
+// longer correcting a mean, it is amplifying colour noise; below 1 it is
+// discarding measured colour that the references demonstrably carry.
+//
+// Why this constant has to exist is the artifact the pass before this one
+// shipped, and the mechanism is arithmetic rather than taste. The gain it
+// shipped was `color / measured mean`, PER CHANNEL, multiplying the whole sample
+// — so it scales the photograph's deviation by that same per-channel factor.
+// For a source whose gain is near-uniform that is harmless: the deviation
+// lands along the authored colour and reads as luminance detail. For an
+// off-band source it is not. Measured on the four files that ship:
+//
+//     sand   gain [3.43 4.09 4.73]  span 1.38
+//     grass  gain [1.20 1.97 1.94]  span 1.64
+//     litter gain [1.08 3.33 4.12]  span 3.82
+//     rock   gain [2.35 5.24 13.45] span 5.72   <- blue mean is 0.034 linear
+//
+// `rock` is the sandstone `MANIFEST.md` marks as too warm for granite. Its
+// blue channel sits near the source's own noise floor, so the ×13.45 that
+// corrects its MEAN also amplifies its JPEG chroma noise thirteenfold, and
+// what reaches the image at a grazing footprint is per-pixel rainbow speckle.
+// The measurement that separates the two, over the near-ground band, is the
+// high-frequency residual resolved along the local mean colour versus
+// orthogonal to it: the thirteen `Rust Images/` frames that actually contain
+// ground run 0.077–0.193 (median 0.120) and the shipped frames ran 0.237–0.798
+// on the five showing ground — while our residual ALONG colour, the detail 15h
+// asserts, was already inside the reference range. The defect was never
+// amplitude, so no amount of extra blur or anisotropy addresses it.
+//
+// So the ceiling is applied per layer, `min(1, MAX / span)`, and that is the
+// same law `ART.md` §7 already states one derivative down: *an off-band source
+// is tinted, not tolerated.* A source that already agrees with its palette
+// entry keeps its colour variation whole; one that had to be dragged 5.7×
+// across channels to hit its mean keeps almost none of it, because almost none
+// of what it has left is its own.
+const BASE_CHROMA_STRETCH_MAX = 1.0;
 // The base maps retire on the SAME law as every octave in this file — cycles
 // per pixel, `FADE_OCTAVE_CPP` — and the argument for it here is stronger than
 // it is for any of them, which is why it is the same array and not a new one.
@@ -561,9 +599,9 @@ const BASE_TEX_UNIT_BUDGET = 16;
 // An octave retires because a reconstructed field cannot be filtered and an
 // unfiltered field past Nyquist reaches the image as its alias. A texture does
 // not have that problem: the mip chain filters it correctly at any footprint.
-// What a texture has instead is a LIMIT — its own mean — and the gain in
-// `uBaseAlbGain` is built so that mean is exactly `IDENTITIES[i].color`, which
-// is exactly what the flat path already delivers. So past the fade the three
+// What a texture has instead is a LIMIT — its own mean — and `gmBaseTap` is
+// built so that mean is exactly `IDENTITIES[i].color` at any chroma keep,
+// which is exactly what the flat path already delivers. So past the fade the three
 // fetches return an answer this shader already has written down, and skipping
 // them is not an approximation of the image: `mix(a, b, 0.0)` is `a`.
 //
@@ -647,7 +685,9 @@ uniform sampler2DArray uBaseRgh;
 uniform float uBase;
 uniform vec4 uBaseScale;
 uniform vec2 uBaseFade;
-uniform vec3 uBaseAlbGain[4];
+uniform vec3 uBaseAlbInvMean[4];
+uniform vec3 uBaseAlbLumaW[4];
+uniform vec4 uBaseChromaKeep;
 uniform vec4 uBaseRghGain;
 ${FIELD_GLSL}
 `;
@@ -668,16 +708,31 @@ ${FIELD_GLSL}
 //     single layer with a near-horizontal normal cannot dominate the blend
 //     through a divide that has already diverged. z is reconstructed rather
 //     than stored (`textures.js` ships RG), which is exact for a unit vector.
-//   · **The albedo gain is per identity and per channel.** It arrives as
-//     `IDENTITIES[i].color / measured mean of layer i`, so the photograph
-//     contributes its variance and the palette keeps its mean — `ART.md` §7's
-//     "hybrid, not replacement", and its "an off-band source is tinted, not
-//     tolerated", as one multiply.
+//   · **The albedo arrives as a RELATIVE field, and its chroma is delivered
+//     at a bounded stretch.** `rel` is the sample over the layer's own
+//     measured mean, so it has mean exactly 1 in every channel; `k` is that
+//     same field resolved to a scalar through the layer's own luma weights, so
+//     it has mean exactly 1 too. Both ends are then multiplied by the authored
+//     colour, which makes `IDENTITIES[i].color` the delivered mean **for any
+//     value of the keep** — the mix is convex and both of its ends already
+//     average to 1, so `ART.md` §7's mean preservation is a property of this
+//     shape rather than of its tuning. What the keep chooses is only how much
+//     of the photograph's colour DEVIATION survives the per-channel correction
+//     that put its mean on the palette (`BASE_CHROMA_STRETCH_MAX`). At keep = 1
+//     it is algebraically `sample * (color / mean)` — exactly what the pass
+//     before this one shipped — and `chromaProbe` renders that leg to prove it.
+//
+//     It is non-negative by construction, which the subtractive form of the
+//     same correction is not: a convex combination of two non-negative fields
+//     needs no clamp, and so introduces no hue shift in the darks from one.
 const BASE_TAP_GLSL = /* glsl */ `
-void gmBaseTap(float lyr, float w, vec3 ag, float rg, vec2 uv, vec2 dx, vec2 dy,
+void gmBaseTap(float lyr, float w, vec3 col, vec3 inv, vec3 lw, float keep, float rg,
+               vec2 uv, vec2 dx, vec2 dy,
                inout vec3 alb, inout vec2 nrm, inout float rgh) {
   vec3 p = vec3(uv, lyr);
-  alb += texture2DGradEXT(uBaseAlb, p, dx, dy).rgb * ag * w;
+  vec3 rel = texture2DGradEXT(uBaseAlb, p, dx, dy).rgb * inv;
+  float k = dot(lw, rel);
+  alb += col * mix(vec3(k), rel, keep) * w;
   nrm += (texture2DGradEXT(uBaseNrm, p, dx, dy).rg * 2.0 - 1.0) * w;
   rgh += texture2DGradEXT(uBaseRgh, p, dx, dy).r * rg * w;
 }
@@ -704,7 +759,8 @@ function baseGlsl() {
   for (let i = 0; i < 4; i++) {
     const c = "xyzw"[i];
     body += /* glsl */ `
-        if (gmW.${c} > 0.0) gmBaseTap(${i}.0, gmW.${c}, uBaseAlbGain[${i}], uBaseRghGain.${c},
+        if (gmW.${c} > 0.0) gmBaseTap(${i}.0, gmW.${c}, uIdentColor[${i}],
+            uBaseAlbInvMean[${i}], uBaseAlbLumaW[${i}], uBaseChromaKeep.${c}, uBaseRghGain.${c},
             gmXZ * uBaseScale.${c}, gmBdx * uBaseScale.${c}, gmBdy * uBaseScale.${c},
             gmBaseA, gmBaseN, gmBaseR);`;
   }
@@ -1110,18 +1166,48 @@ export function makeTerrainMaterial(variantName = "ship") {
     uBaseRgh: { value: base.rough },
     uBaseScale: { value: new THREE.Vector4(...BASE_SCALE) },
     uBaseFade: { value: new THREE.Vector2(...FADE_BASE_CPP) },
-    // color / measured mean, per channel per identity — the gain that makes
-    // the palette entry the delivered MEAN and the photograph the variance.
-    uBaseAlbGain: {
+    // 1 / measured mean, per channel per identity. The sample times this is a
+    // field with mean exactly 1, and the authored colour then multiplies it —
+    // so the palette entry is the delivered mean and the photograph is the
+    // deviation around it, the same arithmetic the gain form carried, split so
+    // the deviation's chroma can be bounded separately from its luminance.
+    uBaseAlbInvMean: {
       value: IDENTITIES.map(
-        (id, i) =>
+        (_id, i) =>
           new THREE.Vector3(
-            id.color[0] / Math.max(base.meanLinear[i][0], 1e-4),
-            id.color[1] / Math.max(base.meanLinear[i][1], 1e-4),
-            id.color[2] / Math.max(base.meanLinear[i][2], 1e-4),
+            1 / Math.max(base.meanLinear[i][0], 1e-4),
+            1 / Math.max(base.meanLinear[i][1], 1e-4),
+            1 / Math.max(base.meanLinear[i][2], 1e-4),
           ),
       ),
     },
+    // The weights that collapse that relative field to a scalar with mean 1
+    // as well: `L * mean / dot(L, mean)`, which sums to 1 by construction. Two
+    // consequences, and the second is the reason the weights are per layer
+    // rather than a shared luma triple:
+    //   · `dot(lw, rel)` has mean exactly 1, so the scalar end of the mix
+    //     preserves the palette mean on its own.
+    //   · for deviation that is luminance-correlated — which is what a
+    //     photograph's DETAIL is — the scalar end delivers the identical luma
+    //     contrast the per-channel gain delivered. That is what makes this
+    //     change surgical: 15h's absolute luma/px floor measures the term this
+    //     leaves alone, and only the chroma that 15i measures moves.
+    uBaseAlbLumaW: {
+      value: IDENTITIES.map((_id, i) => {
+        const m = base.meanLinear[i];
+        const w = [0.2126 * m[0], 0.7152 * m[1], 0.0722 * m[2]];
+        const s = Math.max(w[0] + w[1] + w[2], 1e-6);
+        return new THREE.Vector3(w[0] / s, w[1] / s, w[2] / s);
+      }),
+    },
+    // How much of each photograph's own colour deviation survives, per layer:
+    // `min(1, BASE_CHROMA_STRETCH_MAX / span)` where span is that layer's own
+    // measured gain span. Derived from the source files rather than chosen —
+    // a layer already in its palette's band keeps its colour whole, and the
+    // further a source had to be dragged across channels to hit its mean, the
+    // less of what is left is its own. `baseChromaKeep()` is where it is
+    // computed, so the gate reads the same function the shader is fed from.
+    uBaseChromaKeep: { value: new THREE.Vector4(...baseChromaKeep(base)) },
     // …and the same trick on roughness, so `uIdentRough`'s four authored
     // answers-to-light stay each layer's mean and what the map adds is where
     // that layer is polished and where it is matte.
@@ -2112,6 +2198,40 @@ export function materialFacts() {
 }
 
 /**
+ * Each layer's per-channel gain span, `max / min` over `color / measured mean`.
+ *
+ * One number per layer, and it is the diagnosis rather than a summary of it: a
+ * span of 1 is a source whose colour already agrees with its palette entry, so
+ * correcting its mean is a pure scale and its deviation arrives unstretched. A
+ * span of 5.72 — `rock` — is a source being dragged across channels, and the
+ * same multiply that fixes its mean multiplies its per-channel NOISE by the
+ * same uneven factors.
+ */
+function baseGainSpan(tex) {
+  return IDENTITIES.map((id, i) => {
+    const g = id.color.map((c, ch) => c / Math.max(tex.meanLinear[i][ch], 1e-4));
+    return Math.max(...g) / Math.max(Math.min(...g), 1e-6);
+  });
+}
+
+/**
+ * How much of each photograph's colour deviation the shader keeps.
+ *
+ * `min(1, BASE_CHROMA_STRETCH_MAX / span)` — the effective stretch applied to
+ * a layer's chroma deviation is its span times its keep, so this holds that
+ * product at or below the ceiling for every layer and leaves a layer already
+ * under the ceiling entirely alone. Nothing here is per-identity taste: the
+ * only input is the span the source files themselves measure, so swapping a
+ * better-matched `rock` file raises its keep automatically and swapping a
+ * worse one lowers it, with no edit here and none to `content/`.
+ */
+function baseChromaKeep(tex) {
+  return baseGainSpan(tex).map((span) =>
+    Math.min(1, BASE_CHROMA_STRETCH_MAX / Math.max(span, 1e-6)),
+  );
+}
+
+/**
  * What the base maps are and what they deliver, for the gate to assert.
  *
  * `albedoGain` is the whole hybrid policy as four numbers: it is
@@ -2134,6 +2254,17 @@ export function baseFacts() {
       id.color.map((c, ch) => c / Math.max(tex.meanLinear[i][ch], 1e-4)),
     ),
     roughGain: IDENTITIES.map((id, i) => id.roughness / Math.max(tex.meanRough[i], 1e-4)),
+    // The gain's SPAN per layer — `max/min` over its three channels — and the
+    // chroma keep that falls out of it. The span is the whole diagnosis in one
+    // number per layer: 1.0 is a source that already agrees with its palette
+    // entry and needs no correction beyond a scale, and `rock`'s 5.72 is a
+    // sandstone standing in for granite whose blue mean sits near its own
+    // noise floor. Published as a pair so the gate can assert the derivation
+    // rather than the result — a keep that stops tracking its span is a knob
+    // that has quietly become a taste setting.
+    albedoGainSpan: baseGainSpan(tex),
+    chromaKeep: baseChromaKeep(tex),
+    chromaStretchMax: BASE_CHROMA_STRETCH_MAX,
     normalMaxSlope: BASE_NORMAL_MAX_SLOPE,
     fadeCpp: FADE_BASE_CPP,
     fadeM: FADE_BASE_CPP.map((cpp) => BASE_SCALE.map((s) => cpp / s)),
