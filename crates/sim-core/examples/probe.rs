@@ -6,7 +6,7 @@
 // format/print in SIM code; an example binary is not sim code.
 #![allow(clippy::disallowed_macros)]
 
-use sim_core::probe::{probe_combat, probe_parity, probe_terrain};
+use sim_core::probe::{probe_bags, probe_combat, probe_parity, probe_terrain};
 
 // Keep in lockstep with ci/parity.mjs — a mismatch shows up as a diff.
 const TERRAIN_SEEDS: [u64; 3] = [0x0047_4154_4553, 0x1, 0xDEAD_BEEF];
@@ -18,6 +18,12 @@ const PARITY_TICKS: u32 = 16;
 // death. Fewer, longer brawls instead.
 const COMBAT_SEQUENCES: u32 = 500;
 const COMBAT_TICKS: u32 = 256;
+// Bags need a whole death cycle, not a brawl: the survival fixture's spans
+// are ~10 s, so a body empties around tick 300 and dies of it a hundred-odd
+// ticks later. 600 reaches two deaths per body, which is what puts a *spent*
+// bag on the surface beside a fresh one.
+const BAGS_SEQUENCES: u32 = 24;
+const BAGS_TICKS: u32 = 600;
 
 fn main() {
     for seed in TERRAIN_SEEDS {
@@ -30,5 +36,13 @@ fn main() {
     println!(
         "combat {PARITY_MASTER_SEED:#018x} {COMBAT_SEQUENCES} {COMBAT_TICKS} {:#018x}",
         probe_combat(PARITY_MASTER_SEED, COMBAT_SEQUENCES, COMBAT_TICKS)
+    );
+    // Packed `wakes << 32 | digest32` — printed as its two halves so the
+    // count is a field a gate can read, not a number buried in a hash.
+    let bags = probe_bags(PARITY_MASTER_SEED, BAGS_SEQUENCES, BAGS_TICKS);
+    println!(
+        "bags {PARITY_MASTER_SEED:#018x} {BAGS_SEQUENCES} {BAGS_TICKS} {} {:#010x}",
+        bags >> 32,
+        bags & 0xFFFF_FFFF
     );
 }

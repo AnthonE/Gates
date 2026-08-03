@@ -141,6 +141,21 @@ pub const EV_CONSUME_REFUSED: u8 = 23;
 /// knife (survival.rs). A refused drink rides `EV_CONSUME_REFUSED` — one
 /// refusal channel for the whole module.
 pub const EV_DRANK: u8 = 24;
+/// EV_RESPAWN: a = player id, b = 1 if the body woke on its own sleeping
+/// bag, 0 if the spawn ring answered instead. Own-fact, announced by
+/// `World::respawn` on every death without exception, so "where did I wake
+/// and why" is a fact the sim states rather than one a reader infers by
+/// comparing a position against a bag list.
+///
+/// **Not on the wire yet, and that is deliberate rather than unfinished.**
+/// The client already learns the new position from the next snapshot, so
+/// nothing about the mechanic waits on a packet; what a wire subtype would
+/// buy is the *respawn screen* — the pick-your-bag choice — which is its
+/// own slice with its own action, and spending a subtype here before that
+/// design exists would pin a layout to a guess (wall 6). Until then the
+/// server's event walk ignores it through the catch-all it already has,
+/// and the three walls below read it directly.
+pub const EV_RESPAWN: u8 = 25;
 
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
@@ -594,12 +609,28 @@ impl World {
         self.players.iter().position(|p| p.active && p.id == id)
     }
 
-    /// Death, v1: you wake up naked on a different beach, and what you
-    /// were carrying is **still lying where you fell**. The kill has
-    /// already been counted and announced (combat.rs); this is the
-    /// consequence — the whole inventory into one backpack at the body's
-    /// position (backpack.rs), then a fresh body at the next generation
-    /// of the spawn ring, full hp, and nothing in hand.
+    /// Death, v2: you wake up naked **on your own bag if you placed one**,
+    /// and on a different beach if you did not — and what you were
+    /// carrying is still lying where you fell. The kill has already been
+    /// counted and announced (combat.rs); this is the consequence — the
+    /// whole inventory into one backpack at the body's position
+    /// (backpack.rs), then a fresh body, full hp, and nothing in hand.
+    ///
+    /// **Where that body stands is the difference between building a base
+    /// and having one.** Before this, `deploy.rs` placed sleeping bags,
+    /// capped them per owner, hashed them into the WAL and decayed them,
+    /// and nothing anywhere read one at a death: every death evicted a
+    /// player to a blind ring point with no map and no compass to walk
+    /// back by, so every session ended where its first death landed (the
+    /// merge-gate judge's ranked gap 1,
+    /// `findings/archive-prestamp/pass-20260803-064506-04-judge.md`).
+    ///
+    /// The bag is asked first and the ring is the fallback, which is also
+    /// the order of the two `dev_spawn` obeys: `dev_spawn` pins the *ring*
+    /// (its doc says so, and `browser_smoke` uses it to put two tabs on
+    /// one beach), and a bag is not the ring. A shard pinned for testing
+    /// still honours a bag its player placed, which is the behaviour the
+    /// player would report a bug about otherwise.
     ///
     /// The craft queue and the weak-spot chase are still destroyed, and
     /// deliberately: a queued craft is a promise to a body that no longer
@@ -622,7 +653,20 @@ impl World {
         self.backpacks
             .drop_for(&self.backpack, &body, self.tick, &mut self.events);
         let (id, deaths, frame) = (body.id, body.deaths, body.frame);
-        let (x, z) = self.spawn_pos_n(id, deaths as u32);
+        // Nearest own ready bag to where the body fell; the scan spends it
+        // for `BAG_COOLDOWN_TICKS`, so a chain of deaths inside one
+        // cooldown walks the player's other bags and then the ring.
+        let bag = self.deploys.claim_bag(
+            &self.deploy,
+            id,
+            body.body.qx as f32 * movement::POS_XZ_Q,
+            body.body.qz as f32 * movement::POS_XZ_Q,
+            self.tick,
+        );
+        let (x, z) = match bag {
+            Some(p) => p,
+            None => self.spawn_pos_n(id, deaths as u32),
+        };
         let hp = self.combat.player_hp;
         self.players[slot] = Player {
             id,
@@ -636,6 +680,7 @@ impl World {
         };
         // A player who starved does not respawn already starving.
         survival::grant(&self.survival, &mut self.players[slot]);
+        self.events.push(EV_RESPAWN, id, bag.is_some() as u32, 0);
         self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
     }
@@ -1076,6 +1121,16 @@ impl World {
             buf[15] = d.open as u8;
             buf[16] = d.locked as u8;
             h.update(&buf);
+        }
+        // The bag cooldowns, in their own pass rather than widening the
+        // buffer above — they live in a parallel array precisely so the
+        // wire's mirror of `DeployRec` does not carry them (deploy.rs), and
+        // the digest follows the storage. They are state like any other
+        // timer here: two shards that disagree about which bags are spent
+        // disagree about where the next death wakes, and a hash that could
+        // not see it would call them the same world.
+        for r in self.deploys.bag_ready() {
+            h.update(&r.to_le_bytes());
         }
         h.update(&(self.deploys.hearths().len() as u64).to_le_bytes());
         for hr in self.deploys.hearths() {

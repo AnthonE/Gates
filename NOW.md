@@ -4,7 +4,52 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **The world was lit upside down, and there was no air in it.**
+1. **A death evicted you from your own base, and nothing you built said
+   otherwise.** *(Gap pass. From the merge-gate judge's ranked gap 1 in
+   `findings/archive-prestamp/pass-20260803-064506-04-judge.md` — "the one
+   mechanic the genre uses to make a base worth building is placed, capped,
+   hashed and inert" — ranked there as "higher impact than anything else on
+   this list, because it is the mechanic that converts 'I built a base' into
+   'I have a base'".)*
+
+   **Landed** — `DECISIONS.md` §open, "respawn on bag v0". `ALPHA.md` §1 had
+   already spoken the whole rule ("respawn-on-it with a per-anchor cooldown
+   (~5 min **(knob)**)"), so this implements a spoken knob rather than
+   inventing one: `BAG_COOLDOWN_TICKS = 9_000` is those five minutes at the
+   30 Hz tick. A death now scans the deploy store for the dying player's own
+   ready bags and wakes the body on the **nearest to where it fell**,
+   spending that bag for its cooldown; killed again inside five minutes you
+   walk to your next bag, and with none ready you are back on the ring
+   exactly as before — which is what makes `BAG_CAP` a cap on how many
+   deaths in a row a defender can answer. No wire moved: the client already
+   learns the position from the next snapshot, and the subtype a respawn
+   would spend belongs to the death screen below. Armed in
+   `test_alloc_zero` and in a fourth parity probe whose printed **count** of
+   bag wakes `ci/gates.sh` fails on at zero; structural in `test_replay`,
+   whose script cannot kill anything.
+
+   **What this item still wants**, in the order it is worth doing:
+
+   - **The death screen and the choice.** `ALPHA.md` §1's respawn flow is
+     "who/what killed you — range and weapon, no map position — choose beach
+     or a bag, spawn with nothing". Today the sim picks the nearest bag for
+     you. The choice is the action subtype and the S→C screen this pass
+     deliberately did not spend (wall 6: no layout pinned to a guess), and
+     it is the natural home for `EV_RESPAWN`'s wire lane.
+   - **A reconnect is still a ring spawn.** Only *death* consults a bag;
+     `Command::Join` does not. That is the sleeper/haven lane (`NETCODE.md`
+     §6.3, "haven sleeper timeout 20 min"), and a player who logs out in
+     their own base should not have to die to get back into it.
+   - **You still cannot navigate.** The same judge gap names the other
+     half: no map, no compass strip, no markers — so a body that *does*
+     fall back to the ring has nothing to walk home by, and
+     `mapstylized.jpg` and `gameplayfoundbase.jpeg` are both in the
+     reference set precisely for this. The compass strip is the cheap half
+     and it is also the visual judge's HUD ask.
+   - **A bed halves the cooldown** (ALPHA §1) — content, not code, once a
+     second bag-class deployable exists.
+
+2. **The world was lit upside down, and there was no air in it.**
    *(Gap pass. From the visual judge's ranked gap 3 in
    `findings/pass-20260803-064506-01-visual.md` — "the daylight register is
    inverted and there is no atmosphere — one owner, one pass" — which also
@@ -40,7 +85,7 @@ Done items are deleted, not checked — history lives in git and
      the bounce pole fails through the pine, so there is no split of the
      budget that raises the floor and leaves the ratio alone — and walking the
      key toward the fill is worse, costing 38% of the numerator, because a
-     coloured light is what makes a mineral read. **The unblock is item 4
+     coloured light is what makes a mineral read. **The unblock is item 5
      below** ("nothing that is not the ground has a surface"): raise a prop's
      authored chroma and the same ambient clears ×1.10, and this becomes a
      two-line change. The six measurements are in `DECISIONS.md` so that pass
@@ -71,7 +116,7 @@ Done items are deleted, not checked — history lives in git and
      to spend — but it is theirs, and spending it means re-measuring them, not
      assuming.
 
-2. **There was no clock and no pressure, so the loop had no engine.**
+3. **There was no clock and no pressure, so the loop had no engine.**
    *(Gap pass. From the merge-gate judge's
    ranked gap 1 in `findings/archive-prestamp/pass-20260802-163821-05-judge.md`
    — "you can log in, stand still for an hour, and be in precisely the state
@@ -163,9 +208,9 @@ Done items are deleted, not checked — history lives in git and
      a forest-floor pickup and a farming lane respectively, and inventing
      either to satisfy the new wall would have been inventing content.
    - **Day/night**, `DESIGN.md` §2's other half of the pair, still blocked
-     behind the ground's structure moving from bump into albedo (item 4).
+     behind the ground's structure moving from bump into albedo (item 5).
 
-3. **Gameplay, and the ration that keeps it first.** *(Operator, 2026-08-03:
+4. **Gameplay, and the ration that keeps it first.** *(Operator, 2026-08-03:
    "its for sure getting hung up on lighting of shadows we need gameplay and
    stuff… let it go and code for a long time." The visual judge is an
    absolute bar that cannot be satisfied, so its ranked gaps out-shout the
@@ -174,22 +219,22 @@ Done items are deleted, not checked — history lives in git and
    order, top-down, one slice per pass as ever:
 
    - **The raid loop's missing verbs** — the repair verb + the hammer that
-     swings it, then the satchel throwable (item 5 below carries the full
+     swings it, then the satchel throwable (item 6 below carries the full
      shape and the content rows).
    - **Barrels and shore loot** — the merge-gate judge's own pick
      (pass-20260802-163821-05-judge.md round 3, gap 2: "the cheapest gap on
      this list to close — four of its five parts already built and green."
      One `open` verb on `BarrelSlot`, one roll against `loot.barrel`, one
      respawn timer).
-   - **The remaining M1 survival verbs** (item 10's cut), smallest first.
-   - **Join-time instrumentation** (item 7), then the **100-bot soak**:
+   - **The remaining M1 survival verbs** (item 11's cut), smallest first.
+   - **Join-time instrumentation** (item 8), then the **100-bot soak**:
      NETCODE §9's budgets have never met 100 real connections. Run
      `cargo run -p server --bin bots -- 100` against a dev shard on this
      box, hold it an hour, and record tick jitter, WAL append rate, and
      per-client bandwidth against the budget table — counts and bytes, no
      wall-clock assertions (CLAUDE.md's clock rule). The numbers land in a
      `DECISIONS.md` §open row as the measured baseline.
-   - **Capture determinism** (item 9) — now including fixed-length FRAME
+   - **Capture determinism** (item 10) — now including fixed-length FRAME
      SEQUENCES beside the stills (a walk, a swing, a door opening, water),
      engine-clock-driven; when clips exist, the visual panel gains a
      motion lens.
@@ -203,13 +248,13 @@ Done items are deleted, not checked — history lives in git and
    objections, re-judge, merge. Its sun-elevation unlock condition stands.
    The visual items below (3, 4, 8) are rationed with it.
 
-4. **Nothing that is not the ground has a surface.** *(Gap pass. From the
+5. **Nothing that is not the ground has a surface.** *(Gap pass. From the
    visual judge's ranked gap 1 in
    `findings/pass-20260802-163821-02-visual.md` — "rock, wood and canopy are
    each one flat colour per facet, literally the rubric's own disqualifier",
    and "no amount of further terrain work reaches criterion 2 without this".
    Its gap 2 — the four artifact classes — is the terrain's, and is blocked on
-   the coarse-octave slice item 3 already names, so this pass took the half
+   the coarse-octave slice item 6 already names, so this pass took the half
    that is not.)*
 
    **Landed this pass** (`DECISIONS.md` §open, "prop surfaces v0"): the field
@@ -294,7 +339,7 @@ Done items are deleted, not checked — history lives in git and
      shader in the client and has neither. `propFacts().noiseSamples` publishes
      6; the wall is not written.
 
-5. **The world reads untextured and shows its mesh — and both halves turned
+6. **The world reads untextured and shows its mesh — and both halves turned
    out to be arithmetic, not missing art.** *(Gap pass. From the visual
    judge's ranked gap 1 in
    `findings/pass-20260802-050932-01-visual.md`, which returned FAIL on all
@@ -437,7 +482,7 @@ Done items are deleted, not checked — history lives in git and
    `CLAUDE.md`'s coupled-lighting law — sky, water specular, shadows and
    exposure move together or not at all.
 
-6. **A base can be broken into now, but it cannot be repaired, and a
+7. **A base can be broken into now, but it cannot be repaired, and a
    raid still ends in a shrug.**
    *(From the merge-gate judge's ranked gap 1 in
    `findings/archive-prestamp/pass-20260802-035930-01-judge.md`, and its
@@ -480,7 +525,7 @@ Done items are deleted, not checked — history lives in git and
    the action subtype field is **11 of 16**. The next C→S verb — a repair,
    a throw, a container open — is an action subtype, and there are five.
 
-7. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
+8. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
    The projection half of this item landed (materials v1 third pass,
    `DECISIONS.md` §open): the grain — and only the grain — is sampled
    triplanar, ridge-folded per plane before the blend and the blend's
@@ -514,7 +559,7 @@ Done items are deleted, not checked — history lives in git and
    fragment, 18/24 depth fetches. Price `gmHash4` there too — hash
    evaluations and program chars — not in ms.
 
-8. **A tab that boots beside another live tab takes 34 s to reach the
+9. **A tab that boots beside another live tab takes 34 s to reach the
    world. Nobody knows where those seconds go.**
    The third-tab version of this went red on 2026-08-01 16:26 (`inWorld`
    at 61.6 s of a 60 s window) and the recovery pass closed it, but by
@@ -540,7 +585,7 @@ Done items are deleted, not checked — history lives in git and
    terrain program costs ~3 s to compile here, and a fresh tab compiles
    more than one.
 
-9. **Nothing casts past 720 m, and nothing out there has a silhouette.**
+10. **Nothing casts past 720 m, and nothing out there has a silhouette.**
    The horizon casts now (`DECISIONS.md` §open) but two limits are stated
    rather than solved: the coarsest clipmap level stops at 720 m because
    fog closes at 1000 m, and past the near ring the only caster is the
@@ -549,7 +594,7 @@ Done items are deleted, not checked — history lives in git and
    yaws for exactly that reason. A scatter LOD (billboard crosses,
    `TERRAIN.md` §4's "trees get two LODs") is the fix and it is a terrain
    job, not a shadow one.
-10. **A capture the same twice is a gate; a capture that drifts is a vibe.**
+11. **A capture the same twice is a gate; a capture that drifts is a vibe.**
    Deterministic capture mode (operator, 2026-08-02, `DECISIONS.md` — the
    Claude-of-Duty adoption row): the client animates off the sim tick / an
    injected fixed-step clock in capture mode — today the RAF loop steps off
@@ -568,7 +613,7 @@ Done items are deleted, not checked — history lives in git and
    (must switch to the engine clock in capture mode), or UI-only (excluded
    from shots). Settle by tick count, never by time.
 
-11. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
+12. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
    solid (slice 13: chat — two channels on the reliable lane, local at
    20 m and global, sanitized at both edges and rate-limited per
@@ -584,17 +629,17 @@ Done items are deleted, not checked — history lives in git and
    there) · piece damage (M2's raid lane: hp exists and decays, nothing
    attacks it yet) · nametags (chat names a speaker by id today, because
    nothing has a name yet).
-12. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
+13. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
-13. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
+14. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
    admin lane · backups · status page · error capture · `bench_transport`.
-14. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
+15. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
    then tune content bands from what the anomaly log and the replays say.
-15. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
+16. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
 
-16. **`cargo test --workspace` overflows a debug thread's stack; only
+17. **`cargo test --workspace` overflows a debug thread's stack; only
     `--release` (what CI runs) is green.** Pre-existing, not new: verified
     on `main` at `25f6ec8` before the backpack slice, where
     `snapshot_budget` aborts the same way. The cause is size, not logic —
