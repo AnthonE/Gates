@@ -155,7 +155,38 @@ flythrough, which the blind reader has named on every capture so far.
 Depth in a wide frame: foreground detail (a prop or the viewmodel), midground
 subject (treeline, rocks, a base), background atmosphere (hazed ridges).
 
-## 7 · What passes review
+## 7 · Assets: real detail is allowed, and preferred
+
+**There is no procedural-only rule in Gates and there never was.** The
+all-generated approach was drift, imported by imitation from projects where
+"zero binary assets" is a deliberate stunt; it was never a wall, a knob, or a
+spoken call. Operator, 2026-08-03: *"if its CC0 im fine to pull in whatever
+helps us. then we can replace later."*
+
+The rule that replaces it:
+
+- **CC0 / public-domain sources only** (Poly Haven, ambientCG). No attribution
+  burden, no license file to carry, and orthogonal to the Facepunch rail —
+  which is proper nouns and traced assets, not the existence of a texture.
+  Anything else needs the operator.
+- **`assets/textures/MANIFEST.md` records every file's source and licence.** A
+  texture with no manifest row does not ship.
+- **Hybrid, not replacement.** Real maps supply base albedo / normal /
+  roughness — the measured high-frequency detail a noise field cannot encode
+  (§3: reference near-ground neighbour contrast 6.3, ours 0.26). Everything
+  already built stays as the *variation* layer: splat blending, per-identity
+  tint and chroma, per-instance tint, wear, and the triplanar projection that
+  solves UV-less props. Tiling is broken up by that layer, not by more octaves.
+- **An off-band source is tinted, not tolerated.** Where a sourced albedo sits
+  outside §3's measured band, pull it in with the per-identity machinery rather
+  than editing the file — the file stays pristine and swappable.
+- **Budget**: the working set is 6.0 MB at 1K. Keep total texture payload under
+  **12 MB** before compression work; KTX2/Basis is the optimisation once the
+  look is settled, not a prerequisite.
+- **Meshes are the same deal** when the time comes, but procedural vegetation
+  may well win on variety — see `.claude/skills/threejs-procedural-vegetation`.
+
+## 8 · What passes review
 
 A capture passes only if all of these hold. This section is the visual
 rubric's checklist and a judge may quote it directly:
