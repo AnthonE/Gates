@@ -407,8 +407,13 @@ pub fn consume(sc: &SurvivalContent, slot: usize, p: &mut Player, events: &mut E
     if p.inv[slot].count == 0 {
         p.inv[slot].item = NO_ITEM;
     }
-    p.food = (p.food + def.food).min(sc.max_food);
-    p.water = (p.water + def.water).min(sc.max_water);
+    // Saturating, not wrapping: `min` clamps the *result*, so a plain add
+    // would have to be correct before the clamp could help it. The bake
+    // checks each side fits u16 and never their sum, and content is
+    // operator-authored — but "unreachable through today's validator" is
+    // not the same as "cannot happen", and this is one word.
+    p.food = p.food.saturating_add(def.food).min(sc.max_food);
+    p.water = p.water.saturating_add(def.water).min(sc.max_water);
     if def.health > 0 && def.seconds > 0 {
         // A second consume replaces the ramp rather than queueing behind
         // it: two bandages at once is one bandage's worth of book-keeping,
@@ -533,6 +538,28 @@ mod tests {
         }
         assert_eq!(p.hp, 100);
         assert_eq!(p.food, 0);
+    }
+
+    /// A row that would overflow the meter's own type still lands on the
+    /// ceiling. Today's validator cannot produce this content; the add is
+    /// saturating anyway, because the clamp is on the result and a wrapped
+    /// sum is already wrong by the time it reaches one.
+    #[test]
+    fn an_absurd_row_still_clamps_to_the_ceiling() {
+        let mut sc = SurvivalContent::probe_fixture();
+        sc.consumable[0] = ConsumableDef {
+            health: 0,
+            food: u16::MAX,
+            water: u16::MAX,
+            seconds: 0,
+        };
+        let mut p = player(&sc);
+        p.food = sc.max_food - 1;
+        p.water = sc.max_water - 1;
+        p.inv[0] = ItemStack { item: 0, count: 1 };
+        let mut q = EventQueue::default();
+        assert!(consume(&sc, 0, &mut p, &mut q));
+        assert_eq!((p.food, p.water), (sc.max_food, sc.max_water));
     }
 
     /// Refilling a meter does not bank the partial minute of damage.
