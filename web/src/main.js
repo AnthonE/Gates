@@ -1016,6 +1016,14 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // 0.00% on a class whose field is the strongest in the table. A prop is
   // wherever worldgen put it, and the only thing between an eye and a prop that
   // a probe cannot predict is terrain.
+  // Lighting v1's pair. `tonalProbe` is the only probe in this file that
+  // measures an ABSOLUTE quantity — where the image sits, not how much a
+  // toggle moved it — and it is aimed by the same (yaw, pitch) vantages the
+  // capture harness uses, so the register it reports is the register the
+  // visual judge will be looking at. `sunProbe` aims down the key's own
+  // direction and asks whether the dome drew a sun there.
+  const devTonalProbe = dev ? (views) => scene.tonalProbe(views) : null;
+  const devSunProbe = dev ? () => scene.sunProbe() : null;
   const devPropProbe = dev
     ? (specs, minDelta, radiusM) => {
         const p = scene.camera.position;
@@ -1228,6 +1236,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (devAliasProbe) debug.aliasProbe = devAliasProbe;
     if (devSteepestFace) debug.steepestFace = devSteepestFace;
     if (devPropProbe) debug.propProbe = devPropProbe;
+    if (devTonalProbe) debug.tonalProbe = devTonalProbe;
+    if (devSunProbe) debug.sunProbe = devSunProbe;
     globalThis.__gatesDebug = debug;
   }, 250);
 }
