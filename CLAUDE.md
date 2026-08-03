@@ -28,6 +28,7 @@ pays the same doors and earns the same coins as a human.
 | `TERRAIN.md` | worldgen, slots, collision, terrain rendering | |
 | `CONTENT.md` | every item/recipe/damage/loot number, as data schemas | numbers live here, never in code |
 | `ALPHA.md` | the alpha cut, staged economy arming (A1→A2→A3) | |
+| `ART.md` | the art bible: measured targets off `Rust Images/`, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
 | `NOW.md` | what next | **the only list that answers that** |
 
