@@ -17,8 +17,10 @@ use protocol::{
     encode_event_hit, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
     encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_weak_mark,
-    encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
+    encode_event_consume_refused, encode_event_consumed, encode_event_vitals, encode_hello,
+    encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
 };
+use protocol::encode_action_consume;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
 fn write_fixture(name: &str, bytes: &[u8]) {
@@ -223,4 +225,18 @@ fn main() {
             .unwrap();
         write_fixture(goldens::FIXTURES[48 + i], &buf[..len]);
     }
+
+    let (food, water, max_food, max_water) = goldens::event_vitals();
+    let len = encode_event_vitals(food, water, max_food, max_water, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[50], &buf[..len]);
+
+    let (item, slot) = goldens::event_consumed();
+    let len = encode_event_consumed(item, slot, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[51], &buf[..len]);
+
+    let len = encode_event_consume_refused(goldens::event_consume_refused(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[52], &buf[..len]);
+
+    let len = encode_action_consume(goldens::action_consume(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[53], &buf[..len]);
 }

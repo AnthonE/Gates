@@ -135,6 +135,7 @@ pub async fn spawn_shard(
     deploy: sim_core::deploy::DeployContent,
     combat: sim_core::combat::CombatContent,
     backpack: sim_core::backpack::BackpackContent,
+    survival: sim_core::survival::SurvivalContent,
     catalog: ItemCatalog,
 ) -> Result<ShardHandle, String> {
     let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])
@@ -182,7 +183,8 @@ pub async fn spawn_shard(
             .name("sim".into())
             .spawn(move || {
                 sim_thread(
-                    seed, dev_spawn, gather, craft, build, deploy, combat, backpack, catalog,
+                    seed, dev_spawn, gather, craft, build, deploy, combat, backpack, survival,
+                    catalog,
                     ctrl_rx, grave_tx, slots, stats, shutdown,
                 )
             })
@@ -681,6 +683,7 @@ fn sim_thread(
     deploy: sim_core::deploy::DeployContent,
     combat: sim_core::combat::CombatContent,
     backpack: sim_core::backpack::BackpackContent,
+    survival: sim_core::survival::SurvivalContent,
     catalog: ItemCatalog,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut grave_tx: rtrb::Producer<Link>,
@@ -696,6 +699,7 @@ fn sim_thread(
     core.world.deploy = deploy;
     core.world.combat = combat;
     core.world.backpack = backpack;
+    core.world.survival = survival;
     core.catalog = catalog;
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_PLAYERS);
     links.resize_with(MAX_PLAYERS, || None);

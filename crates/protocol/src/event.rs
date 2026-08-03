@@ -108,7 +108,17 @@ const SUB_BAG_DROPPED: u32 = 27;
 const SUB_BAG_SYNC: u32 = 28;
 const SUB_BAG_REMOVED: u32 = 29;
 const SUB_STRUCT_HIT: u32 = 30;
+/// The survival clock's three (wire v14, survival.rs). `SUB_VITALS` is the
+/// meter pair; the other two are the eat verb's acknowledgement and its
+/// refusal, which follow craft/build/deploy's posture that a verb which
+/// did nothing says so rather than swallowing the press.
+const SUB_VITALS: u32 = 31;
+const SUB_CONSUMED: u32 = 32;
+const SUB_CONSUME_REFUSED: u32 = 33;
 
+/// Consume-refusal reason width (`survival::REFUSE_C_*`: two codes today,
+/// and zero is reserved as "no reason", which the codec refuses).
+const REFUSE_C_BITS: u32 = 4;
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
 const SYNC_COUNT_BITS: u32 = 7;
@@ -374,6 +384,22 @@ pub enum EventMsg {
     /// against. Absolute, never a delta: a client that misses one hears
     /// the whole truth from the next, exactly like `Door`.
     Health { hp: u16, max: u16 },
+    /// Your food and water, and the ceilings they are measured against.
+    /// Absolute for exactly `Health`'s reason — a client that misses one
+    /// hears the whole truth from the next, so no client-side meter can
+    /// drift away from the sim's (survival.rs).
+    Vitals {
+        food: u16,
+        water: u16,
+        max_food: u16,
+        max_water: u16,
+    },
+    /// You ate the item in `slot`. Own-fact: the acknowledgement the HUD
+    /// plays the ramp off, and the reason a client never has to guess
+    /// whether a press landed.
+    Consumed { item: u16, slot: u8 },
+    /// The eat did nothing, and why (`sim_core::survival::REFUSE_C_*`).
+    ConsumeRefused { reason: u8 },
     /// `victim` was killed by `killer` — broadcast, because a death is a
     /// world fact like a placement, and the kill feed the reference frames
     /// carry bottom-left is built from exactly this. No cause, no weapon,
@@ -1037,6 +1063,52 @@ pub fn encode_event_health(hp: u16, max: u16, buf: &mut [u8]) -> Result<usize, W
     Ok(w.finish())
 }
 
+/// The meter pair, absolute. A meter above its own ceiling is refused
+/// rather than clamped: it can only mean the encoder and the sim disagree
+/// about the content, and a clamp would hide that behind a plausible bar.
+pub fn encode_event_vitals(
+    food: u16,
+    water: u16,
+    max_food: u16,
+    max_water: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if food > max_food || water > max_water {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_VITALS)?;
+    w.write(food as u32, 16)?;
+    w.write(water as u32, 16)?;
+    w.write(max_food as u32, 16)?;
+    w.write(max_water as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// The eat acknowledgement. `slot` crosses in the inventory-slot width the
+/// inv message already uses, so a slot past the sim's array is unencodable
+/// rather than merely wrong.
+pub fn encode_event_consumed(item: u16, slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if slot as usize >= INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_CONSUMED)?;
+    w.write(item as u32, 16)?;
+    w.write(slot as u32, INV_SLOT_BITS)?;
+    Ok(w.finish())
+}
+
+/// The eat refusal (`sim_core::survival::REFUSE_C_*`). Reason zero is not a
+/// reason — a refusal that cannot say why is the silence this event exists
+/// to replace, so it is refused at the encoder.
+pub fn encode_event_consume_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if reason == 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_CONSUME_REFUSED)?;
+    w.write(reason as u32, REFUSE_C_BITS)?;
+    Ok(w.finish())
+}
+
 /// A death, broadcast.
 pub fn encode_event_death(victim: u32, killer: u32, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_DEATH)?;
@@ -1436,6 +1508,36 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             EventMsg::Health { hp, max }
+        }
+        SUB_VITALS => {
+            let food = r.read(16)? as u16;
+            let water = r.read(16)? as u16;
+            let max_food = r.read(16)? as u16;
+            let max_water = r.read(16)? as u16;
+            if food > max_food || water > max_water {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Vitals {
+                food,
+                water,
+                max_food,
+                max_water,
+            }
+        }
+        SUB_CONSUMED => {
+            let item = r.read(16)? as u16;
+            let slot = r.read(INV_SLOT_BITS)? as u8;
+            if slot as usize >= INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Consumed { item, slot }
+        }
+        SUB_CONSUME_REFUSED => {
+            let reason = r.read(REFUSE_C_BITS)? as u8;
+            if reason == 0 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::ConsumeRefused { reason }
         }
         SUB_DEATH => EventMsg::Death {
             victim: r.read(32)?,
@@ -2070,11 +2172,12 @@ mod tests {
             Err(WireError::Malformed),
             "spare byte after a valid message must fail the strict tail"
         );
-        // kind EVENT + subtype 31: unknown (the first unused subtype —
-        // 30 became struct-hit, so this moves up with every new subtype).
-        // The 5 → 6 widening at v13 leaves 33 codes free after it, so the
-        // probe has a code of its own for a long time.
-        const UNUSED_SUB: u32 = SUB_STRUCT_HIT + 1;
+        // kind EVENT + the first unused subtype — 30 became struct-hit and
+        // 31–33 became the survival clock's three, so this moves up with
+        // every new subtype, exactly as intended. The 5 → 6 widening at
+        // v13 leaves 30 codes free after it, so the probe keeps a code of
+        // its own for a long time.
+        const UNUSED_SUB: u32 = SUB_CONSUME_REFUSED + 1;
         const { assert!(UNUSED_SUB < 1 << SUB_BITS, "the probe must fit the field") };
         let raw = [
             (KIND_EVENT | (UNUSED_SUB << KIND_BITS)) as u8,

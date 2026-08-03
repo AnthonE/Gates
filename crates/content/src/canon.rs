@@ -204,5 +204,26 @@ pub fn hash(c: &Content) -> u64 {
     }
     h.stacks(&c.balance.starter_base.items);
 
+    // The backpack ladder was reaching the sim (it sets every death bag's
+    // lifetime) and was NOT reaching this hash — so two contents that
+    // despawned bags at different rates canonicalised identically, and a
+    // replay could be handed a WAL whose header said the ladder matched
+    // when it did not. Hashed now, alongside the clock it sits next to.
+    let bp = &c.balance.backpack;
+    h.s("backpack");
+    h.u(bp.despawn_base_min);
+    for m in bp.mults() {
+        h.u(m);
+    }
+
+    let sv = &c.balance.survival;
+    h.s("survival");
+    h.u(sv.max_food);
+    h.u(sv.max_water);
+    h.u(sv.food_minutes_to_empty);
+    h.u(sv.water_minutes_to_empty);
+    h.u(sv.starve_hp_per_min);
+    h.u(sv.dehydrate_hp_per_min);
+
     h.0.digest()
 }

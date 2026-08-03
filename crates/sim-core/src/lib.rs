@@ -19,6 +19,7 @@ pub mod limits;
 pub mod movement;
 pub mod probe;
 pub mod rng;
+pub mod survival;
 pub mod terrain;
 pub mod world;
 mod yaw_lut;

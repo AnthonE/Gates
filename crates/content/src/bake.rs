@@ -27,6 +27,7 @@ use sim_core::limits::{
     HEARTH_STOCK_ROWS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS,
     MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
 };
+use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
 fn node_slot(a: NodeArchetype) -> usize {
@@ -430,6 +431,71 @@ impl Content {
             };
         }
         Ok(cc)
+    }
+
+    /// The survival table: `[survival]`'s meters and rates, plus every
+    /// `content/consumables.toml` row keyed by the item it feeds.
+    ///
+    /// **Minutes become ticks here and nowhere else.** The sim owns a tick
+    /// counter and no clock (wall 1), so a span stated in minutes has to
+    /// cross into ticks exactly once, at the boundary — doing it in the sim
+    /// would put `TICK_HZ` arithmetic on the hot path and doing it twice
+    /// would be two chances to disagree.
+    ///
+    /// `validate::structural` has already refused a zero meter, a zero
+    /// rate, an inverted water/food ordering and a heal with no span; what
+    /// this adds is the arithmetic refusal — a span whose tick count
+    /// overflows u32, and a consumable that arms no item.
+    pub fn bake_survival(&self) -> Result<SurvivalContent, String> {
+        if self.items.len() > MAX_ITEM_DEFS {
+            return Err(format!(
+                "bake: {} items exceed the sim's {MAX_ITEM_DEFS}-def table",
+                self.items.len()
+            ));
+        }
+        let s = &self.balance.survival;
+        let mut sc = SurvivalContent::EMPTY;
+        let u16f = |v: u32, what: &str| {
+            u16::try_from(v).map_err(|_| format!("bake: survival {what} {v} overflows u16"))
+        };
+        sc.max_food = u16f(s.max_food, "max_food")?;
+        sc.max_water = u16f(s.max_water, "max_water")?;
+        sc.starve_hp_per_min = u16f(s.starve_hp_per_min, "starve_hp_per_min")?;
+        sc.dehydrate_hp_per_min = u16f(s.dehydrate_hp_per_min, "dehydrate_hp_per_min")?;
+        let span = |min: u32, what: &str| {
+            min.checked_mul(TICKS_PER_MIN)
+                .ok_or_else(|| format!("bake: survival {what} {min} min overflows the tick span"))
+        };
+        sc.food_span_ticks = span(s.food_minutes_to_empty, "food_minutes_to_empty")?;
+        sc.water_span_ticks = span(s.water_minutes_to_empty, "water_minutes_to_empty")?;
+        if sc.max_food == 0 || sc.max_water == 0 {
+            return Err("bake: a zero meter would disarm the survival clock".to_string());
+        }
+        for con in &self.consumables {
+            let idx = self
+                .item_index(&con.id)
+                .ok_or_else(|| format!("bake: consumable `{}` feeds no item", con.id))?
+                as usize;
+            if sc.consumable[idx].is_food() {
+                return Err(format!("bake: duplicate consumable row for `{}`", con.id));
+            }
+            let health = u16f(con.health, "health")?;
+            let seconds = u16f(con.seconds, "seconds")?;
+            if health > 0 && seconds == 0 {
+                return Err(format!("bake: consumable `{}` heals over 0 s", con.id));
+            }
+            // The ramp's span in ticks must fit the sim's u32 too.
+            (seconds as u32).checked_mul(TICK_HZ).ok_or_else(|| {
+                format!("bake: consumable `{}` span {seconds} s overflows", con.id)
+            })?;
+            sc.consumable[idx] = ConsumableDef {
+                health,
+                food: u16f(con.food, "food")?,
+                water: u16f(con.water, "water")?,
+                seconds,
+            };
+        }
+        Ok(sc)
     }
 
     /// The backpack despawn ladder: `[backpack]`'s base minutes and the

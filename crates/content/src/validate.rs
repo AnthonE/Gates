@@ -254,6 +254,62 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if con.health == 0 && con.food == 0 && con.water == 0 {
             return Err(format!("consumable `{}`: does nothing", con.id));
         }
+        // A heal with no span would be an instant heal, and the sim's ramp
+        // divides by the span — refuse the row rather than let a division
+        // decide (survival.rs).
+        if con.health > 0 && con.seconds == 0 {
+            return Err(format!(
+                "consumable `{}`: heals {} hp over 0 s — health needs a span",
+                con.id, con.health
+            ));
+        }
+        // The meters are u16 in the sim and the bake refuses past them;
+        // catch it here, where the message can name the file.
+        if con.food > u16::MAX as u32 || con.water > u16::MAX as u32 {
+            return Err(format!("consumable `{}`: food/water overflows u16", con.id));
+        }
+    }
+
+    // The survival clock. Every one of these would be a division by zero,
+    // a meter that never moves, or a body that cannot be hurt — each of
+    // which would make the clock silently inert, which is the failure mode
+    // the module's whole point is to avoid.
+    {
+        let s = &c.balance.survival;
+        for (name, v) in [
+            ("max_food", s.max_food),
+            ("max_water", s.max_water),
+            ("food_minutes_to_empty", s.food_minutes_to_empty),
+            ("water_minutes_to_empty", s.water_minutes_to_empty),
+            ("starve_hp_per_min", s.starve_hp_per_min),
+            ("dehydrate_hp_per_min", s.dehydrate_hp_per_min),
+        ] {
+            if v == 0 {
+                return Err(format!("survival `{name}`: must be ≥ 1"));
+            }
+        }
+        if s.max_food > u16::MAX as u32 || s.max_water > u16::MAX as u32 {
+            return Err("survival: meter ceiling overflows u16".to_string());
+        }
+        // DESIGN §2 pairs hunger with thirst and the genre puts thirst
+        // first; the data may retune the gap but not invert the shape,
+        // because the HUD's row order and the module's doc both read it.
+        if s.water_minutes_to_empty >= s.food_minutes_to_empty {
+            return Err(format!(
+                "survival: water ({} min) must empty before food ({} min)",
+                s.water_minutes_to_empty, s.food_minutes_to_empty
+            ));
+        }
+        // A clock that kills a full-hp body faster than it takes to notice
+        // is a bug, not a balance choice. One point per minute per meter is
+        // the floor the band asserts against in `test_content`.
+        let hp = c.balance.globals.player_hp;
+        let worst = s.starve_hp_per_min + s.dehydrate_hp_per_min;
+        if worst == 0 || hp / worst < 5 {
+            return Err(format!(
+                "survival: both meters empty kill {hp} hp in under 5 min ({worst} hp/min)"
+            ));
+        }
     }
     for d in &c.deployables {
         item_exists(&d.id, "deployable")?;

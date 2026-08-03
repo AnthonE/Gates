@@ -82,6 +82,13 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    let survival = match content.bake_survival() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("shard: content bake refused: {e}");
+            std::process::exit(1);
+        }
+    };
     let catalog = match server::net::bake_catalog(&content) {
         Ok(c) => c,
         Err(e) => {
@@ -113,7 +120,11 @@ async fn main() {
     );
     let seed = cfg.seed;
     let handle =
-        match spawn_shard(cfg, gather, craft, build, deploy, combat, backpack, catalog).await {
+        match spawn_shard(
+            cfg, gather, craft, build, deploy, combat, backpack, survival, catalog,
+        )
+        .await
+        {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("shard: {e}");
