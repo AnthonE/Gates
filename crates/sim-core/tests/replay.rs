@@ -19,19 +19,52 @@ const TICKS: u64 = 900;
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
 ///
-/// Regenerated this commit: **the survival clock now runs on this
-/// surface.** The previous regeneration, one commit earlier, was the same
-/// module's fields entering `state_hash` while the script left them all
-/// zero — content parsed but never installed, so `survival::step` returned
-/// on its first line and the hash moved only because the digest got wider.
-/// That is the coverage this replaces: the script installs the clock, 64
-/// bodies drain every tick, two of them eat, and the number below is now a
-/// function of the drain arithmetic rather than of its absence. Change a
-/// numerator, a denominator or the drain→hurt→heal order and this reddens.
+/// Regenerated this commit: **the drink verb now runs on this surface.**
+/// Bot 21 is stood on a scanned shoreline and presses drink every seven
+/// ticks from the moment it joins, so the number below is a function of
+/// the meter write, the full refusal, the dry refusal, and the five
+/// `terrain::height` compares that decide which of the three a press is.
+/// Move `DRINK_REACH_M`, change the tap pattern, or let a full meter pay
+/// hp, and this reddens.
 ///
-/// The regeneration before those two, for a structural reason like the
-/// first, was the death backpack's two zero-length store fields.
-const GOLDEN_FINAL_HASH: u64 = 0x6C79_767B_F15A_AC1E;
+/// The regeneration before it: **the survival clock started running on
+/// this surface** — 64 bodies draining every tick and two of them eating,
+/// which is what made the hash a function of the drain arithmetic rather
+/// than of its absence. Change a numerator, a denominator or the
+/// drain→hurt→heal order and this reddens too.
+///
+/// The two before those were structural rather than behavioural: the
+/// survival module's fields entering `state_hash` while the script left
+/// them all zero, and before that the death backpack's two zero-length
+/// store fields.
+const GOLDEN_FINAL_HASH: u64 = 0xDB77_3653_6575_F530;
+
+/// A standable point with sea inside `DRINK_REACH_M`, scanned off the
+/// heightfield rather than typed in — the same reason `walk_up_the_beach`
+/// walks instead of teleporting to a remembered coordinate: a number that
+/// held at one seed and one set of generator constants is a fixture that
+/// silently stops meaning what it says.
+fn shoreline(seed: u64) -> (f32, f32) {
+    let r = sim_core::survival::DRINK_REACH_M;
+    let mut x = 0.0f32;
+    while x < sim_core::terrain::ISLAND_SIZE {
+        let mut z = 0.0f32;
+        while z < sim_core::terrain::ISLAND_SIZE {
+            let h = sim_core::terrain::height(seed, x, z);
+            if (sim_core::terrain::SEA_LEVEL..sim_core::terrain::BEACH_MAX_H).contains(&h)
+                && (sim_core::terrain::height(seed, x + r, z) < sim_core::terrain::SEA_LEVEL
+                    || sim_core::terrain::height(seed, x - r, z) < sim_core::terrain::SEA_LEVEL
+                    || sim_core::terrain::height(seed, x, z + r) < sim_core::terrain::SEA_LEVEL
+                    || sim_core::terrain::height(seed, x, z - r) < sim_core::terrain::SEA_LEVEL)
+            {
+                return (x, z);
+            }
+            z += 4.0;
+        }
+        x += 4.0;
+    }
+    panic!("this island has no coast — the generator changed under this gate");
+}
 
 /// Stand a kitted bot on ground that will hold a foundation.
 ///
@@ -106,6 +139,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     let (mut placed, mut deployed, mut decayed, mut doors) = (0u32, 0u32, 0u32, 0u32);
     let (mut locked_seen, mut unlocked_seen, mut upgraded_seen) = (false, false, false);
     let (mut eaten, mut eat_refused) = (0u32, 0u32);
+    let (mut drank, mut drink_refused) = (0u32, 0u32);
     let mut hearth_cell = (0u16, 0u16);
 
     for t in 0..TICKS {
@@ -219,6 +253,32 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
             if id == 4 && (t + id as u64).is_multiple_of(43) {
                 cmds.push(Command::Consume { id, slot: 21 });
             }
+            // The drink verb rides it too, on bot 21 — which joins at
+            // t=180, carries no kit, founds nothing and is addressed by no
+            // other scripted arm. It is stood on a scanned shoreline at
+            // t=200 (below); before that the presses land on wherever the
+            // ring put it, which is the refusal path. So the landed drink,
+            // the dry refusal and the full refusal are all on the replayed
+            // surface, and a change to the verb's arithmetic — the meter
+            // write, or the five `terrain::height` compares that decide
+            // whether there is water — moves the pinned hash.
+            //
+            // **The salt death is deliberately NOT on this surface**, and
+            // that is a fact about the fixture rather than about the verb:
+            // this script installs no `CombatContent`, so every body here
+            // has `hp_max == 0`, and a cost clamped to a body's own hp is
+            // zero. `test_alloc_zero` and `tests/survival.rs` own the kill
+            // site; arming combat here to reach it would put 64 bots in a
+            // brawl through the middle of the build arc this script exists
+            // to pin. Every 7 ticks and
+            // not every 29 on purpose: the widened water span drops one
+            // unit every ~22 ticks, so a 7-tick cadence finds the meter
+            // still full on most presses — which is how the *full* refusal
+            // gets onto the replayed surface at all, rather than only in
+            // the unit tests.
+            if id == 21 && (t + id as u64).is_multiple_of(7) {
+                cmds.push(Command::Drink { id });
+            }
         }
         // A scripted hearth: grant a kit to the first eight bots (a
         // fixture arrangement, like the wire tests' server-side grants —
@@ -237,6 +297,16 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     walk_up_the_beach(&mut world, seed, w);
                 }
             }
+        }
+        // The drinker, stood on a shoreline scanned off the heightfield —
+        // a fixture arrangement like the kit grant above, identical on both
+        // runs, so the replay contract holds. Scanned rather than typed in
+        // because a hard-coded coast goes stale the first time the
+        // generator's constants move, and a drinker staged inland would
+        // turn the landed-drink floor below into a coin flip.
+        if t == 200 && world.players[20].active {
+            let (x, z) = shoreline(seed);
+            world.players[20].body = sim_core::movement::Body::at(seed, x, z);
         }
         if t == 150 {
             let b = &world.players[0].body;
@@ -378,7 +448,20 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     decayed += 1
                 }
                 sim_core::world::EV_CONSUMED => eaten += 1,
-                sim_core::world::EV_CONSUME_REFUSED => eat_refused += 1,
+                // One refusal code, two verbs — so the counters partition
+                // by the body that pressed. Ids 2 and 4 are the only ones
+                // the eat script addresses, 21 the only drinker. Counting
+                // the union would sink the eat floor below: bot 21 presses
+                // every 7 ticks from t=180 and most of those find a full
+                // meter, so its refusals alone clear `eat_refused >= 8`
+                // and the assert stops being able to fail on the verb its
+                // own message names.
+                sim_core::world::EV_CONSUME_REFUSED => match e.a {
+                    2 | 4 => eat_refused += 1,
+                    21 => drink_refused += 1,
+                    _ => {}
+                },
+                sim_core::world::EV_DRANK => drank += 1,
                 sim_core::world::EV_DOOR => {
                     doors += 1;
                     if e.b & 2 == 0 {
@@ -466,6 +549,21 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         eaten >= 8 && eat_refused >= 8,
         "the script landed {eaten} consumes and {eat_refused} refusals — the eat \
          verb is falling out of the replay surface"
+    );
+    // Floors, not `> 0`, for the same reason the build ones are floors: a
+    // script that lands one drink exercises the verb about as well as one
+    // that lands none. Both halves are named because both are arithmetic
+    // the pinned hash is now a function of — the meter write and the hp
+    // debit on one side, five `terrain::height` compares on the other.
+    assert!(
+        drank >= 4 && drink_refused >= 4,
+        "the script landed {drank} drinks and {drink_refused} refusals — the \
+         drink verb is falling out of the replay surface"
+    );
+    assert_eq!(
+        world.players[20].hp_max, 0,
+        "the drinker has hp on this surface now — the drink's hp debit is live \
+         here and the comment above it, which says it is not, has gone stale"
     );
     (hashes, world.state_hash())
 }

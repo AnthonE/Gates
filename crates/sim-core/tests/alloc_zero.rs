@@ -16,10 +16,10 @@ use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{INV_SLOTS, MAX_PLAYERS};
 use sim_core::rng::Pcg32;
-use sim_core::survival::SurvivalContent;
+use sim_core::survival::{SurvivalContent, REFUSE_C_NO_WATER};
 use sim_core::world::{
     Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH,
-    EV_PIECE_REMOVED, EV_STRUCT_HIT,
+    EV_DRANK, EV_PIECE_REMOVED, EV_STRUCT_HIT,
 };
 
 /// One tick's commands: every bot's input plus a craft enqueue, a cancel,
@@ -117,6 +117,35 @@ fn tick_cmds(
             }
         }
     })
+}
+
+/// A standable point with sea inside `DRINK_REACH_M` — scanned off the
+/// heightfield rather than typed in, because a hard-coded coast is a number
+/// that goes stale the first time the generator's constants move, and a
+/// drinker staged inland would turn this gate's landed-drink assert into a
+/// coin flip. Pure float reads of the same function `survival::drink` asks;
+/// it allocates nothing, and the caller runs it before the counters open
+/// anyway.
+fn shoreline(seed: u64) -> (f32, f32) {
+    let r = sim_core::survival::DRINK_REACH_M;
+    let mut x = 0.0f32;
+    while x < sim_core::terrain::ISLAND_SIZE {
+        let mut z = 0.0f32;
+        while z < sim_core::terrain::ISLAND_SIZE {
+            let h = sim_core::terrain::height(seed, x, z);
+            if (sim_core::terrain::SEA_LEVEL..sim_core::terrain::BEACH_MAX_H).contains(&h)
+                && (sim_core::terrain::height(seed, x + r, z) < sim_core::terrain::SEA_LEVEL
+                    || sim_core::terrain::height(seed, x - r, z) < sim_core::terrain::SEA_LEVEL
+                    || sim_core::terrain::height(seed, x, z + r) < sim_core::terrain::SEA_LEVEL
+                    || sim_core::terrain::height(seed, x, z - r) < sim_core::terrain::SEA_LEVEL)
+            {
+                return (x, z);
+            }
+            z += 4.0;
+        }
+        x += 4.0;
+    }
+    panic!("this island has no coast — the generator changed under this gate");
 }
 
 struct CountingAlloc;
@@ -221,6 +250,11 @@ fn test_alloc_zero() {
         world.tick(&cmds);
     }
 
+    // Found before the counters open, because a scan is the test's own
+    // work and not the sim's — the window must count the tick, not the
+    // fixture. Pure float reads of the same heightfield the verb asks.
+    let shore = shoreline(SEED);
+
     let a0 = ALLOCS.load(Ordering::SeqCst);
     let f0 = FREES.load(Ordering::SeqCst);
 
@@ -265,6 +299,16 @@ fn test_alloc_zero() {
     // grant assert is the one that fires.
     world.players[5].food = 0;
     world.players[5].water = 0;
+    // Bot 7 is the drinker, stood on a shoreline the heightfield is scanned
+    // for rather than a coordinate typed in — the drink verb reads
+    // `terrain::height` at five taps, so the one thing this gate must not
+    // do is stage it somewhere the generator can move out from under.
+    // It presses drink every counted tick, and at the fixture's 20 hp a
+    // mouthful a 100 hp body drinks itself dead in five: the landed drink,
+    // the salt death, the respawn's grant, and — once the ring has put it
+    // somewhere inland — the dry refusal all land inside the window.
+    world.players[6].body = sim_core::movement::Body::at(SEED, shore.0, shore.1);
+    world.players[6].water = 0;
     // Bot 2's meters are the drain witness: it neither duels, raids,
     // builds nor eats, so nothing but the clock moves them.
     let witness_food = world.players[1].food;
@@ -275,6 +319,9 @@ fn test_alloc_zero() {
     let mut starved = 0u32;
     let mut ate = 0u32;
     let mut eat_refused = 0u32;
+    let mut drank = 0u32;
+    let mut dry_presses = 0u32;
+    let drinker_deaths_before = world.players[6].deaths;
     // `EventQueue::dropped` is cleared every tick, so the total is the sum
     // — see the assert at the end for why this gate reads it at all.
     let mut events_dropped = 0u32;
@@ -309,10 +356,11 @@ fn test_alloc_zero() {
         // grows by two on the stack rather than stealing a bot's input
         // slot — `MAX_COMMANDS_PER_TICK` is 256, so 107 still all apply,
         // and copying `Command`s allocates nothing.
-        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 7];
+        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 8];
         all[..MAX_PLAYERS + 5].copy_from_slice(&cmds);
         all[MAX_PLAYERS + 5] = Command::Loot { id: 3 };
         all[MAX_PLAYERS + 6] = Command::Loot { id: 4 };
+        all[MAX_PLAYERS + 7] = Command::Drink { id: 7 };
         world.tick(&all);
         events_dropped += world.events.dropped;
         for ev in world.events.entries() {
@@ -331,7 +379,22 @@ fn test_alloc_zero() {
             } else if ev.code == EV_CONSUMED {
                 ate += 1;
             } else if ev.code == EV_CONSUME_REFUSED {
-                eat_refused += 1;
+                // Two verbs announce their refusals on this one code, so
+                // the counters partition by the body that pressed rather
+                // than sharing the branch: bot 1 is the only id the eat
+                // script addresses and bot 7 the only one that drinks.
+                // Counting the union here would let one verb's refusals
+                // satisfy the other's floor — `eat_refused > 0` below
+                // would be implied by the drinker alone, and the assert
+                // would go on reading as if it still guarded eating while
+                // the whole eat refusal path could be deleted under it.
+                if ev.a == 1 {
+                    eat_refused += 1;
+                } else if ev.a == 7 && ev.b == REFUSE_C_NO_WATER {
+                    dry_presses += 1;
+                }
+            } else if ev.code == EV_DRANK {
+                drank += 1;
             }
         }
     }
@@ -413,6 +476,26 @@ fn test_alloc_zero() {
         world.players[5].food > 0,
         "the starved body's meters were never granted again — the respawn \
          grant fell out of the alloc gate"
+    );
+    // The drink verb's three outcomes, each read off the thing it moves.
+    // A verb whose only coverage was "it was in the command array" would be
+    // exactly the defect the eat verb's own block above exists against.
+    assert!(
+        drank > 0,
+        "nobody drank inside the counted window — the drinker was staged off \
+         the water, or `survival::drink`'s landed path fell out of the alloc gate"
+    );
+    assert!(
+        world.players[6].deaths > drinker_deaths_before,
+        "the drinker never died of the salt inside the counted window — the \
+         drink's own kill site and the respawn behind it are only in this gate \
+         while it does"
+    );
+    assert!(
+        dry_presses > 0,
+        "no dry press was refused inside the counted window — the spawn ring \
+         put the drinker back on water every time, or the refusal path fell \
+         out of the alloc gate"
     );
     assert!(
         world.players[5].deaths > 0,

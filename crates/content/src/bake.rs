@@ -472,6 +472,8 @@ impl Content {
         sc.max_water = u16f(s.max_water, "max_water")?;
         sc.starve_hp_per_min = u16f(s.starve_hp_per_min, "starve_hp_per_min")?;
         sc.dehydrate_hp_per_min = u16f(s.dehydrate_hp_per_min, "dehydrate_hp_per_min")?;
+        sc.drink_water = u16f(s.drink_water, "drink_water")?;
+        sc.drink_hp_cost = u16f(s.drink_hp_cost, "drink_hp_cost")?;
         let span = |min: u32, what: &str| {
             min.checked_mul(TICKS_PER_MIN)
                 .ok_or_else(|| format!("bake: survival {what} {min} min overflows the tick span"))

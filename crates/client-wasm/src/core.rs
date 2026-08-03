@@ -97,6 +97,11 @@ pub const APPLIED_VITALS: u32 = 1 << 27;
 /// `EventMsg::ConsumeRefused`). One flag: the HUD's response to both is to
 /// re-read the eat readout, which says which it was.
 pub const APPLIED_CONSUME: u32 = 1 << 28;
+/// A drink landed (`EventMsg::Drank`). Its own bit and not `CONSUME`'s: a
+/// refused drink already arrives as a `ConsumeRefused`, so sharing the bit
+/// would leave the HUD holding two readouts and no way to know which of
+/// them this frame's flag was about.
+pub const APPLIED_DRANK: u32 = 1 << 29;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -535,6 +540,9 @@ pub struct ClientCore {
     /// eat landed). Read together by `client_consume`.
     pub last_eat: u32,
     pub last_eat_refused: u8,
+    /// The last drink: water restored << 16 | hp it cost. Read by
+    /// `client_drank`, and the reason the HUD can name what took the hp.
+    pub last_drink: u32,
     /// Own landed hits, oldest first: damage dealt. The hitmarker ring.
     hits: [u16; TOAST_RING],
     hit_head: usize,
@@ -647,6 +655,7 @@ impl ClientCore {
             max_water: 0,
             last_eat: 0,
             last_eat_refused: 0,
+            last_drink: 0,
             hits: [0; TOAST_RING],
             hit_head: 0,
             hit_len: 0,
@@ -1064,6 +1073,10 @@ impl ClientCore {
             EventMsg::ConsumeRefused { reason } => {
                 self.last_eat_refused = reason;
                 flags |= APPLIED_CONSUME;
+            }
+            EventMsg::Drank { water, hp_cost } => {
+                self.last_drink = ((water as u32) << 16) | hp_cost as u32;
+                flags |= APPLIED_DRANK;
             }
             EventMsg::Health { hp, max } => {
                 // Absolute, so a missed one repairs itself. Max travels

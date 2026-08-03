@@ -340,14 +340,34 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // **unanswerable**, which costs a player the whole session rather
         // than nothing.
         //
-        // Reachable means a gatherable pays it — the only payout path the
-        // sim has today. Loot tables deliberately do not count: nine barrel
-        // entries are parsed and hashed, and no verb opens a container
-        // (that judge's ranked gap 2), so counting them would be exactly
-        // the lie this check exists to catch. When the open verb lands, the
-        // set widens in that commit.
+        // A drink that costs more hp than a body has is not a hard choice,
+        // it is a suicide button; and one that costs hp while restoring
+        // nothing is a tax with no purchase. Both are refused here, where
+        // the message can name the file (survival.rs `drink`).
+        if s.drink_water == 0 && s.drink_hp_cost > 0 {
+            return Err(format!(
+                "survival: the drink costs {} hp and restores no water",
+                s.drink_hp_cost
+            ));
+        }
+        if s.drink_hp_cost >= hp {
+            return Err(format!(
+                "survival: one drink costs {} of {hp} hp — the sea is salt, not lethal",
+                s.drink_hp_cost
+            ));
+        }
+
+        // Reachable means a gatherable pays it, **or the drink verb is
+        // armed** — the two payout paths the sim has. The drink counts
+        // because it is a verb the sim actually runs against the
+        // heightfield every shard boots on, which is exactly the property
+        // the loot tables lack below. Loot tables deliberately do not
+        // count: nine barrel entries are parsed and hashed, and no verb
+        // opens a container (that judge's ranked gap 2), so counting them
+        // would be exactly the lie this check exists to catch. When the
+        // open verb lands, the set widens in that commit.
         let mut gathered_food = false;
-        let mut gathered_water = false;
+        let mut gathered_water = s.drink_water > 0;
         for g in &c.gatherables {
             for id in [Some(&g.output), g.secondary.as_ref().map(|s| &s.output)]
                 .into_iter()
@@ -368,9 +388,11 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 .to_string());
         }
         if !gathered_water {
-            return Err("survival: thirst drains and nothing on the island pays \
-                 a consumable with `water` — the clock has no answer"
-                .to_string());
+            return Err(
+                "survival: thirst drains, `drink_water` is 0 and nothing on the \
+                 island pays a consumable with `water` — the clock has no answer"
+                    .to_string(),
+            );
         }
     }
     for d in &c.deployables {

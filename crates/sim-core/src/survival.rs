@@ -8,6 +8,16 @@
 //! them. This is the smallest honest fix: **two meters that only ever fall,
 //! and food that puts them back.**
 //!
+//! **v15 gave thirst its real answer.** Until it, water came only from
+//! berries — 10 minutes of a 40-minute meter per bush — while a player
+//! spawned *beside an ocean* and could not touch it, which is a survival
+//! loop with one input and therefore not a loop. `drink` is the verb, and
+//! the sea is salt: it restores water and costs hit points, so the ocean
+//! is the answer that is always there and never free, and the bush stays
+//! worth walking to. It is also the first verb here that reads the world
+//! rather than the inventory — `terrain::height` under the body's own
+//! feet, the same pure function the client draws the ground from.
+//!
 //! Three verbs, one tick order — drain, then hurt, then heal:
 //!
 //! 1. **Drain.** Food and water fall from full to empty over a span the
@@ -59,8 +69,15 @@
 use crate::gather::NO_ITEM;
 use crate::limits::{MAX_ITEM_DEFS, TICK_HZ};
 use crate::world::{
-    EventQueue, Player, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH, EV_HEALTH, EV_VITALS,
+    EventQueue, Player, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH, EV_DRANK, EV_HEALTH, EV_VITALS,
 };
+
+/// How far a mouthful reaches, planar. Not a knob of its own: it is
+/// `build::BUILD_REACH_M`, the same distance a hearth feed, a door use, a
+/// lock and a bag loot all measure — "what you can touch from where you
+/// stand" is one number in this sim, and a second one would be a second
+/// thing to keep honest.
+pub use crate::build::BUILD_REACH_M as DRINK_REACH_M;
 
 /// Ticks in a minute — the denominator every per-minute rate in this
 /// module divides by. Derived from `limits::TICK_HZ`, never restated.
@@ -112,6 +129,15 @@ pub struct SurvivalContent {
     /// stack — the rates add before the accumulator sees them.
     pub starve_hp_per_min: u16,
     pub dehydrate_hp_per_min: u16,
+    /// Water units one mouthful of the sea puts back, and the hit points
+    /// it costs to swallow it. **The sea is salt** — that is the whole
+    /// design of the verb: the ocean is always there and always answers,
+    /// and it grinds you down for it, so berries stay worth walking to.
+    /// A zero `drink_water` disarms the verb without disarming the module
+    /// (the refusal path still announces), which is how content that
+    /// authors no drink still boots.
+    pub drink_water: u16,
+    pub drink_hp_cost: u16,
 }
 
 impl SurvivalContent {
@@ -128,6 +154,8 @@ impl SurvivalContent {
         water_span_ticks: 0,
         starve_hp_per_min: 0,
         dehydrate_hp_per_min: 0,
+        drink_water: 0,
+        drink_hp_cost: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates. Deliberately
@@ -147,6 +175,12 @@ impl SurvivalContent {
         // Fast enough to kill inside the probe's window once both are dry.
         c.starve_hp_per_min = 600;
         c.dehydrate_hp_per_min = 900;
+        // A quarter of the meter for a fifth of the body: unlike the game
+        // content, the fixture's drink is meant to be *lethal* inside a
+        // counted window, so the probes exercise the salt death and not
+        // only the happy path.
+        c.drink_water = 25;
+        c.drink_hp_cost = 20;
         c.consumable[0] = ConsumableDef {
             health: 20,
             food: 40,
@@ -189,8 +223,13 @@ impl Default for SurvivalContent {
 /// the input and says nothing is indistinguishable from a broken one.
 pub const REFUSE_C_NOT_FOOD: u32 = 1;
 /// The meter this row would have filled is already full (and it heals
-/// nothing). Eating here would destroy the item for no effect.
+/// nothing). Eating here would destroy the item for no effect. A drink
+/// with a full water meter lands here too — same fact, same line.
 pub const REFUSE_C_FULL: u32 = 2;
+/// There is no water within reach of the feet, so the drink was a press
+/// at dry ground. Announced rather than swallowed for `REFUSE_C_NOT_FOOD`'s
+/// reason: the player needs to learn where the verb works.
+pub const REFUSE_C_NO_WATER: u32 = 3;
 
 /// One rational step: add `num` to `acc`, take out whole units against
 /// `den`, keep the remainder. The one piece of arithmetic every meter in
@@ -292,17 +331,7 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
     }
 
     if died {
-        // A death is counted where it happens — the same rule `combat` keeps
-        // at its own kill site, and the reason it is one line here rather
-        // than one in the caller. Without it a clock death is invisible to
-        // `spawn_pos_n(id, deaths)`, so a body that starved was put back on
-        // the *identical* beach to starve on the same ground; the count is
-        // also what the scoreboard and the wire's `deaths` field read.
-        p.deaths = p.deaths.saturating_add(1);
-        // Self-inflicted by the world: victim and killer are the same id,
-        // which `EV_DEATH`'s own doc comment already anticipated ("equal to
-        // `a` if that ever becomes possible"). This is that.
-        events.push(EV_DEATH, p.id, p.id, 0);
+        died_by_the_world(p, events);
         return Step::Died;
     }
     if (p.food, p.water, p.hp) != before {
@@ -310,6 +339,26 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
         return Step::Changed;
     }
     Step::Quiet
+}
+
+/// The module's one kill site: a body the world itself finished off, by
+/// starving, by drying out, or by a mouthful of salt water. **One place**,
+/// so the two ways this module can kill cannot disagree about what a death
+/// is — a bug in the count would otherwise exist twice.
+///
+/// A death is counted where it happens — the same rule `combat` keeps at
+/// its own kill site. Without it a clock death is invisible to
+/// `spawn_pos_n(id, deaths)`, so a body that starved is put back on the
+/// *identical* beach to starve on the same ground; the count is also what
+/// the scoreboard and the wire's `deaths` field read.
+///
+/// Self-inflicted by the world: victim and killer are the same id, which
+/// `EV_DEATH`'s own doc comment already anticipated ("equal to `a` if that
+/// ever becomes possible"). This is that.
+#[inline]
+fn died_by_the_world(p: &mut Player, events: &mut EventQueue) {
+    p.deaths = p.deaths.saturating_add(1);
+    events.push(EV_DEATH, p.id, p.id, 0);
 }
 
 /// Max hp for a player mid-heal. The survival module never learns
@@ -433,6 +482,90 @@ pub fn consume(sc: &SurvivalContent, slot: usize, p: &mut Player, events: &mut E
     );
     announce(sc, p, events);
     true
+}
+
+/// Is there water within `DRINK_REACH_M` of this body, planar? Five taps
+/// on the heightfield — the feet and the four cardinal points at the reach
+/// — and any one of them below `SEA_LEVEL` is water you can put a hand in.
+///
+/// **Five and not a ring**, because a ring costs trig and this module has
+/// none available (wall 1: no libm, no trig). Five is also enough for the
+/// shape being tested: the sea is a half-space with a coastline that wanders
+/// tens of metres per cycle, so a body inside 5 m of it hits the sample on
+/// its seaward side long before the coastline can thread between two of
+/// them. What it deliberately cannot do is find a puddle smaller than the
+/// gap between taps — and there are none, because the only water in this
+/// world is the ocean.
+///
+/// Pure, bounded, allocation-free and float-restricted to the ops wall 1
+/// allows: it is five `terrain::height` calls and five compares, the same
+/// function the client draws the ground from and the same one the spawn
+/// ring picks a beach with, so "am I at water" has exactly one answer on
+/// both sides of the wire.
+#[inline]
+fn water_in_reach(seed: u64, x: f32, z: f32) -> bool {
+    let r = DRINK_REACH_M;
+    let taps = [(0.0, 0.0), (r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)];
+    let mut found = false;
+    for (dx, dz) in taps {
+        // No early return: the loop is the same work every call, which is
+        // what keeps this verb off the tick-jitter budget's variable side.
+        found |= crate::terrain::height(seed, x + dx, z + dz) < crate::terrain::SEA_LEVEL;
+    }
+    found
+}
+
+/// Drink from the water at your feet — thirst's real answer, and the first
+/// verb in this module that reads the world instead of the inventory.
+///
+/// The sea is salt: a mouthful restores `drink_water` and costs
+/// `drink_hp_cost`, so the ocean is the answer that is always there and
+/// never free. That is what keeps the bush worth walking to after this
+/// lands, and it is the reason this verb can kill — a body drinking on its
+/// last points of health dies of it, and dies through the module's one kill
+/// site, exactly as a starved body does.
+///
+/// Every input is the sim's own: the position comes off the body, the water
+/// off the heightfield, the numbers off baked content. Nothing here crosses
+/// the wire, so there is nothing here to forge (`ActionMsg::Drink`).
+pub fn drink(sc: &SurvivalContent, seed: u64, p: &mut Player, events: &mut EventQueue) -> Step {
+    if !sc.armed() || sc.drink_water == 0 {
+        // Content that authors no drink refuses the press rather than
+        // swallowing it — the same posture as an eat with no food row.
+        events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NO_WATER, 0);
+        return Step::Quiet;
+    }
+    let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+    let z = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    if !water_in_reach(seed, x, z) {
+        events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NO_WATER, 0);
+        return Step::Quiet;
+    }
+    if p.water >= sc.max_water {
+        // Refuse rather than charge: a full meter would pay hp for
+        // nothing, which is `REFUSE_C_FULL`'s exact case on the eat side.
+        events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_FULL, 0);
+        return Step::Quiet;
+    }
+
+    // The meter first, the cost second, so a drink that kills you still
+    // delivers the water — the ordering `step` uses for the same reason
+    // (drain, then hurt: the tick a thing happens is the tick it counts).
+    let before = p.water;
+    p.water = p.water.saturating_add(sc.drink_water).min(sc.max_water);
+    let restored = p.water - before;
+    let cost = sc.drink_hp_cost.min(p.hp);
+    p.hp -= cost;
+    events.push(EV_DRANK, p.id, restored as u32, cost as u32);
+    announce(sc, p, events);
+    // `cost > 0` and not `p.hp == 0` alone: a body already at zero is one
+    // the caller has not walked to its respawn yet, and counting a second
+    // death for it would be this module's own kill site lying.
+    if cost > 0 && p.hp == 0 {
+        died_by_the_world(p, events);
+        return Step::Died;
+    }
+    Step::Changed
 }
 
 #[cfg(test)]

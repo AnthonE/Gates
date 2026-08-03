@@ -6,7 +6,6 @@
 // them in hot-path code; an example binary is not hot-path code.
 #![allow(clippy::disallowed_macros)]
 
-use protocol::encode_action_consume;
 use protocol::{
     encode_action_cancel, encode_action_craft, encode_action_deploy, encode_action_feed,
     encode_action_lock, encode_action_loot, encode_action_place, encode_action_upgrade,
@@ -21,6 +20,7 @@ use protocol::{
     encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
     encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
 };
+use protocol::{encode_action_consume, encode_action_drink, encode_event_drank};
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
 fn write_fixture(name: &str, bytes: &[u8]) {
@@ -239,4 +239,11 @@ fn main() {
 
     let len = encode_action_consume(goldens::action_consume(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[53], &buf[..len]);
+
+    let (water, hp_cost) = goldens::event_drank();
+    let len = encode_event_drank(water, hp_cost, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[54], &buf[..len]);
+
+    let len = encode_action_drink(&mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[55], &buf[..len]);
 }

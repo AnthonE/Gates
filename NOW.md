@@ -117,24 +117,42 @@ Done items are deleted, not checked — history lives in git and
      container. The value reaches `canon.rs` too — the defect
      `[backpack]`'s ladder carried, caught here before it shipped.
 
+   **Landed this pass** (`DECISIONS.md` §open, "the drink verb + wire v15"):
+   thirst's real answer, and the ocean stopped being scenery.
+
+   - **`ACT_DRINK`, the eleventh action of sixteen, and `Drank`, the 35th
+     event subtype of sixty-four** — so no field widened and no message
+     moved by a bit. The fifty-four existing goldens are byte-identical
+     after regeneration; only `v15_hello.bin` differs, because `PROTO_VER`
+     is inside it. `Drank` is its own subtype rather than a `Consumed` with
+     an empty item because the drink *costs* hp and `Health` is absolute:
+     a client that only heard the number could not name what took it.
+   - **The sea is salt** — 25 water for 2 hp, `content/balance.toml`
+     `[survival]`, derived against the answers already shipping rather than
+     picked. 25 is one bush's worth of thirst in one press with no walk;
+     2 hp is priced against the repair on the same shelf (a bandage is
+     20 cloth, a bush pays 10, so two bushes buy back ten mouthfuls
+     against the ten bushes it would take to drink the same water).
+   - **The first verb here that reads the world, not the inventory**: five
+     `terrain::height` taps at the feet and the four cardinal points of
+     `build::BUILD_REACH_M` — reused, not given a reach of its own. Five
+     and not a ring because trig is banned in the sim. Payload-free on the
+     wire for a stronger reason than `Loot`'s: the heightfield is a pure
+     function of the seed, so there is no position to forge.
+   - **It can kill you**, through the module's one kill site — factored out
+     of the starve path this commit, so the two ways the world can kill
+     cannot disagree about what a death is.
+   - **The `validate` wall widened in the same commit**, and `test_content`
+     pins the widening from both sides: an armed drink alone answers
+     thirst, and disarming it as well is refused. Three gates arm the verb,
+     each in its own fixture — `test_alloc_zero` (a scanned shoreline, the
+     salt death, the dry refusal, zero alloc delta), `test_replay` (hash
+     re-pinned as a function of the verb's arithmetic) and
+     `test_parity_wasm` via `probe_combat`, which presses it on every bot
+     every tick because the answer is a float compare.
+
    **What this item still wants**, in the order it is worth doing:
 
-   - **The drink verb — thirst's real answer, and the only piece of the
-     merge-gate judge's ranked gap 1 still open.** Berries answer thirst at
-     10 minutes a bush against a 40-minute span, which is a treadmill; a
-     player spawns *beside an ocean* and cannot touch it. Shape: a
-     zero-payload C→S action (`ACT_DRINK`, the **eleventh** of sixteen — no
-     field widens, so no message moves by a bit, but it is still **wire v15
-     with the goldens regenerated in the same commit**, and 54 fixtures
-     rename `v14_*` → `v15_*`); `survival::drink` against
-     `terrain::height` near the feet, so "am I at water" is the sim's
-     verdict off the same heightfield the client draws; the numbers land in
-     `content/balance.toml` `[survival]` (water restored, and — if the sea
-     is salt — the hp it costs, which wants an operator word since nothing
-     regenerates hp). The `validate` wall above then widens: an armed drink
-     row is the other way to answer thirst. Touches protocol, sim, server
-     routing, the wasm bridge, a keybind, and `client_smoke`'s `proto_ver`
-     — its own pass, not a tail.
    - **The status chips.** `spawnedrock.jpg` carries red `WET 36%` /
      `STARVING 2` above the vitals; an empty meter here only turns its own
      number red. The chip row is where a starving player is told *why*
@@ -457,11 +475,10 @@ Done items are deleted, not checked — history lives in git and
      the overflow — now that a ground container exists, that loss has
      somewhere honest to go.
 
-   The wire counters, both moved this pass: the event subtype field is
-   **31 of 64** used (v13 widened it 5 → 6 bits, which is why there is
-   room again), and the action subtype field is **9 of 16**. The next
-   C→S verb — a repair, a throw — is an action subtype, and there are
-   seven.
+   The wire counters, as of wire v15: the event subtype field is **35 of
+   64** used (v13 widened it 5 → 6 bits, which is why there is room), and
+   the action subtype field is **11 of 16**. The next C→S verb — a repair,
+   a throw, a container open — is an action subtype, and there are five.
 
 7. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
    The projection half of this item landed (materials v1 third pass,
