@@ -450,6 +450,90 @@ const TINT_MAX_MEAN_LUMA = Number(process.env.BROWSER_SMOKE_TINT_MAX_LUMA || 1.0
 // on every one and fails here.
 const TINT_MAX_DEV_PARALLEL = Number(process.env.BROWSER_SMOKE_TINT_MAX_PAR || 0.5);
 
+// --- the daylight gate (DECISIONS.md §open, "the daylight register") --------
+// Three counted asserts, and none of them is a taste. Each is a difference
+// between two renders of one scene (see `scene.daylightProbe`), so each means
+// the same thing on this box and on the reference VPS.
+//
+// The sweep is level-ish on purpose, unlike every other probe in this file:
+// the shadow probes pitch down because they are about the ground, and this
+// one has to hold the sky AND the ground in one frame or assertion (a) has
+// nothing to compare. −0.12 rad puts the horizon a little above centre from
+// eye height, which is also the register the capture harness's 01/02/06
+// vantages shoot.
+const DAYLIGHT_PROBE_YAWS = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2];
+const DAYLIGHT_PROBE_PITCH = -0.12;
+// And the second sweep, lifted, where the air is measurable. The lift is the
+// same argument (and a fraction of the height) the far-shadow and horizon
+// probes make for theirs; the pitch keeps the horizon inside the frame so the
+// far tercile has somewhere to come from.
+const DAYLIGHT_AIR_HEIGHT_M = 40;
+const DAYLIGHT_AIR_PITCH = -0.18;
+// Same 6/255 bar every other probe in this file uses for "a pixel moved":
+// comfortably above the rasterizer's own noise between two renders of an
+// identical frame.
+const DAYLIGHT_MIN_DELTA = 6;
+// (a) The sky has to be the top of the value range, not the bottom of it.
+// The defect measured by the visual judge was sky 55–114 against sand
+// 160–200 — a ground brighter than its own sky, which is not a dark scene
+// but an inverted one. Asserted against the frame's own MEDIAN ground pixel
+// rather than its mean: a mean can be dragged under by a shadowed half while
+// the lit half still out-glares the sky, and the median cannot.
+const DAYLIGHT_MIN_SKY_OVER_GROUND = Number(process.env.BROWSER_SMOKE_SKY_OVER_GROUND || 1.15);
+// And the sky has to be IN the frame for that ratio to mean anything — a
+// vantage that framed only ground would divide by a handful of pixels.
+const DAYLIGHT_MIN_SKY_FRACTION = 0.05;
+// (b) There has to be air, and it has to lighten. This is the share of the
+// swept pixels the haze moved by more than the bar — measured 1.08 / 8.23 /
+// 8.19 / 3.47% on the lifted sweep, so the floor sits 2.2x under the worst of
+// the four. The failure it guards is what shipped before this slice: a fog
+// near plane past everything the frame can see scores exactly 0.00%, which is
+// what the eye sweep still reads on the one yaw whose ground is all
+// foreground.
+const DAYLIGHT_MIN_FOG_FRACTION = Number(process.env.BROWSER_SMOKE_FOG_MIN || 0.005);
+// …and the far third of the ground has to be genuinely in it. The probe's
+// depth channel is the recovered fog FACTOR, so this is a floor on the mean
+// factor of the far tercile: below it the "far" band is near ground with
+// rounding noise on it, and the ramp above would be measuring nothing.
+const DAYLIGHT_MIN_FAR_FOG = Number(process.env.BROWSER_SMOKE_FAR_FOG_MIN || 0.03);
+// Aerial perspective converges on a bright sky, so it can only ADD luma. A
+// fog colour under the ground's own value would darken with distance, which
+// is exactly what shipped before this slice; that failure scores 0 here.
+const DAYLIGHT_MIN_FOG_UP_SHARE = 0.98;
+// …and it has to be a RAMP, not a curtain: over the swept frame, the far
+// third of the ground reads brighter and less saturated than the near third.
+// Ratios rather than differences so the bars do not move with the register.
+// Measured x1.118 luma and x0.719 saturation over the four lifted yaws.
+const DAYLIGHT_MIN_BAND_LUMA_STEP = 1.05;
+const DAYLIGHT_MAX_BAND_SAT_STEP = 0.9;
+// (c) The ambient floor: the share of a ground pixel's output luma that
+// survives losing the key. Read at the 5th percentile — the darkest ground
+// pixels are the most-lit ones, so that is where a floor is actually tested,
+// and a p05 rather than a min because the water's specular track is a handful
+// of pixels at nearly pure key.
+//
+// **0.15, and not the judge's 0.30, and this is the one bar in this gate that
+// is a REGRESSION wall rather than an achievement.** The rig measures
+// **20.8–41.2%** and cannot be raised to clear 0.30: the prop gate's chroma
+// ratio ships with 0.02 of headroom over its own floor, every unit of ambient
+// lands in that ratio's denominator, and six built-and-measured
+// configurations of the fill all take it red — the sky pole through the
+// boulder, the bounce pole through the pine (`DECISIONS.md` §open, "the
+// daylight register", has the table). Asserting 0.30 anyway would be a gate
+// the tree cannot pass; asserting nothing would let the next slice spend the
+// floor unnoticed. So this asserts the share cannot FALL, at 1.4x under the
+// worst yaw the rig delivers.
+//
+// The metric is narrower than the judge's sentence, and the difference is
+// worth stating rather than blurring: it reads the fill's share on NON-SKY
+// pixels, which at these vantages are mostly ground. It is sensitive to both
+// poles and measured so — raising the bounce 3.4x while leaving the sky pole
+// alone moved the worst yaw 20.8% → 28.2% — but a ground pixel faces up, so
+// what it will never see is the case the judge actually measured: a canopy's
+// underside at (2, 6, 0). That one needs an object-face probe, and this pass
+// did not build one.
+const DAYLIGHT_MIN_AMBIENT_FLOOR = Number(process.env.BROWSER_SMOKE_AMBIENT_MIN || 0.15);
+
 // --- the alias gate (DECISIONS.md §open, "the bump's sampling law") ---------
 // Where the quad statistic is taken, and against what.
 //
@@ -1544,6 +1628,206 @@ for (const [tab, name] of [
     );
 }
 console.log(`  prewarm: 0 program links after the in-world snapshot, both tabs`);
+
+// --- the daylight register (DECISIONS.md §open, "the daylight register") ----
+// Assertion 16 — three counted claims about the light this world is seen in,
+// each measured as a difference between two renders of the live scene.
+//
+// Measured HERE, before the walk, for the reason assertion 10 states above
+// it: tab A is still standing on `dev_spawn` at a pinned seed, so the frames
+// this scores are the same frames every pass — and they are the frames the
+// capture harness shoots, which is where the report that asked for this work
+// took its own measurements.
+//
+// The structural half first, so that a numeric failure below is diagnosable:
+// "the sky is not above the ground" means something very different when the
+// dome is still a vertex ramp or the fog near plane is still outside the ring.
+const air = (await A.page.evaluate(() => globalThis.__gatesDebug.lighting)).air;
+const skyFacts = (await A.page.evaluate(() => globalThis.__gatesDebug.lighting)).sky;
+if (!air) fail(`tab A: the scene publishes no fog — there is no air to grade`);
+if (!(air.near < air.ringM)) {
+  fail(
+    `tab A: the fog near plane is ${air.near} m against a ${air.ringM} m near ring — ` +
+      `no pixel a standing player can see reaches the ramp, which is aerial perspective ` +
+      `that exists only in the source (this shipped at 180 m against 160 m)`,
+  );
+}
+if (!(air.far > air.near)) fail(`tab A: fog far ${air.far} m is not past near ${air.near} m`);
+if (!skyFacts.patched) {
+  fail(`tab A: the sky dome carries no fragment program — a 24×16 vertex ramp cannot hold a sun disc, and it bands`);
+}
+if (skyFacts.vertexColors) {
+  fail(`tab A: the sky dome still has vertexColors on — the ramp is being reconstructed by the rasterizer`);
+}
+if (!(skyFacts.dither > 0)) fail(`tab A: the sky dither is ${skyFacts.dither} — the largest flat region in the frame is undithered`);
+if (!(skyFacts.discGain > 0 && skyFacts.discRad[0] > 0 && skyFacts.discRad[1] > skyFacts.discRad[0])) {
+  fail(`tab A: the sun disc is [${skyFacts.discRad}] at gain ${skyFacts.discGain} — the sky has no source for the light in it`);
+}
+// The measured half, swept twice — and the two sweeps are not redundant.
+//
+// **At the eye** is where the register and the ambient floor are true or not:
+// it is the height a player plays at, the height the capture harness shoots
+// from, and the height every measurement in the report that asked for this
+// work was taken at.
+//
+// **Lifted** is the only place a question about DISTANCE has enough pixels to
+// answer it, and this file has already made that argument twice — the far
+// shadow and horizon probes both lift 80 m with the same sentence: from eye
+// height the same probe measured almost nothing, not because the effect was
+// absent but because the geometry puts it in a band a few pixels tall under
+// the horizon. Ours is thinner still. At 1.6 m the ground 100 m out sits
+// 0.016 rad below the horizon, which is 1.2% of a 75-degree frame's height;
+// at 40 m it sits 0.38 rad down, which is 29% of it.
+const daylightHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.daylightProbe);
+if (daylightHook !== "function") {
+  fail(`tab A: __gatesDebug.daylightProbe is ${daylightHook} on a dev shard — the daylight gate cannot run`);
+}
+const daySweep = async (pitch, heightM) =>
+  A.page.evaluate(
+    ([yaws, p, minDelta, hM]) => globalThis.__gatesDebug.daylightProbe(yaws, p, minDelta, hM),
+    [DAYLIGHT_PROBE_YAWS, pitch, DAYLIGHT_MIN_DELTA, heightM],
+  );
+const dayEye = await daySweep(DAYLIGHT_PROBE_PITCH, 0);
+const dayAir = await daySweep(DAYLIGHT_AIR_PITCH, DAYLIGHT_AIR_HEIGHT_M);
+if (!dayEye || !dayAir) fail(`tab A: daylightProbe returned null`);
+// Printed BEFORE the assertions, which the rest of this file does the other
+// way round. Every number here is new, so the first thing a failing pass
+// needs is the whole table and not only the row that tripped.
+console.log(
+  `  daylight: fog ${air.near}-${air.far} m inside a ${air.ringM} m ring, dome patched, ` +
+    `disc ${skyFacts.discRad[0]}-${skyFacts.discRad[1]} rad @${skyFacts.discGain}, dither ${skyFacts.dither}`,
+);
+for (const [label, r] of [
+  ["eye", dayEye],
+  ["air", dayAir],
+]) {
+  for (const s of r.samples) {
+    console.log(
+      `    ${label} +${r.heightM}m yaw ${s.yaw.toFixed(2)}: sky ${s.skyLuma.toFixed(1)} (${(s.skyFraction * 100).toFixed(0)}%) ` +
+        `vs ground med ${s.groundMedian} / mean ${s.groundLuma.toFixed(1)} / p90 ${s.groundP90} ` +
+        `-> x${(s.skyLuma / Math.max(s.groundMedian, 1)).toFixed(2)} · air ${(s.fogFraction * 100).toFixed(2)}% ` +
+        `up ${(s.fogUpShare * 100).toFixed(1)}% lift ${s.fogMeanLift.toFixed(2)} max ${s.fogMaxDelta} · ` +
+        `f ${s.bands.map((b) => b.f.toFixed(3)).join("->")} luma ${s.bands.map((b) => b.luma.toFixed(1)).join("->")} ` +
+        `lift ${s.bands.map((b) => b.lift.toFixed(2)).join("->")} sat ${s.bands.map((b) => b.sat.toFixed(3)).join("->")} ` +
+        `drop ${s.bands.map((b) => b.drop.toFixed(4)).join("->")} (${s.bands.map((b) => b.n).join("/")}) · ` +
+        `ambient p05 ${(s.ambientP05 * 100).toFixed(1)}% p50 ${(s.ambientP50 * 100).toFixed(1)}%`,
+    );
+  }
+}
+// (a) and (c) — the register and the floor, at the eye.
+for (const s of dayEye.samples) {
+  const at = `eye yaw ${s.yaw.toFixed(2)}`;
+  if (!(s.skyFraction >= DAYLIGHT_MIN_SKY_FRACTION)) {
+    fail(
+      `tab A: ${at} framed ${(s.skyFraction * 100).toFixed(1)}% sky, under the ` +
+        `${(DAYLIGHT_MIN_SKY_FRACTION * 100).toFixed(0)}% this probe needs to compare one against the other`,
+    );
+  }
+  const ratio = s.groundMedian > 0 ? s.skyLuma / s.groundMedian : Infinity;
+  if (!(ratio >= DAYLIGHT_MIN_SKY_OVER_GROUND)) {
+    fail(
+      `tab A: ${at} sky ${s.skyLuma.toFixed(1)} luma against median ground ` +
+        `${s.groundMedian} — ratio ${ratio.toFixed(2)}, under ${DAYLIGHT_MIN_SKY_OVER_GROUND}. ` +
+        `A ground brighter than its own sky is an inverted register, not a dark one`,
+    );
+  }
+  if (!(s.ambientP05 >= DAYLIGHT_MIN_AMBIENT_FLOOR)) {
+    fail(
+      `tab A: ${at} the darkest 5% of ground pixels keep ${(s.ambientP05 * 100).toFixed(1)}% of ` +
+        `their luma when the key is taken away (median ${(s.ambientP50 * 100).toFixed(1)}%), under ` +
+        `${(DAYLIGHT_MIN_AMBIENT_FLOOR * 100).toFixed(0)}% — an unlit face at that share is a black ` +
+        `silhouette carrying no albedo, no grain and no material identity`,
+    );
+  }
+}
+// (b) — the air, from where there is enough of it to answer.
+for (const s of dayAir.samples) {
+  const at = `air yaw ${s.yaw.toFixed(2)}`;
+  if (!(s.fogFraction >= DAYLIGHT_MIN_FOG_FRACTION)) {
+    fail(
+      `tab A: ${at} moved ${(s.fogFraction * 100).toFixed(2)}% of its pixels when the fog was pushed ` +
+        `past the frame, under ${(DAYLIGHT_MIN_FOG_FRACTION * 100).toFixed(2)}% (mean lift ` +
+        `${s.fogMeanLift.toFixed(2)}, max ${s.fogMaxDelta}) — there is no air in this view`,
+    );
+  }
+  if (!(s.fogUpShare >= DAYLIGHT_MIN_FOG_UP_SHARE)) {
+    fail(
+      `tab A: ${at} the air LIGHTENED only ${(s.fogUpShare * 100).toFixed(1)}% of the pixels it touched, ` +
+        `under ${(DAYLIGHT_MIN_FOG_UP_SHARE * 100).toFixed(0)}% — a haze darker than the ground it hazes ` +
+        `is distance taking contrast away instead of converging on the sky`,
+    );
+  }
+  const [nearB, midB, farB] = s.bands;
+  if (!(nearB.n > 0 && midB.n > 0 && farB.n > 0)) {
+    fail(`tab A: ${at} the fog terciles are [${s.bands.map((b) => b.n)}] — one band is empty, so no ramp can be read`);
+  }
+  if (!(farB.f >= DAYLIGHT_MIN_FAR_FOG)) {
+    fail(
+      `tab A: ${at} the far third of the ground carries a mean fog factor of ${farB.f.toFixed(3)} ` +
+        `(near ${nearB.f.toFixed(3)}, mid ${midB.f.toFixed(3)}), under ${DAYLIGHT_MIN_FAR_FOG} — ` +
+        `there is not enough air in the far band for a ramp across it to mean anything`,
+    );
+  }
+  // The mechanism, per yaw, and it is the half the terrain cannot
+  // counterfeit. A band's RAW luma is mostly what its ground happens to be
+  // made of — measured, this sweep has a yaw whose far third is darker rock
+  // and reads x1.015 while the yaw beside it reads x1.25 — but a band's luma
+  // LIFT, and its saturation DROP, are the haze and nothing else, because
+  // each is that band measured against itself with the air pushed out of the
+  // frame. Those two must climb on every step, and they do, by 2-15x.
+  for (let k = 1; k < 3; k++) {
+    if (!(s.bands[k].lift > s.bands[k - 1].lift)) {
+      fail(
+        `tab A: ${at} the haze lifts the three bands by ${s.bands.map((b) => b.lift.toFixed(2))} luma — ` +
+          `band ${k} is not above band ${k - 1}, so the air is not deepening with distance`,
+      );
+    }
+    if (!(s.bands[k].drop > s.bands[k - 1].drop)) {
+      fail(
+        `tab A: ${at} the haze cuts the three bands' saturation by ${s.bands.map((b) => b.drop.toFixed(4))} — ` +
+          `band ${k} is not above band ${k - 1}, so distance is not washing out with depth`,
+      );
+    }
+  }
+}
+// …and the report's own criterion, on the frame as rendered, pooled over the
+// whole sweep. Pooled and not per yaw for the reason the mechanism block
+// above states: one direction's ground is not another's, and the image-level
+// ramp is a claim about the world seen from a point, not about a bearing.
+// Pixel-weighted, so a yaw with more visible ground counts for more.
+const poolBand = (k, key) => {
+  let num = 0;
+  let den = 0;
+  for (const s of dayAir.samples) {
+    num += s.bands[k][key] * s.bands[k].n;
+    den += s.bands[k].n;
+  }
+  return den > 0 ? num / den : 0;
+};
+const nearLuma = poolBand(0, "luma");
+const farLuma = poolBand(2, "luma");
+const nearSat = poolBand(0, "sat");
+const farSat = poolBand(2, "sat");
+console.log(
+  `    swept: near band ${nearLuma.toFixed(1)} luma / ${nearSat.toFixed(3)} sat → far band ` +
+    `${farLuma.toFixed(1)} / ${farSat.toFixed(3)} — x${(farLuma / nearLuma).toFixed(3)} luma, ` +
+    `x${(farSat / nearSat).toFixed(3)} sat`,
+);
+if (!(farLuma >= nearLuma * DAYLIGHT_MIN_BAND_LUMA_STEP)) {
+  fail(
+    `tab A: swept over 4 yaws the far third of the ground reads ${farLuma.toFixed(1)} luma against ` +
+      `the near third's ${nearLuma.toFixed(1)} — x${(farLuma / nearLuma).toFixed(3)}, under ` +
+      `x${DAYLIGHT_MIN_BAND_LUMA_STEP}. Distance must lighten`,
+  );
+}
+if (!(farSat <= nearSat * DAYLIGHT_MAX_BAND_SAT_STEP)) {
+  fail(
+    `tab A: swept over 4 yaws the far third of the ground reads ${farSat.toFixed(3)} saturation against ` +
+      `the near third's ${nearSat.toFixed(3)} — x${(farSat / nearSat).toFixed(3)}, over ` +
+      `x${DAYLIGHT_MAX_BAND_SAT_STEP}. Distance must wash out`,
+  );
+}
+
 
 // Assertion 10 — the shadow map DARKENS PIXELS. A flag says the renderer was
 // asked for shadows; only a frame says it got any. The dev-only probe renders
@@ -3769,6 +4053,9 @@ for (const hook of [
   "surfaceProbe",
   "splatCensus",
   "horizonProbe",
+  // Four renders and four full readbacks per yaw — sixteen frames handed to
+  // anyone who asks, on a shard where nobody may ask.
+  "daylightProbe",
   "grainProbe",
   // The cost probe is not the only dev affordance that BUILDS something — its
   // variants are five extra terrain programs and the projection probe compiles

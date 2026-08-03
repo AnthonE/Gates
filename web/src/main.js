@@ -927,6 +927,13 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     ? (yaws, pitch, minDelta) => scene.surfaceProbe(yaws, pitch, minDelta)
     : null;
   const devSplatCensus = dev ? () => terrain.splatCensus() : null;
+  // The daylight register's probe: four renders a yaw, each one the frame
+  // minus exactly one of the register's parts (the dome, the air, the key),
+  // so what it reports is the part and never the box's rasterizer.
+  const devDaylightProbe = dev
+    ? (yaws, pitch, minDelta, heightM) =>
+        scene.daylightProbe(yaws, pitch, minDelta, heightM)
+    : null;
   // Shadow clipmap v0's probe: the same difference shape, but the thing it
   // holds fixed is the frame and the thing it removes is every level past the
   // near one — so what it counts is shadow that only exists past 80 m.
@@ -1262,6 +1269,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (devShadowProbe) debug.shadowProbe = devShadowProbe;
     if (devSurfaceProbe) debug.surfaceProbe = devSurfaceProbe;
     if (devSplatCensus) debug.splatCensus = devSplatCensus;
+    if (devDaylightProbe) debug.daylightProbe = devDaylightProbe;
     if (devFarShadowProbe) debug.farShadowProbe = devFarShadowProbe;
     if (devHorizonProbe) debug.horizonProbe = devHorizonProbe;
     if (devCostProbe) debug.costProbe = devCostProbe;

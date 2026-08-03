@@ -4,7 +4,74 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **There was no clock and no pressure, so the loop had no engine.**
+1. **The world was lit upside down, and there was no air in it.**
+   *(Gap pass. From the visual judge's ranked gap 3 in
+   `findings/pass-20260803-064506-01-visual.md` — "the daylight register is
+   inverted and there is no atmosphere — one owner, one pass" — which also
+   turns out to be the mechanism under its ranked gap 2 ("half of every
+   object's screen area is a black identity-free silhouette") and under the
+   **prop surfaces v0** row's own hand-off in `DECISIONS.md`, which wrote the
+   arithmetic out and said the fix was this coupled edit and nothing a
+   material can do.)*
+
+   **Landed** — `DECISIONS.md` §open, "the daylight register". Sky and air
+   taken together by one owner, because `CLAUDE.md`'s trap list says splitting
+   them is how three passes get lost. The dome is a fragment program with a
+   haze band, a sun disc and a dither instead of a 24×16 vertex ramp; the fog
+   near plane is inside the near ring it was 20 m outside of, and its colour
+   is handed to three **pre-transfer** so the horizon seam is exact for the
+   first time (three mixes fog after the tone map, so one hex was reaching the
+   image as two values, and at a daylight register that gap would have put
+   distant ground ~28/255 above the sky over it). `browser_smoke` assertion 16
+   gates it as counted differences of frames: sky ×1.79–2.28 over median
+   ground (floor ×1.15), the haze lightening 100.0% of what it touches, the
+   far third reading ×1.162 luma / ×0.713 saturation against the near third,
+   and each band's own luma lift and saturation drop climbing on every step.
+
+   **What this item still wants**, in the order it is worth doing:
+
+   - **The ambient floor — and it is BLOCKED, by a wall, not by difficulty.**
+     This is the judge's third counted ask (no unlit face below 0.30 of its
+     lit face) and the pass built it six ways and measured every one red. The
+     prop gate's chroma ratio ships at ×1.12/×1.13 against a ×1.10 floor;
+     every unit of ambient lands in that ratio's *denominator*, because light
+     on a face that was rendering as near-black noise is chromaticity the
+     material did not put there. The sky pole fails through the boulder and
+     the bounce pole fails through the pine, so there is no split of the
+     budget that raises the floor and leaves the ratio alone — and walking the
+     key toward the fill is worse, costing 38% of the numerator, because a
+     coloured light is what makes a mineral read. **The unblock is item 4
+     below** ("nothing that is not the ground has a surface"): raise a prop's
+     authored chroma and the same ambient clears ×1.10, and this becomes a
+     two-line change. The six measurements are in `DECISIONS.md` so that pass
+     starts from a bounded problem. Until then `DAYLIGHT_MIN_AMBIENT_FLOOR`
+     sits at 0.15 as a regression wall on the 20.8–41.2% the rig delivers, and
+     the metric itself wants widening: it reads non-sky pixels, which are
+     mostly up-facing ground, so the one case it can never see is the one the
+     judge measured — a canopy's underside at (2, 6, 0) needs an object-face
+     probe.
+   - **The sun's elevation, the other piece taken OUT of this pass rather
+     than shipped.** The report asks for a near-midday register; the shadow
+     gate's floors (15% of the sweep, 10% every yaw) were measured against
+     terrain self-shadowing under a 21° sun, and raising it to 45° removes
+     most of the 24.0% those floors were set against. A floor a change would
+     breach means the change is not done — so this is a pass of its own:
+     raise `SUN_ELEVATION`, re-derive the shadow floor **under the new sun**
+     with the mutation controls the current floors carry, or add the shading
+     term that keeps hillside relief readable when the sun is high.
+   - **Contact grounding** (visual ranked fix 4). A contact-AO or dirt-skirt
+     term wherever a trunk, boulder or deployable meets terrain — the judge's
+     vertical scan into the boulder's base reads 93.7 → 95.1, flat to the
+     contact point, so everything is a decal on the surface. Cheap next to the
+     material work and it is the other half of "nothing is grounded".
+   - **A deeper haze than 1400 m, if it can be paid for.** `FOG_FAR` is long
+     on purpose: fog only ever removes contrast at distance, and the
+     far-shadow and horizon gates measure shadow at 200–500 m. They cleared
+     unmoved at 0.72% and 0.48% against 0.25% and 0.15%, so there is headroom
+     to spend — but it is theirs, and spending it means re-measuring them, not
+     assuming.
+
+2. **There was no clock and no pressure, so the loop had no engine.**
    *(Gap pass. From the merge-gate judge's
    ranked gap 1 in `findings/archive-prestamp/pass-20260802-163821-05-judge.md`
    — "you can log in, stand still for an hour, and be in precisely the state
@@ -80,7 +147,7 @@ Done items are deleted, not checked — history lives in git and
    - **Day/night**, `DESIGN.md` §2's other half of the pair, still blocked
      behind the ground's structure moving from bump into albedo (item 4).
 
-2. **Gameplay, and the ration that keeps it first.** *(Operator, 2026-08-03:
+3. **Gameplay, and the ration that keeps it first.** *(Operator, 2026-08-03:
    "its for sure getting hung up on lighting of shadows we need gameplay and
    stuff… let it go and code for a long time." The visual judge is an
    absolute bar that cannot be satisfied, so its ranked gaps out-shout the
@@ -118,7 +185,7 @@ Done items are deleted, not checked — history lives in git and
    objections, re-judge, merge. Its sun-elevation unlock condition stands.
    The visual items below (3, 4, 8) are rationed with it.
 
-3. **Nothing that is not the ground has a surface.** *(Gap pass. From the
+4. **Nothing that is not the ground has a surface.** *(Gap pass. From the
    visual judge's ranked gap 1 in
    `findings/pass-20260802-163821-02-visual.md` — "rock, wood and canopy are
    each one flat colour per facet, literally the rubric's own disqualifier",
@@ -209,7 +276,7 @@ Done items are deleted, not checked — history lives in git and
      shader in the client and has neither. `propFacts().noiseSamples` publishes
      6; the wall is not written.
 
-4. **The world reads untextured and shows its mesh — and both halves turned
+5. **The world reads untextured and shows its mesh — and both halves turned
    out to be arithmetic, not missing art.** *(Gap pass. From the visual
    judge's ranked gap 1 in
    `findings/pass-20260802-050932-01-visual.md`, which returned FAIL on all
@@ -352,7 +419,7 @@ Done items are deleted, not checked — history lives in git and
    `CLAUDE.md`'s coupled-lighting law — sky, water specular, shadows and
    exposure move together or not at all.
 
-5. **A base can be broken into now, but it cannot be repaired, and a
+6. **A base can be broken into now, but it cannot be repaired, and a
    raid still ends in a shrug.**
    *(From the merge-gate judge's ranked gap 1 in
    `findings/archive-prestamp/pass-20260802-035930-01-judge.md`, and its
@@ -396,7 +463,7 @@ Done items are deleted, not checked — history lives in git and
    C→S verb — a repair, a throw — is an action subtype, and there are
    seven.
 
-6. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
+7. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
    The projection half of this item landed (materials v1 third pass,
    `DECISIONS.md` §open): the grain — and only the grain — is sampled
    triplanar, ridge-folded per plane before the blend and the blend's
@@ -430,7 +497,7 @@ Done items are deleted, not checked — history lives in git and
    fragment, 18/24 depth fetches. Price `gmHash4` there too — hash
    evaluations and program chars — not in ms.
 
-7. **A tab that boots beside another live tab takes 34 s to reach the
+8. **A tab that boots beside another live tab takes 34 s to reach the
    world. Nobody knows where those seconds go.**
    The third-tab version of this went red on 2026-08-01 16:26 (`inWorld`
    at 61.6 s of a 60 s window) and the recovery pass closed it, but by
@@ -456,7 +523,7 @@ Done items are deleted, not checked — history lives in git and
    terrain program costs ~3 s to compile here, and a fresh tab compiles
    more than one.
 
-8. **Nothing casts past 720 m, and nothing out there has a silhouette.**
+9. **Nothing casts past 720 m, and nothing out there has a silhouette.**
    The horizon casts now (`DECISIONS.md` §open) but two limits are stated
    rather than solved: the coarsest clipmap level stops at 720 m because
    fog closes at 1000 m, and past the near ring the only caster is the
@@ -465,7 +532,7 @@ Done items are deleted, not checked — history lives in git and
    yaws for exactly that reason. A scatter LOD (billboard crosses,
    `TERRAIN.md` §4's "trees get two LODs") is the fix and it is a terrain
    job, not a shadow one.
-9. **A capture the same twice is a gate; a capture that drifts is a vibe.**
+10. **A capture the same twice is a gate; a capture that drifts is a vibe.**
    Deterministic capture mode (operator, 2026-08-02, `DECISIONS.md` — the
    Claude-of-Duty adoption row): the client animates off the sim tick / an
    injected fixed-step clock in capture mode — today the RAF loop steps off
@@ -484,7 +551,7 @@ Done items are deleted, not checked — history lives in git and
    (must switch to the engine clock in capture mode), or UI-only (excluded
    from shots). Settle by tick count, never by time.
 
-10. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
+11. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
    solid (slice 13: chat — two channels on the reliable lane, local at
    20 m and global, sanitized at both edges and rate-limited per
@@ -500,17 +567,17 @@ Done items are deleted, not checked — history lives in git and
    there) · piece damage (M2's raid lane: hp exists and decays, nothing
    attacks it yet) · nametags (chat names a speaker by id today, because
    nothing has a name yet).
-11. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
+12. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
-12. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
+13. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
    admin lane · backups · status page · error capture · `bench_transport`.
-13. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
+14. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
    then tune content bands from what the anomaly log and the replays say.
-14. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
+15. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
 
-15. **`cargo test --workspace` overflows a debug thread's stack; only
+16. **`cargo test --workspace` overflows a debug thread's stack; only
     `--release` (what CI runs) is green.** Pre-existing, not new: verified
     on `main` at `25f6ec8` before the backpack slice, where
     `snapshot_budget` aborts the same way. The cause is size, not logic —
