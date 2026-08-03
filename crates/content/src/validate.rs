@@ -96,6 +96,25 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 ));
             }
         }
+        if let Some(s) = &g.secondary {
+            item_exists(&s.output, &format!("gatherable `{}` secondary", g.id))?;
+            if s.per_hit == 0 {
+                return Err(format!(
+                    "gatherable `{}`: secondary `{}` pays nothing — drop the \
+                     row rather than shipping a payout of zero",
+                    g.id, s.output
+                ));
+            }
+            // Two payouts of the same item is one payout with the sum
+            // written twice, and it would put two `EV_GATHER` lines for one
+            // item on the client's toast stack.
+            if s.output == g.output {
+                return Err(format!(
+                    "gatherable `{}`: secondary repeats the primary output `{}`",
+                    g.id, g.output
+                ));
+            }
+        }
     }
 
     // Recipes: outputs/inputs exist, one recipe per output (the cost
@@ -309,6 +328,49 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err(format!(
                 "survival: both meters empty kill {hp} hp in under 5 min ({worst} hp/min)"
             ));
+        }
+        // **A clock must have an answer.** The clock shipped on 2026-08-03
+        // over an island that paid no food at all: five consumable rows
+        // parsed, validated and hashed into the WAL header, and not one
+        // node, recipe or verb that produced a single unit of any of them
+        // (the merge-gate judge's ranked gap 1,
+        // `findings/archive-prestamp/pass-20260803-041958-02-judge.md`).
+        // Every other check in this block refuses a clock that is silently
+        // *inert*; this one refuses a clock that is silently
+        // **unanswerable**, which costs a player the whole session rather
+        // than nothing.
+        //
+        // Reachable means a gatherable pays it — the only payout path the
+        // sim has today. Loot tables deliberately do not count: nine barrel
+        // entries are parsed and hashed, and no verb opens a container
+        // (that judge's ranked gap 2), so counting them would be exactly
+        // the lie this check exists to catch. When the open verb lands, the
+        // set widens in that commit.
+        let mut gathered_food = false;
+        let mut gathered_water = false;
+        for g in &c.gatherables {
+            for id in [Some(&g.output), g.secondary.as_ref().map(|s| &s.output)]
+                .into_iter()
+                .flatten()
+            {
+                for con in &c.consumables {
+                    if &con.id != id {
+                        continue;
+                    }
+                    gathered_food |= con.food > 0;
+                    gathered_water |= con.water > 0;
+                }
+            }
+        }
+        if !gathered_food {
+            return Err("survival: hunger drains and nothing on the island pays \
+                 a consumable with `food` — the clock has no answer"
+                .to_string());
+        }
+        if !gathered_water {
+            return Err("survival: thirst drains and nothing on the island pays \
+                 a consumable with `water` — the clock has no answer"
+                .to_string());
         }
     }
     for d in &c.deployables {

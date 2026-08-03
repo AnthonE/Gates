@@ -60,6 +60,10 @@ hand = 3
 "item.pickaxe_metal" = 30
 
 # Bush: an instant hand pickup, not a swung node — outside the node band.
+# It is also the island's only food, which is why `validate::structural`
+# refuses content whose survival clock has nothing that pays a consumable
+# (DECISIONS.md §open, "food you can get"). The berries are a `secondary`:
+# flat, no tool row and no weak-spot bonus, because picking is not chopping.
 
 [[gatherable]]
 id = "gather.bush"
@@ -70,3 +74,7 @@ weak_spot_bonus_pct = 0
 
 [gatherable.yield_per_hit]
 hand = 10
+
+[gatherable.secondary]
+output = "item.berries"
+per_hit = 5

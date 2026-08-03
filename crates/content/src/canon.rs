@@ -66,6 +66,19 @@ pub fn hash(c: &Content) -> u64 {
             h.s(tool);
             h.u(*per_hit);
         }
+        // The side payout is hashed like everything else the sim reads. A
+        // value that reaches the sim and not the hash lets two contents
+        // that play differently canonicalise identically, so a replay is
+        // handed a WAL header claiming a match it does not have (the same
+        // defect `[backpack]`'s ladder carried until 2026-08-03).
+        match &g.secondary {
+            None => h.u(0),
+            Some(s) => {
+                h.u(1);
+                h.s(&s.output);
+                h.u(s.per_hit);
+            }
+        }
     }
 
     h.s("recipes");

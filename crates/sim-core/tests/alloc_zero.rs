@@ -415,6 +415,12 @@ fn test_alloc_zero() {
          grant fell out of the alloc gate"
     );
     assert!(
+        world.players[5].deaths > 0,
+        "the starved body's death was never counted — a clock death that does \
+         not move `deaths` respawns the body on the identical beach, and the \
+         increment fell out of the alloc gate"
+    );
+    assert!(
         ate > 0 && eat_refused > 0,
         "the eat verb landed {ate} consumes and {eat_refused} refusals inside \
          the counted window — both paths must be in the alloc gate"

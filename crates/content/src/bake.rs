@@ -90,6 +90,16 @@ impl Content {
                 weak_pct: u16::try_from(g.weak_spot_bonus_pct)
                     .map_err(|_| format!("bake: `{}` weak-spot bonus overflows u16", g.id))?,
                 tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
+                secondary: match &g.secondary {
+                    None => (NO_ITEM, 0),
+                    Some(s) => (
+                        self.item_index(&s.output)
+                            .ok_or_else(|| format!("bake: `{}` secondary output missing", g.id))?,
+                        u16::try_from(s.per_hit).map_err(|_| {
+                            format!("bake: `{}` secondary per_hit overflows u16", g.id)
+                        })?,
+                    ),
+                },
             };
             let mut tool_n = 0usize;
             for (tool, per_hit) in &g.yield_per_hit {

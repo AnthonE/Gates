@@ -22,25 +22,61 @@ Done items are deleted, not checked — history lives in git and
    bodies, two eating, hash pinned) and `test_parity_wasm` via
    `probe_combat` (native and wasm byte-identical).
 
+   **Landed the pass after** (`DECISIONS.md` §open, "food you can get + the
+   clock's death"): the clock has an answer, and a content set without one
+   will not boot.
+
+   - **A death by the clock is a death.** One line at the death site, where
+     `combat::strike` already counts its own, so `spawn_pos_n(id, deaths)`
+     walks the ring forward and a starved body stops waking up on the beach
+     it starved on. `test_alloc_zero`'s staged starve asserts the count
+     moved; new `crates/sim-core/tests/survival.rs` owns the consequence
+     (`World::respawn` and the ring), which the module itself cannot reach.
+     `test_replay`'s golden did **not** move, and that is a fact about the
+     script — its fixture widens both spans past the 900 ticks it runs
+     precisely so no body starves inside it.
+   - **A node may pay two things.** `NodeDef.secondary`, one flat
+     `(item, units)` pair from `[gatherable.secondary]`: the bush pays 5
+     berries beside its 10 cloth, on its own `EV_GATHER` so the toast stack
+     reads both. Flat by design — no tool row, no weak-spot bonus, because
+     picking is not chopping. 45 minutes of hunger and 10 of thirst per
+     bush against the shipped meters.
+   - **A clock must have an answer**, and that is a wall now:
+     `validate::structural` refuses content where a meter drains and no
+     gatherable pays a consumable restoring it, and `test_content` prices
+     the answer in the clock's own units (≥ 20 min of the hunger span,
+     ≥ 5 min of the thirst span, per pickup) so one berry cannot satisfy a
+     boolean. Loot deliberately does not count while no verb opens a
+     container. The value reaches `canon.rs` too — the defect
+     `[backpack]`'s ladder carried, caught here before it shipped.
+
    **What this item still wants**, in the order it is worth doing:
 
-   - **A clock death should count as a death.** `deaths` is incremented
-     only on combat's kill path (`combat.rs`), so a body killed by the
-     clock respawns with the same count — and `spawn_pos_n(id, deaths)`
-     therefore puts it back on the *identical* beach to starve on the same
-     ground. One line to fix, but it moves sim behaviour, so it wants its
-     own commit with the replay golden regenerated in it. Found by putting
-     the clock inside `test_alloc_zero`, which is the argument for having
-     done that.
-   - **Food you can actually get.** The five consumable rows are wired but
-     nothing on the island drops them: `gatherables.toml`'s bush is a
-     one-hit pickup that pays no berries, and there is no cooking. Until a
-     node pays food, the clock is a countdown with no answer — which makes
-     this the next slice of this item and not a later one.
+   - **The drink verb — thirst's real answer, and the only piece of the
+     merge-gate judge's ranked gap 1 still open.** Berries answer thirst at
+     10 minutes a bush against a 40-minute span, which is a treadmill; a
+     player spawns *beside an ocean* and cannot touch it. Shape: a
+     zero-payload C→S action (`ACT_DRINK`, the **eleventh** of sixteen — no
+     field widens, so no message moves by a bit, but it is still **wire v15
+     with the goldens regenerated in the same commit**, and 54 fixtures
+     rename `v14_*` → `v15_*`); `survival::drink` against
+     `terrain::height` near the feet, so "am I at water" is the sim's
+     verdict off the same heightfield the client draws; the numbers land in
+     `content/balance.toml` `[survival]` (water restored, and — if the sea
+     is salt — the hp it costs, which wants an operator word since nothing
+     regenerates hp). The `validate` wall above then widens: an armed drink
+     row is the other way to answer thirst. Touches protocol, sim, server
+     routing, the wasm bridge, a keybind, and `client_smoke`'s `proto_ver`
+     — its own pass, not a tail.
    - **The status chips.** `spawnedrock.jpg` carries red `WET 36%` /
      `STARVING 2` above the vitals; an empty meter here only turns its own
      number red. The chip row is where a starving player is told *why*
-     their hp is falling.
+     their hp is falling. (Also the visual judge's ranked gap 3, which
+     asks for "a chip lane the survival clock can actually speak through" —
+     so this one is claimable from either list.)
+   - **Mushrooms and corn are still unreachable**, deliberately: they want
+     a forest-floor pickup and a farming lane respectively, and inventing
+     either to satisfy the new wall would have been inventing content.
    - **Day/night**, `DESIGN.md` §2's other half of the pair, still blocked
      behind the ground's structure moving from bump into albedo (item 4).
 

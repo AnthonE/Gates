@@ -83,6 +83,13 @@ pub struct NodeDef {
     pub weak_pct: u16,
     /// (item index, units per swing) rows; `(NO_ITEM, 0)` = empty row.
     pub tools: [(u16, u16); MAX_TOOLS_PER_NODE],
+    /// A second thing this node pays, flat: `(item index, units per swing)`,
+    /// `(NO_ITEM, 0)` for the nodes that pay one thing. Deliberately **not**
+    /// tool-scaled and **not** weak-spot bonused — a bush pays its berries
+    /// to a bare hand exactly as it pays them to a hatchet, because picking
+    /// is not chopping. The primary keeps both, so the tool ladder and the
+    /// glint still mean what they meant.
+    pub secondary: (u16, u16),
 }
 
 impl NodeDef {
@@ -92,6 +99,7 @@ impl NodeDef {
         hand_yield: 0,
         weak_pct: 0,
         tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
+        secondary: (NO_ITEM, 0),
     };
 
     /// Units this node pays per swing of `held` (falls back to the hand
@@ -158,12 +166,18 @@ impl GatherContent {
                 hand_yield: hand,
                 weak_pct: weak,
                 tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
+                secondary: (NO_ITEM, 0),
             };
             if tool != NO_ITEM {
                 c.nodes[k].tools[0] = (tool, per);
             }
             k += 1;
         }
+        // The bush pays item 0 on the side — the same item
+        // `SurvivalContent::probe_fixture` makes food, so the secondary
+        // payout is on the walls that run this fixture rather than only in
+        // a unit test, and the two fixtures agree about what food is.
+        c.nodes[4].secondary = (0, 3);
         c
     }
 }
@@ -465,6 +479,20 @@ pub fn swing(
         ((def.output as u32) << 16) | added as u32,
         0,
     );
+    // The side payout: its own `EV_GATHER`, so the client's toast stack
+    // reads `+10 Cloth` *and* `+5 Berries` rather than one line that lies
+    // about half of what arrived. Two pushes on a bounded ring, once per
+    // landed swing, on the nodes whose content declares one.
+    let (sec_item, sec_pay) = def.secondary;
+    if sec_item != NO_ITEM && (sec_item as usize) < MAX_ITEM_DEFS && sec_pay > 0 {
+        let got = inv_add(
+            &mut p.inv,
+            sec_item,
+            sec_pay,
+            gc.stack_max[sec_item as usize],
+        );
+        events.push(EV_GATHER, p.id, ((sec_item as u32) << 16) | got as u32, 0);
+    }
     if exhausted {
         events.push(EV_SLOT_HARVESTED, ck, ni as u32, 0);
         p.ws_cell = NO_CELL;
