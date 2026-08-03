@@ -1674,9 +1674,10 @@ if (litFraction < SHADOW_MIN_FRACTION) {
   );
 }
 // Per-yaw floor. The aggregate above can be carried by one direction, and it
-// was: see SHADOW_MIN_FRACTION_PER_YAW. This now catches a direction with no
+// was: see SHADOW_MIN_FRACTION_PER_YAW. This catches a direction with no
 // shadow at all; attributing what shadow there is to the world is the leg
-// below, which is where that job moved when the sun moved.
+// below — a job the area floors never had. (The sun did NOT move this pass —
+// scene.js, SUN_ELEVATION — so both legs guard the same low-sun frames.)
 const thin = probe.samples.filter((s) => s.fraction < SHADOW_MIN_FRACTION_PER_YAW);
 if (thin.length) {
   fail(
@@ -1710,7 +1711,8 @@ if (worldFraction < SHADOW_MIN_WORLD_FRACTION) {
       `the WORLD cast (floor ${(SHADOW_MIN_WORLD_FRACTION * 100).toFixed(2)}%), against ` +
       `${(litFraction * 100).toFixed(2)}% shadowed in total — so the shadow in these frames is ` +
       `coming from the other tab's avatar standing on the shared spawn, not from the hills and ` +
-      `the pines. This is the failure the per-yaw area floor used to catch before the sun moved.\n` +
+      `the pines. The per-yaw area floor above still catches a no-shadow direction; this leg is ` +
+      `what ATTRIBUTES the shadow to the world, which the area floors never could.\n` +
       probe.samples
         .map(
           (s) =>

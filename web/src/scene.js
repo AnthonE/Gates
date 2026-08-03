@@ -436,7 +436,8 @@ function skyMaterial(toSun, horizon) {
           (glow * ${SUN_GLOW_GAIN.toFixed(3)} + disc * ${SUN_DISC_GAIN.toFixed(2)}) * above;
 
         // One level of noise under the 8-bit quantizer — RELATIVE, not
-        // absolute. The chain from here to the framebuffer is Reinhard then
+        // absolute. The chain from here to the framebuffer is toeless
+        // Neutral (installToneMap) then
         // sRGB, and its slope varies 2.9x across this dome (measured: the
         // zenith at linear 0.52 is nearly three times as sensitive as the
         // horizon at 1.4). A constant linear dither is therefore a quarter of
