@@ -39,8 +39,7 @@ export class Hud {
       }
     });
     this.vitals = document.getElementById("vitals");
-    this.vitalsFill = null;
-    this.vitalsNum = null;
+    this.vitalsRows = null;
     this.lastVitals = "";
     this.craftq = document.getElementById("craftq");
     this.build = document.getElementById("build");
@@ -72,36 +71,63 @@ export class Hud {
   }
 
   /**
-   * The vitals stack. `max === 0` means the server has stated no health
-   * at all — a shard whose content disarms combat — and the stack stays
-   * hidden rather than drawing an empty bar for someone who cannot be
-   * hurt. Slow-timer only, and only a changed reading touches the DOM.
+   * The vitals stack — health, hydration, calories, in the order the
+   * reference frames stack them bottom-right.
+   *
+   * A row whose max is 0 is not drawn: the server has stated nothing about
+   * that meter, which is what a shard with combat disarmed says about
+   * health and a shard with no `[survival]` section says about the pair.
+   * That is deliberately different from a meter at 0/100, which is drawn
+   * loudly — "no reading" and "empty" are opposite facts and a bar that
+   * rendered them the same would be lying at the worst moment.
+   *
+   * Slow-timer only, and only a changed reading touches the DOM.
    */
-  setVitals(hp, max) {
-    const key = max === 0 ? "" : `${hp}/${max}`;
+  setVitals(hp, max, food, maxFood, water, maxWater) {
+    const key = `${max === 0 ? "" : `${hp}/${max}`}|${
+      maxWater === 0 ? "" : `${water}/${maxWater}`
+    }|${maxFood === 0 ? "" : `${food}/${maxFood}`}`;
     if (key === this.lastVitals) return;
     this.lastVitals = key;
-    if (!key) {
+    if (key === "||") {
       this.vitals.style.display = "none";
       return;
     }
-    if (!this.vitalsFill) {
-      const row = document.createElement("div");
-      row.className = "vrow";
-      const bar = document.createElement("div");
-      bar.className = "vbar";
-      this.vitalsFill = document.createElement("div");
-      this.vitalsFill.className = "vfill";
-      bar.appendChild(this.vitalsFill);
-      this.vitalsNum = document.createElement("span");
-      this.vitalsNum.className = "vnum";
-      row.appendChild(bar);
-      row.appendChild(this.vitalsNum);
-      this.vitals.appendChild(row);
+    if (!this.vitalsRows) {
+      this.vitalsRows = ["", "water", "food"].map((kind) => {
+        const row = document.createElement("div");
+        row.className = "vrow";
+        const bar = document.createElement("div");
+        bar.className = "vbar";
+        const fill = document.createElement("div");
+        fill.className = kind ? `vfill ${kind}` : "vfill";
+        bar.appendChild(fill);
+        const num = document.createElement("span");
+        num.className = "vnum";
+        row.appendChild(bar);
+        row.appendChild(num);
+        this.vitals.appendChild(row);
+        return { row, fill, num };
+      });
     }
     this.vitals.style.display = "block";
-    this.vitalsFill.style.width = `${Math.max(0, Math.min(100, (hp / max) * 100))}%`;
-    this.vitalsNum.textContent = String(hp);
+    const rows = [
+      [hp, max],
+      [water, maxWater],
+      [food, maxFood],
+    ];
+    for (let i = 0; i < 3; i++) {
+      const [v, m] = rows[i];
+      const r = this.vitalsRows[i];
+      if (m === 0) {
+        r.row.style.display = "none";
+        continue;
+      }
+      r.row.style.display = "flex";
+      r.row.classList.toggle("empty", v === 0);
+      r.fill.style.width = `${Math.max(0, Math.min(100, (v / m) * 100))}%`;
+      r.num.textContent = String(v);
+    }
   }
 
   /** Toggle the craft panel; returns whether it is now open. */

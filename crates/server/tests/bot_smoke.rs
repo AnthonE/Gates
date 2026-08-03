@@ -21,6 +21,7 @@ fn baked_content() -> (
     sim_core::deploy::DeployContent,
     sim_core::combat::CombatContent,
     sim_core::backpack::BackpackContent,
+    sim_core::survival::SurvivalContent,
     protocol::ItemCatalog,
 ) {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
@@ -35,13 +36,18 @@ fn baked_content() -> (
     let backpack = content
         .bake_backpack()
         .expect("shipped despawn ladder bakes");
+    let survival = content
+        .bake_survival()
+        .expect("shipped survival clock bakes");
     let catalog = server::net::bake_catalog(&content).expect("shipped catalog bakes");
-    (gather, craft, build, deploy, combat, backpack, catalog)
+    (
+        gather, craft, build, deploy, combat, backpack, survival, catalog,
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bot_smoke_50() {
-    let (gather, craft, build, deploy, combat, backpack, catalog) = baked_content();
+    let (gather, craft, build, deploy, combat, backpack, survival, catalog) = baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(0xC0FFEE),
         gather,
@@ -50,6 +56,7 @@ async fn test_bot_smoke_50() {
         deploy,
         combat,
         backpack,
+        survival,
         catalog,
     )
     .await
@@ -159,7 +166,7 @@ async fn test_action_lane_over_socket() {
         .recipe_index("recipe.hatchet_stone")
         .expect("shipped recipe");
 
-    let (gather, craft, build, deploy, combat, backpack, catalog) = baked_content();
+    let (gather, craft, build, deploy, combat, backpack, survival, catalog) = baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(11),
         gather,
@@ -168,6 +175,7 @@ async fn test_action_lane_over_socket() {
         deploy,
         combat,
         backpack,
+        survival,
         catalog,
     )
     .await
@@ -243,7 +251,7 @@ async fn test_version_gate_refuses() {
     use protocol::{encode_hello, Hello, MAX_STREAM_MSG_BYTES};
     use server::net::{read_frame, write_frame};
 
-    let (gather, craft, build, deploy, combat, backpack, catalog) = baked_content();
+    let (gather, craft, build, deploy, combat, backpack, survival, catalog) = baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(7),
         gather,
@@ -252,6 +260,7 @@ async fn test_version_gate_refuses() {
         deploy,
         combat,
         backpack,
+        survival,
         catalog,
     )
     .await
@@ -290,12 +299,14 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
 
     // Same shard, same everything, one config key apart.
     for (dev_spawn, want) in [(None, false), (Some((1024.0, 1024.0)), true)] {
-        let (gather, craft, build, deploy, combat, backpack, catalog) = baked_content();
+        let (gather, craft, build, deploy, combat, backpack, survival, catalog) = baked_content();
         let mut cfg = ShardConfig::ephemeral(13);
         cfg.dev_spawn = dev_spawn;
-        let handle = spawn_shard(cfg, gather, craft, build, deploy, combat, backpack, catalog)
-            .await
-            .expect("boots");
+        let handle = spawn_shard(
+            cfg, gather, craft, build, deploy, combat, backpack, survival, catalog,
+        )
+        .await
+        .expect("boots");
         let endpoint = bot_endpoint().expect("endpoint");
         let connection = endpoint
             .connect(&format!("https://{}", handle.local_addr))

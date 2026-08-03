@@ -13,7 +13,8 @@
 use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_craft, encode_action_deploy,
-    encode_action_feed, encode_action_lock, encode_action_loot, encode_action_place,
+    encode_action_consume, encode_action_feed, encode_action_lock, encode_action_loot,
+    encode_action_place,
     encode_action_upgrade, encode_action_use, encode_chat, encode_hello, peek_kind, Hello,
     CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES,
     PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
@@ -431,6 +432,21 @@ pub extern "C" fn client_bags_len() -> u32 {
     with(|b| b.bags_len)
 }
 
+/// Encode an eat request for the inventory slot into the out buffer;
+/// returns its length, or 0 if the slot is past the sim's array. Whether
+/// the slot holds food, and whether eating it would do anything, are the
+/// sim's verdict — both come back as events (survival.rs).
+#[no_mangle]
+pub extern "C" fn client_action_consume(slot: u32) -> u32 {
+    with(|b| {
+        u8::try_from(slot)
+            .ok()
+            .and_then(|s| encode_action_consume(s, &mut b.out_buf).ok())
+            .map(|n| n as u32)
+            .unwrap_or(0)
+    })
+}
+
 /// Encode a loot request into the out buffer for the bidi lane; returns
 /// its length. Payload-free — the sim picks the nearest bag in reach, so
 /// there is nothing here for the client to aim (backpack.rs).
@@ -743,6 +759,46 @@ pub extern "C" fn client_craft_pop() -> u32 {
             None => u32::MAX,
         },
     )
+}
+
+/// Own food and water as `food << 16 | water`, and their ceilings as
+/// `max_food << 16 | max_water`. Both zero in the ceilings means no
+/// `Vitals` has arrived — a shard whose content has no `[survival]`
+/// section never sends one, and the HUD reads that as "no meters to draw".
+#[no_mangle]
+pub extern "C" fn client_vitals() -> u32 {
+    with(|b| {
+        b.core
+            .as_ref()
+            .map(|c| ((c.food as u32) << 16) | c.water as u32)
+            .unwrap_or(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn client_vitals_max() -> u32 {
+    with(|b| {
+        b.core
+            .as_ref()
+            .map(|c| ((c.max_food as u32) << 16) | c.max_water as u32)
+            .unwrap_or(0)
+    })
+}
+
+/// The last eat: `refused << 24 | slot << 16 | item`, where `refused` is a
+/// `sim_core::survival::REFUSE_C_*` code and 0 means the eat landed.
+#[no_mangle]
+pub extern "C" fn client_consume() -> u32 {
+    with(|b| {
+        b.core
+            .as_ref()
+            .map(|c| {
+                let item = c.last_eat >> 16;
+                let slot = c.last_eat & 0xFFFF;
+                ((c.last_eat_refused as u32) << 24) | (slot << 16) | (item & 0xFFFF)
+            })
+            .unwrap_or(0)
+    })
 }
 
 /// Own health as `hp << 16 | max`. `max == 0` means no health reading has

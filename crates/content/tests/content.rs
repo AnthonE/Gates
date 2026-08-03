@@ -710,3 +710,117 @@ fn a_backpack_ladder_that_does_not_rise_is_refused() {
         "mult_common must be ≥ 1",
     );
 }
+
+/// The survival clock, computed from the shipped data rather than
+/// restated: the spans the sim plays are `balance.toml`'s minutes at the
+/// sim's tick rate, every authored consumable reaches the table it is
+/// keyed into, and the meters cannot be drained by a rate that empties
+/// them faster than the design says.
+#[test]
+fn bake_survival_plays_the_clock_the_data_declares() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let sc = c.bake_survival().expect("shipped survival clock must bake");
+    let s = &c.balance.survival;
+    let tick_hz = sim_core::limits::TICK_HZ;
+
+    assert_eq!(sc.max_food as u32, s.max_food);
+    assert_eq!(sc.max_water as u32, s.max_water);
+    assert_eq!(
+        sc.food_span_ticks,
+        s.food_minutes_to_empty * 60 * tick_hz,
+        "the span the sim plays is balance.toml's minutes at the sim's rate"
+    );
+    assert_eq!(sc.water_span_ticks, s.water_minutes_to_empty * 60 * tick_hz);
+    assert!(
+        sc.water_span_ticks < sc.food_span_ticks,
+        "thirst is the shorter fuse (DESIGN §2, and every game in the tradition)"
+    );
+
+    // Every authored row reaches the sim, keyed to its own item, and
+    // nothing else in the table is food. A row that silently failed to
+    // bake would be exactly the defect this whole slice exists to fix.
+    let mut armed = 0;
+    for con in &c.consumables {
+        let idx = c
+            .item_index(&con.id)
+            .expect("a validated consumable names a real item") as usize;
+        let row = sc.consumable[idx];
+        assert_eq!(row.health as u32, con.health, "`{}` health", con.id);
+        assert_eq!(row.food as u32, con.food, "`{}` food", con.id);
+        assert_eq!(row.water as u32, con.water, "`{}` water", con.id);
+        assert_eq!(row.seconds as u32, con.seconds, "`{}` seconds", con.id);
+        assert!(row.is_food(), "`{}` must read as food", con.id);
+        armed += 1;
+    }
+    assert!(armed >= 3, "the shipped set must author real food");
+    let table_food = sc.consumable.iter().filter(|r| r.is_food()).count();
+    assert_eq!(
+        table_food, armed,
+        "no item may be food the content did not author"
+    );
+
+    // The clock must not kill faster than the design's floor, computed
+    // against the same `player_hp` the TTK anchor divides by — so the
+    // survival band and the combat band cannot drift apart.
+    let hp = c.balance.globals.player_hp;
+    let worst = s.starve_hp_per_min + s.dehydrate_hp_per_min;
+    assert!(
+        hp / worst >= 5,
+        "both meters empty must leave at least 5 minutes of {hp} hp at {worst} hp/min"
+    );
+
+    // And an untended fresh spawn must survive long enough that the
+    // session is gathering and building, not eating: the first point of
+    // damage lands no sooner than the shorter span.
+    assert!(
+        s.water_minutes_to_empty >= 30,
+        "a fresh spawn gets at least half an hour before the clock bites"
+    );
+}
+
+/// Every shape that would make the clock silently inert is refused at
+/// load. Silence is the failure mode that matters here: a zero span or a
+/// zero rate does not crash, it just quietly gives back the game where
+/// standing still is free — which is the gap this slice closes.
+#[test]
+fn a_clock_that_would_not_tick_is_refused() {
+    refuses(
+        "balance.toml",
+        "max_water = 100",
+        "max_water = 0",
+        "must be ≥ 1",
+    );
+    refuses(
+        "balance.toml",
+        "water_minutes_to_empty = 40",
+        "water_minutes_to_empty = 0",
+        "must be ≥ 1",
+    );
+    refuses(
+        "balance.toml",
+        "dehydrate_hp_per_min = 5",
+        "dehydrate_hp_per_min = 0",
+        "must be ≥ 1",
+    );
+    // Thirst before hunger is the shape, not a tuning choice.
+    refuses(
+        "balance.toml",
+        "water_minutes_to_empty = 40",
+        "water_minutes_to_empty = 90",
+        "must empty before food",
+    );
+    // A clock that kills a full-hp body faster than it takes to notice.
+    refuses(
+        "balance.toml",
+        "starve_hp_per_min = 3",
+        "starve_hp_per_min = 40",
+        "under 5 min",
+    );
+    // A heal needs a span to arrive over — the sim's ramp divides by it.
+    refuses(
+        "consumables.toml",
+        "health = 20\nfood = 0\nwater = 0\nseconds = 4",
+        "health = 20\nfood = 0\nwater = 0\nseconds = 0",
+        "health needs a span",
+    );
+}

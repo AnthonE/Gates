@@ -17,15 +17,20 @@ const TICKS: u64 = 900;
 
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
-/// Regenerated this commit: the death backpack landed, and `state_hash`
-/// grew the ground-container store — its length, every standing bag, and
-/// the id counter. **This script arms no combat**, so it drops no bags
-/// and the store it hashes is empty; what moved the number is the two
-/// new zero-length fields entering the digest, not any behaviour in this
-/// script. The backpack's own determinism is covered where the fight is:
+/// Regenerated this commit: the survival clock landed, and `state_hash`
+/// grew the per-player meters — food, water, their three accumulators,
+/// the in-flight heal, and `hp_max`. **This script arms no combat and no
+/// survival content**, so every one of those bytes is zero here and
+/// `survival::step` returns on its first line; what moved the number is
+/// the new fields entering the digest, not any behaviour in this script.
+/// The clock's own determinism is covered where the bodies are:
 /// `probe_combat` (`test_parity_wasm`, native and wasm byte-identical)
-/// brawls three bots and has them loot each other every tick.
-const GOLDEN_FINAL_HASH: u64 = 0x5671_7CB1_989B_98A4;
+/// runs a fixture whose spans are seconds, so meters drain, empty, starve
+/// and are granted again, and one bot eats every tick.
+///
+/// The previous regeneration, for the same structural reason, was the
+/// death backpack's two zero-length store fields.
+const GOLDEN_FINAL_HASH: u64 = 0xF258_CBE7_C12D_5B8C;
 
 /// Stand a kitted bot on ground that will hold a foundation.
 ///

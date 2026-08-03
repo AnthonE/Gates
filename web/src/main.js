@@ -569,6 +569,16 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     } else if (e.code === "KeyE") {
       tryUse();
       e.preventDefault();
+    } else if (e.code === "KeyG") {
+      // Eat what is in the selected hotbar slot. G rather than a
+      // right-click because the swing arm is already spoken for and a
+      // consume that shared it would fire every time you chopped a tree
+      // holding berries. Whether the slot holds food is the sim's
+      // verdict, announced back either way (survival.rs).
+      const len = ex.client_action_consume(input.sel);
+      views.refresh();
+      if (len > 0) actions.send(views.output, len);
+      e.preventDefault();
     } else if (e.code === "KeyL") {
       tryLock();
       e.preventDefault();
@@ -669,6 +679,17 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
           if (d === 0xffffffff) break;
           hud.toast(`hit −${d}`);
         }
+      }
+      if (flags & (1 << 28) /* CONSUME */) {
+        // The eat landed or it didn't, and the player is told which. A
+        // press that vanishes silently is indistinguishable from a
+        // broken key, which is the whole reason the sim announces a
+        // refusal at all (survival.rs).
+        const c = ex.client_consume() >>> 0;
+        const reason = c >>> 24;
+        if (reason === 0) hud.toast(`ate ${itemName(c & 0xffff)}`);
+        else if (reason === 2) hud.toast("already full");
+        else hud.toast("not food");
       }
       if (flags & (1 << 26) /* STRUCT_HIT */) {
         // The breach readout: what is left of the thing being broken.
@@ -1146,7 +1167,16 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     hud.setHotbar(hotbar);
     hud.setSelected(input.sel);
     const health = ex.client_health() >>> 0;
-    hud.setVitals(health >>> 16, health & 0xffff);
+    const vit = ex.client_vitals() >>> 0;
+    const vitMax = ex.client_vitals_max() >>> 0;
+    hud.setVitals(
+      health >>> 16,
+      health & 0xffff,
+      vit >>> 16,
+      vitMax >>> 16,
+      vit & 0xffff,
+      vitMax & 0xffff,
+    );
     // The craft views rebuild on change, or every timer tick while the
     // panel or queue is visible (the ETA countdown text).
     const qCount = (ex.client_craft_q() >>> 0) >>> 16;
