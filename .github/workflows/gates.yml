@@ -1,0 +1,48 @@
+name: gates
+
+# The test gate. Red means do not merge; there is no override lane.
+# Path-filtered so docs-only PRs don't trip a gate that has no work to do
+# — the gate either runs for real or does not run at all (never a
+# skip-pass; see ci/gates.sh header).
+on:
+  pull_request:
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "content/**"
+      - "web/**"
+      - "ci/**"
+      - ".github/workflows/gates.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "content/**"
+      - "web/**"
+      - "ci/**"
+      - ".github/workflows/gates.yml"
+  workflow_dispatch: {}
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup target add wasm32-unknown-unknown
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: gates-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: the gates
+        run: ./ci/gates.sh
