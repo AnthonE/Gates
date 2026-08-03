@@ -4,38 +4,43 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **The lighting iteration — one owner, the whole coupled set, spoken.**
-   *(Operator, 2026-08-02, closing the loop the evidence opened: prop albedo
-   v1 reproduced the visual judge's darkest pixel — canopy underside RGB
-   (2,6,0) — from the light rig's constants alone, and showed that at 3× the
-   authored albedo it is still (5,17,3). The materials lane is blocked on
-   light by arithmetic, not taste. CLAUDE.md's coupled-lighting law applies:
-   sky, sun, fill, exposure, tonemap, fog and shadow move together in ONE
-   pass or not at all.)*
+1. **Gameplay, and the ration that keeps it first.** *(Operator, 2026-08-03:
+   "its for sure getting hung up on lighting of shadows we need gameplay and
+   stuff… let it go and code for a long time." The visual judge is an
+   absolute bar that cannot be satisfied, so its ranked gaps out-shout the
+   gameplay judge's forever if the queue lets them — six consecutive visual
+   passes proved it. This item is the counterweight.)* Work these lanes in
+   order, top-down, one slice per pass as ever:
 
-   The one iteration owns, together: the sun's register (the reference bar
-   is MIDDAY — `art/RUBRIC.md`'s frames, not the current low-sun murk), a
-   sky that reads as a sky lit by that sun, a hemisphere fill that gives
-   down-facing surfaces credible ambient (inherit the arithmetic in
-   `DECISIONS.md` §open "prop albedo v1" — the (2,6,1) row is the input),
-   water specular agreeing with the same sun, exposure/tonemap re-metered
-   for the new register, fog that matches the sky at the horizon seam, and
-   the shadow rig re-biased if the new sun angle needs it.
+   - **The raid loop's missing verbs** — the repair verb + the hammer that
+     swings it, then the satchel throwable (item 4 below carries the full
+     shape and the content rows).
+   - **Barrels and shore loot** — the merge-gate judge's own pick
+     (pass-20260802-163821-05-judge.md round 3, gap 2: "the cheapest gap on
+     this list to close — four of its five parts already built and green."
+     One `open` verb on `BarrelSlot`, one roll against `loot.barrel`, one
+     respawn timer).
+   - **The remaining M1 survival verbs** (item 9's cut), smallest first.
+   - **Join-time instrumentation** (item 6), then the **100-bot soak**:
+     NETCODE §9's budgets have never met 100 real connections. Run
+     `cargo run -p server --bin bots -- 100` against a dev shard on this
+     box, hold it an hour, and record tick jitter, WAL append rate, and
+     per-client bandwidth against the budget table — counts and bytes, no
+     wall-clock assertions (CLAUDE.md's clock rule). The numbers land in a
+     `DECISIONS.md` §open row as the measured baseline.
+   - **Capture determinism** (item 8) — now including fixed-length FRAME
+     SEQUENCES beside the stills (a walk, a swing, a door opening, water),
+     engine-clock-driven; when clips exist, the visual panel gains a
+     motion lens.
 
-   Acceptance, from the panel's own reports: the sun no longer "contradicts
-   itself between sky, water, and shadows" (every report so far); a
-   down-facing prop face lands in a range where its surface field is
-   VISIBLE (then write the p05 wall prop albedo v1 deliberately left
-   unwritten); the frames' register sits with the reference set's midday,
-   not beside it. Re-measure assertion 15's directional margins and the
-   albedo band after — the register change moves both, and the numbers in
-   `DECISIONS.md` §open get re-derived, not left stale (the knob-registry
-   gate will catch you if you forget).
-
-   Everything else in the materials lane (needle cards, granite structure,
-   undergrowth, the coarse-octave re-place) WAITS behind this — it will all
-   read differently under the new light, and re-tuning it twice is the
-   three-parallel-rounds mistake the trap list already paid for.
+   **The visual ration:** at most ONE pass in four takes a visual item, and
+   only from a judge's ranked gap. The lighting branch
+   `loop/lighting-midday` is **PARKED at `0e00a90`** — judged FAIL four
+   rounds (findings/pass-20260802-163821-05-judge.md; the code, constants
+   and gates verified green in all four, every FAIL was prose truth) — and
+   is the first candidate for a ration slot: resolve round 4's check-9/10
+   objections, re-judge, merge. Its sun-elevation unlock condition stands.
+   The visual items below (2, 3, 7) are rationed with it.
 
 2. **Nothing that is not the ground has a surface.** *(Gap pass. From the
    visual judge's ranked gap 1 in
