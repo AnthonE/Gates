@@ -280,8 +280,10 @@ const TONAL_MIN_RANGE = 90;
 // So the wall is on runs, which nothing bounds: the share of horizontally
 // adjacent dome pixels whose quantized value DIFFERS. An undithered ramp
 // breaks only where it crosses a quantization boundary — a few percent of
-// pairs, in flat runs tens of pixels long. A ramp with ~1 level of noise under
-// the quantizer breaks at roughly half of them.
+// pairs, in flat runs tens of pixels long. A ramp with noise of a level or
+// so under the quantizer breaks at roughly half of them — the calibration
+// model for this floor; the shipped dither actually delivers 0.5–2.5 levels
+// across the dome (scene.js, SKY_DITHER), which only breaks MORE pairs.
 const SKY_MIN_BREAK = 0.25;
 // …and the longest identical run in a row of sky, directly, as a backstop
 // against gross banding the share above could in principle average away. It
