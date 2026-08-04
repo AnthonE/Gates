@@ -58,6 +58,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { measureReference, REFERENCE_FRAMES } from "./reference_bar.mjs";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = path.join(root, "web/dist");
@@ -166,6 +167,17 @@ const SHADOW_PROBE_MIN_DELTA = 6;
 // measures 24.0%, worst yaw 20.4%, stable across runs. So these floors now
 // bite on the real failure and not only on the total absence of a rig: a
 // terrain material that forgets `shadowSide` scores 10.5% and 3.6%.
+//
+// **Unchanged by lighting v1, and worth knowing why they could not have
+// been.** Shadow area from a vertical caster is `height x cot(elevation)`, so
+// these two floors are only meaningful at a fixed sun: raising it to 45° takes
+// the same intact rig to 8.0% aggregate and 0.6% on the yaw that looks toward
+// the sun. That was built and measured, and it is the reason the sun did NOT
+// move (`scene.js`, SUN_ELEVATION). Had it moved, these numbers would have had
+// to come down by 3x and 16x — which is exactly the shape of a gate being
+// quietly relaxed to fit a change, and exactly why the attribution leg below
+// was written instead: it measures the mutation these were hand-calibrated
+// against, every run, and the sun's elevation cannot flatter it.
 const SHADOW_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_SHADOW_MIN || 0.15);
 // And a floor on EVERY yaw, which is the assertion that actually pins the
 // WORLD as a caster. Dropping castShadow from the terrain and the scatter
@@ -176,12 +188,127 @@ const SHADOW_MIN_FRACTION = Number(process.env.BROWSER_SMOKE_SHADOW_MIN || 0.15)
 // and is 20.4% now that the ground itself casts, which is what let the floor
 // below move from 1% to 10%.
 const SHADOW_MIN_FRACTION_PER_YAW = Number(process.env.BROWSER_SMOKE_SHADOW_MIN_YAW || 0.1);
+// --- and the assertion the two above were a proxy for -----------------------
+// `shadowProbe` now renders a fourth leg per yaw: the same frame with
+// `castShadow` off everything that is not another player. The difference
+// between that and the ship frame is shadow the WORLD cast — the terrain ring,
+// the far mesh, the scatter pools — attributed by construction rather than
+// inferred from an aggregate.
+//
+// This is the mutation the floors above were calibrated by hand against on
+// 2026-08-01, taken every run. Its floor cannot be cleared by the avatar
+// standing on the shared spawn, because the avatar is the thing it holds
+// fixed, and — unlike an area floor — it survives the sun moving: at any
+// elevation, "the hills and the pines account for the shadow in this frame"
+// is either true or the world stopped casting. Measured 3.12% at a 28.6° sun
+// and 4.79% at 45° while the aggregate area floor was failing at both, which
+// is the property that makes it worth having.
+const SHADOW_MIN_WORLD_FRACTION = Number(process.env.BROWSER_SMOKE_SHADOW_MIN_WORLD || 0.015);
+// And on the sweep's best direction rather than on every one of them: a
+// vantage looking toward the sun sees the lit side of everything and has no
+// shadow in it to attribute, at any elevation. What this catches is a world
+// that stopped casting in EVERY direction.
+const SHADOW_MIN_WORLD_BEST_YAW = Number(process.env.BROWSER_SMOKE_SHADOW_MIN_WORLD_YAW || 0.02);
+// The mutation has to actually remove something. A world-caster list that came
+// back empty would measure zero world shadow (reading as catastrophe) and a
+// list that swallowed the avatars too would measure all of it (reading as
+// perfection); neither is the leg doing its job. The intact scene submits 25
+// draws to the shadow pass, of which 2 are the avatar's.
+const SHADOW_MIN_WORLD_CASTERS = 8;
 // Same failure from the other side, counted rather than sampled: the seven
 // scatter pools are frustumCulled=false, so a rig where the world casts
 // submits at least them to the shadow pass. That mutation submitted 2 (the
 // avatar's two meshes); the intact rig submits 25.
 const SHADOW_PASS_MIN_CALLS = Number(process.env.BROWSER_SMOKE_SHADOW_MIN_CALLS || 8);
 const SHADOW_MIN_MAP_PX = 1024;
+// --- the tonal gate (DECISIONS.md §open, "lighting v1") ---------------------
+// Every lighting assertion above this line is a DIFFERENCE: the shadow probe
+// counts pixels the shadow map darkened, the surface probe counts pixels the
+// field moved, the prop probe divides a field by what it was laid on. All of
+// them are blind to an offset, and the defect the visual judge has returned on
+// every capture is an offset — the whole image sitting a stop and a half under
+// `Rust Images/`, which it scores us against as an absolute bar.
+//
+// So this one has no toggle and no baseline. It measures where the image IS,
+// in Rec.601 luma percentiles over the whole frame, at the same six vantages
+// the capture harness shoots — and it compares them to the same statistic read
+// off the reference frames in this same run (`ci/reference_bar.mjs`).
+//
+// The six vantages are copied from `art/capture.mjs`'s VANTAGES (yaw, pitch),
+// which lives in the loop harness and is checksummed between passes. They are
+// copied rather than imported for exactly that reason: the harness is outside
+// this repo and a gate may not depend on a file the repo cannot see. If they
+// ever disagree, this gate is measuring a register at framings the judge does
+// not score, which is a weaker claim but not a false one — the register is a
+// property of the light rig, not of where the camera points.
+const TONAL_VIEWS = [
+  { label: "01-horizon-north", yaw: 0, pitch: 0 },
+  { label: "02-horizon-east", yaw: Math.PI / 2, pitch: 0 },
+  { label: "03-canopy-up", yaw: 0, pitch: 0.9 },
+  { label: "04-ground-down", yaw: 0, pitch: -0.8 },
+  { label: "05-held-level", yaw: Math.PI / 4, pitch: -0.15 },
+  { label: "06-hud", yaw: Math.PI, pitch: 0 },
+];
+// The floors. Plain consts, no env override, so `ci/knob_registry.mjs` pins
+// them to their §open declarations — the discipline `PROP_MIN_VALUE` started.
+//
+// Where they come from: `ci/reference_bar.mjs` measures the six outdoor
+// daylight frames in `Rust Images/` and reports the MEDIAN p10 40 · p50 91 ·
+// p90 170. The capture that opened this item measured p10 41 and p90 70 on
+// ours — the shadows were already sitting on the reference and the entire top
+// of the image was missing. So p90 is the load-bearing floor and p50 is the
+// one that stops it being reached by a single blown highlight.
+const TONAL_MIN_P90 = 150;
+const TONAL_MIN_P50 = 70;
+// …and the other side of it, because "make it brighter" is not a light rig.
+// A scene lifted uniformly would clear both floors above and read as fog. The
+// darks have to STAY dark, and the reference says where: p10 40.
+const TONAL_MAX_P10 = 60;
+// The range those two imply, asserted directly so a frame cannot satisfy both
+// ends on different views and neither on any one of them.
+const TONAL_MIN_RANGE = 90;
+// Banding in the sky dome. The judge counted "131 distinct values over 360
+// rows, longest flat run 11 px, no dither" and called the gradient posterized.
+//
+// The obvious instrument — count distinct luma levels — was written first and
+// is wrong, in a way worth recording: the count is bounded above by how many
+// levels the GRADIENT spans, so the horizon-north vantage, whose visible sky
+// is a 16-level band, scores 16 however perfectly it is dithered. Measured
+// that way our dome read 16-44 against a reference of 232 and the number said
+// nothing.
+//
+// So the wall is on runs, which nothing bounds: the share of horizontally
+// adjacent dome pixels whose quantized value DIFFERS. An undithered ramp
+// breaks only where it crosses a quantization boundary — a few percent of
+// pairs, in flat runs tens of pixels long. A ramp with noise of a level or
+// so under the quantizer breaks at roughly half of them — the calibration
+// model for this floor; the shipped dither actually delivers 0.5–2.5 levels
+// across the dome (scene.js, SKY_DITHER), which only breaks MORE pairs.
+const SKY_MIN_BREAK = 0.25;
+// …and the longest identical run in a row of sky, directly, as a backstop
+// against gross banding the share above could in principle average away. It
+// is the secondary of the two: the break fraction is what bites (an
+// undithered ramp scores a few percent against a 25% floor), and this is set
+// at 2x the measured worst (22 px, at the frame edges where the dome is
+// flattest) rather than at the judge's 11, because a hash dither produces
+// occasional long runs by chance and a ceiling that trips on luck is a
+// flaky gate, not a strict one.
+const SKY_MAX_RUN = 48;
+// How much of a view has to BE sky before its dome statistics mean anything.
+const SKY_MIN_FRACTION = 0.02;
+// And how far above the frame's own median the dome has to sit. The sky is
+// the only surface in this scene that is not a diffuse reflector, so it is
+// where the image's top decile comes from; a dome level with the ground it
+// lights is an image with no highlight, which is what the first cut measured
+// (sky 142 against a median of 138).
+const SKY_MIN_OVER_GROUND = 25;
+// The sun. The disc must be brighter than the sky it sits in (levels of luma
+// over the dome background well away from it), it must land where the KEY
+// LIGHT says it is (the camera aims down `_toSun`, so the disc belongs at the
+// principal point), and it must not have grown into a hemisphere-wide wash.
+const SUN_MIN_PEAK_OVER_SKY = 30;
+const SUN_MAX_OFFSET_PX = 24;
+const SUN_MAX_SATURATED = 0.02;
 // --- the clipmap gate (DECISIONS.md §open, "shadow clipmap v0") -------------
 // Two probes, because the slice makes two separate claims: that the coarse
 // levels DARKEN pixels the near level cannot reach, and that those pixels are
@@ -878,10 +1005,17 @@ const PROP_MIN_AMP = 2.2;
 // The floors sit at roughly half the worse of the two — the same margin
 // `PROP_MIN_STRUCTURE` takes — and an infinite distance above what the failure
 // they guard reaches, which is 1-6 levels of delivered value and under one
-// level of amplitude. p05 is deliberately NOT walled: the dark tail of these
-// masks is the shaded side of the prop, and the light rig owns it (§open,
-// "prop albedo v1"). Walling a number this pass cannot move would be a gate
-// that fails for a reason its owner cannot act on.
+// level of amplitude.
+//
+// And p05, the dark tail — the shaded side of the prop, which prop albedo v1
+// deliberately left unwalled because the light rig owned it and no albedo
+// could move it. The light rig has now moved it (§open, "lighting v1"), so
+// the wall it was waiting for is written here. This is the number the visual
+// judge has been measuring by hand every pass: "shadowed surfaces crush to
+// zero — `03-canopy-up` cone skirt (3,9,0) at 94.9% under 10". A p05 floor is
+// exactly that sentence, gated: the darkest twentieth of a prop's pixels must
+// still be somewhere a surface can exist.
+const PROP_MIN_P05 = 16;
 // The control's ceiling, `ALIAS_MAX_NOISE`'s argument verbatim: two renders of
 // one state, differing on at most this share of the frame.
 const PROP_MAX_NOISE = 0.001;
@@ -1188,6 +1322,12 @@ await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
 try {
   browser = await chromium.launch({
     headless: true,
+    // The same escape hatch `vantages.mjs` has had, under the same name, for
+    // the same reason: a box whose installed Playwright browser build does not
+    // match the revision `web/package.json` pins launches nothing, and a wall
+    // that cannot run is not a wall (`CLAUDE.md`, on the wasm target). Unset
+    // on the reference box and in CI, where the pinned build is present.
+    ...(process.env.VANTAGE_CHROME ? { executablePath: process.env.VANTAGE_CHROME } : {}),
     args: [
       // No GPU on the reference box or this one: ANGLE over SwiftShader.
       "--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader", "--ignore-gpu-blocklist",
@@ -1199,6 +1339,35 @@ try {
 } catch (e) {
   fail(`chromium failed to launch: ${e.message}\n  install it: npx playwright install chromium`);
 }
+
+// --- the reference bar, measured before anything else runs -------------------
+// `art/RUBRIC.md` scores our frames against `Rust Images/` as an absolute bar,
+// and assertion 17 below is the only gate in this file that asserts an
+// absolute. Its floors were derived from these numbers, so they are re-read
+// here every run rather than remembered: if the reference set is ever changed,
+// the floors stop being below it and 17 says so.
+//
+// Measured HERE, before a single game tab exists, and in a context that is
+// closed immediately: this box's join times are monotonic in live tabs (0.4 s
+// alone, 34-36 s beside one), so a decode context held open beside two game
+// tabs would be spending the thinnest margin in the suite on a JPEG.
+let referenceBar;
+{
+  const ctx = await browser.newContext();
+  const p = await ctx.newPage();
+  try {
+    referenceBar = await measureReference(p);
+  } catch (e) {
+    fail(`reference bar: ${e.message}`);
+  }
+  await ctx.close();
+}
+console.log(
+  `  reference bar (${REFERENCE_FRAMES.length} frames of Rust Images/, median): ` +
+    `p10 ${referenceBar.p10} · p50 ${referenceBar.p50} · p90 ${referenceBar.p90} · ` +
+    `range ${referenceBar.range} · sky ${referenceBar.skyMean.toFixed(1)} ` +
+    `in ${referenceBar.skyLevels} levels`,
+);
 
 // One context per tab: separate sessions, separate localStorage — the same
 // isolation two real players have.
@@ -2011,19 +2180,67 @@ if (litFraction < SHADOW_MIN_FRACTION) {
   );
 }
 // Per-yaw floor. The aggregate above can be carried by one direction, and it
-// was: see SHADOW_MIN_FRACTION_PER_YAW. Shadows in every direction can only
-// come from the world casting, not from whatever happens to be next to you.
+// was: see SHADOW_MIN_FRACTION_PER_YAW. This catches a direction with no
+// shadow at all; attributing what shadow there is to the world is the leg
+// below — a job the area floors never had. (The sun did NOT move this pass —
+// scene.js, SUN_ELEVATION — so both legs guard the same low-sun frames.)
 const thin = probe.samples.filter((s) => s.fraction < SHADOW_MIN_FRACTION_PER_YAW);
 if (thin.length) {
   fail(
     `tab A: ${thin.length} of ${probe.samples.length} probed directions have almost no ` +
-      `shadow in them (floor ${(SHADOW_MIN_FRACTION_PER_YAW * 100).toFixed(1)}% per yaw). ` +
+      `shadow in them (floor ${(SHADOW_MIN_FRACTION_PER_YAW * 100).toFixed(2)}% per yaw). ` +
       `Something near the camera is casting and the world is not.\n` +
       probe.samples
         .map((s) => `    yaw ${s.yaw.toFixed(2)}: ${(s.fraction * 100).toFixed(2)}% (${s.darkened} px)`)
         .join("\n"),
   );
 }
+
+// Assertion 10b (lighting v1) — WHOSE shadow is it? The fourth leg: the same
+// four frames with `castShadow` off everything that is not another player. The
+// difference is what the terrain, the far mesh and the scatter pools drew, and
+// it is attribution by construction rather than by aggregate — the mutation
+// that calibrated the two floors above by hand on 2026-08-01, taken every run.
+if (!(probe.worldCasters >= SHADOW_MIN_WORLD_CASTERS)) {
+  fail(
+    `tab A: the world-caster mutation found ${probe.worldCasters} casters to suppress, under ` +
+      `${SHADOW_MIN_WORLD_CASTERS} — the leg is not removing the world, so the attribution below ` +
+      `is measuring nothing. Either nothing in the scene casts, or the remote-exclusion walk ` +
+      `swallowed it.`,
+  );
+}
+const worldFraction = probe.worldDarkened / probe.pixels;
+const bestWorldYaw = Math.max(...probe.samples.map((s) => s.worldFraction));
+if (worldFraction < SHADOW_MIN_WORLD_FRACTION) {
+  fail(
+    `tab A: only ${(worldFraction * 100).toFixed(3)}% of ${probe.pixels} probed pixels are shadow ` +
+      `the WORLD cast (floor ${(SHADOW_MIN_WORLD_FRACTION * 100).toFixed(2)}%), against ` +
+      `${(litFraction * 100).toFixed(2)}% shadowed in total — so the shadow in these frames is ` +
+      `coming from the other tab's avatar standing on the shared spawn, not from the hills and ` +
+      `the pines. The per-yaw area floor above still catches a no-shadow direction; this leg is ` +
+      `what ATTRIBUTES the shadow to the world, which the area floors never could.\n` +
+      probe.samples
+        .map(
+          (s) =>
+            `    yaw ${s.yaw.toFixed(2)}: ${(s.worldFraction * 100).toFixed(2)}% world of ` +
+            `${(s.fraction * 100).toFixed(2)}% total, mean Δluma ${s.worldMeanDelta.toFixed(1)}`,
+        )
+        .join("\n"),
+  );
+}
+if (bestWorldYaw < SHADOW_MIN_WORLD_BEST_YAW) {
+  fail(
+    `tab A: the best of ${probe.samples.length} directions attributes ` +
+      `${(bestWorldYaw * 100).toFixed(3)}% of its frame to the world's casters (floor ` +
+      `${(SHADOW_MIN_WORLD_BEST_YAW * 100).toFixed(2)}%) — the world is casting nowhere, in any ` +
+      `direction, and the aggregate above is being carried by noise`,
+  );
+}
+console.log(
+  `  whose shadow: ${(worldFraction * 100).toFixed(2)}% of the sweep is the world's ` +
+    `(${probe.samples.map((s) => (s.worldFraction * 100).toFixed(1) + "%").join(" ")}) of ` +
+    `${(litFraction * 100).toFixed(2)}% total, ${probe.worldCasters} casters suppressed`,
+);
 
 // The shadow pass is extra DRAW CALLS, not just an extra texture lookup, and
 // the budget below is asserted on a count that includes them. Prove that from
@@ -2292,6 +2509,219 @@ console.log(
     `${(horizonLive.reduce((a, s) => a + s.meanDelta, 0) / Math.max(1, horizonLive.length)).toFixed(1)}, ` +
     `hole ±${horizon.holeHalf[0]} m, lifted ${(horizonLifted * 100).toFixed(4)}%`,
 );
+
+// --- lighting v1: the tonal register, against the reference bar --------------
+// Assertion 17. The first absolute in this file: not "the shadow map darkened
+// something", not "the field moved pixels" — WHERE the image sits, measured in
+// the same statistic `ci/reference_bar.mjs` read off `Rust Images/` before any
+// tab existed.
+const tonalHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.tonalProbe);
+if (tonalHook !== "function") {
+  fail(`tab A: __gatesDebug.tonalProbe is ${tonalHook} on a dev shard — the tonal gate cannot run`);
+}
+const tonal = await A.page.evaluate(
+  (views) => globalThis.__gatesDebug.tonalProbe(views),
+  TONAL_VIEWS,
+);
+if (!tonal || tonal.samples.length !== TONAL_VIEWS.length) {
+  fail(
+    `tab A: tonalProbe returned ${tonal ? tonal.samples.length : "null"} of ` +
+      `${TONAL_VIEWS.length} views — the register was not measured`,
+  );
+}
+console.log(
+  `  register: ${tonal.samples.length} vantages, ${tonal.pixels} px · ` +
+    `p10 ${tonal.all.p10} · p50 ${tonal.all.p50} · p90 ${tonal.all.p90} ` +
+    `(bar ${referenceBar.p10} · ${referenceBar.p50} · ${referenceBar.p90})`,
+);
+for (const s of tonal.samples) {
+  console.log(
+    `    ${s.label.padEnd(17)} p10 ${String(s.p10).padStart(3)} · p50 ${String(s.p50).padStart(3)} · ` +
+      `p90 ${String(s.p90).padStart(3)} · mean ${s.mean.toFixed(1).padStart(5)} · ` +
+      `sky ${(s.skyFraction * 100).toFixed(1)}% at ${s.skyMean.toFixed(1)} in ${s.skyLevels} levels, ` +
+      `break ${(s.skyBreak * 100).toFixed(0)}% run ${s.skyLongestRun}`,
+  );
+}
+// A program that fails to LINK is the one renderer failure this whole file
+// could not see. three reports it to the console and carries on drawing
+// nothing, so the object silently vanishes — and if its absence happens to
+// look like something (a sky dome missing behind a clear colour the same
+// hue), every measurement above stays plausible. That is exactly what
+// happened while lighting v1 was being built: the dome's ShaderMaterial
+// redefined two chunks three's own prefix already carries, never linked, and
+// the tonal probe cheerfully reported a flat overcast sky for two runs.
+//
+// So: tab A's console must be empty by here. It has joined, walked, chatted,
+// streamed terrain and run five probes' worth of programs by this point, so
+// this is not a boot check — it covers every program the client can wear.
+if (A.errors.length) {
+  fail(
+    `tab A: ${A.errors.length} console error(s) by the tonal gate — a shader that fails to link ` +
+      `reports here and NOWHERE else, and the object it belonged to just stops drawing:\n` +
+      A.errors.slice(0, 4).map((e) => `    ${e.slice(0, 1200)}`).join("\n"),
+  );
+}
+
+// The floors are BELOW the bar, and that is asserted rather than asserted-once
+// and trusted. A floor above the reference would mean a passing frame is
+// brighter than the thing it is being compared to, which is a different bug
+// wearing this gate's clothes; a floor that drifts above it — because someone
+// raised the number to make a pass green — goes red here first.
+if (!(referenceBar.p90 >= TONAL_MIN_P90)) {
+  fail(
+    `the reference set measures p90 ${referenceBar.p90} and this gate's floor is ` +
+      `${TONAL_MIN_P90} — the floor is ABOVE the bar it was derived from, so passing it ` +
+      `no longer means "as bright as Rust Images/". Lower the floor or say why.`,
+  );
+}
+if (!(referenceBar.p10 <= TONAL_MAX_P10)) {
+  fail(
+    `the reference set measures p10 ${referenceBar.p10} and this gate's ceiling is ` +
+      `${TONAL_MAX_P10} — the ceiling is BELOW the bar, so a frame with reference-correct ` +
+      `shadows would fail it`,
+  );
+}
+if (!(tonal.all.p90 >= TONAL_MIN_P90)) {
+  fail(
+    `tab A: the capture's p90 luma is ${tonal.all.p90} against a floor of ${TONAL_MIN_P90} ` +
+      `and a reference bar of ${referenceBar.p90} — the top of the image is missing. ` +
+      `Per view: ${tonal.samples.map((s) => `${s.label} ${s.p90}`).join(", ")}`,
+  );
+}
+if (!(tonal.all.p50 >= TONAL_MIN_P50)) {
+  fail(
+    `tab A: the capture's median luma is ${tonal.all.p50} against a floor of ${TONAL_MIN_P50} ` +
+      `and a reference bar of ${referenceBar.p50} — the midtones sit under the bar, so p90 ` +
+      `is being carried by highlights rather than by exposure`,
+  );
+}
+if (!(tonal.all.p10 <= TONAL_MAX_P10)) {
+  fail(
+    `tab A: the capture's p10 luma is ${tonal.all.p10} against a ceiling of ${TONAL_MAX_P10} ` +
+      `(reference ${referenceBar.p10}) — the darks came up with everything else, which is a ` +
+      `lift and not a light rig`,
+  );
+}
+const tonalRange = tonal.all.p90 - tonal.all.p10;
+if (!(tonalRange >= TONAL_MIN_RANGE)) {
+  fail(
+    `tab A: the capture spans ${tonalRange} luma p10→p90 against a floor of ` +
+      `${TONAL_MIN_RANGE} and a reference bar of ${referenceBar.range} — the image is flat`,
+  );
+}
+
+// The vantages with enough dome in them to score one, used by 17a's
+// sky-over-ground check and by 17b below.
+const skyViews = tonal.samples.filter((s) => s.skyFraction >= SKY_MIN_FRACTION);
+if (skyViews.length < 2) {
+  fail(
+    `tab A: only ${skyViews.length} of ${tonal.samples.length} vantages see ` +
+      `${(SKY_MIN_FRACTION * 100).toFixed(0)}% sky — the dome cannot be scored, which means ` +
+      `the probe photographed the wrong thing rather than that the sky is fine`,
+  );
+}
+
+// 17a — the seam, by construction rather than by photograph. Fog and the sky
+// dome's horizon band are the SAME constant; a fully-fogged surface and the
+// sky above it therefore arrive at the tone mapper carrying identical linear
+// values, and the horizon cannot step. The judge measured that step at 31
+// levels. Two numbers that happen to agree would pass a pixel test today and
+// drift the day one of them moves, so this asserts the identity instead.
+const lit2 = await A.page.evaluate(() => globalThis.__gatesDebug.lighting);
+const seamOff = Math.max(...lit2.fogColor.map((v, i) => Math.abs(v - lit2.skyHorizon[i])));
+if (!(seamOff === 0)) {
+  fail(
+    `tab A: fog is linear [${lit2.fogColor.map((v) => v.toFixed(4))}] and the sky's horizon band ` +
+      `is [${lit2.skyHorizon.map((v) => v.toFixed(4))}], off by ${seamOff.toExponential(2)} — the ` +
+      `seam is two numbers that have to be kept equal by hand, which is how a 31-level step at ` +
+      `the horizon happens`,
+  );
+}
+// …and the sky has to be the brightest thing in the frame, or the image has
+// no top for p90 to sit on. This was the first cut's actual defect: an
+// un-gained dome measured sky 142 against a ground median of 138, an image
+// whose whole tonal range was one value wide. Measured on the dome mask, not
+// argued from the constants — what matters is what it delivers.
+const skyOverGround = Math.min(...skyViews.map((s) => s.skyMean - s.worldP50));
+if (!(skyOverGround >= SKY_MIN_OVER_GROUND)) {
+  fail(
+    `tab A: the sky is only ${skyOverGround.toFixed(1)} luma above the frame's own median on its ` +
+      `weakest vantage (floor ${SKY_MIN_OVER_GROUND}) — the dome is no brighter than the ground ` +
+      `it lights, so nothing in the frame is a highlight\n` +
+      tonal.samples
+        .map(
+          (s) =>
+            `    ${s.label}: sky ${s.skyMean.toFixed(1)} over ${s.worldPixels} px of world at ` +
+            `median ${s.worldP50}`,
+        )
+        .join("\n"),
+  );
+}
+if (lit2.skySunShared !== true) {
+  fail(
+    `tab A: the sky's sun direction is not the same object as the key light's — the dome ` +
+      `can draw a sun the shadows disagree with`,
+  );
+}
+if (!(lit2.fogNear > 0) || !(lit2.fogFar > lit2.fogNear)) {
+  fail(`tab A: fog is ${lit2.fogNear}→${lit2.fogFar} m, which is not a range`);
+}
+
+// 17b — the sky is a ramp, and a ramp quantized to 8 bits bands. Counted on
+// the dome's own mask (a sentinel-clear render, so it is the dome and not
+// "the top of the frame"), on every view that has enough sky to measure.
+for (const s of skyViews) {
+  if (!(s.skyBreak >= SKY_MIN_BREAK)) {
+    fail(
+      `tab A: ${s.label}'s sky changes value across only ${(s.skyBreak * 100).toFixed(1)}% of its ` +
+        `adjacent pixel pairs (floor ${(SKY_MIN_BREAK * 100).toFixed(0)}%), longest identical run ` +
+        `${s.skyLongestRun} px over ${s.skyPixels} px of dome — the gradient is posterized, so ` +
+        `there is no dither under the quantizer`,
+    );
+  }
+  if (!(s.skyLongestRun <= SKY_MAX_RUN)) {
+    fail(
+      `tab A: ${s.label}'s sky holds a ${s.skyLongestRun} px run of one identical value (ceiling ` +
+        `${SKY_MAX_RUN}) — that is a visible band, and it is the defect the judge measured at 11 px`,
+    );
+  }
+}
+
+// 17c — the sun. Aimed down the key light's own direction vector, so the disc
+// belongs at the principal point: this is the assertion that the thing in the
+// sky and the thing casting the shadows are one sun.
+const sunHook = await A.page.evaluate(() => typeof globalThis.__gatesDebug.sunProbe);
+if (sunHook !== "function") {
+  fail(`tab A: __gatesDebug.sunProbe is ${sunHook} on a dev shard — the sun gate cannot run`);
+}
+const sun = await A.page.evaluate(() => globalThis.__gatesDebug.sunProbe());
+const sunOverSky = sun.peak - sun.background;
+console.log(
+  `  sun: peak ${sun.peak} at ${sun.offsetPx.toFixed(1)} px off the aim point, sky background ` +
+    `${sun.background.toFixed(1)} (+${sunOverSky.toFixed(1)}), ` +
+    `${(sun.saturatedFraction * 100).toFixed(3)}% of the frame at 250+`,
+);
+if (!(sunOverSky >= SUN_MIN_PEAK_OVER_SKY)) {
+  fail(
+    `tab A: looking straight at the sun, the brightest pixel is ${sun.peak} against a sky ` +
+      `background of ${sun.background.toFixed(1)} — ${sunOverSky.toFixed(1)} levels, under the ` +
+      `${SUN_MIN_PEAK_OVER_SKY} floor. There is no sun in the sky, only a gradient`,
+  );
+}
+if (!(sun.offsetPx <= SUN_MAX_OFFSET_PX)) {
+  fail(
+    `tab A: the brightest sky pixel is ${sun.offsetPx.toFixed(1)} px from the direction the KEY ` +
+      `LIGHT points, against a ${SUN_MAX_OFFSET_PX} px tolerance — the dome's sun and the ` +
+      `world's sun are in different places`,
+  );
+}
+if (!(sun.saturatedFraction <= SUN_MAX_SATURATED)) {
+  fail(
+    `tab A: ${(sun.saturatedFraction * 100).toFixed(2)}% of the frame is at 250+ luma looking at ` +
+      `the sun, over the ${(SUN_MAX_SATURATED * 100).toFixed(0)}% ceiling — the disc has grown ` +
+      `into a wash and the sky around it is blown`,
+  );
+}
 
 // --- materials: the surface read --------------------------------------------
 // Measured here, on the same pinned frame the shadow gate uses, for the same
@@ -3604,6 +4034,18 @@ for (const s of props.samples) {
         `they score a ±17-level swing on a base of 120.\n${propDetail(s)}`,
     );
   }
+  // …and the dark tail, which prop albedo v1 measured, named and deliberately
+  // left unwalled because the light rig owned it. Lighting v1 owns it now.
+  if (!(s.lumaP05 >= PROP_MIN_P05)) {
+    fail(
+      `tab A: the darkest twentieth of the ${s.label} class sits at luma ${s.lumaP05} of 255 (floor ` +
+        `${PROP_MIN_P05}), against a field worth ${s.diffMean.toFixed(2)} levels — the shaded side of ` +
+        `this prop is below where its own surface can exist, so the class reads as two materials: one ` +
+        `textured and one black. This is the visual judge's "94.9% of the skirt under 10/255", gated. ` +
+        `It is a LIGHT failure before it is an albedo one: a down-facing face receives only ` +
+        `groundColor x fillIntensity x albedo / pi.\n${propDetail(s)}`,
+    );
+  }
 }
 console.log(
   `  prop probe: ` +
@@ -4575,6 +5017,11 @@ for (const hook of [
   // …and this one is not a probe at all: it walks every near vertex in a 150 m
   // radius, which is a frame's worth of work handed to anyone who asks.
   "steepestFace",
+  // Lighting v1's two. `tonalProbe` renders 2N frames and reads the whole
+  // drawing buffer back per view; `sunProbe` re-aims the camera. Both are
+  // gate instruments and neither belongs on a public shard.
+  "tonalProbe",
+  "sunProbe",
 ]) {
   const t = await P.page.evaluate((h) => typeof globalThis.__gatesDebug[h], hook);
   if (t !== "undefined") {
