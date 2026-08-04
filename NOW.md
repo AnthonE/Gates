@@ -1221,6 +1221,18 @@ Done items are deleted, not checked — history lives in git and
    tab A (mutual AOI is M0's exit condition), so no amount of harness
    tidying can hand it a quiet box.
 
+   **It now reaches past join, into the prewarm gate (ui lane, 2026-08-04).**
+   Four runs, same commit: tab B seen at 87.5 s and the pass FAILED on
+   `programsAtInWorld was never pinned`; at 63.5 s on a quiet box the same
+   commit passed with 0 late links. Clean `lane/ui` at 90.9 s also passed, so
+   the threshold is not a clean line — it is load. The pin needs four in-world
+   RAF frames and the box was serving p50 1166 / p99 2600 ms frames, so tab B
+   can be alive and answering `page.evaluate` while still short of four
+   frames. The assertion is a COUNT and correct; what it depends on is a
+   frame budget nobody has bounded. Read it as one more reason the seconds
+   below matter, and confirm any red here on a quiet box before believing a
+   diff caused it.
+
    The *client* half is therefore untouched and is the live risk. Grain
    did not cause it — the frame moved 630 → 638 ms, 1.3% — but nothing
    has measured where the seconds go, and every slice that adds a material
