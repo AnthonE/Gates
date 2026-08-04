@@ -24,8 +24,8 @@ use sim_core::deploy::{
 };
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
 use sim_core::limits::{
-    HEARTH_STOCK_ROWS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_TABLES,
-    MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
+    HEARTH_STOCK_ROWS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
+    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
 };
 use sim_core::loot::{LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CRATE};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
@@ -606,6 +606,17 @@ impl Content {
                 u16::try_from(v)
                     .map_err(|_| format!("bake: loot `{}` {what} {v} overflows the sim", l.id))
             };
+            // Wall 4: the roll loop is per-tick work driven by a content
+            // number, so the number needs a cap and a stated policy.
+            // Policy is refusal at boot, `MAX_LOOT_ENTRIES`'s policy — a
+            // clamp would pay a table that silently rolls fewer times than
+            // it reads as rolling, which is worse than not booting.
+            if l.rolls_max as usize > MAX_LOOT_ROLLS {
+                return Err(format!(
+                    "bake: loot `{}` rolls up to {}, past the sim's {MAX_LOOT_ROLLS} per smash",
+                    l.id, l.rolls_max
+                ));
+            }
             let mut t = LootTableDef::INERT;
             t.rolls_min = small(l.rolls_min, "rolls_min")?;
             t.rolls_max = small(l.rolls_max, "rolls_max")?;

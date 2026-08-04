@@ -1099,6 +1099,43 @@ fn an_unknown_container_is_refused_at_bake() {
     assert!(err.contains("no verb for"), "got: {err}");
 }
 
+/// Wall 4 on the roll loop: `rolls_max` is per-tick work chosen by
+/// content, so a table past `MAX_LOOT_ROLLS` must not boot.
+///
+/// The number here is not a strawman. `rolls_max` is read as a `u32` and
+/// narrowed by the bake's `small()`, whose only bound is `u16::MAX` — so
+/// before this cap existed, `65_535` was valid content, and one smash then
+/// walked a 16-row weight table 65_535 times inside a single tick. Nothing
+/// else would have caught it: the arithmetic is integer, the store is
+/// fixed-capacity, and the allocator never moves.
+#[test]
+fn a_roll_count_past_the_cap_is_refused_at_bake() {
+    let mut srcs = sources();
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    l.1 = l.1.replacen("rolls_max = 2", "rolls_max = 65535", 1);
+    let err = build(&srcs)
+        .unwrap()
+        .bake_loot()
+        .expect_err("a 65_535-roll table baked");
+    assert!(err.contains("per smash"), "got: {err}");
+
+    // And the cap itself is the container's slot count, so the shipped
+    // tables sit well under it rather than against it.
+    let lc = build(&sources())
+        .unwrap()
+        .bake_loot()
+        .expect("shipped loot must bake");
+    for which in [sim_core::loot::LOOT_BARREL, sim_core::loot::LOOT_CRATE] {
+        let t = lc.table(which).expect("shipped table is live");
+        assert!(
+            t.rolls_max as usize <= sim_core::limits::MAX_LOOT_ROLLS,
+            "table {which} rolls {} past the {} cap",
+            t.rolls_max,
+            sim_core::limits::MAX_LOOT_ROLLS
+        );
+    }
+}
+
 /// A container nothing can open never pays, so zero hits is content that
 /// disarms itself — refused at validate, before the bake ever sees it.
 #[test]

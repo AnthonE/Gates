@@ -112,14 +112,36 @@ pub const APPLIED_DRANK: u32 = 1 << 29;
 /// else's and belong in the kill feed. This one only ever fires for the
 /// body this client is driving.
 pub const APPLIED_RESPAWN: u32 = 1 << 30;
+
+/// **Bit 31 is not an applied-flag and never becomes one.** It is the
+/// bridge's `client_on_stream` error sentinel, which shares the return
+/// channel with this word, so a flag placed here reads to JS as a decode
+/// failure. `bridge.rs` re-exports it under its own name; the value lives
+/// here so one file owns the whole word and
+/// `applied_word_is_full_and_bit_31_is_the_error_sentinel` can prove it.
+///
+/// That is not hypothetical. `APPLIED_MOVE` was written here — bits 0..30
+/// were already spent and the comment on it said "the last bit in the
+/// word" — and the first `Moved` or `MoveRefused` of a session therefore
+/// tripped the client's error branch, which logs and returns *early*, so
+/// the inventory diff carried by the same pump iteration went with it.
+/// Every wall stayed green: two crates, two constants, one value.
+pub const STREAM_ERR: u32 = 1 << 31;
+
+/// The second applied-flag word: word 0's low 31 bits are spent and its
+/// high bit belongs to `STREAM_ERR`, so this is the "second word" the
+/// note on `APPLIED_MOVE` said the thirty-third flag would need.
+///
+/// It is **not announced by word 0** — there is no spare bit left there to
+/// announce it with. A caller reads it after every `client_on_stream`, the
+/// way it already reads `slot_changes()`: valid until the next call, and
+/// cleared by any message that sets nothing in it, so a stale verdict can
+/// never be read as a fresh one.
+///
 /// A move landed or was refused (`EventMsg::Moved` / `MoveRefused`). One
 /// flag for both, `APPLIED_CONSUME`'s shape: the panel's response to
 /// either is to re-read `client_move_readout`, which says which it was.
-///
-/// **The last bit in the word.** A thirty-third applied-flag needs a
-/// second word or a rethink, and this is the note that says so rather
-/// than the next slice discovering it by shifting off the end into zero.
-pub const APPLIED_MOVE: u32 = 1 << 31;
+pub const APPLIED2_MOVE: u32 = 1 << 0;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -659,6 +681,11 @@ pub struct ClientCore {
     pub stock_addr: (u16, u16, u8),
     pub stock: [(u16, u32); HEARTH_STOCK_ROWS],
     pub stock_count: u8,
+    /// The `APPLIED2_*` word for the last `on_stream` call, read back by
+    /// `applied2()`. Rebuilt from zero on every call for the same reason
+    /// `n_slot_changes` is: it describes one message, not a running state,
+    /// and a verdict that outlived its message would be read as a fresh one.
+    applied2: u32,
     pub events_applied: u64,
     pub event_errors: u64,
 }
@@ -752,9 +779,17 @@ impl ClientCore {
             stock_addr: (0, 0, 0),
             stock: [(0, 0); HEARTH_STOCK_ROWS],
             stock_count: 0,
+            applied2: 0,
             events_applied: 0,
             event_errors: 0,
         }
+    }
+
+    /// The `APPLIED2_*` flags the last `on_stream` call set — word 1 of
+    /// the applied word, which word 0 has no spare bit to announce. Valid
+    /// until the next `on_stream`, like `slot_changes()`.
+    pub fn applied2(&self) -> u32 {
+        self.applied2
     }
 
     /// One event-lane message off the reliable stream. Returns the
@@ -764,6 +799,7 @@ impl ClientCore {
         self.n_slot_changes = 0;
         self.n_piece_changes = 0;
         self.n_deploy_changes = 0;
+        self.applied2 = 0;
         let msg = match decode_event(bytes) {
             Ok(m) => m,
             Err(e) => {
@@ -1149,7 +1185,7 @@ impl ClientCore {
                 self.last_move = sim_core::inventory::addr(from_kind, from_slot, to_kind, to_slot);
                 self.last_move_refused = 0;
                 self.last_move_count = ((count as u32) << 16) | item as u32;
-                flags |= APPLIED_MOVE;
+                self.applied2 |= APPLIED2_MOVE;
             }
             EventMsg::MoveRefused {
                 reason,
@@ -1161,7 +1197,7 @@ impl ClientCore {
                 self.last_move = sim_core::inventory::addr(from_kind, from_slot, to_kind, to_slot);
                 self.last_move_refused = reason;
                 self.last_move_count = 0;
-                flags |= APPLIED_MOVE;
+                self.applied2 |= APPLIED2_MOVE;
             }
             EventMsg::Drank { water, hp_cost } => {
                 self.last_drink = ((water as u32) << 16) | hp_cost as u32;
@@ -1244,6 +1280,11 @@ impl ClientCore {
                 flags |= APPLIED_STOCK;
             }
         }
+        // Bit 31 is the bridge's error sentinel and shares this return
+        // channel; a flag that reached it would read to JS as a decode
+        // failure. `applied_word_is_full_and_bit_31_is_the_error_sentinel`
+        // proves no constant can, this catches a raw literal.
+        debug_assert_eq!(flags & STREAM_ERR, 0, "an applied-flag hit bit 31");
         Ok(flags)
     }
 
@@ -1592,12 +1633,133 @@ impl ClientCore {
 mod tests {
     use super::*;
     use protocol::{
-        encode_event_catalog, encode_event_gather, encode_event_inv, encode_event_slot_change,
-        encode_event_slot_sync, InvSlot, MAX_EVENT_MSG_BYTES,
+        encode_event_catalog, encode_event_gather, encode_event_inv, encode_event_move_refused,
+        encode_event_moved, encode_event_slot_change, encode_event_slot_sync, InvSlot,
+        MAX_EVENT_MSG_BYTES,
     };
 
     fn core() -> ClientCore {
         ClientCore::new(1, 0x107, 0)
+    }
+
+    /// Every `APPLIED_*` flag of word 0, in bit order. A new flag added
+    /// without a row here fails the completeness assert below rather than
+    /// silently landing on a bit that is already spoken for.
+    const APPLIED_LO: [u32; 31] = [
+        APPLIED_INV,
+        APPLIED_SLOTS,
+        APPLIED_RESET,
+        APPLIED_TOAST,
+        APPLIED_CATALOG,
+        APPLIED_MARK,
+        APPLIED_CRAFT_Q,
+        APPLIED_CRAFT_DONE,
+        APPLIED_CRAFT_REFUSED,
+        APPLIED_RECIPES,
+        APPLIED_PIECES,
+        APPLIED_PIECE_RESET,
+        APPLIED_BUILD_REFUSED,
+        APPLIED_PIECE_DEFS,
+        APPLIED_DEPLOYS,
+        APPLIED_DEPLOY_RESET,
+        APPLIED_DEPLOY_REFUSED,
+        APPLIED_DEPLOY_DEFS,
+        APPLIED_STOCK,
+        APPLIED_PIECE_REMOVED,
+        APPLIED_DEPLOY_REMOVED,
+        APPLIED_CHAT,
+        APPLIED_HEALTH,
+        APPLIED_HIT,
+        APPLIED_DEATH,
+        APPLIED_BAGS,
+        APPLIED_STRUCT_HIT,
+        APPLIED_VITALS,
+        APPLIED_CONSUME,
+        APPLIED_DRANK,
+        APPLIED_RESPAWN,
+    ];
+
+    /// Word 1. One flag today; the list is here so the thirty-fourth is a
+    /// row and an assert, not a rediscovery.
+    const APPLIED_HI: [u32; 1] = [APPLIED2_MOVE];
+
+    /// The gate on the trap that put `APPLIED_MOVE` on the error bit.
+    ///
+    /// The defect was invisible to every wall the repo has: two crates,
+    /// two `pub const … = 1 << 31`, one shared return channel, and each
+    /// half correct on its own. What catches it is not a type and not a
+    /// golden — it is the claim that the word is **exactly** full, so the
+    /// next flag written as `1 << 31` collides with a value asserted here
+    /// and the next one written as `1 << 32` does not compile.
+    #[test]
+    fn applied_word_is_full_and_bit_31_is_the_error_sentinel() {
+        // Distinct, single-bit, and none of them the sentinel.
+        let mut seen = 0u32;
+        for (i, &f) in APPLIED_LO.iter().enumerate() {
+            assert_eq!(f.count_ones(), 1, "APPLIED_LO[{i}] is not one bit");
+            assert_eq!(seen & f, 0, "APPLIED_LO[{i}] collides with an earlier flag");
+            assert_eq!(f & STREAM_ERR, 0, "APPLIED_LO[{i}] is the error sentinel");
+            assert_eq!(f, 1 << i, "APPLIED_LO[{i}] is out of bit order");
+            seen |= f;
+        }
+        // Exactly full: bits 0..30 all spent, bit 31 untouched. Both
+        // halves matter — the first says there is no free bit for a
+        // thirty-second lo flag, the second says the sentinel is clear.
+        assert_eq!(seen, 0x7FFF_FFFF, "word 0 is not exactly bits 0..30");
+        assert_eq!(STREAM_ERR, 1 << 31);
+        assert_eq!(seen & STREAM_ERR, 0);
+        assert_eq!(seen | STREAM_ERR, u32::MAX, "word 0 has an unclaimed bit");
+
+        // Word 1 under the same discipline, with room to grow.
+        let mut seen2 = 0u32;
+        for (i, &f) in APPLIED_HI.iter().enumerate() {
+            assert_eq!(f.count_ones(), 1, "APPLIED_HI[{i}] is not one bit");
+            assert_eq!(
+                seen2 & f,
+                0,
+                "APPLIED_HI[{i}] collides with an earlier flag"
+            );
+            assert_eq!(f, 1 << i, "APPLIED_HI[{i}] is out of bit order");
+            seen2 |= f;
+        }
+        assert_eq!(seen2, (1 << APPLIED_HI.len()) - 1);
+    }
+
+    /// The behaviour the collision broke: a move verdict must not read as
+    /// a stream error, and it must not cost the caller the rest of the
+    /// message pump. Both directions, because both set the flag.
+    #[test]
+    fn a_move_verdict_is_never_the_error_bit() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+
+        // A landed move: from (kind 1, slot 9) to (kind 0, slot 22),
+        // 7 of item 5 — every field distinct from every other.
+        let len = encode_event_moved(1, 9, 0, 22, 7, 5, &mut buf).unwrap();
+        let flags = c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(flags & STREAM_ERR, 0, "a move read as a decode error");
+        assert_eq!(c.applied2(), APPLIED2_MOVE);
+        assert_eq!(c.last_move_refused, 0);
+        assert_eq!(c.last_move_count, (7 << 16) | 5);
+
+        // A refusal, same rule.
+        let len = encode_event_move_refused(4, 0, 11, 1, 26, &mut buf).unwrap();
+        let flags = c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(flags & STREAM_ERR, 0, "a refusal read as a decode error");
+        assert_eq!(c.applied2(), APPLIED2_MOVE);
+        assert_eq!(c.last_move_refused, 4);
+
+        // And word 1 describes one message: the next event clears it, so
+        // an unconditional read cannot mistake the refusal above for a
+        // verdict on a drag that has not been answered yet.
+        let len = encode_event_gather(3, 7, &mut buf).unwrap();
+        let flags = c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(flags, APPLIED_TOAST);
+        assert_eq!(c.applied2(), 0, "a stale move verdict outlived its message");
+
+        // A decode failure leaves nothing behind either.
+        assert!(c.on_stream(&[0xFF, 0xFF, 0xFF]).is_err());
+        assert_eq!(c.applied2(), 0);
     }
 
     #[test]
