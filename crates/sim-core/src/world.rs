@@ -161,6 +161,15 @@ pub const EV_DRANK: u8 = 24;
 /// needs and cannot read off a coordinate.
 pub const EV_RESPAWN: u8 = 25;
 
+/// The highest code above, named rather than counted: the event codes are
+/// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
+/// scans that range. It lived in that test as a literal `25`, which meant a
+/// twenty-sixth code could land and read as classified while nothing had
+/// classified it. Tying it to the last constant closes half of that; the
+/// other half is the ledger's own `every_event_code_is_in_range`, which
+/// parses this file and fails if a code is declared past this line.
+pub const EV_MAX: u8 = EV_RESPAWN;
+
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
 /// reads the cause, the weapon and the range back out of the store when it
