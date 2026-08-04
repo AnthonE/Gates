@@ -109,9 +109,13 @@ const CHAT_APART_M = Number(process.env.BROWSER_SMOKE_CHAT_APART_M || 30);
 // first, with a message, instead of here as a mystery.
 const SEED = 20260731;
 const DEV_SPAWN = "1024,1024";
-// Held-walk displacement floor, metres planar. Walk speed is 3 m/s over
-// PLAY_MS of held key (~18 m); 2 m stays green under heavy same-box load
-// while still failing a frozen or never-updated remote outright.
+// Held-walk displacement floor, metres planar. Walk speed is 3 m/s, so this is
+// two thirds of a second of walking — far enough that a frozen or
+// never-updated remote fails outright, short enough that it is about the SIM
+// having moved the player and not about how much wall clock the box needed to
+// get there. The mutual-movement walk clears it by ~7x (13.0 / 15.5 m
+// measured); the aimed walk below now holds its key until it is reached rather
+// than for a fixed slice of time. See AIM_WALK_DEADLINE_MS.
 const MOVE_MIN_M = 2;
 // The aim the dev hook is driven to: yaw pi/2 faces +X (sim-core yaw_lut —
 // 0 faces +Z, increasing turns toward +X), pitch below level so the clamp is
@@ -165,6 +169,19 @@ const AIM_REST_CLEAR_RUNS = 2;
 const AIM_REST_PUBLISHES = 16;
 const AIM_REST_DEADLINE_MS = 25000;
 const AIM_REST_POLL_MS = 400;
+// …and the same reasoning from the other side, for the walk that follows. The
+// key used to be held for `PLAY_MS` of WALL CLOCK and the displacement asserted
+// against `MOVE_MIN_M`, which quietly made the assertion "this box can render
+// fast enough to sample 6 s of held input". On 2026-08-04 it could not: the
+// walk came in at **1.02 m** of the 2 m floor — east-dominant, so the aim WAS
+// reaching the sim and the only thing that failed was the box. `dx` had already
+// fallen 5.4 -> 1.02 m across this gate's history on the same code.
+//
+// So the key is now held until the SIM HAS WALKED the floor, counted off fresh
+// publishes exactly as the rest detector above counts them, with a wall
+// deadline behind it for a client that has stopped moving at all. At the worst
+// rate ever recorded here (1.02 m in 6 s) the floor is reached in ~12 s.
+const AIM_WALK_DEADLINE_MS = 60000;
 // --- the lighting gate (DECISIONS.md §open, "lighting v0") ------------------
 // The shadow probe sweeps four yaws so the assertion does not depend on the
 // player having walked to a spot with a caster in one particular direction,
@@ -1600,16 +1617,13 @@ const join = async (label, port = WIRE_PORT, cert = certHash) => {
     // handshake that never landed, a shard that died, and a client whose
     // debug publisher threw on its first tick — three very different bugs.
     //
-    // And say WHERE, which is the part this cost two passes. `boot()` hides
-    // the #start form as its last act before calling `run()`, and `run()`
-    // registers the 250 ms publisher — so the form's own display property is
-    // a boot-stage marker that has been sitting in the DOM all along, needing
-    // no debug hook and no change to the shipped client. Still visible means
-    // boot is stuck in wasm load, connect or handshake; already hidden means
-    // the client is in the world and its main thread is too busy to publish.
-    // The poll count separates both from the third reading — a gate whose own
-    // `page.evaluate` starved and never asked (NOW.md item 1: one tab got two
-    // polls in sixty seconds).
+    // And say WHERE, which is the part this cost two passes. The ladder above
+    // now carries that: every rung it climbed, with the second it climbed it,
+    // and the rung it died on by name. This second read is taken AFTER the
+    // wait ended, so it is the state as of the failure rather than as of the
+    // last look that happened to settle — and it is the one that reports an
+    // `evaluate` which cannot run at all, which is the shape a torn-down or
+    // wedged page takes.
     const post = await page
       .evaluate(() => ({
         ready: document.readyState,
@@ -5162,16 +5176,35 @@ if (Math.abs(view[0] - AIM_YAW) > AIM_EPS || Math.abs(view[1] - AIM_PITCH) > AIM
 // readback above and still frame a player walking sideways out of shot.
 const beforeAim = atRest.own.slice();
 await A.page.keyboard.down("KeyW");
-await A.page.waitForTimeout(PLAY_MS);
+// Held until the player HAS WALKED, not for a fixed slice of wall clock — see
+// AIM_WALK_DEADLINE_MS. Each iteration waits for a publish the client actually
+// refreshed (`snapshots` moved), so a starved tab buys time instead of failing,
+// and the loop ends the moment the sim has carried the player far enough to
+// prove the aim reached it. Walking further proves nothing more.
+let walkSeen = atRest;
+let walkFresh = 0;
+let dx = 0;
+let dz = 0;
+const walkDeadline = Date.now() + AIM_WALK_DEADLINE_MS;
+while (dx < MOVE_MIN_M && Date.now() < walkDeadline) {
+  await A.page.waitForTimeout(AIM_REST_POLL_MS);
+  const now = await restProbe();
+  if (!(now.snapshots > walkSeen.snapshots)) continue;
+  walkFresh++;
+  walkSeen = now;
+  dx = now.own[0] - beforeAim[0];
+  dz = now.own[2] - beforeAim[2];
+}
 await A.page.keyboard.up("KeyW");
-const afterAim = await A.page.evaluate(() => globalThis.__gatesDebug.own);
-const dx = afterAim[0] - beforeAim[0];
-const dz = afterAim[2] - beforeAim[2];
 if (dx < MOVE_MIN_M || Math.abs(dz) > dx) {
   fail(
-    `tab A: after setView(yaw pi/2) a held W moved [${dx.toFixed(2)}, ${dz.toFixed(2)}] m — ` +
-      `yaw pi/2 faces +X, so the walk must be east-dominant and ≥ ${MOVE_MIN_M} m. ` +
-      `The hook is not reaching the input the sim runs on.`,
+    `tab A: after setView(yaw pi/2) a held W moved [${dx.toFixed(2)}, ${dz.toFixed(2)}] m over ` +
+      `${walkFresh} fresh publish(es) — yaw pi/2 faces +X, so the walk must be east-dominant and ` +
+      `≥ ${MOVE_MIN_M} m. ${
+        walkFresh === 0
+          ? `Nothing was ever measured: the client stopped publishing while the key was held.`
+          : `The hook is not reaching the input the sim runs on.`
+      }`,
   );
 }
 // The residual speed rides along on the PASSING path too: it is the margin the
@@ -5179,8 +5212,8 @@ if (dx < MOVE_MIN_M || Math.abs(dz) > dx) {
 // that the gap between "residual" and "walking" has closed is by watching it.
 console.log(
   `  dev hook: aimed to [${view.map((v) => v.toFixed(2))}], walked +X ${dx.toFixed(1)} m ` +
-    `(dz ${dz.toFixed(1)}), from rest after ${fresh} fresh publish(es) — residual ` +
-    `${lastSpeed.toFixed(2)} m/s over ${lastGapMs} ms, bar ${AIM_REST_SPEED_MPS}, walk 3`,
+    `(dz ${dz.toFixed(1)}) over ${walkFresh} fresh publish(es), from rest after ${fresh} — ` +
+    `residual ${lastSpeed.toFixed(2)} m/s over ${lastGapMs} ms, bar ${AIM_REST_SPEED_MPS}, walk 3`,
 );
 
 // Assertion 11 — DESIGN §9's draw budget, which had no gate until the shadow
