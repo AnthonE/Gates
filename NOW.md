@@ -4,6 +4,33 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+1. **Tab B should be a bot, not a second browser.** *(Operator, 2026-08-04:
+   "i think we need the tab stuff every few hours at this rate". The tiering
+   half landed; this is the half that removes the flakes. `DECISIONS.md`
+   §Spoken.)*
+
+   **Evidence, measured the night it was spoken.** Eleven gate failures across
+   seven runs: **nine were the harness fighting itself** — four dev-shard bind
+   races against a previous run still releasing port 4460, five tab B flakes
+   (connection closed, chat unheard, and three 60 s timeouts, one of them
+   reporting `inWorld=true` and timing out anyway, which is verbatim the clock
+   bug `CLAUDE.md` names). Two were real findings. A gate whose failures are
+   82% environment is measuring the box.
+
+   **What tab B uniquely asserts, and where each belongs.** Mutual AOI and the
+   remote walk, chat local/global routing including the 20 m radius negative,
+   `snapshots > 0`, zero oversize datagrams. All but the last are **netcode**,
+   and `crates/server/src/bin/bots.rs` already drives that path natively —
+   `DECISIONS.md` records the client's netcode core as pure and native-tested,
+   sharing code paths with the bot client. Move them to a bot-driven check and
+   they become deterministic and seconds-long. The datagram clamp stays in a
+   browser (it is a browser-specific `maxDatagramSize` behaviour) but needs
+   only tab A to send.
+
+   **Then one tab is the whole browser gate**, and the two-tab case survives
+   only as the joining-cost check — which must assert on program links after
+   `inWorld`, never on elapsed milliseconds.
+
 1. **The projection's own arithmetic, twice — and both were Quilez's rules,
    stated in his article, shipped wrong here first. — LANDED**
    *(`DECISIONS.md` §open, "materials v5". Operator, 2026-08-04: "figure out

@@ -14,6 +14,51 @@ fail() {
   exit 1
 }
 
+# Tiers (operator, 2026-08-04). Everything above the renderer gates is code:
+# deterministic, headless, and it finishes in a couple of minutes. The two
+# renderer gates are neither — they boot Chromium against swiftshader on a box
+# with no GPU path for them, render thousands of frames at roughly a frame a
+# second, and together they are the overwhelming majority of this script's wall
+# clock (measured 2026-08-04: 1,062 s green end to end, of which the renderer
+# tier is the bulk; a single browser_smoke run is 8-10 min).
+#
+# The reason to tier rather than trim: a pass that changed a server config and
+# three docs was paying 3.6 million probed pixels four times to prove it. The
+# rule is the one CLAUDE.md already applies to lighting — the owner of a change
+# pays its cost. A pass that touched the renderer runs the renderer gates; a
+# pass that did not, need not, and `auto` decides that by reading the diff
+# rather than by asking the builder to be honest about it.
+#
+#   all   (default, and what CI runs) every gate in this file
+#   fast  code gates only — stops before browser smoke and vantages
+#   auto  code gates, plus the renderer tier IF the diff touches renderer paths
+#
+# What this deliberately does NOT do is let a short run claim a long one's
+# result: `fast` and a skipping `auto` print their own final line, never
+# "ALL GATES GREEN". A pass reporting gates green must say which tier it ran.
+TIER="${1:-${GATES_TIER:-all}}"
+case "$TIER" in
+  all | fast | auto) ;;
+  *) fail "unknown tier '$TIER' — one of: all (default), fast, auto" ;;
+esac
+
+# Renderer paths, as a question about the diff. Both halves are read: what is
+# committed on this branch and what is still in the working tree, because a
+# builder runs this before committing as often as after.
+renderer_touched() {
+  {
+    git diff --name-only HEAD 2>/dev/null || true
+    git diff --name-only origin/main...HEAD 2>/dev/null || true
+  } | grep -qE '^(web/|assets/textures/|ci/browser_smoke\.mjs|ci/vantages\.mjs)'
+}
+
+RUN_RENDERER=1
+if [ "$TIER" = "fast" ]; then
+  RUN_RENDERER=0
+elif [ "$TIER" = "auto" ]; then
+  if renderer_touched; then RUN_RENDERER=1; else RUN_RENDERER=0; fi
+fi
+
 # Cheapest gate in the file — pure text, no build — so it runs first: a knob
 # that disagrees with its registry entry should not cost a ten-minute compile
 # to discover. `CLAUDE.md` calls `DECISIONS.md` authoritative on every knob,
@@ -91,6 +136,13 @@ $NICE npm --prefix web run build || fail "vite build"
 # far mesh still rendered (so screenshots looked fine). Both are invisible to
 # every other gate here. Needs the release shard binary — build it first so a
 # missing binary is a loud failure and never a skip.
+if [ "$RUN_RENDERER" = "0" ]; then
+  echo "== renderer tier NOT run (tier: $TIER) — browser smoke, vantages"
+  echo "CODE GATES GREEN — renderer tier skipped, so this is NOT 'all gates green'."
+  echo "Run './ci/gates.sh' with no argument before merging anything that touches the renderer."
+  exit 0
+fi
+
 echo "== gate: browser smoke (real shard, real WebTransport, real browser)"
 $NICE cargo build -p server --bin shard --release || fail "shard build"
 $NICE node ci/browser_smoke.mjs || fail "browser smoke"
