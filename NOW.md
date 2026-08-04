@@ -1,3 +1,26 @@
+1. **The sim can play a survival game; the player cannot reach it.**
+   *(Operator, 2026-08-04. This outranks every gate-building item below it.)*
+
+   `crates/` ships 15 verbs — Craft, Place, PlaceDeploy, Loot, Upgrade, Lock,
+   Feed, Drink, Consume, Use — against 48 items, 36 recipes, 18 building pieces,
+   9 deployables, 6 weapons, 5 gatherables. The client renders **the first six
+   inventory slots as text strings** (`main.js:1303-1308`) and has no inventory
+   grid, no container view, and no way to move an item. Nearly all of that
+   content is unreachable, which is the product gap — not test coverage.
+
+   **This is a Rust clone first.** Work that makes it more playable outranks work
+   that makes it more provable. Gates still ride along with the feature they
+   protect — that is not negotiable and no wall moves — but a gate is no longer a
+   valid item *by itself* unless a red wall demands it.
+
+   - **systems:** container move / stack / split, validation ordered BEFORE the
+     mutation and computed on the values the client predicted with. This is the
+     ui lane's standing request and it blocks them. Then gathering, decay and
+     upkeep behaviour — the loop that makes a day matter.
+   - **ui:** the inventory grid, the loot/container panel, and drag-move against
+     that refusal path. This is the single highest-leverage lane right now.
+   - **looks:** unchanged — keep closing the visual gap to `Rust Images/`.
+
 # Gates · NOW.md — what next
 
 The only list that answers "what should the loop pick up." Top item first.

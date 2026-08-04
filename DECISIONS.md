@@ -44,6 +44,7 @@ invented into code that isn't on this page.
 
 | knob | default | doc |
 |---|---|---|
+| the product is a Rust clone, not a proving ground (**operator, 2026-08-04**) | Playability outranks provability when the two compete for a pass. The sim ships 15 verbs, 48 items and 36 recipes that the client cannot reach: the hotbar renders six slots as text and there is no inventory grid, container view or item-move. **No wall moves and no gate is weakened** — gates ride along with the feature they protect — but a gate is not a valid item by itself unless a red wall demands it. Supersedes nothing in the walls; it reorders NOW.md. The RL-training-environment goal (2026-08-01) stands as background, not as a driver. | `NOW.md` item 1 · lane charters |
 | shard cap / reference box | 100 / 4-core VPS | DESIGN §14 |
 | wipe cadence · BP survival | monthly · BPs one extra cycle | DESIGN §2 |
 | island size | 2,048 m | TERRAIN §6 |
