@@ -412,6 +412,13 @@ export const ARCHETYPES = [
   // side; `_addScatter` only ever reads occupants 1..7 out of the slot buffer,
   // so 8 cannot collide with one.
   { geo: stumpGeometry, composite: true, surface: "wood", lo: PINE_BANDS[0].lo, hi: PINE_BANDS[0].hi, lift: 0.17, tint: 0.11 },
+  // 9: the haven pad's container (sim-core `Occupant::CrateSlot`). The enum
+  // skips 8 rather than this table shifting to make room — the stump index is
+  // read from five places in terrain.js and the alignment has to hold without
+  // anyone remembering it does. Squarer and taller than the road barrel at
+  // index 7 so the destination reads different from the route at silhouette
+  // distance, which is the only range at which either is legible.
+  { geo: () => new THREE.BoxGeometry(1.1, 0.8, 0.8), surface: "wood", lo: 0x6b5334, hi: 0x8a6d47, y0: -0.4, y1: 0.4, lift: 0.4, tint: 0.09 },
 ];
 
 /** Client-only archetype index for a felled pine's stump. */
