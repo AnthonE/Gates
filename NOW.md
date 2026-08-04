@@ -4,6 +4,64 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+1. **The bump's gradient is CLAMPED over two-thirds of a near cliff, and that
+   is the crosshatch that is left.** *(Operator, 2026-08-03, three frames of
+   cliffs and a snow dome: "lets fix these odd visual errors please".
+   materials v4 fixed two of the three causes and measured this one; it is
+   the next visual item and it starts bounded.)*
+
+   `gmSurf` — the world-XZ gradient of the bump height field — is bounded by
+   `BUMP_MAX_SLOPE = 0.55` (wall 4). Instrumenting the clamp and reading the
+   frame back says it is not a bound there, it is the operating point:
+
+   | vantage | fragments at the clamp |
+   |---|---|
+   | near cliff, rock, 69° face | **68.0%** |
+   | snow dome, rock, ~25° | **28.4%** |
+   | near ground, grass, level | **0.6%** |
+
+   **A gradient saturated over two-thirds of a surface is not a gradient, it
+   is a direction field of fixed magnitude** — and a noise gradient's
+   direction flips fast, so what the light lands on is a hard crosshatch
+   rather than relief. It is the loudest thing left in the operator's frame
+   1, and turning the whole field off (`uSurface = 0`) removes it while
+   leaving the photograph, which is how it was attributed.
+
+   **The suspect is amplitude on ONE identity, and the arithmetic is already
+   written down.** `IDENTITIES.rock.bump` is **2.2** against grass's 0.6, and
+   it multiplies the sum of three octaves each chosen inside the 0.03–0.25
+   slope band — so rock asks for roughly 3x what the clamp allows.
+   `materials.js` derives `BUMP_MAX_SLOPE = 0.55` as *"the sum of what the
+   three octaves that reach gmH ask for on the identity that asks most"*, and
+   the measurement above says that derivation is wrong by about 3x. **That
+   disagreement is the finding** (`CLAUDE.md`: a doc that disagrees with a
+   measurement is the finding), and it is why this is not a one-line edit.
+
+   **Why it was NOT taken in the same pass**, stated so the next one does not
+   re-litigate it: 0.55 is not a free number. It was cut from 1.0 precisely
+   because the shadow probe collapsed to 0.131% of the frame against a 15%
+   floor when the bump reached the frame at full strength — so anything that
+   changes how much slope actually lands has to be re-measured against the
+   shadow floors, 15b and 15e in the same pass, under the sun elevation item 3
+   still wants to raise. `NOW.md`'s own chroma pass is the precedent for what
+   an unmeasured amplitude fix costs: two of the three suspects it was handed
+   were amplitude fixes that would have cost the detail 15h asserts.
+
+   Two shapes worth pricing before picking one, neither yet measured:
+   (a) re-derive `rock.bump` (and the three amplitudes) so the ladder lands
+   inside the clamp rather than three times past it — the honest fix, and the
+   one that has to face the shadow floors;
+   (b) replace the hard magnitude clamp with a roll-off that asymptotes to the
+   same bound — strictly ≤ the current magnitude everywhere, so wall 4 and the
+   shadow floors can only improve, at the cost of not being bit-identical
+   below the bound (15b and 15e would move and need re-reading).
+
+   Also measured and NOT this item's: the base map's **relief** dies as a face
+   approaches vertical. `gmBaseSlope` is a world-XZ heightfield gradient by
+   construction and the shading normal scales it by `gmNy`, so a cliff gets
+   the photograph's colour and almost none of its shape. Same formulation,
+   same pass, and it wants `ci/bump_basis.mjs` re-derived under it.
+
 1. **The ground's chroma noise — the artifact the last pass shipped. — LANDED**
    *(GAP PASS, iteration 2. From `findings/pass-20260803-145507-01-visual.md`
    ranked gap 1: "Kill the near-ground chroma confetti — it is a live render
@@ -81,6 +139,12 @@ Done items are deleted, not checked — history lives in git and
    is left for a pass that owns those three; 15i's own restore check reads live.
 
 1. **The renderer has never had real detail to sample — give it some.**
+   *(Slice 1's projection defect is fixed — `DECISIONS.md` §open,
+   "materials v4": the base maps were sampled on world XZ and smeared `1/u`
+   along every fall line, every octave in the file retired on the horizontal
+   footprint rather than the world one, and snow replaced the albedo instead
+   of scaling it. Level ground is bit-identical; 15h/15i/15e unmoved. The
+   crosshatch that remains is the item above, not this one.)*
    *(Operator, 2026-08-03, `DECISIONS.md`: real assets allowed, CC0 is the bar.
    `ART.md` §7 is the policy; `assets/textures/` is the working set, already
    committed and manifested. This is the wiring.)*

@@ -174,6 +174,47 @@
 // program's own two states. What the uniform cannot express is folded into
 // the FIELD instead: `nofield` takes the tile octave out with the other three,
 // because the field is one field.
+//
+// --- fifth pass: the base's projection (DECISIONS.md §open, "materials v4") --
+//
+// The third pass above found that a world-XZ field combs downhill, fixed the
+// grain octave, and wrote down why. The base maps then landed on world XZ —
+// at the finest tile in the ladder, carrying a 1K photograph rather than a
+// noise field. Everything the third pass says about grain is true of them and
+// worse: a face of upness `u` wears the photograph stretched `1/u` along its
+// fall line, which is x2.8 at this seed's steepest faces and unbounded as a
+// face goes vertical. It reaches the image as a comb of long streaks with a
+// filtering lattice over it — the sampler's anisotropy budget spent on a
+// distortion the projection put there — and it is what the operator's frames
+// of the cliffs are frames OF.
+//
+// So the base samples the surface too, biplanar rather than triplanar (two
+// fetched maps per wall tap, not three, and the wall skipped whole below 45°).
+// `BASE_WALL_ON` carries the whole derivation, including why the ramp's foot
+// is a forced value and not a taste.
+//
+// Two things this pass fixed that are the same bug wearing other clothes, both
+// found by reading this file against `TERRAIN.md` rather than by looking:
+//
+//   · **The base retired on the horizontal footprint.** `TERRAIN.md` states
+//     the law for grain — "its fade reads the world footprint, not the
+//     horizontal one, because a pixel on a steep face barely moves in XZ while
+//     covering metres of surface" — and the octave that landed after it did
+//     not follow it. An XZ footprint reports a distant cliff as near ground,
+//     so twelve fetches stayed alive out there delivering detail below the
+//     pixel. One line, and it is grain's own line.
+//   · **Snow REPLACED the albedo.** Every other causal modifier multiplies, so
+//     the photograph survives it; `mix(albedo, SNOW_COLOR, 1)` is a constant,
+//     and above 80 m that is whole hillsides. See the modifier block.
+//
+// What this pass did NOT do, so the next one is not misled: the base map's
+// RELIEF still dies as a face approaches vertical. `gmBaseSlope` is a world-XZ
+// heightfield gradient by construction and the shading normal scales it by
+// `gmNy`, so a cliff gets the photograph's colour and almost none of its
+// shape. That is a property of the bump's whole formulation — the one this
+// file has already spent two passes getting continuous across a triangle edge
+// — and not of the projection. It wants its own pass and `ci/bump_basis.mjs`
+// re-derived under it, not a constant changed underneath it.
 
 import * as THREE from "three";
 import {
@@ -546,13 +587,75 @@ const BASE_SCALE = IDENTITIES.map((i) => i.tint.scale);
 // The base map is now the finest thing in that ladder and the one carrying the
 // most slope, so it takes the top of the band and not a number of its own.
 const BASE_NORMAL_MAX_SLOPE = 0.25;
-// Texture fetches per fragment at the worst case — three maps on all four
-// identities. The budget's ceiling, not its typical: the exact zero-weight
-// skip means a fragment inside one biome takes three. One `sampler2DArray`
-// per map is what keeps the UNIT count at three, which is the number that
-// actually has a hard limit (16 on the software rasterizer the browser gate
-// runs, and the terrain program already binds five shadow maps).
-const BASE_FETCHES_MAX = 3 * GROUND_LAYERS.length;
+// Where the wall plane turns on, as the face normal's dominant HORIZONTAL
+// component — and it is derived rather than chosen, which is why it is
+// `1/sqrt(2)` and not a round number somebody liked.
+//
+// The base maps ship on world XZ, which is a projection from above: on a face
+// of upness `u = n.y` it stretches the photograph by `1/u` along the fall line
+// and leaves it alone across it. That is materials v1's finding about the
+// grain octave (see the third pass above) applied to the octave that landed
+// after it — at the finest tile in the ladder, carrying 1K photographic
+// content instead of a noise field, which is why it reads as a comb rather
+// than as a smear nobody names. At this seed's steepest faces (`upness 0.357`,
+// a 69° slope) the stretch is x2.8, and it is unbounded as the face goes
+// vertical.
+//
+// So the fix is the same fix: sample the surface, not the shadow it casts on
+// the ground plane. Two things about the shape, and the second is what this
+// constant is.
+//
+//   1. **Two taps, not three.** Grain's three planes are noise samples; these
+//      are anisotropically filtered texture fetches, the most expensive thing
+//      in this program. The ground is a heightfield, so the surface has
+//      exactly one direction it leans — its fall line — and the vertical
+//      plane containing that line is the only wall it ever needs. Its stretch
+//      is `1/sin(tilt)` where the top plane's is `1/cos(tilt)`: exact
+//      complements, so between the two of them the worst case in the whole
+//      world is 45°, where each is x1.41 and they average. Triplanar would
+//      buy nothing here and cost a third of the program's bandwidth.
+//   2. **The wall turns on at the CROSSOVER, and that is what `1/sqrt(2)`
+//      is.** `sin(tilt) = cos(tilt)` at exactly 45°: below it the projection
+//      the ground already had is the less distorted of the two, above it the
+//      wall is. So the rule is not a tuned threshold, it is "add the second
+//      tap only where the one you have stops being the better one" — and the
+//      number falls out of the geometry rather than out of a judgement.
+//
+// It is also, independently, where this file's own accepted residual lands:
+// materials v1 measured world-XZ coarsening the grain x2.02 on a 46.6° face
+// and shipped a triplanar leaving x1.40 behind. A 45° face is x1.41. The
+// crossover and the accepted residual are the same place to within 1%.
+//
+// What falls out is the level-ground identity: on flat ground `tilt` is
+// exactly 0, the wall weight is exactly 0, its block is skipped whole, and
+// the top weight is exactly 1 — so on level ground THIS TAP is bit-for-bit
+// the single-tap program it replaces. Same property the grain projection
+// carries, for the same reason.
+//
+// The footprint change below it carries no such algebraic identity (a world
+// footprint equals a horizontal one only where the surface is exactly flat),
+// so the claim for the pass as a whole is measured rather than derived: at
+// the pinned spawn's near-ground vantage the two programs differ on **0.0% of
+// the frame at a mean delta of 0.00**, and 15h, 15i and 15e read the same
+// numbers before and after.
+//
+// Written as a literal rather than as `Math.SQRT1_2` so the knob registry can
+// pin it — `ci/knob_registry.mjs` parses numbers, ratios and arrays, and a
+// name it cannot resolve to a value is printed as unpinned. The derivation
+// above is what guards it against being "tuned"; the registry is what guards
+// the derivation against drifting from what ships.
+const BASE_WALL_ON = 0.70711;
+// Texture fetches per fragment at the worst case — all four identities, three
+// maps on the top plane and two on the wall (the relief is the top tap's
+// alone; `BASE_NRM_GLSL` carries why). The budget's ceiling, not its typical,
+// and now doubly so: the exact zero-weight skip means a fragment inside one
+// biome takes three, and the wall block is skipped entirely below 45°, which
+// is every fragment of level ground. One `sampler2DArray` per map is what
+// keeps the UNIT count at three, which is the number that actually has a hard
+// limit (16 on the software rasterizer the browser gate runs, and the terrain
+// program already binds five shadow maps).
+const BASE_FETCHES_MAX = 5 * GROUND_LAYERS.length;
+const BASE_FETCHES_LEVEL = 3 * GROUND_LAYERS.length;
 const BASE_TEX_UNIT_BUDGET = 16;
 // The most a per-channel palette gain may STRETCH the photograph's own colour
 // deviation. 1.0 is the identity: the source's chroma variation delivered at
@@ -725,16 +828,40 @@ ${FIELD_GLSL}
 //     It is non-negative by construction, which the subtractive form of the
 //     same correction is not: a convex combination of two non-negative fields
 //     needs no clamp, and so introduces no hue shift in the darks from one.
+//   · **`k` is accumulated as well as consumed.** The scalar leg leaves the
+//     tap as `gmBaseK` — the photograph resolved to a mean-1 luminance field —
+//     because one modifier downstream REPLACES the albedo instead of scaling
+//     it (snow) and needs the detail back in a form that carries no colour of
+//     the layer it came from. One `dot` and one add; no fetch.
 const BASE_TAP_GLSL = /* glsl */ `
 void gmBaseTap(float lyr, float w, vec3 col, vec3 inv, vec3 lw, float keep, float rg,
                vec2 uv, vec2 dx, vec2 dy,
-               inout vec3 alb, inout vec2 nrm, inout float rgh) {
+               inout vec3 alb, inout float lum, inout float rgh) {
   vec3 p = vec3(uv, lyr);
   vec3 rel = texture2DGradEXT(uBaseAlb, p, dx, dy).rgb * inv;
   float k = dot(lw, rel);
   alb += col * mix(vec3(k), rel, keep) * w;
-  nrm += (texture2DGradEXT(uBaseNrm, p, dx, dy).rg * 2.0 - 1.0) * w;
+  lum += k * w;
   rgh += texture2DGradEXT(uBaseRgh, p, dx, dy).r * rg * w;
+}
+`;
+
+// The relief, and why it is a SEPARATE tap from the two channels above.
+//
+// `gmBaseSlope` below turns this fetch into `(dH/dx, dH/dz)` — a world-XZ
+// HEIGHTFIELD gradient, the same quantity `gmSurf` speaks, which is what lets
+// the photograph's relief and the procedural octaves' add as one gradient
+// instead of two normals fighting over one shading normal. That quantity is
+// only defined on the projection it is a gradient OF. A tangent normal
+// sampled on a vertical plane describes a surface whose "up" is world ±X or
+// ±Z; there is no honest way to read it as a height over XZ, and the wall tap
+// therefore does not take one. So the relief stays the top tap's, weighted by
+// the top tap's own weight — which sends it to zero exactly as the face goes
+// vertical, in step with the `gmNy` factor that already scales it to nothing
+// there. One fetch, not two, and the wall tap costs two rather than three.
+const BASE_NRM_GLSL = /* glsl */ `
+void gmBaseNrm(float lyr, float w, vec2 uv, vec2 dx, vec2 dy, inout vec2 nrm) {
+  nrm += (texture2DGradEXT(uBaseNrm, vec3(uv, lyr), dx, dy).rg * 2.0 - 1.0) * w;
 }
 `;
 
@@ -755,32 +882,98 @@ void gmBaseTap(float lyr, float w, vec3 col, vec3 inv, vec3 lw, float keep, floa
  * anyway.
  */
 function baseGlsl() {
-  let body = "";
+  let top = "";
+  let wall = "";
   for (let i = 0; i < 4; i++) {
     const c = "xyzw"[i];
-    body += /* glsl */ `
-        if (gmW.${c} > 0.0) gmBaseTap(${i}.0, gmW.${c}, uIdentColor[${i}],
-            uBaseAlbInvMean[${i}], uBaseAlbLumaW[${i}], uBaseChromaKeep.${c}, uBaseRghGain.${c},
-            gmXZ * uBaseScale.${c}, gmBdx * uBaseScale.${c}, gmBdy * uBaseScale.${c},
-            gmBaseA, gmBaseN, gmBaseR);`;
+    top += /* glsl */ `
+          if (gmW.${c} > 0.0) {
+            gmBaseTap(${i}.0, gmW.${c} * gmTop, uIdentColor[${i}],
+                uBaseAlbInvMean[${i}], uBaseAlbLumaW[${i}], uBaseChromaKeep.${c}, uBaseRghGain.${c},
+                gmXZ * uBaseScale.${c}, gmBdx * uBaseScale.${c}, gmBdy * uBaseScale.${c},
+                gmBaseA, gmBaseK, gmBaseR);
+            gmBaseNrm(${i}.0, gmW.${c} * gmTop,
+                gmXZ * uBaseScale.${c}, gmBdx * uBaseScale.${c}, gmBdy * uBaseScale.${c},
+                gmBaseN);
+          }`;
+    wall += /* glsl */ `
+            if (gmW.${c} > 0.0) gmBaseTap(${i}.0, gmW.${c} * gmWall, uIdentColor[${i}],
+                uBaseAlbInvMean[${i}], uBaseAlbLumaW[${i}], uBaseChromaKeep.${c}, uBaseRghGain.${c},
+                gmWallUV * uBaseScale.${c}, gmWdx * uBaseScale.${c}, gmWdy * uBaseScale.${c},
+                gmBaseA, gmBaseK, gmBaseR);`;
   }
   return /* glsl */ `
         vec3 gmBaseA = vec3(0.0);
         vec2 gmBaseN = vec2(0.0);
         float gmBaseR = 0.0;
+        float gmBaseK = 0.0;
         float gmFadeBase = 0.0;
-        // Two derivatives, taken ABOVE the guard for the reason every other
+        // The derivatives, taken ABOVE every guard for the reason every other
         // derivative in this shader is: GLSL leaves them undefined in
         // non-uniform control flow, and these ones reach the image (they are
         // the gradient the fetches filter on, not a footprint that only fades
-        // something already at zero).
-        vec2 gmBdx = dFdx(gmXZ);
-        vec2 gmBdy = dFdy(gmXZ);
+        // something already at zero). Three components now rather than two,
+        // because the wall plane's UV is built from the same world position
+        // and the world footprint below is a function of them.
+        vec3 gmPdx = dFdx(vGmPos);
+        vec3 gmPdy = dFdy(vGmPos);
+        vec2 gmBdx = gmPdx.xz;
+        vec2 gmBdy = gmPdy.xz;
+        // The wall plane and its weight (materials v4). BASE_WALL_ON carries
+        // the derivation; this is the construction.
+        //
+        // The wall is the vertical plane containing the face's own FALL LINE,
+        // not one of the two world ones. A heightfield's distortion under the
+        // top projection is a pure stretch of 1/cos(tilt) along the fall line,
+        // and this plane's is 1/sin(tilt) along the same line — exact
+        // complements, equal at 45°, each perfect where the other is worst. It
+        // also turns the plane CHOICE into a rotation instead of a swap: the
+        // axis-aligned pair flips wherever |n.x| = |n.z|, which is a hard line
+        // of changed photograph down every diagonal cliff, and this frame
+        // rotates through that locus continuously. One wall tap, always, with
+        // nothing to select between.
+        //
+        // u runs across the slope (horizontal, perpendicular to the fall
+        // line), v is world height. Both in metres, so uBaseScale means the
+        // same cycles per metre it means on the top plane.
+        vec3 gmNb = normalize(vGmNorm);
+        vec2 gmFall = gmNb.xz / max(length(gmNb.xz), 1e-4);
+        vec2 gmAcross = vec2(-gmFall.y, gmFall.x);
+        vec2 gmWallUV = vec2(dot(vGmPos.xz, gmAcross), vGmPos.y);
+        // Differentiated AFTER the frame is built, not before: the fall line
+        // rotates across a hillside, and a footprint taken on the unrotated
+        // axes understates it wherever it turns fastest — which is where a
+        // wrong footprint aliases. dFdx of the finished UV carries the frame's
+        // own rotation for free.
+        vec2 gmWdx = dFdx(gmWallUV);
+        vec2 gmWdy = dFdy(gmWallUV);
+        // The weights are the two projections' honest foreshortenings —
+        // sin and cos of the face's tilt — with the wall's gated to exactly
+        // zero at and below the crossover, so gentle ground never pays for a
+        // tap that would be the worse of the two anyway.
+        float gmTilt = length(gmNb.xz);
+        float gmWall = gmTilt * clamp((gmTilt - ${BASE_WALL_ON.toFixed(5)})
+                                      * ${(1 / (1 - BASE_WALL_ON)).toFixed(5)}, 0.0, 1.0);
+        float gmTop = abs(gmNb.y);
+        float gmBW = max(gmTop + gmWall, 1e-4);
+        gmTop /= gmBW;
+        gmWall /= gmBW;
+        // gmFw is the world footprint since materials v4, so this fade needs
+        // no correction of its own: the base maps retired on the horizontal
+        // one like everything else, which reported a cliff at 300 m as near
+        // ground and kept twelve fetches alive out there delivering a texture
+        // below the pixel.
         if (gmFw * ${BASE_SCALE_MIN.toFixed(4)} < uBaseFade.y) {
           float gmBScale = dot(uBaseScale, gmW);
           gmFadeBase = 1.0 - smoothstep(uBaseFade.x, uBaseFade.y, gmFw * gmBScale);
         }
-        if (gmFadeBase > 0.0) {${body}
+        if (gmFadeBase > 0.0) {${top}
+          // Skipped wherever the face is gentler than the ramp's foot, which
+          // is most of the world and all of level ground — where gmTop is
+          // then exactly 1 and the block above is bit-for-bit the single-tap
+          // program this replaces.
+          if (gmWall > 0.0) {${wall}
+          }
         }
         // The blended tangent normal as a world-XZ SLOPE, which is the unit
         // gmSurf below already speaks — so the photograph's relief and the
@@ -850,7 +1043,7 @@ const terrainFragPars = (grain) => {
   // difference between the two is still the field's instructions and nothing
   // else. `uBase` is the handle that removes them, and like `uGrain` and
   // `uTint` it is a probe input, not a quality setting.
-  const head = TERRAIN_FRAG_PARS_HEAD + BASE_TAP_GLSL;
+  const head = TERRAIN_FRAG_PARS_HEAD + BASE_TAP_GLSL + BASE_NRM_GLSL;
   if (grain === "on") return head + GRAIN_GLSL + GRAIN_TRI_GLSL;
   if (grain === "xz") return head + GRAIN_GLSL;
   return head;
@@ -994,29 +1187,25 @@ function fieldGlsl(field) {
  * far field would throw away. Its footprint is the WORLD one, not gmXZ's: a
  * pixel on a steep face barely moves in XZ while covering metres of surface,
  * and filtering on the horizontal footprint alone would keep a 4 cm octave
- * live at any distance on exactly the faces it reads worst on. The cheap
- * horizontal footprint is still what guards the block, because it is a lower
- * bound on the world one — conservative in the right direction.
+ * live at any distance on exactly the faces it reads worst on.
  *
- * The fade it is cut on is already zero at the cut — `gmFw3 >= gmFw` because a
- * vector's length bounds its own xz sub-vector's, and `gmGScale >=
- * GRAIN_SCALE_MIN` because the weights are convex and normalized — so wherever
- * the guard skips, the `smoothstep` inside would have returned exactly 1 and
- * the fade exactly 0. `gmH` therefore stays continuous across the boundary and
- * the `dFdx(gmH)` below sees no step.
+ * Since materials v4 that is `gmFw` itself and this block no longer takes a
+ * footprint of its own. Grain was the only octave in the file written against
+ * the sampling rate it is actually sampled at, and the only octave that never
+ * aliased; the fix was not to give the others a private copy of grain's
+ * measurement but to make the shared one correct, which is what `gmFw` is now.
+ * The guard above and the smoothstep inside therefore read the same quantity,
+ * so the block is entered exactly when it has something to contribute.
  *
- * The one derivative inside is `fwidth(vGmPos)`, and it is inside on purpose,
- * which is a hazard worth naming rather than a claim of safety: GLSL leaves
- * derivatives in non-uniform control flow undefined, and this branch is
- * per-fragment. It is admissible here because the quantity is a screen-space
- * FOOTPRINT — a filter width, not a value that reaches the image — so a wrong
- * one on a quad straddling the boundary can only fade an octave that is
- * already at zero amplitude there. The gate is what holds that: the far view
- * measures 0.000% of the frame moved and the same-state control differs on 0
- * pixels, at the very distances where quads straddle it. Every derivative that
- * DOES reach the image (`fwidth(gmXZ)`, `dFdx(vGmPos)`, `dFdx(gmH)`, the
- * specular-AA pair) is taken outside this branch, which is why the two fades
- * above are computed above the field rather than below it.
+ * `gmGScale >= GRAIN_SCALE_MIN` because the weights are convex and normalized,
+ * so wherever the guard skips, the `smoothstep` inside would have returned
+ * exactly 1 and the fade exactly 0. `gmH` therefore stays continuous across
+ * the boundary and the `dFdx(gmH)` below sees no step.
+ *
+ * No derivative is taken inside this branch any more — the hazard the old
+ * `fwidth(vGmPos)` here carried (GLSL leaves derivatives in non-uniform
+ * control flow undefined, and this branch is per-fragment) is simply gone with
+ * it. Every derivative in this shader is now taken at the top level.
  */
 function grainGlsl(grain) {
   if (grain === "off") {
@@ -1037,9 +1226,8 @@ function grainGlsl(grain) {
         float gmGrain = 0.0;
         float gmGrainSwing = 0.0;
         if (gmFw * ${GRAIN_SCALE_MIN.toFixed(4)} < uGrainFade.y) {
-          float gmFw3 = max(length(fwidth(vGmPos)), 1e-5);
           float gmGScale = dot(uGrainScale, gmW);
-          float gmFadeGrain = 1.0 - smoothstep(uGrainFade.x, uGrainFade.y, gmFw3 * gmGScale);
+          float gmFadeGrain = 1.0 - smoothstep(uGrainFade.x, uGrainFade.y, gmFw * gmGScale);
           if (gmFadeGrain > 0.0) {
             gmGrain = ${tap}
                     * 2.0 * gmFadeGrain * uSurface * uGrain;
@@ -1257,7 +1445,27 @@ export function makeTerrainMaterial(variantName = "ship") {
         // than aliasing — and an octave that is gone need not be SAMPLED.
         // The fades are computed here, above the field, for that second
         // reason (see fieldGlsl).
-        float gmFw = max(length(fwidth(gmXZ)), 1e-5);
+        //
+        // The footprint is the WORLD one and not the horizontal one, and that
+        // one word is materials v4's whole finding. TERRAIN.md has stated the
+        // law since materials v1 — "its fade reads the world footprint, not
+        // the horizontal one, because a pixel on a steep face barely moves in
+        // XZ while covering metres of surface" — and it was written about
+        // GRAIN, applied to grain, and never propagated to the three octaves
+        // grain was derived from, nor to the tint, nor to the base maps. Four
+        // consumers of one law and one of them obeying it.
+        //
+        // What that cost is not subtle and it is not a smear. On a 69 degree
+        // face — the steepest this seed builds — the XZ footprint is 1/2.8 of
+        // the real one, so every octave here stayed at FULL strength roughly
+        // three times past its own retirement. A reconstructed field cannot
+        // be filtered (this file's own argument for why it fades at all), so
+        // what reached the image past Nyquist was its alias: a radial comb of
+        // hard lines with a chevron moire over it, locked to the fall line,
+        // over every cliff and steep hillside in the world. Toggling uBase
+        // off makes it louder rather than quieter, which is how it was
+        // finally attributed — it was never the photograph.
+        float gmFw = max(length(fwidth(vGmPos)), 1e-5);
         float gmFadeMeso = 1.0 - smoothstep(uFade.x, uFade.y, gmFw);
         float gmFadeMicro = 1.0 - smoothstep(uFade.z, uFade.w, gmFw);
 ${fieldGlsl(variant.field)}
@@ -1296,7 +1504,28 @@ ${tintGlsl(variant.tint)}
         float gmSnow = smoothstep(${SNOW_RANGE[0].toFixed(1)}, ${SNOW_RANGE[1].toFixed(1)}, vGmPos.y) * gmW.w;
         float gmCliff = (1.0 - smoothstep(${CLIFF_UPNESS[0].toFixed(3)}, ${CLIFF_UPNESS[1].toFixed(3)}, clamp(vGmNorm.y, 0.0, 1.0))) * gmW.w;
         gmAlbedo *= mix(1.0, ${CLIFF_DARKEN.toFixed(3)}, gmCliff);
-        gmAlbedo = mix(gmAlbedo, uSnowColor, gmSnow);
+        // Snow is the ONE modifier here that replaces the albedo instead of
+        // scaling it, and that is why the high ground rendered as a flat sheet
+        // while everything below it carried a photograph. gmWet and gmCliff
+        // multiply, so whatever variation the base tap delivered survives
+        // them; mix(albedo, SNOW_COLOR, 1) is a constant, and above 80 m
+        // gmSnow IS 1 over whole hillsides. Every gate the base maps have —
+        // 15h's 5.90/8.61 luma per pixel, ART.md rule 1's "no surface may be
+        // one flat value" — was measured on ground the snow does not reach, so
+        // nothing went red over a fifth of the island reverting to the octaves
+        // alone (0.41-0.47 luma/px, an order of magnitude down).
+        //
+        // The repair is the base tap's own mean-preservation law, reused
+        // rather than restated: gmBaseK is the photograph resolved through
+        // each layer's luma weights, so it has mean exactly 1, so
+        // SNOW_COLOR * gmBaseK has mean exactly SNOW_COLOR. Snow keeps its
+        // authored colour to the last bit and gains the surface's luminance
+        // detail — which is what snow over rock looks like anyway: it takes
+        // the relief's light and shade and none of its colour. At uBase = 0
+        // (and past the base's own fade) gmBaseLum is exactly 1 and this line
+        // is the constant it replaces, so the toggle stays an instrument.
+        float gmBaseLum = mix(1.0, gmBaseK, gmBaseAmt);
+        gmAlbedo = mix(gmAlbedo, uSnowColor * gmBaseLum, gmSnow);
         gmRough = mix(gmRough, ${SNOW_ROUGH.toFixed(3)}, gmSnow);
         gmAlbedo *= mix(1.0, ${WET_DARKEN.toFixed(3)}, gmWet);
         gmRough = mix(gmRough, ${WET_ROUGH.toFixed(3)}, gmWet);
@@ -1477,13 +1706,22 @@ ${grainGlsl(variant.grain)}
     // about.
     grainProjection: projectionName(variant.grain),
     grainTaps: grainTaps(variant.grain),
-    // The third counted axis, and the new one. Texture fetches per shaded
-    // fragment: three maps x four identities, an UPPER bound the way the noise
-    // count is one, because the exact `gmW > 0.0` skip means a fragment inside
-    // one biome pays three. Counted and not timed, deliberately — `NOW.md`
-    // item 9 records six cost-sweep runs on this box that came back the wrong
-    // sign five times, and a seventh reading is not a tiebreak.
+    // The third counted axis. Texture fetches per shaded fragment, an UPPER
+    // bound the way the noise count is one: the exact `gmW > 0.0` skip means a
+    // fragment inside one biome pays a quarter of it. Counted and not timed,
+    // deliberately — `NOW.md` item 9 records six cost-sweep runs on this box
+    // that came back the wrong sign five times, and a seventh reading is not a
+    // tiebreak.
+    //
+    // Two numbers since materials v4, because one of them stopped describing
+    // most of the screen. `Level` is what a fragment gentler than 45° pays —
+    // the wall block is skipped whole, so it is the pre-v4 count unchanged —
+    // and `Max` is what a face steeper than that pays at a four-way splat
+    // boundary. Reporting only the ceiling would have said the projection cost
+    // 67% more everywhere, and it costs that nowhere a player stands.
     baseTexFetches: BASE_FETCHES_MAX,
+    baseTexFetchesLevel: BASE_FETCHES_LEVEL,
+    baseProjection: "biplanar",
     baseTexUnits: 3,
   };
   return material;
@@ -2269,6 +2507,13 @@ export function baseFacts() {
     fadeCpp: FADE_BASE_CPP,
     fadeM: FADE_BASE_CPP.map((cpp) => BASE_SCALE.map((s) => cpp / s)),
     fetchesMax: BASE_FETCHES_MAX,
+    fetchesLevel: BASE_FETCHES_LEVEL,
+    // The projection, and the face tilt at which its second tap turns on —
+    // published as the cosine as well, because `BASE_WALL_ON` is a normal
+    // component and the thing a reader wants to check it against is a slope.
+    projection: "biplanar",
+    wallOn: BASE_WALL_ON,
+    wallOnDeg: (Math.asin(BASE_WALL_ON) * 180) / Math.PI,
     units: 3,
     unitBudget: BASE_TEX_UNIT_BUDGET,
   };

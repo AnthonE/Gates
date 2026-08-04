@@ -193,6 +193,22 @@ The rule that replaces it:
   its mean.** Bound it per layer against that layer's own gain span; a source
   already in band keeps its colour whole, and one that is not keeps almost none
   of it, because almost none of what it has left is its own.
+- **A map is only as good as the surface it is laid on, and a modifier that
+  REPLACES an albedo throws the map away.** Two ways the ground can carry a
+  photograph and still not show one, both shipped and both fixed in
+  materials v4. (1) *Projection.* World XZ is a projection from above; on a
+  face of upness `u` it stretches the map `1/u` along the fall line, x2.8 at
+  this island's steepest faces and unbounded at vertical. A sourced map goes
+  on the SURFACE — the top plane plus the fall-line plane, whose distortions
+  are exact complements. (2) *Modifiers multiply, never replace.* Wetness and
+  cliff darkening scale the albedo, so the photograph survives them; snow
+  used `mix(albedo, SNOW_COLOR, 1)`, a constant, and above 80 m that is whole
+  hillsides reverting to rule 1's flat value with every amplitude gate still
+  green because none of them is measured up there. A modifier that must set a
+  colour multiplies the surface's own mean-1 luminance field by it, so the
+  authored colour is the delivered mean and the relief's light and shade
+  survive. **Any new causal modifier is a multiply or it carries the detail
+  through explicitly — there is no third option.**
 - **The measurement that separates detail from noise is direction, not
   amplitude.** Resolve the near ground's high-frequency residual along the
   local mean colour (a surface lighter here, darker there — real detail, and

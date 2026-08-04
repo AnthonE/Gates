@@ -139,8 +139,19 @@ point: **terrain life is just chunk events over a generated backdrop.**
   identity's grain dies at its own distance on one curve — and its fade
   reads the **world** footprint, not the horizontal one, because a pixel
   on a steep face barely moves in XZ while covering metres of surface.
-  It is still projected on world XZ, so on a slope it combs downhill;
-  sampling the grain alone triplanar is the next surface item.
+  Grain is **triplanar** (materials v1) and the base maps are
+  **biplanar** (materials v4): the existing top tap plus one on the
+  vertical plane containing the face's own fall line, whose stretch is
+  `1/sin(tilt)` where the top plane's is `1/cos(tilt)` — exact
+  complements, so the worst case anywhere is 45 deg at x1.41 where they
+  average. The wall turns on at the crossover (`BASE_WALL_ON`, the 45 deg
+  where `sin = cos` and the wall becomes the less distorted of the two),
+  so level ground pays one tap and renders bit-for-bit what it did
+  before. **Every octave now retires on the WORLD footprint** — the law
+  stated in this paragraph since materials v1 was applied to grain alone
+  for two passes, and on a 69 deg face the horizontal footprint is 1/2.8
+  of the real one, so every other octave stayed at full strength three
+  times past its own Nyquist and reached the image as its alias.
 - **Scatter rendering**: per chunk, one `InstancedMesh` per archetype
   filled from the slot list (minus harvested), frustum-culled per chunk.
   Trees get two LODs (mesh / billboard cross) **(knob: distances)**; each
