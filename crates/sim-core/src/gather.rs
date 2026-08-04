@@ -129,6 +129,20 @@ pub struct GatherContent {
 }
 
 impl GatherContent {
+    /// The stack ceiling for an item, total over every `u16` — an index
+    /// past the table reads as zero, which every caller already treats as
+    /// "the ladder cannot size this, so it cannot be carried"
+    /// (`backpack.rs`'s loot skip, `inventory.rs`'s `REFUSE_M_UNSTACKABLE`).
+    /// The bounds test lived inlined at each call site; one item id arrives
+    /// from the wire and one from a WAL, so it wants to be one function.
+    pub fn stack_max_of(&self, item: u16) -> u16 {
+        if (item as usize) < MAX_ITEM_DEFS {
+            self.stack_max[item as usize]
+        } else {
+            0
+        }
+    }
+
     /// Inert: nothing is gatherable. `World::new` starts here; the boot
     /// path installs the baked table before the first tick.
     pub const EMPTY: Self = Self {

@@ -13,12 +13,13 @@ use protocol::{
     encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_respawn,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
-    encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
-    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
-    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_hit, encode_event_inv, encode_event_move_refused, encode_event_moved,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
+    encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog,
+    SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
@@ -33,9 +34,21 @@ use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
     EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED,
     EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT,
-    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
-    EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_RESPAWN, EV_SLOT_HARVESTED,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
+
+/// Unpack `sim_core::inventory::addr` — from kind, from slot, to kind, to
+/// slot. One function, used by both move events, so the two can never
+/// disagree about which byte is which.
+fn addr_parts(addr: u32) -> (u8, u8, u8, u8) {
+    (
+        (addr >> 24) as u8,
+        (addr >> 16) as u8,
+        (addr >> 8) as u8,
+        addr as u8,
+    )
+}
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
 /// distance falloff half-scale is 32 m. Other classes land with their
@@ -287,6 +300,22 @@ impl ShardCore {
                     ActionMsg::Consume { slot } => Command::Consume { id: c.id, slot },
                     ActionMsg::Drink => Command::Drink { id: c.id },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
+                    ActionMsg::Move {
+                        bag,
+                        from_kind,
+                        from_slot,
+                        to_kind,
+                        to_slot,
+                        count,
+                    } => Command::Move {
+                        id: c.id,
+                        bag,
+                        from_kind,
+                        from_slot,
+                        to_kind,
+                        to_slot,
+                        count,
+                    },
                 };
                 n += 1;
             }
@@ -721,6 +750,58 @@ impl ShardCore {
                         continue; // that player left this tick
                     };
                     match encode_event_respawn(ev.b != 0, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_MOVED | EV_MOVE_REFUSED => {
+                    // Own-fact, `EV_RESPAWN`'s audience: a move inside your
+                    // own inventory is nobody else's business, and a move
+                    // into a bag is already visible to everyone else as the
+                    // bag's own sync. What rides here is the *reconcile* —
+                    // the sender predicted this drag and is waiting to be
+                    // told to keep it or roll it back — so it goes to the
+                    // one client that predicted it and to no one else.
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // that player left this tick
+                    };
+                    // `inventory::addr`'s pack, unpacked. The sim and the
+                    // wire agree on the order (from kind, from slot, to
+                    // kind, to slot) and `test_event_roles` holds the sim
+                    // half of that agreement to the sentence in `world.rs`.
+                    let (kind_a, slot_a, kind_b, slot_b) = if ev.code == EV_MOVED {
+                        addr_parts(ev.b)
+                    } else {
+                        addr_parts(ev.c)
+                    };
+                    let encoded = if ev.code == EV_MOVED {
+                        encode_event_moved(
+                            kind_a,
+                            slot_a,
+                            kind_b,
+                            slot_b,
+                            (ev.c >> 16) as u16,
+                            ev.c as u16,
+                            &mut self.ev_buf,
+                        )
+                    } else {
+                        encode_event_move_refused(
+                            ev.b as u8,
+                            kind_a,
+                            slot_a,
+                            kind_b,
+                            slot_b,
+                            &mut self.ev_buf,
+                        )
+                    };
+                    match encoded {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);

@@ -12,6 +12,7 @@ use crate::deploy::{self, DeployContent, Deploys};
 use crate::fmath::floor_i32;
 use crate::gather::{self, GatherContent, ItemStack, SlotLives, NO_CELL, NO_ITEM};
 use crate::input::InputFrame;
+use crate::inventory;
 use crate::limits::{
     CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS,
     STATE_HASH_INTERVAL,
@@ -160,6 +161,33 @@ pub const EV_DRANK: u8 = 24;
 /// because "the bag was spent, you are on a beach" is a fact the player
 /// needs and cannot read off a coordinate.
 pub const EV_RESPAWN: u8 = 25;
+/// EV_MOVED: a = player id, b = the move's address
+/// (`inventory::addr`: from kind << 24 | from slot << 16 | to kind << 8 |
+/// to slot), c = count moved << 16 | the item that left the `from` slot.
+///
+/// Own-fact, and it names what the sender asked for rather than the whole
+/// container, because a move here is all-or-nothing: the address plus the
+/// count plus the item is the entire difference between the state the
+/// client predicted and the state the sim now holds. `c`'s item is the
+/// reconcile hook — a client whose picture of the source slot was stale
+/// gets an item id it did not expect and knows to redraw, instead of
+/// silently carrying a divergence the way a partial move would leave one.
+/// A swap reads as the same event; the client asked for a whole stack onto
+/// an occupied slot and already holds both sides of the exchange.
+pub const EV_MOVED: u8 = 26;
+/// EV_MOVE_REFUSED: a = player id, b = `inventory::REFUSE_M_*` reason,
+/// c = the move's address, exactly as `EV_MOVED.b` packs it.
+///
+/// `b` is the reason and `c` the address — the order every other refusal
+/// in this lane uses (`EV_DEPLOY_REFUSED`, `EV_CONSUME_REFUSED`), so the
+/// field a reader reaches for first is the same one across the lane.
+///
+/// The address rides along, and that is the point of the event: it is what
+/// lets a client roll back the one move it predicted rather than resync a
+/// container. This is the disconnect that never happens — see
+/// `inventory.rs`, where the reference's three-fixes-in-half-an-hour day
+/// is written down.
+pub const EV_MOVE_REFUSED: u8 = 27;
 
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
@@ -168,7 +196,7 @@ pub const EV_RESPAWN: u8 = 25;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_RESPAWN;
+pub const EV_MAX: u8 = EV_MOVE_REFUSED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -448,6 +476,26 @@ pub enum Command {
     Loot {
         id: u32,
     },
+    /// Move `count` items between two slots (`inventory.rs`). `bag` names
+    /// the ground container either side may address — zero when the move
+    /// is inside the sender's own inventory, and ignored when neither kind
+    /// is `CONT_BAG`.
+    ///
+    /// Unlike `Loot`, this one *does* carry a target, and it has to: the
+    /// whole verb is the player choosing which slot, which is the choice
+    /// `Loot` takes away by moving everything that fits. What the sim
+    /// keeps is the verdict — a forged kind, a slot past the container, a
+    /// bag out of reach and a count past the stack all land on the same
+    /// announced `EV_MOVE_REFUSED`, and none of them on a dropped session.
+    Move {
+        id: u32,
+        bag: u32,
+        from_kind: u8,
+        from_slot: u8,
+        to_kind: u8,
+        to_slot: u8,
+        count: u16,
+    },
     /// Eat what is in inventory slot `slot` (survival.rs). The slot is the
     /// sender's claim and the sim is the verdict: a forged index, an empty
     /// hand and a stack of wood all land on the same announced refusal.
@@ -689,6 +737,121 @@ impl World {
     /// body that is standing still (the tick zeroes what it acts on).
     fn live_slot_of(&self, id: u32) -> Option<usize> {
         self.slot_of(id).filter(|&s| !self.players[s].dead)
+    }
+
+    /// The move verb's one mutating body. Everything it decides is decided
+    /// by `inventory.rs`, which cannot write; everything it writes is
+    /// below the last `return`, and there are exactly two writes.
+    ///
+    /// Read the shape rather than the lines: the source and destination
+    /// stacks are read out **by value** (`ItemStack` is `Copy`), so the
+    /// planner is never handed a reference into a container and the two
+    /// sides cannot alias even when both are the same array — which is the
+    /// ordinary case, since arranging your own hotbar is `CONT_SELF` to
+    /// `CONT_SELF`. That is also why the same-slot ask is refused up front
+    /// instead of being allowed to fall through as a no-op: with copies, a
+    /// slot moved onto itself would be written twice and the second write
+    /// would win, which is a dupe.
+    ///
+    /// Every exit before the writes announces itself. There is no silent
+    /// path and no path that ends the session.
+    #[allow(clippy::too_many_arguments)]
+    fn move_item(
+        &mut self,
+        slot: usize,
+        bag: u32,
+        from_kind: u8,
+        from_slot: u8,
+        to_kind: u8,
+        to_slot: u8,
+        count: u16,
+    ) {
+        let pid = self.players[slot].id;
+        let addr = inventory::addr(from_kind, from_slot, to_kind, to_slot);
+
+        // 1. Is that an address at all? Kind, both slot indices, and the
+        //    move-onto-itself case. Nothing has been read yet.
+        if from_kind > inventory::CONT_MAX
+            || to_kind > inventory::CONT_MAX
+            || from_slot as usize >= INV_SLOTS
+            || to_slot as usize >= INV_SLOTS
+            || (from_kind == to_kind && from_slot == to_slot)
+        {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_SLOT, addr);
+            return;
+        }
+
+        // 2. Resolve the ground container, if either side names one. A bag
+        //    that left the world and a bag out of arm's reach are separate
+        //    reasons because they are separate player-facing facts: one
+        //    means "it is gone", the other "walk back".
+        let touches_bag = from_kind == inventory::CONT_BAG || to_kind == inventory::CONT_BAG;
+        let bag_idx = if touches_bag {
+            let Some(i) = self.backpacks.index_of_id(bag) else {
+                self.events
+                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
+                return;
+            };
+            if !self.backpacks.in_reach(i, &self.players[slot]) {
+                self.events
+                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
+                return;
+            }
+            Some(i)
+        } else {
+            None
+        };
+        // Safe past the guard above: `bag_idx` is `Some` whenever either
+        // kind is `CONT_BAG`, and the zero is never indexed otherwise.
+        let bi = bag_idx.unwrap_or(0);
+
+        // 3. Read both sides as copies.
+        let src = if from_kind == inventory::CONT_BAG {
+            self.backpacks.slot(bi, from_slot as usize)
+        } else {
+            self.players[slot].inv[from_slot as usize]
+        };
+        let dst = if to_kind == inventory::CONT_BAG {
+            self.backpacks.slot(bi, to_slot as usize)
+        } else {
+            self.players[slot].inv[to_slot as usize]
+        };
+
+        // 4. Plan. This is the whole of the validation, and it holds no
+        //    reference to anything it could damage.
+        let cap = self.gather.stack_max_of(src.item);
+        let plan = match inventory::plan_move(cap, src, dst, count) {
+            Ok(p) => p,
+            Err(why) => {
+                self.events.push(EV_MOVE_REFUSED, pid, why, addr);
+                return;
+            }
+        };
+        let (new_src, new_dst) = inventory::resolve(plan, src, dst);
+
+        // 5. Mutate. Every check is behind us and both writes always land.
+        if from_kind == inventory::CONT_BAG {
+            self.backpacks.set_slot(bi, from_slot as usize, new_src);
+        } else {
+            self.players[slot].inv[from_slot as usize] = new_src;
+        }
+        if to_kind == inventory::CONT_BAG {
+            self.backpacks.set_slot(bi, to_slot as usize, new_dst);
+        } else {
+            self.players[slot].inv[to_slot as usize] = new_dst;
+        }
+        self.events.push(
+            EV_MOVED,
+            pid,
+            addr,
+            ((count as u32) << 16) | src.item as u32,
+        );
+        // A bag a withdrawal emptied leaves by `loot_nearest`'s route, so
+        // the wire sees one removal contract however it was emptied.
+        if let Some(i) = bag_idx {
+            self.backpacks.drop_if_empty(i, &mut self.events);
+        }
     }
 
     /// Death, v3: the body falls **and stays down**. What you were carrying
@@ -1058,6 +1221,19 @@ impl World {
                         &mut self.players[slot],
                         &mut self.events,
                     );
+                }
+            }
+            Command::Move {
+                id,
+                bag,
+                from_kind,
+                from_slot,
+                to_kind,
+                to_slot,
+                count,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    self.move_item(slot, bag, from_kind, from_slot, to_kind, to_slot, count);
                 }
             }
             Command::Respawn { id, on_bag } => {

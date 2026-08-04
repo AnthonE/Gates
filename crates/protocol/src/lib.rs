@@ -39,12 +39,13 @@ pub use event::{
     encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_respawn,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
-    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
-    BAG_SYNC_BATCH, CATALOG_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_hit, encode_event_inv, encode_event_move_refused, encode_event_moved,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
+    encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH,
+    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
+    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -135,7 +136,17 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// way a bag's position is — the corpse is still in its slot until the
 /// player answers, which is what makes that safe. Fixtures are keyed
 /// `v16_*`.
-pub const PROTO_VER: u16 = 16;
+/// v17 added the move verb — the first way a player can say *which* item
+/// (`inventory.rs`). Three messages, all inside fields earlier versions
+/// widened, so nothing existing moved a bit: the move action, the
+/// **thirteenth**, inside v12's 4-bit subtype; and the `moved` and
+/// `move_refused` events, the **37th** and **38th** subtypes, inside v13's
+/// 6-bit field. The action is the widest on its lane at nine bytes,
+/// because it carries a 32-bit container id unconditionally rather than
+/// conditionally on the kinds — a total decoder is worth five bytes on a
+/// reliable stream that sends one of these per drag. Fixtures are keyed
+/// `v17_*`.
+pub const PROTO_VER: u16 = 17;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -331,6 +342,22 @@ const ACT_DRINK: u32 = 10;
 /// The respawn verb (wire v16, world.rs). Twelfth of the sixteen, so no
 /// width moved for it either — four action codes remain.
 const ACT_RESPAWN: u32 = 11;
+/// The move verb (wire v17, `inventory.rs`). Thirteenth of the sixteen,
+/// so no width moved for it either — three action codes remain.
+const ACT_MOVE: u32 = 12;
+/// Container-kind width on the move action. Two bits for two live kinds
+/// (`inventory::CONT_SELF`, `CONT_BAG`), so 2 and 3 are forgeable and
+/// refuse at decode — the `BUILD_MAT_BITS` posture, and deliberately not
+/// a single bit: the spare pair is where a deployed box lands, and
+/// spending the width now is what keeps that change from moving this
+/// message. See `inventory::CONT_MAX`.
+const CONT_KIND_BITS: u32 = 2;
+/// Move-count width. Full `u16`, matching `ItemStack::count` and the
+/// stack ladder's own type, so no count a container can legally hold is
+/// unsendable. Zero refuses at decode: a move of nothing is not a move,
+/// and letting it cross would spend a refusal event on a message the
+/// wire could have declined itself.
+const MOVE_COUNT_BITS: u32 = 16;
 /// Cancel index width mirrors the queue (`CRAFT_QUEUE` = 4 fits 3 bits);
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
@@ -452,6 +479,64 @@ pub enum ActionMsg {
     /// hold an opinion about: whether to go back to the fight you just lost
     /// or leave it. Sent by a live body it does nothing (world.rs).
     Respawn { on_bag: bool },
+    /// Move `count` items from one slot to another (`inventory.rs`).
+    ///
+    /// **The one action that carries a target id**, and the exception is
+    /// the point of the verb. `Loot` and `Respawn` refuse an id because
+    /// the sim can pick the nearest thing itself and a forgeable id would
+    /// let a client reach a bag that is not theirs; here the whole verb
+    /// *is* the choice, so the id crosses and the sim spends a reach check
+    /// on it instead — which is the same defence, moved from "you cannot
+    /// name it" to "you cannot name it from over there".
+    ///
+    /// `bag` is zero for a move inside your own inventory and ignored
+    /// unless a kind is `CONT_BAG`. Shape is the wire's business (a kind
+    /// inside the two live ones, a slot inside `INV_SLOTS`, a nonzero
+    /// count); whether the item is there, whether it fits and whether the
+    /// bag is in reach is the sim's verdict, delivered as a
+    /// move-refused event.
+    Move {
+        bag: u32,
+        from_kind: u8,
+        from_slot: u8,
+        to_kind: u8,
+        to_slot: u8,
+        count: u16,
+    },
+}
+
+/// The move verb — see `ActionMsg::Move`. Range-checks every field it can
+/// (kinds, slots, a nonzero count) so a client bug is a local `Range`
+/// rather than a frame the server declines by ending the session: a bad
+/// action frame kills the reader task (`server/src/net.rs`), which is
+/// exactly the disconnect this verb is written to never cause.
+pub fn encode_action_move(
+    bag: u32,
+    from_kind: u8,
+    from_slot: u8,
+    to_kind: u8,
+    to_slot: u8,
+    count: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if from_kind > sim_core::inventory::CONT_MAX
+        || to_kind > sim_core::inventory::CONT_MAX
+        || from_slot as usize >= sim_core::limits::INV_SLOTS
+        || to_slot as usize >= sim_core::limits::INV_SLOTS
+        || count == 0
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_MOVE, ACTION_SUB_BITS)?;
+    w.write(bag, 32)?;
+    w.write(from_kind as u32, CONT_KIND_BITS)?;
+    w.write(from_slot as u32, ACTION_SLOT_BITS)?;
+    w.write(to_kind as u32, CONT_KIND_BITS)?;
+    w.write(to_slot as u32, ACTION_SLOT_BITS)?;
+    w.write(count as u32, MOVE_COUNT_BITS)?;
+    Ok(w.finish())
 }
 
 /// Answer the death screen — see `ActionMsg::Respawn`.
@@ -771,6 +856,35 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         ACT_RESPAWN => ActionMsg::Respawn {
             on_bag: r.read_bit()?,
         },
+        ACT_MOVE => {
+            let bag = r.read(32)?;
+            let from_kind = r.read(CONT_KIND_BITS)? as u8;
+            let from_slot = r.read(ACTION_SLOT_BITS)? as u8;
+            let to_kind = r.read(CONT_KIND_BITS)? as u8;
+            let to_slot = r.read(ACTION_SLOT_BITS)? as u8;
+            let count = r.read(MOVE_COUNT_BITS)? as u16;
+            // Two bits hold two kinds and five hold thirty slots, so both
+            // have forgeable values above the live range; a zero count is
+            // forgeable too. The same-slot ask is *not* refused here — it
+            // is a legal shape and an illegal move, so the sim owns it and
+            // answers with a reason the player can be shown.
+            if from_kind > sim_core::inventory::CONT_MAX
+                || to_kind > sim_core::inventory::CONT_MAX
+                || from_slot as usize >= sim_core::limits::INV_SLOTS
+                || to_slot as usize >= sim_core::limits::INV_SLOTS
+                || count == 0
+            {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Move {
+                bag,
+                from_kind,
+                from_slot,
+                to_kind,
+                to_slot,
+                count,
+            }
+        }
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;

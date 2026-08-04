@@ -29,6 +29,34 @@ Done items are deleted, not checked — history lives in git and
 
 1. **The container verb has no UI and no gate — and the systems half is not
    ours.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.)*
+1. **A box holds nothing: `ARCH_BOX` still has no storage and no address.**
+   *(Gap pass, iteration 3. Ranked gap 1 in BOTH `findings/pass-20260804-173640-01-judge.md`
+   and `-02`; the move verb half of it landed this pass, this is the rest.)*
+
+   `Command::Move` now spans `CONT_SELF` and `CONT_BAG` (`inventory.rs`,
+   wire v17), so a player can arrange a hotbar, split a stack and take one
+   slot at a time from a bag. A **base** still holds nothing: `ARCH_BOX`
+   (`deploy.rs:80`) bakes, places, and has no contents array and no verb.
+   That is the judges' "a raid takes nothing" half, and it is now purely
+   additive — a third `CONT_*` kind, resolved against a new store, and not
+   one line of `plan_move` moves.
+
+   What it needs: a `BoxRec { cx, cz, level, owner, items }` parallel dense
+   list on `Deploys`, the way `HearthRec` already is; allocate on a
+   `PlaceDeploy` of an `ARCH_BOX` row and free on removal; address it by
+   cell key like a hearth feed, not by an index. **Watch the stack** — the
+   item below says `World` is ~416 kB against a 2 MB debug limit and
+   already overflows, so box the store at construction rather than
+   discovering it in a red `cargo test`.
+
+   Two open questions for `DECISIONS.md` §open when it is picked up: the
+   box's slot count (reusing `INV_SLOTS` costs 30 KB at `MAX_BOXES` 256),
+   and whether a box is owner-only or open to anyone standing in reach
+   (lock v0 is already §open and unanswered — the same question).
+
+1. **The container panel: the refusal path exists now, so the UI is
+   startable.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.
+   Systems half landed 2026-08-04, wire v17.)*
 
    There is no inventory or loot panel in `web/src` at all: wasm owns the 30
    slots (`wasm.js:76`), the hotbar is the first 6 of them read on a timer
@@ -36,13 +64,18 @@ Done items are deleted, not checked — history lives in git and
    no container view (`main.js:426`). So the move/stack/split verb — the most
    bug-prone thing in the reference — does not exist yet in either half.
 
-   **Systems lane, the one-line request:** container move/stack/split in
-   `crates/`, with the validation ordered BEFORE the mutation and computed on
-   the values the client predicted with (CLAUDE.md's quantize-both-sides law
-   applied to containers). Three Oxide fixes in 28 minutes on one 2019 day were
-   all splice-point moves that landed as *the server disconnecting the client*,
-   because container state diverged and that reads as a forged request. The UI
-   half is not startable until the refusal path exists to draw against.
+   **The systems half is done** — the request is answered, not deleted,
+   because the UI half is what makes it reachable. `client_action_move(bag,
+   from_kind, from_slot, to_kind, to_slot, count)` encodes a drag and
+   returns 0 rather than a frame the server would answer by dropping the
+   session; `client_move_readout()` gives the verdict (reason 0 = landed)
+   and `client_move_payload()` what moved. Slot contents are **not** in
+   that event on purpose: the inventory diff already pushes changed slots
+   authoritatively, so the panel applies those and uses the readout only to
+   keep or roll back the drag it drew. Refusal reasons are
+   `inventory::REFUSE_M_*` — a player-facing string per reason is the
+   panel's job, and "it is out of reach" and "it is gone" are deliberately
+   separate reasons because they are different things to tell a player.
 
    `ci/ui_smoke.mjs` is the gate it lands in. The renderer-tier carve-out is
    **armed** (operator, 2026-08-04, `DECISIONS.md` §open), so a change confined
@@ -235,7 +268,9 @@ Done items are deleted, not checked — history lives in git and
    share of `BUMP_MAX_SLOPE`.
 
 1. **The event lane's payloads are law with no gate — nine codes
-   left.** *(Operator, 2026-08-04: top priority. Ledger now 16/25.)*
+   left.** *(Operator, 2026-08-04: top priority. Ledger now 18/27 — wire
+   v17 added `EV_MOVED` and `EV_MOVE_REFUSED` and classified both in the
+   same commit, which is the rule this item exists to enforce.)*
 
    Every event is `push(code, a, b, c)` over three untyped `u32`s and the
    `/// EV_*:` lines in `world.rs` are the only statement of which is
@@ -244,7 +279,7 @@ Done items are deleted, not checked — history lives in git and
    `state_hash` excludes the ring by design, and a `u32`-for-`u32` swap
    type-checks. `reference/FINDINGS.md` §1 has why this outranks the queue.
 
-   **Landed**, `crates/sim-core/tests/event_roles.rs`, 16 of 25 by role,
+   **Landed**, `crates/sim-core/tests/event_roles.rs`, 18 of 27 by role,
    with four disciplines that keep it able to fail: `distinct3`,
    `distinct_halves` and `distinct_triple` (a packed field whose parts
    match cannot show the pack reversed), and `only` (refuses zero *and*
@@ -1213,10 +1248,10 @@ Done items are deleted, not checked — history lives in git and
      the overflow — now that a ground container exists, that loss has
      somewhere honest to go.
 
-   The wire counters, as of wire v15: the event subtype field is **35 of
+   The wire counters, as of wire v17: the event subtype field is **37 of
    64** used (v13 widened it 5 → 6 bits, which is why there is room), and
-   the action subtype field is **11 of 16**. The next C→S verb — a repair,
-   a throw, a container open — is an action subtype, and there are five.
+   the action subtype field is **12 of 16**. The next C→S verb — a repair,
+   a throw, a container open — is an action subtype, and there are three.
 
 9. **`gmHash4` — four lattice corners in one `vec4` body, never gated.**
    The projection half of this item landed (materials v1 third pass,
