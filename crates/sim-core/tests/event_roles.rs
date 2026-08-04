@@ -23,19 +23,28 @@
 //!
 //! So this file asserts roles, not bytes: drive one known cause through
 //! the real `World`, then check each field against the sentence in
-//! `world.rs`. Three disciplines make it able to fail —
+//! `world.rs`. Four disciplines make it able to fail —
 //!
 //! 1. **Every field in a checked event must be mutually distinguishable.**
 //!    A check where the attacker id, the victim id and the damage all
 //!    happened to be 1 would pass under any permutation. `distinct3`
 //!    asserts the fixture keeps them apart, so a later fixture edit that
 //!    blinds a check fails loudly instead of quietly passing.
-//! 2. **Exactly one event per code on the tick it lands.** `only` refuses
+//! 2. **And distinguishable *inside* a packed field.** Half this lane's
+//!    payloads are `hi << 16 | lo`, or `level << 16 | loc << 8 | row`, and
+//!    a check against one is blind to the pack being reversed whenever two
+//!    parts carry the same number. `distinct_halves` and `distinct_triple`
+//!    refuse that outright. This is not hypothetical either:
+//!    `SurvivalContent::probe_fixture` sets `max_food` and `max_water` both
+//!    to 100, so `EV_VITALS.c` reads identically reversed under the stock
+//!    fixture — the arrangement here moves them apart, and the assertion
+//!    fails loudly if a later edit moves them back.
+//! 3. **Exactly one event per code on the tick it lands.** `only` refuses
 //!    zero and refuses two, which makes this a double-emit gate as
 //!    well — `Removed duplicate OnBonusItemDrop hook` and two rounds of
 //!    `Fixed double deprecated hook call with OnActiveItemChange/d` are
 //!    the same family of defect over there.
-//! 3. **Find the tick, never assume it.** The first cut of this file
+//! 4. **Find the tick, never assume it.** The first cut of this file
 //!    asserted on the tick it sent the swing and read an empty ring twice.
 //!    The sim auto-repeats a held button, so every swing after the first
 //!    resolves *inside* the cooldown, on a tick the test never sent an
@@ -45,25 +54,41 @@
 //!
 //! Coverage is stated, never implied: `coverage_is_stated_not_implied`
 //! pins how many of the 25 codes are checked by role, so the gate can
-//! never read as "the event lane is covered" while covering five, and a
-//! new `EV_*` cannot land without someone classifying it.
+//! never read as "the event lane is covered" while covering thirteen, and
+//! a new `EV_*` cannot land without someone classifying it.
 //!
-//! The arrangement is `combat.rs`'s duel — `dev_spawn` pins both players to
-//! the ring's own spawn for id 1, which the spawn selector guarantees is
-//! clear of scatter for 4 m, so a swing lands on a person and never on a
-//! tree. Player id 1 is `players[0]` and attacks; id 2 is `players[1]` and
-//! dies. Nothing here invents a number: every value comes from a fixture.
+//! There are three arrangements. `duel_world` is `combat.rs`'s duel —
+//! `dev_spawn` pins both players to the ring's own spawn for id 1, which
+//! the spawn selector guarantees is clear of scatter for 4 m, so a swing
+//! lands on a person and never on a tree; id 1 is `players[0]` and
+//! attacks, id 2 is `players[1]` and dies. `lone_world` is one body under
+//! the survival clock. `builder_world` is one body on a cell the sim's own
+//! `foundation_terrain_ok` accepts, paid up for the whole structure.
+//!
+//! Every *content* number here comes from a fixture — damages, spans, the
+//! drink, the consumable row, the piece and deploy tables. What this file
+//! chooses for itself is only ever **which seat a value sits in**, and
+//! always for discipline 2: two maxima that differ, an item index and a
+//! slot that are not both zero, two doorways on different edges so
+//! `level`/`loc`/`row` are three different numbers. Those are stated at
+//! each constant with the blindness they exist to remove. None of them is
+//! a knob — no shipping code reads one.
 
 use sim_core::backpack::BackpackContent;
+use sim_core::build::{
+    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE,
+};
 use sim_core::combat::CombatContent;
-use sim_core::gather::{GatherContent, ItemStack};
+use sim_core::deploy::DeployContent;
+use sim_core::gather::{cell_key, GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
 use sim_core::world::{
-    Command, SimEvent, World, EV_BAG_DROPPED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH, EV_DRANK,
-    EV_GATHER, EV_HEALTH, EV_HIT, EV_VITALS,
+    Command, SimEvent, World, EV_BAG_DROPPED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH,
+    EV_DEPLOY_PLACED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_PIECE_PLACED, EV_STOCK,
+    EV_VITALS,
 };
 use sim_core::yaw_dir;
 
@@ -122,6 +147,34 @@ const WATER_NOW: u16 = 23;
 /// *row itself* is still the fixture's; only its index moves.
 const FOOD_ITEM: u16 = 5;
 const FOOD_SLOT: u8 = 3;
+
+/// The build/deploy fixture's rows, by name rather than by digit.
+/// `BuildContent::probe_fixture`: row 0 is the foundation, row 3 the
+/// doorway. `DeployContent::probe_fixture`: row 0 is the hearth, row 2 the
+/// door.
+const PIECE_FOUNDATION: u16 = 0;
+const PIECE_DOORWAY: u16 = 3;
+const DEPLOY_HEARTH: u16 = 0;
+const DEPLOY_DOOR: u16 = 2;
+
+/// The single build level everything here sits on. A hearth is
+/// `PLACE_FOUNDATION` and a foundation is level 0, so the whole
+/// arrangement is pinned there and `EV_STOCK.c` can only ever read 0 —
+/// stated at that check rather than papered over.
+const LEVEL: u8 = 0;
+
+/// Which edges carry which check, and why they differ.
+///
+/// `EV_PIECE_PLACED` and `EV_DEPLOY_PLACED` both pack `level << 16 | loc
+/// << 8 | row`, and a check is blind to any pair of those three being
+/// swapped when two of them hold the same number. The doorway *piece* is
+/// row 3, so it goes on the west edge (`LOC_EDGE_W` = 2) to read 0/2/3;
+/// the door *deployable* is row 2, so it goes on the north edge
+/// (`LOC_EDGE_N` = 3) to read 0/3/2. Same discipline as `distinct_halves`,
+/// one field wider — and it is why there are two doorways here rather
+/// than one.
+const PIECE_EDGE: u8 = LOC_EDGE_W;
+const DOOR_EDGE: u8 = LOC_EDGE_N;
 
 /// How many events of `code` are in the tick just run.
 fn count(w: &World, code: u8) -> u32 {
@@ -239,6 +292,19 @@ fn distinct_halves(packed: u32, what: &str) {
         "{what} packs {} into both halves, so this check cannot see the \
          pack reversed. Move the fixture, not the assertion.",
         packed >> 16
+    );
+}
+
+/// `distinct_halves`, one field wider: the addressed events pack
+/// `level << 16 | loc << 8 | row` into `b`, and a check against that is
+/// blind to any two of the three being swapped whenever they carry the
+/// same number. The fixture must keep all three apart.
+fn distinct_triple(level: u32, loc: u32, row: u32, what: &str) {
+    assert!(
+        level != loc && loc != row && level != row,
+        "{what} packs level {level}, loc {loc}, row {row} — two are equal, \
+         so this check cannot see them swapped. Move the fixture, not the \
+         assertion."
     );
 }
 
@@ -633,6 +699,357 @@ fn consume_refused_names_the_player_then_why() {
     );
 }
 
+// ---------------------------------------------------------------------
+// The build/deploy lane: EV_PIECE_PLACED, EV_DEPLOY_PLACED, EV_STOCK,
+// EV_DOOR.
+//
+// This is where the reference's own history is loudest. `EV_STOCK` is the
+// one code in the lane whose `a`/`b` convention is *inverted* relative to
+// every addressed neighbour — the player is `a` and the cell key is `b`,
+// where `EV_PIECE_PLACED`, `EV_DEPLOY_PLACED`, `EV_DOOR` and
+// `EV_STRUCT_HIT` all put the cell key in `a`. A reader tidying the doc
+// comments into consistency would "correct" it into a bug, and nothing
+// downstream would object: both fields are `u32`, the encoder's bytes do
+// not move, and the ring is not in `state_hash`.
+// ---------------------------------------------------------------------
+
+/// A cell whose center takes a foundation, found by asking the sim's own
+/// rule rather than by typing a coordinate that held at one seed. Skips
+/// cells where `cx == cz`, because the cell key is `cx << 16 | cz` and a
+/// key with equal halves cannot show the pack reversed.
+fn buildable_cell(seed: u64) -> (u16, u16) {
+    for r in 0..64i32 {
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dz.abs() != r {
+                    continue;
+                }
+                let cx = (170 + dx).clamp(0, 1023) as u16;
+                let cz = (170 + dz).clamp(0, 1023) as u16;
+                if cx == cz {
+                    continue;
+                }
+                let (x, z) = (
+                    (cx as f32 + 0.5) * BUILD_CELL_M,
+                    (cz as f32 + 0.5) * BUILD_CELL_M,
+                );
+                if foundation_terrain_ok(seed, x, z) {
+                    return (cx, cz);
+                }
+            }
+        }
+    }
+    panic!("no buildable cell within 64 cells — the generator changed under this test");
+}
+
+/// One builder, standing on a buildable cell with the fixture's build and
+/// deploy tables installed and enough of every input item to pay for the
+/// whole arrangement. Returns the cell it is standing on.
+fn builder_world() -> (World, u16, u16) {
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    w.combat = CombatContent::probe_fixture();
+    w.build = BuildContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.tick(&[Command::Join { id: BODY }]);
+    let (cx, cz) = buildable_cell(SEED);
+    let (x, z) = (
+        (cx as f32 + 0.5) * BUILD_CELL_M,
+        (cz as f32 + 0.5) * BUILD_CELL_M,
+    );
+    w.players[0].body = Body::at(SEED, x, z);
+    // The fixture's costs: pieces are paid in item 0, the hearth in item
+    // 2, the door in item 4. Generous on purpose — a refusal for want of
+    // wood would be this fixture's bug, not the sim's.
+    for (slot, item) in [(0usize, 0u16), (1, 2), (2, 4)] {
+        w.players[0].inv[slot] = ItemStack { item, count: 200 };
+    }
+    (w, cx, cz)
+}
+
+/// Place a piece and leave the world standing on the tick it landed.
+fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, loc: u8) {
+    let before = w.pieces.len();
+    w.tick(&[Command::Place {
+        id: BODY,
+        row,
+        cx,
+        cz,
+        level: LEVEL,
+        loc,
+    }]);
+    assert_eq!(
+        w.pieces.len(),
+        before + 1,
+        "piece row {row} did not place at ({cx}, {cz}) loc {loc} — the \
+         fixture, not the mechanic"
+    );
+}
+
+/// Place a deployable and leave the world standing on the tick it landed.
+fn place_deploy(w: &mut World, row: u16, cx: u16, cz: u16, loc: u8) {
+    let before = w.deploys.len();
+    w.tick(&[Command::PlaceDeploy {
+        id: BODY,
+        row,
+        cx,
+        cz,
+        level: LEVEL,
+        loc,
+    }]);
+    assert_eq!(
+        w.deploys.len(),
+        before + 1,
+        "deploy row {row} did not place at ({cx}, {cz}) loc {loc} — the \
+         fixture, not the mechanic"
+    );
+}
+
+/// The three sub-fields of an addressed event's packed `b`.
+fn unpack(b: u32) -> (u32, u32, u32) {
+    (b >> 16, (b >> 8) & 0xff, b & 0xff)
+}
+
+/// `EV_PIECE_PLACED: a = build cell key (cx << 16 | cz), b = level << 16 |
+/// loc << 8 | piece row`.
+///
+/// The cell key is `a` here — the convention every addressed event in this
+/// lane keeps except `EV_STOCK`.
+#[test]
+fn piece_placed_names_the_cell_then_level_over_loc_over_row() {
+    let (mut w, cx, cz) = builder_world();
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, LOC_PLANE);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, PIECE_EDGE);
+
+    let p = only(&w, EV_PIECE_PLACED);
+    let (level, loc, row) = unpack(p.b);
+    distinct_triple(level, loc, row, "EV_PIECE_PLACED.b");
+    distinct_halves(p.a, "EV_PIECE_PLACED.a (the cell key)");
+    assert_eq!(
+        p.a,
+        cell_key(cx, cz),
+        "EV_PIECE_PLACED.a is the CELL KEY, not the builder"
+    );
+    assert_eq!(p.a >> 16, cx as u32, "the cell key's HIGH half is cx");
+    assert_eq!(p.a & 0xffff, cz as u32, "the cell key's LOW half is cz");
+    assert_eq!(
+        level, LEVEL as u32,
+        "EV_PIECE_PLACED.b's high field is LEVEL"
+    );
+    assert_eq!(
+        loc, PIECE_EDGE as u32,
+        "EV_PIECE_PLACED.b's middle field is LOC"
+    );
+    assert_eq!(
+        row, PIECE_DOORWAY as u32,
+        "EV_PIECE_PLACED.b's low field is the piece ROW"
+    );
+}
+
+/// `EV_DEPLOY_PLACED: a = build cell key, b = level << 16 | loc << 8 |
+/// row, c = owner player id`.
+///
+/// Same address shape as the piece, plus an owner in `c` — and the owner
+/// is the field that makes this event worth checking, because `a` and `c`
+/// are both small integers and a swap puts a cell key where a player id
+/// belongs.
+#[test]
+fn deploy_placed_names_the_cell_then_the_address_then_the_owner() {
+    let (mut w, cx, cz) = builder_world();
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, LOC_PLANE);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, DOOR_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, DOOR_EDGE);
+
+    let d = only(&w, EV_DEPLOY_PLACED);
+    distinct3(d, "EV_DEPLOY_PLACED");
+    let (level, loc, row) = unpack(d.b);
+    distinct_triple(level, loc, row, "EV_DEPLOY_PLACED.b");
+    assert_eq!(
+        d.a,
+        cell_key(cx, cz),
+        "EV_DEPLOY_PLACED.a is the CELL KEY, not the owner"
+    );
+    assert_eq!(
+        level, LEVEL as u32,
+        "EV_DEPLOY_PLACED.b's high field is LEVEL"
+    );
+    assert_eq!(
+        loc, DOOR_EDGE as u32,
+        "EV_DEPLOY_PLACED.b's middle field is LOC"
+    );
+    assert_eq!(
+        row, DEPLOY_DOOR as u32,
+        "EV_DEPLOY_PLACED.b's low field is the deploy ROW"
+    );
+    assert_eq!(
+        d.c, BODY,
+        "EV_DEPLOY_PLACED.c is the OWNER player id, not part of the address"
+    );
+}
+
+/// `EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | locked << 1
+/// | open, c = the player whose action changed it`.
+///
+/// The door's whole state, absolute. `locked` and `open` are two adjacent
+/// bits in the same byte and are exactly the pair a swap would hide — so
+/// this drives the toggle and requires the two bits to disagree, which is
+/// the one-bit form of `distinct_halves`.
+#[test]
+fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
+    let (mut w, cx, cz) = builder_world();
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, LOC_PLANE);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, DOOR_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, DOOR_EDGE);
+
+    // A door places locked *and* closed, and placement announces nothing —
+    // only the verbs do. Both bits therefore read 1 and 0 together on an
+    // owner's first toggle (a locked door still opens for its owner), and
+    // a check taken there could not tell the two bits apart. So drive them
+    // one at a time and read both ticks: the unlock, then the open.
+    w.tick(&[Command::Lock {
+        id: BODY,
+        cx,
+        cz,
+        level: LEVEL,
+        loc: DOOR_EDGE,
+        locked: false,
+    }]);
+    let unlocked = only(&w, EV_DOOR);
+    let (_, _, unlocked_state) = unpack(unlocked.b);
+
+    w.tick(&[Command::Use {
+        id: BODY,
+        cx,
+        cz,
+        level: LEVEL,
+        loc: DOOR_EDGE,
+    }]);
+    let d = only(&w, EV_DOOR);
+    let (level, loc, state) = unpack(d.b);
+    let (locked, open) = ((state >> 1) & 1, state & 1);
+
+    assert_ne!(
+        locked, open,
+        "the fixture has locked and open holding the same bit, so this \
+         check cannot see them swapped. Move the fixture, not the assertion."
+    );
+    assert_eq!(
+        d.a,
+        cell_key(cx, cz),
+        "EV_DOOR.a is the CELL KEY, not the player who moved it"
+    );
+    assert_eq!(level, LEVEL as u32, "EV_DOOR.b's high field is LEVEL");
+    assert_eq!(loc, DOOR_EDGE as u32, "EV_DOOR.b's middle field is LOC");
+    assert_eq!(open, 1, "EV_DOOR.b bit 0 is OPEN, and the toggle opened it");
+    assert_eq!(
+        locked, 0,
+        "EV_DOOR.b bit 1 is LOCKED, and the unlock before this cleared it"
+    );
+    assert_eq!(
+        d.c, BODY,
+        "EV_DOOR.c is the player whose action changed it, not the cell"
+    );
+
+    // The two bits moved independently, one verb each: the unlock left the
+    // door shut, and the toggle opened it without re-locking. Crossing the
+    // two bits at the emit site cannot produce this pair.
+    assert_eq!(
+        unlocked_state, 0,
+        "the unlock should leave the door clear of both bits — shut and \
+         unlocked — and it read {unlocked_state}"
+    );
+    assert_eq!(
+        state, 1,
+        "and the toggle should set the open bit alone, leaving {state} = 1"
+    );
+}
+
+/// `EV_STOCK: a = feeder player id, b = hearth cell key, c = level`.
+///
+/// **The inverted one.** Every other addressed event in this lane puts the
+/// cell key in `a`; this puts the player there. It is documented that way
+/// (`world.rs`) and the server decodes it that way, so the asymmetry is
+/// correct — but it is the single likeliest field in the sim to be
+/// "tidied" into consistency by someone reading the doc comments in a
+/// block, which is precisely how the reference ecosystem shipped ~27 of
+/// these.
+///
+/// `c` is the level, and a hearth is `PLACE_FOUNDATION`, so it can only
+/// read 0 here. That is checked by value and stated rather than dressed
+/// up: this check sees `a`/`b` crossed, and does not see a level that was
+/// never anything but zero.
+#[test]
+fn stock_names_the_feeder_first_and_the_cell_second() {
+    let (mut w, cx, cz) = builder_world();
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, LOC_PLANE);
+    place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, LOC_PLANE);
+    w.tick(&[Command::Feed {
+        id: BODY,
+        cx,
+        cz,
+        level: LEVEL,
+    }]);
+
+    let s = only(&w, EV_STOCK);
+    distinct3(s, "EV_STOCK");
+    distinct_halves(s.b, "EV_STOCK.b (the cell key)");
+    assert_eq!(
+        s.a, BODY,
+        "EV_STOCK.a is the FEEDER — this event is the lane's one inversion, \
+         and a cell key here means someone made it match its neighbours"
+    );
+    assert_eq!(
+        s.b,
+        cell_key(cx, cz),
+        "EV_STOCK.b is the hearth's CELL KEY, not the feeder"
+    );
+    assert_eq!(s.c, LEVEL as u32, "EV_STOCK.c is the level fed");
+}
+
+/// The inversion, asserted as a relationship rather than left implicit in
+/// two separate tests.
+///
+/// `EV_DEPLOY_PLACED` and `EV_STOCK` describe the *same hearth on the same
+/// cell*, and they disagree about which field holds what on purpose. If a
+/// later edit makes them agree, both of the tests above still pass
+/// individually — one of them would simply be asserting the wrong
+/// convention. This is the pair check that catches that, and it is
+/// `the_hit_and_the_health_name_opposite_players` applied one lane over.
+#[test]
+fn the_placement_and_the_feed_disagree_about_field_a_on_purpose() {
+    let (mut w, cx, cz) = builder_world();
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, LOC_PLANE);
+    place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, LOC_PLANE);
+    let placed = only(&w, EV_DEPLOY_PLACED);
+    w.tick(&[Command::Feed {
+        id: BODY,
+        cx,
+        cz,
+        level: LEVEL,
+    }]);
+    let stocked = only(&w, EV_STOCK);
+
+    assert_eq!(
+        placed.a,
+        cell_key(cx, cz),
+        "the placement leads with the cell"
+    );
+    assert_eq!(stocked.a, BODY, "the feed leads with the player");
+    assert_ne!(
+        placed.a, stocked.a,
+        "EV_DEPLOY_PLACED.a and EV_STOCK.a now hold the same kind of thing \
+         for one hearth on one cell. One of them has been changed to match \
+         the other, and `world.rs` says they differ."
+    );
+    // And the mirror: the cell key and the player id appear in both
+    // events, in opposite seats.
+    assert_eq!(
+        placed.c, stocked.a,
+        "the owner and the feeder are one player"
+    );
+    assert_eq!(placed.a, stocked.b, "and both name one cell");
+}
+
 /// Coverage, stated rather than implied.
 ///
 /// A gate that checks five of twenty-five codes and says nothing about the
@@ -646,7 +1063,7 @@ fn coverage_is_stated_not_implied() {
     /// Every code `world.rs` can emit is 1..=EV_MAX.
     const EV_MAX: u8 = 25;
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [u8; 9] = [
+    const COVERED: [u8; 13] = [
         EV_GATHER,
         EV_HIT,
         EV_HEALTH,
@@ -656,10 +1073,14 @@ fn coverage_is_stated_not_implied() {
         EV_CONSUMED,
         EV_CONSUME_REFUSED,
         EV_DRANK,
+        EV_PIECE_PLACED,
+        EV_DEPLOY_PLACED,
+        EV_DOOR,
+        EV_STOCK,
     ];
     /// What is knowingly still byte-golden only. Change this number in the
     /// same commit that changes `COVERED`, never on its own.
-    const UNCOVERED: usize = 16;
+    const UNCOVERED: usize = 12;
 
     let mut counted = 0usize;
     for code in 1..=EV_MAX {
