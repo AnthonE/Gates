@@ -125,6 +125,40 @@ const SUB_DRANK: u32 = 34;
 /// The death screen closed and a body woke (wire v16, world.rs). 36th of
 /// the 64 a 6-bit field holds, so no other event message moved for it.
 const SUB_RESPAWN: u32 = 35;
+/// The move acknowledgement and its refusal (wire v17, `inventory.rs`).
+/// 37th and 38th of the sixty-four v13's width holds, so nothing moved.
+const SUB_MOVED: u32 = 36;
+const SUB_MOVE_REFUSED: u32 = 37;
+/// The highest live subtype, named rather than counted — `world.rs`'s
+/// `EV_MAX` discipline applied to the wire half.
+///
+/// `trailing_garbage_and_unknown_subtype_are_malformed` probes "the first
+/// unused subtype", and it had that written as `SUB_RESPAWN + 1`. Two
+/// subtypes landed above `SUB_RESPAWN` and the probe silently became a
+/// probe of a **live** code — it caught it here only because the new
+/// decoder arm rejected its all-zero payload, which is luck, not a gate.
+/// Deriving the probe from this constant is what makes it stay a probe.
+const SUB_MAX: u32 = SUB_MOVE_REFUSED;
+/// And the field must hold it. A subtype declared past `SUB_BITS` would
+/// truncate on the way out and decode as a *different, live* code — the
+/// worst shape of wire drift there is, since both ends would agree on
+/// bytes that mean two different things. Compile-time, so it is checked in
+/// every build rather than only where a test happens to look.
+const _: () = assert!(
+    SUB_MAX < (1 << SUB_BITS),
+    "an event subtype past the field width would truncate into a live code"
+);
+/// Container-kind and slot widths on the event lane, deliberately the
+/// same two the action lane spends (`lib.rs`: `CONT_KIND_BITS`,
+/// `ACTION_SLOT_BITS`). An acknowledgement that could not express an
+/// address the client is allowed to *ask* for would be a reconcile hole,
+/// so the two lanes carry the address identically or neither is sound.
+const CONT_KIND_BITS: u32 = 2;
+const MOVE_SLOT_BITS: u32 = 5;
+/// Move-refusal reason width — `inventory::REFUSE_M_*` runs `1..=7` and
+/// zero is reserved as "no reason", refused at both ends the way
+/// `SUB_CONSUME_REFUSED` already refuses its own zero.
+const REFUSE_M_BITS: u32 = 3;
 /// Death-cause width (`sim_core::world::DEATH_BY_*`: hand, clock, salt).
 /// Three values in two bits, so the fourth is forgeable and both the
 /// encoder and the decoder refuse it — the hotbar selector's posture. Two
@@ -480,6 +514,39 @@ pub enum EventMsg {
     /// first" from "you were too slow" — the same information the kill
     /// feed gives about a death.
     BagRemoved { id: u32, why: u8 },
+    /// A move landed, own-fact (`inventory.rs`). The address it landed on,
+    /// how many moved, and the item that left the source slot.
+    ///
+    /// The item is the reconcile hook and the reason this is not just an
+    /// "ok". A move here is all-or-nothing, so address + count is the
+    /// entire diff — *provided* the client's picture of the source slot
+    /// was right. `item` is how it finds out it was not: an id it did not
+    /// predict means the container drifted and the panel redraws, instead
+    /// of the client carrying a divergence forever the way a silently
+    /// partial move would leave one.
+    Moved {
+        from_kind: u8,
+        from_slot: u8,
+        to_kind: u8,
+        to_slot: u8,
+        count: u16,
+        item: u16,
+    },
+    /// A move was refused, and why (`sim_core::inventory::REFUSE_M_*`).
+    ///
+    /// The address rides along and that is the whole point: with it the
+    /// client rolls back exactly the drag it predicted; without it the
+    /// only safe response to a refusal is to resync a container. This is
+    /// also the message that exists so the *other* answer never has to be
+    /// given — the reference shipped this failure as the server dropping
+    /// the client three times in half an hour (`inventory.rs`).
+    MoveRefused {
+        reason: u8,
+        from_kind: u8,
+        from_slot: u8,
+        to_kind: u8,
+        to_slot: u8,
+    },
 }
 
 fn begin(buf: &mut [u8], subtype: u32) -> Result<BitWriter<'_>, WireError> {
@@ -1098,6 +1165,81 @@ pub fn encode_event_bag_removed(id: u32, why: u8, buf: &mut [u8]) -> Result<usiz
     Ok(w.finish())
 }
 
+/// The move acknowledgement — see `EventMsg::Moved`. The four address
+/// parts cross in the order the verb is spoken (from, then to), matching
+/// `sim_core::inventory::addr`'s pack, so a transposition here reads as a
+/// move in the opposite direction rather than as a different slot — which
+/// is what `test_event_roles` asserts on the sim side.
+pub fn encode_event_moved(
+    from_kind: u8,
+    from_slot: u8,
+    to_kind: u8,
+    to_slot: u8,
+    count: u16,
+    item: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if from_kind > sim_core::inventory::CONT_MAX
+        || to_kind > sim_core::inventory::CONT_MAX
+        || from_slot as usize >= sim_core::limits::INV_SLOTS
+        || to_slot as usize >= sim_core::limits::INV_SLOTS
+        || count == 0
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_MOVED)?;
+    w.write(from_kind as u32, CONT_KIND_BITS)?;
+    w.write(from_slot as u32, MOVE_SLOT_BITS)?;
+    w.write(to_kind as u32, CONT_KIND_BITS)?;
+    w.write(to_slot as u32, MOVE_SLOT_BITS)?;
+    w.write(count as u32, 16)?;
+    w.write(item as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// A refused move — see `EventMsg::MoveRefused`. A zero reason refuses for
+/// `encode_event_consume_refused`'s reason: a refusal that refuses to say
+/// why is the silence the whole announced-refusal posture exists to end.
+///
+/// The address is **not** range-checked, and that is deliberate: the
+/// commonest refusal is `REFUSE_M_SLOT`, whose entire content is an
+/// address the sim just rejected as out of range. An encoder that refused
+/// to carry it would make the one refusal a desynced client most needs
+/// unsendable. The widths clamp instead — kinds and slots are masked to
+/// what the field holds, which is the same information the client needs to
+/// find the drag it predicted.
+pub fn encode_event_move_refused(
+    reason: u8,
+    from_kind: u8,
+    from_slot: u8,
+    to_kind: u8,
+    to_slot: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if reason == 0 || (reason as u32) > sim_core::inventory::REFUSE_M_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_MOVE_REFUSED)?;
+    w.write(reason as u32, REFUSE_M_BITS)?;
+    w.write(
+        (from_kind as u32) & ((1 << CONT_KIND_BITS) - 1),
+        CONT_KIND_BITS,
+    )?;
+    w.write(
+        (from_slot as u32) & ((1 << MOVE_SLOT_BITS) - 1),
+        MOVE_SLOT_BITS,
+    )?;
+    w.write(
+        (to_kind as u32) & ((1 << CONT_KIND_BITS) - 1),
+        CONT_KIND_BITS,
+    )?;
+    w.write(
+        (to_slot as u32) & ((1 << MOVE_SLOT_BITS) - 1),
+        MOVE_SLOT_BITS,
+    )?;
+    Ok(w.finish())
+}
+
 pub fn encode_event_hit(victim: u32, damage: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_HIT)?;
     w.write(victim, 32)?;
@@ -1652,6 +1794,46 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 cause,
                 item: r.read(16)? as u16,
                 range_cm: r.read(16)? as u16,
+            }
+        }
+        SUB_MOVED => {
+            let from_kind = r.read(CONT_KIND_BITS)? as u8;
+            let from_slot = r.read(MOVE_SLOT_BITS)? as u8;
+            let to_kind = r.read(CONT_KIND_BITS)? as u8;
+            let to_slot = r.read(MOVE_SLOT_BITS)? as u8;
+            let count = r.read(16)? as u16;
+            let item = r.read(16)? as u16;
+            if from_kind > sim_core::inventory::CONT_MAX
+                || to_kind > sim_core::inventory::CONT_MAX
+                || from_slot as usize >= sim_core::limits::INV_SLOTS
+                || to_slot as usize >= sim_core::limits::INV_SLOTS
+                || count == 0
+            {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Moved {
+                from_kind,
+                from_slot,
+                to_kind,
+                to_slot,
+                count,
+                item,
+            }
+        }
+        SUB_MOVE_REFUSED => {
+            let reason = r.read(REFUSE_M_BITS)? as u8;
+            // The reason is checked and the address is not — see
+            // `encode_event_move_refused`: a `REFUSE_M_SLOT` refusal
+            // exists precisely to carry an address the sim rejected.
+            if reason == 0 || (reason as u32) > sim_core::inventory::REFUSE_M_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::MoveRefused {
+                reason,
+                from_kind: r.read(CONT_KIND_BITS)? as u8,
+                from_slot: r.read(MOVE_SLOT_BITS)? as u8,
+                to_kind: r.read(CONT_KIND_BITS)? as u8,
+                to_slot: r.read(MOVE_SLOT_BITS)? as u8,
             }
         }
         SUB_RESPAWN => EventMsg::Respawn {
@@ -2287,11 +2469,17 @@ mod tests {
             "spare byte after a valid message must fail the strict tail"
         );
         // kind EVENT + the first unused subtype — 30 became struct-hit,
-        // 31–33 the survival clock's three, 34 the drink and 35 the
-        // respawn, so this moves up with every new subtype, exactly as
-        // intended. The 5 → 6 widening at v13 leaves 28 codes free after
-        // it, so the probe keeps a code of its own for a long time.
-        const UNUSED_SUB: u32 = SUB_RESPAWN + 1;
+        // 31–33 the survival clock's three, 34 the drink, 35 the respawn
+        // and 36–37 the move pair, so this moves up with every new
+        // subtype, exactly as intended. The 5 → 6 widening at v13 leaves
+        // 26 codes free after it, so the probe keeps one of its own for a
+        // long time.
+        //
+        // Off `SUB_MAX` and not off whichever subtype was last when this
+        // was written: as `SUB_RESPAWN + 1` it had already drifted onto a
+        // live code, which turns "the decoder refuses unknown subtypes"
+        // into "the decoder refuses this one message with a short payload".
+        const UNUSED_SUB: u32 = SUB_MAX + 1;
         const { assert!(UNUSED_SUB < 1 << SUB_BITS, "the probe must fit the field") };
         let raw = [
             (KIND_EVENT | (UNUSED_SUB << KIND_BITS)) as u8,

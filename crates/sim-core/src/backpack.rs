@@ -282,6 +282,66 @@ impl Backpacks {
     /// entered your inventory", which is the event the client's `+N Item`
     /// toast already reads. Loot pays in the same currency gathering does,
     /// on purpose.
+    /// Where the bag with this id sits in the dense store, or `None` if it
+    /// is not there any more. The one lookup a client-named container goes
+    /// through — a bag that despawned, emptied or was evicted while a
+    /// panel was open resolves to `None`, and `inventory.rs` turns that
+    /// into `REFUSE_M_NO_CONTAINER` rather than into a dropped session.
+    /// Ids are never reused (`next_id` is monotonic and hashed), so this
+    /// cannot answer with a different bag that took the same index.
+    pub fn index_of_id(&self, id: u32) -> Option<usize> {
+        if id == 0 {
+            return None;
+        }
+        (0..self.len).find(|&i| self.entries[i].id == id)
+    }
+
+    /// Is this bag within arm's reach of that body? The same planar test
+    /// `loot_nearest` makes, factored out rather than restated — one arm,
+    /// one dequantize, one comparison, so the take-all verb and the
+    /// per-slot verb can never disagree about what "in reach" means.
+    ///
+    /// Checked when the move resolves, never when a panel opened: reach is
+    /// a fact about now, and a client that walked away is not consulted.
+    pub fn in_reach(&self, i: usize, p: &Player) -> bool {
+        if i >= self.len {
+            return false;
+        }
+        let dx = self.entries[i].qx as f32 * POS_XZ_Q - p.body.qx as f32 * POS_XZ_Q;
+        let dz = self.entries[i].qz as f32 * POS_XZ_Q - p.body.qz as f32 * POS_XZ_Q;
+        dx * dx + dz * dz <= LOOT_REACH_M * LOOT_REACH_M
+    }
+
+    /// Read one slot of one bag. Out of range reads as empty — total, so a
+    /// forged index is a refusal upstream and never an index panic here.
+    pub fn slot(&self, i: usize, s: usize) -> ItemStack {
+        if i >= self.len || s >= INV_SLOTS {
+            return ItemStack::default();
+        }
+        self.entries[i].items[s]
+    }
+
+    /// Write one slot of one bag. Out of range writes nothing — the caller
+    /// has already validated, and a silent no-op beats a panic on a path
+    /// whose whole purpose is never to kill a session.
+    pub fn set_slot(&mut self, i: usize, s: usize, stack: ItemStack) {
+        if i >= self.len || s >= INV_SLOTS {
+            return;
+        }
+        self.entries[i].items[s] = stack;
+    }
+
+    /// Retire a bag that a move emptied. Identical to the tail of
+    /// `loot_nearest` and announced identically (`BAG_GONE_EMPTIED`), so a
+    /// bag that ends empty leaves the world by one route whichever verb
+    /// emptied it — and the wire's sync-walk restart contract stays keyed
+    /// to one event rather than to which command was sent.
+    pub fn drop_if_empty(&mut self, i: usize, events: &mut EventQueue) {
+        if i < self.len && self.entries[i].is_empty() {
+            self.remove(i, BAG_GONE_EMPTIED, events);
+        }
+    }
+
     pub fn loot_nearest(
         &mut self,
         gc: &GatherContent,
@@ -309,11 +369,7 @@ impl Backpacks {
             if stack.count == 0 {
                 continue;
             }
-            let cap = if (stack.item as usize) < MAX_ITEM_DEFS {
-                gc.stack_max[stack.item as usize]
-            } else {
-                0
-            };
+            let cap = gc.stack_max_of(stack.item);
             if cap == 0 {
                 continue; // an item the ladder cannot stack cannot be taken
             }

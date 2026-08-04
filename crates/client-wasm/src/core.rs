@@ -112,6 +112,14 @@ pub const APPLIED_DRANK: u32 = 1 << 29;
 /// else's and belong in the kill feed. This one only ever fires for the
 /// body this client is driving.
 pub const APPLIED_RESPAWN: u32 = 1 << 30;
+/// A move landed or was refused (`EventMsg::Moved` / `MoveRefused`). One
+/// flag for both, `APPLIED_CONSUME`'s shape: the panel's response to
+/// either is to re-read `client_move_readout`, which says which it was.
+///
+/// **The last bit in the word.** A thirty-third applied-flag needs a
+/// second word or a rethink, and this is the note that says so rather
+/// than the next slice discovering it by shifting off the end into zero.
+pub const APPLIED_MOVE: u32 = 1 << 31;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -553,6 +561,26 @@ pub struct ClientCore {
     /// The last drink: water restored << 16 | hp it cost. Read by
     /// `client_drank`, and the reason the HUD can name what took the hp.
     pub last_drink: u32,
+    /// The last move's address, `sim_core::inventory::addr`'s pack
+    /// verbatim, and the refusal reason (0 = the move landed). Read
+    /// together by `client_move_readout`.
+    ///
+    /// The **slot contents are deliberately not applied here.** The server
+    /// diffs the whole inventory against its last-acked copy every tick
+    /// and pushes the changed slots as `EventMsg::Inv` (`server/core.rs`),
+    /// so a move that touched this body's inventory arrives as authoritative
+    /// slots on the same lane a beat later — applying it twice would be two
+    /// writers on one mirror, which is a divergence rather than a
+    /// prediction. What the panel needs from *this* event is the thing the
+    /// inventory diff cannot say: whether the drag it drew was accepted,
+    /// and if not, which drag to roll back.
+    pub last_move: u32,
+    pub last_move_refused: u8,
+    /// The accepted move's payload: count << 16 | the item that left the
+    /// source slot. Zero on a refusal. The item is the panel's reconcile
+    /// hook — an id it did not predict means its picture of the container
+    /// had drifted, so it redraws rather than trusting the drag it drew.
+    pub last_move_count: u32,
     /// Own landed hits, oldest first: damage dealt. The hitmarker ring.
     hits: [u16; TOAST_RING],
     hit_head: usize,
@@ -683,6 +711,9 @@ impl ClientCore {
             last_eat: 0,
             last_eat_refused: 0,
             last_drink: 0,
+            last_move: 0,
+            last_move_refused: 0,
+            last_move_count: 0,
             hits: [0; TOAST_RING],
             hit_head: 0,
             hit_len: 0,
@@ -1106,6 +1137,31 @@ impl ClientCore {
             EventMsg::ConsumeRefused { reason } => {
                 self.last_eat_refused = reason;
                 flags |= APPLIED_CONSUME;
+            }
+            EventMsg::Moved {
+                from_kind,
+                from_slot,
+                to_kind,
+                to_slot,
+                count,
+                item,
+            } => {
+                self.last_move = sim_core::inventory::addr(from_kind, from_slot, to_kind, to_slot);
+                self.last_move_refused = 0;
+                self.last_move_count = ((count as u32) << 16) | item as u32;
+                flags |= APPLIED_MOVE;
+            }
+            EventMsg::MoveRefused {
+                reason,
+                from_kind,
+                from_slot,
+                to_kind,
+                to_slot,
+            } => {
+                self.last_move = sim_core::inventory::addr(from_kind, from_slot, to_kind, to_slot);
+                self.last_move_refused = reason;
+                self.last_move_count = 0;
+                flags |= APPLIED_MOVE;
             }
             EventMsg::Drank { water, hp_cost } => {
                 self.last_drink = ((water as u32) << 16) | hp_cost as u32;

@@ -82,13 +82,15 @@ use sim_core::combat::CombatContent;
 use sim_core::deploy::DeployContent;
 use sim_core::gather::{cell_key, GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
+use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
 use sim_core::world::{
     Command, SimEvent, World, EV_BAG_DROPPED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH,
     EV_DEPLOY_PLACED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_MAX,
-    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, STRUCT_DEPLOY_BIT,
+    EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_STOCK, EV_STRUCT_HIT,
+    EV_VITALS, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -1405,6 +1407,112 @@ fn deploy_removed_names_the_cell_and_the_deploy_row_not_the_piece_under_it() {
     );
 }
 
+/// `EV_MOVED`: a = player id, b = the move's address, c = count << 16 |
+/// the item that left the source slot.
+///
+/// The address is four parts in one field — from kind, from slot, to kind,
+/// to slot — which is precisely the shape `reference/FINDINGS.md` §1 counts
+/// ~27 corrections of over there: the right value in the wrong position.
+/// So all four are held apart in the fixture, and so are the two halves of
+/// `c`. A transposed pair fails here rather than shipping a panel that
+/// rolls back the wrong slot forever.
+#[test]
+fn moved_names_the_address_and_what_moved() {
+    let mut w = duel_world();
+    w.players[0].inv[0] = ItemStack {
+        item: JUNK,
+        count: 30,
+    };
+    w.players[0].inv[9] = ItemStack::default();
+
+    const FROM_SLOT: u8 = 0;
+    const TO_SLOT: u8 = 9;
+    const COUNT: u16 = 12;
+    assert_ne!(FROM_SLOT, TO_SLOT, "the two slots must be distinguishable");
+    w.tick(&[Command::Move {
+        id: ATTACKER,
+        bag: 0,
+        from_kind: CONT_SELF,
+        from_slot: FROM_SLOT,
+        to_kind: CONT_SELF,
+        to_slot: TO_SLOT,
+        count: COUNT,
+    }]);
+
+    let e = only(&w, EV_MOVED);
+    assert_eq!(e.a, ATTACKER, "a is the player who moved it");
+    assert_eq!(
+        e.b,
+        inventory::addr(CONT_SELF, FROM_SLOT, CONT_SELF, TO_SLOT),
+        "b is the address, from before to"
+    );
+    // The pack, read back part by part — an assertion against the whole
+    // word alone would agree with `addr` even if both were reversed.
+    assert_eq!(e.b >> 24, CONT_SELF as u32, "b[31:24] is the from kind");
+    assert_eq!(
+        (e.b >> 16) & 0xff,
+        FROM_SLOT as u32,
+        "b[23:16] is the from slot"
+    );
+    assert_eq!(
+        (e.b >> 8) & 0xff,
+        CONT_SELF as u32,
+        "b[15:8] is the to kind"
+    );
+    assert_eq!(e.b & 0xff, TO_SLOT as u32, "b[7:0] is the to slot");
+    distinct_halves(e.c, "EV_MOVED.c");
+    assert_eq!(e.c >> 16, COUNT as u32, "c's high half is the count");
+    assert_eq!(e.c & 0xffff, JUNK as u32, "c's low half is the item");
+    // And the world actually did it — a role check against an event whose
+    // cause did nothing is a check on a lie.
+    assert_eq!(w.players[0].inv[TO_SLOT as usize].count, COUNT);
+}
+
+/// `EV_MOVE_REFUSED`: a = player id, b = the reason, c = the address.
+///
+/// **Reason in `b`, address in `c`** — the opposite order from `EV_MOVED`,
+/// and deliberately so: every refusal in this lane puts its reason in `b`
+/// (`EV_DEPLOY_REFUSED`, `EV_CONSUME_REFUSED`, `EV_BUILD_REFUSED`), so the
+/// field a reader reaches for first means the same thing lane-wide. That
+/// consistency is exactly the kind of thing a transposition breaks
+/// silently, so it is asserted rather than assumed.
+#[test]
+fn move_refused_names_the_reason_then_the_address() {
+    let mut w = duel_world();
+    w.players[0].inv[3] = ItemStack::default(); // empty source: a known cause
+
+    const FROM_SLOT: u8 = 3;
+    const TO_SLOT: u8 = 14;
+    w.tick(&[Command::Move {
+        id: ATTACKER,
+        bag: 0,
+        from_kind: CONT_SELF,
+        from_slot: FROM_SLOT,
+        to_kind: CONT_SELF,
+        to_slot: TO_SLOT,
+        count: 1,
+    }]);
+
+    let e = only(&w, EV_MOVE_REFUSED);
+    distinct3(e, "EV_MOVE_REFUSED");
+    assert_eq!(e.a, ATTACKER, "a is the player refused");
+    assert_eq!(
+        e.b, REFUSE_M_EMPTY,
+        "b is the reason — an empty source slot, not the address"
+    );
+    assert_eq!(
+        e.c,
+        inventory::addr(CONT_SELF, FROM_SLOT, CONT_SELF, TO_SLOT),
+        "c is the address that was asked for, so the client can roll it back"
+    );
+    assert_eq!(e.c & 0xff, TO_SLOT as u32, "c[7:0] is the to slot");
+    assert_eq!(
+        (e.c >> 16) & 0xff,
+        FROM_SLOT as u32,
+        "c[23:16] is the from slot"
+    );
+}
+
 /// Coverage, stated rather than implied.
 ///
 /// A gate that checks five of twenty-five codes and says nothing about the
@@ -1416,7 +1524,7 @@ fn deploy_removed_names_the_cell_and_the_deploy_row_not_the_piece_under_it() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [u8; 16] = [
+    const COVERED: [u8; 18] = [
         EV_GATHER,
         EV_HIT,
         EV_HEALTH,
@@ -1433,6 +1541,8 @@ fn coverage_is_stated_not_implied() {
         EV_STRUCT_HIT,
         EV_PIECE_REMOVED,
         EV_DEPLOY_REMOVED,
+        EV_MOVED,
+        EV_MOVE_REFUSED,
     ];
     /// What is knowingly still byte-golden only. Change this number in the
     /// same commit that changes `COVERED`, never on its own.

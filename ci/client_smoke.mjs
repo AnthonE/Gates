@@ -107,6 +107,9 @@ const REQUIRED = [
   "client_death_by",
   "client_death_weapon",
   "client_action_respawn",
+  "client_action_move",
+  "client_move_readout",
+  "client_move_payload",
   "client_bag_ids_ptr",
   "client_bags_ptr",
   "client_bags_len",
@@ -162,7 +165,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 16, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 17, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -201,7 +204,12 @@ check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 // either ship them to every public shard or withhold them from the capture
 // harness — and neither shows up anywhere else in this suite.
 const welcomeGolden = readFileSync(
-  join(root, "crates/protocol/tests/golden/v16_welcome.bin"),
+  // Keyed off the version the artifact reports, not off a literal. The
+  // fixtures are renamed wholesale on every bump, so a literal here goes
+  // stale in exactly the commit that is least able to notice — and the
+  // pin above already asserts which version that is, so deriving the path
+  // from it cannot silently read the wrong fixture.
+  join(root, `crates/protocol/tests/golden/v${ex.client_proto_ver()}_welcome.bin`),
 );
 const parseHandshake = (bytes) => {
   // ptr first, buffer second: a getter may grow memory and detach a
@@ -547,6 +555,52 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   // And the drink verb crosses C->S. Payload-free, so there is no forged
   // variant to test — the absence of a payload IS the range check.
   check(ex.client_action_drink() > 0, "the drink verb must encode");
+
+  // The move verb, both directions (wire v17). APPLIED_MOVE = 1 << 31,
+  // which reads as a negative int32 out of the C ABI — hence the `>>> 0`
+  // on the flag word here and nowhere above it. It is the last bit in that
+  // word; a thirty-third flag needs a second one.
+  const MOVE = 2147483648; // 1 << 31
+
+  // Moved: sub 36 · from (kind 1, slot 9) · to (kind 0, slot 22) · count 7
+  // · item 5. Every part distinct from every other, so a transposed pair
+  // cannot pass — the same discipline the goldens and `event_roles` use,
+  // and for the same reason: this payload is two (kind, slot) pairs, which
+  // is the exact shape ~27 of the reference's corrections landed on.
+  f = evFrame(36, [[1, 2], [9, 5], [0, 2], [22, 5], [7, 16], [5, 16]]);
+  writeIn(f);
+  check((ex.client_on_stream(f.length) >>> 0) === MOVE, "a move must apply with the MOVE flag");
+  check(
+    (ex.client_move_readout() >>> 0) === ((22 << 16) | (1 << 8) | 9),
+    "move readout mismatch: reason 0, to slot 22, from kind 1, from slot 9",
+  );
+  check(
+    (ex.client_move_payload() >>> 0) === ((7 << 16) | 5),
+    "move payload mismatch: count 7 of item 5",
+  );
+
+  // MoveRefused: sub 37 · reason 4 (REFUSE_M_NO_ROOM, 3-bit field) · the
+  // address it was asked for. The reason must be distinguishable from the
+  // landed move above, which is why it rides the high byte.
+  f = evFrame(37, [[4, 3], [0, 2], [11, 5], [1, 2], [26, 5]]);
+  writeIn(f);
+  check((ex.client_on_stream(f.length) >>> 0) === MOVE, "a refusal must apply with the MOVE flag");
+  check((ex.client_move_readout() >>> 0) >>> 24 === 4, "move refusal reason mismatch");
+  check(
+    (ex.client_move_readout() >>> 0 & 0xffff) === 11,
+    "a refusal must still carry the from slot, or the panel cannot roll back",
+  );
+  check(ex.client_move_payload() === 0, "a refusal moved nothing");
+
+  // And the move verb crosses C->S. A real drag encodes; a forged kind, a
+  // slot past INV_SLOTS and a zero count do not — the bridge refuses them
+  // locally rather than handing the server a frame it answers by ending
+  // the session, which is precisely how this verb failed in the reference.
+  check(ex.client_action_move(0, 0, 3, 0, 7, 5) > 0, "a real move must encode");
+  check(ex.client_action_move(9001, 1, 0, 0, 4, 1) > 0, "a bag move must encode");
+  check(ex.client_action_move(0, 2, 3, 0, 7, 5) === 0, "a kind past CONT_MAX must not encode");
+  check(ex.client_action_move(0, 0, 30, 0, 7, 5) === 0, "a slot past INV_SLOTS must not encode");
+  check(ex.client_action_move(0, 0, 3, 0, 7, 0) === 0, "a zero count is not a move");
 
   // Hit: sub 24 · victim 4242 · damage 25.
   check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring starts empty");

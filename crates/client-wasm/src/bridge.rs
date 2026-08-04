@@ -14,10 +14,10 @@ use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_consume,
     encode_action_craft, encode_action_deploy, encode_action_drink, encode_action_feed,
-    encode_action_lock, encode_action_loot, encode_action_place, encode_action_respawn,
-    encode_action_upgrade, encode_action_use, encode_chat, encode_hello, peek_kind, Hello,
-    CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES,
-    PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
+    encode_action_lock, encode_action_loot, encode_action_move, encode_action_place,
+    encode_action_respawn, encode_action_upgrade, encode_action_use, encode_chat, encode_hello,
+    peek_kind, Hello, CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME,
+    MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS,
@@ -447,6 +447,45 @@ pub extern "C" fn client_action_consume(slot: u32) -> u32 {
     })
 }
 
+/// Encode a move request into the out buffer; returns its length, or 0 if
+/// the arguments are not a shape the wire will carry (`inventory.rs`).
+///
+/// Zero on refusal is this bridge's whole posture and it earns its keep
+/// here more than anywhere else: a bad action frame ends the reader task
+/// server-side (`server/src/net.rs`), so a UI bug that built a nonsense
+/// drag would arrive as *the player being disconnected* — which is
+/// precisely the reference's own failure on this verb, three times in
+/// half an hour. Refusing to encode it keeps the bug local to the panel.
+///
+/// `bag` is 0 for a move inside your own inventory. Whether the item is
+/// there, whether it fits, and whether the bag is still in reach are the
+/// sim's verdict — `moved` or `move_refused`, and the refusal carries the
+/// address back so the panel rolls back exactly the drag it drew.
+#[no_mangle]
+pub extern "C" fn client_action_move(
+    bag: u32,
+    from_kind: u32,
+    from_slot: u32,
+    to_kind: u32,
+    to_slot: u32,
+    count: u32,
+) -> u32 {
+    with(|b| {
+        let (Ok(fk), Ok(fs), Ok(tk), Ok(ts), Ok(n)) = (
+            u8::try_from(from_kind),
+            u8::try_from(from_slot),
+            u8::try_from(to_kind),
+            u8::try_from(to_slot),
+            u16::try_from(count),
+        ) else {
+            return 0;
+        };
+        encode_action_move(bag, fk, fs, tk, ts, n, &mut b.out_buf)
+            .map(|len| len as u32)
+            .unwrap_or(0)
+    })
+}
+
 /// Encode a drink request into the out buffer; returns its length.
 /// Payload-free — the sim reads the heightfield under the sender's own
 /// feet, so there is nothing here for the client to aim and nothing for it
@@ -845,6 +884,40 @@ pub extern "C" fn client_hit_pop() -> u32 {
         Some(damage) => damage as u32,
         None => u32::MAX,
     })
+}
+
+/// The last move's verdict: `refusal reason << 24 | to slot << 16 |
+/// from kind << 8 | from slot`, with the *to kind* deducible from the
+/// pair the panel sent. Zero reason ⇒ the move landed, and
+/// `client_move_payload` then holds what actually moved.
+///
+/// Packed rather than returned as five calls because the panel reads it
+/// on one `APPLIED_MOVE` flag and must not see half of one verdict beside
+/// half of the next — `client_consume`'s shape, for `client_consume`'s
+/// reason.
+#[no_mangle]
+pub extern "C" fn client_move_readout() -> u32 {
+    with(|b| {
+        b.core
+            .as_ref()
+            .map(|c| {
+                let addr = c.last_move;
+                ((c.last_move_refused as u32) << 24)
+                    | ((addr & 0xFF) << 16)
+                    | (((addr >> 24) & 0xFF) << 8)
+                    | ((addr >> 16) & 0xFF)
+            })
+            .unwrap_or(0)
+    })
+}
+
+/// What the last accepted move carried: count << 16 | the item that left
+/// the source slot. Zero when the last verdict was a refusal. See
+/// `ClientCore::last_move_count` for why the item is here and the slot
+/// contents are not.
+#[no_mangle]
+pub extern "C" fn client_move_payload() -> u32 {
+    with(|b| b.core.as_ref().map(|c| c.last_move_count).unwrap_or(0))
 }
 
 /// Oldest buffered death's victim id; `u32::MAX` when none. The killer of

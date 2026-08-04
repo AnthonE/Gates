@@ -15,6 +15,7 @@ pub mod deploy;
 pub mod fmath;
 pub mod gather;
 pub mod input;
+pub mod inventory;
 pub mod limits;
 pub mod movement;
 pub mod probe;

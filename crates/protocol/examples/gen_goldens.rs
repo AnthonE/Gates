@@ -21,8 +21,8 @@ use protocol::{
     encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
 };
 use protocol::{
-    encode_action_consume, encode_action_drink, encode_action_respawn, encode_event_drank,
-    encode_event_respawn,
+    encode_action_consume, encode_action_drink, encode_action_move, encode_action_respawn,
+    encode_event_drank, encode_event_move_refused, encode_event_moved, encode_event_respawn,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -255,4 +255,16 @@ fn main() {
 
     let len = encode_action_respawn(goldens::action_respawn(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[57], &buf[..len]);
+
+    let (bag, fk, fs, tk, ts, count) = goldens::action_move();
+    let len = encode_action_move(bag, fk, fs, tk, ts, count, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[58], &buf[..len]);
+
+    let (fk, fs, tk, ts, count, item) = goldens::event_moved();
+    let len = encode_event_moved(fk, fs, tk, ts, count, item, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[59], &buf[..len]);
+
+    let (reason, fk, fs, tk, ts) = goldens::event_move_refused();
+    let len = encode_event_move_refused(reason, fk, fs, tk, ts, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[60], &buf[..len]);
 }

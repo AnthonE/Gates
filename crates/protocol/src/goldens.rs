@@ -27,66 +27,100 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 58] = [
-    "v16_input_acks_only.bin",
-    "v16_input_full.bin",
-    "v16_snapshot_keyframe.bin",
-    "v16_snapshot_delta.bin",
-    "v16_snapshot_cap.bin",
-    "v16_hello.bin",
-    "v16_welcome.bin",
-    "v16_refuse_full.bin",
-    "v16_event_gather.bin",
-    "v16_event_inv.bin",
-    "v16_event_slot_harvested.bin",
-    "v16_event_slot_respawned.bin",
-    "v16_event_slot_sync.bin",
-    "v16_event_catalog.bin",
-    "v16_event_weak_mark.bin",
-    "v16_event_craft_q.bin",
-    "v16_event_craft_done.bin",
-    "v16_event_craft_refused.bin",
-    "v16_event_recipes.bin",
-    "v16_action_craft.bin",
-    "v16_action_cancel.bin",
-    "v16_action_place.bin",
-    "v16_event_piece_placed.bin",
-    "v16_event_piece_sync.bin",
-    "v16_event_build_refused.bin",
-    "v16_event_piece_defs.bin",
-    "v16_action_deploy.bin",
-    "v16_action_feed.bin",
-    "v16_event_deploy_placed.bin",
-    "v16_event_deploy_sync.bin",
-    "v16_event_deploy_refused.bin",
-    "v16_event_deploy_defs.bin",
-    "v16_event_piece_removed.bin",
-    "v16_event_deploy_removed.bin",
-    "v16_event_stock.bin",
-    "v16_action_use.bin",
-    "v16_action_lock.bin",
-    "v16_event_door.bin",
-    "v16_action_upgrade.bin",
-    "v16_chat.bin",
-    "v16_event_chat.bin",
-    "v16_event_hit.bin",
-    "v16_event_health.bin",
-    "v16_event_death.bin",
-    "v16_action_loot.bin",
-    "v16_event_bag_dropped.bin",
-    "v16_event_bag_sync.bin",
-    "v16_event_bag_removed.bin",
-    "v16_event_struct_hit_piece.bin",
-    "v16_event_struct_hit_deploy.bin",
-    "v16_event_vitals.bin",
-    "v16_event_consumed.bin",
-    "v16_event_consume_refused.bin",
-    "v16_action_consume.bin",
-    "v16_event_drank.bin",
-    "v16_action_drink.bin",
-    "v16_event_respawn.bin",
-    "v16_action_respawn.bin",
+pub const FIXTURES: [&str; 61] = [
+    "v17_input_acks_only.bin",
+    "v17_input_full.bin",
+    "v17_snapshot_keyframe.bin",
+    "v17_snapshot_delta.bin",
+    "v17_snapshot_cap.bin",
+    "v17_hello.bin",
+    "v17_welcome.bin",
+    "v17_refuse_full.bin",
+    "v17_event_gather.bin",
+    "v17_event_inv.bin",
+    "v17_event_slot_harvested.bin",
+    "v17_event_slot_respawned.bin",
+    "v17_event_slot_sync.bin",
+    "v17_event_catalog.bin",
+    "v17_event_weak_mark.bin",
+    "v17_event_craft_q.bin",
+    "v17_event_craft_done.bin",
+    "v17_event_craft_refused.bin",
+    "v17_event_recipes.bin",
+    "v17_action_craft.bin",
+    "v17_action_cancel.bin",
+    "v17_action_place.bin",
+    "v17_event_piece_placed.bin",
+    "v17_event_piece_sync.bin",
+    "v17_event_build_refused.bin",
+    "v17_event_piece_defs.bin",
+    "v17_action_deploy.bin",
+    "v17_action_feed.bin",
+    "v17_event_deploy_placed.bin",
+    "v17_event_deploy_sync.bin",
+    "v17_event_deploy_refused.bin",
+    "v17_event_deploy_defs.bin",
+    "v17_event_piece_removed.bin",
+    "v17_event_deploy_removed.bin",
+    "v17_event_stock.bin",
+    "v17_action_use.bin",
+    "v17_action_lock.bin",
+    "v17_event_door.bin",
+    "v17_action_upgrade.bin",
+    "v17_chat.bin",
+    "v17_event_chat.bin",
+    "v17_event_hit.bin",
+    "v17_event_health.bin",
+    "v17_event_death.bin",
+    "v17_action_loot.bin",
+    "v17_event_bag_dropped.bin",
+    "v17_event_bag_sync.bin",
+    "v17_event_bag_removed.bin",
+    "v17_event_struct_hit_piece.bin",
+    "v17_event_struct_hit_deploy.bin",
+    "v17_event_vitals.bin",
+    "v17_event_consumed.bin",
+    "v17_event_consume_refused.bin",
+    "v17_action_consume.bin",
+    "v17_event_drank.bin",
+    "v17_action_drink.bin",
+    "v17_event_respawn.bin",
+    "v17_action_respawn.bin",
+    "v17_action_move.bin",
+    "v17_event_moved.bin",
+    "v17_event_move_refused.bin",
 ];
+
+/// The move action: bag id, from (kind, slot), to (kind, slot), count.
+///
+/// Every part is distinguishable from every other, which on this message
+/// is not decoration — it is the entire defence. `reference/FINDINGS.md`
+/// §1 counts ~27 payloads in the reference ecosystem that shipped with
+/// the right value in the wrong position, and a positional message with
+/// two `(kind, slot)` pairs in it is the exact shape that goes wrong. So:
+/// the two kinds differ (self→bag, not self→self), the two slots differ
+/// and neither is near the other, and the count matches nothing else in
+/// the message. A transposed pair moves bytes, and moved bytes fail
+/// `test_protocol_golden`.
+pub fn action_move() -> (u32, u8, u8, u8, u8, u16) {
+    (0x0BA6_1D01, 0, 3, 1, 17, 42)
+}
+
+/// The move acknowledgement. The kinds run the *other* way from
+/// `action_move` (bag→self, a withdrawal) so a copy-paste between the two
+/// lanes shows up as drifted bytes rather than as a fixture that happens
+/// to agree with itself.
+pub fn event_moved() -> (u8, u8, u8, u8, u16, u16) {
+    (1, 9, 0, 22, 7, 5)
+}
+
+/// A refused move: `REFUSE_M_NO_ROOM`, carrying the address that was
+/// asked for. The reason is deliberately neither the first nor the last
+/// of the seven — a fixture pinned to 1 would pass while the field was
+/// being written as a bool.
+pub fn event_move_refused() -> (u8, u8, u8, u8, u8) {
+    (4, 0, 11, 1, 26)
+}
 
 /// The drink acknowledgement: water restored and the hp it cost. Both
 /// nonzero and different from each other, so a transposed pair cannot
