@@ -760,21 +760,33 @@ if (GROUND_LAYERS.length !== IDENTITIES.length ||
 // --- the shared field, in GLSL ---------------------------------------------
 // Hash-without-sine (Dave Hoskins' hash12): four hashes per noise sample,
 // three samples per pixel. No textures, no trig, no dependent texture reads.
+//
+// The four corners are evaluated in ONE vec4 body rather than four inlined
+// scalar ones, and it is lane-for-lane the same arithmetic rather than an
+// approximation of it. The scalar hash builds `vec3(p.xyx)`, so its third
+// component is its first — `Z = X` below — and the lane offsets `(0,1,0,1)` /
+// `(0,0,1,1)` are the same four corners in the same order the bilinear mix
+// consumes them. Nothing about the field moves; what moves is COMPILE time,
+// which is the thing that costs here: the browser gate runs its tabs on a
+// software rasterizer that JITs every program, a tab's first render blocks its
+// main thread while that happens, and a client already in the world then looks
+// like one that never joined. Salvaged from `loop/m1-surface-grain`, which is
+// otherwise red on purpose and stays unmerged (its `BRANCH-NOTES.md`).
 const FIELD_GLSL = /* glsl */ `
-float gmHash(vec2 p) {
-  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-  p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
+vec4 gmHash4(vec2 i) {
+  vec4 X = fract((i.x + vec4(0.0, 1.0, 0.0, 1.0)) * 0.1031);
+  vec4 Y = fract((i.y + vec4(0.0, 0.0, 1.0, 1.0)) * 0.1031);
+  vec4 Z = X;
+  vec4 d = X * (Y + 33.33) + Y * (Z + 33.33) + Z * (X + 33.33);
+  X += d; Y += d; Z += d;
+  return fract((X + Y) * Z);
 }
 float gmNoise(vec2 p) {
   vec2 i = floor(p);
   vec2 f = fract(p);
   vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-  float a = gmHash(i);
-  float b = gmHash(i + vec2(1.0, 0.0));
-  float c = gmHash(i + vec2(0.0, 1.0));
-  float d = gmHash(i + vec2(1.0, 1.0));
-  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  vec4 h = gmHash4(i);
+  return mix(mix(h.x, h.y, u.x), mix(h.z, h.w, u.x), u.y);
 }
 `;
 
@@ -2252,10 +2264,11 @@ vec3 gpNoiseD(vec2 p) {
   vec2 f = fract(p);
   vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
   vec2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
-  float a = gmHash(i);
-  float b = gmHash(i + vec2(1.0, 0.0));
-  float c = gmHash(i + vec2(0.0, 1.0));
-  float d = gmHash(i + vec2(1.0, 1.0));
+  vec4 h = gmHash4(i);
+  float a = h.x;
+  float b = h.y;
+  float c = h.z;
+  float d = h.w;
   float k1 = b - a;
   float k2 = c - a;
   float k3 = a - b - c + d;
