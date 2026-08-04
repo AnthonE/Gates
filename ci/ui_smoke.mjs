@@ -4,12 +4,40 @@
 // Why this exists. `ci/gates.sh` splits into a code tier and a renderer tier,
 // and the renderer tier is the overwhelming majority of the wall clock (a
 // single `browser_smoke` run is 8-10 min). Its `renderer_touched` question
-// matched `^web/`, so a one-line HUD change — a `<div>` moved, a toast string
-// reworded — dragged in `browser_smoke` AND `vantages` and paid ~19 minutes to
+// matches `^web/`, so a one-line HUD change — a `<div>` moved, a toast string
+// reworded — drags in `browser_smoke` AND `vantages` and pays ~19 minutes to
 // prove that a DOM overlay still overlaid. That is the wrong owner paying the
-// cost. This gate is what lets `web/index.html`, `web/src/hud.js` and
-// `web/src/input.js` route out of the renderer tier: it asserts the things
-// those three files can break, and it runs in seconds.
+// cost.
+//
+// This gate does NOT change that, and a previous version of this file said it
+// did. It runs in the code tier, on every pass, in every lane, exempting
+// nothing; `renderer_touched` is untouched. What it does is make the fix
+// available: it asserts, as a strict SUPERSET, every `web/index.html` and
+// `web/src/hud.js` contract that `browser_smoke` holds, so the carve-out
+// proposed in `DECISIONS.md` §open can be approved as a one-line regex edit
+// against coverage that already exists and already runs.
+//
+// The superset is the load-bearing claim, so it is written down rather than
+// asserted in prose. `browser_smoke`'s HUD-owning reads, and where each is
+// answered here:
+//
+//   browser_smoke                        | here
+//   -------------------------------------|---------------------------------
+//   :1445-1447 #url/#cert fill, #connect | A (present, editable, clickable)
+//   :1530 #start inline display "none"   | A (present, inline field clear)
+//   :1534,:1612 #starterr text empty     | A (present, empty at load)
+//   :1745 #vitals INLINE display "block" | F (boxShown, asserted)
+//   :1748 .vrow INLINE display "none"    | F (inline, not computed)
+//   :1749-1751 .vfill/.vnum per row      | F
+//   :1752-1756 .vfill class keys the row | F (exclusive, health has neither)
+//   :1757 .vnum is a bare integer        | F (exact string, no unit)
+//   :1871,:1903-1911 #chatlog text/#id   | D (verbatim text, '#7', '[g] ')
+//   :1931-1940 #death + its three parts  | A (closed at load) and G
+//   :1949-1956 #death computed "none"    | A (on a live body, before showDeath)
+//   :5085-5089 CHAT_CAP eviction         | D
+//
+// Anything `browser_smoke` adds to that list has to be added here too, in the
+// same commit, or the superset is a claim and not a fact.
 //
 // Why a real browser and not a node DOM stub. `Hud` touches `getElementById`,
 // `createElement`, `createTextNode`, `appendChild`, `removeChild`,
@@ -38,10 +66,10 @@
 // nothing here is allowed to look like it does — this gate proves the
 // interaction surface behaves, on a page where the game never started.
 //
-// The scaffold assertions (group A) are the load-bearing half of the tier
-// change. `web/index.html` hosts the renderer's canvas and the client's entry
-// script alongside the whole HUD; carving it out of the renderer tier is only
-// honest if something still asserts that the canvas is present, mounted and
+// The scaffold assertions (group A) are the load-bearing half of the proposal.
+// `web/index.html` hosts the renderer's canvas and the client's entry script
+// alongside the whole HUD; carving it out of the renderer tier would only be
+// honest if something still asserted that the canvas is present, mounted and
 // visible, and that the entry script is still wired. That is group A's job.
 //
 // Serves `web/` (source), not `web/dist`: `hud.js` and `input.js` import
@@ -95,9 +123,19 @@ const HUD_IDS = [...hudSrc.matchAll(/getElementById\("([^"]+)"\)/g)].map((m) => 
 // A parse that found nothing would make every id check below vacuous — the
 // "gate that matches nothing" failure, which is the worst bug class in this
 // repo. Assert the parse before trusting what it produced.
+//
+// This is a RATCHET, pinned at the count that actually ships, not a loose
+// floor. It was written `>= 14` against an actual 16, which is the same hole
+// one size down: two surfaces could leave the HUD entirely and the number
+// would still clear the bar. Adding an element raises it (the check passes
+// and this constant is updated in the same commit, like a golden); removing
+// one has to be a stated act rather than a silent drift.
+const HUD_ID_COUNT = 16;
 check(
-  HUD_IDS.length >= 14,
-  `parsed only ${HUD_IDS.length} getElementById ids out of hud.js — the scaffold check would be vacuous`,
+  HUD_IDS.length >= HUD_ID_COUNT,
+  `parsed ${HUD_IDS.length} getElementById ids out of hud.js, expected at least ${HUD_ID_COUNT}` +
+    " — either the parse broke (every scaffold check below is then vacuous) or a HUD surface left;" +
+    " if a surface was removed on purpose, move this constant in the same commit",
 );
 const hudConst = (name) => {
   const m = hudSrc.match(new RegExp(`const ${name} = (\\d+);`));
@@ -197,13 +235,49 @@ const scaffold = await page.evaluate((ids) => {
   const entry = [...document.querySelectorAll("script[type=module][src]")].map((s) =>
     s.getAttribute("src"),
   );
+  const el = (id) => document.getElementById(id);
+  const tag = (id) => el(id)?.tagName || null;
+  const death = el("death");
   return {
-    missing: ids.filter((id) => !document.getElementById(id)),
+    missing: ids.filter((id) => !el(id)),
     hasCanvas: !!gl && gl.tagName === "CANVAS",
     canvasDisplay: cs ? cs.display : null,
     canvasW: gl ? gl.clientWidth : 0,
     canvasH: gl ? gl.clientHeight : 0,
     entry,
+    // The join form, as browser_smoke drives it: it fills #url and #cert and
+    // clicks #connect (:1445-1447) with no assertion of its own — Playwright
+    // throws on a missing or non-editable node and the throw is uncaught, so
+    // a renamed input reads there as an unexplained crash. Here it is a
+    // sentence.
+    join: {
+      url: tag("url"),
+      cert: tag("cert"),
+      connect: tag("connect"),
+      urlDisabled: el("url")?.disabled ?? null,
+      certDisabled: el("cert")?.disabled ?? null,
+      connectDisabled: el("connect")?.disabled ?? null,
+      // :1530 reads `#start`'s INLINE display and calls anything that is not
+      // the exact string "none" a form still up. Note the `?.` there: a
+      // MISSING #start reads "" !== "none" → still-up → the boot ladder
+      // reports "stuck on rung 0" for an element that does not exist. That
+      // is the assertion this line makes honest.
+      startPresent: !!el("start"),
+      startInline: el("start") ? el("start").style.display : null,
+      // :1534/:1612 — a non-empty #starterr fails the join with its text as
+      // the reason, so it must start empty and it must be a node that can
+      // hold text at all.
+      errPresent: !!el("starterr"),
+      errText: el("starterr")?.textContent ?? null,
+    },
+    // :1949-1956 — on a LIVE body the death screen must compute to none, and
+    // it is a computed read there because `#death { display: none }` is a
+    // stylesheet rule in index.html (not an inline style), so a CSS edit that
+    // dropped the rule would raise the overlay over a living player with no
+    // JS involved. Group G below only ever looks after showDeath() has run;
+    // this is the untouched-page state, which is the one browser_smoke holds.
+    deathAtLoad: death ? getComputedStyle(death).display : null,
+    deathParts: ["respawnbag", "respawnbeach", "deathcause"].filter((id) => !el(id)),
   };
 }, HUD_IDS);
 
@@ -227,6 +301,49 @@ check(
     " — the client has no entry point",
 );
 check(mainRequests === 1, `the page requested /src/main.js ${mainRequests} times, expected exactly 1`);
+
+// --- the contracts browser_smoke holds against index.html -------------------
+// Everything from here to the end of group A exists because `browser_smoke`
+// asserts it and this gate did not. See the table in the header.
+const j = scaffold.join;
+check(
+  j.url === "INPUT" && j.cert === "INPUT",
+  `the join form's fields are <${j.url}>/<${j.cert}>, expected two <input> — browser_smoke fills them by id`,
+);
+check(
+  j.connect === "BUTTON",
+  `#connect is <${j.connect}>, expected <button> — browser_smoke clicks it to start every one of its tabs`,
+);
+check(
+  j.urlDisabled === false && j.certDisabled === false && j.connectDisabled === false,
+  `the join form ships disabled (url=${j.urlDisabled}, cert=${j.certDisabled}, connect=${j.connectDisabled})` +
+    " — nothing could type a shard address into it",
+);
+check(
+  j.startPresent,
+  "index.html has no #start — and browser_smoke:1530 cannot tell that from a form that is still up," +
+    " so its failure would read as 'stuck on rung 0' for an element that does not exist",
+);
+check(
+  j.startInline === "",
+  `#start ships with an inline display of ${JSON.stringify(j.startInline)} — main.js:116 sets that field to` +
+    ' "none" on connect and browser_smoke reads it back, so the scaffold must leave it clear',
+);
+check(j.errPresent, "index.html has no #starterr — a client that refused to boot has nowhere to say why");
+check(
+  j.errText === "",
+  `#starterr ships carrying ${JSON.stringify(j.errText)} — browser_smoke fails any join whose error line is` +
+    " non-empty, so a placeholder here would fail every boot",
+);
+check(
+  scaffold.deathAtLoad === "none",
+  `#death computes display:${scaffold.deathAtLoad} on an untouched page — the death screen is up over a` +
+    " live player, which is a stylesheet edit away and needs no JS at all",
+);
+check(
+  scaffold.deathParts.length === 0,
+  `the death screen is missing ${scaffold.deathParts.join(", ")} — a dead player could not answer it`,
+);
 
 // --- construct the real HUD and tracker against the real scaffold ------------
 const built = await page.evaluate(async () => {
@@ -491,6 +608,12 @@ const vitals = await page.evaluate(() => {
   const read = () =>
     [...box.querySelectorAll(".vrow")].map((r) => ({
       shown: getComputedStyle(r).display !== "none",
+      // browser_smoke:1748 reads the INLINE style, not the computed one, and
+      // treats "none" as an absent meter. The two agree today only because
+      // hud.js:138 writes the field directly; a rewrite that moved the
+      // hide to a class would keep every computed check above green and
+      // silently blind that gate. Captured separately so it cannot.
+      inline: r.style.display,
       empty: r.classList.contains("empty"),
       num: r.querySelector(".vnum").textContent,
       width: r.querySelector(".vfill").style.width,
@@ -498,6 +621,10 @@ const vitals = await page.evaluate(() => {
     }));
   hud.setVitals(90, 100, 40, 100, 70, 100);
   const positional = read();
+  // Read here, with meters live — not at the end of this function, where the
+  // all-zero call below has already hidden the stack. The previous version
+  // captured it there, which is why it could not be asserted.
+  const boxShown = box.style.display;
   hud.setVitals(0, 100, 5, 100, 5, 100);
   const zeroed = read();
   hud.setVitals(50, 100, 0, 0, 0, 0);
@@ -506,7 +633,7 @@ const vitals = await page.evaluate(() => {
   const clamped = read();
   hud.setVitals(0, 0, 0, 0, 0, 0);
   const silent = getComputedStyle(box).display;
-  return { positional, zeroed, unstated, clamped, silent, boxShown: box.style.display };
+  return { positional, zeroed, unstated, clamped, silent, boxShown };
 });
 const [hpRow, waterRow, foodRow] = vitals.positional;
 check(
@@ -518,6 +645,35 @@ check(
   waterRow.kind.includes("water") && foodRow.kind.includes("food"),
   `the vitals fills are not the meters they claim: row1='${waterRow.kind}', row2='${foodRow.kind}'`,
 );
+// browser_smoke:1752-1756 keys a row by class and keys HEALTH BY ABSENCE:
+// water if `.water`, food if `.food`, otherwise health. So a `.vfill` that
+// grew a second class, or a health fill that gained either, is read as the
+// wrong meter and the value comparison at :1794 then fails against the sim
+// with a message about the wrong row. Exclusivity is the real contract.
+check(
+  !hpRow.kind.includes("water") && !hpRow.kind.includes("food"),
+  `the health fill carries a meter class ('${hpRow.kind}') — browser_smoke keys health by the ABSENCE of both,` +
+    " so this row would be read as the water or food meter",
+);
+check(
+  !waterRow.kind.includes("food") && !foodRow.kind.includes("water"),
+  `a vitals fill carries both meter classes (water='${waterRow.kind}', food='${foodRow.kind}') — the class` +
+    " that keys the row must be exactly one",
+);
+// :1757 → :1794 does exact string equality between this text and
+// `String(sim)`. A unit, a comma, a "/100" or a decimal point makes every
+// vitals comparison in browser_smoke fail on a HUD that looks perfect.
+for (const [label, row] of [
+  ["health", hpRow],
+  ["water", waterRow],
+  ["food", foodRow],
+]) {
+  check(
+    /^\d+$/.test(row.num),
+    `the ${label} readout is ${JSON.stringify(row.num)} — it is compared against String(sim) by exact` +
+      " equality, so it must be a bare integer with no unit, separator or suffix",
+  );
+}
 check(hpRow.width === "90%", `a 90/100 meter filled to ${hpRow.width}`);
 check(
   vitals.zeroed[0].shown === true && vitals.zeroed[0].empty === true,
@@ -528,6 +684,25 @@ check(
   "a meter the server has stated nothing about (max 0) must not be drawn — it is not the same fact as empty",
 );
 check(vitals.unstated[0].shown === true, "the health row vanished while its max was still 100");
+check(
+  vitals.unstated[1].inline === "none" && vitals.unstated[2].inline === "none",
+  `an unstated meter hides at inline display '${vitals.unstated[1].inline}'/'${vitals.unstated[2].inline}'` +
+    " — browser_smoke:1748 reads that exact field and counts anything else as a live meter",
+);
+check(
+  vitals.positional[0].inline === "flex",
+  `a live meter shows at inline display '${vitals.positional[0].inline}' — the same field, the shown case`,
+);
+// The one the judge caught: this value was read and thrown away. It is the
+// whole of browser_smoke:1745 — `#vitals` not at inline "block" early-returns
+// `{shown:false}` and fails at :1768 with "no health reached the HUD". A HUD
+// that switched to `display:grid` or to a class would pass every other check
+// in this group and take that gate down with a message about the shard.
+check(
+  vitals.boxShown === "block",
+  `the vitals stack shows at inline display ${JSON.stringify(vitals.boxShown)}, expected "block"` +
+    " — browser_smoke:1745 tests that string exactly and reports anything else as the shard sending no health",
+);
 check(
   vitals.clamped[0].width === "100%" && vitals.clamped[1].width === "0%",
   `the fill did not clamp to 0..100%: over-full read ${vitals.clamped[0].width}, negative read ${vitals.clamped[1].width}`,
@@ -624,13 +799,168 @@ check(
 );
 
 // =============================================================================
-// H. no page errors anywhere in the above
+// H. craft, the queue, and the build strip — the surfaces that spend materials
+// =============================================================================
+// `setCraft` (hud.js:161) is the largest DOM builder in the file and neither
+// gate asserted a line of it; `setCraftQueue` (:202) and `setBuild` (:224)
+// were the same. They are grouped here because they share one failure mode:
+// each carries an INDEX or a COUNT from the panel back into an action that
+// spends the player's materials, and that is the positional-payload shape
+// CLAUDE.md's trap list names — the right value in the wrong position, which
+// every byte-level gate in this repo is blind to.
+const CRAFT_ROWS = [
+  {
+    recipe: 4,
+    name: "stone hatchet",
+    count: 1,
+    seconds: 7,
+    gated: false,
+    gateText: "",
+    inputs: [
+      { text: "wood 100", ok: true },
+      { text: "stone 40", ok: false },
+    ],
+  },
+  { recipe: 9, name: "arrow", count: 4, seconds: 2, gated: false, gateText: "", inputs: [{ text: "wood 25", ok: true }] },
+  {
+    recipe: 12,
+    name: "sheet door",
+    count: 1,
+    seconds: 30,
+    gated: true,
+    gateText: "workbench 2",
+    inputs: [{ text: "metal 200", ok: true }],
+  },
+];
+
+const craft = await page.evaluate((rows) => {
+  const { hud } = globalThis.__ui;
+  const panel = document.getElementById("craft");
+  const calls = [];
+  // Built twice on purpose: main.js rebuilds this panel from a slow timer, so
+  // a builder that appended instead of clearing would grow without bound and
+  // every row would carry a stale click handler.
+  hud.setCraft(rows, (recipe, n) => calls.push([recipe, n]));
+  hud.setCraft(rows, (recipe, n) => calls.push([recipe, n]));
+  const crows = [...panel.querySelectorAll(".crow")];
+  const shape = crows.map((d) => ({
+    gated: d.classList.contains("gated"),
+    name: d.querySelector(".cname").textContent,
+    ins: [...d.querySelectorAll(".cin")].map((s) => s.className),
+    gate: d.querySelector(".gate")?.textContent ?? null,
+  }));
+  // A plain click, a shift-click, and a click on the gated row. The third is
+  // the one that matters: a recipe the player cannot yet make must not be
+  // able to spend anything.
+  crows[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  crows[1].dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }));
+  crows[2].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  return { count: crows.length, shape, calls, heading: panel.querySelector("h2")?.textContent ?? null };
+}, CRAFT_ROWS);
+
+check(
+  craft.count === CRAFT_ROWS.length,
+  `the craft panel holds ${craft.count} rows after two rebuilds of ${CRAFT_ROWS.length} recipes` +
+    " — it must clear before it builds, or a slow-timer rebuild grows it forever",
+);
+check(craft.heading === "CRAFT", `the craft panel's heading reads ${JSON.stringify(craft.heading)}`);
+check(
+  craft.shape[0].name === "stone hatchet" && craft.shape[1].name === "arrow ×4",
+  `a craft row names its output wrongly: got ${JSON.stringify(craft.shape[0].name)} and` +
+    ` ${JSON.stringify(craft.shape[1].name)}, expected 'stone hatchet' and 'arrow ×4' (count>1 shows the ×)`,
+);
+check(
+  JSON.stringify(craft.shape[0].ins) === JSON.stringify(["cin ok", "cin miss"]),
+  `the ingredient marks do not follow their ok flags: ${JSON.stringify(craft.shape[0].ins)} for` +
+    " [have, missing] — a player reads affordability off exactly this",
+);
+check(
+  craft.shape[2].gated === true && craft.shape[2].gate === " · workbench 2",
+  `the gated recipe is not marked as gated (gated=${craft.shape[2].gated}, gate=${JSON.stringify(craft.shape[2].gate)})`,
+);
+check(
+  craft.shape[0].gate === null && craft.shape[1].gate === null,
+  "an ungated recipe is carrying a gate badge",
+);
+// The three clicks, in order: recipe 4 ×1, recipe 9 ×5, and nothing at all.
+check(
+  JSON.stringify(craft.calls) === JSON.stringify([
+    [4, 1],
+    [9, 5],
+  ]),
+  `the craft panel sent ${JSON.stringify(craft.calls)}, expected [[4,1],[9,5]] — a plain click crafts one,` +
+    " shift crafts five, and the workbench-gated row must send nothing at all",
+);
+
+// The queue strip. `onCancel(j.index)` takes the job's OWN index field, which
+// is deliberately not its position in the array here: a cancel that sent the
+// array slot would cancel a different job, and the player would watch the
+// wrong craft disappear.
+const queue = await page.evaluate(() => {
+  const { hud } = globalThis.__ui;
+  const strip = document.getElementById("craftq");
+  const cancels = [];
+  hud.setCraftQueue([], () => cancels.push("empty"));
+  const hidden = strip.style.display;
+  hud.setCraftQueue(
+    [
+      { index: 3, label: "hatchet 4s" },
+      { index: 7, label: "arrow ×4 2s" },
+    ],
+    (i) => cancels.push(i),
+  );
+  const cells = [...strip.querySelectorAll(".qcell")];
+  cells[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  return {
+    hidden,
+    shown: strip.style.display,
+    labels: cells.map((c) => c.textContent),
+    titled: cells.every((c) => c.title.length > 0),
+    cancels,
+  };
+});
+check(queue.hidden === "none", `an empty craft queue shows at display:${queue.hidden} — an empty strip is clutter`);
+check(queue.shown === "flex", `a two-job craft queue shows at display:${queue.shown}, expected flex`);
+check(
+  JSON.stringify(queue.labels) === JSON.stringify(["hatchet 4s", "arrow ×4 2s"]),
+  `the queue strip reads ${JSON.stringify(queue.labels)}`,
+);
+check(queue.titled, "a queue cell carries no title — nothing tells the player a click cancels it");
+check(
+  JSON.stringify(queue.cancels) === JSON.stringify([7]),
+  `clicking the second job cancelled ${JSON.stringify(queue.cancels)}, expected [7] — the job's own index,` +
+    " not its slot in the strip; sending the slot cancels somebody else's craft",
+);
+
+// The build strip: one line, and the empty string is the hide.
+const build = await page.evaluate(() => {
+  const { hud } = globalThis.__ui;
+  const el = document.getElementById("build");
+  const out = {};
+  hud.setBuild("wall · wood · 200 wood");
+  out.text = el.textContent;
+  out.shown = el.style.display;
+  hud.setBuild("");
+  out.cleared = el.textContent;
+  out.hidden = el.style.display;
+  return out;
+});
+check(build.text === "wall · wood · 200 wood", `the build strip reads ${JSON.stringify(build.text)}`);
+check(build.shown === "block", `a live build strip shows at display:${build.shown}, expected block`);
+check(
+  build.hidden === "none" && build.cleared === "",
+  `leaving build mode left the strip at display:${build.hidden} reading ${JSON.stringify(build.cleared)}`,
+);
+
+// =============================================================================
+// I. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
 
 console.log(
-  `  ui smoke: scaffold ${HUD_IDS.length} ids · hotbar 6 cells · composer swallow · ` +
-    `chat cap ${CHAT_CAP} · toast cap ${TOAST_CAP} · vitals positional · death answered once`,
+  `  ui smoke: scaffold ${HUD_IDS.length} ids · join form · hotbar 6 cells · composer swallow · ` +
+    `chat cap ${CHAT_CAP} · toast cap ${TOAST_CAP} · vitals positional+inline · death answered once · ` +
+    `craft gate/×5 · queue index`,
 );
 console.log(`ui smoke: ${checks} checks passed`);
 

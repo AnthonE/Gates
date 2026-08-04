@@ -61,28 +61,20 @@ renderer_base() {
   return 1
 }
 
-# The interaction surface, carved back out of that question (ui lane,
-# 2026-08-04). `^web/` swept in the HUD, so a one-line `<div>` move paid the
-# full renderer tier — ~19 minutes to prove that a DOM overlay still overlaid.
-# These three files cannot change a material, a shader, a light or a mesh;
-# what they CAN break is asserted by `ci/ui_smoke.mjs`, which runs in the code
-# tier below, on every pass, in every lane, in under a second.
+# Every path under `web/` is a renderer path, including the HUD. That is
+# expensive for this lane — a one-line `<div>` move pays the full renderer
+# tier, ~19 minutes to prove that a DOM overlay still overlaid — and a
+# carve-out for `index.html`/`hud.js`/`input.js` was built here on 2026-08-04
+# and reverted the same day. It is not a lane branch's change to make: `auto`
+# is the tier the loop merges on, so subtracting a path from this question
+# subtracts a gate from the merge, and the mechanism is the operator's.
 #
-# `web/index.html` is on the list because it is one inline `<style>` plus the
-# HUD scaffold — but it also hosts the renderer's canvas and the client's entry
-# script, so `ui_smoke` group A asserts exactly that: `#gl` present, mounted,
-# visible and non-zero-sized, and `/src/main.js` still wired as the module
-# entry. Without those assertions this row would not be honest.
-#
-# The rule for extending this list: a path joins it only in a commit that also
-# extends `ci/ui_smoke.mjs` to cover what that path can break. A carve-out with
-# no assertion behind it is a silent skip, which the header above calls the
-# worst bug class in this file. Everything else under `web/` — `main.js`,
-# `scene.js`, `materials.js`, `textures.js`, `props.js`, `terrain.js`,
-# `shadows.js`, `bench.js`, `net.js`, `wasm.js`, `terrainWorker.js`, the vite
-# config, the lockfile — stays a renderer path.
-UI_ONLY_RE='^(web/index\.html|web/src/hud\.js|web/src/input\.js)$'
-
+# The proposal now sits in `DECISIONS.md` §open (ui lane, 2026-08-04) with the
+# coverage table it needs. The coverage itself is built and landed:
+# `ci/ui_smoke.mjs` asserts every `index.html`/`hud.js` contract that
+# `browser_smoke` holds, as a superset, so approving the carve-out later is a
+# one-line edit to the regex below and not a second round of work. Until that
+# word is spoken this list exempts nothing.
 renderer_touched() {
   local base
   base=$(renderer_base) || {
@@ -93,7 +85,7 @@ renderer_touched() {
   {
     git diff --name-only HEAD 2>/dev/null || true
     git diff --name-only "$base"...HEAD 2>/dev/null || true
-  } | grep -vE "$UI_ONLY_RE" | grep -qE '^(web/|assets/textures/|ci/browser_smoke\.mjs|ci/vantages\.mjs)'
+  } | grep -qE '^(web/|assets/textures/|ci/browser_smoke\.mjs|ci/vantages\.mjs)'
 }
 
 RUN_RENDERER=1
@@ -193,24 +185,31 @@ $NICE node ci/pine_shape.mjs || fail "pine shape"
 # gates below expensive applies. Here rather than earlier because playwright is
 # a `web/` devDependency and comes from the install above.
 #
-# It is the reason the HUD files are exempt from `renderer_touched`, and it is
-# also a gate in its own right: the composer that must swallow a keystroke so
-# "w" is a letter and not a step forward, the death screen that must answer
-# once, the chat line that goes in as another player's TEXT and never as
-# markup, and the vitals stack whose argument order and row order disagree by
-# design — the positional-payload shape CLAUDE.md's trap list names as where
-# the reference ecosystem actually bled. Every one of those was a comment with
-# no gate.
+# It exempts nothing — `renderer_touched` above is unchanged and every path
+# under `web/` still schedules the renderer tier. This gate earns its place on
+# what it asserts: the composer that must swallow a keystroke so "w" is a
+# letter and not a step forward, the death screen that must answer once, the
+# chat line that goes in as another player's TEXT and never as markup, and the
+# vitals stack whose argument order and row order disagree by design — the
+# positional-payload shape CLAUDE.md's trap list names as where the reference
+# ecosystem actually bled. Every one of those was a comment with no gate.
+#
+# It also holds, deliberately, a superset of every `index.html`/`hud.js`
+# contract `ci/browser_smoke.mjs` asserts (group A and the inline-style checks
+# in F). That is not redundancy for its own sake: it is the evidence the
+# §open carve-out proposal needs, measured rather than promised.
 echo "== gate: ui smoke (HUD, hotbar, composer, chat, vitals, death — real events, no renderer)"
 $NICE node ci/ui_smoke.mjs || fail "ui smoke"
 
-# The only gate that runs the JS in a browser. Everything above tests the
-# client's LOGIC natively or in node, which is why two hard boot bugs shipped
-# green on 2026-07-31: a detached-buffer throw in WasmViews that stopped the
+# The only gate that BOOTS the client — a real shard, the wasm bridge, a WebGL
+# context, the world drawn. `ui_smoke` above is also a browser, but on a page
+# where the game never started, and it cannot replace this: two hard boot bugs
+# shipped green on 2026-07-31 because everything else tested the client's LOGIC
+# natively or in node — a detached-buffer throw in WasmViews that stopped the
 # client dead, and a terrain-worker race that killed the near ring while the
 # far mesh still rendered (so screenshots looked fine). Both are invisible to
-# every other gate here. Needs the release shard binary — build it first so a
-# missing binary is a loud failure and never a skip.
+# every other gate here, `ui_smoke` included. Needs the release shard binary —
+# build it first so a missing binary is a loud failure and never a skip.
 if [ "$RUN_RENDERER" = "0" ]; then
   echo "== renderer tier NOT run (tier: $TIER) — browser smoke, vantages"
   echo "CODE GATES GREEN — renderer tier skipped, so this is NOT 'all gates green'."

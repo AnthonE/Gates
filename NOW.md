@@ -21,10 +21,10 @@ Done items are deleted, not checked — history lives in git and
    because container state diverged and that reads as a forged request. The UI
    half is not startable until the refusal path exists to draw against.
 
-   `ci/ui_smoke.mjs` is the gate it lands in, and `ci/gates.sh`'s `UI_ONLY_RE`
-   is the list a new UI file joins — **only in a commit that also extends
-   `ui_smoke` to cover it.** A carve-out with no assertion behind it is a
-   silent skip.
+   `ci/ui_smoke.mjs` is the gate it lands in. The renderer-tier carve-out that
+   would make this lane cheap is **not armed** — it is a proposal in
+   `DECISIONS.md` §open with its coverage already built and gated. Until it is
+   spoken, UI work pays the renderer tier.
 
 1. **The generated pine is built, gated, bundled — and not drawn.**
    *(Found while recovering the red join gate, 2026-08-04. `DECISIONS.md` §open
