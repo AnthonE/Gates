@@ -55,6 +55,17 @@ Stages, in order — each cheap, each deterministic:
    players out of their bases into a circulation loop where they meet —
    with zero monument art. Junk piles at bay mouths get slightly denser
    slots **(knob)**.
+   **Landed** as `terrain::road_band`, and the constraint block below turned
+   out not to bind: the road needs no memo at all, because the ring is never
+   located, only tested against. A sample is on the road iff the shoreline
+   crossing lies in a window around the point `ROAD_INLAND_M` seaward along
+   its own outward radial — three `height` taps, one for most of the island,
+   and it tracks the wobble exactly rather than approximating it with control
+   points. Scatter clears the carriageway and draws barrels on the shoulder.
+   **Still open**: the flattening (it needs a mask inside `height` — that is
+   the representation decision the block defers, and nothing forced it yet),
+   the dirt material, and the denser bay-mouth slots. `DECISIONS.md` §open
+   "coast road v0" has the knobs and the measured numbers.
 8. **The haven pad** — deterministic placement: score candidate sites on
    the road ring by flatness + coast distance, take the best, carve a
    flat pad with a smooth blend radius. (This is also the monument hook:
@@ -238,5 +249,11 @@ The reads a survival map must produce, and which stage buys each:
   The spawn-ring half of it has landed early as sim-core
   `world::tests::spawn_ring_lands_on_a_clear_beach`: 32 seeds × 64 joins,
   each spawn asserted beach biome, above the wade line, off a cliff, and
-  4 m clear of every scatter slot. The rest waits on the road and the pad.
+  4 m clear of every scatter slot.
+  The road half has landed as sim-core `tests/road.rs`: 4 seeds × 64
+  bearings, asserting the ring is **closed on every bearing**, that 0 slots
+  stand on the carriageway (re-derived from the slot list, so a veto that
+  stopped firing reddens), that the shoulder carries the barrel route, that
+  under 10% of the road is over the cliff ratio, and that the sea is
+  `ROAD_INLAND_M` ± the shoulder width seaward. The pad half waits on the pad.
 - Chunk-build time and instancing counts ride the client perf harness.
