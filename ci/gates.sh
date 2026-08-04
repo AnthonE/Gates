@@ -168,6 +168,15 @@ $NICE node ci/client_smoke.mjs || fail "client bridge smoke"
 echo "== gate: bump basis (world-XZ gradient is continuous across a triangle edge)"
 $NICE node ci/bump_basis.mjs || fail "bump basis"
 
+# The prop photograph's triplanar blend, as arithmetic. A triplanar blend loses
+# 42% of a source's contrast at the three-way point unless the deviation is
+# variance-normalized, and contrast is the ENTIRE reason the photograph was
+# wired — so the correction is gated by a closed-form identity here rather than
+# by a screenshot ten minutes downstream. Reads the shipped knobs out of
+# `materials.js` rather than carrying its own copy.
+echo "== gate: prop photo (mean-preserving ratio, symmetric clamp, variance-preserving triplanar)"
+$NICE node ci/prop_photo.mjs || fail "prop photo"
+
 echo "== gate: web bundle (npm ci + vite build; the wasm artifact must ride along)"
 command -v npm >/dev/null || fail "npm missing — web gate cannot run"
 mkdir -p web/public
