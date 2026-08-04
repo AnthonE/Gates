@@ -126,6 +126,34 @@ references *ask for*, and the gap between the two is the work.
 - Exposure and tone map are the rig's, not a material's. If something is
   blown, fix its albedo.
 
+**Occlusion has three scales and the rig only reaches one of them.** Written
+here before any of it exists, because the rule that matters is *where each term
+applies*, and getting that wrong is how AO becomes a global darkener. Source:
+Lagarde & de Rousiers, *Moving Frostbite to PBR* §4.10.3 (fetched 2026-08-04),
+cross-read against Filament's material doc.
+
+- **Micro** (creases, cavities — below any map's reach): baked into the albedo,
+  and it is the one term that applies to **direct light as well as indirect**.
+  The common shorthand "AO only affects indirect" is about the medium/large
+  terms and is wrong if applied to this one.
+- **Medium** (between a surface's own features — what a fetched `*_ao.jpg`
+  carries): **`indirectDiffuse *= ao`, indirect only.** A light rig cannot
+  supply this scale; that is the whole reason `assets/textures/*_ao.jpg` now
+  exists. It is also the unblock for the ambient floor — raising hemisphere
+  fill lands everywhere, including in the prop chroma ratio's denominator,
+  while AO removes ambient only where geometry occludes. Raise the fill and put
+  the darkness back where it belongs.
+- **Large** (between objects — screen-space, contact shadows): also indirect
+  only.
+- **Never sum or multiply two occlusion terms of the same scale.** Frostbite
+  takes `min(bakedAO, ssAO)` to avoid double-darkening; micro is deliberately
+  excluded from that min because it is at a different scale and its influence
+  should survive. This binds before either term exists here.
+- **Specular occlusion is a separate term, not the diffuse one reused.**
+  Omitting it "manifests itself as light leaks"; applying diffuse AO to
+  specular is visibly wrong at grazing angles. Frostbite's form is
+  `computeSpecularOcclusion(NdotV, min(bakedAO, ssAO), roughness)`.
+
 ## 5 · Materials
 
 Authored albedo stays inside `ALBEDO_LUMA_BAND = [0.05, 0.55]` linear
@@ -193,6 +221,13 @@ The rule that replaces it:
   its mean.** Bound it per layer against that layer's own gain span; a source
   already in band keeps its colour whole, and one that is not keeps almost none
   of it, because almost none of what it has left is its own.
+- **So picking a source is a measurement, not a browse.** The span above is
+  computable from a candidate file before it ships, which makes source
+  selection the cheapest lever in this document: `rock` went from keep 0.17 to
+  **0.97** on a file swap with no code change, chosen by scoring 74 CC0
+  candidates on gain span, albedo sd, and directional anisotropy. Score
+  candidates with the shipped estimator itself — never a re-implementation that
+  might disagree — and record the numbers in `MANIFEST.md` beside the pick.
 - **A map is only as good as the surface it is laid on, and a modifier that
   REPLACES an albedo throws the map away.** Two ways the ground can carry a
   photograph and still not show one, both shipped and both fixed in
