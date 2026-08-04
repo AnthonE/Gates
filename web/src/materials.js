@@ -223,7 +223,7 @@ import {
   resolvedGlslChars,
 } from "./shadows.js";
 import { WIND_CURVE } from "./props.js";
-import { GROUND_LAYERS, groundTextures } from "./textures.js";
+import { GROUND_LAYERS, PROP_LAYERS, groundTextures, propTextures } from "./textures.js";
 
 // --- the four identities (TERRAIN.md §4's four sets) ------------------------
 // Colours are the retired vertex palette's, unchanged, so this slice changes
@@ -2181,6 +2181,20 @@ const PROP_PHOTO_GAIN = 1.0;
 // roughly the size the source was shot at, and sits inside the 0.6-1 m band
 // `textures.js` records the ground sampling its own base over.
 const PROP_PHOTO_SCALE = 1.6;
+// Bark's own tile, because a trunk is not a boulder. `PROP_PHOTO_SCALE`'s 0.63 m
+// tile was chosen to put granite grain on a 1.5 m boulder at the size the source
+// was shot at; the same tile wrapped round a 0.5 m trunk would put barely two
+// repeats across the whole visible face and read as a smear rather than as
+// fissures. 3.4 repeats/m is a 0.29 m tile, which is the height of roughly one
+// fissure group in `bark_brown_02` and puts ~1.7 of them across the trunk's
+// visible width — the scale `ART.md` §5 asks for when it says bark fissures run
+// UP the trunk and are a crease, not a wash.
+//
+// Proposed default, `DECISIONS.md` §open ("prop photograph v2") — not a spoken
+// number. The direction is fixed by the geometry (a trunk is ~3x narrower than
+// a boulder, so its tile is ~3x finer); the digit is mine and is recorded as
+// open rather than written in as though it were law.
+const PROP_PHOTO_SCALE_BARK = 3.4;
 // Triplanar blend sharpness. `ART.md` §7(2): `pow(w, 8)` blend, not linear — a
 // linear blend smears all three projections across a rounded boulder and the
 // grain reads as mush on every face that is not axis-aligned.
@@ -2206,6 +2220,21 @@ export const SURFACES = {
   wood: {
     roughness: 0.95,
     metalness: 0.0,
+    // The bark photograph, out of the prop-only array (`PROP_LAYERS`). This is
+    // the identity `NOW.md` named: the maps were on disk, in `MANIFEST.md`, and
+    // imported by nothing, while `ART.md` §5 records the trunk as having been
+    // 1.9x under the band floor before prop albedo v1 fixed its VALUE and left
+    // it with no structure at all.
+    //
+    // The field below stays. It is not a duplicate of the photograph and the
+    // two are doing different jobs: the field's `scale` is per-axis (2.0 across
+    // the grain, 0.42 along it — 4.7x taller than wide) and the photograph's
+    // triplanar tile is not, so the field supplies the trunk-long anisotropy
+    // and the photograph supplies the measured fissure detail inside it. Their
+    // frequency split is the third bullet of that `NOW.md` item and is NOT done
+    // here; see the item for what remains.
+    photo: "bark",
+    photoScale: PROP_PHOTO_SCALE_BARK,
     field: {
       scale: [2.0, 0.42, 2.0],
       ridge: 0.85,
@@ -2685,16 +2714,62 @@ const PROP_NORMAL_GLSL = /* glsl */ `
  * gate green — the failure class this repo calls the worst one.
  */
 function photoUniform(s) {
-  const tex = groundTextures();
-  const layer = s.photo === undefined ? -1 : GROUND_LAYERS.indexOf(s.photo);
-  if (!tex || layer < 0) return { map: tex ? tex.albedo : null, cfg: [0, 0, 0, 0] };
+  // Which of the two arrays owns this surface's source. The ground set is
+  // tried first so `rock`/`ore` keep sampling the very layer the ground they
+  // sit on samples, and a name is looked up in exactly one of the two — a
+  // source that appeared in both would be a real ambiguity and is not
+  // reachable, since `GROUND_LAYERS` and `PROP_LAYERS` are disjoint by
+  // construction (a prop-only identity is one nothing splats).
+  //
+  // Both arrays are `sampler2DArray` and both are addressed by
+  // `uPropPhotoCfg.x`, so binding one or the other to the single `uPropPhoto`
+  // sampler is a uniform VALUE difference and nothing else: one patch source,
+  // one compiled program, one cache key, no mid-play link for the prewarm gate
+  // to catch. That is the whole reason bark did not need a fifth ground layer.
+  const ground = groundTextures();
+  const props = propTextures();
+  const name = s.photo;
+  let tex = null;
+  let layer = -1;
+  if (name !== undefined) {
+    const gi = GROUND_LAYERS.indexOf(name);
+    if (gi >= 0) {
+      tex = ground;
+      layer = gi;
+    } else {
+      const pi = PROP_LAYERS.indexOf(name);
+      if (pi >= 0) {
+        tex = props;
+        layer = pi;
+      } else {
+        throw new Error(
+          `surface photo "${name}" is in neither GROUND_LAYERS nor PROP_LAYERS — ` +
+            `a typo here would ship as a prop with no photograph and every gate green`,
+        );
+      }
+    }
+  }
+  // Gain 0 — the term compiled and switched off — whenever there is nothing to
+  // sample. The sampler still gets a bound array (either one will do; it is
+  // never read at gain 0) because an unbound sampler2DArray is undefined
+  // behaviour, and on some drivers it samples black.
+  if (!tex || layer < 0) {
+    const fallback = ground ? ground.albedo : props ? props.albedo : null;
+    return { map: fallback, cfg: [0, 0, 0, 0] };
+  }
   const m = tex.meanLinear[layer];
   // The mean has to be taken in the same space the sampler delivers, which is
   // linear — `loadGroundTextures` already decodes through the sRGB LUT for
   // exactly this reason, so the CPU mean and the GPU sample agree by
   // construction rather than by a tolerance.
   const mean = 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2];
-  return { map: tex.albedo, cfg: [layer, mean, PROP_PHOTO_GAIN, PROP_PHOTO_SCALE] };
+  // Repeats per metre is per-surface, because it was already per-material:
+  // `uPropPhotoCfg.w` is read straight out of this vector, so a class that
+  // wants its source at a different tile costs a number here and no GLSL. A
+  // boulder and a trunk are not the same size and were never going to want the
+  // same tile — see `PROP_PHOTO_SCALE_BARK`.
+  const scale = s.photoScale === undefined ? PROP_PHOTO_SCALE : s.photoScale;
+  return { map: tex.albedo, cfg: [layer, mean, PROP_PHOTO_GAIN, scale] };
 }
 
 export function surfaceMaterial(surface, opts = {}) {
@@ -2889,13 +2964,30 @@ export function windFacts() {
  * or loses a fade cannot pass by agreeing with a copy of itself.
  */
 export function propFacts() {
+  // What each class actually binds, read back through the same function the
+  // material is built with rather than restated from the table. That is the
+  // point: a surface whose `photo` name resolved to the wrong array, or to
+  // gain 0 because the set had not loaded, publishes the wrong numbers HERE
+  // and a gate reads them — where the alternative is a boulder or a trunk that
+  // silently lost its photograph and looks merely a bit flat.
+  const photoOf = (s) => {
+    const cfg = photoUniform(s).cfg;
+    const src =
+      s.photo === undefined
+        ? null
+        : GROUND_LAYERS.indexOf(s.photo) >= 0
+          ? "ground"
+          : "prop";
+    return { photo: s.photo ?? null, photoArray: src, photoLayer: cfg[0], photoMean: cfg[1], photoGain: cfg[2], photoScale: cfg[3] };
+  };
   const classes = Object.entries(SURFACES).map(([name, s]) => {
     const f = s.field;
-    if (!f) return { name, field: false };
+    if (!f) return { name, field: false, ...photoOf(s) };
     const sMax = Math.max(...f.scale);
     return {
       name,
       field: true,
+      ...photoOf(s),
       scale: f.scale,
       // Cycles per metre on the coarsest axis, and the finest feature the
       // material carries — the detail octave's own.
@@ -2941,6 +3033,16 @@ export function propFacts() {
     // module adds is multiplicative, so the band is the condition under which
     // that field is worth anything.
     albedoBand: ALBEDO_LUMA_BAND,
+    photoGain: PROP_PHOTO_GAIN,
+    photoScale: PROP_PHOTO_SCALE,
+    photoScaleBark: PROP_PHOTO_SCALE_BARK,
+    photoBlend: PROP_PHOTO_BLEND,
+    photoClamp: PROP_PHOTO_CLAMP,
+    // The prop-only array, as what it delivers. `albedoSd` is the number that
+    // says a photograph arrived rather than a swatch — the same measurement
+    // `baseFacts` publishes for the ground's four, taken by the same function.
+    propLayers: PROP_LAYERS.slice(),
+    propTex: propTextures()?.facts ?? null,
   };
 }
 

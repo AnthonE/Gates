@@ -54,6 +54,12 @@ import rockRoughUrl from "../../assets/textures/rock_rough.jpg";
 import sandAlbedoUrl from "../../assets/textures/sand_albedo.jpg";
 import sandNormalUrl from "../../assets/textures/sand_normal.jpg";
 import sandRoughUrl from "../../assets/textures/sand_rough.jpg";
+// The prop-only set. Separate from the four above because these identities are
+// NOT ground: nothing splats them, no `gmW` component selects them, and putting
+// bark into the ground array would move `GROUND_LAYERS` and the splat index
+// that `materials.js` asserts against it — the larger blast radius of the two
+// `NOW.md` offers, for a layer the ground would never sample.
+import barkAlbedoUrl from "../../assets/textures/bark_albedo.jpg";
 
 /**
  * The layer order IS `IDENTITIES`' order in `materials.js` (sand, grass,
@@ -63,11 +69,40 @@ import sandRoughUrl from "../../assets/textures/sand_rough.jpg";
  */
 export const GROUND_LAYERS = ["sand", "grass", "litter", "rock"];
 
+/**
+ * The prop-only identities: sources a prop samples that the ground never does.
+ *
+ * A SECOND array rather than a fifth ground layer, which is the choice
+ * `NOW.md` put at "the smaller blast radius" and it is worth saying why it is
+ * smaller. `GROUND_LAYERS`' order IS the splat weights' order and IS the
+ * layer order, asserted equal in `materials.js` at module load; a fifth entry
+ * moves an index three files agree on to buy a layer no `gmW` component can
+ * ever select. This array is indexed by the same `uPropPhotoCfg.x` the ground
+ * array is, so the shader does not learn a second addressing mode — see
+ * `photoUniform` in `materials.js`, which binds ONE of the two arrays per
+ * material to the one `uPropPhoto` sampler. Same uniform, same program, same
+ * cache key: a prop that samples bark and a prop that samples granite differ
+ * by a uniform VALUE, never by generated GLSL.
+ *
+ * **Albedo only, and that is deliberate rather than unfinished.** The prop
+ * photograph path samples `.rgb` at three projections and reads nothing else —
+ * there is no prop normal-map or roughness-map path in the client today. So
+ * `bark_normal.jpg` and `bark_rough.jpg` stay on disk: fetching them now would
+ * cost 468 KB of boot to be decoded and never read, which is the exact defect
+ * `MANIFEST.md` already flags against `*_ao.jpg` ("currently fetched but
+ * unread"). They arrive with the path that consumes them, not before it.
+ */
+export const PROP_LAYERS = ["bark"];
+
 const SOURCES = {
   sand: { albedo: sandAlbedoUrl, normal: sandNormalUrl, rough: sandRoughUrl },
   grass: { albedo: grassAlbedoUrl, normal: grassNormalUrl, rough: grassRoughUrl },
   litter: { albedo: litterAlbedoUrl, normal: litterNormalUrl, rough: litterRoughUrl },
   rock: { albedo: rockAlbedoUrl, normal: rockNormalUrl, rough: rockRoughUrl },
+};
+
+const PROP_SOURCES = {
+  bark: { albedo: barkAlbedoUrl },
 };
 
 // sRGB -> linear, 256 entries, built once. The albedo means below have to be
@@ -125,8 +160,8 @@ function assertUniform(images, map) {
   return { width, height };
 }
 
-function makeArray(data, width, height, format, colorSpace) {
-  const tex = new THREE.DataArrayTexture(data, width, height, GROUND_LAYERS.length);
+function makeArray(data, width, height, format, colorSpace, layers = GROUND_LAYERS.length) {
+  const tex = new THREE.DataArrayTexture(data, width, height, layers);
   tex.format = format;
   tex.type = THREE.UnsignedByteType;
   tex.colorSpace = colorSpace;
@@ -160,7 +195,46 @@ function pack(images, channels, pick) {
   return out;
 }
 
+/**
+ * One albedo's mean, in LINEAR light, over every texel.
+ *
+ * Extracted so the prop set below measures its sources with the SAME code the
+ * ground set measures its own with, rather than with a copy that can drift.
+ * The mean is what `photoUniform` divides by, so a prop array whose mean was
+ * taken a different way would deliver a multiplier centred somewhere other
+ * than 1.0 — the one failure the ratio form exists to make impossible.
+ */
+function meanLinearOf(img) {
+  const d = img.data;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (let p = 0; p < d.length; p += 4) {
+    r += SRGB_TO_LINEAR[d[p]];
+    g += SRGB_TO_LINEAR[d[p + 1]];
+    b += SRGB_TO_LINEAR[d[p + 2]];
+  }
+  const n = d.length / 4;
+  return [r / n, g / n, b / n];
+}
+
+/** The spread around that mean — the number that says a photograph arrived. */
+function albedoSdOf(img, m) {
+  const d = img.data;
+  const mm = 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2];
+  let s = 0;
+  for (let p = 0; p < d.length; p += 4) {
+    const l =
+      0.2126 * SRGB_TO_LINEAR[d[p]] +
+      0.7152 * SRGB_TO_LINEAR[d[p + 1]] +
+      0.0722 * SRGB_TO_LINEAR[d[p + 2]];
+    s += (l - mm) * (l - mm);
+  }
+  return Math.sqrt(s / (d.length / 4));
+}
+
 let loaded = null;
+let loadedProps = null;
 
 /**
  * Load the four ground identities' albedo / normal / roughness and measure
@@ -195,19 +269,7 @@ export async function loadGroundTextures() {
   // is cheaper than the JPEG decode that produced the pixels, and a subsample
   // would have been a number with a standard error in it standing where an
   // exact one was available.
-  const meanLinear = albedo.map((img) => {
-    const d = img.data;
-    let r = 0;
-    let g = 0;
-    let b = 0;
-    for (let p = 0; p < d.length; p += 4) {
-      r += SRGB_TO_LINEAR[d[p]];
-      g += SRGB_TO_LINEAR[d[p + 1]];
-      b += SRGB_TO_LINEAR[d[p + 2]];
-    }
-    const n = d.length / 4;
-    return [r / n, g / n, b / n];
-  });
+  const meanLinear = albedo.map(meanLinearOf);
   // Roughness is linear data, not colour, so its mean is the raw byte mean.
   const meanRough = rough.map((img) => {
     const d = img.data;
@@ -219,20 +281,7 @@ export async function loadGroundTextures() {
   // texels above its own mean and the spread around it, which is the number
   // that says a photograph arrived rather than a flat swatch. A solid colour
   // scores sd 0.
-  const albedoSd = albedo.map((img, i) => {
-    const d = img.data;
-    const m = meanLinear[i];
-    let s = 0;
-    for (let p = 0; p < d.length; p += 4) {
-      const l =
-        0.2126 * SRGB_TO_LINEAR[d[p]] +
-        0.7152 * SRGB_TO_LINEAR[d[p + 1]] +
-        0.0722 * SRGB_TO_LINEAR[d[p + 2]];
-      const mm = 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2];
-      s += (l - mm) * (l - mm);
-    }
-    return Math.sqrt(s / (d.length / 4));
-  });
+  const albedoSd = albedo.map((img, i) => albedoSdOf(img, meanLinear[i]));
 
   loaded = {
     albedo: makeArray(
@@ -291,6 +340,61 @@ export function groundTextures() {
 }
 
 /**
+ * Load the prop-only identities' albedo and measure what each one delivers.
+ *
+ * Awaited from `boot()` beside `loadGroundTextures()` for the same two reasons
+ * that one is: a material built before it resolves would sample an unbound
+ * array, and a texture that arrives after `inWorld` is a program relink the
+ * prewarm gate counts. `photoUniform` degrades to gain 0 rather than to a
+ * black prop if this has not resolved, which is the honest failure — but the
+ * ordering means that path is not reachable from `boot()`.
+ *
+ * The returned shape is deliberately the ground set's shape minus the maps it
+ * does not carry, so `photoUniform` can treat the two identically: `albedo`,
+ * `meanLinear`, and a `facts` block for the gate.
+ */
+export async function loadPropTextures() {
+  if (loadedProps) return loadedProps;
+
+  const albedo = await Promise.all(
+    PROP_LAYERS.map((name) => decode(PROP_SOURCES[name].albedo)),
+  );
+  const albSize = assertUniform(albedo, "prop albedo");
+  const meanLinear = albedo.map(meanLinearOf);
+  const albedoSd = albedo.map((img, i) => albedoSdOf(img, meanLinear[i]));
+
+  loadedProps = {
+    albedo: makeArray(
+      pack(albedo, 4, (s, i, o, w) => {
+        o[w] = s[i];
+        o[w + 1] = s[i + 1];
+        o[w + 2] = s[i + 2];
+        o[w + 3] = 255;
+      }),
+      albSize.width,
+      albSize.height,
+      THREE.RGBAFormat,
+      THREE.SRGBColorSpace,
+      PROP_LAYERS.length,
+    ),
+    meanLinear,
+    facts: {
+      layers: PROP_LAYERS.slice(),
+      albedoSize: [albSize.width, albSize.height],
+      meanLinear,
+      albedoSd,
+      anisotropy: 0,
+    },
+  };
+  return loadedProps;
+}
+
+/** The loaded prop-only set, or null. */
+export function propTextures() {
+  return loadedProps;
+}
+
+/**
  * The most anisotropy this material asks for.
  *
  * `getMaxAnisotropy()` is a device CAPABILITY, not a recommendation, and on
@@ -329,6 +433,16 @@ export function setGroundAnisotropy(deviceMax) {
   for (const key of ["albedo", "normal", "rough"]) {
     loaded[key].anisotropy = aniso;
     loaded[key].needsUpdate = true;
+  }
+  // The prop array takes the same ask, and it is the same case rather than a
+  // courtesy: a trunk is a vertical cylinder, so the side projections are seen
+  // at a grazing angle from every standing eye height — precisely the footprint
+  // an isotropic mip chain over-blurs. One more array at the same bounded 4,
+  // not the device's 16, for the reason stated above.
+  if (loadedProps) {
+    loadedProps.albedo.anisotropy = aniso;
+    loadedProps.albedo.needsUpdate = true;
+    loadedProps.facts.anisotropy = aniso;
   }
   loaded.facts.anisotropy = aniso;
   loaded.facts.anisotropyDeviceMax = deviceMax;

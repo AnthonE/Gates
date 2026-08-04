@@ -166,8 +166,23 @@ for (let i = 0; i < N; i++) {
   // delivers, as a share of the source's own.
   const dotWW = w[0] * w[0] + w[1] * w[1] + w[2] * w[2];
   const naive = Math.sqrt(dotWW);
-  // The shipped form divides that deviation by sqrt(dot(w, w)).
-  const shipped = naive / Math.sqrt(dotWW);
+  // The shipped form divides that deviation by `inversesqrt(dot(w, w))`'s
+  // reciprocal — i.e. it scales the whole weight vector by 1/sqrt(dot(w, w))
+  // and then blends. So build THAT vector and measure the contrast it delivers
+  // the same way `naive` was measured, rather than writing the cancellation
+  // out by hand.
+  //
+  // Writing it by hand is what this gate did until now, and it was worth
+  // nothing: `shipped = naive / Math.sqrt(dotWW)` with `naive = Math.sqrt(dotWW)`
+  // reduces to `1`, so the assertion below read `1 === 1` and would have stayed
+  // green through any normalizer at all — including no normalizer. Going
+  // through the scaled vector means a divisor of `dot(w, w)` (no sqrt), or of
+  // `w.x + w.y + w.z`, or of nothing, each lands somewhere other than 1 and is
+  // caught. Same closed form, same exactness, no cancellation.
+  const wScaled = w.map((c) => c / Math.sqrt(dotWW));
+  const shipped = Math.sqrt(
+    wScaled[0] * wScaled[0] + wScaled[1] * wScaled[1] + wScaled[2] * wScaled[2],
+  );
 
   worstNaive = Math.min(worstNaive, naive);
   worstShipped = Math.min(worstShipped, shipped);
@@ -224,6 +239,128 @@ for (const spread of [0.1, 0.25, 0.5, 0.75, 1.0]) {
     Math.abs(mean - 1) < 1e-3,
     `at deviation spread ${spread.toFixed(2)} the delivered multiplier's mean is ` +
       `${mean.toFixed(6)} — the authored albedo survives the clamp`,
+  );
+}
+
+// --- 6 · the prop-only array, and bark's binding ----------------------------
+//
+// `wood` sampling bark is a THREE-file agreement — the layer list and the
+// source table in `textures.js`, the surface's `photo` name in `materials.js`,
+// and the file on disk — and every way it can be got wrong is silent. A name
+// that matches nothing throws at material build (that is deliberate, and it is
+// why `photoUniform` throws rather than returning gain 0 for an unknown name);
+// a name that matches the WRONG list binds the wrong array and puts granite on
+// a trunk with every gate green. So the agreement is asserted here, as text,
+// in under a second, rather than discovered in a frame ten minutes downstream.
+const TEX = fs.readFileSync(path.join(ROOT, "web/src/textures.js"), "utf8");
+
+const listOf = (name, src) => {
+  const m = src.match(new RegExp(`\\bexport const ${name}\\s*=\\s*\\[([^\\]]*)\\];`));
+  return m ? m[1].split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean) : null;
+};
+const GROUND = listOf("GROUND_LAYERS", TEX);
+const PROPL = listOf("PROP_LAYERS", TEX);
+
+check(
+  Array.isArray(GROUND) && GROUND.length > 0,
+  `GROUND_LAYERS parses out of textures.js (${GROUND ? GROUND.join(", ") : "MISSING"})`,
+);
+check(
+  Array.isArray(PROPL) && PROPL.length > 0,
+  `PROP_LAYERS parses out of textures.js (${PROPL ? PROPL.join(", ") : "MISSING"})`,
+);
+
+if (GROUND && PROPL) {
+  // Disjointness is what makes `photoUniform`'s "ground first, then prop"
+  // lookup unambiguous. If a name ever appeared in both, the resolution order
+  // would silently decide which photograph a surface gets.
+  const both = PROPL.filter((n) => GROUND.includes(n));
+  check(
+    both.length === 0,
+    `GROUND_LAYERS and PROP_LAYERS are disjoint (overlap: [${both.join(", ")}]) — ` +
+      `photoUniform resolves ground first, so a shared name would make the array a lookup-order accident`,
+  );
+
+  // Every `photo:` in the surface table resolves to exactly one of the two.
+  const photoNames = [...src.matchAll(/^\s*photo:\s*"([^"]+)"/gm)].map((m) => m[1]);
+  check(
+    photoNames.length > 0,
+    `the surface table declares at least one photo: binding (found ${photoNames.length})`,
+  );
+  for (const n of new Set(photoNames)) {
+    const inG = GROUND.includes(n);
+    const inP = PROPL.includes(n);
+    check(
+      inG !== inP,
+      `surface photo "${n}" resolves to exactly one array (ground: ${inG}, prop: ${inP})`,
+    );
+  }
+  check(
+    photoNames.includes("bark"),
+    `some surface binds the "bark" photograph — the maps were on disk and imported by nothing before this`,
+  );
+  check(
+    PROPL.includes("bark"),
+    `"bark" is a PROP_LAYERS entry, so it costs the ground's splat index nothing`,
+  );
+}
+
+// The `wood` surface specifically, since that is the identity NOW.md named.
+const woodBlock = src.slice(src.indexOf("  wood: {"), src.indexOf("  stone: {"));
+check(
+  /photo:\s*"bark"/.test(woodBlock),
+  `the "wood" surface binds photo: "bark" — the trunk gets the measured fissures, not just a value`,
+);
+check(
+  /field:\s*\{/.test(woodBlock),
+  `"wood" keeps its procedural field alongside the photograph — the field carries the ` +
+    `per-axis trunk anisotropy a single triplanar tile cannot`,
+);
+
+// Bark's tile, and the direction that makes it right. A trunk is roughly 3x
+// narrower than the boulder `PROP_PHOTO_SCALE` was set for, so its tile is
+// finer — the SIGN of the relation is the checkable part, not the digit.
+const SCALE_BARK = scalarKnob("PROP_PHOTO_SCALE_BARK");
+if (SCALE_BARK !== null && SCALE !== null) {
+  check(
+    SCALE_BARK > SCALE,
+    `bark tiles finer than the boulder default (${SCALE_BARK} vs ${SCALE} repeats/m) — ` +
+      `one granite tile wrapped round a 0.5 m trunk is a smear, not a fissure`,
+  );
+  check(
+    /photoScale:\s*PROP_PHOTO_SCALE_BARK/.test(woodBlock),
+    `"wood" actually reads PROP_PHOTO_SCALE_BARK — the knob is wired, not just declared`,
+  );
+}
+
+// The files the loader imports must exist. A missing one is a vite BUILD
+// failure by design (`textures.js` says so), but that failure costs an npm
+// install and a bundle to reach; this costs a stat.
+for (const [name] of Object.entries({ bark_albedo: 1 })) {
+  const f = path.join(ROOT, "assets/textures", `${name}.jpg`);
+  const st = fs.existsSync(f) ? fs.statSync(f) : null;
+  check(
+    st !== null && st.size > 4096,
+    `assets/textures/${name}.jpg exists and is ${st ? st.size : 0} bytes`,
+  );
+}
+
+// …and the ones deliberately NOT loaded stay not-loaded. `textures.js` states
+// that bark's normal and roughness wait for a prop normal-map path rather than
+// being fetched and dropped — the defect MANIFEST.md already names against
+// `*_ao.jpg`. This asserts the restraint, so a later pass that imports them
+// has to consume them in the same commit.
+for (const n of ["bark_normal", "bark_rough"]) {
+  // An IMPORT, not a mention: `textures.js` names both files in prose to say
+  // why they are absent, and a gate that could not tell an explanation from a
+  // dependency would forbid the explanation.
+  check(
+    !new RegExp(`^\\s*import\\s.*${n}\\.jpg`, "m").test(TEX),
+    `${n}.jpg is not imported — it would be ${
+      fs.existsSync(path.join(ROOT, "assets/textures", `${n}.jpg`))
+        ? "fetched, decoded and never read"
+        : "a missing file"
+    }, since no prop normal/roughness map path exists yet`,
   );
 }
 

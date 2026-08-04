@@ -16,7 +16,7 @@ import { InputTracker } from "./input.js";
 import { GameScene } from "./scene.js";
 import { Terrain } from "./terrain.js";
 import { Hud } from "./hud.js";
-import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
+import { loadGroundTextures, loadPropTextures, setGroundAnisotropy } from "./textures.js";
 
 // Resolved against the document, not the origin root: the page is served
 // from the site root in dev and from /games/gates/alpha/ in production, and
@@ -81,7 +81,11 @@ async function boot(url, certHex) {
   // in hand before `run()` builds a material. Awaited here and not later
   // because a texture that arrives after the first frame is a program relink,
   // and the prewarm gate counts links after `inWorld` (CLAUDE.md's trap list).
-  const [ex] = await Promise.all([loadWasm(WASM_URL), loadGroundTextures()]);
+  const [ex] = await Promise.all([
+    loadWasm(WASM_URL),
+    loadGroundTextures(),
+    loadPropTextures(),
+  ]);
   const wt = await connect(url, certHex);
 
   // Handshake: wasm encodes/decodes; JS only frames bytes on the stream.

@@ -17,8 +17,9 @@ roughness and AO 512 greyscale q80. **9 materials, 34 files, 6.5 MB total.**
 **`rock` is the one exception to that encode spec — albedo q74, normal q82.** It
 holds the swap at **553 KB against `cliff_side`'s 562 KB**, so the only identity
 here that costs client boot time does not cost more of it than what it replaced.
-(Only the four ground identities are bundled; `stone`/`metal`/`wood`/`bark` are
-not loaded by the client at all today.) It is cheap — span 1.03 and keep 0.97 are
+(The four ground identities are bundled, and since prop photograph v2 `bark`'s
+ALBEDO is too — through a second, prop-only array rather than a fifth ground
+layer. `stone`/`metal`/`wood` are still not loaded by the client at all.) It is cheap — span 1.03 and keep 0.97 are
 unchanged, albedo sd moves 0.0942 → 0.0933 — so it is kept as margin.
 
 **It is margin, not a fix, and the record should say so.** The trim was first made
@@ -42,14 +43,19 @@ appear too flat" — and flat is the complaint the visual judge has filed
 repeatedly. Lagarde & de Rousiers (*Moving Frostbite to PBR* §4.10.3) is the
 source for the three scales and for how the terms combine; `ART.md` §4 carries
 the application rules. The files are here ahead of the shader work that consumes
-them, so **`*_ao.jpg` is currently fetched but unread** — see `NOW.md` item 3.
+them, so **`*_ao.jpg` is not loaded at all** — `textures.js` imports albedo,
+normal and roughness only, and nothing in `web/src` references `_ao`. (This
+line previously read "fetched but unread", which overstated it: the bytes are
+not fetched either, so the cost today is disk, not boot. Corrected 2026-08-04.)
+The same restraint now applies to `bark_normal`/`bark_rough`, and `ci/prop_photo.mjs`
+asserts it: a map joins the client in the commit that consumes it, never before.
 
 `PH` = Poly Haven, `aCG` = ambientCG. Both CC0. `ao` marks a role that also
 ships an occlusion map. **bundled** marks the four the client actually loads.
 
 | role | source | ao | bundled | note |
 |---|---|---|---|---|
-| `bark` | PH [bark_brown_02](https://polyhaven.com/a/bark_brown_02) | | | vertical fissures + moss — the reference asks for exactly this |
+| `bark` | PH [bark_brown_02](https://polyhaven.com/a/bark_brown_02) | | ✓ (albedo) | vertical fissures + moss — the reference asks for exactly this. Bound to the `wood` surface via `PROP_LAYERS`, the prop-only array. Albedo only: there is no prop normal/roughness map path yet. |
 | `grass` | PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01) | ✓ | ✓ | turf with dirt wear — matches ART §3 lit-grass band once tinted. Its AO is the strongest of the set (mean 0.477, sd 0.162) and it owns ~99% of the near ring. |
 | `gravel` | PH [bicolour_gravel](https://polyhaven.com/a/bicolour_gravel) | ✓ | | fine scree; slope/scree identity and path scuff |
 | `litter` | PH [brown_mud_leaves_01](https://polyhaven.com/a/brown_mud_leaves_01) | ✓ | ✓ | forest floor, red-leaning; forest identity |

@@ -36,11 +36,11 @@ Done items are deleted, not checked — history lives in git and
    already had, triplanar, mean-preserving, luma only. Three things remain,
    in order of what the judge measured:
 
-   - **`wood` gets bark.** `assets/textures/bark_{albedo,normal,rough}.jpg` are
-     on disk, in `MANIFEST.md`, and imported by nothing. They are not in the
-     ground's four-layer array, so this needs either a fifth layer (which moves
-     `GROUND_LAYERS` and the splat index that is asserted against it — not
-     free) or a second, prop-only array. The second is the smaller blast radius.
+   - ~~**`wood` gets bark.**~~ LANDED as `DECISIONS.md` §open "prop photograph
+     v2": a prop-only array (`PROP_LAYERS`), bound to the same per-material
+     `uPropPhoto` sampler, so no GLSL and no second program. Albedo only —
+     `bark_normal`/`bark_rough` stay on disk until a prop normal-map path
+     consumes them, and `ci/prop_photo.mjs` asserts they are not imported.
    - **`foliage` gets needle cards**, which is geometry, not a map — the judge
      is explicit that "no material work saves a smooth cone", and that is the
      generated pine in the item below, not a texture.
@@ -51,6 +51,32 @@ Done items are deleted, not checked — history lives in git and
      field the coarse per-instance patchiness a tiling map cannot supply —
      which means splitting `PROP_DETAIL_SHARE` into an albedo share and a bump
      share, since zeroing it today would take the bump with it.
+
+1. **The four `*_ao.jpg` are on disk and nothing loads them.** Not "fetched but
+   unread" — `MANIFEST.md` said that and it was wrong (corrected 2026-08-04);
+   `web/src` has zero references to `_ao`, so the cost today is disk, not boot.
+   `ART.md` §4 already carries the application rules, sourced from Frostbite
+   §4.10.3, so this is wiring, not design. Two findings from the skill packs
+   (2026-08-04) that change the shape of it, both worth more than the prose:
+
+   - **The pack does not cover texture-space AO at all** — `aoMap` appears
+     nowhere in `.claude/skills/`. `threejs-screen-space-ambient-occlusion` is a
+     GTAO *pass* skill. What it does bind is the light-term law, four times
+     over: AO modulates indirect only, and "direct light and emission are
+     darkened" is listed as a failure condition, not a tuning choice.
+   - **Specular occlusion is a no-op here today.** three guards it behind
+     `USE_ENVMAP && STANDARD`, and this scene has no envMap, no PMREM, no
+     `scene.environment` — so `indirectSpecular` is exactly zero and there is
+     nothing to occlude. Write the hook, leave it dark. Do not spend the pass
+     implementing `computeSpecularOcclusion` against a zero.
+
+   The splice point is `#include <aomap_fragment>`, which three places under a
+   `// modulation` comment *after* all four `reflectedLight` accumulators are
+   complete — inject there and double-darkening against the shadow map is
+   structurally impossible (they scale disjoint accumulators). Bump
+   `customProgramCacheKey` (`materials.js:1874`) or three hands back a program
+   compiled without the sampler. The hemisphere is ~42% of a lit pixel at
+   N·L=0.3 and 100% in shadow, so indirect-only AO is load-bearing here.
 
 1. **The generated pine is built, gated, bundled — and not drawn.**
    *(Found while recovering the red join gate, 2026-08-04. `DECISIONS.md` §open
