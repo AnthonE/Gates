@@ -57,6 +57,76 @@ Done items are deleted, not checked — history lives in git and
    slope, clearance and tri budgets are numbers. A greybox monument a player can
    walk into and a forest that clumps beat one more correct albedo.
 
+1. **Smash a barrel, pick up the loot. The whole loop, and most of it exists.**
+   *(Operator, 2026-08-04. First concrete target of the playability item above.)*
+
+   Already built: `content/loot.toml`'s `loot.barrel` (8 entries, revolver at
+   weight 1), `Occupant::BarrelSlot`, the spoken "node/barrel respawn 20–45 min",
+   and `balance.toml` pricing barrel drops in **road-minutes per unit** — the
+   economy already assumes a road you run. Missing is the connective tissue.
+
+   - **world:** `TERRAIN.md` §7's coast road, with barrel slots along it. §8's
+     haven pad is the monument hook; build the road first, it is the loop.
+   - **systems:** make `BarrelSlot` smashable. `gather.rs:32` says "Rock and
+     BarrelSlot are not nodes" — that is the line to change. It rolls
+     `loot.barrel` into a container, not straight into the inventory.
+   - **ui:** the loot panel, against the container the roll lands in.
+
+1. **Gravity is there and jump is not — and jump makes the lintel matter.**
+   *(Operator, 2026-08-04. systems lane; it is a wire change, so only that lane.)*
+
+   `movement.rs` already carries vertical velocity as integer quanta, so gravity
+   exists and nothing can leave the ground. Add jump: an input bit, an impulse in
+   quanta, walled float ops only, quantize-both-sides so prediction holds.
+
+   **`collide.rs` predicted this and left the hole open on purpose** — a doorway
+   "blocks only its posts (the 1.2 m opening passes; the lintel never matters at
+   capsule height **until a jump exists**)". It exists now, so the lintel becomes
+   real geometry and a jump into a doorway head must stop. Land both halves in
+   one pass or a player will jump through a doorframe.
+
+   Fall damage is the natural follow-on and is NOT part of this item.
+
+1. **Dropped loot should land somewhere you can find, not inside the floor.**
+   *(Operator, 2026-08-04. systems lane.)*
+
+   A dropped item wants a short settle — gravity to the ground, a slide off a
+   slope, friction to a stop — so it rolls a little and comes to rest where a
+   player can see it. That is a memory hook, not decoration: "it went behind the
+   rock" is how you find your own bag again.
+
+   **This is not a physics engine and must not become one.** Integer quanta,
+   walled float ops, a hard iteration cap in `limits.rs`, settle resolved and
+   then frozen. `sim-core` has exactly one dependency and it stays that way — a
+   rigid-body crate breaks walls 1, 2 and 5 at once, and cosmetic shards when a
+   barrel breaks are client-only and never feed back.
+
+1. **A base collapses when you take its legs out — today it floats.**
+   *(Operator, 2026-08-04. systems lane.)*
+
+   `supported()` runs at PLACEMENT (`build.rs:452`) and nowhere else. Destroy a
+   foundation and everything above keeps hanging in the air. Rust collapses it,
+   and that is central to how raiding feels — the raid is the game.
+
+   Wanted: support re-evaluated when a piece dies, propagating to what rested on
+   it. It is a graph reachability problem over the piece store, not physics —
+   walk from grounded pieces, orphans fall. Bound the sweep in `limits.rs` and
+   state the overflow policy; an unbounded cascade on a 500-piece base is a
+   tick-time bomb, which is wall 4.
+
+1. **There is a revolver in the loot table and nothing to fire it.**
+   *(Operator, 2026-08-04. systems lane, after the three items above.)*
+
+   `combat.rs` is melee-only — grep finds no projectile, ballistic or ranged
+   path — while `loot.toml` drops `item.revolver` at weight 1 and
+   `content/weapons.toml` authors six weapons. The rarest barrel drop in the
+   game is currently a paperweight.
+
+   Ranged v0 is the smallest honest fix, mirroring how melee landed: the swing
+   that fells a tree also lands on a person, so the shot that hits a barrel also
+   hits one. Lag compensation and rewound raycasts are `NOW.md` M2 and are NOT
+   this item — say plainly in the commit what is unlagged.
+
 1. **The container verb has no UI and no gate — and the systems half is not
    ours.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.)*
 1. **A box holds nothing: `ARCH_BOX` still has no storage and no address.**
