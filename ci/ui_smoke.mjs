@@ -1448,6 +1448,97 @@ const move = await page.evaluate(
     out.closed = { drag: hud.invDrag, marked: cells()[22].classList.contains("drag") };
     if (!hud.invOpen) hud.toggleInv();
 
+    // --- released outside the PANEL, which is where a real release lands ----
+    // The `offCell` case above dispatches on `#inv` itself and so passes
+    // straight over this: press a cell, walk the cursor onto the world, let
+    // go. What is asserted is not the flag but the NEXT gesture, because a
+    // stale drag is only a bug through the move it makes the player's next
+    // press send — press 8, and the sim is asked to move 21.
+    fill();
+    sent.length = 0;
+    down(21);
+    document.body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    out.offPanel = { drag: hud.invDrag, sent: sent.length, marked: cells()[21].classList.contains("drag") };
+    down(8);
+    up(17);
+    out.afterOffPanel = sent.slice();
+    hud.invMoveVerdict(0, 8, 17);
+
+    // --- the page loses focus mid-drag --------------------------------------
+    // Once it is not focused the release will never arrive, so a drag that
+    // survives a blur survives forever. `cancelInvDrag`'s docstring named
+    // blur as a caller while nothing wired it.
+    fill();
+    sent.length = 0;
+    down(23);
+    window.dispatchEvent(new Event("blur"));
+    out.blurred = { drag: hud.invDrag, marked: cells()[23].classList.contains("drag") };
+    down(9);
+    up(18);
+    out.afterBlur = sent.slice();
+    hud.invMoveVerdict(0, 9, 18);
+
+    // --- a second pointer cannot finish the first pointer's drag ------------
+    // Two fingers: the second press is refused by the one-drag guard, which
+    // has never had anything to say about the second RELEASE. Without
+    // pointer identity that release runs the drop against the first finger's
+    // source, and the window-level cancel above cannot help — both pointers
+    // are live at once, so nothing is stale.
+    fill();
+    sent.length = 0;
+    const at = (i, type, pointerId) =>
+      cells()[i].dispatchEvent(new PointerEvent(type, { bubbles: true, button: 0, pointerId }));
+    at(4, "pointerdown", 1);
+    at(13, "pointerdown", 2); // refused: one drag at a time
+    at(19, "pointerup", 2); // the foreign release
+    out.foreignUp = { sent: sent.slice(), drag: hud.invDrag, s4: texts()[4], s19: texts()[19] };
+    at(19, "pointerup", 1); // and the drag's OWN pointer still lands it
+    out.ownUp = sent.slice();
+    hud.invMoveVerdict(0, 4, 19);
+
+    // --- an unarmed panel offers no gesture it cannot perform ---------------
+    // With no host holding the move verb every drop toasts "that will not
+    // move", which teaches the player the panel is broken rather than that
+    // the verb is unbuilt. Restores the sentinel `onInvMove` starts at.
+    fill();
+    sent.length = 0;
+    const armedHost = hud.onInvMove;
+    hud.onInvMove = hud.constructor.NO_MOVE_HOST;
+    down(24);
+    out.unarmed = {
+      drag: hud.invDrag,
+      marked: cells()[24].classList.contains("drag"),
+      began: hud.beginInvDrag(24, null),
+    };
+    up(25);
+    out.afterUnarmed = { sent: sent.length, s24: texts()[24], s25: texts()[25], pending: !!hud.invPending };
+    hud.onInvMove = armedHost;
+    // ...and assigning a host arms it again, with no separate step
+    down(24);
+    out.rearmed = { drag: hud.invDrag, marked: cells()[24].classList.contains("drag") };
+    hud.cancelInvDrag();
+
+    // --- no drag means no drag pointer, through every door ------------------
+    // `invDrag` and `invDragPointer` are one piece of state and every read of
+    // the identity is guarded by the slot today — so a cancel that left the
+    // pointer set is invisible until some later caller checks only `invDrag`
+    // and reads a live identity off a drag that ended. Pinned here rather
+    // than left to hold by accident: this exact mutation escaped the eight
+    // checks above.
+    fill();
+    const doors = {};
+    down(26);
+    document.body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    doors.release = { drag: hud.invDrag, pointer: hud.invDragPointer };
+    down(26);
+    window.dispatchEvent(new Event("blur"));
+    doors.blur = { drag: hud.invDrag, pointer: hud.invDragPointer };
+    down(26);
+    hud.toggleInv();
+    if (!hud.invOpen) hud.toggleInv();
+    doors.escape = { drag: hud.invDrag, pointer: hud.invDragPointer };
+    out.doors = doors;
+
     // --- every refusal reason says something, and says something distinct ---
     const said = [];
     for (let r = 1; r <= reasonMax; r++) {
@@ -1545,6 +1636,65 @@ check(
   move.closed.drag === -1 && move.closed.marked === false,
   `closing the panel mid-drag left invDrag=${move.closed.drag} marked=${move.closed.marked} — a drag cannot` +
     " outlive the panel it started in",
+);
+check(
+  move.offPanel.drag === -1 && move.offPanel.sent === 0 && move.offPanel.marked === false,
+  `releasing OUTSIDE the panel left invDrag=${move.offPanel.drag} marked=${move.offPanel.marked} — the release` +
+    " a player actually makes lands on the world, not on #inv, and a cancel bound to the panel never sees it",
+);
+check(
+  JSON.stringify(move.afterOffPanel) === "[[8,17]]",
+  `after a release outside the panel the next drag sent ${JSON.stringify(move.afterOffPanel)}, expected exactly` +
+    " one [8,17] — this is the whole cost of a stale drag: the player presses 8 and the sim is asked to move 21," +
+    " an unasked-for mutation on a container, which is how the reference's three fixes in 28 minutes read on the wire",
+);
+check(
+  move.blurred.drag === -1 && move.blurred.marked === false,
+  `a window blur mid-drag left invDrag=${move.blurred.drag} marked=${move.blurred.marked} — the release will` +
+    " never arrive once the page is unfocused, so that drag survives forever",
+);
+check(
+  JSON.stringify(move.afterBlur) === "[[9,18]]",
+  `after a blur the next drag sent ${JSON.stringify(move.afterBlur)}, expected exactly one [9,18]`,
+);
+check(
+  JSON.stringify(move.foreignUp.sent) === "[]" &&
+    move.foreignUp.drag === 4 &&
+    move.foreignUp.s4 === "s4" &&
+    move.foreignUp.s19 === "s19",
+  `a SECOND pointer's release finished the first pointer's drag (sent=${JSON.stringify(move.foreignUp.sent)},` +
+    ` drag=${move.foreignUp.drag}) — the one-drag guard refuses the second press and has nothing to say about` +
+    " its release, so without pointer identity that release moves an item nobody touched; and it must not cancel" +
+    " the live drag either, which is still under the first finger",
+);
+check(
+  JSON.stringify(move.ownUp) === "[[4,19]]",
+  `after ignoring a foreign release the drag's OWN pointer sent ${JSON.stringify(move.ownUp)}, expected [[4,19]]` +
+    " — scoping to a pointer must not cost the gesture it is protecting",
+);
+check(
+  move.unarmed.drag === -1 && move.unarmed.marked === false && move.unarmed.began === false,
+  `with no host holding the move verb a drag still started (invDrag=${move.unarmed.drag},` +
+    ` marked=${move.unarmed.marked}, began=${move.unarmed.began}) — every drop would then toast "that will not` +
+    ' move", and an affordance that always refuses teaches the player the panel is broken, not that the verb is unbuilt',
+);
+check(
+  move.afterUnarmed.sent === 0 &&
+    move.afterUnarmed.s24 === "s24" &&
+    move.afterUnarmed.s25 === "s25" &&
+    move.afterUnarmed.pending === false,
+  `an unarmed panel still drew or sent a move (sent=${move.afterUnarmed.sent}, s24=${JSON.stringify(move.afterUnarmed.s24)},` +
+    ` s25=${JSON.stringify(move.afterUnarmed.s25)}, pending=${move.afterUnarmed.pending})`,
+);
+check(
+  move.rearmed.drag === 24 && move.rearmed.marked === true,
+  `assigning a host did not arm the drag (invDrag=${move.rearmed.drag}, marked=${move.rearmed.marked}) — arming` +
+    " is identity against Hud.NO_MOVE_HOST precisely so there is no second step to forget when main.js claims the verb",
+);
+check(
+  ["release", "blur", "escape"].every((d) => move.doors[d].drag === -1 && move.doors[d].pointer === null),
+  `a cancelled drag kept its pointer id (${JSON.stringify(move.doors)}) — invDrag and invDragPointer are one piece` +
+    " of state, and a caller that checks only invDrag would then read a live identity off a drag that ended",
 );
 check(
   move.said.length === REFUSE_MAX && move.said.every((s) => s.length > 0),
