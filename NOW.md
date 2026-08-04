@@ -211,6 +211,38 @@ Done items are deleted, not checked — history lives in git and
    a large upgrade with no binary shipped, and the 24 checked-in three.js skill
    packs have gone essentially unused. Read the skill before designing this.
 
+   **Two thirds of that landed early, out of order, and on purpose** —
+   `DECISIONS.md` §open, "wind + felling v0". The *geometry* is untouched and
+   still wants everything above; what shipped is the MOTION, because it turned
+   out not to depend on the geometry at all. Trees now sway (one `aWind`
+   cantilever weight per vertex, world-position phase, two octaves, technique
+   from SeedThree re-expressed for WebGL) and a chopped tree now falls, on a
+   bearing hashed from its own cell, leaving a stump that stands for the
+   respawn window. Both are client-only: no sim state, no wire byte, no
+   `PROTO_VER`. Three things that fell out of it and are worth carrying:
+
+   - **Wind is the client's first animated uniform, and it takes the SIM TICK
+     as its clock** (`terrain.update`). That is item 12's determinism paid for
+     in advance rather than retrofitted — and `browser_smoke`'s new assertion
+     13b checks the arithmetic (`t == tick/30 x speed`), so a later pass that
+     reaches for `performance.now()` goes red instead of quietly making every
+     future frame golden unrepeatable.
+   - **The swaying pools own a wind-bearing depth material.** A displacement
+     in the surface material alone leaves the shadow standing still, and that
+     is invisible to every pixel assertion taken from the camera's side. If
+     leaf cards or a second wind system arrive, they inherit this or they
+     inherit the bug.
+   - **The fall direction is hashed, not sent.** A tree should fall away from
+     the axe, the sim knows where the chopper stood, and `EV_SLOT_HARVESTED`
+     has spare `b` bits — but spending them is a `PROTO_VER` bump and
+     regenerated goldens under wall 6. That is the next slice of this, and it
+     is small.
+
+   Still open, and now the whole of it: the pine's four primitives, and the
+   billboard LOD (item 11). SeedThree's `impostor.js` is the reference for the
+   second — two crossed cards baked front/side in a worker — and its emit side
+   returns a `Group` per tree where this client needs an `InstancedMesh` pool.
+
 2. **A death evicted you from your own base, and nothing you built said
    otherwise.** *(Gap pass. From the merge-gate judge's ranked gap 1 in
    `findings/archive-prestamp/pass-20260803-064506-04-judge.md` — "the one
@@ -815,7 +847,15 @@ Done items are deleted, not checked — history lives in git and
    at 400 m casts nothing and the gate measures the horizon on 2 of 4
    yaws for exactly that reason. A scatter LOD (billboard crosses,
    `TERRAIN.md` §4's "trees get two LODs") is the fix and it is a terrain
-   job, not a shadow one.
+   job, not a shadow one. SeedThree's `impostor.js` (`CLAUDE.md` third-party
+   credit) is a worked reference for the bake: two crossed alpha cards, 4 tris
+   a tree, albedo baked lit-flat-white and re-lit at runtime plus world-space
+   normal and roughness, two ortho cameras at 1024², off-thread in a worker,
+   with the GPU readback's row order probed ONCE against a known image rather
+   than assumed. Its emit side is the part to throw away — a `Group` of two
+   `Mesh`es per tree, which at this forest's density is a draw call per trunk.
+   Whatever LOD1 becomes, it sways: item 1's wind weight is a vertex attribute
+   and a billboard has four vertices to put one on.
 12. **A capture the same twice is a gate; a capture that drifts is a vibe.**
    Deterministic capture mode (operator, 2026-08-02, `DECISIONS.md` — the
    Claude-of-Duty adoption row): the client animates off the sim tick / an

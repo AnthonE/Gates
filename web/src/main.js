@@ -1141,7 +1141,9 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     stamp++;
     if (R[0] === 1) {
       scene.setCamera(R[1], R[2], R[3], input.yaw, input.pitch);
-      terrain.update(R[1], R[3]);
+      // R[10] is the client's fixed sim tick — the wind and the fell both run
+      // off it rather than off `now`, so a capture at a tick is repeatable.
+      terrain.update(R[1], R[3], R[10]);
       // Prewarm, depth half: the first in-world frame parks the casting
       // dummies at the player (the clipmap's first update draws every level,
       // so they are in that pass), two frames later they go and the program
@@ -1298,6 +1300,11 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       // patched splat material, the authored per-surface responses, and how
       // the scatter pools are tinted.
       materials: { ...scene.materials(), scatter: terrain.scatterFacts() },
+      // Wind and felling: the knobs the vertex shader is actually running,
+      // the clock it is standing at, and how many trees are mid-fall. The
+      // clock is the assertable one — it is sim seconds, so a gate can read
+      // it back and know the frame it captured was not timed off a wall.
+      wind: terrain.windFacts(),
       // The horizon's caster: whether the far mesh casts, which side the
       // ground casts from, and the hole the near ring punches in it.
       farCaster: terrain.farCasterFacts(),

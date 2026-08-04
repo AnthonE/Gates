@@ -205,6 +205,17 @@ same bug with a longer fuse.
   coverage cross-check and deliberately never extracted from, so nothing
   committed here derives from GPL work. `reference/README.md` has the
   provenance and the regeneration command; nothing from either ships.
+- `SeedThree` (github.com/SkyeShark/SeedThree, MIT) — source of the wind
+  design the client ships: one per-vertex `aWind` cantilever weight rooted at
+  the trunk base, phase taken from the instance's world position so a gust
+  crosses the forest instead of each tree twitching alone, and two sine
+  octaves rather than one. Its `wind.js` is TSL/WebGPU node-material source and
+  this client is `WebGLRenderer`, so the design was re-expressed as a GLSL
+  injection — guidance only, no code from it ships. Its `impostor.js` (two
+  crossed alpha cards baked from front/side ortho cameras in a worker, with the
+  backend readback row order probed once against a known image) is the
+  reference for `TERRAIN.md` §4's unbuilt billboard LOD; its emit side returns
+  a `Group` per tree and would have to become an `InstancedMesh` pool here.
 - `Claude-of-Duty` (github.com/mshumer/Claude-of-Duty, MIT, © 2026 mshumer)
   — source of the shader-prewarm trap, the bit-identical-capture discipline
   (fresh page per shot; engine clock, not `performance.now()`), and the

@@ -29,7 +29,11 @@ import {
   makeTerrainCostVariants,
   makeTerrainMaterial,
   makeTerrainProjectionVariant,
+  makeWindDepthMaterial,
+  setWindTime,
   surfaceMaterial,
+  windFacts,
+  windWeight,
 } from "./materials.js";
 import {
   castInLevels,
@@ -52,7 +56,7 @@ const ISLAND = 2048;
  * draw call: a pine's trunk, its lower skirt and its lit crown are one
  * buffer (DECISIONS.md §open, materials v0).
  */
-function bakedGeometry(parts) {
+function bakedGeometry(parts, wind) {
   let total = 0;
   const flat = parts.map((p) => {
     const g = p.geo.index ? p.geo.toNonIndexed() : p.geo;
@@ -63,6 +67,14 @@ function bakedGeometry(parts) {
   const pos = new Float32Array(total * 3);
   const nrm = new Float32Array(total * 3);
   const col = new Float32Array(total * 3);
+  // The wind cantilever, one weight per vertex (materials.js). Ramped over
+  // the WHOLE archetype rather than per part, which is why it is a single
+  // `{y0, y1}` here and not a band on each: the pine's trunk, skirt and crown
+  // overlap in y, and three independently ramped parts would put a step in
+  // the middle of one tree. Absent `wind` the array stays zero, and an
+  // archetype whose weights are all zero is displaced by nothing — the rocks
+  // and the ore take the same patch and never move.
+  const wnd = new Float32Array(total);
   const lo = new THREE.Color();
   const hi = new THREE.Color();
   const c = new THREE.Color();
@@ -84,6 +96,9 @@ function bakedGeometry(parts) {
       col[(o + i) * 3] = c.r;
       col[(o + i) * 3 + 1] = c.g;
       col[(o + i) * 3 + 2] = c.b;
+      if (wind) {
+        wnd[o + i] = windWeight((gp[i * 3 + 1] - wind.y0) / (wind.y1 - wind.y0));
+      }
     }
     o += n;
     part.g.dispose();
@@ -92,6 +107,7 @@ function bakedGeometry(parts) {
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   geo.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  geo.setAttribute("aWind", new THREE.BufferAttribute(wnd, 1));
   return geo;
 }
 
@@ -178,7 +194,43 @@ function pineGeometry() {
   const crown = new THREE.ConeGeometry(1.15, 2.5, 9);
   crown.translate(0, 3.95, 0);
   const geos = [trunk, raggedCone(skirt, 0x51ed270b), raggedCone(crown, 0x2545f491)];
-  return bakedGeometry(PINE_BANDS.map((b, i) => ({ ...b, geo: geos[i] })));
+  return bakedGeometry(
+    PINE_BANDS.map((b, i) => ({ ...b, geo: geos[i] })),
+    PINE_WIND,
+  );
+}
+
+// The pine's wind band: base of the trunk to the tip of the crown (3.95 +
+// 2.5/2). One ramp for all three parts — see `bakedGeometry`.
+const PINE_WIND = { y0: 0, y1: 5.2 };
+
+/**
+ * What a felled pine leaves behind.
+ *
+ * `TERRAIN.md` §2 has said "Trees fell to stumps the same way" since before
+ * there was a client to draw one, and until this slice a chopped tree set its
+ * instance scale to 0 and was simply gone — the world's memory of the last ten
+ * swings was nothing at all. The stump is the memory: it stands for the whole
+ * 20–45 minute respawn window and vanishes when the tree comes back, so a
+ * cleared ridge still reads as cleared an hour later.
+ *
+ * Six sides and both caps is 24 triangles, and it only exists where a tree
+ * came down, so the pool is bounded by the felled trees inside the near ring
+ * rather than by the forest. Its ramp is the pine trunk's own, which puts the
+ * pale end of the bark ramp on the cut face — a stump is lightest where the
+ * axe left it.
+ */
+function stumpGeometry() {
+  return bakedGeometry([
+    {
+      part: "stump",
+      geo: new THREE.CylinderGeometry(0.26, 0.32, 0.34, 6),
+      lo: PINE_BANDS[0].lo,
+      hi: PINE_BANDS[0].hi,
+      y0: -0.17,
+      y1: 0.17,
+    },
+  ]);
 }
 
 // Scatter archetypes, indexed by sim-core Occupant (1..7). `surface` names
@@ -186,14 +238,26 @@ function pineGeometry() {
 // deterministic per-instance colour variation (0 = every instance alike).
 const ARCHETYPES = [
   null,
-  { geo: pineGeometry, surface: "foliage", lo: 0xffffff, lift: 0, tint: 0.17 },
+  { geo: pineGeometry, composite: true, wind: PINE_WIND, surface: "foliage", lo: 0xffffff, lift: 0, tint: 0.17 },
   { geo: () => new THREE.DodecahedronGeometry(1.0), surface: "rock", lo: 0x8f9399, lift: 0.5, tint: 0.11 },
   { geo: () => new THREE.DodecahedronGeometry(1.0), surface: "ore", lo: 0xa1785c, lift: 0.5, tint: 0.1 },
   { geo: () => new THREE.DodecahedronGeometry(1.0), surface: "ore", lo: 0xbfae4a, lift: 0.5, tint: 0.1 },
-  { geo: () => new THREE.IcosahedronGeometry(0.7), surface: "foliage", lo: 0x2c5f2e, hi: 0x4b8a3f, y0: -0.7, y1: 0.7, lift: 0.45, tint: 0.19 },
+  { geo: () => new THREE.IcosahedronGeometry(0.7), surface: "foliage", lo: 0x2c5f2e, hi: 0x4b8a3f, y0: -0.7, y1: 0.7, wind: { y0: -0.7, y1: 0.7 }, lift: 0.45, tint: 0.19 },
   { geo: () => new THREE.DodecahedronGeometry(1.5), surface: "rock", lo: 0x75726d, lift: 0.55, tint: 0.12 },
   { geo: () => new THREE.CylinderGeometry(0.45, 0.45, 0.95, 10), surface: "metal", lo: 0x5e6b78, lift: 0.5, tint: 0.08 },
+  // 8: the stump. The only archetype sim-core does not scatter — it is not a
+  // slot occupant but the CONSEQUENCE of one, minted when a tree finishes
+  // falling and retired when the slot respawns. It rides every other path a
+  // scatter entry does (chunk lists, swap-remove on stream-out, the tint), so
+  // the index has to be a real archetype rather than a special case bolted to
+  // the side; `_addScatter` only ever reads occupants 1..7 out of the slot
+  // buffer, so 8 cannot collide with one.
+  { geo: stumpGeometry, composite: true, surface: "wood", lo: PINE_BANDS[0].lo, hi: PINE_BANDS[0].hi, lift: 0.17, tint: 0.11 },
 ];
+/** Client-only archetype index for a felled pine's stump. */
+const ARCH_STUMP = 8;
+/** The archetype a fell animation applies to (sim-core `Occupant::Tree`). */
+const ARCH_TREE = 1;
 /**
  * Every authored colour band an archetype bakes, as `{part, lo, hi}`.
  *
@@ -209,6 +273,52 @@ function albedoParts(k) {
 
 const POOL_CAP = 4096;
 const YAW8_TO_RAD = (Math.PI * 2) / 256;
+
+// --- felling ---------------------------------------------------------------
+//
+// The sim has owned every part of chopping a tree for a long time: ten swings
+// with the right tool, a yield table per tool row, a harvested bit and a
+// 20–45 minute respawn timer, all of it authoritative and all of it on the
+// wire as two event codes (`gather.rs`, `EV_SLOT_HARVESTED`). The client's
+// entire contribution was `scale = 0`. The tenth swing landed and the tree was
+// simply not there any more — no fall, no direction, no sound the eye could
+// see, and the most physical verb in the game read as a rendering bug.
+//
+// So this is the missing half and nothing more: no new sim state, no new wire
+// byte, no protocol version. It is an animation the client already had all the
+// information to play, and the only interesting question is where the fall
+// DIRECTION comes from, because two players watching the same tree must see it
+// land the same way or the world stops being shared.
+//
+// It comes from the cell's own hash — the same hash `instanceTint` derives a
+// tree's colour from — so it is a pure function of a fact both clients already
+// have, and it costs zero bytes. The alternative is honest and rejected: the
+// direction a chopper is standing in is genuinely better (a tree should fall
+// away from the axe), the sim knows it, and putting it in `EV_SLOT_HARVESTED`'s
+// spare `b` bits would cost a `PROTO_VER` bump and regenerated goldens under
+// wall 6. That is a real slice; it is not this one.
+
+/** Ticks from the last swing to flat on the ground (30 Hz). */
+const FELL_TICKS = 33;
+/** Ticks the felled trunk then takes to sink out of the world. */
+const FELL_SINK_TICKS = 60;
+/** How far it sinks, in metres of instance scale. */
+const FELL_SINK_M = 2.4;
+const HALF_PI = Math.PI * 0.5;
+
+/**
+ * The bearing this cell's tree falls along, radians.
+ *
+ * A different mix of the cell hash than `instanceTint` takes, so a tree that
+ * happens to be pale does not also happen to fall north.
+ */
+function fellBearing(cellKey) {
+  let h = Math.imul(cellKey ^ 0x7f4a7c15, 0x2545f491);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x27d4eb2f);
+  h ^= h >>> 16;
+  return ((h >>> 9) & 0x3ff) * ((Math.PI * 2) / 1024);
+}
 
 /**
  * Per-instance tint from the slot's own cell, so a chunk that streams out
@@ -265,6 +375,12 @@ export class Terrain {
       depthPacking: THREE.RGBADepthPacking,
       side: THREE.FrontSide,
     });
+    // And the swaying casters' own, for the sharper version of the same
+    // problem: three's shared depth material carries no wind, so a pine
+    // patched only in its surface material would lean out from under a shadow
+    // that stayed bolted to the ground. One material for every wind archetype
+    // — one program, prewarmed below.
+    this.windDepth = makeWindDepthMaterial();
     // The desired-set scan runs only on chunk-boundary crossings, so the
     // steady-state RAF path builds no key strings (DESIGN.md L8).
     this.lastCcx = -1000;
@@ -280,7 +396,11 @@ export class Terrain {
         continue;
       }
       const a = ARCHETYPES[k];
-      const geo = a.geo === pineGeometry ? pineGeometry() : bakedGeometry([{ ...a, geo: a.geo() }]);
+      // `composite` archetypes bake their own parts (and their own wind band);
+      // everything else is one primitive wearing the row's ramp.
+      const geo = a.composite
+        ? a.geo()
+        : bakedGeometry([{ ...a, geo: a.geo() }], a.wind);
       geo.translate(0, a.lift, 0);
       const mesh = new THREE.InstancedMesh(
         geo,
@@ -297,6 +417,8 @@ export class Terrain {
       // flat; one InstancedMesh casts for every instance in it.
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      // …and it casts the shape the wind actually put there.
+      if (a.wind) mesh.customDepthMaterial = this.windDepth;
       // A pine only exists inside the near ring, so every pixel it can darken
       // is inside level 1's box (shadows.js, "which level gets which caster").
       castInLevels(mesh, 0, NEAR_CASTER_MAX_LEVEL);
@@ -327,6 +449,20 @@ export class Terrain {
         m.castShadow = true;
         m.frustumCulled = false;
         objs.push(m);
+        // The wind caster's depth program, which is a THIRD family and links
+        // the first time a swaying archetype reaches a shadow pass — i.e. on
+        // the first frame there is a tree in the ring, which is the frame the
+        // player arrives. Prewarmed here so the count gate stays flat.
+        const w = new THREE.InstancedMesh(
+          new THREE.PlaneGeometry(0.02, 0.02),
+          pool.material,
+          1,
+        );
+        w.setColorAt(0, this._c.setRGB(1, 1, 1));
+        w.customDepthMaterial = this.windDepth;
+        w.castShadow = true;
+        w.frustumCulled = false;
+        objs.push(w);
       }
       const far = new THREE.Mesh(
         new THREE.PlaneGeometry(0.02, 0.02),
@@ -351,6 +487,22 @@ export class Terrain {
     this._e = new THREE.Euler();
     this._v = new THREE.Vector3();
     this._s = new THREE.Vector3();
+    // The fell's two extra scratch objects, preallocated with the rest: a
+    // falling tree rewrites its matrix every frame, and the RAF path allocates
+    // nothing (DESIGN.md L8).
+    this._qf = new THREE.Quaternion();
+    this._axis = new THREE.Vector3();
+    // Trees mid-fall. Small by construction — a player can only be swinging
+    // at one — and swept in `update`, which is also the only thing that walks
+    // it, so a swap-remove is enough.
+    this._felling = [];
+    // cellKey -> the stump entry standing in for a felled tree. Deliberately
+    // NOT `cellIndex`, which maps a cell to its TREE: both live at the same
+    // cell for the whole respawn window and one map cannot hold both.
+    this.stumpIndex = new Map();
+    // Sim ticks, published by `update` from the render view. The client's one
+    // animation clock: see materials.js `windUniform`.
+    this._tick = 0;
 
     this.worker = new Worker(new URL("./terrainWorker.js", import.meta.url), {
       type: "module",
@@ -732,6 +884,11 @@ export class Terrain {
         scale: slots[i * 8 + 5],
         // Chunks stream in after the join sync: ask the client core.
         hidden: this.ex.client_cell_harvested(cx, cz) === 1,
+        // Streaming in never animates. A tree that was already down when the
+        // chunk arrived was felled minutes ago and possibly by someone else —
+        // replaying its fall on arrival would have the forest collapsing
+        // around anyone who walked back into it.
+        fellAt: 0,
       };
       pool.count = idx + 1;
       this._composeEntry(entry);
@@ -741,19 +898,128 @@ export class Terrain {
       list.push(entry);
     }
     this.chunkSlots.set(key, list);
+    // Stumps after the list exists, because `_setStump` appends to it — hence
+    // the captured length, so this walks the slots the chunk arrived with and
+    // not the stumps it is growing behind itself.
+    const n = list.length;
+    for (let i = 0; i < n; i++) {
+      const entry = list[i];
+      if (entry.arch === ARCH_TREE && entry.hidden) this._setStump(entry, true);
+    }
   }
 
-  /** Write an entry's matrix — scale 0 while its node is harvested. */
+  /**
+   * Write an entry's matrix — scale 0 while its node is harvested, and the
+   * fall pose while it is coming down.
+   *
+   * The tilt is applied about the instance ORIGIN, which for a pine is the
+   * base of its trunk (`lift: 0`, and `pineGeometry` builds from y = 0 up), so
+   * a rotation here is already a rotation about the stump. That is why felling
+   * needs no pivot offset and no second matrix: the geometry was authored
+   * standing on its own origin.
+   *
+   * `premultiply` and not `multiply`, because the fall bearing is a WORLD
+   * direction and the yaw is the instance's own — tilt after yaw, or every
+   * tree falls along a bearing its own random rotation picked for it.
+   */
   _composeEntry(entry) {
     const pool = this.pools[entry.arch];
     this._e.set(0, entry.yaw8 * YAW8_TO_RAD, 0);
     this._q.setFromEuler(this._e);
     this._v.set(entry.x, entry.y, entry.z);
     const s = entry.hidden ? 0 : entry.scale;
+    if (entry.fellAt) {
+      const e = this._tick - entry.fellAt;
+      const u = Math.min(e / FELL_TICKS, 1);
+      // u^2: a tree comes off the cut slowly and arrives fast, because that is
+      // what gravity does to a hinge. Linear reads as a door closing.
+      this._axis.set(Math.sin(entry.fellDir), 0, -Math.cos(entry.fellDir));
+      this._qf.setFromAxisAngle(this._axis, HALF_PI * u * u);
+      this._q.premultiply(this._qf);
+      if (e > FELL_TICKS) {
+        // v^2 again, the other way up: the trunk lies there for most of a
+        // second before it starts going, which is the beat that makes it read
+        // as a felled tree rather than a despawn. One easing, no second knob.
+        const v = Math.min((e - FELL_TICKS) / FELL_SINK_TICKS, 1);
+        this._v.y -= FELL_SINK_M * entry.scale * v * v;
+      }
+    }
     this._s.set(s, s, s);
     this._m4.compose(this._v, this._q, this._s);
     pool.setMatrixAt(entry.idx, this._m4);
     pool.instanceMatrix.needsUpdate = true;
+  }
+
+  /**
+   * Stand a stump at a felled tree's cell, or take it away again.
+   *
+   * The stump is an ordinary scatter entry in every respect that matters —
+   * it joins the chunk's own list, so a chunk that streams out takes its
+   * stumps with it through the same swap-remove every tree uses, and one that
+   * streams back in re-derives them from the harvested set.
+   */
+  _setStump(entry, on) {
+    const have = this.stumpIndex.get(entry.cellKey);
+    if (on === !!have) return;
+    const pool = this.pools[ARCH_STUMP];
+    if (on) {
+      if (pool.count >= POOL_CAP) return;
+      const stump = {
+        arch: ARCH_STUMP,
+        idx: pool.count,
+        key: entry.key,
+        cellKey: entry.cellKey,
+        x: entry.x,
+        y: entry.y,
+        z: entry.z,
+        yaw8: entry.yaw8,
+        // A stump is the tree's own trunk, so it wears the tree's own scale.
+        scale: entry.scale,
+        hidden: false,
+        fellAt: 0,
+      };
+      pool.count = stump.idx + 1;
+      this._composeEntry(stump);
+      this._composeTint(stump);
+      this.owners[ARCH_STUMP][stump.idx] = stump;
+      this.stumpIndex.set(entry.cellKey, stump);
+      const list = this.chunkSlots.get(entry.key);
+      if (list) list.push(stump);
+      return;
+    }
+    this._dropEntry(have);
+    const list = this.chunkSlots.get(have.key);
+    if (list) {
+      const at = list.indexOf(have);
+      if (at >= 0) list.splice(at, 1);
+    }
+  }
+
+  /**
+   * Swap-remove one entry from its pool, fixing up whatever entry moved into
+   * its slot. Lifted out of `_removeScatter` so a stump can be retired on its
+   * own — a respawn takes one stump away while its chunk stays live.
+   */
+  _dropEntry(entry) {
+    const pool = this.pools[entry.arch];
+    const owners = this.owners[entry.arch];
+    const last = pool.count - 1;
+    if (entry.idx !== last) {
+      pool.getMatrixAt(last, this._m4);
+      pool.setMatrixAt(entry.idx, this._m4);
+      const mover = owners[last];
+      mover.idx = entry.idx;
+      owners[entry.idx] = mover;
+      // The tint is a pure function of the mover's cell, so recompute it
+      // at its new index rather than reading the old slot back.
+      this._composeTint(mover);
+    }
+    pool.count = last;
+    owners.pop();
+    pool.instanceMatrix.needsUpdate = true;
+    entry.gone = true;
+    if (entry.arch === ARCH_STUMP) this.stumpIndex.delete(entry.cellKey);
+    else this.cellIndex.delete(entry.cellKey);
   }
 
   /** Write an entry's per-instance tint — derived, never stored. */
@@ -769,53 +1035,117 @@ export class Terrain {
     return this.cellIndex.get(cellKey) || null;
   }
 
-  /** Event-lane fact: the node at this cell vanished or came back. */
+  /**
+   * Event-lane fact: the node at this cell vanished or came back.
+   *
+   * A tree does not vanish — it is felled, which takes `FELL_TICKS` and ends
+   * with `hidden` set by `_stepFells`. Everything else still goes instantly,
+   * because a rock that stops being a rock has nothing to animate.
+   */
   setCellHarvested(cellKey, harvested) {
     const entry = this.cellIndex.get(cellKey);
-    if (!entry || entry.hidden === harvested) return;
+    if (!entry) return;
+    // "Down" is hidden OR on its way down. Comparing `hidden` alone would make
+    // a respawn that lands mid-fall a no-op — the event would be dropped as
+    // redundant, the fall would run to its end, and the slot would stand
+    // harvested on the client and standing on the server until the chunk
+    // streamed. The respawn window is 20–45 minutes so nothing in play gets
+    // there, but a resync can deliver one at any moment and this is a state
+    // machine, not a race.
+    const down = entry.hidden || entry.fellAt !== 0;
+    if (down === harvested) return;
+    if (harvested && entry.arch === ARCH_TREE && !entry.fellAt) {
+      entry.fellAt = this._tick;
+      entry.fellDir = fellBearing(cellKey);
+      this._felling.push(entry);
+      // The stump appears with the first degree of lean, not after the trunk
+      // lands: the cut is what makes the tree fall, so the stump is already
+      // there by the time anything moves.
+      this._setStump(entry, true);
+      return;
+    }
     entry.hidden = harvested;
+    if (!harvested) {
+      entry.fellAt = 0;
+      this._setStump(entry, false);
+    }
     this._composeEntry(entry);
   }
 
   /** Sync reset: un-hide everything; the batch that follows re-hides. */
   resetHarvested() {
     for (const entry of this.cellIndex.values()) {
-      if (entry.hidden) {
+      if (entry.hidden || entry.fellAt) {
         entry.hidden = false;
+        entry.fellAt = 0;
+        this._setStump(entry, false);
         this._composeEntry(entry);
       }
+    }
+    this._felling.length = 0;
+  }
+
+  /**
+   * Advance every tree mid-fall by one frame, retiring the ones that have
+   * finished into a hidden trunk over a standing stump.
+   */
+  _stepFells() {
+    for (let i = this._felling.length - 1; i >= 0; i--) {
+      const entry = this._felling[i];
+      // Three ways off this list, and only ONE of them ends with a hidden
+      // trunk. `gone` is a chunk that streamed out from under the fall;
+      // `fellAt === 0` is a respawn that overtook it (setCellHarvested), and
+      // that tree is standing again — hiding it here would undo the event
+      // that just saved it.
+      const landed = this._tick - entry.fellAt >= FELL_TICKS + FELL_SINK_TICKS;
+      if (entry.gone || !entry.fellAt || landed) {
+        if (!entry.gone && entry.fellAt) {
+          entry.hidden = true;
+          entry.fellAt = 0;
+          this._composeEntry(entry);
+        }
+        this._felling[i] = this._felling[this._felling.length - 1];
+        this._felling.pop();
+        continue;
+      }
+      this._composeEntry(entry);
     }
   }
 
   _removeScatter(key) {
     const list = this.chunkSlots.get(key);
     if (!list) return;
-    // Highest index first so swap-with-last stays valid.
-    list.sort((a, b) => b.idx - a.idx);
+    // Highest index first so swap-with-last stays valid. One sort over the
+    // union of every archetype in the chunk is enough, and stumps join it on
+    // the same terms: any subsequence of a descending sequence is descending,
+    // so per-pool order survives the interleave.
     for (const entry of list) {
-      const pool = this.pools[entry.arch];
-      const owners = this.owners[entry.arch];
-      const last = pool.count - 1;
-      if (entry.idx !== last) {
-        pool.getMatrixAt(last, this._m4);
-        pool.setMatrixAt(entry.idx, this._m4);
-        const mover = owners[last];
-        mover.idx = entry.idx;
-        owners[entry.idx] = mover;
-        // The tint is a pure function of the mover's cell, so recompute it
-        // at its new index rather than reading the old slot back.
-        this._composeTint(mover);
-      }
-      pool.count = last;
-      owners.pop();
-      pool.instanceMatrix.needsUpdate = true;
-      this.cellIndex.delete(entry.cellKey);
+      if (!entry.gone) this._dropEntry(entry);
     }
     this.chunkSlots.delete(key);
   }
 
-  /** Per-frame: retarget the near ring, one build kick, one teardown. */
-  update(px, pz) {
+  /**
+   * Per-frame: advance the wind and any falling trees, retarget the near
+   * ring, one build kick, one teardown.
+   *
+   * `tick` is the client's fixed 30 Hz sim tick, not `performance.now()`, and
+   * that choice is the whole of this client's answer to `NOW.md` item 12. Wind
+   * is the first animated thing in the frame, so it is also the first thing
+   * that could make two captures of one seed differ; taking its clock from the
+   * sim means a shot at tick N is the same shot every time it is taken, and a
+   * capture harness gets determinism by pinning the tick it already pins.
+   *
+   * The cost of that choice is that wind moves in 33 ms steps. At the two
+   * frequencies it runs (1.15 and 2.63 rad/s) the largest step is under a
+   * millimetre at the tip of a pine, which is why this is free rather than a
+   * trade — and it would NOT be free for anything fast, which is the line to
+   * remember when leaf flutter arrives.
+   */
+  update(px, pz, tick) {
+    this._tick = tick;
+    setWindTime(tick * (1 / 30));
+    if (this._felling.length) this._stepFells();
     const ccx = Math.floor(px / CHUNK);
     const ccz = Math.floor(pz / CHUNK);
     if (ccx !== this.lastCcx || ccz !== this.lastCcz) {
@@ -896,6 +1226,34 @@ export class Terrain {
       });
     }
     return out;
+  }
+
+  /**
+   * The wind's knobs and live state, plus what this class owns about it: the
+   * fell timings, whether the swaying pools cast through a wind-bearing depth
+   * material, and how many trees are on their way down right now.
+   *
+   * `depthPatched` is the one worth a gate. A tree that sways while its shadow
+   * stands still is the exact failure this slice was written around, and it is
+   * invisible to every pixel assertion taken from the camera's own side.
+   */
+  windFacts() {
+    const swaying = [];
+    for (let k = 1; k < ARCHETYPES.length; k++) {
+      if (ARCHETYPES[k] && ARCHETYPES[k].wind) swaying.push(k);
+    }
+    return {
+      ...windFacts(),
+      swaying,
+      depthPatched: swaying.every(
+        (k) => this.pools[k].customDepthMaterial === this.windDepth,
+      ),
+      tick: this._tick,
+      fellTicks: FELL_TICKS,
+      fellSinkTicks: FELL_SINK_TICKS,
+      felling: this._felling.length,
+      stumps: this.pools[ARCH_STUMP].count,
+    };
   }
 
   /**
