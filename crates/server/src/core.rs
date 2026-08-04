@@ -301,7 +301,7 @@ impl ShardCore {
                     ActionMsg::Drink => Command::Drink { id: c.id },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
                     ActionMsg::Move {
-                        bag,
+                        cont,
                         from_kind,
                         from_slot,
                         to_kind,
@@ -309,7 +309,7 @@ impl ShardCore {
                         count,
                     } => Command::Move {
                         id: c.id,
-                        bag,
+                        cont,
                         from_kind,
                         from_slot,
                         to_kind,

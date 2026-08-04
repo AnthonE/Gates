@@ -146,7 +146,18 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// conditionally on the kinds — a total decoder is worth five bytes on a
 /// reliable stream that sends one of these per drag. Fixtures are keyed
 /// `v17_*`.
-pub const PROTO_VER: u16 = 17;
+/// v18 made the deployed box a container (`CONT_BOX`, `inventory.rs`).
+/// **Not one bit moved and not one fixture's bytes changed but the
+/// hello's** — the kind field has been two bits since v17 and its third
+/// value was reserved for exactly this. The version moves anyway, and
+/// that is the point of wall 6 rather than an exception to it: the same
+/// nine bytes that meant `Malformed` on a v17 server now mean "move it
+/// into the box at this address", so a v18 client against a v17 server
+/// would have its drags declined by the frame reader — the disconnect the
+/// move verb exists to never cause. A widened *meaning* is a wire change
+/// even when the layout is byte-identical, and `PROTO_VER` is the only
+/// thing that catches a mismatched build. Fixtures are keyed `v18_*`.
+pub const PROTO_VER: u16 = 18;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -489,14 +500,22 @@ pub enum ActionMsg {
     /// on it instead — which is the same defence, moved from "you cannot
     /// name it" to "you cannot name it from over there".
     ///
-    /// `bag` is zero for a move inside your own inventory and ignored
-    /// unless a kind is `CONT_BAG`. Shape is the wire's business (a kind
-    /// inside the two live ones, a slot inside `INV_SLOTS`, a nonzero
-    /// count); whether the item is there, whether it fits and whether the
-    /// bag is in reach is the sim's verdict, delivered as a
-    /// move-refused event.
+    /// `cont` is the **one** ground container this move touches, and what
+    /// it holds depends on the kind naming it: a bag id for `CONT_BAG`, a
+    /// packed `box_key(cx, cz, level)` address for `CONT_BOX`. Zero and
+    /// ignored for a move inside your own inventory. One handle for both
+    /// sides is why a bag→box move is refused rather than encoded — see
+    /// `REFUSE_M_NO_CONTAINER`.
+    ///
+    /// Shape is the wire's business (a kind inside the live ones, a slot
+    /// inside `INV_SLOTS`, a nonzero count); whether the item is there,
+    /// whether it fits and whether the container is in reach is the sim's
+    /// verdict, delivered as a move-refused event. The slot bound here is
+    /// the widest container's — a box has fewer slots and the sim refuses
+    /// the difference, because the wire must not need a content table to
+    /// decode a frame.
     Move {
-        bag: u32,
+        cont: u32,
         from_kind: u8,
         from_slot: u8,
         to_kind: u8,
@@ -511,7 +530,7 @@ pub enum ActionMsg {
 /// action frame kills the reader task (`server/src/net.rs`), which is
 /// exactly the disconnect this verb is written to never cause.
 pub fn encode_action_move(
-    bag: u32,
+    cont: u32,
     from_kind: u8,
     from_slot: u8,
     to_kind: u8,
@@ -530,7 +549,7 @@ pub fn encode_action_move(
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_MOVE, ACTION_SUB_BITS)?;
-    w.write(bag, 32)?;
+    w.write(cont, 32)?;
     w.write(from_kind as u32, CONT_KIND_BITS)?;
     w.write(from_slot as u32, ACTION_SLOT_BITS)?;
     w.write(to_kind as u32, CONT_KIND_BITS)?;
@@ -857,17 +876,19 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             on_bag: r.read_bit()?,
         },
         ACT_MOVE => {
-            let bag = r.read(32)?;
+            let cont = r.read(32)?;
             let from_kind = r.read(CONT_KIND_BITS)? as u8;
             let from_slot = r.read(ACTION_SLOT_BITS)? as u8;
             let to_kind = r.read(CONT_KIND_BITS)? as u8;
             let to_slot = r.read(ACTION_SLOT_BITS)? as u8;
             let count = r.read(MOVE_COUNT_BITS)? as u16;
-            // Two bits hold two kinds and five hold thirty slots, so both
+            // Two bits hold three kinds and five hold thirty slots, so both
             // have forgeable values above the live range; a zero count is
             // forgeable too. The same-slot ask is *not* refused here — it
             // is a legal shape and an illegal move, so the sim owns it and
-            // answers with a reason the player can be shown.
+            // answers with a reason the player can be shown. A box slot
+            // past `BOX_SLOTS` takes the same route for the same reason:
+            // the shape is legal, the address is not, and the sim says so.
             if from_kind > sim_core::inventory::CONT_MAX
                 || to_kind > sim_core::inventory::CONT_MAX
                 || from_slot as usize >= sim_core::limits::INV_SLOTS
@@ -877,7 +898,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             ActionMsg::Move {
-                bag,
+                cont,
                 from_kind,
                 from_slot,
                 to_kind,
