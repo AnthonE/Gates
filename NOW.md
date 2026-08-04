@@ -4,6 +4,27 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+1. **The generated pine is built, gated, bundled — and not drawn.**
+   *(Found while recovering the red join gate, 2026-08-04. `DECISIONS.md` §open
+   row "the pine is generated" and the comments in `props.js`/`terrain.js` all
+   say the near ring draws it. It does not.)*
+
+   `ARCHETYPES[1]` (`web/src/props.js:400`) carries no `parts:` key, so
+   `terrain.js:193`'s `a.parts ? a.parts() : …` takes the else branch and the
+   near ring still draws the 102-triangle cone. `pineParts` is imported at
+   `terrain.js:45` and never called — the tell. `ci/pine_shape.mjs:315` calls
+   `pineParts()` directly, so it scores a generator nothing renders and stays
+   green either way; the bundle ships ez-tree's base64 textures regardless.
+
+   Do not just add the key. Wired as-is the ring costs 416 × 6,496 × 3 passes
+   ≈ **8.1 M triangles against DESIGN §9's 1.5 M** — 5×over, and
+   `browser_smoke`'s own budget assertion would catch it. The billboard LOD
+   (item below, `TERRAIN.md` §4) is the prerequisite, exactly as that commit's
+   own message said. Two honest ways to close this: land the LOD first, or
+   revert the wiring and the dependency and say so. Either way `pine_shape.mjs`
+   should assert the FLEET cost — it already prints the 416-tree arithmetic
+   eight lines above a ceiling justified by "~20 trees inside 40 m".
+
 1. **`main` is RED: the pine's prop contrast sits exactly on its floor.**
    *(Operator, 2026-08-04: land the wind + felling lane anyway and record it.
    `DECISIONS.md` §Spoken. This is the one item that outranks everything below
@@ -29,6 +50,35 @@ Done items are deleted, not checked — history lives in git and
    pass a gate, which is the one move the merge rubric exists to catch. If the
    floor is genuinely wrong for a whorled canopy, that is a measurement and a
    spoken number, not an edit.
+
+   **Update, 2026-08-04 (join-gate recovery pass).** On post-merge `main` this
+   assertion PASSES: the probe read `contrast x1.15` and `1.15 >= 1.15` is
+   true. It has not moved and nothing here is fixed — the value is still
+   sitting on the floor and passes by rounding, so the next run that shaves a
+   thousandth off it is red again. Treat this item as live.
+
+1. **Two stopwatch-shaped waits survive in `browser_smoke`, and one masked
+   gate is expected.** *(Left by the join-gate recovery pass, 2026-08-04.)*
+
+   The join now ends on the client's own progress, not on elapsed time
+   (`DECISIONS.md` §open, "the join is watched, not timed"). Two waits of the
+   same shape were deliberately NOT touched, because a recovery pass fixes the
+   red gate and not its neighbours:
+
+   - `waitForRemote` (`browser_smoke.mjs`, `AOI_TIMEOUT_MS`) — 60 s of total
+     elapsed time for a remote to enter AOI, polled serially. It has never
+     fired. Under the same starvation that made the join a coin flip it gets
+     very few polls, so it is the next one to go red.
+   - `PLAY_MS` and the held-walk floors are wall-clock by construction.
+
+   Both are subsumed by the item below (tab B as a bot), which removes the
+   contention rather than instrumenting around it. That is the real fix.
+
+   **And expect a masked gate.** `ci/gates.sh` stops at the first red, so
+   everything downstream of the join has been unobserved for two health runs.
+   A full run on the recovery branch reached the end, so nothing is known-red
+   right now — but the prop-contrast item above is passing on a rounding tie,
+   which is the most likely next red.
 
 1. **Tab B should be a bot, not a second browser.** *(Operator, 2026-08-04:
    "i think we need the tab stuff every few hours at this rate". The tiering
