@@ -191,6 +191,19 @@ n`) and never on elapsed milliseconds — the failure that started it reported
 `inWorld=true` and timed out anyway. Widening a timeout is not a fix; it is the
 same bug with a longer fuse.
 
+**Not every red gate is a defect, and `bot_smoke` is the one that lies.** On a
+container without IPv6 all four of its tests fail at the endpoint bind with
+`Address family not supported by protocol (os error 97)` — on a *clean tree*,
+identically, which is the giveaway. Confirm with `git stash -u` before
+believing any diff caused it, and do not spend a `GATES_FIX_RED=1` pass on it:
+the suite is correct and the box is short a protocol family. Same class, same
+check: `wasm32-unknown-unknown` is not always installed, and the wasm gates
+fail with `can't find crate for core` until `rustup target add
+wasm32-unknown-unknown` — install it rather than skipping the gate, because a
+wall that cannot run is not a wall. Neither of these repeals the rule above:
+they are missing capabilities, which are diagnosable and permanent, not timing,
+which is neither.
+
 ## Third-party credit
 
 - `.claude/skills/threejs-*` — the Three.js graphics skill pack, MIT,

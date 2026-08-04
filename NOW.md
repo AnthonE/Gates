@@ -4,6 +4,37 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+1. **The projection's own arithmetic, twice — and both were Quilez's rules,
+   stated in his article, shipped wrong here first. — LANDED**
+   *(`DECISIONS.md` §open, "materials v5". Operator, 2026-08-04: "figure out
+   where the math we are using is wrong".)*
+
+   materials v4 put the base maps on a fall-line biplanar projection and the
+   cliffs still streaked. The cause was not the projection, it was two
+   arithmetic errors inside it:
+
+   - **The wall tap's footprint was differentiated after the frame instead of
+     before it.** `gmAcross` is per-fragment, so `dFdx(dot(p.xz, across))`
+     expands to `dot(dFdx(p.xz), across) + dot(p.xz, dFdx(across))`, and the
+     second term is the frame turning, multiplied by a WORLD coordinate
+     (~1568 here). A 1e-4 rad/px rotation injects 0.16 m/px of fake footprint
+     against a true ~0.002 — `textureGrad` picked a mip about **seven levels**
+     too coarse, in bands following the terrain's curvature.
+   - **The plane blend had no sharpening exponent.** cos and sin are the two
+     planes' foreshortenings, so a linear blend at 69.5° hands **32.3%** of
+     the sample to the top plane while that plane is stretched **×2.86**.
+
+   Fixed at `BASE_WALL_SHARPNESS = 8.0` (Quilez's own stated value) and by
+   projecting `dFdx(position)` onto the frame. Measured: near-cliff neighbour
+   contrast **7.42 → 14.58 luma/px**, far cliff **2.88 → 4.35**, and the new
+   vantage gate's slope chroma **0.705 → 0.127** — from double its ceiling to
+   inside the reference band (0.077–0.193). Every vantage at or under 45° is
+   bit-identical, because the wall tap does not run there.
+
+   The bump's own clamp saturation went **68.0% → 4.9%** of a near cliff in
+   the same pass, from the surface-gradient reformulation plus a per-octave
+   share of `BUMP_MAX_SLOPE`.
+
 1. **The event lane's payloads are law with no gate — close the other
    twenty codes.** *(Operator, 2026-08-04: top priority. The first five
    landed with `test_event_roles`; this is the rest of the ledger.)*
@@ -70,6 +101,131 @@ Done items are deleted, not checked — history lives in git and
    overflows a test thread's stack in an unoptimized build, exactly as
    `combat.rs` warns; the helpers here take `&mut World` and never put a
    second one in the frame.
+
+1. **The scatter is white noise and a forest is not — give the occupant
+   draw a continuous fitness field.** *(Operator, 2026-08-04: "should we
+   [upgrade the stack]? unless its unity larp to get around unity jank."
+   Mostly it is. `reference/SPAWN.md` §9.3/§9.4 is the residue that isn't.)*
+
+   **Scope discipline first, because the research it comes from is large
+   and this item is not.** `reference/SPAWN.md` reports four placement
+   systems in the reference game. Three of them — a population that is a
+   *count* rather than a slot list, a quadtree importance sampler, and
+   physics-query occupancy with an attempt budget — are all downstream of
+   one Unity constraint: a choppable tree must be a GameObject with a
+   collider and a network identity, so it is *already* networked and
+   persisted, so placement never had to be a pure function. **None of that
+   is portable and none of it is proposed.** Our slot model is the better
+   half of that trade and `TERRAIN.md` §0 is the reason the island costs
+   zero bytes to join. What survives the filter is one change inside one
+   function.
+
+   **The defect.** `terrain::scatter` draws one hash per 8 m cell and
+   decides that cell alone, against a per-biome weight row indexed by a
+   *discrete* `biome()`. Independent draws are white noise: uniform-density
+   speckle with no groves and no clearings, and a hard density step exactly
+   where `biome()` changes. `TERRAIN.md` §1 stage 6 sells forest as "wood,
+   cover, low visibility" and stage 5's masks are continuous; the scatter is
+   the one consumer that throws that continuity away. The reference game
+   gets the texture from `ClusterSizeMin..Max` objects drawn out of one
+   quadtree leaf, braked by a 2×-density cap over a 20 m cell — a stateful
+   sampler we cannot and should not have.
+
+   **The change.** Make the cell's weight continuous and let one extra
+   noise channel carry the clumping:
+
+   - `weight = biome_row[occupant] × clump(seed, x, z)` where `clump` is a
+     low-frequency value-noise field — the shape `moisture()` already is,
+     at a wavelength that makes groves rather than biomes **(knob)**.
+   - Accept on a **squared** fitness, the reference's own `factor² ≥ rand`
+     rather than `factor ≥ rand`, so a biome edge falls off quadratically
+     into a soft tail instead of stepping. §9.4 is right that this is free;
+     it is also *only expressible* once the fitness is continuous, which is
+     why these are one item and not two.
+   - Still one hash draw, still `O(1)`, still pure, still no trig. The
+     restricted-float and no-libm walls do not move.
+
+   **What it reddens, and the order to take it in.** This is a worldgen
+   change under wall 5, so every fixture it moves is regenerated **in the
+   same commit** or it does not merge:
+
+   - `test_terrain_golden` — `GOLDEN_TERRAIN_HASH` moves by construction.
+   - `test_terrain_shape_sanity` — the live-slot band (8–12k), and trees >
+     1000 / ore > 300 / barrels > 50. **This is the actual work.** A
+     mean-1 multiplier roughly preserves the count but not the variance,
+     and the slope and water vetoes are nonlinear in it, so the weight rows
+     need re-tuning against the band rather than assumed through it.
+   - `world::tests::spawn_ring_lands_on_a_clear_beach` — asserts every
+     spawn is 4 m clear of every slot. More clumping makes that harder to
+     satisfy; if it reddens, that is a real signal about clump amplitude,
+     not a test to widen.
+   - `test_replay`'s `GOLDEN_FINAL_HASH` — only if that script's gather
+     path touches a slot whose occupant changed. Determine empirically;
+     do not pre-emptively regenerate a hash that did not move.
+   - `ci/parity.mjs` needs nothing: gates.sh **diffs** native against wasm
+     rather than pinning either, so both halves move together for free —
+     which is exactly what that gate is for.
+   - Clippy's sim walls and `test_alloc_zero` are untouched: no allocation,
+     no new float op outside the permitted set.
+
+   **The knob, before the code.** `clump` wavelength and amplitude are two
+   numbers nobody has spoken. By `CLAUDE.md` they go into `DECISIONS.md`
+   §open first and reach `terrain.rs` second, and the knob-registry gate
+   will hold them there.
+
+   **Explicitly not in scope**, so a later pass does not smuggle them in
+   under this heading: population counts, respawn-elsewhere, any entity per
+   tree, any sampler with state, and the operator census verb from
+   `SPAWN.md` §9.7 (worth doing, unrelated, its own item when someone wants
+   it).
+1. **The sun cannot rise until the ground's structure moves from bump into
+   albedo — and that is now a measurement, not a hunch.**
+   *(What is left of the lighting iteration after `DECISIONS.md` §open
+   "lighting v1" landed the rest of it. The register, the transfer, the fill's
+   earth half, the sky, the fog and every gate that scores them are done and
+   green; the one thing the item asked for that did NOT ship is the sun's
+   elevation, and it did not ship because a wall said no.)*
+
+   The arithmetic, from the row: a normal perturbed by δ changes `N·L` on flat
+   ground by `cot(elevation)·δ` relative, so the ground's whole bump relief
+   scales with cot. With the shipped field byte-identical and only
+   `SUN_ELEVATION` moved, `browser_smoke` 15 measures
+
+   | elevation | cot  | frame moved | mean Δluma | brightened, worst yaw |
+   |-----------|------|-------------|------------|-----------------------|
+   | 0.36 rad  | 2.66 | 11.20%      | ~19        | +0.4%  (floor 0.2%)   |
+   | 0.50 rad  | 1.83 |  2.03%      | 7.2–8.4    | +0.01%                |
+   | 0.785 rad | 1.00 |  0.47%      | 7.0–7.8    | +0.00%                |
+
+   The last column is the blocker: 15's two-sidedness separates a field from a
+   wash, and the pass before this one built a bump fix, measured it and
+   declined to ship it rather than spend that margin. Raising the sun spends
+   it twenty times over.
+
+   **The exit condition is stated so it can be checked**: when the ground
+   holds assertion 15's margins with its bump contribution removed — i.e.
+   when its structure is carried by albedo rather than by relief — this
+   constant can rise, and the reference frames' midday register comes with
+   it. That work is the GROUND's albedo structure — item 7's "re-place the
+   meso octave" and the bump-vs-albedo balance beneath it — which now has a
+   second, independent reason to be next. Nothing else about the light rig is
+   waiting on anything.
+
+   Smaller things the lighting owner measured and did not take:
+
+   - **The sky has no clouds**, so its own tonal span inside one frame is 16–89
+     levels where the reference's is a few hundred. The dome is a shader now
+     and the seam, the dither and the sun disc are in it; cumulus is a
+     separate slice and probably a `threejs-volumetric-clouds` one.
+   - **Water still has no wave normals.** The specular agrees with the sun by
+     construction (same light) and the horizon no longer steps, but the judge's
+     "amorphous Gaussian smear with no specular structure" is about the surface
+     it sits on, and a flat plane has none.
+   - **The prop field's own amplitude fell 11% (rock) and 28% (pine)** when the
+     transfer's toe came off, disclosed in the §open row rather than netted
+     against the 48%/67% rise in its delivered floor. The toe was exaggerating
+     dark surfaces; the surfaces are now honestly lit and honestly thin, which
+     is the materials lane's number to move.
 
 1. **The ground's chroma noise — the artifact the last pass shipped. — LANDED**
    *(GAP PASS, iteration 2. From `findings/pass-20260803-145507-01-visual.md`
@@ -148,6 +304,12 @@ Done items are deleted, not checked — history lives in git and
    is left for a pass that owns those three; 15i's own restore check reads live.
 
 1. **The renderer has never had real detail to sample — give it some.**
+   *(Slice 1's projection defect is fixed — `DECISIONS.md` §open,
+   "materials v4": the base maps were sampled on world XZ and smeared `1/u`
+   along every fall line, every octave in the file retired on the horizontal
+   footprint rather than the world one, and snow replaced the albedo instead
+   of scaling it. Level ground is bit-identical; 15h/15i/15e unmoved. The
+   crosshatch that remains is the item above, not this one.)*
    *(Operator, 2026-08-03, `DECISIONS.md`: real assets allowed, CC0 is the bar.
    `ART.md` §7 is the policy; `assets/textures/` is the working set, already
    committed and manifested. This is the wiring.)*
@@ -326,16 +488,32 @@ Done items are deleted, not checked — history lives in git and
    **Landed** — `DECISIONS.md` §open, "the daylight register". Sky and air
    taken together by one owner, because `CLAUDE.md`'s trap list says splitting
    them is how three passes get lost. The dome is a fragment program with a
-   haze band, a sun disc and a dither instead of a 24×16 vertex ramp; the fog
-   near plane is inside the near ring it was 20 m outside of, and its colour
-   is handed to three **pre-transfer** so the horizon seam is exact for the
-   first time (three mixes fog after the tone map, so one hex was reaching the
-   image as two values, and at a daylight register that gap would have put
-   distant ground ~28/255 above the sky over it). `browser_smoke` assertion 16
-   gates it as counted differences of frames: sky ×1.79–2.28 over median
-   ground (floor ×1.15), the haze lightening 100.0% of what it touches, the
-   far third reading ×1.162 luma / ×0.713 saturation against the near third,
-   and each band's own luma lift and saturation drop climbing on every step.
+   haze band, a sun disc and a dither instead of a 24×16 vertex ramp, and the
+   fog near plane is inside the near ring it was 20 m outside of.
+   `browser_smoke` assertion 16 gates it as counted differences of frames: sky
+   ×1.79–2.28 over median ground (floor ×1.15), the haze lightening 100.0% of
+   what it touches, the far third reading ×1.162 luma / ×0.713 saturation
+   against the near third, and each band's own luma lift and saturation drop
+   climbing on every step.
+
+   **Its constants were superseded on 2026-08-04 by lighting v1** (the row
+   below it in §open, merged from `loop/lighting-midday`), which re-metered the
+   same coupled set on a branch that never saw this one. The gate above still
+   runs and still passes; the numbers it runs against are v1's.
+
+   **One finding of this item outlived its numbers and is now owed work.** The
+   register handed the fog its colour **pre-transfer**, so the horizon seam was
+   exact for the first time: three uploads `fog.color` in the renderer's output
+   colour space and mixes it in after `tonemapping_fragment` and
+   `colorspace_fragment` (r178 `WebGLRenderer` `getUnlitUniformColorSpace`), so
+   one hex reaches the image as two values — the dome's tone-mapped and the
+   fog's not. v1 instead shares one `THREE.Color` between the two and asserts
+   that identity (assertion 17a), which pins the two INPUTS and leaves the two
+   OUTPUTS a transfer apart: at the shipped horizon the dome's peak channel is
+   past `StartCompression`, so the sky lands a few percent under the haze that
+   is supposed to converge on it. Cheap to fix — put the fog's copy through the
+   transfer the way the register did, with v1's toe removed — but it moves the
+   register, which makes it lighting's owner's change and not a merge's.
 
    **What this item still wants**, in the order it is worth doing:
 
@@ -570,7 +748,10 @@ Done items are deleted, not checked — history lives in git and
      named the amplitude rather than the absence. `propProbe` now returns the
      delivered value as a p05/p50/p95 histogram beside `diffMean`, the field's
      own amplitude, both in 8-bit luma, and 15g walls the median and the
-     amplitude at 24 and 2.2 against shipped 48/59 and 4.86/8.47.
+     amplitude at 24 and 2.2. Shipped 48/59 and 4.86/8.47 when that was
+     written; **under lighting v1 it is 38/95 and 3.51/7.50** — the delivered
+     value up, the field's own amplitude down, because the transfer's toe was
+     exaggerating dark surfaces and no longer is.
    - **`ALBEDO_LUMA_BAND = [0.05, 0.55]`**, the linear luminance every authored
      dielectric albedo sits in, asserted over all seven archetypes at both ends
      of every ramp, derived through the renderer's own sRGB conversion rather
@@ -582,8 +763,10 @@ Done items are deleted, not checked — history lives in git and
      it lands at `groundColor × 1.15 × albedo ÷ π × EXPOSURE` — for the pine
      skirt, **RGB (2,6,1) against the visual judge's measured (2,6,0)** on
      `03-canopy-up`, reproduced from the constants alone. At 3× the authored
-     albedo it is still (5,17,3). The §open row is the arithmetic the lighting
-     owner inherits; `p05` is deliberately left unwalled until then.
+     albedo it is still (5,17,3). **The lighting owner took it** (§open,
+     "lighting v1"): the hemisphere's earth half is 2.4× and the transfer's
+     quadratic toe is gone, the measured p05 went 12 → 20 (pine) and 29 → 43
+     (rock), and `PROP_MIN_P05 = 16` is now written.
 
    **What this item still wants:**
 
@@ -743,10 +926,14 @@ Done items are deleted, not checked — history lives in git and
      asked for bark and canopy albedo in the same breath as grass and sand,
      and nothing in the tint octave reaches them.
 
-   Not this item, and not to be folded into it: the lighting gap
-   (`-visual.md` ranked gap 3) is one owner, one iteration, per
-   `CLAUDE.md`'s coupled-lighting law — sky, water specular, shadows and
-   exposure move together or not at all.
+   The lighting gap (`-visual.md` ranked gap 3) that this item used to defer
+   to is **done** — `DECISIONS.md` §open, "lighting v1", one owner, one
+   iteration, per `CLAUDE.md`'s coupled-lighting law. It hands this item two
+   things: the register everything here will now be judged under, and item 1's
+   measured finding that the ground's relief is what is holding the sun down.
+   Re-measure before re-tuning: every number in this item was taken under the
+   old transfer, and the toe that transfer had was inflating dark-end contrast
+   by ~1.5x.
 
 8. **A base can be broken into now, but it cannot be repaired, and a
    raid still ends in a shrug.**

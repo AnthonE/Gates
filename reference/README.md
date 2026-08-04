@@ -15,6 +15,7 @@ game, the client, or the build.
 | `rip-hooks.py` | the extractor — reproducible, no network of its own |
 | `rust-systems.txt` | its output: 852 patch entries, 277 game classes, 38 categories |
 | `FINDINGS.md` | what the two loaders' **commit history** teaches: which systems bled, and the one gate-shaped hole it exposes in ours |
+| `SPAWN.md` | how the reference game places and respawns world objects — four systems split by networked-or-not, and what that costs us. **Different source, different licence posture: see below.** |
 
 ## How to regenerate
 
@@ -61,6 +62,16 @@ Three things fall out that a hook *name* list cannot give you:
 - `Rust Images/` — the reference frames, already in the repo, which is what
   `MENUS.md` cross-reads the hook table against when the two disagree about
   whether something is one screen or two.
+
+**`SPAWN.md` is the exception, and it is flagged rather than buried.** Its
+source is a community decompile of an Oxide-patched `Assembly-CSharp`
+(`unet-dev/Decompiled-Assemblies`, protocol 179) — **proprietary code, not a
+licensed dump**, so it does not get the treatment `rust-systems.txt` gets:
+there is no extractor for it here and there never will be, nothing was
+transcribed, and every algorithm in that file is described in prose and in
+our own notation. Facts and behaviour only, in the same sense as the rest of
+this directory — and, like the rest of it, nothing ships. `SPAWN.md` §0
+states the terms; read them before adding to it.
 
 `umod.org`, `docs.carbonmod.gg` and `wiki.facepunch.com` are all
 unreachable from the build box's egress policy; the repos are, which is
