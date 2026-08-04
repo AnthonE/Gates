@@ -236,6 +236,30 @@ Done items are deleted, not checked — history lives in git and
    `client_move_readout()` on `APPLIED_MOVE` into `invMoveVerdict`. That touches
    `main.js`, so it pays the renderer tier. Stack split and the loot/container
    panel are the slices after it.
+1. **The drag's release side is closed; the arming decision is made.**
+   *(ui lane, 2026-08-04, from the judge's ranked fixes 1–3,
+   `findings/pass-20260804-205133-01-judge.md`. Not a new item — what remains
+   of the drag is the systems blocker in the item above.)*
+
+   The cancel was bound to `#inv`, so a release on the world — the release a
+   player actually makes — was never seen: `invDrag` stayed on the source and
+   the next press's release ran the drop against it. Press cell 8, sim asked to
+   move cell 3. Now on `window` (`pointerup`, `pointercancel`, `blur`), scoped
+   to the `pointerId` that began the drag.
+
+   Two more of the same class found while in there, both fixed: a **second
+   pointer's release** finished the first pointer's drag (the one-drag guard
+   refuses the second *press* and never had anything to say about its
+   *release*), and it must not cancel the live drag either. And ranked fix 3 is
+   answered by **not offering the gesture**: `beginInvDrag` refuses while
+   `onInvMove` is still `Hud.NO_MOVE_HOST`, so nothing dims and nothing toasts
+   until a host claims the verb — arming is identity against that sentinel, so
+   `main.js` assigning it is the whole of the arming step.
+
+   Gated in `ui_smoke` group K (175 checks). Nine assertions added; eight
+   mutants of `hud.js` run, all eight red. The ninth mutant — `cancelInvDrag`
+   leaving `invDragPointer` set — **escaped** the first eight and is why the
+   `doors` case exists: the two fields are one piece of state.
 1. **The props' photograph: `wood` and `foliage` still have none.**
    *(From the visual judge's ranked gap 1, `findings/pass-20260804-153032-01-visual.md`:
    "the terrain got a sourced photograph this pass and the props did not — this
