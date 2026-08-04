@@ -601,6 +601,13 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     views.refresh();
     if (len > 0) actions.send(views.output, len);
   };
+  // Clicking a belt cell in the inventory screen is the same act as
+  // pressing its digit key — one selection, `input.sel`, which is what
+  // rides the input frame to the sim. The screen adds no second notion of
+  // "held".
+  hud.onInvSelect = (slot) => {
+    input.sel = slot;
+  };
   document.addEventListener("keydown", (e) => {
     if (closed) return;
     if (hud.chatOpen) return; // the composer's own handler has it
@@ -617,6 +624,28 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (e.code === "KeyT" || e.code === "Enter") {
       hud.openChat();
       document.exitPointerLock();
+      e.preventDefault();
+      return;
+    }
+    // The inventory screen. Tab because that is the key the genre trained
+    // every player of it to press, and nothing here bound it. Escape
+    // closes, the same way it closes the composer. preventDefault on both
+    // or Tab walks the browser's own focus ring off the canvas.
+    if (e.code === "Tab") {
+      if (hud.toggleInv()) document.exitPointerLock();
+      e.preventDefault();
+      return;
+    }
+    if (hud.invOpen && e.code === "Escape") {
+      hud.toggleInv();
+      e.preventDefault();
+      return;
+    }
+    // An open panel owns the keyboard: every verb below spends something —
+    // materials, a swing, a door — and a player reading their bag asked
+    // for none of it. One question, asked before any mutation, rather than
+    // a guard bolted onto each branch (hud.eatsKey, ci/ui_smoke.mjs I).
+    if (hud.eatsKey(e.code)) {
       e.preventDefault();
       return;
     }
@@ -1307,6 +1336,20 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     }
     hud.setHotbar(hotbar);
     hud.setSelected(input.sel);
+    if (hud.invOpen) {
+      // Slot-indexed and all 30, because that is setInventory's contract:
+      // the belt row IS slots 0..5 (the six already formatted above) and
+      // the grid IS 6..29. Only while the screen is open — a closed panel
+      // reading 24 more slots and decoding 24 more names off the catalog
+      // every 250 ms would be paying for pixels nobody is looking at.
+      const slots = hotbar.slice();
+      for (let s = 6; s < 30; s++) {
+        const count = views.inv[s * 2 + 1];
+        slots.push(count > 0 ? `${itemName(views.inv[s * 2])} ×${count}` : "");
+      }
+      hud.setInventory(slots);
+      hud.setInvSelected(input.sel);
+    }
     const health = ex.client_health() >>> 0;
     const vit = ex.client_vitals() >>> 0;
     const vitMax = ex.client_vitals_max() >>> 0;

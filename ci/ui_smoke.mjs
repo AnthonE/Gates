@@ -130,7 +130,8 @@ const HUD_IDS = [...hudSrc.matchAll(/getElementById\("([^"]+)"\)/g)].map((m) => 
 // would still clear the bar. Adding an element raises it (the check passes
 // and this constant is updated in the same commit, like a golden); removing
 // one has to be a stated act rather than a silent drift.
-const HUD_ID_COUNT = 16;
+// 2026-08-04: 16 → 20, the inventory screen's #inv/#invgrid/#invbelt/#invdetail.
+const HUD_ID_COUNT = 20;
 check(
   HUD_IDS.length >= HUD_ID_COUNT,
   `parsed ${HUD_IDS.length} getElementById ids out of hud.js, expected at least ${HUD_ID_COUNT}` +
@@ -144,6 +145,24 @@ const hudConst = (name) => {
 };
 const TOAST_CAP = hudConst("TOAST_CAP");
 const CHAT_CAP = hudConst("CHAT_CAP");
+// Same discipline for the inventory's shape. These mirror the sim's own
+// `INV_SLOTS = 30` (limits.rs) split by `ALPHA.md` §1 into 6 belt + 24 grid;
+// read them out of hud.js rather than restate them, so a panel that changed
+// shape without the sim agreeing shows up here as a failed sum, not as a gate
+// quietly measuring the wrong thing.
+const INV_BELT = hudConst("INV_BELT");
+const INV_GRID = hudConst("INV_GRID");
+const INV_SLOTS = hudConst("INV_SLOTS");
+check(
+  INV_BELT + INV_GRID === INV_SLOTS,
+  `hud.js declares INV_BELT ${INV_BELT} + INV_GRID ${INV_GRID} = ${INV_BELT + INV_GRID}, but INV_SLOTS ${INV_SLOTS}` +
+    " — the belt and the grid together ARE the inventory; a gap or an overlap means slots nothing can draw",
+);
+check(
+  INV_BELT === 6 && INV_SLOTS === 30,
+  `hud.js declares a ${INV_BELT}-slot belt of ${INV_SLOTS} slots; ALPHA.md §1 fixes 6 and 24, and wasm.js:76` +
+    " reads exactly 30 × 2 u16 words — a panel drawing a different count draws slots the wire does not carry",
+);
 
 // --- dependencies, each a loud failure --------------------------------------
 const require = createRequire(path.join(root, "web/package.json"));
@@ -953,14 +972,293 @@ check(
 );
 
 // =============================================================================
-// I. no page errors anywhere in the above
+// I. the inventory screen — 30 slots, and which cell each one lands in
+// =============================================================================
+// The load-bearing claim of `setInventory` is POSITIONAL: `texts[s]` is slot
+// `s` as the sim numbers it, belt 0..5 then grid 6..29. CLAUDE.md's own trap
+// list says this is where the reference ecosystem actually bled — 27 Oxide
+// commits correcting a payload that had already shipped wrong, "the right
+// value in the wrong position", four hooks corrected more than once — and
+// that a byte-level golden catches none of it, because every field has the
+// same type. Every one of these 30 cells is a string in a string array. So
+// the check writes a DISTINCT string into each slot and reads back which DOM
+// node holds it: an off-by-six or a swapped belt/grid fails on 30 cells at
+// once, and no amount of "the array had 30 entries" would have noticed.
+//
+// What this group does NOT cover, stated rather than implied: the `Tab` bind
+// and the `hud.eatsKey` call site both live in `main.js`, which this gate
+// stubs at the route (see the header). `eatsKey`'s own truth table is driven
+// below; its caller is not driven anywhere, here or in `browser_smoke`.
+const invBuilt = await page.evaluate(() => {
+  const { hud } = globalThis.__ui;
+  return {
+    open: hud.invOpen,
+    computed: getComputedStyle(document.getElementById("inv")).display,
+    grid: document.querySelectorAll("#invgrid .invcell").length,
+    belt: document.querySelectorAll("#invbelt .invcell").length,
+    cells: hud.invCells.length,
+    focus: hud.invFocus,
+    selected: hud.invSelected,
+    detail: document.getElementById("invdetail").textContent,
+  };
+});
+check(invBuilt.open === false, `a fresh Hud starts with invOpen=${invBuilt.open}, expected false`);
+check(
+  invBuilt.computed === "none",
+  `#inv is visible at load (computed display:${invBuilt.computed}) — the inventory opens on a key, not on boot`,
+);
+check(
+  invBuilt.grid === INV_GRID && invBuilt.belt === INV_BELT,
+  `the panel built ${invBuilt.grid} grid + ${invBuilt.belt} belt cells, expected ${INV_GRID} + ${INV_BELT}`,
+);
+check(
+  invBuilt.cells === INV_SLOTS,
+  `hud.invCells holds ${invBuilt.cells} entries, expected ${INV_SLOTS} — one per wasm inventory slot`,
+);
+check(
+  invBuilt.focus === -1 && invBuilt.selected === -1 && invBuilt.detail === "",
+  `a fresh panel starts focus=${invBuilt.focus} selected=${invBuilt.selected} detail=${JSON.stringify(invBuilt.detail)},` +
+    " expected nothing focused, nothing selected, and an empty readout",
+);
+
+const invToggle = await page.evaluate(() => {
+  const { hud } = globalThis.__ui;
+  const el = document.getElementById("inv");
+  const opened = hud.toggleInv();
+  const shown = { ret: opened, flag: hud.invOpen, inline: el.style.display };
+  const closed = hud.toggleInv();
+  return {
+    shown,
+    hidden: { ret: closed, flag: hud.invOpen, inline: el.style.display },
+    reopened: hud.toggleInv(),
+  };
+});
+check(
+  invToggle.shown.ret === true && invToggle.shown.flag === true && invToggle.shown.inline === "flex",
+  `toggleInv() opening returned ${invToggle.shown.ret}, left invOpen=${invToggle.shown.flag} at display:${invToggle.shown.inline}` +
+    " — expected true/true/flex (main.js reads the return to decide whether to drop pointer lock)",
+);
+check(
+  invToggle.hidden.ret === false && invToggle.hidden.flag === false && invToggle.hidden.inline === "none",
+  `toggleInv() closing returned ${invToggle.hidden.ret}, left invOpen=${invToggle.hidden.flag} at display:${invToggle.hidden.inline}`,
+);
+check(invToggle.reopened === true, `toggleInv() did not reopen (returned ${invToggle.reopened})`);
+
+// The positional law. Distinct string per slot, then read the DOM back in
+// document order and rebuild the slot→cell map from what actually rendered.
+const invPos = await page.evaluate((n) => {
+  const { hud } = globalThis.__ui;
+  const want = [];
+  for (let s = 0; s < n; s++) want.push(`s${s}`);
+  hud.setInventory(want);
+  return {
+    belt: [...document.querySelectorAll("#invbelt .invcell span")].map((e) => e.textContent),
+    grid: [...document.querySelectorAll("#invgrid .invcell span")].map((e) => e.textContent),
+  };
+}, INV_SLOTS);
+const wantBelt = Array.from({ length: INV_BELT }, (_, i) => `s${i}`);
+const wantGrid = Array.from({ length: INV_GRID }, (_, i) => `s${i + INV_BELT}`);
+check(
+  JSON.stringify(invPos.belt) === JSON.stringify(wantBelt),
+  `the belt row rendered ${JSON.stringify(invPos.belt)}, expected ${JSON.stringify(wantBelt)}` +
+    " — slots 0..5 ARE the belt, and they are the six the digit keys select",
+);
+check(
+  JSON.stringify(invPos.grid) === JSON.stringify(wantGrid),
+  `the grid rendered ${JSON.stringify(invPos.grid)}, expected ${JSON.stringify(wantGrid)}` +
+    ` — slot ${INV_BELT} is the first grid cell, not the first belt cell`,
+);
+
+// An empty slot draws nothing. `main.js` decides empty by COUNT (`inv[s*2+1]`,
+// main.js:1305) and passes "", so a cell that kept its last string would show
+// a player wood they no longer have.
+const invEmpty = await page.evaluate((n) => {
+  const { hud } = globalThis.__ui;
+  const texts = [];
+  for (let s = 0; s < n; s++) texts.push(s === 0 || s === 9 ? "" : `s${s}`);
+  hud.setInventory(texts);
+  const all = [
+    ...[...document.querySelectorAll("#invbelt .invcell span")].map((e) => e.textContent),
+    ...[...document.querySelectorAll("#invgrid .invcell span")].map((e) => e.textContent),
+  ];
+  return { slot0: all[0], slot9: all[9], slot1: all[1] };
+}, INV_SLOTS);
+check(
+  invEmpty.slot0 === "" && invEmpty.slot9 === "",
+  `emptied slots still read ${JSON.stringify(invEmpty.slot0)} / ${JSON.stringify(invEmpty.slot9)}` +
+    " — a stale cell shows a player materials they have already spent",
+);
+check(invEmpty.slot1 === "s1", `clearing two slots also cleared slot 1 (${JSON.stringify(invEmpty.slot1)})`);
+
+// Selection: the belt row inside the panel is the hotbar, so it carries the
+// same `input.sel` and exactly one cell can be live. A grid cell must never
+// take it — there is no key 7 and the sim's `client_set_input` only carries
+// 0..5 (main.js:1226).
+const invSel = await page.evaluate((belt) => {
+  const { hud } = globalThis.__ui;
+  const marked = () => {
+    const b = [...document.querySelectorAll("#invbelt .invcell")]
+      .map((c, i) => (c.classList.contains("sel") ? i : -1))
+      .filter((i) => i >= 0);
+    const g = [...document.querySelectorAll("#invgrid .invcell")].filter((c) =>
+      c.classList.contains("sel"),
+    ).length;
+    return { b, g };
+  };
+  const out = [];
+  for (let i = 0; i < belt; i++) {
+    hud.setInvSelected(i);
+    out.push(marked());
+  }
+  hud.setInvSelected(belt + 1);
+  const past = marked();
+  hud.setInvSelected(0);
+  return { out, past };
+}, INV_BELT);
+for (let i = 0; i < INV_BELT; i++) {
+  check(
+    invSel.out[i].b.length === 1 && invSel.out[i].b[0] === i && invSel.out[i].g === 0,
+    `setInvSelected(${i}) marked belt ${JSON.stringify(invSel.out[i].b)} and ${invSel.out[i].g} grid cells` +
+      " — exactly one belt cell, never a grid cell",
+  );
+}
+check(
+  invSel.past.b.length === 0 && invSel.past.g === 0,
+  `setInvSelected(${INV_BELT + 1}) marked ${JSON.stringify(invSel.past.b)} belt / ${invSel.past.g} grid cells` +
+    " — a slot past the belt is not selectable and must clear the highlight rather than leave a stale one",
+);
+
+// Clicks, dispatched as real events so the listener path is what runs. A belt
+// click is the same act as its digit key — it must reach `onInvSelect`, which
+// main.js turns into `input.sel`. A grid click must NOT: there is no verb that
+// makes slot 12 the held item, and firing one would send the sim a slot it
+// refuses.
+const invClick = await page.evaluate((n) => {
+  const { hud } = globalThis.__ui;
+  const picks = [];
+  hud.onInvSelect = (s) => picks.push(s);
+  const texts = [];
+  for (let s = 0; s < n; s++) texts.push(s === 8 ? "" : `s${s}`);
+  hud.setInventory(texts);
+  const detail = document.getElementById("invdetail");
+  const belt = [...document.querySelectorAll("#invbelt .invcell")];
+  const grid = [...document.querySelectorAll("#invgrid .invcell")];
+  const fire = (el) => el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+  fire(belt[3]);
+  const afterBelt = { picks: picks.slice(), focus: hud.invFocus, detail: detail.textContent };
+  fire(grid[0]);
+  const afterGrid = { picks: picks.slice(), focus: hud.invFocus, detail: detail.textContent };
+  fire(grid[2]); // slot 8, emptied above
+  const afterEmpty = { detail: detail.textContent };
+  const focused = [...belt, ...grid].filter((c) => c.classList.contains("focus")).length;
+  return { afterBelt, afterGrid, afterEmpty, focused };
+}, INV_SLOTS);
+check(
+  JSON.stringify(invClick.afterBelt.picks) === "[3]" && invClick.afterBelt.focus === 3,
+  `clicking belt cell 3 reported picks ${JSON.stringify(invClick.afterBelt.picks)} focus ${invClick.afterBelt.focus}` +
+    " — expected exactly one onInvSelect(3), the same selection Digit4 makes",
+);
+check(
+  invClick.afterBelt.detail === "belt 4 · s3",
+  `the readout for belt slot 3 says ${JSON.stringify(invClick.afterBelt.detail)}, expected "belt 4 · s3"` +
+    " — belt slots are named by the digit key that selects them, counting from 1",
+);
+check(
+  JSON.stringify(invClick.afterGrid.picks) === "[3]" && invClick.afterGrid.focus === INV_BELT,
+  `clicking the first grid cell reported picks ${JSON.stringify(invClick.afterGrid.picks)} focus ${invClick.afterGrid.focus}` +
+    ` — it must focus slot ${INV_BELT} and fire NO onInvSelect; a grid slot cannot be the held item`,
+);
+check(
+  invClick.afterGrid.detail === "slot 1 · s6",
+  `the readout for the first grid cell says ${JSON.stringify(invClick.afterGrid.detail)}, expected "slot 1 · s6"` +
+    " — grid slots number 1..24 within the grid, because there is no key 7 to name them by",
+);
+check(
+  invClick.afterEmpty.detail === "slot 3 · empty",
+  `an empty focused slot reads ${JSON.stringify(invClick.afterEmpty.detail)}, expected "slot 3 · empty"` +
+    " — a blank readout and an empty slot are different facts, the same argument the vitals rows make",
+);
+check(
+  invClick.focused === 1,
+  `${invClick.focused} cells carry .focus after three clicks — focus moves, it does not accumulate`,
+);
+
+// A count that changes under an open panel has to reach the readout too: the
+// slow timer calls setInventory every 250 ms and the focused slot's text is
+// the same string the cell holds.
+const invLive = await page.evaluate((n) => {
+  const { hud } = globalThis.__ui;
+  const texts = [];
+  for (let s = 0; s < n; s++) texts.push(`wood ×${s}`);
+  hud.setInventory(texts);
+  return document.getElementById("invdetail").textContent;
+}, INV_SLOTS);
+check(
+  invLive === "slot 3 · wood ×8",
+  `after the slot's count changed the readout still says ${JSON.stringify(invLive)}, expected "slot 3 · wood ×8"`,
+);
+
+// `eatsKey` — the ordering law, as a truth table. main.js asks this once,
+// ahead of every verb, and each of those verbs spends something: KeyE opens a
+// door or loots a bag, KeyG eats, KeyH drinks, KeyC and KeyB open panels. Tab
+// and Escape are the screen's own keys and must fall through.
+const eats = await page.evaluate(() => {
+  const { hud } = globalThis.__ui;
+  const probe = ["KeyE", "KeyG", "KeyH", "KeyL", "KeyU", "KeyC", "KeyB", "Tab", "Escape"];
+  const read = () => Object.fromEntries(probe.map((c) => [c, hud.eatsKey(c)]));
+  if (hud.invOpen) hud.toggleInv();
+  const closed = read();
+  hud.toggleInv();
+  const open = read();
+  return { closed, open };
+});
+for (const code of ["KeyE", "KeyG", "KeyH", "KeyL", "KeyU", "KeyC", "KeyB", "Tab", "Escape"]) {
+  check(
+    eats.closed[code] === false,
+    `with the panel closed eatsKey(${code}) said ${eats.closed[code]} — a closed panel owns no key at all`,
+  );
+}
+for (const code of ["KeyE", "KeyG", "KeyH", "KeyL", "KeyU", "KeyC", "KeyB"]) {
+  check(
+    eats.open[code] === true,
+    `with the panel open eatsKey(${code}) said ${eats.open[code]} — that verb spends something and was not asked for`,
+  );
+}
+check(
+  eats.open.Tab === false && eats.open.Escape === false,
+  `an open panel ate Tab=${eats.open.Tab} Escape=${eats.open.Escape} — those are the keys that close it,` +
+    " and a screen that swallowed its own exit would trap the player",
+);
+
+// Dying closes it. The death branch in main.js already refuses every verb on a
+// corpse; a panel left open would be showing the slots of a body that is now
+// lying on the ground as a bag.
+const invDeath = await page.evaluate(() => {
+  const { hud } = globalThis.__ui;
+  if (!hud.invOpen) hud.toggleInv();
+  const before = hud.invOpen;
+  hud.showDeath(1, 0, "", 0, false);
+  return {
+    before,
+    after: hud.invOpen,
+    inline: document.getElementById("inv").style.display,
+  };
+});
+check(
+  invDeath.before === true && invDeath.after === false && invDeath.inline === "none",
+  `dying with the inventory open left invOpen=${invDeath.after} at display:${invDeath.inline}, expected closed`,
+);
+
+// =============================================================================
+// J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
 
 console.log(
   `  ui smoke: scaffold ${HUD_IDS.length} ids · join form · hotbar 6 cells · composer swallow · ` +
     `chat cap ${CHAT_CAP} · toast cap ${TOAST_CAP} · vitals positional+inline · death answered once · ` +
-    `craft gate/×5 · queue index`,
+    `craft gate/×5 · queue index · inventory ${INV_SLOTS} slots positional + eatsKey`,
 );
 console.log(`ui smoke: ${checks} checks passed`);
 

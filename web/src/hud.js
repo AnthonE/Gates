@@ -13,6 +13,16 @@ const TOAST_CAP = 8;
 const CHAT_CAP = 8;
 const CHAT_FADE_MS = 12000;
 
+/** The inventory screen's shape, mirroring what the sim already owns:
+ * `INV_SLOTS = 30` (crates/sim-core/src/limits.rs) read as `30 * 2` u16
+ * words at web/src/wasm.js:76, split by ALPHA.md §1 into "6 hotbar slots,
+ * 24 inventory". These are not new numbers — they are the shipped ones,
+ * named here so the panel's layout and the wire's slot indices cannot
+ * drift apart silently. */
+const INV_BELT = 6;
+const INV_GRID = 24;
+const INV_SLOTS = 30;
+
 export class Hud {
   constructor() {
     this.el = document.getElementById("hud");
@@ -74,6 +84,41 @@ export class Hud {
       this.cells.push(label);
       this.cellDivs.push(cell);
       this.cellTexts.push("");
+    }
+    // The inventory screen. Built once at construction like the hotbar and
+    // the death screen — a panel that allocated 30 cells the frame a
+    // player opened it would do it mid-step.
+    //
+    // Read-only by design, and that is the honest half rather than a
+    // shortcut: there is no move/stack/split verb in `crates/` yet, so
+    // there is no refusal path to draw a drag against (NOW.md item 1).
+    // Drawing a drag the sim cannot answer is exactly the divergence
+    // CLAUDE.md's item-move trap describes — the client has already drawn
+    // the move, and a container refusal has to be computed on the values
+    // the client predicted with. So this shows and selects; it does not
+    // move.
+    this.inv = document.getElementById("inv");
+    this.invGrid = document.getElementById("invgrid");
+    this.invBelt = document.getElementById("invbelt");
+    this.invDetail = document.getElementById("invdetail");
+    this.invOpen = false;
+    this.invSelected = -1;
+    this.invFocus = -1;
+    /** Set by main.js: (slot 0..INV_BELT-1) → void. Belt cells only. */
+    this.onInvSelect = () => {};
+    this.invCells = [];
+    this.invDivs = [];
+    this.invTexts = [];
+    for (let s = 0; s < INV_SLOTS; s++) {
+      const cell = document.createElement("div");
+      cell.className = "invcell";
+      const label = document.createElement("span");
+      cell.appendChild(label);
+      (s < INV_BELT ? this.invBelt : this.invGrid).appendChild(cell);
+      cell.addEventListener("click", () => this.focusSlot(s));
+      this.invCells.push(label);
+      this.invDivs.push(cell);
+      this.invTexts.push("");
     }
   }
 
@@ -247,6 +292,97 @@ export class Hud {
     if (sel >= 0 && sel < 6) this.cellDivs[sel].classList.add("sel");
   }
 
+  /** Toggle the inventory screen; returns whether it is now open. */
+  toggleInv() {
+    this.invOpen = !this.invOpen;
+    this.inv.style.display = this.invOpen ? "flex" : "none";
+    return this.invOpen;
+  }
+
+  /**
+   * Does an open panel own this key right now?
+   *
+   * main.js asks once, ahead of every verb, so the ordering law is one
+   * function with a gate on it rather than a guard repeated per verb —
+   * the shape the composer's `stopPropagation` already has, given a name.
+   * A player reading their bag is not asking to eat, drink, place a wall
+   * or unlock a door, and each of those spends something.
+   *
+   * The panel's own toggle and close keys are excluded, so the answer is
+   * self-contained: main.js handles those two first, but nothing here
+   * depends on it doing so.
+   */
+  eatsKey(code) {
+    if (!this.invOpen) return false;
+    return code !== "Tab" && code !== "Escape";
+  }
+
+  /**
+   * Draw the 30 slots. `texts` is SLOT-INDEXED — `texts[s]` is slot `s`
+   * as the sim numbers it, which is the whole of this function's contract
+   * and the one thing worth gating about it.
+   *
+   * Slots 0..INV_BELT-1 are the belt row (the same six the hotbar draws,
+   * the same six the digit keys select); INV_BELT..INV_SLOTS-1 are the
+   * grid, in reading order. CLAUDE.md's positional-payload trap is
+   * exactly this shape — the right value in the wrong position, invisible
+   * to every byte-level check because every field has the same type — so
+   * `ci/ui_smoke.mjs` group I writes a distinct string into each of the
+   * 30 and reads back which cell holds it.
+   *
+   * Slow-timer only, and only a changed cell touches the DOM.
+   */
+  setInventory(texts) {
+    for (let s = 0; s < INV_SLOTS; s++) {
+      const t = texts[s] || "";
+      if (t === this.invTexts[s]) continue;
+      this.invTexts[s] = t;
+      this.invCells[s].textContent = t;
+      if (s === this.invFocus) this.drawInvDetail();
+    }
+  }
+
+  /**
+   * Highlight the selected belt slot inside the panel. The belt row IS
+   * the hotbar, so this takes the same `input.sel` `setSelected` does and
+   * the two can never disagree about which slot is live.
+   */
+  setInvSelected(sel) {
+    if (sel === this.invSelected) return;
+    if (this.invSelected >= 0)
+      this.invDivs[this.invSelected].classList.remove("sel");
+    this.invSelected = sel;
+    if (sel >= 0 && sel < INV_BELT) this.invDivs[sel].classList.add("sel");
+  }
+
+  /**
+   * A click on a cell: name what is in it, and — on the belt only — make
+   * it the live slot, which is the one verb this screen has and the one
+   * the client already owned (`input.sel`, keys 1–6). Nothing here moves
+   * an item: see the constructor's note on why the drag waits for the
+   * sim's refusal path.
+   */
+  focusSlot(s) {
+    if (this.invFocus >= 0) this.invDivs[this.invFocus].classList.remove("focus");
+    this.invFocus = s;
+    this.invDivs[s].classList.add("focus");
+    this.drawInvDetail();
+    if (s < INV_BELT) this.onInvSelect(s);
+  }
+
+  /** The readout under the grid. Belt slots are named by their digit key
+   * (1–6); grid slots are numbered 1–24 within the grid, because there is
+   * no key 7 and a readout that implied one would be lying. */
+  drawInvDetail() {
+    const s = this.invFocus;
+    if (s < 0) {
+      this.invDetail.textContent = "";
+      return;
+    }
+    const where = s < INV_BELT ? `belt ${s + 1}` : `slot ${s - INV_BELT + 1}`;
+    this.invDetail.textContent = `${where} · ${this.invTexts[s] || "empty"}`;
+  }
+
   /** Open the chat composer; the caller drops pointer lock. */
   openChat() {
     this.chatOpen = true;
@@ -313,6 +449,10 @@ export class Hud {
     this.respawnBeach.disabled = false;
     this.death.style.display = "flex";
     this.deathOpen = true;
+    // The bag you were reading is not yours any more — it is lying on the
+    // ground with your body in it. Close the screen rather than leave it
+    // showing a corpse's slots behind the respawn buttons.
+    if (this.invOpen) this.toggleInv();
   }
 
   /** The answer, once. The buttons disable on the click rather than on the
