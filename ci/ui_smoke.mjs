@@ -1741,34 +1741,38 @@ check(
 );
 
 // =============================================================================
-// L. the move verdict's inbound half — splitting a bit that means two things
+// L. the move verdict's inbound half — unpacking a positional payload
 // =============================================================================
 // `web/src/invmove.js` is imported here in node, not in the page: it touches
 // no DOM and no wasm, so it is arithmetic, and arithmetic is gated in the
 // cheapest layer that can hold it (`ci/pine_shape.mjs`'s precedent — import
 // the shipped module and score it headlessly).
 //
-// What it decides is which meaning bit 31 of `client_on_stream` carried.
-// `APPLIED_MOVE` and `STREAM_ERR` are both `1 << 31` in client-wasm, so the
-// panel's verdict and "our own server sent undecodable bytes" arrive as the
-// same word, and the split is made against the drag in flight.
+// This section used to hold a TRIPWIRE. `APPLIED_MOVE` and `STREAM_ERR` were
+// both `1 << 31` in client-wasm, so the panel's verdict and "our own server
+// sent undecodable bytes" arrived as the same word, and `classifyMoveVerdict`
+// split them against the drag in flight. The tripwire was red-means-GOOD-NEWS:
+// it asserted the collision still existed, so that the pass which split it
+// would be told to delete the workaround rather than update the check. It
+// fired on 2026-08-04 and did exactly that job.
+//
+// What replaces it is the standing invariant, not the scaffolding: bit 31 of
+// word 0 is the error sentinel and NO applied flag may share it. `main.js`
+// now treats that bit as unambiguously an error, which is only sound while
+// that holds, so it is asserted here against the Rust rather than assumed.
 const {
   CONT_SELF: JS_CONT_SELF,
   REFUSE_M_MAX: JS_REFUSE_MAX,
   STREAM_HIGH_BIT,
-  VERDICT,
-  DECODE_ERROR,
-  classifyMoveVerdict,
+  APPLIED2_MOVE,
+  moveVerdict,
 } = await import(pathToFileURL(path.join(root, "web/src/invmove.js")).href);
 
-// The three constants it restates from Rust, checked against the Rust. A
-// number restated in a gate can drift from the one that ships; so can a
-// number restated in the client, and this one is restated across a language
-// boundary where no compiler is watching.
+// The constants it restates from Rust, checked against the Rust. A number
+// restated in a gate can drift from the one that ships; so can a number
+// restated in the client, and these are restated across a language boundary
+// where no compiler is watching.
 const coreSrc = fs.readFileSync(path.join(root, "crates/client-wasm/src/core.rs"), "utf8");
-const bridgeSrc = fs.readFileSync(path.join(root, "crates/client-wasm/src/bridge.rs"), "utf8");
-const appliedMove = coreSrc.match(/pub const APPLIED_MOVE: u32 = 1 << (\d+);/)?.[1];
-const streamErr = bridgeSrc.match(/const STREAM_ERR: u32 = 1 << (\d+);/)?.[1];
 check(
   JS_CONT_SELF === Number(invSrc.match(/pub const CONT_SELF: u8 = (\d+);/)?.[1]),
   `invmove.js CONT_SELF (${JS_CONT_SELF}) has drifted from inventory.rs — the panel would accept a container's` +
@@ -1777,75 +1781,93 @@ check(
 check(
   JS_REFUSE_MAX === REFUSE_MAX,
   `invmove.js REFUSE_M_MAX (${JS_REFUSE_MAX}) has drifted from inventory.rs (${REFUSE_MAX}) — a reason the sim` +
-    " grew would be classified as corruption, or corruption as a reason",
+    " grew would be rejected as corruption, or corruption accepted as a reason",
 );
-// This one is a red-means-GOOD-NEWS check, and says so: the workaround above
-// exists only because these two collide. If the systems lane splits them, this
-// goes red on THEIR branch, and the fix is to delete `classifyMoveVerdict`'s
-// call site in main.js and test bit 31 as `APPLIED_MOVE` directly.
+// The two flag words, read out of core.rs. `APPLIED2_MOVE` is the flag main.js
+// dispatches the verdict on; if it moves within word 1, the client reads the
+// wrong bit and every verdict silently stops arriving — an optimistic move
+// left drawn forever, which is the container divergence itself.
+const streamErrBit = coreSrc.match(/pub const STREAM_ERR: u32 = 1 << (\d+);/)?.[1];
+const applied2Move = coreSrc.match(/pub const APPLIED2_MOVE: u32 = 1 << (\d+);/)?.[1];
 check(
-  appliedMove === "31" && streamErr === "31" && STREAM_HIGH_BIT === 2 ** 31,
-  `APPLIED_MOVE (1 << ${appliedMove}) and STREAM_ERR (1 << ${streamErr}) no longer collide at bit 31 — if the` +
-    " systems lane has split them, DELETE the classifyMoveVerdict workaround in main.js and invmove.js rather" +
-    " than updating this check; it is scaffolding for a crates/ defect and has no other reason to exist",
+  streamErrBit === "31" && STREAM_HIGH_BIT === 2 ** 31,
+  `invmove.js STREAM_HIGH_BIT (${STREAM_HIGH_BIT}) is not core.rs's STREAM_ERR (1 << ${streamErrBit}) — main.js` +
+    " tests that bit as 'the server sent undecodable bytes' and would be reading the wrong one",
+);
+check(
+  applied2Move !== undefined && APPLIED2_MOVE === 1 << Number(applied2Move),
+  `invmove.js APPLIED2_MOVE (${APPLIED2_MOVE}) has drifted from core.rs (1 << ${applied2Move}) — the panel would` +
+    " dispatch the move verdict on a bit the sim never sets, and every verdict would stop arriving",
+);
+// The invariant the split bought, asserted so it cannot be given back: NO
+// `APPLIED_*` flag in word 0 may sit on bit 31. One that did is what put a
+// landed move on the error branch — which logs and returns early, taking the
+// inventory diff of the same message with it. Two crates, two constants, one
+// value, every wall green (`core.rs`'s own note on the trap).
+const word0Bits = [...coreSrc.matchAll(/pub const (APPLIED_[A-Z0-9_]+): u32 = 1 << (\d+);/g)];
+check(
+  word0Bits.length > 0,
+  "no APPLIED_* flags were found in core.rs — this check reads the word 0 flag set by pattern, and a pattern" +
+    " that matches nothing asserts nothing",
+);
+const onBit31 = word0Bits.filter(([, , bit]) => bit === "31").map(([, name]) => name);
+check(
+  onBit31.length === 0,
+  `${onBit31.join(", ")} is on bit 31, which belongs to STREAM_ERR — main.js reads that bit as a decode error` +
+    " and returns EARLY, so this flag's message would take every other flag it carried out with it. The applied" +
+    " word is full: a new flag goes in word 1 beside APPLIED2_MOVE, never here",
 );
 
 // The truth table. `readout` is packed reason << 24 | to << 16 | from kind
 // << 8 | from slot (`bridge.rs:904-908`).
 const ro = (reason, to, kind, from) => ((reason << 24) | (to << 16) | (kind << 8) | from) >>> 0;
-const cls = (readout, pending) => classifyMoveVerdict(readout, pending);
-const PEND = { from: 3, to: 7 };
 
+// The unpack, field by field, on one word whose four values are all
+// distinguishable. This is the positional check itself: a transposition that
+// swapped `from` and `to` — the single shape the reference corrected most
+// often — reads here as 7 and 3 the wrong way round, and nothing downstream
+// would catch it, because `hud.invMoveVerdict` compares the pair it is GIVEN
+// against its pending record and a swapped pair is self-consistently wrong.
+const landed = moveVerdict(ro(0, 7, 0, 3));
 check(
-  cls(ro(0, 7, 0, 3), null).kind === DECODE_ERROR,
-  "a perfectly well-formed move readout with NO drag in flight must stay an error — nothing is waiting for it," +
-    " so suppressing the report would trade the corruption signal away for nothing",
+  landed !== null && landed.reason === 0 && landed.from === 3 && landed.to === 7,
+  `a landed verdict did not unpack to reason 0, from 3, to 7: ${JSON.stringify(landed)} — the readout is a` +
+    " positional payload and this is the position",
 );
+const transposed = moveVerdict(ro(0, 3, 0, 7));
 check(
-  cls(ro(0, 7, 0, 3), undefined).kind === DECODE_ERROR,
-  "an undefined pending must classify as an error, not throw — `hud.invPending` is null between drags",
-);
-const landed = cls(ro(0, 7, 0, 3), PEND);
-check(
-  landed.kind === VERDICT && landed.reason === 0 && landed.from === 3 && landed.to === 7,
-  `the verdict on the move in flight was not recognised: ${JSON.stringify(landed)}`,
+  transposed !== null && transposed.from === 7 && transposed.to === 3,
+  `the transposed readout did not unpack transposed (${JSON.stringify(transposed)}) — if this reads the same as` +
+    " the line above, the unpack is symmetric in from/to and would roll back the wrong two cells",
 );
 for (let reason = 1; reason <= REFUSE_MAX; reason++) {
-  const v = cls(ro(reason, 7, 0, 3), PEND);
+  const v = moveVerdict(ro(reason, 7, 0, 3));
   check(
-    v.kind === VERDICT && v.reason === reason,
+    v !== null && v.reason === reason && v.from === 3 && v.to === 7,
     `refusal reason ${reason} did not reach the panel (${JSON.stringify(v)}) — a refusal the panel never hears` +
       " leaves the optimistic move drawn forever, which is the container divergence itself",
   );
 }
-// The positional-payload checks. CLAUDE.md's trap list: ~27 of the reference's
-// shipped corrections were the right value in the wrong position, and this
-// readout is exactly that shape — two slots and a kind in one word.
+// The shapes the sim cannot produce for a move this panel sent. Each is a
+// rejection, and each rejection is a cell NOT unwound on a word that was not
+// this panel's verdict.
 check(
-  cls(ro(0, 3, 0, 7), PEND).kind === DECODE_ERROR,
-  "a transposed verdict (from and to swapped) was accepted for the move in flight — the one payload shape the" +
-    " reference corrected most often, and it would roll back the wrong two cells",
-);
-check(
-  cls(ro(0, 7, 1, 3), PEND).kind === DECODE_ERROR,
+  moveVerdict(ro(0, 7, 1, 3)) === null,
   "a CONT_BAG verdict was accepted as this panel's — bag slots and self slots share numbers, so honouring it" +
     " unwinds a cell the server never spoke about",
 );
 check(
-  cls(ro(0, 7, 0, 4), PEND).kind === DECODE_ERROR && cls(ro(0, 8, 0, 3), PEND).kind === DECODE_ERROR,
-  "a verdict whose address does not match the drag in flight was accepted — it is not this panel's move",
+  moveVerdict(ro(REFUSE_MAX + 1, 7, 0, 3)) === null,
+  `a reason past REFUSE_M_MAX (${REFUSE_MAX}) was accepted as a verdict — the sim cannot produce it, so the` +
+    " word was not a verdict, and the panel would toast a refusal string for a reason that does not exist",
 );
+// A zero readout is what a bridge with no core returns (`bridge.rs`'s
+// `unwrap_or(0)`). It unpacks to address (0, 0), and `dropInvDrag` refuses
+// `to === from`, so no move this panel sent can come back addressed to one
+// slot — which is what makes rejecting it safe as well as necessary.
 check(
-  cls(ro(REFUSE_MAX + 1, 7, 0, 3), PEND).kind === DECODE_ERROR,
-  `a reason past REFUSE_M_MAX (${REFUSE_MAX}) was accepted as a verdict — the sim cannot produce it, so the word` +
-    " was not a verdict",
-);
-// A zero readout is what a bridge with no core returns (`bridge.rs:284`'s
-// `unwrap_or(0)`). It must never resolve a drag: `dropInvDrag` refuses
-// `to === from`, so no legal pending can match address (0, 0).
-check(
-  cls(0, { from: 0, to: 5 }).kind === DECODE_ERROR && cls(0, { from: 5, to: 0 }).kind === DECODE_ERROR,
-  "a zero readout resolved a pending move — that is the no-client return, not a verdict",
+  moveVerdict(0) === null && moveVerdict(ro(0, 4, 0, 4)) === null,
+  "a readout addressed from a slot to itself was accepted — readout 0 is the no-client return, not a verdict",
 );
 
 // =============================================================================
@@ -1858,7 +1880,7 @@ console.log(
     `chat cap ${CHAT_CAP} · toast cap ${TOAST_CAP} · vitals positional+inline · death answered once · ` +
     `craft gate/×5 · queue index · inventory ${INV_SLOTS} slots positional + eatsKey · ` +
     `move ordering (send-before-draw, address-matched verdict, diff outranks rollback, ${REFUSE_MAX} reasons) · ` +
-    "unarmed panel starts no drag · verdict/decode-error split off bit 31",
+    "unarmed panel starts no drag · verdict on APPLIED2_MOVE, bit 31 unshared",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 

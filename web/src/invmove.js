@@ -1,91 +1,98 @@
 /**
- * The move verb's INBOUND half: deciding what bit 31 of `client_on_stream`
- * actually meant.
+ * The move verb's INBOUND half: reading a `client_move_readout()` word.
  *
- * ## Why this file exists
+ * ## What used to be here, and why it is gone
  *
- * `client_on_stream` returns one `u32` that carries two unrelated things:
- * the `APPLIED_*` flag set, and an error signal. `APPLIED_MOVE`
- * (`client-wasm/src/core.rs:122`) is `1 << 31` and `STREAM_ERR`
- * (`client-wasm/src/bridge.rs:64`) is also `1 << 31`, so a landed move and
- * "our own server sent bytes we cannot decode" come back bit-identical —
- * `0x80000000` in both cases, with no other bit set to tell them apart.
+ * This file was scaffolding for a `crates/` defect. `APPLIED_MOVE` and
+ * `STREAM_ERR` were both `1 << 31`, so a landed move and "our own server
+ * sent bytes we cannot decode" came back bit-identical, and the only thing
+ * on this side of the wall that could tell them apart was the panel's own
+ * pending drag. `classifyMoveVerdict(readout, pending)` did that, and said
+ * in its own docs what it could not close.
  *
- * That is a `crates/` defect and the systems lane owns the fix. It is NOT
- * the one-line constant change it is usually described as: the flag word
- * is FULL — `core.rs:38-122` assigns every bit 0..31 — so `APPLIED_MOVE`
- * has nowhere to move to. The error is what has to leave the word (a
- * second word, or a `client_on_datagram`-shaped return code, or an
- * out-of-band `client_stream_err()`). See `NOW.md`.
+ * The systems lane has since split them (`client-wasm/src/core.rs`):
+ * bit 31 of word 0 is `STREAM_ERR` and nothing else, and the move verdict
+ * moved to `APPLIED2_MOVE` in a **second applied-flag word**, read through
+ * `client_applied2()` after every `client_on_stream`. So the ambiguity is
+ * gone at the source, the disambiguation is deleted rather than updated,
+ * and the residual that function documented — a genuine decode error
+ * arriving while an identical move was in flight reading as that move's
+ * verdict — is closed. `ci/ui_smoke.mjs` §L held the tripwire that caught
+ * the split; it now holds the invariant that keeps bit 31 unshared.
  *
- * ## What this file does about it, and what it deliberately does not
+ * The collision also cost the client more than the verdict: `main.js` took
+ * the error branch on `APPLIED_MOVE`, and that branch logs and returns
+ * EARLY, so every other flag the same message carried — the inventory diff
+ * most of all — went out with it. Reading word 1 at the end of the handler
+ * rather than short-circuiting on bit 31 is what puts that back.
  *
- * The panel draws a move optimistically and needs the verdict to confirm
- * or roll it back. Until the collision clears, the only thing on this side
- * of the wall that can disambiguate is the panel's own pending drag: the
- * client knows which move it just sent, and `client_move_readout()` says
- * which move the word is about.
+ * ## What is left, and why it is not scaffolding
  *
- * So exactly one case changes from "decode error": the high bit, while a
- * drag is in flight, carrying a readout that matches that drag in every
- * field. Everything else still reports corruption exactly as before. That
- * ordering is deliberate — a suppressed error is a worse bug than a missed
- * move, so the suppression is the narrow case and the error is the default.
- *
- * **The residual, stated plainly.** `last_move` is not cleared when a
- * verdict is consumed, and a decode error leaves it untouched
- * (`bridge.rs:288` returns above every refresh). So a genuine decode error
- * arriving while a move identical to the previously resolved one is in
- * flight reads as that move's verdict. It requires a server already
- * emitting undecodable bytes, and the next authoritative `setInventory`
- * corrects the panel. It cannot be closed from JS without a second event
- * encoder in production code, which would be a wire-drift hazard worse
- * than the hole it plugged. It closes for free when the crate fix lands.
+ * The readout is a POSITIONAL PAYLOAD — two slot numbers, a container
+ * kind and a refusal reason packed into one `u32` — and CLAUDE.md's trap
+ * list is explicit that positional payloads are where the reference
+ * ecosystem actually bled: ~27 of Oxide's shipped corrections were the
+ * right value in the wrong position, four hooks corrected more than once.
+ * A byte-golden is blind to it. So the unpack, and the shapes the sim
+ * cannot produce, stay — they were never about the collision.
  */
 
-/** The collided bit. `client_on_stream`'s return is an i32 out of the C
- *  ABI, so this is tested as a mask and never as a comparison. */
+/** Bit 31 of `client_on_stream`'s return: `core.rs`'s `STREAM_ERR`, and
+ *  since the split it means that and only that. The return comes out of
+ *  the C ABI as an i32, so it is tested as a mask and never as a
+ *  comparison. */
 export const STREAM_HIGH_BIT = 0x80000000;
+
+/** `core.rs`'s `APPLIED2_MOVE` — bit 0 of the second applied word. A move
+ *  landed or was refused; `client_move_readout()` says which. Word 0 has
+ *  no spare bit to announce word 1 with, which is why the caller reads
+ *  `client_applied2()` unconditionally rather than on a flag. */
+export const APPLIED2_MOVE = 1 << 0;
 
 /** `sim-core/src/inventory.rs:56` — the player's own 30 slots. */
 export const CONT_SELF = 0;
 /** `sim-core/src/inventory.rs:109` — the largest `REFUSE_M_*`. */
 export const REFUSE_M_MAX = 7;
 
-/** The word was a verdict on the move this panel drew. Apply it. */
-export const VERDICT = "verdict";
-/** The word was `STREAM_ERR`, or a move this panel is not waiting for.
- *  Report it — the corruption signal is not worth trading away. */
-export const DECODE_ERROR = "error";
-
 /**
- * Classify a `client_move_readout()` word against the drag in flight.
+ * Unpack a `client_move_readout()` word, or `null` if it is not a verdict
+ * this panel can act on.
  *
  * `readout` is `reason << 24 | to slot << 16 | from kind << 8 | from slot`
- * (`bridge.rs:904-908`). `pending` is `hud.invPending` — `{from, to}` or
- * null/undefined when no drag is outstanding.
+ * (`bridge.rs`'s `client_move_readout`). Returns `{ reason, from, to }` —
+ * `reason` 0 for landed, else an `inventory.rs` `REFUSE_M_*`.
  *
- * Every field is checked, not just the pair: the readout is a positional
- * payload, and CLAUDE.md's trap list is explicit that positional payloads
- * are where the reference ecosystem actually bled — the right value in the
- * wrong position, ~27 shipped corrections. `from kind` in particular must
- * be `CONT_SELF`: a bag's verdict carrying slot numbers this panel also
- * uses would otherwise roll back a cell the server never spoke about.
+ * Three rejections, each a shape the sim cannot produce for a move this
+ * panel sent. They are checked here rather than in the panel because this
+ * is arithmetic, and arithmetic is gated in the cheapest layer that can
+ * hold it:
  *
- * Returns `{ kind, reason, from, to }`. On `DECODE_ERROR` the three
- * numbers are meaningless and the caller must not read them.
+ * - **`from kind` is not `CONT_SELF`.** Bag slots and self slots share
+ *   numbers, so honouring a container's verdict here would unwind a cell
+ *   the server never spoke about. This is the one the trap list is about.
+ * - **`reason` is past `REFUSE_M_MAX`.** The sim cannot emit it, so the
+ *   word was not a verdict — and the panel would otherwise toast a
+ *   refusal string for a reason that does not exist.
+ * - **`from === to`.** `hud.dropInvDrag` refuses `to === from`, so no
+ *   move this panel sent can come back addressed to one slot. It is also
+ *   what a bridge with no core returns (`unwrap_or(0)`): readout 0 unpacks
+ *   to (0, 0), and that must never resolve a drag.
+ *   NOTE the coupling: this holds while the panel addresses only its own
+ *   container. When it grows bag moves the *to kind* has to enter this
+ *   readout — the sim can then legitimately move self slot 3 to bag slot
+ *   3 — and this check moves with it.
+ *
+ * The address is checked AGAIN by `hud.invMoveVerdict` against the drag it
+ * actually has in flight; this route is not trusted to have matched.
  */
-export function classifyMoveVerdict(readout, pending) {
-  if (!pending) return { kind: DECODE_ERROR, reason: 0, from: -1, to: -1 };
+export function moveVerdict(readout) {
   const r = readout >>> 0;
   const reason = r >>> 24;
   const to = (r >>> 16) & 0xff;
   const fromKind = (r >>> 8) & 0xff;
   const from = r & 0xff;
-  if (fromKind !== CONT_SELF) return { kind: DECODE_ERROR, reason: 0, from: -1, to: -1 };
-  if (reason > REFUSE_M_MAX) return { kind: DECODE_ERROR, reason: 0, from: -1, to: -1 };
-  if (from !== pending.from || to !== pending.to) {
-    return { kind: DECODE_ERROR, reason: 0, from: -1, to: -1 };
-  }
-  return { kind: VERDICT, reason, from, to };
+  if (fromKind !== CONT_SELF) return null;
+  if (reason > REFUSE_M_MAX) return null;
+  if (from === to) return null;
+  return { reason, from, to };
 }
