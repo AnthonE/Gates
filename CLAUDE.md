@@ -187,7 +187,9 @@ same bug with a longer fuse.
   © 2026 Scott Sun (`THREEJS_GRAPHICS_SKILLS_LICENSE`). `threejs-shadow-systems`
   is the source of the client's light-space texel snapping and texel-scaled
   normal bias (`DECISIONS.md` §open, lighting v0). Guidance only — no code
-  from the pack ships in this repo.
+  from the pack ships in this repo. **That is a licence statement, not a
+  usage limit: read them.** `threejs-skill-router` routes a graphics task to
+  the right ones, and renderer work starts there.
 - `Claude-of-Duty` (github.com/mshumer/Claude-of-Duty, MIT, © 2026 mshumer)
   — source of the shader-prewarm trap, the bit-identical-capture discipline
   (fresh page per shot; engine clock, not `performance.now()`), and the
