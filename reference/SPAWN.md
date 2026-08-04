@@ -545,19 +545,90 @@ trusting a default's value.
 | world size | 4000 default, clamped 1000–6000 | code |
 | seed / salt fallbacks | 123456 / 654321 | code |
 
-## 11 · What this file does not have
+## 11 · Still open — logged, not queued
+
+Placement and respawn are mined out; §9 is the residue and `NOW.md` carries
+the one item worth building. What follows is everything else this research
+touched and did not finish, so nobody re-derives it.
+
+### 11.1 · The gather verb — three deltas, all content-shaped
+
+Adjacent to placement, not part of it: `ResourceDispenser`, `TreeEntity`, and
+`OreResourceEntity` own what happens *after* the swing lands. **We already
+have the headline mechanic and ours is better** — their bonus-hit marker is a
+spawned `tree_marking` **entity** per marked tree plus a `ClientRPC` per hit;
+our `gather::weak_mark8` is a hash of (seed, cell, player, hit count) through
+the yaw LUT, so the mark costs no entity, no bytes, and derives identically on
+server, replay, and any future client ghost. Keep that.
+
+Three real differences remain, and **all three are numbers and curve shapes,
+so they belong in `CONTENT.md` and `DECISIONS.md` §open, not in code**:
+
+- **Their bonus ramps and punishes; ours is flat and forgiving.** A tree
+  pays `1 + clamp(0.125 n, 0, 1)` — up to **2×** over eight consecutive
+  marker hits. An ore node pays `1 + clamp(0.5 n, 0, 2)` — up to **3×** over
+  four, and **a miss resets the streak to zero**. Ours pays a flat
+  `weak_pct` on any weak hit, and `ws_hits` only ever increments (the chase
+  restarts on switching nodes, never on a miss). So a wrong-sector swing
+  costs us nothing but the one bonus, where it costs them the whole ladder.
+  Two decisions in there — *does the bonus escalate*, and *does a miss
+  break it* — and the per-archetype curve difference (2× over 8 for wood,
+  3× over 4 for ore) says they tuned it per resource, not globally.
+- **Their node is a fixed pool; the tool sets speed, not total.**
+  `containedItems` is a list that depletes, and a swing takes
+  `gatherDamage / maxHealth × itemShare` out of it — so a tree is worth N
+  wood no matter what you swing at it, and a better tool only empties it
+  sooner. Worth checking whether our per-tool yield row times hits-to-exhaust
+  makes tool tier a **total-yield multiplier** instead, because those two
+  compound very differently over a wipe and only one of them is an economic
+  anchor. Not asserting we got it wrong — asserting nobody has decided it
+  on purpose.
+- **`finishBonus`** — a bonus pile paid only if the node was finished by
+  *gathering*, with at most `maxDestroyFractionForFinishBonus` (0.2) of it
+  destroyed by non-gather damage. An explicit "chop it, don't blow it up"
+  incentive. We have no equivalent and may not want one; logged because it
+  is the kind of thing that is invisible until someone asks why explosives
+  do not farm.
+
+### 11.2 · Topology as a cross-system veto channel — for when roads land
+
+`SpawnFilter` reads topology bits, and a monument writes `Monument` topology
+into the map at worldgen, so **every population that excludes `Monument`
+avoids monuments without one line of code knowing monuments exist** (§4).
+`TERRAIN.md` §1 stages 7–8 (the coast road, the haven pad) do not exist yet
+and `terrain.rs::scatter`'s own comment already says "later road/haven veto".
+The finding is only about *shape*: make that a **mask channel sampled like
+moisture**, not a chain of `if` tests bolted onto `scatter`, or every future
+POI edits the scatter function. Costs nothing to decide now, costs a refactor
+to decide later.
+
+### 11.3 · What the source cannot answer, and where it would come from
 
 - **The actual densities.** `TargetDensity`, `SpawnRate`, cluster sizes and
-  filters per population live in Unity `ScriptableObject` assets, not in
-  code, and are not in any decompile. So "how many trees does a 4 km Rust map
-  have" is not answerable from this source — only the formula is (§3.3).
-  Their content/code split is the same as our wall 7, which is why.
-- **The `ProceduralComponent` list and its order.** Read from the scene
-  hierarchy at runtime, so only the two components fetched by name
-  (`PlaceDecorUniform`, `PlaceMonuments`) are confirmed here. The ordering
-  mechanism (§2) is confirmed; the roster is not.
-- **Whether any of this still holds.** Protocol 179 is old, and at least one
-  signature has moved since (`SpawnHandler.SpawnGroups` became
-  `List<ISpawnGroup>`, visible in the current interface use). The
-  *architecture* — four systems, split by networked-or-not — is what this
-  file claims, not the field list.
+  filters live in Unity `ScriptableObject` assets, not code, and are in no
+  decompile — so "how many trees on a 4 km map" is not answerable here, only
+  the formula is (§3.3). Their content/code split is our wall 7, which is
+  exactly why. If we ever want to calibrate our 8–12k slot band against
+  theirs, the cheap route is a published `spawn.report` dump from a live
+  server, not more source.
+- **The `ProceduralComponent` roster and its order.** Read off the scene
+  hierarchy at runtime; only `PlaceDecorUniform` and `PlaceMonuments` are
+  confirmed by name. The ordering *mechanism* (§2) is confirmed, the roster
+  is not. Matters when POIs land, not before.
+- **Whether any of it still holds.** Protocol 179 is old and at least one
+  signature has moved since (`SpawnHandler.SpawnGroups` is now
+  `List<ISpawnGroup>`). This file claims the **architecture** — four systems,
+  split by networked-or-not — not the field list.
+
+### 11.4 · Re-fetching, if a later pass needs the source again
+
+Nothing here is cached in the repo and the working copies were scratch, so a
+future pass starts from zero. The classes that carried the answers, so nobody
+has to search for them twice: `SpawnHandler`, `SpawnPopulation`,
+`SpawnDistribution`, `SpawnFilter`, `ByteQuadtree`, `Spawnable`,
+`SpawnGroup`, `SpawnIndividual`, `BaseSpawnPoint`, `SpawnPointInstance`,
+`WorldSetup`, `World`, `Prefab`, `PlaceMonuments`, `PlaceDecorUniform`,
+`TerrainCheck`, `TerrainFilter`, `TerrainAnchor`, `WaterCheck`,
+`NetworkVisibilityGrid`, `ResourceDepositManager`, `ResourceDispenser`,
+`ResourceEntity`, `TreeEntity`, `OreResourceEntity`, `CollectibleEntity`,
+`LootContainer`, `ConVar/Spawn`. §0's terms apply to every one of them.
