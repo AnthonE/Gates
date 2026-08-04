@@ -36,3 +36,7 @@ anomaly.log
 .vscode/
 .idea/
 *.swp
+
+# python bytecode (reference/rip-hooks.py)
+__pycache__/
+*.pyc
