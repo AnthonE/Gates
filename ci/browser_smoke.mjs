@@ -69,7 +69,27 @@ const PORT = Number(process.env.BROWSER_SMOKE_PORT || 8934);
 const WIRE_PORT = Number(process.env.BROWSER_SMOKE_WIRE_PORT || 4433);
 // The public-config shard (no dev_spawn) the dev-gate check joins.
 const PUBLIC_WIRE_PORT = Number(process.env.BROWSER_SMOKE_PUBLIC_WIRE_PORT || WIRE_PORT + 1);
-const JOIN_TIMEOUT_MS = Number(process.env.BROWSER_SMOKE_TIMEOUT_MS || 60000);
+// How long the client may sit with NOTHING OBSERVABLE MOVING before the join
+// is called dead. This is an INACTIVITY window, not a budget for the join: a
+// client that is still climbing the boot ladder (or still counting snapshots)
+// resets it every time it moves, so a slow box buys time and a stuck client
+// does not. See `join()` for why the total-time budget it replaces could not
+// be a gate on this box.
+const JOIN_STALL_MS = Number(process.env.BROWSER_SMOKE_TIMEOUT_MS || 60000);
+// …and the other half of "stuck": the tab's main thread answered AT ONCE, this
+// many looks in a row, with nothing moving. A starved tab is busy — its looks
+// come back in seconds — so it never accumulates these; an idle tab that is
+// waiting on a handshake that will never land accumulates them immediately.
+// Both halves must hold to fail. (DECISIONS.md §open, "the join is watched, not
+// timed".)
+const JOIN_STALL_LOOKS = Number(process.env.BROWSER_SMOKE_STALL_LOOKS || 20);
+// The process must terminate even when the tab's main thread never yields at
+// all — a look that is never answered proves nothing either way, so neither
+// half above can fire. This is a LIVENESS CAP on the harness, not a statement
+// about how fast a client must join: the slowest healthy join this box has ever
+// recorded is 64.8 s, and nothing green has ever come within an order of
+// magnitude of it. (DECISIONS.md §open, same row.)
+const JOIN_LIVENESS_CAP_MS = Number(process.env.BROWSER_SMOKE_LIVENESS_CAP_MS || 900000);
 // How the join is WATCHED inside that window — the instrument, not the budget.
 // A look is a `page.evaluate`, which has to be scheduled on the tab's own main
 // thread; with three tabs live on this box one measured 20 s. So up to 4 may be
@@ -89,9 +109,13 @@ const CHAT_APART_M = Number(process.env.BROWSER_SMOKE_CHAT_APART_M || 30);
 // first, with a message, instead of here as a mystery.
 const SEED = 20260731;
 const DEV_SPAWN = "1024,1024";
-// Held-walk displacement floor, metres planar. Walk speed is 3 m/s over
-// PLAY_MS of held key (~18 m); 2 m stays green under heavy same-box load
-// while still failing a frozen or never-updated remote outright.
+// Held-walk displacement floor, metres planar. Walk speed is 3 m/s, so this is
+// two thirds of a second of walking — far enough that a frozen or
+// never-updated remote fails outright, short enough that it is about the SIM
+// having moved the player and not about how much wall clock the box needed to
+// get there. The mutual-movement walk clears it by ~7x (13.0 / 15.5 m
+// measured); the aimed walk below now holds its key until it is reached rather
+// than for a fixed slice of time. See AIM_WALK_DEADLINE_MS.
 const MOVE_MIN_M = 2;
 // The aim the dev hook is driven to: yaw pi/2 faces +X (sim-core yaw_lut —
 // 0 faces +Z, increasing turns toward +X), pitch below level so the clamp is
@@ -145,6 +169,19 @@ const AIM_REST_CLEAR_RUNS = 2;
 const AIM_REST_PUBLISHES = 16;
 const AIM_REST_DEADLINE_MS = 25000;
 const AIM_REST_POLL_MS = 400;
+// …and the same reasoning from the other side, for the walk that follows. The
+// key used to be held for `PLAY_MS` of WALL CLOCK and the displacement asserted
+// against `MOVE_MIN_M`, which quietly made the assertion "this box can render
+// fast enough to sample 6 s of held input". On 2026-08-04 it could not: the
+// walk came in at **1.02 m** of the 2 m floor — east-dominant, so the aim WAS
+// reaching the sim and the only thing that failed was the box. `dx` had already
+// fallen 5.4 -> 1.02 m across this gate's history on the same code.
+//
+// So the key is now held until the SIM HAS WALKED the floor, counted off fresh
+// publishes exactly as the rest detector above counts them, with a wall
+// deadline behind it for a client that has stopped moving at all. At the worst
+// rate ever recorded here (1.02 m in 6 s) the floor is reached in ~12 s.
+const AIM_WALK_DEADLINE_MS = 60000;
 // --- the lighting gate (DECISIONS.md §open, "lighting v0") ------------------
 // The shadow probe sweeps four yaws so the assertion does not depend on the
 // player having walked to a spot with a caster in one particular direction,
@@ -1444,32 +1481,124 @@ const join = async (label, port = WIRE_PORT, cert = certHash) => {
   //      that settles, so a fast tab launches its four immediately and a
   //      starved one paces itself at 250 ms until the window is full.
   //
+  // WHAT ENDS THE WAIT, and why it is no longer a stopwatch.
+  //
+  // This wait used to end at `JOIN_TIMEOUT_MS` of total elapsed time, and that
+  // made it a coin flip rather than a gate. The same healthy client, the same
+  // assertion, the same box, out of the runner's own logs:
+  //
+  //     tab B joined at 14.7 · 14.7 · 15.3 · 15.4 · 15.5 · 17.1 · 23.7 · 33.4
+  //                     35.0 · 35.7 · 52.2 · 53.7 · 64.8 s
+  //
+  // A 4x spread against a fixed 60 s line, because the number is a reading of
+  // this box's spare cores and not of the client. It has come up tails four
+  // times — three on `tab B`, once on `public tab` — every one of them
+  // reporting `inWorld=true`, which is the client saying it had already done
+  // the thing being asserted. `CLAUDE.md` names this exact shape: assert on
+  // observable state, never on elapsed milliseconds, and widening the number
+  // is the same bug with a longer fuse (`NOW.md` rules that out by name).
+  //
+  // So the wait ends on the CLIENT, three ways:
+  //
+  //   * it joined — `inWorld && snapshots > 0`, unchanged, still the only
+  //     thing that counts as a pass;
+  //   * it is STUCK — the boot ladder below has not moved for `JOIN_STALL_MS`
+  //     *and* the tab answered `JOIN_STALL_LOOKS` looks in a row at once. Both
+  //     halves are needed and they are what separate broken from starved: a
+  //     handshake that will never land leaves the main thread IDLE, so its
+  //     looks come back in single-digit milliseconds and it fails in the same
+  //     60 s it always did, now naming the rung it died on. A starved tab is
+  //     BUSY — the failing run answered 16 looks in 65 s — so it never
+  //     accumulates prompt looks and is never called stuck;
+  //   * the harness liveness cap, for a main thread that never yields at all
+  //     and so can prove nothing either way.
+  //
+  // Nothing asserted got weaker: a client that never reaches the world still
+  // fails, and fails sooner and louder than before.
+  //
   // The full object is fetched once, after the wait, for the caller.
   const t0 = Date.now();
   const look = () =>
     page.evaluate(() => {
       const d = globalThis.__gatesDebug;
       return {
+        // The boot ladder in one round trip. `boot()` hides the #start form as
+        // its last act before calling `run()`, and `run()` registers the
+        // publisher — so these two DOM/global facts, which the failure
+        // diagnostic below has always printed, are stages a client climbs and
+        // never descends.
+        formShown: (document.getElementById("start")?.style.display || "") !== "none",
+        hasDebug: !!d,
         inWorld: d ? d.inWorld : null,
         snapshots: d ? d.snapshots : 0,
         starterr: document.getElementById("starterr")?.textContent || "",
       };
     });
+  // The rungs, in the order the client actually climbs them. `snapshots`
+  // strictly precedes `inWorld` and not the other way round: `on_datagram`
+  // counts the snapshot first and only calls `reconcile` — which is what sets
+  // `predict.started`, which is what `inWorld` reads — once the view carries
+  // our OWN entity (client-wasm core.rs). So rung 2 is a client being fed by a
+  // shard that has not put it in the world, which is precisely the AOI or
+  // delta-encoder break this assertion exists to catch, and it now has a name
+  // instead of being one third of "never reached the world".
+  const RUNGS = [
+    "still in boot() — wasm load, connect or handshake (#start form is up)",
+    "boot() finished, run() has not published __gatesDebug yet",
+    "publishing, no snapshot decoded yet",
+    "decoding snapshots, but none has carried our own entity (no reconcile)",
+    "joined",
+  ];
+  const rungOf = (r) =>
+    !r ? -1 : r.formShown ? 0 : !r.hasDebug ? 1 : r.inWorld ? 4 : r.snapshots > 0 ? 3 : 2;
   const inflight = new Set();
   let brief = null;
   let ready = null;
   let polls = 0;
-  while (Date.now() - t0 < JOIN_TIMEOUT_MS && !ready) {
+  let answered = 0;
+  let rung = -1;
+  let snapsSeen = -1;
+  let movedAt = Date.now(); // last time anything observable advanced
+  let promptStill = 0; // consecutive prompt looks that moved nothing
+  let slowest = 0; // worst look latency, the starvation reading
+  const timeline = [];
+  const stuck = () =>
+    promptStill >= JOIN_STALL_LOOKS && Date.now() - movedAt >= JOIN_STALL_MS;
+  while (!ready && !stuck() && Date.now() - t0 < JOIN_LIVENESS_CAP_MS) {
     if (inflight.size < JOIN_POLL_INFLIGHT) {
       polls++;
+      const at = Date.now();
       const p = look()
+        // All of the bookkeeping lives here so it happens exactly once per
+        // ANSWERED look — the loop below also wakes on a timer, and a timer
+        // tick is not evidence about the client.
         .then((r) => {
+          const ms = Date.now() - at;
           brief = r;
+          answered++;
+          if (ms > slowest) slowest = ms;
+          const rr = rungOf(r);
+          // `>`, never `=`: looks are concurrent, so a stale one can report a
+          // rung the client has already left. The ladder only ever climbs.
+          if (rr > rung) {
+            rung = rr;
+            timeline.push(`${((Date.now() - t0) / 1000).toFixed(1)}s ${RUNGS[rr]}`);
+            movedAt = Date.now();
+            promptStill = 0;
+          } else if (r.snapshots > snapsSeen) {
+            // Progress inside the last rung — the client is decoding.
+            movedAt = Date.now();
+            promptStill = 0;
+          } else if (ms < JOIN_POLL_MS) {
+            // Answered at once, and nothing moved: this tab is idle, not busy.
+            promptStill++;
+          }
+          if (r.snapshots > snapsSeen) snapsSeen = r.snapshots;
           if (r.inWorld && r.snapshots > 0) ready = r;
           return r;
         })
         // A page that went away mid-look is not a signal; the loop's own
-        // deadline and the diagnostic below are what report that.
+        // stop conditions and the diagnostic below are what report that.
         .catch(() => null)
         .finally(() => inflight.delete(p));
       inflight.add(p);
@@ -1488,16 +1617,13 @@ const join = async (label, port = WIRE_PORT, cert = certHash) => {
     // handshake that never landed, a shard that died, and a client whose
     // debug publisher threw on its first tick — three very different bugs.
     //
-    // And say WHERE, which is the part this cost two passes. `boot()` hides
-    // the #start form as its last act before calling `run()`, and `run()`
-    // registers the 250 ms publisher — so the form's own display property is
-    // a boot-stage marker that has been sitting in the DOM all along, needing
-    // no debug hook and no change to the shipped client. Still visible means
-    // boot is stuck in wasm load, connect or handshake; already hidden means
-    // the client is in the world and its main thread is too busy to publish.
-    // The poll count separates both from the third reading — a gate whose own
-    // `page.evaluate` starved and never asked (NOW.md item 1: one tab got two
-    // polls in sixty seconds).
+    // And say WHERE, which is the part this cost two passes. The ladder above
+    // now carries that: every rung it climbed, with the second it climbed it,
+    // and the rung it died on by name. This second read is taken AFTER the
+    // wait ended, so it is the state as of the failure rather than as of the
+    // last look that happened to settle — and it is the one that reports an
+    // `evaluate` which cannot run at all, which is the shape a torn-down or
+    // wedged page takes.
     const post = await page
       .evaluate(() => ({
         ready: document.readyState,
@@ -1506,16 +1632,28 @@ const join = async (label, port = WIRE_PORT, cert = certHash) => {
         hasDebug: typeof globalThis.__gatesDebug,
       }))
       .catch((e) => ({ evaluateFailed: String(e && e.message ? e.message : e) }));
+    // Which of the two stop conditions fired is the first thing a reader needs,
+    // because they mean opposite things: STUCK is a client that sat idle on one
+    // rung, which is a real defect and the rung says where. UNRESPONSIVE is a
+    // main thread that never yielded — which on this box is far more likely to
+    // be the box than the client, and says so.
+    const why = stuck()
+      ? `stuck on rung ${rung} — ${RUNGS[rung] ?? "nothing published"} — for ` +
+        `${((Date.now() - movedAt) / 1000).toFixed(1)}s with ${promptStill} consecutive looks ` +
+        `answered inside ${JOIN_POLL_MS}ms (an idle tab, not a busy one)`
+      : `unresponsive — ${((Date.now() - t0) / 1000).toFixed(1)}s of harness liveness cap ` +
+        `spent with the main thread never yielding long enough to answer`;
     fail(
-      `${label}: never reached the world in ${JOIN_TIMEOUT_MS}ms ` +
-        `(__gatesDebug ${
+      `${label}: never reached the world — ${why}` +
+        `\n    (__gatesDebug ${
           brief && brief.inWorld !== null
             ? `present, inWorld=${brief.inWorld}, snapshots=${brief.snapshots}`
             : "never published"
         })` +
-        `\n    ${polls} looks launched in ${((Date.now() - t0) / 1000).toFixed(1)}s, ` +
-        `${inflight.size} still outstanding · ${liveTabs.size} tab(s) live · ` +
-        `page state ${JSON.stringify(post)}` +
+        `\n    ${answered}/${polls} looks answered in ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
+        `(slowest ${(slowest / 1000).toFixed(1)}s), ${inflight.size} still outstanding · ` +
+        `${liveTabs.size} tab(s) live · page state ${JSON.stringify(post)}` +
+        `\n    ladder: ${timeline.length ? timeline.join(" -> ") : "never left the page load"}` +
         (errors.length ? `\n` + errors.slice(0, 8).map((e) => `    ${e}`).join("\n") : "\n    no page errors"),
     );
   }
@@ -1526,8 +1664,8 @@ const join = async (label, port = WIRE_PORT, cert = certHash) => {
   // a function of, so the two belong on one line.
   console.log(
     `  ${label}: in world as player ${dbg.playerId} at [${dbg.own.map((v) => v.toFixed(1))}] ` +
-      `(seen ${((Date.now() - t0) / 1000).toFixed(1)}s in, ${polls} looks launched, ` +
-      `${liveTabs.size} tab${liveTabs.size === 1 ? "" : "s"} live)`,
+      `(seen ${((Date.now() - t0) / 1000).toFixed(1)}s in, ${answered}/${polls} looks answered, ` +
+      `slowest ${(slowest / 1000).toFixed(1)}s, ${liveTabs.size} tab${liveTabs.size === 1 ? "" : "s"} live)`,
   );
   return {
     label,
@@ -1553,9 +1691,15 @@ const remoteOf = (tab, id) =>
     (want) => (globalThis.__gatesDebug?.remotes || []).find((r) => r[0] === want) || null,
     id,
   );
+// Its own name, same 60 s it has always had. It used to borrow the join's
+// constant, and the join's now means "inactivity", which this wait does not
+// measure — one rename, no behaviour change. This bound is still a stopwatch
+// and so still the shape `CLAUDE.md` rules out; it has never fired, and it is
+// on `NOW.md` rather than fixed here, where the pass is a recovery.
+const AOI_TIMEOUT_MS = Number(process.env.BROWSER_SMOKE_AOI_TIMEOUT_MS || 60000);
 const waitForRemote = async (tab, id) => {
   const t0 = Date.now();
-  while (Date.now() - t0 < JOIN_TIMEOUT_MS) {
+  while (Date.now() - t0 < AOI_TIMEOUT_MS) {
     const r = await remoteOf(tab, id);
     if (r) return r;
     await tab.page.waitForTimeout(250);
@@ -5032,16 +5176,35 @@ if (Math.abs(view[0] - AIM_YAW) > AIM_EPS || Math.abs(view[1] - AIM_PITCH) > AIM
 // readback above and still frame a player walking sideways out of shot.
 const beforeAim = atRest.own.slice();
 await A.page.keyboard.down("KeyW");
-await A.page.waitForTimeout(PLAY_MS);
+// Held until the player HAS WALKED, not for a fixed slice of wall clock — see
+// AIM_WALK_DEADLINE_MS. Each iteration waits for a publish the client actually
+// refreshed (`snapshots` moved), so a starved tab buys time instead of failing,
+// and the loop ends the moment the sim has carried the player far enough to
+// prove the aim reached it. Walking further proves nothing more.
+let walkSeen = atRest;
+let walkFresh = 0;
+let dx = 0;
+let dz = 0;
+const walkDeadline = Date.now() + AIM_WALK_DEADLINE_MS;
+while (dx < MOVE_MIN_M && Date.now() < walkDeadline) {
+  await A.page.waitForTimeout(AIM_REST_POLL_MS);
+  const now = await restProbe();
+  if (!(now.snapshots > walkSeen.snapshots)) continue;
+  walkFresh++;
+  walkSeen = now;
+  dx = now.own[0] - beforeAim[0];
+  dz = now.own[2] - beforeAim[2];
+}
 await A.page.keyboard.up("KeyW");
-const afterAim = await A.page.evaluate(() => globalThis.__gatesDebug.own);
-const dx = afterAim[0] - beforeAim[0];
-const dz = afterAim[2] - beforeAim[2];
 if (dx < MOVE_MIN_M || Math.abs(dz) > dx) {
   fail(
-    `tab A: after setView(yaw pi/2) a held W moved [${dx.toFixed(2)}, ${dz.toFixed(2)}] m — ` +
-      `yaw pi/2 faces +X, so the walk must be east-dominant and ≥ ${MOVE_MIN_M} m. ` +
-      `The hook is not reaching the input the sim runs on.`,
+    `tab A: after setView(yaw pi/2) a held W moved [${dx.toFixed(2)}, ${dz.toFixed(2)}] m over ` +
+      `${walkFresh} fresh publish(es) — yaw pi/2 faces +X, so the walk must be east-dominant and ` +
+      `≥ ${MOVE_MIN_M} m. ${
+        walkFresh === 0
+          ? `Nothing was ever measured: the client stopped publishing while the key was held.`
+          : `The hook is not reaching the input the sim runs on.`
+      }`,
   );
 }
 // The residual speed rides along on the PASSING path too: it is the margin the
@@ -5049,8 +5212,8 @@ if (dx < MOVE_MIN_M || Math.abs(dz) > dx) {
 // that the gap between "residual" and "walking" has closed is by watching it.
 console.log(
   `  dev hook: aimed to [${view.map((v) => v.toFixed(2))}], walked +X ${dx.toFixed(1)} m ` +
-    `(dz ${dz.toFixed(1)}), from rest after ${fresh} fresh publish(es) — residual ` +
-    `${lastSpeed.toFixed(2)} m/s over ${lastGapMs} ms, bar ${AIM_REST_SPEED_MPS}, walk 3`,
+    `(dz ${dz.toFixed(1)}) over ${walkFresh} fresh publish(es), from rest after ${fresh} — ` +
+    `residual ${lastSpeed.toFixed(2)} m/s over ${lastGapMs} ms, bar ${AIM_REST_SPEED_MPS}, walk 3`,
 );
 
 // Assertion 11 — DESIGN §9's draw budget, which had no gate until the shadow
