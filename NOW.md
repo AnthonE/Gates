@@ -25,7 +25,32 @@ Done items are deleted, not checked — history lives in git and
      upkeep behaviour — the loop that makes a day matter.
    - **ui:** the inventory grid, the loot/container panel, and drag-move against
      that refusal path. This is the single highest-leverage lane right now.
-   - **looks:** unchanged — keep closing the visual gap to `Rust Images/`.
+   - **looks (now the world lane):** what exists out there and where —
+     scatter, occupants, monuments, greybox. Textures are parked; see below.
+
+1. **The world is a beach with trees on it. Build the world, not its textures.**
+   *(Operator, 2026-08-04. Retargets the `looks` lane; its charter is rewritten.)*
+
+   `TERRAIN.md` describes monuments and POIs that **exist in no code** — grep
+   finds the word only in that doc. Scatter ships 7 occupant types and the
+   `NOW.md` item below says its distribution is white noise, which a forest is
+   not. There is nowhere to go and nothing to find, and no texture fixes that.
+
+   **Textures, materials and lighting polish are parked.** They are a solved
+   science and not what this build is short of. Frames are no longer captured
+   for that lane and no visual judge scores it — correct while the question is
+   "is there a world here", wrong the moment it becomes "does it look right".
+   Say so here if you think it has flipped.
+
+   **Build it sim-side first, and it costs twenty seconds instead of nineteen
+   minutes.** Scatter is already deterministic in `sim-core` (Occupants 1..7)
+   and `web/src/props.js` only draws what worldgen decided, so a monument that
+   lands in a worldgen slot is seeded, replayable, gated by `terrain_golden`,
+   and pays no renderer tier at all. Give it a greybox mesh second, batched.
+
+   Gate it as arithmetic — `ci/pine_shape.mjs` is the standard. Counts, spacing,
+   slope, clearance and tri budgets are numbers. A greybox monument a player can
+   walk into and a forest that clumps beat one more correct albedo.
 
 1. **The container verb has no UI and no gate — and the systems half is not
    ours.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.)*
