@@ -34,6 +34,148 @@ Done items are deleted, not checked — history lives in git and
    The bump's own clamp saturation went **68.0% → 4.9%** of a near cliff in
    the same pass, from the surface-gradient reformulation plus a per-octave
    share of `BUMP_MAX_SLOPE`.
+1. **The event lane's payloads are law with no gate — close the other
+   twenty codes.** *(Operator, 2026-08-04: top priority. The first five
+   landed with `test_event_roles`; this is the rest of the ledger.)*
+
+   **The hole, stated once.** Every event is `push(code, a, b, c)` over
+   three untyped `u32`s, and the `/// EV_*: a = … b = …` lines in
+   `world.rs` are the only statement of which is which. Swap two at an
+   emit site and every wall stays green: `test_protocol_golden` pins the
+   *encoder's* bytes and an emit site is not the encoder; `state_hash`
+   excludes the event ring by design (derived output, not sim state);
+   every field is a `u32`, so the swap type-checks. `EV_DEATH` is `a` who
+   died, `b` who killed — swap those and every kill feed on every client
+   credits the corpse, silently and forever.
+
+   **Why this outranks the queue rather than joining it.** It is the
+   single largest identifiable bug class in the reference ecosystem's own
+   history: 49 commits in `OxideMod/Oxide.Rust` touch a hook's arguments
+   and ~27 correct a payload that had **already shipped wrong**, four of
+   them more than once (`OnEntityBuilt`, `OnCollectiblePickup`,
+   `OnEntityReskin`, `OnItemStacked`). Their patcher pinned an `MSILHash`
+   per patched method — the exact analogue of our byte-golden — and it
+   caught none of them, because a hash over the *shape* of a payload is
+   blind to the meaning of the fields inside it. `reference/FINDINGS.md`
+   §1 has the receipts. This is not a hypothetical wall; it is the wall
+   the reference walked into for a decade.
+
+   **Landed already**, `crates/sim-core/tests/event_roles.rs`: five codes
+   checked by role against a real cause — `EV_HIT`, `EV_HEALTH`,
+   `EV_DEATH`, `EV_BAG_DROPPED`, `EV_GATHER` — plus two disciplines that
+   make the file able to fail. `distinct3` refuses a check whose three
+   fields are not mutually distinguishable, because a permutation would
+   satisfy it otherwise; `only` refuses zero *and* two, which makes it a
+   double-emit gate as well (their `Removed duplicate OnBonusItemDrop
+   hook` and two rounds of `Fixed double deprecated hook call with
+   OnActiveItemChange/d` are the same family). `coverage_is_stated_not_implied`
+   pins the ledger at 5/25 so the gate can never read as "the event lane
+   is covered" while covering five, and a new `EV_*` cannot land without
+   someone classifying it.
+
+   **This item is the remaining twenty.** Priority inside it is by *swap
+   silence*, not by code order — an event whose fields are different kinds
+   of thing is far harder to get wrong than one carrying two player ids or
+   two hp readings. In order: `EV_DRANK` (b = water restored, c = hp cost
+   — two small ints), `EV_VITALS` (b and c are both `food<<16|water`
+   packs), `EV_STOCK` (a = feeder, b = cell key, c = level),
+   `EV_DEPLOY_PLACED` and `EV_DOOR` (both end in a player id after two
+   packed fields), `EV_STRUCT_HIT` (c packs damage over hp-left), then the
+   refusal codes and the sync/def batches, which are the safest and should
+   go last. Move `UNCOVERED` in the same commit that moves `COVERED`.
+
+   **What would be stronger than more tests, if a pass wants the bigger
+   swing.** A payload-role table both the emit site and the check read, so
+   a swap is a *compile* error rather than a test failure. That is a
+   larger change than this item and should not block it — twenty role
+   checks are worth having either way, and they are what would prove the
+   table correct when it lands.
+
+   **A trap this file already paid for, so the next pass does not.** The
+   first cut asserted on the tick it *sent* the swing and read an empty
+   ring twice. The sim auto-repeats a held button, so every swing after
+   the first resolves inside the cooldown, on a tick the test never sent
+   an input for — `until` steps until the code appears rather than
+   predicting when. And a wrapper struct holding a `World` by value
+   overflows a test thread's stack in an unoptimized build, exactly as
+   `combat.rs` warns; the helpers here take `&mut World` and never put a
+   second one in the frame.
+
+1. **The ground's chroma noise — the artifact the last pass shipped. — LANDED**
+   *(GAP PASS, iteration 2. From `findings/pass-20260803-145507-01-visual.md`
+   ranked gap 1: "Kill the near-ground chroma confetti — it is a live render
+   artifact in four of six frames and it is a sampling bug, not an art task."
+   The report's own instruction was that nothing else in its list should be
+   attempted while a visible render bug is in half the capture.)*
+
+   **The cause was not the one the report ranked first, and the difference
+   matters.** Its three suspects were, in order, the `textureGrad` derivatives
+   across a splat discontinuity; `BASE_ANISOTROPY_MAX = 4` at ~80° incidence;
+   and the per-identity gain amplifying mip-level chroma noise. It is the
+   third, and it is arithmetic rather than sampling: the mean-placing gain is
+   `color / measured mean` PER CHANNEL and it multiplies the whole sample, so
+   a source dragged unevenly across channels has its per-channel NOISE dragged
+   with it. `rock` needs ×13.45 on blue, whose source mean (0.034 linear) sits
+   near its own JPEG chroma floor.
+
+   **The instrument is what made this decidable**, and it is the reason not to
+   act on a ranked gap's literal sentence (`CLAUDE.md`'s "a judge names the
+   symptom; fix the cause"): resolve the near-ground high-frequency residual
+   ALONG the local mean colour versus ORTHOGONAL to it. The thirteen
+   `Rust Images/` frames that actually contain ground run 0.077–0.193 (median
+   0.120); our six judged frames ran 0.659/0.798/0.237/0.284/0.760/0.092 —
+   every frame showing ground is over the reference maximum, and the only frame
+   with no near ground in it is the only one inside the band. **Our
+   along-colour term was inside the reference range the whole time.** So the
+   defect was never amplitude, and both of the report's first two suspects are
+   amplitude fixes that would have cost the detail 15h asserts.
+   `BASE_ANISOTROPY_MAX` is deliberately untouched.
+
+   Shipped: `BASE_CHROMA_STRETCH_MAX = 1.0`, applied per layer as
+   `min(1, MAX / span)` off each source's own measured gain span (sand 0.72,
+   grass 0.61, litter 0.26, rock 0.17). Mean preservation became a property of
+   the tap's shape rather than of its tuning — see `DECISIONS.md` §open. 15h is
+   unmoved (5.90/8.61 against 5.91/8.58) because the along-colour term is
+   unmoved; only chroma falls. Gated at **15i**, a CEILING, with the unbounded
+   leg rendered live every run so the suppression is a number and not a claim
+   about a commit.
+
+   **What this did NOT do, and the next pass should not be misled about it.**
+   The frame moved 0.434 → 0.317 (level) and 0.313 → 0.243 (down). **That is
+   still 1.6× over the reference maximum of 0.193.** The wall is at 0.35, which
+   is where the tree is, not where the references are — 15h's own argument for
+   splitting a target from a floor, applied to a ceiling. Two reasons it stops
+   there, and only one of them is this knob's to fix:
+   (a) the two vantages 15i measures sit at a spawn that is 99.2% grass, where
+   the bound is weakest (grass keep 0.61); `litter` and `rock`, where it bites
+   hardest, are ~absent there. So the gate measures the fix at its weakest,
+   which is the right direction for a wall but understates the fix.
+   (b) **the luma-only floor — every keep at 0 — is 0.186/0.174**, already
+   above the reference median of 0.120. Most of what remains is therefore NOT
+   the photograph: it is the tint octave's deliberate off-colour deviation
+   (15d asserts it at ×1.43), the sky dither and the fog. Tightening
+   `BASE_CHROMA_STRETCH_MAX` below 1.0 cannot reach the references on its own
+   and would start discarding measured colour the references demonstrably
+   carry. Per `CLAUDE.md`'s coupled-lighting law that remaining set has one
+   owner, and it is the lighting pass, not this one.
+
+   **A gate defect this pass found in its own first cut, recorded because it is
+   the more useful half of the lesson.** The reference band was first measured
+   with a 2×2-box residual while the probe used a 4-neighbour-mean one, giving
+   0.336 instead of 0.193 — and 0.336 would have walled our 0.317 in as a pass.
+   A ceiling computed by a different estimator than the frame it judges is not
+   a ceiling. Both are now the probe's estimator, and the reference set is
+   restricted to the thirteen frames that actually contain ground (the four UI
+   screenshots and the top-down map render were two of the five highest
+   readings in the unrestricted set).
+
+   Also cleared here, from the same pass's merge-gate judge (ranked fix 1):
+   `DECISIONS.md` §open, `NOW.md` and 15h's comment block all claimed the
+   shipped frame measures 6.00/8.59 luma/px, which was the aniso-16
+   configuration that was cut. They now say what `base detail:` prints. Its
+   ranked fix 3 (the `grain`/`tint`/`base` toggle checks reading a snapshot
+   captured before any probe ran) is NOT fixed — it is inherited convention and
+   is left for a pass that owns those three; 15i's own restore check reads live.
 
 1. **The renderer has never had real detail to sample — give it some.**
    *(Slice 1's projection defect is fixed — `DECISIONS.md` §open,
@@ -754,8 +896,32 @@ Done items are deleted, not checked — history lives in git and
 17. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
+18. **Anti-ESP occlusion culling — the measure the genre proved, and the one
+   the seed makes cheap** (`DECISIONS.md` 2026-08-04). AOI at 176 m is the
+   whole ESP defence today, and 176 m covers most engagements. Facepunch's
+   answer, rolled out 2025 and defaulted network-wide, was to stop
+   networking players fully occluded by terrain — and they pay to compute it
+   live on a Unity server. Here the terrain is a pure function of the seed,
+   so the occlusion grid bakes at worldgen into a fixed structure and the
+   tick spends a lookup: no allocation, no clock, walls 1 and 2 intact.
+   Lands as a filter on the enter/leave sets of `NETCODE.md` §7's one grid,
+   with a golden beside `test_terrain_golden` and a bot-measured tick cost.
+   Sequence after M2 — it wants real sightlines and real combat to tune
+   against, and it buys nothing until a shard is armed.
+19. **The launcher, in Rust, with the wallet in it** (`DECISIONS.md`
+   2026-08-04). One static binary, `egui`, no webview: patcher, shard list,
+   balances, and a self-custody wallet on `alloy` (`alloy-signer-local`,
+   `keystore` + `mnemonic`) signing the EIP-191 `gates join <shard> <nonce>`
+   the server already accepts — so no protocol moves and nothing enters the
+   sim's blast radius. Key backup is the feature, not a footnote: phrase
+   shown once and confirmed back, encrypted keystore only, never logged and
+   never in the WAL, connect-existing kept first-class, and the plain
+   sentence that the operator holds no keys and can restore nothing. M4
+   adjacent — it is the platform's client for the whole cascade, not a Gates
+   accessory, and it is the only place an anti-cheat bootstrapper could ever
+   live if one is spoken.
 
-18. **`cargo test --workspace` overflows a debug thread's stack; only
+20. **`cargo test --workspace` overflows a debug thread's stack; only
     `--release` (what CI runs) is green.** Pre-existing, not new: verified
     on `main` at `25f6ec8` before the backpack slice, where
     `snapshot_budget` aborts the same way. The cause is size, not logic —
