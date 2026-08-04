@@ -1,16 +1,15 @@
-// Throwaway prop bench — renders the shipped pine on a plain sky so a still
-// can be judged against `Rust Images/`. Not part of the client; deleted after.
-import * as THREE from "three";
-import { pineGeometry, stumpGeometry } from "./props.js";
+// Throwaway prop bench — renders prop builders on a plain sky so a still can be
+// judged against `Rust Images/`. Not part of the client.
+//
 // NOT surfaceMaterial: its clipmap patch expects N shadow-casting directional
-// lights and this bench has one, so the shader will not link. The roughness and
-// metalness below are the SURFACES table's own values for each identity, so
-// what this shows is the real silhouette, the real baked vertex colours and the
-// real normals — everything except the procedural detail field.
-const SURF = { foliage: 0.86, wood: 0.95 };
+// lights and this bench has one, so the shader will not link. Judge shape and
+// shading here, never colour or exposure.
+import * as THREE from "three";
+import { Tree } from "@dgreenheck/ez-tree";
+import { pineGeometry } from "./props.js";
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(1100, 900, false);
+renderer.setSize(1400, 900, false);
 renderer.setPixelRatio(1);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -20,80 +19,103 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x8fb4d8);
-
 const sun = new THREE.DirectionalLight(0xfff2dd, 2.6);
-sun.position.set(-6, 9, 5);
+sun.position.set(-8, 12, 6);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -8;
-sun.shadow.camera.right = 8;
-sun.shadow.camera.top = 12;
-sun.shadow.camera.bottom = -2;
+sun.shadow.camera.left = -16; sun.shadow.camera.right = 16;
+sun.shadow.camera.top = 16; sun.shadow.camera.bottom = -2;
 scene.add(sun);
 scene.add(new THREE.HemisphereLight(0xa9c4e8, 0x6b6a4a, 1.15));
-
 const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(40, 40),
+  new THREE.PlaneGeometry(120, 120),
   new THREE.MeshStandardMaterial({ color: 0x6e7048, roughness: 1 }),
 );
 ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
 scene.add(ground);
 
-// The real pool shape: an InstancedMesh wearing the shipped surface material,
-// so the vertex-colour bake, the per-instance colour buffer and the wind patch
-// are all on the same path they take in play.
-function pool(geo, surface, n) {
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: SURF[surface], metalness: 0 });
-  const m = new THREE.InstancedMesh(geo, mat, n);
-  m.castShadow = true;
-  m.receiveShadow = true;
-  m.frustumCulled = false;
-  for (let i = 0; i < n; i++) m.setColorAt(i, new THREE.Color(1, 1, 1));
-  scene.add(m);
-  return m;
+// Target height for every variant, so the only thing that varies is detail.
+const TARGET_H = 6.6;
+
+// Dial-downs of "Pine Medium". The preset is 59,616 tris and 55 m tall; the
+// cost lives in children[0] (82 first-level branches), leaves.count (30 cards
+// each) and the double billboard (every card drawn twice, crossed).
+const VARIANTS = [
+  { name: "hero", children: 46, leafCount: 18, billboard: "double", sec1: 8, seg1: 5, seg0: 7 },
+  { name: "near", children: 30, leafCount: 12, billboard: "double", sec1: 6, seg1: 4, seg0: 6 },
+  { name: "mid", children: 22, leafCount: 9, billboard: "single", sec1: 5, seg1: 3, seg0: 5 },
+  { name: "far", children: 14, leafCount: 6, billboard: "single", sec1: 4, seg1: 3, seg0: 4 },
+];
+
+const stats = { ours: pineGeometry().attributes.position.count / 3, variants: [] };
+
+function build(cfg, seed, x, z) {
+  const t = new Tree();
+  t.loadPreset("Pine Medium");
+  const o = t.options;
+  o.seed = seed;
+  o.branch.children[0] = cfg.children;
+  o.branch.sections[1] = cfg.sec1;
+  o.branch.segments[1] = cfg.seg1;
+  o.branch.segments[0] = cfg.seg0;
+  o.branch.sections[0] = 8;
+  o.leaves.count = cfg.leafCount;
+  o.leaves.billboard = cfg.billboard;
+  t.generate();
+  // Preset trunk length 50 gives a 55 m tree; normalize every variant to the
+  // same height so tri counts are comparable and the scale question is closed.
+  const box = new THREE.Box3().setFromObject(t);
+  const k = TARGET_H / (box.max.y - box.min.y);
+  t.scale.setScalar(k);
+  t.position.set(x, 0, z);
+  let tris = 0;
+  let leafTris = 0;
+  t.traverse((m) => {
+    if (!m.isMesh) return;
+    m.castShadow = true;
+    m.receiveShadow = true;
+    const n = m.geometry.index ? m.geometry.index.count / 3 : m.geometry.attributes.position.count / 3;
+    tris += n;
+    if (m.material && m.material.alphaTest > 0) leafTris += n;
+  });
+  scene.add(t);
+  return { tris, leafTris, barkTris: tris - leafTris, heightM: +(TARGET_H).toFixed(2) };
 }
 
-const trees = pool(pineGeometry(), "foliage", 6);
-const stumps = pool(stumpGeometry(), "wood", 1);
-const m4 = new THREE.Matrix4();
-const q = new THREE.Quaternion();
-const e = new THREE.Euler();
-const v = new THREE.Vector3();
-const s = new THREE.Vector3();
-const spots = [
-  [0, 0, 0, 1.0], [4.4, 0, -3.0, 0.92], [-4.8, 0, -2.2, 1.08],
-  [2.2, 0, -8.0, 0.95], [-3.0, 0, -9.5, 1.05], [7.5, 0, -11.0, 1.0],
-];
-spots.forEach(([x, y, z, k], i) => {
-  e.set(0, i * 1.7, 0);
-  q.setFromEuler(e);
-  v.set(x, y, z);
-  s.set(k, k, k);
-  trees.setMatrixAt(i, m4.compose(v, q, s));
+VARIANTS.forEach((cfg, i) => {
+  const r = build(cfg, 1000 + i * 137, -9 + i * 6, 0);
+  stats.variants.push({ ...cfg, ...r });
 });
-trees.instanceMatrix.needsUpdate = true;
-stumps.setMatrixAt(0, m4.compose(v.set(1.9, 0, 1.6), q.setFromEuler(e.set(0, 0.6, 0)), s.set(1, 1, 1)));
-stumps.instanceMatrix.needsUpdate = true;
+// …and ours on the far right, same ground, same sun.
+const oursMesh = new THREE.InstancedMesh(
+  pineGeometry(),
+  new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.86, metalness: 0 }),
+  1,
+);
+oursMesh.setColorAt(0, new THREE.Color(1, 1, 1));
+oursMesh.castShadow = true;
+oursMesh.receiveShadow = true;
+oursMesh.frustumCulled = false;
+oursMesh.setMatrixAt(0, new THREE.Matrix4().makeTranslation(15, 0, 0));
+scene.add(oursMesh);
 
-const camera = new THREE.PerspectiveCamera(58, 1100 / 900, 0.1, 200);
+const camera = new THREE.PerspectiveCamera(52, 1400 / 900, 0.1, 300);
 const VIEWS = {
-  // eye, look-at — the framings that matter: the chopper's view, the
-  // silhouette against sky, and the mid-distance stand.
-  melee: [[1.6, 1.65, 3.4], [0, 2.6, 0]],
-  silhouette: [[7.0, 1.2, 9.0], [0, 4.2, 0]],
-  stand: [[11.0, 6.5, 16.0], [0, 3.0, -5.0]],
-  canopyUp: [[0.9, 0.35, 1.5], [0, 5.0, 0]],
+  lineup: [[2.0, 5.2, 22.0], [2.0, 3.4, 0]],
+  nearPair: [[-2.0, 1.7, 7.0], [-3.0, 3.2, 0]],
+  silhouette: [[2.0, 1.0, 16.0], [2.0, 4.6, 0]],
 };
 globalThis.__bench = {
-  shoot(name) {
-    const [eye, at] = VIEWS[name];
+  shoot(n) {
+    const [eye, at] = VIEWS[n];
     camera.position.set(...eye);
     camera.lookAt(...at);
     renderer.render(scene, camera);
     return true;
   },
   views: Object.keys(VIEWS),
+  stats,
 };
-globalThis.__bench.shoot("melee");
+globalThis.__bench.shoot("lineup");
 globalThis.__benchReady = true;
