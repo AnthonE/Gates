@@ -389,6 +389,7 @@ pub fn swing(
     tick: u64,
     gc: &GatherContent,
     scatter: &ScatterTable,
+    haven: &terrain::Haven,
     lives: &mut SlotLives,
     events: &mut EventQueue,
     p: &mut Player,
@@ -414,7 +415,7 @@ pub fn swing(
         while dx_cell <= 1 {
             let cx = pcx + dx_cell;
             let cz = pcz + dz_cell;
-            let s = terrain::scatter(seed, scatter, cx, cz);
+            let s = terrain::scatter(seed, scatter, haven, cx, cz);
             if let Some(ni) = node_index(s.occupant) {
                 let dx = s.x - px;
                 let dy = s.y - py;

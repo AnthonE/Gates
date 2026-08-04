@@ -71,6 +71,18 @@ Stages, in order — each cheap, each deterministic:
    flat pad with a smooth blend radius. (This is also the monument hook:
    later POIs are exactly "carve pad + exclusion zone + scatter table" —
    the machinery exists in alpha, the art doesn't.)
+   Landed as `terrain::haven(seed) -> Haven`, the memoized argmax the
+   constraint block below anticipated: `HAVEN_CANDIDATES` bearings, each
+   marched seaward to the *first* shoreline crossing and stepped back
+   `ROAD_INLAND_M` — the road's own center-line definition inverted, so the
+   site is on the ring by construction. Resolved at `World::new`, passed
+   into `scatter` rather than resolved there. **The exclusion zone is
+   built; the carve is not.** A carve writes to `height`, which has ~50
+   call sites in four crates, so it is a cross-lane change and not a
+   detail — v0 therefore *finds* a flat site rather than *making* one, and
+   `Haven::relief` publishes how flat it got (worst 3.76 m over a 32 m pad
+   across 16 seeds). Also not built: the pad's loot table and any mesh.
+   `DECISIONS.md` §open "haven pad v0" has the knobs and the measurements.
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same
@@ -104,6 +116,19 @@ distance-tested per sample — is almost certainly cheaper, has no resolution
 to choose, and keeps §0's "nothing about the terrain is ever stored or
 networked" intact. **Decide it when stage 7 is built. Do not pre-build a
 channel for producers that do not exist yet.**
+
+**Decided, and the block asked the wrong question.** Stage 7 needed no memo
+at all (the ring is never located, only tested against), and stage 8's memo
+came out smaller than the smallest shape anticipated here: one site, four
+floats, no width and no control points. Shape was never the constraint. The
+constraint is the **signature** — a memo is only free while nothing inside
+`height` needs it, and the moment stage 8's *carve* does, it has to reach
+~50 `height` call sites across four crates. So the rule this block was
+reaching for is narrower and more useful than "do not pre-build a channel":
+**a worldgen stage that only vetoes can take its memo as a parameter and
+cost one signature; a stage that writes `height` costs every reader of the
+terrain, and that is a different size of decision.** Placement is cheap,
+displacement is not. Later POIs inherit both halves.
 
 ## 2 · Slots: how living terrain stays cheap
 
@@ -255,5 +280,17 @@ The reads a survival map must produce, and which stage buys each:
   stand on the carriageway (re-derived from the slot list, so a veto that
   stopped firing reddens), that the shoulder carries the barrel route, that
   under 10% of the road is over the cliff ratio, and that the sea is
-  `ROAD_INLAND_M` ± the shoulder width seaward. The pad half waits on the pad.
+  `ROAD_INLAND_M` ± the shoulder width seaward.
+  The pad half has landed as sim-core `tests/haven.rs`: 16 seeds, asserting
+  the site is deterministic and distinct per seed, stands **on the road** and
+  on land inside the ring bracket (both of `haven`'s fallbacks asserted
+  unreachable), is flat — re-measured on a 48-tap footprint the selector
+  never scored, worst 3.76 m of relief and 0.21 rim slope — that it really is
+  the **argmax**, re-derived by an independent 0.05 m march with no candidate
+  allowed to score better, and that the exclusion zone is non-vacuous against
+  a control haven parked off-island. "Exists and is flat" is now a number.
+  What it cannot assert yet is that the pad is *carved* flat: v0 finds a flat
+  site rather than making one (§1 stage 8), so this suite measures the
+  generator's best natural ground, and the 3.76 m is the argument for the
+  carve rather than evidence it happened.
 - Chunk-build time and instancing counts ride the client perf harness.

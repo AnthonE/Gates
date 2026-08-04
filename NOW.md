@@ -15,27 +15,27 @@ Done items are deleted, not checked — history lives in git and
 > from here would only conflict on the same line. Merge theirs. Until then
 > `UI_SMOKE_PORT=<free>` is the documented override.
 
-0. **world: the haven pad, and the road the client cannot see.**
-   *(Gap pass. Both judge reports named "the island has nowhere to go" as their
-   own top-or-second gap — `findings/archive-prestamp/pass-20260804-173640-01-judge.md`
-   gap 3 and `-02-judge.md` gap 2. The coast road half landed this pass; this is
-   what it leaves.)*
+0. **world: the pad exists but nothing is on it, and the road is invisible.**
+   *(The pad's placement + exclusion zone landed — `DECISIONS.md` §open "haven
+   pad v0", `tests/haven.rs`. This is what it leaves.)*
 
-   - **The haven pad** (TERRAIN §1 stage 8) — score candidate sites on the road
-     ring by flatness + coast distance, carve a pad with a blend radius. This
-     is the monument hook: later POIs are "carve pad + exclusion zone + scatter
-     table", so building it builds the machinery for every POI after it. The
-     carve is the piece the road ducked — it needs a mask inside `height`, which
-     is the representation decision TERRAIN §1's stage 7–9 constraint block
-     defers. Decide it here.
-   - **The road reads as a gap, not a road.** The client already shows *some* of
-     it — `terrain_fill_slots` runs the same `scatter`, so barrels line the
-     shoulder and props stop at the carriageway — but `web/src/terrain.js` has no
-     dirt band, so the surface itself is just a strip where nothing grows. A
-     route nobody can see is not a route. **Unverified in a browser**: this pass
-     ran `./ci/gates.sh auto`, which skipped the renderer tier, and
-     `browser_smoke` is operator-disabled this run. Batch it with other client
-     placement — touching `web/` costs the ~19 min renderer tier.
+   - **The carve, and it is cross-lane.** v0 *finds* a flat site; it does not
+     make one. Measured worst relief is **3.76 m over a 32 m pad** — enough
+     that a greybox building on it would float or bury a corner. Carving means
+     writing `height`, and `terrain::height` has ~50 call sites across four
+     crates (`movement.rs`, `collide.rs`, `build.rs`, `deploy.rs` are systems
+     lane), and it cannot be half-threaded: a client mesh that sees the pad
+     and a collision path that does not is a player standing in the air.
+     **Request to the systems lane:** thread a `&Haven` (or a worldgen context
+     carrying it) through `height` so the world lane can carve. Until then no
+     POI on the pad can be flat.
+   - **Give the pad something to be**: its own `loot.toml` table and a greybox
+     mesh. Right now it is a clearing — `ROAD_BARREL_PERMILLE` is still the
+     beach's own rate, so the judge's "walking the loop is worth the same as
+     standing where you spawned" is unfixed. A loot table is content, not code.
+   - **The road reads as a gap, not a road.** `web/src/terrain.js` has no dirt
+     band, so the carriageway is just a strip where nothing grows. Batch it
+     with the pad mesh — touching `web/` costs the ~19 min renderer tier.
    - Not done from stage 7: the flattening, and the denser bay-mouth slots (knob).
 
 1. **The sim can play a survival game; the player cannot reach it.**
