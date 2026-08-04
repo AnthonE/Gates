@@ -30,6 +30,7 @@ pays the same doors and earns the same coins as a human.
 | `ALPHA.md` | the alpha cut, staged economy arming (A1→A2→A3) | |
 | `ART.md` | the art bible: measured targets off `Rust Images/`, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
+| `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
 | `NOW.md` | what next | **the only list that answers that** |
 
 Docs are dated notes, not law. Four things actually bind: the walls below,
@@ -94,6 +95,28 @@ do not rediscover)
   "untextured" was really diffuse contrast crushed by an earlier fix for
   "too bright", and the correct change was the opposite of the feedback's
   direction. Diagnose the mechanism before acting on a ranked gap.
+- **A byte-golden is blind to what a field means.** Positional payloads
+  are where the reference ecosystem actually bled: 49 of Oxide.Rust's
+  commits touch a hook's arguments and ~27 correct a payload that had
+  already shipped wrong — the right value in the wrong position, four
+  hooks corrected more than once. Their patcher pinned an `MSILHash` per
+  patched method, the exact analogue of our `test_protocol_golden`, and it
+  caught none of them. Ours has the same hole: swap `a` and `b` at an
+  `events.push` site and the encoder is untouched (golden green), the
+  event queue is not in `state_hash` (replay green), and every field is
+  `u32` (clippy green). `reference/FINDINGS.md` §1 has the shape of a gate
+  that would catch it; until one exists, the `/// EV_*: a = … b = …` lines
+  in `world.rs` are law with no gate.
+- **The item-move verb is the most bug-prone thing in the reference, and
+  it fails as a kick.** Three Oxide fixes in 28 minutes on one 2019 day —
+  the third titled as a fix of the fix — all one-line splice-point moves
+  on move/stack/loot, all landing as *the server disconnecting the
+  client*, because container state diverged and that reads as a forged
+  request. The bug is validation ordering against the mutation, never
+  arithmetic. Prediction makes it worse for us: the client has already
+  drawn the move, so a container refusal must be computed on the same
+  values the client predicted with (the quantize-both-sides law, applied
+  to containers).
 - **Tonemap, sky, exposure, and fog are one owner.** Split across parallel
   passes they break each other's assumptions faster than they improve
   (measured elsewhere: three parallel rounds worsened visual defects
@@ -190,6 +213,13 @@ same bug with a longer fuse.
   from the pack ships in this repo. **That is a licence statement, not a
   usage limit: read them.** `threejs-skill-router` routes a graphics task to
   the right ones, and renderer work starts there.
+- `reference/rust-systems.txt` is ripped from `OxideMod/Oxide.Rust`'s
+  `resources/Rust.opj` (MIT, © 2013–2020 Oxide Team and Contributors) —
+  facts only: hook names, patched class names, method signatures,
+  categories. `CarbonCommunity/Carbon.Hooks.*` (GPL-3.0) is cited as a
+  coverage cross-check and deliberately never extracted from, so nothing
+  committed here derives from GPL work. `reference/README.md` has the
+  provenance and the regeneration command; nothing from either ships.
 - `Claude-of-Duty` (github.com/mshumer/Claude-of-Duty, MIT, © 2026 mshumer)
   — source of the shader-prewarm trap, the bit-identical-capture discipline
   (fresh page per shot; engine clock, not `performance.now()`), and the

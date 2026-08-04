@@ -112,6 +112,17 @@ anomaly log · localization · mobile controls (Android runs, but it's a
 desktop game) · monuments beyond the haven (TERRAIN's pad carver is the
 hook) · skin trading/editions (A3 sells; trading is its own later gate).
 
+The anti-cheat cut is now load-bearing rather than merely deferred
+(`DECISIONS.md` 2026-08-04): **the armed set is the perimeter.** Alpha is
+A1 — unarmed, no redeemable coin — so there is nothing on an alpha shard
+worth cheating for, and the protection an official armed shard eventually
+carries is a §2 arming question, not an alpha one. What alpha still owes
+is the evidence: the anomaly log and the replays are what A1 is supposed
+to produce, and both later measures (occlusion culling, offline aim
+analysis over the WAL — `NOW.md` 18) read from them. A kernel anti-cheat
+is not on this ladder at all; it has no native client to attach to and it
+would ban the agent players the training goal depends on.
+
 ## 6 · Order of work (folds into DESIGN §11)
 
 M0 shell → M1 verbs (+ **bags**, hotbar, chat) → M2 combat (+ death/respawn

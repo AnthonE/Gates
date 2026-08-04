@@ -1,0 +1,1716 @@
+# Rust system map, ripped from Oxide's patcher project
+#
+# Each line is: hook name, then the game method it patches.
+# Grouped by Oxide's own HookCategory, then by patched class.
+# A class with many hooks is a system with many verbs.
+#
+# 852 patch entries · 277 distinct game classes · 38 categories
+# Regenerate with reference/rip-hooks.py — see reference/README.md.
+
+======================================================================
+## Player  (176 hooks, 69 classes)
+======================================================================
+
+  BasePlayer  [55]
+    CanBeWounded                               EligibleForWounding(HitInfo)
+    CanDropActiveItem                          ShouldDropActiveItem()
+    CanLootPlayer                              CanBeLooted(BasePlayer)
+    CanNetworkTo                               ShouldNetworkTo(BasePlayer)
+    CanSpectateTarget                          UpdateSpectateTarget(String,Boolean)
+    IOnBasePlayerAttacked                      OnAttacked(HitInfo)
+    IOnBasePlayerHurt                          Hurt(HitInfo)
+    IOnPlayerConnected                         PlayerInit(Connection)
+    OnActiveItemChange                         UpdateActiveItem(ItemId)
+    OnActiveItemChanged                        UpdateActiveItem(ItemId)
+    OnActiveTelephoneUpdated                   SetActiveTelephone(PhoneController)
+    OnDemoRecordingStart                       StartServerDemoRecording()
+    OnDemoRecordingStarted                     StartServerDemoRecording()
+    OnDemoRecordingStop                        StopServerDemoRecording()
+    OnDemoRecordingStopped                     StopServerDemoRecording()
+    OnFogOfWarCleared                          ServerClearFog(Boolean,Boolean)
+    OnFogOfWarImageUpdate                      FogImageUpdate(BaseEntity/RPCMessage)
+    OnFogOfWarStale                            OnFogOfWarStale()
+    OnLootPlayer                               RPC_LootPlayer(BaseEntity/RPCMessage)
+    OnMapMarkerAdd                             Server_AddMarker(BaseEntity/RPCMessage)
+    OnMapMarkerAdd [patch]                     Server_AddMarker(BaseEntity/RPCMessage)
+    OnMapMarkerAdded                           Server_AddMarker(BaseEntity/RPCMessage)
+    OnMapMarkerRemove                          Server_RemovePointOfInterest(BaseEntity/RPCMessage)
+    OnMapMarkersClear                          Server_ClearMapMarkers(BaseEntity/RPCMessage)
+    OnMapMarkersCleared                        Server_ClearMapMarkers(BaseEntity/RPCMessage)
+    OnPlayerAssist                             RPC_Assist(BaseEntity/RPCMessage)
+    OnPlayerAttack                             OnProjectileAttack(BaseEntity/RPCMessage)
+    OnPlayerColliderEnable                     EnablePlayerCollider()
+    OnPlayerCorpseSpawn                        CreateCorpse(BasePlayer/PlayerFlags,Vector3,Quaternion,List`1<TriggerBase>,Boolean)
+    OnPlayerCorpseSpawned                      CreateCorpse(BasePlayer/PlayerFlags,Vector3,Quaternion,List`1<TriggerBase>,Boolean)
+    OnPlayerDeath                              Die(HitInfo)
+    OnPlayerHealthChange                       OnHealthChanged(Single,Single)
+    OnPlayerInput                              OnReceiveTick(PlayerTick,Boolean)
+    OnPlayerKeepAlive                          RPC_KeepAlive(BaseEntity/RPCMessage)
+    OnPlayerKicked                             Kick(String,Boolean)
+    OnPlayerLand                               ApplyFallDamageFromVelocity(Single)
+    OnPlayerLanded                             ApplyFallDamageFromVelocity(Single)
+    OnPlayerMarkersSend                        SendMarkersToClient()
+    OnPlayerPingsSend                          SendPingsToClient()
+    OnPlayerRecover                            RecoverFromWounded()
+    OnPlayerRecovered                          RecoverFromWounded()
+    OnPlayerRespawn                            Respawn()
+    OnPlayerRespawned                          RespawnAt(Vector3,Quaternion,BaseEntity)
+    OnPlayerRevive                             OnMedicalToolApplied(BasePlayer,ItemDefinition,ItemModConsumable,MedicalTool,Boolean)
+    OnPlayerSetInfo                            SetInfo(String,String)
+    OnPlayerSleep                              StartSleeping()
+    OnPlayerSleepEnd                           EndSleeping()
+    OnPlayerSleepEnded                         EndSleeping()
+    OnPlayerSpectate                           StartSpectating()
+    OnPlayerSpectateEnd                        StopSpectating()
+    OnPlayerTick                               OnReceiveTick(PlayerTick,Boolean)
+    OnPlayerWound                              BecomeWounded(HitInfo)
+    OnRespawnInformationGiven                  SendRespawnOptions()
+    OnSendModelState                           SendModelState(Boolean)
+    OnThreatLevelUpdate                        EnsureUpdated()
+
+  ServerMgr  [8]
+    IOnPlayerBanned                            OnValidateAuthTicketResponse(UInt64,UInt64,AuthResponse)
+    OnClientAuth                               OnGiveUserInformation(Message)
+    OnClientDisconnect                         ReadDisconnectReason(Message)
+    OnFindSpawnPoint                           FindSpawnPoint(BasePlayer,UInt64)
+    OnPlayerDisconnected                       OnDisconnected(String,Connection)
+    OnPlayerSetInfo                            ClientReady(Message)
+    OnPlayerSpawn                              SpawnNewPlayer(Connection)
+    OnPlayerVoice                              OnPlayerVoice(Message)
+
+  BaseMountable  [7]
+    CanDismountEntity                          DismountPlayer(BasePlayer,Boolean)
+    CanMountEntity                             MountPlayer(BasePlayer)
+    CanSwapToSeat                              CanSwapToThis(BasePlayer)
+    OnEntityMounted                            MountPlayer(BasePlayer)
+    OnPlayerDismountFailed                     RPC_WantsDismount(BaseEntity/RPCMessage)
+    OnPlayerWantsDismount                      RPC_WantsDismount(BaseEntity/RPCMessage)
+    OnPlayerWantsMount                         WantsMount(BasePlayer)
+
+  CodeLock  [5]
+    CanChangeCode                              RPC_ChangeCode(BaseEntity/RPCMessage)
+    CanLock                                    TryLock(BaseEntity/RPCMessage)
+    CanUnlock                                  TryUnlock(BaseEntity/RPCMessage)
+    CanUseLockedEntity                         OnTryToOpen(BasePlayer)
+    CanUseLockedEntity                         OnTryToClose(BasePlayer)
+
+  ConVar.Debugging  [5]
+    OnPlayerUnvanish                           invis(ConsoleSystem/Arg)
+    OnPlayerUnvanished                         invis(ConsoleSystem/Arg)
+    OnPlayerUnvanished                         invis(ConsoleSystem/Arg)
+    OnPlayerVanish                             invis(ConsoleSystem/Arg)
+    OnPlayerVanished                           invis(ConsoleSystem/Arg)
+
+  KeyLock  [4]
+    CanLock                                    Lock(BasePlayer)
+    CanUnlock                                  RPC_Unlock(BaseEntity/RPCMessage)
+    CanUseLockedEntity                         OnTryToClose(BasePlayer)
+    CanUseLockedEntity                         OnTryToOpen(BasePlayer)
+
+  PlayerLoot  [4]
+    OnLootEntity                               StartLootingEntity(BaseEntity,Boolean)
+    OnLootItem                                 StartLootingItem(Item)
+    OnLootNetworkUpdate                        SendUpdate()
+    OnPlayerLootEnd                            Clear()
+
+  SleepingBag  [4]
+    CanAssignBed                               AssignToFriend(BaseEntity/RPCMessage)
+    CanRenameBed                               Rename(BaseEntity/RPCMessage)
+    CanSetBedPublic                            RPC_MakePublic(BaseEntity/RPCMessage)
+    OnPlayerRespawn                            SpawnPlayer(BasePlayer,NetworkableId)
+
+  Workbench  [4]
+    OnExperimentEnd                            ExperimentComplete()
+    OnExperimentEnded                          ExperimentComplete()
+    OnExperimentStart                          RPC_BeginExperiment(BaseEntity/RPCMessage)
+    OnExperimentStarted                        RPC_BeginExperiment(BaseEntity/RPCMessage)
+
+  PlayerInventory  [4]
+    OnClothingItemChanged                      OnClothingChanged(Item,Boolean)
+    OnDefaultItemsReceive                      GiveDefaultItems()
+    OnDefaultItemsReceived                     GiveDefaultItems()
+    OnInventoryNetworkUpdate                   SendUpdatedInventoryInternal(PlayerInventory/Type,ItemContainer,PlayerInventory/NetworkInventoryMode)
+
+  GunTrap  [3]
+    CanBeTargeted                              CheckTrigger()
+    CanBeTargeted                              CheckTrigger()
+    CanBeTargeted                              CheckTrigger()
+
+  WireTool  [3]
+    CanUseWires                                CanPlayerUseWires(BasePlayer,Boolean,Single)
+    OnWireClear                                AttemptClearSlot(BaseNetworkable,BasePlayer,Int32,Boolean)
+    OnWireConnect                              RPC_MakeConnection(BaseEntity/RPCMessage)
+
+  ConVar.Chat/<sayAs>d__22  [3]
+    IOnPlayerChat                              MoveNext()
+    IOnPlayerChat[patch2]                      MoveNext()
+    IOnPlayerChat[patch]                       MoveNext()
+
+  BaseMelee  [2]
+    OnMeleeAttack                              PlayerAttack(BaseEntity/RPCMessage)
+    OnPlayerAttack                             DoAttackShared(HitInfo)
+
+  PlayerMetabolism  [2]
+    OnPlayerMetabolize                         ServerUpdate(BaseCombatEntity,Single)
+    OnRunPlayerMetabolism                      RunMetabolism(BaseCombatEntity,Single)
+
+  LootableCorpse  [2]
+    CanLootEntity                              RPC_LootCorpse(BaseEntity/RPCMessage)
+    OnLootEntityEnd                            PlayerStoppedLooting(BasePlayer)
+
+  StorageContainer  [2]
+    CanLootEntity                              PlayerOpenLoot(BasePlayer,String,Boolean)
+    OnLootEntityEnd                            PlayerStoppedLooting(BasePlayer)
+
+  FlameTurret  [2]
+    CanBeTargeted                              CheckTrigger()
+    CanBeTargeted [patch]                      CheckTrigger()
+
+  PlayerBelt  [2]
+    OnPlayerActiveShieldDrop                   DropActive(Vector3,Vector3)
+    OnPlayerDropActiveItem                     DropActive(Vector3,Vector3)
+
+  DroppedItemContainer  [2]
+    CanLootEntity                              RPC_OpenLoot(BaseEntity/RPCMessage)
+    OnLootEntityEnd                            PlayerStoppedLooting(BasePlayer)
+
+  ContainerIOEntity  [2]
+    CanLootEntity                              PlayerOpenLoot(BasePlayer,String,Boolean)
+    OnLootEntityEnd                            PlayerStoppedLooting(BasePlayer)
+
+  EACServer  [2]
+    OnPlayerBanned                             OnClientActionRequired(OnClientActionRequiredCallbackInfo&)
+    OnPlayerKicked                             OnClientActionRequired(OnClientActionRequiredCallbackInfo&)
+
+  BasePortal  [2]
+    OnPortalUse                                UsePortal(BasePlayer)
+    OnPortalUsed                               UsePortal(BasePlayer)
+
+  Handcuffs  [2]
+    OnPlayerHandcuff                           SV_HandcuffVictim(BasePlayer,BasePlayer)
+    OnPlayerHandcuffed                         SV_HandcuffVictim(BasePlayer,BasePlayer)
+
+  ConnectionAuth  [1]
+    IOnUserApprove                             OnNewConnection(Connection)
+
+  Signage  [1]
+    CanUpdateSign                              CanUpdateSign(BasePlayer)
+
+  ResearchTable  [1]
+    CanResearchItem                            DoResearch(BaseEntity/RPCMessage)
+
+  AutoTurret  [1]
+    CanBeTargeted                              ObjectVisible(BaseCombatEntity)
+
+  HelicopterTurret  [1]
+    CanBeTargeted                              InFiringArc(BaseCombatEntity)
+
+  ConnectionQueue  [1]
+    CanBypassQueue                             CanJumpQueue(Connection)
+
+  BaseCombatEntity  [1]
+    CanPickupEntity                            CanCompletePickup(BasePlayer)
+
+  StashContainer  [1]
+    CanHideStash                               RPC_HideStash(BaseEntity/RPCMessage)
+
+  AntiHack  [1]
+    OnPlayerViolation                          AddViolation(BasePlayer,AntiHackType,Single,GameObject)
+
+  Mailbox  [1]
+    CanUseMailbox                              PlayerIsOwner(BasePlayer)
+
+  SpinnerWheel  [1]
+    OnSpinWheel                                RPC_Spin(BaseEntity/RPCMessage)
+
+  BaseLock  [1]
+    CanPickupLock                              RPC_TakeLock(BaseEntity/RPCMessage)
+
+  ResourceContainer  [1]
+    CanLootEntity                              StartLootingContainer(BaseEntity/RPCMessage)
+
+  HackableLockedCrate  [1]
+    CanHackCrate                               RPC_Hack(BaseEntity/RPCMessage)
+
+  DoorCloser  [1]
+    ICanPickupEntity                           RPC_Take(BaseEntity/RPCMessage)
+
+  GrowableEntity  [1]
+    CanTakeCutting                             TakeClones(BasePlayer)
+
+  BuildingBlock  [1]
+    OnPayForUpgrade                            PayForUpgrade(ConstructionGrade,BasePlayer)
+
+  Planner  [1]
+    OnPayForPlacement                          PayForPlacement(BasePlayer,Construction)
+
+  WallpaperPlanner  [1]
+    OnPayForPlacement                          PayForPlacement(BasePlayer,Construction)
+
+  ItemModStudyBlueprint  [1]
+    OnPlayerStudyBlueprint                     ServerCommand(Item,String,BasePlayer)
+
+  RidableHorse  [1]
+    CanLootEntity                              SERVER_OpenLoot(BaseEntity/RPCMessage)
+
+  BaseRagdoll  [1]
+    CanRagdollDismount                         AllowPlayerInstigatedDismount(BasePlayer)
+
+  PhotoFrame  [1]
+    CanUpdateSign                              CanUpdateSign(BasePlayer)
+
+  ModularCarSeat  [1]
+    CanSwapToSeat                              CanSwapToThis(BasePlayer)
+
+  ItemModConsume  [1]
+    OnPlayerAddModifiers                       DoAction(Item,BasePlayer)
+
+  GestureConfig  [1]
+    CanUseGesture                              IsOwnedBy(BasePlayer,Boolean)
+
+  Auth_CentralizedBans/<Run>d__0  [1]
+    OnCentralizedBanCheck                      MoveNext()
+
+  ConsoleNetwork  [1]
+    OnClientCommand                            OnClientCommand(Message)
+
+  RelationshipManager  [1]
+    CanSetRelationship                         SetRelationship(BasePlayer,BasePlayer,RelationshipManager/RelationshipType,Int32,Boolean)
+
+  LiquidContainer  [1]
+    OnPlayerDrink                              SVDrink(BaseEntity/RPCMessage)
+
+  ItemBasedFlowRestrictor  [1]
+    OnLootEntityEnd                            PlayerStoppedLooting(BasePlayer)
+
+  CarvablePumpkin  [1]
+    CanUpdateSign                              CanUpdateSign(BasePlayer)
+
+  AttackEntity  [1]
+    OnEyePosValidate                           ValidateEyePos(BasePlayer,Vector3,Boolean)
+
+  BaseProjectile  [1]
+    OnClientProjectileEffectCreate             CreateProjectileEffectClientside(String,Vector3,Vector3,Int32,Connection,Boolean,Boolean,Connection>,Single)
+
+  ModularCarCodeLock  [1]
+    CanUnlock                                  TryOpenWithCode(BasePlayer,String)
+
+  IndustrialCrafter  [1]
+    CanLootEntity                              PlayerOpenLoot(BasePlayer,String,Boolean)
+
+  BaseDiggableEntity  [1]
+    OnPlayerDig                                Dig(BasePlayer)
+
+  BaseMetalDetector  [1]
+    OnMetalDetectorFlagRequest                 RPC_RequestFlag(BaseEntity/RPCMessage)
+
+  HBHFSensor  [1]
+    CanUseHBHFSensor                           CanUse(BasePlayer)
+
+  RFTimedExplosive  [1]
+    ICanPickupEntity                           Pickup(BaseEntity/RPCMessage)
+
+  BasePlayer/<OnFeedbackReport>d__775  [1]
+    OnFeedbackReported                         MoveNext()
+
+  BasePlayer/<OnPlayerReported>d__774  [1]
+    OnPlayerReported                           MoveNext()
+
+  SteamInventory/<UpdateSteamInventory>d__3  [1]
+    OnSteamInventoryUpdated                    MoveNext()
+
+  BaseEntity  [1]
+    OnSignalBroadcast                          SignalBroadcast(BaseEntity/Signal,String,Connection)
+
+  Network.Server  [1]
+    OnClientDisconnected                       OnDisconnected(String,Connection)
+
+======================================================================
+## Entity  (118 hooks, 59 classes)
+======================================================================
+
+  BaseNetworkable  [6]
+    IOnEntitySaved                             ToStream(Stream,BaseNetworkable/SaveInfo)
+    OnEntityKill                               Kill(BaseNetworkable/DestroyMode,Boolean)
+    OnEntityLoaded                             Load(BaseNetworkable/LoadInfo)
+    OnEntitySnapshot                           SendAsSnapshot(Connection,Boolean)
+    OnEntitySnapshot                           SendAsSnapshot(Connection,NetWrite,Boolean)
+    OnEntitySpawned                            Spawn()
+
+  BaseOven  [6]
+    OnOvenCook                                 Cook(Single)
+    OnOvenCooked                               Cook(Single)
+    OnOvenStart                                StartCooking()
+    OnOvenStarted                              StartCooking()
+    OnOvenTemperature                          GetTemperature(Int32)
+    OnOvenToggle                               SVSwitch(BaseEntity/RPCMessage)
+
+  BaseCombatEntity  [5]
+    CanEntityBeHostile                         IsHostile()
+    IOnBaseCombatEntityHurt                    Hurt(HitInfo)
+    OnEntityDeath                              Die(HitInfo)
+    OnEntityMarkHostile                        MarkHostileFor(Single)
+    OnEntityPickedUp                           OnPickedUp(Item,BasePlayer)
+
+  HackableLockedCrate  [5]
+    OnCrateDropped                             SetWasDropped()
+    OnCrateHack                                StartHacking()
+    OnCrateHackEnd                             HackProgress()
+    OnCrateLanded                              LandCheck()
+    OnCrateLaptopAttack                        OnAttacked(HitInfo)
+
+  BasePlayer  [5]
+    CanEntityBeHostile                         IsHostile()
+    CanSeeStash                                CheckStashRevealInvoke()
+    OnEntityMarkHostile                        MarkHostileFor(Single)
+    OnEntitySnapshot                           SendEntitySnapshot(BaseNetworkable)
+    OnStashExposed                             CheckStashRevealInvoke()
+
+  CargoShip  [5]
+    OnCargoShipEgress                          StartEgress()
+    OnCargoShipHarborApproach                  StartHarborApproach(CargoNotifier)
+    OnCargoShipHarborArrived                   OnArrivedAtHarbor()
+    OnCargoShipHarborLeave                     LeaveHarbor()
+    OnCargoShipSpawnCrate                      RespawnLoot()
+
+  SamSite  [4]
+    CanSamSiteShoot                            WeaponTick()
+    OnSamSiteModeToggle                        ToggleDefenderMode(BaseEntity/RPCMessage)
+    OnSamSiteTarget                            TargetScan()
+    OnSamSiteTargetScan                        TargetScan()
+
+  SleepingBag  [4]
+    OnBedMade                                  RPC_MakeBed(BaseEntity/RPCMessage)
+    OnSleepingBagDestroy                       DestroyBag(UInt64,NetworkableId)
+    OnSleepingBagDestroyed                     DestroyBag(UInt64,NetworkableId)
+    OnSleepingBagValidCheck                    ValidForPlayer(UInt64,Boolean)
+
+  DieselEngine  [3]
+    OnDieselEngineToggle                       EngineSwitch(BaseEntity/RPCMessage)
+    OnDieselEngineToggled                      EngineOff()
+    OnDieselEngineToggled                      EngineOn()
+
+  HotAirBalloon  [3]
+    OnHotAirBalloonToggle                      EngineSwitch(BaseEntity/RPCMessage)
+    OnHotAirBalloonToggled                     EngineSwitch(BaseEntity/RPCMessage)
+    OnHotAirBalloonToggled                     EngineSwitch(BaseEntity/RPCMessage)
+
+  DecayEntity  [3]
+    OnDebrisSpawn                              SpawnDebris(Vector3,Quaternion,Boolean)
+    OnDecayDamage                              OnDecay(Decay,Single)
+    OnDecayHeal                                OnDecay(Decay,Single)
+
+  PatrolHelicopter  [3]
+    OnCrateSpawned                             OnDied(HitInfo)
+    OnPatrolHelicopterKill                     Hurt(HitInfo)
+    OnPatrolHelicopterTakeDamage               Hurt(HitInfo)
+
+  FreeableLootContainer  [3]
+    OnFreeableContainerRelease                 Release(BasePlayer)
+    OnFreeableContainerReleaseStarted          RPC_FreeCrateTimer(BaseEntity/RPCMessage)
+    OnFreeableContainerReleased                Release(BasePlayer)
+
+  TriggerBase  [2]
+    OnEntityEnter                              OnEntityEnter(BaseEntity)
+    OnEntityLeave                              OnEntityLeave(BaseEntity)
+
+  CargoPlane  [2]
+    OnAirdrop                                  UpdateDropPosition(Vector3)
+    OnSupplyDropDropped                        Update()
+
+  BaseMountable  [2]
+    OnEntityDismounted                         DismountPlayer(BasePlayer,Boolean)
+    OnEntityDismounted                         DismountPlayer(BasePlayer,Boolean)
+
+  ElectricSwitch  [2]
+    OnSwitchToggle                             RPC_Switch(BaseEntity/RPCMessage)
+    OnSwitchToggled                            RPC_Switch(BaseEntity/RPCMessage)
+
+  ResourceEntity  [2]
+    OnEntityDeath                              OnDied(HitInfo)
+    OnEntityTakeDamage                         OnAttacked(HitInfo)
+
+  TriggerComfort  [2]
+    OnEntityEnter                              OnEntityEnter(BaseEntity)
+    OnEntityLeave                              OnEntityLeave(BaseEntity)
+
+  BaseEntity  [2]
+    OnBuildingPrivilege                        GetBuildingPrivilege(OBB,Boolean,Single,BuildingPrivlidge)
+    OnEntityFlagsNetworkUpdate                 SendNetworkUpdate_Flags()
+
+  BradleyAPC  [2]
+    OnCrateSpawned                             OnDied(HitInfo)
+    OnEntityDestroy                            OnDied(HitInfo)
+
+  FuelGenerator  [2]
+    OnSwitchToggle                             RPC_EngineSwitch(BaseEntity/RPCMessage)
+    OnSwitchToggled                            RPC_EngineSwitch(BaseEntity/RPCMessage)
+
+  StashContainer  [2]
+    OnStashHidden                              RPC_HideStash(BaseEntity/RPCMessage)
+    OnStashOcclude                             DoOccludedCheck()
+
+  MixingTable  [2]
+    OnMixingTableFinished                      ProduceItem(Recipe,Int32)
+    OnMixingTableToggle                        SVSwitch(BaseEntity/RPCMessage)
+
+  WaterPurifier  [2]
+    OnWaterPurified                            ConvertWater(Single)
+    OnWaterPurify                              ConvertWater(Single)
+
+  ElectricWindmill  [2]
+    OnWindmillUpdate                           WindUpdate()
+    OnWindmillUpdated                          WindUpdate()
+
+  Mannequin  [2]
+    CanMannequinChangePose                     Server_ChangePose(BaseEntity/RPCMessage)
+    CanMannequinSwap                           Server_RequestSwap(BaseEntity/RPCMessage)
+
+  BigWheelGame  [2]
+    OnBigWheelLoss                             Payout()
+    OnBigWheelWin                              Payout()
+
+  InstantCameraTool  [2]
+    OnPhotoCapture                             TakePhoto(BaseEntity/RPCMessage)
+    OnPhotoCaptured                            TakePhoto(BaseEntity/RPCMessage)
+
+  IndustrialConveyor  [2]
+    OnSwitchToggle                             SvSwitch(BaseEntity/RPCMessage)
+    OnSwitchToggled                            SvSwitch(BaseEntity/RPCMessage)
+
+  DestroyOnGroundMissing  [1]
+    OnEntityGroundMissing                      OnGroundMissing()
+
+  Recycler  [1]
+    OnRecyclerToggle                           SVSwitch(BaseEntity/RPCMessage)
+
+  DropUtil  [1]
+    OnContainerDropItems                       DropItems(ItemContainer,Vector3)
+
+  CH47HelicopterAIController  [1]
+    OnEntityDestroy                            OnDied(HitInfo)
+
+  BaseArcadeMachine  [1]
+    OnArcadeScoreAdded                         AddScore(BasePlayer,Int32)
+
+  SupplyDrop  [1]
+    OnSupplyDropLanded                         OnCollisionEnter(Collision)
+
+  StabilityEntity  [1]
+    OnEntityStabilityCheck                     StabilityCheck()
+
+  BaseEntity/RPC_Server/IsActiveItem  [1]
+    OnEntityActiveCheck                        Test(UInt32,String,BaseEntity,BasePlayer)
+
+  BaseEntity/RPC_Server/FromOwner  [1]
+    OnEntityFromOwnerCheck                     Test(UInt32,String,BaseEntity,BasePlayer)
+
+  BaseEntity/RPC_Server/IsVisible  [1]
+    OnEntityVisibilityCheck                    Test(UInt32,String,BaseEntity,BasePlayer,Single)
+
+  BaseEntity/RPC_Server/MaxDistance  [1]
+    OnEntityDistanceCheck                      Test(UInt32,String,BaseEntity,BasePlayer,Single,Boolean)
+
+  SurveyCrater  [1]
+    OnAnalysisComplete                         AnalysisComplete(BaseEntity/RPCMessage)
+
+  ReactiveTarget  [1]
+    OnReactiveTargetReset                      ResetTarget()
+
+  SupplySignal  [1]
+    OnCargoPlaneSignaled                       Explode()
+
+  WaterCatcher  [1]
+    OnWaterCollect                             CollectWater()
+
+  BaseLiquidVessel  [1]
+    OnLiquidVesselFill                         FillCheck()
+
+  WaterPump  [1]
+    OnWaterCollect                             CreateWater()
+
+  Sprinkler  [1]
+    OnSprinklerSplashed                        DoSplash()
+
+  WaterBall  [1]
+    CanWaterBallSplash                         DoSplash(Vector3,Single,ItemDefinition,Int32,Boolean)
+
+  TreeEntity  [1]
+    OnTreeMarkerHit                            DidHitMarker(HitInfo)
+
+  SprayCanSpray  [1]
+    OnSprayRemove                              Server_RequestWaterClear(BaseEntity/RPCMessage)
+
+  Composter  [1]
+    OnComposterUpdate                          UpdateComposting()
+
+  PoweredRemoteControlEntity  [1]
+    OnRemoteIdentifierUpdate                   UpdateIdentifier(String,Boolean)
+
+  TimedExplosive  [1]
+    CanExplosiveStick                          CanStickTo(BaseEntity)
+
+  PlanterBox  [1]
+    OnPlanterBoxFertilize                      FertilizeGrowables()
+
+  PatrolHelicopterAI  [1]
+    OnNoGoZoneAdded                            NoGoZoneAdded(PatrolHelicopterAI/DangerZone)
+
+  TriggeredEventPrefab  [1]
+    OnEventTrigger                             RunEvent()
+
+  WorldItem  [1]
+    CanLootEntity                              RPC_OpenLoot(BaseEntity/RPCMessage)
+
+  ServerGib  [1]
+    OnGibsSpawned                              CreateGibs(String,GameObject,GameObject,Vector3,Single)
+
+======================================================================
+## Item  (75 hooks, 24 classes)
+======================================================================
+
+  Item  [11]
+    CanStackItem                               CanStack(Item)
+    IOnLoseCondition                           LoseCondition(Single)
+    OnItemDropped                              Drop(Vector3,Vector3,Quaternion)
+    OnItemLock                                 LockUnlock(Boolean)
+    OnItemRemove                               Remove(Single)
+    OnItemSplit                                SplitItem(Int32)
+    OnItemStacked                              MoveToContainer(ItemContainer,Int32,Boolean,Boolean,BasePlayer,Boolean)
+    OnItemStacked                              MoveToContainer(ItemContainer,Int32,Boolean,Boolean,BasePlayer,Boolean)
+    OnItemUnlock                               LockUnlock(Boolean)
+    OnItemUse                                  UseItem(Int32)
+    OnMaxStackable                             MaxStackable()
+
+  PlayerInventory  [11]
+    CanEquipItem                               CanEquipItem(Item,Int32)
+    CanMoveItem                                MoveItem(BaseEntity/RPCMessage)
+    CanWearItem                                CanWearItem(Item,Int32)
+    OnBackpackDrop                             TryDropBackpack()
+    OnInventoryAmmoFind                        FindAmmo(List`1<Item>,AmmoTypes)
+    OnInventoryAmmoItemFind                    FindAmmo(AmmoTypes)
+    OnInventoryItemFind                        FindItemByItemID(Int32)
+    OnInventoryItemsCount                      GetAmount(Int32,Boolean)
+    OnInventoryItemsFind                       FindItemsByItemID(List`1<Item>,Int32)
+    OnInventoryItemsTake                       Take(List`1<Item>,Int32,Int32)
+    OnItemAction                               ItemCmd(BaseEntity/RPCMessage)
+
+  WeaponRack  [10]
+    OnRackedWeaponLoad                         LoadWeaponAmmo(BaseEntity/RPCMessage)
+    OnRackedWeaponLoaded                       LoadWeaponAmmo(BaseEntity/RPCMessage)
+    OnRackedWeaponMount                        MountWeapon(Item,BasePlayer,Int32,Int32,Boolean)
+    OnRackedWeaponMounted                      MountWeapon(Item,BasePlayer,Int32,Int32,Boolean)
+    OnRackedWeaponSwap                         SwapPlayerWeapon(BasePlayer,Int32,Int32,Int32)
+    OnRackedWeaponSwapped                      SwapPlayerWeapon(BasePlayer,Int32,Int32,Int32)
+    OnRackedWeaponTake                         GivePlayerWeapon(BasePlayer,Int32,Int32,Boolean,Boolean)
+    OnRackedWeaponTaken                        GivePlayerWeapon(BasePlayer,Int32,Int32,Boolean,Boolean)
+    OnRackedWeaponUnload                       UnloadWeapon(BasePlayer,Int32)
+    OnRackedWeaponUnloaded                     UnloadWeapon(BasePlayer,Int32)
+
+  LootContainer  [7]
+    OnBonusItemDrop                            DropBonusItems(BaseEntity,ItemContainer)
+    OnBonusItemDropped                         DropBonusItems(BaseEntity,ItemContainer)
+    OnBonusItemDropped [patch 1]               DropBonusItems(BaseEntity,ItemContainer)
+    OnBonusItemDropped [patch 2]               DropBonusItems(BaseEntity,ItemContainer)
+    OnBonusItemDropped [patch 3]               DropBonusItems(BaseEntity,ItemContainer)
+    OnBonusItemDropped [patch 4]               DropBonusItems(BaseEntity,ItemContainer)
+    OnBonusItemDropped [patch 5]               DropBonusItems(BaseEntity,ItemContainer)
+
+  ItemCrafter  [4]
+    CanFastTrackCraftTask                      FastTrackTask(Int32)
+    OnItemCraft                                CraftItem(ItemBlueprint,BasePlayer,Item/InstanceData,Int32,Int32,Item,Boolean,Int32)
+    OnItemCraftCancelled                       CancelTask(Int32)
+    OnItemCraftFinished                        FinishCrafting(ItemCraftTask)
+
+  ResearchTable  [4]
+    OnItemResearch                             DoResearch(BaseEntity/RPCMessage)
+    OnItemResearched                           ResearchAttemptFinished()
+    OnResearchCostDetermine                    ScrapForResearch(Item)
+    OnResearchCostDetermine                    ScrapForResearch(ItemDefinition)
+
+  ItemContainer  [3]
+    CanAcceptItem                              CanAcceptItem(Item,Int32)
+    OnItemAddedToContainer                     Insert(Item)
+    OnItemRemovedFromContainer                 Remove(Item)
+
+  Deployer  [3]
+    CanDeployItem                              DoDeploy(BaseEntity/RPCMessage)
+    OnItemDeployed                             DoDeploy_Regular(Deployable,Ray)
+    OnItemDeployed                             DoDeploy_Slot(Deployable,Ray,NetworkableId)
+
+  Recycler  [3]
+    OnItemRecycle                              RecycleThink()
+    OnItemRecycle                              RecycleThink()
+    OnItemRecycleAmount                        RecycleThink()
+
+  DroppedItem  [3]
+    CanCombineDroppedItem                      OnDroppedOn(DroppedItem)
+    OnDroppedItemCombined                      OnDroppedOn(DroppedItem)
+    OnItemDespawn                              IdleDestroy()
+
+  RepairBench  [2]
+    OnItemRepair                               RepairAnItem(Item,BasePlayer,BaseEntity,Single,Boolean)
+    OnItemSkinChange                           ChangeSkin(BaseEntity/RPCMessage)
+
+  Mailbox  [2]
+    OnItemSubmit                               SubmitInputItems(BasePlayer)
+    OnItemSubmit                               SubmitInputItems(BasePlayer)
+
+  MedicalTool  [1]
+    OnHealingItemUse                           GiveEffectsTo(BasePlayer,IMedicalToolTarget)
+
+  MapEntity  [1]
+    OnMapImageUpdated                          ImageUpdate(BaseEntity/RPCMessage)
+
+  ItemModUpgrade  [1]
+    OnItemUpgrade                              ServerCommand(Item,String,BasePlayer)
+
+  WorldItem  [1]
+    OnItemPickup                               Pickup(BaseEntity/RPCMessage)
+
+  BaseOven  [1]
+    OnFindBurnable                             FindBurnable()
+
+  ItemModRepair  [1]
+    OnItemRefill                               ServerCommand(Item,String,BasePlayer)
+
+  ItemModUnwrap  [1]
+    OnItemUnwrap                               ServerCommand(Item,String,BasePlayer)
+
+  PaintedItemStorageEntity  [1]
+    OnItemPainted                              Server_UpdateImage(BaseEntity/RPCMessage)
+
+  Chainsaw  [1]
+    OnInventoryAmmoItemFind                    GetAmmo()
+
+  FlameThrower  [1]
+    OnInventoryAmmoItemFind                    GetAmmo()
+
+  Locker  [1]
+    CanLockerAcceptItem                        ItemFilter(Item,Int32)
+
+  StorageContainer  [1]
+    OnItemFilter                               ItemFilter(Item,Int32)
+
+======================================================================
+## Vehicle  (55 hooks, 19 classes)
+======================================================================
+
+  ModularCarGarage  [7]
+    OnCodeChange                               RPC_RequestNewCode(BaseEntity/RPCMessage)
+    OnLockRemove                               RPC_RequestRemoveLock(BaseEntity/RPCMessage)
+    OnVehicleLockRequest                       RPC_RequestAddLock(BaseEntity/RPCMessage)
+    OnVehicleModuleDeselected                  RPC_DeselectedLootItem(BaseEntity/RPCMessage)
+    OnVehicleModuleSelect                      RPC_SelectedLootItem(BaseEntity/RPCMessage)
+    OnVehicleModuleSelected                    RPC_SelectedLootItem(BaseEntity/RPCMessage)
+    OnVehicleModuleSelectedFix [patch]         RPC_SelectedLootItem(BaseEntity/RPCMessage)
+
+  PatrolHelicopterAI  [6]
+    CanHelicopterStrafe                        CanStrafe()
+    CanHelicopterStrafeTarget                  ValidRocketTarget(BasePlayer)
+    CanHelicopterTarget                        PlayerVisible(BasePlayer)
+    CanHelicopterUseNapalm                     CanUseNapalm()
+    OnHelicopterRetire                         Retire()
+    OnHelicopterStrafeEnter                    StartStrafe(BasePlayer,Boolean)
+
+  CH47HelicopterAIController  [6]
+    CanHelicopterDropCrate                     CanDropCrate()
+    CanUseHelicopter                           AttemptMount(BasePlayer,Boolean)
+    OnHelicopterAttack                         OnAttacked(HitInfo)
+    OnHelicopterDropCrate                      DropCrate()
+    OnHelicopterDropDoorOpen                   SetDropDoorOpen(Boolean)
+    OnHelicopterOutOfCrates                    OutOfCrates()
+
+  MLRS  [6]
+    OnMlrsFire                                 Fire(BasePlayer)
+    OnMlrsFired                                Fire(BasePlayer)
+    OnMlrsFiringEnded                          EndFiring()
+    OnMlrsRocketFired                          FireNextRocket()
+    OnMlrsTarget                               SetUserTargetHitPos(Vector3)
+    OnMlrsTargetSet                            SetUserTargetHitPos(Vector3)
+
+  BradleyAPC  [5]
+    CanBradleyApcTarget                        VisibilityTest(BaseEntity)
+    OnBradleyApcHunt                           UpdateMovement_Hunt()
+    OnBradleyApcInitialize                     Initialize()
+    OnBradleyApcPatrol                         UpdateMovement_Patrol()
+    OnBradleyApcThink                          DoSimpleAI()
+
+  VehicleEngineController`1  [5]
+    OnEngineStart                              TryStartEngine(BasePlayer)
+    OnEngineStartFinished                      FinishStartingEngine()
+    OnEngineStarted                            TryStartEngine(BasePlayer)
+    OnEngineStop                               StopEngine()
+    OnEngineStopped                            StopEngine()
+
+  ModularCar  [3]
+    CanDestroyLock                             PlayerCanDestroyLock(BasePlayer,BaseVehicleModule)
+    OnVehicleModulesAssign                     SpawnPreassignedModules()
+    OnVehicleModulesAssigned                   SpawnPreassignedModules()
+
+  VehiclePrivilege  [3]
+    OnCupboardAuthorize                        AddSelfAuthorize(BaseEntity/RPCMessage)
+    OnCupboardClearList                        ClearList(BaseEntity/RPCMessage)
+    OnCupboardDeauthorize                      RemoveSelfAuthorize(BaseEntity/RPCMessage)
+
+  MotorRowboat  [2]
+    OnEngineStart                              EngineToggle(Boolean)
+    OnEngineStarted                            EngineToggle(Boolean)
+
+  VehicleModuleEngine  [2]
+    OnEngineStatsRefresh                       RefreshPerformanceStats(EngineStorage)
+    OnEngineStatsRefreshed                     RefreshPerformanceStats(EngineStorage)
+
+  ModularCarCodeLock  [2]
+    CanLock                                    HasLockPermission(BasePlayer)
+    OnVehicleLockableCheck                     CanHaveALock()
+
+  HelicopterTurret  [1]
+    OnHelicopterTarget                         SetTarget(BaseCombatEntity)
+
+  BaseBoat  [1]
+    OnBoatPathGenerate                         GenerateOceanPatrolPath(Single,Single)
+
+  BaseVehicle  [1]
+    OnVehiclePush                              RPC_WantsPush(BaseEntity/RPCMessage)
+
+  Rust.Modular.EngineStorage  [1]
+    OnEngineLoadoutRefresh                     RefreshLoadoutData()
+
+  BaseModularVehicle  [1]
+    OnVehicleModuleMove                        CanMoveFrom(BasePlayer,Item)
+
+  TrainCar  [1]
+    OnTrainCarUncouple                         RPC_WantsUncouple(BaseEntity/RPCMessage)
+
+  TrainCoupling  [1]
+    CanTrainCarCouple                          TryCouple(TrainCoupling,Boolean)
+
+  VehicleModuleSeating  [1]
+    OnVehicleHornPressed                       PlayerServerInput(InputState,BasePlayer)
+
+======================================================================
+## Structure  (38 hooks, 17 classes)
+======================================================================
+
+  BuildingBlock  [8]
+    CanAffordUpgrade                           CanAffordUpgrade(BuildingGrade/Enum,UInt64,BasePlayer)
+    CanChangeGrade                             CanChangeToGrade(BuildingGrade/Enum,UInt64,BasePlayer)
+    OnPlayerPveDamage                          Hurt(HitInfo)
+    OnStructureRotate                          DoRotation(BaseEntity/RPCMessage)
+    OnStructureUpgrade                         DoUpgradeToGrade(BaseEntity/RPCMessage)
+    OnStructureUpgraded                        DoUpgradeToGrade(BaseEntity/RPCMessage)
+    OnWallpaperRemove                          RemoveWallpaper(Int32)
+    OnWallpaperSet                             SetWallpaper(UInt64,Int32,Single)
+
+  BuildingPrivlidge  [4]
+    IOnCupboardAuthorize                       AddAuthorize(BaseEntity/RPCMessage)
+    OnCupboardClearList                        ClearList(BaseEntity/RPCMessage)
+    OnCupboardDeauthorize                      RemoveSelfAuthorize(BaseEntity/RPCMessage)
+    OnCupboardProtectionCalculated             GetProtectedMinutes(Boolean)
+
+  Planner  [4]
+    CanAffordToPlace                           CanAffordToPlace(Construction)
+    CanBuild                                   DoBuild(CreateBuilding)
+    OnConstructionPlace                        DoPlacement(Construction/Target,Construction)
+    OnEntityBuilt                              DoBuild(Construction/Target,Construction)
+
+  DecayEntity  [3]
+    CanDemolish                                CanDemolish(BasePlayer)
+    OnStructureDemolish                        DoImmediateDemolish(BaseEntity/RPCMessage)
+    OnStructureDemolish                        DoDemolish(BaseEntity/RPCMessage)
+
+  Door  [3]
+    OnDoorClosed                               RPC_CloseDoor(BaseEntity/RPCMessage)
+    OnDoorKnocked                              RPC_KnockDoor(BaseEntity/RPCMessage)
+    OnDoorOpened                               RPC_OpenDoor(BaseEntity/RPCMessage)
+
+  Signage  [2]
+    OnSignLocked                               LockSign(BaseEntity/RPCMessage)
+    OnSignUpdated                              UpdateSign(BaseEntity/RPCMessage)
+
+  CodeLock  [2]
+    OnCodeChanged                              RPC_ChangeCode(BaseEntity/RPCMessage)
+    OnCodeEntered                              UnlockWithCode(BaseEntity/RPCMessage)
+
+  ServerBuildingManager  [2]
+    OnBuildingMerge                            Merge(BuildingManager/Building,BuildingManager/Building)
+    OnBuildingSplit                            Split(BuildingManager/Building)
+
+  PhotoFrame  [2]
+    OnSignLocked                               LockSign(BaseEntity/RPCMessage)
+    OnSignUpdated                              UpdateSign(BaseEntity/RPCMessage)
+
+  Hammer  [1]
+    OnHammerHit                                DoAttackShared(HitInfo)
+
+  BaseCombatEntity  [1]
+    OnStructureRepair                          DoRepair(BasePlayer)
+
+  ItemModDeployable  [1]
+    OnCupboardAuthorize                        OnDeployed(BaseEntity,BasePlayer)
+
+  CarvablePumpkin  [1]
+    OnSignUpdated                              UpdateSign(BaseEntity/RPCMessage)
+
+  DoorKnocker  [1]
+    OnDoorKnocked                              Knock(BasePlayer)
+
+  Locker  [1]
+    OnLockerSwap                               RPC_Equip(BaseEntity/RPCMessage)
+
+  StringLights  [1]
+    OnPoweredLightsPointAdd                    SERVER_AddPoint(BaseEntity/RPCMessage)
+
+  SignContent  [1]
+    OnSignContentCopied                        CopyInfoToSign(ISignage,IUGCBrowserEntity)
+
+======================================================================
+## Resource  (29 hooks, 12 classes)
+======================================================================
+
+  EngineSwitch  [6]
+    OnQuarryToggle                             StartEngine(BaseEntity/RPCMessage)
+    OnQuarryToggle                             StopEngine(BaseEntity/RPCMessage)
+    OnQuarryToggled                            StopEngine(BaseEntity/RPCMessage)
+    OnQuarryToggled                            StopEngine(BaseEntity/RPCMessage)
+    OnQuarryToggled                            StartEngine(BaseEntity/RPCMessage)
+    OnQuarryToggled                            StartEngine(BaseEntity/RPCMessage)
+
+  ResourceDispenser  [4]
+    OnDispenserBonus                           AssignFinishBonus(BasePlayer,Single,AttackEntity)
+    OnDispenserBonusReceived                   AssignFinishBonus(BasePlayer,Single,AttackEntity)
+    OnDispenserGather                          GiveResourceFromItem(BasePlayer,ItemAmount,Single,Single,AttackEntity)
+    OnDispenserGathered                        GiveResourceFromItem(BasePlayer,ItemAmount,Single,Single,AttackEntity)
+
+  ExcavatorArm  [4]
+    OnExcavatorGather                          ProduceResources()
+    OnExcavatorMiningToggled                   BeginMining()
+    OnExcavatorMiningToggled                   StopMining()
+    OnExcavatorResourceSet                     RPC_SetResourceTarget(BaseEntity/RPCMessage)
+
+  GrowableEntity  [4]
+    OnGrowableGather                           PickFruit(BasePlayer,Boolean)
+    OnGrowableGathered                         GiveFruit(BasePlayer,Int32,Boolean,Boolean)
+    OnGrowableStateChange                      ChangeState(PlantProperties/State,Boolean,Boolean)
+    OnRemoveDying                              RemoveDying(BasePlayer)
+
+  CollectibleEntity  [2]
+    OnCollectiblePickedup                      DoPickup(BasePlayer,Boolean)
+    OnCollectiblePickup                        DoPickup(BasePlayer,Boolean)
+
+  MiningQuarry  [2]
+    OnQuarryConsumeFuel                        FuelCheck()
+    OnQuarryGather                             ProcessResources()
+
+  CoalingTower  [2]
+    OnCoalingTowerGather                       EmptyTenPercent()
+    OnCoalingTowerStart                        RPC_Unload(BaseEntity/RPCMessage)
+
+  SurveyCharge  [1]
+    OnSurveyGather                             Explode()
+
+  ResourceDepositManager  [1]
+    OnResourceDepositCreated                   CreateFromPosition(Vector3)
+
+  LootContainer  [1]
+    OnLootSpawn                                SpawnLoot()
+
+  RandomItemDispenser  [1]
+    OnRandomItemAward                          TryAward(RandomItemDispenser/RandomItemChance,BasePlayer,Vector3)
+
+  LootFill  [1]
+    OnLootSpawn                                DelayFill()
+
+======================================================================
+## Weapon  (29 hooks, 17 classes)
+======================================================================
+
+  BaseProjectile  [6]
+    OnAmmoSwitch                               SwitchAmmoTo(BaseEntity/RPCMessage)
+    OnAmmoUnload                               UnloadAmmo(Item,BasePlayer)
+    OnMagazineReload                           TryReloadMagazine(IAmmoContainer,Int32,Boolean)
+    OnWeaponFired                              CLProject(BaseEntity/RPCMessage)
+    OnWeaponModChange                          DelayedModsChanged()
+    OnWeaponReload                             StartReload(BaseEntity/RPCMessage)
+
+  BasePlayer  [3]
+    CanCreateWorldProjectile                   CreateWorldProjectile(HitInfo,ItemDefinition,ItemModProjectile,Projectile,Item)
+    OnProjectileRicochet                       OnProjectileRicochet(BaseEntity/RPCMessage)
+    OnWorldProjectileCreate                    CreateWorldProjectile(HitInfo,ItemDefinition,ItemModProjectile,Projectile,Item)
+
+  LiquidWeapon  [3]
+    CanFireLiquidWeapon                        CanFire(BasePlayer)
+    OnLiquidWeaponFired                        StartFiring(BaseEntity/RPCMessage)
+    OnLiquidWeaponFiringStopped                StopFiring()
+
+  ThrownWeapon  [2]
+    OnExplosiveDropped                         DoDrop(BaseEntity/RPCMessage)
+    OnExplosiveThrown                          DoThrow(BaseEntity/RPCMessage)
+
+  FireBall  [2]
+    OnFireBallDamage                           DoRadialDamage()
+    OnFireBallSpread                           TryToSpread()
+
+  TimedExplosive  [2]
+    OnExplosiveFuseSet                         SetFuse(Single)
+    OnTimedExplosiveExplode                    Explode(Vector3)
+
+  BaseMelee  [1]
+    OnMeleeThrown                              CLProject(BaseEntity/RPCMessage)
+
+  BaseLauncher  [1]
+    OnRocketLaunched                           SV_Launch(BaseEntity/RPCMessage)
+
+  FlameThrower  [1]
+    OnFlameThrowerBurn                         FlameTick()
+
+  DudTimedExplosive  [1]
+    OnExplosiveDud                             Explode()
+
+  FlameExplosive  [1]
+    OnFlameExplosion                           FlameExplode(Vector3)
+
+  Effect/server  [1]
+    OnImpactEffectCreate                       ImpactEffect(HitInfo,String)
+
+  BaseHelicopter  [1]
+    CanBeHomingTargeted                        IsValidHomingTarget()
+
+  CH47Helicopter  [1]
+    CanBeHomingTargeted                        IsValidHomingTarget()
+
+  PlayerHelicopter  [1]
+    CanBeHomingTargeted                        IsValidHomingTarget()
+
+  PatrolHelicopter  [1]
+    CanBeHomingTargeted                        IsValidHomingTarget()
+
+  HeliPilotFlare  [1]
+    CanBeHomingTargeted                        IsValidHomingTarget()
+
+======================================================================
+## Server  (27 hooks, 12 classes)
+======================================================================
+
+  ServerMgr  [7]
+    IOnServerInitialized                       OpenConnection(Boolean)
+    IOnServerShutdown                          Shutdown()
+    OnServerInformationUpdated                 UpdateServerInformation()
+    OnServerInitialize                         Initialize(Boolean,String,Boolean,Boolean)
+    OnServerRestart                            RestartServer(String,Int32)
+    OnServerRestartInterrupt                   RestartServer(String,Int32)
+    OnTick                                     DoTick()
+
+  ConVar.Chat  [3]
+    OnPlayerActionBroadcast                    BroadcastPlayerAction(BasePlayer,String)
+    OnPlayerActionBroadcast                    BroadcastPlayerAction(BasePlayer,String,BasePlayer,String)
+    OnServerMessage                            Broadcast(String,String,String,UInt64)
+
+  SaveRestore  [3]
+    OnNewSave                                  Load(String,Boolean)
+    OnSaveLoad                                 Load(String,Boolean)
+    OnServerSave                               DoAutomatedSave(Boolean)
+
+  ConsoleNetwork  [3]
+    OnBroadcastCommand                         BroadcastToAllClients(String,Object[])
+    OnSendCommand                              SendClientCommand(Connection,String,Object[])
+    OnSendCommand                              SendClientCommand(Connection>,String,Object[])
+
+  Bootstrap  [2]
+    InitLogging                                StartupShared()
+    InitOxide                                  Init_Tier0()
+
+  ServerUsers  [2]
+    OnServerUserRemove                         Remove(UInt64)
+    OnServerUserSet                            Set(UInt64,ServerUsers/UserGroup,String,String,Int64)
+
+  ConsoleSystem  [2]
+    IOnRunCommandLine                          UpdateValuesFromCommandLine()
+    IOnServerCommand                           Internal(ConsoleSystem/Arg)
+
+  BasePlayer  [1]
+    OnMessagePlayer                            ChatMessage(String)
+
+  Facepunch.RCon/RConListener  [1]
+    OnRconConnection                           ProcessConnections()
+
+  Facepunch.RCon  [1]
+    IOnRconInitialize                          Initialize()
+
+  Facepunch.Rcon.Listener/<>c__DisplayClass27_0  [1]
+    OnRconConnection                           <Start>b__0(IWebSocketConnection)
+
+  Facepunch.Rcon.Listener/<>c__DisplayClass27_1  [1]
+    IOnRconMessage                             <Start>b__3(String)
+
+======================================================================
+## _Patches  (25 hooks, 18 classes)
+======================================================================
+
+  CargoPlane  [3]
+    OnSupplyDropDropped [patch 1]              Update()
+    OnSupplyDropDropped [patch 2]              Update()
+    OnSupplyDropDropped [patch 3]              Update()
+
+  AutoTurret  [3]
+    ConsumptionAmountField [AutoTurret]        ConsumptionAmount()
+    ConsumptionAmountField [AutoTurret]        .ctor()
+    ContinueTargetScan [patch]                 TargetScan()
+
+  PlayerLoot  [2]
+    OnLootEntity [patch]                       StartLootingEntity(BaseEntity,Boolean)
+    OnLootItem [patch]                         StartLootingItem(Item)
+
+  BaseEntity  [2]
+    LimitNetworkingSignalBroadcast [Patch]     SignalBroadcast(BaseEntity/Signal,String,Connection)
+    NoLimboGroupForPlayers [patch]             UpdateNetworkGroup()
+
+  BasePlayer  [2]
+    LimitNetworkingNoEffect [patch 3]          OnAttacked(HitInfo)
+    OnPlayerAttack                             OnProjectileAttack(BaseEntity/RPCMessage)
+
+  Facepunch.RCon/RConListener  [1]
+    OnRconConnection [exp, patch]              ProcessConnections()
+
+  BaseMelee  [1]
+    OnPlayerAttack [melee, patch]              DoAttackShared(HitInfo)
+
+  WireTool  [1]
+    OnWireClear [patch]                        AttemptClearSlot(BaseNetworkable,BasePlayer,Int32,Boolean)
+
+  ItemCrafter  [1]
+    FixItemKeyId [patch]                       CraftItem(ItemBlueprint,BasePlayer,Item/InstanceData,Int32,Int32,Item,Boolean,Int32)
+
+  SupplySignal  [1]
+    OnCargoPlaneSignaled [Patch]               Explode()
+
+  Effect/server  [1]
+    LimitNetworkingNoEffect [patch 1]          ImpactEffect(HitInfo,String)
+
+  BaseProjectile  [1]
+    LimitNetworkingNoEffect [patch 2]          CLProject(BaseEntity/RPCMessage)
+
+  RelationshipManager  [1]
+    LimitNetworkingAcquaintances [patch]       UpdateAcquaintancesFor(BasePlayer,Single)
+
+  CH47HelicopterAIController  [1]
+    AllowNpcNonAdminHeliUse [patch]            AttemptMount(BasePlayer,Boolean)
+
+  SprayCanSpray  [1]
+    SplashThresholdField [SprayCanSpray]       WantsSplash(ItemDefinition,Int32)
+
+  BasePlayer/<OnFeedbackReport>d__775  [1]
+    OnFeedbackReported                         MoveNext()
+
+  Facepunch.Rcon.Listener/<>c__DisplayClass27_0  [1]
+    OnRconConnection                           <Start>b__0(IWebSocketConnection)
+
+  Facepunch.Sqlite.Database  [1]
+    NoPragmaColumnExists                       ColumnExists(String,String)
+
+======================================================================
+## NPC  (25 hooks, 12 classes)
+======================================================================
+
+  NPCTalking  [4]
+    OnNpcConversationEnded                     Server_OnConversationEnded(BasePlayer)
+    OnNpcConversationRespond                   Server_ResponsePressed(BaseEntity/RPCMessage)
+    OnNpcConversationResponded                 Server_ResponsePressed(BaseEntity/RPCMessage)
+    OnNpcConversationStart                     Server_BeginTalking(BasePlayer)
+
+  BaseNpc  [3]
+    CanNpcEat                                  WantsToEat(BaseEntity)
+    IOnNpcTarget                               GetWantsToAttack(BaseEntity)
+    OnNpcAttack                                StartAttack()
+
+  ScientistNPC  [3]
+    OnNpcAlert                                 Alert()
+    OnNpcEquipWeapon                           EquipWeapon(Boolean)
+    OnNpcRadioChatter                          PlayRadioChatter()
+
+  BradleyAPC  [3]
+    CanDeployScientists                        CanDeployScientists(BaseEntity,List`1<GameObjectRef>,Vector3>)
+    OnScientistInitialized                     InitScientist(ScientistNPC,Vector3,BasePlayer,Boolean,Boolean)
+    OnScientistRecalled                        OnScientistMounted(ScientistNPC)
+
+  NPCPlayer  [2]
+    OnCorpsePopulate                           CreateCorpse(BasePlayer/PlayerFlags,Vector3,Quaternion,List`1<TriggerBase>,Boolean)
+    OnNpcEquipWeapon                           EquipWeapon(Boolean)
+
+  HumanNPC  [2]
+    OnNpcDuck                                  SetDucked(Boolean)
+    OnNpcTarget                                GetBestTarget()
+
+  BaseAIBrain  [2]
+    OnAIBrainStateSwitch                       SwitchToState(BaseAIBrain/BasicAIState,Int32)
+    OnAIBrainStateSwitched                     SwitchToState(BaseAIBrain/BasicAIState,Int32)
+
+  Rust.Ai.Gen2.State_Dead  [2]
+    OnCorpsePopulate                           StartRagdoll()
+    OnCorpsePopulate                           StartRagdoll()
+
+  NPCVendingMachine  [1]
+    OnNpcGiveSoldItem                          GiveSoldItem(Item,BasePlayer)
+
+  AIBrainSenses  [1]
+    OnNpcTarget                                GetNearest(List`1<BaseEntity>,Single)
+
+  Rust.Ai.SimpleAIMemory  [1]
+    OnNpcTargetSense                           SetKnown(BaseEntity,BaseEntity,AIBrainSenses)
+
+  Rust.Ai.Gen2.SenseComponent  [1]
+    IOnNpcTarget                               CanTarget(BaseEntity)
+
+======================================================================
+## Vending  (24 hooks, 5 classes)
+======================================================================
+
+  VendingMachine  [17]
+    CanAdministerVending                       CanPlayerAdmin(BasePlayer)
+    CanPurchaseItem                            DoTransaction(BasePlayer,Int32,Int32,ItemContainer,Action`2<BasePlayer,Item>,Action`2<BasePlayer,Item>,MarketTerminal)
+    CanUseVending                              CanOpenLootPanel(BasePlayer,String)
+    CanVendingAcceptItem                       CanAcceptItem(Item,Int32)
+    OnAddVendingOffer                          AddSellOrder(Int32,Int32,Int32,Int32,Byte,UInt64,UInt64)
+    OnBuyVendingItem                           BuyItem(BaseEntity/RPCMessage)
+    OnDeleteVendingOffer                       RPC_DeleteSellOrder(BaseEntity/RPCMessage)
+    OnGiveSoldItem                             GiveSoldItem(Item,BasePlayer)
+    OnOpenVendingAdmin                         RPC_OpenAdmin(BaseEntity/RPCMessage)
+    OnRefreshVendingStock                      RefreshSellOrderStockLevel(ItemDefinition)
+    OnRotateVendingMachine                     RPC_RotateVM(BaseEntity/RPCMessage)
+    OnTakeCurrencyItem                         TakeCurrencyItem(Item)
+    OnToggleVendingBroadcast                   RPC_Broadcast(BaseEntity/RPCMessage)
+    OnVendingShopOpen                          RPC_OpenShop(BaseEntity/RPCMessage)
+    OnVendingShopOpened                        RPC_OpenShop(BaseEntity/RPCMessage)
+    OnVendingShopRename                        RPC_UpdateShopName(BaseEntity/RPCMessage)
+    OnVendingTransaction                       DoTransaction(BasePlayer,Int32,Int32,ItemContainer,Action`2<BasePlayer,Item>,Action`2<BasePlayer,Item>,MarketTerminal)
+
+  NPCVendingMachine  [2]
+    CanAdministerVending                       CanPlayerAdmin(BasePlayer)
+    OnTakeCurrencyItem                         TakeCurrencyItem(Item)
+
+  NPCTalking  [2]
+    OnVendingShopOpen                          OnConversationAction(BasePlayer,String)
+    OnVendingShopOpened                        OnConversationAction(BasePlayer,String)
+
+  TravellingVendor  [2]
+    OnVendingShopOpen                          SV_OpenMenu(BaseEntity/RPCMessage)
+    OnVendingShopOpened                        SV_OpenMenu(BaseEntity/RPCMessage)
+
+  MarketTerminal  [1]
+    CanAccessVendingMachine                    <GetDeliveryEligibleVendingMachines>g__IsEligible|25_0(VendingMachine,Vector3,Int32)
+
+======================================================================
+## Electronic  (23 hooks, 14 classes)
+======================================================================
+
+  PowerCounter  [4]
+    OnCounterModeToggle                        ToggleDisplayMode(BaseEntity/RPCMessage)
+    OnCounterModeToggle [patch]                ToggleDisplayMode(BaseEntity/RPCMessage)
+    OnCounterTargetChange                      SERVER_SetTarget(BaseEntity/RPCMessage)
+    OnCounterTargetChange [patch]              SERVER_SetTarget(BaseEntity/RPCMessage)
+
+  DigitalClock  [3]
+    OnDigitalClockAlarmsSet                    RPC_SetAlarms(BaseEntity/RPCMessage)
+    OnDigitalClockRing                         Ring()
+    OnDigitalClockRingStop                     StopRinging()
+
+  IOEntity  [2]
+    OnInputUpdate                              UpdateFromInput(Int32,Int32)
+    OnOutputUpdate                             UpdateOutputs()
+
+  PhoneController  [2]
+    OnPhoneNameUpdate                          UpdatePhoneName(String)
+    OnPhoneNameUpdated                         UpdatePhoneName(String)
+
+  IOEntity/IORef  [2]
+    OnIORefCleared                             Clear()
+    OnIORefCleared [patch]                     Clear()
+
+  ExcavatorSignalComputer  [2]
+    OnExcavatorSuppliesRequest                 RequestSupplies(BaseEntity/RPCMessage)
+    OnExcavatorSuppliesRequested               RequestSupplies(BaseEntity/RPCMessage)
+
+  CardReader  [1]
+    OnCardSwipe                                ServerCardSwiped(BaseEntity/RPCMessage)
+
+  PressButton  [1]
+    OnButtonPress                              RPC_Press(BaseEntity/RPCMessage)
+
+  SolarPanel  [1]
+    OnSolarPanelSunUpdate                      SunUpdate()
+
+  AutoTurret  [1]
+    OnEntityControl                            CanControl(UInt64)
+
+  PoweredRemoteControlEntity  [1]
+    OnEntityControl                            CanControl(UInt64)
+
+  RemoteControlEntity  [1]
+    OnEntityControl                            CanControl(UInt64)
+
+  CCTV_RC  [1]
+    OnCCTVDirectionChange                      Server_SetDir(BaseEntity/RPCMessage)
+
+  HBHFSensor  [1]
+    OnSensorDetect                             CountDetectedPlayers()
+
+======================================================================
+## Radio  (21 hooks, 6 classes)
+======================================================================
+
+  RFManager  [9]
+    OnRfBroadcasterAdd                         AddBroadcaster(Int32,IRFObject)
+    OnRfBroadcasterAdded                       AddBroadcaster(Int32,IRFObject)
+    OnRfBroadcasterRemove                      RemoveBroadcaster(Int32,IRFObject)
+    OnRfBroadcasterRemoved                     RemoveBroadcaster(Int32,IRFObject)
+    OnRfListenerAdd                            AddListener(Int32,IRFObject)
+    OnRfListenerAdded                          AddListener(Int32,IRFObject)
+    OnRfListenerRemove                         RemoveListener(Int32,IRFObject)
+    OnRfListenerRemoved                        RemoveListener(Int32,IRFObject)
+    OnRfListenerRemoved [patch]                RemoveListener(Int32,IRFObject)
+
+  BoomBox  [4]
+    OnBoomboxStationUpdate                     Server_UpdateRadioIP(BaseEntity/RPCMessage)
+    OnBoomboxStationUpdated                    Server_UpdateRadioIP(BaseEntity/RPCMessage)
+    OnBoomboxStationValidate                   IsStationValid(String)
+    OnBoomboxToggle                            ServerTogglePlay(BaseEntity/RPCMessage,Boolean)
+
+  RFBroadcaster  [2]
+    OnRfFrequencyChange                        ServerSetFrequency(BaseEntity/RPCMessage)
+    OnRfFrequencyChanged                       ServerSetFrequency(BaseEntity/RPCMessage)
+
+  RFReceiver  [2]
+    OnRfFrequencyChange                        ServerSetFrequency(BaseEntity/RPCMessage)
+    OnRfFrequencyChanged                       ServerSetFrequency(BaseEntity/RPCMessage)
+
+  Detonator  [2]
+    OnRfFrequencyChange                        ServerSetFrequency(BasePlayer,Int32)
+    OnRfFrequencyChanged                       ServerSetFrequency(BasePlayer,Int32)
+
+  PagerEntity  [2]
+    OnRfFrequencyChange                        ServerSetFrequency(BaseEntity/RPCMessage)
+    OnRfFrequencyChanged                       ServerSetFrequency(BaseEntity/RPCMessage)
+
+======================================================================
+## Naval  (19 hooks, 9 classes)
+======================================================================
+
+  SmallEngine  [3]
+    OnEngineReverse                            SV_ToggleReverse(BaseEntity/RPCMessage)
+    OnEngineStart                              TurnOn(BaseEntity/RPCMessage)
+    OnEngineStop                               TurnOff(BaseEntity/RPCMessage)
+
+  Sail  [3]
+    CanLowerSail                               CanBeLowered(BasePlayer)
+    CanRaiseSail                               CanBeRaised(BasePlayer)
+    CanRotateSail                              CanRotate(BasePlayer)
+
+  BoatGroupSpawner  [3]
+    OnBoatGroupSpawn                           SpawnBoatGroup(HashSet`1<RHIB>,BoatAI/AILoadMode,Boolean,ScientistBoatOilrigManager)
+    OnBoatGroupSpawned                         SpawnBoatGroup(HashSet`1<RHIB>,BoatAI/AILoadMode,Boolean,ScientistBoatOilrigManager)
+    OnBoatGroupSpawned                         SpawnBoatGroup(HashSet`1<RHIB>,BoatAI/AILoadMode,Boolean,ScientistBoatOilrigManager)
+
+  TriggerDeepSeaPortal  [2]
+    CanTeleportDeepSea                         CanEntityTeleport(BaseEntity)
+    OnDeepSeaTeleport                          OnEntityEnter(BaseEntity)
+
+  PlayerBoat  [2]
+    CanEditPlayerBoat                          CanStartEditing(BasePlayer,Boolean)
+    OnPlayerBoatCollide                        ProcessCollision(Collision)
+
+  DeepSeaManager/<CloseDeepSeaAsync>d__77  [2]
+    OnDeepSeaClose                             MoveNext()
+    OnDeepSeaClosed                            MoveNext()
+
+  DeepSeaManager/<OpenDeepSeaAsync>d__75  [2]
+    OnDeepSeaOpen                              MoveNext()
+    OnDeepSeaOpened                            MoveNext()
+
+  Cannon  [1]
+    CanLightCannonFuse                         CanLightFuse()
+
+  BoatBuildingStation  [1]
+    OnPlayerBoatEditStarted                    ConvertPlayerBoatToConstruction()
+
+======================================================================
+## Apartments  (18 hooks, 4 classes)
+======================================================================
+
+  RentableShop  [6]
+    OnRentableShopBreakInComplete              CompleteBreakIn(BasePlayer)
+    OnRentableShopBreakInCompleted             CompleteBreakIn(BasePlayer)
+    OnRentableShopClose                        CloseStore(Boolean)
+    OnRentableShopClosed                       OnShopClosed(Boolean)
+    OnRentableShopOpen                         Server_OpenStore(BaseEntity/RPCMessage)
+    OnRentableShopOpened                       OnShopOpened(BasePlayer)
+
+  ApartmentBuilding  [6]
+    OnApartmentRoomCheckedout                  TryCheckout(BasePlayer)
+    OnApartmentRoomCheckout                    TryCheckout(BasePlayer)
+    OnApartmentRoomPurchase                    PurchaseRoom(BasePlayer,ApartmentSize)
+    OnApartmentRoomPurchased                   PurchaseRoom(BasePlayer,ApartmentSize)
+    OnApartmentRoomUpgrade                     TryUpgradeRoom(BasePlayer,ApartmentSize)
+    OnApartmentRoomUpgraded                    TryUpgradeRoom(BasePlayer,ApartmentSize)
+
+  NPCApartmentSecurity  [4]
+    CanAffordApartmentMasterKey                Conversation_CanAffordMasterKey(BasePlayer)
+    OnApartmentMasterKeyPurchase               OnPurchaseKey(BasePlayer,Vector3)
+    OnApartmentMasterKeyPurchased              OnPurchaseKey(BasePlayer,Vector3)
+    OnApartmentMasterKeyPurchased [Patch]      OnPurchaseKey(BasePlayer,Vector3)
+
+  ApartmentDoor  [2]
+    OnApartmentRoomBreakInComplete             CompleteBreakIn(BasePlayer)
+    OnApartmentRoomBreakInCompleted            CompleteBreakIn(BasePlayer)
+
+======================================================================
+## Turret  (15 hooks, 1 classes)
+======================================================================
+
+  AutoTurret  [15]
+    OnInterferenceUpdate                       RecalculateInterference()
+    OnNearbyTurretsScan                        AddNearbyTurrets()
+    OnTurretAssign                             AssignToFriend(BaseEntity/RPCMessage)
+    OnTurretAssigned                           AssignToFriend(BaseEntity/RPCMessage)
+    OnTurretAuthorize                          AddSelfAuthorize(BasePlayer)
+    OnTurretClearList                          ClearList(BaseEntity/RPCMessage)
+    OnTurretDeauthorize                        RemoveSelfAuthorize(BaseEntity/RPCMessage)
+    OnTurretIdentifierSet                      SetID(BasePlayer,String,String,Boolean)
+    OnTurretModeToggle                         SERVER_Peacekeeper(BaseEntity/RPCMessage)
+    OnTurretModeToggle                         SERVER_AttackAll(BaseEntity/RPCMessage)
+    OnTurretRotate                             FlipAim(BaseEntity/RPCMessage)
+    OnTurretShutdown                           InitiateShutdown()
+    OnTurretStartup                            InitiateStartup()
+    OnTurretTarget                             SetTarget(BaseCombatEntity)
+    OnTurretToggle                             SetIsOnline(Boolean)
+
+======================================================================
+## Team  (13 hooks, 3 classes)
+======================================================================
+
+  RelationshipManager  [10]
+    OnTeamAcceptInvite                         acceptinvite(ConsoleSystem/Arg)
+    OnTeamCreate                               TryCreateTeam(BasePlayer)
+    OnTeamCreated                              TryCreateTeam(BasePlayer)
+    OnTeamDisband                              DisbandTeam(RelationshipManager/PlayerTeam)
+    OnTeamDisbanded                            DisbandTeam(RelationshipManager/PlayerTeam)
+    OnTeamKick                                 kickmember(ConsoleSystem/Arg)
+    OnTeamLeave                                leaveteam(ConsoleSystem/Arg)
+    OnTeamMemberInvite                         sendofflineinvite(ConsoleSystem/Arg)
+    OnTeamMemberInvite                         sendinvite(ConsoleSystem/Arg)
+    OnTeamRejectInvite                         rejectinvite(ConsoleSystem/Arg)
+
+  BasePlayer  [2]
+    OnTeamUpdate                               UpdateTeam(UInt64)
+    OnTeamUpdated                              TeamUpdate(Boolean)
+
+  RelationshipManager/PlayerTeam  [1]
+    OnTeamMemberPromote                        SetTeamLeader(UInt64)
+
+======================================================================
+## Bookmark  (10 hooks, 1 classes)
+======================================================================
+
+  ComputerStation  [10]
+    OnBookmarkAdd                              AddBookmark(BaseEntity/RPCMessage)
+    OnBookmarkControl                          BeginControllingBookmark(BaseEntity/RPCMessage)
+    OnBookmarkControlEnd                       StopControl(BasePlayer)
+    OnBookmarkControlEnded                     StopControl(BasePlayer)
+    OnBookmarkControlEnded                     BeginControllingBookmark(BaseEntity/RPCMessage)
+    OnBookmarkControlEnded [2] [patch]         BeginControllingBookmark(BaseEntity/RPCMessage)
+    OnBookmarkControlStarted                   BeginControllingBookmark(BaseEntity/RPCMessage)
+    OnBookmarkDelete                           RemoveBookmark(String,BasePlayer)
+    OnBookmarkInput                            PlayerServerInput(InputState,BasePlayer)
+    OnBookmarksSendControl                     SendControlBookmarks(BasePlayer)
+
+======================================================================
+## Phone  (10 hooks, 1 classes)
+======================================================================
+
+  PhoneController  [10]
+    CanReceiveCall                             CanReceiveCall()
+    OnPhoneAnswer                              AnswerPhone(BaseEntity/RPCMessage)
+    OnPhoneAnswered                            AnswerPhone(BaseEntity/RPCMessage)
+    OnPhoneCallStart                           BeginCall()
+    OnPhoneCallStarted                         BeginCall()
+    OnPhoneDial                                CallPhone(Int32)
+    OnPhoneDialFail                            OnDialFailed(Telephone/DialFailReason)
+    OnPhoneDialFailed                          OnDialFailed(Telephone/DialFailReason)
+    OnPhoneDialTimedOut                        TimeOutDialing()
+    OnPhoneDialTimeout                         TimeOutDialing()
+
+======================================================================
+## Seasonal  (9 hooks, 5 classes)
+======================================================================
+
+  AdventCalendar  [3]
+    CanBeAwardedAdventGift                     WasAwardedTodaysGift(BasePlayer)
+    OnAdventGiftAward                          AwardGift(BasePlayer)
+    OnAdventGiftAwarded                        AwardGift(BasePlayer)
+
+  XMasRefill  [2]
+    OnXmasGiftsDistribute                      DistributeGiftsForPlayer(BasePlayer)
+    OnXmasLootDistribute                       ServerInit()
+
+  EggHuntEvent  [2]
+    OnHuntEventEnd                             Update()
+    OnHuntEventStart                           StartEvent()
+
+  Stocking  [1]
+    OnXmasStockingFill                         SpawnLoot()
+
+  CollectableEasterEgg  [1]
+    OnEventCollectablePickup                   RPC_PickUp(BaseEntity/RPCMessage)
+
+======================================================================
+## Crafting  (8 hooks, 4 classes)
+======================================================================
+
+  SprayCan  [3]
+    OnEntityReskin                             ChangeItemSkin(BaseEntity/RPCMessage)
+    OnEntityReskinned                          ChangeItemSkin(BaseEntity/RPCMessage)
+    OnSprayCreate                              CreateSpray(BaseEntity/RPCMessage)
+
+  Recycler  [2]
+    CanBeRecycled                              CanBeRecycled(Item)
+    CanRecycle                                 HasRecyclable()
+
+  ItemCrafter  [2]
+    CanCraft                                   CanCraft(ItemBlueprint,Int32,Boolean)
+    OnIngredientsCollect                       CollectIngredients(ItemBlueprint,ItemCraftTask,Int32,BasePlayer,Boolean)
+
+  PlayerBlueprints  [1]
+    CanCraft                                   CanCraft(Int32,Int32,BasePlayer)
+
+======================================================================
+## Animal  (8 hooks, 2 classes)
+======================================================================
+
+  RidableHorse  [6]
+    OnAnimalDungProduce                        DoDung()
+    OnAnimalDungProduced                       DoDung()
+    OnAnimalDungProduced                       DoDung()
+    OnHorseLead                                SERVER_Lead(BaseEntity/RPCMessage)
+    OnRidableAnimalClaim                       SERVER_Claim(BaseEntity/RPCMessage)
+    OnRidableAnimalClaimed                     SERVER_Claim(BaseEntity/RPCMessage)
+
+  HitchTrough  [2]
+    OnHorseHitch                               AttemptToHitch(HitchTrough/IHitchable,HitchTrough/HitchSpot)
+    OnHorseUnhitch                             UnHitch(HitchTrough/IHitchable)
+
+======================================================================
+## Clan  (8 hooks, 6 classes)
+======================================================================
+
+  LocalClan/<Kick>d__65  [2]
+    OnClanMemberKicked                         MoveNext()
+    OnClanMemberLeft                           MoveNext()
+
+  LocalClan/<SetLogo>d__60  [2]
+    OnClanLogoChanged                          MoveNext()
+    OnClanLogoChanged [patch]                  MoveNext()
+
+  LocalClan/<Disband>d__72  [1]
+    OnClanDisbanded                            MoveNext()
+
+  LocalClanBackend/<Create>d__11  [1]
+    OnClanCreated                              MoveNext()
+
+  LocalClanDatabase  [1]
+    OnClanMemberAdded                          AcceptInvite(Int64,UInt64)
+
+  LocalClan/<SetColor>d__61  [1]
+    OnClanColorChanged                         MoveNext()
+
+======================================================================
+## Fuel  (7 hooks, 2 classes)
+======================================================================
+
+  EntityFuelSystem  [5]
+    CanCheckFuel                               IsInFuelInteractionRange(BasePlayer)
+    CanUseFuel                                 TryUseFuel(Single,Single)
+    OnFuelAmountCheck                          GetFuelAmount()
+    OnFuelCheck                                HasFuel(Boolean)
+    OnFuelItemCheck                            GetFuelItem()
+
+  BaseOven  [2]
+    OnFuelConsume                              ConsumeFuel(Item,ItemModBurnable)
+    OnFuelConsumed                             ConsumeFuel(Item,ItemModBurnable)
+
+======================================================================
+## Traps  (7 hooks, 5 classes)
+======================================================================
+
+  Landmine  [2]
+    OnTrapDisarm                               RPC_Disarm(BaseEntity/RPCMessage)
+    OnTrapTrigger                              ObjectEntered(GameObject)
+
+  BearTrap  [2]
+    OnTrapArm                                  RPC_Arm(BaseEntity/RPCMessage)
+    OnTrapTrigger                              ObjectEntered(GameObject)
+
+  BaseTrapTrigger  [1]
+    OnTrapSnapped                              OnObjectAdded(GameObject,Collider)
+
+  WildlifeTrap  [1]
+    OnWildlifeTrap                             TrapWildlife(TrappableWildlife)
+
+  SurvivalFishTrap  [1]
+    OnWildlifeTrap                             TrapThink()
+
+======================================================================
+## Primitive  (7 hooks, 4 classes)
+======================================================================
+
+  BatteringRam  [3]
+    OnSiegeWeaponDoorClose                     RPC_CloseDoor(BaseEntity/RPCMessage)
+    OnSiegeWeaponDoorOpen                      RPC_OpenDoor(BaseEntity/RPCMessage)
+    OnSiegeWeaponFire                          SERVER_WantsAttack(BaseEntity/RPCMessage)
+
+  Catapult  [2]
+    OnCatapultFireForce                        Fire(BasePlayer,Single)
+    OnSiegeWeaponFire                          SERVER_WantsFire(BaseEntity/RPCMessage)
+
+  BallistaGun  [1]
+    OnBallistaGunReload                        SERVER_ReloadStart(BaseEntity/RPCMessage)
+
+  BaseSiegeWeapon  [1]
+    OnSiegeWeaponPull                          SERVER_StartPulling(BaseEntity/RPCMessage)
+
+======================================================================
+## Network  (6 hooks, 3 classes)
+======================================================================
+
+  BaseNetworkable  [3]
+    CanNetworkTo                               ShouldNetworkTo(BasePlayer)
+    OnNetworkGroupEntered                      OnNetworkGroupEnter(Group)
+    OnNetworkGroupLeft                         OnNetworkGroupLeave(Group)
+
+  Network.Networkable  [2]
+    OnNetworkSubscriptionsUpdate               UpdateSubscriptions(Int32,Int32)
+    OnNetworkSubscriptionsUpdate               UpdateHighPrioritySubscriptions()
+
+  NetworkVisibilityGrid  [1]
+    OnNetworkSubscriptionsGather               GetVisibleFrom(Group,Group>,Int32)
+
+======================================================================
+## Elevator  (6 hooks, 4 classes)
+======================================================================
+
+  Elevator  [2]
+    OnElevatorCall                             <CallElevator>b__26_0(Elevator)
+    OnElevatorMove                             RequestMoveLiftTo(Int32,Single&,Elevator)
+
+  ElevatorLift  [2]
+    CanElevatorLiftMove                        CanMove()
+    OnElevatorButtonPress                      Server_RaiseLowerFloor(BaseEntity/RPCMessage)
+
+  Lift  [1]
+    OnLiftUse                                  RPC_UseLift(BaseEntity/RPCMessage)
+
+  ProceduralLift  [1]
+    OnLiftUse                                  RPC_UseLift(BaseEntity/RPCMessage)
+
+======================================================================
+## Fishing  (6 hooks, 1 classes)
+======================================================================
+
+  BaseFishingRod  [6]
+    CanCastFishingRod                          Server_RequestCast(BaseEntity/RPCMessage)
+    CanCatchFish                               CatchProcessBudgeted()
+    OnFishCatch                                CatchProcessBudgeted()
+    OnFishCaught                               CatchProcessBudgeted()
+    OnFishingRodCast                           Server_RequestCast(BaseEntity/RPCMessage)
+    OnFishingStopped                           Server_Cancel(BaseFishingRod/FailReason)
+
+======================================================================
+## Mission  (6 hooks, 1 classes)
+======================================================================
+
+  BaseMission  [6]
+    CanAssignMission                           AssignMission(BasePlayer,IMissionProvider,BaseMission)
+    OnMissionAssigned                          AssignMission(BasePlayer,IMissionProvider,BaseMission)
+    OnMissionFailed                            MissionFailed(BaseMission/MissionInstance,BasePlayer,BaseMission/MissionFailReason,Boolean)
+    OnMissionStart                             MissionStart(BaseMission/MissionInstance,BasePlayer)
+    OnMissionStarted                           MissionStart(BaseMission/MissionInstance,BasePlayer)
+    OnMissionSucceeded                         MissionSuccess(BaseMission/MissionInstance,BasePlayer)
+
+======================================================================
+## Firework  (6 hooks, 2 classes)
+======================================================================
+
+  PatternFirework  [3]
+    CanDesignFirework                          PlayerCanModify(BasePlayer)
+    OnFireworkDesignChange                     ServerSetFireworkDesign(BaseEntity/RPCMessage)
+    OnFireworkDesignChanged                    ServerSetFireworkDesign(BaseEntity/RPCMessage)
+
+  BaseFirework  [3]
+    OnFireworkDamage                           OnAttacked(HitInfo)
+    OnFireworkExhausted                        OnExhausted()
+    OnFireworkStarted                          Begin()
+
+======================================================================
+## Queue  (4 hooks, 1 classes)
+======================================================================
+
+  ConnectionQueue  [4]
+    OnConnectionDequeue                        RemoveConnection(Connection)
+    OnConnectionQueue                          Join(Connection)
+    OnQueueCycle                               Cycle(Int32)
+    OnQueueUpdate                              SendQueueUpdate(Connection,Int32)
+
+======================================================================
+## World  (3 hooks, 3 classes)
+======================================================================
+
+  TerrainMeta  [1]
+    OnTerrainInitialized                       PostSetupComponents()
+
+  World  [1]
+    OnWorldPrefabSpawned                       SpawnPrefab(String,Prefab,Vector3,Quaternion,Vector3)
+
+  TerrainGenerator  [1]
+    OnTerrainCreate                            CreateTerrain(Int32,Int32)
+
+======================================================================
+## Shop  (3 hooks, 1 classes)
+======================================================================
+
+  ShopFront  [3]
+    OnShopAcceptClick                          AcceptClicked(BaseEntity/RPCMessage)
+    OnShopCancelClick                          CancelClicked(BaseEntity/RPCMessage)
+    OnShopCompleteTrade                        CompleteTrade()
+
+======================================================================
+## TechTree  (2 hooks, 1 classes)
+======================================================================
+
+  Workbench  [2]
+    OnTechTreeNodeUnlock                       RPC_TechTreeUnlock(BaseEntity/RPCMessage)
+    OnTechTreeNodeUnlocked                     RPC_TechTreeUnlock(BaseEntity/RPCMessage)
+
+======================================================================
+## Industrial  (2 hooks, 2 classes)
+======================================================================
+
+  IndustrialConveyor  [1]
+    OnConveyorFiltersChange                    RPC_ChangeFilters(BaseEntity/RPCMessage)
+
+  IndustrialCrafter  [1]
+    OnItemCraft                                RunJob()
+
+======================================================================
+## Pet  (2 hooks, 1 classes)
+======================================================================
+
+  FrankensteinTable  [2]
+    OnFrankensteinPetSleep                     SleepFrankenstein(BasePlayer)
+    OnFrankensteinPetWake                      WakeFrankenstein(BasePlayer)
+
+======================================================================
+## CommunityUI  (2 hooks, 1 classes)
+======================================================================
+
+  CommunityEntity  [2]
+    OnCuiDraggableDrag                         Hook_DragRPC(BasePlayer,String,Vector3,CommunityEntity/DraggablePositionSendType)
+    OnCuiDraggableDrop                         Hook_DropRPC(BasePlayer,String,String,String,String)
