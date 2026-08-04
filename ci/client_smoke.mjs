@@ -108,6 +108,7 @@ const REQUIRED = [
   "client_death_weapon",
   "client_action_respawn",
   "client_action_move",
+  "client_applied2",
   "client_move_readout",
   "client_move_payload",
   "client_bag_ids_ptr",
@@ -556,11 +557,20 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   // variant to test — the absence of a payload IS the range check.
   check(ex.client_action_drink() > 0, "the drink verb must encode");
 
-  // The move verb, both directions (wire v17). APPLIED_MOVE = 1 << 31,
-  // which reads as a negative int32 out of the C ABI — hence the `>>> 0`
-  // on the flag word here and nowhere above it. It is the last bit in that
-  // word; a thirty-third flag needs a second one.
-  const MOVE = 2147483648; // 1 << 31
+  // The move verb, both directions (wire v17). The move verdict is the
+  // one applied-flag that is NOT in the word `client_on_stream` returns:
+  // bits 0..30 of that word are spent and bit 31 is the bridge's error
+  // sentinel, so it rides word 1 and is read through `client_applied2`.
+  //
+  // That is the whole point of these two checks. `APPLIED_MOVE` was
+  // `1 << 31` — the sentinel's own value — so the first move of a session
+  // reached the client as a decode error, which logs and returns early,
+  // taking the rest of that pump iteration with it. Asserting bit 31 is
+  // CLEAR on a verdict is the C-ABI half of the ledger test in `core.rs`:
+  // that one proves no constant can reach the bit, this one proves the
+  // browser's actual calling path does not hand one to JS.
+  const MOVE2 = 1; // core::APPLIED2_MOVE, word 1 bit 0
+  const STREAM_ERR = 2147483648; // 1 << 31, and nothing else may be it
 
   // Moved: sub 36 · from (kind 1, slot 9) · to (kind 0, slot 22) · count 7
   // · item 5. Every part distinct from every other, so a transposed pair
@@ -569,7 +579,9 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   // is the exact shape ~27 of the reference's corrections landed on.
   f = evFrame(36, [[1, 2], [9, 5], [0, 2], [22, 5], [7, 16], [5, 16]]);
   writeIn(f);
-  check((ex.client_on_stream(f.length) >>> 0) === MOVE, "a move must apply with the MOVE flag");
+  let mflags = ex.client_on_stream(f.length) >>> 0;
+  check((mflags & STREAM_ERR) === 0, "a move must not read as a stream error");
+  check(ex.client_applied2() === MOVE2, "a move must apply with the MOVE flag in word 1");
   check(
     (ex.client_move_readout() >>> 0) === ((22 << 16) | (1 << 8) | 9),
     "move readout mismatch: reason 0, to slot 22, from kind 1, from slot 9",
@@ -584,13 +596,24 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   // landed move above, which is why it rides the high byte.
   f = evFrame(37, [[4, 3], [0, 2], [11, 5], [1, 2], [26, 5]]);
   writeIn(f);
-  check((ex.client_on_stream(f.length) >>> 0) === MOVE, "a refusal must apply with the MOVE flag");
+  mflags = ex.client_on_stream(f.length) >>> 0;
+  check((mflags & STREAM_ERR) === 0, "a refusal must not read as a stream error");
+  check(ex.client_applied2() === MOVE2, "a refusal must apply with the MOVE flag in word 1");
   check((ex.client_move_readout() >>> 0) >>> 24 === 4, "move refusal reason mismatch");
   check(
     (ex.client_move_readout() >>> 0 & 0xffff) === 11,
     "a refusal must still carry the from slot, or the panel cannot roll back",
   );
   check(ex.client_move_payload() === 0, "a refusal moved nothing");
+
+  // Word 1 describes ONE message. JS has to read it unconditionally —
+  // word 0 has no spare bit to announce it with — so a verdict that
+  // outlived its message would be read as the answer to a drag the server
+  // has not answered yet, and the panel would roll back a live move.
+  f = evFrame(33, [[3, 4]]); // a consume, which sets nothing in word 1
+  writeIn(f);
+  ex.client_on_stream(f.length);
+  check(ex.client_applied2() === 0, "a stale move verdict outlived its message");
 
   // And the move verb crosses C->S. A real drag encodes; a forged kind, a
   // slot past INV_SLOTS and a zero count do not — the bridge refuses them
