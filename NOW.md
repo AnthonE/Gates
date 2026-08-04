@@ -1038,7 +1038,20 @@ Done items are deleted, not checked — history lives in git and
    terrain program costs ~3 s to compile here, and a fresh tab compiles
    more than one.
 
-11. **Nothing casts past 720 m, and nothing out there has a silhouette.**
+11. **The billboard LOD is now a BLOCKER, not an item.** `ci/pine_shape.mjs`
+   is red on the branch that generated the pine, and it is right to be: the
+   scatter pool holds every tree in the 5×5 chunk ring — `browser_smoke`
+   measured **110** of them — and `frustumCulled = false`, because an
+   `InstancedMesh` has one bounding sphere so three culls the whole pool or
+   none of it. 110 × 6,496 tris × 3 passes = **2.14 M**, and with the terrain's
+   ~0.93 M that is 3.07 M against DESIGN §9's 1.5 M. There is no dial-down that
+   escapes it: a generated pine thinned to ~1,100 triangles measures BALD, so
+   detail cannot buy the budget back. Billboards can — 4 triangles a tree past
+   the near ring. SeedThree's `impostor.js` is the worked reference (below),
+   and whatever LOD1 becomes it must sway and it must alpha-test, or it will
+   pop against the near ring on both counts.
+
+12. **Nothing casts past 720 m, and nothing out there has a silhouette.**
    The horizon casts now (`DECISIONS.md` §open) but two limits are stated
    rather than solved: the coarsest clipmap level stops at 720 m because
    fog closes at 1000 m, and past the near ring the only caster is the

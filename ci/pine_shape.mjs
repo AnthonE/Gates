@@ -379,14 +379,41 @@ check(
 check(genBase > -0.05, `the generated pine starts at y ${genBase.toFixed(3)} — it floats or it is buried`);
 check(genRootW < ROOT_MAX_W, `the generated pine's base carries wind weight ${genRootW} — the trunk will slide`);
 
-// Budget. Reported against the ring arithmetic, and ASSERTED against a ceiling,
-// because this is the number a generator can run away with in one parameter.
+// Budget, and this is the assertion that matters most now.
+//
+// The per-tree ceiling was never the binding constraint — the FLEET is, and I
+// estimated it wrong twice. "About 20 trees inside 40 m" is not what the pool
+// holds: it holds every tree in the 5x5 chunk ring, `browser_smoke` measured
+// 110 of them, and `frustumCulled = false` means all 110 render every pass
+// (an InstancedMesh has one bounding sphere, so three culls the whole pool or
+// none of it — there is no per-instance culling to lean on).
+//
+// So the arithmetic is 110 x tris x 3 passes against DESIGN §9's 1.5 M, with
+// the terrain already measured at ~0.93 M of it. Read from browser_smoke's own
+// constant rather than restated, because a budget that lives in two files is a
+// budget that will disagree with itself.
 const genTris = parts.reduce((a, p) => a + triOf(p.geo), 0);
 const GEN_TRI_MAX = 8000;
 check(
   genTris <= GEN_TRI_MAX,
-  `the generated pine is ${genTris} triangles against a ${GEN_TRI_MAX} ceiling — at ~20 trees inside ` +
-    `40 m over 3 passes that is ${Math.round((genTris * 20 * 3) / 1000)} k of DESIGN §9's 1.5 M`,
+  `the generated pine is ${genTris} triangles against a ${GEN_TRI_MAX} per-tree ceiling`,
+);
+const smokeSrc = fs.readFileSync(path.join(ROOT, "ci/browser_smoke.mjs"), "utf8");
+const budgetM = smokeSrc.match(/const TRIANGLE_BUDGET = ([\d_]+);/);
+if (!budgetM) fail("browser_smoke.mjs no longer declares TRIANGLE_BUDGET — this gate reads it by name");
+const TRIANGLE_BUDGET = Number(budgetM[1].replace(/_/g, ""));
+const RING_TREES = 110; // measured by browser_smoke's prop probe on a forest spawn
+const SHADOW_PASSES = 3; // main + shadow levels 0 and 1 (NEAR_CASTER_MAX_LEVEL)
+const TERRAIN_TRIS = 930000; // measured peak with the cone trees subtracted
+const fleetTris = RING_TREES * genTris * SHADOW_PASSES;
+check(
+  fleetTris + TERRAIN_TRIS <= TRIANGLE_BUDGET,
+  `${RING_TREES} generated pines x ${genTris} tris x ${SHADOW_PASSES} passes = ` +
+    `${fleetTris.toLocaleString()} triangles, and with the terrain's ~${TERRAIN_TRIS.toLocaleString()} ` +
+    `that is ${(fleetTris + TERRAIN_TRIS).toLocaleString()} against DESIGN §9's ` +
+    `${TRIANGLE_BUDGET.toLocaleString()}. There is no dial-down that fixes this: at ~1,100 tris the ` +
+    `generated tree measures BALD (see PINE_VARIANTS notes), so the billboard LOD is a blocker for ` +
+    `this branch and not a follow-up. TERRAIN.md §4 has specified it the whole time.`,
 );
 
 // Determinism, on the generator this time. ez-tree seeds its own RNG; if the
