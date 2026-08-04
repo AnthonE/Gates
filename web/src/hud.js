@@ -23,6 +23,30 @@ const INV_BELT = 6;
 const INV_GRID = 24;
 const INV_SLOTS = 30;
 
+/**
+ * What a refused move tells the player, indexed by `REFUSE_M_*`
+ * (crates/sim-core/src/inventory.rs). Index 0 is "landed" and is never
+ * shown. The sim keeps these as separate reasons on purpose and so does
+ * this table: "it is gone" (the box was destroyed under you) and "it is out
+ * of reach" (you walked away from it) are the same refusal to a byte-level
+ * gate and completely different news to a player standing there.
+ *
+ * A reason the sim grows and this table has not is caught by ui_smoke,
+ * which walks 1..REFUSE_M_MAX and requires a distinct non-empty string for
+ * each — a silent `undefined` here would tell the player nothing at the one
+ * moment the panel owes them a sentence.
+ */
+const MOVE_REFUSALS = [
+  "",
+  "that slot is not there",
+  "there is nothing there",
+  "you do not have that many",
+  "there is no room for it",
+  "it is gone",
+  "it is out of reach",
+  "those do not stack",
+];
+
 export class Hud {
   constructor() {
     this.el = document.getElementById("hud");
@@ -89,14 +113,19 @@ export class Hud {
     // the death screen — a panel that allocated 30 cells the frame a
     // player opened it would do it mid-step.
     //
-    // Read-only by design, and that is the honest half rather than a
-    // shortcut: there is no move/stack/split verb in `crates/` yet, so
-    // there is no refusal path to draw a drag against (NOW.md item 1).
-    // Drawing a drag the sim cannot answer is exactly the divergence
-    // CLAUDE.md's item-move trap describes — the client has already drawn
-    // the move, and a container refusal has to be computed on the values
-    // the client predicted with. So this shows and selects; it does not
-    // move.
+    // It shows, it selects, and since the sim grew a refusal path (wire
+    // v17) it drags: `beginInvDrag` / `dropInvDrag` / `invMoveVerdict`
+    // below are the move verb, and the ordering law they enforce is the
+    // one CLAUDE.md's item-move trap is about.
+    //
+    // NOT YET WIRED TO THE SIM, and deliberately so. `APPLIED_MOVE`
+    // (client-wasm `core.rs:122`) is `1 << 31` and `STREAM_ERR`
+    // (`bridge.rs:64`) is also `1 << 31`, so the verdict this panel waits
+    // for arrives at `main.js:759` as a decode error: it logs
+    // `console.error`, which fails the browser gates, and returns early,
+    // dropping the inventory diff riding with it. That is a `crates/`
+    // collision and the systems lane owns it (NOW.md). Until it clears,
+    // `onInvMove` stays at its default and no drag reaches the wire.
     this.inv = document.getElementById("inv");
     this.invGrid = document.getElementById("invgrid");
     this.invBelt = document.getElementById("invbelt");
@@ -106,6 +135,23 @@ export class Hud {
     this.invFocus = -1;
     /** Set by main.js: (slot 0..INV_BELT-1) → void. Belt cells only. */
     this.onInvSelect = () => {};
+    /**
+     * Set by main.js: (from, to) → did the frame go out?
+     *
+     * The host owns the count, not this panel: `setInventory` is handed
+     * strings and a string is not a stack size, so a panel that parsed
+     * "wood ×8" back into an 8 would be inventing the payload it sends.
+     * main.js reads the count off the same authoritative array it drew
+     * from — the quantize-both-sides law, applied to containers.
+     *
+     * Returning false means the wire refused the shape
+     * (`client_action_move` → 0) and nothing is drawn.
+     */
+    this.onInvMove = () => false;
+    /** The slot being dragged, or -1. */
+    this.invDrag = -1;
+    /** The one move in flight, or null. See `dropInvDrag`. */
+    this.invPending = null;
     this.invCells = [];
     this.invDivs = [];
     this.invTexts = [];
@@ -116,10 +162,23 @@ export class Hud {
       cell.appendChild(label);
       (s < INV_BELT ? this.invBelt : this.invGrid).appendChild(cell);
       cell.addEventListener("click", () => this.focusSlot(s));
+      // The drag, as real pointer events. `pointerdown` picks up and
+      // `pointerup` drops, so the press and the release can land on
+      // different cells — which is the whole gesture. A release outside any
+      // cell is handled on the panel below, not here.
+      cell.addEventListener("pointerdown", (e) => {
+        if (e.button === 0) this.beginInvDrag(s);
+      });
+      cell.addEventListener("pointerup", () => this.dropInvDrag(s));
       this.invCells.push(label);
       this.invDivs.push(cell);
       this.invTexts.push("");
     }
+    // Released on the panel but not on a cell: the drag ends and nothing
+    // moves. Without this the next click anywhere would drop a stale drag
+    // into whatever it landed on.
+    this.inv.addEventListener("pointerup", () => this.cancelInvDrag());
+    this.inv.addEventListener("pointercancel", () => this.cancelInvDrag());
   }
 
   show() {
@@ -296,6 +355,10 @@ export class Hud {
   toggleInv() {
     this.invOpen = !this.invOpen;
     this.inv.style.display = this.invOpen ? "flex" : "none";
+    // A drag cannot survive the panel it was started in. Closing mid-drag
+    // and reopening would otherwise leave a cell marked and the next click
+    // would drop into it.
+    this.cancelInvDrag();
     return this.invOpen;
   }
 
@@ -333,12 +396,17 @@ export class Hud {
    * Slow-timer only, and only a changed cell touches the DOM.
    */
   setInventory(texts) {
+    const p = this.invPending;
     for (let s = 0; s < INV_SLOTS; s++) {
       const t = texts[s] || "";
       if (t === this.invTexts[s]) continue;
-      this.invTexts[s] = t;
-      this.invCells[s].textContent = t;
-      if (s === this.invFocus) this.drawInvDetail();
+      // The server has restated a slot this panel is predicting on. Its
+      // word is newer than the rollback snapshot, so a refusal that arrives
+      // after this must NOT put the snapshot back — see `invMoveVerdict`.
+      // Marked before the write, because the write is what makes the
+      // snapshot stale.
+      if (p && (s === p.from || s === p.to)) p.restated = true;
+      this.setInvText(s, t);
     }
   }
 
@@ -368,6 +436,117 @@ export class Hud {
     this.invDivs[s].classList.add("focus");
     this.drawInvDetail();
     if (s < INV_BELT) this.onInvSelect(s);
+  }
+
+  /**
+   * Begin a drag. Returns whether one started.
+   *
+   * An empty slot starts nothing — there is no such thing as dragging
+   * nothing somewhere, and letting it start would make every later step
+   * reason about a move with no item in it.
+   */
+  beginInvDrag(s) {
+    if (this.invDrag >= 0) return false;
+    if (!this.invTexts[s]) return false;
+    this.invDrag = s;
+    this.invDivs[s].classList.add("drag");
+    return true;
+  }
+
+  /** Abort a drag without moving anything: pointercancel, blur, Escape. */
+  cancelInvDrag() {
+    if (this.invDrag < 0) return false;
+    this.invDivs[this.invDrag].classList.remove("drag");
+    this.invDrag = -1;
+    return true;
+  }
+
+  /**
+   * Drop the drag on slot `to`. This is the item-move verb, and CLAUDE.md's
+   * trap list is explicit about how it fails: three Oxide fixes in 28
+   * minutes on one 2019 day, all one-line splice-point moves, all landing
+   * as *the server disconnecting the client*, because container state
+   * diverged and a diverged container reads as a forged request. The bug is
+   * validation ORDERING against the mutation, never arithmetic.
+   *
+   * So the order here is fixed, and every step of it is gated:
+   *
+   *   1. validate the address BEFORE touching a cell — same slot, no drag,
+   *      out of range, empty source. A refused drag mutates nothing, so
+   *      there is nothing to roll back and no frame goes out.
+   *   2. snapshot exactly the two labels about to change.
+   *   3. ask the host to encode and send. `client_action_move` returns 0
+   *      for a shape the wire will not carry, and a drawn move with no
+   *      frame behind it is the divergence itself — so the send is asked
+   *      BEFORE the prediction is drawn, and a refusal to encode draws
+   *      nothing at all.
+   *   4. only then draw it.
+   *
+   * One move in flight at a time. The second concurrent splice is what the
+   * reference actually shipped three times, and serialising is cheaper than
+   * reconciling two predictions against one authoritative diff.
+   */
+  dropInvDrag(to) {
+    const from = this.invDrag;
+    if (from < 0) return false;
+    this.cancelInvDrag();
+    if (this.invPending) {
+      this.toast("still moving that");
+      return false;
+    }
+    if (to === from) return false;
+    if (!(to >= 0 && to < INV_SLOTS)) return false;
+    if (!this.invTexts[from]) return false;
+    const wasFrom = this.invTexts[from];
+    const wasTo = this.invTexts[to];
+    if (!this.onInvMove(from, to)) {
+      // The wire refused the shape. Nothing was drawn, so nothing unwinds —
+      // and the player still has to learn the drag did not happen.
+      this.toast("that will not move");
+      return false;
+    }
+    this.invPending = { from, to, wasFrom, wasTo, restated: false };
+    this.setInvText(from, "");
+    this.setInvText(to, wasFrom);
+    return true;
+  }
+
+  /**
+   * The sim's verdict on the move this panel drew.
+   *
+   * `reason` is 0 for landed, else an `inventory.rs` `REFUSE_M_*`. The
+   * address comes back with it because the refusal must be matched against
+   * the prediction it answers: a verdict carrying a different `from`/`to`
+   * than the one in flight is not this panel's move, and rolling the drawn
+   * move back on it would corrupt a slot the server never spoke about.
+   * That is the same positional-payload shape CLAUDE.md names — the right
+   * value in the wrong position — one level up from the encoder.
+   */
+  invMoveVerdict(reason, from, to) {
+    const p = this.invPending;
+    if (!p) return false;
+    if (from !== p.from || to !== p.to) return false;
+    this.invPending = null;
+    if (reason === 0) return true;
+    // Roll back to what was drawn over — UNLESS an authoritative
+    // `setInventory` has already restated those slots while this was in
+    // flight. The server's word is newer than our snapshot, and restoring
+    // the snapshot over it would put back an item the sim has since moved
+    // somewhere else. This flag is the whole reason `setInventory` knows
+    // about pending moves at all.
+    if (!p.restated) {
+      this.setInvText(p.from, p.wasFrom);
+      this.setInvText(p.to, p.wasTo);
+    }
+    this.toast(MOVE_REFUSALS[reason] || "that will not move");
+    return true;
+  }
+
+  /** One cell's label, kept with the mirror `setInventory` diffs against. */
+  setInvText(s, t) {
+    this.invTexts[s] = t;
+    this.invCells[s].textContent = t;
+    if (s === this.invFocus) this.drawInvDetail();
   }
 
   /** The readout under the grid. Belt slots are named by their digit key

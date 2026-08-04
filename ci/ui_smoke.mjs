@@ -9,13 +9,19 @@
 // prove that a DOM overlay still overlaid. That is the wrong owner paying the
 // cost.
 //
-// This gate does NOT change that, and a previous version of this file said it
-// did. It runs in the code tier, on every pass, in every lane, exempting
-// nothing; `renderer_touched` is untouched. What it does is make the fix
-// available: it asserts, as a strict SUPERSET, every `web/index.html` and
-// `web/src/hud.js` contract that `browser_smoke` holds, so the carve-out
-// proposed in `DECISIONS.md` §open can be approved as a one-line regex edit
-// against coverage that already exists and already runs.
+// This gate is the coverage that made the fix safe, and the fix is now ARMED
+// (operator, 2026-08-04, `DECISIONS.md` §open): `renderer_touched` exempts
+// `web/index.html`, `web/src/hud.js` and `web/src/input.js`, and every other
+// path under `web/` still schedules the renderer tier. It earned that by
+// asserting, as a strict SUPERSET, every `web/index.html` and `web/src/hud.js`
+// contract that `browser_smoke` holds — eleven mutants of those two files, all
+// eleven red.
+//
+// THE STANDING RULE that came with the arming, and it binds this file: a path
+// joins that exemption list ONLY in a commit that also extends this gate to
+// cover what that path can break. Subtracting a path from `renderer_touched`
+// subtracts a gate from the merge, so the list is the operator's and never a
+// lane branch's.
 //
 // The superset is the load-bearing claim, so it is written down rather than
 // asserted in prose. `browser_smoke`'s HUD-owning reads, and where each is
@@ -84,9 +90,27 @@ import { createRequire } from "node:module";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WEB = path.join(root, "web");
-// Away from `browser_smoke` (8934) and `vantages` (8971) so a UI gate can run
-// beside either without a port fight.
-const PORT = Number(process.env.UI_SMOKE_PORT || 8952);
+// Port 0: the OS picks a free one and we read back what it gave us.
+//
+// This was 8952 — "away from `browser_smoke` (8934) and `vantages` (8971) so a
+// UI gate can run beside either without a port fight" — and that reasoning was
+// right about the wrong neighbours. The build runs THREE lanes in parallel
+// (`looks`, `systems`, `ui`), each a worktree running its own `./ci/gates.sh`,
+// and this gate is in the CODE tier, which every lane runs on every pass. So
+// the collision was never with the renderer gates; it was with the other two
+// copies of THIS one. A distinct fixed port cannot fix that, because the thing
+// it collides with is itself.
+//
+// It showed up as a flaky wall on 2026-08-04: `./ci/gates.sh` red, then green
+// on an immediate re-run of an unchanged clean tree (`logs/health-red1.log`
+// against `logs/health.log`). A flaky wall is not a wall.
+//
+// Deliberately not a retry loop and not a scan for a free port: both re-open
+// the same race with a longer fuse, and this repo has already paid for
+// "widening a timeout is not a fix". Port 0 has no race — the kernel does not
+// hand the same ephemeral port to two sockets. `UI_SMOKE_PORT` still overrides
+// for a caller who needs a known address.
+const PORT = Number(process.env.UI_SMOKE_PORT || 0);
 
 let checks = 0;
 let server = null;
@@ -203,7 +227,28 @@ server = http.createServer((req, res) => {
   });
   fs.createReadStream(file).pipe(res);
 });
-await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+// Listen with the `error` event actually handled. Without this line a bind
+// failure is an UNHANDLED 'error' event: node prints a raw `node:events:497
+// throw er` stack and dies, and `gates.sh` reports "GATE FAIL: ui smoke" with
+// no cause attached to it — which is how the 2026-08-04 flake presented. A
+// gate that cannot say why it failed costs a pass to diagnose.
+await new Promise((resolve, reject) => {
+  server.once("error", reject);
+  server.listen(PORT, "127.0.0.1", () => {
+    server.removeListener("error", reject);
+    resolve();
+  });
+}).catch((e) =>
+  fail(
+    `the static server could not bind ${PORT === 0 ? "an ephemeral port" : `127.0.0.1:${PORT}`}: ${e.message}` +
+      (PORT === 0 ? "" : " — UI_SMOKE_PORT pins the port; unset it to let the OS pick a free one"),
+  ),
+);
+// Read back what the kernel actually assigned. With PORT=0 the value in
+// `PORT` is 0 and navigating to `http://127.0.0.1:0/` would not resolve, so
+// every URL below must come from here and never from the constant.
+const port = server.address()?.port;
+if (!port) fail("the static server bound no port — server.address() returned nothing");
 
 // --- the browser ------------------------------------------------------------
 try {
@@ -243,7 +288,7 @@ await page.route("**/src/main.js", (route) => {
   return route.fulfill({ status: 200, contentType: "text/javascript", body: "" });
 });
 
-await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
+await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "load" });
 
 // =============================================================================
 // A. the scaffold — what lets index.html leave the renderer tier
@@ -1251,6 +1296,268 @@ check(
 );
 
 // =============================================================================
+// K. the item-move verb — validation ordering against the mutation
+// =============================================================================
+// CLAUDE.md's trap list calls this the most bug-prone thing in the reference
+// and says exactly how it fails: three Oxide fixes in 28 minutes on one 2019
+// day, all one-line splice-point moves on move/stack/loot, all landing as *the
+// server disconnecting the client*, because container state diverged and a
+// diverged container reads as a forged request. "The bug is validation
+// ordering against the mutation, never arithmetic." So this group asserts the
+// ORDER, not the sums — every check below is about what was mutated before
+// what was checked, and which values a rollback restores.
+//
+// The refusal reasons come out of the sim rather than being restated here,
+// for `pine_shape.mjs`'s reason: a number restated in a gate is a number that
+// can drift away from the one that ships.
+const invSrc = fs.readFileSync(path.join(root, "crates/sim-core/src/inventory.rs"), "utf8");
+const REFUSE_MAX = Number(invSrc.match(/pub const REFUSE_M_UNSTACKABLE: u32 = (\d+);/)?.[1]);
+check(
+  Number.isInteger(REFUSE_MAX) && REFUSE_MAX >= 7,
+  `could not read REFUSE_M_UNSTACKABLE out of inventory.rs (got ${REFUSE_MAX}) — the refusal table below` +
+    " would then be checked against nothing, which is the gate-that-matches-nothing class",
+);
+
+const move = await page.evaluate(
+  ([n, belt, reasonMax]) => {
+    const { hud } = globalThis.__ui;
+    const sent = [];
+    let allow = true;
+    hud.onInvMove = (from, to) => {
+      sent.push([from, to]);
+      return allow;
+    };
+    const fill = () => {
+      const t = [];
+      for (let s = 0; s < n; s++) t.push(`s${s}`);
+      hud.setInventory(t);
+    };
+    const cells = () => [
+      ...document.querySelectorAll("#invbelt .invcell"),
+      ...document.querySelectorAll("#invgrid .invcell"),
+    ];
+    const texts = () => cells().map((c) => c.querySelector("span").textContent);
+    const down = (i) => cells()[i].dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    const up = (i) => cells()[i].dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    const out = {};
+
+    // --- a drag from an empty slot is not a drag ----------------------------
+    fill();
+    hud.setInventory(Object.assign([], texts(), { 4: "" }));
+    down(4);
+    out.emptyDrag = { drag: hud.invDrag, marked: cells()[4].classList.contains("drag") };
+    up(9);
+    out.afterEmptyDrop = { sent: sent.length, s9: texts()[9] };
+
+    // --- the happy path: draw it, then have it land -------------------------
+    fill();
+    sent.length = 0;
+    down(0);
+    out.picked = { drag: hud.invDrag, marked: cells()[0].classList.contains("drag") };
+    up(7);
+    out.predicted = { from: texts()[0], to: texts()[7], sent: sent.slice(), pending: !!hud.invPending };
+    out.landed = hud.invMoveVerdict(0, 0, 7);
+    out.afterLand = { from: texts()[0], to: texts()[7], pending: !!hud.invPending };
+
+    // --- a refusal rolls back EXACTLY the two slots it drew -----------------
+    fill();
+    sent.length = 0;
+    down(2);
+    up(11);
+    const drew = { from: texts()[2], to: texts()[11] };
+    const handled = hud.invMoveVerdict(6, 2, 11);
+    out.refused = {
+      drew,
+      handled,
+      from: texts()[2],
+      to: texts()[11],
+      pending: !!hud.invPending,
+      toast: document.getElementById("toasts").lastElementChild?.textContent || "",
+    };
+
+    // --- a verdict for a DIFFERENT address is not ours ----------------------
+    // The positional-payload trap, one level above the encoder: rolling back
+    // on somebody else's address corrupts a slot the sim never spoke about.
+    fill();
+    down(3);
+    up(12);
+    const mine = { from: texts()[3], to: texts()[12] };
+    const alien = hud.invMoveVerdict(6, 3, 13); // same from, wrong to
+    out.alien = {
+      handled: alien,
+      unchanged: texts()[3] === mine.from && texts()[12] === mine.to,
+      stillPending: !!hud.invPending,
+    };
+    // and the real one still works afterwards
+    out.alienThenReal = hud.invMoveVerdict(0, 3, 12);
+
+    // --- an authoritative diff outranks the rollback snapshot ---------------
+    // The server restated both slots while the move was in flight. A refusal
+    // arriving after that must NOT put the stale snapshot back over it.
+    fill();
+    down(5);
+    up(14);
+    const t2 = texts();
+    t2[5] = "server said this";
+    t2[14] = "and this";
+    hud.setInventory(t2);
+    hud.invMoveVerdict(4, 5, 14);
+    out.restated = { from: texts()[5], to: texts()[14] };
+
+    // --- one move in flight at a time ---------------------------------------
+    fill();
+    sent.length = 0;
+    down(1);
+    up(8); // opens a pending move
+    down(2);
+    up(9); // must be refused locally
+    out.serialised = { sent: sent.slice(), s2: texts()[2], s9: texts()[9] };
+    hud.invMoveVerdict(0, 1, 8);
+
+    // --- the wire refusing the shape draws NOTHING --------------------------
+    // Ordering: the send is asked before the prediction is drawn, so a frame
+    // that never went out leaves no drawn move to diverge from the server.
+    fill();
+    sent.length = 0;
+    allow = false;
+    down(6);
+    up(15);
+    out.unsendable = {
+      sent: sent.length,
+      from: texts()[6],
+      to: texts()[15],
+      pending: !!hud.invPending,
+    };
+    allow = true;
+
+    // --- a drop on the source slot is a no-op, not a move -------------------
+    fill();
+    sent.length = 0;
+    down(20);
+    up(20);
+    out.selfDrop = { sent: sent.length, pending: !!hud.invPending, marked: cells()[20].classList.contains("drag") };
+
+    // --- released off a cell, and cancelled by closing the panel ------------
+    fill();
+    sent.length = 0;
+    down(21);
+    document.getElementById("inv").dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    out.offCell = { drag: hud.invDrag, sent: sent.length };
+    down(22);
+    hud.toggleInv();
+    out.closed = { drag: hud.invDrag, marked: cells()[22].classList.contains("drag") };
+    if (!hud.invOpen) hud.toggleInv();
+
+    // --- every refusal reason says something, and says something distinct ---
+    const said = [];
+    for (let r = 1; r <= reasonMax; r++) {
+      fill();
+      down(0);
+      up(belt + 1);
+      hud.invMoveVerdict(r, 0, belt + 1);
+      said.push(document.getElementById("toasts").lastElementChild?.textContent || "");
+    }
+    out.said = said;
+    return out;
+  },
+  [INV_SLOTS, INV_BELT, REFUSE_MAX],
+);
+
+check(
+  move.emptyDrag.drag === -1 && move.emptyDrag.marked === false,
+  `a pointerdown on an EMPTY slot started a drag (invDrag=${move.emptyDrag.drag}, marked=${move.emptyDrag.marked})` +
+    " — there is no such thing as dragging nothing, and every step after it would reason about a move with no item",
+);
+check(
+  move.afterEmptyDrop.sent === 0,
+  `dropping a drag that never started sent ${move.afterEmptyDrop.sent} frame(s) — the sim would answer a move of nothing`,
+);
+check(
+  move.picked.drag === 0 && move.picked.marked === true,
+  `pointerdown on a filled slot left invDrag=${move.picked.drag} marked=${move.picked.marked}, expected 0/true`,
+);
+check(
+  move.predicted.from === "" && move.predicted.to === "s0",
+  `the predicted move drew from=${JSON.stringify(move.predicted.from)} to=${JSON.stringify(move.predicted.to)},` +
+    ' expected the source emptied and "s0" landed in the target — the client draws the move it is asking for',
+);
+check(
+  JSON.stringify(move.predicted.sent) === "[[0,7]]",
+  `the drop sent ${JSON.stringify(move.predicted.sent)}, expected exactly one [0,7] — the slots as the SIM numbers` +
+    " them, belt 0..5 then grid 6..29, not an index into either row",
+);
+check(move.predicted.pending === true, "a drawn move left nothing pending — its verdict could never be matched");
+check(
+  move.landed === true && move.afterLand.from === "" && move.afterLand.to === "s0" && move.afterLand.pending === false,
+  `a landed verdict did not settle the move (handled=${move.landed}, from=${JSON.stringify(move.afterLand.from)},` +
+    ` to=${JSON.stringify(move.afterLand.to)}, pending=${move.afterLand.pending})`,
+);
+check(
+  move.refused.drew.from === "" && move.refused.drew.to === "s2",
+  "the refusal case did not draw its move first — it must, or the rollback below is testing nothing",
+);
+check(
+  move.refused.handled === true && move.refused.from === "s2" && move.refused.to === "s11",
+  `a refused move rolled back to from=${JSON.stringify(move.refused.from)} to=${JSON.stringify(move.refused.to)},` +
+    ' expected "s2"/"s11" — the values the client predicted WITH, not whatever is there now',
+);
+check(move.refused.pending === false, "a refused move stayed pending — the next drag would be locked out forever");
+check(
+  move.refused.toast === "it is out of reach",
+  `REFUSE_M_REACH told the player ${JSON.stringify(move.refused.toast)} — the panel owes them the reason`,
+);
+check(
+  move.alien.handled === false && move.alien.unchanged === true && move.alien.stillPending === true,
+  `a verdict for a DIFFERENT address was applied (handled=${move.alien.handled}, unchanged=${move.alien.unchanged},` +
+    ` stillPending=${move.alien.stillPending}) — it would roll back a slot the sim never spoke about, which is` +
+    " the right value in the wrong position one level above the encoder",
+);
+check(move.alienThenReal === true, "after ignoring an alien verdict the panel could no longer settle its own move");
+check(
+  move.restated.from === "server said this" && move.restated.to === "and this",
+  `a refusal put its stale snapshot back over an authoritative diff (from=${JSON.stringify(move.restated.from)},` +
+    ` to=${JSON.stringify(move.restated.to)}) — the server's word is newer than the prediction's rollback, and` +
+    " restoring the snapshot would put back an item the sim has since moved elsewhere",
+);
+check(
+  JSON.stringify(move.serialised.sent) === "[[1,8]]" && move.serialised.s2 === "s2" && move.serialised.s9 === "s9",
+  `a second drag while one was in flight sent ${JSON.stringify(move.serialised.sent)} and drew over slots` +
+    " — two concurrent splices on one container is what the reference actually shipped three times in 28 minutes",
+);
+check(
+  move.unsendable.sent === 1 &&
+    move.unsendable.from === "s6" &&
+    move.unsendable.to === "s15" &&
+    move.unsendable.pending === false,
+  `a move the wire refused to encode still drew (from=${JSON.stringify(move.unsendable.from)},` +
+    ` to=${JSON.stringify(move.unsendable.to)}, pending=${move.unsendable.pending}) — a drawn move with no frame` +
+    " behind it IS the divergence, and the sim will never send a verdict to unwind it",
+);
+check(
+  move.selfDrop.sent === 0 && move.selfDrop.pending === false && move.selfDrop.marked === false,
+  `dropping a slot on itself sent ${move.selfDrop.sent} frame(s) — it is a no-op, not a move, and not a refusal`,
+);
+check(
+  move.offCell.drag === -1 && move.offCell.sent === 0,
+  `releasing off a cell left invDrag=${move.offCell.drag} — the next click anywhere would drop a stale drag into it`,
+);
+check(
+  move.closed.drag === -1 && move.closed.marked === false,
+  `closing the panel mid-drag left invDrag=${move.closed.drag} marked=${move.closed.marked} — a drag cannot` +
+    " outlive the panel it started in",
+);
+check(
+  move.said.length === REFUSE_MAX && move.said.every((s) => s.length > 0),
+  `a refusal reason told the player nothing: ${JSON.stringify(move.said)} for reasons 1..${REFUSE_MAX}` +
+    " — the sim grew a reason the panel has no sentence for",
+);
+check(
+  new Set(move.said).size === REFUSE_MAX,
+  `two refusal reasons share a sentence (${JSON.stringify(move.said)}) — the sim keeps them distinct because they` +
+    " are different news; 'it is gone' and 'it is out of reach' are not the same thing to a player standing there",
+);
+
+// =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
@@ -1258,7 +1565,8 @@ check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
 console.log(
   `  ui smoke: scaffold ${HUD_IDS.length} ids · join form · hotbar 6 cells · composer swallow · ` +
     `chat cap ${CHAT_CAP} · toast cap ${TOAST_CAP} · vitals positional+inline · death answered once · ` +
-    `craft gate/×5 · queue index · inventory ${INV_SLOTS} slots positional + eatsKey`,
+    `craft gate/×5 · queue index · inventory ${INV_SLOTS} slots positional + eatsKey · ` +
+    `move ordering (send-before-draw, address-matched verdict, diff outranks rollback, ${REFUSE_MAX} reasons)`,
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
