@@ -4,6 +4,40 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+> **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the
+> world lane's to make.** `ci/gates.sh` went RED then GREEN on an unchanged
+> tree on 2026-08-04. Both runs ran the same 289 tests with 0 failures and the
+> same gate list; the RED one died before any check executed, on
+> `EADDRINUSE 127.0.0.1:8952` at `ci/ui_smoke.mjs:206`, because line 89 hard-codes
+> that port and two lanes run the gate concurrently. Not a clock, not a
+> timeout — the `bot_smoke`/IPv6 class, a contended resource. **The ui lane has
+> already fixed it** (`|| 0` plus readback) and it is unmerged; a second fix
+> from here would only conflict on the same line. Merge theirs. Until then
+> `UI_SMOKE_PORT=<free>` is the documented override.
+
+0. **world: the haven pad, and the road the client cannot see.**
+   *(Gap pass. Both judge reports named "the island has nowhere to go" as their
+   own top-or-second gap — `findings/archive-prestamp/pass-20260804-173640-01-judge.md`
+   gap 3 and `-02-judge.md` gap 2. The coast road half landed this pass; this is
+   what it leaves.)*
+
+   - **The haven pad** (TERRAIN §1 stage 8) — score candidate sites on the road
+     ring by flatness + coast distance, carve a pad with a blend radius. This
+     is the monument hook: later POIs are "carve pad + exclusion zone + scatter
+     table", so building it builds the machinery for every POI after it. The
+     carve is the piece the road ducked — it needs a mask inside `height`, which
+     is the representation decision TERRAIN §1's stage 7–9 constraint block
+     defers. Decide it here.
+   - **The road reads as a gap, not a road.** The client already shows *some* of
+     it — `terrain_fill_slots` runs the same `scatter`, so barrels line the
+     shoulder and props stop at the carriageway — but `web/src/terrain.js` has no
+     dirt band, so the surface itself is just a strip where nothing grows. A
+     route nobody can see is not a route. **Unverified in a browser**: this pass
+     ran `./ci/gates.sh auto`, which skipped the renderer tier, and
+     `browser_smoke` is operator-disabled this run. Batch it with other client
+     placement — touching `web/` costs the ~19 min renderer tier.
+   - Not done from stage 7: the flattening, and the denser bay-mouth slots (knob).
+
 1. **The sim can play a survival game; the player cannot reach it.**
    *(Operator, 2026-08-04. This outranks every gate-building item below it.)*
 
