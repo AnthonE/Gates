@@ -139,6 +139,15 @@ const SUB_MOVE_REFUSED: u32 = 37;
 /// decoder arm rejected its all-zero payload, which is luck, not a gate.
 /// Deriving the probe from this constant is what makes it stay a probe.
 const SUB_MAX: u32 = SUB_MOVE_REFUSED;
+/// And the field must hold it. A subtype declared past `SUB_BITS` would
+/// truncate on the way out and decode as a *different, live* code — the
+/// worst shape of wire drift there is, since both ends would agree on
+/// bytes that mean two different things. Compile-time, so it is checked in
+/// every build rather than only where a test happens to look.
+const _: () = assert!(
+    SUB_MAX < (1 << SUB_BITS),
+    "an event subtype past the field width would truncate into a live code"
+);
 /// Container-kind and slot widths on the event lane, deliberately the
 /// same two the action lane spends (`lib.rs`: `CONT_KIND_BITS`,
 /// `ACTION_SLOT_BITS`). An acknowledgement that could not express an
