@@ -24,9 +24,10 @@ use sim_core::deploy::{
 };
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
 use sim_core::limits::{
-    HEARTH_STOCK_ROWS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS,
-    MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
+    HEARTH_STOCK_ROWS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_TABLES,
+    MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
 };
+use sim_core::loot::{LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CRATE};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
@@ -557,5 +558,76 @@ impl Content {
             })?;
         }
         Ok(bc)
+    }
+
+    /// The loot tables: `content/loot.toml`'s weighted rows resolved into
+    /// item indices, with the weight sum baked once so the sim's roll is a
+    /// multiply-shift and a walk rather than a sum-then-walk.
+    ///
+    /// The container **name** is content and the container **index** is
+    /// code (`loot::LOOT_*`), the same split `bake_deployables` makes for
+    /// archetypes: content may re-price a barrel, and it may not invent a
+    /// container the sim has no verb for. A table naming an unknown
+    /// container is therefore a bake refusal, not a silently ignored row —
+    /// silently ignoring it is how you ship a crate table that never
+    /// spawns and never says so.
+    ///
+    /// `validate::structural` has already refused a zero-weight row, an
+    /// empty table, a bad count range and zero hits; what this adds is the
+    /// arithmetic refusal — a weight or count past the sim's `u16` field,
+    /// and a weight sum past `u32`.
+    pub fn bake_loot(&self) -> Result<LootContent, String> {
+        if self.loot_tables.len() > MAX_LOOT_TABLES {
+            return Err(format!(
+                "bake: {} loot tables exceed the sim's {MAX_LOOT_TABLES}-table store",
+                self.loot_tables.len()
+            ));
+        }
+        let mut lc = LootContent::EMPTY;
+        for l in &self.loot_tables {
+            let which = match l.container.as_str() {
+                "barrel" => LOOT_BARREL,
+                "crate" => LOOT_CRATE,
+                other => {
+                    return Err(format!(
+                        "bake: loot `{}` names container `{other}`, which the sim has no verb for",
+                        l.id
+                    ))
+                }
+            };
+            if l.entries.len() > MAX_LOOT_ENTRIES {
+                return Err(format!(
+                    "bake: loot `{}` has {} rows, past the sim's {MAX_LOOT_ENTRIES}",
+                    l.id,
+                    l.entries.len()
+                ));
+            }
+            let small = |v: u32, what: &str| -> Result<u16, String> {
+                u16::try_from(v)
+                    .map_err(|_| format!("bake: loot `{}` {what} {v} overflows the sim", l.id))
+            };
+            let mut t = LootTableDef::INERT;
+            t.rolls_min = small(l.rolls_min, "rolls_min")?;
+            t.rolls_max = small(l.rolls_max, "rolls_max")?;
+            t.hits = small(l.hits, "hits")?;
+            t.len = l.entries.len() as u16;
+            for (i, e) in l.entries.iter().enumerate() {
+                let item = self
+                    .item_index(&e.item)
+                    .ok_or_else(|| format!("bake: loot `{}` names unknown `{}`", l.id, e.item))?;
+                t.entries[i] = LootEntryDef {
+                    item,
+                    weight: small(e.weight, "weight")?,
+                    count_min: small(e.count_min, "count_min")?,
+                    count_max: small(e.count_max, "count_max")?,
+                };
+                t.total_weight = t
+                    .total_weight
+                    .checked_add(e.weight)
+                    .ok_or_else(|| format!("bake: loot `{}` weight sum overflows", l.id))?;
+            }
+            lc.tables[which] = t;
+        }
+        Ok(lc)
     }
 }

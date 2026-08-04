@@ -439,6 +439,10 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if l.entries.is_empty() {
             return Err(format!("loot `{}`: empty table", l.id));
         }
+        // A container nothing can open is a container that never pays.
+        if l.hits == 0 {
+            return Err(format!("loot `{}`: zero hits would never open", l.id));
+        }
         for e in &l.entries {
             item_exists(&e.item, &format!("loot `{}` entry", l.id))?;
             if e.weight == 0 {

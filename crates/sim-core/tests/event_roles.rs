@@ -83,14 +83,15 @@ use sim_core::deploy::DeployContent;
 use sim_core::gather::{cell_key, GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
+use sim_core::loot::LootContent;
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
 use sim_core::world::{
     Command, SimEvent, World, EV_BAG_DROPPED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH,
     EV_DEPLOY_PLACED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_MAX,
-    EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_STOCK, EV_STRUCT_HIT,
-    EV_VITALS, STRUCT_DEPLOY_BIT,
+    EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_SLOT_HARVESTED, EV_STOCK,
+    EV_STRUCT_HIT, EV_VITALS, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -433,6 +434,84 @@ fn death_names_the_dead_then_the_killer() {
     assert_eq!(death.a, VICTIM, "EV_DEATH.a is the player who DIED");
     assert_eq!(death.b, ATTACKER, "EV_DEATH.b is the player who KILLED");
     assert_eq!(w.players[1].deaths, 1, "and the body actually died");
+}
+
+/// The first cell holding `kind`, scanned off `terrain::scatter` rather
+/// than typed in: a cell that held a barrel at one seed and one weight
+/// table is a fixture that silently stops meaning what it says. Returns
+/// the slot's world position and its cell, because the swinger is stood
+/// exactly on it — `POINT_BLANK_M2` bypasses the aim cone, so the swing
+/// lands without this fixture also having to reproduce a yaw.
+fn scanned_slot(w: &World, kind: terrain::Occupant) -> (f32, f32, u16, u16) {
+    let span = (terrain::ISLAND_SIZE / terrain::CELL_SIZE) as i32;
+    for cz in 0..span {
+        for cx in 0..span {
+            let s = terrain::scatter(SEED, &w.scatter, cx, cz);
+            if s.occupant == kind {
+                return (s.x, s.z, cx as u16, cz as u16);
+            }
+        }
+    }
+    panic!("no {kind:?} on this island — the scatter table changed under this gate");
+}
+
+/// `EV_SLOT_HARVESTED: a = cell key, b = terrain occupant ordinal`, on a
+/// barrel.
+///
+/// The barrel is the reason the field had to be named rather than
+/// counted: it has no row in the gather table at all, so the old
+/// "gatherable index" reading had no value it could honestly carry.
+#[test]
+fn slot_harvested_on_a_barrel_names_the_cell_then_the_occupant() {
+    let mut w = duel_world();
+    w.loot = LootContent::probe_fixture();
+    let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::BarrelSlot);
+    w.players[0].body = Body::at(SEED, x, z);
+    until(&mut w, EV_SLOT_HARVESTED);
+    let ev = only(&w, EV_SLOT_HARVESTED);
+    assert_ne!(
+        ev.a, ev.b,
+        "EV_SLOT_HARVESTED carries the same value twice, so this check \
+         cannot see a swap"
+    );
+    assert_eq!(
+        ev.b,
+        terrain::Occupant::BarrelSlot as u32,
+        "EV_SLOT_HARVESTED.b is the occupant ordinal, not the cell"
+    );
+    assert_eq!(
+        ev.a,
+        cell_key(cx, cz),
+        "EV_SLOT_HARVESTED.a is the cell key, not the occupant"
+    );
+}
+
+/// The same event on a node, and the reason this test is not redundant
+/// with the barrel above: a tree is occupant **1** and gather-table row
+/// **0**. The two readings of field `b` differ by exactly one, which is
+/// the quietest possible wrong value — every `u32` check passes, the
+/// encoder is untouched so `test_protocol_golden` is green, and the ring
+/// is outside `state_hash` so `test_replay` is green. Only a fixture that
+/// knows which number it wants can see it.
+#[test]
+fn slot_harvested_on_a_node_names_the_occupant_not_the_table_row() {
+    let mut w = duel_world();
+    let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::Tree);
+    w.players[0].body = Body::at(SEED, x, z);
+    until(&mut w, EV_SLOT_HARVESTED);
+    let ev = only(&w, EV_SLOT_HARVESTED);
+    assert_eq!(
+        ev.b,
+        terrain::Occupant::Tree as u32,
+        "EV_SLOT_HARVESTED.b is the occupant ordinal (Tree = 1), not the \
+         gather-table row (Tree = 0)"
+    );
+    assert_ne!(ev.b, 0, "the table row and the ordinal have been confused");
+    assert_eq!(
+        ev.a,
+        cell_key(cx, cz),
+        "EV_SLOT_HARVESTED.a is the cell key"
+    );
 }
 
 /// `EV_BAG_DROPPED: a = backpack id, b = the player whose body it came off`.
@@ -1524,8 +1603,9 @@ fn move_refused_names_the_reason_then_the_address() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [u8; 18] = [
+    const COVERED: [u8; 19] = [
         EV_GATHER,
+        EV_SLOT_HARVESTED,
         EV_HIT,
         EV_HEALTH,
         EV_DEATH,
@@ -1546,7 +1626,7 @@ fn coverage_is_stated_not_implied() {
     ];
     /// What is knowingly still byte-golden only. Change this number in the
     /// same commit that changes `COVERED`, never on its own.
-    const UNCOVERED: usize = 9;
+    const UNCOVERED: usize = 8;
 
     let mut counted = 0usize;
     for code in 1..=EV_MAX {

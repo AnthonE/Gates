@@ -10,13 +10,14 @@ use crate::combat::{self, CombatContent};
 use crate::craft::{self, CraftContent, CraftJob};
 use crate::deploy::{self, DeployContent, Deploys};
 use crate::fmath::floor_i32;
-use crate::gather::{self, GatherContent, ItemStack, SlotLives, NO_CELL, NO_ITEM};
+use crate::gather::{self, cell_key, GatherContent, ItemStack, SlotLives, Swing, NO_CELL, NO_ITEM};
 use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
     CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS,
     STATE_HASH_INTERVAL,
 };
+use crate::loot::{LootContent, LOOT_BARREL};
 use crate::movement::{self, Body};
 use crate::rng::cell_hash;
 use crate::survival::{self, SurvivalContent};
@@ -66,7 +67,14 @@ const SPAWN_CLEAR_M: f32 = 4.0;
 /// deliberately — the client's `+N Item` toast is the right feedback for
 /// both, and loot pays in the currency gathering already pays in.
 pub const EV_GATHER: u8 = 1;
-/// EV_SLOT_HARVESTED: a = cell key (cx << 16 | cz), b = gatherable index.
+/// EV_SLOT_HARVESTED: a = cell key (cx << 16 | cz), b = terrain occupant
+/// ordinal (`terrain::Occupant as u32`) — *what* stopped standing there,
+/// not which row of the gather table it came from. It read "gatherable
+/// index" while only nodes could be exhausted, and that was the same
+/// number minus one; a barrel has no gather row at all, so the event now
+/// names the occupant and covers both. The wire is unaffected either way:
+/// the server sends the cell alone (`encode_event_slot_change`) and the
+/// client re-derives the occupant from shared worldgen.
 pub const EV_SLOT_HARVESTED: u8 = 2;
 /// EV_SLOT_RESPAWNED: a = cell key, b = 0.
 pub const EV_SLOT_RESPAWNED: u8 = 3;
@@ -113,10 +121,13 @@ pub const EV_HEALTH: u8 = 16;
 /// (equal to `a` if that ever becomes possible; today nothing but another
 /// hand can kill). Broadcast — a death is a world fact like a placement.
 pub const EV_DEATH: u8 = 17;
-/// EV_BAG_DROPPED: a = backpack id, b = the player whose body it came
-/// off. Broadcast — a bag on the ground is a world fact like a placement;
-/// the wire reads its position out of the store at encode, the way a
-/// hearth's stock is read (backpack.rs).
+/// EV_BAG_DROPPED: a = container id, b = the container's owner — the
+/// player whose body it came off for a death bag, the smasher for a
+/// barrel's loot (`backpack::stand_up`). Broadcast — a container on the
+/// ground is a world fact like a placement; the wire reads its position
+/// out of the store at encode, the way a hearth's stock is read
+/// (backpack.rs), and carries no owner at all, so `b` is a sim-side fact
+/// only.
 pub const EV_BAG_DROPPED: u8 = 18;
 /// EV_BAG_REMOVED: a = backpack id, b = `backpack::BAG_GONE_*` (despawn,
 /// emptied, evicted). Broadcast, and it restarts in-progress bag sync
@@ -548,6 +559,10 @@ pub struct World {
     /// input too; the inert default leaves the world without a clock, which
     /// is the game that existed before the module.
     pub survival: SurvivalContent,
+    /// Baked loot tables (loot.rs). Construction input too; the inert
+    /// default leaves barrels standing, because a barrel that broke into
+    /// nothing would be worse than one that does not break.
+    pub loot: LootContent,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
@@ -593,6 +608,7 @@ impl World {
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
             survival: SurvivalContent::EMPTY,
+            loot: LootContent::EMPTY,
             pieces: Pieces::new(),
             deploys: Deploys::new(),
             backpacks: Box::new(Backpacks::new()),
@@ -1301,10 +1317,11 @@ impl World {
             }
             let frame = self.players[i].frame;
             movement::step(seed, self.pieces.cols(), &mut self.players[i].body, &frame);
-            let free = gather::swing(
+            let swung = gather::swing(
                 seed,
                 tick,
                 &self.gather,
+                &self.loot,
                 &self.scatter,
                 &mut self.slot_lives,
                 &mut self.events,
@@ -1317,7 +1334,38 @@ impl World {
                 &mut self.players[i],
                 &mut self.events,
             );
-            if free {
+            if let Swing::Smashed { cx, cz, qx, qy, qz } = swung {
+                // The barrel is already gone (gather.rs marked the slot and
+                // announced it). What falls out is decided here, because
+                // this is where the container store lives: gather owns the
+                // slot bit, loot owns the table, and neither owns the other.
+                //
+                // An empty roll stands nothing up — `stand_up` refuses it —
+                // and that is correct rather than a lost drop: the barrel
+                // still broke, still respawns on its timer, and the player
+                // still paid three swings for a bad table.
+                let mut items = [ItemStack::default(); INV_SLOTS];
+                self.loot.roll_into(
+                    LOOT_BARREL,
+                    &self.gather,
+                    seed,
+                    cell_key(cx, cz),
+                    tick,
+                    &mut items,
+                );
+                let owner = self.players[i].id;
+                self.backpacks.stand_up(
+                    &self.backpack,
+                    qx,
+                    qy,
+                    qz,
+                    owner,
+                    &items,
+                    tick,
+                    &mut self.events,
+                );
+            }
+            if swung == Swing::Free {
                 // node → player → structure: the arm passes on only what
                 // nothing nearer absorbed.
                 match combat::strike(&self.combat, i, &mut self.players, &mut self.events) {

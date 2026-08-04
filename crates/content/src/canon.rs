@@ -155,6 +155,7 @@ pub fn hash(c: &Content) -> u64 {
         h.s(&l.container);
         h.u(l.rolls_min);
         h.u(l.rolls_max);
+        h.u(l.hits);
         h.u(l.entries.len() as u32);
         for e in &l.entries {
             h.s(&e.item);
