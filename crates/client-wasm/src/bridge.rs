@@ -1340,10 +1340,13 @@ pub extern "C" fn terrain_fill_slots(seed: u64, cx0: i32, cz0: i32, cells: u32) 
     with(|b| {
         let cells = (cells as usize).min(SLOTS_MAX_CELLS) as i32;
         let table = ScatterTable::alpha_default();
+        // Once per batch, not once per cell: the argmax is ~1,000 height
+        // taps and this loop runs up to SLOTS_MAX_CELLS² of them.
+        let haven = terrain::haven(seed);
         let mut n = 0usize;
         for dz in 0..cells {
             for dx in 0..cells {
-                let s = terrain::scatter(seed, &table, cx0 + dx, cz0 + dz);
+                let s = terrain::scatter(seed, &table, &haven, cx0 + dx, cz0 + dz);
                 if s.occupant == terrain::Occupant::None {
                     continue;
                 }

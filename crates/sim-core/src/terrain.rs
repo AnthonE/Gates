@@ -3,7 +3,8 @@
 //! native and wasm agree bit for bit. The coast road (stage 7) is below and
 //! costs the goldens nothing — it reads `height`, never writes it, and the
 //! golden's 256 scatter cells sit at the island center, far inside the ring.
-//! The haven pad (stage 8) is the next worldgen slice.
+//! The haven pad (stage 8) costs them nothing for the same reason: it is
+//! placement and a veto, not a write. Its carve is the part still unbuilt.
 //!
 //! Numbers of record are TERRAIN.md §6; generator shape params (frequencies,
 //! warp amplitude, remap LUT, scatter weights) are registered in DECISIONS.md
@@ -309,6 +310,202 @@ pub fn road_band(seed: u64, x: f32, z: f32) -> RoadBand {
     band
 }
 
+// --- The haven pad (TERRAIN.md §1 stage 8) --------------------------------
+//
+// The one destination the coast road runs to, and the hook every later
+// monument reuses: "carve pad + exclusion zone + scatter table". Stage 8 is
+// explicitly a global argmax — score candidate sites on the road ring by
+// flatness and coast distance, take the best — so unlike stage 7 it really
+// is the memoized thing the constraint block anticipated. The memo is not a
+// raster and not control points: it is one site, three floats wide.
+//
+// Where the block's guidance stops being enough is the CARVE. A carve is a
+// write to `height`, and `height(seed, x, z)` is called from ~50 sites in
+// four crates — `movement.rs`, `collide.rs`, `build.rs`, `deploy.rs` among
+// them. Threading the memo through it is the whole change, not a detail of
+// it, and it cannot be half-done: a client mesh that sees the pad and a
+// collision path that does not is a player standing in the air. So this
+// slice FINDS a flat site rather than MAKING one — the argmax scores
+// flatness precisely so the eventual cut is small — and `haven` reports the
+// relief it settled for, so the gate can say in meters how flat "found" got
+// and whether the carve is optional or mandatory (DECISIONS.md §open).
+//
+// Cost: `HAVEN_CANDIDATES` bearings, each a bracket + `HAVEN_BISECT_ITERS`
+// halvings + a `HAVEN_PROBES`-point rosette — under 1,000 `height` taps,
+// once, at world init and never in a tick (wall 2). Bounded by
+// `limits::MAX_HAVEN_CANDIDATES` (wall 4), and float-walled like everything
+// else here, so native and wasm agree bit for bit (wall 1).
+
+/// Pad radius in meters: inside this, scatter places nothing. Sized to read
+/// as a clearing rather than a gap — 32 m across clears ~12 scatter cells
+/// and is four carriageways wide (knob, DECISIONS.md §open: haven pad v0).
+pub const HAVEN_RADIUS_M: f32 = 16.0;
+/// Bearings the argmax scores, evenly spaced around the island. Capped by
+/// `limits::MAX_HAVEN_CANDIDATES` (knob, DECISIONS.md §open: haven pad v0).
+pub const HAVEN_CANDIDATES: i32 = 64;
+/// Rim samples per candidate footprint; with the center that is 9 taps.
+/// Powers of two only — the yaw LUT is indexed by 256 / this (knob).
+pub const HAVEN_PROBES: i32 = 8;
+/// Coarse march step, meters, used to bracket the *first* shoreline
+/// crossing seaward of a bearing before bisecting it. Bisecting the whole
+/// 400 m bracket instead was measurably wrong: a radial that crosses water
+/// more than once (an inlet, a channel behind an islet) has no single
+/// crossing to converge on, and `tests/haven.rs` caught the argmax landing
+/// 131 m off the best site on seed 1 because of it. Below the narrowest
+/// land a coastline can be and still be one (knob).
+pub const HAVEN_MARCH_M: f32 = 4.0;
+/// Halvings of the bracketed crossing. 12 over a `HAVEN_MARCH_M` bracket
+/// resolves it to under a millimeter — far inside `ROAD_HALF_W` (knob).
+pub const HAVEN_BISECT_ITERS: i32 = 12;
+/// How many meters of footprint relief one meter of elevation above the
+/// land line is worth, when the two scores trade off. Below 1 because
+/// flatness is the term that decides whether the pad needs a carve at all;
+/// elevation only breaks near-ties toward the shore (knob).
+pub const HAVEN_HEIGHT_W: f32 = 0.25;
+
+// Wall 4 at the definition, not in a test: the search is capped, and both
+// counts must divide the 256-entry yaw LUT evenly or the bearings bunch.
+const _: () = {
+    assert!(HAVEN_CANDIDATES as usize <= crate::limits::MAX_HAVEN_CANDIDATES);
+    assert!(HAVEN_CANDIDATES > 0 && 256 % HAVEN_CANDIDATES == 0);
+    assert!(HAVEN_PROBES > 0 && 256 % HAVEN_PROBES == 0);
+};
+
+/// The haven pad site: a pure function of the seed, resolved once.
+///
+/// `relief` is the max−min height over the scored footprint — the size of
+/// the cut a carve would have to make. It is carried rather than recomputed
+/// so the gate can re-derive it independently and compare.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Haven {
+    pub x: f32,
+    pub z: f32,
+    pub y: f32,
+    pub relief: f32,
+}
+
+/// Max−min height over the pad footprint at (x, z): center plus a rim
+/// rosette at `HAVEN_RADIUS_M`. The flatness term of the stage 8 score.
+fn haven_relief(seed: u64, x: f32, z: f32) -> f32 {
+    let h0 = height(seed, x, z);
+    let mut lo = h0;
+    let mut hi = h0;
+    let step = (256 / HAVEN_PROBES) as u16;
+    let mut j = 0i32;
+    while j < HAVEN_PROBES {
+        let (dx, dz) = crate::yaw_lut::yaw_dir((j as u16 * step) << 8);
+        let h = height(seed, x + dx * HAVEN_RADIUS_M, z + dz * HAVEN_RADIUS_M);
+        lo = lo.min(h);
+        hi = hi.max(h);
+        j += 1;
+    }
+    hi - lo
+}
+
+/// Resolve the haven pad for a seed (TERRAIN.md §1 stage 8).
+///
+/// One candidate per bearing: bisect the shoreline crossing along that
+/// radial, step `ROAD_INLAND_M` back inland — which is the road's own
+/// definition of its center line, inverted, so the site lands on the ring
+/// by construction and `road_band` confirms it rather than being trusted to
+/// agree. Score = footprint relief + `HAVEN_HEIGHT_W` × height above the
+/// land line, minimized; the scan runs bearings in ascending order and
+/// takes a strict improvement, so ties go to the lowest index and the
+/// result is order-independent.
+///
+/// Two fallbacks, both asserted unreachable by `tests/haven.rs` over 16
+/// seeds — the same posture `World::spawn_pos_n` takes: the best site that
+/// cleared the land line but not `road_band`, then the island center.
+pub fn haven(seed: u64) -> Haven {
+    let c = ISLAND_SIZE * 0.5;
+    let inner = ROAD_R_MIN + ROAD_INLAND_M;
+    let outer = ROAD_R_MAX + ROAD_INLAND_M;
+    let bearing_step = (256 / HAVEN_CANDIDATES) as u16;
+
+    let mut best: Option<Haven> = None;
+    let mut best_score = 0.0f32;
+    let mut relaxed: Option<Haven> = None;
+    let mut relaxed_score = 0.0f32;
+
+    let mut i = 0i32;
+    while i < HAVEN_CANDIDATES {
+        let (dx, dz) = crate::yaw_lut::yaw_dir((i as u16 * bearing_step) << 8);
+        i += 1;
+
+        // March seaward to the FIRST crossing, then bisect that bracket.
+        // "First" is the load-bearing word: the shoreline of a point on
+        // land is the nearest water going out, and a radial may meet
+        // several. Start inland — a bearing whose inner probe is already
+        // wet has no shore in the bracket.
+        if height(seed, c + dx * inner, c + dz * inner) <= SEA_LEVEL {
+            continue;
+        }
+        let mut lo = inner;
+        let mut hi = inner;
+        while hi < outer {
+            hi = (lo + HAVEN_MARCH_M).min(outer);
+            if height(seed, c + dx * hi, c + dz * hi) <= SEA_LEVEL {
+                break;
+            }
+            lo = hi;
+        }
+        if height(seed, c + dx * hi, c + dz * hi) > SEA_LEVEL {
+            continue; // dry all the way out: no shore on this bearing
+        }
+        let mut k = 0i32;
+        while k < HAVEN_BISECT_ITERS {
+            let mid = (lo + hi) * 0.5;
+            if height(seed, c + dx * mid, c + dz * mid) > SEA_LEVEL {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+            k += 1;
+        }
+
+        // `lo` is the landward side of the crossing; the road's center line
+        // is ROAD_INLAND_M in from it.
+        let r = lo - ROAD_INLAND_M;
+        let x = c + dx * r;
+        let z = c + dz * r;
+        let y = height(seed, x, z);
+        if y < LAND_MIN_H {
+            continue;
+        }
+
+        let relief = haven_relief(seed, x, z);
+        let score = relief + HAVEN_HEIGHT_W * (y - LAND_MIN_H);
+        let site = Haven { x, z, y, relief };
+        if relaxed.is_none() || score < relaxed_score {
+            relaxed = Some(site);
+            relaxed_score = score;
+        }
+        if road_band(seed, x, z) == RoadBand::Off {
+            continue;
+        }
+        if best.is_none() || score < best_score {
+            best = Some(site);
+            best_score = score;
+        }
+    }
+
+    best.or(relaxed).unwrap_or(Haven {
+        x: c,
+        z: c,
+        y: height(seed, c, c),
+        relief: 0.0,
+    })
+}
+
+/// True if (x, z) stands inside the pad — the exclusion zone. Squared
+/// compare, no sqrt (and `SPAWN.md` §9.4's point: the squared form is the
+/// acceptance test, not an optimization of one).
+pub fn in_haven(haven: &Haven, x: f32, z: f32) -> bool {
+    let dx = x - haven.x;
+    let dz = z - haven.z;
+    dx * dx + dz * dz < HAVEN_RADIUS_M * HAVEN_RADIUS_M
+}
+
 /// What a scatter cell holds (TERRAIN.md §1 stage 9's occupant list).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -366,8 +563,13 @@ pub struct Slot {
 }
 
 /// One hash draw decides a cell's occupant, offset, yaw, scale
-/// (TERRAIN.md §1 stage 9). Slope, water — and later road/haven — veto.
-pub fn scatter(seed: u64, table: &ScatterTable, cell_x: i32, cell_z: i32) -> Slot {
+/// (TERRAIN.md §1 stage 9). Slope, water, road and haven veto.
+///
+/// The haven arrives as a parameter rather than being resolved here on
+/// purpose: `haven` costs ~1,000 `height` taps and `scatter` is called
+/// 65,536 times for one island. Callers resolve it once and hold it —
+/// `World` at init, the bridge per chunk batch.
+pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell_z: i32) -> Slot {
     let none = Slot {
         occupant: Occupant::None,
         x: 0.0,
@@ -389,6 +591,13 @@ pub fn scatter(seed: u64, table: &ScatterTable, cell_x: i32, cell_z: i32) -> Slo
 
     let hy = height(seed, x, z);
     if hy < LAND_MIN_H || slope(seed, x, z) > CLIFF_SLOPE_RATIO {
+        return none;
+    }
+
+    // The pad clears before the road does, because the pad sits ON the road
+    // and the shoulder rule below would otherwise line the destination with
+    // the same barrels as the route to it (TERRAIN.md §1 stage 8).
+    if in_haven(haven, x, z) {
         return none;
     }
 

@@ -124,12 +124,15 @@ fn shoreline(seed: u64) -> (f32, f32) {
 /// lands without the script also having to reproduce a yaw.
 fn barrel_cells(seed: u64, scatter: &sim_core::terrain::ScatterTable, n: usize) -> Vec<(f32, f32)> {
     let mut out = Vec::new();
+    // The same haven the sim resolves at init: it vetoes scatter, so a script
+    // built without it could aim a swing at a barrel the world never placed.
+    let haven = sim_core::terrain::haven(seed);
     let span = (sim_core::terrain::ISLAND_SIZE / sim_core::terrain::CELL_SIZE) as i32;
     let mut cz = 0;
     while cz < span && out.len() < n {
         let mut cx = 0;
         while cx < span && out.len() < n {
-            let s = sim_core::terrain::scatter(seed, scatter, cx, cz);
+            let s = sim_core::terrain::scatter(seed, scatter, &haven, cx, cz);
             if s.occupant == sim_core::terrain::Occupant::BarrelSlot {
                 out.push((s.x, s.z));
             }

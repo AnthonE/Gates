@@ -98,6 +98,7 @@ fn carriageway_is_clear_and_the_shoulder_carries_barrels() {
     let mut worst_ratio = f32::MAX;
 
     for seed in SEEDS {
+        let haven = terrain::haven(seed);
         let mut on_carriageway = 0usize;
         let mut shoulder_barrels = 0usize;
         let mut shoulder_cells = 0usize;
@@ -105,7 +106,7 @@ fn carriageway_is_clear_and_the_shoulder_carries_barrels() {
 
         for cx in 0..CELLS_PER_SIDE {
             for cz in 0..CELLS_PER_SIDE {
-                let s = terrain::scatter(seed, &table, cx, cz);
+                let s = terrain::scatter(seed, &table, &haven, cx, cz);
                 if s.occupant == Occupant::None {
                     continue;
                 }
@@ -140,18 +141,24 @@ fn carriageway_is_clear_and_the_shoulder_carries_barrels() {
         }
     }
 
-    // A loot route needs enough barrels to be worth walking. The floor is set
-    // well under the measured worst seed so a real regression reddens and
-    // seed-to-seed coastline variation does not.
+    // A loot route needs enough barrels to be worth walking. Both floors sit
+    // one margin under the MEASURED worst seed, not far under it: at the
+    // original 40 / 20% a 60% collapse in the route stayed green, which is a
+    // floor that records an intention rather than guarding a number.
+    // Measured worst: 103 barrels, 52.2% of occupied shoulder cells; the
+    // margin is ~20% for coastline variation (DECISIONS.md §open: coast road
+    // v0), so 80 and 42%.
     assert!(
-        worst_shoulder_barrels >= 40,
+        worst_shoulder_barrels >= 80,
         "worst seed puts only {worst_shoulder_barrels} barrels on the road \
-         shoulder — the route does not pay, so nobody walks it"
+         shoulder (measured 103 when this floor was set) — the route does not \
+         pay, so nobody walks it"
     );
     assert!(
-        worst_ratio >= 0.20,
-        "barrels are only {:.0}% of what stands on the shoulder — the road \
-         draw is being outvoted by the biome table",
+        worst_ratio >= 0.42,
+        "barrels are only {:.0}% of what stands on the shoulder (measured 52% \
+         when this floor was set) — the road draw is being outvoted by the \
+         biome table",
         worst_ratio * 100.0
     );
 }

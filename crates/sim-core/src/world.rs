@@ -538,6 +538,11 @@ pub struct World {
     pub tick: u64,
     pub players: [Player; MAX_PLAYERS],
     pub scatter: ScatterTable,
+    /// The haven pad site (TERRAIN.md §1 stage 8). Resolved once here
+    /// because it is a bounded argmax over the road ring — world init,
+    /// never a tick (CLAUDE.md wall 2). Derived purely from `seed`, so it
+    /// is not state: a replay recomputes the identical site.
+    pub haven: terrain::Haven,
     /// Baked gather rules (gather.rs). Construction input like `seed`:
     /// inert until the boot path installs the table baked from
     /// `content/*.toml`, before the first tick. The WAL pins the content
@@ -602,6 +607,7 @@ impl World {
             tick: 0,
             players: [Player::default(); MAX_PLAYERS],
             scatter: ScatterTable::alpha_default(),
+            haven: terrain::haven(seed),
             gather: GatherContent::EMPTY,
             craft: CraftContent::EMPTY,
             build: BuildContent::EMPTY,
@@ -722,7 +728,7 @@ impl World {
         while ox <= 1 {
             let mut oz = -1i32;
             while oz <= 1 {
-                let s = terrain::scatter(self.seed, &self.scatter, cx + ox, cz + oz);
+                let s = terrain::scatter(self.seed, &self.scatter, &self.haven, cx + ox, cz + oz);
                 oz += 1;
                 if s.occupant == terrain::Occupant::None {
                     continue;
@@ -1366,6 +1372,7 @@ impl World {
                 &self.gather,
                 &self.loot,
                 &self.scatter,
+                &self.haven,
                 &mut self.slot_lives,
                 &mut self.events,
                 &mut self.players[i],
@@ -1741,7 +1748,7 @@ mod tests {
                     for oz in -2..=2 {
                         let cx = crate::fmath::floor_i32(x / terrain::CELL_SIZE) + ox;
                         let cz = crate::fmath::floor_i32(z / terrain::CELL_SIZE) + oz;
-                        let slot = terrain::scatter(seed, &w.scatter, cx, cz);
+                        let slot = terrain::scatter(seed, &w.scatter, &w.haven, cx, cz);
                         if slot.occupant == terrain::Occupant::None {
                             continue;
                         }

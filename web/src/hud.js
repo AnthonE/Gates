@@ -129,16 +129,17 @@ export class Hud {
     // below are the move verb, and the ordering law they enforce is the
     // one CLAUDE.md's item-move trap is about.
     //
-    // NOT YET WIRED TO THE SIM, and deliberately so. `APPLIED_MOVE`
-    // (client-wasm `core.rs:122`) is `1 << 31` and `STREAM_ERR`
-    // (`bridge.rs:64`) is also `1 << 31`, so the verdict this panel waits
-    // for arrives at `main.js:759` as a decode error: it logs
-    // `console.error`, which fails the browser gates, and returns early,
-    // dropping the inventory diff riding with it. That is a `crates/`
-    // collision and the systems lane owns it (NOW.md). Until it clears,
-    // `onInvMove` stays at its default and no drag reaches the wire.
+    // WIRED TO THE SIM — main.js claims the verb, both directions. The
+    // outbound half encodes with `client_action_move`; the inbound half
+    // reads `APPLIED2_MOVE` off `client_applied2()` and unpacks the
+    // verdict with `web/src/invmove.js`. That flag lives in a SECOND
+    // applied word because word 0's bit 31 is `STREAM_ERR`: the verdict
+    // shared that bit until the systems lane split it, and while it did,
+    // a landed move and "undecodable bytes" arrived as the same word.
+    // `invmove.js` has the history and what the split closed.
     //
-    // And while it stays there the gesture does not START. An affordance
+    // A host claims the verb by assigning over `NO_MOVE_HOST`, and until
+    // one does the gesture does not START. An affordance
     // that always refuses is worse than one that is absent: every drop
     // would dim a cell and toast "that will not move", which teaches the
     // player the panel is broken rather than that the verb is unbuilt.

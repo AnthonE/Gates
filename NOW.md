@@ -54,28 +54,69 @@ Done items are deleted, not checked — history lives in git and
 > by `ci/client_smoke.mjs` through the real C ABI. **Unverified in a browser:**
 > `browser_smoke` is operator-disabled this run, so "the console.error is gone"
 > is a claim the native and ABI gates support and no browser has checked.
+00. **systems: the error must leave the flag word — it is NOT a one-line change.**
+   *(Gap pass, ui lane. Gap 1 of BOTH `findings/pass-20260804-205133-01-judge.md`
+   and `-02-judge.md`: "a player still cannot move a single item".)*
+
+   The client half landed this pass — main.js arms `onInvMove` and routes the
+   verdict, so a player can drag. It is armed over a workaround, and this is
+   what retires it.
+
+   Both reports call the cure "one constant in `crates/client-wasm`". **It is
+   not, and a pass that starts there will hit a wall in ten minutes.**
+   `core.rs:38-122` assigns every bit 0..31 of the `APPLIED_*` word — bit 31
+   (`APPLIED_MOVE`) is the last one, and `core.rs:115-121` says so in its own
+   comment. So `APPLIED_MOVE` has nowhere to move to. The thing that must
+   leave the word is **`STREAM_ERR`** (`bridge.rs:64`), because it is not a
+   flag at all — it is an error channel multiplexed into a full flag set by
+   `client_on_stream`, which returns both.
+
+   Cheapest shape: `client_on_datagram`'s, which already does this right —
+   return a code, not flags. Or an out-of-band `client_stream_err()`. Either
+   way `ci/client_smoke.mjs:543,807,816,822` assert the error meaning of bit 31
+   and `:572,587` assert the move meaning, so both sides move in that commit.
+
+   When it lands: delete `web/src/invmove.js` and its call site in `main.js`,
+   and test bit 31 as `APPLIED_MOVE` directly. `ci/ui_smoke.mjs` group L
+   already goes red on that commit and says exactly this in its failure text.
+
+> **Cross-lane, not an item: `browser_smoke` is red on a CLEAN tree, and it is
+> tab B, not the prop-contrast probe.** Measured 2026-08-04 from the ui lane,
+> both on `lane/ui` HEAD `ecf1985` with nothing applied and on a branch off it:
+> the same assertion both times — *"tab B: never reached the world —
+> unresponsive"*, `__gatesDebug` never published, `2 tab(s) live`, ~68–70 s of
+> liveness cap. Tab A reaches the world in under a second in both runs. This is
+> the two-live-renderers class CLAUDE.md already names (2026-08-01), on a box
+> with no GPU where Chromium is on SwiftShader — not a diff, and not a timeout
+> to widen. The operator has `browser_smoke` switched off this run. Anything
+> touching `web/` therefore cannot honestly claim the renderer tier; say so.
 
 0. **world: the haven pad, and the road the client cannot see.**
    *(Gap pass. Both judge reports named "the island has nowhere to go" as their
    own top-or-second gap — `findings/archive-prestamp/pass-20260804-173640-01-judge.md`
    gap 3 and `-02-judge.md` gap 2. The coast road half landed this pass; this is
    what it leaves.)*
+0. **world: the pad exists but nothing is on it, and the road is invisible.**
+   *(The pad's placement + exclusion zone landed — `DECISIONS.md` §open "haven
+   pad v0", `tests/haven.rs`. This is what it leaves.)*
 
-   - **The haven pad** (TERRAIN §1 stage 8) — score candidate sites on the road
-     ring by flatness + coast distance, carve a pad with a blend radius. This
-     is the monument hook: later POIs are "carve pad + exclusion zone + scatter
-     table", so building it builds the machinery for every POI after it. The
-     carve is the piece the road ducked — it needs a mask inside `height`, which
-     is the representation decision TERRAIN §1's stage 7–9 constraint block
-     defers. Decide it here.
-   - **The road reads as a gap, not a road.** The client already shows *some* of
-     it — `terrain_fill_slots` runs the same `scatter`, so barrels line the
-     shoulder and props stop at the carriageway — but `web/src/terrain.js` has no
-     dirt band, so the surface itself is just a strip where nothing grows. A
-     route nobody can see is not a route. **Unverified in a browser**: this pass
-     ran `./ci/gates.sh auto`, which skipped the renderer tier, and
-     `browser_smoke` is operator-disabled this run. Batch it with other client
-     placement — touching `web/` costs the ~19 min renderer tier.
+   - **The carve, and it is cross-lane.** v0 *finds* a flat site; it does not
+     make one. Measured worst relief is **3.76 m over a 32 m pad** — enough
+     that a greybox building on it would float or bury a corner. Carving means
+     writing `height`, and `terrain::height` has ~50 call sites across four
+     crates (`movement.rs`, `collide.rs`, `build.rs`, `deploy.rs` are systems
+     lane), and it cannot be half-threaded: a client mesh that sees the pad
+     and a collision path that does not is a player standing in the air.
+     **Request to the systems lane:** thread a `&Haven` (or a worldgen context
+     carrying it) through `height` so the world lane can carve. Until then no
+     POI on the pad can be flat.
+   - **Give the pad something to be**: its own `loot.toml` table and a greybox
+     mesh. Right now it is a clearing — `ROAD_BARREL_PERMILLE` is still the
+     beach's own rate, so the judge's "walking the loop is worth the same as
+     standing where you spawned" is unfixed. A loot table is content, not code.
+   - **The road reads as a gap, not a road.** `web/src/terrain.js` has no dirt
+     band, so the carriageway is just a strip where nothing grows. Batch it
+     with the pad mesh — touching `web/` costs the ~19 min renderer tier.
    - Not done from stage 7: the flattening, and the denser bay-mouth slots (knob).
 
 1. **The sim can play a survival game; the player cannot reach it.**
