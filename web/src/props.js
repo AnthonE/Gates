@@ -173,9 +173,54 @@ const PINE_WHORLS = [
 /** Overall height: the top whorl's apex. */
 const PINE_H = 6.6;
 
+// Where the trunk stops. NOT `PINE_H`: the top whorl tapers to a point and the
+// trunk does not, so a trunk run to full height leaves a bare brown spike
+// standing above the canopy on every tree in the forest — which is exactly
+// what it did in the first render of this shape. At 5.7 m the trunk's 0.13 m
+// tip sits inside a cone that is still 0.27 m wide there, so it is covered.
+const PINE_TRUNK_H = 5.7;
+
+/**
+ * How far a canopy vertex's normal is blended from its own facet toward the
+ * canopy volume, 0..1.
+ *
+ * The defect this exists for is the one that survives every silhouette fix:
+ * nine segments to a whorl means nine ENORMOUS flat triangles, each catching
+ * the sun as one uniform plate, and a stack of uniform plates is the whole
+ * visual signature of an asset-pack tree. Raggedness does not touch it —
+ * it is a shading problem, not an outline problem.
+ *
+ * A needle mass does not have facets; it scatters light as a soft volume. So
+ * the canopy's normals are pulled toward "outward from the middle of the
+ * canopy", which is what that volume's normals would be, and the nine plates
+ * become one shell with a gradient across it. It is free — no extra vertex,
+ * no extra triangle, no program — and it is the single cheapest thing in this
+ * file per unit of "stops looking authored by a programmer".
+ *
+ * Caps are exempt. They are the canopy underside, they genuinely are flat
+ * downward plates, and `ART.md` §5 wants them reading as such — blending them
+ * into the volume would tip the upper whorls' undersides skyward and quietly
+ * delete the face every judge catches.
+ *
+ * The volume direction is OUTWARD AND UP, not "away from the middle of the
+ * canopy". The first version used the latter and it is worth recording why it
+ * was wrong, because it looks more principled: away-from-centre points every
+ * whorl below the canopy's midpoint DOWNWARD, so the bottom two thirds of the
+ * tree stopped catching the sun and the whole thing rendered as a black
+ * wedding cake. A needle does not lie on a sphere around the canopy — it fans
+ * out from the trunk and tilts up toward the light, and that is the same
+ * direction at every height.
+ */
+const PINE_NORMAL_BLEND = 0.7;
+/** The upward tilt in that outward direction — see PINE_NORMAL_BLEND. */
+const PINE_NORMAL_UP = 0.85;
+
 // The pine's wind band, base of trunk to tip of crown. One ramp for all six
 // parts — see `bakedGeometry`.
 export const PINE_WIND = { y0: 0, y1: PINE_H };
+
+/** Canopy geometry, for the shape gate to score the trunk against. */
+export const PINE_SHAPE = { h: PINE_H, trunkH: PINE_TRUNK_H, whorls: PINE_WHORLS };
 
 /**
  * The pine's authored colour bands, hoisted out of the geometry builder so the
@@ -262,6 +307,34 @@ export function raggedCone(geo, seed) {
 }
 
 /**
+ * Blend a canopy part's normals toward the canopy volume — see
+ * `PINE_NORMAL_BLEND`. The volume normal is the vertex's own outward direction
+ * from the trunk axis, tilted up, so the whole canopy shades as one mass
+ * instead of five stacks of plates.
+ */
+function volumeNormals(geo) {
+  const pos = geo.attributes.position;
+  const nrm = geo.attributes.normal;
+  for (let i = 0; i < pos.count; i++) {
+    // The caps stay exactly as computed: they are the underside.
+    if (nrm.getY(i) < -0.5) continue;
+    const dx = pos.getX(i);
+    const dy = PINE_NORMAL_UP * Math.hypot(pos.getX(i), pos.getZ(i));
+    const dz = pos.getZ(i);
+    const d = Math.hypot(dx, dy, dz);
+    if (d < 1e-4) continue;
+    const b = PINE_NORMAL_BLEND;
+    const nx = nrm.getX(i) * (1 - b) + (dx / d) * b;
+    const ny = nrm.getY(i) * (1 - b) + (dy / d) * b;
+    const nz = nrm.getZ(i) * (1 - b) + (dz / d) * b;
+    const n = Math.hypot(nx, ny, nz) || 1;
+    nrm.setXYZ(i, nx / n, ny / n, nz / n);
+  }
+  nrm.needsUpdate = true;
+  return geo;
+}
+
+/**
  * A conifer: a bare tapered trunk carrying five ragged, drooping whorls.
  *
  * 102 triangles against the four primitives' 48 — see `PINE_WHORLS` for why
@@ -271,8 +344,8 @@ export function pineGeometry() {
   // Full height, not just the bare part: the trunk is also the spire the top
   // whorl closes around, and an open-ended cylinder costs the same 12
   // triangles either way.
-  const trunk = new THREE.CylinderGeometry(0.13, 0.26, PINE_H, 6, 1, true);
-  trunk.translate(0, PINE_H * 0.5, 0);
+  const trunk = new THREE.CylinderGeometry(0.13, 0.26, PINE_TRUNK_H, 6, 1, true);
+  trunk.translate(0, PINE_TRUNK_H * 0.5, 0);
   const parts = [{ ...PINE_BANDS[0], geo: trunk }];
   for (let i = 0; i < PINE_WHORLS.length; i++) {
     const w = PINE_WHORLS[i];
@@ -282,7 +355,10 @@ export function pineGeometry() {
     // `ART.md` §5 says every judge catches, the one the fill and bounce poles
     // in `scene.js` were tuned against (`03-canopy-up`).
     cone.translate(0, w.y + w.h * 0.5, 0);
-    parts.push({ ...PINE_BANDS[PINE_WHORL_BANDS[i]], geo: raggedCone(cone, w.seed) });
+    parts.push({
+      ...PINE_BANDS[PINE_WHORL_BANDS[i]],
+      geo: volumeNormals(raggedCone(cone, w.seed)),
+    });
   }
   return bakedGeometry(parts, PINE_WIND);
 }

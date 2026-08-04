@@ -35,6 +35,7 @@ import {
   pineGeometry,
   PINE_BANDS,
   PINE_MAX_R,
+  PINE_SHAPE,
   PINE_WHORL_BANDS,
   PINE_WIND,
 } from "../web/src/props.js";
@@ -156,6 +157,25 @@ check(
   rimY.size >= RIM_MIN,
   `the canopy has ${rimY.size} distinct vertex heights — a whorl whose rim is a level disc stacks ` +
     `into horizontal lines up the trunk, which is the same defect rotated 90 degrees`,
+);
+
+// --- 3b. the trunk does not stand above the canopy ------------------------
+// A bug this shipped with for exactly one render. The whorls taper to a point
+// and the trunk does not, so a trunk run to full height leaves a bare brown
+// spike over every tree in the forest — visible from any angle, and invisible
+// to every check above this one, all of which it passed. Cheap to assert:
+// where the trunk ends, the top whorl must still be wider than it is.
+const top = PINE_SHAPE.whorls[PINE_SHAPE.whorls.length - 1];
+const trunkTopR = 0.13; // CylinderGeometry(radiusTop, ...) in pineGeometry
+check(
+  PINE_SHAPE.trunkH < PINE_SHAPE.h,
+  `the trunk is ${PINE_SHAPE.trunkH} m and the canopy tops out at ${PINE_SHAPE.h} m — the trunk is a spike above the tree`,
+);
+const coneRAtTrunkTop = top.r * ((top.y + top.h - PINE_SHAPE.trunkH) / top.h);
+check(
+  coneRAtTrunkTop > trunkTopR,
+  `at the trunk's top (${PINE_SHAPE.trunkH} m) the crown is only ${coneRAtTrunkTop.toFixed(3)} m wide ` +
+    `against the trunk's ${trunkTopR} m — the trunk pokes out through the canopy`,
 );
 
 // --- 4. the underside reads -------------------------------------------------
