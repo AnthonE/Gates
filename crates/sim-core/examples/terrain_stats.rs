@@ -47,7 +47,9 @@ fn main() {
 
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(seed);
-    let mut counts = [0u32; 8];
+    // Indexed by `Occupant as usize`, which skips 8 (see the enum): sized to
+    // the largest discriminant + 1, not to the number of variants.
+    let mut counts = [0u32; 10];
     for cz in 0..CELLS_PER_SIDE {
         for cx in 0..CELLS_PER_SIDE {
             counts[terrain::scatter(seed, &table, &haven, cx, cz).occupant as usize] += 1;
@@ -55,7 +57,7 @@ fn main() {
     }
     let live: u32 = counts[1..].iter().sum();
     println!(
-        "slots: live {live} (tree {} stone {} metal {} sulfur {} bush {} rock {} barrel {})",
+        "slots: live {live} (tree {} stone {} metal {} sulfur {} bush {} rock {} barrel {} crate {})",
         counts[Occupant::Tree as usize],
         counts[Occupant::StoneNode as usize],
         counts[Occupant::MetalNode as usize],
@@ -63,5 +65,6 @@ fn main() {
         counts[Occupant::Bush as usize],
         counts[Occupant::Rock as usize],
         counts[Occupant::BarrelSlot as usize],
+        counts[Occupant::CrateSlot as usize],
     );
 }
