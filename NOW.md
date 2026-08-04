@@ -163,8 +163,8 @@ Done items are deleted, not checked — history lives in git and
    the same pass, from the surface-gradient reformulation plus a per-octave
    share of `BUMP_MAX_SLOPE`.
 
-1. **The event lane's payloads are law with no gate — twelve codes
-   left.** *(Operator, 2026-08-04: top priority. Ledger now 13/25.)*
+1. **The event lane's payloads are law with no gate — nine codes
+   left.** *(Operator, 2026-08-04: top priority. Ledger now 16/25.)*
 
    Every event is `push(code, a, b, c)` over three untyped `u32`s and the
    `/// EV_*:` lines in `world.rs` are the only statement of which is
@@ -173,18 +173,26 @@ Done items are deleted, not checked — history lives in git and
    `state_hash` excludes the ring by design, and a `u32`-for-`u32` swap
    type-checks. `reference/FINDINGS.md` §1 has why this outranks the queue.
 
-   **Landed**, `crates/sim-core/tests/event_roles.rs`, 13 of 25 by role,
+   **Landed**, `crates/sim-core/tests/event_roles.rs`, 16 of 25 by role,
    with four disciplines that keep it able to fail: `distinct3`,
    `distinct_halves` and `distinct_triple` (a packed field whose parts
    match cannot show the pack reversed), and `only` (refuses zero *and*
-   two, so it doubles as a double-emit gate).
+   two, so it doubles as a double-emit gate). The raid arrangement added
+   for `EV_STRUCT_HIT` stands the whole thing a storey, which is what made
+   the `level` seat falsifiable for the first time.
 
-   **The remaining twelve**, by swap silence: `EV_STRUCT_HIT` first (`c`
-   packs damage over hp-left — the last one carrying two same-kind
-   numbers), then `EV_WEAK_MARK`, `EV_SLOT_HARVESTED`, `EV_CRAFT_DONE`,
-   `EV_PIECE_REMOVED`/`EV_DEPLOY_REMOVED`, `EV_RESPAWN`, `EV_BAG_REMOVED`,
+   **The remaining nine**, by swap silence: `EV_WEAK_MARK` first, then
+   `EV_SLOT_HARVESTED`, `EV_CRAFT_DONE`, `EV_RESPAWN`, `EV_BAG_REMOVED`,
    `EV_SLOT_RESPAWNED`, then the three refusal codes last. Move
    `UNCOVERED` in the same commit as `COVERED`.
+
+   **The refusal three need a fixture move, not just a test.** Every
+   refusal push is `(code, p.id, REFUSE_*, 0)` — same shape at all 46
+   sites — so `a`/`b` are only distinguishable if the player id and the
+   reason code differ. `EV_CONSUME_REFUSED` got there by accident (body 1
+   vs `REFUSE_C_NOT_FOOD`); the build and deploy refusals have reason
+   codes in the same 0..9 range as a player id and will need the raider's
+   id moved, the way `BUILDER = 4` was moved for `EV_STOCK.c`.
 
    **Bigger swing, unbuilt:** a payload-role table both the emit site and
    the check read, making a swap a *compile* error. Should not block this.
