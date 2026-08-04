@@ -31,6 +31,31 @@ Done items are deleted, not checked — history lives in git and
    only as the joining-cost check — which must assert on program links after
    `inWorld`, never on elapsed milliseconds.
 
+1. **The renderer moves to `WebGPURenderer` + TSL.** *(Operator, 2026-08-04:
+   "for the record i am upgrading asap the graphics". `DECISIONS.md` §Spoken.
+   The costed plan is `MIGRATION.md` — read §6 before picking this up.)*
+
+   Four steps, in order, because each one done later costs more. **Do not
+   compress them into one pass.**
+
+   0. **Bump three `0.178.0` → `0.185.1`, alone, on WebGL.** `shadows.js`
+      throws at boot if three renamed a shadow uniform; read that on a clean
+      tree, not inside a rewrite.
+   1. **Port the 12 probes to render targets + async bodies, still on
+      WebGL** — 43 `readPixels` sites, 126 `browser_smoke` references, and
+      every existing assertion must prove the port changed no number. The
+      centre of gravity: after the swap instead means a window with no visual
+      gates at all. `farShadowProbe` needs its corner math re-derived too.
+   2. **Re-derive the prewarm COUNT** (`renderer.info.programs.length` has no
+      WebGPU equivalent); prove it catches the same event class.
+   3. **Swap the renderer and rebuild the material path together** —
+      `scene.js`, `materials.js`, `shadows.js`, `terrain.js`, `main.js`. One
+      owner, one lane, no parallel loop. `CSMShadowNode` and
+      `TileShadowNode` ship with three as worked references; its
+      `transpiler/` converts our GLSL bodies mechanically.
+
+   Visual work (clouds, `SkyMesh`, GTAO) is step 4 and not a prerequisite.
+   Mixing it in is how a renderer swap becomes unreviewable.
 1. **The projection's own arithmetic, twice — and both were Quilez's rules,
    stated in his article, shipped wrong here first. — LANDED**
    *(`DECISIONS.md` §open, "materials v5". Operator, 2026-08-04: "figure out

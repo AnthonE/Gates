@@ -31,6 +31,7 @@ pays the same doors and earns the same coins as a human.
 | `ART.md` | the art bible: measured targets off `Rust Images/`, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
 | `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
+| `MIGRATION.md` | the renderer move to `WebGPURenderer` + TSL: what breaks, counted against the installed three; the prior art; **§6 the order of work** | **the plan of record** for the move (operator, 2026-08-04) — `NOW.md` still owns "what next" |
 | `NOW.md` | what next | **the only list that answers that** |
 
 Docs are dated notes, not law. Four things actually bind: the walls below,
@@ -225,3 +226,15 @@ same bug with a longer fuse.
   (fresh page per shot; engine clock, not `performance.now()`), and the
   coupled-lighting single-owner datum, all from its postmortem. Guidance
   only — no code from it ships in this repo.
+- `SkyeShark/Eanpa-Sky` and `SkyeShark/SeedThree` (both MIT, © 2026 SkyeShark)
+  — read while surveying the node stack; both are catalogued in
+  `MIGRATION.md` §8.3 with their status and their traps. Nothing from either
+  ships **yet** — and unlike the skill packs above, MIT means it may. Two
+  routes are open and both require carrying the notice at the donor site, not
+  a bullet here alone: SeedThree as vendored `.glb` output (§8.3), and
+  Eanpa-Sky's cloud noise, presets and density function copied into the
+  renderer (§8.3.1). Credit again, in the file, at that point. Neither repo's
+  audio may be touched: Eanpa-Sky names four xeno-canto recordings as
+  CC BY-NC-SA, and SeedThree ships bird recordings whose `README.txt` cites
+  xeno-canto but **states no licence per file** — unresolved is not the same
+  as permissive, and NC does not survive a sold product either way.
