@@ -45,13 +45,14 @@ fn test_terrain_shape_sanity() {
     // TERRAIN.md §6: ~8–12k live slots per seed. The band is the doc's; a
     // seed outside it means the scatter weights drifted, not the seed.
     let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(GOLDEN_SEED);
     let mut live = 0u32;
     let mut trees = 0u32;
     let mut barrels = 0u32;
     let mut ore = 0u32;
     for cz in 0..CELLS_PER_SIDE {
         for cx in 0..CELLS_PER_SIDE {
-            let s = terrain::scatter(GOLDEN_SEED, &table, cx, cz);
+            let s = terrain::scatter(GOLDEN_SEED, &table, &haven, cx, cz);
             match s.occupant {
                 Occupant::None => {}
                 Occupant::Tree => {
