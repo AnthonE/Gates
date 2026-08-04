@@ -590,17 +590,32 @@ so they belong in `CONTENT.md` and `DECISIONS.md` §open, not in code**:
   is the kind of thing that is invisible until someone asks why explosives
   do not farm.
 
-### 11.2 · Topology as a cross-system veto channel — for when roads land
+### 11.2 · Topology as a cross-system veto — moved to `TERRAIN.md`, and corrected
 
-`SpawnFilter` reads topology bits, and a monument writes `Monument` topology
-into the map at worldgen, so **every population that excludes `Monument`
-avoids monuments without one line of code knowing monuments exist** (§4).
-`TERRAIN.md` §1 stages 7–8 (the coast road, the haven pad) do not exist yet
-and `terrain.rs::scatter`'s own comment already says "later road/haven veto".
-The finding is only about *shape*: make that a **mask channel sampled like
-moisture**, not a chain of `if` tests bolted onto `scatter`, or every future
-POI edits the scatter function. Costs nothing to decide now, costs a refactor
-to decide later.
+The durable fact is §4's: a monument writes `Monument` topology into the map
+at worldgen, so **every population that excludes `Monument` avoids monuments
+without one line of code knowing monuments exist.** Cross-system veto through
+a shared spatial channel, no system naming another. That much is real and
+worth having.
+
+**The first cut of this section then prescribed their mechanism, which is the
+mistake this whole file exists to avoid.** It said to build "a mask channel
+sampled like `moisture`" and called it free. It is neither. A raster is the
+right answer *for a game with a map file to bake into and dozens of monuments
+to keep out of each other's way*; we have one ring and one pad, and a handful
+of seed-derived control points distance-tested per sample is very likely
+cheaper and keeps `TERRAIN.md` §0 intact. Pre-building the channel now would
+be committing to Rust's answer to a question our architecture may answer
+differently — with **zero producers to put in it**, since stages 7–8 do not
+exist.
+
+What was real underneath it is a constraint on those stages, not a mechanism,
+and it now lives in **`TERRAIN.md` §1 after stage 9**, which is the doc that
+owns worldgen and the one that will actually be open when the road gets
+built: `terrain.rs` has no state today, the pad is a global argmax and the
+road needs distance to a warped coastline, so both need something derived
+once at init and queried — bounded, warmup-only, and bit-identical across
+native and wasm. Nothing to do here until stage 7.
 
 ### 11.3 · What the source cannot answer, and where it would come from
 
