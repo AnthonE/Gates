@@ -244,6 +244,16 @@ pub const SYNC_SCAN_PER_TICK: usize = 256;
 /// loss. Proposed default, DECISIONS.md §open (death backpack v0).
 pub const MAX_BACKPACKS: usize = 256;
 
+/// Bearings the haven-pad argmax may score (TERRAIN.md §1 stage 8's
+/// "something derived once from the seed then queried", which the stage
+/// 7–9 constraint block requires to carry a cap here). Overflow policy:
+/// **refuse** — the search scores at most this many candidate sites and
+/// never grows the set; a seed where none is accepted falls back to the
+/// best land site, then the island center, both asserted unreachable by
+/// `tests/haven.rs`. Bounded work at world init, never in a tick.
+/// Proposed default, DECISIONS.md §open (haven pad v0).
+pub const MAX_HAVEN_CANDIDATES: usize = 64;
+
 /// Sim event ring, cleared every tick — the sim's only output channel
 /// besides state itself (integer codes, CLAUDE.md wall 3). Overflow
 /// policy: **drop newest**, counted; the late-join slot sync (the wire

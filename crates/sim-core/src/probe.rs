@@ -28,9 +28,10 @@ pub extern "C" fn probe_terrain(seed: u64) -> u64 {
         }
     }
     let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(seed);
     for cz in 120..136i32 {
         for cx in 120..136i32 {
-            let s = terrain::scatter(seed, &table, cx, cz);
+            let s = terrain::scatter(seed, &table, &haven, cx, cz);
             h.update(&[s.occupant as u8, s.yaw]);
             h.update(&s.x.to_bits().to_le_bytes());
             h.update(&s.y.to_bits().to_le_bytes());

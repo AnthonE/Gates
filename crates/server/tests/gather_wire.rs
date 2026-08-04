@@ -26,9 +26,10 @@ fn id_of(slot: usize) -> u32 {
 /// the seed offers none: a setup failure, never a skip.
 fn find_isolated_tree() -> ((f32, f32), u16, (u16, u16)) {
     let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(SEED);
     for cz in 40..216i32 {
         for cx in 40..216i32 {
-            let s = terrain::scatter(SEED, &table, cx, cz);
+            let s = terrain::scatter(SEED, &table, &haven, cx, cz);
             if s.occupant != Occupant::Tree {
                 continue;
             }
@@ -42,7 +43,7 @@ fn find_isolated_tree() -> ((f32, f32), u16, (u16, u16)) {
             let mut rivals = 0;
             for dz in -1..=1i32 {
                 for dx in -1..=1i32 {
-                    let n = terrain::scatter(SEED, &table, pcx + dx, pcz + dz);
+                    let n = terrain::scatter(SEED, &table, &haven, pcx + dx, pcz + dz);
                     if sim_core::gather::node_index(n.occupant).is_some() {
                         let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
                         if d2 <= 6.25 && (n.x != s.x || n.z != s.z) {
