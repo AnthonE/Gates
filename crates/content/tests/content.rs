@@ -110,6 +110,18 @@ fn hash_moves_with_values() {
         build(&srcs).unwrap().hash(),
         "the side payout's rate must move the content hash"
     );
+
+    // `hits` decides how long a barrel takes to open, so two contents that
+    // disagree about it play differently and must not canonicalise the
+    // same. It reaches the sim through `bake_loot`.
+    let mut srcs = sources();
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    l.1 = l.1.replace("hits = 3", "hits = 4");
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the barrel's hits-to-open must move the content hash"
+    );
 }
 
 #[test]
@@ -1007,5 +1019,131 @@ fn a_secondary_that_pays_nothing_is_refused() {
         "[gatherable.secondary]\noutput = \"item.berries\"",
         "[gatherable.secondary]\noutput = \"item.cloth\"",
         "repeats the primary output",
+    );
+}
+
+/// The shipped loot tables reach the sim, and reach it intact.
+///
+/// A table that parses, validates and hashes but never bakes is what
+/// `content/loot.toml` was until this slice: eight authored rows and a
+/// revolver that nothing could drop. The assertions below are the ones a
+/// silent mis-bake would break — the rare row surviving at weight 1, the
+/// weight sum matching what the rows say, and the container name
+/// resolving to the index the sim's verb uses.
+#[test]
+fn the_shipped_loot_tables_bake() {
+    let c = build(&sources()).unwrap();
+    let lc = c.bake_loot().expect("shipped loot tables must bake");
+
+    let t = lc
+        .table(sim_core::loot::LOOT_BARREL)
+        .expect("the barrel table is armed");
+    assert_eq!(t.len, 8, "the barrel table lost or gained a row");
+    assert_eq!(t.rolls_min, 1);
+    assert_eq!(t.rolls_max, 2);
+    assert_eq!(t.hits, 3, "the barrel's hits came from content");
+
+    let summed: u32 = t.entries[..t.len as usize]
+        .iter()
+        .map(|e| e.weight as u32)
+        .sum();
+    assert_eq!(
+        t.total_weight, summed,
+        "the baked weight sum disagrees with the rows it was summed from — \
+         the roll would pick past the end of the table"
+    );
+
+    // The rarest thing on the island survived the bake at its authored
+    // weight. A revolver quietly baked to weight 0 is unreachable loot
+    // that every other gate would call fine.
+    let revolver = c.item_index("item.revolver").expect("shipped item");
+    let row = t.entries[..t.len as usize]
+        .iter()
+        .find(|e| e.item == revolver)
+        .expect("the revolver is still a barrel drop");
+    assert_eq!(row.weight, 1, "the revolver's rarity moved");
+    assert_eq!((row.count_min, row.count_max), (1, 1));
+
+    // Every row names a real item and a sane band.
+    for e in &t.entries[..t.len as usize] {
+        assert!(e.weight > 0, "a zero-weight row baked");
+        assert!(e.count_min > 0 && e.count_min <= e.count_max, "bad band");
+        assert!(
+            (e.item as usize) < sim_core::limits::MAX_ITEM_DEFS,
+            "a row baked an item index past the sim's table"
+        );
+    }
+
+    // The crate table is authored and armed even though nothing spawns one
+    // yet; the world lane's monument is what will reach it.
+    let k = lc
+        .table(sim_core::loot::LOOT_CRATE)
+        .expect("the crate table is armed");
+    assert_eq!(k.len, 9);
+    assert_eq!(k.hits, 5);
+}
+
+/// A container the sim has no verb for is a bake refusal, not a row that
+/// is silently dropped — a crate table that never spawns and never says so
+/// is the failure this catches.
+#[test]
+fn an_unknown_container_is_refused_at_bake() {
+    let mut srcs = sources();
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    l.1 =
+        l.1.replace("container = \"crate\"", "container = \"lockbox\"");
+    let err = build(&srcs)
+        .unwrap()
+        .bake_loot()
+        .expect_err("`lockbox` was accepted");
+    assert!(err.contains("no verb for"), "got: {err}");
+}
+
+/// Wall 4 on the roll loop: `rolls_max` is per-tick work chosen by
+/// content, so a table past `MAX_LOOT_ROLLS` must not boot.
+///
+/// The number here is not a strawman. `rolls_max` is read as a `u32` and
+/// narrowed by the bake's `small()`, whose only bound is `u16::MAX` — so
+/// before this cap existed, `65_535` was valid content, and one smash then
+/// walked a 16-row weight table 65_535 times inside a single tick. Nothing
+/// else would have caught it: the arithmetic is integer, the store is
+/// fixed-capacity, and the allocator never moves.
+#[test]
+fn a_roll_count_past_the_cap_is_refused_at_bake() {
+    let mut srcs = sources();
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    l.1 = l.1.replacen("rolls_max = 2", "rolls_max = 65535", 1);
+    let err = build(&srcs)
+        .unwrap()
+        .bake_loot()
+        .expect_err("a 65_535-roll table baked");
+    assert!(err.contains("per smash"), "got: {err}");
+
+    // And the cap itself is the container's slot count, so the shipped
+    // tables sit well under it rather than against it.
+    let lc = build(&sources())
+        .unwrap()
+        .bake_loot()
+        .expect("shipped loot must bake");
+    for which in [sim_core::loot::LOOT_BARREL, sim_core::loot::LOOT_CRATE] {
+        let t = lc.table(which).expect("shipped table is live");
+        assert!(
+            t.rolls_max as usize <= sim_core::limits::MAX_LOOT_ROLLS,
+            "table {which} rolls {} past the {} cap",
+            t.rolls_max,
+            sim_core::limits::MAX_LOOT_ROLLS
+        );
+    }
+}
+
+/// A container nothing can open never pays, so zero hits is content that
+/// disarms itself — refused at validate, before the bake ever sees it.
+#[test]
+fn a_container_that_cannot_be_opened_is_refused() {
+    refuses(
+        "loot.toml",
+        "rolls_max = 2\nhits = 3",
+        "rolls_max = 2\nhits = 0",
+        "would never open",
     );
 }

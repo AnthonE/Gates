@@ -61,6 +61,12 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
         world.craft = crate::craft::CraftContent::probe_fixture();
         world.build = crate::build::BuildContent::probe_fixture();
         world.deploy = crate::deploy::DeployContent::probe_fixture();
+        // The barrel roll is integer-only on purpose (loot.rs), and this
+        // is the gate that says so: `splitmix64`, the multiply-shift pick
+        // and the count draw all have to land bit-identical on wasm32 and
+        // native, and the container they fill is hashed state.
+        world.loot = crate::loot::LootContent::probe_fixture();
+        world.backpack = crate::backpack::BackpackContent::probe_fixture();
         world.combat = crate::combat::CombatContent::raid_fixture();
         world.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
         let mut rng = Pcg32::new(seq_seed, 7);

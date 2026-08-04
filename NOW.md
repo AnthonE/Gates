@@ -15,6 +15,22 @@ Done items are deleted, not checked — history lives in git and
 > from here would only conflict on the same line. Merge theirs. Until then
 > `UI_SMOKE_PORT=<free>` is the documented override.
 
+> **Cross-lane, not an item: the ui lane's flag-word blocker is cleared, and
+> the read changed.** *(systems lane, 2026-08-04. Read this before wiring the
+> drag.)* `APPLIED_MOVE` and `STREAM_ERR` were both `1 << 31`. Bit 31 stays the
+> error sentinel — `main.js:759` already reads it that way and the fix must not
+> need `web/` — so the move verdict moved to a **second applied word**:
+> `core::APPLIED2_MOVE`, read through the new export **`client_applied2()`**.
+> Word 0 cannot announce word 1 (bits 0..30 are flags, 31 is the sentinel), so
+> call `client_applied2()` after *every* `client_on_stream`; it is zero on any
+> message that set nothing, so an unconditional read cannot see a stale
+> verdict. The ui half is unchanged otherwise: `client_move_readout()` into
+> `invMoveVerdict`, on `APPLIED2_MOVE` instead of `APPLIED_MOVE`. Gated by
+> `applied_word_is_full_and_bit_31_is_the_error_sentinel` (core.rs — the word
+> is asserted *exactly* full, so the next flag cannot land on the sentinel) and
+> by `ci/client_smoke.mjs` through the real C ABI. **Unverified in a browser:**
+> `browser_smoke` is operator-disabled this run, so "the console.error is gone"
+> is a claim the native and ABI gates support and no browser has checked.
 00. **systems: the error must leave the flag word — it is NOT a one-line change.**
    *(Gap pass, ui lane. Gap 1 of BOTH `findings/pass-20260804-205133-01-judge.md`
    and `-02-judge.md`: "a player still cannot move a single item".)*
@@ -145,6 +161,29 @@ Done items are deleted, not checked — history lives in git and
    the judge exists to prevent. If textures are un-parked later, start from
    these branches rather than from scratch; if they are never un-parked, delete
    them in a commit that says so, as a stated decision rather than a skip.
+
+1. **The barrel's systems half is done — the loop now waits on world and ui.**
+   *(systems lane, 2026-08-04. Read this before picking the barrel item below.)*
+
+   `BarrelSlot` is smashable: `hits` swings (content, `loot.toml`) open it, the
+   table rolls by weight, and the roll stands up a **ground container** at the
+   barrel's own address — `backpack.rs`'s store, not a new one, so `CONT_BAG`,
+   the move verb, the loot verb, the sync walk and the wire all work unchanged.
+   **`PROTO_VER` did not move.** Gates: `tests/loot.rs` (8), two `event_roles`
+   payload checks (`EV_SLOT_HARVESTED` is off the uncovered ledger, 9→8),
+   `bake_loot` + refusals in `content.rs`, and `test_replay`'s golden
+   regenerated **behaviourally** with a `made >= 2` assert so it cannot go
+   green on an unarmed fixture again.
+
+   What is left, and neither is systems':
+   - **world:** barrels only spawn on the beach today (`terrain.rs` weight row).
+     `TERRAIN.md` §7's coast road is what puts them somewhere worth walking.
+   - **ui:** the loot panel. It is a `CONT_BAG` container like a death bag, so
+     one panel serves both — no new protocol to write against.
+
+   Two §open rows landed with it: "barrel smash hits" and the call to reuse the
+   ground-container store (which shares `MAX_BACKPACKS` 256 and its evict
+   policy with death bags — stated there, not discovered later).
 
 1. **Smash a barrel, pick up the loot. The whole loop, and most of it exists.**
    *(Operator, 2026-08-04. First concrete target of the playability item above.)*

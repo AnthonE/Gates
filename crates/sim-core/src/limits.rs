@@ -244,6 +244,35 @@ pub const SYNC_SCAN_PER_TICK: usize = 256;
 /// loss. Proposed default, DECISIONS.md §open (death backpack v0).
 pub const MAX_BACKPACKS: usize = 256;
 
+/// Loot tables the sim preallocates for — one per container archetype
+/// (`content/loot.toml` ships 2: barrel and crate). The content bake
+/// refuses a set past this. Structural cap like `MAX_DEPLOY_DEFS`, not a
+/// knob: the index is code (`loot::LOOT_*`), so a table the sim has no
+/// verb for is a bake error rather than a silent extra row.
+pub const MAX_LOOT_TABLES: usize = 8;
+
+/// Weighted rows one loot table may carry (the shipped crate table uses
+/// 9). The bake refuses past it. Structural cap like `MAX_RECIPE_INPUTS`,
+/// not a knob.
+pub const MAX_LOOT_ENTRIES: usize = 16;
+
+/// Draws one smash may make — the cap on a table's `rolls_max`. The bake
+/// refuses past it. Structural cap like the two above, **not a knob**: it
+/// is `INV_SLOTS` because `LootContent::roll_into` fills exactly that many
+/// slots, so a draw past the last one can only deepen a stack that is
+/// already standing, and how deep a row pays is what its `count_min` /
+/// `count_max` are for. Balance lives in `content/loot.toml`; this is the
+/// ceiling on the work, not on the reward.
+///
+/// It is wall 4's cap on this path, and until this constant existed there
+/// was none: `rolls_max` is a `u32` in the TOML narrowed to `u16` by the
+/// bake, so `65_535` validated, and one smash then walked the 16-row
+/// weight table that many times **inside a tick**. Every other wall stays
+/// green through it — the arithmetic is integer, the store is fixed, the
+/// allocator is untouched — which is precisely why the bound has to be
+/// stated rather than inferred from a passing suite.
+pub const MAX_LOOT_ROLLS: usize = INV_SLOTS;
+
 /// Sim event ring, cleared every tick — the sim's only output channel
 /// besides state itself (integer codes, CLAUDE.md wall 3). Overflow
 /// policy: **drop newest**, counted; the late-join slot sync (the wire

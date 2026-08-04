@@ -61,7 +61,11 @@ const PIECE_DEF_ROW_WORDS: usize = 4 + 2 * MAX_PIECE_COSTS;
 /// Deploy-def view row, u16 words: arch, placement, hp, item.
 const DEPLOY_DEF_ROW_WORDS: usize = 4;
 /// `client_on_stream` error flag (high bit; real flags are low bits).
-const STREAM_ERR: u32 = 1 << 31;
+///
+/// Defined in `core.rs` beside the `APPLIED_*` flags it shares the word
+/// with, not here: two files each holding half of one bit layout is how
+/// `APPLIED_MOVE` came to be assigned this exact value.
+const STREAM_ERR: u32 = crate::core::STREAM_ERR;
 
 struct Bridge {
     core: Option<ClientCore>,
@@ -255,6 +259,11 @@ pub extern "C" fn client_on_datagram(len: u32) -> u32 {
 /// Returns the `core::APPLIED_*` flags, or the high bit on a decode error
 /// / missing client. Refreshes whichever views the flags point at: the
 /// slot-change pairs, the inventory words, the catalog rows.
+///
+/// **This word is word 0 of two, and it cannot announce word 1** — bits
+/// 0..30 are flags and bit 31 is the error above, so there is no spare bit
+/// to announce with. A caller that wants the `APPLIED2_*` flags reads
+/// `client_applied2()` after this returns, unconditionally; see it for why.
 #[no_mangle]
 pub extern "C" fn client_on_stream(len: u32) -> u32 {
     with(|b| {
@@ -886,13 +895,29 @@ pub extern "C" fn client_hit_pop() -> u32 {
     })
 }
 
+/// Word 1 of the applied word — the `core::APPLIED2_*` flags for the last
+/// `client_on_stream`, valid until the next one.
+///
+/// Read it after **every** `client_on_stream`, not on a bit of the word 0
+/// return: that word has no spare bit to announce this one with, which is
+/// the whole reason word 1 exists. It is cheap (a load, no view refresh)
+/// and it is zero on any message that set nothing in it, so an
+/// unconditional read cannot see a stale verdict.
+///
+/// Today it carries one flag, `APPLIED2_MOVE` — the move verdict the panel
+/// reads through `client_move_readout` and `client_move_payload`.
+#[no_mangle]
+pub extern "C" fn client_applied2() -> u32 {
+    with(|b| b.core.as_ref().map_or(0, |c| c.applied2()))
+}
+
 /// The last move's verdict: `refusal reason << 24 | to slot << 16 |
 /// from kind << 8 | from slot`, with the *to kind* deducible from the
 /// pair the panel sent. Zero reason ⇒ the move landed, and
 /// `client_move_payload` then holds what actually moved.
 ///
 /// Packed rather than returned as five calls because the panel reads it
-/// on one `APPLIED_MOVE` flag and must not see half of one verdict beside
+/// on one `APPLIED2_MOVE` flag and must not see half of one verdict beside
 /// half of the next — `client_consume`'s shape, for `client_consume`'s
 /// reason.
 #[no_mangle]
