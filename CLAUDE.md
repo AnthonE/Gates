@@ -114,6 +114,19 @@ do not rediscover)
   `limits.rs` changes never land from two branches in one merge window.
 - When the operator's word conflicts with any doc including this one, the
   word wins; record it in `DECISIONS.md` the same day.
+- **A partial slice, landed honestly, is a good iteration** — not a fallback.
+  Land the coherent piece with the gates green, say in `NOW.md` what remains
+  and what you learned about why, and stop there. The walls above are hard
+  because they are gated and objectively checkable; nothing in them asks you
+  to finish an item you cannot stand behind.
+- **Prose is bounded: a `NOW.md` item ≤ ~25 lines, a commit body ≤ ~20.**
+  `NOW.md` is a work queue — the next iteration reads every item before it can
+  pick one, so an essay about a single constant is a tax on every pass after
+  it. Detail worth keeping goes to `DECISIONS.md` §open (a knob) or a
+  `gates-loop/findings/` note (a measurement), and the item points at it in one
+  line. Length is not evidence of rigour and no gate or rubric scores it. This
+  binds what you write; the items already over it are not a cleanup task, so
+  trim one when you edit it anyway and leave the rest.
 
 ## Commands (derive, don't quote)
 
