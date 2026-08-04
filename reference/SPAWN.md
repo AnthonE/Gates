@@ -372,10 +372,21 @@ what makes tens of thousands of tree entities affordable:
 - Subscription updates are budgeted: `UpdateSubscriptions(removeLimit,
   addLimit)` and re-queues itself when it runs out.
 
-Read against `NETCODE.md`: the hysteresis band and the "static entities never
-move between groups, so their subscription set is computed once" property are
-the two things worth carrying. Our 64 m chunk grid already *is* this grid; we
-have no hysteresis and no reserved global lane.
+**Correcting this file's first cut: there is nothing here to carry.** It
+claimed we had neither hysteresis nor a global lane. We have both, and both
+are gated — `AOI_ENTER_CM` / `AOI_EXIT_CM` in `limits.rs` are a 176 m / 208 m
+planar band with `test_aoi_hysteresis` on it, and `EV_DEATH` and `EV_DOOR`
+are broadcast rather than AOI'd on the stated grounds that a death is a world
+fact, which is their group 0 by another name. A doc that disagrees with a
+passing gate is wrong (`CLAUDE.md`), and this one was.
+
+The one genuine difference is a tradeoff, not a gap: **their cell *count* is
+fixed and ours is fixed the other way.** They pin `cellCount` and let cell
+size scale with the map, which bounds the size of the group table and lets
+one build serve 1000 m and 6000 m maps. We pin 64 m cells and let the count
+follow, which bounds the work *inside* a cell. For one fixed 2 km island ours
+is the right end of that trade, and it stops being right only if map size
+ever becomes a server option — which `TERRAIN.md` §6 says it is not.
 
 ## 9 · What this means for Gates
 
