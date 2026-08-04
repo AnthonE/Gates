@@ -30,6 +30,7 @@ pays the same doors and earns the same coins as a human.
 | `ALPHA.md` | the alpha cut, staged economy arming (A1→A2→A3) | |
 | `ART.md` | the art bible: measured targets off `Rust Images/`, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
+| `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
 | `NOW.md` | what next | **the only list that answers that** |
 
 Docs are dated notes, not law. Four things actually bind: the walls below,
