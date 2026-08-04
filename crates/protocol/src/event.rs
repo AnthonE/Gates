@@ -129,6 +129,16 @@ const SUB_RESPAWN: u32 = 35;
 /// 37th and 38th of the sixty-four v13's width holds, so nothing moved.
 const SUB_MOVED: u32 = 36;
 const SUB_MOVE_REFUSED: u32 = 37;
+/// The highest live subtype, named rather than counted — `world.rs`'s
+/// `EV_MAX` discipline applied to the wire half.
+///
+/// `trailing_garbage_and_unknown_subtype_are_malformed` probes "the first
+/// unused subtype", and it had that written as `SUB_RESPAWN + 1`. Two
+/// subtypes landed above `SUB_RESPAWN` and the probe silently became a
+/// probe of a **live** code — it caught it here only because the new
+/// decoder arm rejected its all-zero payload, which is luck, not a gate.
+/// Deriving the probe from this constant is what makes it stay a probe.
+const SUB_MAX: u32 = SUB_MOVE_REFUSED;
 /// Container-kind and slot widths on the event lane, deliberately the
 /// same two the action lane spends (`lib.rs`: `CONT_KIND_BITS`,
 /// `ACTION_SLOT_BITS`). An acknowledgement that could not express an
@@ -2450,11 +2460,17 @@ mod tests {
             "spare byte after a valid message must fail the strict tail"
         );
         // kind EVENT + the first unused subtype — 30 became struct-hit,
-        // 31–33 the survival clock's three, 34 the drink and 35 the
-        // respawn, so this moves up with every new subtype, exactly as
-        // intended. The 5 → 6 widening at v13 leaves 28 codes free after
-        // it, so the probe keeps a code of its own for a long time.
-        const UNUSED_SUB: u32 = SUB_RESPAWN + 1;
+        // 31–33 the survival clock's three, 34 the drink, 35 the respawn
+        // and 36–37 the move pair, so this moves up with every new
+        // subtype, exactly as intended. The 5 → 6 widening at v13 leaves
+        // 26 codes free after it, so the probe keeps one of its own for a
+        // long time.
+        //
+        // Off `SUB_MAX` and not off whichever subtype was last when this
+        // was written: as `SUB_RESPAWN + 1` it had already drifted onto a
+        // live code, which turns "the decoder refuses unknown subtypes"
+        // into "the decoder refuses this one message with a short payload".
+        const UNUSED_SUB: u32 = SUB_MAX + 1;
         const { assert!(UNUSED_SUB < 1 << SUB_BITS, "the probe must fit the field") };
         let raw = [
             (KIND_EVENT | (UNUSED_SUB << KIND_BITS)) as u8,

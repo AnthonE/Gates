@@ -45,7 +45,7 @@ use sim_core::limits::{INV_SLOTS, MAX_ITEM_DEFS};
 use sim_core::rng::Pcg32;
 use sim_core::world::{Command, World, EV_MOVED, EV_MOVE_REFUSED};
 
-const SEED: u64 = 0x5EED_0F_C0_11_ED;
+const SEED: u64 = 0x5EED_C011_ED17;
 const PLAYER: u32 = 7;
 /// `GatherContent::probe_fixture` arms items 0..8 with `stack_max` 100.
 const STACK_MAX: u16 = 100;
@@ -111,6 +111,33 @@ fn ledger(w: &World) -> [u64; MAX_ITEM_DEFS] {
         }
     }
     total
+}
+
+/// One slot of one container, read the way the verb reads it.
+fn stack_at(w: &World, kind: u8, slot: u8) -> ItemStack {
+    if kind == CONT_BAG {
+        w.backpacks.slot(0, slot as usize)
+    } else {
+        w.players[0].inv[slot as usize]
+    }
+}
+
+/// The first occupied slot at or after `start`, wrapping — or `start`
+/// itself when the container is empty. Deterministic: a pure function of
+/// world state and the index handed in, so the fuzz stays replayable.
+fn occupied_slot(w: &World, kind: u8, start: usize) -> u8 {
+    for i in 0..INV_SLOTS {
+        let s = (start + i) % INV_SLOTS;
+        let stack = if kind == CONT_BAG {
+            w.backpacks.slot(0, s)
+        } else {
+            w.players[0].inv[s]
+        };
+        if stack.count > 0 {
+            return s as u8;
+        }
+    }
+    start as u8
 }
 
 /// The player's inventory and every bag's, as one comparable value.
@@ -213,7 +240,7 @@ fn refused_moves_never_mutate() {
         if code == EV_MOVE_REFUSED {
             refusals += 1;
             assert!(
-                b >= 1 && b <= REFUSE_M_MAX,
+                (1..=REFUSE_M_MAX).contains(&b),
                 "a refusal must name a reason inside the published range, got {b}"
             );
             seen[b as usize] = true;
@@ -273,21 +300,51 @@ fn moves_conserve_every_item() {
 
     let opening = ledger(&w);
     let mut accepted = 0usize;
-    for _ in 0..4_000 {
+    // Ten thousand draws, and the floor below is a tenth of them. The
+    // count is set by what makes the *coverage* claim robust rather than
+    // by what this seed happens to produce: a floor tuned down to fit one
+    // seed's yield is a floor that stops meaning anything the moment the
+    // fixture moves. One tick per draw, and the whole test runs in a
+    // fraction of a second.
+    for _ in 0..10_000 {
         let from_kind = rng.next_bounded(CONT_MAX as u32 + 1) as u8;
         let to_kind = rng.next_bounded(CONT_MAX as u32 + 1) as u8;
-        let from_slot = rng.next_bounded(INV_SLOTS as u32) as u8;
+        // Source drawn from an *occupied* slot seven times in eight. A
+        // uniform draw lands on an empty slot most of the time and refuses
+        // before it reaches any arithmetic, which is how the acceptance
+        // rate ends up under a tenth — and the accept path is precisely
+        // what a conservation property has to walk to prove anything. The
+        // remaining eighth stays uniform so the empty-source exit is still
+        // sampled here too, and `refused_moves_never_mutate` covers the
+        // refusal space properly in any case.
+        let from_slot = if rng.next_bounded(8) == 0 {
+            rng.next_bounded(INV_SLOTS as u32) as u8
+        } else {
+            occupied_slot(&w, from_kind, rng.next_bounded(INV_SLOTS as u32) as usize)
+        };
         let to_slot = rng.next_bounded(INV_SLOTS as u32) as u8;
-        // Counts biased small, with a heavy tail. A uniform draw over the
-        // whole stack range almost never fits, so it spends its whole run
-        // on the refusal paths — and a conservation property that only ever
-        // sees refusals is proving the *other* test's point, not this one.
-        // Small counts land splits and merges; the tail still reaches the
-        // over-the-ladder refusals.
+        // **Count drawn from the source stack, not independently of it.**
+        // Measured: a count drawn blind over a fixed range refuses as
+        // `REFUSE_M_COUNT` on 65% of all draws — the source is occupied but
+        // smaller than the ask — and the survivors then fragment every
+        // stack they split, so both containers saturate and the acceptance
+        // rate decays as the run proceeds. That is a sampler that spends
+        // ten thousand ticks proving `refused_moves_never_mutate`'s point
+        // instead of this one.
+        //
+        // Half of the well-formed draws take the whole stack, which is what
+        // reaches the swap plan and what keeps the fixture from shredding
+        // itself; the rest split. One draw in eight is still wild, so the
+        // over-the-stack and over-the-ladder exits stay sampled here too.
+        let src = stack_at(&w, from_kind, from_slot);
         let count = if rng.next_bounded(8) == 0 {
             rng.next_bounded(STACK_MAX as u32 + 10) as u16
+        } else if src.count == 0 {
+            1
+        } else if rng.next_bounded(2) == 0 {
+            src.count
         } else {
-            rng.next_bounded(25) as u16 + 1
+            rng.next_bounded(src.count as u32) as u16 + 1
         };
         let (code, _, _) = do_move(&mut w, bag, from_kind, from_slot, to_kind, to_slot, count);
         if code == EV_MOVED {
@@ -304,7 +361,7 @@ fn moves_conserve_every_item() {
         );
     }
     assert!(
-        accepted > 400,
+        accepted > 1_000,
         "the fuzz never landed a move ({accepted} accepted) — a conservation \
          proof over nothing but refusals proves nothing"
     );
@@ -336,7 +393,7 @@ fn every_move_answers_and_none_panics() {
                             do_move(&mut w, bag, from_kind, from_slot, to_kind, to_slot, count);
                         if code == EV_MOVE_REFUSED {
                             assert!(
-                                b >= 1 && b <= REFUSE_M_MAX,
+                                (1..=REFUSE_M_MAX).contains(&b),
                                 "refusal reason {b} is outside the published range"
                             );
                         }

@@ -6,42 +6,44 @@
 
 use protocol::goldens::{
     action_cancel, action_consume, action_craft, action_deploy, action_feed, action_lock,
-    action_place, action_respawn, action_upgrade, action_use, chat, event_bag_dropped,
+    action_move, action_place, action_respawn, action_upgrade, action_use, chat, event_bag_dropped,
     event_bag_removed, event_bag_sync, event_build_refused, event_catalog, event_chat,
     event_consume_refused, event_consumed, event_craft_done, event_craft_q, event_craft_refused,
     event_death, event_deploy_defs, event_deploy_placed, event_deploy_refused, event_deploy_sync,
-    event_door, event_drank, event_gather, event_health, event_hit, event_inv, event_piece_defs,
-    event_piece_placed, event_piece_sync, event_recipes, event_removed, event_respawn,
-    event_slot_change, event_slot_sync, event_stock, event_struct_hit_deploy,
-    event_struct_hit_piece, event_vitals, event_weak_mark, hello, input_acks_only, input_full,
-    refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe, welcome, SnapshotCase, FIXTURES,
+    event_door, event_drank, event_gather, event_health, event_hit, event_inv, event_move_refused,
+    event_moved, event_piece_defs, event_piece_placed, event_piece_sync, event_recipes,
+    event_removed, event_respawn, event_slot_change, event_slot_sync, event_stock,
+    event_struct_hit_deploy, event_struct_hit_piece, event_vitals, event_weak_mark, hello,
+    input_acks_only, input_full, refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe,
+    welcome, SnapshotCase, FIXTURES,
 };
 use protocol::{
     decode_action, decode_chat, decode_event, decode_hello, decode_input, decode_refuse,
     decode_snapshot, decode_welcome, encode_action_cancel, encode_action_consume,
     encode_action_craft, encode_action_deploy, encode_action_drink, encode_action_feed,
-    encode_action_lock, encode_action_loot, encode_action_place, encode_action_respawn,
-    encode_action_upgrade, encode_action_use, encode_chat, encode_event_bag_dropped,
-    encode_event_bag_removed, encode_event_bag_sync, encode_event_build_refused,
-    encode_event_catalog, encode_event_chat, encode_event_consume_refused, encode_event_consumed,
-    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
-    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
-    encode_event_health, encode_event_hit, encode_event_inv, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_sync, encode_event_recipes, encode_event_removed,
-    encode_event_respawn, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
-    encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark, encode_hello,
-    encode_input, encode_refuse, encode_snapshot, encode_welcome, peek_kind, ActionMsg, ChatMsg,
-    EventMsg, InputDatagram, WireError, BAG_SYNC_BATCH, CATALOG_BATCH, DEPLOY_SYNC_BATCH,
-    KIND_ACTION, KIND_CHAT, KIND_EVENT, KIND_HELLO, KIND_INPUT, KIND_REFUSE, KIND_SNAPSHOT,
-    KIND_WELCOME, MAX_EVENT_MSG_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_action_lock, encode_action_loot, encode_action_move, encode_action_place,
+    encode_action_respawn, encode_action_upgrade, encode_action_use, encode_chat,
+    encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
+    encode_event_build_refused, encode_event_catalog, encode_event_chat,
+    encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
+    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
+    encode_event_hit, encode_event_inv, encode_event_move_refused, encode_event_moved,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
+    encode_event_weak_mark, encode_hello, encode_input, encode_refuse, encode_snapshot,
+    encode_welcome, peek_kind, ActionMsg, ChatMsg, EventMsg, InputDatagram, WireError,
+    BAG_SYNC_BATCH, CATALOG_BATCH, DEPLOY_SYNC_BATCH, KIND_ACTION, KIND_CHAT, KIND_EVENT,
+    KIND_HELLO, KIND_INPUT, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME, MAX_EVENT_MSG_BYTES,
+    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 58] = [
+const GOLDEN: [&[u8]; 61] = [
     include_bytes!("golden/v17_input_acks_only.bin"),
     include_bytes!("golden/v17_input_full.bin"),
     include_bytes!("golden/v17_snapshot_keyframe.bin"),
@@ -337,6 +339,23 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_action_respawn(on_bag, &mut buf).unwrap()
+        }
+        "v17_action_move.bin" => {
+            let (bag, from_kind, from_slot, to_kind, to_slot, count) = action_move();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Move {
+                    bag,
+                    from_kind,
+                    from_slot,
+                    to_kind,
+                    to_slot,
+                    count,
+                },
+                "{name}: decode mismatch"
+            );
+            encode_action_move(bag, from_kind, from_slot, to_kind, to_slot, count, &mut buf)
+                .unwrap()
         }
         other => panic!("unknown action fixture {other}"),
     };
@@ -742,6 +761,41 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_event_respawn(on_bag, &mut buf).unwrap()
+        }
+        "v17_event_moved.bin" => {
+            let (from_kind, from_slot, to_kind, to_slot, count, item) = event_moved();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Moved {
+                    from_kind,
+                    from_slot,
+                    to_kind,
+                    to_slot,
+                    count,
+                    item,
+                },
+                "{name}: decode mismatch"
+            );
+            encode_event_moved(
+                from_kind, from_slot, to_kind, to_slot, count, item, &mut buf,
+            )
+            .unwrap()
+        }
+        "v17_event_move_refused.bin" => {
+            let (reason, from_kind, from_slot, to_kind, to_slot) = event_move_refused();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::MoveRefused {
+                    reason,
+                    from_kind,
+                    from_slot,
+                    to_kind,
+                    to_slot,
+                },
+                "{name}: decode mismatch"
+            );
+            encode_event_move_refused(reason, from_kind, from_slot, to_kind, to_slot, &mut buf)
+                .unwrap()
         }
         "v17_event_bag_dropped.bin" => {
             let b = event_bag_dropped();
