@@ -446,7 +446,7 @@ fn scanned_slot(w: &World, kind: terrain::Occupant) -> (f32, f32, u16, u16) {
     let span = (terrain::ISLAND_SIZE / terrain::CELL_SIZE) as i32;
     for cz in 0..span {
         for cx in 0..span {
-            let s = terrain::scatter(SEED, &w.scatter, cx, cz);
+            let s = terrain::scatter(SEED, &w.scatter, &w.haven, cx, cz);
             if s.occupant == kind {
                 return (s.x, s.z, cx as u16, cz as u16);
             }

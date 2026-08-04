@@ -220,7 +220,8 @@ fn a_standing_node_outranks_a_person() {
     'scan: for cz in 100..160i32 {
         for cx in 100..160i32 {
             let table = sim_core::terrain::ScatterTable::alpha_default();
-            let s = terrain::scatter(SEED, &table, cx, cz);
+            let haven = terrain::haven(SEED);
+            let s = terrain::scatter(SEED, &table, &haven, cx, cz);
             if s.occupant == Occupant::Tree {
                 found = Some((s.x, s.z));
                 break 'scan;

@@ -24,9 +24,10 @@ const SEED: u64 = 20_260_731;
 /// sufficiently isolated node — that is a test-setup failure, not a skip.
 fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), u16, (i32, i32)) {
     let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(seed);
     for cz in 40..216i32 {
         for cx in 40..216i32 {
-            let s = terrain::scatter(seed, &table, cx, cz);
+            let s = terrain::scatter(seed, &table, &haven, cx, cz);
             if s.occupant != want {
                 continue;
             }
@@ -42,7 +43,7 @@ fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), u16, (i32, i32)) {
             let mut rivals = 0;
             for dz in -1..=1i32 {
                 for dx in -1..=1i32 {
-                    let n = terrain::scatter(seed, &table, pcx + dx, pcz + dz);
+                    let n = terrain::scatter(seed, &table, &haven, pcx + dx, pcz + dz);
                     if sim_core::gather::node_index(n.occupant).is_some() {
                         let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
                         if d2 <= 6.25 && (n.x != s.x || n.z != s.z) {
@@ -364,7 +365,8 @@ fn weak_spot_pays_only_inside_the_marks_sector() {
     let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::Tree);
     let (cxu, czu) = (cx as u16, cz as u16);
     let table = ScatterTable::alpha_default();
-    let s = terrain::scatter(SEED, &table, cx, cz);
+    let haven = terrain::haven(SEED);
+    let s = terrain::scatter(SEED, &table, &haven, cx, cz);
     let def = GatherContent::probe_fixture().nodes[0];
     assert!(def.weak_pct > 0, "fixture tree must carry a weak bonus");
 

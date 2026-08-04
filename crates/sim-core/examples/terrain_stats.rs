@@ -46,10 +46,11 @@ fn main() {
     );
 
     let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(seed);
     let mut counts = [0u32; 8];
     for cz in 0..CELLS_PER_SIDE {
         for cx in 0..CELLS_PER_SIDE {
-            counts[terrain::scatter(seed, &table, cx, cz).occupant as usize] += 1;
+            counts[terrain::scatter(seed, &table, &haven, cx, cz).occupant as usize] += 1;
         }
     }
     let live: u32 = counts[1..].iter().sum();

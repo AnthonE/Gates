@@ -36,10 +36,13 @@ const MAX_STEPS: u32 = 600;
 /// table is a fixture that silently stops meaning what it says.
 fn scanned_slot(kind: Occupant) -> (f32, f32, f32) {
     let scatter = terrain::ScatterTable::alpha_default();
+    // The same haven the sim resolves at init: it vetoes scatter, so a fixture
+    // that skipped it could return a cell the world does not actually place.
+    let haven = terrain::haven(SEED);
     let span = (terrain::ISLAND_SIZE / terrain::CELL_SIZE) as i32;
     for cz in 0..span {
         for cx in 0..span {
-            let s = terrain::scatter(SEED, &scatter, cx, cz);
+            let s = terrain::scatter(SEED, &scatter, &haven, cx, cz);
             if s.occupant == kind {
                 return (s.x, s.y, s.z);
             }
