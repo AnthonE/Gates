@@ -32,6 +32,7 @@ pays the same doors and earns the same coins as a human.
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
 | `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
 | `MIGRATION.md` | the renderer move to `WebGPURenderer` + TSL: what breaks, counted against the installed three; the prior art; **§6 the order of work** | **the plan of record** for the move (operator, 2026-08-04) — `NOW.md` still owns "what next" |
+| `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
 | `NOW.md` | what next | **the only list that answers that** |
 
 Docs are dated notes, not law. Four things actually bind: the walls below,

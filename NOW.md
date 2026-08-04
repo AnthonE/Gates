@@ -31,10 +31,15 @@ Done items are deleted, not checked — history lives in git and
 1. **The world is a beach with trees on it. Build the world, not its textures.**
    *(Operator, 2026-08-04. Retargets the `looks` lane; its charter is rewritten.)*
 
-   `TERRAIN.md` describes monuments and POIs that **exist in no code** — grep
-   finds the word only in that doc. Scatter ships 7 occupant types and the
-   `NOW.md` item below says its distribution is white noise, which a forest is
-   not. There is nowhere to go and nothing to find, and no texture fixes that.
+   **The spec exists and is unbuilt — do not design a new one.** `TERRAIN.md`
+   §7 is the coast road: a ring ~40 m inland, flattened, dirt, **barrel spawn
+   slots along it**, doing what Rust's roads do — pulling players out of their
+   bases into a circulation loop where they meet — with zero monument art.
+   §8 is the haven pad, and it is the monument hook: every later POI is "carve
+   pad + exclusion zone + scatter table". `grep road crates/` returns nothing.
+   Both halves are research-backed by `reference/SPAWN.md` (§9.3 their scatter
+   clusters and ours does not, §9.4 the squared acceptance, §9.6 per-cell RNG).
+   There is nowhere to go and nothing to find, and no texture fixes that.
 
    **Textures, materials and lighting polish are parked.** They are a solved
    science and not what this build is short of. Frames are no longer captured
