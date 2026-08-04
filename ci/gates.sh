@@ -202,8 +202,9 @@ $NICE node ci/pine_shape.mjs || fail "pine shape"
 # gates below expensive applies. Here rather than earlier because playwright is
 # a `web/` devDependency and comes from the install above.
 #
-# It exempts nothing — `renderer_touched` above is unchanged and every path
-# under `web/` still schedules the renderer tier. This gate earns its place on
+# It is the coverage the armed carve-out above rests on: `renderer_touched`
+# exempts exactly `index.html`, `hud.js` and `input.js`, and every other path
+# under `web/` still schedules the renderer tier. This gate earns that on
 # what it asserts: the composer that must swallow a keystroke so "w" is a
 # letter and not a step forward, the death screen that must answer once, the
 # chat line that goes in as another player's TEXT and never as markup, and the

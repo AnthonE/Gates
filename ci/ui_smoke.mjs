@@ -9,13 +9,19 @@
 // prove that a DOM overlay still overlaid. That is the wrong owner paying the
 // cost.
 //
-// This gate does NOT change that, and a previous version of this file said it
-// did. It runs in the code tier, on every pass, in every lane, exempting
-// nothing; `renderer_touched` is untouched. What it does is make the fix
-// available: it asserts, as a strict SUPERSET, every `web/index.html` and
-// `web/src/hud.js` contract that `browser_smoke` holds, so the carve-out
-// proposed in `DECISIONS.md` §open can be approved as a one-line regex edit
-// against coverage that already exists and already runs.
+// This gate is the coverage that made the fix safe, and the fix is now ARMED
+// (operator, 2026-08-04, `DECISIONS.md` §open): `renderer_touched` exempts
+// `web/index.html`, `web/src/hud.js` and `web/src/input.js`, and every other
+// path under `web/` still schedules the renderer tier. It earned that by
+// asserting, as a strict SUPERSET, every `web/index.html` and `web/src/hud.js`
+// contract that `browser_smoke` holds — eleven mutants of those two files, all
+// eleven red.
+//
+// THE STANDING RULE that came with the arming, and it binds this file: a path
+// joins that exemption list ONLY in a commit that also extends this gate to
+// cover what that path can break. Subtracting a path from `renderer_touched`
+// subtracts a gate from the merge, so the list is the operator's and never a
+// lane branch's.
 //
 // The superset is the load-bearing claim, so it is written down rather than
 // asserted in prose. `browser_smoke`'s HUD-owning reads, and where each is
@@ -84,9 +90,27 @@ import { createRequire } from "node:module";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WEB = path.join(root, "web");
-// Away from `browser_smoke` (8934) and `vantages` (8971) so a UI gate can run
-// beside either without a port fight.
-const PORT = Number(process.env.UI_SMOKE_PORT || 8952);
+// Port 0: the OS picks a free one and we read back what it gave us.
+//
+// This was 8952 — "away from `browser_smoke` (8934) and `vantages` (8971) so a
+// UI gate can run beside either without a port fight" — and that reasoning was
+// right about the wrong neighbours. The build runs THREE lanes in parallel
+// (`looks`, `systems`, `ui`), each a worktree running its own `./ci/gates.sh`,
+// and this gate is in the CODE tier, which every lane runs on every pass. So
+// the collision was never with the renderer gates; it was with the other two
+// copies of THIS one. A distinct fixed port cannot fix that, because the thing
+// it collides with is itself.
+//
+// It showed up as a flaky wall on 2026-08-04: `./ci/gates.sh` red, then green
+// on an immediate re-run of an unchanged clean tree (`logs/health-red1.log`
+// against `logs/health.log`). A flaky wall is not a wall.
+//
+// Deliberately not a retry loop and not a scan for a free port: both re-open
+// the same race with a longer fuse, and this repo has already paid for
+// "widening a timeout is not a fix". Port 0 has no race — the kernel does not
+// hand the same ephemeral port to two sockets. `UI_SMOKE_PORT` still overrides
+// for a caller who needs a known address.
+const PORT = Number(process.env.UI_SMOKE_PORT || 0);
 
 let checks = 0;
 let server = null;
@@ -203,7 +227,28 @@ server = http.createServer((req, res) => {
   });
   fs.createReadStream(file).pipe(res);
 });
-await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+// Listen with the `error` event actually handled. Without this line a bind
+// failure is an UNHANDLED 'error' event: node prints a raw `node:events:497
+// throw er` stack and dies, and `gates.sh` reports "GATE FAIL: ui smoke" with
+// no cause attached to it — which is how the 2026-08-04 flake presented. A
+// gate that cannot say why it failed costs a pass to diagnose.
+await new Promise((resolve, reject) => {
+  server.once("error", reject);
+  server.listen(PORT, "127.0.0.1", () => {
+    server.removeListener("error", reject);
+    resolve();
+  });
+}).catch((e) =>
+  fail(
+    `the static server could not bind ${PORT === 0 ? "an ephemeral port" : `127.0.0.1:${PORT}`}: ${e.message}` +
+      (PORT === 0 ? "" : " — UI_SMOKE_PORT pins the port; unset it to let the OS pick a free one"),
+  ),
+);
+// Read back what the kernel actually assigned. With PORT=0 the value in
+// `PORT` is 0 and navigating to `http://127.0.0.1:0/` would not resolve, so
+// every URL below must come from here and never from the constant.
+const port = server.address()?.port;
+if (!port) fail("the static server bound no port — server.address() returned nothing");
 
 // --- the browser ------------------------------------------------------------
 try {
@@ -243,7 +288,7 @@ await page.route("**/src/main.js", (route) => {
   return route.fulfill({ status: 200, contentType: "text/javascript", body: "" });
 });
 
-await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
+await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "load" });
 
 // =============================================================================
 // A. the scaffold — what lets index.html leave the renderer tier
