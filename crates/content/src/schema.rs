@@ -247,6 +247,11 @@ pub struct LootTable {
     pub container: String,
     pub rolls_min: u32,
     pub rolls_max: u32,
+    /// Swings to smash the container open. Content, not a code literal:
+    /// re-pricing how long a barrel takes is a balance pass, and balance
+    /// passes are `content/*.toml` only (CLAUDE.md wall 7). See
+    /// DECISIONS.md §open, "barrel smash hits".
+    pub hits: u32,
     pub entries: Vec<LootEntry>,
 }
 
