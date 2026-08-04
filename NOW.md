@@ -185,72 +185,31 @@ Done items are deleted, not checked — history lives in git and
    the same pass, from the surface-gradient reformulation plus a per-octave
    share of `BUMP_MAX_SLOPE`.
 
-1. **The event lane's payloads are law with no gate — close the other
-   twenty codes.** *(Operator, 2026-08-04: top priority. The first five
-   landed with `test_event_roles`; this is the rest of the ledger.)*
+1. **The event lane's payloads are law with no gate — twelve codes
+   left.** *(Operator, 2026-08-04: top priority. Ledger now 13/25.)*
 
-   **The hole, stated once.** Every event is `push(code, a, b, c)` over
-   three untyped `u32`s, and the `/// EV_*: a = … b = …` lines in
-   `world.rs` are the only statement of which is which. Swap two at an
-   emit site and every wall stays green: `test_protocol_golden` pins the
-   *encoder's* bytes and an emit site is not the encoder; `state_hash`
-   excludes the event ring by design (derived output, not sim state);
-   every field is a `u32`, so the swap type-checks. `EV_DEATH` is `a` who
-   died, `b` who killed — swap those and every kill feed on every client
-   credits the corpse, silently and forever.
+   Every event is `push(code, a, b, c)` over three untyped `u32`s and the
+   `/// EV_*:` lines in `world.rs` are the only statement of which is
+   which. Swap two at an emit site and every wall stays green: the golden
+   pins the *encoder's* bytes and an emit site is not the encoder,
+   `state_hash` excludes the ring by design, and a `u32`-for-`u32` swap
+   type-checks. `reference/FINDINGS.md` §1 has why this outranks the queue.
 
-   **Why this outranks the queue rather than joining it.** It is the
-   single largest identifiable bug class in the reference ecosystem's own
-   history: 49 commits in `OxideMod/Oxide.Rust` touch a hook's arguments
-   and ~27 correct a payload that had **already shipped wrong**, four of
-   them more than once (`OnEntityBuilt`, `OnCollectiblePickup`,
-   `OnEntityReskin`, `OnItemStacked`). Their patcher pinned an `MSILHash`
-   per patched method — the exact analogue of our byte-golden — and it
-   caught none of them, because a hash over the *shape* of a payload is
-   blind to the meaning of the fields inside it. `reference/FINDINGS.md`
-   §1 has the receipts. This is not a hypothetical wall; it is the wall
-   the reference walked into for a decade.
+   **Landed**, `crates/sim-core/tests/event_roles.rs`, 13 of 25 by role,
+   with four disciplines that keep it able to fail: `distinct3`,
+   `distinct_halves` and `distinct_triple` (a packed field whose parts
+   match cannot show the pack reversed), and `only` (refuses zero *and*
+   two, so it doubles as a double-emit gate).
 
-   **Landed already**, `crates/sim-core/tests/event_roles.rs`: five codes
-   checked by role against a real cause — `EV_HIT`, `EV_HEALTH`,
-   `EV_DEATH`, `EV_BAG_DROPPED`, `EV_GATHER` — plus two disciplines that
-   make the file able to fail. `distinct3` refuses a check whose three
-   fields are not mutually distinguishable, because a permutation would
-   satisfy it otherwise; `only` refuses zero *and* two, which makes it a
-   double-emit gate as well (their `Removed duplicate OnBonusItemDrop
-   hook` and two rounds of `Fixed double deprecated hook call with
-   OnActiveItemChange/d` are the same family). `coverage_is_stated_not_implied`
-   pins the ledger at 5/25 so the gate can never read as "the event lane
-   is covered" while covering five, and a new `EV_*` cannot land without
-   someone classifying it.
+   **The remaining twelve**, by swap silence: `EV_STRUCT_HIT` first (`c`
+   packs damage over hp-left — the last one carrying two same-kind
+   numbers), then `EV_WEAK_MARK`, `EV_SLOT_HARVESTED`, `EV_CRAFT_DONE`,
+   `EV_PIECE_REMOVED`/`EV_DEPLOY_REMOVED`, `EV_RESPAWN`, `EV_BAG_REMOVED`,
+   `EV_SLOT_RESPAWNED`, then the three refusal codes last. Move
+   `UNCOVERED` in the same commit as `COVERED`.
 
-   **This item is the remaining twenty.** Priority inside it is by *swap
-   silence*, not by code order — an event whose fields are different kinds
-   of thing is far harder to get wrong than one carrying two player ids or
-   two hp readings. In order: `EV_DRANK` (b = water restored, c = hp cost
-   — two small ints), `EV_VITALS` (b and c are both `food<<16|water`
-   packs), `EV_STOCK` (a = feeder, b = cell key, c = level),
-   `EV_DEPLOY_PLACED` and `EV_DOOR` (both end in a player id after two
-   packed fields), `EV_STRUCT_HIT` (c packs damage over hp-left), then the
-   refusal codes and the sync/def batches, which are the safest and should
-   go last. Move `UNCOVERED` in the same commit that moves `COVERED`.
-
-   **What would be stronger than more tests, if a pass wants the bigger
-   swing.** A payload-role table both the emit site and the check read, so
-   a swap is a *compile* error rather than a test failure. That is a
-   larger change than this item and should not block it — twenty role
-   checks are worth having either way, and they are what would prove the
-   table correct when it lands.
-
-   **A trap this file already paid for, so the next pass does not.** The
-   first cut asserted on the tick it *sent* the swing and read an empty
-   ring twice. The sim auto-repeats a held button, so every swing after
-   the first resolves inside the cooldown, on a tick the test never sent
-   an input for — `until` steps until the code appears rather than
-   predicting when. And a wrapper struct holding a `World` by value
-   overflows a test thread's stack in an unoptimized build, exactly as
-   `combat.rs` warns; the helpers here take `&mut World` and never put a
-   second one in the frame.
+   **Bigger swing, unbuilt:** a payload-role table both the emit site and
+   the check read, making a swap a *compile* error. Should not block this.
 
 1. **The scatter is white noise and a forest is not — give the occupant
    draw a continuous fitness field.** *(Operator, 2026-08-04: "should we
