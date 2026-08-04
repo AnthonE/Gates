@@ -175,39 +175,33 @@ Done items are deleted, not checked — history lives in git and
 1. **The container panel: the refusal path exists now, so the UI is
    startable.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.
    Systems half landed 2026-08-04, wire v17.)*
-1. **The inventory screen draws all 30 slots now; it still cannot move one.**
-   *(GAP PASS, 2026-08-04, from `findings/pass-20260804-173640-02-judge.md`
-   ranked gap 1 — also `-01`'s gap 1. Supersedes the old item 1: the SEE half
-   landed, sort and move did not.)*
+1. **The inventory drag is built and gated; one bit in `crates/` stops it
+   reaching the sim.** *(ui lane, 2026-08-04. Supersedes "the inventory screen
+   draws all 30 slots now; it still cannot move one" — the panel half landed.)*
 
-   Landed: `#inv` (index.html), `toggleInv`/`setInventory`/`setInvSelected`/
-   `focusSlot`/`eatsKey` (hud.js), Tab + Escape + the verb guard + the 30-slot
-   fill (main.js), and `ci/ui_smoke.mjs` group I. `setInventory` is
-   slot-indexed — belt 0..5, grid 6..29 — and the gate writes a distinct
-   string into each of the 30 and reads back which cell holds it, because
-   CLAUDE.md's positional-payload trap is exactly this shape and every field
-   here is a string. Mutation-tested against a swapped belt/grid, an
-   off-by-six readout, an inverted `eatsKey`, and a grid cell firing
-   `onInvSelect`; all four go red.
+   In `hud.js` + `ci/ui_smoke.mjs` group K, inside the armed carve-out so it
+   pays `ui_smoke` and not the renderer tier: `beginInvDrag` / `dropInvDrag` /
+   `cancelInvDrag` / `invMoveVerdict`, driven by real pointer events, plus the
+   `REFUSE_M_*` → sentence table read off `inventory.rs`. The ordering law is
+   the whole point and every clause is a check — validate the address before
+   touching a cell; ask the host to encode BEFORE drawing, because a drawn move
+   with no frame behind it IS the divergence; one move in flight; a verdict
+   applied only when its address matches the prediction; and an authoritative
+   `setInventory` outranking the rollback snapshot. Eight mutants, all red.
 
-   **The systems half is done** — the request is answered, not deleted,
-   because the UI half is what makes it reachable. `client_action_move(bag,
-   from_kind, from_slot, to_kind, to_slot, count)` encodes a drag and
-   returns 0 rather than a frame the server would answer by dropping the
-   session; `client_move_readout()` gives the verdict (reason 0 = landed)
-   and `client_move_payload()` what moved. Slot contents are **not** in
-   that event on purpose: the inventory diff already pushes changed slots
-   authoritatively, so the panel applies those and uses the readout only to
-   keep or roll back the drag it drew. Refusal reasons are
-   `inventory::REFUSE_M_*` — a player-facing string per reason is the
-   panel's job, and "it is out of reach" and "it is gone" are deliberately
-   separate reasons because they are different things to tell a player.
+   **Systems lane, one-line request — this is the blocker.** `APPLIED_MOVE`
+   (`client-wasm/src/core.rs:122`) and `STREAM_ERR` (`client-wasm/src/bridge.rs:64`)
+   are both `1 << 31`. `main.js:759` reads that bit as a decode error, so the
+   first `Moved`/`MoveRefused` logs `console.error` — which fails the browser
+   gates — and returns early, dropping the inventory diff in the same message.
+   It needs a distinct sentinel; the flag word is full and `core.rs:122` says so.
 
-   `ci/ui_smoke.mjs` is the gate it lands in. The renderer-tier carve-out is
-   **armed** (operator, 2026-08-04, `DECISIONS.md` §open), so a change confined
-   to `index.html`/`hud.js`/`input.js` pays `ui_smoke` and not the renderer
-   tier. A container panel that adds a file will not be confined to those three
-   — extend `ui_smoke` to cover it, and only then propose adding the path.
+   **The UI half left, once that clears:** set `hud.onInvMove` in `main.js`
+   (the host owns the count — the panel is handed strings, and a panel parsing
+   "wood ×8" back into an 8 would be inventing its own payload), then read
+   `client_move_readout()` on `APPLIED_MOVE` into `invMoveVerdict`. That touches
+   `main.js`, so it pays the renderer tier. Stack split and the loot/container
+   panel are the slices after it.
 1. **The props' photograph: `wood` and `foliage` still have none.**
    *(From the visual judge's ranked gap 1, `findings/pass-20260804-153032-01-visual.md`:
    "the terrain got a sourced photograph this pass and the props did not — this
