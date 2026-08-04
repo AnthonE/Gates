@@ -222,6 +222,7 @@ import {
   installClipmapShadows,
   resolvedGlslChars,
 } from "./shadows.js";
+import { WIND_CURVE } from "./props.js";
 import { GROUND_LAYERS, groundTextures } from "./textures.js";
 
 // --- the four identities (TERRAIN.md §4's four sets) ------------------------
@@ -2297,9 +2298,119 @@ vec4 gpTri(vec3 p, vec3 w, vec3 s, float ridge) {
 }
 `;
 
+// --- wind: the first thing in this client that moves ------------------------
+//
+// Nothing in the frame has ever animated. The terrain is a pure function of
+// the seed, every prop is an instance matrix written once on stream-in, and
+// the only motion in the image was the camera. So this is not "a sway effect
+// on the trees" — it is the client's first animated uniform, and the three
+// decisions below are the ones that keep it from becoming the client's first
+// nondeterminism, its first mid-play program link, and its first frame-timed
+// gate.
+//
+// The technique is SeedThree's (`CLAUDE.md` third-party credit), re-expressed
+// for WebGL — its wind is TSL node material code and none of it can be lifted
+// as source, the same wall `shadows.js` hit with the shadow skill. Three parts
+// of its design are worth naming because each is a thing a naive version gets
+// wrong:
+//
+//   * ONE per-vertex weight, `aWind`, 0 at the trunk base rising to 1 at the
+//     tips. A tree in wind is neither a rigid body nor a noise field; it is a
+//     cantilever, and the weight IS the cantilever. It is also what roots the
+//     trunk: a tree whose base slides is the single most obvious tell.
+//   * The phase comes from the instance's own WORLD position, not from a
+//     per-instance random. Random phase gives a forest of trees each doing its
+//     own thing; a world-position phase gives one gust CROSSING the forest,
+//     which is what you actually see from a hillside — and it costs nothing,
+//     because the position is already in the instance matrix.
+//   * Two octaves. One sine is a metronome, and a metronome is what makes
+//     cheap foliage read as cheap.
+//
+// It is a vertex displacement and nothing else. No normal recompute (a 30 cm
+// sway does not turn a lit face enough to pay for one) and no fragment cost at
+// all, so the frame budget this slice spends is a handful of vertex ALU on the
+// only geometry in the scene small enough for that to be free.
+
+// The bearing wind blows along, world XZ, normalized at boot. SeedThree's own
+// (0.85, 0.53) — an off-axis direction, deliberately: on an axis, every trunk
+// in a chunk-aligned world sways in the same plane as the terrain grid and the
+// eye finds the lattice.
+const WIND_DIR = [0.85, 0.53];
+// Metres of horizontal sway at `aWind = 1` — the tip of a 5.2 m pine, so this
+// is a ~3.3 degree lean at peak. Sway is a signed unit sinusoid, so this is
+// the amplitude and not the swing.
+const WIND_STRENGTH = 0.3;
+// Gust tempo. The two octaves below run at 1.15x and 2.63x this.
+const WIND_SPEED = 1.0;
+// World metres to radians of phase, per axis. Together these set the gust's
+// wavelength (~2*PI/hypot = 14 m) and its bearing across the forest.
+const WIND_PHASE = [0.35, 0.27];
+// The height curve is NOT here: it is baked into the `aWind` attribute at
+// geometry-build time, so it belongs to the shape and lives with it
+// (`props.js`). Imported only to be reported by `windFacts`.
+
+/**
+ * The shared wind state: `xy` bearing, `z` strength, `w` seconds.
+ *
+ * ONE object, referenced by every material that takes the patch — the same
+ * shape `propToggle` uses, and for the same reason: the per-frame write is one
+ * scalar store into one uniform, not a walk over every material in the scene.
+ *
+ * `w` is written from the SIM TICK, never from `performance.now()`
+ * (`terrain.update`). That is what keeps the first animated thing in this
+ * client from being the thing that makes a capture unrepeatable — `NOW.md`
+ * item 12 wants the frame goldens to diff to zero, and a wall clock in the
+ * vertex shader would move every needle in every shot.
+ */
+export const windUniform = {
+  value: new THREE.Vector4(0, 0, WIND_STRENGTH, 0),
+};
+{
+  const n = Math.hypot(WIND_DIR[0], WIND_DIR[1]);
+  windUniform.value.x = WIND_DIR[0] / n;
+  windUniform.value.y = WIND_DIR[1] / n;
+}
+
+/** Advance the wind to `seconds`. Called once a frame with sim-tick time. */
+export function setWindTime(seconds) {
+  windUniform.value.w = seconds * WIND_SPEED;
+}
+
+const WIND_VERT_PARS = /* glsl */ `
+attribute float aWind;
+uniform vec4 uWind;
+`;
+
+// Injected after `begin_vertex`, which is where `transformed` is born and the
+// last point before `project_vertex` consumes it.
+//
+// The displacement is authored in WORLD space (wind has one bearing for the
+// whole island) and applied in OBJECT space (that is what `transformed` is),
+// so it has to come back through the instance's own basis. For a rotation and
+// a uniform scale that inverse is the transpose over s^2, and `v * M` is GLSL
+// for `transpose(M) * v` — six ALU, no matrix inverse, and it is what makes a
+// felled tree's sway lie down with it instead of staying upright in world Y.
+const WIND_VERT_GLSL = /* glsl */ `
+  vec3 gpRest = transformed;
+  #ifdef USE_INSTANCING
+    mat3 gwBasis = mat3(modelMatrix) * mat3(instanceMatrix);
+    vec3 gwOrigin = (modelMatrix * instanceMatrix[3]).xyz;
+  #else
+    mat3 gwBasis = mat3(modelMatrix);
+    vec3 gwOrigin = modelMatrix[3].xyz;
+  #endif
+  float gwPhase = gwOrigin.x * ${WIND_PHASE[0]} + gwOrigin.z * ${WIND_PHASE[1]};
+  float gwSway = sin(uWind.w * 1.15 + gwPhase) * 0.72
+               + sin(uWind.w * 2.63 + gwPhase * 1.9) * 0.28;
+  vec3 gwWorld = vec3(uWind.x, 0.0, uWind.y) * (aWind * uWind.z * gwSway);
+  float gwS2 = max(dot(gwBasis[0], gwBasis[0]), 1e-6);
+  transformed += (gwWorld * gwBasis) / gwS2;
+`;
+
 const PROP_VERT_PARS = /* glsl */ `
 varying vec3 vGpPos;
 varying vec3 vGpNrm;
+${WIND_VERT_PARS}
 `;
 
 // The world position and world normal this field is a function of. Both are
@@ -2310,9 +2421,16 @@ varying vec3 vGpNrm;
 // result behind. Every scatter pool is an InstancedMesh, so a patch that
 // forgot this would give all 4,096 trees in a pool the same square metre of
 // bark.
+//
+// It reads `gpRest` and not `transformed`, which is the wind block's rest pose
+// (see WIND_VERT_GLSL). The field is a world-space function — a pattern carved
+// in the air, not painted on the object — so sampling it at the DISPLACED
+// vertex would slide the bark along the trunk every time the tree leaned, and
+// a fissure that swims is worse than no fissure. `gpRest` always exists: the
+// wind block is part of the same single patch source every material takes.
 const PROP_VERT_GLSL = /* glsl */ `
   vec3 gpNrm = normal;
-  vec4 gpWp = vec4(transformed, 1.0);
+  vec4 gpWp = vec4(gpRest, 1.0);
   #ifdef USE_INSTANCING
     gpNrm = mat3(instanceMatrix) * gpNrm;
     gpWp = instanceMatrix * gpWp;
@@ -2454,13 +2572,36 @@ export function surfaceMaterial(surface, opts = {}) {
         PROP_BUMP_FADE_CPP[1],
       ),
     },
+    // Shared by reference, like `uProp` above: one Vector4 for the whole
+    // scene, advanced once a frame. Materials on geometry that carries no
+    // `aWind` attribute read the attribute's 0 default and are displaced by
+    // exactly nothing, which is why this can be unconditional — one patch
+    // source, one program, no per-archetype variant for the prewarm gate to
+    // catch mid-play.
+    uWind: windUniform,
   };
   material.userData.propUniforms = uniforms;
   material.userData.propSurface = surface;
+  // Everything the scatter draws carries `aWind` (`bakedGeometry` writes the
+  // attribute zero-filled when an archetype has no wind band), but this same
+  // material dresses building pieces and player capsules, whose geometry has
+  // no such attribute. An attribute a program declares and a geometry does not
+  // supply falls back to WebGL's GENERIC vertex attribute — a piece of global
+  // state that keeps whatever the last draw call left in it. Without this line
+  // a wall would sway iff a tree had been drawn before it, which is the kind
+  // of bug that reproduces on one machine in four.
+  material.defaultAttributeValues = { aWind: [0] };
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${PROP_VERT_PARS}`)
+      // Wind BEFORE the projection (it moves the vertex three is about to
+      // project), the field AFTER it (it only needs the world position, and
+      // takes it from the rest pose the wind block left behind).
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>\n${WIND_VERT_GLSL}`,
+      )
       .replace(
         "#include <project_vertex>",
         `#include <project_vertex>\n${PROP_VERT_GLSL}`,
@@ -2485,6 +2626,62 @@ export function surfaceMaterial(surface, opts = {}) {
       );
   };
   return installClipmapShadows(material);
+}
+
+/**
+ * The depth material a wind-bearing caster needs.
+ *
+ * This exists because of the oldest bug in animated foliage: displace the
+ * vertex in the surface material and the tree sways while its SHADOW stands
+ * perfectly still, which reads as the tree sliding across its own shadow. The
+ * shadow pass renders through a different program, so it needs the same
+ * displacement or the two disagree — and three hands every plain caster ONE
+ * shared `MeshDepthMaterial` it will not let us patch without patching it for
+ * the ground and the buildings too. So the scatter owns this one, exactly as
+ * `Terrain.nearDepth` owns the ground's and for the same reason.
+ *
+ * SeedThree does not solve this half — its wind is "engine-specific, not
+ * exported", and its depth pass goes unmentioned — so this is ours.
+ *
+ * It is a second program, therefore it is prewarmed (`terrain.prewarmObjects`)
+ * or the first tree to cast a shadow links it mid-play and the count gate in
+ * `browser_smoke` fails, correctly.
+ */
+export function makeWindDepthMaterial() {
+  const material = new THREE.MeshDepthMaterial({
+    depthPacking: THREE.RGBADepthPacking,
+    side: THREE.FrontSide,
+  });
+  material.defaultAttributeValues = { aWind: [0] };
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uWind = windUniform;
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", `#include <common>\n${WIND_VERT_PARS}`)
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>\n${WIND_VERT_GLSL}`,
+      );
+  };
+  return material;
+}
+
+/**
+ * The wind's knobs and live state, for the debug snapshot and any gate that
+ * comes to score it. Published rather than restated: a strength edited in the
+ * table above cannot pass by agreeing with a number written beside it.
+ */
+export function windFacts() {
+  return {
+    dir: [windUniform.value.x, windUniform.value.y],
+    strength: windUniform.value.z,
+    speed: WIND_SPEED,
+    phase: WIND_PHASE,
+    curve: WIND_CURVE,
+    // Seconds of sim time the vertex shader is currently standing at. Moves
+    // in 1/30 steps and only while the sim ticks, which is the whole claim:
+    // a capture at tick N is the same image every time it is taken.
+    t: windUniform.value.w,
+  };
 }
 
 /**
