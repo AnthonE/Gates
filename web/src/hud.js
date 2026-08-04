@@ -48,6 +48,17 @@ const MOVE_REFUSALS = [
 ];
 
 export class Hud {
+  /**
+   * The `onInvMove` a panel has while no host has claimed the move verb.
+   *
+   * Identity, not behaviour: a host arms the drag by assigning over this,
+   * and `beginInvDrag` compares against it. Static rather than a private
+   * module const so `ci/ui_smoke.mjs` can put the unarmed state back and
+   * assert the panel offers no gesture it cannot perform — an arming rule
+   * with no gate would be the comment-with-no-gate class again.
+   */
+  static NO_MOVE_HOST = () => false;
+
   constructor() {
     this.el = document.getElementById("hud");
     this.cross = document.getElementById("cross");
@@ -126,6 +137,14 @@ export class Hud {
     // dropping the inventory diff riding with it. That is a `crates/`
     // collision and the systems lane owns it (NOW.md). Until it clears,
     // `onInvMove` stays at its default and no drag reaches the wire.
+    //
+    // And while it stays there the gesture does not START. An affordance
+    // that always refuses is worse than one that is absent: every drop
+    // would dim a cell and toast "that will not move", which teaches the
+    // player the panel is broken rather than that the verb is unbuilt.
+    // `beginInvDrag` therefore refuses outright until a host claims the
+    // verb, and a host claims it by assigning over `NO_MOVE_HOST` — there
+    // is nothing separate to remember, so nothing separate to forget.
     this.inv = document.getElementById("inv");
     this.invGrid = document.getElementById("invgrid");
     this.invBelt = document.getElementById("invbelt");
@@ -147,9 +166,19 @@ export class Hud {
      * Returning false means the wire refused the shape
      * (`client_action_move` → 0) and nothing is drawn.
      */
-    this.onInvMove = () => false;
+    this.onInvMove = Hud.NO_MOVE_HOST;
     /** The slot being dragged, or -1. */
     this.invDrag = -1;
+    /**
+     * The `pointerId` that began the live drag, or null.
+     *
+     * One item is picked up by one pointer, so only that pointer may put it
+     * down or call it off. Without this a second finger's release reaches
+     * `dropInvDrag` holding the FIRST finger's source and sends a move
+     * nobody gestured — the one-drag guard refuses the second pointer's
+     * press but has never had anything to say about its release.
+     */
+    this.invDragPointer = null;
     /** The one move in flight, or null. See `dropInvDrag`. */
     this.invPending = null;
     this.invCells = [];
@@ -167,18 +196,41 @@ export class Hud {
       // different cells — which is the whole gesture. A release outside any
       // cell is handled on the panel below, not here.
       cell.addEventListener("pointerdown", (e) => {
-        if (e.button === 0) this.beginInvDrag(s);
+        if (e.button === 0) this.beginInvDrag(s, e.pointerId);
       });
-      cell.addEventListener("pointerup", () => this.dropInvDrag(s));
+      cell.addEventListener("pointerup", (e) => this.dropInvDrag(s, e.pointerId));
       this.invCells.push(label);
       this.invDivs.push(cell);
       this.invTexts.push("");
     }
-    // Released on the panel but not on a cell: the drag ends and nothing
-    // moves. Without this the next click anywhere would drop a stale drag
-    // into whatever it landed on.
-    this.inv.addEventListener("pointerup", () => this.cancelInvDrag());
-    this.inv.addEventListener("pointercancel", () => this.cancelInvDrag());
+    // A drag ends wherever the pointer is released, and in real play that is
+    // usually NOT over the panel: press a cell, walk the cursor onto the
+    // world, let go. Bound on `window` for exactly that case. With the
+    // listener on `#inv` — where it was — that release was never seen at
+    // all: `invDrag` kept pointing at the source, the cell kept its mark,
+    // and the player's NEXT press was refused by the one-drag guard while
+    // that press's release ran the drop against the stale source. Press
+    // cell 8, and the sim is asked to move cell 3.
+    //
+    // Which is the item-move verb failing as an unasked-for mutation on a
+    // container, i.e. the exact shape CLAUDE.md's trap list says the
+    // reference shipped three times in 28 minutes. It is not a cosmetic
+    // stuck highlight.
+    //
+    // Cell handlers still run first — they are deeper in the same bubble
+    // path — so a real drop has already cleared the drag by the time this
+    // sees the event and `cancelInvDrag` no-ops. Scoped to the pointer that
+    // began the drag: another finger releasing elsewhere is not this drag
+    // ending. `blur` is not scoped and cannot be — once the page loses
+    // focus the release will never arrive at all, so a drag that survived
+    // a blur survives forever.
+    this.onWinPointerUp = (e) => {
+      if (e.pointerId === this.invDragPointer) this.cancelInvDrag();
+    };
+    this.onWinBlur = () => this.cancelInvDrag();
+    window.addEventListener("pointerup", this.onWinPointerUp);
+    window.addEventListener("pointercancel", this.onWinPointerUp);
+    window.addEventListener("blur", this.onWinBlur);
   }
 
   show() {
@@ -445,19 +497,29 @@ export class Hud {
    * nothing somewhere, and letting it start would make every later step
    * reason about a move with no item in it.
    */
-  beginInvDrag(s) {
+  beginInvDrag(s, pointerId = null) {
+    if (this.onInvMove === Hud.NO_MOVE_HOST) return false;
     if (this.invDrag >= 0) return false;
     if (!this.invTexts[s]) return false;
     this.invDrag = s;
+    this.invDragPointer = pointerId;
     this.invDivs[s].classList.add("drag");
     return true;
   }
 
-  /** Abort a drag without moving anything: pointercancel, blur, Escape. */
+  /**
+   * Abort a drag without moving anything. Four callers and all four are
+   * wired: `pointerup` and `pointercancel` away from a cell and `blur`, all
+   * three on `window` from the constructor, and Escape via `toggleInv`.
+   *
+   * Unconditional by design — the pointer-scoping lives at the window
+   * listener, because `blur` and Escape have no pointer to scope to.
+   */
   cancelInvDrag() {
     if (this.invDrag < 0) return false;
     this.invDivs[this.invDrag].classList.remove("drag");
     this.invDrag = -1;
+    this.invDragPointer = null;
     return true;
   }
 
@@ -471,9 +533,14 @@ export class Hud {
    *
    * So the order here is fixed, and every step of it is gated:
    *
-   *   1. validate the address BEFORE touching a cell — same slot, no drag,
-   *      out of range, empty source. A refused drag mutates nothing, so
-   *      there is nothing to roll back and no frame goes out.
+   *   1. validate the address BEFORE touching a cell — no drag, a release
+   *      from a pointer that never picked this up, same slot, out of range,
+   *      empty source. A refused drag mutates nothing, so there is nothing
+   *      to roll back and no frame goes out. The pointer check in
+   *      particular has to sit above `cancelInvDrag` and not below it, or a
+   *      foreign release calls off a drag that is still under a finger —
+   *      the validation-ordering law applied to the abort as well as to
+   *      the move.
    *   2. snapshot exactly the two labels about to change.
    *   3. ask the host to encode and send. `client_action_move` returns 0
    *      for a shape the wire will not carry, and a drawn move with no
@@ -486,9 +553,15 @@ export class Hud {
    * reference actually shipped three times, and serialising is cheaper than
    * reconciling two predictions against one authoritative diff.
    */
-  dropInvDrag(to) {
+  dropInvDrag(to, pointerId = null) {
     const from = this.invDrag;
     if (from < 0) return false;
+    // Only the pointer that picked the item up may put it down. A second
+    // finger's release arriving here holds the FIRST finger's `from`, and
+    // honouring it sends a move the player never gestured — the same
+    // unasked-for mutation the window-level cancel closes, by the other
+    // door. Above the cancel, so a foreign release neither moves nor aborts.
+    if (pointerId !== this.invDragPointer) return false;
     this.cancelInvDrag();
     if (this.invPending) {
       this.toast("still moving that");
