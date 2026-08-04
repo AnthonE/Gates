@@ -203,6 +203,83 @@ Done items are deleted, not checked — history lives in git and
      dark surfaces; the surfaces are now honestly lit and honestly thin, which
      is the materials lane's number to move.
 
+1. **The scatter is white noise and a forest is not — give the occupant
+   draw a continuous fitness field.** *(Operator, 2026-08-04: "should we
+   [upgrade the stack]? unless its unity larp to get around unity jank."
+   Mostly it is. `reference/SPAWN.md` §9.3/§9.4 is the residue that isn't.)*
+
+   **Scope discipline first, because the research it comes from is large
+   and this item is not.** `reference/SPAWN.md` reports four placement
+   systems in the reference game. Three of them — a population that is a
+   *count* rather than a slot list, a quadtree importance sampler, and
+   physics-query occupancy with an attempt budget — are all downstream of
+   one Unity constraint: a choppable tree must be a GameObject with a
+   collider and a network identity, so it is *already* networked and
+   persisted, so placement never had to be a pure function. **None of that
+   is portable and none of it is proposed.** Our slot model is the better
+   half of that trade and `TERRAIN.md` §0 is the reason the island costs
+   zero bytes to join. What survives the filter is one change inside one
+   function.
+
+   **The defect.** `terrain::scatter` draws one hash per 8 m cell and
+   decides that cell alone, against a per-biome weight row indexed by a
+   *discrete* `biome()`. Independent draws are white noise: uniform-density
+   speckle with no groves and no clearings, and a hard density step exactly
+   where `biome()` changes. `TERRAIN.md` §1 stage 6 sells forest as "wood,
+   cover, low visibility" and stage 5's masks are continuous; the scatter is
+   the one consumer that throws that continuity away. The reference game
+   gets the texture from `ClusterSizeMin..Max` objects drawn out of one
+   quadtree leaf, braked by a 2×-density cap over a 20 m cell — a stateful
+   sampler we cannot and should not have.
+
+   **The change.** Make the cell's weight continuous and let one extra
+   noise channel carry the clumping:
+
+   - `weight = biome_row[occupant] × clump(seed, x, z)` where `clump` is a
+     low-frequency value-noise field — the shape `moisture()` already is,
+     at a wavelength that makes groves rather than biomes **(knob)**.
+   - Accept on a **squared** fitness, the reference's own `factor² ≥ rand`
+     rather than `factor ≥ rand`, so a biome edge falls off quadratically
+     into a soft tail instead of stepping. §9.4 is right that this is free;
+     it is also *only expressible* once the fitness is continuous, which is
+     why these are one item and not two.
+   - Still one hash draw, still `O(1)`, still pure, still no trig. The
+     restricted-float and no-libm walls do not move.
+
+   **What it reddens, and the order to take it in.** This is a worldgen
+   change under wall 5, so every fixture it moves is regenerated **in the
+   same commit** or it does not merge:
+
+   - `test_terrain_golden` — `GOLDEN_TERRAIN_HASH` moves by construction.
+   - `test_terrain_shape_sanity` — the live-slot band (8–12k), and trees >
+     1000 / ore > 300 / barrels > 50. **This is the actual work.** A
+     mean-1 multiplier roughly preserves the count but not the variance,
+     and the slope and water vetoes are nonlinear in it, so the weight rows
+     need re-tuning against the band rather than assumed through it.
+   - `world::tests::spawn_ring_lands_on_a_clear_beach` — asserts every
+     spawn is 4 m clear of every slot. More clumping makes that harder to
+     satisfy; if it reddens, that is a real signal about clump amplitude,
+     not a test to widen.
+   - `test_replay`'s `GOLDEN_FINAL_HASH` — only if that script's gather
+     path touches a slot whose occupant changed. Determine empirically;
+     do not pre-emptively regenerate a hash that did not move.
+   - `ci/parity.mjs` needs nothing: gates.sh **diffs** native against wasm
+     rather than pinning either, so both halves move together for free —
+     which is exactly what that gate is for.
+   - Clippy's sim walls and `test_alloc_zero` are untouched: no allocation,
+     no new float op outside the permitted set.
+
+   **The knob, before the code.** `clump` wavelength and amplitude are two
+   numbers nobody has spoken. By `CLAUDE.md` they go into `DECISIONS.md`
+   §open first and reach `terrain.rs` second, and the knob-registry gate
+   will hold them there.
+
+   **Explicitly not in scope**, so a later pass does not smuggle them in
+   under this heading: population counts, respawn-elsewhere, any entity per
+   tree, any sampler with state, and the operator census verb from
+   `SPAWN.md` §9.7 (worth doing, unrelated, its own item when someone wants
+   it).
+
 1. **The ground's chroma noise — the artifact the last pass shipped. — LANDED**
    *(GAP PASS, iteration 2. From `findings/pass-20260803-145507-01-visual.md`
    ranked gap 1: "Kill the near-ground chroma confetti — it is a live render
