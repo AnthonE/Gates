@@ -2906,6 +2906,56 @@ console.log(
       .join(" · "),
 );
 
+// Assertion 13b — wind is animated by the SIM, and it moves the shadow too.
+//
+// Two claims, neither of which any pixel assertion in this file can reach.
+//
+// The first is the shadow. A vertex displacement lives in the surface
+// material; the shadow pass renders through a different program entirely, and
+// three hands every plain caster one shared `MeshDepthMaterial`. Patch only
+// the surface and the tree sways out from under a shadow bolted to the ground
+// — from the camera's own side that reads as *correct*, because the shadow is
+// behind the thing casting it. So this asserts the STRUCTURE: every archetype
+// that sways owns the wind-bearing depth material.
+//
+// The second is the clock, and it is the one worth the most. Wind is the first
+// animated thing in this client, so it is the first thing that could make two
+// captures of one seed differ — `NOW.md` item 12's whole premise. The client
+// takes its wind time from the sim tick, and that is checkable arithmetic
+// rather than a sentence: `t` must be the tick in seconds. A wall clock, a
+// frame counter or an accumulated dt all fail it within a second of play.
+const wind = await A.page.evaluate(() => globalThis.__gatesDebug.wind);
+if (!wind) fail(`tab A: __gatesDebug.wind missing — the client publishes no wind state`);
+if (!(wind.strength > 0)) fail(`tab A: wind strength is ${wind.strength} — nothing moves`);
+const windLen = Math.hypot(wind.dir[0], wind.dir[1]);
+if (Math.abs(windLen - 1) > 1e-3) {
+  fail(`tab A: wind bearing [${wind.dir}] has length ${windLen.toFixed(4)} — the strength knob is not in metres`);
+}
+if (!Array.isArray(wind.swaying) || !wind.swaying.includes(1)) {
+  fail(`tab A: swaying archetypes are [${wind.swaying}] — archetype 1 is the tree and it is not among them`);
+}
+if (wind.depthPatched !== true) {
+  fail(
+    `tab A: a swaying archetype casts through three's shared depth material — its shadow will ` +
+      `stand still while it leans, and no capture from the camera's side can see it`,
+  );
+}
+if (!(wind.tick > 0)) fail(`tab A: wind clock is at tick ${wind.tick} — the sim never advanced`);
+// The whole determinism claim, as arithmetic. `t` is sim seconds x WIND_SPEED;
+// the tolerance is one tick, not a fudge — the snapshot is read between frames.
+if (Math.abs(wind.t - (wind.tick / 30) * wind.speed) > (1 / 30) * wind.speed + 1e-6) {
+  fail(
+    `tab A: wind clock t=${wind.t} against tick ${wind.tick} (${wind.tick / 30}s x speed ${wind.speed}) — ` +
+      `the vertex shader is being animated by something other than the sim, so no two captures of ` +
+      `one seed can agree`,
+  );
+}
+console.log(
+  `  wind: bearing [${wind.dir.map((d) => d.toFixed(3))}] · ${wind.strength} m at the tip · ` +
+    `curve ${wind.curve} · archetypes [${wind.swaying}] all casting through the wind depth material · ` +
+    `clock t=${wind.t.toFixed(2)}s from tick ${wind.tick} · ${wind.stumps} stump(s), ${wind.felling} falling`,
+);
+
 // Assertion 14 — the splat weights are a field, not a constant. The shader
 // below can blend four identities perfectly and still paint one, if what it
 // is fed is uniform or one-hot; no pixel probe can tell those apart from a
