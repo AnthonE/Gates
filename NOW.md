@@ -180,55 +180,6 @@ Done items are deleted, not checked — history lives in git and
    `combat.rs` warns; the helpers here take `&mut World` and never put a
    second one in the frame.
 
-1. **The sun cannot rise until the ground's structure moves from bump into
-   albedo — and that is now a measurement, not a hunch.**
-   *(What is left of the lighting iteration after `DECISIONS.md` §open
-   "lighting v1" landed the rest of it. The register, the transfer, the fill's
-   earth half, the sky, the fog and every gate that scores them are done and
-   green; the one thing the item asked for that did NOT ship is the sun's
-   elevation, and it did not ship because a wall said no.)*
-
-   The arithmetic, from the row: a normal perturbed by δ changes `N·L` on flat
-   ground by `cot(elevation)·δ` relative, so the ground's whole bump relief
-   scales with cot. With the shipped field byte-identical and only
-   `SUN_ELEVATION` moved, `browser_smoke` 15 measures
-
-   | elevation | cot  | frame moved | mean Δluma | brightened, worst yaw |
-   |-----------|------|-------------|------------|-----------------------|
-   | 0.36 rad  | 2.66 | 11.20%      | ~19        | +0.4%  (floor 0.2%)   |
-   | 0.50 rad  | 1.83 |  2.03%      | 7.2–8.4    | +0.01%                |
-   | 0.785 rad | 1.00 |  0.47%      | 7.0–7.8    | +0.00%                |
-
-   The last column is the blocker: 15's two-sidedness separates a field from a
-   wash, and the pass before this one built a bump fix, measured it and
-   declined to ship it rather than spend that margin. Raising the sun spends
-   it twenty times over.
-
-   **The exit condition is stated so it can be checked**: when the ground
-   holds assertion 15's margins with its bump contribution removed — i.e.
-   when its structure is carried by albedo rather than by relief — this
-   constant can rise, and the reference frames' midday register comes with
-   it. That work is the GROUND's albedo structure — item 7's "re-place the
-   meso octave" and the bump-vs-albedo balance beneath it — which now has a
-   second, independent reason to be next. Nothing else about the light rig is
-   waiting on anything.
-
-   Smaller things the lighting owner measured and did not take:
-
-   - **The sky has no clouds**, so its own tonal span inside one frame is 16–89
-     levels where the reference's is a few hundred. The dome is a shader now
-     and the seam, the dither and the sun disc are in it; cumulus is a
-     separate slice and probably a `threejs-volumetric-clouds` one.
-   - **Water still has no wave normals.** The specular agrees with the sun by
-     construction (same light) and the horizon no longer steps, but the judge's
-     "amorphous Gaussian smear with no specular structure" is about the surface
-     it sits on, and a flat plane has none.
-   - **The prop field's own amplitude fell 11% (rock) and 28% (pine)** when the
-     transfer's toe came off, disclosed in the §open row rather than netted
-     against the 48%/67% rise in its delivered floor. The toe was exaggerating
-     dark surfaces; the surfaces are now honestly lit and honestly thin, which
-     is the materials lane's number to move.
-
 1. **The scatter is white noise and a forest is not — give the occupant
    draw a continuous fitness field.** *(Operator, 2026-08-04: "should we
    [upgrade the stack]? unless its unity larp to get around unity jank."
@@ -305,6 +256,54 @@ Done items are deleted, not checked — history lives in git and
    tree, any sampler with state, and the operator census verb from
    `SPAWN.md` §9.7 (worth doing, unrelated, its own item when someone wants
    it).
+1. **The sun cannot rise until the ground's structure moves from bump into
+   albedo — and that is now a measurement, not a hunch.**
+   *(What is left of the lighting iteration after `DECISIONS.md` §open
+   "lighting v1" landed the rest of it. The register, the transfer, the fill's
+   earth half, the sky, the fog and every gate that scores them are done and
+   green; the one thing the item asked for that did NOT ship is the sun's
+   elevation, and it did not ship because a wall said no.)*
+
+   The arithmetic, from the row: a normal perturbed by δ changes `N·L` on flat
+   ground by `cot(elevation)·δ` relative, so the ground's whole bump relief
+   scales with cot. With the shipped field byte-identical and only
+   `SUN_ELEVATION` moved, `browser_smoke` 15 measures
+
+   | elevation | cot  | frame moved | mean Δluma | brightened, worst yaw |
+   |-----------|------|-------------|------------|-----------------------|
+   | 0.36 rad  | 2.66 | 11.20%      | ~19        | +0.4%  (floor 0.2%)   |
+   | 0.50 rad  | 1.83 |  2.03%      | 7.2–8.4    | +0.01%                |
+   | 0.785 rad | 1.00 |  0.47%      | 7.0–7.8    | +0.00%                |
+
+   The last column is the blocker: 15's two-sidedness separates a field from a
+   wash, and the pass before this one built a bump fix, measured it and
+   declined to ship it rather than spend that margin. Raising the sun spends
+   it twenty times over.
+
+   **The exit condition is stated so it can be checked**: when the ground
+   holds assertion 15's margins with its bump contribution removed — i.e.
+   when its structure is carried by albedo rather than by relief — this
+   constant can rise, and the reference frames' midday register comes with
+   it. That work is the GROUND's albedo structure — item 7's "re-place the
+   meso octave" and the bump-vs-albedo balance beneath it — which now has a
+   second, independent reason to be next. Nothing else about the light rig is
+   waiting on anything.
+
+   Smaller things the lighting owner measured and did not take:
+
+   - **The sky has no clouds**, so its own tonal span inside one frame is 16–89
+     levels where the reference's is a few hundred. The dome is a shader now
+     and the seam, the dither and the sun disc are in it; cumulus is a
+     separate slice and probably a `threejs-volumetric-clouds` one.
+   - **Water still has no wave normals.** The specular agrees with the sun by
+     construction (same light) and the horizon no longer steps, but the judge's
+     "amorphous Gaussian smear with no specular structure" is about the surface
+     it sits on, and a flat plane has none.
+   - **The prop field's own amplitude fell 11% (rock) and 28% (pine)** when the
+     transfer's toe came off, disclosed in the §open row rather than netted
+     against the 48%/67% rise in its delivered floor. The toe was exaggerating
+     dark surfaces; the surfaces are now honestly lit and honestly thin, which
+     is the materials lane's number to move.
 
 1. **The ground's chroma noise — the artifact the last pass shipped. — LANDED**
    *(GAP PASS, iteration 2. From `findings/pass-20260803-145507-01-visual.md`

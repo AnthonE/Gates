@@ -29,6 +29,7 @@ import {
   makeTerrainCostVariants,
   makeTerrainMaterial,
   makeTerrainProjectionVariant,
+  makeLeafDepthMaterial,
   makeWindDepthMaterial,
   setWindTime,
   surfaceMaterial,
@@ -41,6 +42,7 @@ import {
   ARCHETYPES,
   bakedGeometry,
   pineGeometry,
+  pineParts,
 } from "./props.js";
 import {
   castInLevels,
@@ -182,34 +184,53 @@ export class Terrain {
         continue;
       }
       const a = ARCHETYPES[k];
-      // `composite` archetypes bake their own parts (and their own wind band);
-      // everything else is one primitive wearing the row's ramp.
-      const geo = a.composite
-        ? a.geo()
-        : bakedGeometry([{ ...a, geo: a.geo() }], a.wind);
-      geo.translate(0, a.lift, 0);
-      const mesh = new THREE.InstancedMesh(
-        geo,
-        surfaceMaterial(a.surface, { color: 0xffffff, vertexColors: true }),
-        POOL_CAP,
-      );
-      // Allocate the per-instance colour buffer up front: the tint is
-      // written on stream-in, and a pool that first renders without one
-      // would make three recompile its program mid-play.
-      mesh.setColorAt(0, this._c.setRGB(1, 1, 1));
-      mesh.count = 0;
-      mesh.frustumCulled = false; // instances span the near ring
-      // A forest that casts nothing is the whole reason the ground reads
-      // flat; one InstancedMesh casts for every instance in it.
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      // …and it casts the shape the wind actually put there.
-      if (a.wind) mesh.customDepthMaterial = this.windDepth;
-      // A pine only exists inside the near ring, so every pixel it can darken
-      // is inside level 1's box (shadows.js, "which level gets which caster").
-      castInLevels(mesh, 0, NEAR_CASTER_MAX_LEVEL);
-      scene.add(mesh);
-      this.pools.push(mesh);
+      // An archetype is a GROUP of InstancedMeshes sharing one instance-matrix
+      // stream, not a single mesh. The generated pine needs two — bark opaque,
+      // needles alpha-tested — because an object gets one customDepthMaterial
+      // and a merged two-material geometry would alpha-test the trunk against
+      // the leaf texture in the shadow pass. Every other archetype is a group
+      // of one, so the rest of this class does not care.
+      const rows = a.parts
+        ? a.parts()
+        : [{ ...a, geo: a.composite ? a.geo() : bakedGeometry([{ ...a, geo: a.geo() }], a.wind) }];
+      const group = [];
+      for (const row of rows) {
+        const geo = row.geo;
+        geo.translate(0, a.lift, 0);
+        const opts = { color: 0xffffff, vertexColors: !row.maps };
+        if (row.maps) {
+          Object.assign(opts, row.maps);
+          if (row.alpha) {
+            opts.side = THREE.DoubleSide;
+            opts.transparent = false; // cutout, never blended: no sort, no order
+          }
+        }
+        const mesh = new THREE.InstancedMesh(geo, surfaceMaterial(row.surface, opts), POOL_CAP);
+        // Allocate the per-instance colour buffer up front: the tint is
+        // written on stream-in, and a pool that first renders without one
+        // would make three recompile its program mid-play.
+        mesh.setColorAt(0, this._c.setRGB(1, 1, 1));
+        mesh.count = 0;
+        mesh.frustumCulled = false; // instances span the near ring
+        // A forest that casts nothing is the whole reason the ground reads
+        // flat; one InstancedMesh casts for every instance in it.
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        // …and it casts the shape the wind actually put there — through the
+        // leaf's own cutoff where there is one, or a needle card casts a
+        // solid rectangle.
+        if (row.alpha) {
+          mesh.customDepthMaterial = makeLeafDepthMaterial(row.maps.map, row.maps.alphaTest);
+        } else if (a.wind || row.maps) {
+          mesh.customDepthMaterial = this.windDepth;
+        }
+        // A pine only exists inside the near ring, so every pixel it can darken
+        // is inside level 1's box (shadows.js, "which level gets which caster").
+        castInLevels(mesh, 0, NEAR_CASTER_MAX_LEVEL);
+        scene.add(mesh);
+        group.push(mesh);
+      }
+      this.pools.push(group);
       this.owners.push([]);
     }
     this.chunkSlots = new Map(); // key -> [{arch, idx, key, cellKey, …}]
@@ -224,7 +245,7 @@ export class Terrain {
     // pass, then disposes them.
     this.prewarmObjects = () => {
       const objs = [];
-      const pool = this.pools.find(Boolean);
+      const pool = (this.pools.find(Boolean) || [])[0];
       if (pool) {
         const m = new THREE.InstancedMesh(
           new THREE.PlaneGeometry(0.02, 0.02),
@@ -653,9 +674,9 @@ export class Terrain {
     const list = [];
     for (let i = 0; i < count; i++) {
       const arch = slots[i * 8] | 0;
-      const pool = this.pools[arch];
-      if (!pool || pool.count >= POOL_CAP) continue;
-      const idx = pool.count;
+      const group = this.pools[arch];
+      if (!group || group[0].count >= POOL_CAP) continue;
+      const idx = group[0].count;
       const cx = slots[i * 8 + 6] | 0;
       const cz = slots[i * 8 + 7] | 0;
       const entry = {
@@ -676,7 +697,7 @@ export class Terrain {
         // around anyone who walked back into it.
         fellAt: 0,
       };
-      pool.count = idx + 1;
+      for (const mesh of group) mesh.count = idx + 1;
       this._composeEntry(entry);
       this._composeTint(entry);
       this.owners[arch][idx] = entry;
@@ -709,7 +730,7 @@ export class Terrain {
    * tree falls along a bearing its own random rotation picked for it.
    */
   _composeEntry(entry) {
-    const pool = this.pools[entry.arch];
+    const group = this.pools[entry.arch];
     this._e.set(0, entry.yaw8 * YAW8_TO_RAD, 0);
     this._q.setFromEuler(this._e);
     this._v.set(entry.x, entry.y, entry.z);
@@ -732,8 +753,10 @@ export class Terrain {
     }
     this._s.set(s, s, s);
     this._m4.compose(this._v, this._q, this._s);
-    pool.setMatrixAt(entry.idx, this._m4);
-    pool.instanceMatrix.needsUpdate = true;
+    for (const mesh of group) {
+      mesh.setMatrixAt(entry.idx, this._m4);
+      mesh.instanceMatrix.needsUpdate = true;
+    }
   }
 
   /**
@@ -747,12 +770,12 @@ export class Terrain {
   _setStump(entry, on) {
     const have = this.stumpIndex.get(entry.cellKey);
     if (on === !!have) return;
-    const pool = this.pools[ARCH_STUMP];
+    const group = this.pools[ARCH_STUMP];
     if (on) {
-      if (pool.count >= POOL_CAP) return;
+      if (group[0].count >= POOL_CAP) return;
       const stump = {
         arch: ARCH_STUMP,
-        idx: pool.count,
+        idx: group[0].count,
         key: entry.key,
         cellKey: entry.cellKey,
         x: entry.x,
@@ -764,7 +787,7 @@ export class Terrain {
         hidden: false,
         fellAt: 0,
       };
-      pool.count = stump.idx + 1;
+      for (const mesh of group) mesh.count = stump.idx + 1;
       this._composeEntry(stump);
       this._composeTint(stump);
       this.owners[ARCH_STUMP][stump.idx] = stump;
@@ -787,12 +810,14 @@ export class Terrain {
    * own — a respawn takes one stump away while its chunk stays live.
    */
   _dropEntry(entry) {
-    const pool = this.pools[entry.arch];
+    const group = this.pools[entry.arch];
     const owners = this.owners[entry.arch];
-    const last = pool.count - 1;
+    const last = group[0].count - 1;
     if (entry.idx !== last) {
-      pool.getMatrixAt(last, this._m4);
-      pool.setMatrixAt(entry.idx, this._m4);
+      for (const mesh of group) {
+        mesh.getMatrixAt(last, this._m4);
+        mesh.setMatrixAt(entry.idx, this._m4);
+      }
       const mover = owners[last];
       mover.idx = entry.idx;
       owners[entry.idx] = mover;
@@ -800,9 +825,11 @@ export class Terrain {
       // at its new index rather than reading the old slot back.
       this._composeTint(mover);
     }
-    pool.count = last;
+    for (const mesh of group) {
+      mesh.count = last;
+      mesh.instanceMatrix.needsUpdate = true;
+    }
     owners.pop();
-    pool.instanceMatrix.needsUpdate = true;
     entry.gone = true;
     if (entry.arch === ARCH_STUMP) this.stumpIndex.delete(entry.cellKey);
     else this.cellIndex.delete(entry.cellKey);
@@ -810,10 +837,11 @@ export class Terrain {
 
   /** Write an entry's per-instance tint — derived, never stored. */
   _composeTint(entry) {
-    const pool = this.pools[entry.arch];
     instanceTint(entry.cellKey, ARCHETYPES[entry.arch].tint, this._c);
-    pool.setColorAt(entry.idx, this._c);
-    pool.instanceColor.needsUpdate = true;
+    for (const mesh of this.pools[entry.arch]) {
+      mesh.setColorAt(entry.idx, this._c);
+      mesh.instanceColor.needsUpdate = true;
+    }
   }
 
   /** The rendered scatter entry at cellKey, or null (chunk not streamed). */
@@ -985,11 +1013,22 @@ export class Terrain {
   scatterFacts() {
     const out = [];
     for (let k = 1; k < ARCHETYPES.length; k++) {
-      const pool = this.pools[k];
-      if (!pool) continue;
+      const group = this.pools[k];
+      if (!group) continue;
+      // The group's FIRST mesh speaks for the archetype's material identity;
+      // `parts` lists every one, so an archetype that grew a second mesh
+      // cannot hide it from the gate.
+      const pool = group[0];
       out.push({
         arch: k,
         surface: ARCHETYPES[k].surface,
+        parts: group.map((m) => ({
+          surface: m.material.userData.propSurface,
+          textured: !!m.material.map,
+          alphaTest: m.material.alphaTest || 0,
+          tris: (m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3,
+          alphaDepth: !!(m.customDepthMaterial && m.customDepthMaterial.alphaTest > 0),
+        })),
         type: pool.material.type,
         roughness: pool.material.roughness,
         metalness: pool.material.metalness,
@@ -1032,13 +1071,13 @@ export class Terrain {
       ...windFacts(),
       swaying,
       depthPatched: swaying.every(
-        (k) => this.pools[k].customDepthMaterial === this.windDepth,
+        (k) => this.pools[k].every((m) => m.customDepthMaterial != null),
       ),
       tick: this._tick,
       fellTicks: FELL_TICKS,
       fellSinkTicks: FELL_SINK_TICKS,
       felling: this._felling.length,
-      stumps: this.pools[ARCH_STUMP].count,
+      stumps: this.pools[ARCH_STUMP][0].count,
     };
   }
 
@@ -1057,7 +1096,7 @@ export class Terrain {
     const out = [];
     const m = new THREE.Matrix4();
     for (let k = 1; k < ARCHETYPES.length; k++) {
-      const pool = this.pools[k];
+      const pool = this.pools[k] && this.pools[k][0];
       if (!pool || pool.count === 0) continue;
       let best = null;
       let bestD = maxR * maxR;
