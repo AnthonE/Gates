@@ -16,6 +16,12 @@ import { InputTracker } from "./input.js";
 import { GameScene } from "./scene.js";
 import { Terrain } from "./terrain.js";
 import { Hud } from "./hud.js";
+import {
+  CONT_SELF,
+  STREAM_HIGH_BIT,
+  VERDICT,
+  classifyMoveVerdict,
+} from "./invmove.js";
 import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
 
 // Resolved against the document, not the origin root: the page is served
@@ -608,6 +614,31 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   hud.onInvSelect = (slot) => {
     input.sel = slot;
   };
+  // The move verb's OUTBOUND half — this assignment is what arms the drag
+  // (`Hud.NO_MOVE_HOST`), so the gesture does not exist until the host can
+  // actually carry it.
+  //
+  // The count comes off `views.inv`, the same authoritative array the
+  // panel was drawn from, and never off the label: the panel holds
+  // "wood ×8" as a string, and parsing an 8 back out of it would be
+  // inventing the payload. That is the quantize-both-sides law applied to
+  // containers — the server must sim on the values the client predicted
+  // with, so the client must send the values it drew.
+  //
+  // Ordering, which is the whole trap: `client_action_move` validates the
+  // shape and returns 0 for one the wire will not carry, and it is asked
+  // BEFORE `dropInvDrag` draws anything. A drawn move with no frame behind
+  // it is the container divergence itself, and divergence is what the
+  // reference kept shipping as a disconnect.
+  hud.onInvMove = (from, to) => {
+    views.refresh();
+    const count = views.inv[from * 2 + 1];
+    if (count <= 0) return false;
+    const len = ex.client_action_move(0, CONT_SELF, from, CONT_SELF, to, count);
+    views.refresh();
+    if (len === 0) return false;
+    return actions.send(views.output, len);
+  };
   document.addEventListener("keydown", (e) => {
     if (closed) return;
     if (hud.chatOpen) return; // the composer's own handler has it
@@ -757,7 +788,22 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       views.refresh();
       views.input.set(bytes);
       const flags = ex.client_on_stream(bytes.length);
-      if (flags & 0x80000000) {
+      if (flags & STREAM_HIGH_BIT) {
+        // Bit 31 is two things at once: `APPLIED_MOVE` and `STREAM_ERR`
+        // are both `1 << 31` in client-wasm, so a landed move and an
+        // undecodable message arrive bit-identical. `classifyMoveVerdict`
+        // splits them the only way this side of the wall can — against
+        // the drag this panel actually has in flight. `web/src/invmove.js`
+        // has the whole argument, including what it cannot close.
+        const v = classifyMoveVerdict(ex.client_move_readout(), hud.invPending);
+        if (v.kind === VERDICT) {
+          // The sim's word on the move we drew. `invMoveVerdict` re-checks
+          // the address against its own pending record before it unwinds
+          // anything — this route is not trusted to have matched.
+          hud.invMoveVerdict(v.reason, v.from, v.to);
+          views.refresh();
+          return;
+        }
         // Our own server sent bytes we can't decode — the smoke gate
         // fails on console.error, which is exactly right.
         console.error("event lane: message failed to decode");

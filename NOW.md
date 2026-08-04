@@ -31,6 +31,42 @@ Done items are deleted, not checked — history lives in git and
 > by `ci/client_smoke.mjs` through the real C ABI. **Unverified in a browser:**
 > `browser_smoke` is operator-disabled this run, so "the console.error is gone"
 > is a claim the native and ABI gates support and no browser has checked.
+00. **systems: the error must leave the flag word — it is NOT a one-line change.**
+   *(Gap pass, ui lane. Gap 1 of BOTH `findings/pass-20260804-205133-01-judge.md`
+   and `-02-judge.md`: "a player still cannot move a single item".)*
+
+   The client half landed this pass — main.js arms `onInvMove` and routes the
+   verdict, so a player can drag. It is armed over a workaround, and this is
+   what retires it.
+
+   Both reports call the cure "one constant in `crates/client-wasm`". **It is
+   not, and a pass that starts there will hit a wall in ten minutes.**
+   `core.rs:38-122` assigns every bit 0..31 of the `APPLIED_*` word — bit 31
+   (`APPLIED_MOVE`) is the last one, and `core.rs:115-121` says so in its own
+   comment. So `APPLIED_MOVE` has nowhere to move to. The thing that must
+   leave the word is **`STREAM_ERR`** (`bridge.rs:64`), because it is not a
+   flag at all — it is an error channel multiplexed into a full flag set by
+   `client_on_stream`, which returns both.
+
+   Cheapest shape: `client_on_datagram`'s, which already does this right —
+   return a code, not flags. Or an out-of-band `client_stream_err()`. Either
+   way `ci/client_smoke.mjs:543,807,816,822` assert the error meaning of bit 31
+   and `:572,587` assert the move meaning, so both sides move in that commit.
+
+   When it lands: delete `web/src/invmove.js` and its call site in `main.js`,
+   and test bit 31 as `APPLIED_MOVE` directly. `ci/ui_smoke.mjs` group L
+   already goes red on that commit and says exactly this in its failure text.
+
+> **Cross-lane, not an item: `browser_smoke` is red on a CLEAN tree, and it is
+> tab B, not the prop-contrast probe.** Measured 2026-08-04 from the ui lane,
+> both on `lane/ui` HEAD `ecf1985` with nothing applied and on a branch off it:
+> the same assertion both times — *"tab B: never reached the world —
+> unresponsive"*, `__gatesDebug` never published, `2 tab(s) live`, ~68–70 s of
+> liveness cap. Tab A reaches the world in under a second in both runs. This is
+> the two-live-renderers class CLAUDE.md already names (2026-08-01), on a box
+> with no GPU where Chromium is on SwiftShader — not a diff, and not a timeout
+> to widen. The operator has `browser_smoke` switched off this run. Anything
+> touching `web/` therefore cannot honestly claim the renderer tier; say so.
 
 0. **world: the haven pad, and the road the client cannot see.**
    *(Gap pass. Both judge reports named "the island has nowhere to go" as their
