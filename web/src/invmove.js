@@ -61,9 +61,24 @@ export const CONT_SELF = 0;
  * `bag` field wants an id no panel is open on. See `NOW.md`.
  */
 export const CONT_BAG = 1;
-/** `sim-core/src/inventory.rs:72` — the largest container kind the wire's
- *  2-bit field will carry. `encode_action_move` range-checks against it. */
-export const CONT_MAX = 1;
+/**
+ * `sim-core/src/inventory.rs:76` — a deployed storage box.
+ *
+ * Named here for the same reason `CONT_BAG` is: the ceiling below is now
+ * this kind, and a bare `2` would be exactly the magic number that comment
+ * argues against. Nothing forms one yet — `hud.js` draws only `CONT_SELF`
+ * (`hud.invContainers`) and `main.js`'s move host refuses a non-self end.
+ * The box carries a packed `box_key(cx, cz, level)` in the wire's handle
+ * field rather than an id, so the panel that opens one needs no new bytes.
+ */
+export const CONT_BOX = 2;
+/** `sim-core/src/inventory.rs:81` — the largest container kind the wire's
+ *  2-bit field will carry. `encode_action_move` range-checks against it, so
+ *  this must EQUAL the sim's ceiling and not merely bound what this client
+ *  happens to send today. Written as the alias, exactly as Rust writes it
+ *  (`pub const CONT_MAX: u8 = CONT_BOX;`), so a fourth kind moves one line
+ *  on each side instead of leaving a literal behind. */
+export const CONT_MAX = CONT_BOX;
 /** `sim-core/src/inventory.rs:109` — the largest `REFUSE_M_*`. */
 export const REFUSE_M_MAX = 7;
 
