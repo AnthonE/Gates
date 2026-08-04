@@ -22,6 +22,7 @@ use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, S
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
 use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_DOOR, PLACE_ANY};
 use sim_core::gather::ItemStack;
+use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOY_DEFS,
     MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
@@ -70,6 +71,14 @@ pub const BAG_SYNC_BATCH: usize = 16;
 /// Longest item display name on the wire; the catalog bake refuses past
 /// it (content names are short by construction — CONTENT.md §2).
 pub const MAX_ITEM_NAME_BYTES: usize = 24;
+
+/// Slots one container-sync message carries. Not a drip constant like the
+/// syncs above it, and that is the point: the widest container is
+/// `INV_SLOTS` and a slot is 37 bits, so a *whole* container is ≈ 145 B —
+/// comfortably inside `MAX_EVENT_MSG_BYTES` — and a cursor would buy a
+/// second walk to restart, a second reset flag to get wrong, and a window
+/// in which a panel is drawn half full. One message, one truth.
+pub const CONT_SYNC_BATCH: usize = INV_SLOTS;
 
 /// Widened 5 → 6 with `PROTO_VER` 13 (piece damage v0): the struct-hit
 /// subtype was the 31st of the 32 a 5-bit field holds, which left one code
@@ -129,6 +138,19 @@ const SUB_RESPAWN: u32 = 35;
 /// 37th and 38th of the sixty-four v13's width holds, so nothing moved.
 const SUB_MOVED: u32 = 36;
 const SUB_MOVE_REFUSED: u32 = 37;
+/// An open container's contents (wire v19). 39th of the sixty-four, so
+/// nothing moved for it.
+///
+/// **The first S→C message addressed to one client on purpose rather than
+/// by accident.** Every other unicast on this lane is an own-fact — your
+/// gather, your health, your refusal — and is unicast because nobody else
+/// would want it. This one is unicast because everybody else *would*: a
+/// box's contents fanned out to AOI is a raider reading a base's stock
+/// from outside its walls, which is ESP with a nicer name, plus a
+/// bandwidth bill for a panel nobody has open. The audience is exactly
+/// the client that asked, for exactly as long as the server can still
+/// prove it is in reach.
+const SUB_CONT_SYNC: u32 = 38;
 /// The highest live subtype, named rather than counted — `world.rs`'s
 /// `EV_MAX` discipline applied to the wire half.
 ///
@@ -138,7 +160,7 @@ const SUB_MOVE_REFUSED: u32 = 37;
 /// probe of a **live** code — it caught it here only because the new
 /// decoder arm rejected its all-zero payload, which is luck, not a gate.
 /// Deriving the probe from this constant is what makes it stay a probe.
-const SUB_MAX: u32 = SUB_MOVE_REFUSED;
+const SUB_MAX: u32 = SUB_CONT_SYNC;
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
 /// worst shape of wire drift there is, since both ends would agree on
@@ -198,6 +220,11 @@ const ARCH_BITS: u32 = 3;
 const PLACEMENT_BITS: u32 = 2;
 const STOCK_COUNT_BITS: u32 = 3;
 const BAG_SYNC_COUNT_BITS: u32 = 5;
+/// Container-sync slot count. `CONT_SYNC_BATCH` is `INV_SLOTS` = 30, so
+/// six bits hold it and the count itself is bounded by the decoder rather
+/// than by the width — 31..63 are forgeable and refuse, the way `SUB_INV`
+/// refuses a count past `INV_SLOTS`.
+const CONT_COUNT_BITS: u32 = 6;
 /// Why a bag left: `sim_core::backpack::BAG_GONE_*`, three values today.
 const BAG_GONE_BITS: u32 = 2;
 
@@ -506,6 +533,35 @@ pub enum EventMsg {
     BagSync {
         reset: bool,
         recs: [WireBag; BAG_SYNC_BATCH],
+        count: u8,
+    },
+    /// The contents of the container this client has open — the answer to
+    /// `ActionMsg::Container`, and the only message on the lane whose
+    /// audience is a single client by design rather than by relevance.
+    ///
+    /// `kind` and `cont` are the same pair the action carried, echoed back
+    /// so a client can never apply a batch to the wrong panel: two opens
+    /// in flight, a close that crossed an open, or a container that went
+    /// away and came back at the same address all read as a mismatch the
+    /// client can drop, instead of as slots landing in a box the player
+    /// already walked away from.
+    ///
+    /// `kind == CONT_SELF` is the **close**: nothing is open, the panel
+    /// shuts. It arrives unasked-for whenever the server can no longer
+    /// prove the opener is in reach of what they opened — walked away,
+    /// bag looted out from under them, box raided down — so a panel never
+    /// outlives the reach the move verb will judge against.
+    ///
+    /// `reset` says "this is the whole container, forget what you had";
+    /// without it the batch is a diff of the slots that changed since the
+    /// last one. An emptied slot crosses as a real change (item 0,
+    /// count 0), so a diff can say "that is gone" and not only "that is
+    /// new".
+    ContSync {
+        kind: u8,
+        cont: u32,
+        reset: bool,
+        slots: [InvSlot; CONT_SYNC_BATCH],
         count: u8,
     },
     /// The bag is gone, and why (`sim_core::backpack::BAG_GONE_*`):
@@ -1151,6 +1207,62 @@ pub fn encode_event_bag_sync(
     w.write(recs.len() as u32, BAG_SYNC_COUNT_BITS)?;
     for b in recs {
         write_bag(&mut w, b)?;
+    }
+    Ok(w.finish())
+}
+
+/// The open container's contents — see `EventMsg::ContSync`.
+///
+/// Three refusals, and each one is a server bug the caller wants told
+/// about rather than a client fact:
+///
+/// 1. A kind past `CONT_MAX`.
+/// 2. A close (`CONT_SELF`) that carries a handle or a slot. A close says
+///    "nothing is open"; contents attached to it would be contents with no
+///    container, and the client would have to invent a rule for them.
+/// 3. A slot index past **that kind's** container. This is tighter than
+///    the move action's bound, which checks every slot against `INV_SLOTS`
+///    even for a twelve-slot box, and the asymmetry is deliberate: on the
+///    action lane a tight check would make an over-wide slot a *frame*
+///    error, and a frame error ends the session — the disconnect the whole
+///    verb exists to avoid — so the sim answers it with a refusal event
+///    instead. Here the server is the author. A box slot 17 leaving this
+///    encoder is not a forged client, it is us, and the honest response is
+///    `Range` into `encode_range_errors` rather than a slot the client
+///    stores somewhere no reader will ever look at again.
+///
+/// A batch may be empty only with `reset` — the bag-sync contract, and it
+/// is what makes "you opened an empty box" and "the box you opened is now
+/// empty" sayable at all.
+pub fn encode_event_cont_sync(
+    kind: u8,
+    cont: u32,
+    reset: bool,
+    slots: &[InvSlot],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if kind > CONT_MAX {
+        return Err(WireError::Range);
+    }
+    if kind == CONT_SELF && (cont != 0 || !slots.is_empty() || !reset) {
+        return Err(WireError::Range);
+    }
+    if slots.len() > CONT_SYNC_BATCH || (slots.is_empty() && !reset) {
+        return Err(WireError::Cap);
+    }
+    let width = slots_in(kind);
+    let mut w = begin(buf, SUB_CONT_SYNC)?;
+    w.write(kind as u32, CONT_KIND_BITS)?;
+    w.write(cont, 32)?;
+    w.write_bit(reset)?;
+    w.write(slots.len() as u32, CONT_COUNT_BITS)?;
+    for s in slots {
+        if s.slot as usize >= width {
+            return Err(WireError::Range);
+        }
+        w.write(s.slot as u32, INV_SLOT_BITS)?;
+        w.write(s.stack.item as u32, 16)?;
+        w.write(s.stack.count as u32, 16)?;
     }
     Ok(w.finish())
 }
@@ -1864,6 +1976,44 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 count: count as u8,
             }
         }
+        SUB_CONT_SYNC => {
+            let kind = r.read(CONT_KIND_BITS)? as u8;
+            let cont = r.read(32)?;
+            let reset = r.read_bit()?;
+            let count = r.read(CONT_COUNT_BITS)? as usize;
+            // Every refusal the encoder makes, made again — this decoder
+            // is the client's, and a server it does not trust is exactly
+            // the case a codec is written total for.
+            if kind > CONT_MAX
+                || count > CONT_SYNC_BATCH
+                || (count == 0 && !reset)
+                || (kind == CONT_SELF && (cont != 0 || count != 0 || !reset))
+            {
+                return Err(WireError::Malformed);
+            }
+            let width = slots_in(kind);
+            let mut slots = [InvSlot::default(); CONT_SYNC_BATCH];
+            for s in slots.iter_mut().take(count) {
+                let slot = r.read(INV_SLOT_BITS)? as u8;
+                if slot as usize >= width {
+                    return Err(WireError::Malformed);
+                }
+                *s = InvSlot {
+                    slot,
+                    stack: ItemStack {
+                        item: r.read(16)? as u16,
+                        count: r.read(16)? as u16,
+                    },
+                };
+            }
+            EventMsg::ContSync {
+                kind,
+                cont,
+                reset,
+                slots,
+                count: count as u8,
+            }
+        }
         SUB_BAG_REMOVED => EventMsg::BagRemoved {
             id: r.read(32)?,
             why: r.read(BAG_GONE_BITS)? as u8,
@@ -1877,6 +2027,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sim_core::inventory::{CONT_BAG, CONT_BOX};
+    use sim_core::limits::BOX_SLOTS;
 
     #[test]
     fn gather_and_slot_change_round_trip() {
@@ -2457,6 +2609,191 @@ mod tests {
             encode_event_stock(0, 0, 0, &too_many, &mut buf),
             Err(WireError::Cap)
         );
+    }
+
+    /// The container sync's shape, both ways, plus every refusal it owes.
+    ///
+    /// The refusals are the point rather than the round trip. This message
+    /// has a field whose value changes what the *other* fields are allowed
+    /// to be — `kind == CONT_SELF` is a close, and a close carries no
+    /// handle and no slots — and that is exactly the shape that decays
+    /// into "well, the client ignores those anyway". So each illegal
+    /// combination is asserted here on both the encoder and the decoder;
+    /// a future edit that relaxes one end alone fails on the other.
+    #[test]
+    fn cont_sync_round_trips_and_refuses_every_illegal_shape() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let rows = [
+            InvSlot {
+                slot: 0,
+                stack: ItemStack { item: 9, count: 4 },
+            },
+            InvSlot {
+                slot: 11,
+                stack: ItemStack {
+                    item: 21,
+                    count: 60,
+                },
+            },
+        ];
+
+        // A box diff. Slot 11 is the last a `BOX_SLOTS` container has, so
+        // the tight per-kind bound is exercised at its edge rather than in
+        // its middle.
+        let len = encode_event_cont_sync(CONT_BOX, 0x0011_2233, false, &rows, &mut buf).unwrap();
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::ContSync {
+                kind,
+                cont,
+                reset,
+                slots,
+                count,
+            } => {
+                assert_eq!((kind, cont, reset, count), (CONT_BOX, 0x0011_2233, false, 2));
+                assert_eq!(&slots[..2], &rows);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // A bag reset carrying the widest slot index there is.
+        let wide = [InvSlot {
+            slot: (INV_SLOTS - 1) as u8,
+            stack: ItemStack { item: 3, count: 1 },
+        }];
+        let len = encode_event_cont_sync(CONT_BAG, 7, true, &wide, &mut buf).unwrap();
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::ContSync {
+                kind, reset, slots, ..
+            } => {
+                assert_eq!((kind, reset), (CONT_BAG, true));
+                assert_eq!(slots[0], wide[0]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // The close, and the empty-batch contract it rests on.
+        let len = encode_event_cont_sync(CONT_SELF, 0, true, &[], &mut buf).unwrap();
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::ContSync {
+                kind, cont, count, ..
+            } => assert_eq!((kind, cont, count), (CONT_SELF, 0, 0)),
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // A kind past the live set.
+        assert_eq!(
+            encode_event_cont_sync(CONT_MAX + 1, 1, true, &[], &mut buf),
+            Err(WireError::Range)
+        );
+        // A close that names a container, holds slots, or is not a reset —
+        // the three ways the one cross-field rule can be broken.
+        assert_eq!(
+            encode_event_cont_sync(CONT_SELF, 5, true, &[], &mut buf),
+            Err(WireError::Range)
+        );
+        assert_eq!(
+            encode_event_cont_sync(CONT_SELF, 0, true, &rows, &mut buf),
+            Err(WireError::Range)
+        );
+        assert_eq!(
+            encode_event_cont_sync(CONT_SELF, 0, false, &[], &mut buf),
+            Err(WireError::Range)
+        );
+        // An empty batch that is not a reset says nothing.
+        assert_eq!(
+            encode_event_cont_sync(CONT_BAG, 1, false, &[], &mut buf),
+            Err(WireError::Cap)
+        );
+        // Past the batch.
+        let too_many = [InvSlot::default(); CONT_SYNC_BATCH + 1];
+        assert_eq!(
+            encode_event_cont_sync(CONT_BAG, 1, true, &too_many, &mut buf),
+            Err(WireError::Cap)
+        );
+        // A slot inside `INV_SLOTS` but past **this kind's** container.
+        // This is the tightness the action lane deliberately does not have
+        // (see `encode_event_cont_sync`), so it needs its own assertion —
+        // the same slot is legal one line down under a bag.
+        let past_box = [InvSlot {
+            slot: BOX_SLOTS as u8,
+            stack: ItemStack { item: 1, count: 1 },
+        }];
+        assert_eq!(
+            encode_event_cont_sync(CONT_BOX, 1, true, &past_box, &mut buf),
+            Err(WireError::Range)
+        );
+        assert!(encode_event_cont_sync(CONT_BAG, 1, true, &past_box, &mut buf).is_ok());
+
+        // And the decoder refuses the same shapes off the wire, because a
+        // client that trusted the encoder's checks would be trusting a
+        // server it has no reason to. Forged by hand: a close whose handle
+        // is not zero.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_EVENT, KIND_BITS).unwrap();
+        w.write(SUB_CONT_SYNC, SUB_BITS).unwrap();
+        w.write(CONT_SELF as u32, CONT_KIND_BITS).unwrap();
+        w.write(0xDEAD_BEEF, 32).unwrap();
+        w.write_bit(true).unwrap();
+        w.write(0, CONT_COUNT_BITS).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+
+        // A box batch whose slot is past `BOX_SLOTS`.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_EVENT, KIND_BITS).unwrap();
+        w.write(SUB_CONT_SYNC, SUB_BITS).unwrap();
+        w.write(CONT_BOX as u32, CONT_KIND_BITS).unwrap();
+        w.write(1, 32).unwrap();
+        w.write_bit(true).unwrap();
+        w.write(1, CONT_COUNT_BITS).unwrap();
+        w.write(BOX_SLOTS as u32, INV_SLOT_BITS).unwrap();
+        w.write(1, 16).unwrap();
+        w.write(1, 16).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+
+        // A count past the batch — forgeable because the width holds 63
+        // and the batch is 30.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_EVENT, KIND_BITS).unwrap();
+        w.write(SUB_CONT_SYNC, SUB_BITS).unwrap();
+        w.write(CONT_BAG as u32, CONT_KIND_BITS).unwrap();
+        w.write(1, 32).unwrap();
+        w.write_bit(true).unwrap();
+        w.write(CONT_SYNC_BATCH as u32 + 1, CONT_COUNT_BITS).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+    }
+
+    /// A whole container fits one message — the claim `CONT_SYNC_BATCH`
+    /// makes when it refuses to be a drip constant. If this ever fails,
+    /// the answer is a cursor, not a wider cap.
+    #[test]
+    fn a_full_container_fits_one_message() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let mut rows = [InvSlot::default(); CONT_SYNC_BATCH];
+        for (i, r) in rows.iter_mut().enumerate() {
+            *r = InvSlot {
+                slot: i as u8,
+                stack: ItemStack {
+                    item: (i as u16) + 1,
+                    count: u16::MAX,
+                },
+            };
+        }
+        let len = encode_event_cont_sync(CONT_BAG, u32::MAX, true, &rows, &mut buf).unwrap();
+        assert!(
+            len <= MAX_EVENT_MSG_BYTES,
+            "a full container is {len} B against a {MAX_EVENT_MSG_BYTES} B cap"
+        );
+        assert_eq!(CONT_SYNC_BATCH, INV_SLOTS, "the widest container is a bag");
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::ContSync { slots, count, .. } => {
+                assert_eq!(count as usize, CONT_SYNC_BATCH);
+                assert_eq!(slots, rows);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]
