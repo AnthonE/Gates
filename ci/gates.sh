@@ -45,10 +45,32 @@ esac
 # Renderer paths, as a question about the diff. Both halves are read: what is
 # committed on this branch and what is still in the working tree, because a
 # builder runs this before committing as often as after.
+# The committed half needs a base to diff against, and `origin/main` is not it:
+# it does not resolve in a worktree cut for a parallel lane (operator, 2026-08-04,
+# three-lane build), and a base that fails to resolve makes this half return
+# NOTHING — so a committed renderer change would answer "no" and skip the
+# renderer tier silently. That is the exact silent-skip class the trap list
+# calls the worst bug in the file. Try the bases in order of trustworthiness and
+# take the first that resolves; local `main` is present in every worktree.
+renderer_base() {
+  local b
+  for b in "$(git merge-base HEAD main 2>/dev/null || true)" \
+           "$(git merge-base HEAD origin/main 2>/dev/null || true)"; do
+    [ -n "$b" ] && { echo "$b"; return 0; }
+  done
+  return 1
+}
+
 renderer_touched() {
+  local base
+  base=$(renderer_base) || {
+    # No base at all: cannot answer the question, so do NOT answer it "no".
+    echo "  tier: no merge base against main — running the renderer tier rather than guessing." >&2
+    return 0
+  }
   {
     git diff --name-only HEAD 2>/dev/null || true
-    git diff --name-only origin/main...HEAD 2>/dev/null || true
+    git diff --name-only "$base"...HEAD 2>/dev/null || true
   } | grep -qE '^(web/|assets/textures/|ci/browser_smoke\.mjs|ci/vantages\.mjs)'
 }
 
