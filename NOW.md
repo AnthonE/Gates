@@ -793,8 +793,32 @@ Done items are deleted, not checked — history lives in git and
 17. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
+18. **Anti-ESP occlusion culling — the measure the genre proved, and the one
+   the seed makes cheap** (`DECISIONS.md` 2026-08-04). AOI at 176 m is the
+   whole ESP defence today, and 176 m covers most engagements. Facepunch's
+   answer, rolled out 2025 and defaulted network-wide, was to stop
+   networking players fully occluded by terrain — and they pay to compute it
+   live on a Unity server. Here the terrain is a pure function of the seed,
+   so the occlusion grid bakes at worldgen into a fixed structure and the
+   tick spends a lookup: no allocation, no clock, walls 1 and 2 intact.
+   Lands as a filter on the enter/leave sets of `NETCODE.md` §7's one grid,
+   with a golden beside `test_terrain_golden` and a bot-measured tick cost.
+   Sequence after M2 — it wants real sightlines and real combat to tune
+   against, and it buys nothing until a shard is armed.
+19. **The launcher, in Rust, with the wallet in it** (`DECISIONS.md`
+   2026-08-04). One static binary, `egui`, no webview: patcher, shard list,
+   balances, and a self-custody wallet on `alloy` (`alloy-signer-local`,
+   `keystore` + `mnemonic`) signing the EIP-191 `gates join <shard> <nonce>`
+   the server already accepts — so no protocol moves and nothing enters the
+   sim's blast radius. Key backup is the feature, not a footnote: phrase
+   shown once and confirmed back, encrypted keystore only, never logged and
+   never in the WAL, connect-existing kept first-class, and the plain
+   sentence that the operator holds no keys and can restore nothing. M4
+   adjacent — it is the platform's client for the whole cascade, not a Gates
+   accessory, and it is the only place an anti-cheat bootstrapper could ever
+   live if one is spoken.
 
-18. **`cargo test --workspace` overflows a debug thread's stack; only
+20. **`cargo test --workspace` overflows a debug thread's stack; only
     `--release` (what CI runs) is green.** Pre-existing, not new: verified
     on `main` at `25f6ec8` before the backpack slice, where
     `snapshot_budget` aborts the same way. The cause is size, not logic —
