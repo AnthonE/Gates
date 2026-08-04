@@ -1510,7 +1510,7 @@ fn moved_names_the_address_and_what_moved() {
     assert_ne!(FROM_SLOT, TO_SLOT, "the two slots must be distinguishable");
     w.tick(&[Command::Move {
         id: ATTACKER,
-        bag: 0,
+        cont: 0,
         from_kind: CONT_SELF,
         from_slot: FROM_SLOT,
         to_kind: CONT_SELF,
@@ -1564,7 +1564,7 @@ fn move_refused_names_the_reason_then_the_address() {
     const TO_SLOT: u8 = 14;
     w.tick(&[Command::Move {
         id: ATTACKER,
-        bag: 0,
+        cont: 0,
         from_kind: CONT_SELF,
         from_slot: FROM_SLOT,
         to_kind: CONT_SELF,

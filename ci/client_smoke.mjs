@@ -166,7 +166,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 17, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 18, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -621,7 +621,20 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   // the session, which is precisely how this verb failed in the reference.
   check(ex.client_action_move(0, 0, 3, 0, 7, 5) > 0, "a real move must encode");
   check(ex.client_action_move(9001, 1, 0, 0, 4, 1) > 0, "a bag move must encode");
-  check(ex.client_action_move(0, 2, 3, 0, 7, 5) === 0, "a kind past CONT_MAX must not encode");
+  // Wire v18 made kind 2 the deployed box, so the boundary moved by one
+  // and both sides of it are checked: a box move encodes, and the first
+  // forgeable kind above it still does not. `CONT_KIND_BITS` is 2, so 3 is
+  // the last value that fits in the field and there is nothing past it to
+  // test — a fourth kind would have to widen the field.
+  check(
+    ex.client_action_move(0x0155_d450, 2, 3, 0, 7, 5) > 0,
+    "a box move must encode (CONT_BOX, wire v18)",
+  );
+  check(
+    ex.client_action_move(0x0155_d450, 0, 3, 2, 11, 5) > 0,
+    "a box move must encode in the deposit direction too",
+  );
+  check(ex.client_action_move(0, 3, 3, 0, 7, 5) === 0, "a kind past CONT_MAX must not encode");
   check(ex.client_action_move(0, 0, 30, 0, 7, 5) === 0, "a slot past INV_SLOTS must not encode");
   check(ex.client_action_move(0, 0, 3, 0, 7, 0) === 0, "a zero count is not a move");
 

@@ -244,6 +244,36 @@ pub const SYNC_SCAN_PER_TICK: usize = 256;
 /// loss. Proposed default, DECISIONS.md §open (death backpack v0).
 pub const MAX_BACKPACKS: usize = 256;
 
+/// Deployed storage boxes standing at once (`deploy.rs`, `ARCH_BOX`).
+/// Held in its own dense list beside the hearths, for the same reason:
+/// `DeployRec` is the struct the wire mirrors, so contents may not ride
+/// on it. Overflow policy: **refuse** the placement with
+/// `REFUSE_D_FULL` — the same posture `MAX_HEARTHS` takes, and correct
+/// here for the same reason: nothing is lost by refusing a box that was
+/// never placed. Proposed default, DECISIONS.md §open (box v0).
+pub const MAX_BOXES: usize = 256;
+
+/// Slots inside one deployed box. Deliberately under `INV_SLOTS`: a box
+/// is a place to put things down, not a second inventory, and the whole
+/// store is sized against this (`MAX_BOXES * BOX_SLOTS` stacks). Both
+/// box rows in `content/deployables.toml` share it — a per-row slot
+/// count is a content field and an open question, not a constant.
+/// Proposed default, DECISIONS.md §open (box v0).
+pub const BOX_SLOTS: usize = 12;
+
+/// Broken-box spills awaiting a ground bag, drained at the end of the
+/// tick that broke them (`world.rs`). A box is emptied where it stood by
+/// the same `stand_up` a corpse and a barrel use, but the removal path
+/// (`deploy::drop_deploy`, reached from decay and from a raid) holds
+/// neither the bag store nor the clock, so the contents wait one step of
+/// the same tick in this buffer. Overflow policy: **refuse the removal's
+/// spill** — a full buffer drops that box's contents rather than growing
+/// unbounded work (wall 4). Sized past the worst honest case: an upkeep
+/// sweep visits `UPKEEP_SWEEP_PER_TICK` deploys and a piece cascade can
+/// take several boxes with one wall, so this is that cascade's headroom,
+/// not the sweep's. Proposed default, DECISIONS.md §open (box v0).
+pub const MAX_BOX_SPILL_PER_TICK: usize = 16;
+
 /// Loot tables the sim preallocates for — one per container archetype
 /// (`content/loot.toml` ships 2: barrel and crate). The content bake
 /// refuses a set past this. Structural cap like `MAX_DEPLOY_DEFS`, not a
