@@ -61,20 +61,26 @@ renderer_base() {
   return 1
 }
 
-# Every path under `web/` is a renderer path, including the HUD. That is
-# expensive for this lane — a one-line `<div>` move pays the full renderer
-# tier, ~19 minutes to prove that a DOM overlay still overlaid — and a
-# carve-out for `index.html`/`hud.js`/`input.js` was built here on 2026-08-04
-# and reverted the same day. It is not a lane branch's change to make: `auto`
-# is the tier the loop merges on, so subtracting a path from this question
-# subtracts a gate from the merge, and the mechanism is the operator's.
+# Every path under `web/` is a renderer path EXCEPT the three HUD files below.
+# The carve-out was proposed by the ui lane on 2026-08-04, built before it was
+# asked for, and ARMED by the operator the same day (`DECISIONS.md` §Spoken).
+# A one-line `<div>` move now pays `ui_smoke` at ~0.8 s instead of
+# `browser_smoke` + `vantages` at ~19 min.
 #
-# The proposal now sits in `DECISIONS.md` §open (ui lane, 2026-08-04) with the
-# coverage table it needs. The coverage itself is built and landed:
-# `ci/ui_smoke.mjs` asserts every `index.html`/`hud.js` contract that
-# `browser_smoke` holds, as a superset, so approving the carve-out later is a
-# one-line edit to the regex below and not a second round of work. Until that
-# word is spoken this list exempts nothing.
+# It is armed on landed evidence, not on the saving: `ci/ui_smoke.mjs` asserts
+# every `index.html`/`hud.js` contract `browser_smoke` holds, as a strict
+# superset, with the coverage table in that file's header keyed to
+# `browser_smoke` line numbers — and eleven mutants of those two files were run
+# against it, all eleven red. The first attempt at this carve-out was judged
+# FAIL precisely because the coverage was NOT equivalent: `#vitals` at inline
+# `display:"block"` (`browser_smoke:1745`) was a value `ui_smoke` read and
+# discarded, so the mutation escaped both gates.
+#
+# THE STANDING RULE, and it is the whole reason this is safe: a path joins this
+# exemption list ONLY in a commit that also extends `ui_smoke` to cover what
+# that path can break. Subtracting a path from the question below subtracts a
+# gate from the merge — `auto` is the tier the loop merges on — so the list is
+# the operator's, never a lane branch's.
 renderer_touched() {
   local base
   base=$(renderer_base) || {
@@ -82,10 +88,12 @@ renderer_touched() {
     echo "  tier: no merge base against main — running the renderer tier rather than guessing." >&2
     return 0
   }
+  local ui_only='^(web/index\.html|web/src/hud\.js|web/src/input\.js)$'
   {
     git diff --name-only HEAD 2>/dev/null || true
     git diff --name-only "$base"...HEAD 2>/dev/null || true
-  } | grep -qE '^(web/|assets/textures/|ci/browser_smoke\.mjs|ci/vantages\.mjs)'
+  } | grep -vE "$ui_only" \
+    | grep -qE '^(web/|assets/textures/|ci/browser_smoke\.mjs|ci/vantages\.mjs)'
 }
 
 RUN_RENDERER=1
