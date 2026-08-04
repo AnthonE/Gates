@@ -176,6 +176,13 @@ same bug with a longer fuse.
   is the source of the client's light-space texel snapping and texel-scaled
   normal bias (`DECISIONS.md` §open, lighting v0). Guidance only — no code
   from the pack ships in this repo.
+- `reference/rust-systems.txt` is ripped from `OxideMod/Oxide.Rust`'s
+  `resources/Rust.opj` (MIT, © 2013–2020 Oxide Team and Contributors) —
+  facts only: hook names, patched class names, method signatures,
+  categories. `CarbonCommunity/Carbon.Hooks.*` (GPL-3.0) is cited as a
+  coverage cross-check and deliberately never extracted from, so nothing
+  committed here derives from GPL work. `reference/README.md` has the
+  provenance and the regeneration command; nothing from either ships.
 - `Claude-of-Duty` (github.com/mshumer/Claude-of-Duty, MIT, © 2026 mshumer)
   — source of the shader-prewarm trap, the bit-identical-capture discipline
   (fresh page per shot; engine clock, not `performance.now()`), and the
