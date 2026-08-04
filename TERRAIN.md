@@ -67,6 +67,33 @@ Stages, in order — each cheap, each deterministic:
    masks veto. Result: a deterministic **slot list** both sides can
    enumerate for any chunk.
 
+**Stages 7–9 share one constraint, stated before either of the first two
+exists because it decides how they get built.** Everything in `terrain.rs`
+today is `(seed, x, z) → value` with **no state at all** — which is why
+`scatter` runs identically in the server, the wasm client, the chunk worker
+and the golden with no setup, and why stage 9 costs nothing to call 65 k
+times. Stages 7 and 8 break that property: the road ring needs distance to a
+domain-warped coastline, and the pad is explicitly a **global argmax** over
+candidate sites. Neither is computable per sample, so both need something
+derived once from the seed and then queried — still a pure function of the
+seed, just memoized.
+
+Three walls bound what that thing may be, and they are the design rather than
+a review note: built at **world init, never in a tick** (wall 2); **bounded,
+with its cap in `limits.rs`** (wall 4); **bit-identical native and wasm**
+(wall 1 → `test_parity_wasm`), so integer or walled-float math only and no
+iteration whose order a map could perturb.
+
+What it must not be *assumed* to be is a raster. The reference game bakes a
+topology bitmask into its map file and samples that, and it is right to —
+for a game that already has a map file and dozens of monuments to keep out
+of each other's way (`reference/SPAWN.md` §4). We have one ring and one pad,
+so the small shape — a handful of seed-derived control points plus a width,
+distance-tested per sample — is almost certainly cheaper, has no resolution
+to choose, and keeps §0's "nothing about the terrain is ever stored or
+networked" intact. **Decide it when stage 7 is built. Do not pre-build a
+channel for producers that do not exist yet.**
+
 ## 2 · Slots: how living terrain stays cheap
 
 A slot is potential, not state. The scatter defines *where a node can be*;
@@ -139,8 +166,22 @@ point: **terrain life is just chunk events over a generated backdrop.**
   identity's grain dies at its own distance on one curve — and its fade
   reads the **world** footprint, not the horizontal one, because a pixel
   on a steep face barely moves in XZ while covering metres of surface.
-  It is still projected on world XZ, so on a slope it combs downhill;
-  sampling the grain alone triplanar is the next surface item.
+  Grain is **triplanar** (materials v1) and the base maps are
+  **biplanar** (materials v4): the existing top tap plus one on the
+  vertical plane containing the face's own fall line, whose stretch is
+  `1/sin(tilt)` where the top plane's is `1/cos(tilt)` — exact
+  complements, so the worst case anywhere is 45 deg at x1.41 where they
+  average. The wall turns on at the crossover (`BASE_WALL_ON`, the 45 deg
+  where `sin = cos` and the wall becomes the less distorted of the two),
+  so level ground pays one tap and renders bit-for-bit what it did
+  before. Weights are raised to `BASE_WALL_SHARPNESS` before blending and
+  the wall's footprint is `dFdx(position)` projected onto the frame, not
+  `dFdx(uv)` — a rotating frame otherwise puts its own turn, times a
+  world coordinate, into the mip selector. **Every octave now retires on the WORLD footprint** — the law
+  stated in this paragraph since materials v1 was applied to grain alone
+  for two passes, and on a 69 deg face the horizontal footprint is 1/2.8
+  of the real one, so every other octave stayed at full strength three
+  times past its own Nyquist and reached the image as its alias.
 - **Scatter rendering**: per chunk, one `InstancedMesh` per archetype
   filled from the slot list (minus harvested), frustum-culled per chunk.
   Trees get two LODs (mesh / billboard cross) **(knob: distances)**; each
