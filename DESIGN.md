@@ -162,7 +162,7 @@ exchange the coins. That is the entire monetary constitution.
 
 ## 4 · Architecture
 
-Cargo workspace, five crates, one law about where code may live:
+Cargo workspace, five crates today, one law about where code may live:
 
 ```
 gates/
@@ -183,6 +183,12 @@ gates/
                    # the same pattern the parity probe ships).
   web/             # three.js app (vite): renderer, input, interpolation,
                    # UI overlay (plain DOM), wallet connect.
+  launcher/        # (M4, not a crate yet) the platform's desktop client:
+                   # Rust + egui, one static binary, no webview — patcher,
+                   # shard list, balances, self-custody wallet on alloy.
+                   # Shares `protocol`, imports no sim code, and is built
+                   # for the cascade, not for Gates alone.
+                   # DECISIONS.md 2026-08-04.
 ```
 
 **Thread model** — the picture the whole server hangs on:
@@ -426,15 +432,36 @@ a later quest can gate on a real played round with no human in the loop.
 - **Session and identity**: guest UUID sessions play instantly. Binding a
   wallet = signing one EIP-191 message (`gates join <shard> <nonce>`) —
   same pattern as every scry game action; the wallet then owns banked OBOL,
-  skins, and the character slot. One live session per wallet.
+  skins, and the character slot. One live session per wallet. The desktop
+  launcher carries a self-custody wallet that signs this same message and
+  nothing new (`DECISIONS.md` 2026-08-04): encrypted keystore on the
+  player's own box, phrase shown once and confirmed back, connect-existing
+  kept first-class, and the operator holding no keys stated to the player
+  rather than only in pillar 4.
 - Flood control at the edge: per-connection datagram/stream rate limits in
   the net tasks (the sim never sees a flood), input-rate clamp (§5.4),
   transaction budget (L4).
+- **The armed set is the perimeter** (`DECISIONS.md` 2026-08-04). Economy
+  arming is an operator-only act (§3, `ALPHA.md` §2), so protection scales
+  with stake by construction: **official shards** are operator-run, armed,
+  and OBOL-redeemable; **community and training shards** run unarmed and
+  stay open to self-hosting and to agent players. An unarmed shard has
+  nothing worth cheating for, which is what keeps agent play and any
+  anti-cheat posture from competing — they are not on the same shard.
 - **Honest gaps, v1**: no ESP/wallhack countermeasures beyond AOI (a snapshot
   you never receive can't be wallhacked — AOI is already the big one), no
   statistical anticheat, no replays-as-evidence UI. The anomaly log (lag-comp
   clamps, impossible-input counts, damage outliers) exists from day one so
-  the data is there when those get built.
+  the data is there when those get built. The two gaps that survive an
+  authoritative sim are **ESP inside AOI** and **aimbot**, and both have an
+  answer that costs no client trust and works in a browser: server-side
+  occlusion culling (the genre's proven measure — and cheap here, because a
+  seeded terrain bakes its occlusion grid once, `NOW.md` 18) and offline aim
+  analysis over the WAL, which every round already produces as verifiable
+  evidence. A kernel anti-cheat is **not integrated** and stays cut
+  (`ALPHA.md` §5); it would need a native client to attach to, and it would
+  ban the agent players the training goal depends on (`DECISIONS.md`
+  2026-08-01).
 
 ## 11 · Milestones
 
@@ -495,6 +522,8 @@ is scry's standing rule: the operator's eye and a public SCRY transfer.
 | knob | default until spoken |
 |---|---|
 | shard cap / reference hardware | 100 players / 4-core VPS |
+| desktop client renderer | three.js stays; the browser build is the shipping client |
+| kernel anti-cheat on armed shards | not integrated (`ALPHA.md` §5) |
 | wipe cadence + BP survival | monthly map, BPs survive one cycle |
 | hunger/thirst depth | minimal timer-drain v1 |
 | bank deposit fee | 2%, burns |

@@ -373,6 +373,16 @@ Subscribe cost is dominated by first-visit chunk state; the join bundle
 pre-streams the spawn ring (9 chunks) before the first keyframe so a fresh
 spawn never sees pop-in of the base they spawned beside.
 
+**The planned extension is occlusion, and it lands here** (`DECISIONS.md`
+2026-08-04 · `NOW.md` 18): a class-D member fully occluded by terrain is
+dropped from the snapshot set rather than merely deprioritized, which is
+the genre's proven anti-ESP measure and costs no client trust. It filters
+these same enter/leave sets — one spatial truth stays one — and it is
+cheaper here than where it was proven, because a seeded heightfield lets
+the occlusion grid bake at worldgen into a fixed structure the tick only
+reads. Class S is untouched: chunk subscriptions are terrain you are
+standing on, not information about anyone.
+
 ## 8 · Lag compensation, scoped tight
 
 Ring of collider transforms, **awake players only**, 30 sim-ticks (1 s of
