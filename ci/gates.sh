@@ -61,6 +61,28 @@ renderer_base() {
   return 1
 }
 
+# The interaction surface, carved back out of that question (ui lane,
+# 2026-08-04). `^web/` swept in the HUD, so a one-line `<div>` move paid the
+# full renderer tier — ~19 minutes to prove that a DOM overlay still overlaid.
+# These three files cannot change a material, a shader, a light or a mesh;
+# what they CAN break is asserted by `ci/ui_smoke.mjs`, which runs in the code
+# tier below, on every pass, in every lane, in under a second.
+#
+# `web/index.html` is on the list because it is one inline `<style>` plus the
+# HUD scaffold — but it also hosts the renderer's canvas and the client's entry
+# script, so `ui_smoke` group A asserts exactly that: `#gl` present, mounted,
+# visible and non-zero-sized, and `/src/main.js` still wired as the module
+# entry. Without those assertions this row would not be honest.
+#
+# The rule for extending this list: a path joins it only in a commit that also
+# extends `ci/ui_smoke.mjs` to cover what that path can break. A carve-out with
+# no assertion behind it is a silent skip, which the header above calls the
+# worst bug class in this file. Everything else under `web/` — `main.js`,
+# `scene.js`, `materials.js`, `textures.js`, `props.js`, `terrain.js`,
+# `shadows.js`, `bench.js`, `net.js`, `wasm.js`, `terrainWorker.js`, the vite
+# config, the lockfile — stays a renderer path.
+UI_ONLY_RE='^(web/index\.html|web/src/hud\.js|web/src/input\.js)$'
+
 renderer_touched() {
   local base
   base=$(renderer_base) || {
@@ -71,7 +93,7 @@ renderer_touched() {
   {
     git diff --name-only HEAD 2>/dev/null || true
     git diff --name-only "$base"...HEAD 2>/dev/null || true
-  } | grep -qE '^(web/|assets/textures/|ci/browser_smoke\.mjs|ci/vantages\.mjs)'
+  } | grep -vE "$UI_ONLY_RE" | grep -qE '^(web/|assets/textures/|ci/browser_smoke\.mjs|ci/vantages\.mjs)'
 }
 
 RUN_RENDERER=1
@@ -164,6 +186,23 @@ $NICE npm --prefix web run build || fail "vite build"
 # changed underneath it. No GPU, no shard: a vertex buffer is arithmetic.
 echo "== gate: pine shape (silhouette counts + the SPAWN_CLEAR_M coupling)"
 $NICE node ci/pine_shape.mjs || fail "pine shape"
+
+# The interaction surface: a real browser, no renderer. Sits in the CODE tier
+# because it costs under a second — it renders no frames, creates no WebGL
+# context, loads no wasm and starts no shard, so none of what makes the two
+# gates below expensive applies. Here rather than earlier because playwright is
+# a `web/` devDependency and comes from the install above.
+#
+# It is the reason the HUD files are exempt from `renderer_touched`, and it is
+# also a gate in its own right: the composer that must swallow a keystroke so
+# "w" is a letter and not a step forward, the death screen that must answer
+# once, the chat line that goes in as another player's TEXT and never as
+# markup, and the vitals stack whose argument order and row order disagree by
+# design — the positional-payload shape CLAUDE.md's trap list names as where
+# the reference ecosystem actually bled. Every one of those was a comment with
+# no gate.
+echo "== gate: ui smoke (HUD, hotbar, composer, chat, vitals, death — real events, no renderer)"
+$NICE node ci/ui_smoke.mjs || fail "ui smoke"
 
 # The only gate that runs the JS in a browser. Everything above tests the
 # client's LOGIC natively or in node, which is why two hard boot bugs shipped

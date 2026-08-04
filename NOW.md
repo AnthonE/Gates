@@ -4,6 +4,28 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+1. **The container verb has no UI and no gate — and the systems half is not
+   ours.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.)*
+
+   There is no inventory or loot panel in `web/src` at all: wasm owns the 30
+   slots (`wasm.js:76`), the hotbar is the first 6 of them read on a timer
+   (`main.js:1303`), and looting is a payload-free `client_action_loot()` with
+   no container view (`main.js:426`). So the move/stack/split verb — the most
+   bug-prone thing in the reference — does not exist yet in either half.
+
+   **Systems lane, the one-line request:** container move/stack/split in
+   `crates/`, with the validation ordered BEFORE the mutation and computed on
+   the values the client predicted with (CLAUDE.md's quantize-both-sides law
+   applied to containers). Three Oxide fixes in 28 minutes on one 2019 day were
+   all splice-point moves that landed as *the server disconnecting the client*,
+   because container state diverged and that reads as a forged request. The UI
+   half is not startable until the refusal path exists to draw against.
+
+   `ci/ui_smoke.mjs` is the gate it lands in, and `ci/gates.sh`'s `UI_ONLY_RE`
+   is the list a new UI file joins — **only in a commit that also extends
+   `ui_smoke` to cover it.** A carve-out with no assertion behind it is a
+   silent skip.
+
 1. **The generated pine is built, gated, bundled — and not drawn.**
    *(Found while recovering the red join gate, 2026-08-04. `DECISIONS.md` §open
    row "the pine is generated" and the comments in `props.js`/`terrain.js` all
