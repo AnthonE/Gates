@@ -2135,6 +2135,71 @@ export function albedoLuma(hex) {
 // `field: null` is the deliberate absence — water owns its own look and is the
 // one surface here that is not a solid. The shader branches on it, so the
 // ocean plane pays none of this.
+// --- prop photograph v1: the props get the sourced base too ------------------
+//
+// The visual judge's ranked gap 1, 2026-08-04, named the cause in one line:
+// "the terrain got a sourced photograph this pass and the props did not — this
+// is a coverage gap, not a tuning one." It was literally true. Every drawn
+// archetype reached this table with an authored colour and a hand-rolled noise
+// field and nothing else, while `assets/textures/` had held a granite
+// photograph, already decoded, already on the GPU, since the ground took it.
+//
+// So this reuses it rather than fetching anything: `groundTextures().albedo` is
+// a four-layer array and `rock` is one of its layers, with its exact linear
+// mean already measured over every texel by `loadGroundTextures`. The prop path
+// binds the same array and selects a layer. No new asset, no new decode, no new
+// load order — `main.js` already awaits the set before `new Terrain(...)`.
+//
+// Three properties of the term, each load-bearing:
+//
+//   · **It preserves the authored mean, exactly.** The photograph arrives as
+//     `1 + (L - Lmean) * gain`, and `E[L - Lmean] = 0`, so the delivered mean is
+//     the authored albedo untouched. That is what keeps `ALBEDO_LUMA_BAND` and
+//     the granite VALUE authored here rather than hostage to whichever file was
+//     fetched. A photograph that replaced the mean would be exactly the
+//     REPLACING modifier `ci/vantages.mjs` exists to catch.
+//   · **Value only, never chroma.** The same report measured our near-ground
+//     chroma per unit luma at 0.34-0.73 against a reference band of 0.077-0.193.
+//     Feeding a photograph's chroma into props would push the number that is
+//     already worst in the wrong direction, so this moves luma and leaves hue to
+//     the authored colour and the field's luma-neutral `dev`.
+//   · **It does not retire.** The octave ladder fades because a reconstructed
+//     field cannot be filtered; a texture can, which `textures.js` states in its
+//     own words. Mipmaps do at distance what `PROP_FADE_CPP` has to do by hand,
+//     so there is no fade term here and no distance at which a boulder loses its
+//     grain and goes back to being a flat facet.
+//
+// Gated by `uProp` with everything else, so the probe's toggle still moves the
+// whole prop surface and the gate's flat baseline stays a genuine baseline.
+//
+// Gain is 1.0 and that is not a taste call: `ART.md` §7 already binds it —
+// "deviation may not be stretched more than x1 by the correction that places the
+// mean". 1.0 is the photograph at its own contrast, neither amplified nor
+// damped, which is the most that rule allows.
+const PROP_PHOTO_GAIN = 1.0;
+// Repeats per metre. A 0.63 m tile puts granite grain on a 1.5 m boulder at
+// roughly the size the source was shot at, and sits inside the 0.6-1 m band
+// `textures.js` records the ground sampling its own base over.
+const PROP_PHOTO_SCALE = 1.6;
+// Triplanar blend sharpness. `ART.md` §7(2): `pow(w, 8)` blend, not linear — a
+// linear blend smears all three projections across a rounded boulder and the
+// grain reads as mush on every face that is not axis-aligned.
+const PROP_PHOTO_BLEND = 8.0;
+// The multiplier's bounds, and they are SYMMETRIC about 1.0 on purpose. The
+// mean survives in expectation for free — that is the ratio form's whole
+// property — but a clamp is the one step that can take it back, and an
+// asymmetric one does: `ci/prop_photo.mjs` measured [0.6, 1.6] biasing the
+// delivered mean to 1.05 at full spread, because it bites 0.4 deep on the dark
+// side and 0.6 on the light one. A 5% brightening of every boulder is exactly
+// the granite VALUE handed back to whichever file was fetched, which is the one
+// thing this design exists not to do. Symmetric about 1.0, a symmetric
+// deviation clamps to a mean of exactly 1.0.
+//
+// Beyond that it is what makes `ALBEDO_LUMA_BAND` checkable per PIXEL rather
+// than only in the average, and what stops a crushed black or a blown highlight
+// in the source from arriving as one on a boulder.
+const PROP_PHOTO_CLAMP = [0.4, 1.6];
+
 export const SURFACES = {
   // Bark: fissures across the grain at ~0.38 m, running 4.7x that far up the
   // trunk. The strongest ridge in the table — a bark fissure is a crease.
@@ -2200,6 +2265,10 @@ export const SURFACES = {
   rock: {
     roughness: 0.85,
     metalness: 0.0,
+    // The layer `loadGroundTextures` already decoded for the ground's fourth
+    // splat. Same file, same mean, same array — the boulder and the rocky
+    // ground it sits on are now literally the same stone.
+    photo: "rock",
     field: {
       scale: [1.25, 1.25, 1.25],
       ridge: 0.7,
@@ -2216,6 +2285,9 @@ export const SURFACES = {
   ore: {
     roughness: 0.55,
     metalness: 0.45,
+    // Ore is rock's structure with a fleck in it, so it takes rock's stone and
+    // keeps its own finer field and its own metalness on top.
+    photo: "rock",
     field: {
       scale: [1.5, 1.5, 1.5],
       ridge: 0.45,
@@ -2469,6 +2541,8 @@ uniform vec4 uPropShape;
 uniform vec3 uPropBump;
 uniform vec3 uPropDev;
 uniform vec4 uPropFade;
+uniform sampler2DArray uPropPhoto;
+uniform vec4 uPropPhotoCfg;
 ${FIELD_GLSL}
 ${PROP_NOISE_GLSL}
 `;
@@ -2519,6 +2593,48 @@ const PROP_FRAG_GLSL = /* glsl */ `
         + uPropDev * (gpV * gpBase),
       0.0);
   }
+
+  // The sourced base. Triplanar on the same world position and the same normal
+  // the field above already has, so a prop needs no uv and no tangent — which
+  // is the whole reason this could be added to a DodecahedronGeometry and a
+  // stack of cones at all.
+  if (uProp * uPropPhotoCfg.z > 0.0) {
+    float gpPm = max(uPropPhotoCfg.y, 1e-4);
+    // pow(w, 8), per ART.md §7(2). A linear blend keeps all three projections
+    // alive across a rounded boulder and the grain reads as mush on every face
+    // that is not axis-aligned; the peak narrows the transition to a band.
+    vec3 gpPw = pow(abs(gpN), vec3(${PROP_PHOTO_BLEND.toFixed(1)}));
+    gpPw /= max(gpPw.x + gpPw.y + gpPw.z, 1e-4);
+    // Mirror the projection on the far side of each axis, so the grain does not
+    // run backwards on the faces pointing away from it.
+    vec3 gpPs = sign(gpN);
+    float gpPk = uPropPhotoCfg.w;
+    float gpPl = uPropPhotoCfg.x;
+    vec3 gpLw = vec3(0.2126, 0.7152, 0.0722);
+    float gpPx = dot(texture(uPropPhoto, vec3(vec2(vGpPos.z * gpPs.x, vGpPos.y) * gpPk, gpPl)).rgb, gpLw);
+    float gpPy = dot(texture(uPropPhoto, vec3(vec2(vGpPos.x * gpPs.y, vGpPos.z) * gpPk, gpPl)).rgb, gpLw);
+    float gpPz = dot(texture(uPropPhoto, vec3(vec2(vGpPos.x * -gpPs.z, vGpPos.y) * gpPk, gpPl)).rgb, gpLw);
+    // Variance-preserving blend, and it is the line that makes this worth
+    // doing. A plain weighted mean of three decorrelated samples has variance
+    // sigma^2 * dot(w, w) — at the three-way point that is sigma^2 / 3, so the
+    // photograph's own contrast arrives at 0.577 of itself exactly on the faces
+    // where all three projections are live. Dividing the deviation by
+    // sqrt(dot(w, w)) restores the variance and leaves the mean untouched
+    // (Heitz & Neyret's histogram-preserving blend, its core identity). Without
+    // it a triplanar granite reads FLATTER than the noise it replaced, which
+    // would have been a pass spent making the measured number worse.
+    float gpPd = (gpPw.x * (gpPx - gpPm) + gpPw.y * (gpPy - gpPm) + gpPw.z * (gpPz - gpPm))
+               * inversesqrt(max(dot(gpPw, gpPw), 1e-6));
+    // Ratio form: E[(L - m) / m] = 0, so the multiplier's mean is exactly 1 at
+    // ANY gain and the authored albedo — the granite VALUE ART.md §3 asks for
+    // — is delivered untouched. Luma only: the same visual report measured our
+    // near-ground chroma per unit luma at 0.34-0.73 against a reference band of
+    // 0.077-0.193, so the photograph moves value and the authored colour keeps
+    // the hue.
+    diffuseColor.rgb *= clamp(
+      1.0 + (gpPd / gpPm) * uPropPhotoCfg.z,
+      ${PROP_PHOTO_CLAMP[0].toFixed(2)}, ${PROP_PHOTO_CLAMP[1].toFixed(2)});
+  }
 `;
 
 // Bounded (wall 4): a gradient has no upper bound of its own, and the cap is
@@ -2556,6 +2672,31 @@ const PROP_NORMAL_GLSL = /* glsl */ `
  * them. `installClipmapShadows` hands each of them the same onBeforeCompile
  * source, so they still share one compiled program.
  */
+/**
+ * The photograph term for one surface, as the four numbers the shader reads.
+ *
+ * Returns gain 0 — the term compiled and switched off, at the cost of the one
+ * `if` every prop already pays — in both cases where there is nothing to
+ * sample: a surface with no `photo` (foliage, cloth, water, metal), and a
+ * surface that has one before `loadGroundTextures()` has resolved. The second
+ * is not reachable for the scatter (`main.js` awaits the set before
+ * `new Terrain(...)`) and is handled anyway, because a material that silently
+ * multiplied albedo by an unbound sampler would be a black boulder with every
+ * gate green — the failure class this repo calls the worst one.
+ */
+function photoUniform(s) {
+  const tex = groundTextures();
+  const layer = s.photo === undefined ? -1 : GROUND_LAYERS.indexOf(s.photo);
+  if (!tex || layer < 0) return { map: tex ? tex.albedo : null, cfg: [0, 0, 0, 0] };
+  const m = tex.meanLinear[layer];
+  // The mean has to be taken in the same space the sampler delivers, which is
+  // linear — `loadGroundTextures` already decodes through the sRGB LUT for
+  // exactly this reason, so the CPU mean and the GPU sample agree by
+  // construction rather than by a tolerance.
+  const mean = 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2];
+  return { map: tex.albedo, cfg: [layer, mean, PROP_PHOTO_GAIN, PROP_PHOTO_SCALE] };
+}
+
 export function surfaceMaterial(surface, opts = {}) {
   const s = SURFACES[surface];
   if (!s) throw new Error(`unknown surface identity: ${surface}`);
@@ -2572,6 +2713,7 @@ export function surfaceMaterial(surface, opts = {}) {
   // `field: null` and still takes the patch: it is the same source, the same
   // program, and `uPropShape.y = 0` closes the branch at zero cost.
   const f = s.field;
+  const photo = photoUniform(s);
   const uniforms = {
     uProp: propToggle,
     uPropScale: { value: new THREE.Vector3(...(f ? f.scale : [1, 1, 1])) },
@@ -2600,6 +2742,16 @@ export function surfaceMaterial(surface, opts = {}) {
     // source, one program, no per-archetype variant for the prewarm gate to
     // catch mid-play.
     uWind: windUniform,
+    // The sourced base, and the four numbers that place it:
+    // (layer index, that layer's linear luma mean, gain, repeats per metre).
+    // One sampler for every prop class, bound whether or not the class uses it
+    // — the per-class difference is a uniform VALUE, never generated GLSL, for
+    // the same reason the field's table is: three keys its program cache on
+    // `onBeforeCompile.toString()`, and a source that differed per class would
+    // compile one program per class and every one of them would be the mid-play
+    // link the prewarm gate exists to catch.
+    uPropPhoto: { value: photo.map },
+    uPropPhotoCfg: { value: new THREE.Vector4(...photo.cfg) },
   };
   material.userData.propUniforms = uniforms;
   material.userData.propSurface = surface;

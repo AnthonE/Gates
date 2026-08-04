@@ -4,6 +4,54 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+1. **The container verb has no UI and no gate — and the systems half is not
+   ours.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.)*
+
+   There is no inventory or loot panel in `web/src` at all: wasm owns the 30
+   slots (`wasm.js:76`), the hotbar is the first 6 of them read on a timer
+   (`main.js:1303`), and looting is a payload-free `client_action_loot()` with
+   no container view (`main.js:426`). So the move/stack/split verb — the most
+   bug-prone thing in the reference — does not exist yet in either half.
+
+   **Systems lane, the one-line request:** container move/stack/split in
+   `crates/`, with the validation ordered BEFORE the mutation and computed on
+   the values the client predicted with (CLAUDE.md's quantize-both-sides law
+   applied to containers). Three Oxide fixes in 28 minutes on one 2019 day were
+   all splice-point moves that landed as *the server disconnecting the client*,
+   because container state diverged and that reads as a forged request. The UI
+   half is not startable until the refusal path exists to draw against.
+
+   `ci/ui_smoke.mjs` is the gate it lands in. The renderer-tier carve-out is
+   **armed** (operator, 2026-08-04, `DECISIONS.md` §open), so a change confined
+   to `index.html`/`hud.js`/`input.js` pays `ui_smoke` and not the renderer
+   tier. A container panel that adds a file will not be confined to those three
+   — extend `ui_smoke` to cover it, and only then propose adding the path.
+1. **The props' photograph: `wood` and `foliage` still have none.**
+   *(From the visual judge's ranked gap 1, `findings/pass-20260804-153032-01-visual.md`:
+   "the terrain got a sourced photograph this pass and the props did not — this
+   is a coverage gap, not a tuning one." Half of it landed as `DECISIONS.md`
+   §open "prop photograph v1"; this is the half that did not.)*
+
+   `rock` and `ore` now sample the granite layer of the array the ground
+   already had, triplanar, mean-preserving, luma only. Three things remain,
+   in order of what the judge measured:
+
+   - **`wood` gets bark.** `assets/textures/bark_{albedo,normal,rough}.jpg` are
+     on disk, in `MANIFEST.md`, and imported by nothing. They are not in the
+     ground's four-layer array, so this needs either a fifth layer (which moves
+     `GROUND_LAYERS` and the splat index that is asserted against it — not
+     free) or a second, prop-only array. The second is the smaller blast radius.
+   - **`foliage` gets needle cards**, which is geometry, not a map — the judge
+     is explicit that "no material work saves a smooth cone", and that is the
+     generated pine in the item below, not a texture.
+   - **The frequency split.** The field and the photograph are both live on
+     `rock`/`ore` albedo now, and per the pack's own rule two uncorrelated
+     deviations on one channel add variance rather than detail. The fix is to
+     hand everything above the tile frequency to the photograph and leave the
+     field the coarse per-instance patchiness a tiling map cannot supply —
+     which means splitting `PROP_DETAIL_SHARE` into an albedo share and a bump
+     share, since zeroing it today would take the bump with it.
+
 1. **The generated pine is built, gated, bundled — and not drawn.**
    *(Found while recovering the red join gate, 2026-08-04. `DECISIONS.md` §open
    row "the pine is generated" and the comments in `props.js`/`terrain.js` all
