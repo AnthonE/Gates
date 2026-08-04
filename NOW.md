@@ -57,6 +57,24 @@ Done items are deleted, not checked — history lives in git and
    slope, clearance and tri budgets are numbers. A greybox monument a player can
    walk into and a forest that clumps beat one more correct albedo.
 
+1. **Two branches of texture work are unmerged and are NOT lost — read this
+   before rebuilding either.** *(Operator, 2026-08-04. Not a queued item.)*
+
+   Nothing judged PASS is stranded: every lane trunk adds nothing `main` lacks.
+   These two failed or stopped, so the harness kept them rather than merging:
+
+   - `loop/bark-photo` (tag `salvage/bark-photo`) — judged **FAIL** 2026-08-04,
+     +438 lines in `materials.js`/`textures.js`. Report is in the looks lane's
+     `findings/`.
+   - `loop/m1-surface-grain` (tag `salvage/m1-surface-grain`) — +666 lines in
+     `materials.js`/`scene.js`, stopped unmerged, its own `BRANCH-NOTES.md`.
+
+   Both are **texture and material work, which is parked** (item above). Do not
+   merge either to clear the list — failed work in the trunk is the one thing
+   the judge exists to prevent. If textures are un-parked later, start from
+   these branches rather than from scratch; if they are never un-parked, delete
+   them in a commit that says so, as a stated decision rather than a skip.
+
 1. **Smash a barrel, pick up the loot. The whole loop, and most of it exists.**
    *(Operator, 2026-08-04. First concrete target of the playability item above.)*
 
