@@ -41,6 +41,17 @@ Done items are deleted, not checked — history lives in git and
    and test bit 31 as `APPLIED_MOVE` directly. `ci/ui_smoke.mjs` group L
    already goes red on that commit and says exactly this in its failure text.
 
+> **Cross-lane, not an item: `browser_smoke` is red on a CLEAN tree, and it is
+> tab B, not the prop-contrast probe.** Measured 2026-08-04 from the ui lane,
+> both on `lane/ui` HEAD `ecf1985` with nothing applied and on a branch off it:
+> the same assertion both times — *"tab B: never reached the world —
+> unresponsive"*, `__gatesDebug` never published, `2 tab(s) live`, ~68–70 s of
+> liveness cap. Tab A reaches the world in under a second in both runs. This is
+> the two-live-renderers class CLAUDE.md already names (2026-08-01), on a box
+> with no GPU where Chromium is on SwiftShader — not a diff, and not a timeout
+> to widen. The operator has `browser_smoke` switched off this run. Anything
+> touching `web/` therefore cannot honestly claim the renderer tier; say so.
+
 0. **world: the haven pad, and the road the client cannot see.**
    *(Gap pass. Both judge reports named "the island has nowhere to go" as their
    own top-or-second gap — `findings/archive-prestamp/pass-20260804-173640-01-judge.md`
