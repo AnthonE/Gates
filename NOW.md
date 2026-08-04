@@ -26,6 +26,42 @@ Done items are deleted, not checked — history lives in git and
 
    Until it lands the ui lane cannot draw a container panel, and that is
    the honest blocker to quote rather than the box.
+## 0. The second container panel — gap 1's other half *(ui lane)*
+
+*From `findings/pass-20260804-205133-03-judge.md` gap 1, "there is nowhere to
+put anything, so a base is scenery" — picked as this lane's gap-pass item.*
+
+Landed this pass (the half that needed no `crates/` change): every address the
+panel forms is a **(kind, slot) pair**, not a slot number. Bag slot 3 and self
+slot 3 were the same integer, so the drag, the pending record, the verdict
+match and the rollback all aliased; `ui_smoke` §M drives each. Report 03's
+ranked fix 1 (only `len > 0` was asserted, so a transposed move encoded
+green) is closed at two of its three hops: §M pins the panel→host argument
+order, and `client_smoke` now decodes `client_action_move`'s bytes field by
+field. **The third is still open** — main.js's pour of those four into the
+wasm call is covered only by `browser_smoke`, which is off this run; main.js
+is not node-importable, so closing it needs the marshalling extracted.
+
+Remaining otherwise, all `crates/` — the requests below. The panel still draws
+exactly ONE container and says so (`hud.invContainers`); listing a second
+there without cells and a contents source would promise a draw it cannot
+perform.
+
+> **Cross-lane request → systems, three items, all for gap 1** *(ui lane,
+> 2026-08-04)*. In dependency order:
+> 1. **Container contents on the wire.** No S→C message carries them:
+>    `EventMsg::Inv` has no container id and `WireBag` is id + position, its
+>    own doc saying contents stay sim-side. Without one a loot panel has
+>    nothing to draw. Needs `(container id, slots)`; 26 event subtypes free.
+> 2. **`client_move_readout` must carry the TO kind.** It packs
+>    `reason<<24 | to_slot<<16 | from_kind<<8 | from_slot` — 8 bits spare.
+>    `invmove.moveVerdict` therefore rejects every non-self FROM kind, which
+>    is correct and load-bearing today: without the to-kind a bag verdict
+>    cannot be told apart from a self one. That rejection is the last thing
+>    between the panel and cross-container drags.
+> 3. **`ARCH_BOX` needs slots and a container address** (`deploy.rs:80`), the
+>    piece the judge named. (2) unblocks the panel; (3) gives it something
+>    worth opening.
 
 > **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the
 > world lane's to make.** `ci/gates.sh` went RED then GREEN on an unchanged

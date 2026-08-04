@@ -638,6 +638,101 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   check(ex.client_action_move(0, 0, 30, 0, 7, 5) === 0, "a slot past INV_SLOTS must not encode");
   check(ex.client_action_move(0, 0, 3, 0, 7, 0) === 0, "a zero count is not a move");
 
+  // --- and the BYTES, field by field ---------------------------------------
+  // The five checks above are the whole of what pinned this call until now,
+  // and every one of them asks the same question: did a frame come out. So
+  // `client_action_move(0, 0, 7, 0, 3, 5)` is exactly as green as
+  // `(0, 0, 3, 0, 7, 5)` — a `from`/`to` transposition, or a kind swapped
+  // with the slot beside it, produces a valid frame of the same length and
+  // no gate in this repo looks at it. That is CLAUDE.md's positional-payload
+  // trap on the client's own outbound edge: ~27 of the reference ecosystem's
+  // shipped corrections were the right value in the wrong position, four
+  // hooks corrected more than once, and their per-method hash — the exact
+  // analogue of `test_protocol_golden` — caught none of them, because the
+  // encoder is untouched when the CALLER swaps two arguments.
+  //
+  // `test_protocol_golden` owns the byte shape; this owns which value the
+  // browser's calling path puts in each of those bytes. The widths come out
+  // of `protocol/src/lib.rs` rather than being restated, for the reason the
+  // event frames above already give: wire v13 moved every field by a bit,
+  // and a literal cannot tell a typo from a real drift.
+  const protoSrc = readFileSync(join(root, "crates/protocol/src/lib.rs"), "utf8");
+  const protoConst = (name) => {
+    const m = protoSrc.match(new RegExp(`const ${name}: u32 = (\\d+);`));
+    const v = Number(m?.[1]);
+    check(
+      Number.isInteger(v),
+      `could not read ${name} out of protocol/src/lib.rs — this decode would then be checked against` +
+        " nothing, which is the gate-that-matches-nothing class",
+    );
+    return v;
+  };
+  const fieldBits = {
+    kind: protoConst("KIND_BITS"),
+    sub: protoConst("ACTION_SUB_BITS"),
+    contKind: protoConst("CONT_KIND_BITS"),
+    slot: protoConst("ACTION_SLOT_BITS"),
+    count: protoConst("MOVE_COUNT_BITS"),
+  };
+  // Lower-camel deliberately: `ci/knob_registry.mjs` pins every SHOUTY
+  // constant it can see against `DECISIONS.md`, and these are read out of the
+  // Rust at run time rather than declared here, so a registry that tried to
+  // parse them would be pinning a function call.
+  const kindAction = protoConst("KIND_ACTION");
+  const actMove = protoConst("ACT_MOVE");
+  /// LSB-first, the mirror of `packed` above and of `protocol/src/bits.rs`.
+  const unpack = (buf, widths) => {
+    let bit = 0;
+    return widths.map((n) => {
+      let v = 0;
+      for (let i = 0; i < n; i++, bit++)
+        if ((buf[bit >> 3] >> (bit & 7)) & 1) v += 2 ** i;
+      return v;
+    });
+  };
+  // Every field a distinct value, and distinct from every other field's, so
+  // a transposition cannot pass by coincidence: bag 9001, from (kind 1, slot
+  // 6), to (kind 0, slot 21), count 13. The two kinds differ, the two slots
+  // differ, and no slot equals a kind.
+  const mlen = ex.client_action_move(9001, 1, 6, 0, 21, 13);
+  check(mlen > 0, "the field-by-field move must encode at all");
+  const mbuf = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), mlen).slice();
+  const [mKind, mSub, mBag, mFromKind, mFromSlot, mToKind, mToSlot, mCount] = unpack(mbuf, [
+    fieldBits.kind, fieldBits.sub, 32, fieldBits.contKind, fieldBits.slot, fieldBits.contKind, fieldBits.slot, fieldBits.count,
+  ]);
+  check(
+    mKind === kindAction && mSub === actMove,
+    `the move frame is not an ACT_MOVE action (kind ${mKind}, sub ${mSub}) — the decode below would then be` +
+      " reading some other message's fields and calling them a move",
+  );
+  check(mBag === 9001, `move bag encoded as ${mBag}, not 9001 — the sim addresses the container by this id`);
+  check(
+    mFromKind === 1 && mFromSlot === 6,
+    `the move's FROM encoded as (kind ${mFromKind}, slot ${mFromSlot}), not (1, 6) — a kind and the slot beside` +
+      " it are both small integers in adjacent fields, and swapping them is a valid frame the server acts on",
+  );
+  check(
+    mToKind === 0 && mToSlot === 21,
+    `the move's TO encoded as (kind ${mToKind}, slot ${mToSlot}), not (0, 21)`,
+  );
+  check(
+    mCount === 13,
+    `move count encoded as ${mCount}, not 13 — the count is what the server sims on, so a wrong one here is the` +
+      " quantize-both-sides law broken at its own call site",
+  );
+  // The transposition itself, driven rather than reasoned about: the same
+  // call with `from` and `to` exchanged must produce a DIFFERENT frame. If
+  // these compare equal the encoder is symmetric in the pair and every check
+  // above is satisfied by a client that has them the wrong way round — which
+  // is the single shape the reference corrected most often.
+  const tlen = ex.client_action_move(9001, 0, 21, 1, 6, 13);
+  const tbuf = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), tlen).slice();
+  check(
+    tlen === mlen && !mbuf.every((b, i) => b === tbuf[i]),
+    "exchanging the move's from and to produced a byte-identical frame — the two ends are the same position on" +
+      " the wire, so nothing downstream can tell a move from its reverse",
+  );
+
   // Hit: sub 24 · victim 4242 · damage 25.
   check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring starts empty");
   f = evFrame(24, [[4242, 32], [25, 16]]);

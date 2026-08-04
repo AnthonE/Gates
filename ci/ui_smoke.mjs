@@ -1351,12 +1351,26 @@ check(
     " on a FILLED slot — the affordance that always refuses is the one this rule exists to prevent",
 );
 
+// Read rather than restated, same reason as `REFUSE_MAX` above.
+const selfKind = Number(invSrc.match(/pub const CONT_SELF: u8 = (\d+);/)?.[1]);
+check(
+  Number.isInteger(selfKind),
+  "could not read CONT_SELF out of inventory.rs — the host below would then record addresses it could not check",
+);
+
 const move = await page.evaluate(
-  ([n, belt, reasonMax]) => {
+  ([n, belt, reasonMax, self]) => {
     const { hud } = globalThis.__ui;
     const sent = [];
     let allow = true;
-    hud.onInvMove = (from, to) => {
+    // The host takes ADDRESSES: (fromKind, from, toKind, to). This group
+    // owns the SLOTS and the ordering, so it records the pair it always
+    // did; group M owns the kinds. Any address naming a container other
+    // than self is noted here anyway, so that "record only the slots"
+    // cannot quietly become "the kinds are not looked at anywhere".
+    const foreignKinds = [];
+    hud.onInvMove = (fromKind, from, toKind, to) => {
+      if (fromKind !== self || toKind !== self) foreignKinds.push([fromKind, toKind]);
       sent.push([from, to]);
       return allow;
     };
@@ -1582,9 +1596,16 @@ const move = await page.evaluate(
       said.push(document.getElementById("toasts").lastElementChild?.textContent || "");
     }
     out.said = said;
+    out.foreignKinds = foreignKinds;
     return out;
   },
-  [INV_SLOTS, INV_BELT, REFUSE_MAX],
+  [INV_SLOTS, INV_BELT, REFUSE_MAX, selfKind],
+);
+
+check(
+  move.foreignKinds.length === 0,
+  `the panel's own thirty cells sent an address naming another container: ${JSON.stringify(move.foreignKinds)} —` +
+    " these cells ARE the self container and every drag through them is self to self",
 );
 
 check(
@@ -1871,6 +1892,198 @@ check(
 );
 
 // =============================================================================
+// M. addresses, not slot numbers — the aliasing that blocks a second panel
+// =============================================================================
+// The newest judge report's gap 1 ("there is nowhere to put anything") asks
+// for a second panel bound to the same move verb. The thing in the way on this
+// side is not netcode: bag slot 3 and self slot 3 are the same integer, and
+// until this pass the panel keyed its drag, its pending record and its verdict
+// match on that integer alone. A verdict about a container would then have
+// resolved — and rolled back — a cell of the player's own inventory.
+//
+// So every address is now a (kind, slot) pair, and this group asserts the two
+// places that can still alias: the verdict matcher, and the rollback.
+const { CONT_BAG: JS_CONT_BAG, CONT_MAX: JS_CONT_MAX } = await import(
+  pathToFileURL(path.join(root, "web/src/invmove.js")).href
+);
+check(
+  JS_CONT_BAG === Number(invSrc.match(/pub const CONT_BAG: u8 = (\d+);/)?.[1]),
+  `invmove.js CONT_BAG (${JS_CONT_BAG}) has drifted from inventory.rs — the panel would form addresses naming a` +
+    " container the sim numbers differently, and every one of them would be answered about somewhere else",
+);
+// `CONT_MAX` is defined in Rust as an alias rather than a literal
+// (`pub const CONT_MAX: u8 = CONT_BAG;`), so the alias is what is read: a pass
+// that adds a third kind moves that alias, and this goes red on the same
+// commit rather than on the frame the server declines.
+const contMaxAlias = invSrc.match(/pub const CONT_MAX: u8 = (\w+);/)?.[1];
+check(
+  contMaxAlias === "CONT_BAG" && JS_CONT_MAX === JS_CONT_BAG,
+  `invmove.js CONT_MAX (${JS_CONT_MAX}) is not inventory.rs's CONT_MAX (= ${contMaxAlias}) — the wire range-checks` +
+    " kinds against it, and a client that thinks the ceiling is higher encodes frames the server answers by" +
+    " ending the session, which is exactly how this verb failed in the reference",
+);
+
+const addr = await page.evaluate(
+  ([n, self, bag]) => {
+    const { hud } = globalThis.__ui;
+    const out = {};
+    const sent = [];
+    hud.onInvMove = (fk, f, tk, t) => {
+      sent.push([fk, f, tk, t]);
+      return true;
+    };
+    const fill = () => {
+      const t = [];
+      for (let s = 0; s < n; s++) t.push(`s${s}`);
+      hud.setInventory(t);
+    };
+    const cells = () => [
+      ...document.querySelectorAll("#invbelt .invcell"),
+      ...document.querySelectorAll("#invgrid .invcell"),
+    ];
+    const texts = () => cells().map((c) => c.querySelector("span").textContent);
+
+    // --- the panel names the containers it draws, and draws only one -------
+    out.containers = hud.invContainers.slice();
+    out.drawsSelf = hud.drawsContainer(self);
+    out.drawsBag = hud.drawsContainer(bag);
+
+    // --- a drag cannot start in a container the panel does not draw --------
+    fill();
+    out.bagBegan = hud.beginInvDrag(4, 1, bag);
+    out.bagDrag = { drag: hud.invDrag, kind: hud.invDragKind };
+    hud.cancelInvDrag();
+
+    // --- the host is handed the ADDRESSES, in that order -------------------
+    // Positional, and every value distinct from every other so a transposed
+    // pair cannot pass: kind 0 twice is the only shape this host carries, so
+    // the slots carry the distinctness (5 and 19).
+    fill();
+    sent.length = 0;
+    hud.beginInvDrag(5, 1, self);
+    out.sentDrop = hud.dropInvDrag(19, 1, self);
+    out.sent = sent.slice();
+    out.pending = hud.invPending && { ...hud.invPending };
+
+    // --- a verdict from a DIFFERENT container is not this move's ----------
+    // Same two slot numbers, same reason, other container. Before addresses
+    // this was indistinguishable from the real verdict.
+    out.alienFrom = hud.invMoveVerdict(0, 5, 19, bag, self);
+    out.aliveAfterFrom = !!hud.invPending;
+    out.alienTo = hud.invMoveVerdict(0, 5, 19, self, bag);
+    out.aliveAfterTo = !!hud.invPending;
+    out.mine = hud.invMoveVerdict(0, 5, 19, self, self);
+    out.aliveAfterMine = !!hud.invPending;
+    out.drawnAfterLand = { from: texts()[5], to: texts()[19] };
+
+    // --- a rollback writes only cells this panel drew ----------------------
+    // A move with one end in another container drew ONE cell. Restoring the
+    // other end would put a foreign container's item into the self grid at a
+    // slot the server never spoke about — the aliasing, by the back door.
+    // The pending record is set directly here because the panel that would
+    // draw the other end does not exist yet: this is the matcher under test,
+    // not the drag.
+    fill();
+    hud.invPending = {
+      fromKind: bag, from: 2, toKind: self, to: 8,
+      wasFrom: "BAGITEM", wasTo: "s8", restated: false,
+    };
+    hud.setInvText(8, "BAGITEM"); // what the prediction drew, self end only
+    out.rolled = hud.invMoveVerdict(6, 2, 8, bag, self);
+    out.afterRoll = { self2: texts()[2], self8: texts()[8] };
+
+    // --- a self restatement is not a bag end's restatement -----------------
+    // `setInventory` is the OWN inventory diff. A write to self slot 2 while
+    // a move out of BAG slot 2 is in flight is a different slot entirely,
+    // and counting it would give up a rollback the panel still owes.
+    fill();
+    hud.invPending = {
+      fromKind: bag, from: 2, toKind: self, to: 8,
+      wasFrom: "BAGITEM", wasTo: "s8", restated: false,
+    };
+    hud.setInventory(Object.assign([], texts(), { 2: "CHANGED" }));
+    out.restatedByForeign = hud.invPending.restated;
+    hud.setInventory(Object.assign([], texts(), { 8: "ALSOCHANGED" }));
+    out.restatedByOwn = hud.invPending.restated;
+    hud.invPending = null;
+    return out;
+  },
+  [INV_SLOTS, JS_CONT_SELF, JS_CONT_BAG],
+);
+
+check(
+  addr.containers.length === 1 && addr.containers[0] === JS_CONT_SELF,
+  `the panel claims to draw ${JSON.stringify(addr.containers)} — it has cells and a text array for exactly one` +
+    " container, so listing a second here would promise a draw it cannot perform. Gap 1's second panel adds the" +
+    " cells and the contents source in the same change that adds the entry",
+);
+check(
+  addr.drawsSelf === true && addr.drawsBag === false,
+  `drawsContainer disagrees with that list (self=${addr.drawsSelf}, bag=${addr.drawsBag})`,
+);
+check(
+  addr.bagBegan === false && addr.bagDrag.drag === -1 && addr.bagDrag.kind === -1,
+  `a drag started in a container the panel does not draw (${JSON.stringify(addr.bagDrag)}) — it would mark a cell` +
+    " of the self grid and then send a move out of somewhere else",
+);
+check(
+  addr.sentDrop === true &&
+    addr.sent.length === 1 &&
+    addr.sent[0][0] === JS_CONT_SELF &&
+    addr.sent[0][1] === 5 &&
+    addr.sent[0][2] === JS_CONT_SELF &&
+    addr.sent[0][3] === 19,
+  `the host was handed ${JSON.stringify(addr.sent)}, not [[self, 5, self, 19]] — this is the panel's own` +
+    " positional payload, and main.js pours these four straight into client_action_move's four address arguments",
+);
+check(
+  addr.pending &&
+    addr.pending.fromKind === JS_CONT_SELF &&
+    addr.pending.toKind === JS_CONT_SELF &&
+    addr.pending.from === 5 &&
+    addr.pending.to === 19,
+  `the pending record is ${JSON.stringify(addr.pending)} — a record without the kinds is what made a container's` +
+    " verdict indistinguishable from this one's",
+);
+check(
+  addr.alienFrom === false && addr.aliveAfterFrom === true,
+  "a verdict addressed out of ANOTHER container resolved this panel's move — the two slot numbers match because" +
+    " containers share numbering, which is exactly why the kind has to be matched too",
+);
+check(
+  addr.alienTo === false && addr.aliveAfterTo === true,
+  "a verdict addressed INTO another container resolved this panel's move — same aliasing, other end",
+);
+check(
+  addr.mine === true && addr.aliveAfterMine === false,
+  "the panel's own verdict did not resolve its own move — the kind match must not reject the one address it sent",
+);
+check(
+  addr.drawnAfterLand.from === "" && addr.drawnAfterLand.to === "s5",
+  `a landed move left the grid at ${JSON.stringify(addr.drawnAfterLand)} — the three refused verdicts above must` +
+    " not have unwound anything either",
+);
+check(
+  addr.rolled === true && addr.afterRoll.self8 === "s8",
+  `a refusal did not put the self end back (slot 8 = ${JSON.stringify(addr.afterRoll.self8)})`,
+);
+check(
+  addr.afterRoll.self2 === "s2",
+  `the rollback wrote the OTHER container's item into self slot 2 (${JSON.stringify(addr.afterRoll.self2)}) — the` +
+    " panel does not draw that container, so that slot number named a cell the server never spoke about",
+);
+check(
+  addr.restatedByForeign === false,
+  "a write to self slot 2 counted as the restatement of a move out of BAG slot 2 — the panel would then decline" +
+    " a rollback it still owes, and the optimistic draw stands forever, which is the container divergence itself",
+);
+check(
+  addr.restatedByOwn === true,
+  "a write to the move's own self end did NOT count as a restatement — the server's word is newer than the" +
+    " snapshot and rolling back over it would put back an item the sim has since moved",
+);
+
+// =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
@@ -1880,7 +2093,8 @@ console.log(
     `chat cap ${CHAT_CAP} · toast cap ${TOAST_CAP} · vitals positional+inline · death answered once · ` +
     `craft gate/×5 · queue index · inventory ${INV_SLOTS} slots positional + eatsKey · ` +
     `move ordering (send-before-draw, address-matched verdict, diff outranks rollback, ${REFUSE_MAX} reasons) · ` +
-    "unarmed panel starts no drag · verdict on APPLIED2_MOVE, bit 31 unshared",
+    "unarmed panel starts no drag · verdict on APPLIED2_MOVE, bit 31 unshared · " +
+    "addresses are (kind, slot): one container drawn, foreign verdict refused, rollback stays in it",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
