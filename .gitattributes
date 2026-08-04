@@ -1,0 +1,17 @@
+# Two docs are written by every lane, every pass, and they collide positionally
+# rather than substantively: each lane appends a new NOW.md item at the top and
+# a new DECISIONS.md §open row at the end, so git sees two additions at one
+# position and calls it a conflict. The first three-lane collision (2026-08-04,
+# lane/looks) was exactly this and the correct resolution was "keep both".
+#
+# `union` is that resolution, applied automatically. It is right ONLY because
+# these two files are append-structured and lanes are forbidden from editing
+# each other's lines (see each lane's charter). Where it degrades, it degrades
+# visibly: a true edit-edit collision keeps BOTH versions, which reads as an
+# obvious duplicate rather than as a silent loss. Nothing is ever dropped.
+#
+# DECISIONS.md has a gate behind it — ci/knob_registry.mjs pins every declared
+# knob to its source and fails on a row that disagrees. NOW.md has none, so a
+# duplicated item there is caught by a reader, not a wall. Judges read it.
+NOW.md merge=union
+DECISIONS.md merge=union

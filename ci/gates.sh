@@ -61,6 +61,26 @@ renderer_base() {
   return 1
 }
 
+# Every path under `web/` is a renderer path EXCEPT the three HUD files below.
+# The carve-out was proposed by the ui lane on 2026-08-04, built before it was
+# asked for, and ARMED by the operator the same day (`DECISIONS.md` §Spoken).
+# A one-line `<div>` move now pays `ui_smoke` at ~0.8 s instead of
+# `browser_smoke` + `vantages` at ~19 min.
+#
+# It is armed on landed evidence, not on the saving: `ci/ui_smoke.mjs` asserts
+# every `index.html`/`hud.js` contract `browser_smoke` holds, as a strict
+# superset, with the coverage table in that file's header keyed to
+# `browser_smoke` line numbers — and eleven mutants of those two files were run
+# against it, all eleven red. The first attempt at this carve-out was judged
+# FAIL precisely because the coverage was NOT equivalent: `#vitals` at inline
+# `display:"block"` (`browser_smoke:1745`) was a value `ui_smoke` read and
+# discarded, so the mutation escaped both gates.
+#
+# THE STANDING RULE, and it is the whole reason this is safe: a path joins this
+# exemption list ONLY in a commit that also extends `ui_smoke` to cover what
+# that path can break. Subtracting a path from the question below subtracts a
+# gate from the merge — `auto` is the tier the loop merges on — so the list is
+# the operator's, never a lane branch's.
 renderer_touched() {
   local base
   base=$(renderer_base) || {
@@ -68,10 +88,12 @@ renderer_touched() {
     echo "  tier: no merge base against main — running the renderer tier rather than guessing." >&2
     return 0
   }
+  local ui_only='^(web/index\.html|web/src/hud\.js|web/src/input\.js)$'
   {
     git diff --name-only HEAD 2>/dev/null || true
     git diff --name-only "$base"...HEAD 2>/dev/null || true
-  } | grep -qE '^(web/|assets/textures/|ci/browser_smoke\.mjs|ci/vantages\.mjs)'
+  } | grep -vE "$ui_only" \
+    | grep -qE '^(web/|assets/textures/|ci/browser_smoke\.mjs|ci/vantages\.mjs)'
 }
 
 RUN_RENDERER=1
@@ -174,13 +196,37 @@ $NICE npm --prefix web run build || fail "vite build"
 echo "== gate: pine shape (silhouette counts + the SPAWN_CLEAR_M coupling)"
 $NICE node ci/pine_shape.mjs || fail "pine shape"
 
-# The only gate that runs the JS in a browser. Everything above tests the
-# client's LOGIC natively or in node, which is why two hard boot bugs shipped
-# green on 2026-07-31: a detached-buffer throw in WasmViews that stopped the
+# The interaction surface: a real browser, no renderer. Sits in the CODE tier
+# because it costs under a second — it renders no frames, creates no WebGL
+# context, loads no wasm and starts no shard, so none of what makes the two
+# gates below expensive applies. Here rather than earlier because playwright is
+# a `web/` devDependency and comes from the install above.
+#
+# It exempts nothing — `renderer_touched` above is unchanged and every path
+# under `web/` still schedules the renderer tier. This gate earns its place on
+# what it asserts: the composer that must swallow a keystroke so "w" is a
+# letter and not a step forward, the death screen that must answer once, the
+# chat line that goes in as another player's TEXT and never as markup, and the
+# vitals stack whose argument order and row order disagree by design — the
+# positional-payload shape CLAUDE.md's trap list names as where the reference
+# ecosystem actually bled. Every one of those was a comment with no gate.
+#
+# It also holds, deliberately, a superset of every `index.html`/`hud.js`
+# contract `ci/browser_smoke.mjs` asserts (group A and the inline-style checks
+# in F). That is not redundancy for its own sake: it is the evidence the
+# §open carve-out proposal needs, measured rather than promised.
+echo "== gate: ui smoke (HUD, hotbar, composer, chat, vitals, death — real events, no renderer)"
+$NICE node ci/ui_smoke.mjs || fail "ui smoke"
+
+# The only gate that BOOTS the client — a real shard, the wasm bridge, a WebGL
+# context, the world drawn. `ui_smoke` above is also a browser, but on a page
+# where the game never started, and it cannot replace this: two hard boot bugs
+# shipped green on 2026-07-31 because everything else tested the client's LOGIC
+# natively or in node — a detached-buffer throw in WasmViews that stopped the
 # client dead, and a terrain-worker race that killed the near ring while the
 # far mesh still rendered (so screenshots looked fine). Both are invisible to
-# every other gate here. Needs the release shard binary — build it first so a
-# missing binary is a loud failure and never a skip.
+# every other gate here, `ui_smoke` included. Needs the release shard binary —
+# build it first so a missing binary is a loud failure and never a skip.
 if [ "$RUN_RENDERER" = "0" ]; then
   echo "== renderer tier NOT run (tier: $TIER) — browser smoke, vantages"
   echo "CODE GATES GREEN — renderer tier skipped, so this is NOT 'all gates green'."
