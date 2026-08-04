@@ -14,6 +14,7 @@ game, the client, or the build.
 |---|---|
 | `rip-hooks.py` | the extractor — reproducible, no network of its own |
 | `rust-systems.txt` | its output: 852 patch entries, 277 game classes, 38 categories |
+| `FINDINGS.md` | what the two loaders' **commit history** teaches: which systems bled, and the one gate-shaped hole it exposes in ours |
 
 ## How to regenerate
 

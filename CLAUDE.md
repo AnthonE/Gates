@@ -95,6 +95,28 @@ do not rediscover)
   "untextured" was really diffuse contrast crushed by an earlier fix for
   "too bright", and the correct change was the opposite of the feedback's
   direction. Diagnose the mechanism before acting on a ranked gap.
+- **A byte-golden is blind to what a field means.** Positional payloads
+  are where the reference ecosystem actually bled: 49 of Oxide.Rust's
+  commits touch a hook's arguments and ~27 correct a payload that had
+  already shipped wrong — the right value in the wrong position, four
+  hooks corrected more than once. Their patcher pinned an `MSILHash` per
+  patched method, the exact analogue of our `test_protocol_golden`, and it
+  caught none of them. Ours has the same hole: swap `a` and `b` at an
+  `events.push` site and the encoder is untouched (golden green), the
+  event queue is not in `state_hash` (replay green), and every field is
+  `u32` (clippy green). `reference/FINDINGS.md` §1 has the shape of a gate
+  that would catch it; until one exists, the `/// EV_*: a = … b = …` lines
+  in `world.rs` are law with no gate.
+- **The item-move verb is the most bug-prone thing in the reference, and
+  it fails as a kick.** Three Oxide fixes in 28 minutes on one 2019 day —
+  the third titled as a fix of the fix — all one-line splice-point moves
+  on move/stack/loot, all landing as *the server disconnecting the
+  client*, because container state diverged and that reads as a forged
+  request. The bug is validation ordering against the mutation, never
+  arithmetic. Prediction makes it worse for us: the client has already
+  drawn the move, so a container refusal must be computed on the same
+  values the client predicted with (the quantize-both-sides law, applied
+  to containers).
 - **Tonemap, sky, exposure, and fog are one owner.** Split across parallel
   passes they break each other's assumptions faster than they improve
   (measured elsewhere: three parallel rounds worsened visual defects
