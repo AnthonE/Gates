@@ -15,9 +15,10 @@ Done items are deleted, not checked — history lives in git and
 > from here would only conflict on the same line. Merge theirs. Until then
 > `UI_SMOKE_PORT=<free>` is the documented override.
 
-0. **world: the pad exists but nothing is on it, and the road is invisible.**
-   *(The pad's placement + exclusion zone landed — `DECISIONS.md` §open "haven
-   pad v0", `tests/haven.rs`. This is what it leaves.)*
+0. **world: the pad pays now, but it is still bare ground.**
+   *(Placement, exclusion zone and the container ring have landed —
+   `DECISIONS.md` §open "haven pad v0" + "haven crates v0", `tests/haven.rs`,
+   `ci/haven_prize.mjs`. This is what they leave.)*
 
    - **The carve, and it is cross-lane.** v0 *finds* a flat site; it does not
      make one. Measured worst relief is **3.76 m over a 32 m pad** — enough
@@ -28,15 +29,17 @@ Done items are deleted, not checked — history lives in git and
      and a collision path that does not is a player standing in the air.
      **Request to the systems lane:** thread a `&Haven` (or a worldgen context
      carrying it) through `height` so the world lane can carve. Until then no
-     POI on the pad can be flat.
-   - **Give the pad something to be**: its own `loot.toml` table and a greybox
-     mesh. Right now it is a clearing — `ROAD_BARREL_PERMILLE` is still the
-     beach's own rate, so the judge's "walking the loop is worth the same as
-     standing where you spawned" is unfixed. A loot table is content, not code.
+     POI on the pad can be flat — the crates already sit on up to 3.76 m of it.
+   - **A structure, not just containers.** The pad has five crates and no
+     walls. A greybox a player can walk into is the next thing that makes it a
+     place, and it is what actually needs the carve above.
    - **The road reads as a gap, not a road.** `web/src/terrain.js` has no dirt
-     band, so the carriageway is just a strip where nothing grows. Batch it
-     with the pad mesh — touching `web/` costs the ~19 min renderer tier.
+     band, so the carriageway is just a strip where nothing grows. Parked with
+     the operator's "textures are not this lane's remit" call — reopen it if
+     the lane's remit flips back. Touching `web/` costs the ~19 min tier.
    - Not done from stage 7: the flattening, and the denser bay-mouth slots (knob).
+   - **Nobody has looked at a crate.** The archetype at `props.js` index 9 is
+     unverified by anything but arithmetic; `browser_smoke` is off this run.
 
 1. **The sim can play a survival game; the player cannot reach it.**
    *(Operator, 2026-08-04. This outranks every gate-building item below it.)*
