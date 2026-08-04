@@ -202,6 +202,13 @@
       .invcell.focus {
         border-color: #d9b96f;
       }
+      /* The slot currently being dragged out of. Dimmed rather than
+         highlighted: the item is on its way somewhere else, and the two
+         other cell states here already spend the bright borders. */
+      .invcell.drag {
+        opacity: 0.45;
+        border-style: dashed;
+      }
       /* Chat: log bottom-left (the reference's kill/contacts feed sits
          there), composer directly under it. Plain DOM, outside the RAF
          path like every other panel. */

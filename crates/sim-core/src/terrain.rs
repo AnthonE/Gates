@@ -1,7 +1,9 @@
 //! The island as a pure function of the seed (TERRAIN.md). `height`, masks,
 //! biomes, and the scatter pass — all integer hashes + walled float ops, so
-//! native and wasm agree bit for bit. Road ring and haven pad are the next
-//! worldgen slice; adding them regenerates the goldens in the same commit.
+//! native and wasm agree bit for bit. The coast road (stage 7) is below and
+//! costs the goldens nothing — it reads `height`, never writes it, and the
+//! golden's 256 scatter cells sit at the island center, far inside the ring.
+//! The haven pad (stage 8) is the next worldgen slice.
 //!
 //! Numbers of record are TERRAIN.md §6; generator shape params (frequencies,
 //! warp amplitude, remap LUT, scatter weights) are registered in DECISIONS.md
@@ -179,6 +181,11 @@ pub enum Biome {
 /// spawns into it, so the spawn zone cannot drift away from the biome.
 pub const BEACH_MAX_H: f32 = SEA_LEVEL + 2.0;
 
+/// The land line: ground below this is water's edge, not somewhere a thing
+/// stands or a road runs. Scatter has always used it; naming it is what let
+/// the coast road share one definition instead of inventing a second.
+pub const LAND_MIN_H: f32 = SEA_LEVEL + 0.6;
+
 pub fn biome(h: f32, moist: f32) -> Biome {
     if h < BEACH_MAX_H {
         Biome::Beach
@@ -189,6 +196,117 @@ pub fn biome(h: f32, moist: f32) -> Biome {
     } else {
         Biome::Meadow
     }
+}
+
+// --- The coast road (TERRAIN.md §1 stage 7) -------------------------------
+//
+// The road is the loot route: a ring offset inland from the coastline that
+// pulls players out of their bases into a circulation loop, with barrel
+// slots along it and no monument art. TERRAIN.md's stage 7–9 constraint
+// block says the ring needs "something derived once from the seed and then
+// queried", and warns off a raster. It turns out to need neither.
+//
+// The trick is to never ask "where is the ring", only "am I on it". The
+// road's center line is the set of points exactly ROAD_INLAND_M inland of
+// the shoreline, so a sample is on the road iff the shoreline crossing lies
+// in a window around the point ROAD_INLAND_M seaward of it — and that is
+// three `height` taps along the sample's own outward radial, no memo, no
+// cap in limits.rs, no signature to thread through eight call sites, and
+// the golden untouched. It also follows the wobble exactly rather than
+// approximating it with control points.
+//
+// The one thing it assumes is that height falls monotonically across the
+// ~10 m shoulder window. A shore that rises again inside 10 m would read as
+// off-road; that is a coastline steeper than ROAD_MAX_GRADE, which is above
+// CLIFF_SLOPE_RATIO, where scatter already vetoes and no player walks.
+
+/// How far inland of the shoreline the road's center line runs, meters
+/// (DECISIONS.md §open: coast road v0; TERRAIN.md §1 stage 7 "~40 m").
+pub const ROAD_INLAND_M: f32 = 40.0;
+/// Carriageway half-width, meters — the cleared surface (TERRAIN.md §6
+/// "roads: 1 coast ring, ~4 m wide").
+pub const ROAD_HALF_W: f32 = 2.0;
+/// Shoulder half-width, meters: the barrel band, outside the carriageway.
+pub const ROAD_SHOULDER_HALF_W: f32 = 5.0;
+/// The radial bracket the ring may live in, meters from island center.
+/// The shoreline sits at CONTINENT_RADIUS ± COAST_WOBBLE modulated by
+/// relief; these bound it with margin, and double as the broad phase.
+pub const ROAD_R_MIN: f32 = 600.0;
+pub const ROAD_R_MAX: f32 = 1000.0;
+/// The steepest shore the one-probe early-out will still find a crossing
+/// on, as rise/run. Above CLIFF_SLOPE_RATIO on purpose: the road declining
+/// to cross ground scatter itself vetoes costs nothing.
+pub const ROAD_MAX_GRADE: f32 = 2.0;
+/// Per-mille of shoulder cells that become barrel slots — the same rate
+/// the beach row already washes barrels up at (`alpha_default`), so the
+/// route and the shore agree (DECISIONS.md §open: coast road v0).
+pub const ROAD_BARREL_PERMILLE: u16 = 250;
+
+/// Where a point stands relative to the coast road.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum RoadBand {
+    Off = 0,
+    /// Outside the carriageway, inside the shoulder: the barrel band.
+    Shoulder = 1,
+    /// The cleared surface itself — scatter never occupies it.
+    Carriageway = 2,
+}
+
+/// The coast road as a pure function of (seed, x, z) — no state, no memo,
+/// so it costs the same in the server, the wasm client and the golden.
+pub fn road_band(seed: u64, x: f32, z: f32) -> RoadBand {
+    let c = ISLAND_SIZE * 0.5;
+    let dx = x - c;
+    let dz = z - c;
+    let d = (dx * dx + dz * dz).sqrt();
+    if !(ROAD_R_MIN..=ROAD_R_MAX).contains(&d) {
+        return RoadBand::Off;
+    }
+    // d >= ROAD_R_MIN > 0, so the normalize is safe without a guard.
+    let ux = dx / d;
+    let uz = dz / d;
+    // Where the shoreline would be if this sample were on the center line.
+    let r = d + ROAD_INLAND_M;
+
+    // One probe first. If the ground there is far from sea level, no
+    // crossing can be inside the shoulder window without a grade steeper
+    // than ROAD_MAX_GRADE, so most of the island answers in one tap.
+    let hp = height(seed, c + ux * r, c + uz * r);
+    if fabs(hp) > ROAD_SHOULDER_HALF_W * ROAD_MAX_GRADE {
+        return RoadBand::Off;
+    }
+
+    // The probe's sign says which way the crossing lies, so the window only
+    // costs one more tap per width tested, not two.
+    let band = if hp > SEA_LEVEL {
+        let w = ROAD_SHOULDER_HALF_W;
+        if height(seed, c + ux * (r + ROAD_HALF_W), c + uz * (r + ROAD_HALF_W)) <= SEA_LEVEL {
+            RoadBand::Carriageway
+        } else if height(seed, c + ux * (r + w), c + uz * (r + w)) <= SEA_LEVEL {
+            RoadBand::Shoulder
+        } else {
+            RoadBand::Off
+        }
+    } else {
+        let w = ROAD_SHOULDER_HALF_W;
+        if height(seed, c + ux * (r - ROAD_HALF_W), c + uz * (r - ROAD_HALF_W)) > SEA_LEVEL {
+            RoadBand::Carriageway
+        } else if height(seed, c + ux * (r - w), c + uz * (r - w)) > SEA_LEVEL {
+            RoadBand::Shoulder
+        } else {
+            RoadBand::Off
+        }
+    };
+
+    // Last, and only for candidates: the road has to be ON land. A radial
+    // 40 m out of an inlet's far shore satisfies the window while the sample
+    // itself sits in the water — measured, not hypothetical (the ring dipped
+    // to 0.00 m before this guard). Costs one tap, and only on the ring.
+    if band != RoadBand::Off && height(seed, x, z) < LAND_MIN_H {
+        return RoadBand::Off;
+    }
+    band
 }
 
 /// What a scatter cell holds (TERRAIN.md §1 stage 9's occupant list).
@@ -270,27 +388,42 @@ pub fn scatter(seed: u64, table: &ScatterTable, cell_x: i32, cell_z: i32) -> Slo
     let z = cell_z as f32 * CELL_SIZE + 4.0 + jz;
 
     let hy = height(seed, x, z);
-    if hy < 0.6 || slope(seed, x, z) > CLIFF_SLOPE_RATIO {
+    if hy < LAND_MIN_H || slope(seed, x, z) > CLIFF_SLOPE_RATIO {
         return none;
     }
 
-    let row = &table.weights[biome(hy, moisture(seed, x, z)) as usize];
-    let roll = (h % 1000) as u16;
-    let mut acc = 0u16;
+    // The coast road (TERRAIN.md §1 stage 7) vetoes ahead of the table: the
+    // carriageway stays clear so the loop is walkable, and the shoulder
+    // draws barrels off its own bits so the route is worth walking.
     let mut occupant = Occupant::None;
-    for (i, w) in row.iter().enumerate() {
-        acc += w;
-        if roll < acc {
-            occupant = match i {
-                0 => Occupant::Tree,
-                1 => Occupant::StoneNode,
-                2 => Occupant::MetalNode,
-                3 => Occupant::SulfurNode,
-                4 => Occupant::Bush,
-                5 => Occupant::Rock,
-                _ => Occupant::BarrelSlot,
-            };
-            break;
+    match road_band(seed, x, z) {
+        RoadBand::Carriageway => return none,
+        RoadBand::Shoulder => {
+            if (((h >> 44) % 1000) as u16) < ROAD_BARREL_PERMILLE {
+                occupant = Occupant::BarrelSlot;
+            }
+        }
+        RoadBand::Off => {}
+    }
+
+    if occupant == Occupant::None {
+        let row = &table.weights[biome(hy, moisture(seed, x, z)) as usize];
+        let roll = (h % 1000) as u16;
+        let mut acc = 0u16;
+        for (i, w) in row.iter().enumerate() {
+            acc += w;
+            if roll < acc {
+                occupant = match i {
+                    0 => Occupant::Tree,
+                    1 => Occupant::StoneNode,
+                    2 => Occupant::MetalNode,
+                    3 => Occupant::SulfurNode,
+                    4 => Occupant::Bush,
+                    5 => Occupant::Rock,
+                    _ => Occupant::BarrelSlot,
+                };
+                break;
+            }
         }
     }
     if occupant == Occupant::None {
