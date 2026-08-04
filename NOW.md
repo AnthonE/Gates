@@ -4,6 +4,32 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+1. **`main` is RED: the pine's prop contrast sits exactly on its floor.**
+   *(Operator, 2026-08-04: land the wind + felling lane anyway and record it.
+   `DECISIONS.md` §Spoken. This is the one item that outranks everything below
+   it, because every pass after it inherits a red `ci/gates.sh`.)*
+
+   **Measured, two independent runs, same value.** `browser_smoke`'s prop
+   probe: pine `contrast x1.15` against `PROP_MIN_CONTRAST_RATIO = 1.15`,
+   asserted with `>=` on a value that rounds onto the floor. Before the wind +
+   felling merge the same probe read **x1.22 at mask 15.22%**; after it,
+   **x1.15 at mask 11.53%**.
+
+   **The cause is the denominator, not the field.** This ratio is
+   `(baseline + added) / baseline`, and the baseline is the flat state's own
+   detail — facet edges, the vertex ramp, the shadow map. Pine geometry v1's
+   five whorls put more structure into that flat state, so the same field
+   divides by more. The floor's own comment predicted exactly this ("a prop
+   with structure of its own can never score what a smooth heightfield does")
+   and was calibrated at x1.26 on the four-primitive canopy that no longer
+   exists. `gmHash4` is NOT the cause: reverting it leaves the value at x1.15.
+
+   **The fix is the pine's field against its new silhouette, single owner** —
+   not the floor. Lowering `PROP_MIN_CONTRAST_RATIO` is inventing a knob to
+   pass a gate, which is the one move the merge rubric exists to catch. If the
+   floor is genuinely wrong for a whorled canopy, that is a measurement and a
+   spoken number, not an edit.
+
 1. **Tab B should be a bot, not a second browser.** *(Operator, 2026-08-04:
    "i think we need the tab stuff every few hours at this rate". The tiering
    half landed; this is the half that removes the flakes. `DECISIONS.md`
