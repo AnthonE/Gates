@@ -87,8 +87,8 @@ use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFU
 use sim_core::terrain;
 use sim_core::world::{
     Command, SimEvent, World, EV_BAG_DROPPED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH,
-    EV_DEPLOY_PLACED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_PIECE_PLACED, EV_STOCK,
-    EV_VITALS,
+    EV_DEPLOY_PLACED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_MAX,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -149,19 +149,46 @@ const FOOD_ITEM: u16 = 5;
 const FOOD_SLOT: u8 = 3;
 
 /// The build/deploy fixture's rows, by name rather than by digit.
-/// `BuildContent::probe_fixture`: row 0 is the foundation, row 3 the
-/// doorway. `DeployContent::probe_fixture`: row 0 is the hearth, row 2 the
-/// door.
+/// `BuildContent::probe_fixture`: row 0 is the foundation, row 1 a wood
+/// wall, row 2 a stone floor, row 3 the doorway.
+/// `DeployContent::probe_fixture`: row 0 is the hearth, row 2 the door.
 const PIECE_FOUNDATION: u16 = 0;
+const PIECE_WALL: u16 = 1;
+const PIECE_FLOOR: u16 = 2;
 const PIECE_DOORWAY: u16 = 3;
 const DEPLOY_HEARTH: u16 = 0;
 const DEPLOY_DOOR: u16 = 2;
 
-/// The single build level everything here sits on. A hearth is
-/// `PLACE_FOUNDATION` and a foundation is level 0, so the whole
-/// arrangement is pinned there and `EV_STOCK.c` can only ever read 0 —
-/// stated at that check rather than papered over.
-const LEVEL: u8 = 0;
+/// The fixture's hp, and what the fixture spear takes off in one swing.
+/// `CombatContent::probe_fixture` item 0 deals 34 to a structure;
+/// `BuildContent::probe_fixture`'s wood wall has 100 hp and
+/// `DeployContent::probe_fixture`'s door has 60. Both first swings
+/// therefore leave a `damage << 16 | hp left` whose halves differ, which is
+/// what `EV_STRUCT_HIT.c` has to be read against.
+const STRUCT_DAMAGE: u32 = 34;
+const WALL_HP: u32 = 100;
+const DOOR_HP: u32 = 60;
+
+/// The two build levels this file uses, and why there are two.
+///
+/// Everything used to sit on level 0, so the `level` field of all four
+/// addressed payloads — `EV_PIECE_PLACED.b`, `EV_DEPLOY_PLACED.b`,
+/// `EV_DOOR.b` and `EV_STOCK.c` — was checked against a value that never
+/// varied. A field pinned at its own zero is `distinct3`'s blindness in one
+/// dimension: a `level` seat that some future edit stopped writing reads
+/// identically. So the arrangement stands a storey. `GROUND` carries the
+/// foundation that supports it (and the raid checks, which have to be
+/// reachable from the ground); `UPPER` carries the doorways, the door, and
+/// the hearth, and is the level every addressed check now asserts.
+const GROUND: u8 = 0;
+const UPPER: u8 = 1;
+
+/// The builder's own id, distinct from `BODY`/`ATTACKER` for one payload's
+/// sake: `EV_STOCK` is `a = feeder, b = cell key, c = level`, and with the
+/// hearth on `UPPER` a builder numbered 1 would put 1 in both `a` and `c`
+/// and `distinct3` would (correctly) refuse the check. Moving the id is the
+/// smaller move than flattening the storey back down.
+const BUILDER: u32 = 4;
 
 /// Which edges carry which check, and why they differ.
 ///
@@ -173,8 +200,21 @@ const LEVEL: u8 = 0;
 /// (`LOC_EDGE_N` = 3) to read 0/3/2. Same discipline as `distinct_halves`,
 /// one field wider — and it is why there are two doorways here rather
 /// than one.
+///
+/// With the arrangement standing a storey (`UPPER`) the two triples read
+/// 1/2/3 and 1/3/2: three different numbers each, and no longer a level
+/// that is only ever its own zero.
 const PIECE_EDGE: u8 = LOC_EDGE_W;
 const DOOR_EDGE: u8 = LOC_EDGE_N;
+
+/// Where a raider stands to swing at the arrangement, and which way it
+/// faces. One build cell west of the target column, looking back east —
+/// `combat.rs`'s own raid rig in the same posture, because the target scan
+/// picks the nearest anchor it is aimed at, and the west edge of the cell
+/// is what that resolves to from here. Yaw 64/256 of a turn is +x over the
+/// 256-entry LUT.
+const RAID_YAW: u16 = 64 << 8;
+const RAID_OFFSET_CELLS: f32 = 1.0;
 
 /// How many events of `code` are in the tick just run.
 fn count(w: &World, code: u8) -> u32 {
@@ -745,64 +785,120 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
 /// One builder, standing on a buildable cell with the fixture's build and
 /// deploy tables installed and enough of every input item to pay for the
 /// whole arrangement. Returns the cell it is standing on.
-fn builder_world() -> (World, u16, u16) {
-    let mut w = World::new(SEED);
+///
+/// Takes the `World` by `&mut` and never returns one. It used to return
+/// `(World, u16, u16)`, and a `World` inside a returned tuple is a second
+/// one in the frame: an unoptimized build cannot elide the move out of the
+/// tuple, so every test here overflowed its thread stack under a plain
+/// `cargo test` while `--release` — what `ci/gates.sh` runs — quietly
+/// elided the copy and stayed green on an unmeasured margin. `duel_world`
+/// returns a bare `World`, which is constructible in place; a tuple is not.
+/// Same discipline `combat.rs` states, and this file has now learned it
+/// twice.
+fn builder_world(w: &mut World) -> (u16, u16) {
     w.gather = GatherContent::probe_fixture();
     w.combat = CombatContent::probe_fixture();
     w.build = BuildContent::probe_fixture();
     w.deploy = DeployContent::probe_fixture();
-    w.tick(&[Command::Join { id: BODY }]);
+    w.tick(&[Command::Join { id: BUILDER }]);
     let (cx, cz) = buildable_cell(SEED);
     let (x, z) = (
         (cx as f32 + 0.5) * BUILD_CELL_M,
         (cz as f32 + 0.5) * BUILD_CELL_M,
     );
     w.players[0].body = Body::at(SEED, x, z);
-    // The fixture's costs: pieces are paid in item 0, the hearth in item
-    // 2, the door in item 4. Generous on purpose — a refusal for want of
-    // wood would be this fixture's bug, not the sim's.
-    for (slot, item) in [(0usize, 0u16), (1, 2), (2, 4)] {
+    // The fixture's costs: the wood pieces are paid in item 0, the stone
+    // ones (the floor this arrangement's second storey stands on) in item
+    // 1, the hearth in item 2, the door in item 4. Generous on purpose — a
+    // refusal for want of wood would be this fixture's bug, not the sim's.
+    for (slot, item) in [(0usize, 0u16), (1, 1), (2, 2), (3, 4)] {
         w.players[0].inv[slot] = ItemStack { item, count: 200 };
     }
-    (w, cx, cz)
+    (cx, cz)
+}
+
+/// The storey the addressed checks read: a foundation on the ground, a wall
+/// on its west edge, and a floor on top of the wall — so `UPPER` is a real,
+/// supported level rather than a number the test asserts about an empty
+/// column. The wall is not decoration: `build.rs`'s support rule v0 carries
+/// a floor on *an edge piece under one of the cell's four sides*, so a
+/// foundation alone refuses the storey with `REFUSE_B_SPOT`'s neighbour,
+/// `REFUSE_B_SUPPORT`. Leaves the world standing on the tick the floor
+/// landed.
+fn stand_a_storey(w: &mut World, cx: u16, cz: u16) {
+    place_piece(w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    place_piece(w, PIECE_WALL, cx, cz, GROUND, LOC_EDGE_W);
+    place_piece(w, PIECE_FLOOR, cx, cz, UPPER, LOC_PLANE);
 }
 
 /// Place a piece and leave the world standing on the tick it landed.
-fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, loc: u8) {
+fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
     let before = w.pieces.len();
     w.tick(&[Command::Place {
-        id: BODY,
+        id: BUILDER,
         row,
         cx,
         cz,
-        level: LEVEL,
+        level,
         loc,
     }]);
     assert_eq!(
         w.pieces.len(),
         before + 1,
-        "piece row {row} did not place at ({cx}, {cz}) loc {loc} — the \
-         fixture, not the mechanic"
+        "piece row {row} did not place at ({cx}, {cz}) level {level} loc \
+         {loc} — the fixture, not the mechanic"
     );
 }
 
 /// Place a deployable and leave the world standing on the tick it landed.
-fn place_deploy(w: &mut World, row: u16, cx: u16, cz: u16, loc: u8) {
+fn place_deploy(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
-        id: BODY,
+        id: BUILDER,
         row,
         cx,
         cz,
-        level: LEVEL,
+        level,
         loc,
     }]);
     assert_eq!(
         w.deploys.len(),
         before + 1,
-        "deploy row {row} did not place at ({cx}, {cz}) loc {loc} — the \
-         fixture, not the mechanic"
+        "deploy row {row} did not place at ({cx}, {cz}) level {level} loc \
+         {loc} — the fixture, not the mechanic"
     );
+}
+
+/// Move the builder one cell west of the target column and face it, then
+/// swing until `code` lands. The raid posture: the target scan wants an
+/// anchor it is aimed at, and a body standing *inside* its own cell is not
+/// aiming at that cell's edges.
+fn raid_until(w: &mut World, cx: u16, cz: u16, code: u8) {
+    let (x, z) = (
+        (cx as f32 + 0.5 - RAID_OFFSET_CELLS) * BUILD_CELL_M,
+        (cz as f32 + 0.5) * BUILD_CELL_M,
+    );
+    w.players[0].body = Body::at(SEED, x, z);
+    let mut seq = 0u16;
+    for _ in 0..MAX_STEPS {
+        w.tick(&[Command::Input {
+            id: BUILDER,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_PRIMARY,
+                yaw: RAID_YAW,
+                pitch: 128,
+                move_x: 0,
+                move_z: 0,
+                sel: 0,
+            },
+        }]);
+        seq = seq.wrapping_add(1);
+        if count(w, code) > 0 {
+            return;
+        }
+    }
+    panic!("event code {code} never landed in {MAX_STEPS} sim ticks of raiding");
 }
 
 /// The three sub-fields of an addressed event's packed `b`.
@@ -817,9 +913,10 @@ fn unpack(b: u32) -> (u32, u32, u32) {
 /// lane keeps except `EV_STOCK`.
 #[test]
 fn piece_placed_names_the_cell_then_level_over_loc_over_row() {
-    let (mut w, cx, cz) = builder_world();
-    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, LOC_PLANE);
-    place_piece(&mut w, PIECE_DOORWAY, cx, cz, PIECE_EDGE);
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, PIECE_EDGE);
 
     let p = only(&w, EV_PIECE_PLACED);
     let (level, loc, row) = unpack(p.b);
@@ -833,8 +930,10 @@ fn piece_placed_names_the_cell_then_level_over_loc_over_row() {
     assert_eq!(p.a >> 16, cx as u32, "the cell key's HIGH half is cx");
     assert_eq!(p.a & 0xffff, cz as u32, "the cell key's LOW half is cz");
     assert_eq!(
-        level, LEVEL as u32,
-        "EV_PIECE_PLACED.b's high field is LEVEL"
+        level, UPPER as u32,
+        "EV_PIECE_PLACED.b's high field is LEVEL, and this doorway is on \
+         the second storey — a check that reads 0 here is reading a field \
+         nobody wrote"
     );
     assert_eq!(
         loc, PIECE_EDGE as u32,
@@ -855,10 +954,11 @@ fn piece_placed_names_the_cell_then_level_over_loc_over_row() {
 /// belongs.
 #[test]
 fn deploy_placed_names_the_cell_then_the_address_then_the_owner() {
-    let (mut w, cx, cz) = builder_world();
-    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, LOC_PLANE);
-    place_piece(&mut w, PIECE_DOORWAY, cx, cz, DOOR_EDGE);
-    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, DOOR_EDGE);
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
 
     let d = only(&w, EV_DEPLOY_PLACED);
     distinct3(d, "EV_DEPLOY_PLACED");
@@ -870,8 +970,9 @@ fn deploy_placed_names_the_cell_then_the_address_then_the_owner() {
         "EV_DEPLOY_PLACED.a is the CELL KEY, not the owner"
     );
     assert_eq!(
-        level, LEVEL as u32,
-        "EV_DEPLOY_PLACED.b's high field is LEVEL"
+        level, UPPER as u32,
+        "EV_DEPLOY_PLACED.b's high field is LEVEL, and this door hangs on \
+         the second storey"
     );
     assert_eq!(
         loc, DOOR_EDGE as u32,
@@ -882,7 +983,7 @@ fn deploy_placed_names_the_cell_then_the_address_then_the_owner() {
         "EV_DEPLOY_PLACED.b's low field is the deploy ROW"
     );
     assert_eq!(
-        d.c, BODY,
+        d.c, BUILDER,
         "EV_DEPLOY_PLACED.c is the OWNER player id, not part of the address"
     );
 }
@@ -896,10 +997,11 @@ fn deploy_placed_names_the_cell_then_the_address_then_the_owner() {
 /// the one-bit form of `distinct_halves`.
 #[test]
 fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
-    let (mut w, cx, cz) = builder_world();
-    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, LOC_PLANE);
-    place_piece(&mut w, PIECE_DOORWAY, cx, cz, DOOR_EDGE);
-    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, DOOR_EDGE);
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
 
     // A door places locked *and* closed, and placement announces nothing —
     // only the verbs do. Both bits therefore read 1 and 0 together on an
@@ -907,10 +1009,10 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
     // a check taken there could not tell the two bits apart. So drive them
     // one at a time and read both ticks: the unlock, then the open.
     w.tick(&[Command::Lock {
-        id: BODY,
+        id: BUILDER,
         cx,
         cz,
-        level: LEVEL,
+        level: UPPER,
         loc: DOOR_EDGE,
         locked: false,
     }]);
@@ -918,10 +1020,10 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
     let (_, _, unlocked_state) = unpack(unlocked.b);
 
     w.tick(&[Command::Use {
-        id: BODY,
+        id: BUILDER,
         cx,
         cz,
-        level: LEVEL,
+        level: UPPER,
         loc: DOOR_EDGE,
     }]);
     let d = only(&w, EV_DOOR);
@@ -938,7 +1040,7 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
         cell_key(cx, cz),
         "EV_DOOR.a is the CELL KEY, not the player who moved it"
     );
-    assert_eq!(level, LEVEL as u32, "EV_DOOR.b's high field is LEVEL");
+    assert_eq!(level, UPPER as u32, "EV_DOOR.b's high field is LEVEL");
     assert_eq!(loc, DOOR_EDGE as u32, "EV_DOOR.b's middle field is LOC");
     assert_eq!(open, 1, "EV_DOOR.b bit 0 is OPEN, and the toggle opened it");
     assert_eq!(
@@ -946,7 +1048,7 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
         "EV_DOOR.b bit 1 is LOCKED, and the unlock before this cleared it"
     );
     assert_eq!(
-        d.c, BODY,
+        d.c, BUILDER,
         "EV_DOOR.c is the player whose action changed it, not the cell"
     );
 
@@ -974,27 +1076,30 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
 /// block, which is precisely how the reference ecosystem shipped ~27 of
 /// these.
 ///
-/// `c` is the level, and a hearth is `PLACE_FOUNDATION`, so it can only
-/// read 0 here. That is checked by value and stated rather than dressed
-/// up: this check sees `a`/`b` crossed, and does not see a level that was
-/// never anything but zero.
+/// `c` is the level, and it used to be unfalsifiable: a hearth is
+/// `PLACE_FOUNDATION`, the whole arrangement sat on level 0, so this seat
+/// could only ever read its own zero and a `c` nobody wrote would have
+/// passed. `PLACE_FOUNDATION` wants *a plane piece at that level*, and a
+/// floor is one — so the hearth now stands on `UPPER` and `c` has a value
+/// to be wrong about.
 #[test]
 fn stock_names_the_feeder_first_and_the_cell_second() {
-    let (mut w, cx, cz) = builder_world();
-    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, LOC_PLANE);
-    place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, LOC_PLANE);
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, UPPER, LOC_PLANE);
     w.tick(&[Command::Feed {
-        id: BODY,
+        id: BUILDER,
         cx,
         cz,
-        level: LEVEL,
+        level: UPPER,
     }]);
 
     let s = only(&w, EV_STOCK);
     distinct3(s, "EV_STOCK");
     distinct_halves(s.b, "EV_STOCK.b (the cell key)");
     assert_eq!(
-        s.a, BODY,
+        s.a, BUILDER,
         "EV_STOCK.a is the FEEDER — this event is the lane's one inversion, \
          and a cell key here means someone made it match its neighbours"
     );
@@ -1003,7 +1108,10 @@ fn stock_names_the_feeder_first_and_the_cell_second() {
         cell_key(cx, cz),
         "EV_STOCK.b is the hearth's CELL KEY, not the feeder"
     );
-    assert_eq!(s.c, LEVEL as u32, "EV_STOCK.c is the level fed");
+    assert_eq!(
+        s.c, UPPER as u32,
+        "EV_STOCK.c is the LEVEL fed, and this hearth is upstairs"
+    );
 }
 
 /// The inversion, asserted as a relationship rather than left implicit in
@@ -1017,15 +1125,16 @@ fn stock_names_the_feeder_first_and_the_cell_second() {
 /// `the_hit_and_the_health_name_opposite_players` applied one lane over.
 #[test]
 fn the_placement_and_the_feed_disagree_about_field_a_on_purpose() {
-    let (mut w, cx, cz) = builder_world();
-    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, LOC_PLANE);
-    place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, LOC_PLANE);
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, UPPER, LOC_PLANE);
     let placed = only(&w, EV_DEPLOY_PLACED);
     w.tick(&[Command::Feed {
-        id: BODY,
+        id: BUILDER,
         cx,
         cz,
-        level: LEVEL,
+        level: UPPER,
     }]);
     let stocked = only(&w, EV_STOCK);
 
@@ -1034,7 +1143,7 @@ fn the_placement_and_the_feed_disagree_about_field_a_on_purpose() {
         cell_key(cx, cz),
         "the placement leads with the cell"
     );
-    assert_eq!(stocked.a, BODY, "the feed leads with the player");
+    assert_eq!(stocked.a, BUILDER, "the feed leads with the player");
     assert_ne!(
         placed.a, stocked.a,
         "EV_DEPLOY_PLACED.a and EV_STOCK.a now hold the same kind of thing \
@@ -1050,6 +1159,252 @@ fn the_placement_and_the_feed_disagree_about_field_a_on_purpose() {
     assert_eq!(placed.a, stocked.b, "and both name one cell");
 }
 
+/// `EV_STRUCT_HIT: a = build cell key, b = STRUCT_DEPLOY_BIT | level << 16
+/// | loc << 8 | row, c = damage dealt << 16 | hp left`.
+///
+/// The raid's progress bar, and the widest payload in the lane: four
+/// distinct meanings over three fields, two of them packed. `c` is the pair
+/// a swap would hide most expensively — `damage << 16 | left` reversed
+/// draws a wall gaining health as it is beaten, and the fixture keeps the
+/// halves apart (34 dealt, 66 left) so this check can see it.
+///
+/// The target is a wood wall on the *west edge* of the ground storey, which
+/// is what makes `b` readable: a foundation would address 0/0/0 and a check
+/// against three zeroes is blind to every permutation of them.
+#[test]
+fn struct_hit_names_the_cell_then_the_address_then_damage_over_hp_left() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    place_piece(&mut w, PIECE_WALL, cx, cz, GROUND, PIECE_EDGE);
+    raid_until(&mut w, cx, cz, EV_STRUCT_HIT);
+
+    let h = only(&w, EV_STRUCT_HIT);
+    distinct3(h, "EV_STRUCT_HIT");
+    let (level, loc, row) = unpack(h.b & !STRUCT_DEPLOY_BIT);
+    distinct_triple(level, loc, row, "EV_STRUCT_HIT.b");
+    distinct_halves(h.c, "EV_STRUCT_HIT.c (damage over hp left)");
+    distinct_halves(h.a, "EV_STRUCT_HIT.a (the cell key)");
+
+    assert_eq!(
+        h.a,
+        cell_key(cx, cz),
+        "EV_STRUCT_HIT.a is the CELL KEY, not the raider"
+    );
+    assert_eq!(
+        h.b & STRUCT_DEPLOY_BIT,
+        0,
+        "a PIECE was hit, so STRUCT_DEPLOY_BIT is clear — set it here and \
+         the client looks the address up in the wrong store"
+    );
+    assert_eq!(
+        level, GROUND as u32,
+        "EV_STRUCT_HIT.b's high field is LEVEL"
+    );
+    assert_eq!(
+        loc, PIECE_EDGE as u32,
+        "EV_STRUCT_HIT.b's middle field is LOC"
+    );
+    assert_eq!(
+        row, PIECE_WALL as u32,
+        "EV_STRUCT_HIT.b's low field is the piece ROW"
+    );
+    assert_eq!(
+        h.c >> 16,
+        STRUCT_DAMAGE,
+        "EV_STRUCT_HIT.c's HIGH half is the damage DEALT, not the hp left"
+    );
+    assert_eq!(
+        h.c & 0xffff,
+        WALL_HP - STRUCT_DAMAGE,
+        "EV_STRUCT_HIT.c's LOW half is the hp LEFT, not the damage dealt — \
+         reversed, a raided wall appears to heal under the swing"
+    );
+}
+
+/// The deployable half of the same code, and the bit that tells the two
+/// apart.
+///
+/// `damage_deploy` sets `STRUCT_DEPLOY_BIT` and `damage_piece` does not,
+/// and that single bit is the whole of how a client knows which store the
+/// address names. A door and a doorway sit at the *same* address, so
+/// dropping the bit does not merely mislabel the hit — it points the client
+/// at the piece the door hangs in. Nothing else in the payload could
+/// disambiguate them.
+#[test]
+fn struct_hit_on_a_deployable_sets_the_deploy_bit() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, GROUND, PIECE_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, GROUND, PIECE_EDGE);
+    raid_until(&mut w, cx, cz, EV_STRUCT_HIT);
+
+    let h = only(&w, EV_STRUCT_HIT);
+    distinct3(h, "EV_STRUCT_HIT (deployable)");
+    distinct_halves(h.c, "EV_STRUCT_HIT.c (damage over hp left)");
+    let (level, loc, row) = unpack(h.b & !STRUCT_DEPLOY_BIT);
+
+    assert_eq!(
+        h.b & STRUCT_DEPLOY_BIT,
+        STRUCT_DEPLOY_BIT,
+        "the DOOR takes the swing, not the doorway it hangs in, so \
+         STRUCT_DEPLOY_BIT is set — clear it and the client charges the \
+         damage to the piece at the same address"
+    );
+    assert_eq!(h.a, cell_key(cx, cz), "EV_STRUCT_HIT.a is the CELL KEY");
+    assert_eq!(level, GROUND as u32, "the level, under the bit");
+    assert_eq!(loc, PIECE_EDGE as u32, "the loc, under the bit");
+    assert_eq!(
+        row, DEPLOY_DOOR as u32,
+        "the low field is the DEPLOY row, read against the deploy table"
+    );
+    assert_eq!(
+        h.c >> 16,
+        STRUCT_DAMAGE,
+        "the damage DEALT is the high half here too"
+    );
+    assert_eq!(
+        h.c & 0xffff,
+        DOOR_HP - STRUCT_DAMAGE,
+        "and the hp LEFT the low half — the door's 60, not the wall's 100"
+    );
+}
+
+/// `EV_PIECE_REMOVED: a = build cell key, b = level << 16 | loc << 8 | row`.
+///
+/// The same address the hit carried, one swing later. Worth checking as its
+/// own event rather than trusting the hit: this is a *different* emit site
+/// (`drop_piece`, which decay also reaches), and the pair is where the two
+/// could drift apart — a removal that named a different cell than the hits
+/// that caused it would leave the piece drawn forever on every client that
+/// saw the raid.
+#[test]
+fn piece_removed_names_the_cell_then_the_address_it_was_hit_at() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    place_piece(&mut w, PIECE_WALL, cx, cz, GROUND, PIECE_EDGE);
+    raid_until(&mut w, cx, cz, EV_STRUCT_HIT);
+    let hit = only(&w, EV_STRUCT_HIT);
+    raid_until(&mut w, cx, cz, EV_PIECE_REMOVED);
+
+    let r = only(&w, EV_PIECE_REMOVED);
+    let (level, loc, row) = unpack(r.b);
+    distinct_triple(level, loc, row, "EV_PIECE_REMOVED.b");
+    distinct_halves(r.a, "EV_PIECE_REMOVED.a (the cell key)");
+
+    assert_eq!(
+        r.a,
+        cell_key(cx, cz),
+        "EV_PIECE_REMOVED.a is the CELL KEY, not the raider who felled it"
+    );
+    assert_eq!(
+        level, GROUND as u32,
+        "EV_PIECE_REMOVED.b's high field is LEVEL"
+    );
+    assert_eq!(
+        loc, PIECE_EDGE as u32,
+        "EV_PIECE_REMOVED.b's middle field is LOC"
+    );
+    assert_eq!(
+        row, PIECE_WALL as u32,
+        "EV_PIECE_REMOVED.b's low field is the piece ROW"
+    );
+    assert_eq!(
+        r.c, 0,
+        "EV_PIECE_REMOVED states no role for c, and the emit site passes 0"
+    );
+
+    // The address the removal names is the address the hits named. Checked
+    // as a relationship, because each test above passes on its own while
+    // the two sites disagree.
+    assert_eq!(r.a, hit.a, "the removal and the hits name one cell");
+    assert_eq!(
+        r.b,
+        hit.b & !STRUCT_DEPLOY_BIT,
+        "and one address — the removal carries no store bit, the hit does"
+    );
+    assert!(
+        w.pieces
+            .entries()
+            .iter()
+            .take(w.pieces.len())
+            .all(|p| !(p.cx == cx && p.cz == cz && p.level == GROUND && p.loc == PIECE_EDGE)),
+        "the wall is announced gone but still in the store"
+    );
+}
+
+/// `EV_DEPLOY_REMOVED: a = build cell key, b = level << 16 | loc << 8 |
+/// row`.
+///
+/// Byte-for-byte the same shape as `EV_PIECE_REMOVED` and a different code,
+/// which is exactly the pair most worth checking together: the two removals
+/// address two different stores, they are one line apart in `world.rs`, and
+/// nothing in a payload distinguishes them but the code itself. A door
+/// removed under its own doorway's code deletes the doorway on every client
+/// that hears it.
+#[test]
+fn deploy_removed_names_the_cell_and_the_deploy_row_not_the_piece_under_it() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, GROUND, PIECE_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, GROUND, PIECE_EDGE);
+    raid_until(&mut w, cx, cz, EV_DEPLOY_REMOVED);
+
+    let r = only(&w, EV_DEPLOY_REMOVED);
+    let (level, loc, row) = unpack(r.b);
+    distinct_halves(r.a, "EV_DEPLOY_REMOVED.a (the cell key)");
+
+    assert_eq!(
+        r.a,
+        cell_key(cx, cz),
+        "EV_DEPLOY_REMOVED.a is the CELL KEY, not the raider"
+    );
+    assert_eq!(
+        level, GROUND as u32,
+        "EV_DEPLOY_REMOVED.b's high field is LEVEL"
+    );
+    assert_eq!(
+        loc, PIECE_EDGE as u32,
+        "EV_DEPLOY_REMOVED.b's middle field is LOC"
+    );
+    assert_eq!(
+        row, DEPLOY_DOOR as u32,
+        "EV_DEPLOY_REMOVED.b's low field is the DEPLOY row — read against \
+         the piece table it would name the doorway"
+    );
+    assert_eq!(
+        r.b & STRUCT_DEPLOY_BIT,
+        0,
+        "the removal carries no store bit: its own code already says which \
+         store this is, and setting it here would corrupt the level field"
+    );
+    assert_eq!(
+        r.c, 0,
+        "EV_DEPLOY_REMOVED states no role for c, and the emit site passes 0"
+    );
+
+    // The doorway is still standing. The two removals are separate codes
+    // over separate stores, and the door falling must not take its frame.
+    assert_eq!(w.deploys.len(), 0, "the door fell");
+    assert!(
+        w.pieces
+            .entries()
+            .iter()
+            .take(w.pieces.len())
+            .any(|p| p.cx == cx && p.cz == cz && p.level == GROUND && p.loc == PIECE_EDGE),
+        "the doorway the door hung in went with it — that is the two \
+         removals crossed, and the piece store is the one that lost"
+    );
+    assert_eq!(
+        count(&w, EV_PIECE_REMOVED),
+        0,
+        "a deployable fell and the PIECE removal code was emitted for it"
+    );
+}
+
 /// Coverage, stated rather than implied.
 ///
 /// A gate that checks five of twenty-five codes and says nothing about the
@@ -1060,10 +1415,8 @@ fn the_placement_and_the_feed_disagree_about_field_a_on_purpose() {
 /// (`reference/FINDINGS.md` §1), not a reason to leave the five unchecked.
 #[test]
 fn coverage_is_stated_not_implied() {
-    /// Every code `world.rs` can emit is 1..=EV_MAX.
-    const EV_MAX: u8 = 25;
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [u8; 13] = [
+    const COVERED: [u8; 16] = [
         EV_GATHER,
         EV_HIT,
         EV_HEALTH,
@@ -1077,10 +1430,13 @@ fn coverage_is_stated_not_implied() {
         EV_DEPLOY_PLACED,
         EV_DOOR,
         EV_STOCK,
+        EV_STRUCT_HIT,
+        EV_PIECE_REMOVED,
+        EV_DEPLOY_REMOVED,
     ];
     /// What is knowingly still byte-golden only. Change this number in the
     /// same commit that changes `COVERED`, never on its own.
-    const UNCOVERED: usize = 12;
+    const UNCOVERED: usize = 9;
 
     let mut counted = 0usize;
     for code in 1..=EV_MAX {
@@ -1099,4 +1455,89 @@ fn coverage_is_stated_not_implied() {
         EV_MAX as usize,
         "the ledger does not add up to the code range"
     );
+}
+
+/// The ledger's own range is derived, not asserted.
+///
+/// `coverage_is_stated_not_implied` scans `1..=EV_MAX` and claims that a new
+/// `EV_*` cannot land without someone classifying it. That claim was false
+/// while `EV_MAX` was a literal `25` in this file: `EV_FOO: u8 = 26` landed
+/// with the ledger green and the new code outside the range it scanned, so
+/// the gate would have reported full knowledge of a lane it had not looked
+/// at. `EV_MAX` now lives in `world.rs` next to the codes — which halves the
+/// problem, because it is at least in the file being edited — and this
+/// closes the other half by reading the declarations themselves.
+///
+/// Parsing a source file in a test is not a habit worth spreading, and it is
+/// right here: the fact under assertion is *what the constant block
+/// contains*, and no amount of importing can see a constant that the
+/// importer was never told about.
+#[test]
+fn every_event_code_is_in_range() {
+    const SRC: &str = include_str!("../src/world.rs");
+
+    // Borrowed out of `SRC`, never built: wall 3 disallows `String` and
+    // `format!` in this crate, and it is right to bind a test too — the
+    // names here are `'static` slices of the source and copying them would
+    // buy nothing but a wall violation.
+    let mut seen: Vec<(&str, u8)> = Vec::new();
+    for line in SRC.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("pub const EV_") else {
+            continue;
+        };
+        let Some((name, value)) = rest.split_once(": u8 = ") else {
+            continue;
+        };
+        // `EV_MAX` is the bound itself, and it is defined as `EV_RESPAWN`
+        // rather than a digit — it is not one of the codes being bounded.
+        if name == "MAX" {
+            continue;
+        }
+        let value = value.trim_end_matches(';');
+        let code: u8 = value.parse().unwrap_or_else(|_| {
+            panic!(
+                "EV_{name} is declared as `{value}`, which is not a literal \
+                 code — this parser reads the constant block in `world.rs` \
+                 and a non-literal there makes the ledger's range unknowable"
+            )
+        });
+        seen.push((name, code));
+    }
+
+    assert!(
+        seen.len() >= 25,
+        "only {} event codes parsed out of world.rs — the constant block's \
+         shape changed and this gate is now reading nothing, which is worse \
+         than failing",
+        seen.len()
+    );
+
+    let highest = seen.iter().map(|(_, c)| *c).max().unwrap();
+    assert_eq!(
+        highest, EV_MAX,
+        "world.rs declares an event code {highest} but EV_MAX is {EV_MAX}. \
+         The coverage ledger scans 1..=EV_MAX, so the codes past it are \
+         unclassified while the gate reads green. Move EV_MAX in the same \
+         commit as the new code."
+    );
+    assert_eq!(
+        seen.len(),
+        EV_MAX as usize,
+        "world.rs declares {} event codes but EV_MAX is {EV_MAX} — the \
+         range 1..=EV_MAX has a gap or a duplicate in it, and the ledger's \
+         arithmetic assumes neither.",
+        seen.len()
+    );
+
+    let mut sorted: Vec<u8> = seen.iter().map(|(_, c)| *c).collect();
+    sorted.sort_unstable();
+    for (i, code) in sorted.iter().enumerate() {
+        assert_eq!(
+            *code,
+            i as u8 + 1,
+            "the event codes are not 1..=EV_MAX with no gaps: {:?}",
+            seen
+        );
+    }
 }
