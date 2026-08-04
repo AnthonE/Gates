@@ -1068,7 +1068,7 @@ Done items are deleted, not checked — history lives in git and
    `Mesh`es per tree, which at this forest's density is a draw call per trunk.
    Whatever LOD1 becomes, it sways: item 1's wind weight is a vertex attribute
    and a billboard has four vertices to put one on.
-12. **A capture the same twice is a gate; a capture that drifts is a vibe.**
+13. **A capture the same twice is a gate; a capture that drifts is a vibe.**
    Deterministic capture mode (operator, 2026-08-02, `DECISIONS.md` — the
    Claude-of-Duty adoption row): the client animates off the sim tick / an
    injected fixed-step clock in capture mode — today the RAF loop steps off
@@ -1087,7 +1087,7 @@ Done items are deleted, not checked — history lives in git and
    (must switch to the engine clock in capture mode), or UI-only (excluded
    from shots). Settle by tick count, never by time.
 
-13. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
+14. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
    Gather, craft, build, and deployables are sim'd, on the wire, and
    solid (slice 13: chat — two channels on the reliable lane, local at
    20 m and global, sanitized at both edges and rate-limited per
@@ -1103,16 +1103,16 @@ Done items are deleted, not checked — history lives in git and
    there) · piece damage (M2's raid lane: hp exists and decays, nothing
    attacks it yet) · nametags (chat names a speaker by id today, because
    nothing has a name yet).
-14. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
+15. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
    projectiles · satchel + damage-by-tier · day/night · netem feel bar.
-15. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
+16. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch ·
    admin lane · backups · status page · error capture · `bench_transport`.
-16. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
+17. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle —
    then tune content bands from what the anomaly log and the replays say.
-17. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
+18. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
-18. **Anti-ESP occlusion culling — the measure the genre proved, and the one
+19. **Anti-ESP occlusion culling — the measure the genre proved, and the one
    the seed makes cheap** (`DECISIONS.md` 2026-08-04). AOI at 176 m is the
    whole ESP defence today, and 176 m covers most engagements. Facepunch's
    answer, rolled out 2025 and defaulted network-wide, was to stop
@@ -1124,7 +1124,7 @@ Done items are deleted, not checked — history lives in git and
    with a golden beside `test_terrain_golden` and a bot-measured tick cost.
    Sequence after M2 — it wants real sightlines and real combat to tune
    against, and it buys nothing until a shard is armed.
-19. **The launcher, in Rust, with the wallet in it** (`DECISIONS.md`
+20. **The launcher, in Rust, with the wallet in it** (`DECISIONS.md`
    2026-08-04). One static binary, `egui`, no webview: patcher, shard list,
    balances, and a self-custody wallet on `alloy` (`alloy-signer-local`,
    `keystore` + `mnemonic`) signing the EIP-191 `gates join <shard> <nonce>`
@@ -1137,7 +1137,7 @@ Done items are deleted, not checked — history lives in git and
    accessory, and it is the only place an anti-cheat bootstrapper could ever
    live if one is spoken.
 
-20. **`cargo test --workspace` overflows a debug thread's stack; only
+21. **`cargo test --workspace` overflows a debug thread's stack; only
     `--release` (what CI runs) is green.** Pre-existing, not new: verified
     on `main` at `25f6ec8` before the backpack slice, where
     `snapshot_budget` aborts the same way. The cause is size, not logic —
