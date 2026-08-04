@@ -1,3 +1,9 @@
+# Gates · NOW.md — what next
+
+The only list that answers "what should the loop pick up." Top item first.
+Done items are deleted, not checked — history lives in git and
+`DECISIONS.md`. A loop iteration starts here, ends with gates green.
+
 1. **The sim can play a survival game; the player cannot reach it.**
    *(Operator, 2026-08-04. This outranks every gate-building item below it.)*
 
@@ -20,12 +26,6 @@
    - **ui:** the inventory grid, the loot/container panel, and drag-move against
      that refusal path. This is the single highest-leverage lane right now.
    - **looks:** unchanged — keep closing the visual gap to `Rust Images/`.
-
-# Gates · NOW.md — what next
-
-The only list that answers "what should the loop pick up." Top item first.
-Done items are deleted, not checked — history lives in git and
-`DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
 1. **The container verb has no UI and no gate — and the systems half is not
    ours.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.)*
