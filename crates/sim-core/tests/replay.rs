@@ -21,7 +21,16 @@ const TICKS: u64 = 900;
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
 ///
-/// Regenerated this commit, and **behaviourally: the barrel loop runs on
+/// Regenerated this commit, and **structurally rather than
+/// behaviourally**: the deployed box became a container, so the box
+/// store's length entered the digest. This script places no box, so the
+/// number below moved by exactly eight zero bytes — one `u64` count and
+/// not one record. That distinction is the whole value of the note: this
+/// regeneration is *not* evidence that a box move runs here, and
+/// `crates/sim-core/tests/box_container.rs` is what owns that behaviour.
+/// The move verb itself is unchanged on this surface — no bot sends one.
+///
+/// The regeneration before it was **behavioural: the barrel loop runs on
 /// this surface.** Bot 31 is held on four scanned barrel cells in turn and
 /// swings them apart, so the number below is a function of the weighted
 /// pick, the count draw, the stack rule that files the roll into a
@@ -76,7 +85,7 @@ const TICKS: u64 = 900;
 /// survival module's fields entering `state_hash` while the script left
 /// them all zero, and before that the death backpack's two zero-length
 /// store fields.
-const GOLDEN_FINAL_HASH: u64 = 0x533D_812B_6F76_BA08;
+const GOLDEN_FINAL_HASH: u64 = 0x66B6_0CC0_1555_D451;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

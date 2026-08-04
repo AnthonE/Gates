@@ -4,6 +4,29 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+1. **Container contents have never crossed the wire — for a bag either.**
+   *(Gap pass, iteration 3, systems lane. From ranked gap 2 of
+   `findings/pass-20260804-205133-02-judge.md` ("a raid takes nothing") and
+   gap 1 of `-01`; the storage-and-address half landed this pass at wire
+   v18, this is what it uncovered.)*
+
+   `WireBag` carries an id and three position quanta and says contents
+   "deliberately never cross". So the loot panel both judges rank first is
+   not blocked on boxes — **it has no bag contents to draw either**, and
+   `Command::Loot`'s take-all is the only container verb a client can
+   express. A box changes nothing about that; it just makes the hole
+   visible in a second place.
+
+   The shape, and it is one slice for both containers: an open/close
+   action subtype (12 of 16 used, three left), per-client "which container
+   is open" state, and a contents sync sent **only to the opener** — not
+   to everyone in AOI, which would be an ESP leak and a bandwidth bill for
+   a panel nobody has open. Then `EV_MOVED` already tells the opener what
+   changed. Wire bump + regenerated goldens, systems lane.
+
+   Until it lands the ui lane cannot draw a container panel, and that is
+   the honest blocker to quote rather than the box.
+
 > **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the
 > world lane's to make.** `ci/gates.sh` went RED then GREEN on an unchanged
 > tree on 2026-08-04. Both runs ran the same 289 tests with 0 failures and the
@@ -262,30 +285,6 @@ Done items are deleted, not checked — history lives in git and
 
 1. **The container verb has no UI and no gate — and the systems half is not
    ours.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.)*
-1. **A box holds nothing: `ARCH_BOX` still has no storage and no address.**
-   *(Gap pass, iteration 3. Ranked gap 1 in BOTH `findings/pass-20260804-173640-01-judge.md`
-   and `-02`; the move verb half of it landed this pass, this is the rest.)*
-
-   `Command::Move` now spans `CONT_SELF` and `CONT_BAG` (`inventory.rs`,
-   wire v17), so a player can arrange a hotbar, split a stack and take one
-   slot at a time from a bag. A **base** still holds nothing: `ARCH_BOX`
-   (`deploy.rs:80`) bakes, places, and has no contents array and no verb.
-   That is the judges' "a raid takes nothing" half, and it is now purely
-   additive — a third `CONT_*` kind, resolved against a new store, and not
-   one line of `plan_move` moves.
-
-   What it needs: a `BoxRec { cx, cz, level, owner, items }` parallel dense
-   list on `Deploys`, the way `HearthRec` already is; allocate on a
-   `PlaceDeploy` of an `ARCH_BOX` row and free on removal; address it by
-   cell key like a hearth feed, not by an index. **Watch the stack** — the
-   item below says `World` is ~416 kB against a 2 MB debug limit and
-   already overflows, so box the store at construction rather than
-   discovering it in a red `cargo test`.
-
-   Two open questions for `DECISIONS.md` §open when it is picked up: the
-   box's slot count (reusing `INV_SLOTS` costs 30 KB at `MAX_BOXES` 256),
-   and whether a box is owner-only or open to anyone standing in reach
-   (lock v0 is already §open and unanswered — the same question).
 
 1. **The container panel: the refusal path exists now, so the UI is
    startable.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.

@@ -62,11 +62,14 @@
 //! rolls back — DESIGN.md §5.6's own example), no lock item (the lock is a
 //! property of the door, not a deployable).
 
-use crate::build::{BuildContent, Pieces, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, SHAPE_DOORWAY};
+use crate::build::{
+    BuildContent, Pieces, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, SHAPE_DOORWAY,
+};
 use crate::craft::{inv_count, inv_take};
+use crate::gather::ItemStack;
 use crate::limits::{
-    HEARTH_STOCK_ROWS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_DEPLOY_DEFS,
-    MAX_HEARTHS, UPKEEP_SWEEP_PER_TICK,
+    BOX_SLOTS, HEARTH_STOCK_ROWS, MAX_BOXES, MAX_BOX_SPILL_PER_TICK, MAX_BUILD_COORD,
+    MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_DEPLOY_DEFS, MAX_HEARTHS, UPKEEP_SWEEP_PER_TICK,
 };
 use crate::terrain;
 use crate::world::{
@@ -264,10 +267,90 @@ pub struct HearthRec {
     pub stock: [u32; HEARTH_STOCK_ROWS],
 }
 
+/// One deployed box's contents, in the dense box list. Identity is the
+/// grid address of its deploy record — `(cx, cz, level)`, the same triple
+/// a hearth uses — because a box is furniture and has no id to hand out.
+/// `loc` is deliberately absent: two boxes never share a cell and a level
+/// (placement's occupancy check forbids it), so the triple is already
+/// unique, and leaving `loc` out is what lets the client name a box from
+/// the deploy record it already drew.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoxRec {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    /// Who placed it. Sim-side only, and — unlike a door — **not** an
+    /// access check: see `inventory::CONT_BOX`. Kept because the spill a
+    /// broken box leaves has to belong to someone, the way a corpse's bag
+    /// does.
+    pub owner: u32,
+    pub items: [ItemStack; BOX_SLOTS],
+}
+
+impl Default for BoxRec {
+    fn default() -> Self {
+        Self {
+            cx: 0,
+            cz: 0,
+            level: 0,
+            owner: 0,
+            items: [ItemStack::default(); BOX_SLOTS],
+        }
+    }
+}
+
+impl BoxRec {
+    pub fn is_empty(&self) -> bool {
+        self.items.iter().all(|s| s.count == 0)
+    }
+}
+
+/// Pack a box's grid address into the one container handle the move
+/// command carries. `cx`/`cz` are bounded by `MAX_BUILD_COORD` (1024, so
+/// ten bits each) and `level` by `MAX_BUILD_LEVELS` (8, three bits), which
+/// is 23 bits inside a `u32` with room to spare.
+///
+/// Deliberately **not** `gather::cell_key`: that one packs `cx << 16 | cz`
+/// and spends all 32 bits on the pair, leaving nowhere for the level. A
+/// box on a second storey is a box, so the level is part of the address.
+pub fn box_key(cx: u16, cz: u16, level: u8) -> u32 {
+    ((cx as u32) << 16) | ((cz as u32) << 4) | (level as u32 & 0xF)
+}
+
+/// The contents of every standing box, plus the spill buffer a removal
+/// hands to `world.rs`. Boxed inside `Deploys` — `MAX_BOXES * BOX_SLOTS`
+/// stacks is 12 kB of fixed capacity and `World` is built on the stack
+/// (`ShardCore::new`, every wire test) where it is already tight, so this
+/// takes the same one-allocation-at-construction posture `Backpacks`
+/// takes for exactly the same reason. Nothing here allocates in the tick
+/// (wall 2).
+pub struct BoxStore {
+    entries: [BoxRec; MAX_BOXES],
+    len: usize,
+    /// Contents of boxes removed this tick, awaiting a ground bag.
+    /// `drop_deploy` is reached from decay and from a raid and holds
+    /// neither the bag store nor the clock, so it parks the record here
+    /// and `World::step` stands the bag up before the tick ends.
+    spill: [BoxRec; MAX_BOX_SPILL_PER_TICK],
+    spill_len: usize,
+}
+
+impl BoxStore {
+    fn new() -> Self {
+        Self {
+            entries: [BoxRec::default(); MAX_BOXES],
+            len: 0,
+            spill: [BoxRec::default(); MAX_BOX_SPILL_PER_TICK],
+            spill_len: 0,
+        }
+    }
+}
+
 /// The placed-deployable store: dense, insertion-ordered, plus the dense
-/// hearth list the claim checks and the sweep scan. Removal swap-removes
-/// (decay order is the sweep cursor's, deterministic); the wire layer
-/// restarts in-progress sync walks on any removal.
+/// hearth list the claim checks and the sweep scan, and the dense box list
+/// the move verb resolves against. Removal swap-removes (decay order is
+/// the sweep cursor's, deterministic); the wire layer restarts in-progress
+/// sync walks on any removal.
 pub struct Deploys {
     entries: [DeployRec; MAX_DEPLOYS],
     len: usize,
@@ -286,6 +369,11 @@ pub struct Deploys {
     bag_ready: [u64; MAX_DEPLOYS],
     hearths: [HearthRec; MAX_HEARTHS],
     hearth_count: usize,
+    /// The box contents, on the heap. Same wire decision as `bag_ready`
+    /// above and the same one as the hearth list: `DeployRec` is what the
+    /// deploy-sync packet mirrors, so a box's twelve stacks may not ride
+    /// on it.
+    boxes: Box<BoxStore>,
 }
 
 impl Deploys {
@@ -296,6 +384,7 @@ impl Deploys {
             bag_ready: [0; MAX_DEPLOYS],
             hearths: [HearthRec::default(); MAX_HEARTHS],
             hearth_count: 0,
+            boxes: Box::new(BoxStore::new()),
         }
     }
 
@@ -320,6 +409,80 @@ impl Deploys {
 
     pub fn hearths(&self) -> &[HearthRec] {
         &self.hearths[..self.hearth_count]
+    }
+
+    /// The live box records. Read by `state_hash` (contents are sim
+    /// state) and by the gates.
+    pub fn boxes(&self) -> &[BoxRec] {
+        &self.boxes.entries[..self.boxes.len]
+    }
+
+    /// Resolve a packed box address to an index into `boxes()`, or `None`
+    /// when no box stands there. The index is transient — swap-remove
+    /// invalidates it — which is exactly why the handle on the wire is the
+    /// address and never this.
+    pub fn box_index(&self, key: u32) -> Option<usize> {
+        self.boxes.entries[..self.boxes.len]
+            .iter()
+            .position(|b| box_key(b.cx, b.cz, b.level) == key)
+    }
+
+    /// One slot of box `i`. Total: an index or slot out of range reads
+    /// empty, the same posture `Backpacks::slot` takes, so a stale address
+    /// can never panic the sim thread.
+    pub fn box_slot(&self, i: usize, s: usize) -> ItemStack {
+        if i >= self.boxes.len || s >= BOX_SLOTS {
+            return ItemStack::default();
+        }
+        self.boxes.entries[i].items[s]
+    }
+
+    /// Write one slot of box `i`. Total in the same way: out of range
+    /// writes nothing.
+    pub fn set_box_slot(&mut self, i: usize, s: usize, stack: ItemStack) {
+        if i >= self.boxes.len || s >= BOX_SLOTS {
+            return;
+        }
+        self.boxes.entries[i].items[s] = stack;
+    }
+
+    /// Planar distance from a box to a player, against the same
+    /// `BUILD_REACH_M` a door uses — and planar for the same reason: a
+    /// door on the storey above is reachable today too, and inventing a
+    /// vertical rule for boxes alone would make two verbs disagree about
+    /// what "in reach" means. Level is part of the *address*, not of the
+    /// reach test.
+    pub fn box_in_reach(&self, i: usize, p: &Player) -> bool {
+        if i >= self.boxes.len {
+            return false;
+        }
+        let b = self.boxes.entries[i];
+        let (bx, bz) = cell_center(b.cx, b.cz);
+        let (px, pz) = player_xz(p);
+        let (dx, dz) = (bx - px, bz - pz);
+        dx * dx + dz * dz <= crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M
+    }
+
+    /// How many spills this tick's removals left. Read once per tick by
+    /// `World::step`, which owns the bag store and the clock.
+    pub fn box_spill_len(&self) -> usize {
+        self.boxes.spill_len
+    }
+
+    /// One parked spill. Read by value — the caller stands a bag up from
+    /// it and never holds a reference into the store.
+    pub fn box_spill_at(&self, i: usize) -> BoxRec {
+        if i >= self.boxes.spill_len {
+            return BoxRec::default();
+        }
+        self.boxes.spill[i]
+    }
+
+    /// Empty the spill buffer, after `World::step` has stood every parked
+    /// record up. Separate from the reads so a spill is drained exactly
+    /// once and never half-drained by an early return.
+    pub fn clear_box_spill(&mut self) {
+        self.boxes.spill_len = 0;
     }
 
     pub fn find(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<&DeployRec> {
@@ -355,6 +518,26 @@ impl Deploys {
             {
                 self.hearth_count -= 1;
                 self.hearths[h] = self.hearths[self.hearth_count];
+            }
+        }
+        if dc.defs[rec.row as usize].arch == ARCH_BOX {
+            if let Some(b) = self.box_index(box_key(rec.cx, rec.cz, rec.level)) {
+                let bx = self.boxes.entries[b];
+                self.boxes.len -= 1;
+                let last = self.boxes.len;
+                self.boxes.entries[b] = self.boxes.entries[last];
+                self.boxes.entries[last] = BoxRec::default();
+                // What was inside outlives the box. Parked rather than
+                // dropped where it stands, because this path is reached
+                // from decay and from a raid and holds neither the bag
+                // store nor the clock; `World::step` drains it this same
+                // tick. An empty box parks nothing — `stand_up` would
+                // refuse it anyway, and a full buffer is then never spent
+                // on boxes that had nothing in them.
+                if !bx.is_empty() && self.boxes.spill_len < MAX_BOX_SPILL_PER_TICK {
+                    self.boxes.spill[self.boxes.spill_len] = bx;
+                    self.boxes.spill_len += 1;
+                }
             }
         }
     }
@@ -464,6 +647,15 @@ impl Default for Deploys {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Where a broken box's contents fall: the centre of its own cell, on its
+/// own storey. The height is the collider's floor formula (`collide.rs`:
+/// terrain under the cell plus `level * LEVEL_H_M`), so the bag lands on
+/// the floor the box was standing on rather than inside it.
+pub fn box_drop_pos(seed: u64, cx: u16, cz: u16, level: u8) -> (f32, f32, f32) {
+    let (x, z) = cell_center(cx, cz);
+    (x, terrain::height(seed, x, z) + level as f32 * LEVEL_H_M, z)
 }
 
 fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
@@ -585,6 +777,13 @@ pub fn place_deploy(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_BAG_CAP, 0);
         return;
     }
+    // Checked before the insert for the same reason the hearth cap is: the
+    // record below cannot be written into a full store, so the append that
+    // follows the insert needs no second guard.
+    if def.arch == ARCH_BOX && deploys.boxes.len == MAX_BOXES {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
+        return;
+    }
     if inv_count(&p.inv, def.item) < 1 {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_COST, 0);
         return;
@@ -620,6 +819,17 @@ pub fn place_deploy(
             stock: [0; HEARTH_STOCK_ROWS],
         };
         deploys.hearth_count += 1;
+    }
+    if def.arch == ARCH_BOX {
+        let n = deploys.boxes.len;
+        deploys.boxes.entries[n] = BoxRec {
+            cx,
+            cz,
+            level,
+            owner: p.id,
+            items: [ItemStack::default(); BOX_SLOTS],
+        };
+        deploys.boxes.len += 1;
     }
     inv_take(&mut p.inv, def.item, 1);
     events.push(
@@ -2251,6 +2461,90 @@ mod tests {
             (m.doors_w, m.shut_w),
             (0, 0),
             "a decayed doorway leaves no door collision behind"
+        );
+    }
+
+    /// The box store's cap, and its stated overflow policy: **refuse**
+    /// (wall 4). Written against the private `len` rather than by placing
+    /// two hundred and fifty-six boxes, because the thing under test is
+    /// the guard and not the terrain generator's supply of flat cells.
+    ///
+    /// The refusal has to land *before* the deploy record is inserted, or
+    /// a full box store would leave a standing box with nowhere to keep
+    /// what you put in it — a container that silently eats items, which is
+    /// the one failure mode worse than refusing to place.
+    #[test]
+    fn a_full_box_store_refuses_the_placement_and_places_nothing() {
+        let mut dc = DeployContent::probe_fixture();
+        dc.defs[4] = DeployDef {
+            arch: ARCH_BOX,
+            placement: PLACE_FOUNDATION,
+            hp: 100,
+            item: 6,
+        };
+        dc.def_count = 5;
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 9), (6, 4)]);
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+
+        deploys.boxes.len = MAX_BOXES;
+        let deploys_before = deploys.len();
+        let held = crate::craft::inv_count(&p.inv, 6);
+        ev.clear();
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            4,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_REFUSED);
+        assert_eq!(last(&ev).2, REFUSE_D_FULL, "a full box store refuses");
+        assert_eq!(
+            deploys.len(),
+            deploys_before,
+            "a refused box must not leave a deploy record standing"
+        );
+        assert_eq!(
+            crate::craft::inv_count(&p.inv, 6),
+            held,
+            "a refused placement must not spend the item"
+        );
+
+        // One slot back and the same placement succeeds — a guard that
+        // refused unconditionally would pass every assert above.
+        deploys.boxes.len = MAX_BOXES - 1;
+        ev.clear();
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            4,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        assert_eq!(
+            deploys.boxes.len, MAX_BOXES,
+            "the record took the last slot"
         );
     }
 }
