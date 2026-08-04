@@ -1808,6 +1808,14 @@ export const SURFACES = {
     },
   },
   water: { roughness: 0.14, metalness: 0.0, field: null },
+  // The generated pine's two identities. `field: null` on both, deliberately:
+  // these are the only surfaces in the table that carry real texture maps, and
+  // the procedural field exists to give detail to surfaces that have none.
+  // Running both would be two fights over the same pixels. Water proves the
+  // shape works — same patch, same program, `uPropShape.y = 0` closes the
+  // branch at no cost.
+  bark: { roughness: 0.92, metalness: 0.0, field: null },
+  needle: { roughness: 0.78, metalness: 0.0, field: null },
 };
 
 // The probe's handle on the whole prop field, shared by every material the
@@ -2250,6 +2258,32 @@ export function makeWindDepthMaterial() {
  * comes to score it. Published rather than restated: a strength edited in the
  * table above cannot pass by agreeing with a number written beside it.
  */
+/**
+ * The depth material an alpha-tested caster needs.
+ *
+ * A needle card that is 60% transparent casts a SOLID rectangle unless the
+ * shadow pass tests the same alpha the colour pass does — which is the whole
+ * reason a foliage shadow reads as a blob in engines that forget it. Same
+ * wind patch as `makeWindDepthMaterial`, plus the leaf map and its cutoff.
+ */
+export function makeLeafDepthMaterial(map, alphaTest) {
+  const material = new THREE.MeshDepthMaterial({
+    depthPacking: THREE.RGBADepthPacking,
+    side: THREE.DoubleSide,
+    alphaMap: map,
+    map,
+    alphaTest,
+  });
+  material.defaultAttributeValues = { aWind: [0] };
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uWind = windUniform;
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", `#include <common>\n${WIND_VERT_PARS}`)
+      .replace("#include <begin_vertex>", `#include <begin_vertex>\n${WIND_VERT_GLSL}`);
+  };
+  return material;
+}
+
 export function windFacts() {
   return {
     dir: [windUniform.value.x, windUniform.value.y],
