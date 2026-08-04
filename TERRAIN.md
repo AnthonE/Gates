@@ -147,7 +147,10 @@ point: **terrain life is just chunk events over a generated backdrop.**
   average. The wall turns on at the crossover (`BASE_WALL_ON`, the 45 deg
   where `sin = cos` and the wall becomes the less distorted of the two),
   so level ground pays one tap and renders bit-for-bit what it did
-  before. **Every octave now retires on the WORLD footprint** — the law
+  before. Weights are raised to `BASE_WALL_SHARPNESS` before blending and
+  the wall's footprint is `dFdx(position)` projected onto the frame, not
+  `dFdx(uv)` — a rotating frame otherwise puts its own turn, times a
+  world coordinate, into the mip selector. **Every octave now retires on the WORLD footprint** — the law
   stated in this paragraph since materials v1 was applied to grain alone
   for two passes, and on a 69 deg face the horizontal footprint is 1/2.8
   of the real one, so every other octave stayed at full strength three

@@ -4,139 +4,36 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **The bump's gradient is CLAMPED over two-thirds of a near cliff, and that
-   is the crosshatch that is left.** *(Operator, 2026-08-03, three frames of
-   cliffs and a snow dome: "lets fix these odd visual errors please".
-   materials v4 fixed two of the three causes and measured this one; it is
-   the next visual item and it starts bounded.)*
+1. **The projection's own arithmetic, twice — and both were Quilez's rules,
+   stated in his article, shipped wrong here first. — LANDED**
+   *(`DECISIONS.md` §open, "materials v5". Operator, 2026-08-04: "figure out
+   where the math we are using is wrong".)*
 
-   `gmSurf` — the world-XZ gradient of the bump height field — is bounded by
-   `BUMP_MAX_SLOPE = 0.55` (wall 4). Instrumenting the clamp and reading the
-   frame back says it is not a bound there, it is the operating point:
+   materials v4 put the base maps on a fall-line biplanar projection and the
+   cliffs still streaked. The cause was not the projection, it was two
+   arithmetic errors inside it:
 
-   | vantage | fragments at the clamp |
-   |---|---|
-   | near cliff, rock, 69° face | **68.0%** |
-   | snow dome, rock, ~25° | **28.4%** |
-   | near ground, grass, level | **0.6%** |
+   - **The wall tap's footprint was differentiated after the frame instead of
+     before it.** `gmAcross` is per-fragment, so `dFdx(dot(p.xz, across))`
+     expands to `dot(dFdx(p.xz), across) + dot(p.xz, dFdx(across))`, and the
+     second term is the frame turning, multiplied by a WORLD coordinate
+     (~1568 here). A 1e-4 rad/px rotation injects 0.16 m/px of fake footprint
+     against a true ~0.002 — `textureGrad` picked a mip about **seven levels**
+     too coarse, in bands following the terrain's curvature.
+   - **The plane blend had no sharpening exponent.** cos and sin are the two
+     planes' foreshortenings, so a linear blend at 69.5° hands **32.3%** of
+     the sample to the top plane while that plane is stretched **×2.86**.
 
-   **A gradient saturated over two-thirds of a surface is not a gradient, it
-   is a direction field of fixed magnitude** — and a noise gradient's
-   direction flips fast, so what the light lands on is a hard crosshatch
-   rather than relief. It is the loudest thing left in the operator's frame
-   1, and turning the whole field off (`uSurface = 0`) removes it while
-   leaving the photograph, which is how it was attributed.
+   Fixed at `BASE_WALL_SHARPNESS = 8.0` (Quilez's own stated value) and by
+   projecting `dFdx(position)` onto the frame. Measured: near-cliff neighbour
+   contrast **7.42 → 14.58 luma/px**, far cliff **2.88 → 4.35**, and the new
+   vantage gate's slope chroma **0.705 → 0.127** — from double its ceiling to
+   inside the reference band (0.077–0.193). Every vantage at or under 45° is
+   bit-identical, because the wall tap does not run there.
 
-   **The suspect is amplitude on ONE identity, and the arithmetic is already
-   written down.** `IDENTITIES.rock.bump` is **2.2** against grass's 0.6, and
-   it multiplies the sum of three octaves each chosen inside the 0.03–0.25
-   slope band — so rock asks for roughly 3x what the clamp allows.
-   `materials.js` derives `BUMP_MAX_SLOPE = 0.55` as *"the sum of what the
-   three octaves that reach gmH ask for on the identity that asks most"*, and
-   the measurement above says that derivation is wrong by about 3x. **That
-   disagreement is the finding** (`CLAUDE.md`: a doc that disagrees with a
-   measurement is the finding), and it is why this is not a one-line edit.
-
-   **Why it was NOT taken in the same pass**, stated so the next one does not
-   re-litigate it: 0.55 is not a free number. It was cut from 1.0 precisely
-   because the shadow probe collapsed to 0.131% of the frame against a 15%
-   floor when the bump reached the frame at full strength — so anything that
-   changes how much slope actually lands has to be re-measured against the
-   shadow floors, 15b and 15e in the same pass, under the sun elevation item 3
-   still wants to raise. `NOW.md`'s own chroma pass is the precedent for what
-   an unmeasured amplitude fix costs: two of the three suspects it was handed
-   were amplitude fixes that would have cost the detail 15h asserts.
-
-   Two shapes worth pricing before picking one, neither yet measured:
-   (a) re-derive `rock.bump` (and the three amplitudes) so the ladder lands
-   inside the clamp rather than three times past it — the honest fix, and the
-   one that has to face the shadow floors;
-   (b) replace the hard magnitude clamp with a roll-off that asymptotes to the
-   same bound — strictly ≤ the current magnitude everywhere, so wall 4 and the
-   shadow floors can only improve, at the cost of not being bit-identical
-   below the bound (15b and 15e would move and need re-reading).
-
-   Also measured and NOT this item's: the base map's **relief** dies as a face
-   approaches vertical. `gmBaseSlope` is a world-XZ heightfield gradient by
-   construction and the shading normal scales it by `gmNy`, so a cliff gets
-   the photograph's colour and almost none of its shape. Same formulation,
-   same pass, and it wants `ci/bump_basis.mjs` re-derived under it.
-
-1. **The ground's chroma noise — the artifact the last pass shipped. — LANDED**
-   *(GAP PASS, iteration 2. From `findings/pass-20260803-145507-01-visual.md`
-   ranked gap 1: "Kill the near-ground chroma confetti — it is a live render
-   artifact in four of six frames and it is a sampling bug, not an art task."
-   The report's own instruction was that nothing else in its list should be
-   attempted while a visible render bug is in half the capture.)*
-
-   **The cause was not the one the report ranked first, and the difference
-   matters.** Its three suspects were, in order, the `textureGrad` derivatives
-   across a splat discontinuity; `BASE_ANISOTROPY_MAX = 4` at ~80° incidence;
-   and the per-identity gain amplifying mip-level chroma noise. It is the
-   third, and it is arithmetic rather than sampling: the mean-placing gain is
-   `color / measured mean` PER CHANNEL and it multiplies the whole sample, so
-   a source dragged unevenly across channels has its per-channel NOISE dragged
-   with it. `rock` needs ×13.45 on blue, whose source mean (0.034 linear) sits
-   near its own JPEG chroma floor.
-
-   **The instrument is what made this decidable**, and it is the reason not to
-   act on a ranked gap's literal sentence (`CLAUDE.md`'s "a judge names the
-   symptom; fix the cause"): resolve the near-ground high-frequency residual
-   ALONG the local mean colour versus ORTHOGONAL to it. The thirteen
-   `Rust Images/` frames that actually contain ground run 0.077–0.193 (median
-   0.120); our six judged frames ran 0.659/0.798/0.237/0.284/0.760/0.092 —
-   every frame showing ground is over the reference maximum, and the only frame
-   with no near ground in it is the only one inside the band. **Our
-   along-colour term was inside the reference range the whole time.** So the
-   defect was never amplitude, and both of the report's first two suspects are
-   amplitude fixes that would have cost the detail 15h asserts.
-   `BASE_ANISOTROPY_MAX` is deliberately untouched.
-
-   Shipped: `BASE_CHROMA_STRETCH_MAX = 1.0`, applied per layer as
-   `min(1, MAX / span)` off each source's own measured gain span (sand 0.72,
-   grass 0.61, litter 0.26, rock 0.17). Mean preservation became a property of
-   the tap's shape rather than of its tuning — see `DECISIONS.md` §open. 15h is
-   unmoved (5.90/8.61 against 5.91/8.58) because the along-colour term is
-   unmoved; only chroma falls. Gated at **15i**, a CEILING, with the unbounded
-   leg rendered live every run so the suppression is a number and not a claim
-   about a commit.
-
-   **What this did NOT do, and the next pass should not be misled about it.**
-   The frame moved 0.434 → 0.317 (level) and 0.313 → 0.243 (down). **That is
-   still 1.6× over the reference maximum of 0.193.** The wall is at 0.35, which
-   is where the tree is, not where the references are — 15h's own argument for
-   splitting a target from a floor, applied to a ceiling. Two reasons it stops
-   there, and only one of them is this knob's to fix:
-   (a) the two vantages 15i measures sit at a spawn that is 99.2% grass, where
-   the bound is weakest (grass keep 0.61); `litter` and `rock`, where it bites
-   hardest, are ~absent there. So the gate measures the fix at its weakest,
-   which is the right direction for a wall but understates the fix.
-   (b) **the luma-only floor — every keep at 0 — is 0.186/0.174**, already
-   above the reference median of 0.120. Most of what remains is therefore NOT
-   the photograph: it is the tint octave's deliberate off-colour deviation
-   (15d asserts it at ×1.43), the sky dither and the fog. Tightening
-   `BASE_CHROMA_STRETCH_MAX` below 1.0 cannot reach the references on its own
-   and would start discarding measured colour the references demonstrably
-   carry. Per `CLAUDE.md`'s coupled-lighting law that remaining set has one
-   owner, and it is the lighting pass, not this one.
-
-   **A gate defect this pass found in its own first cut, recorded because it is
-   the more useful half of the lesson.** The reference band was first measured
-   with a 2×2-box residual while the probe used a 4-neighbour-mean one, giving
-   0.336 instead of 0.193 — and 0.336 would have walled our 0.317 in as a pass.
-   A ceiling computed by a different estimator than the frame it judges is not
-   a ceiling. Both are now the probe's estimator, and the reference set is
-   restricted to the thirteen frames that actually contain ground (the four UI
-   screenshots and the top-down map render were two of the five highest
-   readings in the unrestricted set).
-
-   Also cleared here, from the same pass's merge-gate judge (ranked fix 1):
-   `DECISIONS.md` §open, `NOW.md` and 15h's comment block all claimed the
-   shipped frame measures 6.00/8.59 luma/px, which was the aniso-16
-   configuration that was cut. They now say what `base detail:` prints. Its
-   ranked fix 3 (the `grain`/`tint`/`base` toggle checks reading a snapshot
-   captured before any probe ran) is NOT fixed — it is inherited convention and
-   is left for a pass that owns those three; 15i's own restore check reads live.
+   The bump's own clamp saturation went **68.0% → 4.9%** of a near cliff in
+   the same pass, from the surface-gradient reformulation plus a per-octave
+   share of `BUMP_MAX_SLOPE`.
 
 1. **The renderer has never had real detail to sample — give it some.**
    *(Slice 1's projection defect is fixed — `DECISIONS.md` §open,

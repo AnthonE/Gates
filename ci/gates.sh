@@ -95,4 +95,13 @@ echo "== gate: browser smoke (real shard, real WebTransport, real browser)"
 $NICE cargo build -p server --bin shard --release || fail "shard build"
 $NICE node ci/browser_smoke.mjs || fail "browser smoke"
 
+# The one gate that looks anywhere other than the beach. `browser_smoke` above
+# fires every material assertion from one spawn whose own 40 m ring is 100%
+# under 10 degrees of tilt, on one seed — three defects shipped green through
+# that blind spot in as many passes. This runs the same probes at a 69 degree
+# face, above the snow line, and on a second seed, one tab at a time so a
+# loaded box cannot turn it into a clock.
+echo "== gate: vantages (the material off the beach: slope, snow line, second seed)"
+$NICE node ci/vantages.mjs || fail "vantages"
+
 echo "ALL GATES GREEN"

@@ -200,7 +200,16 @@ The rule that replaces it:
   face of upness `u` it stretches the map `1/u` along the fall line, x2.8 at
   this island's steepest faces and unbounded at vertical. A sourced map goes
   on the SURFACE — the top plane plus the fall-line plane, whose distortions
-  are exact complements. (2) *Modifiers multiply, never replace.* Wetness and
+  are exact complements. **Two things about a multi-plane projection are
+  arithmetic, not taste, and getting either wrong costs more than the smear
+  it removes.** (a) *The footprint is differentiated before the frame, never
+  after.* A per-fragment projection frame makes `dFdx(uv)` pick up the frame's
+  own rotation times a WORLD coordinate, which at island scale is a mip
+  several levels too coarse — the fix smears worse than the defect. Project
+  `dFdx(position)` onto the frame instead. (b) *The blend needs an exponent.*
+  Linear weights hand a third of the sample to the worse plane on a steep
+  face; `pow(w, 8)` hands it 0.05%. Both rules are Quilez's, from the
+  biplanar-mapping article, and both were shipped wrong here first. (2) *Modifiers multiply, never replace.* Wetness and
   cliff darkening scale the albedo, so the photograph survives them; snow
   used `mix(albedo, SNOW_COLOR, 1)`, a constant, and above 80 m that is whole
   hillsides reverting to rule 1's flat value with every amplitude gate still
