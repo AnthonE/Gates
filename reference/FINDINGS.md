@@ -86,13 +86,22 @@ with a hole in it exactly where the reference ecosystem's history says the
 drift actually happens. `CLAUDE.md`'s "a law without a gate is a mood"
 applies to the doc comments above: they are law, and they have no gate.
 
-**The shape of a gate, if one is cut into `NOW.md`.** Not a byte fixture —
-that is the gate that already exists and already misses this. It has to
-assert *meaning*: drive one known cause through the sim (one player kills
-another with known ids) and assert the decoded event's fields against the
-roles, not against bytes. A payload-role table that both the emit site and
-the test read would be stronger still, and would make a swap a compile
-error rather than a test failure.
+**The gate, now partly built** — `crates/sim-core/tests/event_roles.rs`,
+`NOW.md` item 1. Not a byte fixture; that is the gate that already exists
+and already misses this. It drives one known cause through the real
+`World` and asserts the fields against their roles: `EV_HIT`, `EV_HEALTH`,
+`EV_DEATH`, `EV_BAG_DROPPED`, `EV_GATHER` — the five where two fields are
+the same *kind* of thing and so nothing but the values tells them apart.
+Two disciplines make it able to fail: a check whose three fields are not
+mutually distinguishable is refused outright (a permutation would satisfy
+it), and each code must appear exactly once on its tick, which makes it a
+double-emit gate as well. Coverage is pinned at 5 of 25 rather than
+implied, so the remaining twenty are a stated debt.
+
+**Stronger still, and not yet built:** a payload-role table that both the
+emit site and the check read, making a swap a *compile* error rather than
+a test failure. Larger than the twenty remaining checks, and it should not
+block them.
 
 ## 2 · The item-move path is where the reference actually bled
 
@@ -157,13 +166,22 @@ Their `Removed duplicate OnBonusItemDrop hook` and two rounds of
 same family: one cause emitting one event twice, or two causes emitting
 one event that consumers cannot tell apart.
 
-We have the second half already. **`EV_GATHER` is emitted from three
-modules** — `gather.rs` (a harvest), `world.rs`, and `backpack.rs` (a bag
-loot). One code, three causes, all meaning "you gained items." That is
-correct for what it currently drives, which is a `+N Thing` toast. It
-stops being correct the moment anything *counts* them — a gather stat, a
-quest, an economy sink — because looting your own bag would score as
-harvesting. Not a bug today; a mislabelled foundation.
+We have the second half already, and — correcting the first cut of this
+file — it is documented intent rather than an oversight. **`EV_GATHER` is
+emitted from three modules**: `gather.rs` (a harvest), `world.rs`, and
+`backpack.rs` (a bag loot). Its doc comment argues the case out loud:
+
+> Read it as "these units entered your inventory", not as "a node paid":
+> looting a backpack announces its take the same way, and deliberately —
+> the client's `+N Item` toast is the right feedback for both.
+
+So this is a decision, not a defect, and the reference's own duplicate-hook
+fixes are not evidence against it. The one thing worth carrying forward is
+where the decision stops holding: the moment anything *counts* gathers — a
+stat, a quest, an economy sink — looting your own bag scores as
+harvesting, and the cause has to become a field rather than an inference.
+`test_event_roles` checks the packed halves of `EV_GATHER` today; it
+cannot check a cause the payload does not carry.
 
 ## 5 · The parallel worth stealing
 
