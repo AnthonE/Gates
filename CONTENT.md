@@ -118,7 +118,18 @@ hash notes it, replays unaffected retroactively.
 - **crate** (haven periphery + headlands): T1/T2 mats, powder chain
   pieces, medkit
 - Barrels respawn on the slot system (`TERRAIN.md` §2), 15–30 min
-  jittered **(knob)**.
+  jittered **(knob)** — the sim ships the spoken 20–45 min window
+  (`DECISIONS.md` §open, "node/barrel respawn"), which is what
+  `gather.rs` reads for nodes and barrels alike.
+- Each table carries **`hits`**: swings to open the container
+  **(knob: barrel 3, crate 5)**. Content, not code — re-pricing the walk
+  between barrels is a balance pass. Zero is refused at validate: a
+  container nothing can open never pays.
+- The roll lands in a **ground container**, never in the smasher's
+  inventory — the same store a death bag stands up in (`backpack.rs`), so
+  the loot panel is one panel. Weighted pick is Lemire multiply-shift over
+  the baked weight sum, so the weight-1 revolver keeps its odds instead of
+  losing them to modulo bias.
 
 ## 6 · What content deliberately cannot express
 

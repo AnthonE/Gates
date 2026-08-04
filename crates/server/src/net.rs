@@ -136,6 +136,7 @@ pub async fn spawn_shard(
     combat: sim_core::combat::CombatContent,
     backpack: sim_core::backpack::BackpackContent,
     survival: sim_core::survival::SurvivalContent,
+    loot: sim_core::loot::LootContent,
     catalog: ItemCatalog,
 ) -> Result<ShardHandle, String> {
     // A PUBLIC shard serves a real certificate chain and browsers trust it
@@ -193,7 +194,7 @@ pub async fn spawn_shard(
             .spawn(move || {
                 sim_thread(
                     seed, dev_spawn, gather, craft, build, deploy, combat, backpack, survival,
-                    catalog, ctrl_rx, grave_tx, slots, stats, shutdown,
+                    loot, catalog, ctrl_rx, grave_tx, slots, stats, shutdown,
                 )
             })
             .map_err(|e| format!("sim thread spawn: {e}"))?;
@@ -692,6 +693,7 @@ fn sim_thread(
     combat: sim_core::combat::CombatContent,
     backpack: sim_core::backpack::BackpackContent,
     survival: sim_core::survival::SurvivalContent,
+    loot: sim_core::loot::LootContent,
     catalog: ItemCatalog,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut grave_tx: rtrb::Producer<Link>,
@@ -708,6 +710,7 @@ fn sim_thread(
     core.world.combat = combat;
     core.world.backpack = backpack;
     core.world.survival = survival;
+    core.world.loot = loot;
     core.catalog = catalog;
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_PLAYERS);
     links.resize_with(MAX_PLAYERS, || None);

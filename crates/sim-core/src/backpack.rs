@@ -222,7 +222,47 @@ impl Backpacks {
         if bc.base_ticks == 0 {
             return None; // inert content: the module is disarmed
         }
-        let items = &body.inv;
+        self.stand_up(
+            bc,
+            body.body.qx,
+            body.body.qy + BAG_Y_OFFSET_Q,
+            body.body.qz,
+            body.id,
+            &body.inv,
+            tick,
+            events,
+        )
+    }
+
+    /// Stand a container up at a quantized address holding `items`.
+    ///
+    /// The one insert path: a death bag and a smashed barrel's loot are
+    /// the same object — a container on the ground with a lifetime, an
+    /// address, and slots the move verb already resolves as `CONT_BAG`.
+    /// Splitting them into two stores would have bought a second wire
+    /// message, a second sync walk and a second eviction policy for one
+    /// difference (where the items came from) that nothing downstream
+    /// reads: `owner` is state-hash and test material only, never a gate.
+    ///
+    /// `None` when nothing stood up — an inert ladder (content that never
+    /// armed the module) and an empty item set both take this exit, so a
+    /// naked spawn dying leaves no litter and neither does a barrel whose
+    /// roll paid nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stand_up(
+        &mut self,
+        bc: &BackpackContent,
+        qx: i32,
+        qy: i32,
+        qz: i32,
+        owner: u32,
+        items: &[ItemStack; INV_SLOTS],
+        tick: u64,
+        events: &mut EventQueue,
+    ) -> Option<u32> {
+        if bc.base_ticks == 0 {
+            return None; // inert content: the module is disarmed
+        }
         if items.iter().all(|s| s.count == 0) {
             return None; // nothing to catch
         }
@@ -243,15 +283,15 @@ impl Backpacks {
         let i = self.len;
         self.entries[i] = BackpackRec {
             id,
-            qx: body.body.qx,
-            qy: body.body.qy + BAG_Y_OFFSET_Q,
-            qz: body.body.qz,
-            owner: body.id,
+            qx,
+            qy,
+            qz,
+            owner,
             expires: tick + bc.lifetime_ticks(items) as u64,
             items: *items,
         };
         self.len += 1;
-        events.push(EV_BAG_DROPPED, id, body.id, 0);
+        events.push(EV_BAG_DROPPED, id, owner, 0);
         Some(id)
     }
 

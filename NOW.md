@@ -75,6 +75,29 @@ Done items are deleted, not checked — history lives in git and
    these branches rather than from scratch; if they are never un-parked, delete
    them in a commit that says so, as a stated decision rather than a skip.
 
+1. **The barrel's systems half is done — the loop now waits on world and ui.**
+   *(systems lane, 2026-08-04. Read this before picking the barrel item below.)*
+
+   `BarrelSlot` is smashable: `hits` swings (content, `loot.toml`) open it, the
+   table rolls by weight, and the roll stands up a **ground container** at the
+   barrel's own address — `backpack.rs`'s store, not a new one, so `CONT_BAG`,
+   the move verb, the loot verb, the sync walk and the wire all work unchanged.
+   **`PROTO_VER` did not move.** Gates: `tests/loot.rs` (8), two `event_roles`
+   payload checks (`EV_SLOT_HARVESTED` is off the uncovered ledger, 9→8),
+   `bake_loot` + refusals in `content.rs`, and `test_replay`'s golden
+   regenerated **behaviourally** with a `made >= 2` assert so it cannot go
+   green on an unarmed fixture again.
+
+   What is left, and neither is systems':
+   - **world:** barrels only spawn on the beach today (`terrain.rs` weight row).
+     `TERRAIN.md` §7's coast road is what puts them somewhere worth walking.
+   - **ui:** the loot panel. It is a `CONT_BAG` container like a death bag, so
+     one panel serves both — no new protocol to write against.
+
+   Two §open rows landed with it: "barrel smash hits" and the call to reuse the
+   ground-container store (which shares `MAX_BACKPACKS` 256 and its evict
+   policy with death bags — stated there, not discovered later).
+
 1. **Smash a barrel, pick up the loot. The whole loop, and most of it exists.**
    *(Operator, 2026-08-04. First concrete target of the playability item above.)*
 
