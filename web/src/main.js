@@ -630,11 +630,28 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // BEFORE `dropInvDrag` draws anything. A drawn move with no frame behind
   // it is the container divergence itself, and divergence is what the
   // reference kept shipping as a disconnect.
-  hud.onInvMove = (from, to) => {
+  //
+  // Both ends arrive as ADDRESSES now (container kind + slot) rather than as
+  // two bare slot numbers with `CONT_SELF` written in twice here. Nothing on
+  // the wire changed — `client_action_move` has always taken two kinds — but
+  // the panel now states which container each end is in, and this host now
+  // refuses the ones it cannot address instead of relabelling them self.
+  //
+  // A non-self END is refused rather than guessed at, and the two halves have
+  // different reasons. A non-self SOURCE has no count here: `views.inv` is the
+  // own-inventory mirror (`client_inv_ptr`, "own inventory view"), and reading
+  // a bag's stack size out of it would be inventing the payload — the same
+  // thing parsing "wood ×8" out of a label would be. A non-self DESTINATION
+  // needs the `bag` id the sim addresses containers by, and this client has
+  // ids for dropped bags but no notion of which one a panel is open on, so
+  // the 0 below would name whichever container the sim indexes at 0. Both
+  // unblock together when the container-contents message lands (NOW.md).
+  hud.onInvMove = (fromKind, from, toKind, to) => {
     views.refresh();
+    if (fromKind !== CONT_SELF || toKind !== CONT_SELF) return false;
     const count = views.inv[from * 2 + 1];
     if (count <= 0) return false;
-    const len = ex.client_action_move(0, CONT_SELF, from, CONT_SELF, to, count);
+    const len = ex.client_action_move(0, fromKind, from, toKind, to, count);
     views.refresh();
     if (len === 0) return false;
     return actions.send(views.output, len);
