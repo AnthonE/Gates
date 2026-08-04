@@ -131,13 +131,12 @@ export class Hud {
     //
     // WIRED TO THE SIM — main.js claims the verb, both directions. The
     // outbound half encodes with `client_action_move`; the inbound half
-    // has to work around a `crates/` collision, because `APPLIED_MOVE`
-    // (client-wasm `core.rs:122`) and `STREAM_ERR` (`bridge.rs:64`) are
-    // both `1 << 31`, so this panel's verdict and "undecodable bytes"
-    // arrive as the same word. `web/src/invmove.js` splits them against
-    // the drag in flight and states what that cannot close; the systems
-    // lane still owns the real fix (NOW.md), and it is not the one-line
-    // change it is usually called — the flag word has no free bit.
+    // reads `APPLIED2_MOVE` off `client_applied2()` and unpacks the
+    // verdict with `web/src/invmove.js`. That flag lives in a SECOND
+    // applied word because word 0's bit 31 is `STREAM_ERR`: the verdict
+    // shared that bit until the systems lane split it, and while it did,
+    // a landed move and "undecodable bytes" arrived as the same word.
+    // `invmove.js` has the history and what the split closed.
     //
     // A host claims the verb by assigning over `NO_MOVE_HOST`, and until
     // one does the gesture does not START. An affordance
