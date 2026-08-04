@@ -2448,7 +2448,19 @@ if (!Array.isArray(band) || !(band[0] > 0) || !(band[1] > band[0])) {
   fail(`tab A: the client published albedo band ${JSON.stringify(band)} — 15g's structural half has no law to assert`);
 }
 let albedoParts = 0;
+let texturedArch = 0;
 for (const p of mat.scatter) {
+  // A TEXTURED archetype bakes no ramp — its albedo is its map, and the band
+  // law is about authored hexes. Skipped, but never silently: an archetype
+  // that lost its bands by accident and one that has a texture instead look
+  // identical from here, so the texture has to be asserted, not assumed.
+  if (Array.isArray(p.parts) && p.parts.some((q) => q.textured)) {
+    if (!p.parts.every((q) => q.textured)) {
+      fail(`tab A: scatter archetype ${p.arch} mixes textured and untextured parts — half of it has no albedo law at all`);
+    }
+    texturedArch++;
+    continue;
+  }
   if (!Array.isArray(p.albedo) || p.albedo.length === 0) {
     fail(`tab A: scatter archetype ${p.arch} published no albedo bands — the albedo law cannot be scored on it`);
   }
@@ -2469,7 +2481,8 @@ for (const p of mat.scatter) {
   }
 }
 console.log(
-  `  prop albedo: ${albedoParts} authored band ends over ${mat.scatter.length} archetypes, all inside ` +
+  `  prop albedo: ${albedoParts} authored band ends over ${mat.scatter.length - texturedArch} untextured ` +
+    `archetypes (${texturedArch} textured, scored by their maps not a ramp), all inside ` +
     `[${band[0]}, ${band[1]}] linear luminance · ` +
     mat.scatter
       .map((p) => `${p.surface}#${p.arch} ${p.albedo.map((a) => `${a.part} ${a.lo.toFixed(3)}→${a.hi.toFixed(3)}`).join(", ")}`)

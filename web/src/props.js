@@ -397,7 +397,13 @@ export function stumpGeometry() {
 // deterministic per-instance colour variation (0 = every instance alike).
 export const ARCHETYPES = [
   null,
-  { geo: pineGeometry, composite: true, wind: PINE_WIND, surface: "foliage", lo: 0xffffff, lift: 0, tint: 0.17 },
+  // `parts` is what makes this the GENERATED pine and not the cone. It was
+  // missing from the wiring commit — `terrain.js` had the branch, `props.js`
+  // had the builder, the bench called the builder directly and looked right,
+  // and the client quietly took the else branch and drew cones. Nothing failed:
+  // the bench does not go through ARCHETYPES, and no gate scored which of the
+  // two the pool actually held. `scatterFacts().parts` publishes it now.
+  { parts: pineParts, geo: pineGeometry, composite: true, wind: PINE_WIND, surface: "bark", lo: 0xffffff, lift: 0, tint: 0.13 },
   { geo: () => new THREE.DodecahedronGeometry(1.0), surface: "rock", lo: 0x8f9399, lift: 0.5, tint: 0.11 },
   { geo: () => new THREE.DodecahedronGeometry(1.0), surface: "ore", lo: 0xa1785c, lift: 0.5, tint: 0.1 },
   { geo: () => new THREE.DodecahedronGeometry(1.0), surface: "ore", lo: 0xbfae4a, lift: 0.5, tint: 0.1 },
@@ -429,6 +435,11 @@ export const ARCH_TREE = 1;
 export function albedoParts(k) {
   const a = ARCHETYPES[k];
   if (!a) return [];
+  // A textured archetype bakes no ramp: its albedo IS its map, and the band
+  // law (`ALBEDO_LUMA_BAND`) is about authored hexes. Publishing the retired
+  // cone's trunk/skirt/crown here would have the gate scoring three colours
+  // nothing draws — which is exactly what it did for one commit.
+  if (a.parts) return [];
   return a.geo === pineGeometry ? PINE_BANDS : [{ part: a.surface, lo: a.lo, hi: a.hi }];
 }
 

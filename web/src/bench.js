@@ -5,7 +5,7 @@
 // lights and this bench has one, so the shader will not link. Judge shape and
 // shading here, never colour or exposure.
 import * as THREE from "three";
-import { pineParts, stumpGeometry } from "./props.js";
+import { ARCHETYPES, ARCH_TREE, stumpGeometry } from "./props.js";
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(1400, 900, false);
@@ -38,7 +38,10 @@ scene.add(ground);
 // InstancedMesh per part, one matrix stream, alpha-tested needles casting
 // through their own depth material.
 const stats = { parts: [] };
-const rows = pineParts();
+// Through the ARCHETYPE, deliberately. Calling pineParts() directly is what
+// let a wiring gap survive a commit: the bench rendered a beautiful generated
+// tree while the client drew cones, because only the client read this row.
+const rows = ARCHETYPES[ARCH_TREE].parts();
 const meshes = [];
 const SPOTS = [[0,0,0,1.0,0.0],[4.6,0,-4.0,0.92,1.7],[-4.4,0,-3.2,1.08,3.1],[2.0,0,-9.0,0.97,4.6],[-2.6,0,-10.5,1.04,0.9]];
 for (const row of rows) {
