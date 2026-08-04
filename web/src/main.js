@@ -17,10 +17,10 @@ import { GameScene } from "./scene.js";
 import { Terrain } from "./terrain.js";
 import { Hud } from "./hud.js";
 import {
+  APPLIED2_MOVE,
   CONT_SELF,
   STREAM_HIGH_BIT,
-  VERDICT,
-  classifyMoveVerdict,
+  moveVerdict,
 } from "./invmove.js";
 import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
 
@@ -788,22 +788,22 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       views.refresh();
       views.input.set(bytes);
       const flags = ex.client_on_stream(bytes.length);
+      // Word 1 of the applied word, read unconditionally and right here,
+      // because word 0 has no spare bit to announce it with — bits 0..30
+      // are flags and bit 31 is the error below (`bridge.rs`'s
+      // `client_applied2`). It is a load, it is zero on any message that
+      // set nothing in it, and it stays valid until the next
+      // `client_on_stream` — so reading it now and acting on it at the
+      // bottom of this handler cannot see a stale verdict.
+      const applied2 = ex.client_applied2() >>> 0;
       if (flags & STREAM_HIGH_BIT) {
-        // Bit 31 is two things at once: `APPLIED_MOVE` and `STREAM_ERR`
-        // are both `1 << 31` in client-wasm, so a landed move and an
-        // undecodable message arrive bit-identical. `classifyMoveVerdict`
-        // splits them the only way this side of the wall can — against
-        // the drag this panel actually has in flight. `web/src/invmove.js`
-        // has the whole argument, including what it cannot close.
-        const v = classifyMoveVerdict(ex.client_move_readout(), hud.invPending);
-        if (v.kind === VERDICT) {
-          // The sim's word on the move we drew. `invMoveVerdict` re-checks
-          // the address against its own pending record before it unwinds
-          // anything — this route is not trusted to have matched.
-          hud.invMoveVerdict(v.reason, v.from, v.to);
-          views.refresh();
-          return;
-        }
+        // Bit 31 is `STREAM_ERR` and nothing else. It used to be
+        // `APPLIED_MOVE` as well, and this branch logs and returns EARLY —
+        // so the first landed move of a session took the inventory diff
+        // riding the same message out with it. `web/src/invmove.js` has
+        // the history; the verdict now arrives on `APPLIED2_MOVE` below
+        // and no longer competes with the error for this bit.
+        //
         // Our own server sent bytes we can't decode — the smoke gate
         // fails on console.error, which is exactly right.
         console.error("event lane: message failed to decode");
@@ -1047,6 +1047,29 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
             entry.y + lift,
             entry.z + Math.cos(a) * r,
           );
+        }
+      }
+      // The move verdict, LAST — read at the top of this handler per the
+      // bridge contract, applied here so that nothing else the same
+      // message carried is skipped or reordered by it. That is not a
+      // preference: the old code took the error branch on this verdict and
+      // returned early, and the inventory diff riding the same message
+      // went with it. Landing the verdict after the word-0 dispatch makes
+      // that failure unrepresentable rather than fixed.
+      if (applied2 & APPLIED2_MOVE) {
+        const v = moveVerdict(ex.client_move_readout());
+        if (v) {
+          // `invMoveVerdict` re-checks the address against its own pending
+          // record before it unwinds anything — this route is not trusted
+          // to have matched.
+          hud.invMoveVerdict(v.reason, v.from, v.to);
+          views.refresh();
+        } else {
+          // The sim said a move resolved and handed us a word that is not
+          // a verdict this panel can act on. That is the corruption signal
+          // the collision used to swallow, and it is worth a report for
+          // exactly that reason.
+          console.error("event lane: APPLIED2_MOVE carried a malformed readout");
         }
       }
     },
