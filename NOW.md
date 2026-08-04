@@ -4,6 +4,36 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+1. **The projection's own arithmetic, twice — and both were Quilez's rules,
+   stated in his article, shipped wrong here first. — LANDED**
+   *(`DECISIONS.md` §open, "materials v5". Operator, 2026-08-04: "figure out
+   where the math we are using is wrong".)*
+
+   materials v4 put the base maps on a fall-line biplanar projection and the
+   cliffs still streaked. The cause was not the projection, it was two
+   arithmetic errors inside it:
+
+   - **The wall tap's footprint was differentiated after the frame instead of
+     before it.** `gmAcross` is per-fragment, so `dFdx(dot(p.xz, across))`
+     expands to `dot(dFdx(p.xz), across) + dot(p.xz, dFdx(across))`, and the
+     second term is the frame turning, multiplied by a WORLD coordinate
+     (~1568 here). A 1e-4 rad/px rotation injects 0.16 m/px of fake footprint
+     against a true ~0.002 — `textureGrad` picked a mip about **seven levels**
+     too coarse, in bands following the terrain's curvature.
+   - **The plane blend had no sharpening exponent.** cos and sin are the two
+     planes' foreshortenings, so a linear blend at 69.5° hands **32.3%** of
+     the sample to the top plane while that plane is stretched **×2.86**.
+
+   Fixed at `BASE_WALL_SHARPNESS = 8.0` (Quilez's own stated value) and by
+   projecting `dFdx(position)` onto the frame. Measured: near-cliff neighbour
+   contrast **7.42 → 14.58 luma/px**, far cliff **2.88 → 4.35**, and the new
+   vantage gate's slope chroma **0.705 → 0.127** — from double its ceiling to
+   inside the reference band (0.077–0.193). Every vantage at or under 45° is
+   bit-identical, because the wall tap does not run there.
+
+   The bump's own clamp saturation went **68.0% → 4.9%** of a near cliff in
+   the same pass, from the surface-gradient reformulation plus a per-octave
+   share of `BUMP_MAX_SLOPE`.
 1. **The event lane's payloads are law with no gate — close the other
    twenty codes.** *(Operator, 2026-08-04: top priority. The first five
    landed with `test_event_roles`; this is the rest of the ledger.)*
@@ -148,6 +178,12 @@ Done items are deleted, not checked — history lives in git and
    is left for a pass that owns those three; 15i's own restore check reads live.
 
 1. **The renderer has never had real detail to sample — give it some.**
+   *(Slice 1's projection defect is fixed — `DECISIONS.md` §open,
+   "materials v4": the base maps were sampled on world XZ and smeared `1/u`
+   along every fall line, every octave in the file retired on the horizontal
+   footprint rather than the world one, and snow replaced the albedo instead
+   of scaling it. Level ground is bit-identical; 15h/15i/15e unmoved. The
+   crosshatch that remains is the item above, not this one.)*
    *(Operator, 2026-08-03, `DECISIONS.md`: real assets allowed, CC0 is the bar.
    `ART.md` §7 is the policy; `assets/textures/` is the working set, already
    committed and manifested. This is the wiring.)*
@@ -860,8 +896,32 @@ Done items are deleted, not checked — history lives in git and
 17. **M4 — arm A2, then A3** (operator acts): claim rail export · skin
    catalog · the board delivery (repo + playable link + a recorded round
    whose replay hash checks) on `munus-first-sale`.
+18. **Anti-ESP occlusion culling — the measure the genre proved, and the one
+   the seed makes cheap** (`DECISIONS.md` 2026-08-04). AOI at 176 m is the
+   whole ESP defence today, and 176 m covers most engagements. Facepunch's
+   answer, rolled out 2025 and defaulted network-wide, was to stop
+   networking players fully occluded by terrain — and they pay to compute it
+   live on a Unity server. Here the terrain is a pure function of the seed,
+   so the occlusion grid bakes at worldgen into a fixed structure and the
+   tick spends a lookup: no allocation, no clock, walls 1 and 2 intact.
+   Lands as a filter on the enter/leave sets of `NETCODE.md` §7's one grid,
+   with a golden beside `test_terrain_golden` and a bot-measured tick cost.
+   Sequence after M2 — it wants real sightlines and real combat to tune
+   against, and it buys nothing until a shard is armed.
+19. **The launcher, in Rust, with the wallet in it** (`DECISIONS.md`
+   2026-08-04). One static binary, `egui`, no webview: patcher, shard list,
+   balances, and a self-custody wallet on `alloy` (`alloy-signer-local`,
+   `keystore` + `mnemonic`) signing the EIP-191 `gates join <shard> <nonce>`
+   the server already accepts — so no protocol moves and nothing enters the
+   sim's blast radius. Key backup is the feature, not a footnote: phrase
+   shown once and confirmed back, encrypted keystore only, never logged and
+   never in the WAL, connect-existing kept first-class, and the plain
+   sentence that the operator holds no keys and can restore nothing. M4
+   adjacent — it is the platform's client for the whole cascade, not a Gates
+   accessory, and it is the only place an anti-cheat bootstrapper could ever
+   live if one is spoken.
 
-18. **`cargo test --workspace` overflows a debug thread's stack; only
+20. **`cargo test --workspace` overflows a debug thread's stack; only
     `--release` (what CI runs) is green.** Pre-existing, not new: verified
     on `main` at `25f6ec8` before the backpack slice, where
     `snapshot_budget` aborts the same way. The cause is size, not logic —
