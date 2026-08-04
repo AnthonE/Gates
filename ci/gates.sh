@@ -84,6 +84,14 @@ $NICE npm --prefix web ci --include=dev --no-audit --no-fund || fail "npm ci"
 $NICE npm --prefix web run build || fail "vite build"
 [ -f web/dist/client_wasm.wasm ] || fail "wasm artifact absent from web bundle"
 
+# The pine's silhouette, and the sim constant derived from its width. Runs
+# here and not earlier because it imports the shipped builder out of
+# `web/src/props.js`, which needs three from the install above — a geometry
+# gate that built its own tree to score would pass forever while the tree
+# changed underneath it. No GPU, no shard: a vertex buffer is arithmetic.
+echo "== gate: pine shape (silhouette counts + the SPAWN_CLEAR_M coupling)"
+$NICE node ci/pine_shape.mjs || fail "pine shape"
+
 # The only gate that runs the JS in a browser. Everything above tests the
 # client's LOGIC natively or in node, which is why two hard boot bugs shipped
 # green on 2026-07-31: a detached-buffer throw in WasmViews that stopped the

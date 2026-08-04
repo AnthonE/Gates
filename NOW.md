@@ -211,10 +211,22 @@ Done items are deleted, not checked — history lives in git and
    a large upgrade with no binary shipped, and the 24 checked-in three.js skill
    packs have gone essentially unused. Read the skill before designing this.
 
-   **Two thirds of that landed early, out of order, and on purpose** —
-   `DECISIONS.md` §open, "wind + felling v0". The *geometry* is untouched and
-   still wants everything above; what shipped is the MOTION, because it turned
-   out not to depend on the geometry at all. Trees now sway (one `aWind`
+   **This item is now mostly spent** — `DECISIONS.md` §open, "wind + felling
+   v0" and "pine geometry v1 (whorls)". The pine is no longer four primitives:
+   it is a tapered full-height trunk carrying five ragged, drooping whorls,
+   102 triangles against 48, slenderness 1.53 → 2.41, 44 silhouette radii
+   against ~18, and 23% of its area facing down so the canopy underside the
+   fill and bounce poles were tuned against actually exists. `ci/pine_shape.mjs`
+   scores all of it off the shipped builder, which is why `web/src/props.js`
+   is a module importing THREE and nothing else. **What that gate also closed:**
+   `world.rs` derived `SPAWN_CLEAR_M` from a sentence about a JS constant and
+   nothing enforced it — a canopy widened for taste would have put fresh spawns
+   back inside trees with every gate green. Read the vegetation skill before
+   the NEXT thing here, which is needle cards and alpha (`ART.md` §5 asks for
+   them by name and this slice deliberately did not spend a texture, a program
+   variant or an `alphaTest` on them).
+
+   **The motion landed first, out of order and on purpose.** Trees sway (one `aWind`
    cantilever weight per vertex, world-position phase, two octaves, technique
    from SeedThree re-expressed for WebGL) and a chopped tree now falls, on a
    bearing hashed from its own cell, leaving a stump that stands for the

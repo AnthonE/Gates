@@ -181,6 +181,7 @@ import {
   installClipmapShadows,
   resolvedGlslChars,
 } from "./shadows.js";
+import { WIND_CURVE } from "./props.js";
 import { GROUND_LAYERS, groundTextures } from "./textures.js";
 
 // --- the four identities (TERRAIN.md §4's four sets) ------------------------
@@ -1924,10 +1925,9 @@ const WIND_SPEED = 1.0;
 // World metres to radians of phase, per axis. Together these set the gust's
 // wavelength (~2*PI/hypot = 14 m) and its bearing across the forest.
 const WIND_PHASE = [0.35, 0.27];
-// How the per-vertex weight rises with height: `aWind = (y/h)^WIND_CURVE`.
-// Above 1 the trunk is stiffer than linear and the canopy carries the motion,
-// which is the shape a conifer actually has.
-const WIND_CURVE = 1.7;
+// The height curve is NOT here: it is baked into the `aWind` attribute at
+// geometry-build time, so it belongs to the shape and lives with it
+// (`props.js`). Imported only to be reported by `windFacts`.
 
 /**
  * The shared wind state: `xy` bearing, `z` strength, `w` seconds.
@@ -1954,17 +1954,6 @@ export const windUniform = {
 /** Advance the wind to `seconds`. Called once a frame with sim-tick time. */
 export function setWindTime(seconds) {
   windUniform.value.w = seconds * WIND_SPEED;
-}
-
-/**
- * The per-vertex wind weight at a normalized height up the plant, 0..1.
- *
- * Lives here and not in the geometry builder so `WIND_CURVE` has exactly one
- * declaration in the repo — the knob registry treats a name that resolves in
- * two files with two values as a failure, and it is right to.
- */
-export function windWeight(t) {
-  return Math.pow(Math.max(0, Math.min(t, 1)), WIND_CURVE);
 }
 
 const WIND_VERT_PARS = /* glsl */ `

@@ -46,9 +46,15 @@ const SPAWN_BISECT_ITERS: i32 = 12;
 /// The walkability shape used by foundations and the old placeholder alike.
 const SPAWN_MAX_SLOPE: f32 = 1.0;
 /// Clearance from any scatter slot center. The widest archetype the client
-/// draws is the tree cone at radius 1.7 m × 1.1 max scale ≈ 1.9 m; add the
-/// 0.4 m capsule and 4 m leaves a spawn standing clear of it, not merely
-/// outside it.
+/// draws is the tree, whose canopy radius is capped at `PINE_MAX_R` = 1.7 m
+/// (`web/src/props.js`); 1.7 × 1.1 max scale ≈ 1.9 m, add the 0.4 m capsule
+/// and 4 m leaves a spawn standing clear of it, not merely outside it.
+///
+/// That was a sentence about a constant in another language until
+/// `ci/pine_shape.mjs`, which reads this number, the capsule, the scatter's
+/// scale range and the tree's actual vertices, and closes the arithmetic. A
+/// canopy widened for taste on the client used to be able to put fresh spawns
+/// back inside trees with every gate green.
 const SPAWN_CLEAR_M: f32 = 4.0;
 
 /// Integer event codes (CLAUDE.md wall 3) — the sim's outbound facts, one
