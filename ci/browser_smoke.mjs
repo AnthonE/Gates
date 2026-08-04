@@ -1035,12 +1035,26 @@ const PROJ_MAX_FLAT_EFFECT = Number(process.env.BROWSER_SMOKE_PROJ_MAX_FLAT_EFF 
 // that goes back to being the most expensive thing in the shader.
 const DEPTH_FETCH_BUDGET = Number(process.env.BROWSER_SMOKE_DEPTH_FETCHES || 24);
 // The compiled terrain fragment program, in characters of GLSL with three's
-// `#include`s expanded: 81,520 today, of which 73,375 is three's stock
-// MeshStandardMaterial as it was handed over and 8,145 (10.0%) is everything
-// this repo added to the ground — the grain octave being 638 of it. The cap is
-// ~18% over, which survives a three minor bump and still catches a program
-// that doubled.
-const TERRAIN_FRAGMENT_BUDGET = Number(process.env.BROWSER_SMOKE_FRAG_CHARS || 96000);
+// `#include`s expanded: 88,883 today, of which 73,375 is three's stock
+// MeshStandardMaterial as it was handed over and 15,508 (17.4%) is everything
+// this repo added to the ground. The cap is ~18% over, the same construction
+// as the 96,000 it replaces (81,520 measured, 8,145 ours) — it survives a
+// three minor bump, and its slack is about one doubling of this repo's share,
+// which is what it is here to catch.
+//
+// Re-derived rather than widened, and the difference is the point. The base
+// maps and materials v5's biplanar wall tap took our share 8,145 -> 33,050 and
+// the program to 106,425, which walked through the old cap — correctly, that
+// is the gate working. But roughly three-fifths of that growth was COMMENT
+// TEXT shipping into the compiled program, so the metric had drifted into
+// measuring how much the shader explained itself. `materials.js` now emits
+// through a `glsl` tag that blanks full-line comments (they stay in the file;
+// the blank line keeps a driver's error line numbers honest), which took the
+// program to 88,883 with the code unchanged — verified by this file's own
+// probes running green on the same commit. The cap is set against the stripped
+// number so the wall keeps its old relative strictness instead of pocketing
+// the 17,542 chars the strip freed.
+const TERRAIN_FRAGMENT_BUDGET = Number(process.env.BROWSER_SMOKE_FRAG_CHARS || 105000);
 // Noise sample sites per shaded ground fragment: 7 today — three field octaves,
 // the grain octave's three triplanar taps, and materials v3's one tile tap —
 // where materials v1 paid 4 on one world-XZ tap. Each site is four `gmHash`
@@ -3091,9 +3105,20 @@ if (baseFacts.units > baseFacts.unitBudget) {
       `budget — the terrain program already carries five shadow maps`,
   );
 }
-if (baseFacts.fetchesMax !== 3 * baseFacts.layers.length) {
+// Two counts since the biplanar wall tap (materials v5), and asserting both is
+// what keeps this a gate: level ground skips the wall block entirely, so it is
+// three maps x the layers; a wall pays a second plane and nothing else may
+// quietly appear in that doubling.
+if (baseFacts.fetchesLevel !== 3 * baseFacts.layers.length) {
   fail(
-    `tab A: base fetch ceiling ${baseFacts.fetchesMax} is not three maps x ${baseFacts.layers.length} layers`,
+    `tab A: base level-ground fetch count ${baseFacts.fetchesLevel} is not three maps x ` +
+      `${baseFacts.layers.length} layers`,
+  );
+}
+if (baseFacts.fetchesMax !== 2 * baseFacts.fetchesLevel) {
+  fail(
+    `tab A: base fetch ceiling ${baseFacts.fetchesMax} is not the two biplanar planes over a ` +
+      `level-ground ${baseFacts.fetchesLevel} — the wall tap adds one plane, not a third thing`,
   );
 }
 for (const [k, size] of [
@@ -3122,7 +3147,7 @@ if (baseFacts.anisotropy > Math.min(baseFacts.anisotropyMax, baseFacts.anisotrop
   fail(
     `tab A: base maps ship at anisotropy ${baseFacts.anisotropy} over a cap of ` +
       `${baseFacts.anisotropyMax} and a device max of ${baseFacts.anisotropyDeviceMax} — the cap is ` +
-      `what keeps twelve filtered fetches a fragment affordable`,
+      `what keeps ${baseFacts.fetchesMax} filtered fetches a fragment affordable`,
   );
 }
 // The hybrid policy as arithmetic. `albedoGain` is `identity colour / measured

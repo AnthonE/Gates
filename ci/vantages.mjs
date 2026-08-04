@@ -435,3 +435,22 @@ for (const r of rows) {
 }
 
 console.log(`  vantage gate: ${checks} checks passed over ${VANTAGES.length} vantages and 2 seeds`);
+
+// Teardown, and it has to happen HERE rather than in the `exit` handler above.
+// That handler is the whole bug: node fires `exit` when it runs out of live
+// handles, and the browser connection, the static server and the shard children
+// ARE live handles — so cleanup waited for an exit that cleanup was the only
+// thing that could cause. Measured 2026-08-04: every check on this gate passed
+// and the process then sat for 52 minutes, which `ci/gates.sh` waits on
+// forever. A gate that passes and never returns reads exactly like a hung one.
+//
+// `browser.close()` is a promise, so it is awaited before the exit rather than
+// fired into one — a Playwright handle that outlives the process is how the
+// orphaned chromium in this box's other failure mode gets made. The registered
+// handler stays for the `fail()` path, where a best-effort sync kill is all
+// that is available.
+try {
+  await browser?.close();
+} catch {}
+cleanup();
+process.exit(0);

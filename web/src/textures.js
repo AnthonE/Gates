@@ -299,10 +299,12 @@ export function groundTextures() {
  * the benefit of anisotropic filtering on a ground texture saturates by 4–8 —
  * past that the extra taps are resolving detail the mip chain has already
  * averaged — while the COST is linear in taps, and this ground takes up to
- * twelve filtered fetches per fragment. 16 x 12 is 192 texel samples on a
- * fragment, which the reference VPS would not notice and a software
- * rasterizer very much does: measured on this box, at 16 a second browser tab
- * did not reach the world at all.
+ * twenty-four filtered fetches per fragment since the biplanar wall tap
+ * (twelve on level ground, where the wall block is skipped). 16 x 24 is 384
+ * texel samples on a fragment, which the reference VPS would not notice and a
+ * software rasterizer very much does: measured on this box under the twelve
+ * that preceded biplanar, at 16 a second browser tab did not reach the world
+ * at all, and the second plane only widened that.
  *
  * 4 is the conventional floor where aniso has already bought most of what it
  * buys over trilinear, and it is a proposed default recorded in

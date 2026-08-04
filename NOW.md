@@ -138,7 +138,8 @@ Done items are deleted, not checked — history lives in git and
    assertion in that file whose sharp number is an absolute rather than a
    ratio: **5.90 luma/px at the level vantage and 8.61 near-ground, against
    0.41–0.47 from the octaves alone**, with §3's 6.3 printed beside it every
-   run. Three texture units, ≤12 fetches/fragment, 3.1 MB of §7's 12 MB.
+   run. Three texture units, 3.1 MB of §7's 12 MB, and ≤12 fetches/fragment —
+   ≤24 at a wall since materials v5 put the tap on two planes.
 
    Two things fell out of it, both recorded in the §open row: the octave probes
    (15b/15c/15d) now hold `uBase` at 0 across every leg, because a ratio cannot

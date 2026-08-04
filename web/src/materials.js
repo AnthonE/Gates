@@ -733,7 +733,8 @@ const BASE_CHROMA_STRETCH_MAX = 1.0;
 // them is not an approximation of the image: `mix(a, b, 0.0)` is `a`.
 //
 // It is also the cost decision, and it is stated as one rather than buried:
-// twelve fetches with anisotropic filtering is the most expensive thing in the
+// up to twenty-four fetches with anisotropic filtering — twelve on level
+// ground, both planes at a wall — is the most expensive thing in the
 // ground program, and the far field — where the answer is already known — is
 // most of the screen at any framing that is not pointed at the player's feet.
 // Measured on this box, that is the difference between a second browser tab
@@ -888,6 +889,31 @@ void gmBaseNrm(float lyr, float w, vec2 uv, vec2 dx, vec2 dy, inout vec2 nrm) {
   nrm += (texture2DGradEXT(uBaseNrm, vec3(uv, lyr), dx, dy).rg * 2.0 - 1.0) * w;
 }
 `;
+
+/**
+ * A GLSL template that keeps its prose in THIS file and out of the program.
+ *
+ * Every full-line `//` comment in the emitted source becomes an empty line —
+ * empty rather than deleted, so a driver's `ERROR: 0:412` still names the line
+ * this file shows. Nothing else is touched: trailing comments after code stay,
+ * because a `//` that is not at the start of a line is one regex away from
+ * being a bug and this saves almost nothing.
+ *
+ * Why it exists, since a size gate that prose can move is the thing to be
+ * careful about: `browser_smoke`'s terrain fragment budget counts characters
+ * of resolved GLSL as the proxy for what a software rasterizer charges a
+ * joining tab to compile. That proxy was written when this repo's share of the
+ * program was 8,145 chars and mostly code. The base maps and the biplanar wall
+ * tap took the share to ~33,000, of which roughly three-fifths was comment
+ * text — so the metric had started measuring how much we had explained
+ * ourselves, which is not a cost the driver pays in any way that matters. The
+ * budget is re-derived against the stripped program in `browser_smoke`, so the
+ * wall keeps its old relative strictness rather than pocketing the difference.
+ */
+const glsl = (strings, ...values) =>
+  strings
+    .reduce((acc, s, i) => acc + s + (i < values.length ? values[i] : ""), "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
 
 /**
  * The four call sites, unrolled.
@@ -1535,10 +1561,10 @@ export function makeTerrainMaterial(variantName = "ship") {
     // and leaves two locals (gmRough, gmH) for the roughness and normal
     // stages below — three's chunks run in one main(), so they carry.
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", `#include <common>\n${terrainFragPars(variant.grain)}`)
+      .replace("#include <common>", glsl`#include <common>\n${terrainFragPars(variant.grain)}`)
       .replace(
         "#include <color_fragment>",
-        /* glsl */ `
+        glsl`
         vec2 gmXZ = vGmPos.xz;
 
         // Filtered microstructure, hoisted: both octaves fade by pixel
@@ -1721,7 +1747,7 @@ ${grainGlsl(variant.grain)}
       // own, which is why `ci/bump_basis.mjs` tests the world half and stops.
       .replace(
         "#include <normal_fragment_maps>",
-        /* glsl */ `
+        glsl`
         #include <normal_fragment_maps>
         // Bump: the world-XZ gradient of gmH, solved from screen derivatives,
         // added to the ground's own heightfield. Never reads the triangle.
