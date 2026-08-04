@@ -87,12 +87,20 @@ Done items are deleted, not checked — history lives in git and
 1. **The container panel: the refusal path exists now, so the UI is
    startable.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.
    Systems half landed 2026-08-04, wire v17.)*
+1. **The inventory screen draws all 30 slots now; it still cannot move one.**
+   *(GAP PASS, 2026-08-04, from `findings/pass-20260804-173640-02-judge.md`
+   ranked gap 1 — also `-01`'s gap 1. Supersedes the old item 1: the SEE half
+   landed, sort and move did not.)*
 
-   There is no inventory or loot panel in `web/src` at all: wasm owns the 30
-   slots (`wasm.js:76`), the hotbar is the first 6 of them read on a timer
-   (`main.js:1303`), and looting is a payload-free `client_action_loot()` with
-   no container view (`main.js:426`). So the move/stack/split verb — the most
-   bug-prone thing in the reference — does not exist yet in either half.
+   Landed: `#inv` (index.html), `toggleInv`/`setInventory`/`setInvSelected`/
+   `focusSlot`/`eatsKey` (hud.js), Tab + Escape + the verb guard + the 30-slot
+   fill (main.js), and `ci/ui_smoke.mjs` group I. `setInventory` is
+   slot-indexed — belt 0..5, grid 6..29 — and the gate writes a distinct
+   string into each of the 30 and reads back which cell holds it, because
+   CLAUDE.md's positional-payload trap is exactly this shape and every field
+   here is a string. Mutation-tested against a swapped belt/grid, an
+   off-by-six readout, an inverted `eatsKey`, and a grid cell firing
+   `onInvSelect`; all four go red.
 
    **The systems half is done** — the request is answered, not deleted,
    because the UI half is what makes it reachable. `client_action_move(bag,
@@ -137,6 +145,22 @@ Done items are deleted, not checked — history lives in git and
      field the coarse per-instance patchiness a tiling map cannot supply —
      which means splitting `PROP_DETAIL_SHARE` into an albedo share and a bump
      share, since zeroing it today would take the bump with it.
+   Not startable here: drag/drop, stack split, the loot panel.
+   `client_action_loot()` is payload-free (`main.js:426`) so there is no
+   container view to draw, and a drag the sim cannot refuse is the divergence
+   CLAUDE.md's item-move trap describes.
+
+   **Systems lane, unchanged one-line request:** container move/stack/split in
+   `crates/`, validation ordered BEFORE the mutation and computed on the values
+   the client predicted with. Three Oxide fixes in 28 minutes on one 2019 day
+   were all splice-point moves that landed as *the server disconnecting the
+   client*. The panel is built and gated; wiring a drag to it is a small pass
+   once that refusal path exists.
+
+   Deliberately not drawn: worn/armour slots. `inventory.jpeg` has a
+   paperdoll, the client has no worn-slot data, and empty slots for a system
+   that does not exist are decoration. The renderer-tier carve-out that would
+   make this lane cheap is still **not armed** — `DECISIONS.md` §open.
 
 1. **The generated pine is built, gated, bundled — and not drawn.**
    *(Found while recovering the red join gate, 2026-08-04. `DECISIONS.md` §open
@@ -1332,6 +1356,18 @@ Done items are deleted, not checked — history lives in git and
    and it is still the thinnest margin in the suite: tab B needs a live
    tab A (mutual AOI is M0's exit condition), so no amount of harness
    tidying can hand it a quiet box.
+
+   **It now reaches past join, into the prewarm gate (ui lane, 2026-08-04).**
+   Four runs, same commit: tab B seen at 87.5 s and the pass FAILED on
+   `programsAtInWorld was never pinned`; at 63.5 s on a quiet box the same
+   commit passed with 0 late links. Clean `lane/ui` at 90.9 s also passed, so
+   the threshold is not a clean line — it is load. The pin needs four in-world
+   RAF frames and the box was serving p50 1166 / p99 2600 ms frames, so tab B
+   can be alive and answering `page.evaluate` while still short of four
+   frames. The assertion is a COUNT and correct; what it depends on is a
+   frame budget nobody has bounded. Read it as one more reason the seconds
+   below matter, and confirm any red here on a quiet box before believing a
+   diff caused it.
 
    The *client* half is therefore untouched and is the live risk. Grain
    did not cause it — the frame moved 630 → 638 ms, 1.3% — but nothing

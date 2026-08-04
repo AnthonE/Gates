@@ -129,6 +129,79 @@
         border-color: #7fa8c9;
         background: rgba(28, 44, 58, 0.7);
       }
+      /* The inventory screen (ALPHA.md §1: 6 hotbar, 24 inventory). Over
+         the live world, never a fullscreen opaque menu — the reference's
+         own inventory frame keeps the world visible behind it, and a
+         player reading a bag is still standing somewhere. Left edge so it
+         and #craft (right edge) can be open at once, which is how the
+         reference stacks them. */
+      #inv {
+        position: fixed;
+        left: 12px;
+        top: 48px;
+        display: none;
+        flex-direction: column;
+        gap: 6px;
+        background: rgba(10, 15, 20, 0.82);
+        border: 1px solid #2a3642;
+        border-radius: 6px;
+        padding: 8px;
+        z-index: 6;
+        font: 11px monospace;
+        color: #cdd9e4;
+      }
+      #invtitle,
+      #invdetail {
+        margin: 0;
+        font: 11px monospace;
+      }
+      #invtitle {
+        color: #7d8fa0;
+        letter-spacing: 1px;
+      }
+      #invdetail {
+        color: #a9cf8f;
+        min-height: 13px;
+      }
+      #invgrid {
+        display: grid;
+        grid-template-columns: repeat(6, 66px);
+        gap: 3px;
+      }
+      /* The belt row is the hotbar, seen from the inventory screen — same
+         six slots, same selection. Separated by a rule so it reads as the
+         strip it is and not as a fifth grid row. */
+      #invbelt {
+        display: flex;
+        gap: 3px;
+        padding-top: 6px;
+        border-top: 1px solid #2a3642;
+      }
+      .invcell {
+        width: 66px;
+        height: 38px;
+        background: rgba(10, 15, 20, 0.55);
+        border: 1px solid #2a3642;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        font: 10px monospace;
+        color: #cdd9e4;
+        overflow: hidden;
+        cursor: pointer;
+      }
+      .invcell:hover {
+        border-color: #46596b;
+      }
+      .invcell.sel {
+        border-color: #7fa8c9;
+        background: rgba(28, 44, 58, 0.7);
+      }
+      .invcell.focus {
+        border-color: #d9b96f;
+      }
       /* Chat: log bottom-left (the reference's kill/contacts feed sits
          there), composer directly under it. Plain DOM, outside the RAF
          path like every other panel. */
@@ -437,6 +510,12 @@
     <div id="build"></div>
     <div id="craftq"></div>
     <div id="craft"></div>
+    <div id="inv">
+      <p id="invtitle">INVENTORY</p>
+      <div id="invgrid"></div>
+      <div id="invbelt"></div>
+      <p id="invdetail"></p>
+    </div>
     <div id="vitals"></div>
     <div id="toasts"></div>
     <div id="chatlog"></div>
