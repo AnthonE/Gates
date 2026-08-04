@@ -122,6 +122,16 @@ const SUB_CONSUME_REFUSED: u32 = 33;
 /// salt sea *costs* hp, and `SUB_HEALTH` is absolute, so a client that
 /// only heard the new hp could not name what took it.
 const SUB_DRANK: u32 = 34;
+/// The death screen closed and a body woke (wire v16, world.rs). 36th of
+/// the 64 a 6-bit field holds, so no other event message moved for it.
+const SUB_RESPAWN: u32 = 35;
+/// Death-cause width (`sim_core::world::DEATH_BY_*`: hand, clock, salt).
+/// Three values in two bits, so the fourth is forgeable and both the
+/// encoder and the decoder refuse it — the hotbar selector's posture. Two
+/// and not three because a cause is a *closed* set the sim owns: a fourth
+/// way to die is a wire change, which is the point of wall 6.
+const DEATH_CAUSE_BITS: u32 = 2;
+const DEATH_CAUSE_MAX: u8 = 2;
 
 /// Consume-refusal reason width (`survival::REFUSE_C_*`: three codes
 /// today, and zero is reserved as "no reason", which the codec refuses).
@@ -417,10 +427,39 @@ pub enum EventMsg {
     Drank { water: u16, hp_cost: u16 },
     /// `victim` was killed by `killer` — broadcast, because a death is a
     /// world fact like a placement, and the kill feed the reference frames
-    /// carry bottom-left is built from exactly this. No cause, no weapon,
-    /// no position: what the world may know about a death is who and by
-    /// whom.
-    Death { victim: u32, killer: u32 },
+    /// carry bottom-left is built from exactly this.
+    ///
+    /// Widened in v16 to carry what the death screen is made of:
+    /// `cause` is a `sim_core::world::DEATH_BY_*` code, `item` the weapon
+    /// in the killer's hand (`NO_ITEM` when the world did it), `range_cm`
+    /// how far the blow landed from. **Still no position** — that is not an
+    /// omission but the rule ALPHA.md §1 states outright ("no map
+    /// position"): a death that told you where you fell would hand every
+    /// raider a map pin to the base they just cleared, and hand the corpse
+    /// one back. Who, with what, from how far. Never where.
+    ///
+    /// Broadcast rather than own-fact for the same reason it always was —
+    /// a kill feed reports kills nobody saw — and the extra three fields
+    /// broadcast with it because they are the feed's content too: "killed
+    /// you with a rock from 2 m" is the line, for everyone.
+    Death {
+        victim: u32,
+        killer: u32,
+        cause: u8,
+        item: u16,
+        range_cm: u16,
+    },
+    /// You woke up: `on_bag` is true if one of your own sleeping bags
+    /// answered, false if the beach ring did. Own-fact, and the one message
+    /// that closes the death screen.
+    ///
+    /// Carries no position on purpose — the snapshot has always carried
+    /// that and still does. What it carries is the thing a coordinate
+    /// cannot say: *which anchor answered*. Ask for a bag inside its
+    /// five-minute cooldown and the ring answers instead (world.rs), and a
+    /// player who is not told that has no way to learn it except by
+    /// looking around at a beach they did not choose.
+    Respawn { on_bag: bool },
     /// A death backpack landed at a world position — broadcast, because a
     /// bag on the ground is a world fact like a placement. What is inside
     /// is deliberately absent: v0 has no container UI, the take is
@@ -1139,11 +1178,34 @@ pub fn encode_event_drank(water: u16, hp_cost: u16, buf: &mut [u8]) -> Result<us
     Ok(w.finish())
 }
 
-/// A death, broadcast.
-pub fn encode_event_death(victim: u32, killer: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+/// A death, broadcast — with what the death screen and the kill feed both
+/// need to say a sentence rather than a name. `cause` is a
+/// `sim_core::world::DEATH_BY_*` code; the width is the range check, so a
+/// forged one cannot decode.
+pub fn encode_event_death(
+    victim: u32,
+    killer: u32,
+    cause: u8,
+    item: u16,
+    range_cm: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cause > DEATH_CAUSE_MAX {
+        return Err(WireError::Range);
+    }
     let mut w = begin(buf, SUB_DEATH)?;
     w.write(victim, 32)?;
     w.write(killer, 32)?;
+    w.write(cause as u32, DEATH_CAUSE_BITS)?;
+    w.write(item as u32, 16)?;
+    w.write(range_cm as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// A body woke up, own-fact — see `EventMsg::Respawn`.
+pub fn encode_event_respawn(on_bag: bool, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_RESPAWN)?;
+    w.write_bit(on_bag)?;
     Ok(w.finish())
 }
 
@@ -1577,9 +1639,23 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             EventMsg::Drank { water, hp_cost }
         }
-        SUB_DEATH => EventMsg::Death {
-            victim: r.read(32)?,
-            killer: r.read(32)?,
+        SUB_DEATH => {
+            let victim = r.read(32)?;
+            let killer = r.read(32)?;
+            let cause = r.read(DEATH_CAUSE_BITS)? as u8;
+            if cause > DEATH_CAUSE_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Death {
+                victim,
+                killer,
+                cause,
+                item: r.read(16)? as u16,
+                range_cm: r.read(16)? as u16,
+            }
+        }
+        SUB_RESPAWN => EventMsg::Respawn {
+            on_bag: r.read_bit()?,
         },
         SUB_BAG_DROPPED => {
             let b = read_bag(&mut r)?;
@@ -2211,11 +2287,11 @@ mod tests {
             "spare byte after a valid message must fail the strict tail"
         );
         // kind EVENT + the first unused subtype — 30 became struct-hit,
-        // 31–33 the survival clock's three and 34 the drink, so this moves
-        // up with every new subtype, exactly as intended. The 5 → 6
-        // widening at v13 leaves 29 codes free after it, so the probe
-        // keeps a code of its own for a long time.
-        const UNUSED_SUB: u32 = SUB_DRANK + 1;
+        // 31–33 the survival clock's three, 34 the drink and 35 the
+        // respawn, so this moves up with every new subtype, exactly as
+        // intended. The 5 → 6 widening at v13 leaves 28 codes free after
+        // it, so the probe keeps a code of its own for a long time.
+        const UNUSED_SUB: u32 = SUB_RESPAWN + 1;
         const { assert!(UNUSED_SUB < 1 << SUB_BITS, "the probe must fit the field") };
         let raw = [
             (KIND_EVENT | (UNUSED_SUB << KIND_BITS)) as u8,

@@ -104,6 +104,12 @@ grep -q '^bags ' "$native_out" || fail "probe output has no bags line — respaw
 # a digest is only evidence of parity, never of coverage. `probe_bags`
 # counts the deaths that woke on a bag; zero means the fixture stopped
 # reaching the scan and the parity claim above it is empty.
+#
+# Since wire v16 this count is strictly stronger than it was. A death no
+# longer wakes a body by itself: it lays it on the death screen, and only a
+# `Command::Respawn` from that player reaches the scan. So a nonzero here
+# proves the whole chain — the death, `World::die`, the corpse ticks, the
+# answer, and the bag scan — ran on BOTH targets, not just the last link.
 bag_wakes="$(awk '/^bags /{print $5}' "$native_out")"
 [ -n "$bag_wakes" ] && [ "$bag_wakes" -gt 0 ] \
   || fail "test_parity_wasm: the bags probe woke nobody on a bag (count '$bag_wakes') — the respawn scan is not actually on the parity surface"

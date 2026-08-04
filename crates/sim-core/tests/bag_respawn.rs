@@ -3,10 +3,12 @@
 //!
 //! `deploy.rs`'s own unit tests own the *scan* — nearest, owner-only, spent
 //! for its cooldown, blind to every archetype that is not a bag. This file
-//! owns the **consequence**, which lives in `World::respawn` and which the
-//! deploy module cannot reach: that a death actually consults it, that the
-//! spawn ring is still there when it answers `None`, and that a body waking
-//! on a bag wakes with everything else a respawn owes it.
+//! owns the **consequence**, which lives in `World::die`/`World::wake` and
+//! which the deploy module cannot reach: that a death lays the body down
+//! and the *player's answer* consults the scan, that the spawn ring is
+//! still there when it answers `None`, that asking for a beach never spends
+//! a bag, and that a body waking on a bag wakes with everything else a
+//! respawn owes it.
 //!
 //! Nothing here invents a number. The clock that does the killing is
 //! `SurvivalContent::probe_fixture`, whose spans are seconds precisely so a
@@ -111,20 +113,46 @@ fn place_bag(w: &mut World, cx: u16, cz: u16) {
     );
 }
 
-/// Empty both meters and run until the clock takes the body. Returns the
-/// position it woke on, read on the tick the death landed so a later step
-/// of movement cannot smear the answer.
-fn die(w: &mut World) -> (i32, i32) {
+/// Empty both meters and run until the clock takes the body. The body is
+/// on the death screen when this returns and has gone nowhere: since v16 a
+/// death is not a respawn, it is a body lying where it fell waiting for an
+/// answer.
+fn die(w: &mut World) {
     let before = w.players[0].deaths;
     w.players[0].food = 0;
     w.players[0].water = 0;
     for _ in 0..120 * TICK_HZ {
         w.tick(&[]);
         if w.players[0].deaths > before {
-            return (w.players[0].body.qx, w.players[0].body.qz);
+            assert!(
+                w.players[0].dead,
+                "the clock killed the body and it woke by itself — the death \
+                 screen has no one waiting on it"
+            );
+            return;
         }
     }
     panic!("the clock never killed the body — the survival fixture changed under this test");
+}
+
+/// Answer the screen and return the position the body woke on, read on the
+/// tick the answer landed so a later step of movement cannot smear it.
+fn wake(w: &mut World, on_bag: bool) -> (i32, i32) {
+    assert!(
+        w.players[0].dead,
+        "nothing to answer — the body is standing"
+    );
+    w.tick(&[Command::Respawn { id: 1, on_bag }]);
+    assert!(!w.players[0].dead, "the answer did not wake the body");
+    (w.players[0].body.qx, w.players[0].body.qz)
+}
+
+/// The common case: die, then ask for a bag. Every test below that used to
+/// call `die` and read a position calls this, because "the bag answered"
+/// is now two facts — the world offered and the player asked.
+fn die_and_wake(w: &mut World, on_bag: bool) -> (i32, i32) {
+    die(w);
+    wake(w, on_bag)
 }
 
 /// Where `Body::at` would put a body standing on this cell — the answer the
@@ -159,7 +187,7 @@ fn a_death_wakes_you_on_your_own_bag() {
     stand(&mut w, fx, fz);
     assert_ne!((fx, fz), (cx, cz), "the fixture must move the body");
 
-    let woke = die(&mut w);
+    let woke = die_and_wake(&mut w, true);
     assert_eq!(
         woke,
         body_on(&w, cx, cz),
@@ -185,7 +213,7 @@ fn a_death_wakes_you_on_your_own_bag() {
 #[test]
 fn no_bag_is_still_the_spawn_ring() {
     let mut w = lone_world();
-    let woke = die(&mut w);
+    let woke = die_and_wake(&mut w, true);
     let (x, z) = w.spawn_pos_n(1, 1);
     let b = sim_core::movement::Body::at(SEED, x, z);
     assert_eq!(
@@ -210,10 +238,14 @@ fn a_second_death_inside_the_cooldown_falls_back_to_the_ring() {
     let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
     place_bag(&mut w, cx, cz);
 
-    assert_eq!(die(&mut w), body_on(&w, cx, cz), "first death: the bag");
+    assert_eq!(
+        die_and_wake(&mut w, true),
+        body_on(&w, cx, cz),
+        "first death: the bag"
+    );
     let after_first = w.tick;
 
-    let woke = die(&mut w);
+    let woke = die_and_wake(&mut w, true);
     assert!(
         w.tick - after_first < BAG_COOLDOWN_TICKS,
         "the second death landed after the cooldown had already lapsed — \
@@ -244,12 +276,12 @@ fn a_second_bag_answers_the_second_death() {
     // the second death has to reach past a spent bag to find the other.
     stand(&mut w, cx, cz);
     assert_eq!(
-        die(&mut w),
+        die_and_wake(&mut w, true),
         body_on(&w, cx, cz),
         "first death: the near bag"
     );
     assert_eq!(
-        die(&mut w),
+        die_and_wake(&mut w, true),
         body_on(&w, bx, bz),
         "the second death did not fall through to the owner's other bag"
     );
@@ -264,14 +296,18 @@ fn the_bag_answers_again_once_its_cooldown_lapses() {
     let mut w = lone_world();
     let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
     place_bag(&mut w, cx, cz);
-    assert_eq!(die(&mut w), body_on(&w, cx, cz), "first death: the bag");
+    assert_eq!(
+        die_and_wake(&mut w, true),
+        body_on(&w, cx, cz),
+        "first death: the bag"
+    );
 
     // Leap the clock past the cooldown, exactly as the deploy probe leaps
     // it past an upkeep period: every timer here is tick-driven, so the
     // leap is the same arithmetic five real minutes would have done.
     w.tick += BAG_COOLDOWN_TICKS;
     assert_eq!(
-        die(&mut w),
+        die_and_wake(&mut w, true),
         body_on(&w, cx, cz),
         "the bag never woke up — a cooldown that does not lapse is a consumable"
     );
@@ -304,5 +340,247 @@ fn the_cooldown_is_hashed_state() {
         "the bag cooldown is not inside state_hash — a replay resuming \
          mid-cooldown would wake a body on a bag the first run had spent, \
          and the two runs would still call themselves the same world"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The death screen and the choice (wire v16, ALPHA.md §1's respawn flow)
+// ---------------------------------------------------------------------------
+
+/// The state the whole slice exists for: a death is a body lying where it
+/// fell, not a body somewhere else. Before v16 the sim picked the anchor
+/// and the player was already standing on it by the time the client heard
+/// anything, so there was nothing a death screen could have been about.
+#[test]
+fn a_death_leaves_the_body_where_it_fell_and_waiting() {
+    let mut w = lone_world();
+    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    place_bag(&mut w, cx, cz);
+    let (fx, fz) = buildable_cell_near(SEED, 341, 341, 40);
+    stand(&mut w, fx, fz);
+    let fell = (w.players[0].body.qx, w.players[0].body.qz);
+
+    die(&mut w);
+    assert!(w.players[0].dead, "the screen is not up");
+    assert_eq!(w.players[0].hp, 0, "a corpse is at zero");
+    assert_eq!(
+        (w.players[0].body.qx, w.players[0].body.qz),
+        fell,
+        "the body moved without anyone answering the screen"
+    );
+    assert!(
+        respawn_event(&w).is_none(),
+        "the death announced a respawn — nothing has answered yet"
+    );
+
+    // …and it stays there. A minute of ticks with a ready bag two cells
+    // away and nothing wakes it: there is no timer here, by design.
+    for _ in 0..60 * TICK_HZ {
+        w.tick(&[]);
+        assert!(w.players[0].dead, "something released the death screen");
+    }
+    assert_eq!(
+        (w.players[0].body.qx, w.players[0].body.qz),
+        fell,
+        "the corpse drifted"
+    );
+}
+
+/// The choice, in one assertion: the same death, the same ready bag, and
+/// the beach button puts you on the ring instead. This is the half v2 could
+/// not express — it always took the bag.
+#[test]
+fn the_beach_button_refuses_a_ready_bag() {
+    let mut w = lone_world();
+    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    place_bag(&mut w, cx, cz);
+    stand(&mut w, cx, cz);
+
+    die(&mut w);
+    let woke = wake(&mut w, false);
+    let (x, z) = w.spawn_pos_n(1, 1);
+    let b = sim_core::movement::Body::at(SEED, x, z);
+    assert_eq!(
+        woke,
+        (b.qx, b.qz),
+        "the beach button woke the body on its bag anyway"
+    );
+    assert_eq!(
+        respawn_event(&w),
+        Some((1, false)),
+        "the respawn claimed a bag the player refused"
+    );
+}
+
+/// …and refusing it does not *spend* it. A choice that cost the same either
+/// way would not be a choice: walk away from one fight and the bag is still
+/// there for the next death.
+#[test]
+fn a_refused_bag_is_not_a_spent_bag() {
+    let mut w = lone_world();
+    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    place_bag(&mut w, cx, cz);
+    stand(&mut w, cx, cz);
+
+    die(&mut w);
+    let hash_before = w.state_hash();
+    wake(&mut w, false);
+    assert_eq!(
+        w.deploys.bag_ready()[0],
+        0,
+        "the beach answer stamped the bag's cooldown"
+    );
+    assert_ne!(
+        hash_before,
+        w.state_hash(),
+        "the wake moved nothing at all — this fixture is not proving anything"
+    );
+
+    // The proof it is still live: the very next death takes it.
+    assert_eq!(
+        die_and_wake(&mut w, true),
+        body_on(&w, cx, cz),
+        "the refused bag would not answer the next death — it was spent after all"
+    );
+}
+
+/// Asking for a bag you do not have is a beach, not a refusal. A player
+/// stuck behind a screen their button cannot dismiss has left the game,
+/// which is why this is the one place the sim silently gives you the other
+/// answer instead of announcing that it will not.
+#[test]
+fn asking_for_a_bag_you_have_not_got_is_a_beach() {
+    let mut w = lone_world();
+    die(&mut w);
+    let woke = wake(&mut w, true);
+    let (x, z) = w.spawn_pos_n(1, 1);
+    let b = sim_core::movement::Body::at(SEED, x, z);
+    assert_eq!(woke, (b.qx, b.qz), "an unanswerable ask stranded the body");
+    assert_eq!(
+        respawn_event(&w),
+        Some((1, false)),
+        "the event must say a beach answered, so the client can say so too"
+    );
+}
+
+/// A corpse does not play. Every verb resolves through `live_slot_of`, and
+/// the one that proves it end-to-end is the one a dead body could otherwise
+/// use to un-kill itself: eating.
+#[test]
+fn a_corpse_cannot_act() {
+    let mut w = lone_world();
+    w.players[0].inv[0] = ItemStack {
+        item: BAG_ITEM,
+        count: 4,
+    };
+    die(&mut w);
+    // The backpack took the inventory with it; put something back by hand
+    // so the refusal below is the death screen's and not an empty slot's.
+    w.players[0].inv[0] = ItemStack {
+        item: BAG_ITEM,
+        count: 4,
+    };
+    let hash_before = w.state_hash();
+
+    w.tick(&[
+        Command::Consume { id: 1, slot: 0 },
+        Command::Drink { id: 1 },
+        Command::Loot { id: 1 },
+        Command::PlaceDeploy {
+            id: 1,
+            row: BAG_ROW,
+            cx: 341,
+            cz: 341,
+            level: 0,
+            loc: LOC_PLANE,
+        },
+    ]);
+    assert!(w.players[0].dead, "a verb woke the corpse");
+    assert_eq!(w.players[0].hp, 0, "a corpse healed itself");
+    assert_eq!(
+        w.players[0].inv[0].count, 4,
+        "the corpse ate — a dead body spent an item"
+    );
+    // The tick counter is the only thing that moved, and it is not state
+    // this compares: re-hash at the same tick by construction.
+    w.tick -= 1;
+    assert_eq!(
+        hash_before,
+        w.state_hash(),
+        "four verbs from a dead body changed the world"
+    );
+}
+
+/// A respawn from a body that is *standing* does nothing. The wire cannot
+/// forge a bag id (the action carries one bit), so this is the whole of the
+/// verb's forgeable surface: pressing it twice, or at all, while alive.
+#[test]
+fn a_respawn_from_a_live_body_does_nothing() {
+    let mut w = lone_world();
+    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    place_bag(&mut w, cx, cz);
+    stand(&mut w, cx, cz);
+    let stood = (w.players[0].body.qx, w.players[0].body.qz);
+
+    w.tick(&[
+        Command::Respawn {
+            id: 1,
+            on_bag: true,
+        },
+        Command::Respawn {
+            id: 1,
+            on_bag: false,
+        },
+    ]);
+    assert_eq!(
+        (w.players[0].body.qx, w.players[0].body.qz),
+        stood,
+        "a live body was moved by a respawn press"
+    );
+    assert_eq!(w.players[0].deaths, 0, "a press invented a death");
+    assert_eq!(
+        w.deploys.bag_ready()[0],
+        0,
+        "a live body's press spent its own bag"
+    );
+    assert!(respawn_event(&w).is_none(), "a live press announced a wake");
+}
+
+/// The clock and the sea are different sentences, and the record says
+/// which. `EV_DRANK` exists for exactly this reason one shelf over: a
+/// number with no cause on it is not information.
+#[test]
+fn the_world_names_which_way_it_killed_you() {
+    let mut w = lone_world();
+    die(&mut w);
+    assert_eq!(w.players[0].death_cause, sim_core::world::DEATH_BY_CLOCK);
+    assert_eq!(
+        w.players[0].death_by, 1,
+        "the world's deaths are self-dealt"
+    );
+    assert_eq!(
+        w.players[0].death_item,
+        sim_core::gather::NO_ITEM,
+        "the clock holds no weapon"
+    );
+    assert_eq!(w.players[0].death_range_cm, 0);
+}
+
+/// The screen is sim state, so two worlds that disagree about whether a
+/// body is standing must not agree about their hashes (wall 5). A replay
+/// that reproduced the position and lost the screen would resume with a
+/// player who can act and a client that cannot.
+#[test]
+fn the_death_screen_is_hashed_state() {
+    let mut w = lone_world();
+    die(&mut w);
+    let dead = w.state_hash();
+    let tick = w.tick;
+    wake(&mut w, false);
+    w.tick = tick;
+    assert_ne!(
+        dead,
+        w.state_hash(),
+        "the death screen is not inside state_hash"
     );
 }

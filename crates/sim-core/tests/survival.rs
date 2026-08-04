@@ -32,12 +32,20 @@ fn lone_world() -> World {
 
 /// Run until the clock kills the only body *again* — the count is read
 /// against where it started, so a second call cannot be satisfied by the
-/// first call's death. Returns the tick the death landed on.
+/// first call's death — then answer the death screen with the beach, which
+/// is what a clock death used to do by itself before wire v16 put the
+/// choice in the player's hands (`bag_respawn.rs` owns the choice; this
+/// file is about the clock). Returns the tick the death landed on.
 fn run_until_death(w: &mut World, ticks: u32) -> Option<u32> {
     let before = w.players[0].deaths;
     for t in 0..ticks {
         w.tick(&[]);
         if w.players[0].deaths > before {
+            assert!(w.players[0].dead, "a clock death did not raise the screen");
+            w.tick(&[Command::Respawn {
+                id: 1,
+                on_bag: false,
+            }]);
             return Some(t);
         }
     }
@@ -306,6 +314,19 @@ fn drinking_yourself_to_death_is_a_death() {
         .filter(|e| e.code == sim_core::world::EV_DEATH && e.a == e.b)
         .count();
     assert_eq!(self_death, 1, "a death by the world names one id twice");
+    // The sea is its own sentence on the death screen: `DEATH_BY_SALT` and
+    // not the clock's code, for `EV_DRANK`'s reason one shelf over — a
+    // death you pressed a key for is not a death that happened to you.
+    assert!(w.players[0].dead, "the salt death did not raise the screen");
+    assert_eq!(
+        w.players[0].death_cause,
+        sim_core::world::DEATH_BY_SALT,
+        "the sea was recorded as the clock"
+    );
+    w.tick(&[Command::Respawn {
+        id: 1,
+        on_bag: false,
+    }]);
     assert_eq!(
         (w.players[0].food, w.players[0].water),
         (sc.max_food, sc.max_water),

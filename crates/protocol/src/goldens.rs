@@ -27,63 +27,65 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 56] = [
-    "v15_input_acks_only.bin",
-    "v15_input_full.bin",
-    "v15_snapshot_keyframe.bin",
-    "v15_snapshot_delta.bin",
-    "v15_snapshot_cap.bin",
-    "v15_hello.bin",
-    "v15_welcome.bin",
-    "v15_refuse_full.bin",
-    "v15_event_gather.bin",
-    "v15_event_inv.bin",
-    "v15_event_slot_harvested.bin",
-    "v15_event_slot_respawned.bin",
-    "v15_event_slot_sync.bin",
-    "v15_event_catalog.bin",
-    "v15_event_weak_mark.bin",
-    "v15_event_craft_q.bin",
-    "v15_event_craft_done.bin",
-    "v15_event_craft_refused.bin",
-    "v15_event_recipes.bin",
-    "v15_action_craft.bin",
-    "v15_action_cancel.bin",
-    "v15_action_place.bin",
-    "v15_event_piece_placed.bin",
-    "v15_event_piece_sync.bin",
-    "v15_event_build_refused.bin",
-    "v15_event_piece_defs.bin",
-    "v15_action_deploy.bin",
-    "v15_action_feed.bin",
-    "v15_event_deploy_placed.bin",
-    "v15_event_deploy_sync.bin",
-    "v15_event_deploy_refused.bin",
-    "v15_event_deploy_defs.bin",
-    "v15_event_piece_removed.bin",
-    "v15_event_deploy_removed.bin",
-    "v15_event_stock.bin",
-    "v15_action_use.bin",
-    "v15_action_lock.bin",
-    "v15_event_door.bin",
-    "v15_action_upgrade.bin",
-    "v15_chat.bin",
-    "v15_event_chat.bin",
-    "v15_event_hit.bin",
-    "v15_event_health.bin",
-    "v15_event_death.bin",
-    "v15_action_loot.bin",
-    "v15_event_bag_dropped.bin",
-    "v15_event_bag_sync.bin",
-    "v15_event_bag_removed.bin",
-    "v15_event_struct_hit_piece.bin",
-    "v15_event_struct_hit_deploy.bin",
-    "v15_event_vitals.bin",
-    "v15_event_consumed.bin",
-    "v15_event_consume_refused.bin",
-    "v15_action_consume.bin",
-    "v15_event_drank.bin",
-    "v15_action_drink.bin",
+pub const FIXTURES: [&str; 58] = [
+    "v16_input_acks_only.bin",
+    "v16_input_full.bin",
+    "v16_snapshot_keyframe.bin",
+    "v16_snapshot_delta.bin",
+    "v16_snapshot_cap.bin",
+    "v16_hello.bin",
+    "v16_welcome.bin",
+    "v16_refuse_full.bin",
+    "v16_event_gather.bin",
+    "v16_event_inv.bin",
+    "v16_event_slot_harvested.bin",
+    "v16_event_slot_respawned.bin",
+    "v16_event_slot_sync.bin",
+    "v16_event_catalog.bin",
+    "v16_event_weak_mark.bin",
+    "v16_event_craft_q.bin",
+    "v16_event_craft_done.bin",
+    "v16_event_craft_refused.bin",
+    "v16_event_recipes.bin",
+    "v16_action_craft.bin",
+    "v16_action_cancel.bin",
+    "v16_action_place.bin",
+    "v16_event_piece_placed.bin",
+    "v16_event_piece_sync.bin",
+    "v16_event_build_refused.bin",
+    "v16_event_piece_defs.bin",
+    "v16_action_deploy.bin",
+    "v16_action_feed.bin",
+    "v16_event_deploy_placed.bin",
+    "v16_event_deploy_sync.bin",
+    "v16_event_deploy_refused.bin",
+    "v16_event_deploy_defs.bin",
+    "v16_event_piece_removed.bin",
+    "v16_event_deploy_removed.bin",
+    "v16_event_stock.bin",
+    "v16_action_use.bin",
+    "v16_action_lock.bin",
+    "v16_event_door.bin",
+    "v16_action_upgrade.bin",
+    "v16_chat.bin",
+    "v16_event_chat.bin",
+    "v16_event_hit.bin",
+    "v16_event_health.bin",
+    "v16_event_death.bin",
+    "v16_action_loot.bin",
+    "v16_event_bag_dropped.bin",
+    "v16_event_bag_sync.bin",
+    "v16_event_bag_removed.bin",
+    "v16_event_struct_hit_piece.bin",
+    "v16_event_struct_hit_deploy.bin",
+    "v16_event_vitals.bin",
+    "v16_event_consumed.bin",
+    "v16_event_consume_refused.bin",
+    "v16_action_consume.bin",
+    "v16_event_drank.bin",
+    "v16_action_drink.bin",
+    "v16_event_respawn.bin",
+    "v16_action_respawn.bin",
 ];
 
 /// The drink acknowledgement: water restored and the hp it cost. Both
@@ -573,9 +575,30 @@ pub fn event_health() -> (u16, u16) {
 }
 
 /// A kill: victim and killer, both real ids, neither zero (a zero would
-/// let a decoder's default pass for a value).
-pub fn event_death() -> (u32, u32) {
-    (4_242, 7)
+/// let a decoder's default pass for a value) — and, since v16, the three
+/// fields the death screen is made of. `DEATH_BY_HAND` is deliberately
+/// *not* the cause here: it is code 0, and a fixture that pinned the
+/// default could not tell an encoder that dropped the field from one that
+/// wrote it. `DEATH_BY_SALT` (2) is the top of the two-bit range, so the
+/// same fixture also pins the width. The weapon is a real row and the
+/// range is a real reach, both nonzero and different from each other and
+/// from every other number in the tuple.
+pub fn event_death() -> (u32, u32, u8, u16, u16) {
+    (4_242, 7, 2, 13, 187)
+}
+
+/// A wake on the player's own bag. `true` and not `false` for the reason
+/// the cause above is not zero: a one-bit field pinned at its default is a
+/// fixture an encoder that never wrote the bit would still pass.
+pub fn event_respawn() -> bool {
+    true
+}
+
+/// The beach half of the choice — `false`, so the action fixture and the
+/// event fixture pin opposite values of the two one-bit fields v16 adds
+/// and neither can be satisfied by a stuck encoder.
+pub fn action_respawn() -> bool {
+    false
 }
 
 /// A meter pair partway down the shipped 100/100 ceilings, with food and

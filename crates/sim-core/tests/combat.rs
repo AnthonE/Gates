@@ -15,7 +15,7 @@ use sim_core::gather::{GatherContent, ItemStack, NO_ITEM, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::terrain::{self, Occupant};
-use sim_core::world::{Command, World};
+use sim_core::world::{Command, World, DEATH_BY_HAND};
 use sim_core::yaw_dir;
 
 const SEED: u64 = 20260802;
@@ -132,6 +132,19 @@ fn three_swings_kill_and_the_count_is_the_content_s() {
         "kill took {hits} swings, not {expect_hits}"
     );
     assert_eq!(w.players[1].deaths, 1);
+    // Since wire v16 the third swing ends the body rather than replacing
+    // it: the corpse waits on the death screen until its own player
+    // answers, so "a respawn is a whole body" is asserted after the answer.
+    assert!(
+        w.players[1].dead,
+        "the kill did not put up the death screen"
+    );
+    assert_eq!(w.players[1].hp, 0);
+    w.tick(&[Command::Respawn {
+        id: 2,
+        on_bag: false,
+    }]);
+    assert!(!w.players[1].dead);
     assert_eq!(w.players[1].hp, FIXTURE_HP, "a respawn is a whole body");
 }
 
@@ -284,6 +297,25 @@ fn death_takes_the_beach_and_everything_on_you() {
     w.players[1].hp = 1; // one swing from the end
 
     swing_once(&mut w, 1, yaw, 0);
+
+    // The death screen first: the body is down, holding the sentence the
+    // wire encodes off it, and it has not moved (wire v16, world.rs).
+    {
+        let v = &w.players[1];
+        assert!(v.dead, "the kill did not put up the death screen");
+        assert_eq!(v.death_cause, DEATH_BY_HAND);
+        assert_eq!(v.death_by, 1, "the killer is the other player");
+        assert_eq!(v.death_item, SPEAR, "the weapon that did it");
+        assert!(
+            (90..=110).contains(&v.death_range_cm),
+            "one metre of reach read as {} cm",
+            v.death_range_cm
+        );
+    }
+    w.tick(&[Command::Respawn {
+        id: 2,
+        on_bag: false,
+    }]);
 
     let v = &w.players[1];
     assert_eq!(v.deaths, 1);

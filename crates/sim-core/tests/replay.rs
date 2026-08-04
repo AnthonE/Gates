@@ -21,18 +21,25 @@ const TICKS: u64 = 900;
 ///
 /// Regenerated this commit, and **structurally rather than behaviourally**
 /// — the distinction matters, because only one of the two is evidence that
-/// a new rule runs here. Respawn-on-bag put the deploy store's bag
-/// cooldowns into the state digest, and this script stands a great many
-/// deployables, so the number below moved by eight zero bytes per record.
-/// It moved for no other reason: **nothing on this surface can die.** The
-/// script installs no `CombatContent`, so every body here has
-/// `hp_max == 0` (the drink comment below says the same thing about the
-/// salt death), and a respawn is the only thing that ever spends a bag.
+/// a new rule runs here. The death screen put five fields on every
+/// `Player` (`dead` and the four facts the wire encodes off it) and all
+/// five are in the state digest, so the number below moved by ten bytes
+/// per active body. It moved for no other reason: **nothing on this
+/// surface can die**, so every one of those ten bytes is the value a live
+/// body carries — `false`, `0`, `0`, `NO_ITEM`, `0`. The script installs
+/// no `CombatContent`, so every body here has `hp_max == 0` (the drink
+/// comment below says the same thing about the salt death), and a body
+/// that cannot die never reaches `World::die`.
 /// `test_alloc_zero` and `crates/sim-core/tests/bag_respawn.rs` own the
-/// behaviour; what this gate owns is that the cooldowns are *in the hash*,
-/// which is the property a WAL resumed mid-cooldown depends on.
+/// behaviour; what this gate owns is that the screen is *in the hash*,
+/// which is what a WAL resumed over a corpse depends on.
 ///
-/// The regeneration before it: **the drink verb runs on this surface.**
+/// The regeneration before it was structural for the same reason:
+/// respawn-on-bag put the deploy store's bag cooldowns into the digest,
+/// and this script stands a great many deployables, so it moved by eight
+/// zero bytes per record.
+///
+/// The regeneration before that: **the drink verb runs on this surface.**
 /// Bot 21 is stood on a scanned shoreline and presses drink every seven
 /// ticks from the moment it joins, so the number below is a function of
 /// the meter write, the full refusal, the dry refusal, and the five
@@ -50,7 +57,7 @@ const TICKS: u64 = 900;
 /// survival module's fields entering `state_hash` while the script left
 /// them all zero, and before that the death backpack's two zero-length
 /// store fields.
-const GOLDEN_FINAL_HASH: u64 = 0x4FBD_8DEA_BE64_B033;
+const GOLDEN_FINAL_HASH: u64 = 0xA232_2ECF_032C_E3BA;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

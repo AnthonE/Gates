@@ -252,6 +252,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
 pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u64 {
     let mut h = Xxh3::new();
     let mut wakes: u32 = 0;
+    let mut screens: u32 = 0;
     for s in 0..sequences {
         let seq_seed = splitmix64(master_seed ^ (s as u64));
         let mut world = World::new(seq_seed);
@@ -297,6 +298,13 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
                 };
                 (cell(b.qx), cell(b.qz))
             };
+            // Two bots ask for a bag and one asks for the beach, every
+            // tick, unconditionally — a press from a standing body is a
+            // no-op (world.rs), so this puts *both* answers on the parity
+            // surface permanently rather than whichever one a schedule
+            // happened to reach. Bot 3's beach press is also the only
+            // thing that proves the refusal does not spend a bag on one
+            // target and does on the other.
             world.tick(&[
                 Command::Input { id: 1, frame: f1 },
                 Command::Input { id: 2, frame: f2 },
@@ -309,15 +317,47 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
                     level: 0,
                     loc: crate::build::LOC_PLANE,
                 },
+                Command::Respawn {
+                    id: 1,
+                    on_bag: true,
+                },
+                Command::Respawn {
+                    id: 2,
+                    on_bag: true,
+                },
+                Command::Respawn {
+                    id: 3,
+                    on_bag: false,
+                },
             ]);
             for e in world.events.entries() {
                 if e.code == crate::world::EV_RESPAWN && e.b == 1 {
                     wakes = wakes.saturating_add(1);
                 }
             }
+            // Slot-ticks spent on the death screen. Counted beside the
+            // wakes for the reason the wakes are counted beside the
+            // digest: two targets can agree byte-for-byte about a path
+            // neither ran, and `dead` is now the gate between a death and
+            // a respawn — a zero here means the screen state itself has
+            // fallen off the surface, whatever the wakes say.
+            for p in world.players.iter().take(3) {
+                if p.dead {
+                    screens = screens.saturating_add(1);
+                }
+            }
         }
         h.update(&world.state_hash().to_le_bytes());
     }
+    // Folded into the digest rather than returned beside the wakes: the
+    // count of corpse-ticks is real parity surface (two targets that
+    // disagreed about how long a body lay there would disagree here), but
+    // it needs no gate of its own. Since v16 a wake is only reachable
+    // *through* the screen — `Command::Respawn` does nothing to a standing
+    // body — so `ci/gates.sh`'s existing "wakes > 0" is now strictly
+    // stronger than it was: it proves the death, the screen, the answer
+    // and the scan, in that order.
+    h.update(&screens.to_le_bytes());
     ((wakes as u64) << 32) | (h.digest() & 0xFFFF_FFFF)
 }
 
@@ -432,6 +472,13 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
             // digest carries the dry refusal, the landed drink, the full
             // refusal, and the salt death with its respawn, on both
             // targets or on neither.
+            // …and every bot answers its own death screen every tick,
+            // which since wire v16 is what a respawn *is*. Unconditional,
+            // because a press from a standing body is a no-op by design
+            // (world.rs) — so the surface carries the wake, the corpse tick
+            // that precedes it, and the press that does nothing, on both
+            // targets or on neither. The beach for all three: a bag scan
+            // is `probe_bags`'s subject and this world places none.
             world.tick(&[
                 Command::Input { id: 1, frame: f1 },
                 Command::Input { id: 2, frame: f2 },
@@ -442,6 +489,18 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
                     slot: (t % 8) as u8,
                 },
                 Command::Drink { id: (t % 3) + 1 },
+                Command::Respawn {
+                    id: 1,
+                    on_bag: false,
+                },
+                Command::Respawn {
+                    id: 2,
+                    on_bag: false,
+                },
+                Command::Respawn {
+                    id: 3,
+                    on_bag: false,
+                },
             ]);
         }
         h.update(&world.state_hash().to_le_bytes());

@@ -459,27 +459,72 @@ Done items are deleted, not checked — history lives in git and
    bag wakes `ci/gates.sh` fails on at zero; structural in `test_replay`,
    whose script cannot kill anything.
 
+   **Landed this pass** (`DECISIONS.md` §open, "the death screen + the
+   choice · wire v16"): the flow `ALPHA.md` §1 actually specifies, and the
+   half v2 could not express.
+
+   - **A death is a body lying where it fell.** `World::die` drops the
+     backpack and sets `Player::dead`; `World::wake` is a separate half only
+     `Command::Respawn` reaches. **No timer releases it** — a span nobody
+     spoke would be a knob invented into code, and the one thing the state
+     exists for is that the player decides. A corpse keeps its id, deaths,
+     position and facing and nothing else, every verb resolves through a new
+     `live_slot_of`, and it is stepped by `movement` with a **zeroed** frame
+     rather than skipped so the client's predictor agrees about a body it
+     can still see.
+   - **The choice is real, and refusing a bag does not spend it.** The beach
+     button leaves the cooldown untouched, so walking away from a fight you
+     have already lost costs nothing but the walk — `a_refused_bag_is_not_a_
+     spent_bag` is that assertion. Asking for a bag you have not got is a
+     beach, never a refusal: a player stuck behind a screen their button
+     cannot dismiss has left the game.
+   - **Wire v16, every part inside a field an earlier version widened.**
+     `ACT_RESPAWN` is the 12th action of 16 (v12's bits) carrying one bit and
+     **no bag id** — a forgeable id would let a client wake on someone else's
+     bag. `SUB_RESPAWN` is the 36th event subtype of 64 (v13's bits) carrying
+     the same bit *back*, because a bag inside its cooldown gets you a beach
+     and nothing else would tell you. The one layout that moved is `Death`,
+     which gained cause, weapon and range — and **still carries no position**,
+     which is ALPHA §1's stated rule, not an omission. All three read off the
+     victim's own record at encode (the corpse is still in its slot), 56
+     goldens regenerated in the same commit plus two new.
+   - **The gates are counted.** `test_replay`'s golden moved
+     **structurally** — ten bytes per live body, and nothing on that surface
+     can die. `test_alloc_zero` answers four screens a tick inside the window
+     and walls `screen_ticks > 0` / `corpse_acted == 0`; `probe_bags` presses
+     both answers on every bot every tick, which makes `ci/gates.sh`'s
+     existing `wakes > 0` strictly stronger (a wake is now only reachable
+     *through* the screen); `client_smoke` hand-frames our own death, a
+     stranger's, and a forged fourth cause.
+   - **No gate kills a body in a browser**, and the reason is content: melee
+     wants a weapon neither smoke tab can gather, and the sea refuses a drink
+     into a full meter, so salt suicide runs at the speed thirst drains.
+     `browser_smoke` 17 asserts the half a browser can see. The honest way to
+     close it is a `__gatesDebug` kill affordance on a **dev** shard only, or
+     a smoke tab that gathers a rock first — both are their own slice.
+
    **What this item still wants**, in the order it is worth doing:
 
-   - **The death screen and the choice — BUILT, JUDGED FAIL, PARKED on
-     `loop/death-screen` at `6eca08c`.** Nine of ten checks passed; check 9
-     (doc/code truth) failed on a real one, and it is worth reading before
-     rebasing: `crates/server/src/core.rs:711–719` documents a client-side
-     reconciliation that does not exist, for a reachable failure — `EV_RESPAWN`
-     is droppable at `MAX_EVENTS_PER_TICK`, and it is the only thing in the
-     system that can close the screen, so losing it leaves a live body behind
-     an overlay with its inputs zeroed. The judge's ranked fix 1 is to
-     implement the clause (clear `ClientCore::dead` on an own-body snapshot
-     that cannot be reconciled with a corpse, gateable in `client_smoke.mjs`)
-     rather than delete it. Report:
-     `findings/archive-prestamp/pass-20260803-121954-02-judge.md`. The rest of
-     this bullet is that branch's original scope:
-     `ALPHA.md` §1's respawn flow is
-     "who/what killed you — range and weapon, no map position — choose beach
-     or a bag, spawn with nothing". Today the sim picks the nearest bag for
-     you. The choice is the action subtype and the S→C screen this pass
-     deliberately did not spend (wall 6: no layout pinned to a guess), and
-     it is the natural home for `EV_RESPAWN`'s wire lane.
+   - **A dropped `EV_RESPAWN` leaves a live body behind the overlay — the
+     documented reconciliation does not exist.** The merge-gate judge failed
+     this branch on it (check 9, doc/code truth,
+     `findings/archive-prestamp/pass-20260803-121954-02-judge.md`), and it
+     merged anyway on the operator's call 2026-08-04, so the defect is carried
+     here rather than erased by the merge. `crates/server/src/core.rs:711–719`
+     documents a client-side reconciliation that is not implemented, for a
+     reachable failure: `EV_RESPAWN` is droppable at `MAX_EVENTS_PER_TICK` and
+     is the only thing that can close the screen, so losing it strands a live
+     player behind an overlay with its inputs zeroed. The fix is to implement
+     the clause, not delete it — clear `ClientCore::dead` on an own-body
+     snapshot that cannot be reconciled with a corpse, gated in
+     `client_smoke.mjs`.
+   - **The choice is beach-or-nearest, not a bag picker.** ALPHA §1 says
+     "choose beach or a bag" and that is what shipped; what it is not is
+     `inventory.jpeg`'s map of anchors to click. A picker needs the client
+     to know which of *its* bags are ready, which is per-bag cooldown state
+     the deploy sync deliberately does not carry (`DeployRec` has no room
+     for it, by design) — so it is a wire slice, and it wants the map below
+     more than it wants itself.
    - **A reconnect is still a ring spawn.** Only *death* consults a bag;
      `Command::Join` does not. That is the sleeper/haven lane (`NETCODE.md`
      §6.3, "haven sleeper timeout 20 min"), and a player who logs out in
@@ -492,6 +537,11 @@ Done items are deleted, not checked — history lives in git and
      and it is also the visual judge's HUD ask.
    - **A bed halves the cooldown** (ALPHA §1) — content, not code, once a
      second bag-class deployable exists.
+   - **The kill feed still says less than the wire now carries.** `Death`
+     crosses with cause, weapon and range as of v16 and the feed line is
+     still `#N killed you`; the death screen reads all three and the feed
+     reads two. One line in `main.js`, and it wants the nametags below more
+     than it wants doing alone.
 
 3. **The world was lit upside down, and there was no air in it.**
    *(Gap pass. From the visual judge's ranked gap 3 in

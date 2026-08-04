@@ -103,6 +103,10 @@ const REQUIRED = [
   "client_hit_pop",
   "client_death_pop",
   "client_death_killer",
+  "client_death_screen",
+  "client_death_by",
+  "client_death_weapon",
+  "client_action_respawn",
   "client_bag_ids_ptr",
   "client_bags_ptr",
   "client_bags_len",
@@ -158,7 +162,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 15, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 16, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -197,7 +201,7 @@ check(helloLen > 0 && helloLen <= 64, `hello length odd: ${helloLen}`);
 // either ship them to every public shard or withhold them from the capture
 // harness — and neither shows up anywhere else in this suite.
 const welcomeGolden = readFileSync(
-  join(root, "crates/protocol/tests/golden/v15_welcome.bin"),
+  join(root, "crates/protocol/tests/golden/v16_welcome.bin"),
 );
 const parseHandshake = (bytes) => {
   // ptr first, buffer second: a getter may grow memory and detach a
@@ -552,8 +556,8 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   check((ex.client_hit_pop() >>> 0) === 25, "hitmarker damage mismatch");
   check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring must drain");
 
-  // Death: sub 26 · victim 4242 · killer 7.
-  f = evFrame(26, [[4242, 32], [7, 32]]);
+  // Death: sub 26 · victim 4242 · killer 7 · cause 1 · no weapon · no range.
+  f = evFrame(26, [[4242, 32], [7, 32], [1, 2], [0xffff, 16], [0, 16]]);
   writeIn(f);
   check(ex.client_on_stream(f.length) === 16777216, "a death must apply with the DEATH flag");
   check((ex.client_death_pop() >>> 0) === 4242, "death victim mismatch");
@@ -670,6 +674,86 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
     check(n === 1, `loot frame must be one byte, got ${n}`);
     const out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 1);
     check(out[0] === (6 | (8 << 3)), `loot frame byte mismatch: ${out[0]}`);
+  }
+
+  // The death screen (wire v16). `client_new` above joined as player 257,
+  // so a Death naming 257 is this body's and a Death naming anyone else is
+  // the kill feed's — the distinction the screen depends on, and the one
+  // no native test can make on this side of the wire.
+  // sub 26 · victim (32) · killer (32) · cause (2) · item (16) · range (16).
+  {
+    const RESPAWN = 1073741824; // APPLIED_RESPAWN = 1 << 30
+    const DEATH = 16777216; // APPLIED_DEATH = 1 << 24
+    check(ex.client_death_screen() === 0, "the screen must start closed");
+
+    // Somebody else's death: the feed hears it, the screen does not.
+    f = evFrame(26, [[999, 32], [7, 32], [0, 2], [3, 16], [140, 16]]);
+    writeIn(f);
+    let df = ex.client_on_stream(f.length);
+    check((df & DEATH) !== 0, `a stranger's death must reach the feed: ${df}`);
+    check((df & RESPAWN) === 0, "a stranger's death must not raise our screen");
+    check(ex.client_death_screen() === 0, "a stranger's death opened our screen");
+    check((ex.client_death_pop() >>> 0) === 999, "the feed lost the stranger");
+    check((ex.client_death_killer() >>> 0) === 7, "the feed lost the killer");
+
+    // Ours: cause DEATH_BY_HAND(0), weapon item 3, from 140 cm.
+    f = evFrame(26, [[257, 32], [42, 32], [0, 2], [3, 16], [140, 16]]);
+    writeIn(f);
+    df = ex.client_on_stream(f.length);
+    check((df & RESPAWN) !== 0, `our own death must raise the screen: ${df}`);
+    check(
+      (ex.client_death_screen() >>> 0) === ((1 << 24) | 0),
+      `screen word after our death: ${ex.client_death_screen() >>> 0}`,
+    );
+    check((ex.client_death_by() >>> 0) === 42, "the screen lost who killed us");
+    check(
+      (ex.client_death_weapon() >>> 0) === ((3 << 16) | 140),
+      `the screen lost the weapon or the range: ${ex.client_death_weapon() >>> 0}`,
+    );
+
+    // A stranger dying now must not overwrite the sentence on our screen.
+    f = evFrame(26, [[998, 32], [1, 32], [1, 2], [0xffff, 16], [0, 16]]);
+    writeIn(f);
+    ex.client_on_stream(f.length);
+    check(
+      (ex.client_death_screen() >>> 0) === ((1 << 24) | 0),
+      "a stranger's death rewrote our death screen",
+    );
+    check((ex.client_death_by() >>> 0) === 42, "…and its killer");
+
+    // The answer: kind ACTION(6) in three bits, sub 11 in four, and the
+    // choice bit — one byte, and the bit is the whole payload.
+    let n = ex.client_action_respawn(1);
+    check(n === 1, `respawn frame must be one byte, got ${n}`);
+    let out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 1);
+    check(out[0] === (6 | (11 << 3) | (1 << 7)), `bag respawn byte: ${out[0]}`);
+    n = ex.client_action_respawn(0);
+    out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 1);
+    check(out[0] === (6 | (11 << 3)), `beach respawn byte: ${out[0]}`);
+
+    // …and the Respawn event closes it, carrying which anchor answered.
+    // sub 35 · on_bag (1).
+    f = evFrame(35, [[1, 1]]);
+    writeIn(f);
+    check((ex.client_on_stream(f.length) & RESPAWN) !== 0, "the wake must raise RESPAWN");
+    check(
+      (ex.client_death_screen() >>> 0) === (1 << 16),
+      `screen must close and remember the bag: ${ex.client_death_screen() >>> 0}`,
+    );
+    f = evFrame(35, [[0, 1]]);
+    writeIn(f);
+    ex.client_on_stream(f.length);
+    check(ex.client_death_screen() === 0, "a beach wake must leave the screen closed");
+
+    // A forged fourth cause has no meaning and must not decode — the two
+    // bits are the range check, the hotbar selector's posture.
+    f = evFrame(26, [[257, 32], [1, 32], [3, 2], [0, 16], [0, 16]]);
+    writeIn(f);
+    check(
+      (ex.client_on_stream(f.length) & 0x80000000) !== 0,
+      "a forged death cause must be refused",
+    );
+    check(ex.client_death_screen() === 0, "a refused death must not open the screen");
   }
 
   // hp > max is a server bug, not a bar to render: refused, error bit set.

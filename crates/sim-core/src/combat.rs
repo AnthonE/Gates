@@ -195,10 +195,23 @@ pub enum Strike {
     Missed,
     /// A player took the hit and lived.
     Hit,
-    /// A player took the hit and died; the slot needs a respawn. Respawn
-    /// is the caller's, because the spawn ring needs the whole world and
-    /// this function only needs the slot array.
-    Killed(usize),
+    /// A player took the hit and died; the slot needs laying down. That is
+    /// the caller's, because the backpack drop and the death screen need
+    /// the whole world and this function only needs the slot array.
+    ///
+    /// The weapon and the range travel with the verdict because this is the
+    /// only place that still knows them, and the death screen is made of
+    /// them: ALPHA.md §1 says a player is told "who/what killed you — range
+    /// and weapon, no map position", and by the time `world` has the corpse
+    /// the swing that made it is gone. `range_cm` is the planar distance
+    /// between the two capsules at the instant of the blow — centimetres
+    /// because the reach table is already in them (`MeleeDef::reach_cm`),
+    /// so no unit is invented to carry it.
+    Killed {
+        victim: usize,
+        item: u16,
+        range_cm: u16,
+    },
 }
 
 /// Resolve one already-taken swing (cadence paid, no node hit) against
@@ -250,9 +263,14 @@ pub fn strike(
             best = Some((d2, j));
         }
     }
-    let Some((_, victim)) = best else {
+    let Some((d2, victim)) = best else {
         return Strike::Missed;
     };
+    // Floor-by-cast of a sqrt, both on wall 1's allowed list, and the two
+    // sides quantize identically because they run the same expression on
+    // the same values — the reason the sim sims on what it transmits.
+    let range_cm = (d2.sqrt() * 100.0) as u16;
+    let weapon = held_item(&players[attacker]);
 
     let v = &mut players[victim];
     let victim_id = v.id;
@@ -266,7 +284,11 @@ pub fn strike(
     events.push(EV_HEALTH, victim_id, left as u32, cc.player_hp as u32);
     if died {
         events.push(EV_DEATH, victim_id, attacker_id, 0);
-        return Strike::Killed(victim);
+        return Strike::Killed {
+            victim,
+            item: weapon,
+            range_cm,
+        };
     }
     Strike::Hit
 }
@@ -983,7 +1005,14 @@ mod tests {
         assert_eq!(strike(&cc, 0, &mut players, &mut ev), Strike::Hit);
         assert_eq!(
             strike(&cc, 0, &mut players, &mut ev),
-            Strike::Killed(1),
+            Strike::Killed {
+                victim: 1,
+                // The two bodies stand on the same point, so the blow lands
+                // at zero range — and the weapon is the fixture's item 0,
+                // which is what the death screen will name.
+                item: 0,
+                range_cm: 0,
+            },
             "the third of three"
         );
         assert_eq!(
