@@ -420,7 +420,10 @@ const built = await page.evaluate(async () => {
   const hud = new Hud();
   const input = new InputTracker(document.getElementById("gl"));
   hud.show();
-  const ui = { hud, input, respawns: [], chats: [] };
+  // The class as well as the instance: group K asserts the constructor's
+  // arming default by identity against `Hud.NO_MOVE_HOST`, which needs the
+  // real class object and not a second import that could resolve elsewhere.
+  const ui = { hud, Hud, input, respawns: [], chats: [] };
   hud.onRespawn = (onBag) => ui.respawns.push(onBag);
   hud.onChatSend = (line) => {
     ui.chats.push(line);
@@ -1318,6 +1321,36 @@ check(
     " would then be checked against nothing, which is the gate-that-matches-nothing class",
 );
 
+// The arming default, asserted on a PRISTINE panel — before the test host
+// below assigns over it. The previous pass gated "if `onInvMove` is the
+// sentinel, no drag starts" by putting the sentinel BACK by hand, which is a
+// hand-restored state and not the shipped one: reverting hud.js's constructor
+// to `() => false` left that check green, because the check never looked at
+// what the constructor actually does. Both halves are asserted here — the
+// identity, and the behaviour that identity is supposed to buy.
+const unarmed = await page.evaluate((n) => {
+  const { hud, Hud } = globalThis.__ui;
+  const t = [];
+  for (let s = 0; s < n; s++) t.push(`s${s}`);
+  hud.setInventory(t);
+  return {
+    isSentinel: hud.onInvMove === Hud.NO_MOVE_HOST,
+    began: hud.beginInvDrag(3, 1),
+    marked: hud.invDivs[3].classList.contains("drag"),
+    drag: hud.invDrag,
+  };
+}, INV_SLOTS);
+check(
+  unarmed.isSentinel,
+  "a freshly constructed Hud must sit at Hud.NO_MOVE_HOST — a constructor that arms the verb by default" +
+    " hands the player a gesture no host can carry",
+);
+check(
+  unarmed.began === false && unarmed.drag === -1 && unarmed.marked === false,
+  `an unarmed panel began a drag (began=${unarmed.began}, invDrag=${unarmed.drag}, marked=${unarmed.marked})` +
+    " on a FILLED slot — the affordance that always refuses is the one this rule exists to prevent",
+);
+
 const move = await page.evaluate(
   ([n, belt, reasonMax]) => {
     const { hud } = globalThis.__ui;
@@ -1708,6 +1741,114 @@ check(
 );
 
 // =============================================================================
+// L. the move verdict's inbound half — splitting a bit that means two things
+// =============================================================================
+// `web/src/invmove.js` is imported here in node, not in the page: it touches
+// no DOM and no wasm, so it is arithmetic, and arithmetic is gated in the
+// cheapest layer that can hold it (`ci/pine_shape.mjs`'s precedent — import
+// the shipped module and score it headlessly).
+//
+// What it decides is which meaning bit 31 of `client_on_stream` carried.
+// `APPLIED_MOVE` and `STREAM_ERR` are both `1 << 31` in client-wasm, so the
+// panel's verdict and "our own server sent undecodable bytes" arrive as the
+// same word, and the split is made against the drag in flight.
+const {
+  CONT_SELF: JS_CONT_SELF,
+  REFUSE_M_MAX: JS_REFUSE_MAX,
+  STREAM_HIGH_BIT,
+  VERDICT,
+  DECODE_ERROR,
+  classifyMoveVerdict,
+} = await import(pathToFileURL(path.join(root, "web/src/invmove.js")).href);
+
+// The three constants it restates from Rust, checked against the Rust. A
+// number restated in a gate can drift from the one that ships; so can a
+// number restated in the client, and this one is restated across a language
+// boundary where no compiler is watching.
+const coreSrc = fs.readFileSync(path.join(root, "crates/client-wasm/src/core.rs"), "utf8");
+const bridgeSrc = fs.readFileSync(path.join(root, "crates/client-wasm/src/bridge.rs"), "utf8");
+const appliedMove = coreSrc.match(/pub const APPLIED_MOVE: u32 = 1 << (\d+);/)?.[1];
+const streamErr = bridgeSrc.match(/const STREAM_ERR: u32 = 1 << (\d+);/)?.[1];
+check(
+  JS_CONT_SELF === Number(invSrc.match(/pub const CONT_SELF: u8 = (\d+);/)?.[1]),
+  `invmove.js CONT_SELF (${JS_CONT_SELF}) has drifted from inventory.rs — the panel would accept a container's` +
+    " verdict as its own and roll back a slot the server never spoke about",
+);
+check(
+  JS_REFUSE_MAX === REFUSE_MAX,
+  `invmove.js REFUSE_M_MAX (${JS_REFUSE_MAX}) has drifted from inventory.rs (${REFUSE_MAX}) — a reason the sim` +
+    " grew would be classified as corruption, or corruption as a reason",
+);
+// This one is a red-means-GOOD-NEWS check, and says so: the workaround above
+// exists only because these two collide. If the systems lane splits them, this
+// goes red on THEIR branch, and the fix is to delete `classifyMoveVerdict`'s
+// call site in main.js and test bit 31 as `APPLIED_MOVE` directly.
+check(
+  appliedMove === "31" && streamErr === "31" && STREAM_HIGH_BIT === 2 ** 31,
+  `APPLIED_MOVE (1 << ${appliedMove}) and STREAM_ERR (1 << ${streamErr}) no longer collide at bit 31 — if the` +
+    " systems lane has split them, DELETE the classifyMoveVerdict workaround in main.js and invmove.js rather" +
+    " than updating this check; it is scaffolding for a crates/ defect and has no other reason to exist",
+);
+
+// The truth table. `readout` is packed reason << 24 | to << 16 | from kind
+// << 8 | from slot (`bridge.rs:904-908`).
+const ro = (reason, to, kind, from) => ((reason << 24) | (to << 16) | (kind << 8) | from) >>> 0;
+const cls = (readout, pending) => classifyMoveVerdict(readout, pending);
+const PEND = { from: 3, to: 7 };
+
+check(
+  cls(ro(0, 7, 0, 3), null).kind === DECODE_ERROR,
+  "a perfectly well-formed move readout with NO drag in flight must stay an error — nothing is waiting for it," +
+    " so suppressing the report would trade the corruption signal away for nothing",
+);
+check(
+  cls(ro(0, 7, 0, 3), undefined).kind === DECODE_ERROR,
+  "an undefined pending must classify as an error, not throw — `hud.invPending` is null between drags",
+);
+const landed = cls(ro(0, 7, 0, 3), PEND);
+check(
+  landed.kind === VERDICT && landed.reason === 0 && landed.from === 3 && landed.to === 7,
+  `the verdict on the move in flight was not recognised: ${JSON.stringify(landed)}`,
+);
+for (let reason = 1; reason <= REFUSE_MAX; reason++) {
+  const v = cls(ro(reason, 7, 0, 3), PEND);
+  check(
+    v.kind === VERDICT && v.reason === reason,
+    `refusal reason ${reason} did not reach the panel (${JSON.stringify(v)}) — a refusal the panel never hears` +
+      " leaves the optimistic move drawn forever, which is the container divergence itself",
+  );
+}
+// The positional-payload checks. CLAUDE.md's trap list: ~27 of the reference's
+// shipped corrections were the right value in the wrong position, and this
+// readout is exactly that shape — two slots and a kind in one word.
+check(
+  cls(ro(0, 3, 0, 7), PEND).kind === DECODE_ERROR,
+  "a transposed verdict (from and to swapped) was accepted for the move in flight — the one payload shape the" +
+    " reference corrected most often, and it would roll back the wrong two cells",
+);
+check(
+  cls(ro(0, 7, 1, 3), PEND).kind === DECODE_ERROR,
+  "a CONT_BAG verdict was accepted as this panel's — bag slots and self slots share numbers, so honouring it" +
+    " unwinds a cell the server never spoke about",
+);
+check(
+  cls(ro(0, 7, 0, 4), PEND).kind === DECODE_ERROR && cls(ro(0, 8, 0, 3), PEND).kind === DECODE_ERROR,
+  "a verdict whose address does not match the drag in flight was accepted — it is not this panel's move",
+);
+check(
+  cls(ro(REFUSE_MAX + 1, 7, 0, 3), PEND).kind === DECODE_ERROR,
+  `a reason past REFUSE_M_MAX (${REFUSE_MAX}) was accepted as a verdict — the sim cannot produce it, so the word` +
+    " was not a verdict",
+);
+// A zero readout is what a bridge with no core returns (`bridge.rs:284`'s
+// `unwrap_or(0)`). It must never resolve a drag: `dropInvDrag` refuses
+// `to === from`, so no legal pending can match address (0, 0).
+check(
+  cls(0, { from: 0, to: 5 }).kind === DECODE_ERROR && cls(0, { from: 5, to: 0 }).kind === DECODE_ERROR,
+  "a zero readout resolved a pending move — that is the no-client return, not a verdict",
+);
+
+// =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
@@ -1716,7 +1857,8 @@ console.log(
   `  ui smoke: scaffold ${HUD_IDS.length} ids · join form · hotbar 6 cells · composer swallow · ` +
     `chat cap ${CHAT_CAP} · toast cap ${TOAST_CAP} · vitals positional+inline · death answered once · ` +
     `craft gate/×5 · queue index · inventory ${INV_SLOTS} slots positional + eatsKey · ` +
-    `move ordering (send-before-draw, address-matched verdict, diff outranks rollback, ${REFUSE_MAX} reasons)`,
+    `move ordering (send-before-draw, address-matched verdict, diff outranks rollback, ${REFUSE_MAX} reasons) · ` +
+    "unarmed panel starts no drag · verdict/decode-error split off bit 31",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
