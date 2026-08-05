@@ -77,6 +77,33 @@ Leaves open:
 > either. Until then a box at cell (0,0) level 0 is openable but not a legal
 > move destination, because `moveArgs` must refuse handle 0 to avoid sending
 > "no container known" as a real address.
+0. **A base comes down when you take its legs out — landed this pass
+   (systems lane).**
+   *(Gap pass. From `findings/archive-prestamp/pass-20260805-011412-01-judge.md`,
+   ranked gap 3: "`supported()` runs at placement and nowhere else".)*
+
+   `build::collapse_from` re-checks support around each removed address and
+   drops what no longer stands, breadth-first over `dependents()` — the exact
+   inverse of `supported()`, sitting beside it, gated by removing **every**
+   piece of six fixtures in turn and requiring the same world a naive fixed
+   point reaches. Wired into both death paths (a raid swing and the decay
+   sweep). Capped at `MAX_COLLAPSE_PIECES = 64` a tick, derived from the
+   256-slot event ring, with `support_sweep` finishing the remainder on later
+   ticks so the cap costs latency and not correctness. Replay golden
+   regenerated — checked, not assumed: with the new hash field held out and
+   the sweep disabled the world still differs, so the cascade is really
+   changing what the script replays.
+
+   What it does **not** do, ranked:
+   - A collapsed piece pays nothing back. `drop_piece` drops no loot and
+     refunds no material, so a raid's whole reward is still what was in the
+     containers it broke. Whether rubble should pay is unspoken — a
+     `DECISIONS.md` §open row, not a number to invent. systems lane.
+   - A large collapse arrives as a burst of `EV_PIECE_REMOVED` in one tick.
+     The wire carries it and nobody has watched a client take one. ui lane.
+   - The rest of that judge gap is untouched: `combat.rs` is still melee-only
+     (its own item below), and what a raid is *for* is the container panel
+     (ui lane).
 
 0. **The outbound move marshalling is gated — done this pass (ui lane), kept
    for what it leaves open.**
@@ -197,8 +224,14 @@ directions). `DECISIONS.md` §open "haven shelter v0" has the rest.
 
 What remains, in the order it is worth doing:
 
-- **It is not solid.** See the cross-lane request above. A structure you walk
-  through is a silhouette, not a place, and that half is not this lane's.
+- **It is not solid — this lane's half now exists, the wiring does not.**
+  `terrain.rs` has `OCCUPANT_R_M` / `OCCUPANT_TOP_M` and `slot_blocks`, gated by
+  `tests/solid.rs` (8 tests; cover on 19.2–20.5% of land cells ~18 m apart,
+  narrowest clear carriageway 2.62–3.88 m against a 0.80 m body). **Nothing
+  calls it** — see the request below. The shelter itself is still passable and
+  deliberately so: a doorway is the one shape a radius cannot express, so it
+  needs a box list sim-side plus a gate holding it equal to `props.js`'s
+  fourteen boxes. That is the next slice in this item.
 - **Nobody has looked at it.** No frame has been captured since it landed; the
   claim "a player can tell they arrived" rests on arithmetic alone. The lane
   charter says to say so when the item flips from "is there a world here" to
@@ -213,6 +246,19 @@ What remains, in the order it is worth doing:
 >    `4d7a926`, 2026-08-04**, before this request was read. `BOX_SLOTS` is on
 >    the wire and `box_key` is the address; the ui half landed 2026-08-05
 >    (item 0 above). (2) is the one still open.
+
+> **Cross-lane request, systems lane: the occupant query exists, please call
+> it.** *(world lane, 2026-08-05.)* `terrain::slot_blocks(&slot, x, z, feet_y,
+> capsule_r, capsule_h) -> bool` is pure, allocation-free, sqrt-free and takes
+> an ALREADY-RESOLVED slot — never a seed, because `scatter` costs a `height`
+> fan plus a `moisture`, a `clump` and a `road_band` per cell and must never be
+> re-derived inside a movement step. `terrain::OCCUPANT_PROBE_CELLS` (= 1) is
+> the neighbourhood to scan and it is proved complete, not assumed: every slot
+> lies strictly inside its own cell (measured worst margin 0.122 m over 38,969
+> slots) while the widest reach is 2.050 m against an 8 m cell. Nothing in
+> `terrain.rs` changed signature and no golden moved. **Unverified in play:**
+> no body has ever been stopped by one of these — `tests/solid.rs` gates the
+> shapes and the predicate, and that is all it can gate from this side.
 
 > **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the
 > world lane's to make.** `ci/gates.sh` went RED then GREEN on an unchanged
@@ -489,19 +535,6 @@ What remains, in the order it is worth doing:
    then frozen. `sim-core` has exactly one dependency and it stays that way — a
    rigid-body crate breaks walls 1, 2 and 5 at once, and cosmetic shards when a
    barrel breaks are client-only and never feed back.
-
-1. **A base collapses when you take its legs out — today it floats.**
-   *(Operator, 2026-08-04. systems lane.)*
-
-   `supported()` runs at PLACEMENT (`build.rs:452`) and nowhere else. Destroy a
-   foundation and everything above keeps hanging in the air. Rust collapses it,
-   and that is central to how raiding feels — the raid is the game.
-
-   Wanted: support re-evaluated when a piece dies, propagating to what rested on
-   it. It is a graph reachability problem over the piece store, not physics —
-   walk from grounded pieces, orphans fall. Bound the sweep in `limits.rs` and
-   state the overflow policy; an unbounded cascade on a 500-piece base is a
-   tick-time bomb, which is wall 4.
 
 1. **There is a revolver in the loot table and nothing to fire it.**
    *(Operator, 2026-08-04. systems lane, after the three items above.)*
