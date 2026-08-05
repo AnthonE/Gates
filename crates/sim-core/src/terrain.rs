@@ -1505,6 +1505,14 @@ const fn abs_const(v: f32) -> f32 {
 /// you cannot push through is a wall you cannot see over, which is worse than
 /// no bush. It reads as cover and costs nothing to cross, which is what the
 /// reference does with the same prop.
+///
+/// Every row is held to the mesh by `ci/occupant_volume.mjs`, which measures
+/// the vertex buffer `ARCHETYPES` actually builds and sandwiches each row
+/// between the mesh's widest horizontal extent below the blocking top and the
+/// mesh's own bound. Nothing in the Rust workspace can see a triangle, so the
+/// asserts below prove only that this file agrees with itself. The gate found
+/// the `CrateSlot` row inward: it read 0.68 against a measured half-diagonal
+/// of 0.680074, which is the bug this doc names, so it is 0.6801 now.
 pub const OCCUPANT_R_M: [f32; 11] = [
     0.0,                // None
     0.26,               // Tree — the TRUNK, not the canopy: `CylinderGeometry(0.13, 0.26)`
@@ -1515,7 +1523,7 @@ pub const OCCUPANT_R_M: [f32; 11] = [
     1.5,                // Rock — DodecahedronGeometry(1.5)
     0.45,               // BarrelSlot — CylinderGeometry(0.45, 0.45, 0.95)
     0.0,                // 8: the client's stump. Not a sim occupant; the hole is the point.
-    0.68,               // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
+    0.6801,             // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
     SHELTER_CORNER_R_M, // HavenShelter — broad phase; SHELTER_BOXES is the volume
 ];
 
@@ -1601,7 +1609,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::Bush => (0.0, 0.0),
         Occupant::Rock => (1.5, 2.05),
         Occupant::BarrelSlot => (0.45, 0.975),
-        Occupant::CrateSlot => (0.68, 0.8),
+        Occupant::CrateSlot => (0.6801, 0.8),
         Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
     }
 }
