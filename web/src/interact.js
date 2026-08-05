@@ -303,3 +303,193 @@ export function promptFor(pick) {
   if (pick.verb === VERB_HEARTH) return `[E] FEED ${label}`;
   return `[E] OPEN ${label}`;
 }
+
+// ---------------------------------------------------------------------------
+// The other half of the crosshair: what a SWING would hit.
+//
+// E's resolver above answers a key you have to be told about. The swing is the
+// mouse button players already hold down, and until now nothing on screen ever
+// named its target either — the prompt landed on 2026-08-05 covering
+// deployables only, and its own `NOW.md` entry said so ("gathering and building
+// have no prompt, only deployables do"). This is that remainder.
+//
+// Why it is a SECOND resolver rather than four more verbs in the first one.
+// The two picks disagree about every term of the metric: E reaches
+// `build::BUILD_REACH_M` (5 m) and ranks an aim RADIUS against a nearby rank,
+// while a swing reaches `gather::REACH_M` (2 m) through a 30° CONE with a
+// vertical window and a point-blank exception, over a 3×3 block of terrain
+// cells rather than over the deploy records. Folding them would have to pick
+// one metric and would then advertise a verb on the wrong terms — the exact
+// failure the one-resolver law exists to prevent. One resolver per key is the
+// law; these are two keys.
+//
+// Everything below MIRRORS `crates/sim-core/src/gather.rs`'s `swing()` target
+// selection and invents nothing. That is not a style preference: the sim picks
+// the swing's target on its own, the client sends only a button bit
+// (`BTN_PRIMARY`), so a prompt computed on any other rule would name a node the
+// arm does not swing at. `ci/ui_smoke.mjs` §R reads every constant here back
+// out of `gather.rs` and `terrain.rs`, so a rule changed on the Rust side lands
+// red on the commit that changes it rather than as a prompt that quietly lies.
+// ---------------------------------------------------------------------------
+
+/**
+ * Terrain cell size in metres — `terrain::CELL_SIZE`. This is NOT `BUILD_CELL`:
+ * the scatter grid a node stands on is 8 m and the build grid is its own
+ * thing, and the 3×3 block below is nine terrain cells.
+ */
+export const TERRAIN_CELL_M = 8;
+
+/** Gather reach in metres — `gather::REACH_M`. Planar, like the sim's test. */
+export const GATHER_REACH_M = 2.0;
+/**
+ * Cosine of the swing's aim cone half-angle (30°) — `gather::CONE_COS`,
+ * authored offline there so the sim runs no trig, and mirrored as the same
+ * literal here for the same reason the reach is.
+ */
+export const GATHER_CONE_COS = 0.8660254;
+/** Vertical acceptance window in metres — `gather::DY_MAX_M`. */
+export const GATHER_DY_MAX_M = 3.0;
+/**
+ * Squared planar distance inside which the cone test is bypassed —
+ * `gather::POINT_BLANK_M2`. Standing in the node leaves no bearing to judge.
+ */
+export const GATHER_POINT_BLANK_M2 = 0.04;
+
+/**
+ * The terrain occupant ordinals a swing can connect with, mirrored from
+ * `terrain::Occupant`. `gather::node_index` takes 1..=`GATHERABLE_KINDS` and
+ * `target_index` adds the barrel; ROCK (6) and an empty cell are "the two
+ * things a swing passes through" in that file's own words, so neither gets a
+ * prompt however close it is.
+ */
+export const OCC_TREE = 1;
+export const OCC_STONE = 2;
+export const OCC_METAL = 3;
+export const OCC_SULFUR = 4;
+export const OCC_BUSH = 5;
+export const OCC_ROCK = 6;
+export const OCC_BARREL = 7;
+
+/**
+ * The verb and the noun for each swingable occupant. Generic kinds only, the
+ * same rule `VERB_LABEL` and `hud.js`'s `CONT_NAMES` follow — `CONTENT.md`
+ * owns item names and none of these is one.
+ *
+ * The verbs differ on purpose: a bush is picked and a tree is chopped, which
+ * is the one thing the prompt can say about *why* a bare hand is fine on one
+ * and slow on the other. A barrel is smashed and pays a container rather than
+ * a resource (`gather::smash` → `loot.rs`), so it does not say "gather".
+ */
+export const SWING_LABEL = {
+  [OCC_TREE]: "CHOP TREE",
+  [OCC_STONE]: "MINE STONE",
+  [OCC_METAL]: "MINE METAL",
+  [OCC_SULFUR]: "MINE SULFUR",
+  [OCC_BUSH]: "PICK BUSH",
+  [OCC_BARREL]: "SMASH BARREL",
+};
+
+/** A reusable swing pick, allocated once per caller like `newPick`. */
+export function newSwingPick() {
+  return {
+    /** The terrain occupant ordinal, or 0 for nothing swingable in reach. */
+    arch: 0,
+    cx: 0,
+    cz: 0,
+    /** Squared planar distance to the node. Diagnostics; nothing draws it. */
+    d2: 0,
+  };
+}
+
+/**
+ * What a swing would connect with right now, or `arch = 0` for a whiff.
+ *
+ * A transcription of `gather::swing`'s scan (`gather.rs:494-532`), and the
+ * places it would be tempting to improve on it are exactly the places it must
+ * not be:
+ *
+ * - **The window is 3×3 terrain cells around the player's own cell**, not a
+ *   radius sweep. A node whose cell is two cells away cannot be hit even if
+ *   its position is inside the 2 m reach, because the sim never looks at it.
+ * - **`d2 < best.d2` is strict**, and the sim walks dz outer, dx inner. So an
+ *   exact tie goes to the cell found FIRST in that order. Ties are not
+ *   hypothetical here — two nodes at mirrored offsets is ordinary — and a
+ *   prompt that broke them the other way would name the other node.
+ * - **The cone test is unnormalised on purpose**: `dot > CONE_COS * sqrt(d2)`
+ *   with a unit look vector, which is the sim's own arrangement of it. Written
+ *   as an angle comparison instead, it would round differently at the edge.
+ * - **`dy` is measured from the player's feet to the node's own y**, and the
+ *   test is on its absolute value against the window.
+ *
+ * The harvested bit is the client's, not the sim's: `lives.is_harvested` there
+ * is `entry.hidden` here, which the event lane keeps current
+ * (`EV_SLOT_HARVESTED` → `terrain.setCellHarvested`). A node the client has
+ * not streamed has no entry at all and is skipped — the prompt describes what
+ * this client can see, which is the honest bound on a client-side hint.
+ *
+ * @param out   a pick from `newSwingPick()`, mutated in place and returned
+ * @param aim   `{x, y, z, fx, fz}` — feet position (y included: the swing has
+ *              a vertical window E does not) and look direction, normalised
+ *              here so a caller cannot distort the cone with a scaled vector
+ * @param world `{cellAt(cx, cz)}` — the streamed scatter entry at a cell, or
+ *              null. One bound accessor, called nine times; nothing allocates.
+ */
+export function resolveSwing(out, aim, world) {
+  out.arch = 0;
+  out.cx = 0;
+  out.cz = 0;
+  out.d2 = 0;
+
+  const flen = Math.sqrt(aim.fx * aim.fx + aim.fz * aim.fz);
+  const fx = flen > 0 ? aim.fx / flen : 0;
+  const fz = flen > 0 ? aim.fz / flen : 0;
+
+  const pcx = Math.floor(aim.x / TERRAIN_CELL_M);
+  const pcz = Math.floor(aim.z / TERRAIN_CELL_M);
+  let best = Infinity;
+
+  // dz outer, dx inner — the sim's own order, and the tiebreak depends on it.
+  for (let dzc = -1; dzc <= 1; dzc++) {
+    for (let dxc = -1; dxc <= 1; dxc++) {
+      const cx = pcx + dxc;
+      const cz = pcz + dzc;
+      const e = world.cellAt(cx, cz);
+      if (!e) continue;
+      const arch = e.arch | 0;
+      // 1..5 gather, 7 smashes. 6 (ROCK) and anything else is passed through,
+      // which includes the client-only stump archetype standing where a felled
+      // tree was: a stump is the CONSEQUENCE of a harvest, never a target.
+      if (!(arch >= OCC_TREE && arch <= OCC_BUSH) && arch !== OCC_BARREL) continue;
+      if (e.hidden) continue; // harvested, standing only on this client's clock
+      const dx = e.x - aim.x;
+      const dy = e.y - aim.y;
+      const dz = e.z - aim.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > GATHER_REACH_M * GATHER_REACH_M) continue;
+      if (Math.abs(dy) > GATHER_DY_MAX_M) continue;
+      const aimed =
+        d2 <= GATHER_POINT_BLANK_M2 || dx * fx + dz * fz > GATHER_CONE_COS * Math.sqrt(d2);
+      if (!aimed) continue;
+      if (d2 >= best) continue; // strict: the first of an exact tie keeps it
+      best = d2;
+      out.arch = arch;
+      out.cx = cx;
+      out.cz = cz;
+      out.d2 = d2;
+    }
+  }
+  return out;
+}
+
+/**
+ * What the prompt says for a swing pick, or `""` for a whiff.
+ *
+ * `[LMB]` rather than a verb name because the swing is a button, and the
+ * button is the thing the player has to connect the text to.
+ */
+export function promptForSwing(pick) {
+  if (!pick || !pick.arch) return "";
+  const label = SWING_LABEL[pick.arch];
+  if (!label) return "";
+  return `[LMB] ${label}`;
+}

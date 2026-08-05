@@ -27,9 +27,10 @@ Leaves open:
 - **Nothing highlights the picked thing in the world.** The prompt names it;
   the box itself does not light up. That is a looks-lane material change, not
   ours — a NOW.md line, not a cross-lane request, until someone wants it.
-- **Gathering and building have no prompt**, only deployables do. A tree and a
-  rock answer a swing, not E, so they were out of the resolver's scope; the
-  reference prompts on them too (`Rust Images/choppingtree.jpg`).
+- ~~**Gathering and building have no prompt**, only deployables do.~~ Gathering
+  closed 2026-08-05 (`## 0. The crosshair answers for the swing too` below).
+  **Building still has none** — placement is a preview mesh with no text, and
+  it is the last verb with nothing under the crosshair.
 - **Unverified in a real browser end to end.** `ui_smoke` drives the DOM and
   the resolver; `browser_smoke` is off this run, so nothing here claims a box
   was opened by aiming at one on a live shard.
@@ -165,6 +166,36 @@ Leaves open:
    - **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are
      UNRUN (operator's `GATES_TIER=fast`) and this pass edits `main.js`,
      `wasm.js` and `index.html`.
+
+## 0. The crosshair answers for the swing too — done this pass *(ui lane)*
+
+*2026-08-05. The top item's own remainder ("gathering and building have no
+prompt"), plus ranked fix 1 of `findings/pass-20260805-002720-05-judge.md`.*
+
+`interact.js` gains a SECOND resolver, `resolveSwing` — not four more verbs in
+the first one, because the two picks share no term: E reaches 5 m and ranks an
+aim radius, a swing reaches `gather::REACH_M` (2 m) through a 30° cone with a
+±3 m window and a point-blank bypass, over a 3×3 block of 8 m terrain cells.
+It transcribes `gather.rs:494-532` and invents nothing: the client sends a
+swing as a button bit and the sim picks the node alone, so any other rule names
+a node the arm does not hit. Nodes come from `terrain.cellEntry`, already
+public. E's pick still wins the line; the swing prompt fills the silence.
+`ui_smoke` §R: 433 checks (was 381), 20 mutants run, all 20 red.
+
+The judge's ranked fix 1 is closed in the same file: `promptFor` was only ever
+called with `{open:false, locked:false}`, so flattening the door's whole
+open/locked branch shipped green (its mutant M14). Now walked at all three
+states.
+
+Leaves open:
+- **Which prompt outranks which is unspoken** — `DECISIONS.md` §open ("swing
+  prompt precedence v0"). E-first is argued, not decided.
+- **The tie test found a hole in its own first version.** A tie between cells
+  (0,0) and (2,2) is kept by (0,0) under BOTH loop nestings, so transposing the
+  loops escaped green; cells (2,0)/(0,2) swap under the transpose and catch it.
+- **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are UNRUN
+  (operator's `GATES_TIER=fast`) and this pass edits `main.js`.
+- **Building still has no prompt** — the last verb without one.
 
 ## 0. The second container panel — gap 1's other half *(ui lane)*
 
