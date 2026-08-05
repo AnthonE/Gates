@@ -397,3 +397,211 @@ fn test_clump_leaves_authored_slots_alone() {
         );
     }
 }
+
+// ── The mix, not the amount (TERRAIN.md §1 stage 9's stated residual) ──────
+//
+// `clump` above gates how MUCH stands somewhere. These gate WHAT stands
+// there. Stage 9 shipped its clumping with one line left open — "`biome()`
+// is still a hard classifier, so a biome boundary is still a step in
+// *composition* even though density now ramps across it" — and
+// `terrain::scatter_row` closes it by drawing the mix from `splat_from`,
+// the same four weights the ground material and the clutter population
+// already use. The three checks below are, in order: the blend is faithful
+// where the splat is one-hot, it ramps where the splat is not, and it is
+// convex everywhere (which is what keeps `test_no_biome_row_saturates`
+// above a valid bound on the blended row without knowing it exists).
+
+/// Height and slope chosen so only the moisture channel is in play: above
+/// `SPLAT_BEACH_BAND`, below `SPLAT_ALPINE_BAND`, flat. The splat there is
+/// `[0, 1-wood, wood, 0]`, so the sweep is a pure Meadow→Forest transition
+/// and the tree weight is the whole story.
+const MIX_H: f32 = 20.0;
+const MIX_SLOPE: f32 = 0.0;
+
+/// The transition the two classifiers disagree about, swept fine enough
+/// that the smoothstep's own curvature is resolved.
+const MIX_LO: f32 = -0.05;
+const MIX_HI: f32 = 0.15;
+const MIX_STEPS: i32 = 200;
+
+fn mix_at(table: &ScatterTable, moist: f32) -> [u16; terrain::OCCUPANT_KINDS] {
+    terrain::scatter_row(table, MIX_H, moist, MIX_SLOPE)
+}
+
+/// The hard classifier, re-derived here rather than remembered — this is the
+/// control the ramp is measured against, and it is the code that shipped
+/// before this change.
+fn hard_row_at(table: &ScatterTable, moist: f32) -> [u16; terrain::OCCUPANT_KINDS] {
+    table.weights[terrain::biome(MIX_H, moist) as usize]
+}
+
+/// Where the splat is one-hot the blend must be the identity, or this is not
+/// a softening of the boundary but a re-authoring of the whole island.
+///
+/// It is the property that lets `test_scatter_density_preserved` above stay
+/// a statement about `CLUMP_NORM`: interiors are untouched, so any density
+/// the blend moves, it moves in the transition bands alone.
+#[test]
+fn test_scatter_mix_is_identity_in_the_interior() {
+    let table = ScatterTable::alpha_default();
+    for (label, moist) in [("meadow", MIX_LO), ("forest", MIX_HI)] {
+        let blended = mix_at(&table, moist);
+        let pure = hard_row_at(&table, moist);
+        println!("{label} interior (moist {moist}): blended {blended:?} pure {pure:?}");
+        assert_eq!(
+            blended, pure,
+            "deep in the {label} the splat is one-hot, so the blended row must \
+             equal the row the hard classifier picked — it does not, so \
+             `scatter_row` is not a boundary fix, it is a new table."
+        );
+    }
+}
+
+/// The claim itself: composition crosses the boundary as a ramp, where it
+/// used to cross as a step.
+///
+/// Both classifiers are walked over the same sweep and the largest
+/// single-sample change in the tree weight is taken from each. The hard
+/// one's is the entire Meadow→Forest difference in one sample, by
+/// construction — that is what a classifier is. The blend's is bounded by
+/// the smoothstep's slope, so the ratio is the measurement, and no number
+/// from a previous build is involved on either side.
+#[test]
+fn test_scatter_mix_ramps_where_it_used_to_step() {
+    let table = ScatterTable::alpha_default();
+    let tree_span = {
+        let m = table.weights[Biome::Meadow as usize][0] as i32;
+        let f = table.weights[Biome::Forest as usize][0] as i32;
+        (f - m).max(m - f)
+    };
+
+    let mut worst_blend = 0i32;
+    let mut worst_hard = 0i32;
+    let mut prev: Option<(
+        [u16; terrain::OCCUPANT_KINDS],
+        [u16; terrain::OCCUPANT_KINDS],
+    )> = None;
+    for i in 0..=MIX_STEPS {
+        let moist = MIX_LO + (MIX_HI - MIX_LO) * (i as f32 / MIX_STEPS as f32);
+        let b = mix_at(&table, moist);
+        let h = hard_row_at(&table, moist);
+        if let Some((pb, ph)) = prev {
+            for k in 0..terrain::OCCUPANT_KINDS {
+                let db = b[k] as i32 - pb[k] as i32;
+                worst_blend = worst_blend.max(db).max(-db);
+                let dh = h[k] as i32 - ph[k] as i32;
+                worst_hard = worst_hard.max(dh).max(-dh);
+            }
+        }
+        prev = Some((b, h));
+    }
+
+    println!(
+        "moisture sweep {MIX_LO}..{MIX_HI} in {MIX_STEPS} steps: worst per-sample \
+         jump — blended {worst_blend} per-mille, hard classifier {worst_hard}, \
+         tree span {tree_span}"
+    );
+
+    // The control really is a cliff: the classifier moves the whole span at
+    // one sample. If this ever fails, the sweep stopped crossing the edge
+    // and the comparison below would be measuring nothing.
+    assert_eq!(
+        worst_hard, tree_span,
+        "the hard classifier should jump the full Meadow→Forest tree span \
+         ({tree_span}) at one sample — it jumped {worst_hard}, so this sweep \
+         no longer crosses the boundary and the ramp assert below is vacuous."
+    );
+
+    // And the blend is not. An order of magnitude is a floor, not the
+    // measurement: at this step count the smoothstep's own slope puts it
+    // near fifty times gentler, so a regression that half-reverted the blend
+    // would still fall through this.
+    assert!(
+        worst_blend * 10 < worst_hard,
+        "composition still steps: the blended row's worst per-sample jump is \
+         {worst_blend} per-mille against the classifier's {worst_hard}. Stage \
+         9's residual is that a biome edge is a step in composition; a blend \
+         that jumps nearly as hard as the classifier has not closed it."
+    );
+    assert!(
+        worst_blend > 0,
+        "the blended row never changed across the whole sweep — the mix is \
+         not tracking moisture at all."
+    );
+}
+
+/// Convexity, on the real island rather than the synthetic sweep.
+///
+/// Every blended entry must lie inside the range its four pure rows span.
+/// This is what makes `test_no_biome_row_saturates` above still a bound on
+/// what `scatter` actually draws: that test rails the four authored rows,
+/// and a convex blend of them cannot exceed the largest. It also catches the
+/// failure a normalization bug would produce — a row that sums past its
+/// inputs, thinning the tail entries with every mean still reading right.
+///
+/// Sampled on the same cell centers the field above is built on, so the
+/// points are the ones the world is actually drawn at.
+#[test]
+fn test_scatter_mix_is_convex_and_the_island_uses_it() {
+    let table = ScatterTable::alpha_default();
+    let mut lo = [u16::MAX; terrain::OCCUPANT_KINDS];
+    let mut hi = [0u16; terrain::OCCUPANT_KINDS];
+    for row in table.weights.iter() {
+        for k in 0..terrain::OCCUPANT_KINDS {
+            lo[k] = lo[k].min(row[k]);
+            hi[k] = hi[k].max(row[k]);
+        }
+    }
+
+    for seed in SEEDS {
+        let mut land = 0u32;
+        let mut blended = 0u32;
+        for gz in 0..CELLS_PER_SIDE {
+            for gx in 0..CELLS_PER_SIDE {
+                let x = gx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                let z = gz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                let h = terrain::height(seed, x, z);
+                if h < LAND_MIN_H {
+                    continue;
+                }
+                land += 1;
+                let sl = terrain::slope(seed, x, z);
+                let w = terrain::splat_from(h, terrain::moisture(seed, x, z), sl);
+                let row = terrain::scatter_row(&table, h, terrain::moisture(seed, x, z), sl);
+                for k in 0..terrain::OCCUPANT_KINDS {
+                    assert!(
+                        row[k] >= lo[k] && row[k] <= hi[k],
+                        "seed {seed} cell ({gx},{gz}): blended entry {k} is {}, \
+                         outside the [{}, {}] its four authored rows span. A \
+                         convex blend cannot do that — the normalization is \
+                         wrong, and `test_no_biome_row_saturates` is no longer \
+                         a bound on what scatter draws.",
+                        row[k],
+                        lo[k],
+                        hi[k]
+                    );
+                }
+                // "In a transition" = no single ground identity owns the
+                // cell outright. This is the share of the island the change
+                // can reach at all, and it is reported because a fix that
+                // touched almost nothing would otherwise read as a fix.
+                if w.iter().all(|&c| c < 230) {
+                    blended += 1;
+                }
+            }
+        }
+        let share = blended as f32 / land as f32;
+        println!(
+            "seed {seed}: {blended}/{land} land cells sit in a transition \
+             ({:.1}% of the island's land)",
+            share * 100.0
+        );
+        assert!(
+            blended * 20 > land,
+            "seed {seed}: only {blended} of {land} land cells are in a \
+             transition band. Below a twentieth of the island the composition \
+             blend is not worth the arithmetic — say so rather than shipping \
+             it as a boundary fix."
+        );
+    }
+}
