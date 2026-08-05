@@ -22,9 +22,10 @@
 #![allow(clippy::disallowed_macros)]
 
 use sim_core::terrain::{
-    self, Occupant, ScatterTable, Waystation, CELLS_PER_SIDE, CELL_SIZE, HAVEN_CRATES,
-    HAVEN_RADIUS_M, LAND_MIN_H, ROAD_R_MAX, ROAD_R_MIN, WAYSTATIONS, WAYSTATION_CRATES,
-    WAYSTATION_CRATE_R_M, WAYSTATION_MIN_SEP_M, WAYSTATION_RADIUS_M,
+    self, Occupant, RoadBand, ScatterTable, Waystation, CELLS_PER_SIDE, CELL_SIZE,
+    CLIFF_SLOPE_RATIO, HAVEN_CRATES, HAVEN_RADIUS_M, LAND_MIN_H, ROAD_R_MAX, ROAD_R_MIN,
+    WAYSTATIONS, WAYSTATION_CRATES, WAYSTATION_CRATE_R_M, WAYSTATION_MIN_SEP_M,
+    WAYSTATION_RADIUS_M,
 };
 
 /// The same sixteen `tests/haven.rs` sweeps, so a seed that is interesting to
@@ -358,24 +359,38 @@ fn every_site_carries_its_containers() {
 /// actually displaced, so "cleared" is a measurement and not an assumption.
 /// Straight from `tests/haven.rs::the_pad_is_clear_and_would_not_have_been`.
 ///
-/// **The non-vacuity proof is `furnished`, and it is stronger than the
-/// control it stands beside.** The control's per-seed form — every seed's
-/// zones displace at least one slot — was luck rather than law and this pass
-/// caught it holding a site in place: a waystation zone is 380 m² of
-/// roadside, the carriageway inside it is vetoed and the shoulder is thin, so
-/// zero is an ordinary draw. It read 3, 3, 3, 0 across the sweep once the
-/// canopy search moved seed `0xDEADBEEF`'s sites onto emptier ground, and
-/// nothing about that is a defect. So displacement is asserted over the sweep
-/// — the same one-per-seed claim, at the scale it is true at — and the
-/// question it was really standing in for is asked exactly instead: every
-/// seed must find `WAYSTATIONS * (WAYSTATION_CRATES + 1)` authored slots
-/// inside the zones, its containers and its canopy and nothing else. A
-/// broken `in_waystation`, a dead site or a canopy that stopped being emitted
-/// all read as a wrong count here, and none of them could move a control arm.
+/// **Three claims, at the three scales each is true at.** The control's
+/// per-seed form — every seed's zones displace at least one slot — was luck
+/// rather than law, and this pass caught it holding a site in place: a
+/// waystation zone is 380 m² of roadside, the carriageway inside it is vetoed
+/// and the shoulder is thin, so zero is an ordinary draw. It read 3, 3, 3, 0
+/// across the sweep once the canopy search moved seed `0xDEADBEEF`'s sites
+/// onto emptier ground, and nothing about that is a defect.
+///
+/// So `cleared` is asserted over the SWEEP — the same one-per-seed claim, at
+/// the scale it is true at — and the two things it was standing in for are
+/// asked exactly, per seed, instead:
+///
+///   - `furnished`: every seed finds `WAYSTATIONS * (WAYSTATION_CRATES + 1)`
+///     authored slots inside the zones, its caches and its canopy and nothing
+///     else. A broken `in_waystation`, a dead site, a dropped anchor or a
+///     canopy that stopped being emitted all read as a wrong count here.
+///   - `opportunity`: the control arm HAD a chance to put something in the
+///     zone — the zone covers at least one scatter cell whose ground the
+///     control would not have vetoed outright. This is the half a bare
+///     `cleared >= 1` was reaching for and could not state: it separates "the
+///     zone displaced nothing because the exclusion is broken" from "the zone
+///     displaced nothing because it is 380 m² of road and cliff", and unlike
+///     the count it cannot be moved by a seed landing on bare ground.
+///
+/// `opportunity` is measured at the cell CENTRE while `scatter` draws at a
+/// jittered point inside the cell, so it is a floor on the real opportunity
+/// and never an overstatement of it.
 #[test]
 fn the_zones_are_clear_and_would_not_have_been() {
     let table = ScatterTable::alpha_default();
     let mut total_cleared = 0usize;
+    let mut worst_opportunity = usize::MAX;
     let want_furnished = WAYSTATIONS * (WAYSTATION_CRATES as usize + 1);
 
     for seed in SWEEP_SEEDS {
@@ -388,8 +403,27 @@ fn the_zones_are_clear_and_would_not_have_been() {
         let mut inside = 0usize;
         let mut cleared = 0usize;
         let mut furnished = 0usize;
+        let mut opportunity = 0usize;
         for cx in 0..CELLS_PER_SIDE {
             for cz in 0..CELLS_PER_SIDE {
+                // Did the control arm have a chance? A cell is an opportunity
+                // when its centre lies in a zone AND the ground there is not
+                // something `scatter` refuses on sight — `terrain.rs`'s land,
+                // cliff and carriageway vetoes, which run before any biome
+                // draw. `in_waystation` is tested first and short-circuits, so
+                // the two `height` fans cost nothing on the 65,000 cells that
+                // are nowhere near a site.
+                let (ccx, ccz) = (
+                    cx as f32 * CELL_SIZE + CELL_SIZE * 0.5,
+                    cz as f32 * CELL_SIZE + CELL_SIZE * 0.5,
+                );
+                if terrain::in_waystation(&haven, ccx, ccz)
+                    && terrain::height(seed, ccx, ccz) >= LAND_MIN_H
+                    && terrain::slope(seed, ccx, ccz) <= CLIFF_SLOPE_RATIO
+                    && terrain::road_band(seed, ccx, ccz) != RoadBand::Carriageway
+                {
+                    opportunity += 1;
+                }
                 let s = terrain::scatter(seed, &table, &haven, cx, cz);
                 // The site's own furniture — its two `CacheSlot` containers
                 // and its one `WaystationCanopy` — is the only thing allowed
@@ -426,6 +460,15 @@ fn the_zones_are_clear_and_would_not_have_been() {
              and one canopy, so a wrong count here is a dead site, a dropped \
              anchor, or a zone predicate that is not on the site at all"
         );
+        assert!(
+            opportunity >= 1,
+            "seed {seed}: the zones cover no scatter cell the control arm would \
+             have drawn on, so this seed's control is vacuous and its 'cleared' \
+             count means nothing either way. Either the zones are off the grid, \
+             `in_waystation` is not on the site, or both sites stand on ground \
+             scatter refuses outright"
+        );
+        worst_opportunity = worst_opportunity.min(opportunity);
         total_cleared += cleared;
     }
     assert!(
@@ -437,7 +480,8 @@ fn the_zones_are_clear_and_would_not_have_been() {
     );
     println!(
         "waystation zones displaced {total_cleared} slot(s) across {} seeds, \
-         and furnished {want_furnished} per seed",
+         furnished {want_furnished} per seed, worst per-seed control \
+         opportunity {worst_opportunity} cell(s)",
         SWEEP_SEEDS.len()
     );
 }

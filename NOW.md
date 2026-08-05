@@ -20,6 +20,23 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 From the judge's **ranked fixes 1–6**, `pass-20260805-074623-04-judge.md`, which
 FAILED `loop/waystation-canopy`. All six landed. Knob row: `DECISIONS.md` §open.
 
+**Then `-05` FAILED it again on one wall, and that fix landed too** — this branch
+carries both passes and is judged as one diff.
+
+- **The weakened assert is restored as a law, not as the old line.** `-05` fix 1:
+  `cleared >= 1` per seed became an aggregate, which is a loosening. The judge's own
+  prescription is what shipped — keep `assert_eq!(furnished, want_furnished)`, keep
+  the aggregate displacement, and add the per-seed claim the old line was reaching
+  for: the control arm had an **opportunity**, i.e. the zones cover ≥ 1 scatter cell
+  whose ground `scatter` would not veto outright. It is a law, not a draw —
+  **measured worst 7 cells against a floor of 1** — and mutation-proved live *past*
+  `furnished`, which asserts first and would otherwise mask it (`-05` check 2's own
+  warning, applied to this test).
+- **The stale "walks through the parapet" claim was in four files, not two.**
+  `-05` fix 2 named `NOW.md` and `ci/waystation_canopy.mjs`; `ci/haven_shelter.mjs`
+  and `TERRAIN.md` stage 8 carried it verbatim. All four now name the narrower
+  residual with the line that proves it — see **Left behind** below.
+
 - **Cause, not the sentence:** it stood at the site centre, and a waystation's
   centre is the coast road's centre line — `pick_minor` scores only candidates off
   the ring, and `haven_shelter_bearing`'s doc already said so. It now stands in a
@@ -38,8 +55,14 @@ FAILED `loop/waystation-canopy`. All six landed. Knob row: `DECISIONS.md` §open
   lit, sited or legible at range.
 
 **Left behind:**
-- *(systems)* `collide.rs` knows only built pieces, so a body walks through the
-  parapet and through the pad's walls. `slot_blocks` is ready and uncalled.
+- *(systems)* Bodies **are** stopped — `movement.rs:158` → `occupy.rs::blocks` →
+  `terrain::slot_blocks`, gated by `tests/solid.rs`. The old bullet here said the
+  opposite and was false in four files; all four are corrected. The two real holes
+  are each one grep: `combat.rs` carries no occupant term, so a shot passes through
+  the parapet that stops a body (TERRAIN §1 stage 6 asks the forest for cover and
+  gets none); and `collide::piece_ground` (`collide.rs:339`) reads built pieces
+  only, so nothing scattered is standable — the deck and the pad's plinth are
+  kerbs you sink into.
 - *(any)* `tests/box_container.rs` overflows its stack in a **debug** build on a
   clean `lane/looks` — confirmed on a worktree at 750fd53, not from any diff here.
   `ci/gates.sh` runs `--release`, where it passes, so CI cannot see it.

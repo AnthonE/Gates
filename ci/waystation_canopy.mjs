@@ -41,11 +41,17 @@
 //      off the published radius, because the published radius is the thing
 //      under test.
 //
-// What it deliberately does NOT assert is that anything is COLLIDABLE in
-// play, for `ci/haven_shelter.mjs`'s reason and with the same honesty:
-// `crates/sim-core/src/collide.rs` knows only built pieces, so a player still
-// walks through the parapet. That last step is the systems lane's path and it
-// is a one-line request in `NOW.md`, not something reached into from here.
+// What it does NOT assert is anything about play — and the honest version of
+// that is narrower than this header used to claim, because the seam closed
+// underneath it. A body IS stopped by the parapet today: `movement.rs:158`
+// calls `occupy.rs`'s `blocks`, which resolves every non-`None` occupant
+// through `terrain::slot_blocks`, and `tests/solid.rs` walks a capsule into
+// this very table. Two narrower holes remain, each provable by one grep:
+// `crates/sim-core/src/combat.rs` carries no occupant term at all, so a shot
+// passes through the parapet that stops a body; and `collide::piece_ground`
+// (`collide.rs:339`) reads built pieces only, so nothing scattered
+// contributes standable ground and the deck cannot be stood on. Both are the
+// systems lane's path, not something reached into from here.
 //
 // Arithmetic over a box list: no GPU, no shard, no frames.
 

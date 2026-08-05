@@ -120,11 +120,14 @@ Stages, in order — each cheap, each deterministic:
    row-for-row mirror of the client's, with `ci/haven_shelter.mjs` holding all
    14 × 6 fields equal across the language seam. The plinth is floor rather
    than the fourteenth wall (`SHELTER_FLOOR_IX`), or the building seals from
-   outside. **Nothing calls it yet**: `collide.rs` knows only built pieces, so
-   a player still walks through these walls — the shape is proven, the wiring
-   is the systems lane's. `DECISIONS.md` §open "haven pad v0", "haven crates
-   v0", "haven shelter v0" and "shelter volume v0" have the knobs and the
-   measurements.
+   outside. **It is called now** — `movement.rs:158` → `occupy.rs`'s `blocks`
+   → `terrain::slot_blocks`, so these walls stop a body. What is still missing
+   is narrower than the sentence that stood here: `combat.rs` carries no
+   occupant term, so a shot passes through a wall that stops a body; and
+   `collide::piece_ground` (`collide.rs:339`) reads built pieces only, so the
+   plinth is a kerb you sink into rather than a floor. `DECISIONS.md` §open
+   "haven pad v0", "haven crates v0", "haven shelter v0" and "shelter volume
+   v0" have the knobs and the measurements.
    **The hook is now used, and the second tier cost no new search.** The
    argmax above scores `HAVEN_CANDIDATES` bearings and keeps one; the other 63
    passed the same land and road checks and lost on flatness by centimetres.
