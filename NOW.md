@@ -742,11 +742,21 @@ They are moved here intact. **Nothing has been deleted and nothing has been
 judged.**
 
 **This is not a queue. Do not pick from it.** It is two divergent trunks'
-work stapled together: many items are marked LANDED, many more are
-three.js renderer work that §1's native pivot retires, and several restate
+work stapled together: many items are marked LANDED and several restate
 items §0–§6 already carry in their current form. Reconciling it means
 deciding item by item which is still true, which is why it was not done in
 the merge that created it.
+
+**Do not assume the three.js items in here are dead.** The two trunks carry
+two operator calls from the same day and the merge is the first time they
+have sat together. §1 (native client, two slices landed) reads as retiring
+browser work outright; the row this merge brought in reads *"three.js stays
+for the web demo; a native renderer is **unscheduled** — second class
+justifies the cost, it does not schedule or reduce it"*. The reading that
+fits both: the native **client** is real and progressing, a native
+**renderer** is not scheduled, and the browser client is **demoted, not
+retired**. Anything here that only three.js can do may still be live.
+**Operator: say which, before anyone spends a pass on this section.**
 
 **Two things in here outrank the rest and should be lifted out first:**
 
