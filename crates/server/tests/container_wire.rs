@@ -39,8 +39,8 @@ use protocol::{EventMsg, ItemCatalog};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use sim_core::backpack::BackpackContent;
-use sim_core::combat::CombatContent;
 use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_PLANE};
+use sim_core::combat::CombatContent;
 use sim_core::deploy::{box_key, DeployContent, DeployDef, ARCH_BOX, PLACE_FOUNDATION};
 use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
 use sim_core::input::BTN_PRIMARY;
@@ -123,9 +123,16 @@ fn pump(
     applied2
 }
 
-/// Every container-sync message on the lane, as (slot, kind, handle,
-/// reset, the slots it named).
-fn syncs(seen: &[(usize, EventMsg)]) -> Vec<(usize, u8, u32, bool, Vec<(u8, ItemStack)>)> {
+/// One container-sync message, flattened: (connection slot, container
+/// kind, handle, reset, the slots it named). Named rather than written
+/// inline because it is five positional fields with two integers and a
+/// bool among them — the shape CLAUDE.md's trap list counts ~27 shipped
+/// corrections on — so every reader of this file should be able to look up
+/// what position 2 is.
+type Sync = (usize, u8, u32, bool, Vec<(u8, ItemStack)>);
+
+/// Every container-sync message on the lane.
+fn syncs(seen: &[(usize, EventMsg)]) -> Vec<Sync> {
     seen.iter()
         .filter_map(|(slot, m)| match m {
             EventMsg::ContSync {
@@ -226,7 +233,8 @@ fn bag_from_a_kill(
             assert_eq!(core.world.backpacks.len(), 1, "the death left one bag");
             let bag = core.world.backpacks.entries()[0];
             assert!(
-                burn.iter().all(|(_, m)| !matches!(m, EventMsg::ContSync { .. })),
+                burn.iter()
+                    .all(|(_, m)| !matches!(m, EventMsg::ContSync { .. })),
                 "a death must not open a panel by itself"
             );
             return bag.id;
@@ -239,7 +247,8 @@ fn bag_from_a_kill(
 /// action lane — through `decode_action`, so the bytes are real.
 fn ask(core: &mut ShardCore, slot: usize, kind: u8, cont: u32) {
     let mut buf = [0u8; 32];
-    let n = protocol::encode_action_container(kind, cont, &mut buf).expect("a shape the wire takes");
+    let n =
+        protocol::encode_action_container(kind, cont, &mut buf).expect("a shape the wire takes");
     let msg = protocol::decode_action(&buf[..n]).expect("round trips");
     core.push_action(slot, msg);
 }
@@ -256,6 +265,17 @@ fn only_the_opener_is_shown_a_container() {
     // that parked it across the map would pass against an AOI broadcast.
     let (w0, w1) = (world_slot(&core, id_of(0)), world_slot(&core, id_of(1)));
     core.world.players[w1].body = core.world.players[w0].body;
+    // And give the neighbour a reason to be sent something on this very
+    // lane in this very window. Slot 1 is a fresh corpse: it is quiet, so
+    // without this the capture below holds nothing for slot 1 and the
+    // negative claim is true for the wrong reason — it would stay green
+    // the day the unicast becomes a broadcast, because the observation
+    // would have broken first. One slot of its own inventory moves, which
+    // the server owes it as a unicast `Inv` diff and nobody else.
+    core.world.players[w1].inv[0] = ItemStack {
+        item: THIRD,
+        count: COUNT_C,
+    };
 
     let mut seen = Vec::new();
     ask(&mut core, 0, CONT_BAG, bag);
@@ -270,9 +290,11 @@ fn only_the_opener_is_shown_a_container() {
     // with no such check is the shape that passes after the observation
     // breaks.
     assert!(
-        seen.iter().any(|(slot, _)| *slot == 1),
-        "the capture never saw slot 1 at all — the negative claim below \
-         would pass against a broadcast"
+        seen.iter()
+            .any(|(slot, m)| *slot == 1 && matches!(m, EventMsg::Inv { .. })),
+        "the capture recorded no event-lane traffic for slot 1 — the negative \
+         claim below would pass against a broadcast, or against a harness that \
+         had stopped watching: {seen:?}"
     );
     let got = syncs(&seen);
     assert!(
@@ -301,7 +323,11 @@ fn only_the_opener_is_shown_a_container() {
         ],
         "the opener was shown the wrong slots"
     );
-    assert_eq!(got.len(), 1, "an open pays once, not once per tick: {got:?}");
+    assert_eq!(
+        got.len(),
+        1,
+        "an open pays once, not once per tick: {got:?}"
+    );
 
     // And the client mirror agrees with the bytes — through the same
     // fields the ui lane reads, so a readout that decoded but published
@@ -355,7 +381,11 @@ fn walking_away_closes_the_panel_rather_than_starving_it() {
         (0, CONT_SELF, 0, true, 0),
         "the server must shut the panel, not merely stop feeding it"
     );
-    assert_ne!(applied2[0] & APPLIED2_CONT, 0, "the close reaches the C ABI");
+    assert_ne!(
+        applied2[0] & APPLIED2_CONT,
+        0,
+        "the close reaches the C ABI"
+    );
     assert_eq!(
         (clients[0].1.cont_kind, clients[0].1.cont_handle),
         (CONT_SELF, 0),
@@ -397,8 +427,8 @@ fn a_forged_handle_is_answered_with_nothing() {
 
     let got = syncs(&seen);
     assert!(
-        got.iter().all(|(_, kind, _, _, rows)| *kind == CONT_SELF
-            && rows.is_empty()),
+        got.iter()
+            .all(|(_, kind, _, _, rows)| *kind == CONT_SELF && rows.is_empty()),
         "a forged open was paid in contents: {got:?}"
     );
     assert_eq!(
@@ -433,7 +463,9 @@ fn a_change_inside_an_open_container_arrives_as_a_diff() {
             count: COUNT_C,
         },
     );
-    core.world.backpacks.set_slot(0, SLOT_B, ItemStack::default());
+    core.world
+        .backpacks
+        .set_slot(0, SLOT_B, ItemStack::default());
 
     let mut after = Vec::new();
     pump(&mut core, &stats, &mut clients, &mut after);
@@ -606,7 +638,11 @@ fn a_box_opens_by_its_packed_address() {
         level: 0,
         loc: LOC_PLANE,
     }]);
-    assert_eq!(core.world.deploys.boxes().len(), 1, "the box must be placed");
+    assert_eq!(
+        core.world.deploys.boxes().len(),
+        1,
+        "the box must be placed"
+    );
 
     // Put something in it the way a move would, then open it.
     core.world.deploys.set_box_slot(

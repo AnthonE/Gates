@@ -2649,7 +2649,10 @@ mod tests {
                 slots,
                 count,
             } => {
-                assert_eq!((kind, cont, reset, count), (CONT_BOX, 0x0011_2233, false, 2));
+                assert_eq!(
+                    (kind, cont, reset, count),
+                    (CONT_BOX, 0x0011_2233, false, 2)
+                );
                 assert_eq!(&slots[..2], &rows);
             }
             other => panic!("wrong variant: {other:?}"),
@@ -2760,7 +2763,8 @@ mod tests {
         w.write(CONT_BAG as u32, CONT_KIND_BITS).unwrap();
         w.write(1, 32).unwrap();
         w.write_bit(true).unwrap();
-        w.write(CONT_SYNC_BATCH as u32 + 1, CONT_COUNT_BITS).unwrap();
+        w.write(CONT_SYNC_BATCH as u32 + 1, CONT_COUNT_BITS)
+            .unwrap();
         let len = w.finish();
         assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
     }

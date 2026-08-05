@@ -35,18 +35,18 @@ pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     decode_event, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_chat,
-    encode_event_cont_sync, encode_event_consume_refused, encode_event_consumed,
-    encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_move_refused, encode_event_moved,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
+    encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
+    encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_respawn,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
+    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
+    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -390,12 +390,15 @@ const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
 );
-/// Container-kind width on the move action. Two bits for two live kinds
-/// (`inventory::CONT_SELF`, `CONT_BAG`), so 2 and 3 are forgeable and
-/// refuse at decode — the `BUILD_MAT_BITS` posture, and deliberately not
-/// a single bit: the spare pair is where a deployed box lands, and
-/// spending the width now is what keeps that change from moving this
-/// message. See `inventory::CONT_MAX`.
+/// Container-kind width, on the move action and now the container verb.
+/// Two bits for **three** live kinds (`inventory::CONT_SELF`, `CONT_BAG`,
+/// `CONT_BOX`), so only 3 is forgeable and it refuses at decode — the
+/// `BUILD_MAT_BITS` posture. Spending the pair at v17 rather than one bit
+/// is what let the box land at v18 and the container verb at v19 without
+/// moving a single existing message; the width is now full, and a fourth
+/// kind widens this field and every fixture with it. Every check is
+/// against `inventory::CONT_MAX`, never against this width — the two are
+/// deliberately not the same number.
 const CONT_KIND_BITS: u32 = 2;
 /// Move-count width. Full `u16`, matching `ItemStack::count` and the
 /// stack ladder's own type, so no count a container can legally hold is
@@ -590,8 +593,7 @@ pub enum ActionMsg {
 /// `CONT_MAX` and a close carrying a handle are both refused here, so the
 /// decoder's checks and the encoder's are the same two.
 pub fn encode_action_container(kind: u8, cont: u32, buf: &mut [u8]) -> Result<usize, WireError> {
-    if kind > sim_core::inventory::CONT_MAX
-        || (kind == sim_core::inventory::CONT_SELF && cont != 0)
+    if kind > sim_core::inventory::CONT_MAX || (kind == sim_core::inventory::CONT_SELF && cont != 0)
     {
         return Err(WireError::Range);
     }

@@ -115,6 +115,13 @@ const REQUIRED = [
   "client_bags_ptr",
   "client_bags_len",
   "client_action_loot",
+  // Wire v19, the container view. Four exports and no panel reads them yet
+  // — which is exactly when a C ABI drifts unseen, so they are pinned here
+  // the pass they land rather than the pass something depends on them.
+  "client_action_container",
+  "client_cont_ptr",
+  "client_cont_kind",
+  "client_cont_handle",
 ];
 
 let failed = 0;
@@ -166,7 +173,14 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 18, "proto ver drifted without this gate hearing");
+// Deliberately a literal, unlike the fixture path below it: this is the
+// tripwire, not a mirror. A bump has to be typed here in the commit that
+// bumps `PROTO_VER`, which is wall 6's "in the same commit" made mechanical
+// on the client's side of the wire. Deriving it from the Rust would turn the
+// one gate that notices a version move into a gate that cannot.
+// 19: the container view (`event.rs` `SUB_CONT_SYNC`, `lib.rs`
+// `ACT_CONTAINER`).
+check(ex.client_proto_ver() === 19, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -732,6 +746,126 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
     "exchanging the move's from and to produced a byte-identical frame — the two ends are the same position on" +
       " the wire, so nothing downstream can tell a move from its reverse",
   );
+
+  // --- the container view, both directions (wire v19) ----------------------
+  // Nothing in `web/` opens a panel yet, so every one of these four exports
+  // has exactly one reader today: this gate. That is the reason to write it
+  // now rather than with the panel — a C ABI nobody calls is a C ABI that
+  // drifts silently, and the four functions are the whole contract the ui
+  // lane will build against.
+  //
+  // The claim that matters is the ECHO: a batch names the container it
+  // belongs to, and the client drops one that names a different container.
+  // Without that a diff for a box the player already closed lands in
+  // whatever panel is open — the positional-payload defect one level up,
+  // where the values are right and the destination is wrong.
+  {
+    const CONT2 = 2; // core::APPLIED2_CONT, word 1 bit 1
+    const contKindBits = fieldBits.contKind;
+    const evSlotBits = 5; // event.rs INV_SLOT_BITS
+    const contCountBits = 6; // event.rs CONT_COUNT_BITS
+    const SUB_CONT_SYNC = 38;
+    const BOX = 0x0155_d450; // the same packed box_key the move above uses
+    const contFrame = (kind, handle, reset, rows) =>
+      evFrame(SUB_CONT_SYNC, [
+        [kind, contKindBits],
+        [handle, 32],
+        [reset ? 1 : 0, 1],
+        [rows.length, contCountBits],
+        ...rows.flatMap(([s, item, n]) => [
+          [s, evSlotBits],
+          [item, 16],
+          [n, 16],
+        ]),
+      ]);
+    const contView = () =>
+      new Uint16Array(ex.memory.buffer, ex.client_cont_ptr(), 30 * 2).slice();
+
+    check(ex.client_cont_kind() === 0, "nothing may be open before a sync says so");
+    check(ex.client_cont_handle() === 0, "a closed panel must name no container");
+
+    // The open: kind 2 (CONT_BOX), reset, two rows. Every number distinct
+    // from every other — slot 0 / item 5 / count 40 and slot 11 / item 31 /
+    // count 3 — so a (slot, item, count) rotation cannot pass.
+    f = contFrame(2, BOX, true, [[0, 5, 40], [11, 31, 3]]);
+    writeIn(f);
+    let cflags = ex.client_on_stream(f.length) >>> 0;
+    check((cflags & STREAM_ERR) === 0, "a container sync must not read as a stream error");
+    check(ex.client_applied2() === CONT2, "an open must apply with the CONT flag in word 1");
+    check(ex.client_cont_kind() === 2, `the open panel must name CONT_BOX: ${ex.client_cont_kind()}`);
+    check(
+      (ex.client_cont_handle() >>> 0) === BOX,
+      `the open panel lost its handle: ${ex.client_cont_handle() >>> 0} — a move typed against the wrong` +
+        " address is the container divergence the reference answered by disconnecting the client",
+    );
+    {
+      const v = contView();
+      check(v[0] === 5 && v[1] === 40, `container slot 0 mismatch: ${v[0]}/${v[1]}`);
+      check(v[22] === 31 && v[23] === 3, `container slot 11 mismatch: ${v[22]}/${v[23]}`);
+      check(v[2] === 0 && v[3] === 0, "a reset must leave the untouched slots empty");
+    }
+
+    // A diff for the SAME container, emptying slot 0. Item 0 count 0 is a
+    // real change and not a no-op — "that is gone" has to be sayable.
+    f = contFrame(2, BOX, false, [[0, 0, 0]]);
+    writeIn(f);
+    ex.client_on_stream(f.length);
+    check(ex.client_applied2() === CONT2, "a diff must apply with the CONT flag");
+    {
+      const v = contView();
+      check(v[0] === 0 && v[1] === 0, "an emptied slot must clear");
+      check(v[22] === 31 && v[23] === 3, "a diff must not disturb the slots it did not name");
+    }
+
+    // And a diff for a container this client does NOT have open: dropped
+    // whole. Same kind, one bit of the handle different, which is the
+    // cheapest thing an echo check can get wrong.
+    f = contFrame(2, BOX ^ 1, false, [[11, 7, 99]]);
+    writeIn(f);
+    check((ex.client_on_stream(f.length) & STREAM_ERR) === 0, "a foreign diff must still decode");
+    check(ex.client_applied2() === 0, "a diff for another container must apply nothing");
+    {
+      const v = contView();
+      check(v[22] === 31 && v[23] === 3, "a foreign diff reached this panel's slots");
+    }
+
+    // The server's close: kind 0, no handle, no slots, reset set.
+    f = contFrame(0, 0, true, []);
+    writeIn(f);
+    ex.client_on_stream(f.length);
+    check(ex.client_applied2() === CONT2, "a close must apply with the CONT flag");
+    check(ex.client_cont_kind() === 0, "a close must shut the panel");
+    check(ex.client_cont_handle() === 0, "a close must forget the handle");
+
+    // C->S. The two shapes the encoder owes a refusal, refused locally
+    // rather than handed to a server that answers a bad frame by ending the
+    // session — the same posture as the move verb above.
+    check(ex.client_action_container(1, 9001) > 0, "opening a bag must encode");
+    check(ex.client_action_container(2, BOX) > 0, "opening a box must encode");
+    check(ex.client_action_container(0, 0) > 0, "a close must encode");
+    check(ex.client_action_container(0, 1) === 0, "a close naming a container must not encode");
+    check(ex.client_action_container(3, 0) === 0, "a kind past CONT_MAX must not encode");
+
+    // The bytes, field by field: which value the browser's calling path puts
+    // in each field, which `test_protocol_golden` cannot see because the
+    // encoder is untouched when the CALLER swaps two arguments.
+    const actContainer = protoConst("ACT_CONTAINER");
+    const clen = ex.client_action_container(2, BOX);
+    const cbuf = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), clen).slice();
+    const [cKind, cSub, cContKind, cHandle] = unpack(cbuf, [
+      fieldBits.kind, fieldBits.sub, contKindBits, 32,
+    ]);
+    check(
+      cKind === kindAction && cSub === actContainer,
+      `the open frame is not an ACT_CONTAINER action (kind ${cKind}, sub ${cSub})`,
+    );
+    check(cContKind === 2, `the open's container kind encoded as ${cContKind}, not 2`);
+    check(
+      (cHandle >>> 0) === BOX,
+      `the open's handle encoded as ${cHandle >>> 0}, not ${BOX} — the server resolves the container by this` +
+        " value and answers a handle it cannot resolve with silence, so a wrong one is a panel that never draws",
+    );
+  }
 
   // Hit: sub 24 · victim 4242 · damage 25.
   check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring starts empty");
