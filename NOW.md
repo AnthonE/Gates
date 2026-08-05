@@ -641,7 +641,7 @@ failed work in the trunk is the one thing the judge exists to prevent.
 
 | tag | what | why it is here |
 |---|---|---|
-| `salvage/ranged-v0` | ranged weapons — `ranged.rs` (402), `pitch_lut.rs` (285), `tests/shoot.rs` (695), `ci/gen_pitch_lut.py` | judged FAIL, wall 6 — and the branch's own `NOW.md` text says why: *"already on the wire, so the wire did not move and `PROTO_VER` did not bump"*. A shot arrives as `EV_HIT`/`EV_HEALTH`/`EV_DEATH` and nothing else, so **no client can tell an arrow from a swing and nothing can draw the projectile**. The wire half it names as missing — an `EV_SHOT` code, its subtype, a `PROTO_VER` bump, 66 regenerated goldens — is the rebuild's real scope, and `ACT_MAX` is full (§0r item 4), so it also widens `ACTION_SUB_BITS`. The judge report itself was pruned; this reading is off the diff, not the report. **The sim half is good work** — bounded (`MAX_ARROWS` 128, `MAX_ARROW_LIFE_TICKS` 120, integer `ARROW_STEP_MM`) and heavily tested. Start from the branch, not from scratch |
+| `salvage/ranged-v0` | ranged weapons — `ranged.rs` (402), `pitch_lut.rs` (285), `tests/shoot.rs` (695), `ci/gen_pitch_lut.py` | judged FAIL, wall 6 — and the branch's own `NOW.md` text says why: *"already on the wire, so the wire did not move and `PROTO_VER` did not bump"*. A shot arrives as `EV_HIT`/`EV_HEALTH`/`EV_DEATH` and nothing else, so **no client can tell an arrow from a swing and nothing can draw the projectile**. The wire half it names as missing — an `EV_SHOT` code, its subtype, a `PROTO_VER` bump, 66 regenerated goldens — is the rebuild's whole scope. **It does NOT need a new action code**: the bow fires on the existing `BTN_PRIMARY`, adds no `ACT_*`, so `ACT_MAX` being full (§0r item 4) does not apply and `ACTION_SUB_BITS` does not move. An earlier note here said otherwise and was wrong. The judge report was pruned; this reading is off the diff. **The sim half is good work and survives the desktop pivot untouched** — pure `sim-core`/content, nothing in `web/` or `crates/client`, bounded (`MAX_ARROWS` 128, `MAX_ARROW_LIFE_TICKS` 120, integer `ARROW_STEP_MM`), 695 lines of tests. Four rebase conflicts against current `main` (`bake.rs`, `combat.rs`, `limits.rs`, `world.rs`), all in files that moved under it. **Start from the branch — this is a slice, not a rewrite** |
 
 Cleared 2026-08-05 (operator pass, not the runner). Every dropped tag's
 work is still held by its `loop/*` branch — the tags went, the commits did
@@ -747,16 +747,22 @@ items §0–§6 already carry in their current form. Reconciling it means
 deciding item by item which is still true, which is why it was not done in
 the merge that created it.
 
-**Do not assume the three.js items in here are dead.** The two trunks carry
-two operator calls from the same day and the merge is the first time they
-have sat together. §1 (native client, two slices landed) reads as retiring
-browser work outright; the row this merge brought in reads *"three.js stays
-for the web demo; a native renderer is **unscheduled** — second class
-justifies the cost, it does not schedule or reduce it"*. The reading that
-fits both: the native **client** is real and progressing, a native
-**renderer** is not scheduled, and the browser client is **demoted, not
-retired**. Anything here that only three.js can do may still be live.
-**Operator: say which, before anyone spends a pass on this section.**
+**RESOLVED by the operator, 2026-08-05: "we are focusing on desktop rust
+build now."** This section was holding open a conflict between §1's native
+pivot and a "three.js stays for the web demo" row. The word settles it —
+**desktop is the build, web is the demo** — so the three.js items in here
+are **deprioritized**, not merely un-adjudicated. `DECISIONS.md` has the
+row. The web client is not deleted and its gates still run; it is simply
+not where work goes.
+
+Read that together with the same operator's verdict on why this section is
+full of visual passes: **they were wheel-spinning.** Not a discovery about
+content density — wasted motion, measured against having built worlds with
+this tooling faster and with less circling. **So the bar for any visual
+work that follows, on the native client, is a visibly better picture in
+reasonable time.** A pass that produces tuned constants instead of that is
+the failure mode to stop early, and this section is 1,100 lines of what
+that failure mode looks like when it is allowed to run.
 
 **Two things in here outrank the rest and should be lifted out first:**
 
