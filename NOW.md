@@ -104,6 +104,18 @@ and covered by §Q/§R/§V/§W with eleven mutants of its own; it cannot reach a
 material, a shader or the terrain. A one-line edit to it currently costs the
 ~19-minute renderer tier. `map.js` and `invmove.js` have the same shape.
 `main.js` does NOT — it builds three.js scenes and belongs where it is.
+`web/src/refusals.js` (new) is the strongest case on the list: four string
+tables and one accessor, no imports at all, fully walked by §W with fourteen
+mutants red. It is NOT exempt today and correctly costs the renderer tier.
+
+## 0g · The deploy-def cost rows stop at the bridge *(systems lane, cross-lane)*
+
+Carried out of the finished §0c2 so it is not lost with it. `bridge.rs:66`
+exports `DEPLOY_DEF_ROW_WORDS = 4`, so `SUB_DEPLOY_DEFS`' new `n_costs` and
+its cost rows never reach `web/src` — the client cannot show what mending a
+door costs, and `describeDeploy` reads `b+3` of a stride-4 row because that is
+all there is. Same shape as §0e: a widened export, ~10 lines.
+
 ## 0d · The island validates at boot *(systems lane — done this pass)*
 
 Closes the boot-refusal request filed twice — `## 0`'s "A short waystation tier
