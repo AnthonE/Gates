@@ -70,8 +70,18 @@ import { bakedGeometry } from "./props.js";
 
 /** Tile edge in meters — `terrain::CLUTTER_TILE_M`. */
 export const CLUTTER_TILE_M = 16.0;
-/** Max elements one tile yields — `terrain::CLUTTER_PER_TILE`. */
+/** Max grid elements one tile yields — `terrain::CLUTTER_PER_TILE`. */
 export const CLUTTER_PER_TILE = 625;
+/**
+ * Max PROP-SKIRT elements one tile yields — `terrain::SKIRT_PER_TILE`.
+ *
+ * The skirts are the same four kinds through the same four pools, arriving in
+ * the same `terrain_fill_clutter` buffer behind the grid. Nothing downstream
+ * distinguishes them, which is the whole reason they cost no draw call.
+ */
+export const SKIRT_PER_TILE = 256;
+/** Everything one tile can yield — `terrain::CLUTTER_TILE_CAP`. */
+export const CLUTTER_TILE_CAP = CLUTTER_PER_TILE + SKIRT_PER_TILE;
 /** Floats per element in the bridge buffer — `bridge::CLUTTER_FLOATS`. */
 export const CLUTTER_FLOATS = 6;
 
@@ -95,7 +105,7 @@ export const CLUTTER_FILLS_PER_FRAME = 1;
 
 /** Instances one kind's pool can hold: the whole ring, if it were uniform. */
 export const CLUTTER_POOL_CAP =
-  CLUTTER_PER_TILE * (2 * CLUTTER_RING + 1) * (2 * CLUTTER_RING + 1);
+  CLUTTER_TILE_CAP * (2 * CLUTTER_RING + 1) * (2 * CLUTTER_RING + 1);
 
 // ── Geometry ───────────────────────────────────────────────────────────────
 
