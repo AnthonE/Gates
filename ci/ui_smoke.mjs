@@ -5358,6 +5358,316 @@ for (const [what, re] of [
 }
 
 // =============================================================================
+// W. the piece's other half — what mends it, and the news that it broke
+// =============================================================================
+// Repair v0 landed in the sim (wire v20, `ACT_REPAIR`) and nothing can press
+// it: `client_action_repair` is not exported from the bridge, so the SEND is a
+// systems-lane line in `NOW.md`. Everything else on the client side of a
+// piece's hp is this lane's, and this group is it — which piece a
+// piece-addressed verb aims at, what the sim's refusals say, and whether a
+// player can tell a wall being mended from a wall being broken into.
+//
+// All three were defects, and all three were invisible for the same structural
+// reason: they sat in `main.js`, which this gate cannot execute (it boots
+// three.js and is stubbed at the route) and `browser_smoke` never pressed the
+// keys that reach them. They are now in `interact.js`, which node calls for
+// real — the move `describePiece` made, for the move's whole reason.
+
+// --- the anchor, against the sim's own -------------------------------------
+// `build.rs:346`'s `anchor` is what BOTH reach checks measure to: placement
+// measures build reach to it and a raid swing measures weapon reach to it. The
+// client has to agree or U and repair refuse at a distance the server accepts.
+// Mirrored in JS and pinned to the Rust source text — `ci/bump_basis.mjs`'s
+// pattern, for the case where the original cannot be imported.
+const rsLoc = Object.fromEntries(
+  [...buildSrc.matchAll(/^pub const LOC_([A-Z_]+): u8 = (\d+);/gm)].map(([, n, v]) => [n, Number(v)]),
+);
+check(
+  Object.keys(rsLoc).length === 4,
+  `build.rs declares ${Object.keys(rsLoc).length} LOC_* constants, not the four this walk knows` +
+    ` (${JSON.stringify(rsLoc)}) — a stale parse makes every anchor check below vacuous`,
+);
+for (const [name, want] of [
+  ["PLANE", interact.LOC_PLANE],
+  ["RISER", interact.LOC_RISER],
+  ["EDGE_W", interact.LOC_EDGE_W],
+  ["EDGE_N", interact.LOC_EDGE_N],
+]) {
+  check(
+    rsLoc[name] === want,
+    `build.rs LOC_${name} = ${rsLoc[name]} but interact.js says ${want} — the client would anchor an edge` +
+      " piece at a cell centre, and a wall you are standing against would read as out of reach",
+  );
+}
+// The two arms that carry the whole positional risk, read out of the Rust.
+for (const [loc, arm] of [
+  ["LOC_EDGE_W", "LOC_EDGE_W => (x0, z0 + half),"],
+  ["LOC_EDGE_N", "LOC_EDGE_N => (x0 + half, z0),"],
+]) {
+  check(
+    buildSrc.includes(arm),
+    `build.rs's anchor no longer contains \`${arm}\` — either the sim moved its anchor and this mirror is now` +
+      " wrong, or the function was reformatted and this pin matches nothing. Both need a human, because a" +
+      " silently re-cornered anchor is exactly the positional class CLAUDE.md's trap list names",
+  );
+}
+const wCellM = 3; // main.js's BUILD_CELL, and build.rs's BUILD_CELL_M
+const anchorOf = (cx, cz, loc) => interact.pieceAnchor([0, 0], cx, cz, loc, wCellM);
+{
+  const half = wCellM / 2;
+  const [cx, cz] = [7, 11];
+  const [x0, z0] = [cx * wCellM, cz * wCellM];
+  check(
+    anchorOf(cx, cz, interact.LOC_EDGE_W)[0] === x0 &&
+      anchorOf(cx, cz, interact.LOC_EDGE_W)[1] === z0 + half,
+    `a west edge anchored at ${JSON.stringify(anchorOf(cx, cz, interact.LOC_EDGE_W))} — build.rs puts it ON` +
+      ` the west boundary (x = cx*${wCellM}) at the edge's midpoint, i.e. (${x0}, ${z0 + half})`,
+  );
+  check(
+    anchorOf(cx, cz, interact.LOC_EDGE_N)[0] === x0 + half &&
+      anchorOf(cx, cz, interact.LOC_EDGE_N)[1] === z0,
+    `a north edge anchored at ${JSON.stringify(anchorOf(cx, cz, interact.LOC_EDGE_N))} — build.rs puts it ON` +
+      ` the north boundary (z = cz*${wCellM}), i.e. (${x0 + half}, ${z0})`,
+  );
+  for (const loc of [interact.LOC_PLANE, interact.LOC_RISER]) {
+    check(
+      anchorOf(cx, cz, loc)[0] === x0 + half && anchorOf(cx, cz, loc)[1] === z0 + half,
+      `loc ${loc} anchored at ${JSON.stringify(anchorOf(cx, cz, loc))} instead of the cell centre` +
+        ` (${x0 + half}, ${z0 + half}) — planes and risers fill the cell, so they have no edge to sit on`,
+    );
+  }
+  // The two edges must not collapse onto each other or onto the centre: if
+  // they did, every check above could pass while the address stopped naming a
+  // place. This is the swap M24/M25 perform.
+  const pts = [interact.LOC_PLANE, interact.LOC_EDGE_W, interact.LOC_EDGE_N].map((l) =>
+    anchorOf(cx, cz, l).join(),
+  );
+  check(
+    new Set(pts).size === 3,
+    `two of the three distinct locs anchor at the same point (${JSON.stringify(pts)}) — a west wall and a` +
+      " north wall on one cell are different walls, and reach that cannot tell them apart picks the wrong one",
+  );
+}
+
+// --- which piece the key addresses -----------------------------------------
+// This scan was `main.js`'s `nearestPiece`, and its first statement read
+// `bestD = REACH * REACH` against a `REACH` declared NOWHERE in the repo. So
+// it threw a ReferenceError before its loop and U (upgrade) had been dead at
+// runtime for as long as the binding existed — no gate could see it, because a
+// free variable is not a syntax error and nothing here could call the
+// function. That it is now callable at all is the fix; these are its rules.
+const wRec = (cx, cz, loc, level = 0, row = 0) => ({ cx, cz, level, loc, row });
+const pickAt = (x, z, recs) =>
+  interact.nearestPiece(interact.newPiecePick(), { x, z }, { cell: wCellM, recs });
+check(
+  pickAt(0, 0, []).found === false,
+  "nearestPiece claimed to find a piece in an empty world — `found` is what every caller branches on and a" +
+    " true here sends an address for a piece that does not exist",
+);
+{
+  // Two pieces, one much nearer. The far one is inside reach too, so this
+  // scores the ordering and not merely the bound.
+  const near = wRec(1, 0, interact.LOC_PLANE, 0, 5);
+  const far = wRec(2, 0, interact.LOC_PLANE, 0, 9);
+  const at = { x: 1 * wCellM + wCellM / 2, z: wCellM / 2 };
+  const p = pickAt(at.x, at.z, [far, near]);
+  check(
+    p.found && p.cx === 1 && p.row === 5,
+    `standing on one piece with another a cell away, the scan picked ${JSON.stringify(p)} — nearest wins, and` +
+      " the whole address (cx, cz, level, loc, row) has to come back or the verb acts on a different wall" +
+      " than the one it measured",
+  );
+  const rev = pickAt(at.x, at.z, [near, far]);
+  check(
+    rev.cx === p.cx && rev.row === p.row,
+    "reversing the iteration order changed the pick — then it is insertion order deciding, not distance," +
+      " and `pieceRecs` is a Map whose order is whatever the wire happened to deliver",
+  );
+}
+{
+  // The bound is the sim's, and it is strict: a piece exactly at the reach
+  // radius is refused by `build.rs`'s `>` check, so picking it costs a round
+  // trip and a REFUSE_B_REACH the player cannot act on.
+  const R = interact.INTERACT_REACH_M;
+  const on = wRec(0, 0, interact.LOC_EDGE_W); // anchors at (0, 1.5)
+  const anchor = anchorOf(0, 0, interact.LOC_EDGE_W);
+  check(
+    pickAt(anchor[0] + R + 0.01, anchor[1], [on]).found === false,
+    `a piece ${R + 0.01} m away was picked — beyond INTERACT_REACH_M (${R}) the server refuses, so the` +
+      " client must not aim there",
+  );
+  check(
+    pickAt(anchor[0] + R - 0.01, anchor[1], [on]).found === true,
+    `a piece ${R - 0.01} m away was NOT picked though it is inside INTERACT_REACH_M (${R}) — a reach the` +
+      " client under-reads is a verb that refuses while the player is standing in range",
+  );
+  check(
+    pickAt(anchor[0], anchor[1] + 100, [on]).found === false,
+    "a piece 100 m away was picked — the reach bound is not being applied at all",
+  );
+}
+check(
+  /nearestPiece\(piecePick, pieceAt, pieceWorld\)/.test(mainSrc) &&
+    !/let bestD = REACH/.test(mainSrc),
+  "main.js no longer routes its piece pick through interact.nearestPiece (or has grown the old inline scan" +
+    " back) — the scan only stays gateable while main.js is the caller and not the author",
+);
+
+// --- no main.js constant is a free variable ---------------------------------
+// The class behind `REACH`, not just the instance. `main.js` is the one file
+// no gate here can execute, so an undeclared SCREAMING_CASE constant in it is
+// invisible: it builds clean, it is not a syntax error, and it throws only
+// when a player presses the key. Comments and string literals are stripped
+// first — `main.js` legitimately NAMES Rust constants in its prose.
+let freeScanUsed = 0;
+{
+  const code = mainSrc
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/^\s*\/\/.*$/gm, " ")
+    .replace(/([^:])\/\/.*$/gm, "$1")
+    .replace(/`(?:[^`\\$]|\\.|\$(?!\{))*`/g, '""')
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)*'/g, '""');
+  const declared = new Set();
+  for (const re of [
+    /\b(?:const|let|var)\s+([A-Z][A-Z0-9_]{2,})\b/g,
+    /^\s{2}([A-Z][A-Z0-9_]{2,}),$/gm, // the import lists
+    /\bimport\s*\{([^}]*)\}/g,
+  ]) {
+    for (const m of code.matchAll(re)) {
+      for (const part of m[1].split(",")) {
+        const id = part.trim().split(/\s+as\s+/).pop().trim();
+        if (/^[A-Z][A-Z0-9_]{2,}$/.test(id)) declared.add(id);
+      }
+    }
+  }
+  const used = new Set();
+  for (const m of code.matchAll(/(^|[^.\w$])([A-Z][A-Z0-9_]{2,})\b(?!\s*:)/g)) used.add(m[2]);
+  freeScanUsed = used.size;
+  // Vacuity guard first: a scan that finds nothing asserts nothing, and this
+  // one is a regex over a language it does not parse.
+  check(
+    used.size >= 20 && declared.size >= 10,
+    `the free-variable scan found ${used.size} SCREAMING_CASE uses and ${declared.size} declarations in` +
+      " main.js — it is matching almost nothing, so every result below is vacuous and the stripper broke",
+  );
+  // The platform's own, whose names happen to be SCREAMING_CASE. Kept as a
+  // named list rather than a looser pattern: this is the only way a real free
+  // variable gets past, so it is meant to be short and to be read.
+  const PLATFORM = new Set(["URL", "JSON"]);
+  const free = [...used].filter((id) => !declared.has(id) && !PLATFORM.has(id));
+  check(
+    free.length === 0,
+    `main.js reads ${JSON.stringify(free)}, which nothing in it declares or imports — this is the REACH bug` +
+      " exactly: no gate can execute main.js, so a free constant builds clean, passes every wall, and throws" +
+      " the first time a player presses the key that reaches it",
+  );
+}
+
+// --- the refusals say something ---------------------------------------------
+// The table's INDEX is the sim's number, and it fell one short the day
+// REFUSE_B_INTACT (9) landed — so repairing a wall that is already whole, the
+// likeliest repair refusal there is, answered `can't build: code 9`.
+const rsRefuseB = [...buildSrc.matchAll(/^pub const REFUSE_B_([A-Z]+): u32 = (\d+);/gm)].map(
+  ([, n, v]) => [n, Number(v)],
+);
+check(
+  rsRefuseB.length >= 9,
+  `only ${rsRefuseB.length} REFUSE_B_* constants parsed out of build.rs — the walk below would be vacuous`,
+);
+check(
+  interact.BUILD_REFUSE_TEXT.length === rsRefuseB.length,
+  `build.rs declares ${rsRefuseB.length} REFUSE_B_* reasons and interact.js has` +
+    ` ${interact.BUILD_REFUSE_TEXT.length} sentences — the short end prints a bare number at a player who is` +
+    " being told why a thing they just tried did not happen",
+);
+for (const [name, code] of rsRefuseB) {
+  check(
+    typeof interact.BUILD_REFUSE_TEXT[code] === "string" &&
+      interact.BUILD_REFUSE_TEXT[code].length > 0,
+    `REFUSE_B_${name} = ${code} has no sentence in interact.js — it would reach the player as "code ${code}"`,
+  );
+  check(
+    interact.buildRefusal(code) !== `code ${code}`,
+    `buildRefusal(${code}) still falls through to the bare code for REFUSE_B_${name}`,
+  );
+}
+check(
+  new Set(interact.BUILD_REFUSE_TEXT).size === interact.BUILD_REFUSE_TEXT.length,
+  `two build refusals share a sentence (${JSON.stringify(interact.BUILD_REFUSE_TEXT)}) — the sim keeps them` +
+    " distinct because they are different news, and 'you cannot afford it' is not 'it is already whole'",
+);
+check(
+  interact.buildRefusal(rsRefuseB.length + 3).startsWith("code "),
+  "buildRefusal invented a sentence for a code the sim does not have — the fallback is what keeps a wire" +
+    " ahead of the client honest rather than mislabelled",
+);
+check(
+  /can't build: \$\{buildRefusal\(r\)\}/.test(mainSrc),
+  "main.js no longer routes its build refusal through interact.buildRefusal — the table is only walkable" +
+    " while it lives in the module node can import",
+);
+
+// --- a repair is not a raid --------------------------------------------------
+// `StructHit` and `PieceRepaired` write the same readout from opposite ends
+// and both raise APPLIED_STRUCT_HIT; only a hit also raises APPLIED_HIT.
+// core.rs:98 says so in prose — "A reader that wants only raid damage checks
+// for both" — and the one reader in this client checked one, so a wall being
+// MENDED announced itself as `breaching 750/750`.
+const rsBit = (name) => {
+  const m = coreSrc.match(new RegExp(`^pub const ${name}: u32 = 1 << (\\d+);`, "m"));
+  if (!m) fail(`core.rs declares no ${name} — this gate reads the flag bits from the source`);
+  return 1 << Number(m[1]);
+};
+const HIT_BIT = rsBit("APPLIED_HIT");
+const STRUCT_BIT = rsBit("APPLIED_STRUCT_HIT");
+check(
+  interact.APPLIED_HIT_BIT === HIT_BIT && interact.APPLIED_STRUCT_HIT_BIT === STRUCT_BIT,
+  `interact.js mirrors APPLIED_HIT/APPLIED_STRUCT_HIT as ${interact.APPLIED_HIT_BIT}/` +
+    `${interact.APPLIED_STRUCT_HIT_BIT}, core.rs says ${HIT_BIT}/${STRUCT_BIT} — a drifted bit reads one` +
+    " event's flag as another's and the readout describes the wrong thing entirely",
+);
+{
+  const packed = (left, max) => ((left << 16) | max) >>> 0;
+  const raid = interact.structNews(HIT_BIT | STRUCT_BIT, packed(300, 750));
+  const mend = interact.structNews(STRUCT_BIT, packed(750, 750));
+  check(
+    raid === "breaching 300/750",
+    `a hit read as ${JSON.stringify(raid)} — the breach readout is what tells a player their base is being` +
+      " broken into, and it must still say so",
+  );
+  check(
+    mend === "repaired 750/750",
+    `a repair read as ${JSON.stringify(mend)} — this is the defect verbatim: PieceRepaired raises` +
+      " APPLIED_STRUCT_HIT too, so a wall you just mended announced itself as a wall being breached, which is" +
+      " the most alarming sentence in the game fired by your own verb",
+  );
+  check(
+    raid !== mend,
+    "a repair and a raid produce the same sentence — then the flag pair is not being read and the player" +
+      " cannot tell the two apart at all",
+  );
+  check(
+    interact.structNews(STRUCT_BIT, packed(750, 0)) === "" &&
+      interact.structNews(HIT_BIT | STRUCT_BIT, packed(300, 0)) === "",
+    "structNews spoke with max = 0 — the piece's def row has not arrived, so there is no denominator and the" +
+      " honest answer is silence, not a bar drawn off a number we do not have",
+  );
+  check(
+    interact.structNews(HIT_BIT, packed(300, 750)) === "" &&
+      interact.structNews(0, packed(300, 750)) === "",
+    "structNews spoke without APPLIED_STRUCT_HIT — the readout is stale by definition unless the flag that" +
+      " means 'the readout was just written' is set, and APPLIED_HIT alone is a player hit, not a structure",
+  );
+}
+check(
+  /structNews\(flags, ex\.client_struct_hit_hp\(\) >>> 0\)/.test(mainSrc) &&
+    !/breaching \$\{/.test(mainSrc),
+  "main.js no longer routes the structure readout through interact.structNews (or has grown the old" +
+    " unconditional `breaching` template back) — the discriminator is only gateable where node can call it",
+);
+
+// =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
@@ -5398,7 +5708,14 @@ console.log(
     "build prompt: shape/material labels walked against build.rs, the stride-8 def row decoded as " +
     "arithmetic (item/quantity pair at 4+k*2, first unmet ingredient, exactly-enough is enough), " +
     "deployables from b+3 of a stride-4 row, [RMB] text with and without a shortfall, and centrePrompt " +
-    "swept over all eight combinations (build > E > swing) with main.js pinned to route through it",
+    "swept over all eight combinations (build > E > swing) with main.js pinned to route through it · " +
+    `the piece's hp half: anchor mirrored off build.rs's own arms with all four LOC_* pinned and the three ` +
+    `distinct locs distinct, nearestPiece callable at all (it read an undeclared REACH and threw, so U was ` +
+    `dead) with nearest-wins order-independent and the reach bound strict either side of ` +
+    `${interact.INTERACT_REACH_M} m, ${freeScanUsed} SCREAMING_CASE uses in main.js all declared or ` +
+    `imported, ${interact.BUILD_REFUSE_TEXT.length} refusal sentences walked by name against build.rs's ` +
+    "REFUSE_B_* (INTACT included) all distinct with the bare-code fallback intact, and a repair told from a " +
+    "raid on the APPLIED_HIT bit read out of core.rs, silent when max is 0",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
