@@ -7,9 +7,10 @@
 use sim_core::backpack::BackpackContent;
 use sim_core::bots::bot_frame;
 use sim_core::build::BuildContent;
+use sim_core::combat::{CombatContent, ThrowDef};
 use sim_core::craft::CraftContent;
 use sim_core::gather::GatherContent;
-use sim_core::limits::{STATE_HASH_INTERVAL, TICK_HZ};
+use sim_core::limits::{HOTBAR_SLOTS, STATE_HASH_INTERVAL, TICK_HZ};
 use sim_core::loot::LootContent;
 use sim_core::rng::Pcg32;
 use sim_core::survival::SurvivalContent;
@@ -136,7 +137,32 @@ const TICKS: u64 = 900;
 /// number moved for one reason and not for two — a stream shift would have
 /// re-rolled every bot's entire life and made the two causes indistinguishable
 /// from inside this file.
-const GOLDEN_FINAL_HASH: u64 = 0xB6BA_05A0_0025_F72F;
+/// Regenerated again for the raid verb (wire v23, `charge.rs`), and this
+/// time the number moved for **three** stated reasons rather than one —
+/// which is worth writing down, because the paragraph above earned its
+/// single-cause claim by keeping the rng stream out of the move, and this
+/// commit cannot make the same claim:
+///
+/// 1. `Command::Throw` joined the scripted arm at ticks 165/166, so two
+///    charges are planted and two blasts land four ticks later.
+/// 2. `World::state_hash` gained the charge store. A burning fuse is state
+///    — two shards disagreeing about one disagree about whether a base is
+///    standing ten seconds later — so it is hashed, and it is hashed even
+///    on the ticks the store is empty (a length prefix of zero).
+/// 3. A `CombatContent` is installed on this surface at all for the first
+///    time. Only `throw[3]` is armed and `player_hp` stays 0, so no body
+///    gained hp and nothing became able to hurt anything — but the table
+///    is construction input and the world is no longer built from
+///    `EMPTY`.
+///
+/// **Determinism itself did not move, and that is the assertion that
+/// matters here.** `hashes_a == hashes_b` and `final_a == final_b` both
+/// still hold — the two runs agree tick for tick — so what changed is what
+/// the sim *does*, not whether it does it reproducibly. A regenerated
+/// golden beside a red equality assert would be the bug this constant
+/// exists to catch; a regenerated golden beside a green one is the verb
+/// landing.
+const GOLDEN_FINAL_HASH: u64 = 0xF383_7F11_EF0C_B67B;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
@@ -254,6 +280,27 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     // respawn) and `backpacks` (the container, its address, its timer and
     // its rolled contents) — so the weighted walk, the count draw and the
     // stacking rule are all functions of the number below.
+    // The raid tool, and *only* the raid tool. This surface has never
+    // installed a `CombatContent` at all — `player_hp` stays 0, so no body
+    // gains hp, nothing can be hurt and nobody dies, which is what keeps
+    // this script's bots standing where it left them. Arming the melee
+    // rows to reach the charge verb would have put a brawl and a
+    // hatchet-rate raid on the replayed surface as a side effect of adding
+    // a throwable, and moved this file's golden for three reasons instead
+    // of one.
+    //
+    // `structure` is 10 against the fixture's 100 hp pieces on purpose: two
+    // charges land, two blasts announce, and nothing is removed — so the
+    // removal floors below still count decay and only decay. A charge that
+    // takes a piece down is covered where it belongs, in
+    // `tests/event_roles.rs`, against a wall the test owns.
+    let mut combat = CombatContent::EMPTY;
+    combat.throw[3] = ThrowDef {
+        structure: 10,
+        fuse_ticks: 4,
+        reach_cm: (sim_core::build::BUILD_REACH_M * 100.0) as u16,
+    };
+    world.combat = combat;
     world.loot = LootContent::probe_fixture();
     world.backpack = BackpackContent::probe_fixture();
     let barrels = barrel_cells(seed, &world.scatter, 4);
@@ -281,6 +328,8 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     let mut hashes = Vec::new();
     let (mut placed, mut deployed, mut decayed, mut doors) = (0u32, 0u32, 0u32, 0u32);
     let (mut locked_seen, mut unlocked_seen, mut upgraded_seen) = (false, false, false);
+    let mut charges_planted = 0u32;
+    let mut hotbar_saved = [sim_core::gather::ItemStack::default(); HOTBAR_SLOTS];
     let (mut eaten, mut eat_refused) = (0u32, 0u32);
     let (mut drank, mut drink_refused) = (0u32, 0u32);
     let mut hearth_cell = (0u16, 0u16);
@@ -428,6 +477,22 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         // identical on both runs, so the replay contract holds), then
         // bot 1 founds, hearths, and feeds one remembered cell. This
         // pins the pay path — everything unpaid decays by the leaps.
+        // The raid verb's hand, and it has to be the whole hotbar: `bot_frame`
+        // draws `sel` from the rng every tick, so a charge in one slot would
+        // be held on about a sixth of the ticks and this gate's floor would
+        // be a coin flip rather than a floor. A fixture arrangement like the
+        // kit grant below — identical on both runs, so the replay contract
+        // holds — and restored two ticks later so bot 0 goes back to holding
+        // the tools the gather floors need it holding.
+        if t == 165 {
+            hotbar_saved.copy_from_slice(&world.players[0].inv[..HOTBAR_SLOTS]);
+            for slot in 0..HOTBAR_SLOTS {
+                world.players[0].inv[slot] = sim_core::gather::ItemStack { item: 3, count: 8 };
+            }
+        }
+        if t == 167 {
+            world.players[0].inv[..HOTBAR_SLOTS].copy_from_slice(&hotbar_saved);
+        }
         if t == 149 {
             for w in 0..8usize {
                 if world.players[w].active {
@@ -587,6 +652,21 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_W,
                 }),
+                // The raid verb, on the addresses the repair arm above just
+                // mended. It belongs in *this* gate specifically because a
+                // charge is the one thing in the sim whose effect outlives
+                // the tick that asked for it: the plant lands here, the
+                // damage lands `fuse_ticks` later, and a replay that
+                // reproduced the command stream but not the fuse deadline
+                // would diverge silently at a tick no command names.
+                165 | 166 => cmds.push(Command::Throw {
+                    id,
+                    deploy: t == 166,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: sim_core::build::LOC_EDGE_W,
+                }),
                 _ => cmds.push(Command::Feed {
                     id,
                     cx,
@@ -614,6 +694,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         }
         for e in world.events.entries() {
             match e.code {
+                sim_core::world::EV_CHARGE_PLACED => charges_planted += 1,
                 sim_core::world::EV_PIECE_PLACED => placed += 1,
                 sim_core::world::EV_DEPLOY_PLACED => deployed += 1,
                 sim_core::world::EV_PIECE_REMOVED | sim_core::world::EV_DEPLOY_REMOVED => {
@@ -686,6 +767,18 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         locked_seen && unlocked_seen,
         "the scripted door never changed hands both ways — the lock verb fell out \
          of the replay surface"
+    );
+    // The raid verb's own floor, and it is the one arm on this surface that
+    // needs one most: a `Command::Throw` whose every instance refused would
+    // still be *in* the command stream, still reach `charge::place`, and
+    // still hash identically on both runs — a verb covered by the letter of
+    // the gate and by none of its meaning. This counts announcements, which
+    // only a landed plant makes.
+    assert!(
+        charges_planted > 0,
+        "not one charge was planted in the whole window — the raid verb is in \
+         the command stream and refusing every time, which hashes the same as \
+         a verb that works"
     );
     // The clock's own three claims on this surface, each read off the thing
     // it moves. Content installed and never exercised would hash the same

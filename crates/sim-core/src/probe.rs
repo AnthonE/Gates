@@ -357,6 +357,23 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                         level: ((t / 32) % 2) as u8,
                         loc: ((t / 16) % 4) as u8,
                     },
+                    // Bot 2 plants charges on bot 1's addresses on the same
+                    // beat. It is the *other* half of what makes this verb
+                    // worth a parity gate: `place` mutates the charge store
+                    // and `Player::inv`, and `tick_fuses` then mutates a
+                    // structure store on a **later tick than the command**
+                    // — the only path in the sim where a command's effect
+                    // lands after the tick that carried it, so a native and
+                    // a wasm build that disagreed by one tick would show up
+                    // here and nowhere else.
+                    Command::Throw {
+                        id: 2,
+                        deploy: (t / 16) % 2 == 1,
+                        cx: own_cell.0,
+                        cz: own_cell.1,
+                        level: ((t / 32) % 2) as u8,
+                        loc: ((t / 16) % 4) as u8,
+                    },
                 ]);
                 continue;
             }

@@ -271,7 +271,13 @@ for (let i = 0; i < slotCount; i++) {
 // mismatch that makes that matter, since `movement::step` is shared verbatim
 // with `client-wasm`'s predictor, so a v22 client against a v21 server would
 // predict an arc the server never runs and be snapped back on every press.
-check(ex.client_proto_ver() === 22, "proto ver drifted without this gate hearing");
+// 23: the raid verb (`lib.rs` `ACT_THROW`, `event.rs` `SUB_CHARGE_PLACED`,
+// `sim-core/charge.rs`). Two new subtypes, no existing message moved a bit —
+// and the mismatch this side would suffer is the batch-drop kind: a v22
+// client handed a `SUB_CHARGE_PLACED` decodes it as unknown, calls the whole
+// event message malformed, and loses every event that shared the datagram
+// with it. Walls would lose hp with nothing drawn to say why.
+check(ex.client_proto_ver() === 23, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13

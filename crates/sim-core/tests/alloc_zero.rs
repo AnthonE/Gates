@@ -24,9 +24,9 @@ use sim_core::world::{
 };
 
 /// One tick's commands: every bot's input plus a craft enqueue, a cancel,
-/// a place, an upgrade, a repair, and an eat, so the craft, build and
-/// survival verbs sit inside the counted window. Fixed-size — the test
-/// itself must not allocate.
+/// a place, an upgrade, a repair, a charge plant, and an eat, so the
+/// craft, build, raid and survival verbs sit inside the counted window.
+/// Fixed-size — the test itself must not allocate.
 ///
 /// `cell` is bot 1's own build cell, recomputed every tick by the caller,
 /// so the place and upgrade requests are always inside the 5 m reach and
@@ -47,6 +47,13 @@ use sim_core::world::{
 /// given tick's repair lands or refuses is not the point — neither path
 /// may reach the allocator.
 ///
+/// The charge plant rides the same address with the bit the other way, and
+/// it is the one arm here whose work does not finish on the tick that
+/// asked for it: `tick_fuses` runs every tick of the window, over an empty
+/// store on most of them and into `damage_piece` on the rest. Both cases
+/// are counted, which is the point — a per-tick scan that allocated only
+/// when it found something would pass a gate that never planted one.
+///
 /// The eat rides bot 1's own stock on a 3-tick cycle: slot 20 holds
 /// fixture item 0, which the survival fixture makes food, so that arm is
 /// the landed consume — the stack decrement, the meter clamp, the heal
@@ -61,7 +68,7 @@ fn tick_cmds(
     yaws: &mut [u16; MAX_PLAYERS],
     t: u16,
     cell: (u16, u16),
-) -> [Command; MAX_PLAYERS + 6] {
+) -> [Command; MAX_PLAYERS + 7] {
     core::array::from_fn(|i| {
         if i < MAX_PLAYERS {
             let f = bot_frame(rng, yaws[i], t);
@@ -123,6 +130,22 @@ fn tick_cmds(
             Command::Repair {
                 id: 1,
                 deploy: t.is_multiple_of(2),
+                cx: cell.0,
+                cz: cell.1,
+                level: 0,
+                loc: LOC_EDGE_W,
+            }
+        } else if i == MAX_PLAYERS + 5 {
+            // The raid verb, on the address the repair arm walks. Two
+            // allocation surfaces, not one: `place` writes the charge
+            // store, and `tick_fuses` runs every tick after it — including
+            // the ticks that detonate, which reach `damage_piece` and from
+            // there `collapse_from`'s bounded cascade. The fuse scan runs
+            // whether or not anything is planted, so this arm keeps the
+            // counter over the empty case too.
+            Command::Throw {
+                id: 1,
+                deploy: !t.is_multiple_of(2),
                 cx: cell.0,
                 cz: cell.1,
                 level: 0,
@@ -491,11 +514,11 @@ fn test_alloc_zero() {
         // grows on the stack rather than stealing a bot's input slot —
         // `MAX_COMMANDS_PER_TICK` is 256 and this is 113, so they all
         // still apply, and copying `Command`s allocates nothing.
-        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 13];
-        all[..MAX_PLAYERS + 6].copy_from_slice(&cmds);
-        all[MAX_PLAYERS + 6] = Command::Loot { id: 3 };
-        all[MAX_PLAYERS + 7] = Command::Loot { id: 4 };
-        all[MAX_PLAYERS + 8] = Command::Drink { id: 7 };
+        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 14];
+        all[..MAX_PLAYERS + 7].copy_from_slice(&cmds);
+        all[MAX_PLAYERS + 7] = Command::Loot { id: 3 };
+        all[MAX_PLAYERS + 8] = Command::Loot { id: 4 };
+        all[MAX_PLAYERS + 9] = Command::Drink { id: 7 };
         // …and every body that can die in this window answers its own
         // death screen every tick. Unconditional because a respawn from a
         // standing body is a no-op by design (world.rs), so this is the
@@ -504,19 +527,19 @@ fn test_alloc_zero() {
         // the one with a bag and asks for it, and the three that have none
         // ask for a beach, so `bag_wakes` and `ring_wakes` below count two
         // different decisions rather than one path's two outcomes.
-        all[MAX_PLAYERS + 9] = Command::Respawn {
+        all[MAX_PLAYERS + 10] = Command::Respawn {
             id: 6,
             on_bag: true,
         };
-        all[MAX_PLAYERS + 10] = Command::Respawn {
+        all[MAX_PLAYERS + 11] = Command::Respawn {
             id: 3,
             on_bag: false,
         };
-        all[MAX_PLAYERS + 11] = Command::Respawn {
+        all[MAX_PLAYERS + 12] = Command::Respawn {
             id: 4,
             on_bag: false,
         };
-        all[MAX_PLAYERS + 12] = Command::Respawn {
+        all[MAX_PLAYERS + 13] = Command::Respawn {
             id: 7,
             on_bag: false,
         };

@@ -137,6 +137,78 @@ fn hash_moves_with_values() {
         build(&srcs).unwrap().hash(),
         "the repair price must move the content hash"
     );
+
+    // The satchel's fuse. It reaches the sim through `bake_combat` into
+    // `ThrowDef::fuse_ticks`, and it is the newest field on the newest
+    // path, which is exactly the shape `canon.rs` has been caught by twice
+    // before: a field added to `schema.rs` and to `bake.rs` and not to the
+    // canonical walk. Two shards disagreeing about how long a charge burns
+    // play a materially different raid — the defender's seconds to answer
+    // are the whole mechanic — so this is checked here rather than left to
+    // whoever notices.
+    let mut srcs = sources();
+    let w = srcs.iter_mut().find(|(n, _)| *n == "weapons.toml").unwrap();
+    w.1 = w.1.replace("fuse_s = 10", "fuse_s = 11");
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the satchel's fuse must move the content hash"
+    );
+}
+
+/// The raid tool reaches the sim, and the raid ratio is arithmetic a
+/// player can actually spend.
+///
+/// `content/balance.toml`'s anchor 1 divides a wall's hp by the throwable's
+/// `structure` column, and for every version up to this one that division
+/// had no verb behind it: `bake_combat` dropped every non-melee row, so the
+/// number the whole economy is balanced around reached the sim as a zero.
+/// A content file can state a raid ratio and a sim can be unable to raid,
+/// and nothing between them would notice — which is what this asserts
+/// against.
+#[test]
+fn the_raid_tool_crosses_into_the_sim() {
+    let c = build(&sources()).expect("shipped content bakes");
+    let cc = c.bake_combat().expect("combat bakes");
+    let idx = c
+        .item_index("item.satchel_charge")
+        .expect("the satchel is an item") as usize;
+    let def = cc.throw[idx];
+    assert!(
+        def.structure > 0,
+        "the satchel baked with no structure damage — the raid ratio \
+         divides wall hp by this number and would be dividing by nothing"
+    );
+    assert!(
+        def.fuse_ticks > 0,
+        "the satchel baked with no fuse — a charge that never blows is a \
+         priced item with no verb, which is the gap this landed to close"
+    );
+    assert!(
+        cc.held_throw(idx as u16).is_some(),
+        "the sim cannot recognise the shipped raid tool in a hand"
+    );
+
+    // And it must actually get through a wall. Stone is the tier the
+    // anchor names; the assert is that a finite number of charges breaches
+    // it, not what that number is — the count itself is `balance.toml`'s
+    // to tune and `balance.rs`'s to band.
+    let bc = c.bake_building().expect("building bakes");
+    let stone_wall = (0..bc.piece_count as usize)
+        .map(|i| bc.pieces[i].hp)
+        .max()
+        .expect("the piece table is not empty");
+    assert!(
+        stone_wall > 0 && def.structure > 0,
+        "a zero on either side makes the division below meaningless"
+    );
+    let charges = stone_wall.div_ceil(def.structure);
+    assert!(
+        (1..=64).contains(&charges),
+        "the toughest piece takes {charges} charges — below 1 is a wall \
+         that falls to nothing, and past `MAX_LIVE_CHARGES` no single \
+         raider can carry the breach"
+    );
 }
 
 /// A deployable's repair price is its recipe, joined at bake time.

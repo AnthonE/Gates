@@ -88,10 +88,11 @@ use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
 use sim_core::world::{
-    Command, SimEvent, World, DEATH_BY_MAX, EV_BAG_DROPPED, EV_CONSUMED, EV_CONSUME_REFUSED,
-    EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT,
-    EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED,
-    EV_SLOT_HARVESTED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, STRUCT_DEPLOY_BIT,
+    Command, SimEvent, World, DEATH_BY_MAX, EV_BAG_DROPPED, EV_CHARGE_PLACED, EV_CONSUMED,
+    EV_CONSUME_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK,
+    EV_GATHER, EV_HEALTH, EV_HIT, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED,
+    EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_SLOT_HARVESTED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS,
+    STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -1798,6 +1799,135 @@ fn move_refused_names_the_reason_then_the_address() {
     );
 }
 
+/// The probe table's throwable: item 3, `structure` 100 and a 4-tick fuse
+/// (`CombatContent::probe_fixture`). Its structure damage is exactly
+/// `WALL_HP`, so one charge is one wall and the blast lands as a single
+/// event rather than a sum this test would have to carry.
+const CHARGE_ITEM: u16 = 3;
+const CHARGE_SLOT: u8 = 4;
+const CHARGE_FUSE: u32 = 4;
+
+/// `EV_CHARGE_PLACED` says where and how long — and then the fuse actually
+/// runs out.
+///
+/// The second half is not decoration on a role check. Every other event in
+/// this file is emitted on the tick its cause was commanded; this one
+/// announces something that has *not happened yet*, and the only way to
+/// know the announcement was true is to keep ticking until the wall falls.
+/// A charge that announced a fuse and then never blew would pass a pure
+/// field-role assert and be a dead verb.
+#[test]
+fn charge_placed_names_the_cell_then_the_address_then_the_fuse() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    place_piece(&mut w, PIECE_WALL, cx, cz, GROUND, PIECE_EDGE);
+    w.players[0].inv[CHARGE_SLOT as usize] = ItemStack {
+        item: CHARGE_ITEM,
+        count: 3,
+    };
+    // Select the charge on its own tick. Buttons stay at zero throughout:
+    // item 3 is also a melee row in this fixture, and a held primary would
+    // put a swing on the same wall and leave the test arguing with itself
+    // about which cause took the hp.
+    w.tick(&[Command::Input {
+        id: BUILDER,
+        frame: InputFrame {
+            seq: 1,
+            buttons: 0,
+            yaw: RAID_YAW,
+            pitch: 128,
+            move_x: 0,
+            move_z: 0,
+            sel: CHARGE_SLOT,
+        },
+    }]);
+    w.tick(&[Command::Throw {
+        id: BUILDER,
+        deploy: false,
+        cx,
+        cz,
+        level: GROUND,
+        loc: PIECE_EDGE,
+    }]);
+
+    let r = only(&w, EV_CHARGE_PLACED);
+    distinct3(r, "EV_CHARGE_PLACED");
+    assert_eq!(
+        r.b & STRUCT_DEPLOY_BIT,
+        0,
+        "a PIECE was charged, so STRUCT_DEPLOY_BIT is clear — set it here \
+         and the client sticks the fuse on the door hanging at the same \
+         address instead of on the wall that is coming down"
+    );
+    let (level, loc, row) = unpack(r.b & !STRUCT_DEPLOY_BIT);
+    distinct_triple(level, loc, row, "EV_CHARGE_PLACED.b");
+    distinct_halves(r.a, "EV_CHARGE_PLACED.a (the cell key)");
+    assert_eq!(
+        r.a,
+        cell_key(cx, cz),
+        "EV_CHARGE_PLACED.a is the CELL KEY, not the planter — it is \
+         broadcast because the defender needs it more than the raider does"
+    );
+    assert_eq!(
+        level, GROUND as u32,
+        "EV_CHARGE_PLACED.b's high field is LEVEL"
+    );
+    assert_eq!(
+        loc, PIECE_EDGE as u32,
+        "EV_CHARGE_PLACED.b's middle field is LOC"
+    );
+    assert_eq!(
+        row, PIECE_WALL as u32,
+        "EV_CHARGE_PLACED.b's low field is the piece ROW"
+    );
+    assert_eq!(
+        r.c, CHARGE_FUSE,
+        "EV_CHARGE_PLACED.c is the FUSE IN TICKS — not the tick it fires \
+         on, which a client joining mid-fuse could not subtract from"
+    );
+    assert_ne!(
+        r.c, 0,
+        "a zero fuse is refused at bake and at both ends of the wire; one \
+         reaching the ring means the field is carrying something else"
+    );
+
+    // The charge was paid for out of the hand that planted it.
+    assert_eq!(
+        w.players[0].inv[CHARGE_SLOT as usize].count, 2,
+        "planting spends exactly one charge from the held stack"
+    );
+    assert_eq!(w.charges.len(), 1, "one charge planted, one charge burning");
+
+    // Now let it burn. The wall must actually fall — this is the assert
+    // that makes `balance.toml`'s raid ratio a number a player can spend.
+    let standing = |w: &World| w.pieces.find(cx, cz, GROUND, PIECE_EDGE).is_some();
+    assert!(standing(&w), "the wall stands while the fuse is burning");
+    let mut blast = None;
+    for _ in 0..=CHARGE_FUSE + 2 {
+        w.tick(&[]);
+        if let Some(e) = w.events.entries().iter().find(|e| e.code == EV_STRUCT_HIT) {
+            blast = Some(*e);
+            break;
+        }
+    }
+    let blast = blast.expect("the fuse ran out and the charge went off");
+    assert_eq!(
+        blast.c >> 16,
+        WALL_HP,
+        "the blast deals the THROWABLE's structure column, not a melee row's"
+    );
+    assert!(
+        !standing(&w),
+        "a wall at exactly one charge's damage comes down"
+    );
+    assert!(
+        w.charges.is_empty(),
+        "a detonated charge leaves the store — a fuse that re-armed would \
+         raid the same address forever"
+    );
+}
+
 /// Coverage, stated rather than implied.
 ///
 /// A gate that checks five of twenty-five codes and says nothing about the
@@ -1809,7 +1939,7 @@ fn move_refused_names_the_reason_then_the_address() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [u8; 20] = [
+    const COVERED: [u8; 21] = [
         EV_GATHER,
         EV_SLOT_HARVESTED,
         EV_HIT,
@@ -1830,6 +1960,7 @@ fn coverage_is_stated_not_implied() {
         EV_MOVED,
         EV_MOVE_REFUSED,
         EV_PIECE_REPAIRED,
+        EV_CHARGE_PLACED,
     ];
     /// What is knowingly still byte-golden only. Change this number in the
     /// same commit that changes `COVERED`, never on its own.

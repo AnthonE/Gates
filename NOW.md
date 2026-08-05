@@ -15,6 +15,34 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0r · The raid loop has offence now — what it still cannot do *(from `findings/pass-20260805-113001-02-judge.md` gap 1 and `-03-judge.md` gap 1, both ranked first)*
+
+Landed (systems): `sim-core/charge.rs` — plant the held throwable at an
+address, fuse from content, damage on the tick it runs out through the same
+`damage_piece`/`damage_deploy` a swing uses. `ACT_THROW`/`EV_CHARGE_PLACED`,
+`PROTO_VER` 23. Knobs in `DECISIONS.md` §open ("satchel fuse v0", "raid wire
+v23"). `bake_combat` no longer drops throwable rows, so `balance.toml`'s raid
+ratio finally divides by a number the sim holds.
+
+Remaining, in order:
+
+1. **No key plants one — the ui lane owns this.** `client_action_throw` and
+   `client_charge_{key,info,fuse}` are exported; nothing in `web/src` calls
+   them and nothing draws a countdown on a charged wall. `APPLIED2_CHARGE`
+   is the flag to poll. Without it the raid is gated and unplayed.
+2. **No blast radius** (systems). A charge damages only the address it was
+   planted on. Deliberate for v0 — it keeps the anchor's arithmetic exactly
+   `piece hp ÷ structure` — but it means raiding a base is per-wall, where
+   the reference blows a hole. Wants its own knob and a bounded multi-target
+   scan; `combat::raid`'s 3x3 column-index ring is the shape to copy.
+3. **Nothing is hurt by standing in one** (systems). `EV_CHARGE_PLACED` has
+   no player-damage half, so the defender's seconds are free to spend
+   standing on the charge. Fourth `DEATH_BY_*` if taken.
+4. **The action lane is full** (systems, register not work). `ACT_MAX` = 15.
+   The next C->S verb widens `ACTION_SUB_BITS` and regenerates all 74
+   goldens — read `the_action_lane_has_the_room_it_claims` before proposing
+   one.
+
 ## 0c3 · RECOVERY (systems lane): the same red, and it was propagation *(done this pass)*
 
 `ci/gates.sh` was red on this lane's clean tree at `ui smoke`, same assertion in
