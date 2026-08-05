@@ -18,8 +18,8 @@ import { Terrain } from "./terrain.js";
 import { Hud } from "./hud.js";
 import {
   APPLIED2_MOVE,
-  CONT_SELF,
   STREAM_HIGH_BIT,
+  moveArgs,
   moveVerdict,
 } from "./invmove.js";
 import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
@@ -618,40 +618,27 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // (`Hud.NO_MOVE_HOST`), so the gesture does not exist until the host can
   // actually carry it.
   //
-  // The count comes off `views.inv`, the same authoritative array the
-  // panel was drawn from, and never off the label: the panel holds
-  // "wood ×8" as a string, and parsing an 8 back out of it would be
-  // inventing the payload. That is the quantize-both-sides law applied to
-  // containers — the server must sim on the values the client predicted
-  // with, so the client must send the values it drew.
+  // What the drag becomes — the count off `views.inv` rather than off the
+  // panel's label, the two refusals for an end this client cannot address,
+  // and above all the ORDER of the six arguments — is `moveArgs`, in
+  // `invmove.js`, next to the inbound unpack and gated the same way
+  // (`ci/ui_smoke.mjs` §N reads `client_action_move`'s parameter list out of
+  // `bridge.rs` and holds the client to it). It was written out longhand here
+  // until 2026-08-05, where the only gate that ever drove it was
+  // `browser_smoke` — six positional `u32`s of the same type, whose
+  // transposition the encoder golden, the replay hash and clippy are all
+  // blind to. Spreading one array is what leaves nothing here to transpose.
   //
-  // Ordering, which is the whole trap: `client_action_move` validates the
-  // shape and returns 0 for one the wire will not carry, and it is asked
-  // BEFORE `dropInvDrag` draws anything. A drawn move with no frame behind
-  // it is the container divergence itself, and divergence is what the
-  // reference kept shipping as a disconnect.
-  //
-  // Both ends arrive as ADDRESSES now (container kind + slot) rather than as
-  // two bare slot numbers with `CONT_SELF` written in twice here. Nothing on
-  // the wire changed — `client_action_move` has always taken two kinds — but
-  // the panel now states which container each end is in, and this host now
-  // refuses the ones it cannot address instead of relabelling them self.
-  //
-  // A non-self END is refused rather than guessed at, and the two halves have
-  // different reasons. A non-self SOURCE has no count here: `views.inv` is the
-  // own-inventory mirror (`client_inv_ptr`, "own inventory view"), and reading
-  // a bag's stack size out of it would be inventing the payload — the same
-  // thing parsing "wood ×8" out of a label would be. A non-self DESTINATION
-  // needs the `bag` id the sim addresses containers by, and this client has
-  // ids for dropped bags but no notion of which one a panel is open on, so
-  // the 0 below would name whichever container the sim indexes at 0. Both
-  // unblock together when the container-contents message lands (NOW.md).
+  // Ordering, which is the whole trap and is still this host's job:
+  // `client_action_move` validates the shape and returns 0 for one the wire
+  // will not carry, and it is asked BEFORE `dropInvDrag` draws anything. A
+  // drawn move with no frame behind it is the container divergence itself,
+  // and divergence is what the reference kept shipping as a disconnect.
   hud.onInvMove = (fromKind, from, toKind, to) => {
     views.refresh();
-    if (fromKind !== CONT_SELF || toKind !== CONT_SELF) return false;
-    const count = views.inv[from * 2 + 1];
-    if (count <= 0) return false;
-    const len = ex.client_action_move(0, fromKind, from, toKind, to, count);
+    const args = moveArgs(fromKind, from, toKind, to, views.inv);
+    if (args === null) return false;
+    const len = ex.client_action_move(...args);
     views.refresh();
     if (len === 0) return false;
     return actions.send(views.output, len);

@@ -4,7 +4,34 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-0. **Recovery, 2026-08-05 — done this pass, kept only for what it leaves open.**
+0. **The outbound move marshalling is gated — done this pass (ui lane), kept
+   for what it leaves open.**
+
+   *(Gap pass, iteration 2. From ranked fix 4 of
+   `findings/pass-20260805-002720-01-judge.md`: "main.js's marshalling of
+   (fromKind, from, toKind, to) into the wasm call is covered only by
+   `browser_smoke`, which is off this run. Closing it needs the marshalling
+   extracted into something node-importable." Ranked fix 1 of the same report
+   — `rustConst`'s unanchored regex — is folded in.)*
+
+   `client_action_move` takes six `u32`s and every wall here is blind to
+   swapping two: encoder untouched, action queue not in `state_hash`, one
+   type throughout. Now `invmove.moveArgs()`, pure and node-imported, and the
+   order is stated once as NAMES (`MOVE_ARG_ORDER`) which `ui_smoke` §N reads
+   back out of `bridge.rs` — so it is checked against Rust, not against the
+   client's own opinion. `main.js` spreads the result, leaving nothing at the
+   call site to transpose. 11 mutants run, all 11 red, including an ABI
+   reorder and a rename made in `bridge.rs` alone.
+
+   Two things it leaves:
+   - **`bag`, `from_kind`, `to_kind` are all 0 on every call this client can
+     legally make**, so no value probe separates those three; the name-order
+     check is what covers them. They become separable on the pass that opens
+     a second container — the same pass that makes `bag` non-zero.
+   - **`browser_smoke` and `vantages` are UNRUN** (operator's `GATES_TIER=fast`),
+     and this pass edits `main.js`. Nothing here is claimed to boot.
+
+1. **Recovery, 2026-08-05 — done, kept only for what it leaves open.**
 
    `ui_smoke`'s `CONT_MAX` check went red on a clean tree. Neither commit was
    wrong alone: the ui lane's `1fe35b0` pinned the Rust alias by NAME
@@ -56,9 +83,9 @@ match and the rollback all aliased; `ui_smoke` §M drives each. Report 03's
 ranked fix 1 (only `len > 0` was asserted, so a transposed move encoded
 green) is closed at two of its three hops: §M pins the panel→host argument
 order, and `client_smoke` now decodes `client_action_move`'s bytes field by
-field. **The third is still open** — main.js's pour of those four into the
-wasm call is covered only by `browser_smoke`, which is off this run; main.js
-is not node-importable, so closing it needs the marshalling extracted.
+field. **The third hop closed on 2026-08-05** — the marshalling is
+`invmove.moveArgs()` and `ui_smoke` §N holds its order to `bridge.rs`; see
+item 0.
 
 Remaining otherwise, all `crates/` — the requests below. The panel still draws
 exactly ONE container and says so (`hud.invContainers`); listing a second

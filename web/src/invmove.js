@@ -1,5 +1,11 @@
 /**
- * The move verb's INBOUND half: reading a `client_move_readout()` word.
+ * The move verb's two halves, both of them POSITIONAL PAYLOADS, both of them
+ * here because that is the cheapest layer that can hold arithmetic:
+ *
+ * - INBOUND, `moveVerdict()` — unpacking a `client_move_readout()` word.
+ * - OUTBOUND, `moveArgs()` — marshalling a drag into the six arguments of
+ *   `client_action_move`. Added 2026-08-05; it lived inline in `main.js`'s
+ *   host, where the only thing that ever drove it was `browser_smoke`.
  *
  * ## What used to be here, and why it is gone
  *
@@ -129,4 +135,86 @@ export function moveVerdict(readout) {
   if (reason > REFUSE_M_MAX) return null;
   if (from === to) return null;
   return { reason, from, to };
+}
+
+/**
+ * The parameter list of `client-wasm/src/bridge.rs`'s `client_action_move`,
+ * BY NAME and in order. The whole outbound half is marshalled through this
+ * one list, so the order is stated exactly once on this side of the wall —
+ * and `ci/ui_smoke.mjs` §N reads the same list out of `bridge.rs` and
+ * compares them, which is what makes it a fact rather than a restatement.
+ *
+ * This exists because of the hole the 2026-08-05 judge report left open. Six
+ * positional `u32`s went into that call from an argument list written out
+ * longhand in `main.js`, and swapping two of them is invisible to every wall
+ * this repo has: the encoder is untouched (`test_protocol_golden` green), the
+ * action queue is not in `state_hash` (`test_replay` green), and all six are
+ * the same type (clippy green). CLAUDE.md's trap list is explicit that this
+ * is where the reference ecosystem actually bled — ~27 of Oxide's shipped
+ * corrections were the right value in the wrong position, four hooks
+ * corrected more than once, and their own per-method `MSILHash` gate, the
+ * exact analogue of `test_protocol_golden`, caught none of them. The only
+ * thing that ever drove this call was `browser_smoke`, a ~19-minute renderer
+ * gate that is switched off for this run.
+ */
+export const MOVE_ARG_ORDER = Object.freeze([
+  "bag",
+  "from_kind",
+  "from_slot",
+  "to_kind",
+  "to_slot",
+  "count",
+]);
+
+/**
+ * Marshal a drag into `client_action_move`'s arguments, or `null` for a drag
+ * this client will not encode. The caller spreads the result — there is no
+ * second place the order is written, so there is nothing at the call site to
+ * transpose.
+ *
+ * `inv` is the authoritative own-inventory view (`client_inv_ptr`: 30 slots
+ * of `(item, count)` `u16` pairs, so slot `s`'s COUNT is at `s * 2 + 1` and
+ * its item id is the even neighbour). The count is read from there and never
+ * off the panel's label: the panel holds "wood ×8" as a string and parsing an
+ * 8 back out of it would be inventing the payload. That is the
+ * quantize-both-sides law applied to containers — the server sims on the
+ * values the client transmits, so the client must send the values it drew.
+ * Reading the even index instead would send an ITEM ID as a count, which is
+ * the same bug class one index over, so §N probes it with an item and a count
+ * that differ.
+ *
+ * Three refusals, and the first two are the reason this is not yet a general
+ * container verb. A non-self SOURCE has no count here — `inv` is the own
+ * mirror, and reading a bag's stack size out of it is the label bug again. A
+ * non-self DESTINATION needs the `bag` handle the sim addresses containers
+ * by, and this client has ids for dropped bags but no notion of which one a
+ * panel is open on, so the `bag: 0` below would name whichever container the
+ * sim indexes at 0. Both unblock together when the container-contents
+ * message lands (`NOW.md`) — that is the judge's ranked gap 1, and it is a
+ * `crates/` change this lane may not make.
+ *
+ * The third refusal, a count that is not a positive integer, is the one that
+ * was load-bearing by accident. An out-of-range slot indexes past `inv` and
+ * yields `undefined`, and `undefined <= 0` is FALSE — so the old inline test
+ * passed `undefined` down to wasm, where it coerced to 0, failed
+ * `encode_action_move`'s `count == 0` range check, and came back as a 0
+ * length the host read as refusal. Correct, through three layers, by luck.
+ * Refusing it here makes it local.
+ *
+ * A six-element array per drag is an allocation, and deliberately not one the
+ * hot-path law is about: this runs on a pointer release, not in the RAF loop.
+ */
+export function moveArgs(fromKind, from, toKind, to, inv) {
+  if (fromKind !== CONT_SELF || toKind !== CONT_SELF) return null;
+  const count = inv?.[from * 2 + 1];
+  if (!Number.isInteger(count) || count <= 0) return null;
+  const named = {
+    bag: 0,
+    from_kind: fromKind,
+    from_slot: from,
+    to_kind: toKind,
+    to_slot: to,
+    count,
+  };
+  return MOVE_ARG_ORDER.map((name) => named[name]);
 }
