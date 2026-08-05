@@ -253,6 +253,20 @@ export class Hud {
     /** Reused by `drawMap`'s projection: the map redraws four times a second
      * while open and `CLAUDE.md`'s client law is no per-frame allocations. */
     this.mapPos = { px: 0, py: 0 };
+    /**
+     * The marker's heading, in IMAGE space, as `drawMap` last drew it — the
+     * unit vector the triangle's nose points along.
+     *
+     * Parked here for the same reason `mapPos` is, and it is not diagnostics:
+     * `ui_smoke` §U read `mapPos` and nothing else, so the bearing half of the
+     * marker had no assertion at all. A mutant that hard-coded the rotation to
+     * zero — a map whose arrow always claims north — ran the whole gate GREEN
+     * (the judge's M11 on `pass-20260805-074623-02`, the one survivor of
+     * eleven). That is the positional-payload class `CLAUDE.md`'s trap list
+     * names, one field wide, and a pixel probe is not the answer: what is
+     * wanted is the DIRECTION the triangle was built from, which is this.
+     */
+    this.mapDir = { dx: 0, dy: 0 };
     this.mapLastRef = "";
     this.craftOpen = false;
     this.last = "";
@@ -882,6 +896,8 @@ export class Hud {
     // north term puts it up the image.
     const dx = Math.sin(rad);
     const dy = -Math.cos(rad);
+    this.mapDir.dx = dx;
+    this.mapDir.dy = dy;
     const px = this.mapPos.px;
     const py = this.mapPos.py;
     ctx.beginPath();
