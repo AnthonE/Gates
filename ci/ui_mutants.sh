@@ -122,16 +122,28 @@ run_mut "M22 promptForBuild drops the shortfall" web/src/interact.js \
 
 # --- which verb wins the one row --------------------------------------------
 run_mut "M14 centrePrompt puts the swing ahead of E" web/src/interact.js \
-  'promptForBuild(buildPick) || promptFor(interactPick) || promptForSwing(swingPick)' \
-  'promptForBuild(buildPick) || promptForSwing(swingPick) || promptFor(interactPick)'
+  '    promptForBuild(buildPick) ||
+    promptFor(interactPick) ||
+    promptForSwing(swingPick) ||
+    promptForRepair(repairPick)' \
+  '    promptForBuild(buildPick) ||
+    promptForSwing(swingPick) ||
+    promptFor(interactPick) ||
+    promptForRepair(repairPick)'
 run_mut "M15 centrePrompt puts E ahead of the build pick" web/src/interact.js \
-  'promptForBuild(buildPick) || promptFor(interactPick) || promptForSwing(swingPick)' \
-  'promptFor(interactPick) || promptForBuild(buildPick) || promptForSwing(swingPick)'
+  '    promptForBuild(buildPick) ||
+    promptFor(interactPick) ||
+    promptForSwing(swingPick) ||
+    promptForRepair(repairPick)' \
+  '    promptFor(interactPick) ||
+    promptForBuild(buildPick) ||
+    promptForSwing(swingPick) ||
+    promptForRepair(repairPick)'
 
 # --- and that the client actually routes through all of it ------------------
 run_mut "M21 the build pick ignores build.on" web/src/main.js \
-  'centrePrompt(build.on ? selDesc() : null, aimPick(pick, VERB_NONE), swingAt()),' \
-  'centrePrompt(selDesc(), aimPick(pick, VERB_NONE), swingAt()),'
+  '        build.on ? selDesc() : null,' \
+  '        selDesc(),'
 run_mut "M20 B stops redrawing the centre prompt" web/src/main.js \
   '      // The centre hint changes owner on this key — into and out of the build
       // row — so it is redrawn on the keypress and not up to 250 ms later on
@@ -162,8 +174,10 @@ run_mut "M26 main.js reads an undeclared REACH again" web/src/main.js \
   '  const pieceAt = { x: 0, z: 0 };' \
   '  const pieceAt = { x: 0, z: REACH };'
 run_mut "M27 the reach bound is not applied to the piece scan" web/src/interact.js \
-  'let bestD = INTERACT_REACH_M * INTERACT_REACH_M;' \
-  'let bestD = Infinity;'
+  '  let bestD = INTERACT_REACH_M * INTERACT_REACH_M;
+  for (const rec of world.recs) {' \
+  '  let bestD = Infinity;
+  for (const rec of world.recs) {'
 # The refusal table and the repair/raid discriminator: the two reads that told
 # a player the wrong thing about their own base.
 #
