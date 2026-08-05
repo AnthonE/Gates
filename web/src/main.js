@@ -41,6 +41,7 @@ import {
   resolveInteract,
   resolveSwing,
 } from "./interact.js";
+import { MAP_N, WORLD_M, paintMap } from "./map.js";
 import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
 
 // Resolved against the document, not the origin root: the page is served
@@ -563,6 +564,56 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     const text = promptFor(aimPick(pick, VERB_NONE));
     hud.setPrompt(text || promptForSwing(swingAt()));
   };
+  // ===========================================================================
+  // The map's one wasm call.
+  // ===========================================================================
+  // `map.js` owns the geography and takes a sampler; this is the sampler, and
+  // it is here rather than in `map.js` because `map.js` is node-importable and
+  // wasm is not (`ci/ui_smoke.mjs` loads no wasm at all — that is what keeps it
+  // in the code tier).
+  //
+  // Every ground fact comes out of the SAME worldgen the 3D ground is built
+  // from, through the same three exports `terrainWorker.js` uses. The map
+  // cannot therefore draw an island the player would not walk onto.
+  //
+  // The fresh-view discipline is `terrainWorker.js:99` and `clutterField.js`'s
+  // comment, and it is not optional: wasm memory MOVES when it grows and a
+  // held view detaches — the boot bug that shipped green on 2026-07-31. So the
+  // `Float32Array` is constructed AFTER the fill, off `ex.memory.buffer` read
+  // at that moment, and never cached across calls.
+  let islandPainted = false;
+  /** The last wire yaw the RAF loop sampled — see the assignment beside
+   * `hud.setBearing`. The map marker's heading, and nothing else. */
+  let lastYawU16 = 0;
+  const paintIsland = () => {
+    if (islandPainted) return;
+    const size = MAP_N;
+    const g = size + 2;
+    const step = WORLD_M / size;
+    // One call for the whole island: `terrain_fill_heights` refuses any side
+    // above `HEIGHTS_MAX_N` (259) and 258 fits. It refuses by RETURNING 0 and
+    // leaving the buffer untouched, so an unchecked call would paint whatever
+    // was in the scratch buffer — hence the exact-count check, which is
+    // `terrainWorker.js:98`'s, and `ui_smoke` §U pins the inequality that
+    // makes it pass.
+    const wrote = ex.terrain_fill_heights(seed, -step, -step, g, step);
+    if (wrote !== g * g) {
+      hud.toast("map unavailable");
+      return;
+    }
+    const heights = new Float32Array(ex.memory.buffer, ex.terrain_heights_ptr(), g * g);
+    const rgba = new Uint8ClampedArray(size * size * 4);
+    paintMap(rgba, size, {
+      heights,
+      step,
+      x0: 0,
+      z0: 0,
+      moistAt: (x, z) => ex.terrain_moisture_at(seed, x, z),
+      splatAt: (h, moist, slope) => ex.terrain_splat_from(h, moist, slope),
+    });
+    hud.setMapTerrain(rgba, size);
+    islandPainted = true;
+  };
   const closeOpenContainer = () => {
     if ((ex.client_cont_kind() >>> 0) === CONT_SELF) return false;
     const len = ex.client_action_container(CONT_SELF, 0);
@@ -816,6 +867,30 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (hud.invOpen && e.code === "Escape") {
       hud.toggleInv();
       closeOpenContainer();
+      e.preventDefault();
+      return;
+    }
+    // The map. M because it is the genre's key for it and nothing here bound
+    // it. It releases pointer lock like the inventory does: this is a screen
+    // you read, not an overlay you fight under, and `hud.eatsKey` below states
+    // the same thing about the keyboard.
+    //
+    // The island is painted on the FIRST open and never again — it is a
+    // function of the seed alone, the seed does not change inside a session,
+    // and 66,564 height samples through wasm is not a thing to do four times a
+    // second. Painting it lazily rather than at boot keeps it off the join
+    // path, where `browser_smoke` measures how long the client takes to reach
+    // the world.
+    if (e.code === "KeyM") {
+      if (hud.toggleMap()) {
+        paintIsland();
+        document.exitPointerLock();
+      }
+      e.preventDefault();
+      return;
+    }
+    if (hud.mapOpen && e.code === "Escape") {
+      hud.toggleMap();
       e.preventDefault();
       return;
     }
@@ -1509,6 +1584,13 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     // the camera's, not the world's, so a corpse still gets a compass —
     // the same reason the block above spares yaw and pitch from `dead`.
     hud.setBearing(yaw);
+    // Kept for the map marker, which runs on the HUD's quarter-second timer
+    // and therefore cannot reach this local. Parked rather than re-sampled:
+    // `ci/ui_smoke.mjs` §T asserts main.js calls `yawU16()` EXACTLY once, and
+    // that assertion is the whole of the seam argument three lines above —
+    // the marker and the compass are one fact drawn twice, so they must come
+    // from one sample, not from two calls a quarter second apart.
+    lastYawU16 = yaw;
     ex.client_advance(dt);
     const dgLen = ex.client_poll_input();
     views.refresh();
@@ -1597,6 +1679,14 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     // prompt, and a sweep of every deployable in the RAF path is a frame
     // budget spent on a `<div>`.
     updatePrompt();
+    // Where you are, and which way you face, on the same timer and for the
+    // same reason. The heading is the wire's bearing quantum and not the
+    // free-running `input.yaw`, because the compass strip reads the same
+    // quantum and the marker is that one fact drawn a second way. It comes off
+    // the RAF loop's parked sample rather than from a fresh call — §T of
+    // `ci/ui_smoke.mjs` holds this file to one sample per frame, and that
+    // assertion IS the argument: two reads a quarter second apart are two yaws.
+    if (hud.mapOpen) hud.setMapView(R[1], R[3], lastYawU16);
     if (hud.invOpen) {
       // Slot-indexed and all 30, because that is setInventory's contract:
       // the belt row IS slots 0..5 (the six already formatted above) and
