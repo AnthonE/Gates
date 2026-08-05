@@ -360,16 +360,22 @@ Two slices have landed and both are on `main`:
 those and writes transforms. Gameplay state in a Bevy component would
 retire the determinism walls with nothing in CI to notice.
 
-Next slices, roughly in order:
+**The visual plan is `RENDER.md` now** — the slice order, the gate design,
+the budgets, and the paid-for traps that cross from `web/` as arithmetic.
+Read its §4 before picking any of these; each slice there names the picture
+it buys and the probe it must land with.
 
-1. **Input** — keyboard/mouse into `ClientCore::set_input`. Every verb
-   exists server-side; nothing native can press one yet.
-2. **Terrain** — mesh `sim_core::terrain`. It is a pure function of the
-   seed and both sides already agree on it, so this is meshing, not
-   design. `web/src/terrain.js` is the reference for *what* to draw.
-3. **A native visual gate** — item 2 below. The pivot's real debt.
-4. **HUD, inventory, container panel** against the wire that already
-   carries them (v19 `ACT_CONTAINER` / `SUB_CONT_SYNC`).
+1. **R0 · input + the capture harness** — keyboard/mouse into
+   `ClientCore::set_input`, and `--capture` on the `gates` binary. Neither
+   is art; everything after them is unmeasurable without them.
+2. **R1 · terrain** — mesh `sim_core::terrain`. Pure function of the seed,
+   both sides already agree: this is meshing, not design.
+3. **R2 · the light rig, one owner** — atmosphere, sun, exposure, tonemap,
+   fog, in one module. `RENDER.md` §3 has the finding that the midday sun
+   `ART.md` asks for is no longer blocked on this path.
+4. **R3 · the population** — scatter and clutter drawn. `ART.md`'s largest
+   structural gap, and the only thing that can move the 24× contrast gap.
+5. **R4–R6** — materials, the metered tonal bar, HUD and viewmodel.
 
 Retired by this pivot rather than finished: `MIGRATION.md` (three.js →
 `WebGPURenderer` + TSL) is **moot** — you do not port three.js *and*
@@ -433,11 +439,23 @@ lavapipe software rasterizer, no GPU needed. The session stayed healthy
 throughout: `in ok/bad/drop 729/0/0`, `snap sent 434`, `leaves 0`.
 
 So a native visual gate is **buildable here now**, and it is the next
-gate to write. Two notes for whoever writes it: lavapipe is a CPU
-rasterizer, so budget on frame COUNT and pixel assertions, never on frame
-time (`CLAUDE.md`: a gate that waits on a clock is not a gate on this
-box); and one live renderer at a time, since two was the browser tier's
-whole problem.
+gate to write. **Its design is `RENDER.md` §5** — the capture protocol, the
+vantage list, and the assertion order (structural claims before any
+statistic, because a beige smear passed all 36 of `vantages`' checks). Two
+notes still: lavapipe is a CPU rasterizer, so budget on frame COUNT, never
+on frame time; and one live renderer at a time. Prefer Bevy's off-screen
+readback to the `xwd` above — the recipe proves the box can see, but `xwd`
+is absent on some boxes and a gate should not need a window server.
+
+**One line of it is nearly free and should land first: nothing in CI
+compiles the render feature.** `ci/gates.sh` runs clippy and the test suite
+with default features, `render` is off by default, and `[[bin]] gates` is
+`required-features = ["render"]` — so cargo skips it and `gates.rs` can stop
+compiling with every gate green. Reproduced on a throwaway crate of the same
+manifest shape: the skipped bin held `this is not rust at all !!!` and
+`cargo clippy --all-targets -- -D warnings` exited 0. `cargo clippy -p client
+--features render --all-targets -D warnings` in the native renderer tier
+closes it.
 
 **What the first frame showed, unfixed:** the body draws and is lit, and
 there is no ground under it. The reference plane is at `y = 0` while the
