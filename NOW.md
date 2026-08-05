@@ -597,19 +597,34 @@ run since 2026-08-04 — not because they are queued work:
 
 ---
 
-## 4 · The event lane's payloads are law with no gate
+## 4 · The event lane's payloads are law with no gate — 24 of 29 now gated
 
-Nine `EV_*` codes carry positional `u32` fields whose meaning lives only in
-a `/// EV_*: a = … b = …` comment in `world.rs`. Swap `a` and `b` at an
-`events.push` site and every wall stays green: the encoder is untouched
-(`test_protocol_golden` green), the event queue is not in `state_hash`
-(`test_replay` green), and every field is `u32` (clippy green).
+Swap `a` and `b` at an `events.push` site and every wall stays green: the
+encoder is untouched (`test_protocol_golden`), the ring is not in
+`state_hash` (`test_replay`), every field is `u32` (clippy). The hole
+`reference/FINDINGS.md` §1 measured in the reference — 49 Oxide commits on
+hook arguments, ~27 correcting a payload that had already shipped wrong.
 
-This is the hole `reference/FINDINGS.md` §1 measured in the reference
-ecosystem — 49 Oxide commits touching hook arguments, ~27 correcting a
-payload that had already shipped wrong, four hooks corrected more than
-once, and their `MSILHash` (the exact analogue of our golden) caught none
-of them. `event_roles.rs` covers part of this now; finish it.
+**Landed (systems, `loop/event-refusal-roles`):** the refusal family —
+`EV_CRAFT_REFUSED`, `EV_BUILD_REFUSED`, `EV_DEPLOY_REFUSED` — has role
+checks. 55 of the lane's 103 emit sites, previously unroled, all shaped
+`(player, reason, 0)`. Two causes per code so `b` is proven a channel and
+not a constant. Trap found and written into the fixture: `BUILDER` is id 4
+and `REFUSE_B_REACH`/`REFUSE_D_REACH` are both ordinal **4**, so the
+obvious out-of-reach cause is the one case where a swap reads green.
+
+Also: `coverage_is_stated_not_implied` could lie in both directions and no
+longer can. `COVERED`/`NOT_COVERED` name each code as well as numbering it,
+both are cross-checked against `world.rs`'s declarations, and coverage must
+be witnessed by a real `only(&w, EV_*)` call. Five mutations proved each
+gate red — a swapped emit site, an unearned claim, a name/value transpose.
+
+**Remains:** 5 codes with no role check — `EV_SLOT_RESPAWNED`,
+`EV_WEAK_MARK`, `EV_CRAFT_DONE`, `EV_BAG_REMOVED`, `EV_RESPAWN`. The last
+three are cheap (`bag_respawn.rs` and `gather.rs` already drive the
+causes); `EV_SLOT_RESPAWNED` needs a respawn timer to elapse and is the
+one worth its own look. Note `CLAUDE.md`'s trap list still reads "law with
+no gate" flat — left alone deliberately, it is a shared doc mid-run.
 
 ---
 
