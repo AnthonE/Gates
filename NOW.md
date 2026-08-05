@@ -15,6 +15,33 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0 · Half the verbs you own are undiscoverable — *(ui lane; compass done this pass)*
+
+From the judge's **ranked gap 3**, `pass-20260805-063306-01-judge.md`. NOW.md
+held no open ui-lane item, so the gap list supplied this one. Two halves:
+
+- **A bearing readout — DONE.** Compass strip, top centre, `hud.js` +
+  `index.html`. `ui_smoke` 442 → 507 checks (§S/§T); nine mutants red.
+  **+Z is North, +X is East** — `DECISIONS.md` §open has the row and the
+  conflict it resolves against `build.rs`'s `LOC_EDGE_N`.
+- **The build prompt — still open, and it is the judge's ranked fix 2.**
+  `interact.js:64-72` resolves `VERB_DOOR`/`BAG`/`BOX`/`HEARTH` and no place
+  verb, so the placement preview exists only for someone who has read
+  `main.js`. Squarely ui-lane; not started.
+
+Two things the compass could not carry, both needing another lane:
+
+- **Systems lane, one export please:** the haven pad centre is not reachable
+  client-side. `terrain::haven(seed)` is pure and `bridge.rs:92` already
+  memoizes it, but nothing returns it — no getter beside `terrain_fill_slots`.
+  One export and the pad can carry a compass marker; the judge's gap named
+  the pad as the destination nobody can find.
+- **A marker is a design call, not just an export.** `showDeath` states the
+  standing rule (`ALPHA.md` §1, "no map position") and it is about the death
+  screen, not the HUD — but a pad marker is close enough to it that an
+  operator word is cheaper than a pass spent guessing.
+
+---
 ## 0 · The rest of `pass-20260805-074623-01`'s ranked fixes
 
 *(GAP PASS, world lane. Its ranked fix **1** — the authored sites were not
@@ -184,6 +211,32 @@ half: 3 authored sites on the ring instead of 1, gated by
 - **Nothing threatens you on the walk between them.** A circulation loop with
   no risk on it is a longer commute. No AI module exists anywhere in
   `crates/sim-core/src/`.
+## 4b · The domain gate reads the crate now — three residuals
+
+Landed 2026-08-05 (`loop/domain-gate-whole-crate`), from the
+`pass-20260805-074623-01-judge.md` ranked fixes 1 and 2. The domain gate
+scraped **one file per domain**, so `DEATH_BY_ARROW = 3` in `combat.rs`
+left all three checks green while `encode_event_death` still returned
+`Err(Range)` — the 2026-08-05 failure, one module over, with the gate
+written to catch it watching the wrong file. Reproduced red-then-green,
+all three below.
+
+Now: `SOURCES` reads all 22 `sim-core` modules, members carry their file
+and must sit in the domain's declared `home`;
+`the_source_table_covers_the_whole_crate` checks `SOURCES` against
+`lib.rs`'s own `mod` list both ways; `every_enumeration_width_is_classified`
+scrapes `event.rs`'s 33 `*_BITS` and forces each into DOMAINS or a named
+magnitude list. No wire move — `PROTO_VER` 19, goldens green.
+
+What remains:
+
+- **§4's other half.** Role coverage is still 19 of `EV_MAX` codes, 8
+  uncovered (`coverage_is_stated_not_implied`). The a/b swap gate is the
+  unfinished part; the value gate is done.
+- **`death_causes_are_a_closed_ledger`** (`event_roles.rs`) still scrapes
+  `world.rs` alone. Narrow now — the protocol gate catches a stray value
+  crate-wide — but its *contiguity* claim is still file-local.
+- **§5b below** is untouched and still wants its own pass.
 
 ---
 

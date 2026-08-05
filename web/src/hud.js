@@ -19,6 +19,81 @@ const TOAST_CAP = 8;
 const CHAT_CAP = 8;
 const CHAT_FADE_MS = 12000;
 
+/**
+ * The compass strip's geometry (cosmetic, measured off the reference).
+ *
+ * `gameplayfoundbase.jpeg` carries labels `10 20 30 40 NE 50 60 70 80 E`
+ * across a strip spanning roughly the middle third of a 2000 px frame — so
+ * about 90 degrees of bearing over about 460 px, labelled every 10 and
+ * lettered at each 45. `COMPASS_FOV_DEG` and `COMPASS_STEP_DEG` are that
+ * read; `COMPASS_PX_PER_DEG` makes the window 450 px on our 1280-wide
+ * canvas, the same fraction of frame width.
+ *
+ * These are layout, not balance — the same class as `TOAST_MS` above and
+ * declared the same way, with the measurement that produced them written
+ * down rather than a bare number.
+ */
+export const COMPASS_FOV_DEG = 90;
+export const COMPASS_PX_PER_DEG = 5;
+export const COMPASS_STEP_DEG = 10;
+
+/**
+ * The band is one full turn PLUS one window, so the window never runs off
+ * either end and no wrap branch is needed in the per-frame write: at
+ * bearing 0 the window sits over `[-45, 45]`, at bearing 359 over
+ * `[314, 404]`, and both are inside the band. It costs one window of
+ * duplicated ticks and buys a hot path with no conditional in it.
+ */
+export const COMPASS_SPAN_DEG = 360 + COMPASS_FOV_DEG;
+
+/**
+ * Degrees per unit of wire yaw — and the whole reason this is a bare
+ * division and not a table.
+ *
+ * `input.js` states the sim's convention: wire yaw 0 faces +Z and
+ * increasing yaw turns toward +X. **This client calls +Z North and +X
+ * East**, which makes the compass bearing and the wire yaw the SAME
+ * NUMBER on two scales — 0 is N, 16384 is E (`yaw_dir` there is
+ * `dx = 1, dz = 0`, which is +X), 32768 is S, 49152 is W.
+ *
+ * The alternative — any other axis for North — is not wrong, it is just
+ * an offset constant, and an offset constant between the bearing a player
+ * reads and the yaw the wire carries is a thing that can drift while every
+ * gate stays green. Choosing the identity means there is nothing to drift.
+ *
+ * Two client-side readings already assume it (`scene.js`'s sun azimuth,
+ * `browser_smoke.mjs`'s `01-horizon-north` at yaw 0) and one place
+ * disagrees: `build.rs` names low-z "north" for its build grid. That
+ * conflict is real and is recorded in `DECISIONS.md` §open rather than
+ * quietly resolved here; `ci/ui_smoke.mjs` §T pins THIS file to `yawDir`
+ * so at least the compass and the sim's direction table cannot part.
+ */
+const COMPASS_DEG_PER_U16 = 360 / 65536;
+
+/** The eight bearings that get a letter instead of a number. Index is
+ * `bearing / COMPASS_CARD_DEG`, so the table doubles as the check for "is
+ * this a cardinal" — a lookup that misses returns undefined and the tick
+ * falls back to its number. */
+export const COMPASS_CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+
+/**
+ * The letters sit every 45 degrees and the numbers every 10, and 45 is not
+ * a multiple of 10 — so these are two independent mark sets over the same
+ * band, not one loop with a condition in it. The reference frame shows
+ * exactly that: `… 30 40 NE 50 60 …`, with NE between two numbers rather
+ * than replacing one. A single stride of 10 from the band's left edge
+ * would not even land on north.
+ *
+ * A literal 45 and not `360 / COMPASS_CARDINALS.length`, which is what it
+ * means: `ci/knob_registry.mjs` pins every registered knob by reading its
+ * initializer out of the source, and a computed one is a knob it cannot
+ * check against `DECISIONS.md`. The relationship is not lost by writing
+ * the number down — `ci/ui_smoke.mjs` §S asserts
+ * `COMPASS_CARD_DEG * COMPASS_CARDINALS.length === 360`, so the two still
+ * cannot disagree, and now BOTH gates can see it.
+ */
+export const COMPASS_CARD_DEG = 45;
+
 /** The inventory screen's LAYOUT split, ALPHA.md §1's "6 hotbar slots, 24
  * inventory". The total they must sum to is `INV_SLOTS`, and that one is
  * imported rather than restated here: it is the sim's
@@ -120,6 +195,13 @@ export class Hud {
     this.craftq = document.getElementById("craftq");
     this.build = document.getElementById("build");
     this.prompt = document.getElementById("prompt");
+
+    // The compass. Built once, here, and never rebuilt: the band is a fixed
+    // set of ticks and the only thing that moves is the window over it.
+    this.compass = document.getElementById("compass");
+    this.compassNow = document.getElementById("compassnow");
+    this.bearingPx = -1;
+    this.buildCompass();
     this.craftOpen = false;
     this.last = "";
     this.lastBuild = "";
@@ -331,12 +413,93 @@ export class Hud {
     window.addEventListener("blur", this.onWinBlur);
   }
 
+  /**
+   * Lay the compass band out once, at construction.
+   *
+   * Two mark sets over one band — numbers every `COMPASS_STEP_DEG` and
+   * letters every `COMPASS_CARD_DEG`, each aligned to ABSOLUTE bearing and
+   * not to the band's left edge, which is why they are generated by
+   * bearing and merged rather than walked in one stride.
+   *
+   * The band runs `[-half, 360 + half]`. The marks outside `[0, 360)` are
+   * the duplicated window that lets `setBearing` be a single unconditional
+   * write — they carry the same labels as their in-range twins, because
+   * -30 and 330 are the same heading and a player crossing north must not
+   * see the strip jump.
+   */
+  buildCompass() {
+    const band = document.getElementById("compassband");
+    const half = COMPASS_FOV_DEG / 2;
+    const lo = -half;
+    const hi = 360 + half;
+    // bearing -> label. A bearing carrying both rules (every 90) is written
+    // twice and the cardinal wins, which is the order the reference draws.
+    const marks = new Map();
+    for (
+      let d = Math.ceil(lo / COMPASS_STEP_DEG) * COMPASS_STEP_DEG;
+      d <= hi;
+      d += COMPASS_STEP_DEG
+    ) {
+      marks.set(d, String(((d % 360) + 360) % 360));
+    }
+    for (
+      let d = Math.ceil(lo / COMPASS_CARD_DEG) * COMPASS_CARD_DEG;
+      d <= hi;
+      d += COMPASS_CARD_DEG
+    ) {
+      const norm = ((d % 360) + 360) % 360;
+      marks.set(d, COMPASS_CARDINALS[norm / COMPASS_CARD_DEG]);
+    }
+    for (const d of [...marks.keys()].sort((a, b) => a - b)) {
+      const label = marks.get(d);
+      const tick = document.createElement("div");
+      tick.className = COMPASS_CARDINALS.includes(label) ? "ctick card" : "ctick";
+      tick.textContent = label;
+      // Band-left is bearing `-half`, so a bearing sits at `(d + half)`
+      // degrees along it. Same arithmetic as `setBearing`'s, one direction
+      // apart, which is what makes the two agree at every bearing.
+      tick.style.left = `${(d + half) * COMPASS_PX_PER_DEG}px`;
+      band.appendChild(tick);
+    }
+  }
+
+  /**
+   * Point the compass at a wire yaw. **This is the one HUD method on the
+   * RAF path**, and it is there because a heading readout quantized to the
+   * 250 ms timer judders badly enough to read as a bug — a compass is the
+   * one piece of this HUD whose whole job is to track the mouse.
+   *
+   * It is allowed there because it obeys L8 rather than being excused from
+   * it: no allocation (`scrollLeft` takes a NUMBER, so there is no template
+   * string per frame — that is why the band scrolls instead of being
+   * transformed), no closure, no DOM construction, and no write at all
+   * unless the rounded pixel actually moved. One integer compare and at
+   * most one property write.
+   *
+   * The band spans one turn plus one window, so `px` lands in
+   * `[0, 360 * COMPASS_PX_PER_DEG]` for every input and there is no wrap
+   * branch — see `COMPASS_SPAN_DEG`.
+   *
+   * @param yawU16 the wire yaw, 0..65535. The WIRE value and not
+   *               `input.yaw`: the bearing a player reads should be the one
+   *               the server is being told, for the same reason `yawDir`
+   *               exists (`input.js`, quantize both sides).
+   */
+  setBearing(yawU16) {
+    const px = Math.round(yawU16 * COMPASS_DEG_PER_U16 * COMPASS_PX_PER_DEG);
+    if (px === this.bearingPx) return;
+    this.bearingPx = px;
+    this.compass.scrollLeft = px;
+  }
+
   show() {
     this.el.style.display = "block";
     this.cross.style.display = "block";
     this.hotbar.style.display = "flex";
     this.toasts.style.display = "block";
     this.chatlog.style.display = "block";
+    this.compass.style.display = "block";
+    this.compassNow.style.display = "block";
   }
 
   /**

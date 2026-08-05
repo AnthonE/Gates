@@ -1491,14 +1491,24 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     // pitch survive: they are the camera's, not the world's, and freezing
     // them would lock the view on the frame the player died.
     const dead = hud.deathOpen;
+    // Sampled ONCE and used twice. The compass shows the bearing the wire
+    // carries, so it must be the same sample the wire carried this frame —
+    // calling `yawU16()` a second time for the readout would reintroduce,
+    // between two statements, exactly the temporal seam `input.js` names.
+    const yaw = input.yawU16();
     ex.client_set_input(
       dead ? 0 : input.buttons(),
-      input.yawU16(),
+      yaw,
       input.pitchU8(),
       dead ? 0 : input.moveX(),
       dead ? 0 : input.moveZ(),
       input.sel,
     );
+    // The one HUD call in the RAF path, and the only one that belongs
+    // here: see `Hud.setBearing` for why it costs no allocation. Yaw is
+    // the camera's, not the world's, so a corpse still gets a compass —
+    // the same reason the block above spares yaw and pitch from `dead`.
+    hud.setBearing(yaw);
     ex.client_advance(dt);
     const dgLen = ex.client_poll_input();
     views.refresh();

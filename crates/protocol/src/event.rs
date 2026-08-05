@@ -2881,7 +2881,16 @@ mod tests {
 /// them.
 ///
 /// So this reads the sim's constant blocks as text and checks each domain
-/// still fits the field that carries it. Parsing source is the deliberate
+/// still fits the field that carries it. It reads **every module of
+/// `sim-core`**, not the one file a domain is declared in: the first cut
+/// of this gate read one file per domain, and a
+/// `pub const DEATH_BY_ARROW: u8 = 3;` appended to `combat.rs` left all
+/// of it green while `encode_event_death` still returned `Err(Range)` —
+/// the identical failure, one module over, with the gate written to catch
+/// it watching the wrong file. A domain is the set of values the sim can
+/// emit, and the sim is the crate.
+///
+/// Parsing source is the deliberate
 /// choice `event_roles.rs` documents and it is the same reason here: the
 /// fact under assertion is *what the constant block contains*, and no
 /// amount of importing can see a constant the importer was never told
@@ -2899,8 +2908,17 @@ mod wire_domains {
         /// Where the domain is declared, and where the width is.
         sim_site: &'static str,
         wire_site: &'static str,
-        /// The sim source, read at compile time.
-        src: &'static str,
+        /// The module this domain is declared in, e.g. `"world.rs"`.
+        ///
+        /// Not where the gate *looks* — it reads every module in
+        /// `SOURCES` — but where the domain is allowed to live. Scraping
+        /// one file was the hole: on 2026-08-05 a stray
+        /// `pub const DEATH_BY_ARROW: u8 = 3;` in `combat.rs` left all
+        /// three checks below green while `encode_event_death` still
+        /// refused cause 3, which is the original failure one module
+        /// over. The crate-wide read catches the value; this field is
+        /// what makes the red name the file.
+        home: &'static str,
         /// `pub const <prefix>NAME<ty> = <literal>;` — the shape scraped.
         /// The type is part of the match on purpose: it is what keeps
         /// `craft.rs`'s `STATION_RADIUS_M: f32 = 5.0` out of `STATION_*`,
@@ -2934,6 +2952,111 @@ mod wire_domains {
         live_max: u32,
     }
 
+    /// One `sim-core` module, read at compile time.
+    struct Module {
+        file: &'static str,
+        src: &'static str,
+    }
+
+    /// Every module of `sim-core`, so a domain member cannot hide in one
+    /// the table forgot.
+    ///
+    /// `include_str!` needs a literal path, so this list cannot be a
+    /// glob — which makes a stale list the obvious next hole, and
+    /// `the_source_table_covers_the_whole_crate` below is what closes it:
+    /// it reads `lib.rs`'s own `mod` declarations and fails if this table
+    /// and that list disagree in either direction.
+    const SOURCES: &[Module] = &[
+        Module {
+            file: "lib.rs",
+            src: include_str!("../../sim-core/src/lib.rs"),
+        },
+        Module {
+            file: "backpack.rs",
+            src: include_str!("../../sim-core/src/backpack.rs"),
+        },
+        Module {
+            file: "bots.rs",
+            src: include_str!("../../sim-core/src/bots.rs"),
+        },
+        Module {
+            file: "build.rs",
+            src: include_str!("../../sim-core/src/build.rs"),
+        },
+        Module {
+            file: "collide.rs",
+            src: include_str!("../../sim-core/src/collide.rs"),
+        },
+        Module {
+            file: "combat.rs",
+            src: include_str!("../../sim-core/src/combat.rs"),
+        },
+        Module {
+            file: "craft.rs",
+            src: include_str!("../../sim-core/src/craft.rs"),
+        },
+        Module {
+            file: "deploy.rs",
+            src: include_str!("../../sim-core/src/deploy.rs"),
+        },
+        Module {
+            file: "fmath.rs",
+            src: include_str!("../../sim-core/src/fmath.rs"),
+        },
+        Module {
+            file: "gather.rs",
+            src: include_str!("../../sim-core/src/gather.rs"),
+        },
+        Module {
+            file: "input.rs",
+            src: include_str!("../../sim-core/src/input.rs"),
+        },
+        Module {
+            file: "inventory.rs",
+            src: include_str!("../../sim-core/src/inventory.rs"),
+        },
+        Module {
+            file: "limits.rs",
+            src: include_str!("../../sim-core/src/limits.rs"),
+        },
+        Module {
+            file: "loot.rs",
+            src: include_str!("../../sim-core/src/loot.rs"),
+        },
+        Module {
+            file: "movement.rs",
+            src: include_str!("../../sim-core/src/movement.rs"),
+        },
+        Module {
+            file: "occupy.rs",
+            src: include_str!("../../sim-core/src/occupy.rs"),
+        },
+        Module {
+            file: "probe.rs",
+            src: include_str!("../../sim-core/src/probe.rs"),
+        },
+        Module {
+            file: "rng.rs",
+            src: include_str!("../../sim-core/src/rng.rs"),
+        },
+        Module {
+            file: "survival.rs",
+            src: include_str!("../../sim-core/src/survival.rs"),
+        },
+        Module {
+            file: "terrain.rs",
+            src: include_str!("../../sim-core/src/terrain.rs"),
+        },
+        Module {
+            file: "world.rs",
+            src: include_str!("../../sim-core/src/world.rs"),
+        },
+        Module {
+            file: "yaw_lut.rs",
+            src: include_str!("../../sim-core/src/yaw_lut.rs"),
+        },
+    ];
+
     /// All ten domains this module bounds. Widths are the private consts
     /// above, so this table cannot drift from the encoder — it *is* the
     /// encoder's constants.
@@ -2953,7 +3076,7 @@ mod wire_domains {
             what: "death cause",
             sim_site: "world.rs DEATH_BY_*",
             wire_site: "DEATH_CAUSE_BITS",
-            src: include_str!("../../sim-core/src/world.rs"),
+            home: "world.rs",
             prefix: "pub const DEATH_BY_",
             ty: ": u8 = ",
             exempt: &["MAX"],
@@ -2965,7 +3088,7 @@ mod wire_domains {
             what: "move refusal",
             sim_site: "inventory.rs REFUSE_M_*",
             wire_site: "REFUSE_M_BITS",
-            src: include_str!("../../sim-core/src/inventory.rs"),
+            home: "inventory.rs",
             prefix: "pub const REFUSE_M_",
             ty: ": u32 = ",
             exempt: &["MAX"],
@@ -2977,7 +3100,7 @@ mod wire_domains {
             what: "consume refusal",
             sim_site: "survival.rs REFUSE_C_*",
             wire_site: "REFUSE_C_BITS",
-            src: include_str!("../../sim-core/src/survival.rs"),
+            home: "survival.rs",
             prefix: "pub const REFUSE_C_",
             ty: ": u32 = ",
             exempt: &[],
@@ -2989,7 +3112,7 @@ mod wire_domains {
             what: "container kind",
             sim_site: "inventory.rs CONT_*",
             wire_site: "CONT_KIND_BITS",
-            src: include_str!("../../sim-core/src/inventory.rs"),
+            home: "inventory.rs",
             prefix: "pub const CONT_",
             ty: ": u8 = ",
             exempt: &["MAX"],
@@ -3001,7 +3124,7 @@ mod wire_domains {
             what: "piece shape",
             sim_site: "build.rs SHAPE_*",
             wire_site: "SHAPE_BITS",
-            src: include_str!("../../sim-core/src/build.rs"),
+            home: "build.rs",
             prefix: "pub const SHAPE_",
             ty: ": u8 = ",
             exempt: &[],
@@ -3013,7 +3136,7 @@ mod wire_domains {
             what: "piece material",
             sim_site: "build.rs MAT_*",
             wire_site: "MATERIAL_BITS",
-            src: include_str!("../../sim-core/src/build.rs"),
+            home: "build.rs",
             prefix: "pub const MAT_",
             ty: ": u8 = ",
             exempt: &[],
@@ -3025,7 +3148,7 @@ mod wire_domains {
             what: "deploy archetype",
             sim_site: "deploy.rs ARCH_*",
             wire_site: "ARCH_BITS",
-            src: include_str!("../../sim-core/src/deploy.rs"),
+            home: "deploy.rs",
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
@@ -3037,7 +3160,7 @@ mod wire_domains {
             what: "deploy placement",
             sim_site: "deploy.rs PLACE_*",
             wire_site: "PLACEMENT_BITS",
-            src: include_str!("../../sim-core/src/deploy.rs"),
+            home: "deploy.rs",
             prefix: "pub const PLACE_",
             ty: ": u8 = ",
             exempt: &[],
@@ -3049,7 +3172,7 @@ mod wire_domains {
             what: "craft station",
             sim_site: "craft.rs STATION_*",
             wire_site: "STATION_BITS",
-            src: include_str!("../../sim-core/src/craft.rs"),
+            home: "craft.rs",
             prefix: "pub const STATION_",
             ty: ": u8 = ",
             exempt: &[],
@@ -3061,7 +3184,7 @@ mod wire_domains {
             what: "bag-removal reason",
             sim_site: "backpack.rs BAG_GONE_*",
             wire_site: "BAG_GONE_BITS",
-            src: include_str!("../../sim-core/src/backpack.rs"),
+            home: "backpack.rs",
             prefix: "pub const BAG_GONE_",
             ty: ": u32 = ",
             exempt: &[],
@@ -3071,37 +3194,45 @@ mod wire_domains {
         },
     ];
 
-    /// Scrape one domain's live members out of its declaring source.
+    /// Scrape one domain's live members out of **every** module.
+    ///
+    /// Crate-wide, not per-file, and that is the whole point: a domain is
+    /// a set of values the sim can emit, and the sim is the crate. Which
+    /// file a member sits in is a fact about tidiness; whether the value
+    /// exists at all is a fact about the wire. Reading `d.home` alone
+    /// answered the second question with the first one's evidence.
     ///
     /// Deliberately line-oriented and not block-terminated: four of the
     /// ten families interleave doc comments between members, so a scan
     /// that stops at the first non-`const` line reads two of `world.rs`'s
     /// three causes and calls the domain covered.
-    fn members(d: &Domain) -> Vec<(&'static str, u32)> {
+    fn members(d: &Domain) -> Vec<(&'static str, u32, &'static str)> {
         let mut found = Vec::new();
-        for line in d.src.lines() {
-            let Some(rest) = line.trim().strip_prefix(d.prefix) else {
-                continue;
-            };
-            let Some((name, value)) = rest.split_once(d.ty) else {
-                continue;
-            };
-            if d.exempt.contains(&name) {
-                continue;
+        for m in SOURCES {
+            for line in m.src.lines() {
+                let Some(rest) = line.trim().strip_prefix(d.prefix) else {
+                    continue;
+                };
+                let Some((name, value)) = rest.split_once(d.ty) else {
+                    continue;
+                };
+                if d.exempt.contains(&name) {
+                    continue;
+                }
+                let value = value.trim_end_matches(';');
+                let v: u32 = value.parse().unwrap_or_else(|_| {
+                    panic!(
+                        "{}: {}{} in {} is declared as `{value}`, which is \
+                         not a literal. This gate reads the constant block \
+                         as text to learn the domain's range; a non-literal \
+                         member makes that range unknowable, so either give \
+                         it a literal or add it to `exempt` because it names \
+                         the ledger rather than sitting in it.",
+                        d.what, d.prefix, name, m.file
+                    )
+                });
+                found.push((name, v, m.file));
             }
-            let value = value.trim_end_matches(';');
-            let v: u32 = value.parse().unwrap_or_else(|_| {
-                panic!(
-                    "{}: {}{} is declared as `{value}`, which is not a \
-                     literal. This gate reads the constant block as text to \
-                     learn the domain's range; a non-literal member makes \
-                     that range unknowable, so either give it a literal or \
-                     add it to `exempt` because it names the ledger rather \
-                     than sitting in it.",
-                    d.what, d.prefix, name
-                )
-            });
-            found.push((name, v));
         }
         found
     }
@@ -3126,7 +3257,25 @@ mod wire_domains {
                 d.sim_site
             );
 
-            let highest = found.iter().map(|(_, v)| *v).max().unwrap();
+            // A domain lives in exactly one module. The scrape above is
+            // crate-wide, so a stray member is already counted in
+            // `highest` and will trip the pins below — but it would trip
+            // them with a number and no address. This says the file.
+            for (name, v, file) in &found {
+                assert_eq!(
+                    *file, d.home,
+                    "{}: {}{} = {v} is declared in {file}, and this domain's \
+                     home is {}. The value is on the wire either way — the \
+                     scrape reads the whole crate precisely because the \
+                     2026-08-05 failure was a death cause added one module \
+                     away from the block that bounds it. Move it to {}, or \
+                     move the domain's home here and say which in the same \
+                     commit.",
+                    d.what, d.prefix, name, d.home, d.home
+                );
+            }
+
+            let highest = found.iter().map(|(_, v, _)| *v).max().unwrap();
             let capacity = 1u32 << d.bits;
             assert!(
                 highest < capacity,
@@ -3171,9 +3320,14 @@ mod wire_domains {
     /// this module that bounds a `sim-core` enumeration rather than a
     /// length, an index or a quantity. Widths like `INV_COUNT_BITS` or
     /// `NAME_LEN_BITS` bound a *magnitude* the sim computes and are not
-    /// domains — they have no constant block to drift against. If a
-    /// later pass spends a width on a new enumeration, this number moves
-    /// with it, and the reviewer has to say which kind it added.
+    /// domains — they have no constant block to drift against.
+    ///
+    /// Note what this does **not** do: it fires when the table changes
+    /// size, so it catches a row removed or added, and it cannot catch a
+    /// width that never asked for a row. `every_enumeration_width_is_classified`
+    /// is the gate for that, and it is the stronger of the two — this one
+    /// is kept because a pinned count states the ledger's size as a fact
+    /// somebody chose, which a scrape derives and therefore cannot assert.
     #[test]
     fn the_domain_table_states_its_own_coverage() {
         assert_eq!(
@@ -3184,6 +3338,175 @@ mod wire_domains {
              in the same commit that adds the width, or state why the \
              width bounds a magnitude rather than a domain."
         );
+    }
+
+    /// `SOURCES` is the whole crate, checked against `lib.rs`'s own list.
+    ///
+    /// The crate-wide scrape is only as wide as this table, and
+    /// `include_str!` takes a literal path, so the table is hand-written
+    /// and a new `sim-core` module is one `mod` line away from being
+    /// invisible to every domain check above — the same hole again, one
+    /// level up. `lib.rs` has to declare the module for it to compile, so
+    /// that declaration is the thing to check against.
+    #[test]
+    fn the_source_table_covers_the_whole_crate() {
+        const LIB: &str = include_str!("../../sim-core/src/lib.rs");
+
+        let mut declared = Vec::new();
+        for line in LIB.lines() {
+            let t = line.trim();
+            let Some(rest) = t
+                .strip_prefix("pub mod ")
+                .or_else(|| t.strip_prefix("mod "))
+            else {
+                continue;
+            };
+            // `mod foo;` only — an inline `mod tests {` is not a file.
+            let Some(name) = rest.strip_suffix(';') else {
+                continue;
+            };
+            declared.push(name);
+        }
+
+        assert!(
+            declared.len() >= 20,
+            "only {} `mod` declarations parsed out of sim-core/src/lib.rs — \
+             the declaration shape changed and this gate is reading nothing, \
+             which is worse than failing.",
+            declared.len()
+        );
+
+        for name in &declared {
+            assert!(
+                SOURCES
+                    .iter()
+                    .any(|m| m.file.strip_suffix(".rs") == Some(name)),
+                "sim-core declares `mod {name};` and SOURCES has no row for \
+                 it, so every domain check in this module is blind to \
+                 {name}.rs. A domain member declared there would pass all \
+                 ten pins and still be refused by the encoder at runtime — \
+                 that is the 2026-08-05 failure. Add the include_str! row."
+            );
+        }
+
+        // And no stale rows: a deleted module leaves a path that still
+        // compiles only until it does not, and a renamed one silently
+        // narrows the scrape back to where it started.
+        for m in SOURCES {
+            let stem = m.file.strip_suffix(".rs").unwrap();
+            assert!(
+                stem == "lib" || declared.contains(&stem),
+                "SOURCES lists {} and sim-core/src/lib.rs declares no \
+                 `mod {stem};`. Either the module was renamed and the \
+                 scrape is now reading a file nothing imports, or this row \
+                 is stale — remove it or fix the name.",
+                m.file
+            );
+        }
+    }
+
+    /// Every width this module spends is classified as a domain or a
+    /// magnitude — by scraping the widths, not by counting the table.
+    ///
+    /// `the_domain_table_states_its_own_coverage` pins `DOMAINS.len()`,
+    /// which fires only when the table *changes size*. It cannot make a
+    /// newly added width acquire a row: spend `TOOL_TIER_BITS` on a new
+    /// `sim-core` enumeration, bound it nowhere, and the count is still
+    /// ten and still green. So this reads this file's own `*_BITS` block
+    /// and forces each width into one of two named sets. A width that is
+    /// in neither fails, and the fix is a sentence either way.
+    #[test]
+    fn every_enumeration_width_is_classified() {
+        const WIRE_SRC: &str = include_str!("event.rs");
+
+        /// Widths that bound a *magnitude* — a length, an index, a count,
+        /// a duration — computed by the sim rather than chosen from a
+        /// constant block. These have no domain to drift against, which
+        /// is exactly why they are listed by name rather than by rule:
+        /// the distinction is a judgement, and it should be made once,
+        /// here, by whoever adds the width.
+        const MAGNITUDES: &[&str] = &[
+            "SUB_BITS",
+            "MOVE_SLOT_BITS",
+            "INV_COUNT_BITS",
+            "INV_SLOT_BITS",
+            "SYNC_COUNT_BITS",
+            "CATALOG_TOTAL_BITS",
+            "CATALOG_COUNT_BITS",
+            "NAME_LEN_BITS",
+            "CRAFT_Q_COUNT_BITS",
+            "RECIPE_TOTAL_BITS",
+            "RECIPE_COUNT_BITS",
+            "RECIPE_TICKS_BITS",
+            "N_INPUTS_BITS",
+            "PIECE_SYNC_COUNT_BITS",
+            "PIECE_DEFS_TOTAL_BITS",
+            "PIECE_DEFS_COUNT_BITS",
+            "N_COSTS_BITS",
+            "DEPLOY_SYNC_COUNT_BITS",
+            "DEPLOY_DEFS_TOTAL_BITS",
+            "DEPLOY_DEFS_COUNT_BITS",
+            "STOCK_COUNT_BITS",
+            "BAG_SYNC_COUNT_BITS",
+            "CONT_COUNT_BITS",
+        ];
+
+        let mut widths = Vec::new();
+        for line in WIRE_SRC.lines() {
+            let Some(rest) = line.trim().strip_prefix("const ") else {
+                continue;
+            };
+            let Some((name, _)) = rest.split_once(": u32 = ") else {
+                continue;
+            };
+            if !name.ends_with("_BITS") {
+                continue;
+            }
+            widths.push(name);
+        }
+
+        assert!(
+            widths.len() >= 33,
+            "only {} `*_BITS` widths parsed out of event.rs — the \
+             declaration shape changed and this gate is reading nothing.",
+            widths.len()
+        );
+
+        for name in &widths {
+            let is_domain = DOMAINS.iter().any(|d| d.wire_site == *name);
+            let is_magnitude = MAGNITUDES.contains(name);
+            assert!(
+                is_domain != is_magnitude,
+                "{name} is {}. Every width this module spends is one of \
+                 two things: a *domain*, bounding a sim-core enumeration \
+                 that can grow past it (add a DOMAINS row, and the ten \
+                 pins there start guarding it), or a *magnitude*, bounding \
+                 a length or index the sim computes (add it to MAGNITUDES \
+                 above). A width in neither is the 2026-08-05 failure with \
+                 nothing watching for it; a width in both is a table that \
+                 contradicts itself.",
+                if is_domain {
+                    "both a DOMAINS row and a listed magnitude"
+                } else {
+                    "in neither DOMAINS nor MAGNITUDES"
+                }
+            );
+        }
+
+        // Every DOMAINS row names a width that actually exists — a typo
+        // or a renamed const would otherwise leave a row guarding nothing
+        // while still counting toward the ten.
+        for d in DOMAINS {
+            assert!(
+                widths.contains(&d.wire_site),
+                "{}: DOMAINS names its width `{}` and event.rs declares no \
+                 such `const {}: u32`. The row is guarding a field that \
+                 does not exist under that name.",
+                d.what,
+                d.wire_site,
+                d.wire_site
+            );
+        }
     }
 
     /// The one domain whose bound is *derived* rather than restated stays
