@@ -41,6 +41,33 @@ keyword passes. The ORDER is walled; the prose is not.
 touch** — the satchel's raid verb + a structure-damage path into `build::hp`,
 the bow, shore barrels as a second destination class, `jump`, and the wipe.
 Unclaimed, and the two judges rank them above everything else in the repo.
+## 0a · world lane: skirt residual — the beach path, and the ring's hard edge
+
+*(GAP PASS item, from `findings/pass-20260804-173640-01-visual.md` ranked gaps 1
+and 3. The skirts themselves LANDED this pass — `terrain::skirt_fill`, 6 tests,
+`ci/clutter_shape.mjs` at 54 checks. This is what they left open.)*
+
+Two residuals, both cheap, neither blocking:
+
+1. **The Pebble path is untested by sweep.** A 400 m box at the island centre
+   yields 3 Pebble skirt elements in 1,875 tiles — correct behaviour (the kind
+   law tracks the splat and there is almost no sand channel inland), but it
+   means no sweep has exercised sand. A beach-tile sweep in `tests/clutter.rs`
+   would close it. The kind law is `clutter_kind_at`, shared with the grid,
+   which `test_each_kind_stands_on_its_own_splat_channel` does cover — so this
+   is coverage of the skirt's *placement* on sand, not of the law.
+2. **The clutter ring still ends hard** at ~32–45 m rather than thinning into
+   the fog. `web/src/clutter.js` names it and names why it is parked: the cheap
+   fix is a per-frame player-relative shader term, which is a new program, and
+   the prewarm gate counts program links after `inWorld`. The recipe if someone
+   takes it: thin stochastically by instance hash (so the same elements survive
+   at a given range and nothing pops), then scale survivors to zero. Budget and
+   prewarm the program, or drive it off the existing shared wind uniform.
+
+**Nothing here has been seen.** No frames were captured this pass and
+`browser_smoke`'s renderer tier is off by operator config, so every claim above
+is placement arithmetic. The moment the item becomes "does the skirt look
+right" rather than "is there one", this lane needs frames again.
 
 ## 0c3 · RECOVERY (systems lane): the same red, and it was propagation *(done this pass)*
 
