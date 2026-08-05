@@ -15,6 +15,31 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0c3 · RECOVERY (systems lane): the same red, and it was propagation *(done this pass)*
+
+`ci/gates.sh` was red on this lane's clean tree at `ui smoke`, same assertion in
+both health runs, so not a flake. **The code was wrong and was already fixed** —
+the ui lane landed the sentence in `b2a48bc`, judged PASS, and it was in `main`
+before this pass started. `lane/systems` had simply not taken `main` since. So
+this lane's red was *propagation lag, not a second defect*, and the fix was to
+take `main` into the branch. Nothing reverted, nothing lost, and the ui lane's
+wording ("cannot be repaired") is not forked — duplicating it here with a
+different sentence is what would have conflicted.
+
+The standing hazard, which is this lane's to carry: **growing `REFUSE_B_*` is a
+two-file act and the second file is `web/`, which this lane may not touch.**
+`ui_smoke` §W walks the constants against `interact.js`, so a sim commit that
+adds a reason reddens *every* lane until the client half lands. Twice now (9,
+then 10). `build.rs` now says so at the constants themselves; the durable fix,
+if one is wanted, is a spoken call on whether the sentence table should be
+generated rather than mirrored — not invented here.
+
+**Expect next:** nothing was masked in the code tier — `ui smoke` is its last
+gate, so the green below is the whole tier. The renderer tier (`browser smoke`,
+`vantages`) has NOT run: tier `fast` for this whole run, and `browser_smoke` is
+off by operator act. If either is red it is still red, and an `all` run is where
+that surfaces.
+
 ## 0c · RECOVERY: the refusal table fell one short again *(ui lane — done this pass)*
 
 `ci/gates.sh` was red on a clean tree at `ui smoke`: `build.rs` declares 11
