@@ -7,11 +7,22 @@ here is wrong, fix the claim; history goes in `DECISIONS.md`.
 
 ## What this is
 
-A browser survival game (Rust-the-game tradition): Rust-language
-authoritative server, three.js client, WebTransport/QUIC. A separate
-product that orbits scry — sold through its Great Work board, coins from
-its economy — importing none of its code. **The skeleton is the product**:
-determinism, netcode, and the hot-path laws outrank every feature.
+A survival game (Rust-the-game tradition): Rust-language authoritative
+server, **a native Rust desktop client** (Bevy; operator, 2026-08-05),
+WebTransport/QUIC. A separate product that orbits scry — sold through its
+Great Work board, coins from its economy — importing none of its code.
+**The skeleton is the product**: determinism, netcode, and the hot-path
+laws outrank every feature.
+
+The three.js browser client in `web/` still builds and is still gated, and
+is being retired rather than deleted — the native client replaces it slice
+by slice (`NOW.md` §1). Two things bind the move. **Bevy draws, it does
+not decide**: `sim-core` keeps the walls and `ClientCore` keeps
+prediction, so gameplay state never enters the ECS, where it would retire
+the determinism walls with nothing in CI to notice. And **a render path
+that lands without its probes ships a client with no visual gates at
+all** — forbidden outright, and the pivot inherits that rule from
+`MIGRATION.md` even though it moots the rest of that doc.
 
 **Agents are first-class on both sides.** They build it — `AGENTS.md` is
 the door for any harness — and they will play it: the deterministic core
@@ -31,7 +42,7 @@ pays the same doors and earns the same coins as a human.
 | `ART.md` | the art bible: measured targets off `Rust Images/`, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
 | `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
-| `MIGRATION.md` | the renderer move to `WebGPURenderer` + TSL: what breaks, counted against the installed three; the prior art; **§6 the order of work** | **the plan of record** for the move (operator, 2026-08-04) — `NOW.md` still owns "what next" |
+| `MIGRATION.md` | the renderer move to `WebGPURenderer` + TSL | **SUPERSEDED 2026-08-05** — the client pivot to native Rust moots it; you do not port three.js *and* replace it. Kept for its probe/readback inventory, which the native visual gate still has to answer |
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
 | `NOW.md` | what next | **the only list that answers that** |
 
