@@ -22,9 +22,10 @@
 #![allow(clippy::disallowed_macros)]
 
 use sim_core::terrain::{
-    self, Occupant, ScatterTable, Waystation, CELLS_PER_SIDE, CELL_SIZE, HAVEN_CRATES,
-    HAVEN_RADIUS_M, LAND_MIN_H, ROAD_R_MAX, ROAD_R_MIN, WAYSTATIONS, WAYSTATION_CRATES,
-    WAYSTATION_CRATE_R_M, WAYSTATION_MIN_SEP_M, WAYSTATION_RADIUS_M,
+    self, Occupant, RoadBand, ScatterTable, Waystation, CELLS_PER_SIDE, CELL_SIZE,
+    CLIFF_SLOPE_RATIO, HAVEN_CRATES, HAVEN_RADIUS_M, LAND_MIN_H, ROAD_R_MAX, ROAD_R_MIN,
+    WAYSTATIONS, WAYSTATION_CRATES, WAYSTATION_CRATE_R_M, WAYSTATION_MIN_SEP_M,
+    WAYSTATION_RADIUS_M,
 };
 
 /// The same sixteen `tests/haven.rs` sweeps, so a seed that is interesting to
@@ -357,10 +358,40 @@ fn every_site_carries_its_containers() {
 /// sweep against a haven whose tier is switched off shows what the zone
 /// actually displaced, so "cleared" is a measurement and not an assumption.
 /// Straight from `tests/haven.rs::the_pad_is_clear_and_would_not_have_been`.
+///
+/// **Three claims, at the three scales each is true at.** The control's
+/// per-seed form — every seed's zones displace at least one slot — was luck
+/// rather than law, and this pass caught it holding a site in place: a
+/// waystation zone is 380 m² of roadside, the carriageway inside it is vetoed
+/// and the shoulder is thin, so zero is an ordinary draw. It read 3, 3, 3, 0
+/// across the sweep once the canopy search moved seed `0xDEADBEEF`'s sites
+/// onto emptier ground, and nothing about that is a defect.
+///
+/// So `cleared` is asserted over the SWEEP — the same one-per-seed claim, at
+/// the scale it is true at — and the two things it was standing in for are
+/// asked exactly, per seed, instead:
+///
+///   - `furnished`: every seed finds `WAYSTATIONS * (WAYSTATION_CRATES + 1)`
+///     authored slots inside the zones, its caches and its canopy and nothing
+///     else. A broken `in_waystation`, a dead site, a dropped anchor or a
+///     canopy that stopped being emitted all read as a wrong count here.
+///   - `opportunity`: the control arm HAD a chance to put something in the
+///     zone — the zone covers at least one scatter cell whose ground the
+///     control would not have vetoed outright. This is the half a bare
+///     `cleared >= 1` was reaching for and could not state: it separates "the
+///     zone displaced nothing because the exclusion is broken" from "the zone
+///     displaced nothing because it is 380 m² of road and cliff", and unlike
+///     the count it cannot be moved by a seed landing on bare ground.
+///
+/// `opportunity` is measured at the cell CENTRE while `scatter` draws at a
+/// jittered point inside the cell, so it is a floor on the real opportunity
+/// and never an overstatement of it.
 #[test]
 fn the_zones_are_clear_and_would_not_have_been() {
     let table = ScatterTable::alpha_default();
     let mut total_cleared = 0usize;
+    let mut worst_opportunity = usize::MAX;
+    let want_furnished = WAYSTATIONS * (WAYSTATION_CRATES as usize + 1);
 
     for seed in SWEEP_SEEDS {
         let haven = terrain::haven(seed);
@@ -371,20 +402,45 @@ fn the_zones_are_clear_and_would_not_have_been() {
 
         let mut inside = 0usize;
         let mut cleared = 0usize;
+        let mut furnished = 0usize;
+        let mut opportunity = 0usize;
         for cx in 0..CELLS_PER_SIDE {
             for cz in 0..CELLS_PER_SIDE {
-                let s = terrain::scatter(seed, &table, &haven, cx, cz);
-                // The site's own containers are `CacheSlot` and are the only
-                // thing allowed inside the zone. `CrateSlot` is deliberately
-                // NOT exempted any more: the pad's kind standing in a
-                // waystation would be the lesser tier drawing `loot.crate`,
-                // which is the defect the two kinds were split to remove, so
-                // it must count as an intruder here rather than be waved past.
-                if s.occupant != Occupant::None
-                    && s.occupant != Occupant::CacheSlot
-                    && terrain::in_waystation(&haven, s.x, s.z)
+                // Did the control arm have a chance? A cell is an opportunity
+                // when its centre lies in a zone AND the ground there is not
+                // something `scatter` refuses on sight — `terrain.rs`'s land,
+                // cliff and carriageway vetoes, which run before any biome
+                // draw. `in_waystation` is tested first and short-circuits, so
+                // the two `height` fans cost nothing on the 65,000 cells that
+                // are nowhere near a site.
+                let (ccx, ccz) = (
+                    cx as f32 * CELL_SIZE + CELL_SIZE * 0.5,
+                    cz as f32 * CELL_SIZE + CELL_SIZE * 0.5,
+                );
+                if terrain::in_waystation(&haven, ccx, ccz)
+                    && terrain::height(seed, ccx, ccz) >= LAND_MIN_H
+                    && terrain::slope(seed, ccx, ccz) <= CLIFF_SLOPE_RATIO
+                    && terrain::road_band(seed, ccx, ccz) != RoadBand::Carriageway
                 {
-                    inside += 1;
+                    opportunity += 1;
+                }
+                let s = terrain::scatter(seed, &table, &haven, cx, cz);
+                // The site's own furniture — its two `CacheSlot` containers
+                // and its one `WaystationCanopy` — is the only thing allowed
+                // inside the zone, the same pair of exemptions
+                // `tests/haven.rs` grants `CrateSlot` and `HavenShelter`.
+                // `CrateSlot` is deliberately NOT exempted: the pad's kind
+                // standing in a waystation would be the lesser tier drawing
+                // `loot.crate`, which is the defect the two kinds were split
+                // to remove, so it must count as an intruder here rather
+                // than be waved past.
+                if s.occupant != Occupant::None && terrain::in_waystation(&haven, s.x, s.z) {
+                    if s.occupant == Occupant::CacheSlot || s.occupant == Occupant::WaystationCanopy
+                    {
+                        furnished += 1;
+                    } else {
+                        inside += 1;
+                    }
                 }
                 let u = terrain::scatter(seed, &table, &control, cx, cz);
                 if u.occupant != Occupant::None && terrain::in_waystation(&haven, u.x, u.z) {
@@ -397,16 +453,35 @@ fn the_zones_are_clear_and_would_not_have_been() {
             "seed {seed}: {inside} scattered slot(s) stand inside a waystation \
              zone — the exclusion is meant to run ahead of the biome draw"
         );
-        assert!(
-            cleared >= 1,
-            "seed {seed}: the zones displaced nothing at all, so 'cleared' is \
-             not evidence of anything. Either both sites landed on bare ground \
-             or the control arm is not a control"
+        assert_eq!(
+            furnished, want_furnished,
+            "seed {seed}: {furnished} authored slot(s) inside the zones against \
+             {want_furnished} — every live site owes {WAYSTATION_CRATES} caches \
+             and one canopy, so a wrong count here is a dead site, a dropped \
+             anchor, or a zone predicate that is not on the site at all"
         );
+        assert!(
+            opportunity >= 1,
+            "seed {seed}: the zones cover no scatter cell the control arm would \
+             have drawn on, so this seed's control is vacuous and its 'cleared' \
+             count means nothing either way. Either the zones are off the grid, \
+             `in_waystation` is not on the site, or both sites stand on ground \
+             scatter refuses outright"
+        );
+        worst_opportunity = worst_opportunity.min(opportunity);
         total_cleared += cleared;
     }
+    assert!(
+        total_cleared >= SWEEP_SEEDS.len(),
+        "the zones displaced {total_cleared} slot(s) across {} seeds, so \
+         'cleared' is not evidence of anything and the control arm is not a \
+         control",
+        SWEEP_SEEDS.len()
+    );
     println!(
-        "waystation zones displaced {total_cleared} slot(s) across {} seeds",
+        "waystation zones displaced {total_cleared} slot(s) across {} seeds, \
+         furnished {want_furnished} per seed, worst per-seed control \
+         opportunity {worst_opportunity} cell(s)",
         SWEEP_SEEDS.len()
     );
 }
@@ -495,5 +570,117 @@ fn the_tiers_pay_in_order() {
         pad_density,
         site_density,
         pad_density / site_density
+    );
+}
+
+/// **Every site carries its canopy, and the canopy is not in the road.**
+///
+/// The failure this exists for is measured, not hypothetical. The first draft
+/// stood the canopy at the site centre on the argument that a two-anchor site
+/// needs a middle; the centre of a waystation is the centre line of the coast
+/// road, because every candidate `pick_minor` scores comes off the road ring,
+/// and `tests/road.rs` read 2 slots on the carriageway at every seed probed.
+/// Three suites went red together and none of them names the canopy, so this
+/// is the one that does.
+///
+/// Four claims per site, all arithmetic: the canopy exists and stands at the
+/// offset and bearing the site carries; its whole footprint is off the
+/// carriageway, sampled at the two extremes across the road's width rather
+/// than at its anchor alone; it is inside the exclusion zone that keeps
+/// scatter off it; and it holds a scatter cell neither cache holds, because a
+/// cell carries one occupant and a collision would silently delete one of the
+/// two.
+#[test]
+fn every_site_carries_its_canopy_clear_of_the_road() {
+    let c = terrain::ISLAND_SIZE * 0.5;
+    let mut worst_edge = f32::MAX;
+
+    for seed in SEEDS {
+        let haven = terrain::haven(seed);
+        for w in 0..WAYSTATIONS {
+            let ws = haven.minor[w];
+            if !ws.live {
+                continue;
+            }
+            let (kx, kz, kyaw) = terrain::waystation_canopy(&ws);
+
+            // It stands where the site says it does: `WAYSTATION_CANOPY_OFF_M`
+            // out on the carried bearing, facing back in. The facing is
+            // asserted as an ANGLE — the dot of the facing against the inward
+            // direction — and not as a number, because `haven_shelter` shipped
+            // an outward bearing into a facing field once and every number in
+            // it was the right type.
+            let dx = kx - ws.x;
+            let dz = kz - ws.z;
+            let r = (dx * dx + dz * dz).sqrt();
+            let off = terrain::WAYSTATION_CANOPY_OFF_M;
+            assert!(
+                (r - off).max(off - r) < 1.0e-3,
+                "seed {seed}: site {w}'s canopy stands {r:.3} m out against \
+                 {off:.3} m"
+            );
+            let (fx, fz) = sim_core::yaw_dir((kyaw as u16) << 8);
+            let dot = (fx * -dx + fz * -dz) / r;
+            assert!(
+                dot > 0.99,
+                "seed {seed}: site {w}'s canopy faces {dot:.3} of the way back \
+                 at its site — the yaw is an outward bearing in a facing field"
+            );
+
+            // Off the carriageway across the road's whole width. The road is
+            // a ring about the island centre, so its normal at any point is
+            // the radial; the extremes of the footprint across it are the
+            // anchor ± the bounding radius along that vector.
+            let (rx, rz) = (kx - c, kz - c);
+            let d = (rx * rx + rz * rz).sqrt();
+            let (ux, uz) = (rx / d, rz / d);
+            let e = terrain::WAYSTATION_CANOPY_R_M;
+            for (sx, sz) in [
+                (kx, kz),
+                (kx + ux * e, kz + uz * e),
+                (kx - ux * e, kz - uz * e),
+            ] {
+                assert_ne!(
+                    terrain::road_band(seed, sx, sz),
+                    terrain::RoadBand::Carriageway,
+                    "seed {seed}: site {w}'s canopy footprint touches the \
+                     carriageway — the road surface is not clear, so the \
+                     circulation loop is obstructed at the place built to \
+                     draw players onto it"
+                );
+            }
+            assert!(
+                terrain::height(seed, kx, kz) >= LAND_MIN_H,
+                "seed {seed}: site {w}'s canopy stands in the water"
+            );
+
+            // Inside the zone that keeps scatter off it — whole, not just its
+            // anchor. This is the const block's `OFF + R < RADIUS` measured on
+            // the shipped site rather than asserted about the constants.
+            let edge = WAYSTATION_RADIUS_M - (r + e);
+            assert!(
+                edge > 0.0,
+                "seed {seed}: site {w}'s canopy overhangs its exclusion zone \
+                 by {:.2} m, so ordinary scatter grows through the deck",
+                -edge
+            );
+            worst_edge = worst_edge.min(edge);
+
+            // One cell, one occupant.
+            let kcell = cell_of(kx, kz);
+            for k in 0..WAYSTATION_CRATES {
+                let (ax, az, _) = terrain::waystation_crate(&ws, k);
+                assert_ne!(
+                    cell_of(ax, az),
+                    kcell,
+                    "seed {seed}: site {w}'s canopy and cache {k} resolved to \
+                     one scatter cell, so one of the two is silently gone"
+                );
+            }
+        }
+    }
+    println!(
+        "canopies: worst zone margin {worst_edge:.2} m, all clear of the \
+         carriageway at both footprint extremes"
     );
 }

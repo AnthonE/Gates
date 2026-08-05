@@ -650,6 +650,32 @@ pub const WAYSTATION_PHASE_STEP: i32 = 256 / WAYSTATION_CRATES / WAYSTATION_PHAS
 /// any exclusion zone, so "separate sites" is a statement about the walk
 /// between them and not about their footprints (knob).
 pub const WAYSTATION_MIN_SEP_M: f32 = ROAD_R_MIN;
+/// How far off the site center the canopy stands, meters.
+///
+/// **Not a new number: it is the container ring's own radius.** The pad puts
+/// its shelter INSIDE its ring (6.5 against 10.0) because five containers on
+/// a 10 m ring have already spent the circle and the gaps between them are
+/// too narrow to stand a building in. Two containers on a 6.5 m ring leave
+/// two gaps of half the circle each, so the canopy stands in one of them, on
+/// the ring, and the arithmetic below proves that costs nothing.
+///
+/// It stands off center for the reason `haven_shelter_bearing`'s doc already
+/// gives in one line — *"the pad's center IS the road's center line"* — and
+/// the site center is on that same line, because every candidate `pick_minor`
+/// scores comes off the road ring. A structure at the center of a waystation
+/// is a structure in the road. That is not a judgement call about composition;
+/// it is what `tests/road.rs` measures, and it read 2 slots on the
+/// carriageway at every seed probed when this stood at the center.
+pub const WAYSTATION_CANOPY_OFF_M: f32 = WAYSTATION_CRATE_R_M;
+/// LUT steps from a container anchor to the middle of the gap beside it —
+/// where the canopy stands. Derived exactly as `HAVEN_SHELTER_YAW_STEP` is
+/// (half of one anchor gap), and at `WAYSTATION_CRATES == 2` that is a
+/// quarter turn: square to the pair, so neither cache stands behind the
+/// canopy's one solid side and both flank an open bay.
+pub const WAYSTATION_CANOPY_YAW_STEP: i32 = 256 / WAYSTATION_CRATES / 2;
+/// Gaps the canopy search may try, mirroring `HAVEN_SHELTER_TRIES`: the ring
+/// has exactly `WAYSTATION_CRATES` of them and beyond that it repeats.
+pub const WAYSTATION_CANOPY_TRIES: i32 = WAYSTATION_CRATES;
 
 // Wall 4 at the definition, as the haven block does it. Every one of these is
 // a property of the shape rather than a preference, so a later pass that
@@ -697,6 +723,31 @@ const _: () = {
     // Every candidate the search can offer lies on the road ring, so a floor
     // above the ring's own diameter could never be met at all.
     assert!(WAYSTATION_MIN_SEP_M < 2.0 * ROAD_R_MIN);
+
+    // --- the canopy stands in a gap in that ring --------------------------
+    // The gap search is capped and covers the ring exactly once, the same
+    // shape as the phase search two asserts up.
+    assert!(WAYSTATION_CANOPY_YAW_STEP > 0);
+    assert!(2 * WAYSTATION_CANOPY_YAW_STEP <= 256 / WAYSTATION_CRATES);
+    assert!(2 * WAYSTATION_CANOPY_YAW_STEP + 1 >= 256 / WAYSTATION_CRATES);
+    assert!(WAYSTATION_CANOPY_TRIES == WAYSTATION_CRATES);
+    // The WHOLE structure is inside the zone `scatter` keeps clear, not just
+    // its anchor point — 6.5 + 3.96 against 11.0. Below this the exclusion
+    // zone stops covering the building it exists for and ordinary scatter
+    // grows through the deck.
+    assert!(WAYSTATION_CANOPY_OFF_M + WAYSTATION_CANOPY_R_M < WAYSTATION_RADIUS_M);
+    // And it clears both containers by their own volumes. The gap is square
+    // to the pair, so the separation is the hypotenuse of two equal legs;
+    // 1.25 stands in for √2 from below (exact in binary, no sqrt in a const
+    // block) the same way 1.5 stands in from above four asserts up.
+    assert!(
+        1.25 * WAYSTATION_CANOPY_OFF_M
+            > WAYSTATION_CANOPY_R_M + OCCUPANT_R_M[Occupant::CacheSlot as usize]
+    );
+    // `scatter`'s broad phase is the site's cell plus one, and the canopy is
+    // now the furthest thing from the center — so it, not the containers,
+    // is what makes that phase complete. Same argument, the further anchor.
+    assert!(WAYSTATION_CANOPY_OFF_M < CELL_SIZE);
 };
 
 /// One lesser site: position, the rotation its container pair stands at, and
@@ -717,6 +768,12 @@ pub struct Waystation {
     /// function of the site, and the client, the server and the gate all ask
     /// for anchor `k` and have to be told the same place.
     pub phase: u8,
+    /// Outward bearing the canopy stands on, as a yaw-LUT index — carried
+    /// for the reason `Haven::shelter` is carried and not recomputed: it is
+    /// the answer to a search over the terrain (`waystation_canopy_bearing`),
+    /// so a reader that re-derived it would have to re-run that search and
+    /// could disagree with the site the shard actually booted.
+    pub canopy: u8,
     pub live: bool,
 }
 
@@ -728,6 +785,7 @@ impl Waystation {
         z: 0.0,
         y: 0.0,
         phase: 0,
+        canopy: 0,
         live: false,
     };
 }
@@ -1110,7 +1168,7 @@ fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystat
             if !clear {
                 continue;
             }
-            let phase = match waystation_ring_phase(seed, x, z) {
+            let (phase, canopy) = match waystation_ring_phase(seed, x, z) {
                 Some(p) => p,
                 None => continue,
             };
@@ -1119,6 +1177,7 @@ fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystat
                 z,
                 y,
                 phase,
+                canopy,
                 live: true,
             });
             take_score = score;
@@ -1135,15 +1194,24 @@ fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystat
     out
 }
 
-/// The first rotation at (x, z) both containers can stand on, or `None` if
-/// the site cannot hold them at any tried rotation.
+/// The first rotation at (x, z) both containers can stand on **together with
+/// a gap the canopy can stand in**, or `None` if the site cannot hold the
+/// whole arrangement at any tried rotation.
 ///
 /// The pad's `haven_ring_phase` with the pad's numbers swapped out, and
 /// deliberately a separate function rather than a shared generic one: the two
 /// tiers are allowed to diverge — a later POI kind with a different check
 /// chain is the point of the hook — and a shared body would make the next
 /// one's constraint a parameter of this one's.
-fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
+///
+/// The canopy is resolved HERE rather than after the fact because the two
+/// searches are not independent: the gaps the canopy may stand in are the
+/// container ring's gaps, so they move with `phase`. A rotation whose
+/// containers stand but whose gaps are both in the road is not a site — and
+/// asking the questions in sequence, 16 phases each offering
+/// `WAYSTATION_CANOPY_TRIES` gaps, is what lets a candidate survive one
+/// blocked gap instead of being thrown away with it.
+fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<(u8, u8)> {
     let mut t = 0i32;
     while t < WAYSTATION_PHASE_TRIES {
         let phase = (t * WAYSTATION_PHASE_STEP) as u8;
@@ -1153,6 +1221,7 @@ fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             z,
             y: 0.0,
             phase,
+            canopy: 0,
             live: true,
         };
         let mut k = 0i32;
@@ -1167,7 +1236,88 @@ fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             k += 1;
         }
         if ok {
-            return Some(phase);
+            if let Some(canopy) = waystation_canopy_bearing(seed, x, z, phase) {
+                return Some((phase, canopy));
+            }
+        }
+    }
+    None
+}
+
+/// The first gap in the container pair the canopy can stand in, or `None` if
+/// the site cannot hold it at any of them.
+///
+/// `haven_shelter_bearing`'s three conditions with this tier's numbers — on
+/// land, off the carriageway, and in a scatter cell no container has taken —
+/// plus one this tier needs and the pad does not.
+///
+/// **The road test is the footprint's, not the anchor's.** The pad probes
+/// `road_band` at its shelter's center alone and gets away with it because
+/// `HAVEN_SHELTER_R_M` is 6.5 off a center whose ring is 10 m out: its
+/// structure is well inside a 32 m pad. Here the canopy stands 6.5 m off a
+/// center that IS the road's center line, on a bearing the ring chose and the
+/// road did not, so a center that reads `Off` can still be a 5.6 m eave lying
+/// across the carriageway at an angle. The road's width is measured radially
+/// from the island center (`road_band` normalizes exactly that vector), so
+/// the two extreme points across it are the center ± `WAYSTATION_CANOPY_R_M`
+/// along the radial — three taps, and they are the right three rather than a
+/// sample of a circle.
+///
+/// The fourth condition is the one that was missing when this shipped at the
+/// site center: `tests/road.rs` read 2 slots on the carriageway at every seed
+/// it swept, and `tests/waystation.rs` and `tests/scatter.rs` reported the
+/// same two from their own angles. `reference/SPAWN.md` §5: refuse the
+/// position, never patch the object.
+fn waystation_canopy_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
+    let probe = Waystation {
+        x,
+        z,
+        y: 0.0,
+        phase,
+        canopy: 0,
+        live: true,
+    };
+    let c = ISLAND_SIZE * 0.5;
+    let mut t = 0i32;
+    while t < WAYSTATION_CANOPY_TRIES {
+        let bearing = ((t as u32 * 256) / WAYSTATION_CRATES as u32
+            + phase as u32
+            + WAYSTATION_CANOPY_YAW_STEP as u32) as u8;
+        t += 1;
+        let (dx, dz) = crate::yaw_lut::yaw_dir((bearing as u16) << 8);
+        let kx = x + dx * WAYSTATION_CANOPY_OFF_M;
+        let kz = z + dz * WAYSTATION_CANOPY_OFF_M;
+        if height(seed, kx, kz) < LAND_MIN_H || road_band(seed, kx, kz) == RoadBand::Carriageway {
+            continue;
+        }
+        // The footprint's two extremes across the road's width. `d` is the
+        // radius the road's own normal is taken along; it cannot be zero on
+        // any site, because every candidate lies on the ring and the const
+        // block holds that ring's floor at `ROAD_R_MIN`.
+        let rx = kx - c;
+        let rz = kz - c;
+        let d = (rx * rx + rz * rz).sqrt();
+        let (ux, uz) = (rx / d, rz / d);
+        let e = WAYSTATION_CANOPY_R_M;
+        if road_band(seed, kx + ux * e, kz + uz * e) == RoadBand::Carriageway
+            || road_band(seed, kx - ux * e, kz - uz * e) == RoadBand::Carriageway
+        {
+            continue;
+        }
+        let kcx = (kx * (1.0 / CELL_SIZE)) as i32;
+        let kcz = (kz * (1.0 / CELL_SIZE)) as i32;
+        let mut k = 0i32;
+        let mut ok = true;
+        while k < WAYSTATION_CRATES {
+            let (ax, az, _) = waystation_crate(&probe, k);
+            if (ax * (1.0 / CELL_SIZE)) as i32 == kcx && (az * (1.0 / CELL_SIZE)) as i32 == kcz {
+                ok = false;
+                break;
+            }
+            k += 1;
+        }
+        if ok {
+            return Some(bearing);
         }
     }
     None
@@ -1319,6 +1469,34 @@ pub fn haven_shelter(haven: &Haven) -> (f32, f32, u8) {
     )
 }
 
+/// The canopy of a waystation: position and the yaw it faces, a pure
+/// function of the site exactly as `waystation_crate` is.
+///
+/// It stands in a gap in the container pair, `WAYSTATION_CANOPY_OFF_M` off
+/// the site center, on the bearing `waystation_canopy_bearing` accepted —
+/// beside the road rather than across it, with a cache to either side. The
+/// first draft stood it at the center and argued the center was what a
+/// two-anchor site needed; the center of a waystation is the middle of the
+/// road, and it put a 5.6 m structure on the carriageway at every seed.
+///
+/// **The yaw is the INWARD facing, back at the site center, exactly as
+/// `waystation_crate`'s and `haven_shelter`'s are.** One convention for all
+/// three, deliberately — `haven_shelter`'s doc records what the second one
+/// cost when this same structure shipped with an outward bearing in a field
+/// that expected a facing, and no type saw it because the arity was right and
+/// the field was right and the value meant something else. Since the gap is
+/// square to the pair, facing in means the parapet — the one solid side —
+/// faces neither cache, and both stand in an open bay.
+pub fn waystation_canopy(ws: &Waystation) -> (f32, f32, u8) {
+    let (dx, dz) = crate::yaw_lut::yaw_dir((ws.canopy as u16) << 8);
+    (
+        ws.x + dx * WAYSTATION_CANOPY_OFF_M,
+        ws.z + dz * WAYSTATION_CANOPY_OFF_M,
+        // Facing in: half a turn from the outward bearing it stands on.
+        ws.canopy.wrapping_add(128),
+    )
+}
+
 /// What a scatter cell holds (TERRAIN.md §1 stage 9's occupant list).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -1357,6 +1535,13 @@ pub enum Occupant {
     /// Content calls this one `cache` (`content/loot.toml`,
     /// `loot::LOOT_CACHE`); `web/src/props.js` index 11.
     CacheSlot = 11,
+    /// The greybox standing at a waystation's center — the lesser tier's
+    /// answer to `HavenShelter`, and deliberately not a smaller copy of it:
+    /// `WAYSTATION_CANOPY_BOXES` is an open canopy on four posts where the
+    /// pad's is a walled block with a tower, and the const block holds the
+    /// two apart. One slot, one structure, the same reasoning row 10 gives.
+    /// `web/src/props.js` index 12.
+    WaystationCanopy = 12,
 }
 
 const OCCUPANT_KINDS: usize = 7;
@@ -1503,6 +1688,27 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
         let wcz = (ws.z * (1.0 / CELL_SIZE)) as i32;
         if (cell_x - wcx).abs() > 1 || (cell_z - wcz).abs() > 1 {
             continue;
+        }
+        // The canopy ahead of the containers, the pad's ordering exactly and
+        // for the pad's reason: a cell holds one occupant, so if the two ever
+        // wanted the same one the loss has to fall on the thing a test
+        // COUNTS. `tests/waystation.rs` counts caches islandwide and would
+        // fail loudly; nothing counts a missing structure. The ordering picks
+        // which drop is audible, and `waystation_canopy_bearing` — which
+        // refuses a gap whose cell a container already holds — is what stops
+        // it happening at all.
+        let (kx, kz, kyaw) = waystation_canopy(ws);
+        if (kx * (1.0 / CELL_SIZE)) as i32 == cell_x && (kz * (1.0 / CELL_SIZE)) as i32 == cell_z {
+            return Slot {
+                occupant: Occupant::WaystationCanopy,
+                x: kx,
+                y: height(seed, kx, kz),
+                z: kz,
+                yaw: kyaw,
+                // Authored, not drawn — a structure is built, and a size
+                // wobble on one would read as scatter.
+                scale: 1.0,
+            };
         }
         let mut k = 0i32;
         while k < WAYSTATION_CRATES {
@@ -1950,6 +2156,90 @@ pub const SHELTER_CORNER_R_M: f32 = 4.9498;
 /// `props.js`'s `HAVEN_SHELTER_PEAK`, and `OCCUPANT_TOP_M`'s row 10.
 pub const SHELTER_PEAK_M: f32 = 9.2;
 
+/// The lesser tier's greybox, as a box list on `SHELTER_BOXES`' terms:
+/// `[cx, cy, cz, sx, sy, sz]`, center and full size, in the slot's own frame,
+/// y measured from the slot's ground. `web/src/props.js` holds the same nine
+/// rows as `WAYSTATION_CANOPY_PARTS` and `ci/waystation_canopy.mjs` refuses a
+/// drift between them.
+///
+/// **It is an open canopy because it must not be a second shelter.**
+/// `NOW.md` §4b states the rule — "a second copy of `HAVEN_SHELTER` makes the
+/// tiers look identical" — and a silhouette is what a player reads at 300 m,
+/// where a smaller copy of the same mass is not a second thing, it is the
+/// same thing nearer or further. So the two differ in the axis that survives
+/// distance rather than in size: the pad is an enclosed 7 m block with a
+/// tower to 9.2 m — a solid mass with a spire — and this is four thin posts
+/// under two stacked plates, 4.1 m at its finial, with no wall above knee
+/// height on three of its four sides. One is opaque and vertical; the other
+/// is transparent and horizontal. Nothing about them reads the same, and the
+/// const block below holds the numbers apart rather than the prose.
+///
+/// The deck's top is exactly 0.0 — flush with the slot's ground, not a
+/// plinth. `SHELTER_FLOOR_IX`'s doc records what the pad's 0.2 m step costs
+/// today: nothing makes a body stand on it, so it reads as a kerb a player
+/// sinks into, and the ground query that would fix it is the systems lane's
+/// `collide.rs`. Repeating a known defect at a second site to gain 0.1 m of
+/// visible edge is not a trade; the deck is a hardstanding, and on ground
+/// that is *found* flat rather than carved (TERRAIN.md §8, still unbuilt) it
+/// will show its rim on the low side anyway.
+pub const WAYSTATION_CANOPY_BOXES: [[f32; 6]; 9] = [
+    [0.0, -0.25, 0.0, 5.2, 0.5, 5.2], // deck — FLOOR, see WAYSTATION_CANOPY_FLOOR_IX
+    [-2.2, 1.5, -2.2, 0.36, 3.0, 0.36], // post-nw
+    [2.2, 1.5, -2.2, 0.36, 3.0, 0.36], // post-ne
+    [-2.2, 1.5, 2.2, 0.36, 3.0, 0.36], // post-sw
+    [2.2, 1.5, 2.2, 0.36, 3.0, 0.36], // post-se
+    [0.0, 0.55, -2.2, 4.4, 1.1, 0.36], // parapet — the one solid side, knee high
+    [0.0, 3.15, 0.0, 5.6, 0.3, 5.6],  // eave  — the wide lower plate
+    [0.0, 3.55, 0.0, 3.6, 0.5, 3.6],  // cap   — the narrow upper plate
+    [0.0, 3.95, 0.0, 0.5, 0.3, 0.5],  // finial
+];
+
+/// The deck's row. FLOOR, not wall, and the narrow phase skips it — the same
+/// exception `SHELTER_FLOOR_IX` carries and for the same reason, held to the
+/// same structural test by `boxes_floor_top_is_lowest_wall_bottom`.
+///
+/// It matters less here than at the pad, because a canopy with no walls
+/// cannot be sealed by its own floor. It is still marked, because "this box
+/// is the thing the posts stand on" is a claim the const block can check and
+/// a comment cannot.
+pub const WAYSTATION_CANOPY_FLOOR_IX: usize = 0;
+
+/// The parapet's row — the canopy's only solid side, and the only box in the
+/// table a standing body can be stopped by that is not a post. Named because
+/// the const block asserts its height, and an index written as `5` in an
+/// assert is a claim about whatever row 5 happens to be next week.
+pub const WAYSTATION_CANOPY_PARAPET_IX: usize = 5;
+
+/// Ceiling on the parapet's top, meters: what "the solid side is knee high"
+/// means as a number.
+///
+/// Derived from the body the sim already has rather than picked. A capsule is
+/// `collide::CAPSULE_HEIGHT_M` tall, and a wall a player can see over is one
+/// their eyes clear — so the bar is a fraction of that height, and the
+/// fraction is the one the pad's own geometry already states: the shelter's
+/// doorway is 2.4 m of opening under a 3.6 m wall, so two thirds of a
+/// dimension is what this building kit calls "open". Two thirds of 1.7 m is
+/// 1.133 m, and the parapet's 1.1 m top sits under it.
+///
+/// It is a wall, not a threshold: raise the parapet into something a body
+/// cannot see over and the canopy has become a shed, which is the one thing
+/// `NOW.md` §4b says it must not be, and the build stops here rather than in
+/// a frame. (knob, DECISIONS.md §open: waystation canopy v0.)
+pub const WAYSTATION_CANOPY_PARAPET_MAX_M: f32 = crate::collide::CAPSULE_HEIGHT_M * (2.0 / 3.0);
+
+/// Bounding radius of the canopy's boxes about the slot, meters — the broad
+/// phase before the nine-box loop, and `OCCUPANT_R_M`'s row 12.
+///
+/// The widest box is the 5.6 m eave, so this is its half-diagonal 2.8·√2 =
+/// 3.9598, rounded UP as `SHELTER_CORNER_R_M` is: erring outward costs one
+/// extra box loop, erring inward drops a post. The const block proves the
+/// rounding went the right way by squared compare.
+pub const WAYSTATION_CANOPY_R_M: f32 = 3.96;
+
+/// Height of the canopy's tallest point above its own ground, meters —
+/// `props.js`'s `WAYSTATION_CANOPY_PEAK`, and `OCCUPANT_TOP_M`'s row 12.
+pub const WAYSTATION_CANOPY_PEAK_M: f32 = 4.1;
+
 /// `|v|` in a const context, which `f32::abs` is not. Sign flip only — no
 /// libm, nothing outside the L1 float set.
 const fn abs_const(v: f32) -> f32 {
@@ -1958,6 +2248,68 @@ const fn abs_const(v: f32) -> f32 {
     } else {
         v
     }
+}
+
+// The three rules every greybox box-list obeys, written once and applied to
+// each table by the const block below. Shared rather than copied per table
+// on purpose: these are not a tier's *design*, which is allowed to diverge
+// (`waystation_ring_phase`'s doc says why the placement searches are not
+// shared), they are what makes a list of six floats a building at all. A
+// second table that got its own copy of these loops would be checked by
+// whatever the copy happened to say, which is how the second one drifts.
+
+/// Distance between the floor box's top and the lowest bottom of every other
+/// box, meters. Zero means the walls stand ON the floor — the structural form
+/// of the floor exception, and the reason it cannot silently widen onto a
+/// wall. Also asserts, in passing, that every box has positive size in all
+/// three axes, because a box that does not is not one.
+const fn boxes_floor_gap(boxes: &[[f32; 6]], floor_ix: usize) -> f32 {
+    let floor_top = boxes[floor_ix][1] + boxes[floor_ix][4] * 0.5;
+    let mut lowest_wall = f32::MAX;
+    let mut b = 0;
+    while b < boxes.len() {
+        assert!(boxes[b][3] > 0.0 && boxes[b][4] > 0.0 && boxes[b][5] > 0.0);
+        if b != floor_ix {
+            let bottom = boxes[b][1] - boxes[b][4] * 0.5;
+            if bottom < lowest_wall {
+                lowest_wall = bottom;
+            }
+        }
+        b += 1;
+    }
+    abs_const(floor_top - lowest_wall)
+}
+
+/// True if `r` really does contain every box's far corner — the broad phase
+/// rejecting nothing the narrow phase would have accepted. Squared, because
+/// `sqrt` is not const, and because the squared form is the acceptance test
+/// rather than an optimization of one (`reference/SPAWN.md` §9.4).
+const fn boxes_corner_fits(boxes: &[[f32; 6]], r: f32) -> bool {
+    let mut c = 0;
+    while c < boxes.len() {
+        let ex = abs_const(boxes[c][0]) + boxes[c][3] * 0.5;
+        let ez = abs_const(boxes[c][2]) + boxes[c][5] * 0.5;
+        if ex * ex + ez * ez > r * r {
+            return false;
+        }
+        c += 1;
+    }
+    true
+}
+
+/// The tallest box's top — so a published peak is a measurement of the table
+/// and not a number standing beside it.
+const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
+    let mut peak = 0.0f32;
+    let mut p = 0;
+    while p < boxes.len() {
+        let top = boxes[p][1] + boxes[p][4] * 0.5;
+        if top > peak {
+            peak = top;
+        }
+        p += 1;
+    }
+    peak
 }
 
 /// Blocking radius per `Occupant`, meters, at a slot `scale` of 1.0.
@@ -1969,7 +2321,7 @@ const fn abs_const(v: f32) -> f32 {
 /// outward blocks a little air at a dodecahedron's flats; erring inward is
 /// the bug. (knob, DECISIONS.md §open: occupant volume v0.)
 ///
-/// Indexed by `Occupant as usize`, so the array is 11 long and two entries
+/// Indexed by `Occupant as usize`, so the array is 13 long and three entries
 /// are structural rather than tuned:
 ///
 /// - **8 is the client's felled-pine stump**, which is not a sim occupant at
@@ -1982,6 +2334,10 @@ const fn abs_const(v: f32) -> f32 {
 ///   entrance or blocks nothing. This row is the bounding circle that rejects
 ///   the fourteen-box loop cheaply, so it is the only row that is deliberately
 ///   wider than what it blocks: inside it, `slot_blocks` asks the boxes.
+/// - **12, the waystation canopy, is the same** — a broad phase over
+///   `WAYSTATION_CANOPY_BOXES`. Four posts and two overhead plates are even
+///   less like a cylinder than the shelter is: the disc a radius would block
+///   is almost entirely the open bays between the posts.
 ///
 /// The bush is the third zero and the only one that is a design call: a bush
 /// you cannot push through is a wall you cannot see over, which is worse than
@@ -1995,7 +2351,7 @@ const fn abs_const(v: f32) -> f32 {
 /// asserts below prove only that this file agrees with itself. The gate found
 /// the `CrateSlot` row inward: it read 0.68 against a measured half-diagonal
 /// of 0.680074, which is the bug this doc names, so it is 0.6801 now.
-pub const OCCUPANT_R_M: [f32; 12] = [
+pub const OCCUPANT_R_M: [f32; 13] = [
     0.0,                // None
     0.26,               // Tree — the TRUNK, not the canopy: `CylinderGeometry(0.13, 0.26)`
     1.0,                // StoneNode  — DodecahedronGeometry(1.0)
@@ -2008,6 +2364,10 @@ pub const OCCUPANT_R_M: [f32; 12] = [
     0.6801,             // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
     SHELTER_CORNER_R_M, // HavenShelter — broad phase; SHELTER_BOXES is the volume
     0.5701,             // CacheSlot — BoxGeometry(0.9, 0.55, 0.7) half-diagonal, 0.45/0.35 in xz
+    // WaystationCanopy — broad phase, like row 10; WAYSTATION_CANOPY_BOXES is
+    // the volume. A canopy is the other shape a radius cannot express: a
+    // cylinder here would seal four open bays a player is meant to walk into.
+    WAYSTATION_CANOPY_R_M,
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -2024,7 +2384,7 @@ pub const OCCUPANT_R_M: [f32; 12] = [
 /// canopy, and a body is 1.7 m against a 5.7 m trunk, so the distinction
 /// costs nothing today and is the correct shape when something flies or a
 /// tree falls. (knob, DECISIONS.md §open: occupant volume v0.)
-pub const OCCUPANT_TOP_M: [f32; 12] = [
+pub const OCCUPANT_TOP_M: [f32; 13] = [
     0.0,            // None
     5.7,            // Tree — PINE_TRUNK_H
     1.5,            // StoneNode  — lift 0.5 + radius 1.0
@@ -2037,6 +2397,10 @@ pub const OCCUPANT_TOP_M: [f32; 12] = [
     0.8,            // CrateSlot — lift 0.4 + half-height 0.4
     SHELTER_PEAK_M, // HavenShelter — tower-cap at 9.0 + 0.2
     0.55,           // CacheSlot — lift 0.275 + half-height 0.275
+    // WaystationCanopy — the finial's top at 3.95 + 0.15. The plates
+    // overhead are inside this interval and a standing body is not; the box
+    // loop is what lets a player walk under them.
+    WAYSTATION_CANOPY_PEAK_M,
 ];
 
 /// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
@@ -2096,6 +2460,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::CrateSlot => (0.6801, 0.8),
         Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
         Occupant::CacheSlot => (0.5701, 0.55),
+        Occupant::WaystationCanopy => (WAYSTATION_CANOPY_R_M, WAYSTATION_CANOPY_PEAK_M),
     }
 }
 
@@ -2104,7 +2469,7 @@ const _: () = {
     // than looped because a loop would need the variant list this file is
     // trying not to keep twice; here the compiler checks the pairing and the
     // match checks the completeness.
-    assert!(OCCUPANT_R_M.len() == 12 && OCCUPANT_TOP_M.len() == 12);
+    assert!(OCCUPANT_R_M.len() == 13 && OCCUPANT_TOP_M.len() == 13);
     // Index 8 is the client's stump and has no variant, so it is the one row
     // the match cannot speak for; it is a hole and stays zero.
     assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);
@@ -2119,6 +2484,7 @@ const _: () = {
     assert!(occupant_volume(Occupant::CrateSlot).0 == OCCUPANT_R_M[9]);
     assert!(occupant_volume(Occupant::HavenShelter).0 == OCCUPANT_R_M[10]);
     assert!(occupant_volume(Occupant::CacheSlot).0 == OCCUPANT_R_M[11]);
+    assert!(occupant_volume(Occupant::WaystationCanopy).0 == OCCUPANT_R_M[12]);
     assert!(occupant_volume(Occupant::None).1 == OCCUPANT_TOP_M[0]);
     assert!(occupant_volume(Occupant::Tree).1 == OCCUPANT_TOP_M[1]);
     assert!(occupant_volume(Occupant::StoneNode).1 == OCCUPANT_TOP_M[2]);
@@ -2130,6 +2496,7 @@ const _: () = {
     assert!(occupant_volume(Occupant::CrateSlot).1 == OCCUPANT_TOP_M[9]);
     assert!(occupant_volume(Occupant::HavenShelter).1 == OCCUPANT_TOP_M[10]);
     assert!(occupant_volume(Occupant::CacheSlot).1 == OCCUPANT_TOP_M[11]);
+    assert!(occupant_volume(Occupant::WaystationCanopy).1 == OCCUPANT_TOP_M[12]);
     // The lesser tier's container is the lesser silhouette, and it is a
     // structural claim rather than a taste one: the two tiers must be
     // distinguishable at the range either is legible from, and a player who
@@ -2144,50 +2511,44 @@ const _: () = {
     // it" means as a number. Thicken the plinth into something a body should
     // meet and it stops being the floor line, and this stops the build
     // rather than silently sealing the doorway from outside.
-    let floor_top = SHELTER_BOXES[SHELTER_FLOOR_IX][1] + SHELTER_BOXES[SHELTER_FLOOR_IX][4] * 0.5;
-    let mut lowest_wall = f32::MAX;
-    let mut b = 0;
-    while b < SHELTER_BOXES.len() {
-        // Every box has positive size in all three axes, or it is not a box.
-        assert!(
-            SHELTER_BOXES[b][3] > 0.0 && SHELTER_BOXES[b][4] > 0.0 && SHELTER_BOXES[b][5] > 0.0
-        );
-        if b != SHELTER_FLOOR_IX {
-            let bottom = SHELTER_BOXES[b][1] - SHELTER_BOXES[b][4] * 0.5;
-            if bottom < lowest_wall {
-                lowest_wall = bottom;
-            }
-        }
-        b += 1;
-    }
     // Tolerance because the two sides are different float paths to the same
     // 0.2 m (`-0.6 + 1.6/2` against `2.0 - 3.6/2`), not because the rule is
     // approximate: 0.1 mm is four orders below the centimetres any real edit
     // to the plinth or the wall base would move it.
-    assert!(abs_const(floor_top - lowest_wall) < 1.0e-4);
+    assert!(boxes_floor_gap(&SHELTER_BOXES, SHELTER_FLOOR_IX) < 1.0e-4);
+    assert!(boxes_corner_fits(&SHELTER_BOXES, SHELTER_CORNER_R_M));
+    assert!(boxes_peak(&SHELTER_BOXES) == SHELTER_PEAK_M);
 
-    // The published radius really does contain every box's far corner, and
-    // the rounding went OUTWARD. Squared, because `sqrt` is not const — and
-    // because the squared form is the acceptance test rather than an
-    // optimization of one (`reference/SPAWN.md` §9.4).
-    let mut c = 0;
-    while c < SHELTER_BOXES.len() {
-        let ex = abs_const(SHELTER_BOXES[c][0]) + SHELTER_BOXES[c][3] * 0.5;
-        let ez = abs_const(SHELTER_BOXES[c][2]) + SHELTER_BOXES[c][5] * 0.5;
-        assert!(ex * ex + ez * ez <= SHELTER_CORNER_R_M * SHELTER_CORNER_R_M);
-        c += 1;
-    }
-    // And the peak is the tallest box's top, not a number beside it.
-    let mut peak = 0.0f32;
-    let mut p = 0;
-    while p < SHELTER_BOXES.len() {
-        let top = SHELTER_BOXES[p][1] + SHELTER_BOXES[p][4] * 0.5;
-        if top > peak {
-            peak = top;
-        }
-        p += 1;
-    }
-    assert!(peak == SHELTER_PEAK_M);
+    // --- the canopy's boxes, on exactly the same three rules --------------
+    assert!(boxes_floor_gap(&WAYSTATION_CANOPY_BOXES, WAYSTATION_CANOPY_FLOOR_IX) < 1.0e-4);
+    assert!(boxes_corner_fits(
+        &WAYSTATION_CANOPY_BOXES,
+        WAYSTATION_CANOPY_R_M
+    ));
+    assert!(boxes_peak(&WAYSTATION_CANOPY_BOXES) == WAYSTATION_CANOPY_PEAK_M);
+
+    // The two tiers are different SHAPES, not one shape at two sizes, and
+    // that is the whole point of the second table (`NOW.md` §4b). Scaling
+    // alone would satisfy any per-table check above, so the difference is
+    // asserted between them: the canopy is under half the pad's height, and
+    // it is WIDER relative to its own height than the pad is — squat against
+    // tall, which is the comparison a silhouette at distance actually makes.
+    // Shrink this into a small shelter and the build stops here.
+    assert!(WAYSTATION_CANOPY_PEAK_M * 2.0 < SHELTER_PEAK_M);
+    assert!(WAYSTATION_CANOPY_R_M * SHELTER_PEAK_M > SHELTER_CORNER_R_M * WAYSTATION_CANOPY_PEAK_M);
+    // And it is genuinely open: the pad's walls reach the roof, so no box of
+    // it clears a standing body, while the canopy's one solid side stops
+    // where a player can still see over it and everything above head height
+    // is plate. The number is the parapet's top against a bar derived from
+    // the body (`WAYSTATION_CANOPY_PARAPET_MAX_M`);
+    // `tests/solid.rs::a_body_walks_under_the_canopy_and_the_parapet_stops_it`
+    // walks a body through the gap this leaves rather than trusting the
+    // arithmetic, and stops it on the parapet in the same test.
+    assert!(
+        WAYSTATION_CANOPY_BOXES[WAYSTATION_CANOPY_PARAPET_IX][1]
+            + WAYSTATION_CANOPY_BOXES[WAYSTATION_CANOPY_PARAPET_IX][4] * 0.5
+            < WAYSTATION_CANOPY_PARAPET_MAX_M
+    );
 
     // A volume is a radius AND a height, or it is neither. A radius with no
     // height is a body that stops at nothing; a height with no radius is a
@@ -2261,23 +2622,52 @@ pub fn slot_blocks(
     if dx * dx + dz * dz >= reach * reach {
         return false;
     }
-    if slot.occupant == Occupant::HavenShelter {
-        return shelter_blocks(slot, dx, dz, feet_y, capsule_r, capsule_h);
+    match slot.occupant {
+        Occupant::HavenShelter => boxes_block(
+            slot,
+            &SHELTER_BOXES,
+            SHELTER_FLOOR_IX,
+            dx,
+            dz,
+            feet_y,
+            capsule_r,
+            capsule_h,
+        ),
+        Occupant::WaystationCanopy => boxes_block(
+            slot,
+            &WAYSTATION_CANOPY_BOXES,
+            WAYSTATION_CANOPY_FLOOR_IX,
+            dx,
+            dz,
+            feet_y,
+            capsule_r,
+            capsule_h,
+        ),
+        _ => true,
     }
-    true
 }
 
-/// The fourteen-box narrow phase, called only after the shelter's bounding
-/// circle has already accepted. `dx`/`dz` are the query's offset from the
-/// slot in WORLD axes; this rotates them into the building's frame.
+/// The box-list narrow phase, called only after a greybox's bounding circle
+/// has already accepted. `dx`/`dz` are the query's offset from the slot in
+/// WORLD axes; this rotates them into the building's frame.
+///
+/// Takes the table rather than naming one, because there are two now and the
+/// rule they are read by is the same rule — the shelter's doorway and the
+/// canopy's open bays are the identical predicate over different rows. A
+/// second copy of this loop for the second table would be a second chance to
+/// get the frame conversion wrong, which is the failure this whole shape
+/// already had once (`haven_shelter`'s yaw, shipped wrong).
 ///
 /// The horizontal test is a cylinder against an axis-aligned rectangle done
 /// the exact way — clamp the point into the rectangle and measure to the
 /// clamped point — rather than by growing the rectangle by `capsule_r`, which
 /// would round the corners the wrong way and stop a body that is diagonally
 /// past a jamb. Squared throughout, so there is still no `sqrt` on the path.
-fn shelter_blocks(
+#[allow(clippy::too_many_arguments)]
+fn boxes_block(
     slot: &Slot,
+    boxes: &[[f32; 6]],
+    floor_ix: usize,
     dx: f32,
     dz: f32,
     feet_y: f32,
@@ -2293,9 +2683,9 @@ fn shelter_blocks(
 
     let head_y = feet_y + capsule_h;
     let mut i = 0;
-    while i < SHELTER_BOXES.len() {
-        let b = &SHELTER_BOXES[i];
-        let is_floor = i == SHELTER_FLOOR_IX;
+    while i < boxes.len() {
+        let b = &boxes[i];
+        let is_floor = i == floor_ix;
         i += 1;
         if is_floor {
             continue; // floor, not wall — see SHELTER_FLOOR_IX
