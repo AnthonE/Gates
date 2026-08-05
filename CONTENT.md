@@ -33,7 +33,11 @@
   weak-spot bonus
 - **recipe**: output, station (`none|workbench1|furnace`), inputs, seconds
 - **building_piece**: shape (foundation/wall/doorway/floor/stairs/roof/
-  door), per-material hp + upgrade cost (wood→stone→metal)
+  door), per-material hp + upgrade cost (wood→stone→metal). One `cost` row
+  serves three verbs: build it, upgrade into it, and **mend it** — a repair
+  is charged that cost pro-rata against the hp being restored, scaled by
+  `globals.repair_cost_pct` (100 = the damage's worth exactly, validated
+  1..=100), rounded up and floored at one unit so no repair is ever free.
 - **weapon**: kind (`melee|bow|firearm|throwable`), damage, headshot ×,
   rate, range falloff curve, ballistic (speed, drop) or hitscan, ammo id
 - **armor**: slot, damage reduction %, movement penalty

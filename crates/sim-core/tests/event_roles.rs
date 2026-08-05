@@ -90,8 +90,8 @@ use sim_core::terrain;
 use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_BAG_DROPPED, EV_CONSUMED, EV_CONSUME_REFUSED,
     EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT,
-    EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_SLOT_HARVESTED,
-    EV_STOCK, EV_STRUCT_HIT, EV_VITALS, STRUCT_DEPLOY_BIT,
+    EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED,
+    EV_SLOT_HARVESTED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -1303,6 +1303,107 @@ fn struct_hit_names_the_cell_then_the_address_then_damage_over_hp_left() {
     );
 }
 
+/// `EV_PIECE_REPAIRED: a = build cell key, b = level << 16 | loc << 8 |
+/// row, c = healed << 16 | hp now`.
+///
+/// `EV_STRUCT_HIT` read backwards, and checked against the same wall for
+/// exactly that reason: the two events describe one number moving in two
+/// directions, and if their `c` halves ever disagreed on which end is
+/// which, a client would draw a repaired wall as a damaged one. So this
+/// asserts the *shape agreement* as well as the positions — `healed` sits
+/// where `damage` sits, `hp now` where `left` does.
+///
+/// The reversal is the expensive swap here. `healed << 16 | hp` flipped
+/// draws a wall dropping to the size of its own repair the moment it is
+/// paid for, which reads as a bug in the repair verb rather than in the
+/// event, and would be chased in the wrong file.
+///
+/// The wall is damaged by a real raid rather than a poked store, and the
+/// hp before the repair is read out of the store rather than assumed, so
+/// however many swings the raid took to land the fixture still knows what
+/// the payment was owed to buy back.
+#[test]
+fn piece_repaired_names_the_cell_then_the_address_then_healed_over_hp() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    place_piece(&mut w, PIECE_WALL, cx, cz, GROUND, PIECE_EDGE);
+    raid_until(&mut w, cx, cz, EV_STRUCT_HIT);
+
+    // Let go of the swing first. Held, the button lands another hit on the
+    // same tick the repair is applied, and the fixture would be arguing
+    // with itself over what the wall's hp was when it was paid for.
+    w.tick(&[Command::Input {
+        id: BUILDER,
+        frame: InputFrame {
+            seq: u16::MAX,
+            buttons: 0,
+            yaw: RAID_YAW,
+            pitch: 128,
+            move_x: 0,
+            move_z: 0,
+            sel: 0,
+        },
+    }]);
+    let hurt = w
+        .pieces
+        .find(cx, cz, GROUND, PIECE_EDGE)
+        .expect("the raided wall still stands")
+        .hp as u32;
+    assert!(
+        hurt > 0 && hurt < WALL_HP,
+        "the fixture must hand the repair a wall that is damaged and \
+         standing, not one at {hurt} of {WALL_HP}"
+    );
+    w.tick(&[Command::Repair {
+        id: BUILDER,
+        cx,
+        cz,
+        level: GROUND,
+        loc: PIECE_EDGE,
+    }]);
+
+    let r = only(&w, EV_PIECE_REPAIRED);
+    distinct3(r, "EV_PIECE_REPAIRED");
+    let (level, loc, row) = unpack(r.b);
+    distinct_triple(level, loc, row, "EV_PIECE_REPAIRED.b");
+    distinct_halves(r.c, "EV_PIECE_REPAIRED.c (healed over hp now)");
+    distinct_halves(r.a, "EV_PIECE_REPAIRED.a (the cell key)");
+
+    assert_eq!(
+        r.a,
+        cell_key(cx, cz),
+        "EV_PIECE_REPAIRED.a is the CELL KEY, not the payer — it is \
+         broadcast, and the id of whoever paid is not what an onlooker \
+         needs to redraw a wall"
+    );
+    assert_eq!(
+        level, GROUND as u32,
+        "EV_PIECE_REPAIRED.b's high field is LEVEL"
+    );
+    assert_eq!(
+        loc, PIECE_EDGE as u32,
+        "EV_PIECE_REPAIRED.b's middle field is LOC"
+    );
+    assert_eq!(
+        row, PIECE_WALL as u32,
+        "EV_PIECE_REPAIRED.b's low field is the piece ROW"
+    );
+    assert_eq!(
+        r.c >> 16,
+        WALL_HP - hurt,
+        "EV_PIECE_REPAIRED.c's HIGH half is what the payment HEALED, the \
+         same seat EV_STRUCT_HIT.c gives the damage dealt"
+    );
+    assert_eq!(
+        r.c & 0xffff,
+        WALL_HP,
+        "EV_PIECE_REPAIRED.c's LOW half is the hp the piece stands at NOW, \
+         the same seat EV_STRUCT_HIT.c gives the hp left — reversed, a \
+         repaired wall appears to shrink to the size of its own repair"
+    );
+}
+
 /// The deployable half of the same code, and the bit that tells the two
 /// apart.
 ///
@@ -1603,7 +1704,7 @@ fn move_refused_names_the_reason_then_the_address() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [u8; 19] = [
+    const COVERED: [u8; 20] = [
         EV_GATHER,
         EV_SLOT_HARVESTED,
         EV_HIT,
@@ -1623,6 +1724,7 @@ fn coverage_is_stated_not_implied() {
         EV_DEPLOY_REMOVED,
         EV_MOVED,
         EV_MOVE_REFUSED,
+        EV_PIECE_REPAIRED,
     ];
     /// What is knowingly still byte-golden only. Change this number in the
     /// same commit that changes `COVERED`, never on its own.

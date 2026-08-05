@@ -282,6 +282,10 @@ pub struct Globals {
     pub farm_per_min: BTreeMap<String, u32>,
     pub component_minutes: BTreeMap<String, u32>,
     pub upkeep_pct_per_day: u32,
+    /// Repair price as a percent of the pro-rata share of the piece's own
+    /// build cost (100 = the damage's worth exactly). Percent so the file
+    /// stays integer-only, like `raid_ratio_stone_pct`.
+    pub repair_cost_pct: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
