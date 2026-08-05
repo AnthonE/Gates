@@ -15,6 +15,34 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0 · Half the verbs you own are undiscoverable — *(ui lane; compass done this pass)*
+
+From the judge's **ranked gap 3**, `pass-20260805-063306-01-judge.md`. NOW.md
+held no open ui-lane item, so the gap list supplied this one. Two halves:
+
+- **A bearing readout — DONE.** Compass strip, top centre, `hud.js` +
+  `index.html`. `ui_smoke` 442 → 507 checks (§S/§T); nine mutants red.
+  **+Z is North, +X is East** — `DECISIONS.md` §open has the row and the
+  conflict it resolves against `build.rs`'s `LOC_EDGE_N`.
+- **The build prompt — still open, and it is the judge's ranked fix 2.**
+  `interact.js:64-72` resolves `VERB_DOOR`/`BAG`/`BOX`/`HEARTH` and no place
+  verb, so the placement preview exists only for someone who has read
+  `main.js`. Squarely ui-lane; not started.
+
+Two things the compass could not carry, both needing another lane:
+
+- **Systems lane, one export please:** the haven pad centre is not reachable
+  client-side. `terrain::haven(seed)` is pure and `bridge.rs:92` already
+  memoizes it, but nothing returns it — no getter beside `terrain_fill_slots`.
+  One export and the pad can carry a compass marker; the judge's gap named
+  the pad as the destination nobody can find.
+- **A marker is a design call, not just an export.** `showDeath` states the
+  standing rule (`ALPHA.md` §1, "no map position") and it is about the death
+  screen, not the HUD — but a pad marker is close enough to it that an
+  operator word is cheaper than a pass spent guessing.
+
+---
+
 ## 1 · The client is becoming a native Rust desktop app
 
 *(Operator, 2026-08-05. `DECISIONS.md` has the row. This outranks the
