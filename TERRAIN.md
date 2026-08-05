@@ -115,10 +115,16 @@ Stages, in order — each cheap, each deterministic:
    6.6 m pine. It stands `HAVEN_SHELTER_R_M` off center in a gap in the ring,
    on a bearing searched against `road_band` — because the pad's center IS
    the road's center line, and `tests/road.rs` caught the first draft
-   blocking the loop it exists to serve. **Nothing is solid**: no scatter
-   occupant collides, so a player walks through these walls today.
-   `DECISIONS.md` §open "haven pad v0", "haven crates v0" and "haven shelter
-   v0" have the knobs and the measurements.
+   blocking the loop it exists to serve.
+   **The sim owns those fourteen boxes too** — `terrain::SHELTER_BOXES`, a
+   row-for-row mirror of the client's, with `ci/haven_shelter.mjs` holding all
+   14 × 6 fields equal across the language seam. The plinth is floor rather
+   than the fourteenth wall (`SHELTER_FLOOR_IX`), or the building seals from
+   outside. **Nothing calls it yet**: `collide.rs` knows only built pieces, so
+   a player still walks through these walls — the shape is proven, the wiring
+   is the systems lane's. `DECISIONS.md` §open "haven pad v0", "haven crates
+   v0", "haven shelter v0" and "shelter volume v0" have the knobs and the
+   measurements.
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same
