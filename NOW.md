@@ -4,6 +4,42 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+> **Cross-lane request, systems lane: nothing in the world is solid.**
+> `collide.rs` knows only built pieces — `blocked`/`piece_ground` take a
+> `ColIndex` and never a `Slot`. So a player walks through every tree, boulder,
+> barrel and now through the haven shelter's walls. The world lane can place a
+> building but cannot make you stop at it. One entry point would do it: a
+> `terrain`-side occupant query the movement path can call, owned by systems
+> because `movement.rs` and `collide.rs` are theirs.
+
+## world: the pad has a building on it, and it is hollow in two senses
+
+From `findings/pass-20260805-002720-01-judge.md` ranked gap 3 — the authored
+clearing stopped reading as authored once scatter clumping made empty forest
+windows ordinary, and the gap's own fix was "the greybox, gated as arithmetic".
+Landed: `Occupant::HavenShelter = 10`, one slot carrying a fourteen-box
+structure (6.2 m room, 2.4 x 2.8 m doorway, tower to 9.2 m over a 6.6 m pine),
+placed `HAVEN_SHELTER_R_M` off the pad center by a bounded search against
+`road_band` — the pad's center is the carriageway, and `tests/road.rs` caught
+the first draft blocking the loop. Gated by `tests/haven.rs` (9 tests) and
+`ci/haven_shelter.mjs` (40 checks, doorway passability asserted in both
+directions). `DECISIONS.md` §open "haven shelter v0" has the rest.
+
+What remains, in the order it is worth doing:
+
+- **It is not solid.** See the cross-lane request above. A structure you walk
+  through is a silhouette, not a place, and that half is not this lane's.
+- **Nobody has looked at it.** No frame has been captured since it landed; the
+  claim "a player can tell they arrived" rests on arithmetic alone. The lane
+  charter says to say so when the item flips from "is there a world here" to
+  "does it look right" — placing a building is the flip. **This lane wants
+  frames again.**
+- **Interior is empty.** The five containers stand outside the walls, on the
+  ring they were already on. Putting some inside is a `haven_crate` change and
+  would move a measured prize ratio; it needs its own pass.
+- The pad is still not carved (3.76 m of relief under a flat-based building —
+  the plinth buries 1.4 m of that, which is a cover, not a fix).
+
 > **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the
 > world lane's to make.** `ci/gates.sh` went RED then GREEN on an unchanged
 > tree on 2026-08-04. Both runs ran the same 289 tests with 0 failures and the

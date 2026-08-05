@@ -204,6 +204,15 @@ $NICE npm --prefix web run build || fail "vite build"
 echo "== gate: pine shape (silhouette counts + the SPAWN_CLEAR_M coupling)"
 $NICE node ci/pine_shape.mjs || fail "pine shape"
 
+# The haven pad's greybox, same standard and same reason it sits here: it
+# imports the shipped box list out of `web/src/props.js`. Three claims no
+# `cargo test` can reach, because they straddle the Rust/JS line — the mesh
+# fits the slot `HAVEN_SHELTER_HALF_M` reserved, the doorway is passable and
+# the walls enclose something (asserted in both directions), and the peak
+# clears a full-scale pine. Arithmetic over a box list: no GPU, no shard.
+echo "== gate: haven shelter (the greybox fits the slot sim-core placed)"
+$NICE node ci/haven_shelter.mjs || fail "haven shelter"
+
 # The interaction surface: a real browser, no renderer. Sits in the CODE tier
 # because it costs under a second — it renders no frames, creates no WebGL
 # context, loads no wasm and starts no shard, so none of what makes the two
