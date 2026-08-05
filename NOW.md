@@ -15,38 +15,77 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0d · A piece's hp, client side — three reads, all wrong *(ui lane — done this pass)*
+## 0c3 · RECOVERY (systems lane): the same red, and it was propagation *(done this pass)*
 
-Gap pass. Ranked gap **3** of `findings/pass-20260805-074623-04-judge.md`
-(and gap **1** of `-03`): the sim half of a base's life story landed and the
-player-facing half did not. This is that half, as far as `web/` can carry it.
+`ci/gates.sh` was red on this lane's clean tree at `ui smoke`, same assertion in
+both health runs, so not a flake. **The code was wrong and was already fixed** —
+the ui lane landed the sentence in `b2a48bc`, judged PASS, and it was in `main`
+before this pass started. `lane/systems` had simply not taken `main` since. So
+this lane's red was *propagation lag, not a second defect*, and the fix was to
+take `main` into the branch. Nothing reverted, nothing lost, and the ui lane's
+wording ("cannot be repaired") is not forked — duplicating it here with a
+different sentence is what would have conflicted.
 
-Three defects, all found by reading, all in `main.js` — the one file no gate
-here can execute:
+The standing hazard, which is this lane's to carry: **growing `REFUSE_B_*` is a
+two-file act and the second file is `web/`, which this lane may not touch.**
+`ui_smoke` §W walks the constants against `interact.js`, so a sim commit that
+adds a reason reddens *every* lane until the client half lands. Twice now (9,
+then 10). `build.rs` now says so at the constants themselves; the durable fix,
+if one is wanted, is a spoken call on whether the sentence table should be
+generated rather than mirrored — not invented here.
 
-- **U was dead.** `nearestPiece` read `bestD = REACH * REACH` against a `REACH`
-  declared nowhere in the repo, so it threw a `ReferenceError` on its first
-  line and upgrade had never worked from the browser. A free variable is not a
-  syntax error, so the bundle built clean.
-- **A repair announced itself as a raid.** `PieceRepaired` raises
-  `APPLIED_STRUCT_HIT` too; only a hit also raises `APPLIED_HIT`. `core.rs:98`
-  says so in prose and the one reader checked one bit, so mending a wall
-  toasted `breaching 750/750`.
-- **`BUILD_REFUSE_TEXT` was one short** — `REFUSE_B_INTACT` (9) reached the
-  player as `can't build: code 9`, the likeliest repair refusal there is.
+**Expect next:** nothing was masked in the code tier — `ui smoke` is its last
+gate, so the green below is the whole tier. The renderer tier (`browser smoke`,
+`vantages`) has NOT run: tier `fast` for this whole run, and `browser_smoke` is
+off by operator act. If either is red it is still red, and an `all` run is where
+that surfaces.
 
-The fix and the gate are one move: the anchor, the scan, the table and the
-discriminator are now in `interact.js`, which node calls for real (§W, 1468 →
-1530 checks). `main.js` also gets a free-variable scan — the class, not the
-instance, and it needed a real character-walking stripper: the regex draft
-went blind past `` `can't build:` ``'s apostrophe and M26 survived it.
-**All 21 mutants run, all 21 red** — which also closes `-04`'s ranked fix 3,
-where 7 of 12 had never been executed.
+## 0c · RECOVERY: the refusal table fell one short again *(ui lane — done this pass)*
 
-**Not done, and it is the point of the item:** nothing can still *send* a
-repair. `client_action_repair` is not exported from the wasm bridge, so the
-key has nothing to call — see §0e. Untested on a live shard: no client sent a
-repair, and `browser_smoke` was off this run.
+`ci/gates.sh` was red on a clean tree at `ui smoke`: `build.rs` declares 11
+`REFUSE_B_*` reasons and `interact.js` carried 10 sentences. The CODE was
+wrong, not the gate — `REFUSE_B_UNPRICED` (10) landed from the sim lane in
+`65e5110` and this lane's table stayed where it was, so a repair refused on a
+piece whose baked row quotes no price would have reached the player as
+`code 10`. Fixed by adding the sentence ("cannot be repaired"); nothing was
+reverted and nothing was lost.
+
+Worth recording because the gate is now two-for-two on the same class: §W was
+written when `REFUSE_B_INTACT` (9) shipped as a bare number, and it caught the
+very next reason the sim grew, on the run that grew it. A count in prose rots
+the same way — `promptForBuild`'s comment said "nine reasons" and now names no
+number.
+
+**Nothing was masked behind it.** `ui smoke` is the last gate in the code tier,
+so the green run below it is the whole tier, not a fresh first-red. What has
+NOT run is the renderer tier (`browser smoke`, `vantages`) — off for this whole
+run at tier `fast`, not skipped by this pass. If either is red it is still
+red, and the next `all` run is where that shows up.
+
+## 0c2 · The same bug, one file over: `DEPLOY_REFUSE_TEXT` *(ui lane)*
+
+Found while scanning `65e5110` for other unmirrored constants, not built —
+§0c was a recovery pass and this is a feature-shaped fix.
+
+`main.js:160` holds `DEPLOY_REFUSE_TEXT`, 13 entries against `deploy.rs`'s
+`REFUSE_D_KIND`(0)…`REFUSE_D_OWNER`(12). It matches *today*. It is also a
+module-private `const` in `main.js`, so `ui_smoke` cannot import it and no
+gate walks it — which is verbatim the condition `interact.js:736` describes
+as the reason the build table had to move: "cannot live as a bare array in
+`main.js` where nothing can walk it". A fourteenth `REFUSE_D_*` reaches the
+player as `can't place: code 13` (`main.js:1260`), and §0c is the proof that
+the sim does grow these.
+
+The fix is the one already paid for: move the table to `interact.js`, export
+it, and extend `ui_smoke` §W's walk to parse `REFUSE_D_*` out of `deploy.rs`
+the way it parses `REFUSE_B_*` out of `build.rs`. Same shape for
+`main.js:151`'s `REFUSE_TEXT` (5, vs `craft.rs`) and `:57`'s
+`REFUSE_REASONS` (2) while the file is open.
+
+Related and NOT this lane's: `bridge.rs:66` still exports
+`DEPLOY_DEF_ROW_WORDS = 4`, so `SUB_DEPLOY_DEFS`' new `n_costs` + cost rows
+stop at the wasm bridge and `web/src` cannot show what mending a door costs.
+That is a systems-lane export, like §0e.
 
 ## 0e · One export the client needs — *(systems lane, cross-lane)*
 

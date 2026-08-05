@@ -64,6 +64,18 @@ pub const LOC_EDGE_N: u8 = 3;
 
 /// Integer refusal reasons (CLAUDE.md wall 3), carried by
 /// EV_BUILD_REFUSED / the build-refused wire subtype.
+///
+/// **Growing this list is a two-file act, and the second file is not this
+/// lane's.** `ci/ui_smoke.mjs` §W walks these constants by name and by value
+/// against `BUILD_REFUSE_TEXT` in `web/src/interact.js`, and a code with no
+/// sentence reaches the player as `can't build: code N`. The sim lane owns
+/// this file and may not touch `web/`, so a commit that adds a reason here
+/// turns `ui smoke` red in *every* lane's `ci/gates.sh` until the client half
+/// lands separately. It has happened twice — `REFUSE_B_INTACT` (9), which is
+/// what §W was written for, and `REFUSE_B_UNPRICED` (10), which cost the
+/// following pass in this lane a recovery. Adding a reason means filing the
+/// sentence on `NOW.md` for the ui lane in the same commit; the red between
+/// the two is expected, not a defect.
 pub const REFUSE_B_PIECE: u32 = 0;
 pub const REFUSE_B_SPOT: u32 = 1;
 pub const REFUSE_B_SUPPORT: u32 = 2;
