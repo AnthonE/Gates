@@ -28,8 +28,10 @@ Two slices have landed and both are on `main`:
   `in ok/bad/drop 270/0/0`, `leaves 0`.
 - `crates/client/src/bin/gates.rs` — Bevy 0.18 behind the optional
   `render` feature (default **off**; the code tier stays ~106 s). Chase
-  camera, reference plane, a cuboid per body. **Compiles; never run** —
-  this box has no display.
+  camera, reference plane, a cuboid per body. **Runs, and draws** — 30 s
+  under Xvfb + lavapipe against a live shard, frame captured, session
+  healthy throughout (`in ok/bad/drop 729/0/0`, `snap sent 434`). Item 2
+  has the recipe.
 
 **The rule that holds the pivot together: Bevy draws, it does not decide.**
 `sim-core` keeps the walls, `ClientCore` keeps prediction; the ECS reads
