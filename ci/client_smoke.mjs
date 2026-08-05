@@ -31,10 +31,21 @@ try {
 const { instance } = await WebAssembly.instantiate(bytes, {});
 const ex = instance.exports;
 
+// Every export that is NOT an action verb. The action verbs are not listed
+// here on purpose — they are derived from the `ACT_*` block in
+// `protocol/src/lib.rs` below, because a hand list is exactly the thing that
+// failed. `ACT_REPAIR` landed with the wire cut for it (v20), the server
+// dispatching it, and 68 goldens rekeyed, and the bridge shipped no export
+// for a whole pass: no client on earth could press repair, and every gate in
+// this repo was green, because the only statement that the verb needed an
+// export was a name someone had to remember to type into this array.
+//
+// `client_action_chat` stays hand-listed and is not a counterexample: chat is
+// its own wire KIND with its own encoder, not an `ACT_*` subtype. The derived
+// set below owns the action lane and only the action lane.
 const REQUIRED = [
   "memory",
   "client_proto_ver",
-  "client_action_drink",
   "client_drank",
   "client_in_ptr",
   "client_in_cap",
@@ -72,19 +83,11 @@ const REQUIRED = [
   "client_recipes_state",
   "client_craft_pop",
   "client_craft_refusal_pop",
-  "client_action_craft",
-  "client_action_cancel",
-  "client_action_place",
   "client_piece_changes_ptr",
   "client_piece_changes_len",
   "client_piece_defs_ptr",
   "client_piece_defs_state",
   "client_build_refusal_pop",
-  "client_action_deploy",
-  "client_action_feed",
-  "client_action_use",
-  "client_action_lock",
-  "client_action_upgrade",
   "client_predict_door",
   "client_deploy_changes_ptr",
   "client_deploy_changes_len",
@@ -102,26 +105,21 @@ const REQUIRED = [
   "client_vitals",
   "client_vitals_max",
   "client_consume",
-  "client_action_consume",
   "client_hit_pop",
   "client_death_pop",
   "client_death_killer",
   "client_death_screen",
   "client_death_by",
   "client_death_weapon",
-  "client_action_respawn",
-  "client_action_move",
   "client_applied2",
   "client_move_readout",
   "client_move_payload",
   "client_bag_ids_ptr",
   "client_bags_ptr",
   "client_bags_len",
-  "client_action_loot",
   // Wire v19, the container view. Four exports and no panel reads them yet
   // — which is exactly when a C ABI drifts unseen, so they are pinned here
   // the pass they land rather than the pass something depends on them.
-  "client_action_container",
   "client_cont_ptr",
   "client_cont_kind",
   "client_cont_handle",
@@ -138,6 +136,88 @@ const check = (ok, what) => {
 for (const name of REQUIRED) {
   check(name in ex, `export missing: ${name}`);
 }
+
+// --- every action verb reaches a finger -----------------------------------
+// The rule the repair near-miss argues for, made mechanical: a new `ACT_*`
+// and its `client_action_*` export land in the same commit, so the sim can
+// never again ship a verb no client can press.
+//
+// Derived from the constant block, never mirrored. A mirror is what was
+// already here — `REQUIRED` listed fourteen action exports by hand and was
+// silent about the fifteenth, which is not a gate, it is a habit. Reading
+// the declarations themselves is the discipline `event_roles.rs`'s
+// `every_event_code_is_in_range` uses for the event lane, and for the same
+// reason: no amount of importing can see a constant the importer was never
+// told about.
+//
+// This asserts on the COMPILED ARTIFACT, not on bridge.rs's source text.
+// `#[no_mangle] pub extern "C"` is what actually puts a symbol in the wasm
+// export table, and a function that loses either attribute still greps fine
+// while being unreachable from JS — which is the whole defect class.
+const protoSrc = readFileSync(join(root, "crates/protocol/src/lib.rs"), "utf8");
+const acts = [];
+let actMaxName = null;
+for (const line of protoSrc.split("\n")) {
+  const decl = /^const ACT_([A-Z_0-9]+): u32 = (.+);$/.exec(line.trim());
+  if (!decl) continue;
+  const [, name, value] = decl;
+  if (name === "MAX") {
+    const ref = /^ACT_([A-Z_0-9]+)$/.exec(value);
+    // `ACT_MAX` is named rather than counted on purpose (lib.rs). If it ever
+    // became a digit, the bound and the codes could drift apart silently.
+    check(ref !== null, `ACT_MAX is \`${value}\`, not a named code — the bound is now uncheckable`);
+    actMaxName = ref ? ref[1] : null;
+    continue;
+  }
+  const code = Number(value);
+  check(
+    Number.isInteger(code),
+    `ACT_${name} is declared as \`${value}\`, which is not a literal code — ` +
+      "this gate reads the constant block and a non-literal makes the lane unknowable",
+  );
+  acts.push([name, code]);
+}
+
+// Reading nothing is worse than failing: if the constant block's shape
+// changes, this gate would otherwise pass by looking at an empty list.
+check(
+  acts.length >= 14,
+  `only ${acts.length} ACT_* codes parsed out of protocol/src/lib.rs — the ` +
+    "constant block's shape changed and this gate is now reading nothing",
+);
+check(actMaxName !== null, "no ACT_MAX found in protocol/src/lib.rs");
+
+// Contiguity, so the derived set cannot have a hole in it. The action field
+// is four bits and `ACT_MAX` is one code from full (lib.rs); a gap here
+// would mean the ceiling arithmetic in that const assert is reasoning about
+// a range that does not exist.
+const sorted = [...acts].sort((a, b) => a[1] - b[1]);
+sorted.forEach(([name, code], i) => {
+  check(code === i, `action codes are not 0..=ACT_MAX with no gaps: ACT_${name} is ${code}, expected ${i}`);
+});
+const highest = sorted[sorted.length - 1];
+check(
+  highest && highest[0] === actMaxName,
+  `ACT_MAX names ACT_${actMaxName} but the highest declared code is ACT_${highest && highest[0]}`,
+);
+
+const reachFailedAt = failed;
+for (const [name] of acts) {
+  const exp = `client_action_${name.toLowerCase()}`;
+  check(
+    typeof ex[exp] === "function",
+    `ACT_${name} has no bridge export: the wasm module exposes no \`${exp}\`, ` +
+      "so the wire carries this verb and no client can press it. A new ACT_* " +
+      "and its client_action_* export land in the same commit (NOW.md §0e).",
+  );
+}
+// Only on a clean sweep. A summary printed above its own failures is how a
+// log comes to read green while the exit code is 1 — and this gate's whole
+// subject is a claim of coverage that was not earned.
+if (failed === reachFailedAt) {
+  console.log(`action reach: ${acts.length} ACT_* codes, each with a live bridge export`);
+}
+
 if (failed) process.exit(1);
 
 const SEED = 0x4741544553n;
@@ -364,6 +444,27 @@ const upgradeLen = ex.client_action_upgrade(341, 341, 0, 2, 2);
 check(upgradeLen === 5, `upgrade action length odd: ${upgradeLen}`);
 check(ex.client_action_upgrade(341, 341, 0, 2, 3) === 0, "a fourth material must refuse");
 check(ex.client_action_upgrade(1024, 341, 0, 2, 1) === 0, "cx past the grid must refuse");
+// Repair addresses two stores, so the leading `deploy` bit is the argument
+// upgrade has no analogue for — and it is the one an export written from
+// `NOW.md` §0e's "the same four minus the material" would have dropped. Both
+// values are driven: a bit that is silently ignored encodes the same length
+// either way, so equal lengths alone would not have caught a dropped
+// argument. The bytes differ, and that is what is asserted.
+const repairPiece = ex.client_action_repair(0, 341, 341, 0, 2);
+check(repairPiece === 5, `repair action length odd: ${repairPiece}`);
+const outAt = (len) => Array.from(new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), len));
+const repairPieceBytes = outAt(repairPiece);
+const repairDeploy = ex.client_action_repair(1, 341, 341, 0, 2);
+check(repairDeploy === 5, `repair (deploy) action length odd: ${repairDeploy}`);
+check(
+  outAt(repairDeploy).join(",") !== repairPieceBytes.join(","),
+  "the deploy bit does not reach the wire — repair encodes identically for a " +
+    "built piece and a deployable, so the server cannot tell which store the " +
+    "address means",
+);
+check(ex.client_action_repair(0, 1024, 341, 0, 2) === 0, "cx past the grid must refuse");
+check(ex.client_action_repair(0, 341, 341, 8, 2) === 0, "level past the grid must refuse");
+check(ex.client_action_repair(0, 341, 341, 0, 4) === 0, "loc past the four must refuse");
 
 // subtype DEPLOY_PLACED(15) · cx=341 (10) · cz=682 (10) · level=1 (3) ·
 // loc=0 (2) · row=3 (4) · open=0 (1) · locked=0 (1).

@@ -15,6 +15,31 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0c3 · RECOVERY (systems lane): the same red, and it was propagation *(done this pass)*
+
+`ci/gates.sh` was red on this lane's clean tree at `ui smoke`, same assertion in
+both health runs, so not a flake. **The code was wrong and was already fixed** —
+the ui lane landed the sentence in `b2a48bc`, judged PASS, and it was in `main`
+before this pass started. `lane/systems` had simply not taken `main` since. So
+this lane's red was *propagation lag, not a second defect*, and the fix was to
+take `main` into the branch. Nothing reverted, nothing lost, and the ui lane's
+wording ("cannot be repaired") is not forked — duplicating it here with a
+different sentence is what would have conflicted.
+
+The standing hazard, which is this lane's to carry: **growing `REFUSE_B_*` is a
+two-file act and the second file is `web/`, which this lane may not touch.**
+`ui_smoke` §W walks the constants against `interact.js`, so a sim commit that
+adds a reason reddens *every* lane until the client half lands. Twice now (9,
+then 10). `build.rs` now says so at the constants themselves; the durable fix,
+if one is wanted, is a spoken call on whether the sentence table should be
+generated rather than mirrored — not invented here.
+
+**Expect next:** nothing was masked in the code tier — `ui smoke` is its last
+gate, so the green below is the whole tier. The renderer tier (`browser smoke`,
+`vantages`) has NOT run: tier `fast` for this whole run, and `browser_smoke` is
+off by operator act. If either is red it is still red, and an `all` run is where
+that surfaces.
+
 ## 0c · RECOVERY: the refusal table fell one short again *(ui lane — done this pass)*
 
 `ci/gates.sh` was red on a clean tree at `ui smoke`: `build.rs` declares 11
@@ -62,14 +87,24 @@ Related and NOT this lane's: `bridge.rs:66` still exports
 stop at the wasm bridge and `web/src` cannot show what mending a door costs.
 That is a systems-lane export, like §0e.
 
-## 0e · One export the client needs — *(systems lane, cross-lane)*
+## 0e2 · The deploy-def stride is stale, and this lane cannot fix it alone
+*(systems lane — BLOCKED on a web/ half)*
 
-`crates/client-wasm/src/bridge.rs` exports `client_action_` for all fourteen
-other verbs and none for repair, so `ACT_REPAIR` decodes, the server dispatches
-it, and no client can press it. ~15 lines mirroring `client_action_upgrade`
-(`bridge.rs:735`), whose arg list is the same four (cx, cz, level, loc) minus
-the material. The ui lane has the anchor, the pick and the refusal text
-already landed and will bind the key the pass after it exists.
+Found while doing §0e; both are `bridge.rs` and the handover at line 88 reads
+as if they are the same size. They are not. `DEPLOY_DEF_ROW_WORDS = 4`
+(`bridge.rs:67`) predates `n_costs` + cost rows on `SUB_DEPLOY_DEFS`, so what
+mending a door costs stops at the bridge. The Rust half is four lines,
+mirroring the piece path (`4 + 2 * MAX_PIECE_COSTS`, filled at `bridge.rs:387`).
+
+**The blocker is that the stride is hardcoded in `web/`, which this lane may
+not touch:** `wasm.js:96` views the table as `16 * 4`, `main.js:306/329` index
+`rec.row * 4`, and `interact.js:527` declares it. Widening the Rust alone does
+not redden a gate — it silently re-bases every one of those reads onto the
+wrong words. That is worse than the current state, so it did not land.
+
+**ui lane owns the second half.** The clean version is one commit across both,
+or `interact.js:527`'s constant becoming the single reader that `ui_smoke`
+walks against `bridge.rs` — the shape §W already uses for `REFUSE_B_*`.
 
 ## 0f · A proposal for the `renderer_touched` list — *(operator act)*
 
@@ -79,6 +114,18 @@ and covered by §Q/§R/§V/§W with eleven mutants of its own; it cannot reach a
 material, a shader or the terrain. A one-line edit to it currently costs the
 ~19-minute renderer tier. `map.js` and `invmove.js` have the same shape.
 `main.js` does NOT — it builds three.js scenes and belongs where it is.
+`web/src/refusals.js` (new) is the strongest case on the list: four string
+tables and one accessor, no imports at all, fully walked by §W with fourteen
+mutants red. It is NOT exempt today and correctly costs the renderer tier.
+
+## 0g · The deploy-def cost rows stop at the bridge *(systems lane, cross-lane)*
+
+Carried out of the finished §0c2 so it is not lost with it. `bridge.rs:66`
+exports `DEPLOY_DEF_ROW_WORDS = 4`, so `SUB_DEPLOY_DEFS`' new `n_costs` and
+its cost rows never reach `web/src` — the client cannot show what mending a
+door costs, and `describeDeploy` reads `b+3` of a stride-4 row because that is
+all there is. Same shape as §0e: a widened export, ~10 lines.
+
 ## 0d · The island validates at boot *(systems lane — done this pass)*
 
 Closes the boot-refusal request filed twice — `## 0`'s "A short waystation tier

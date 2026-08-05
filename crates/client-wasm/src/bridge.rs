@@ -15,9 +15,10 @@ use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_consume,
     encode_action_container, encode_action_craft, encode_action_deploy, encode_action_drink,
     encode_action_feed, encode_action_lock, encode_action_loot, encode_action_move,
-    encode_action_place, encode_action_respawn, encode_action_upgrade, encode_action_use,
-    encode_chat, encode_hello, peek_kind, Hello, CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE,
-    KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
+    encode_action_place, encode_action_repair, encode_action_respawn, encode_action_upgrade,
+    encode_action_use, encode_chat, encode_hello, peek_kind, Hello, CHAT_MAX_BYTES,
+    DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS,
@@ -752,6 +753,39 @@ pub extern "C" fn client_action_upgrade(
             level as u8,
             loc as u8,
             material as u8,
+            &mut b.out_buf,
+        )
+        .map(|n| n as u32)
+        .unwrap_or(0)
+    })
+}
+
+/// Encode a repair request (buy the damaged thing at the address back to
+/// its baked hp, in its own materials) into the out buffer; returns its
+/// length, or 0 when the arguments are outside the wire's domain.
+///
+/// **Five arguments, not `client_action_upgrade`'s four-minus-material.**
+/// `NOW.md` §0e sized this against upgrade and read the arg list off it;
+/// `encode_action_repair` takes a leading `deploy` bit that upgrade has no
+/// analogue for, because repair addresses two stores and upgrade addresses
+/// one. Pass 0 for a built piece and 1 for a deployable — the same bit
+/// `encode_event_struct_hit` writes, in the same leading position, so the
+/// two directions agree on which store an address means.
+///
+/// Nothing is predicted, for the same reason `client_action_upgrade`
+/// predicts nothing and a stronger one besides: a repair moves no
+/// collision, and whether you can afford it is the sim's verdict over
+/// inventory the client only mirrors. The refusal arrives as a
+/// `REFUSE_B_*` through `client_build_refusal_pop`.
+#[no_mangle]
+pub extern "C" fn client_action_repair(deploy: u32, cx: u32, cz: u32, level: u32, loc: u32) -> u32 {
+    with(|b| {
+        encode_action_repair(
+            deploy != 0,
+            cx as u16,
+            cz as u16,
+            level as u8,
+            loc as u8,
             &mut b.out_buf,
         )
         .map(|n| n as u32)
