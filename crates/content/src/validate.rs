@@ -283,10 +283,25 @@ pub fn structural(c: &Content) -> Result<(), String> {
                         w.id
                     ));
                 }
+                // A zero radius is not "no splash", it is a division the
+                // falloff cannot do (`charge::falloff` divides by it), so
+                // it is refused here rather than guarded at every use.
+                if w.blast_m.unwrap_or(0) == 0 {
+                    return Err(format!(
+                        "weapon `{}`: throwables need a nonzero blast_m",
+                        w.id
+                    ));
+                }
             }
             _ => {
                 if w.fuse_s.is_some() {
                     return Err(format!("weapon `{}`: only throwables carry a fuse_s", w.id));
+                }
+                if w.blast_m.is_some() {
+                    return Err(format!(
+                        "weapon `{}`: only throwables carry a blast_m",
+                        w.id
+                    ));
                 }
             }
         }

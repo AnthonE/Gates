@@ -296,9 +296,11 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     // `tests/event_roles.rs`, against a wall the test owns.
     let mut combat = CombatContent::EMPTY;
     combat.throw[3] = ThrowDef {
+        damage: 0,
         structure: 10,
         fuse_ticks: 4,
         reach_cm: (sim_core::build::BUILD_REACH_M * 100.0) as u16,
+        blast_cm: 1,
     };
     world.combat = combat;
     world.loot = LootContent::probe_fixture();

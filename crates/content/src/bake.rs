@@ -482,6 +482,8 @@ impl Content {
             if structure == 0 {
                 return Err(format!("bake: `{}` deals no structure damage", w.id));
             }
+            let damage = u16::try_from(w.damage)
+                .map_err(|_| format!("bake: `{}` damage {} overflows u16", w.id, w.damage))?;
             if w.kind == WeaponKind::Throwable {
                 // Seconds → ticks, the reach column's treatment: the
                 // division lives here so the sim reads an integer it never
@@ -500,18 +502,37 @@ impl Content {
                 if fuse_ticks == 0 {
                     return Err(format!("bake: throwable `{}` has no fuse", w.id));
                 }
+                // Metres → cm, the reach column's treatment. Zero is
+                // refused here as well as in `validate` because this is
+                // the number `charge::falloff` divides by, and a bake that
+                // let a zero through would put the division one call away
+                // from a NaN the determinism gates would then have to
+                // catch for it.
+                let blast_cm = (w.blast_m.unwrap_or(0))
+                    .checked_mul(100)
+                    .and_then(|cm| u16::try_from(cm).ok())
+                    .ok_or_else(|| {
+                        format!(
+                            "bake: `{}` blast {} m overflows the cm radius",
+                            w.id,
+                            w.blast_m.unwrap_or(0)
+                        )
+                    })?;
+                if blast_cm == 0 {
+                    return Err(format!("bake: throwable `{}` has no blast radius", w.id));
+                }
                 if cc.throw[idx].structure != 0 {
                     return Err(format!("bake: duplicate throwable row for `{}`", w.id));
                 }
                 cc.throw[idx] = ThrowDef {
+                    damage,
                     structure,
                     fuse_ticks,
                     reach_cm,
+                    blast_cm,
                 };
                 continue;
             }
-            let damage = u16::try_from(w.damage)
-                .map_err(|_| format!("bake: `{}` damage {} overflows u16", w.id, w.damage))?;
             if damage == 0 {
                 return Err(format!("bake: melee `{}` deals no damage", w.id));
             }
