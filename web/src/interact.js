@@ -629,10 +629,23 @@ export function promptForBuild(pick) {
  * E outranks the swing because the mouse button is already held down while
  * nothing on screen would ever suggest pressing E — the half a player cannot
  * otherwise discover wins the row.
+ *
+ * Repair ranks LAST, below all three, and that is the whole of its claim on the
+ * row: it appears only where the row would otherwise be blank. The other three
+ * are resolved off the crosshair — what the player is looking at — while repair
+ * is resolved off the feet (`nearestRepairable`, the metric `build.rs` gates
+ * on), so it is the one prompt that does not describe the thing under the aim.
+ * Ranking it above anything would let a wall three metres to the side displace
+ * a verb the player is pointing at. Ranking it last means standing inside your
+ * own base with no tree, no door and no ghost in reach — today an empty row —
+ * now names the key that mends the wall you are touching.
  */
-export function centrePrompt(buildPick, interactPick, swingPick) {
+export function centrePrompt(buildPick, interactPick, swingPick, repairPick) {
   return (
-    promptForBuild(buildPick) || promptFor(interactPick) || promptForSwing(swingPick)
+    promptForBuild(buildPick) ||
+    promptFor(interactPick) ||
+    promptForSwing(swingPick) ||
+    promptForRepair(repairPick)
   );
 }
 
@@ -727,6 +740,126 @@ export function nearestPiece(out, at, world) {
     }
   }
   return out;
+}
+
+/**
+ * Which of the two stores a repair address names — the LEADING argument of
+ * `client_action_repair(deploy, cx, cz, level, loc)`, and the whole reason
+ * repair needs its own scan instead of reusing `nearestPiece`.
+ *
+ * A built piece and a deployable can share ONE address exactly. `place_deploy`
+ * requires the doorway piece at the *identical* `(cx, cz, level, loc)`, so a
+ * door and its doorway are the same four numbers and the store bit is the only
+ * thing that tells them apart. Send the wrong bit and the address is still
+ * valid, every field is still a `u32`, and the server mends the other thing (or
+ * refuses "not damaged" for a wall the player is watching burn). That is
+ * `CLAUDE.md`'s positional-payload trap with the fifth argument promoted to
+ * first: no encoder changes, no golden moves, nothing else goes red.
+ */
+export const REPAIR_STORE_PIECE = 0;
+export const REPAIR_STORE_DEPLOY = 1;
+
+/** The pick `nearestRepairable` fills. `what` is the caller's to name. */
+export function newRepairPick() {
+  return {
+    found: false,
+    store: REPAIR_STORE_PIECE,
+    cx: 0,
+    cz: 0,
+    level: 0,
+    loc: 0,
+    row: 0,
+    d2: 0,
+    what: "",
+  };
+}
+
+/**
+ * One store's contribution to the pick. Returns the new best squared distance.
+ *
+ * The comparison is written out rather than left to emerge from the order the
+ * caller happens to scan in: strictly nearer always wins, and an EXACT tie goes
+ * to the deployable. The tie is not a curiosity — it is the shared-address case
+ * above, where the door and its doorway anchor at the same point and every scan
+ * returns the same `d2` for both. The deployable wins it because it is the
+ * thing physically in front of the player and the breach point a raid actually
+ * uses (`NOW.md` §0a); the doorway behind it is reachable by stepping aside,
+ * which is not true in reverse. Written as a total order, so the answer does not
+ * depend on which store was walked first — asserted both ways in `ui_smoke` §X.
+ */
+const REPAIR_SCRATCH = [0, 0];
+function scanRepairStore(out, at, recs, cell, store, bestD) {
+  for (const rec of recs) {
+    const a = pieceAnchor(REPAIR_SCRATCH, rec.cx, rec.cz, rec.loc, cell);
+    const dx = a[0] - at.x;
+    const dz = a[1] - at.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestD || (d2 === bestD && out.found && store > out.store)) {
+      bestD = d2;
+      out.found = true;
+      out.store = store;
+      out.cx = rec.cx;
+      out.cz = rec.cz;
+      out.level = rec.level;
+      out.loc = rec.loc;
+      out.row = rec.row;
+      out.d2 = d2;
+    }
+  }
+  return bestD;
+}
+
+/**
+ * The nearest repairable thing within reach of the player's feet, across BOTH
+ * stores — what R addresses.
+ *
+ * Same reach and same anchor as `nearestPiece` above, for the same
+ * quantize-both-sides reason: `build.rs`'s `repair` gates on `BUILD_REACH_M`
+ * measured to `anchor`, so the client picks inside the radius the server will
+ * accept. The difference is only that it walks two stores and reports which one
+ * won, because the wire asks.
+ *
+ * `at` = `{x, z}` (the feet, world metres), `world` = `{cell, pieces, deploys}`
+ * where both are iterables of `{cx, cz, level, loc, row}`.
+ *
+ * `what` is reset and never filled here: naming a piece needs the def tables and
+ * the wasm string table, neither of which this file may reach. The caller fills
+ * it (`main.js`, via `describePiece`/`describeDeploy`). Resetting it on every
+ * scan is deliberate — a caller that forgets loses the prompt, rather than
+ * showing the previous target's name over this one's address.
+ */
+export function nearestRepairable(out, at, world) {
+  out.found = false;
+  out.store = REPAIR_STORE_PIECE;
+  out.cx = 0;
+  out.cz = 0;
+  out.level = 0;
+  out.loc = 0;
+  out.row = 0;
+  out.d2 = 0;
+  out.what = "";
+  let bestD = INTERACT_REACH_M * INTERACT_REACH_M;
+  bestD = scanRepairStore(out, at, world.pieces, world.cell, REPAIR_STORE_PIECE, bestD);
+  scanRepairStore(out, at, world.deploys, world.cell, REPAIR_STORE_DEPLOY, bestD);
+  return out;
+}
+
+/**
+ * What the prompt says for a repair pick, or `""` when nothing is in reach (or
+ * the def table has not arrived, which is `what === ""`).
+ *
+ * `[R]` names the key, the same way `[E]` and `[LMB]` do. What it deliberately
+ * does NOT say is how damaged the thing is: the client cannot tell. The wire
+ * carries a `deploy` bit on `EventMsg::StructHit` and `core.rs`'s `struct_hit`
+ * tuple drops it, so a cached hp at a shared address could not say whether it
+ * belonged to the door or the doorway — and guessing there is the same
+ * positional bug as guessing the store. A row reading `340/500` for the wrong
+ * one of two things is worse than a row that names only the verb. The number
+ * arrives when the bit does (`NOW.md`, systems lane).
+ */
+export function promptForRepair(pick) {
+  if (!pick || !pick.found || !pick.what) return "";
+  return `[R] REPAIR ${pick.what.toUpperCase()}`;
 }
 
 /**
