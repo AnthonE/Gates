@@ -15,6 +15,7 @@ use protocol::{ActionMsg, ChatMsg, EntityState, Nudge};
 use sim_core::craft::CraftJob;
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
+use sim_core::inventory;
 use sim_core::limits::{
     CRAFT_QUEUE, INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INV_SLOTS, MAX_PLAYERS,
     MAX_SNAPSHOT_ENTITIES, PENDING_REMOVALS_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS,
@@ -136,6 +137,31 @@ pub struct ClientNetState {
     pub bag_sync_cursor: usize,
     /// The next bag batch carries the reset bit.
     pub bag_sync_reset: bool,
+    /// Which container this client has open, as the handle the open verb
+    /// named: `inventory::CONT_SELF` means none. **Netcode state, not sim
+    /// state** — opening a box changes nothing in the world, so it lives
+    /// here rather than on the player, never reaches a `Command`, never
+    /// enters the WAL, and `test_replay` is untouched by it.
+    ///
+    /// It is also not a claim: two clients may hold the same box open, and
+    /// neither knows about the other. What it buys is the right to be told
+    /// the contents, which is why it is checked against reach every tick
+    /// rather than once when the panel opened.
+    pub open_kind: u8,
+    pub open_cont: u32,
+    /// The open container's contents as last successfully queued to this
+    /// client — `last_inv`'s shape, for the same reason and with the same
+    /// self-healing property: a refused push simply re-diffs next tick.
+    ///
+    /// Sized `INV_SLOTS` because a bag is that wide; a box uses the first
+    /// `BOX_SLOTS` and the rest stay zero. Diffing rather than resending
+    /// is what makes *another player's* move show up in your open panel
+    /// with no extra plumbing — the mirror is against the world, not
+    /// against what you did to it.
+    pub last_cont: [ItemStack; INV_SLOTS],
+    /// The next contents batch carries the reset bit: the client clears
+    /// the panel before applying. Set on open, on close, and on resync.
+    pub cont_reset: bool,
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
@@ -185,6 +211,10 @@ impl ClientNetState {
             deploy_sync_reset: true,
             bag_sync_cursor: 0,
             bag_sync_reset: true,
+            open_kind: inventory::CONT_SELF,
+            open_cont: 0,
+            last_cont: [ItemStack::default(); INV_SLOTS],
+            cont_reset: false,
             pending_action: None,
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -212,6 +242,15 @@ impl ClientNetState {
         self.bag_sync_cursor = 0;
         self.bag_sync_reset = true;
         self.last_done_at = u64::MAX;
+        // The container mirror does NOT get `last_inv`'s treatment. That
+        // shadow may stay because the client's own inventory panel is
+        // never torn down, so a re-diff against the world converges. An
+        // open container's panel can have been cleared by a message the
+        // overflow ate, so the shadow is zeroed and the reset bit armed:
+        // the next batch rebuilds the panel from nothing. The *handle*
+        // stays — the player did not close anything.
+        self.last_cont = [ItemStack::default(); INV_SLOTS];
+        self.cont_reset = true;
     }
 
     /// Arm the slot for a fresh connection. Everything netcode resets; the

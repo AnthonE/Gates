@@ -9,22 +9,23 @@ use crate::stats::ShardStats;
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_chat,
-    encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_move_refused, encode_event_moved,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog,
-    SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
+    encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
+    encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_respawn,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
+    encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
+    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
+    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
 use sim_core::deploy::DeployRec;
 use sim_core::gather::{ItemStack, NO_ITEM};
+use sim_core::inventory;
 use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, CHAT_LOCAL_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES,
     HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
@@ -221,6 +222,28 @@ impl ShardCore {
             }
             if let Some(act) = c.pending_action.take() {
                 cmds[n] = match act {
+                    // The open verb is netcode, not a command: it changes
+                    // nothing in the world, it asks to be *told*
+                    // something. So it is answered here, spends no command
+                    // slot (the `continue`), and never reaches the sim,
+                    // the WAL or `state_hash`. Keeping it out of `Command`
+                    // is also what keeps the replay path free of a variant
+                    // it would have to ignore.
+                    ActionMsg::Open { kind, cont } => {
+                        // Re-opening what is already open is a resend
+                        // request, not a no-op — the panel may have been
+                        // torn down client-side. Either way the mirror
+                        // restarts from empty with the reset bit armed.
+                        c.open_kind = kind;
+                        c.open_cont = if kind == inventory::CONT_SELF {
+                            0
+                        } else {
+                            cont
+                        };
+                        c.last_cont = [ItemStack::default(); INV_SLOTS];
+                        c.cont_reset = true;
+                        continue;
+                    }
                     ActionMsg::Craft { recipe, count } => Command::Craft {
                         id: c.id,
                         recipe,
@@ -1248,6 +1271,108 @@ impl ShardCore {
                     }
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // The container this client has open — to this client and to
+        // nobody else, which is the whole design (`SUB_CONT_SYNC`). Diffed
+        // against a shadow exactly like the inventory above, and that is
+        // what makes *another* player's move into the same box appear in
+        // this panel with no second message type: the mirror is against
+        // the world, not against what you did to it.
+        let (open_kind, open_cont, own_wslot) = {
+            let c = &self.clients[slot];
+            (c.open_kind, c.open_cont, c.own_wslot)
+        };
+        // Resolve, then reach — the same two questions in the same order,
+        // through the same two `World` methods `move_item` asks them
+        // through. A container that would refuse a move must not keep
+        // feeding a panel, and there is one implementation of each
+        // question so the two answers cannot drift apart.
+        let open = if open_kind == inventory::CONT_SELF {
+            None
+        } else {
+            self.world
+                .cont_index(open_kind, open_cont)
+                .filter(|ci| self.world.cont_in_reach(own_wslot, open_kind, *ci))
+        };
+        if open_kind != inventory::CONT_SELF && open.is_none() {
+            // Gone or walked away from. Stop mirroring immediately and
+            // owe the client a closed message — `cont_reset` keeps it
+            // owed until a send actually takes it.
+            let c = &mut self.clients[slot];
+            c.open_kind = inventory::CONT_SELF;
+            c.open_cont = 0;
+            c.last_cont = [ItemStack::default(); INV_SLOTS];
+            c.cont_reset = true;
+        }
+        let c = &self.clients[slot];
+        match open {
+            None => {
+                if c.cont_reset {
+                    match encode_event_cont_sync(
+                        inventory::CONT_SELF,
+                        0,
+                        true,
+                        &[],
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                                self.clients[slot].cont_reset = false;
+                            } else {
+                                return;
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+            }
+            Some(ci) => {
+                let mut view = [ItemStack::default(); INV_SLOTS];
+                let width = self.world.cont_view(open_kind, ci, &mut view);
+                let mut changed = [InvSlot::default(); CONT_SYNC_BATCH];
+                let mut n_changed = 0usize;
+                for (i, (now, last)) in view[..width].iter().zip(c.last_cont.iter()).enumerate() {
+                    if now != last && n_changed < CONT_SYNC_BATCH {
+                        changed[n_changed] = InvSlot {
+                            slot: i as u8,
+                            stack: *now,
+                        };
+                        n_changed += 1;
+                    }
+                }
+                // A reset batch may be empty — that is how "the box you
+                // opened is empty" crosses. A non-reset one may not.
+                if c.cont_reset || n_changed > 0 {
+                    match encode_event_cont_sync(
+                        open_kind,
+                        open_cont,
+                        c.cont_reset,
+                        &changed[..n_changed],
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                                let c = &mut self.clients[slot];
+                                c.cont_reset = false;
+                                // Only what actually crossed advances the
+                                // shadow: a bag whose diff is wider than
+                                // CONT_SYNC_BATCH leaves the rest to the
+                                // next tick, and the reset bit has already
+                                // been spent on the first batch.
+                                for s in &changed[..n_changed] {
+                                    c.last_cont[s.slot as usize] = s.stack;
+                                }
+                            } else {
+                                return;
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
             }
         }
 

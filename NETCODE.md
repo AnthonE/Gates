@@ -364,6 +364,46 @@ a check**. We start where they ended (Building 3.0):
   despawns oldest-lowest-tier first, loudly in the log. A loot-fountain
   griefer hits the cap, not the tick budget.
 
+### 6.5 · Container contents — the one lane that is not a broadcast
+
+Everything above this line replicates what a player standing there can
+see. A container's **contents** are the opposite: they are precisely what
+you have to walk up and open something to learn. So the contents lane is
+per-client, and that is a design rule, not an optimisation.
+
+- **The handle.** One `u32` plus a 2-bit kind, the same pair the move verb
+  carries: a bag id for `CONT_BAG`, a packed `box_key(cx, cz, level)` for
+  `CONT_BOX`. `CONT_SELF` is the **null** handle — you are always inside
+  your own inventory — so the open verb with `CONT_SELF` means *close*,
+  and there is no second subtype for it.
+- **Opening takes nothing.** No lock, no exclusivity, no sim state. Two
+  players may hold the same box open and neither is told about the other.
+  The open verb never becomes a `Command`: it changes nothing in the
+  world, so it stays out of the sim thread, out of the WAL and out of
+  `state_hash`, and a replay is bit-identical with or without it.
+- **The server mirrors, it does not log.** Each client carries a shadow of
+  its open container (`last_cont`, `last_inv`'s shape) and the drip sends
+  the diff. That is what makes *another* player's stash appear in your
+  open panel with no message that says so — and it is why `EV_MOVED` is a
+  latency optimisation here rather than the mechanism.
+- **Reach is re-asked every tick**, through the same two `World` methods
+  the move verb resolves through (`cont_index`, then `cont_in_reach`).
+  Walking away closes the box; so does breaking it. A panel can never
+  outlive the move it would predict, which is the container half of the
+  quantize-both-sides law.
+- **Closed is a message.** Out of reach, gone, or never there all answer
+  with the same `CONT_SELF` sync — one encoding, byte-pinned, because a
+  silent refusal leaves a panel spinning and a second spelling of "closed"
+  is a golden that proves nothing.
+- **Budget.** `CONT_SYNC_BATCH` = 12 slots ≈ 62 B, one message per client
+  per tick at most, and **zero for a client with nothing open** — which is
+  every client, almost always. Overflow policy: defer, the rest next tick.
+
+Gates: `crates/server/tests/container_wire.rs` (six, including the
+to-nobody-else assertion against the decoded bytes the server actually
+sent), fixtures `v19_action_open` / `v19_action_close` /
+`v19_event_cont_sync` / `v19_event_cont_closed`.
+
 ## 7 · Interest management (both classes, one grid)
 
 The 64 m grid serves both pipelines: class D snapshot membership *and*

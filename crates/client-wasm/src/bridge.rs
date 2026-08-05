@@ -14,10 +14,10 @@ use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_consume,
     encode_action_craft, encode_action_deploy, encode_action_drink, encode_action_feed,
-    encode_action_lock, encode_action_loot, encode_action_move, encode_action_place,
-    encode_action_respawn, encode_action_upgrade, encode_action_use, encode_chat, encode_hello,
-    peek_kind, Hello, CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME,
-    MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
+    encode_action_lock, encode_action_loot, encode_action_move, encode_action_open,
+    encode_action_place, encode_action_respawn, encode_action_upgrade, encode_action_use,
+    encode_chat, encode_hello, peek_kind, Hello, CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE,
+    KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS,
@@ -81,6 +81,10 @@ struct Bridge {
     changes_len: u32,
     /// Own inventory view: item, count per slot.
     inv: [u16; INV_SLOTS * 2],
+    /// The open container's contents, same flat `(item, count)` shape as
+    /// `inv` and refreshed on `APPLIED2_CONT`. Read `client_cont_kind`
+    /// first: zero means nothing is open and these words are stale.
+    cont: [u16; INV_SLOTS * 2],
     /// Item names: `CATALOG_ROW` bytes per item index.
     catalog: Box<[u8; MAX_ITEM_DEFS * CATALOG_ROW]>,
     /// Craft queue view: recipe, remaining per job slot.
@@ -129,6 +133,7 @@ impl Bridge {
             changes: [0; SLOT_SYNC_BATCH * 2],
             changes_len: 0,
             inv: [0; INV_SLOTS * 2],
+            cont: [0; INV_SLOTS * 2],
             catalog: Box::new([0; MAX_ITEM_DEFS * CATALOG_ROW]),
             craft_jobs: [0; CRAFT_QUEUE * 2],
             recipes: Box::new([0; MAX_RECIPES * RECIPE_ROW_WORDS]),
@@ -274,6 +279,7 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             changes,
             changes_len,
             inv,
+            cont,
             catalog,
             craft_jobs,
             recipes,
@@ -308,6 +314,14 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             for (i, s) in core.inv.iter().enumerate() {
                 inv[i * 2] = s.item;
                 inv[i * 2 + 1] = s.count;
+            }
+        }
+        // Word 1, not word 0 — the container flag is `APPLIED2_CONT` and
+        // word 0 has no bit left to announce it with (`client_applied2`).
+        if core.applied2() & crate::core::APPLIED2_CONT != 0 {
+            for (i, s) in core.cont.iter().enumerate() {
+                cont[i * 2] = s.item;
+                cont[i * 2 + 1] = s.count;
             }
         }
         if flags & crate::core::APPLIED_CATALOG != 0 {
@@ -504,6 +518,32 @@ pub extern "C" fn client_action_move(
 pub extern "C" fn client_action_drink() -> u32 {
     with(|b| {
         encode_action_drink(&mut b.out_buf)
+            .map(|n| n as u32)
+            .unwrap_or(0)
+    })
+}
+
+/// Encode an open (or close) request into the out buffer for the bidi
+/// lane; returns its length, or 0 if the kind is not a container.
+///
+/// `kind` is a `sim_core::inventory::CONT_*` and `cont` the same handle
+/// the move verb takes — a bag id, or a packed `box_key(cx, cz, level)`
+/// the deploy sync already gave you the parts of. **`CONT_SELF` closes**,
+/// and `cont` is then ignored: your own inventory is always open, so
+/// "open self" is exactly "nothing else is open" and there is no second
+/// verb for it.
+///
+/// Opening asks the server to start mirroring that container to this
+/// client and nothing more. It takes no lock, refuses nobody else, and is
+/// answered by `ContSync` messages — including the one that says it
+/// closed, when you walk out of reach of what you opened.
+#[no_mangle]
+pub extern "C" fn client_action_open(kind: u32, cont: u32) -> u32 {
+    with(|b| {
+        let Ok(k) = u8::try_from(kind) else {
+            return 0;
+        };
+        encode_action_open(k, cont, &mut b.out_buf)
             .map(|n| n as u32)
             .unwrap_or(0)
     })
@@ -1121,6 +1161,45 @@ pub extern "C" fn client_slot_changes_len() -> u32 {
 #[no_mangle]
 pub extern "C" fn client_inv_ptr() -> *const u16 {
     with(|b| b.inv.as_ptr())
+}
+
+/// Open-container contents view: `INV_SLOTS` pairs of `(item, count)`,
+/// same layout as `client_inv_ptr`, refreshed on `APPLIED2_CONT`.
+///
+/// Only the first `client_cont_slots()` pairs are a container — the tail
+/// is whatever the last wider container left there, and no message can
+/// write it. Read `client_cont_kind()` before drawing anything from here.
+#[no_mangle]
+pub extern "C" fn client_cont_ptr() -> *const u16 {
+    with(|b| b.cont.as_ptr())
+}
+
+/// Which container is open: a `sim_core::inventory::CONT_*`, and **zero
+/// (`CONT_SELF`) means none**. This is the panel's whole open/closed
+/// state — the server closes a container the moment it goes out of reach
+/// or out of the world, so a panel that polls this cannot keep drawing a
+/// box that is no longer there.
+#[no_mangle]
+pub extern "C" fn client_cont_kind() -> u32 {
+    with(|b| b.core.as_ref().map_or(0, |c| c.cont_kind as u32))
+}
+
+/// The open container's handle — the bag id or packed box address the
+/// open verb named. Zero when nothing is open. Compare it before applying
+/// a drag: a panel that opened a second container has no other way to
+/// know the contents it is looking at are the ones it asked for.
+#[no_mangle]
+pub extern "C" fn client_cont_handle() -> u32 {
+    with(|b| b.core.as_ref().map_or(0, |c| c.cont_handle))
+}
+
+/// How many slots the open container actually has (`BOX_SLOTS` for a box,
+/// `INV_SLOTS` for a bag), so the panel draws the grid the sim will
+/// accept rather than one the move verb refuses past slot 12. Zero when
+/// nothing is open.
+#[no_mangle]
+pub extern "C" fn client_cont_slots() -> u32 {
+    with(|b| b.core.as_ref().map_or(0, |c| c.cont_slots as u32))
 }
 
 /// Item-name rows: `1 + MAX_ITEM_NAME_BYTES` bytes per index (len, bytes).

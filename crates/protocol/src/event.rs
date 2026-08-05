@@ -67,6 +67,13 @@ pub const DEPLOY_DEFS_BATCH: usize = 8;
 /// there when you look, without a burst at the door.
 pub const BAG_SYNC_BATCH: usize = 16;
 
+/// Container slots one contents-sync message carries. A slot record is 37
+/// bits (index, item, count), so a full batch is ≈ 62 B — well under the
+/// message cap, and `BOX_SLOTS` (12) of them means an opened box syncs in
+/// **one** message rather than a drip the player watches fill. A bag is
+/// `INV_SLOTS` (30) and takes three. Knob: `DECISIONS.md` §open.
+pub const CONT_SYNC_BATCH: usize = 12;
+
 /// Longest item display name on the wire; the catalog bake refuses past
 /// it (content names are short by construction — CONTENT.md §2).
 pub const MAX_ITEM_NAME_BYTES: usize = 24;
@@ -129,6 +136,15 @@ const SUB_RESPAWN: u32 = 35;
 /// 37th and 38th of the sixty-four v13's width holds, so nothing moved.
 const SUB_MOVED: u32 = 36;
 const SUB_MOVE_REFUSED: u32 = 37;
+/// The contents of the container this client has open (wire v19). 39th of
+/// the sixty-four v13's width holds, so nothing moved.
+///
+/// The first event addressed to one client rather than to an AOI. Every
+/// other subtype describes something anyone standing there can see; this
+/// one describes what is *inside* a box, which is exactly the thing a
+/// player has to walk up and open to learn. Sending it to an AOI would be
+/// an ESP feed and a bandwidth bill for a panel nobody has open.
+const SUB_CONT_SYNC: u32 = 38;
 /// The highest live subtype, named rather than counted — `world.rs`'s
 /// `EV_MAX` discipline applied to the wire half.
 ///
@@ -138,7 +154,7 @@ const SUB_MOVE_REFUSED: u32 = 37;
 /// probe of a **live** code — it caught it here only because the new
 /// decoder arm rejected its all-zero payload, which is luck, not a gate.
 /// Deriving the probe from this constant is what makes it stay a probe.
-const SUB_MAX: u32 = SUB_MOVE_REFUSED;
+const SUB_MAX: u32 = SUB_CONT_SYNC;
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
 /// worst shape of wire drift there is, since both ends would agree on
@@ -198,6 +214,9 @@ const ARCH_BITS: u32 = 3;
 const PLACEMENT_BITS: u32 = 2;
 const STOCK_COUNT_BITS: u32 = 3;
 const BAG_SYNC_COUNT_BITS: u32 = 5;
+/// Four bits hold 0..=12, so `CONT_SYNC_BATCH` and one spare above it are
+/// nameable and the decoder refuses the rest by range check.
+const CONT_SYNC_COUNT_BITS: u32 = 4;
 /// Why a bag left: `sim_core::backpack::BAG_GONE_*`, three values today.
 const BAG_GONE_BITS: u32 = 2;
 
@@ -546,6 +565,33 @@ pub enum EventMsg {
         from_slot: u8,
         to_kind: u8,
         to_slot: u8,
+    },
+    /// What is inside the container this client has open — sent to the
+    /// opener and to nobody else (`SUB_CONT_SYNC`).
+    ///
+    /// `kind` + `cont` re-state the handle on **every** message, and that
+    /// is not redundancy: a client that opened a second container before
+    /// this batch arrived would otherwise paint a bag's contents into a
+    /// box's panel, and the address is four bytes against a wrong answer
+    /// nothing could detect. Apply a batch only if the handle is the one
+    /// you have open; drop it otherwise.
+    ///
+    /// `kind == CONT_SELF` is **closed** — the container went out of
+    /// reach, was emptied away, or was never there. `cont`, `reset` and
+    /// `count` are then 0, 1 and 0, and the encoder refuses any other
+    /// shape of it so the message has exactly one encoding.
+    ///
+    /// `reset` means "clear the panel before applying": it rides the first
+    /// batch after an open, the way the piece and deploy syncs do it. A
+    /// non-reset batch is a diff — slots that changed since the last one,
+    /// including slots that went empty (`count == 0` in the stack, never
+    /// an omission).
+    ContSync {
+        kind: u8,
+        cont: u32,
+        reset: bool,
+        slots: [InvSlot; CONT_SYNC_BATCH],
+        count: u8,
     },
 }
 
@@ -1162,6 +1208,51 @@ pub fn encode_event_bag_removed(id: u32, why: u8, buf: &mut [u8]) -> Result<usiz
     let mut w = begin(buf, SUB_BAG_REMOVED)?;
     w.write(id, 32)?;
     w.write(why as u32, BAG_GONE_BITS)?;
+    Ok(w.finish())
+}
+
+/// The opener's view of a container — see `EventMsg::ContSync`. Slot
+/// indices are checked against **that kind's** size, not `INV_SLOTS`, for
+/// the reason `inventory::slots_in` exists: slot 12 of a box is not a slot,
+/// and a message that could name one would put items where every reader
+/// that stops at `BOX_SLOTS` is blind to them.
+///
+/// A batch may be empty only with `reset` — the same contract the piece,
+/// deploy and bag syncs already keep.
+pub fn encode_event_cont_sync(
+    kind: u8,
+    cont: u32,
+    reset: bool,
+    slots: &[InvSlot],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if kind > sim_core::inventory::CONT_MAX {
+        return Err(WireError::Range);
+    }
+    // "Closed" has exactly one encoding. Without this the same fact could
+    // cross as a handle-carrying message the client would try to apply,
+    // and a golden pinning one of its spellings would say nothing about
+    // the others — the hole `reference/FINDINGS.md` §1 describes.
+    if kind == sim_core::inventory::CONT_SELF && (cont != 0 || !reset || !slots.is_empty()) {
+        return Err(WireError::Range);
+    }
+    if slots.len() > CONT_SYNC_BATCH || (slots.is_empty() && !reset) {
+        return Err(WireError::Cap);
+    }
+    let width = sim_core::inventory::slots_in(kind);
+    let mut w = begin(buf, SUB_CONT_SYNC)?;
+    w.write(kind as u32, CONT_KIND_BITS)?;
+    w.write(cont, 32)?;
+    w.write_bit(reset)?;
+    w.write(slots.len() as u32, CONT_SYNC_COUNT_BITS)?;
+    for s in slots {
+        if s.slot as usize >= width {
+            return Err(WireError::Range);
+        }
+        w.write(s.slot as u32, MOVE_SLOT_BITS)?;
+        w.write(s.stack.item as u32, 16)?;
+        w.write(s.stack.count as u32, 16)?;
+    }
     Ok(w.finish())
 }
 
@@ -1868,6 +1959,45 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             id: r.read(32)?,
             why: r.read(BAG_GONE_BITS)? as u8,
         },
+        SUB_CONT_SYNC => {
+            let kind = r.read(CONT_KIND_BITS)? as u8;
+            let cont = r.read(32)?;
+            let reset = r.read_bit()?;
+            let count = r.read(CONT_SYNC_COUNT_BITS)? as usize;
+            if kind > sim_core::inventory::CONT_MAX
+                || count > CONT_SYNC_BATCH
+                || (count == 0 && !reset)
+            {
+                return Err(WireError::Malformed);
+            }
+            // The mirror of the encoder's rule: exactly one spelling of
+            // "closed" decodes, so a forged handle cannot ride one in.
+            if kind == sim_core::inventory::CONT_SELF && (cont != 0 || count != 0) {
+                return Err(WireError::Malformed);
+            }
+            let width = sim_core::inventory::slots_in(kind);
+            let mut slots = [InvSlot::default(); CONT_SYNC_BATCH];
+            for s in slots.iter_mut().take(count) {
+                let idx = r.read(MOVE_SLOT_BITS)? as u8;
+                if idx as usize >= width {
+                    return Err(WireError::Malformed);
+                }
+                *s = InvSlot {
+                    slot: idx,
+                    stack: ItemStack {
+                        item: r.read(16)? as u16,
+                        count: r.read(16)? as u16,
+                    },
+                };
+            }
+            EventMsg::ContSync {
+                kind,
+                cont,
+                reset,
+                slots,
+                count: count as u8,
+            }
+        }
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;

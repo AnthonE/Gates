@@ -789,6 +789,54 @@ impl World {
         }
     }
 
+    /// Resolve a ground-container handle to its store index, or `None` if
+    /// the container has left the world. `CONT_SELF` resolves to `None`
+    /// too — it names no store — so the caller must know which question it
+    /// is asking; `move_item` only calls this for a kind it has already
+    /// proved is a ground container.
+    ///
+    /// Public because the *server* asks the same question for a different
+    /// reason: an opened container is mirrored to its opener each tick,
+    /// and that mirror must go dark on exactly the containers a move would
+    /// refuse. Two copies of "does this handle resolve" is how the two
+    /// answers drift apart, and the drift is invisible — the panel keeps
+    /// drawing a box the move verb says is gone.
+    pub fn cont_index(&self, kind: u8, cont: u32) -> Option<usize> {
+        match kind {
+            inventory::CONT_BAG => self.backpacks.index_of_id(cont),
+            inventory::CONT_BOX => self.deploys.box_index(cont),
+            _ => None,
+        }
+    }
+
+    /// Is the container at store index `ci` within arm's reach of the
+    /// player in world slot `slot`? The second half of the pair above, and
+    /// asked in the same order for the same reason: resolve, then reach.
+    pub fn cont_in_reach(&self, slot: usize, kind: u8, ci: usize) -> bool {
+        match kind {
+            inventory::CONT_BAG => self.backpacks.in_reach(ci, &self.players[slot]),
+            inventory::CONT_BOX => self.deploys.box_in_reach(ci, &self.players[slot]),
+            _ => false,
+        }
+    }
+
+    /// Copy the live contents of a resolved ground container into `out`,
+    /// returning how many slots the kind actually has. Reads only, fills
+    /// only what it returns, and allocates nothing — the caller owns the
+    /// buffer, which is why this takes a slice rather than handing one
+    /// back. `slot` is unused for a ground container and is not taken.
+    pub fn cont_view(&self, kind: u8, ci: usize, out: &mut [ItemStack]) -> usize {
+        let n = inventory::slots_in(kind).min(out.len());
+        for (s, o) in out.iter_mut().enumerate().take(n) {
+            *o = match kind {
+                inventory::CONT_BAG => self.backpacks.slot(ci, s),
+                inventory::CONT_BOX => self.deploys.box_slot(ci, s),
+                _ => ItemStack::default(),
+            };
+        }
+        n
+    }
+
     /// The mirror of `cont_slot`, and the only place a move writes.
     fn set_cont_slot(&mut self, slot: usize, kind: u8, s: u8, ci: usize, v: ItemStack) {
         match kind {
@@ -850,34 +898,20 @@ impl World {
         // back". Both kinds answer them the same way — a bag by id, a box
         // by packed address — which is the whole of what a third kind
         // costs here.
-        let cont_idx = match ground {
-            inventory::CONT_BAG => {
-                let Some(i) = self.backpacks.index_of_id(cont) else {
-                    self.events
-                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
-                    return;
-                };
-                if !self.backpacks.in_reach(i, &self.players[slot]) {
-                    self.events
-                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
-                    return;
-                }
-                Some(i)
+        let cont_idx = if ground == inventory::CONT_SELF {
+            None
+        } else {
+            let Some(i) = self.cont_index(ground, cont) else {
+                self.events
+                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
+                return;
+            };
+            if !self.cont_in_reach(slot, ground, i) {
+                self.events
+                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
+                return;
             }
-            inventory::CONT_BOX => {
-                let Some(i) = self.deploys.box_index(cont) else {
-                    self.events
-                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
-                    return;
-                };
-                if !self.deploys.box_in_reach(i, &self.players[slot]) {
-                    self.events
-                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
-                    return;
-                }
-                Some(i)
-            }
-            _ => None,
+            Some(i)
         };
         // Safe past the guard above: `cont_idx` is `Some` whenever either
         // kind is a ground container, and the zero is never indexed

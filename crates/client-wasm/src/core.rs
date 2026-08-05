@@ -143,6 +143,13 @@ pub const STREAM_ERR: u32 = 1 << 31;
 /// either is to re-read `client_move_readout`, which says which it was.
 pub const APPLIED2_MOVE: u32 = 1 << 0;
 
+/// The open container's contents changed (`EventMsg::ContSync`) — an
+/// open, a close, or a slot moving inside a box someone else is also
+/// standing at. One flag for all three, because the panel's response to
+/// every one of them is the same: re-read `client_cont_kind` (zero ⇒ it
+/// closed) and repaint from `client_cont_ptr`.
+pub const APPLIED2_CONT: u32 = 1 << 1;
+
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
 /// (`MAX_SLOT_LIVES` covers every slot a seed produces); a server-driven
@@ -527,6 +534,18 @@ pub struct ClientCore {
     // --- event lane (reliable stream, protocol::event) ---
     /// Authoritative own inventory as last announced by the server.
     pub inv: [ItemStack; INV_SLOTS],
+    /// The open container's contents as last announced by the server, and
+    /// the handle they belong to. `cont_kind == inventory::CONT_SELF` ⇒
+    /// nothing is open and `cont` is stale — read the kind first.
+    ///
+    /// `INV_SLOTS` wide because a bag is; a box fills the first
+    /// `BOX_SLOTS` and `cont_slots` says which. The server only ever
+    /// addresses slots inside the kind's own width (the encoder refuses
+    /// the rest), so the tail cannot be written by a message.
+    pub cont: [ItemStack; INV_SLOTS],
+    pub cont_kind: u8,
+    pub cont_handle: u32,
+    pub cont_slots: u8,
     pub harvested: HarvestedSet,
     pub catalog: ItemCatalog,
     /// Cell changes the last `on_stream` call produced: (key, harvested).
@@ -707,6 +726,10 @@ impl ClientCore {
             snapshots_no_baseline: 0,
             decode_errors: 0,
             inv: [ItemStack::default(); INV_SLOTS],
+            cont: [ItemStack::default(); INV_SLOTS],
+            cont_kind: sim_core::inventory::CONT_SELF,
+            cont_handle: 0,
+            cont_slots: 0,
             harvested: HarvestedSet::new(),
             catalog: ItemCatalog::EMPTY,
             slot_changes: [(0, false); protocol::SLOT_SYNC_BATCH],
@@ -827,6 +850,35 @@ impl ClientCore {
                     self.inv[s.slot as usize] = s.stack;
                 }
                 flags |= APPLIED_INV;
+            }
+            EventMsg::ContSync {
+                kind,
+                cont,
+                reset,
+                slots,
+                count,
+            } => {
+                // Reset clears before applying — the panel is rebuilt, not
+                // patched. It rides the first batch after an open and any
+                // batch after an event-lane resync, so a stale slot from
+                // the container you had open before cannot survive into
+                // the one you have open now.
+                if reset {
+                    self.cont = [ItemStack::default(); INV_SLOTS];
+                }
+                self.cont_kind = kind;
+                self.cont_handle = cont;
+                self.cont_slots = sim_core::inventory::slots_in(kind) as u8;
+                if kind == sim_core::inventory::CONT_SELF {
+                    // Closed. `slots_in(CONT_SELF)` is the inventory's
+                    // width and would read as "a 30-slot container is
+                    // open"; the panel is gone, so the width is zero.
+                    self.cont_slots = 0;
+                }
+                for s in slots.iter().take(count as usize) {
+                    self.cont[s.slot as usize] = s.stack;
+                }
+                self.applied2 |= APPLIED2_CONT;
             }
             EventMsg::SlotHarvested { cx, cz } => {
                 self.harvested.insert(cell_key(cx, cz));
@@ -1681,7 +1733,7 @@ mod tests {
 
     /// Word 1. One flag today; the list is here so the thirty-fourth is a
     /// row and an assert, not a rediscovery.
-    const APPLIED_HI: [u32; 1] = [APPLIED2_MOVE];
+    const APPLIED_HI: [u32; 2] = [APPLIED2_MOVE, APPLIED2_CONT];
 
     /// The gate on the trap that put `APPLIED_MOVE` on the error bit.
     ///

@@ -35,17 +35,18 @@ pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     decode_event, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_chat,
-    encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_move_refused, encode_event_moved,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH,
-    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
-    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
+    encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
+    encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_respawn,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
+    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
+    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -157,7 +158,22 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// move verb exists to never cause. A widened *meaning* is a wire change
 /// even when the layout is byte-identical, and `PROTO_VER` is the only
 /// thing that catches a mismatched build. Fixtures are keyed `v18_*`.
-pub const PROTO_VER: u16 = 18;
+/// v19 put a container's **contents** on the wire — for a bag as much as
+/// a box, neither of which had ever crossed. Two messages, both inside
+/// widths earlier versions already paid for: the open verb, the
+/// **fourteenth** action, inside v12's 4-bit subtype; and the
+/// container-contents sync, the **39th** event, inside v13's 6-bit field.
+/// Nothing existing moved a bit.
+///
+/// The sync is the first S→C message addressed to **one** client rather
+/// than to everyone who can see the thing it describes. That is the whole
+/// design: contents go to the opener alone, so a panel nobody has open
+/// costs nothing and a player cannot read a box across the valley. It is
+/// also why the open verb never becomes a `Command` — it changes nothing
+/// in the world, so it stays out of the sim, out of the WAL, and out of
+/// `state_hash`, and a replay is bit-identical with or without it.
+/// Fixtures are keyed `v19_*`.
+pub const PROTO_VER: u16 = 19;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -356,6 +372,19 @@ const ACT_RESPAWN: u32 = 11;
 /// The move verb (wire v17, `inventory.rs`). Thirteenth of the sixteen,
 /// so no width moved for it either — three action codes remain.
 const ACT_MOVE: u32 = 12;
+/// The open verb (wire v19). Fourteenth of the sixteen, so no width moved
+/// for it either — **two action codes remain**, and the next lane to want
+/// one should read `KIND_CHAT`'s note first.
+///
+/// One subtype, not two, because the thing being sent is a *handle* and
+/// `CONT_SELF` is that handle's null: your own inventory is always open,
+/// so "open self" is precisely "nothing else is open" and needs no second
+/// code. That is a meaning a byte-golden cannot see, which is why
+/// `test_protocol_golden` pins the close message's exact bytes and
+/// `container_wire` asserts the server clears its handle on it — the
+/// `reference/FINDINGS.md` §1 shape, applied to a field that would
+/// otherwise be law with no gate.
+const ACT_OPEN: u32 = 13;
 /// Container-kind width on the move action. Two bits for two live kinds
 /// (`inventory::CONT_SELF`, `CONT_BAG`), so 2 and 3 are forgeable and
 /// refuse at decode — the `BUILD_MAT_BITS` posture, and deliberately not
@@ -522,6 +551,24 @@ pub enum ActionMsg {
         to_slot: u8,
         count: u16,
     },
+    /// Open a container, or close whatever is open. `kind` is an
+    /// `inventory::CONT_*` and `cont` the same handle the move verb
+    /// carries — a bag id for `CONT_BAG`, a packed `box_key` for
+    /// `CONT_BOX`.
+    ///
+    /// `kind == CONT_SELF` is **close**, and `cont` is then ignored rather
+    /// than refused. Ignored, because the alternative is a `Malformed`
+    /// frame for a harmless stale value and a bad action frame ends the
+    /// session (`server/src/net.rs`) — the same disconnect the move verb
+    /// exists to never cause, and there is no reason to reintroduce it on
+    /// the verb that *closes* a panel.
+    ///
+    /// Opening is a request to be told a container's contents, never a
+    /// claim on it: no lock, no exclusivity, and two players may hold the
+    /// same box open. The sim is untouched by this message — it changes
+    /// nothing in the world, so it never becomes a `Command`, never enters
+    /// the WAL, and a replay is identical with or without it.
+    Open { kind: u8, cont: u32 },
 }
 
 /// The move verb — see `ActionMsg::Move`. Range-checks every field it can
@@ -555,6 +602,23 @@ pub fn encode_action_move(
     w.write(to_kind as u32, CONT_KIND_BITS)?;
     w.write(to_slot as u32, ACTION_SLOT_BITS)?;
     w.write(count as u32, MOVE_COUNT_BITS)?;
+    Ok(w.finish())
+}
+
+/// The open verb — see `ActionMsg::Open`. Range-checks the one field it
+/// can (a kind inside `CONT_MAX`); the handle is 32 bits wide and every
+/// value of it is a shape the wire accepts, because whether a bag id or a
+/// box address resolves is the sim's question and its answer is a *closed*
+/// message, not a declined frame.
+pub fn encode_action_open(kind: u8, cont: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if kind > sim_core::inventory::CONT_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_OPEN, ACTION_SUB_BITS)?;
+    w.write(kind as u32, CONT_KIND_BITS)?;
+    w.write(cont, 32)?;
     Ok(w.finish())
 }
 
@@ -905,6 +969,18 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 to_slot,
                 count,
             }
+        }
+        ACT_OPEN => {
+            let kind = r.read(CONT_KIND_BITS)? as u8;
+            let cont = r.read(32)?;
+            // Two bits hold three kinds, so 3 is forgeable and refuses.
+            // The handle is not checked: an id that names no bag and an
+            // address that names no box are both answered by the *sim*,
+            // with a closed message. See `ActionMsg::Open`.
+            if kind > sim_core::inventory::CONT_MAX {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Open { kind, cont }
         }
         _ => return Err(WireError::Malformed),
     };

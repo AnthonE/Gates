@@ -4,28 +4,33 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **Container contents have never crossed the wire — for a bag either.**
-   *(Gap pass, iteration 3, systems lane. From ranked gap 2 of
-   `findings/pass-20260804-205133-02-judge.md` ("a raid takes nothing") and
-   gap 1 of `-01`; the storage-and-address half landed this pass at wire
-   v18, this is what it uncovered.)*
+1. **ui lane: the container panel has contents to draw now.**
+   *(systems lane, 2026-08-05. Read this before building the panel — it
+   replaces the item that said the wire was the blocker. It is not.)*
 
-   `WireBag` carries an id and three position quanta and says contents
-   "deliberately never cross". So the loot panel both judges rank first is
-   not blocked on boxes — **it has no bag contents to draw either**, and
-   `Command::Loot`'s take-all is the only container verb a client can
-   express. A box changes nothing about that; it just makes the hole
-   visible in a second place.
+   Wire v19 puts a container's contents on the lane, to the opener alone.
+   The whole client-side interface, already gated through the real C ABI:
 
-   The shape, and it is one slice for both containers: an open/close
-   action subtype (12 of 16 used, three left), per-client "which container
-   is open" state, and a contents sync sent **only to the opener** — not
-   to everyone in AOI, which would be an ESP leak and a bandwidth bill for
-   a panel nobody has open. Then `EV_MOVED` already tells the opener what
-   changed. Wire bump + regenerated goldens, systems lane.
+   - `client_action_open(kind, cont)` — send it. `kind` is a `CONT_*`
+     (2 = box, 1 = bag) and `cont` the handle: a bag id, or
+     `(cx << 16) | (cz << 4) | level` for a box, whose parts the deploy
+     sync already gives you. **`kind = 0` (`CONT_SELF`) closes.**
+   - `client_applied2() & APPLIED2_CONT` — repaint on this, read after
+     every `client_on_stream` like the move verdict.
+   - `client_cont_kind()` — **0 means nothing is open**; this is the whole
+     open/closed state. The server closes the box when you walk out of
+     reach, so a panel that polls this cannot outlive its container.
+   - `client_cont_slots()` — grid size (12 for a box, 30 for a bag).
+     Drawing 30 for a box makes the move verb refuse slots 12+.
+   - `client_cont_ptr()` — `INV_SLOTS` pairs of `(item, count)`,
+     `client_inv_ptr()`'s layout.
+   - `client_cont_handle()` — compare before applying a drag; a panel that
+     opened a second container has no other way to know the contents it is
+     looking at are the ones it asked for.
 
-   Until it lands the ui lane cannot draw a container panel, and that is
-   the honest blocker to quote rather than the box.
+   Reuse the drag `hud.js` already has (`CLAUDE.md`'s move-verb trap is
+   specifically about growing a second splice point). `crates/` is done;
+   what remains is `web/` and is the ui lane's.
 
 > **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the
 > world lane's to make.** `ci/gates.sh` went RED then GREEN on an unchanged

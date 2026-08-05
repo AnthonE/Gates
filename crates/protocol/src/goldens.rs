@@ -27,71 +27,80 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 61] = [
-    "v18_input_acks_only.bin",
-    "v18_input_full.bin",
-    "v18_snapshot_keyframe.bin",
-    "v18_snapshot_delta.bin",
-    "v18_snapshot_cap.bin",
-    "v18_hello.bin",
-    "v18_welcome.bin",
-    "v18_refuse_full.bin",
-    "v18_event_gather.bin",
-    "v18_event_inv.bin",
-    "v18_event_slot_harvested.bin",
-    "v18_event_slot_respawned.bin",
-    "v18_event_slot_sync.bin",
-    "v18_event_catalog.bin",
-    "v18_event_weak_mark.bin",
-    "v18_event_craft_q.bin",
-    "v18_event_craft_done.bin",
-    "v18_event_craft_refused.bin",
-    "v18_event_recipes.bin",
-    "v18_action_craft.bin",
-    "v18_action_cancel.bin",
-    "v18_action_place.bin",
-    "v18_event_piece_placed.bin",
-    "v18_event_piece_sync.bin",
-    "v18_event_build_refused.bin",
-    "v18_event_piece_defs.bin",
-    "v18_action_deploy.bin",
-    "v18_action_feed.bin",
-    "v18_event_deploy_placed.bin",
-    "v18_event_deploy_sync.bin",
-    "v18_event_deploy_refused.bin",
-    "v18_event_deploy_defs.bin",
-    "v18_event_piece_removed.bin",
-    "v18_event_deploy_removed.bin",
-    "v18_event_stock.bin",
-    "v18_action_use.bin",
-    "v18_action_lock.bin",
-    "v18_event_door.bin",
-    "v18_action_upgrade.bin",
-    "v18_chat.bin",
-    "v18_event_chat.bin",
-    "v18_event_hit.bin",
-    "v18_event_health.bin",
-    "v18_event_death.bin",
-    "v18_action_loot.bin",
-    "v18_event_bag_dropped.bin",
-    "v18_event_bag_sync.bin",
-    "v18_event_bag_removed.bin",
-    "v18_event_struct_hit_piece.bin",
-    "v18_event_struct_hit_deploy.bin",
-    "v18_event_vitals.bin",
-    "v18_event_consumed.bin",
-    "v18_event_consume_refused.bin",
-    "v18_action_consume.bin",
-    "v18_event_drank.bin",
-    "v18_action_drink.bin",
-    "v18_event_respawn.bin",
-    "v18_action_respawn.bin",
-    "v18_action_move.bin",
-    "v18_event_moved.bin",
-    "v18_event_move_refused.bin",
+pub const FIXTURES: [&str; 66] = [
+    "v19_input_acks_only.bin",
+    "v19_input_full.bin",
+    "v19_snapshot_keyframe.bin",
+    "v19_snapshot_delta.bin",
+    "v19_snapshot_cap.bin",
+    "v19_hello.bin",
+    "v19_welcome.bin",
+    "v19_refuse_full.bin",
+    "v19_event_gather.bin",
+    "v19_event_inv.bin",
+    "v19_event_slot_harvested.bin",
+    "v19_event_slot_respawned.bin",
+    "v19_event_slot_sync.bin",
+    "v19_event_catalog.bin",
+    "v19_event_weak_mark.bin",
+    "v19_event_craft_q.bin",
+    "v19_event_craft_done.bin",
+    "v19_event_craft_refused.bin",
+    "v19_event_recipes.bin",
+    "v19_action_craft.bin",
+    "v19_action_cancel.bin",
+    "v19_action_place.bin",
+    "v19_event_piece_placed.bin",
+    "v19_event_piece_sync.bin",
+    "v19_event_build_refused.bin",
+    "v19_event_piece_defs.bin",
+    "v19_action_deploy.bin",
+    "v19_action_feed.bin",
+    "v19_event_deploy_placed.bin",
+    "v19_event_deploy_sync.bin",
+    "v19_event_deploy_refused.bin",
+    "v19_event_deploy_defs.bin",
+    "v19_event_piece_removed.bin",
+    "v19_event_deploy_removed.bin",
+    "v19_event_stock.bin",
+    "v19_action_use.bin",
+    "v19_action_lock.bin",
+    "v19_event_door.bin",
+    "v19_action_upgrade.bin",
+    "v19_chat.bin",
+    "v19_event_chat.bin",
+    "v19_event_hit.bin",
+    "v19_event_health.bin",
+    "v19_event_death.bin",
+    "v19_action_loot.bin",
+    "v19_event_bag_dropped.bin",
+    "v19_event_bag_sync.bin",
+    "v19_event_bag_removed.bin",
+    "v19_event_struct_hit_piece.bin",
+    "v19_event_struct_hit_deploy.bin",
+    "v19_event_vitals.bin",
+    "v19_event_consumed.bin",
+    "v19_event_consume_refused.bin",
+    "v19_action_consume.bin",
+    "v19_event_drank.bin",
+    "v19_action_drink.bin",
+    "v19_event_respawn.bin",
+    "v19_action_respawn.bin",
+    "v19_action_move.bin",
+    "v19_event_moved.bin",
+    "v19_event_move_refused.bin",
+    "v19_action_move_box.bin",
+    "v19_action_open.bin",
+    "v19_action_close.bin",
+    "v19_event_cont_sync.bin",
+    "v19_event_cont_closed.bin",
 ];
 
-/// The move action: bag id, from (kind, slot), to (kind, slot), count.
+/// The move action: container handle, from (kind, slot), to (kind, slot),
+/// count. The handle is a **bag id or a packed box address** depending on
+/// the kind naming it — it was written here as "bag id" while `CONT_BOX`
+/// was already live, which is the field-name-disagrees-with-payload class
+/// `CLAUDE.md` cites 27 Oxide corrections for.
 ///
 /// Every part is distinguishable from every other, which on this message
 /// is not decoration — it is the entire defence. `reference/FINDINGS.md`
@@ -104,6 +113,72 @@ pub const FIXTURES: [&str; 61] = [
 /// `test_protocol_golden`.
 pub fn action_move() -> (u32, u8, u8, u8, u8, u16) {
     (0x0BA6_1D01, 0, 3, 1, 17, 42)
+}
+
+/// The same verb aimed at a **box**, because `action_move` never was and
+/// `CONT_BOX` therefore crossed a version with no fixture of its own — the
+/// v18 bytes were byte-identical to v17's and pinned only the two kinds
+/// that already existed. A meaning with no golden is exactly the hole
+/// `reference/FINDINGS.md` §1 describes, and it is not closed by the
+/// message next to it being pinned.
+///
+/// Same discipline as `action_move` and deliberately different values:
+/// into the box (self→box, the direction a stash goes), a `box_key`
+/// handle rather than a bag id, and a destination slot inside `BOX_SLOTS`
+/// — 11 is the last one a box has, so a fixture that drifted to the
+/// inventory's width would still have to move bytes to pass.
+pub fn action_move_box() -> (u32, u8, u8, u8, u8, u16) {
+    (0x0051_0037, 0, 6, 2, 11, 9)
+}
+
+/// The open verb: open the box at that address. The kind is `CONT_BOX`
+/// rather than `CONT_BAG` so the fixture pins the *third* container value
+/// — the one two bits made forgeable and v18 made live — and the handle
+/// is not the one `action_move_box` carries, so a fixture that read the
+/// wrong case's constant would not agree with itself.
+pub fn action_open() -> (u8, u32) {
+    (2, 0x00A3_002C)
+}
+
+/// **Close**, which is the same message with `CONT_SELF` in the kind and
+/// nothing else set. It has its own fixture because it is the one shape
+/// of this verb whose meaning does not follow from its fields — every
+/// other action means what its name says, and this one means the
+/// *opposite* of its name. Pinned bytes are the only thing standing
+/// between that and a reader who assumes `CONT_SELF` opens a backpack.
+pub fn action_close() -> (u8, u32) {
+    (0, 0)
+}
+
+/// A container sync: a box's contents, mid-drip rather than mid-open, so
+/// the reset bit is **false** and the batch is a diff. Three slots, none
+/// of them slot 0 (a fixture that pinned the first slot would pass while
+/// the index field was being dropped), indices inside `BOX_SLOTS`, and
+/// three distinct items with three distinct counts — the count of one is
+/// the item of none, so a swapped pair moves bytes.
+pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
+    (
+        2,
+        0x00A3_002C,
+        false,
+        [
+            InvSlot {
+                slot: 2,
+                stack: ItemStack { item: 7, count: 31 },
+            },
+            InvSlot {
+                slot: 5,
+                stack: ItemStack { item: 19, count: 4 },
+            },
+            InvSlot {
+                slot: 11,
+                stack: ItemStack {
+                    item: 3,
+                    count: 128,
+                },
+            },
+        ],
+    )
 }
 
 /// The move acknowledgement. The kinds run the *other* way from
