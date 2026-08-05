@@ -15,6 +15,34 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0 · Half the verbs you own are undiscoverable — *(ui lane; compass done this pass)*
+
+From the judge's **ranked gap 3**, `pass-20260805-063306-01-judge.md`. NOW.md
+held no open ui-lane item, so the gap list supplied this one. Two halves:
+
+- **A bearing readout — DONE.** Compass strip, top centre, `hud.js` +
+  `index.html`. `ui_smoke` 442 → 507 checks (§S/§T); nine mutants red.
+  **+Z is North, +X is East** — `DECISIONS.md` §open has the row and the
+  conflict it resolves against `build.rs`'s `LOC_EDGE_N`.
+- **The build prompt — still open, and it is the judge's ranked fix 2.**
+  `interact.js:64-72` resolves `VERB_DOOR`/`BAG`/`BOX`/`HEARTH` and no place
+  verb, so the placement preview exists only for someone who has read
+  `main.js`. Squarely ui-lane; not started.
+
+Two things the compass could not carry, both needing another lane:
+
+- **Systems lane, one export please:** the haven pad centre is not reachable
+  client-side. `terrain::haven(seed)` is pure and `bridge.rs:92` already
+  memoizes it, but nothing returns it — no getter beside `terrain_fill_slots`.
+  One export and the pad can carry a compass marker; the judge's gap named
+  the pad as the destination nobody can find.
+- **A marker is a design call, not just an export.** `showDeath` states the
+  standing rule (`ALPHA.md` §1, "no map position") and it is about the death
+  screen, not the HUD — but a pad marker is close enough to it that an
+  operator word is cheaper than a pass spent guessing.
+
+---
+
 ## 1 · The client is becoming a native Rust desktop app
 
 *(Operator, 2026-08-05. `DECISIONS.md` has the row. This outranks the
@@ -130,6 +158,29 @@ of them. `event_roles.rs` covers part of this now; finish it.
 
 ---
 
+## 4b · The world lane: what the second tier left open
+
+*(From the ranked gaps of `pass-20260805-053501-01` §3 and `-02` §2 — "one
+place on the island worth walking to". `waystations v0` landed the placement
+half: 3 authored sites on the ring instead of 1, gated by
+`tests/waystation.rs`. What it did not close, in order:)*
+
+- **A destination still offers no verb you cannot perform at your own base.**
+  `-02`'s gap 2 names the recycler as the only one of `DESIGN.md` §2's three
+  fixtures not blocked on an operator act (bank is A2/A3, vendor is skins).
+  Container verb + `content/*.toml` yields — **systems lane**, and it is what
+  turns a loot gradient into a reason.
+- **The waystations are two crates on bare ground.** The pad got a greybox
+  when the judge found the clearing indistinguishable from natural scenery;
+  the lesser tier will read the same way once the novelty is gone. It wants a
+  silhouette, and it must be a *different* one — a second copy of
+  `HAVEN_SHELTER` makes the tiers look identical.
+- **The pad carve is still unbuilt** and is the one piece of TERRAIN §7/§8
+  that never got easier: `height` has ~80 call sites in four crates, so it is
+  a cross-lane change, not a detail. Sites are still *found* flat, not made.
+- **Nothing threatens you on the walk between them.** A circulation loop with
+  no risk on it is a longer commute. No AI module exists anywhere in
+  `crates/sim-core/src/`.
 ## 4b · The domain gate reads the crate now — three residuals
 
 Landed 2026-08-05 (`loop/domain-gate-whole-crate`), from the

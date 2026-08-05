@@ -519,6 +519,86 @@
         gap: 4px;
         z-index: 5;
       }
+      /* The compass strip, top centre, as `gameplayfoundbase.jpeg` and
+         `mapstylized.jpg` draw it: a window onto a much wider band of
+         bearings that scrolls under a fixed centre index.
+         `#compass` is the window and clips; `#compassband` is the band and
+         is `COMPASS_SPAN_DEG` wide. Width and height are derived from the
+         same two constants `hud.js` builds the band with, restated here in
+         px only because CSS cannot read them — `ci/ui_smoke.mjs` asserts
+         the two agree, so a change to one that misses the other is red. */
+      #compass {
+        position: fixed;
+        left: 50%;
+        top: 15px;
+        width: 450px; /* COMPASS_FOV_DEG * COMPASS_PX_PER_DEG */
+        height: 18px;
+        /* `margin-left: -half` rather than the file's usual
+           `transform: translateX(-50%)`: the width here is exact, and a
+           transform on a masked scroll container stacks a compositing
+           layer under the mask for no gain. */
+        margin-left: -225px;
+        display: none;
+        overflow: hidden;
+        z-index: 5;
+        pointer-events: none;
+        /* Fades the two ends rather than cutting them: a bearing sliding
+           off the edge should leave, not vanish at a hard line. */
+        -webkit-mask-image: linear-gradient(
+          to right,
+          transparent,
+          #000 12%,
+          #000 88%,
+          transparent
+        );
+        mask-image: linear-gradient(
+          to right,
+          transparent,
+          #000 12%,
+          #000 88%,
+          transparent
+        );
+      }
+      #compassband {
+        position: relative;
+        height: 100%;
+        width: 2250px; /* COMPASS_SPAN_DEG * COMPASS_PX_PER_DEG */
+      }
+      .ctick {
+        position: absolute;
+        top: 0;
+        width: 40px;
+        margin-left: -20px;
+        text-align: center;
+        font: 10px monospace;
+        color: #9fb0be;
+        text-shadow: 0 1px 2px #000;
+      }
+      /* A cardinal reads as a heading you steer by; a number reads as a
+         gradation between them. Same strip, two weights. */
+      .ctick.card {
+        font: bold 12px monospace;
+        color: #e6edf3;
+      }
+      /* The fixed centre index — the strip moves under it, it does not
+         move. ABOVE the band and not on it: at top:8px for both, the
+         caret landed on top of whichever label was centred and the two
+         glyphs overprinted, which is what the reference avoids by putting
+         its chevrons above the letters. */
+      #compassnow {
+        position: fixed;
+        left: 50%;
+        top: 3px;
+        margin-left: -4px;
+        display: none;
+        font: 10px monospace;
+        color: #e6edf3;
+        text-shadow: 0 1px 2px #000;
+        /* 5 is the passive-HUD rung; it sits over the band on DOM order,
+           which is the tie-break, rather than by climbing the ladder. */
+        z-index: 5;
+        pointer-events: none;
+      }
       #build {
         position: fixed;
         left: 50%;
@@ -575,6 +655,8 @@
     <canvas id="gl"></canvas>
     <div id="hud"></div>
     <div id="cross">·</div>
+    <div id="compass"><div id="compassband"></div></div>
+    <div id="compassnow">▼</div>
     <div id="prompt"></div>
     <div id="hotbar"></div>
     <div id="build"></div>
