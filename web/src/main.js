@@ -422,6 +422,27 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     bagPos: null,
     bagIds: null,
   };
+  // The same world, for the map's markers. Built once and refreshed in place
+  // for the reason `interactWorld` is, and it differs from it in exactly one
+  // field: `recs` is the deploy Map itself, not `deployRecs.values()`. The
+  // map redraws from `toggleMap` as well as from the HUD timer, and a spent
+  // iterator handed to the second caller draws an island with nothing on it.
+  const mapWorld = {
+    cell: BUILD_CELL,
+    defs: null,
+    recs: deployRecs,
+    bagCount: 0,
+    bagPos: null,
+  };
+  /** Bring `mapWorld` up to date. The views are re-read rather than held:
+   * wasm memory growth detaches a typed array, and `WasmViews.refresh` hands
+   * back new ones. */
+  const refreshMapWorld = () => {
+    mapWorld.defs = views.deployDefs;
+    mapWorld.bagCount = ex.client_bags_len();
+    mapWorld.bagPos = views.bagPos;
+  };
+  hud.setMapWorld(mapWorld);
   const interactAim = { x: 0, z: 0, fx: 0, fz: 0, reach: INTERACT_REACH_M, only: VERB_NONE };
   /**
    * Resolve what E would act on right now. `only` restricts the pick to a
@@ -955,6 +976,11 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     // path, where `browser_smoke` measures how long the client takes to reach
     // the world.
     if (e.code === "KeyM") {
+      // Before the toggle, not after: `toggleMap` draws the panel on the way
+      // open, and the markers it draws are read out of `mapWorld` at that
+      // moment. Refreshed after, the first frame of every open would be the
+      // world as it stood the last time the map was closed.
+      refreshMapWorld();
       if (hud.toggleMap()) {
         paintIsland();
         document.exitPointerLock();
@@ -1789,7 +1815,13 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     // the RAF loop's parked sample rather than from a fresh call — §T of
     // `ci/ui_smoke.mjs` holds this file to one sample per frame, and that
     // assertion IS the argument: two reads a quarter second apart are two yaws.
-    if (hud.mapOpen) hud.setMapView(R[1], R[3], lastYawU16);
+    if (hud.mapOpen) {
+      // Same order as the KeyM path: the markers are resolved inside the draw
+      // `setMapView` triggers, so the world has to be current before the call
+      // rather than after it.
+      refreshMapWorld();
+      hud.setMapView(R[1], R[3], lastYawU16);
+    }
     if (hud.invOpen) {
       // Slot-indexed and all 30, because that is setInventory's contract:
       // the belt row IS slots 0..5 (the six already formatted above) and

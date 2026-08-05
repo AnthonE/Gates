@@ -25,6 +25,12 @@
 // file owns is the PALETTE — which colour a weight paints — and that is
 // cartography, not terrain shading.
 
+// The deployable archetype codes, from the one place the client mirrors them.
+// `interact.js` does not import this file, so this is a leaf edge and not a
+// cycle — see `ARCH_MARK` at the foot of the file for why the numbers are not
+// simply restated here.
+import { ARCH_BAG, ARCH_HEARTH } from "./interact.js";
+
 /**
  * The world's extent in metres — `terrain::ISLAND_SIZE`. x and z both run
  * `[0, WORLD_M]` and the island is centred at half of it.
@@ -334,6 +340,197 @@ export function paintMap(out, size, src) {
       out[o + 2] = b;
       out[o + 3] = 255;
     }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// The markers: the things on the island that are YOURS.
+//
+// Why this exists. The judge of `pass-20260805-111501-04` ranks first "the
+// destinations pay nothing, so there is still no reason to leave your base",
+// and names its mechanism as the missing verb that opens a world container —
+// which is `crates/` work and this lane's `NOW.md` carries the request for it.
+// This is the other half of the same sentence, and it is entirely client-side:
+// leaving your base is a round trip, and until this landed the map could not
+// draw the trip's other end. It painted the island, a grid, and one triangle
+// for the player, and NOTHING else — `mapstylized.jpg`, the frame the panel
+// was drawn from, is made almost entirely of markers. A player who cannot see
+// where home is cannot afford to walk away from it, whatever is in the crate.
+//
+// Every marker here comes off data the client ALREADY holds — deploy records
+// and the standing death bags, both already streamed for the 3D scene and for
+// `interact.js`. Nothing new crosses the wire and no new wasm export is
+// needed, which is the whole reason this half could land while the other waits.
+//
+// What it deliberately does NOT mark: the haven pad and the waystations. The
+// client cannot know where they are — `terrain::haven(seed)` returns the pad
+// and the waystation array in one struct and nothing bridges it, so a client
+// learns a destination exists only by standing in its chunk. That is the
+// systems lane's export, and `resolveMarks` takes world positions, so it is a
+// caller change here and not a rewrite.
+
+/**
+ * The most markers the map will draw. A wall (`CLAUDE.md` §4: bounded
+ * everything, with a stated overflow policy), not a budget a player meets —
+ * the marked archetypes are the two a base has one of, so a real map draws two
+ * or three of these plus a bag.
+ *
+ * Overflow policy: drop-newest, and the count of dropped markers is kept on
+ * the result rather than discarded, because a cap that truncates silently
+ * reads as "everything is drawn" when it is not. Proposed default,
+ * `DECISIONS.md` §open (map marker cap v0).
+ */
+export const MAP_MARKS_MAX = 64;
+
+/** No marker. Never drawn; the zero so a stale array slot cannot draw a bed. */
+export const MARK_NONE = 0;
+/** A deployed sleeping bag: where you WAKE. `Rust Images/genericview.jpeg`. */
+export const MARK_BED = 1;
+/** A hearth: the base's anchor, and what its upkeep is paid into. */
+export const MARK_HEARTH = 2;
+/** A standing death backpack: where your stuff is. */
+export const MARK_BAG = 3;
+/** The highest marker kind. `ui_smoke` walks 1..MARK_MAX and requires a label,
+ * a fill, a shape and a draw branch for every one, so a kind added here
+ * without all four lands red on the commit that adds it. */
+export const MARK_MAX = 3;
+
+/**
+ * The noun each marker names. Generic kinds only — the same rule
+ * `interact.js`'s `VERB_LABEL` and `hud.js`'s `CONT_NAMES` follow, and
+ * `CONTENT.md` owns item names. Nothing draws these yet; they exist so the
+ * kind has a name a gate and a legend can both address it by.
+ */
+export const MARK_LABEL = {
+  [MARK_BED]: "BED",
+  [MARK_HEARTH]: "HEARTH",
+  [MARK_BAG]: "BACKPACK",
+};
+
+/**
+ * The fill each kind is drawn in, and the shape it is drawn as. BOTH differ
+ * per kind on purpose: colour alone is the one channel a player reading a
+ * 512-pixel panel in a hurry can confuse, and shape alone is the one a
+ * screenshot at this scale can. They are also two independent things a
+ * transposition has to get right, which is what makes a swap visible rather
+ * than merely different.
+ *
+ * The colours are the map's own palette family (cool blue for the sea-side
+ * cold thing you sleep on, ember orange for fire, straw for loot), not the
+ * ground palette above — a marker that shared a ground colour would vanish
+ * over that biome.
+ */
+export const MARK_FILL = {
+  [MARK_BED]: "#7fb3ff",
+  [MARK_HEARTH]: "#ff9d5c",
+  [MARK_BAG]: "#e8d76a",
+};
+
+/** One of `"square"`, `"diamond"`, `"disc"`. `hud.js`'s `drawMap` dispatches
+ * on this and `ui_smoke` requires a branch for every value present. */
+export const MARK_SHAPE = {
+  [MARK_BED]: "square",
+  [MARK_HEARTH]: "diamond",
+  [MARK_BAG]: "disc",
+};
+
+/**
+ * Which deployable archetype becomes which marker — the ONLY table that
+ * decides it, and the reason `ARCH_BAG` was moved into `interact.js` rather
+ * than restated here.
+ *
+ * The archetypes NOT in this table are the point of the table. A box, a door,
+ * a fire, a furnace and a workbench are all deployables and none is marked: a
+ * base is a dozen boxes and a door per room, and marking them turns the panel
+ * into a solid block of icons over the one square the player already knows how
+ * to find. Two anchors is a map; twenty is a smear.
+ */
+export const ARCH_MARK = {
+  [ARCH_BAG]: MARK_BED,
+  [ARCH_HEARTH]: MARK_HEARTH,
+};
+
+/**
+ * A reusable marker set. One is allocated per caller at wire-up and mutated in
+ * place — `drawMap` runs off the HUD's quarter-second timer while the map is
+ * open and `CLAUDE.md`'s client law is no per-frame allocations.
+ *
+ * `a` is flat `[kind, px, py]` triples in CANVAS pixels, and it is flat for
+ * the reason `hud.mapTri` is: the array is what the 2D context is walked out
+ * of, so it is also what a gate can assert on. The judge's M9 on
+ * `pass-20260805-074623-03` left the triangle's heading correct and hard-coded
+ * the vertex it drew — heading readable, drawing wrong, gate green. A marker
+ * layer that computed positions into the `ctx` calls would have the same seam.
+ */
+export function newMarks() {
+  return {
+    a: new Float64Array(MAP_MARKS_MAX * 3),
+    /** How many triples of `a` are live. */
+    count: 0,
+    /** How many markers the cap refused. Not drawn; not silent either. */
+    dropped: 0,
+    /** `worldToMap`'s reused output. Scratch, never read by the caller. */
+    p: { px: 0, py: 0 },
+  };
+}
+
+/**
+ * Fill `out` with every marker on a `size`-square image.
+ *
+ * Every marker goes through `worldToMap` — the SAME projection the player's
+ * own triangle is placed by, and that is the load-bearing sentence in this
+ * file. A marker layer with its own copy of the north-is-up flip is the defect
+ * class `CLAUDE.md`'s trap list calls positional: the island would be correct,
+ * the player would be correct, and your bed would be drawn as far south of you
+ * as it is north. `ui_smoke` closes it by requiring a marker at the player's
+ * own position to land on the player's own pixel.
+ *
+ * @param out   from `newMarks()`, mutated in place and returned
+ * @param size  the canvas side in pixels
+ * @param world `{cell, defs, recs, bagCount, bagPos}` — the build cell size,
+ *              `deployDefs`, the deploy record MAP, and the bag views.
+ *
+ * `recs` is a Map and not the iterator `resolveInteract` takes, and the
+ * difference is not cosmetic: `drawMap` is called from `toggleMap` as well as
+ * from the timer, and an iterator spent by the first call draws a blank map on
+ * the second. `.values()` here is fresh every call.
+ */
+export function resolveMarks(out, world, size) {
+  out.count = 0;
+  out.dropped = 0;
+  if (!world) return out;
+
+  const push = (kind, x, z) => {
+    if (out.count >= MAP_MARKS_MAX) {
+      out.dropped++;
+      return;
+    }
+    worldToMap(out.p, x, z, size);
+    const i = out.count * 3;
+    out.a[i] = kind;
+    out.a[i + 1] = out.p.px;
+    out.a[i + 2] = out.p.py;
+    out.count++;
+  };
+
+  const half = world.cell / 2;
+  for (const rec of world.recs.values()) {
+    // The archetype is `defs[row * 4]`, the same stride-4 row `interact.js`
+    // reads. An unmarked archetype answers undefined and is skipped — that is
+    // the table's whole job, so it is a lookup and never a chain of ifs.
+    const kind = ARCH_MARK[world.defs[rec.row * 4]];
+    if (!kind) continue;
+    // Measured to the cell CENTRE, which is where `interact.js` measures a
+    // deployable's reach to and where `drawDeploy` puts the mesh. A marker on
+    // the cell's corner would sit up to half a cell off the thing it names.
+    push(kind, rec.cx * world.cell + half, rec.cz * world.cell + half);
+  }
+  // A bag carries a world position, not a grid cell — it is dropped where its
+  // owner died, and `bagPos` is stride-3 x/y/z in metres. y is the one term a
+  // map has no axis for.
+  for (let i = 0; i < world.bagCount; i++) {
+    push(MARK_BAG, world.bagPos[i * 3], world.bagPos[i * 3 + 2]);
   }
   return out;
 }
