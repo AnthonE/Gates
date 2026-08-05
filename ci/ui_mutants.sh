@@ -166,7 +166,12 @@ run_mut "M27 the reach bound is not applied to the piece scan" web/src/interact.
   'let bestD = Infinity;'
 # The refusal table and the repair/raid discriminator: the two reads that told
 # a player the wrong thing about their own base.
-run_mut "M28 the refusal table loses its last sentence" web/src/interact.js \
+#
+# M28 was anchored in `interact.js` and went stale the day the four tables moved
+# to `web/src/refusals.js` — it matched zero times, which this script reports as
+# PATCH-FAILED and exits nonzero on, correctly: an anchor that finds nothing is
+# asserting nothing. Re-anchored, not deleted.
+run_mut "M28 the refusal table loses its last sentence" web/src/refusals.js \
   '  "nothing to upgrade into",
   "not damaged",' \
   '  "nothing to upgrade into",'
@@ -176,6 +181,39 @@ run_mut "M29 a repair announces itself as a breach" web/src/interact.js \
 run_mut "M30 structNews draws a bar off a missing denominator" web/src/interact.js \
   '  if (max === 0) return "";' \
   '  if (max === -1) return "";'
+
+# M31-M34: the ORDER of a refusal table, which every check on it up to
+# 2026-08-05 passed straight through. M31 is verbatim the mutation the judge of
+# pass-20260805-111501-02 ran to prove the hole — it reported `1597 checks
+# passed` while a player placing on a missing hearth read "no door there".
+# The Rust side and the JS side are separate mutants on purpose: the wall has
+# to hold whichever end moved, because either end moving is the same bug.
+# A true SWAP, not a single renumber: the codes stay contiguous 0..12 and the
+# counts stay equal, so contiguity and length both pass and only the meaning
+# wall is left standing.
+run_mut "M31 the sim exchanges REFUSE_D_HEARTH and REFUSE_D_DOOR" crates/sim-core/src/deploy.rs \
+  'pub const REFUSE_D_HEARTH: u32 = 10;
+/// A use request named an address holding no door.
+pub const REFUSE_D_DOOR: u32 = 11;' \
+  'pub const REFUSE_D_HEARTH: u32 = 11;
+/// A use request named an address holding no door.
+pub const REFUSE_D_DOOR: u32 = 10;'
+run_mut "M32 two deploy sentences are transposed" web/src/refusals.js \
+  '  "no hearth there",
+  "no door there",' \
+  '  "no door there",
+  "no hearth there",'
+run_mut "M33 two move sentences are transposed" web/src/hud.js \
+  '  "that slot is not there",
+  "there is nothing there",' \
+  '  "there is nothing there",
+  "that slot is not there",'
+# M34 is the meaning wall's own vacuity: a keyword two sentences share cannot
+# tell those two apart, so it would let them swap. Softening one is exactly how
+# a future pass would "fix" M31 without fixing anything.
+run_mut "M34 a refusal keyword is softened to one three sentences share" ci/ui_smoke.mjs \
+  '      HEARTH: "no hearth",' \
+  '      HEARTH: "hearth",'
 
 echo
 echo "mutants: $red red, $green survived, $broken stale"

@@ -1379,6 +1379,80 @@ check(
     " would then be checked against nothing, which is the gate-that-matches-nothing class",
 );
 
+/**
+ * THE MEANING WALL on a refusal table: each sentence says ITS refusal, tied to
+ * the Rust constant's NAME rather than to its number.
+ *
+ * Every other check on these tables — count, contiguity, non-emptiness,
+ * distinctness, no fall-through — is satisfied by a table of correct sentences
+ * in the WRONG ORDER, and the judge of `pass-20260805-111501-02` demonstrated
+ * exactly that: it swapped the values of `REFUSE_D_HEARTH` (10) and
+ * `REFUSE_D_DOOR` (11) in `deploy.rs`, touched no JS, and this gate reported
+ * `1597 checks passed` while a player placing on a missing hearth was told
+ * "no door there". `CLAUDE.md` names the class — *"the right value in the
+ * wrong position"*, the one an `MSILHash`-style byte golden is blind to and
+ * that 27 of Oxide's shipped payload corrections belong to.
+ *
+ * Three checks, and the third is the one that makes it a wall:
+ *
+ *  1. COMPLETE, both ways. Every constant the Rust declares has a keyword, and
+ *     every keyword names a constant the Rust declares. A refusal added
+ *     without a word goes red on the commit that adds it, and a stale keyword
+ *     for a deleted code cannot sit here pretending to assert something.
+ *  2. MEANS IT. The sentence at that constant's code contains the keyword.
+ *  3. DISCRIMINATING. The keyword appears in exactly ONE sentence of the whole
+ *     table. Without this, two refusals sharing a word ("hearth" appears in
+ *     three deploy sentences) could rotate freely and check 2 would still
+ *     hold. With it, ANY transposition of two codes is red by construction.
+ *
+ * It reads no English and judges no prose: a keyword is a claim the author
+ * made, and the gate holds the author to it positionally. Weakening it means
+ * editing keywords in this file, in the diff, next to this comment.
+ *
+ * @param what     the table's name, for the message
+ * @param rs       the Rust file that declares the codes, for the message
+ * @param prefix   the constant prefix, for the message
+ * @param rs_       [shortName, code] pairs parsed out of the Rust
+ * @param mean     shortName -> required substring
+ * @param at       code -> the sentence the player reads for that code
+ * @param all      every sentence in the table, for the discriminating check
+ */
+function checkNames(what, rs, prefix, rs_, mean, at, all) {
+  const names = rs_.map(([n]) => n);
+  const missing = names.filter((n) => !(n in mean));
+  const stale = Object.keys(mean).filter((n) => !names.includes(n));
+  check(
+    missing.length === 0,
+    `${prefix}${missing.join(`, ${prefix}`)} reached ${what}'s table with no keyword tying the sentence to the` +
+      " NAME — an untied row is a row a reorder of the Rust slides past, which is the defect this group exists" +
+      " for. Add it to `mean` with a word only its own sentence contains",
+  );
+  check(
+    stale.length === 0,
+    `${what}'s \`mean\` still keys ${prefix}${stale.join(`, ${prefix}`)}, which ${rs} no longer declares — a` +
+      " keyword for a code that does not exist asserts nothing and hides how much of the table is really tied",
+  );
+  for (const [name, code] of rs_) {
+    const want = mean[name];
+    if (want === undefined) continue; // already red above; do not double-report
+    const said = String(at(code) ?? "").toLowerCase();
+    check(
+      said.includes(want),
+      `${prefix}${name} = ${code} reads ${JSON.stringify(said)}, which does not say ${JSON.stringify(want)} —` +
+        ` either the sentence is wrong for this refusal or ${rs} renumbered underneath it. A player who hits` +
+        ` ${prefix}${name} is being told about a different refusal entirely, and every count, contiguity and` +
+        " distinctness check above this one passes on exactly that",
+    );
+    const hits = all.filter((s) => String(s ?? "").toLowerCase().includes(want));
+    check(
+      hits.length === 1,
+      `${what}'s keyword ${JSON.stringify(want)} for ${prefix}${name} matches ${hits.length} sentences` +
+        ` (${JSON.stringify(hits)}) — a keyword two sentences share cannot tell them apart, so those two codes` +
+        " could swap and this wall would stay green. Make it longer, or make it a phrase",
+    );
+  }
+}
+
 // The arming default, asserted on a PRISTINE panel — before the test host
 // below assigns over it. The previous pass gated "if `onInvMove` is the
 // sentinel, no drag starts" by putting the sentinel BACK by hand, which is a
@@ -1818,6 +1892,33 @@ check(
   `two refusal reasons share a sentence (${JSON.stringify(move.said)}) — the sim keeps them distinct because they` +
     " are different news; 'it is gone' and 'it is out of reach' are not the same thing to a player standing there",
 );
+// The fifth refusal table, held to the same meaning wall as the four in §W.
+// This one is not imported — `MOVE_REFUSALS` is a module-private const in
+// hud.js and these sentences are read off the LIVE panel, one refused drop per
+// reason — so it is walked here rather than there. Same defect class either
+// way: `inventory.rs` renumbering `REFUSE_M_*` underneath a table indexed by
+// those numbers, which every check above this one passes straight through.
+const MOVE_MEAN = {
+  SLOT: "slot",
+  EMPTY: "nothing",
+  COUNT: "that many",
+  NO_ROOM: "no room",
+  NO_CONTAINER: "gone",
+  REACH: "out of reach",
+  UNSTACKABLE: "stack",
+};
+const moveCodes = [...invSrc.matchAll(/^pub const REFUSE_M_([A-Z0-9_]+): u32 = (\d+);/gm)].map(
+  ([, n, v]) => [n, Number(v)],
+);
+check(
+  moveCodes.length === REFUSE_MAX,
+  `${moveCodes.length} numeric REFUSE_M_* constants parsed out of inventory.rs but REFUSE_M_MAX resolves to` +
+    ` ${REFUSE_MAX} — either the pattern stopped matching (making the name walk below vacuous) or the sim has a` +
+    " reason that is not contiguous with the rest",
+);
+// `said` is gathered for reasons 1..REFUSE_MAX, so it is offset by one: there
+// is no REFUSE_M_* with value 0 because 0 is "landed" and is never shown.
+checkNames("move", "inventory.rs", "REFUSE_M_", moveCodes, MOVE_MEAN, (c) => move.said[c - 1], move.said);
 
 // =============================================================================
 // L. the move verdict's inbound half — unpacking a positional payload
@@ -5713,13 +5814,24 @@ let freeScanUsed = 0;
 // the fourteenth. All four now live in `web/src/refusals.js`, and one loop
 // holds each against the Rust that declares its codes.
 //
-// WHAT THIS PROVES, stated because it is weaker than it looks: contiguity,
-// count, non-emptiness, distinctness, and that the accessor neither falls
-// through inside the range nor invents a sentence outside it. Every one of
-// those is satisfied by a placeholder string. No check here reads English, so
-// this is a length-and-liveness wall on the class that actually shipped twice
-// — a client table shorter than the sim — and it is not evidence that any
-// given sentence MEANS its refusal.
+// WHAT THIS PROVES. Two walls, and they catch different bugs.
+//
+// LENGTH AND LIVENESS: contiguity, count, non-emptiness, distinctness, and
+// that the accessor neither falls through inside the range nor invents a
+// sentence outside it. That is the class which actually shipped twice — a
+// client table shorter than the sim — and every one of those checks is
+// satisfied by a placeholder string.
+//
+// MEANING, added after the judge of `pass-20260805-111501-02` walked straight
+// through the first wall with a two-line mutation: `checkNames` ties each
+// sentence to its Rust constant's NAME, so a table of correct sentences in the
+// wrong ORDER is red. See its doc comment for the mechanism.
+//
+// What neither wall claims: no check here reads English. A keyword is the
+// author's own claim about what a sentence says, and the gate holds the table
+// to it positionally — it cannot tell you the sentence is well written, only
+// that the sentence sitting at REFUSE_D_BAG_CAP is the one that talks about
+// bags and is the only one that does.
 const craftSrc = fs.readFileSync(path.join(root, "crates/sim-core/src/craft.rs"), "utf8");
 const protoSrc = fs.readFileSync(path.join(root, "crates/protocol/src/lib.rs"), "utf8");
 const refusals = await import(pathToFileURL(path.join(root, "web/src/refusals.js")).href);
@@ -5728,6 +5840,12 @@ const refusals = await import(pathToFileURL(path.join(root, "web/src/refusals.js
 // accessor, and the call site in main.js that must route through it). `min` is
 // the count known when the row was written: a regex that stops matching goes
 // red here instead of making every check under it vacuous.
+//
+// `mean` is the meaning column, keyed by the Rust constant's SHORT name — the
+// part after the prefix, exactly what the parse below captures. Its value is a
+// substring the sentence at that constant's code must contain, and which no
+// OTHER sentence in the table may contain. Keyed by name and not by index is
+// the whole point: the index is the thing that moves.
 const REFUSAL_TABLES = [
   {
     what: "connect",
@@ -5740,6 +5858,7 @@ const REFUSAL_TABLES = [
     fn: refusals.connectRefusal,
     fnName: "connectRefusal",
     callSite: /refused: \$\{connectRefusal\(hs\[5\]\)\}/,
+    mean: { VERSION: "version", FULL: "full" },
   },
   {
     what: "craft",
@@ -5752,6 +5871,13 @@ const REFUSAL_TABLES = [
     fn: refusals.craftRefusal,
     fnName: "craftRefusal",
     callSite: /can't craft: \$\{craftRefusal\(r\)\}/,
+    mean: {
+      RECIPE: "recipe",
+      COUNT: "count",
+      STATION: "station",
+      QUEUE_FULL: "queue",
+      INPUTS: "ingredient",
+    },
   },
   {
     what: "build",
@@ -5764,6 +5890,19 @@ const REFUSAL_TABLES = [
     fn: refusals.buildRefusal,
     fnName: "buildRefusal",
     callSite: /can't build: \$\{buildRefusal\(r\)\}/,
+    mean: {
+      PIECE: "piece",
+      SPOT: "spot",
+      SUPPORT: "support",
+      TERRAIN: "ground",
+      REACH: "out of reach",
+      COST: "material",
+      FULL: "world is full",
+      CLAIM: "claimed",
+      TIER: "upgrade",
+      INTACT: "damage",
+      UNPRICED: "repair",
+    },
   },
   {
     what: "deploy",
@@ -5776,12 +5915,33 @@ const REFUSAL_TABLES = [
     fn: refusals.deployRefusal,
     fnName: "deployRefusal",
     callSite: /can't place: \$\{deployRefusal\(r\)\}/,
+    // Three of these say "hearth" and two say "door", so the keyword that
+    // discriminates is longer than the noun. That is the check doing its job
+    // at authoring time rather than a nuisance: "hearth" alone would let
+    // CLAIM/OVERLAP/HEARTH rotate freely.
+    mean: {
+      KIND: "deployable",
+      SPOT: "spot",
+      SUPPORT: "support",
+      TERRAIN: "ground",
+      REACH: "out of reach",
+      COST: "inventory",
+      FULL: "world is full",
+      CLAIM: "claimed",
+      OVERLAP: "too close",
+      BAG_CAP: "bag",
+      HEARTH: "no hearth",
+      DOOR: "no door",
+      OWNER: "your door",
+    },
   },
 ];
 check(
   REFUSAL_TABLES.length === 4,
-  `the refusal walk covers ${REFUSAL_TABLES.length} tables — every array whose index is a sim refusal code` +
-    " belongs in refusals.js and in this list, and one left out is one nothing walks",
+  `the refusal walk covers ${REFUSAL_TABLES.length} tables, which are the four main.js held — a fifth, the` +
+    " move table in hud.js indexed by inventory.rs's REFUSE_M_*, is walked the same way in group K above" +
+    " (search MOVE_MEAN) because it is read off the live panel rather than imported. Any OTHER array whose" +
+    " index is a sim refusal code belongs in refusals.js and in this list, and one left out is one nothing walks",
 );
 for (const t of REFUSAL_TABLES) {
   const re = new RegExp(`^pub const ${t.prefix}([A-Z0-9_]+): ${t.ty} = (\\d+);`, "gm");
@@ -5824,6 +5984,17 @@ for (const t of REFUSAL_TABLES) {
     `two ${t.what} refusals share a sentence (${JSON.stringify(t.table)}) — the sim keeps them distinct` +
       " because they are different news, and 'you cannot afford it' is not 'it is already whole'",
   );
+  // --- and each sentence means ITS refusal, pinned by name -------------------
+  // Everything above holds on a table whose sentences are all correct English
+  // in the wrong ORDER. The judge of pass-20260805-111501-02 proved it: it
+  // swapped the VALUES of REFUSE_D_HEARTH (10) and REFUSE_D_DOOR (11) in
+  // deploy.rs, left the JS untouched, and this gate stayed green while every
+  // player placing on a missing hearth read "no door there". That is verbatim
+  // CLAUDE.md's positional-payload trap — the right value in the wrong
+  // position — and the class 27 of Oxide's shipped payload corrections belong
+  // to. The fix is to tie each sentence to its constant's NAME, because the
+  // name is the thing that does not move when the number does.
+  checkNames(t.what, t.rs, t.prefix, rs, t.mean, (code) => t.table[code], t.table);
   check(
     t.fn(rs.length + 3).startsWith("code "),
     `${t.fnName} invented a sentence for a code the sim does not have — the fallback is what keeps a wire` +
@@ -5967,8 +6138,10 @@ console.log(
     `${REFUSAL_TABLES.length} tables (${REFUSAL_TABLES.map((t) => `${t.what} ${t.table.length}`).join(", ")}) ` +
     "walked by name against the prefixed consts in protocol/craft/build/deploy, each contiguous from zero, " +
     "all distinct, no in-range fall-through, the bare-code fallback intact past the end, main.js pinned to " +
-    "route every one through the importable accessor and to declare no copy of its own, and a repair told " +
-    "from a raid on the APPLIED_HIT bit read out of core.rs, silent when max is 0",
+    "route every one through the importable accessor and to declare no copy of its own; and every sentence " +
+    "of those four plus hud.js's move table pinned to its constant's NAME by a keyword no other sentence in " +
+    "its table contains, so a renumber under the table is red rather than a player told the wrong refusal; " +
+    "and a repair told from a raid on the APPLIED_HIT bit read out of core.rs, silent when max is 0",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
