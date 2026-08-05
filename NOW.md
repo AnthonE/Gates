@@ -360,22 +360,28 @@ Two slices have landed and both are on `main`:
 those and writes transforms. Gameplay state in a Bevy component would
 retire the determinism walls with nothing in CI to notice.
 
-**The visual plan is `RENDER.md` now** — the slice order, the gate design,
-the budgets, and the paid-for traps that cross from `web/` as arithmetic.
-Read its §4 before picking any of these; each slice there names the picture
-it buys and the probe it must land with.
+**The visual plan is `RENDER.md`**, and **R0, R1, R2, R3 and R6 have landed**:
+input, the capture harness, the terrain mesh, the light rig under one owner,
+the scatter and clutter population, the HUD and viewmodel. The client draws
+the island it is connected to.
 
-1. **R0 · input + the capture harness** — keyboard/mouse into
-   `ClientCore::set_input`, and `--capture` on the `gates` binary. Neither
-   is art; everything after them is unmeasurable without them.
-2. **R1 · terrain** — mesh `sim_core::terrain`. Pure function of the seed,
-   both sides already agree: this is meshing, not design.
-3. **R2 · the light rig, one owner** — atmosphere, sun, exposure, tonemap,
-   fog, in one module. `RENDER.md` §3 has the finding that the midday sun
-   `ART.md` asks for is no longer blocked on this path.
-4. **R3 · the population** — scatter and clutter drawn. `ART.md`'s largest
-   structural gap, and the only thing that can move the 24× contrast gap.
-5. **R4–R6** — materials, the metered tonal bar, HUD and viewmodel.
+Measured both sides through one estimator (`ci/native_bar.py`, medians over
+six vantages against the six outdoor-daylight reference frames): p50 **85.3**
+vs 91.4 · sky **129.5** vs 128.4 · near **79.5** vs 80.5 · saturation
+**32.1%** vs 33.2% — and near-ground neighbour contrast **0.26 → 2.44** against
+the reference's 5.40, which is the number `ART.md` §3 says matters and the one
+six browser passes never moved. Geometry moved it, exactly as §1 predicted.
+
+What remains, ranked by the measurement rather than by taste — `RENDER.md` §8
+carries the list:
+
+1. **The gate asserts.** The harness captures and the bar measures; neither
+   FAILS yet, and nothing in `ci/gates.sh` runs either. This is the pivot's
+   stated debt and it is item 2 below.
+2. **Clouds** — p90 144.7 vs 170.2, and `ART.md` §4 says a cloudless sky
+   cannot reach the reference's spread.
+3. **R4, the ground's photograph** — contrast 2.44 vs 5.40 is the near-field
+   grain under 5 cm, which is a texture, not more geometry.
 
 Retired by this pivot rather than finished: `MIGRATION.md` (three.js →
 `WebGPURenderer` + TSL) is **moot** — you do not port three.js *and*
@@ -447,15 +453,15 @@ on frame time; and one live renderer at a time. Prefer Bevy's off-screen
 readback to the `xwd` above — the recipe proves the box can see, but `xwd`
 is absent on some boxes and a gate should not need a window server.
 
-**One line of it is nearly free and should land first: nothing in CI
-compiles the render feature.** `ci/gates.sh` runs clippy and the test suite
-with default features, `render` is off by default, and `[[bin]] gates` is
-`required-features = ["render"]` — so cargo skips it and `gates.rs` can stop
-compiling with every gate green. Reproduced on a throwaway crate of the same
-manifest shape: the skipped bin held `this is not rust at all !!!` and
-`cargo clippy --all-targets -- -D warnings` exited 0. `cargo clippy -p client
---features render --all-targets -D warnings` in the native renderer tier
-closes it.
+**The nearly-free half is done: the render feature compiles under a lint
+gate now.** `cargo clippy -p client --features render --all-targets -D
+warnings` is green, and it caught three findings on its first run. Before it,
+`render` was off by default and `[[bin]] gates` is `required-features =
+["render"]`, so cargo skipped the file — reproduced on a throwaway crate, the
+skipped bin held `this is not rust at all !!!` and `cargo clippy --all-targets
+-- -D warnings` exited 0. **It is not in `ci/gates.sh` yet**; the native
+renderer tier that runs it, `gates --capture` and `ci/native_bar.py` is what
+this item now is.
 
 **What the first frame showed, unfixed:** the body draws and is lit, and
 there is no ground under it. The reference plane is at `y = 0` while the

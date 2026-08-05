@@ -14,6 +14,11 @@
 //! client side, so this speaks the identical transport the browser speaks,
 //! against the same shard, at the same `PROTO_VER`.
 
+// The render path. Feature-gated because Bevy is several hundred crates and
+// the code tier must not pay for it (`crates/client/Cargo.toml`).
+#[cfg(feature = "render")]
+pub mod render;
+
 use client_wasm::core::{ClientCore, Ingest};
 use protocol::{
     decode_refuse, decode_welcome, encode_hello, peek_kind, Hello, Welcome, KIND_REFUSE,
@@ -21,6 +26,7 @@ use protocol::{
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use std::net::SocketAddr;
+use wtransport::config::IpBindConfig;
 use wtransport::endpoint::endpoint_side::Client;
 use wtransport::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
 
@@ -54,11 +60,28 @@ async fn read_frame<const N: usize>(recv: &mut RecvStream) -> Option<([u8; N], u
 /// client validates, and that is a `DECISIONS.md` row before anything is
 /// published, not a default to drift into.
 pub fn client_endpoint() -> Result<Endpoint<Client>, String> {
-    let config = ClientConfig::builder()
-        .with_bind_default()
-        .with_no_cert_validation()
-        .build();
-    Endpoint::client(config).map_err(|e| format!("client endpoint: {e}"))
+    // **Bind IPv4 first, and fall back to the dual-stack default.**
+    // `with_bind_default()` is `INADDR_ANY` dual-stack, which fails outright
+    // on a container with no IPv6 — `Address family not supported by protocol
+    // (os error 97)`, the exact failure `CLAUDE.md` records for `bot_smoke`
+    // on such a box. That was diagnosed there as a missing capability rather
+    // than a defect, and it is; but a client that cannot bind cannot draw,
+    // and every shard we run and every gate we write is reachable over v4.
+    // So: ask for what works, keep the dual-stack path for a v6 shard, and
+    // report both failures if neither binds.
+    let build = |ip: IpBindConfig| {
+        Endpoint::client(
+            ClientConfig::builder()
+                .with_bind_config(ip)
+                .with_no_cert_validation()
+                .build(),
+        )
+    };
+    match build(IpBindConfig::InAddrAnyV4) {
+        Ok(e) => Ok(e),
+        Err(v4) => build(IpBindConfig::InAddrAnyDual)
+            .map_err(|dual| format!("client endpoint: v4 {v4}; dual-stack {dual}")),
+    }
 }
 
 /// What the session hands a renderer each frame. Deliberately small: the

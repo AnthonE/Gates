@@ -20,44 +20,52 @@ picture it is supposed to buy.
 
 ---
 
-## 0 · Where the picture is today — measured, not remembered
+## 0 · Where the picture is now — measured, both sides, one estimator
 
-`crates/client/src/bin/gates.rs`, 167 lines behind the optional `render`
-feature, draws:
+**R0, R1, R2, R3 and R6 have landed** (§4 for what each is). The client
+connects to an unmodified shard, meshes `sim_core::terrain` around the
+player, populates the near ground out of `terrain::clutter_fill`, scatters
+`terrain::scatter`'s occupants, lights it with Bevy's Bruneton atmosphere
+under one owner, draws a HUD and a viewmodel, and captures a fixed vantage
+list headless under Xvfb + lavapipe.
 
-- one `Camera3d` at a fixed chase offset (`+8 y`, `+16 z`) looking at the
-  player;
-- one `DirectionalLight` with shadows on;
-- one 512 m `Plane3d` at `y = 0` in flat `srgb(0.30, 0.29, 0.26)`;
-- one 0.6 × 1.8 × 0.6 cuboid per body, flat colour, no material variation.
+`ci/native_bar.py` reads our captures and `Rust Images/` **in the same run,
+through the same estimator** — a bar computed a different way than the frame
+it judges is not a bar. Medians over the six vantages against the six
+outdoor-daylight reference frames:
 
-That is five materials' worth of nothing, and the first captured frame
-already showed the defect `NOW.md` §2 records: **the plane is at `y = 0`
-while the player spawns at terrain height**, so the reference ground is
-below the frame and the body floats in a void. Nothing here is wrong for
-slice 2 — it proved the loop — but it is the whole picture.
+| statistic | first native frame | now | reference | note |
+|---|---|---|---|---|
+| whole-frame p10 | 41.9 | 64.9 | 41.0 | ours no longer reaches the darks — the fill's cost |
+| whole-frame p50 | 61.0 | **85.3** | 91.4 | was most of a stop under |
+| whole-frame p90 | 110.9 | 144.7 | 170.2 | **the sky has no clouds in it** |
+| sky band mean | 97.3 | **129.5** | 128.4 | on the bar |
+| near band mean | 54.8 | **79.5** | 80.5 | on the bar |
+| near-band saturation | 42.0% | **32.1%** | 33.2% | on the bar |
+| **near neighbour contrast** | 1.55 | **2.44** | 5.40 | the browser client's was **0.26** |
 
-**Two facts about its coverage, both checkable, both load-bearing:**
+The last row is the one `ART.md` §3 says matters and the one nothing had ever
+moved. Geometry moved it **9.4×** off the browser's 0.26 without a single
+shader being written, which is what §1 of the art bible says the mechanism is:
+the ground is not a surface, it is a population. It is still 2.2× short.
 
-1. **No gate in this repo compiles this file.** `ci/gates.sh` runs
-   `cargo clippy --workspace --all-targets` and `cargo test --workspace
-   --release`, both with default features; `render` is off by default and
-   `[[bin]] gates` is `required-features = ["render"]`, so cargo skips it.
-   The render path can stop compiling and every gate stays green. §5 fixes
-   this in its first line, and it is the cheapest thing in this document.
-   **Reproduced rather than argued** (2026-08-05, throwaway crate, same
-   manifest shape): a `[[bin]]` whose `required-features` are unmet may
-   contain the line `this is not rust at all !!!` and `cargo clippy
-   --all-targets -- -D warnings` still exits 0.
-2. **`crates/client` has no `tests/` directory.** The session was measured by
-   hand against a live shard (`in ok/bad/drop 729/0/0`, `snap sent 434`) and
-   that measurement lives in a `NOW.md` bullet, not in CI.
+Two gaps are named by the table rather than by taste, and both have a
+mechanism rather than a knob:
 
-Everything visual this repo knows how to do lives in `web/src` — 17 k lines
-of three.js — and **none of it ports as code.** It ports as arithmetic and as
-traps (§2), which is worth more than the lines were.
+- **p90 144.7 against 170.2 — there are no clouds.** `ART.md` §4 states it
+  outright: a cloudless gradient cannot reach the reference's spread, which
+  gets its top stop from lit cumulus. Bevy's atmosphere has no cloud layer and
+  this is the largest remaining tonal gap.
+- **contrast 2.44 against 5.40 — the ground between the tufts is smooth.**
+  That is the near-field grain under 5 cm, which is a texture's job (R4) and
+  not more geometry.
 
----
+One number moved the wrong way and is worth stating plainly rather than
+hiding: **p10 rose from 41.9 to 64.9 against a reference of 41.0** — our darks
+are no longer dark enough. That is the direct cost of the fill raise below,
+and the honest reading is that a uniform ambient term buys rule 3's floor at
+the price of the bottom of the range. A hemisphere fill (sky half cool, earth
+half warm) is the shape that gets both, and Bevy's ambient is uniform.
 
 ## 1 · The rule the path hangs on: Bevy draws, it does not decide
 
@@ -180,7 +188,7 @@ Each slice is one iteration: branch → build → gates green → merge. Each na
 its probe, and **no slice merges without one** (§5). Slices are ordered so the
 frame gets visibly better every time, not so the architecture gets tidy.
 
-### R0 · Input, and the capture harness — *before the first pixel of art*
+### R0 · Input, and the capture harness — **LANDED**
 
 The two things every later slice needs and neither is art.
 
@@ -200,7 +208,7 @@ The two things every later slice needs and neither is art.
 *Picture bought*: none. It is the only slice allowed to say that, and it is
 first because everything after it is unmeasurable without it.
 
-### R1 · The island — mesh `sim_core::terrain`
+### R1 · The island — mesh `sim_core::terrain` — **LANDED**
 
 Not design; meshing. The heightfield is a pure function of the seed and both
 sides already agree on it.
@@ -221,9 +229,9 @@ sides already agree on it.
   `terrain::height(seed, x, z)`; the horizon line exists and sky is above it.
 
 *Picture bought*: a cube in a void becomes a person standing on an island.
-This is the single largest step in the document.
+This is the single largest step in the document, and it was.
 
-### R2 · The light rig v0 — one owner, one file
+### R2 · The light rig v0 — one owner, one file — **LANDED**
 
 Atmosphere, sun, exposure, tonemap, fog. **One module. One iteration. One
 lane.** (§2, first bullet — this is the rule that was measured, not a style.)
@@ -248,11 +256,28 @@ lane.** (§2, first bullet — this is the rule that was measured, not a style.)
 *Picture bought*: outdoors instead of a viewport. Cheap, because Bevy owns the
 hard parts now.
 
+**Three things this slice measured, all of them cheap to have got wrong:**
+
+  1. **Rule 3's floor is arithmetic and the first cut missed it by 10×.** A
+     35° sun at 100,000 lux puts ~57,000 on flat ground, so the fill that
+     reaches 0.30 of it is ~17,000 — not the 3,500 that shipped first. The
+     tell was a boulder with a NAVY shaded face.
+  2. **Exposure was most of a stop under the bar**, measured rather than
+     eyeballed: p50 61 against 91. `Exposure::SUNLIGHT` minus 0.8 stop.
+  3. **Air density is not a sky knob**, and this is `ART.md` rule 5 catching a
+     hand in the till. Thickening the medium 6× to buy aerial perspective put
+     the sky mean exactly on the bar (120 → 135 vs 128) and simultaneously
+     dropped the ground from 84 to 63 and pushed saturation 31% → 40%: the
+     medium extinguishes the sun on its way DOWN as well as scattering it
+     sideways, so midday became a hazy sunset. 1.6× is what the coupled set
+     tolerates. Nothing but a measurement catches this — the sky looked better
+     the whole time.
+
 **Do not meter the tonal bar here.** p10/p50/p90 against `Rust Images/` is R5's
 job, after there is content in the frame. A bar measured on an empty world is
 the beige-smear trap with a different file name.
 
-### R3 · The population — the largest structural gap in `ART.md`
+### R3 · The population — the largest structural gap in `ART.md` — **LANDED**
 
 "The ground is not a surface, it is a population." No shader fixes this and
 six passes proved it.
@@ -279,8 +304,16 @@ six passes proved it.
   bare disc inside 15 m under the sim's own bound — then the statistic that
   matters: near-band neighbour contrast against `ART.md` §3's 6.3 luma/px.
 
-*Picture bought*: the difference between a terrain demo and a place. Expect
-the 24× contrast gap to move here or nowhere.
+*Picture bought*: the difference between a terrain demo and a place, and the
+24× contrast gap moved here exactly as predicted — 0.26 → 2.44 (§0).
+
+**What the first population capture got wrong, both structural:** three blades
+to a tuft is a sprig, not turf, at `clutter_fill`'s ~2.4 elements per square
+metre (now seven, wider, shorter); and a blade's two triangles wind opposite
+ways, so blending only 0.72 toward vertical left a facet normal in and every
+tuft had one lit blade and one black one. Blades are also `NotShadowCaster`:
+two triangles a few centimetres wide against a cascade sized for 200 m is not
+a shadow, it is acne, and the first capture was full of it.
 
 ### R4 · Materials — the photograph, on the surface
 
@@ -308,14 +341,19 @@ Now that the frame has content, meter it. `ci/reference_bar.mjs` reads the six
 outdoor-daylight reference frames with the same code path that reads ours;
 port that discipline, not the numbers. Targets are `ART.md` §3's.
 
-### R6 · HUD and viewmodel — the cheapest scored points in the document
+### R6 · HUD and viewmodel — **LANDED**
 
 `ART.md` §6 and §8: a frame with no viewmodel and no HUD reads as a
-flythrough, and the blind reader has named it on **every capture so far**.
-Bottom-centre hotbar, right-side vitals stack with numbers and status chips,
-a held item in the lower-right. `bevy_ui` does the first two in an afternoon;
-the third is one mesh parented to the camera. The wire already carries all of
-it (`v19 ACT_CONTAINER`/`SUB_CONT_SYNC`, the vitals, the hotbar selection).
+flythrough, and the blind reader had named it on every capture so far. Landed
+as the reference's shape — bottom-centre hotbar with the selected cell lit,
+right-side vitals stack, a held item entering from the lower right. Every
+number on it is the server's (`hp`/`hp_max`, `food`, `water` off `ClientCore`),
+and the zero-max rule `core.rs` states is honoured: a shard whose content
+disarms combat draws no bar rather than an empty one.
+
+Still owed: item icons in the cells (the hotbar knows only which cell is
+selected, not what is in it), status chips (`WET 36%`), and a viewmodel that
+is the held item rather than a stand-in.
 
 ### R7 · What is deliberately not in this plan
 
@@ -332,6 +370,23 @@ impostor design and `CLAUDE.md` credits its source.
 The pivot's real debt. It is built **incrementally with the slices** rather
 than as one item at the end — that is how the rule "no render path without its
 probes" is actually satisfied.
+
+**Landed: the harness and the measurement. NOT landed: the assertions.**
+`gates --capture <dir>` settles on observable state (all three rings full —
+25 chunks, 25 scatter parents, 25 clutter tiles, reported at the frame it
+happens), warms 30 frames, shoots six vantages and exits; `ci/native_bar.py`
+reads those captures and `Rust Images/` through one estimator. What neither
+does yet is FAIL. Nothing in `ci/gates.sh` runs either, and until it does the
+render path's coverage is `cargo clippy -p client --features render` and a
+human looking at a PNG. That is the top of §8's list, it is the pivot's stated
+debt, and calling it anything other than open would be the "pass it didn't
+earn" this repo names as its worst bug class.
+
+Also landed, and it is the cheapest thing in the document: **the render
+feature now compiles under a lint gate.** `cargo clippy -p client --features
+render --all-targets -- -D warnings` is green and it caught three real
+findings on its first run — before it, cargo skipped `gates.rs` entirely and
+a bin containing `this is not rust at all !!!` would have passed.
 
 **The tier.** `ci/gates.sh` grows a native renderer tier beside the browser
 one, scheduled the same way `renderer_touched` schedules today's: a diff
@@ -422,7 +477,26 @@ earlier.
 
 ---
 
-## 8 · Open, and deliberately unanswered here
+## 8 · What is next, in the order the measurements rank it
+
+1. **The gate asserts.** Structural claims first — sky occupies the top band,
+   ground the bottom, a horizon between them, N distinct objects framed, the
+   camera's feet on the terrain — then `ART.md` §8's checklist, then the
+   counts. Wire `--capture` + `native_bar` into a native renderer tier in
+   `ci/gates.sh`, scheduled off a `crates/client/**` or `assets/**` diff.
+2. **Clouds.** The p90 gap is 25 luma and `ART.md` §4 says where it comes
+   from. Bevy has no cloud layer; this is a real slice, not a knob.
+3. **R4, the near-field grain.** Contrast 2.44 → 5.40 needs the photograph on
+   the ground, which is the CC0 set already in `assets/textures/` plus the
+   biplanar rules §2 carries.
+4. **A hemisphere fill.** Rule 3's floor and the p10 both, instead of one at
+   the other's expense (§0).
+5. **Per-instance tint.** `ART.md` rule 7 — the forest is four meshes at many
+   yaws and scales, which is variation but not colour variation.
+
+---
+
+## 9 · Open, and deliberately unanswered here
 
 - **Which tonemapper.** Measured in R2, argued nowhere.
 - **Whether Bevy's atmosphere runs usefully on lavapipe.** It is compute-shader
