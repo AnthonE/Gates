@@ -34,6 +34,48 @@ Left:
   query calls it once per blocking slot. Bounded and off the common path (it is
   asked only after something already blocks), but a late-wipe world with
   thousands of harvested cells pays it in the tick. Measure before fixing.
+## 0. The ground is a population now — done this pass *(world lane)*
+
+GAP PASS. From `findings/pass-20260804-173640-01-visual.md` ranked gap 1:
+"there is no grass geometry anywhere in the client: turf is a shaded plane."
+
+Landed: a second population below the 8 m scatter grid, on a 0.64 m jittered
+grid — pebble · tuft · twig · shard, placed by `terrain::clutter_cell`,
+drawn by `web/src/clutter.js` + `clutterField.js`. Potential, not state: no
+volume, no wire, nothing in `state_hash`.
+
+The two claims that make it more than decoration, both gated:
+- **The mix is the splat.** The ground's four identity weights moved out of
+  `terrainWorker.js` into `terrain::splat_from`; the worker calls the bridge
+  now, so surface and population are one function in one language.
+- **Coverage is total**, so `ART.md` rule 4 is arithmetic. Measured, not
+  argued: worst bare disc **1.50 m² of the 3 m² cap**, 33,852 land points ×
+  3 seeds. `tests/clutter.rs` (8), `ci/clutter_shape.mjs` (52).
+
+Client: solid blades not alpha cards (SwiftShader is fill-bound, `discard`
+defeats early-Z), existing `surfaceMaterial` identities so it adds **zero**
+shader programs, `castShadow = false` so it draws once not once per cascade.
+Worst fleet 188 k tris = 12.5% of DESIGN §9's budget, asserted.
+
+Leaves open:
+- **No distance fade** — the population ends at the ring edge (32-48 m). The
+  cheap recipe needs a per-frame shader term, i.e. a new program, which is the
+  one gate this slice was shaped to avoid. Whether the edge reads is a
+  question for the visual judge, not a guess made here.
+- **Unverified visually.** No frames were captured this pass and
+  `browser_smoke` is the only thing that can see the real frame peak; 188 k is
+  a bound on this population's contribution, not a measurement of the frame.
+- Clutter does not thin under a deployed base or inside the haven pad.
+
+Looked at it (one tab, `art/capture.mjs`, DIAGNOSIS only — no visual judge ran
+and no claim here rests on it). All four kinds draw and stream; no throw, no
+hard ring edge. Two things a visual judge should confirm or refute rather than
+me tuning against one SwiftShader frame: **twigs read as the loudest thing on
+sand** (dark 23 cm sticks on ~200-luma beach — the litter channel is genuinely
+~0.5 in the beach ramp, so placement is honest and it is the value/size that
+may be wrong), and **tufts alias to a green speckle past ~10 m** rather than
+reading as blades, which is the sub-pixel case the fade above would also
+address. Frames: `/tmp/clutter-shots`.
 
 ## 0. E tells you what it does — done this pass *(ui lane)*, kept for what it leaves
 
