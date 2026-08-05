@@ -20,16 +20,25 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
 ///
-/// Regenerated here from `0xEE0C_0328_6045_86AA` because worldgen DID move
-/// this time: a waystation's containers resolve `Occupant::CacheSlot = 11`
-/// where they resolved the pad's `CrateSlot = 9`, so four cells on every
-/// island hash a different occupant ordinal. Nothing else changed —
-/// positions, yaws, heights and every drawn slot are bit-identical, which is
-/// why the delta is confined to the site windows the previous regeneration
-/// put on the surface in the first place. (Before those windows existed this
-/// change would have moved nothing at all: the golden could not see a
-/// waystation.)
-const GOLDEN_TERRAIN_HASH: u64 = 0xD9E1_A3B9_4C95_6DD6;
+/// Regenerated here from `0xD9E1_A3B9_4C95_6DD6` because worldgen moved
+/// twice, both times at the waystations and both intentionally.
+///
+/// One: each site now emits a third authored slot, the `WaystationCanopy`,
+/// in a cell that previously carried whatever the biome draw put there. Two —
+/// and this is the larger delta — the site SEARCH got stricter, so some seeds
+/// pick a different candidate off the road ring than they did: a rotation is
+/// now accepted only if the container pair stands AND one of the two gaps in
+/// that pair can hold the canopy clear of the carriageway. A candidate that
+/// cannot house the whole arrangement is not a site, so `pick_minor` walks
+/// past it (`reference/SPAWN.md` §5).
+///
+/// The change this replaces is why: the canopy shipped at the site centre,
+/// which is the coast road's own centre line, and `tests/road.rs`,
+/// `tests/scatter.rs` and `tests/waystation.rs` all read the same two slots
+/// standing on the carriageway. Everything outside the site windows is
+/// bit-identical — heights, the ring, the biome draw and every scattered
+/// slot on the rest of the island are untouched.
+const GOLDEN_TERRAIN_HASH: u64 = 0x77E3_89F5_F2FC_E643;
 
 #[test]
 fn test_terrain_golden() {
