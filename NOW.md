@@ -114,14 +114,24 @@ Related and NOT this lane's: `bridge.rs:66` still exports
 stop at the wasm bridge and `web/src` cannot show what mending a door costs.
 That is a systems-lane export, like §0e.
 
-## 0e · One export the client needs — *(systems lane, cross-lane)*
+## 0e2 · The deploy-def stride is stale, and this lane cannot fix it alone
+*(systems lane — BLOCKED on a web/ half)*
 
-`crates/client-wasm/src/bridge.rs` exports `client_action_` for all fourteen
-other verbs and none for repair, so `ACT_REPAIR` decodes, the server dispatches
-it, and no client can press it. ~15 lines mirroring `client_action_upgrade`
-(`bridge.rs:735`), whose arg list is the same four (cx, cz, level, loc) minus
-the material. The ui lane has the anchor, the pick and the refusal text
-already landed and will bind the key the pass after it exists.
+Found while doing §0e; both are `bridge.rs` and the handover at line 88 reads
+as if they are the same size. They are not. `DEPLOY_DEF_ROW_WORDS = 4`
+(`bridge.rs:67`) predates `n_costs` + cost rows on `SUB_DEPLOY_DEFS`, so what
+mending a door costs stops at the bridge. The Rust half is four lines,
+mirroring the piece path (`4 + 2 * MAX_PIECE_COSTS`, filled at `bridge.rs:387`).
+
+**The blocker is that the stride is hardcoded in `web/`, which this lane may
+not touch:** `wasm.js:96` views the table as `16 * 4`, `main.js:306/329` index
+`rec.row * 4`, and `interact.js:527` declares it. Widening the Rust alone does
+not redden a gate — it silently re-bases every one of those reads onto the
+wrong words. That is worse than the current state, so it did not land.
+
+**ui lane owns the second half.** The clean version is one commit across both,
+or `interact.js:527`'s constant becoming the single reader that `ui_smoke`
+walks against `bridge.rs` — the shape §W already uses for `REFUSE_B_*`.
 
 ## 0f · A proposal for the `renderer_touched` list — *(operator act)*
 
@@ -558,12 +568,27 @@ half: 3 authored sites on the ring instead of 1, gated by
   the lesser tier will read the same way once the novelty is gone. It wants a
   silhouette, and it must be a *different* one — a second copy of
   `HAVEN_SHELTER` makes the tiers look identical.
-- **The pad carve is still unbuilt** and is the one piece of TERRAIN §7/§8
-  that never got easier: `height` has ~80 call sites in four crates, so it is
-  a cross-lane change, not a detail. Sites are still *found* flat, not made.
+- **The pad carve is still unbuilt**, and it is smaller than this file has
+  been saying. Counted this pass: `height` has **18 production call sites in
+  3 crates** (world 6, movement 4, deploy 2, bridge 2, collide 1, build 1,
+  survival 1, probe 1), not the "~80 in four crates" that stood here — the
+  other 86 are tests and examples. `DECISIONS.md`'s "~50 sites" and its
+  "~1,000 height taps per `haven()`" are both stale too; `haven()` measures
+  **12,463 taps mean** over 16 seeds. Still cross-lane, but re-scope it
+  against 18 before assuming it cannot be a pass. Sites are still *found*
+  flat, not made — and `DECISIONS.md` §open (waystation canopy v0) records
+  that whether a tier should carve at all is **open for the operator**.
 - **Nothing threatens you on the walk between them.** A circulation loop with
   no risk on it is a longer commute. No AI module exists anywhere in
   `crates/sim-core/src/`.
+- ~~Composition steps at a biome edge~~ — **done this pass**
+  (`loop/scatter-splat-mix`): `scatter` blends the four biome rows by the
+  ground's own splat weights instead of picking one, so the props ramp across
+  a boundary the way the material and the clutter under them already did.
+  Worst per-sample jump 4 per-mille against the classifier's 190; reaches
+  10.2–11.8% of land cells; density unmoved. `DECISIONS.md` §open "scatter
+  mix v0" has the measurements and the one operator question (the cliff term
+  puts scree on steep walkable ground — say if props should ignore it).
 ## 4b · The domain gate reads the crate now — three residuals
 
 Landed 2026-08-05 (`loop/domain-gate-whole-crate`), from the

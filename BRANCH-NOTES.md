@@ -1,76 +1,35 @@
-# loop/looks-pass1 — where this stopped, and what is still open
+# Branch notes — `loop/scatter-splat-mix`
 
-## What landed
+The slice is complete; this file carries no handoff. (It previously described
+`loop/looks-pass1` / "prop photograph v1", which merged long ago — a stale
+handoff note is a trap for the next pass, so it is replaced rather than kept.)
 
-`DECISIONS.md` §open, "prop photograph v1". The visual judge's ranked gap 1
-(`findings/pass-20260804-153032-01-visual.md`) named the cause in one line and it
-was literally true: *"the terrain got a sourced photograph this pass and the props
-did not — this is a coverage gap, not a tuning one."* `rock` and `ore` now sample
-the granite layer of the array texture the ground already had.
+**What landed.** `TERRAIN.md` §1 stage 9's last open line — "`biome()` is
+still a hard classifier, so a biome boundary is still a step in
+*composition*" — is closed. `scatter` no longer selects a biome weight row;
+it blends all four by the ground's own splat weights (`terrain::scatter_row`),
+because `splat_from`'s channels are sand · grass · forest-litter · rock and
+`Biome` is Beach · Meadow · Forest · Highland — the same four identities in
+the same order. Stage 10's law for clutter, *the mix IS the splat*, now holds
+for the prop population too.
 
-The diagnosis is worth keeping because it contradicts the obvious reading. The
-boulder's *authored* albedo is `0x75726d` / `0x8f9399` — sRGB luma ~116 and ~147,
-already inside `ART.md` §3's granite band of 127-167 — and it still rendered at
-luma 43.5. So the three previous passes that tuned the authored colour were tuning
-something that was not wrong. The gap was that nothing sampled a photograph.
+**Measured** (`tests/scatter.rs`, three new checks): worst per-sample jump in
+the tree weight across a moisture sweep **4 per-mille against the hard
+classifier's 190**; **10.2–11.8%** of land cells sit in a transition band;
+live slots moved at most 35 of ~9,800 across the four gate seeds.
+`GOLDEN_TERRAIN_HASH` regenerated in the same commit.
 
-## The gate state, stated exactly
+**Left for whoever picks up the world lane next** — none of it started here:
 
-**Every code gate is green, including the new one.** `ci/gates.sh` runs them in
-order and the log reaches `pine shape: 32 checks passed` with no failure:
-knob registry (84 declarations pinned, 338 checks — the four new `PROP_PHOTO_*`
-knobs among them), rustfmt, clippy walls, the native suite, the wasm build,
-`test_parity_wasm`, the client bridge, bump basis, **prop photo**, the web bundle,
-pine shape.
-
-**`browser_smoke` did not complete on this box, in two runs, in two different
-ways — and neither is an assertion about this diff.**
-
-| run | how far | what ended it |
-|---|---|---|
-| 1 | tab A fully green (66/66 looks); tab B seen 110.2 s in | tab B never rendered 3 in-world frames, so `programsAtInWorld` was never pinned. Frame p50 1383 ms. Load average was 13.05. |
-| 2 | tab B joined (63.3 s, 24/24 looks); **prewarm green on BOTH tabs**; prop albedo, surface, grain, register, shadows, horizon all printed | chromium closed during `grainProbe("uTint")` (`ci/browser_smoke.mjs:3538`) — `Target page, context or browser has been closed`. Frame p50 833 ms. |
-
-Run 2 clears run 1's failure outright: the prewarm line reads
-`0 program links after the in-world snapshot, both tabs`. And run 2's crash site is
-the **terrain's** tint octave probe, which does not touch the prop path this branch
-changed.
-
-The control: `web/src` was reverted to the merge base, rebuilt, and `browser_smoke`
-run alone — **it did not finish in 10 minutes either**. This is `CLAUDE.md`'s
-"confirm with a clean tree before believing any diff caused it", and the clean tree
-was no faster. Frame times of 0.8-1.5 s on a software rasterizer are the condition
-`NOW.md` items 3 and 4 already describe: *nine of eleven gate failures across seven
-runs were the harness fighting itself.*
-
-**This is not a claim that the branch is green.** It is not. The renderer tier has
-not returned a pass, so nothing here may be reported as "ALL GATES GREEN", and no
-gate, assert, tolerance or skip was touched to get closer to one.
-
-## What the next pass should do first
-
-Re-run `./ci/gates.sh` on a quieter box before anything else — both failures are
-non-deterministic and the second run cleared the first's. If `browser_smoke` fails
-a **third** time in a **third** place, that pattern is itself the finding and it
-belongs to `NOW.md` item 4 (tab B should be a bot, not a second browser), which is
-not this lane's to fix.
-
-Two numbers to read when it does complete, both new to this branch:
-
-- the prop contrast ratio (`NOW.md` item 2, sitting on its `PROP_MIN_CONTRAST_RATIO`
-  floor at x1.15). This change adds mean-preserving detail to `rock`/`ore` gated by
-  the same `uProp` toggle the ratio is measured across, so it should move the
-  numerator. It does **not** touch `foliage`, which is the pine the floor was
-  actually measured on — so the floor may still sit where it sat.
-- `prop albedo`, which must still read `rock#2 0.290→0.290`, `ore#3 0.218→0.218`,
-  `ore#4 0.418→0.418`, `rock#6 0.169→0.169`. It did in run 2. That is the
-  mean-preservation property holding: a photograph that moved those numbers would
-  have un-authored the granite value, and `ci/prop_photo.mjs` exists to catch the
-  arithmetic that would let it.
-
-## What is deliberately not done
-
-`NOW.md` item 1 carries it: bark for `wood` (the files are on disk and imported by
-nothing), needle cards for `foliage` (geometry, not a map), and the frequency split
-that would hand everything above the tile frequency to the photograph and leave the
-field the coarse patchiness a tiling map cannot supply.
+- The **pad carve** (NOW.md §4b). Re-scoped this pass: `height` has **18
+  production call sites in 3 crates**, not the "~80 in four" the file said.
+  Whether a tier should carve at all is open for the operator
+  (`DECISIONS.md` §open, waystation canopy v0).
+- **One operator question** from this pass, in `DECISIONS.md` §open "scatter
+  mix v0": the blend includes `splat_from`'s cliff term, so steep-but-walkable
+  ground now draws toward the Highland row (scree/ore on slopes, matching the
+  rock painted there). Taken as the "one law, three populations" reading; say
+  if props on slopes should ignore the cliff mask instead.
+- `combat.rs` has no occupant term and `collide::piece_ground` reads built
+  pieces only — both tagged **systems lane** in NOW.md §0a and in
+  `terrain.rs`'s own `SHELTER_FLOOR_IX` note.
