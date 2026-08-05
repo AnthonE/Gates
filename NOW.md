@@ -43,8 +43,15 @@ RISE is what an independent coin cannot fake (`SPAWN.md` §9.3). 3 new gates.
    all three above a builder. Knobs in `DECISIONS.md` §open "clutter richness
    v0", both unspoken.
 
-**Not done:** unverified in a frame — no capture this pass, and `browser_smoke`
-is off, so nothing here rests on a pixel.
+**Not done / unverified:** no capture this pass, so nothing here rests on a
+pixel. The code tier is green (`GATES_TIER=fast`, the runner's setting for this
+run). The renderer tier was run anyway because this touches `web/`: it is RED
+both on this branch and on the anchor `e802fdb`, on **different** assertions —
+branch, tab B never reached the world inside the cap; anchor, tab B reached it
+at 91.2 s and never pinned `programsAtInWorld`. Item 3's two-live-renderers
+class, confirmed pre-existing a third time. What that noise cannot resolve is
+an 11% effect, and this raises `CLUTTER_POOL_CAP` by 11% (22 025 → 24 425 a
+kind) — so "my diff did not slow tab B" is *not* something this box can show.
 
 ## 0c4 · GAP PASS (ui lane): the refusal walk now reads position, not just length *(done this pass)*
 
