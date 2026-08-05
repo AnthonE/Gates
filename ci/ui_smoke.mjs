@@ -6138,8 +6138,10 @@ console.log(
     `${REFUSAL_TABLES.length} tables (${REFUSAL_TABLES.map((t) => `${t.what} ${t.table.length}`).join(", ")}) ` +
     "walked by name against the prefixed consts in protocol/craft/build/deploy, each contiguous from zero, " +
     "all distinct, no in-range fall-through, the bare-code fallback intact past the end, main.js pinned to " +
-    "route every one through the importable accessor and to declare no copy of its own, and a repair told " +
-    "from a raid on the APPLIED_HIT bit read out of core.rs, silent when max is 0",
+    "route every one through the importable accessor and to declare no copy of its own; and every sentence " +
+    "of those four plus hud.js's move table pinned to its constant's NAME by a keyword no other sentence in " +
+    "its table contains, so a renumber under the table is red rather than a player told the wrong refusal; " +
+    "and a repair told from a raid on the APPLIED_HIT bit read out of core.rs, silent when max is 0",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
