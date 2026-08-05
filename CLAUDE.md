@@ -61,10 +61,11 @@ that disagrees with a passing gate is wrong — fix the doc.
    `content/*.toml` only, validated at boot, content hash pinned into the
    WAL header (a replay replays the content it was played under). →
    `test_content`.
-8. **Money is appearance-only from the house.** The never-table
-   (`DESIGN.md` §3.3) is a wall, not a knob. Economy stages (A1/A2/A3)
-   arm only by operator act. Tickers are bare: SCRY, OBOL, MYRRH — never
-   a `$` prefix.
+8. **The house never sells power.** It sells appearance and the game
+   itself; the never-table (`DESIGN.md` §3.3) is a wall, not a knob, and
+   a uniform entry price is not on it — a *better door than the next
+   player's* still is. Economy stages (A1/A2/A3) arm only by operator
+   act. Tickers are bare: SCRY, OBOL, MYRRH — never a `$` prefix.
 
 ## Traps already paid for (learned from research or scry production —
 do not rediscover)

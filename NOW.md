@@ -61,6 +61,12 @@ Done items are deleted, not checked — history lives in git and
    "for the record i am upgrading asap the graphics". `DECISIONS.md` §Spoken.
    The costed plan is `MIGRATION.md` — read §6 before picking this up.)*
 
+   *Read before picking this up: the browser client became **second class** on
+   2026-08-05, so this single-owner migration is now aimed at the demo. It is
+   **not** held — the 2026-08-04 word stands until the operator moves it — but
+   the sequencing is an open knob (`DECISIONS.md` §open, "TSL migration
+   sequencing after the demotion"). Confirm before spending a pass this size.*
+
    Four steps, in order, because each one done later costs more. **Do not
    compress them into one pass.**
 

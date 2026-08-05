@@ -155,10 +155,19 @@ crypto-native audience can trust a survival game with real coins in it:
 | upkeep, decay pauses, protection windows | paying rent to not be raided is pay-to-win with extra steps |
 | blueprints, tech, crafting speed | progression is play |
 | loot odds, spawn quality, map intel | information is position |
-| a better queue **(knob: default never — flipping this is an operator sentence)** | access is the last honest thing to sell and we default to not selling it |
+| queue priority over another player **(knob: default never — flipping this is an operator sentence)** | the door is sold once, at one price; selling a shorter line to the same door is pay-to-win wearing a hat |
 
-The house sells appearance. Players sell each other everything. The pools
-exchange the coins. That is the entire monetary constitution.
+The house sells appearance and the game itself. Players sell each other
+everything. The pools exchange the coins. That is the entire monetary
+constitution.
+
+**The door is not on this table** (`DECISIONS.md` 2026-08-05). A game that
+costs money sells *access*, uniformly, to everyone who plays — which is
+exactly why it grants no player an edge and clears every row above. What
+stays forbidden is a **better door than the next player's**; the queue row
+means priority among people who have already paid, and "we already sell
+access" is not an argument that reaches it. Price and currency are
+`DECISIONS.md` §open — no number is invented here.
 
 ## 4 · Architecture
 
@@ -183,6 +192,10 @@ gates/
                    # the same pattern the parity probe ships).
   web/             # three.js app (vite): renderer, input, interpolation,
                    # UI overlay (plain DOM), wallet connect.
+                   # SECOND CLASS as of DECISIONS.md 2026-08-05: the demo
+                   # and the playable link, not the product. Allowed to
+                   # sit below ART.md's bar; points at unarmed shards.
+                   # A native renderer is NOT scheduled by that call.
   launcher/        # (M4, not a crate yet) the platform's desktop client:
                    # Rust + egui, one static binary, no webview — patcher,
                    # shard list, balances, self-custody wallet on alloy.
@@ -429,7 +442,11 @@ a later quest can gate on a real played round with no human in the loop.
 - Server-side sanity on every action: interact range + LOS checks, speed
   caps enforced by the sim itself (movement *is* server-simulated;
   prediction is cosmetic), fire-rate from item stats not packet cadence.
-- **Session and identity**: guest UUID sessions play instantly. Binding a
+- **Session and identity**: the game is bought, so a session on an
+  official shard starts from an entitlement rather than from nothing
+  (`DECISIONS.md` 2026-08-05); *what* the purchase gates is §open. The
+  `session{guest_uuid}` path in §9's handshake is unchanged and is what
+  unarmed community, training, and demo shards run on. Binding a
   wallet = signing one EIP-191 message (`gates join <shard> <nonce>`) —
   same pattern as every scry game action; the wallet then owns banked OBOL,
   skins, and the character slot. One live session per wallet. The desktop
@@ -490,7 +507,9 @@ export at wipe, wipe machinery end-to-end on a test shard.
 **M4 — the counter + the door.** Skin catalog, till verification
 (three-valued), entitlements by wallet, wallet-bind flow, first public
 shard, and the board's delivery: repo + playable link + a recorded round
-whose replay hash checks.
+whose replay hash checks. The playable link is the **web demo** — that is
+the job second class was given (`DECISIONS.md` 2026-08-05), and it is why
+the browser build survives the tiering rather than being cut.
 
 ## 12 · CI gates (the walls)
 
@@ -522,7 +541,9 @@ is scry's standing rule: the operator's eye and a public SCRY transfer.
 | knob | default until spoken |
 |---|---|
 | shard cap / reference hardware | 100 players / 4-core VPS |
-| desktop client renderer | three.js stays; the browser build is the shipping client |
+| game price + currency | unset — an operator act; no number invented here |
+| what the purchase gates | the native client + the official armed shards; unarmed self-hosted shards stay free |
+| desktop client renderer | three.js stays for the web demo; a native renderer is unscheduled (`DECISIONS.md` 2026-08-05) |
 | kernel anti-cheat on armed shards | not integrated (`ALPHA.md` §5) |
 | wipe cadence + BP survival | monthly map, BPs survive one cycle |
 | hunger/thirst depth | minimal timer-drain v1 |
