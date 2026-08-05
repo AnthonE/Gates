@@ -27,75 +27,77 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 68] = [
-    "v20_input_acks_only.bin",
-    "v20_input_full.bin",
-    "v20_snapshot_keyframe.bin",
-    "v20_snapshot_delta.bin",
-    "v20_snapshot_cap.bin",
-    "v20_hello.bin",
-    "v20_welcome.bin",
-    "v20_refuse_full.bin",
-    "v20_event_gather.bin",
-    "v20_event_inv.bin",
-    "v20_event_slot_harvested.bin",
-    "v20_event_slot_respawned.bin",
-    "v20_event_slot_sync.bin",
-    "v20_event_catalog.bin",
-    "v20_event_weak_mark.bin",
-    "v20_event_craft_q.bin",
-    "v20_event_craft_done.bin",
-    "v20_event_craft_refused.bin",
-    "v20_event_recipes.bin",
-    "v20_action_craft.bin",
-    "v20_action_cancel.bin",
-    "v20_action_place.bin",
-    "v20_event_piece_placed.bin",
-    "v20_event_piece_sync.bin",
-    "v20_event_build_refused.bin",
-    "v20_event_piece_defs.bin",
-    "v20_action_deploy.bin",
-    "v20_action_feed.bin",
-    "v20_event_deploy_placed.bin",
-    "v20_event_deploy_sync.bin",
-    "v20_event_deploy_refused.bin",
-    "v20_event_deploy_defs.bin",
-    "v20_event_piece_removed.bin",
-    "v20_event_deploy_removed.bin",
-    "v20_event_stock.bin",
-    "v20_action_use.bin",
-    "v20_action_lock.bin",
-    "v20_event_door.bin",
-    "v20_action_upgrade.bin",
-    "v20_chat.bin",
-    "v20_event_chat.bin",
-    "v20_event_hit.bin",
-    "v20_event_health.bin",
-    "v20_event_death.bin",
-    "v20_action_loot.bin",
-    "v20_event_bag_dropped.bin",
-    "v20_event_bag_sync.bin",
-    "v20_event_bag_removed.bin",
-    "v20_event_struct_hit_piece.bin",
-    "v20_event_struct_hit_deploy.bin",
-    "v20_event_vitals.bin",
-    "v20_event_consumed.bin",
-    "v20_event_consume_refused.bin",
-    "v20_action_consume.bin",
-    "v20_event_drank.bin",
-    "v20_action_drink.bin",
-    "v20_event_respawn.bin",
-    "v20_action_respawn.bin",
-    "v20_action_move.bin",
-    "v20_event_moved.bin",
-    "v20_event_move_refused.bin",
-    "v20_action_move_box.bin",
-    "v20_action_container.bin",
-    "v20_action_container_close.bin",
-    "v20_event_cont_sync.bin",
-    "v20_event_cont_close.bin",
-    "v20_action_repair.bin",
-    "v20_event_piece_repaired.bin",
+pub const FIXTURES: [&str; 70] = [
+    "v21_input_acks_only.bin",
+    "v21_input_full.bin",
+    "v21_snapshot_keyframe.bin",
+    "v21_snapshot_delta.bin",
+    "v21_snapshot_cap.bin",
+    "v21_hello.bin",
+    "v21_welcome.bin",
+    "v21_refuse_full.bin",
+    "v21_event_gather.bin",
+    "v21_event_inv.bin",
+    "v21_event_slot_harvested.bin",
+    "v21_event_slot_respawned.bin",
+    "v21_event_slot_sync.bin",
+    "v21_event_catalog.bin",
+    "v21_event_weak_mark.bin",
+    "v21_event_craft_q.bin",
+    "v21_event_craft_done.bin",
+    "v21_event_craft_refused.bin",
+    "v21_event_recipes.bin",
+    "v21_action_craft.bin",
+    "v21_action_cancel.bin",
+    "v21_action_place.bin",
+    "v21_event_piece_placed.bin",
+    "v21_event_piece_sync.bin",
+    "v21_event_build_refused.bin",
+    "v21_event_piece_defs.bin",
+    "v21_action_deploy.bin",
+    "v21_action_feed.bin",
+    "v21_event_deploy_placed.bin",
+    "v21_event_deploy_sync.bin",
+    "v21_event_deploy_refused.bin",
+    "v21_event_deploy_defs.bin",
+    "v21_event_piece_removed.bin",
+    "v21_event_deploy_removed.bin",
+    "v21_event_stock.bin",
+    "v21_action_use.bin",
+    "v21_action_lock.bin",
+    "v21_event_door.bin",
+    "v21_action_upgrade.bin",
+    "v21_chat.bin",
+    "v21_event_chat.bin",
+    "v21_event_hit.bin",
+    "v21_event_health.bin",
+    "v21_event_death.bin",
+    "v21_action_loot.bin",
+    "v21_event_bag_dropped.bin",
+    "v21_event_bag_sync.bin",
+    "v21_event_bag_removed.bin",
+    "v21_event_struct_hit_piece.bin",
+    "v21_event_struct_hit_deploy.bin",
+    "v21_event_vitals.bin",
+    "v21_event_consumed.bin",
+    "v21_event_consume_refused.bin",
+    "v21_action_consume.bin",
+    "v21_event_drank.bin",
+    "v21_action_drink.bin",
+    "v21_event_respawn.bin",
+    "v21_action_respawn.bin",
+    "v21_action_move.bin",
+    "v21_event_moved.bin",
+    "v21_event_move_refused.bin",
+    "v21_action_move_box.bin",
+    "v21_action_container.bin",
+    "v21_action_container_close.bin",
+    "v21_event_cont_sync.bin",
+    "v21_event_cont_close.bin",
+    "v21_action_repair_piece.bin",
+    "v21_action_repair_deploy.bin",
+    "v21_event_piece_repaired_piece.bin",
+    "v21_event_piece_repaired_deploy.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -860,20 +862,50 @@ pub fn snapshot_cap() -> SnapshotCase {
 }
 
 /// The repair request: `action_use`'s address, deliberately — the two
-/// verbs address a piece the same way, so a fixture that differed would
-/// prove only that two constants differ. `loc` is an edge rather than 0 so
-/// a dropped `loc` field cannot pass as a zero.
-pub fn action_repair() -> (u16, u16, u8, u8) {
-    (341, 682, 2, sim_core::build::LOC_EDGE_N)
+/// verbs address a structure the same way, so a fixture that differed
+/// would prove only that two constants differ. `loc` is an edge rather
+/// than 0 so a dropped `loc` field cannot pass as a zero.
+///
+/// Two fixtures, one per store, for `event_struct_hit_*`'s reason: the
+/// leading bit is the whole point of v21 and a single-store fixture would
+/// pin only one of its two values. The deploy one carries a different
+/// address as well, so a decoder that read the bit but then took the
+/// wrong branch cannot land on the same bytes.
+/// `(deploy, cx, cz, level, loc)`.
+pub fn action_repair_piece() -> (bool, u16, u16, u8, u8) {
+    (false, 341, 682, 2, sim_core::build::LOC_EDGE_N)
+}
+
+pub fn action_repair_deploy() -> (bool, u16, u16, u8, u8) {
+    (true, 512, 128, 1, sim_core::build::LOC_EDGE_W)
 }
 
 /// A repair landing: the address, what the payment bought back, and where
-/// the piece now stands.
+/// the structure now stands.
 ///
 /// `healed` and `hp` are different, both nonzero, and `healed < hp` — the
 /// three things a transposed or dropped pair could not survive. `row` is
 /// nonzero for the same reason `action_lock`'s bit is 1: a zero there is
 /// byte-identical to a field the encoder never wrote.
-pub fn event_piece_repaired() -> (u16, u16, u8, u8, u8, u16, u16) {
-    (341, 682, 2, sim_core::build::LOC_EDGE_N, 4, 610, 1750)
+///
+/// Two fixtures again, and here the bit also *sizes* the row field
+/// (`PIECE_ROW_BITS` vs `DEPLOY_ROW_BITS`), so the deploy row is chosen
+/// inside four bits — a row of 4 would encode identically at both widths
+/// and prove nothing about the branch.
+/// `(deploy, cx, cz, level, loc, row, healed, hp)`.
+pub fn event_piece_repaired_piece() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
+    (
+        false,
+        341,
+        682,
+        2,
+        sim_core::build::LOC_EDGE_N,
+        200,
+        610,
+        1750,
+    )
+}
+
+pub fn event_piece_repaired_deploy() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
+    (true, 512, 128, 1, sim_core::build::LOC_EDGE_W, 11, 37, 60)
 }

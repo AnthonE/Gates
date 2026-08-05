@@ -139,6 +139,13 @@ pub async fn spawn_shard(
     loot: sim_core::loot::LootContent,
     catalog: ItemCatalog,
 ) -> Result<ShardHandle, String> {
+    // The island validates at boot the way content does (CLAUDE.md wall 7),
+    // and here rather than in `bin/shard.rs` so that every path that raises a
+    // shard — the binary, the bots, the wire tests — refuses the same seed.
+    // First, before an identity is loaded or a port is bound: a refusal this
+    // cheap should cost neither.
+    crate::boot::check_seed(cfg.seed)?;
+
     // A PUBLIC shard serves a real certificate chain and browsers trust it
     // outright; the dev flow self-signs for loopback and the page passes the
     // hash below through `serverCertificateHashes`. Both or neither is

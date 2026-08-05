@@ -24,8 +24,9 @@ use sim_core::deploy::{
 };
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
 use sim_core::limits::{
-    HEARTH_STOCK_ROWS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
-    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
+    HEARTH_STOCK_ROWS, MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES,
+    MAX_LOOT_ROLLS, MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
+    MAX_RECIPE_INPUTS, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -326,6 +327,43 @@ impl Content {
             if hp == 0 {
                 return Err(format!("bake: `{}` hp 0 is the inert sentinel", d.id));
             }
+            // The repair price, joined from the recipe that makes this
+            // deployable's item. Placement charges one crafted item and a
+            // repair cannot: a fraction of one item rounds up to the whole
+            // thing, so a scratched door would cost a whole door. Pricing
+            // against what the door was *made* of gives the piece formula
+            // something to divide (`build::repair_units`).
+            //
+            // `validate.rs` enforces one recipe per output, so this join
+            // is 1:1 and never picks. A deployable with no recipe at all
+            // bakes `n_costs = 0` and `repair` refuses it as unpriced —
+            // it is not required to be craftable, only to be priced
+            // before it can be mended.
+            let mut costs = [(0u16, 0u16); MAX_DEPLOY_COSTS];
+            let mut n_costs = 0u8;
+            if let Some(r) = self.recipe_for(&d.id) {
+                // Equal widths today; the guard is what keeps them from
+                // diverging into an out-of-bounds write.
+                if r.inputs.len() > MAX_DEPLOY_COSTS {
+                    return Err(format!(
+                        "bake: `{}` recipe has more than {MAX_DEPLOY_COSTS} inputs to price a repair against",
+                        d.id
+                    ));
+                }
+                for (n, input) in r.inputs.iter().enumerate() {
+                    let item = self.item_index(&input.item).ok_or_else(|| {
+                        format!("bake: `{}` repair input `{}` missing", d.id, input.item)
+                    })?;
+                    let count = u16::try_from(input.count).map_err(|_| {
+                        format!(
+                            "bake: `{}` repair input `{}` count overflows u16",
+                            d.id, input.item
+                        )
+                    })?;
+                    costs[n] = (item, count);
+                }
+                n_costs = r.inputs.len() as u8;
+            }
             dc.defs[idx] = DeployDef {
                 arch: match d.archetype {
                     DeployArchetype::Bag => ARCH_BAG,
@@ -346,6 +384,8 @@ impl Content {
                 item: self
                     .item_index(&d.id)
                     .ok_or_else(|| format!("bake: `{}` is not an item", d.id))?,
+                n_costs,
+                costs,
             };
         }
         // Upkeep materials: distinct build-cost items, ascending — the

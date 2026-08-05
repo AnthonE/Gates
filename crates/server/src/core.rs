@@ -315,8 +315,15 @@ impl ShardCore {
                         loc,
                         material,
                     },
-                    ActionMsg::Repair { cx, cz, level, loc } => Command::Repair {
+                    ActionMsg::Repair {
+                        deploy,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    } => Command::Repair {
                         id: c.id,
+                        deploy,
                         cx,
                         cz,
                         level,
@@ -937,9 +944,11 @@ impl ShardCore {
                     // person who paid. No sync walk moves — the address
                     // held this row before and holds it after.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let deploy = ev.b & STRUCT_DEPLOY_BIT != 0;
                     let (level, loc, row) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8, ev.b as u8);
                     let (healed, hp) = ((ev.c >> 16) as u16, ev.c as u16);
                     match encode_event_piece_repaired(
+                        deploy,
                         cx,
                         cz,
                         level,

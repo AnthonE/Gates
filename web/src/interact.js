@@ -506,3 +506,292 @@ export function promptForSwing(pick) {
   if (!label) return "";
   return `[LMB] ${label}`;
 }
+
+// ---------------------------------------------------------------------------
+// The third half of the crosshair: what a PLACEMENT would put there.
+//
+// Build mode was the one verb with no centre hint at all. `main.js:287` calls
+// it "the plain-UI stand-in for the radial at alpha" and it draws a green
+// wireframe ghost 3.5 m ahead, but the only text naming the button that
+// commits it is the bottom strip 96 px above the hotbar — and until this
+// landed, the hint UNDER the crosshair went on advertising `[LMB] CHOP TREE`
+// while the ghost sat over the aimed cell. The player's eye is on the ghost;
+// the row that describes it was somewhere else.
+// ---------------------------------------------------------------------------
+
+/** Stride of one row of the wasm piece-def table (`views.pieceDefs`). */
+export const PIECE_DEF_STRIDE = 8;
+/** Where a piece row's ingredient pairs start, and how wide a pair is. */
+export const PIECE_COST_AT = 4;
+export const PIECE_COST_STRIDE = 2;
+/** Stride of one row of the wasm deployable-def table (`views.deployDefs`). */
+export const DEPLOY_DEF_STRIDE = 4;
+// UI labels for sim-core `build.rs`'s shape and material codes — labels, not
+// content: `CONTENT.md` owns every number and these name none of them. They sat
+// in `main.js` beside the one function that read them; they moved here so the
+// decode below could move here, and `ci/ui_smoke.mjs` §V walks both against
+// `build.rs`'s own enums.
+export const BUILD_SHAPE_LABEL = ["foundation", "wall", "doorway", "floor", "stairs", "roof"];
+export const BUILD_MAT_LABEL = ["wood", "stone", "metal"];
+
+/**
+ * Decode one row of the piece-def table into `{ what, costs, need }`.
+ *
+ * Pure, and here rather than in `main.js` for exactly one reason: it is a
+ * POSITIONAL read of a flat table — shape at `b`, material at `b + 1`, the
+ * ingredient count at `b + 3`, and the pairs at `b + 4 + k*2` — and
+ * `CLAUDE.md`'s trap list names that shape as where the reference ecosystem
+ * actually bled (49 Oxide commits touching a hook's arguments, ~27 correcting
+ * a payload that had already shipped wrong). Swap the item and the quantity in
+ * that pair and the client asks for "3 stone wall" instead of "200 wood": a
+ * byte-golden cannot see it, every field is a number, and nothing else here
+ * would go red. In `main.js` it was a closure inside `run()` that no gate could
+ * import. Here `ci/ui_smoke.mjs` §V evaluates it against a hand-built table.
+ *
+ * `itemName` and `have` are injected because both are the caller's: item names
+ * come from the wasm string table and inventory counts from `views.inv`, and
+ * this file may not reach either. Fills a caller-owned object — the client is a
+ * hot path and this runs off the HUD timer four times a second.
+ */
+export function describePiece(out, defs, row, itemName, have) {
+  const b = row * PIECE_DEF_STRIDE;
+  out.what = `${BUILD_MAT_LABEL[defs[b + 1]] || "?"} ${BUILD_SHAPE_LABEL[defs[b]] || "?"}`;
+  out.need = "";
+  const parts = [];
+  for (let k = 0; k < defs[b + 3]; k++) {
+    const item = defs[b + PIECE_COST_AT + k * PIECE_COST_STRIDE];
+    const qty = defs[b + PIECE_COST_AT + k * PIECE_COST_STRIDE + 1];
+    parts.push(`${qty} ${itemName(item)}`);
+    // First unmet ingredient only. The build strip already lists every cost;
+    // the hint is ONE row, and the actionable number for a player standing at
+    // a ghost is how much more to go and get.
+    const gap = qty - have(item);
+    if (gap > 0 && !out.need) out.need = `${gap} more ${itemName(item)}`;
+  }
+  out.costs = parts.join(" + ");
+  return out;
+}
+
+/**
+ * Decode one row of the deployable-def table into the same shape.
+ *
+ * A deployable is placed FROM the stack rather than crafted in place, so its
+ * cost is one of itself — and the item id is at `b + 3`, the same positional
+ * read with a different stride.
+ */
+export function describeDeploy(out, defs, row, itemName, have) {
+  const item = defs[row * DEPLOY_DEF_STRIDE + 3];
+  out.what = itemName(item);
+  out.costs = `1 ${out.what}`;
+  out.need = have(item) < 1 ? `1 ${out.what}` : "";
+  return out;
+}
+
+/**
+ * What the prompt says for a build pick, or `""` when build mode is off (or
+ * the piece table has not arrived, which is `what === ""`).
+ *
+ * `[RMB]` for the same reason the swing says `[LMB]`: right-click is what
+ * commits the placement (`main.js`'s `mousedown`, button 2), and the button is
+ * the thing the text has to connect to. `need` is the SHORTFALL of the first
+ * ingredient the player is missing, not the piece's total cost — the total is
+ * already on the build strip, and the number a player standing at a ghost
+ * wants is how much more wood to go and get. `""` means affordable, which is
+ * the ordinary case and gets no chrome.
+ *
+ * Affordability is advisory and stated as a cost, never as a refusal: the
+ * server owns whether this placement is legal (materials is only one of
+ * `BUILD_REFUSE_TEXT`'s reasons), so this line never says "can't".
+ */
+export function promptForBuild(pick) {
+  if (!pick || !pick.what) return "";
+  const head = `[RMB] PLACE ${pick.what.toUpperCase()}`;
+  return pick.need ? `${head} · NEED ${pick.need.toUpperCase()}` : head;
+}
+
+/**
+ * The one centre hint, chosen — the whole of `#prompt`'s policy, in one pure
+ * function so it can be gated.
+ *
+ * The reference's centre hint is a SINGLE row (`Rust Images/choppingtree.jpg`)
+ * and two stacked prompts under a crosshair is a menu, not a hint — so three
+ * candidate verbs have to become one, and the ordering is the entire decision.
+ * It was three chained `||`s inside `main.js`'s RAF-adjacent `updatePrompt`
+ * with nothing asserting it, which is precisely the positional shape
+ * `CLAUDE.md`'s trap list names: swap two of these and every other gate stays
+ * green while the crosshair advertises a verb the button will not perform.
+ *
+ * Build outranks E outranks the swing, and the reason is which verb the
+ * player's own attention is already on. In build mode there is a ghost drawn
+ * over the aimed cell and right-click is about to act on it; E still works
+ * (the build strip says so) but it is not what the eye is on. Off build mode,
+ * E outranks the swing because the mouse button is already held down while
+ * nothing on screen would ever suggest pressing E — the half a player cannot
+ * otherwise discover wins the row.
+ */
+export function centrePrompt(buildPick, interactPick, swingPick) {
+  return (
+    promptForBuild(buildPick) || promptFor(interactPick) || promptForSwing(swingPick)
+  );
+}
+
+// =============================================================================
+// The other half of a piece's life story: what breaks it, and what mends it.
+// =============================================================================
+
+/**
+ * Where a piece's address sits on the ground, mirrored from
+ * `crates/sim-core/src/build.rs`'s `LOC_*`. The same physical edge is never
+ * addressable twice, so which of the four a piece carries decides where its
+ * anchor is — and the anchor is what BOTH reach checks measure to.
+ */
+export const LOC_PLANE = 0;
+export const LOC_RISER = 1;
+export const LOC_EDGE_W = 2;
+export const LOC_EDGE_N = 3;
+
+/**
+ * The planar anchor of a build address — `build.rs`'s `anchor`, said in JS.
+ *
+ * This is a positional payload in the exact sense `CLAUDE.md`'s trap list
+ * means it: swap the two `half` terms and every byte-golden stays green while
+ * the client measures reach to the wrong corner of the cell, so U and the
+ * repair key refuse at a distance the server would have accepted (and reach at
+ * one it will not). It is written out here, rather than left inline in
+ * `main.js`, so `ui_smoke` can walk it against the Rust in node.
+ *
+ * `out` is a two-element array, mutated in place — this runs inside a scan
+ * over every piece in reach and the hot-path law forbids the tuple.
+ */
+export function pieceAnchor(out, cx, cz, loc, cell) {
+  const x0 = cx * cell;
+  const z0 = cz * cell;
+  const half = cell * 0.5;
+  out[0] = loc === LOC_EDGE_W ? x0 : x0 + half;
+  out[1] = loc === LOC_EDGE_N ? z0 : z0 + half;
+  return out;
+}
+
+/** The pick `nearestPiece` fills. `found` is false when nothing is in reach. */
+export function newPiecePick() {
+  return { found: false, cx: 0, cz: 0, level: 0, loc: 0, row: 0, d2: 0 };
+}
+
+/**
+ * The nearest placed piece within reach of the player's feet — the target for
+ * the verbs that address a piece rather than a thing under the crosshair (U
+ * today, repair when the client can send one).
+ *
+ * Why it is here and not in `main.js`. It WAS in `main.js`, and it read
+ * `bestD = REACH * REACH` against a `REACH` that is declared nowhere in the
+ * repo — so `nearestPiece` threw a `ReferenceError` on its first line and U
+ * had been dead at runtime for as long as the binding existed. Nothing caught
+ * it: `ui_smoke` cannot execute `main.js` (it boots three.js and is stubbed at
+ * the route), `browser_smoke` never presses U, and a free variable is not a
+ * syntax error, so the bundle built clean. The fix is not the missing
+ * constant — it is that the arithmetic now lives where a node gate can call
+ * it, which is the same move `describePiece` made for the same reason.
+ *
+ * The reach is `INTERACT_REACH_M`, i.e. the sim's own `BUILD_REACH_M`, which
+ * is what `build.rs`'s `repair` and `upgrade` both gate on. Quantize both
+ * sides: the client picks inside the radius the server will accept.
+ *
+ * `at` = `{x, z}` (the feet, world metres), `world` = `{cell, recs}` where
+ * `recs` is any iterable of `{cx, cz, level, loc, row}`.
+ */
+const ANCHOR_SCRATCH = [0, 0];
+export function nearestPiece(out, at, world) {
+  out.found = false;
+  out.cx = 0;
+  out.cz = 0;
+  out.level = 0;
+  out.loc = 0;
+  out.row = 0;
+  out.d2 = 0;
+  let bestD = INTERACT_REACH_M * INTERACT_REACH_M;
+  for (const rec of world.recs) {
+    const a = pieceAnchor(ANCHOR_SCRATCH, rec.cx, rec.cz, rec.loc, world.cell);
+    const dx = a[0] - at.x;
+    const dz = a[1] - at.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestD) {
+      bestD = d2;
+      out.found = true;
+      out.cx = rec.cx;
+      out.cz = rec.cz;
+      out.level = rec.level;
+      out.loc = rec.loc;
+      out.row = rec.row;
+      out.d2 = d2;
+    }
+  }
+  return out;
+}
+
+/**
+ * What the sim says when it turns down a build, an upgrade or a repair,
+ * indexed by `build.rs`'s `REFUSE_B_*` code.
+ *
+ * The index IS the sim's number, which is the whole reason this table cannot
+ * live as a bare array in `main.js` where nothing can walk it: it fell one
+ * entry short of the sim the day `REFUSE_B_INTACT` (9) landed, so repairing a
+ * wall that is already whole — by far the likeliest repair refusal, and the
+ * one every player will hit first — answered `can't build: code 9`. `ui_smoke`
+ * §W now walks it against the constants `build.rs` declares, by name and by
+ * value, so the next reason the sim grows lands red on the commit that grows
+ * it rather than as a number on a player's screen.
+ *
+ * It has since done exactly that once: `REFUSE_B_UNPRICED` (10) landed from
+ * the sim lane and this table stayed at ten entries, and the gate was red on a
+ * clean tree the same run rather than silent until a player saw `code 10`.
+ */
+export const BUILD_REFUSE_TEXT = [
+  "no such piece",
+  "spot taken",
+  "needs support",
+  "bad ground",
+  "out of reach",
+  "missing materials",
+  "world is full",
+  "claimed by a hearth",
+  "nothing to upgrade into",
+  "not damaged",
+  "cannot be repaired",
+];
+
+/** The refusal sentence, or the bare code when the sim is ahead of us. */
+export function buildRefusal(code) {
+  return BUILD_REFUSE_TEXT[code] || `code ${code}`;
+}
+
+/**
+ * The two flag bits that carry a structure's hp news, mirrored from
+ * `crates/client-wasm/src/core.rs`.
+ */
+export const APPLIED_HIT_BIT = 1 << 23;
+export const APPLIED_STRUCT_HIT_BIT = 1 << 26;
+
+/**
+ * The breach readout — and, since repair v0, its opposite.
+ *
+ * `EventMsg::StructHit` and `EventMsg::PieceRepaired` write the SAME readout
+ * from opposite directions and both raise `APPLIED_STRUCT_HIT`; only a hit
+ * also raises `APPLIED_HIT`, because only a hit struck somebody. `core.rs:98`
+ * states it outright — *"A reader that wants only raid damage checks for
+ * both"* — and the one reader in this client checked one, so a wall being
+ * mended announced itself as a wall being broken: `breaching 750/750`, the
+ * most alarming sentence in the game, fired by your own repair. A law with a
+ * prose statement and no gate is the class `CLAUDE.md` names; this function is
+ * the gate's surface.
+ *
+ * `hp` is the packed `left << 16 | max` of `client_struct_hit_hp`. A `max` of
+ * 0 means the piece's def row has not arrived, so there is no bar to draw and
+ * the honest answer is silence.
+ */
+export function structNews(flags, hp) {
+  if (!(flags & APPLIED_STRUCT_HIT_BIT)) return "";
+  const max = hp & 0xffff;
+  if (max === 0) return "";
+  const left = hp >>> 16;
+  return flags & APPLIED_HIT_BIT ? `breaching ${left}/${max}` : `repaired ${left}/${max}`;
+}

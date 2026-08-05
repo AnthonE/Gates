@@ -1200,6 +1200,14 @@ impl ClientCore {
                 flags |= APPLIED_HIT | APPLIED_STRUCT_HIT;
             }
             EventMsg::PieceRepaired {
+                // `StructHit` reads its bit to pick which store to look a
+                // maximum up in. This one has nothing to look up — `hp` is
+                // both halves of the pair by construction, because the
+                // verb's whole contract is that a repaired structure
+                // stands at its baked row's hp and never a point over — so
+                // the bit is ignored here and the readout means the same
+                // thing for a door as for the doorway it stands in.
+                deploy: _,
                 cx,
                 cz,
                 level,
@@ -1210,10 +1218,7 @@ impl ClientCore {
             } => {
                 // The same readout `StructHit` writes, from the other
                 // direction — and no hitmarker, so `APPLIED_HIT` stays
-                // off: nobody was struck. `hp` is both halves of the pair
-                // by construction, because the verb's whole contract is
-                // that a repaired piece stands at its baked row's hp and
-                // never a point over; there is nothing to look up.
+                // off: nobody was struck.
                 self.struct_hit = (cx, cz, level, loc, hp, hp);
                 flags |= APPLIED_STRUCT_HIT;
             }

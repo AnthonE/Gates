@@ -69,7 +69,8 @@ use crate::craft::{inv_count, inv_take};
 use crate::gather::ItemStack;
 use crate::limits::{
     BOX_SLOTS, HEARTH_STOCK_ROWS, MAX_BOXES, MAX_BOX_SPILL_PER_TICK, MAX_BUILD_COORD,
-    MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_DEPLOY_DEFS, MAX_HEARTHS, UPKEEP_SWEEP_PER_TICK,
+    MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_HEARTHS,
+    UPKEEP_SWEEP_PER_TICK,
 };
 use crate::terrain;
 use crate::world::{
@@ -153,6 +154,19 @@ pub struct DeployDef {
     pub hp: u16,
     /// Item index placing consumes one unit of (the deployable's item).
     pub item: u16,
+    /// Live rows of `costs`. Zero ⇒ the bake found no recipe for `item`,
+    /// so this row has no quoted price and `repair` refuses rather than
+    /// mending it free.
+    pub n_costs: u8,
+    /// What the deployable's own recipe consumes, `(item index, units)` —
+    /// the raw materials, not the one crafted item placement takes.
+    ///
+    /// Placement charges one `item`; repair cannot, because a fractional
+    /// share of one item rounds to the whole thing and a scratched door
+    /// would cost a whole door. So a repair is priced against what the
+    /// door was *made* of, pro-rata, exactly as a piece is priced against
+    /// `PieceDef::costs` — one formula, two stores.
+    pub costs: [(u16, u16); MAX_DEPLOY_COSTS],
 }
 
 impl DeployDef {
@@ -161,6 +175,8 @@ impl DeployDef {
         placement: PLACE_GROUND,
         hp: 0,
         item: 0,
+        n_costs: 0,
+        costs: [(0, 0); MAX_DEPLOY_COSTS],
     };
 }
 
@@ -194,6 +210,13 @@ impl DeployContent {
     /// probe fixture's items (fixture, not game content). Rows cover the
     /// hearth, a station, a door, and a ground deploy so every placement
     /// class and the claim/upkeep paths ride the gates.
+    ///
+    /// Repair prices are items 0 and 1 — the build fixture's cost items,
+    /// so an inventory stocked for building can already pay for mending.
+    /// The door carries two rows on purpose: a multi-material deployable
+    /// repair is the case where a half-paid payment would show. The bag
+    /// carries none, also on purpose, so `REFUSE_B_UNPRICED` has a live
+    /// target inside the gates rather than only in a unit test.
     pub fn probe_fixture() -> Self {
         let mut d = Self::EMPTY;
         d.def_count = 4;
@@ -202,24 +225,32 @@ impl DeployContent {
             placement: PLACE_FOUNDATION,
             hp: 100,
             item: 2,
+            n_costs: 2,
+            costs: [(0, 30), (1, 10), (0, 0), (0, 0)],
         };
         d.defs[1] = DeployDef {
             arch: ARCH_WORKBENCH,
             placement: PLACE_ANY,
             hp: 80,
             item: 3,
+            n_costs: 1,
+            costs: [(0, 20), (0, 0), (0, 0), (0, 0)],
         };
         d.defs[2] = DeployDef {
             arch: ARCH_DOOR,
             placement: PLACE_DOORWAY,
             hp: 60,
             item: 4,
+            n_costs: 2,
+            costs: [(0, 40), (1, 8), (0, 0), (0, 0)],
         };
         d.defs[3] = DeployDef {
             arch: ARCH_BAG,
             placement: PLACE_GROUND,
             hp: 50,
             item: 5,
+            n_costs: 0,
+            costs: [(0, 0); MAX_DEPLOY_COSTS],
         };
         // The build probe fixture costs items 0 and 1.
         d.mats = [0, 1, 0, 0];
@@ -507,6 +538,27 @@ impl Deploys {
             .find(|d| d.cx == cx && d.cz == cz && d.level == level && d.loc == loc)
     }
 
+    /// The store index of the deployable at an address — `Pieces`'
+    /// `find_index`, for the same reason: `find` hands out a reference the
+    /// borrow checker will not let a mutation follow. The address is
+    /// shared with the piece store by design (a door and its doorway have
+    /// one address), so the caller has already decided which store it
+    /// means; this one never guesses.
+    pub(crate) fn find_index(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<usize> {
+        self.entries[..self.len]
+            .iter()
+            .position(|d| d.cx == cx && d.cz == cz && d.level == level && d.loc == loc)
+    }
+
+    /// Write entry `i`'s hp alone — the repair verb's write (`build.rs`).
+    /// `Pieces::set_hp`'s twin, and the upkeep clock is untouched for its
+    /// reason: materials are not rent. Until this existed every hp write
+    /// on a deployable was a direct field poke inside this module, which
+    /// is why the verb could not reach a door from outside it.
+    pub(crate) fn set_hp(&mut self, i: usize, hp: u16) {
+        self.entries[i].hp = hp;
+    }
+
     fn insert(&mut self, rec: DeployRec) -> bool {
         if self.len == MAX_DEPLOYS {
             return false;
@@ -674,7 +726,12 @@ pub fn box_drop_pos(seed: u64, cx: u16, cz: u16, level: u8) -> (f32, f32, f32) {
     (x, terrain::height(seed, x, z) + level as f32 * LEVEL_H_M, z)
 }
 
-fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
+/// The point `place_deploy` measures reach to, for every `loc`. `build.rs`
+/// measures `repair` to `build::anchor` instead, which is this point for a
+/// plane and half a cell off it for an edge; `pub(crate)` so the test that
+/// pins that relation can name both functions rather than re-deriving one of
+/// them and gating its own arithmetic.
+pub(crate) fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
     (
         cx as f32 * crate::build::BUILD_CELL_M + crate::build::BUILD_CELL_M * 0.5,
         cz as f32 * crate::build::BUILD_CELL_M + crate::build::BUILD_CELL_M * 0.5,
@@ -1347,7 +1404,7 @@ pub fn upkeep_sweep(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{BuildContent, Pieces, LOC_PLANE};
+    use crate::build::{BuildContent, Pieces, LOC_PLANE, REFUSE_B_SPOT, REFUSE_B_UNPRICED};
     use crate::gather::ItemStack;
     use crate::limits::MAX_REMOVALS_PER_TICK;
 
@@ -2208,6 +2265,195 @@ mod tests {
         b.qx as f32 * crate::movement::POS_XZ_Q
     }
 
+    /// The door and the doorway it hangs in have the *same* address, and
+    /// this is the gate on the bit that tells them apart.
+    ///
+    /// `place_deploy`'s `PLACE_DOORWAY` arm requires the piece at the
+    /// identical `(cx, cz, level, loc)`, so the two stores overlap here by
+    /// construction rather than by accident. A repair that read the wrong
+    /// store would find a real record at a real address, price it against
+    /// a real row, take real materials and mend the wrong thing — every
+    /// step of it looking correct. Nothing else in the payload could catch
+    /// that, which is why the bit is on the wire and not inferred.
+    #[test]
+    fn the_deploy_bit_mends_the_door_and_leaves_the_doorway_alone() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+
+        let di = deploys.find_index(CX, CZ, 0, LOC_EDGE_W).expect("the door");
+        let pi = pieces
+            .find_index(CX, CZ, 0, LOC_EDGE_W)
+            .expect("the doorway");
+        deploys.set_hp(di, 30);
+        pieces.set_hp(pi, 50);
+        let wood = crate::craft::inv_count(&p.inv, 0);
+        let cloth = crate::craft::inv_count(&p.inv, 1);
+
+        crate::build::repair(
+            &bc,
+            &dc,
+            &mut deploys,
+            &mut pieces,
+            &mut p,
+            true,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            deploys.entries()[di].hp,
+            60,
+            "the DOOR is what the set bit names, and it stands at its \
+             baked 60"
+        );
+        assert_eq!(
+            pieces.entries()[pi].hp,
+            50,
+            "and the doorway at the same address is untouched — mending it \
+             here would be the whole bug this bit exists to prevent"
+        );
+        // 40 units over 60 hp, 30 missing, at 100%: 20. The second row is
+        // 8 over the same, which is 4 — a deployable priced from its
+        // recipe, not from the one crafted item placing it took.
+        assert_eq!(crate::craft::inv_count(&p.inv, 0), wood - 20);
+        assert_eq!(crate::craft::inv_count(&p.inv, 1), cloth - 4);
+
+        crate::build::repair(
+            &bc,
+            &dc,
+            &mut deploys,
+            &mut pieces,
+            &mut p,
+            false,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            pieces.entries()[pi].hp,
+            100,
+            "and the clear bit reaches the doorway, at the same address"
+        );
+        // The piece table's own row: 3 units over 100 hp, 50 missing = 2,
+        // and only the one item, so the door's second row is not charged.
+        assert_eq!(crate::craft::inv_count(&p.inv, 0), wood - 22);
+        assert_eq!(crate::craft::inv_count(&p.inv, 1), cloth - 4);
+    }
+
+    /// The bit selects a store; it does not fall back to the other one.
+    ///
+    /// A plain wall has no deployable at its address. Asking to repair a
+    /// deployable there must refuse rather than quietly mend the wall,
+    /// because a client that had the wrong idea about what it was aiming
+    /// at should be told, not served.
+    #[test]
+    fn a_deploy_repair_at_a_piece_only_address_refuses() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99)]);
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        crate::build::place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED, "the wall lands");
+        let pi = pieces.find_index(CX, CZ, 0, LOC_EDGE_N).expect("the wall");
+        pieces.set_hp(pi, 40);
+        let wood = crate::craft::inv_count(&p.inv, 0);
+
+        crate::build::repair(
+            &bc,
+            &dc,
+            &mut deploys,
+            &mut pieces,
+            &mut p,
+            true,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0),
+            "no deployable stands there, and the piece at the same address \
+             is not a substitute for one"
+        );
+        assert_eq!(pieces.entries()[pi].hp, 40, "the wall is untouched");
+        assert_eq!(crate::craft::inv_count(&p.inv, 0), wood, "and unpaid for");
+    }
+
+    /// A row that quotes no price is refused, not mended free.
+    ///
+    /// `DeployDef::n_costs` is 0 whenever the bake found no recipe for the
+    /// deployable's item. Both cost loops in `repair` iterate `n_costs`
+    /// rows, so without this refusal the check loop passes vacuously, the
+    /// take loop takes nothing, and the hp assignment still runs — a full
+    /// heal for free, on a path where every individual step looks right.
+    #[test]
+    fn an_unpriced_deployable_refuses_rather_than_mending_free() {
+        let mut dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        let di = deploys.find_index(CX, CZ, 0, LOC_EDGE_W).expect("the door");
+        deploys.set_hp(di, 30);
+        let wood = crate::craft::inv_count(&p.inv, 0);
+
+        // Content with no recipe behind this door: the row still has hp
+        // and an item, it simply has no price.
+        dc.defs[2].n_costs = 0;
+        crate::build::repair(
+            &bc,
+            &dc,
+            &mut deploys,
+            &mut pieces,
+            &mut p,
+            true,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, p.id, REFUSE_B_UNPRICED, 0),
+            "an unpriced row is refused by name"
+        );
+        assert_eq!(
+            deploys.entries()[di].hp,
+            30,
+            "and the door stays damaged — a free mend is the one outcome \
+             this refusal exists to make impossible"
+        );
+        assert_eq!(crate::craft::inv_count(&p.inv, 0), wood);
+    }
+
     #[test]
     fn door_places_closed_toggles_open_and_reseals() {
         let dc = DeployContent::probe_fixture();
@@ -2581,6 +2827,7 @@ mod tests {
             placement: PLACE_FOUNDATION,
             hp: 100,
             item: 6,
+            ..DeployDef::INERT
         };
         dc.def_count = 5;
         let bc = BuildContent::probe_fixture();

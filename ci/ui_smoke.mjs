@@ -3533,16 +3533,25 @@ check(
 // which is that whatever else `setPrompt` is handed, E's answer OUTRANKS it.
 // A mutant that draws E's prompt from a second resolver still fails the first;
 // a mutant that reorders the `||` so the swing hint wins fails the second.
+// RE-ANCHORED a second time, and again not relaxed. The build prompt made the
+// row a three-way choice, so the `||` chain moved out of `main.js` into
+// `interact.centrePrompt` where it can be EXERCISED rather than pattern-
+// matched — §V sweeps all eight combinations of the three verbs and asserts
+// the winning text. These two keep §Q's own claim at the new seam: E's answer
+// still comes from `promptFor(aimPick(...))` and nowhere else, and it still
+// outranks the swing. What §V adds, the old regexes could not say at all.
 check(
-  /const text = promptFor\(aimPick\(pick, VERB_NONE\)\);/.test(mainSrc),
-  "main.js does not compute the prompt text from promptFor(aimPick(...)) — a prompt computed any other way" +
-    " is a second opinion, and the judge's gap 3 is that the prompt and the key must not be able to differ",
+  /centrePrompt\([\s\S]{0,80}?aimPick\(pick, VERB_NONE\)/.test(mainSrc) &&
+    /promptFor\(interactPick\)/.test(interactSrc),
+  "main.js does not hand aimPick(pick, VERB_NONE) to centrePrompt, or centrePrompt does not run it through" +
+    " promptFor — a prompt computed any other way is a second opinion, and the judge's gap 3 is that the" +
+    " prompt and the key must not be able to differ",
 );
 check(
-  /hud\.setPrompt\(text \|\| /.test(mainSrc),
-  "main.js does not hand `text` to setPrompt as the FIRST term of the fallback — E's pick is the half a" +
-    " player cannot discover, so anything else drawn under the crosshair sits behind it or the door you are" +
-    " standing at loses its hint to a tree",
+  /promptFor\(interactPick\) \|\| promptForSwing\(swingPick\)/.test(interactSrc),
+  "interact.centrePrompt does not put E's pick AHEAD of the swing — E's pick is the half a player cannot" +
+    " discover, so anything else drawn under the crosshair sits behind it or the door you are standing at" +
+    " loses its hint to a tree",
 );
 // And it is CALLED. Pinning only the definition let a mutant that commented
 // out the one call site pass green: the prompt would be correct code that
@@ -3898,14 +3907,19 @@ check(interact.resolveSwing(sPick, P, { cellAt: () => null }).arch === 0, "an un
 // --- the wiring, in main.js --------------------------------------------------
 // Same discipline as §Q: the resolver being right is worth nothing if the
 // prompt is drawn from something else.
+// Re-anchored with §Q's pair when the build prompt made the row a three-way
+// choice: `swingAt()` is now the THIRD argument of `centrePrompt` rather than
+// the second term of a `||` here, and §V exercises the resulting order over
+// all eight combinations instead of matching it as a pattern.
 check(
-  /hud\.setPrompt\(text \|\| promptForSwing\(swingAt\(\)\)\)/.test(mainSrc),
-  "main.js does not fall back to promptForSwing(swingAt()) when E has no pick — the swing half of the" +
-    " crosshair would compute correctly and never reach the screen",
+  /centrePrompt\([\s\S]{0,110}?swingAt\(\)\)/.test(mainSrc) &&
+    /promptForSwing\(swingPick\)/.test(interactSrc),
+  "main.js does not hand swingAt() to centrePrompt, or centrePrompt does not run it through promptForSwing" +
+    " — the swing half of the crosshair would compute correctly and never reach the screen",
 );
 check(
-  /const text = promptFor\(aimPick\(pick, VERB_NONE\)\)/.test(mainSrc),
-  "main.js no longer draws E's prompt through promptFor(aimPick(...)) — the fallback must sit BEHIND the" +
+  /promptFor\(interactPick\) \|\| promptForSwing\(swingPick\)/.test(interactSrc),
+  "interact.centrePrompt no longer draws E's prompt ahead of the swing's — the fallback must sit BEHIND the" +
     " interact pick, or the swing hint would outrank a door the player is standing at",
 );
 check(
@@ -4745,6 +4759,86 @@ check(
     " through an arbitrary pixel, which two consistently-wrong projections would also pass",
 );
 
+// --- what the SAMPLER was actually asked, per pixel -------------------------
+// The two sweeps above stub the sampler flat (`splatAt: () => GRASS_ONLY`,
+// `moistAt: () => 0`) and decide land from the height index, so they see the
+// height field's geometry and nothing else. The judge's M7 on
+// `pass-20260805-074623-03` is what that costs: mirror the world x handed to
+// the sampler — `const x = src.x0 + (size - 1 - i) * src.step` — and all 635
+// checks run green while the island ships with its BIOME COLOURS flipped
+// east-west over a correct shape. The height index is still `i`; only the
+// question asked of the terrain moved.
+//
+// So this records the sampler's arguments instead of stubbing them. Every
+// pixel is land (the sampler is not called for sea), which makes the call
+// order exactly the loop's own: j outer, i inner.
+const sampled = [];
+{
+  const g = PAINT_N + 2;
+  const H = new Float32Array(g * g);
+  // A height that NAMES its cell, so `splatAt`'s first argument identifies the
+  // sample it belongs to rather than merely being positive.
+  const hOf = (i, j) => 10 + i + j * 100;
+  for (let j = 0; j < g; j++) {
+    for (let i = 0; i < g; i++) H[j * g + i] = hOf(i - 1, j - 1);
+  }
+  map.paintMap(new Uint8ClampedArray(PAINT_N * PAINT_N * 4), PAINT_N, {
+    heights: H,
+    step: CELL_M,
+    x0: CELL_ORIG,
+    z0: CELL_ORIG,
+    // A moisture that names its cell too, so the value cannot be confused with
+    // the slope in `splatAt`'s three-argument payload — the same positional
+    // shape `CLAUDE.md`'s trap list names, three fields wide.
+    moistAt: (x, z) => {
+      sampled.push({ x, z, moist: NaN, h: NaN });
+      return x * 1000 + z;
+    },
+    splatAt: (h, moist, slope) => {
+      const last = sampled[sampled.length - 1];
+      if (last) {
+        last.h = h;
+        last.moist = moist;
+        last.slope = slope;
+      }
+      return GRASS_ONLY;
+    },
+  });
+  check(
+    sampled.length === PAINT_N * PAINT_N,
+    `map.paintMap asked the sampler ${sampled.length} times over an all-land ${PAINT_N}x${PAINT_N} field,` +
+      ` expected ${PAINT_N * PAINT_N} — one call per pixel. A short count means the recording below is` +
+      " reading a partial sweep and the mirror it exists to catch could hide in the pixels never asked about",
+  );
+  for (let j = 0; j < PAINT_N; j++) {
+    for (let i = 0; i < PAINT_N; i++) {
+      const s = sampled[j * PAINT_N + i];
+      const wx = CELL_ORIG + i * CELL_M;
+      const wz = CELL_ORIG + j * CELL_M;
+      check(
+        s && Math.abs(s.x - wx) < 1e-9 && Math.abs(s.z - wz) < 1e-9,
+        `map.paintMap asked the terrain about world (${s?.x}, ${s?.z}) for sample (${i}, ${j}), expected` +
+          ` (${wx}, ${wz}) = x0 + i*step, z0 + j*step. The pixel the answer is PAINTED into is chosen by` +
+          " the index; the ground it describes is chosen by this. Mirror or transpose one and the island" +
+          " keeps its shape and wears another cell's biome — which is exactly what the height-field sweeps" +
+          " above cannot see, because they stub the sampler flat",
+      );
+      check(
+        s && Math.abs(s.h - (10 + i + j * 100)) < 1e-9,
+        `map.paintMap handed splatAt height ${s?.h} for sample (${i}, ${j}), expected ${10 + i + j * 100} —` +
+          " the height at that very sample. A splat read off a neighbour's height is a biome boundary one" +
+          " pixel out at every coast",
+      );
+      check(
+        s && Math.abs(s.moist - (wx * 1000 + wz)) < 1e-9,
+        `map.paintMap handed splatAt moisture ${s?.moist} for sample (${i}, ${j}), expected the` +
+          ` ${wx * 1000 + wz} that moistAt returned for that sample. The three arguments are (h, moist,` +
+          " slope) positionally and nothing else here would notice two of them swapped",
+      );
+    }
+  }
+}
+
 // --- 3. the palette is the splat law's --------------------------------------
 // Flat ground: lambert is exactly MAP_LIGHT[1] and the shade term is therefore
 // exactly 1, so the palette colour survives untouched. That is what makes the
@@ -4842,7 +4936,18 @@ const mapDom = await page.evaluate(async ({ probe, yaws, at }) => {
   const heads = [];
   for (const yaw of yaws) {
     hud.setMapView(at[0], at[1], yaw);
-    heads.push({ yaw, dx: hud.mapDir.dx, dy: hud.mapDir.dy });
+    // `mapDir` is the heading the triangle was built FROM; `mapTri` is what the
+    // 2D context was actually handed. Both, because the judge's M9 on
+    // `pass-20260805-074623-03` walked between them — it left `mapDir` correct
+    // and hard-coded the nose vertex north, and every check below passed.
+    heads.push({
+      yaw,
+      dx: hud.mapDir.dx,
+      dy: hud.mapDir.dy,
+      tri: [...hud.mapTri],
+      px: hud.mapPos.px,
+      py: hud.mapPos.py,
+    });
   }
   // Every verb key must be eaten while the map is up; its own two must not.
   //
@@ -4963,6 +5068,74 @@ check(
   "hud.drawMap drew two different wire yaws along the SAME image direction — the rotation is dropped or" +
     " collapsed, which every check above would still pass if it were pinned to one convenient angle",
 );
+// --- the vertices the CONTEXT got, not the heading they were built from -----
+// Everything above reads `mapDir`, and `mapDir` is not what the canvas draws.
+// The judge's M9 on `pass-20260805-074623-03` is the proof: leave `mapDir`
+// exact and hard-code the nose to `(px + 0*MARKER, py + -1*MARKER)` — all 635
+// checks green, and the arrow always claims north, one line below where M11
+// was closed. Closing the INSTANCE is not closing the class. So the triangle
+// `drawMap` handed to `ctx` is now parked in `hud.mapTri`, and this reads it.
+// Built from a name variable rather than written as a regex LITERAL, and that
+// is load-bearing: `ci/knob_registry.mjs` scans every `.mjs` in the repo with
+// `\bconst\s+<NAME>\s*=\s*([^;]+);`, so a literal `/export const MAP_MARKER_PX
+// = ([\d.]+);/` here reads to that gate as a second declaration of the knob —
+// initialized to `([\d.]+)`, which it correctly refuses to parse as a number.
+// Do not "simplify" this back into a literal; it reddens the knob registry.
+const MARKER_KNOB = "MAP_MARKER_PX";
+const markerPx = Number(
+  new RegExp(`export const ${MARKER_KNOB} = ([\\d.]+);`).exec(hudSrc)?.[1],
+);
+check(
+  Number.isFinite(markerPx) && markerPx > 0,
+  `could not read MAP_MARKER_PX out of hud.js (got ${markerPx}) — every triangle check below would compare` +
+    " against NaN and pass on nothing",
+);
+for (const h of mapDom.heads) {
+  check(
+    h.tri?.length === 6 && h.tri.every((n) => Number.isFinite(n)),
+    `hud.drawMap parked ${JSON.stringify(h.tri)} for the marker triangle at yaw ${h.yaw} — expected six` +
+      " finite canvas coordinates. An unparked triangle means the checks below read undefined",
+  );
+  // The nose sits one marker-length along the heading from the player's own
+  // pixel. This is the assertion M9 walked through: it is stated against
+  // `mapDir` AND `mapPos`, so a nose pinned to a constant direction is red
+  // here whatever `mapDir` says, and a triangle drawn at the wrong place is
+  // red too.
+  check(
+    Math.abs(h.tri[0] - (h.px + h.dx * markerPx)) < 1e-9 &&
+      Math.abs(h.tri[1] - (h.py + h.dy * markerPx)) < 1e-9,
+    `hud.drawMap put the marker's NOSE at (${h.tri?.[0]}, ${h.tri?.[1]}) at wire yaw ${h.yaw}, expected` +
+      ` (${h.px + h.dx * markerPx}, ${h.py + h.dy * markerPx}) — the player's pixel plus ${markerPx} px` +
+      " along the heading it reported. A nose that does not track the heading is an arrow that lies about" +
+      " which way the player faces, and reading mapDir alone cannot see it",
+  );
+  // The two tail corners straddle the axis: equal and opposite across it, and
+  // both BEHIND the pixel. Stated as a symmetry rather than as the same
+  // formula again — recomputing `±0.6/−0.5` here would agree with whatever
+  // drawMap held, including a collapsed triangle.
+  const midX = (h.tri[2] + h.tri[4]) / 2;
+  const midY = (h.tri[3] + h.tri[5]) / 2;
+  check(
+    Math.abs(midX - (h.px - h.dx * markerPx * 0.5)) < 1e-9 &&
+      Math.abs(midY - (h.py - h.dy * markerPx * 0.5)) < 1e-9,
+    `hud.drawMap's two tail corners at yaw ${h.yaw} have midpoint (${midX}, ${midY}), which is not on the` +
+      " heading axis behind the player's pixel — the triangle is skewed or its base does not follow the nose",
+  );
+  const spanX = h.tri[4] - h.tri[2];
+  const spanY = h.tri[5] - h.tri[3];
+  check(
+    Math.abs(spanX * h.dx + spanY * h.dy) < 1e-9 &&
+      Math.hypot(spanX, spanY) > markerPx * 0.5,
+    `hud.drawMap's tail span at yaw ${h.yaw} is (${spanX}, ${spanY}) — it must be PERPENDICULAR to the` +
+      " heading and wider than half a marker. A span along the heading, or a zero one, is a triangle that" +
+      " has collapsed to a line and points nowhere",
+  );
+}
+check(
+  new Set(mapDom.heads.map((h) => h.tri.join(","))).size === mapDom.heads.length,
+  "hud.drawMap handed the 2D context the SAME three vertices for two different wire yaws — the marker does" +
+    " not turn, whatever mapDir reports",
+);
 check(
   mapDom.invWasOpen === false,
   "the map's key-ownership probe ran with the inventory still open — eatsKey answers for the UNION of" +
@@ -4989,6 +5162,644 @@ check(
   /if \(islandPainted\) return;/.test(mainSrc) && /islandPainted = true;/.test(mainSrc),
   "main.js no longer guards paintIsland with a once-only flag — the whole-island fill is 66k height" +
     " samples and it is a function of the seed alone",
+);
+
+// =============================================================================
+// V. the build prompt — the third verb under the crosshair, and which one wins
+// =============================================================================
+// `NOW.md` §0: "the build prompt — `interact.js` resolves VERB_DOOR/BAG/BOX/
+// HEARTH and no place verb, so the placement preview exists only for someone
+// who has read `main.js`". Build mode drew a green wireframe ghost over the
+// aimed cell while the hint UNDER the crosshair went on advertising
+// `[LMB] CHOP TREE` — the player's eye is on the ghost and the row describing
+// it was 96 px above the hotbar.
+//
+// Three things are gated here and all three are positional, which is the class
+// `CLAUDE.md`'s trap list names: the def-table decode (a stride-8 row whose
+// ingredient PAIRS sit at `4 + k*2`), the prompt's own text, and above all the
+// ORDER the three candidate verbs resolve in — which was three chained `||`s
+// inside `main.js` with nothing asserting them.
+
+// --- the labels, against build.rs's own enums -------------------------------
+// They lived in `main.js` as bare arrays whose INDEX was the sim's code, with
+// no gate: renumber a shape in `build.rs` and the client cheerfully calls a
+// doorway a floor. Walked by name, so a shape added to the sim with no label
+// lands red on the commit that adds it.
+for (const [table, prefix, names] of [
+  [interact.BUILD_SHAPE_LABEL, "SHAPE", ["FOUNDATION", "WALL", "DOORWAY", "FLOOR", "STAIRS", "ROOF"]],
+  [interact.BUILD_MAT_LABEL, "MAT", ["WOOD", "STONE", "METAL"]],
+]) {
+  const rs = [...buildSrc.matchAll(new RegExp(`^pub const ${prefix}_([A-Z]+): u8 = (\\d+);`, "gm"))];
+  check(
+    rs.length === table.length && rs.length === names.length,
+    `interact.js ${prefix} labels have ${table.length} entries, build.rs declares ${rs.length} ${prefix}_*` +
+      ` constants and this walk names ${names.length} — a code the sim can send with no label prints "?"` +
+      " in the build strip and in the centre hint, and a stale parse makes every check below vacuous",
+  );
+  for (const [, name, code] of rs) {
+    check(
+      table[Number(code)] === name.toLowerCase(),
+      `build.rs ${prefix}_${name} = ${code}, but interact.js's label at ${code} is` +
+        ` ${JSON.stringify(table[Number(code)])} — the prompt would name the wrong piece, and the ghost the` +
+        " player is looking at would be the right one. A renumbered enum is exactly how that happens",
+    );
+    check(
+      names.includes(name),
+      `build.rs declares ${prefix}_${name}, which this walk does not name — the sim grew a piece and the` +
+        " client's labels were not extended with it",
+    );
+  }
+}
+
+// --- the decode, as arithmetic ----------------------------------------------
+// A hand-built table with the ingredient pair DELIBERATELY asymmetric (item 7,
+// quantity 200) so item-vs-quantity cannot be swapped silently: the swap would
+// read "7 more <item 200>" and this reads the string.
+const NAMES = { 7: "wood", 9: "stone", 11: "cloth" };
+const nameOf = (i) => NAMES[i] || `item${i}`;
+const dOut = { what: "", costs: "", need: "" };
+// Row 0: wood wall, 200 wood. Row 1: stone floor, 300 stone + 20 wood.
+const DEFS = new Uint16Array(2 * interact.PIECE_DEF_STRIDE);
+DEFS.set([1, 0, 0, 1, 7, 200, 0, 0], 0);
+DEFS.set([3, 1, 0, 2, 9, 300, 7, 20], interact.PIECE_DEF_STRIDE);
+interact.describePiece(dOut, DEFS, 0, nameOf, () => 1000);
+check(
+  dOut.what === "wood wall" && dOut.costs === "200 wood" && dOut.need === "",
+  `interact.describePiece of a wood wall costing 200 wood, with 1000 of everything, gave` +
+    ` ${JSON.stringify(dOut)} — expected what "wood wall", costs "200 wood", need "". The pair is` +
+    " (item, quantity) positionally: read it backwards and this says \"7 more item200\"",
+);
+interact.describePiece(dOut, DEFS, 1, nameOf, () => 1000);
+check(
+  dOut.what === "stone floor" && dOut.costs === "300 stone + 20 wood",
+  `interact.describePiece of the two-ingredient row gave ${JSON.stringify(dOut)} — expected "stone floor"` +
+    ' costing "300 stone + 20 wood". Both pairs, in table order, at 4 + k*2',
+);
+// The shortfall, and that it is the FIRST unmet ingredient and not the last.
+interact.describePiece(dOut, DEFS, 1, nameOf, (i) => (i === 9 ? 40 : 0));
+check(
+  dOut.need === "260 more stone",
+  `interact.describePiece with 40 stone and no wood said need ${JSON.stringify(dOut.need)} — expected` +
+    ' "260 more stone", the first ingredient the player cannot cover. Reporting the last one instead sends' +
+    " a player after 20 wood while 260 stone is what is actually stopping the placement",
+);
+interact.describePiece(dOut, DEFS, 1, nameOf, (i) => (i === 9 ? 300 : 0));
+check(
+  dOut.need === "20 more wood",
+  `interact.describePiece with the stone covered and no wood said need ${JSON.stringify(dOut.need)} —` +
+    ' expected "20 more wood". A shortfall that stops at the first ingredient WHETHER OR NOT it is unmet' +
+    " would go silent here and the hint would claim an affordable piece",
+);
+// Exactly-enough is affordable: the boundary, which a `<` / `<=` slip moves.
+interact.describePiece(dOut, DEFS, 0, nameOf, () => 200);
+check(
+  dOut.need === "",
+  `interact.describePiece with exactly the 200 wood it costs said need ${JSON.stringify(dOut.need)} —` +
+    " expected none. Exactly enough is enough, and the server agrees; an off-by-one here tells a player to" +
+    " go and fetch 0 more wood",
+);
+// A deployable: placed FROM the stack, item id at b + 3 of a stride-4 row.
+const DDEFS = new Uint16Array(2 * interact.DEPLOY_DEF_STRIDE);
+DDEFS.set([0, 0, 0, 11], interact.DEPLOY_DEF_STRIDE);
+interact.describeDeploy(dOut, DDEFS, 1, nameOf, () => 1);
+check(
+  dOut.what === "cloth" && dOut.costs === "1 cloth" && dOut.need === "",
+  `interact.describeDeploy of row 1 gave ${JSON.stringify(dOut)} — expected "cloth" at 1, held. The item` +
+    " id is at b + 3 of a stride-4 row and reading b + 1 there would name whatever the archetype code is",
+);
+interact.describeDeploy(dOut, DDEFS, 1, nameOf, () => 0);
+check(
+  dOut.need === "1 cloth",
+  `interact.describeDeploy with none in the pack said need ${JSON.stringify(dOut.need)} — expected` +
+    ' "1 cloth". A deployable you do not have is the single commonest refusal ("item not in inventory")',
+);
+
+// --- the prompt text --------------------------------------------------------
+check(
+  interact.promptForBuild(null) === "" &&
+    interact.promptForBuild(undefined) === "" &&
+    interact.promptForBuild({ what: "" }) === "",
+  "interact.promptForBuild drew a hint with no piece — build mode off, or the piece table not yet arrived," +
+    " must leave the crosshair alone rather than print an empty pill",
+);
+check(
+  interact.promptForBuild({ what: "wood wall", need: "" }) === "[RMB] PLACE WOOD WALL",
+  `interact.promptForBuild of an affordable wood wall = ` +
+    `${JSON.stringify(interact.promptForBuild({ what: "wood wall", need: "" }))} — expected` +
+    ' "[RMB] PLACE WOOD WALL". The BUTTON is named for the same reason the swing says [LMB]: it is what' +
+    " the player has to connect the text to, and right-click is what commits the placement",
+);
+check(
+  interact.promptForBuild({ what: "wood wall", need: "143 more wood" }) ===
+    "[RMB] PLACE WOOD WALL · NEED 143 MORE WOOD",
+  `interact.promptForBuild of an unaffordable wall = ` +
+    `${JSON.stringify(interact.promptForBuild({ what: "wood wall", need: "143 more wood" }))} — expected` +
+    " the shortfall appended. It is stated as a COST and never as a refusal: the server owns whether the" +
+    " placement is legal and materials is one of nine reasons it can say no",
+);
+
+// --- which verb wins, swept over all eight combinations ---------------------
+// The ordering was three chained `||`s in `main.js` that no gate could reach.
+// Build outranks E outranks the swing; swap any two and the crosshair
+// advertises a verb the button will not perform, with every other gate green.
+const BUILD_P = { what: "wood wall", need: "" };
+const INTER_P = { verb: interact.VERB_BOX };
+const SWING_P = { arch: interact.OCC_TREE };
+const B_TEXT = "[RMB] PLACE WOOD WALL";
+const I_TEXT = interact.promptFor(INTER_P);
+const S_TEXT = interact.promptForSwing(SWING_P);
+check(
+  I_TEXT.startsWith("[E] ") && S_TEXT.startsWith("[LMB] "),
+  `the ordering sweep's own fixtures are wrong (E = ${JSON.stringify(I_TEXT)}, swing =` +
+    ` ${JSON.stringify(S_TEXT)}) — every check below would compare two empty strings and pass`,
+);
+for (const [b, i, s, want, why] of [
+  [1, 1, 1, B_TEXT, "all three true: the ghost is what the player is looking at"],
+  [1, 1, 0, B_TEXT, "build outranks a box in reach"],
+  [1, 0, 1, B_TEXT, "build outranks a tree in swing range"],
+  [1, 0, 0, B_TEXT, "build alone"],
+  [0, 1, 1, I_TEXT, "E outranks the swing — the mouse is already held down, nothing suggests pressing E"],
+  [0, 1, 0, I_TEXT, "E alone"],
+  [0, 0, 1, S_TEXT, "the swing fills the silence"],
+  [0, 0, 0, "", "nothing in reach leaves the crosshair clean"],
+]) {
+  const got = interact.centrePrompt(b ? BUILD_P : null, i ? INTER_P : null, s ? SWING_P : null);
+  check(
+    got === want,
+    `interact.centrePrompt(build=${b}, interact=${i}, swing=${s}) = ${JSON.stringify(got)}, expected` +
+      ` ${JSON.stringify(want)} — ${why}. The reference's centre hint is a SINGLE row` +
+      " (Rust Images/choppingtree.jpg); three verbs can be true at once and exactly one gets the row",
+  );
+}
+
+// --- main.js actually routes through it -------------------------------------
+// The pure functions above are only worth their checks if the client calls
+// them. `updatePrompt` is the sole writer of `#prompt` (§Q pins that), so this
+// pins what it writes.
+check(
+  /hud\.setPrompt\(\s*centrePrompt\(build\.on \? selDesc\(\) : null, aimPick\(pick, VERB_NONE\), swingAt\(\)\),?\s*\)/.test(
+    mainSrc,
+  ),
+  "main.js's updatePrompt no longer ends in centrePrompt(build.on ? selDesc() : null, aimPick(...)," +
+    " swingAt()) — either the order moved back into this file where no gate can read it, or the build pick" +
+    " stopped being gated on build.on and the hint now offers a placement with no ghost under the crosshair",
+);
+// The hint has to redraw on the keys that change what it says, not up to
+// 250 ms later on the HUD timer: a hint that lags its own ghost is the defect.
+for (const [what, re] of [
+  ["B (build mode on/off)", /build\.on = !build\.on;[\s\S]{0,400}?updatePrompt\(\);/],
+  ["the wheel (which piece)", /build\.row = \(build\.row \+ d\) % total;[\s\S]{0,300}?updatePrompt\(\);/],
+]) {
+  check(
+    re.test(mainSrc),
+    `main.js changes the build selection on ${what} without redrawing the centre prompt — the ghost moves` +
+      " or appears and the row describing it keeps the previous verb until the next HUD tick",
+  );
+}
+
+// =============================================================================
+// W. the piece's other half — what mends it, and the news that it broke
+// =============================================================================
+// Repair v0 landed in the sim (wire v20, `ACT_REPAIR`) and nothing can press
+// it: `client_action_repair` is not exported from the bridge, so the SEND is a
+// systems-lane line in `NOW.md`. Everything else on the client side of a
+// piece's hp is this lane's, and this group is it — which piece a
+// piece-addressed verb aims at, what the sim's refusals say, and whether a
+// player can tell a wall being mended from a wall being broken into.
+//
+// All three were defects, and all three were invisible for the same structural
+// reason: they sat in `main.js`, which this gate cannot execute (it boots
+// three.js and is stubbed at the route) and `browser_smoke` never pressed the
+// keys that reach them. They are now in `interact.js`, which node calls for
+// real — the move `describePiece` made, for the move's whole reason.
+
+// --- the anchor, against the sim's own -------------------------------------
+// `build.rs:346`'s `anchor` is what BOTH reach checks measure to: placement
+// measures build reach to it and a raid swing measures weapon reach to it. The
+// client has to agree or U and repair refuse at a distance the server accepts.
+// Mirrored in JS and pinned to the Rust source text — `ci/bump_basis.mjs`'s
+// pattern, for the case where the original cannot be imported.
+const rsLoc = Object.fromEntries(
+  [...buildSrc.matchAll(/^pub const LOC_([A-Z_]+): u8 = (\d+);/gm)].map(([, n, v]) => [n, Number(v)]),
+);
+check(
+  Object.keys(rsLoc).length === 4,
+  `build.rs declares ${Object.keys(rsLoc).length} LOC_* constants, not the four this walk knows` +
+    ` (${JSON.stringify(rsLoc)}) — a stale parse makes every anchor check below vacuous`,
+);
+for (const [name, want] of [
+  ["PLANE", interact.LOC_PLANE],
+  ["RISER", interact.LOC_RISER],
+  ["EDGE_W", interact.LOC_EDGE_W],
+  ["EDGE_N", interact.LOC_EDGE_N],
+]) {
+  check(
+    rsLoc[name] === want,
+    `build.rs LOC_${name} = ${rsLoc[name]} but interact.js says ${want} — the client would anchor an edge` +
+      " piece at a cell centre, and a wall you are standing against would read as out of reach",
+  );
+}
+// The two arms that carry the whole positional risk, read out of the Rust.
+for (const [loc, arm] of [
+  ["LOC_EDGE_W", "LOC_EDGE_W => (x0, z0 + half),"],
+  ["LOC_EDGE_N", "LOC_EDGE_N => (x0 + half, z0),"],
+]) {
+  check(
+    buildSrc.includes(arm),
+    `build.rs's anchor no longer contains \`${arm}\` — either the sim moved its anchor and this mirror is now` +
+      " wrong, or the function was reformatted and this pin matches nothing. Both need a human, because a" +
+      " silently re-cornered anchor is exactly the positional class CLAUDE.md's trap list names",
+  );
+}
+const wCellM = 3; // main.js's BUILD_CELL, and build.rs's BUILD_CELL_M
+const anchorOf = (cx, cz, loc) => interact.pieceAnchor([0, 0], cx, cz, loc, wCellM);
+{
+  const half = wCellM / 2;
+  const [cx, cz] = [7, 11];
+  const [x0, z0] = [cx * wCellM, cz * wCellM];
+  check(
+    anchorOf(cx, cz, interact.LOC_EDGE_W)[0] === x0 &&
+      anchorOf(cx, cz, interact.LOC_EDGE_W)[1] === z0 + half,
+    `a west edge anchored at ${JSON.stringify(anchorOf(cx, cz, interact.LOC_EDGE_W))} — build.rs puts it ON` +
+      ` the west boundary (x = cx*${wCellM}) at the edge's midpoint, i.e. (${x0}, ${z0 + half})`,
+  );
+  check(
+    anchorOf(cx, cz, interact.LOC_EDGE_N)[0] === x0 + half &&
+      anchorOf(cx, cz, interact.LOC_EDGE_N)[1] === z0,
+    `a north edge anchored at ${JSON.stringify(anchorOf(cx, cz, interact.LOC_EDGE_N))} — build.rs puts it ON` +
+      ` the north boundary (z = cz*${wCellM}), i.e. (${x0 + half}, ${z0})`,
+  );
+  for (const loc of [interact.LOC_PLANE, interact.LOC_RISER]) {
+    check(
+      anchorOf(cx, cz, loc)[0] === x0 + half && anchorOf(cx, cz, loc)[1] === z0 + half,
+      `loc ${loc} anchored at ${JSON.stringify(anchorOf(cx, cz, loc))} instead of the cell centre` +
+        ` (${x0 + half}, ${z0 + half}) — planes and risers fill the cell, so they have no edge to sit on`,
+    );
+  }
+  // The two edges must not collapse onto each other or onto the centre: if
+  // they did, every check above could pass while the address stopped naming a
+  // place. This is the swap M24/M25 perform.
+  const pts = [interact.LOC_PLANE, interact.LOC_EDGE_W, interact.LOC_EDGE_N].map((l) =>
+    anchorOf(cx, cz, l).join(),
+  );
+  check(
+    new Set(pts).size === 3,
+    `two of the three distinct locs anchor at the same point (${JSON.stringify(pts)}) — a west wall and a` +
+      " north wall on one cell are different walls, and reach that cannot tell them apart picks the wrong one",
+  );
+}
+
+// --- which piece the key addresses -----------------------------------------
+// This scan was `main.js`'s `nearestPiece`, and its first statement read
+// `bestD = REACH * REACH` against a `REACH` declared NOWHERE in the repo. So
+// it threw a ReferenceError before its loop and U (upgrade) had been dead at
+// runtime for as long as the binding existed — no gate could see it, because a
+// free variable is not a syntax error and nothing here could call the
+// function. That it is now callable at all is the fix; these are its rules.
+const wRec = (cx, cz, loc, level = 0, row = 0) => ({ cx, cz, level, loc, row });
+const pickAt = (x, z, recs) =>
+  interact.nearestPiece(interact.newPiecePick(), { x, z }, { cell: wCellM, recs });
+check(
+  pickAt(0, 0, []).found === false,
+  "nearestPiece claimed to find a piece in an empty world — `found` is what every caller branches on and a" +
+    " true here sends an address for a piece that does not exist",
+);
+{
+  // Two pieces, one much nearer. The far one is inside reach too, so this
+  // scores the ordering and not merely the bound.
+  const near = wRec(1, 0, interact.LOC_PLANE, 0, 5);
+  const far = wRec(2, 0, interact.LOC_PLANE, 0, 9);
+  const at = { x: 1 * wCellM + wCellM / 2, z: wCellM / 2 };
+  const p = pickAt(at.x, at.z, [far, near]);
+  check(
+    p.found && p.cx === 1 && p.row === 5,
+    `standing on one piece with another a cell away, the scan picked ${JSON.stringify(p)} — nearest wins, and` +
+      " the whole address (cx, cz, level, loc, row) has to come back or the verb acts on a different wall" +
+      " than the one it measured",
+  );
+  const rev = pickAt(at.x, at.z, [near, far]);
+  check(
+    rev.cx === p.cx && rev.row === p.row,
+    "reversing the iteration order changed the pick — then it is insertion order deciding, not distance," +
+      " and `pieceRecs` is a Map whose order is whatever the wire happened to deliver",
+  );
+}
+{
+  // The bound is the sim's, and it is strict: a piece exactly at the reach
+  // radius is refused by `build.rs`'s `>` check, so picking it costs a round
+  // trip and a REFUSE_B_REACH the player cannot act on.
+  const R = interact.INTERACT_REACH_M;
+  const on = wRec(0, 0, interact.LOC_EDGE_W); // anchors at (0, 1.5)
+  const anchor = anchorOf(0, 0, interact.LOC_EDGE_W);
+  check(
+    pickAt(anchor[0] + R + 0.01, anchor[1], [on]).found === false,
+    `a piece ${R + 0.01} m away was picked — beyond INTERACT_REACH_M (${R}) the server refuses, so the` +
+      " client must not aim there",
+  );
+  check(
+    pickAt(anchor[0] + R - 0.01, anchor[1], [on]).found === true,
+    `a piece ${R - 0.01} m away was NOT picked though it is inside INTERACT_REACH_M (${R}) — a reach the` +
+      " client under-reads is a verb that refuses while the player is standing in range",
+  );
+  check(
+    pickAt(anchor[0], anchor[1] + 100, [on]).found === false,
+    "a piece 100 m away was picked — the reach bound is not being applied at all",
+  );
+}
+check(
+  /nearestPiece\(piecePick, pieceAt, pieceWorld\)/.test(mainSrc) &&
+    !/let bestD = REACH/.test(mainSrc),
+  "main.js no longer routes its piece pick through interact.nearestPiece (or has grown the old inline scan" +
+    " back) — the scan only stays gateable while main.js is the caller and not the author",
+);
+
+// --- no main.js constant is a free variable ---------------------------------
+// The class behind `REACH`, not just the instance. `main.js` is the one file
+// no gate here can execute, so an undeclared SCREAMING_CASE constant in it is
+// invisible: it builds clean, it is not a syntax error, and it throws only
+// when a player presses the key.
+//
+// Comments and string literals have to come out first, because `main.js`
+// legitimately NAMES Rust constants in its prose — and the stripper is a
+// character walk rather than a stack of `replace`s for a reason this pass
+// paid for. The regex version put `'(?:[^'\\]|\\.)*'` last, and `main.js`
+// contains the template `` `can't build: ${…}` ``: the apostrophe in "can't"
+// opened a phantom string that ran to the next apostrophe hundreds of lines
+// away and swallowed the code between. The scan still reported 26 identifiers
+// and passed its own vacuity guard while being blind to a whole region —
+// mutant M26 (a reintroduced `REACH`) survived in exactly that hole. A gate
+// that is quietly blind over part of its input is worse than no gate, so this
+// one is verified against a fixture below before it is trusted on main.js.
+const stripJs = (src) => {
+  let out = "";
+  let i = 0;
+  // `tpl` is a stack: a template literal can hold `${}` which can hold
+  // another template. Depth is what tells a closing brace from a code one.
+  const tpl = [];
+  let prev = ""; // last significant character, for the regex/division call
+  while (i < src.length) {
+    const c = src[i];
+    const two = src.slice(i, i + 2);
+    // Template TEXT is checked FIRST, before quotes and comments. Put it
+    // anywhere later and the apostrophe in `can't build:` is read as a string
+    // opener again — which is the bug this whole block replaces, and it
+    // reappeared here on the first draft.
+    if (tpl.length > 0 && tpl[tpl.length - 1] === 0) {
+      if (two === "${") {
+        tpl[tpl.length - 1] = 1;
+        i += 2;
+        out += " ";
+        prev = "{";
+        continue;
+      }
+      if (c === "`") {
+        tpl.pop();
+        i++;
+        out += '""';
+        prev = '"';
+        continue;
+      }
+      i += c === "\\" ? 2 : 1;
+      continue;
+    }
+    if (two === "//") {
+      while (i < src.length && src[i] !== "\n") i++;
+      continue;
+    }
+    if (two === "/*") {
+      i += 2;
+      while (i < src.length && src.slice(i, i + 2) !== "*/") i++;
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      i++;
+      while (i < src.length && src[i] !== c) i += src[i] === "\\" ? 2 : 1;
+      i++;
+      out += '""';
+      prev = '"';
+      continue;
+    }
+    if (c === "`") {
+      i++;
+      tpl.push(0);
+      out += " ";
+      continue;
+    }
+    if (c === "}" && tpl.length > 0 && tpl[tpl.length - 1] === 1) {
+      tpl[tpl.length - 1] = 0;
+      i++;
+      out += " ";
+      continue;
+    }
+    if (c === "/" && /[(,=:[!&|?{};+\-*%~^\n]|^$/.test(prev)) {
+      // A regex literal, by the standard "what can precede a division"
+      // heuristic. Character classes may contain an unescaped `/`.
+      i++;
+      let cls = false;
+      while (i < src.length && (cls || src[i] !== "/")) {
+        if (src[i] === "\\") i++;
+        else if (src[i] === "[") cls = true;
+        else if (src[i] === "]") cls = false;
+        i++;
+      }
+      i++;
+      while (i < src.length && /[a-z]/.test(src[i])) i++;
+      out += '""';
+      prev = '"';
+      continue;
+    }
+    out += c;
+    if (!/\s/.test(c)) prev = c;
+    i++;
+  }
+  return out;
+};
+// The stripper, against the three shapes that actually appear in main.js and
+// the one that defeated its predecessor. If this fixture ever stops behaving,
+// every result below is unreliable and the gate says so here rather than
+// passing over a blind region.
+{
+  const fixture = [
+    "const A_DECLARED = 1;",
+    "// a comment naming COMMENT_ONLY",
+    "/* a block naming BLOCK_ONLY */",
+    'const s = "a string naming STRING_ONLY";',
+    "const t = `can't build: ${A_DECLARED} and ${TEMPLATE_CODE} TEMPLATE_TEXT_ONLY`;",
+    "const re = /LITERAL_IN_REGEX/;",
+    "const bad = A_FREE_ONE;",
+  ].join("\n");
+  const got = stripJs(fixture);
+  for (const gone of [
+    "COMMENT_ONLY",
+    "BLOCK_ONLY",
+    "STRING_ONLY",
+    "LITERAL_IN_REGEX",
+    "TEMPLATE_TEXT_ONLY",
+  ]) {
+    check(
+      !got.includes(gone),
+      `the stripper left ${gone} in the code it hands the scan — prose and string content would be read as` +
+        " identifiers, and main.js names Rust constants in its comments on nearly every screen",
+    );
+  }
+  for (const kept of ["A_DECLARED", "A_FREE_ONE", "TEMPLATE_CODE"]) {
+    check(
+      got.includes(kept),
+      `the stripper ate ${kept}, which is CODE — this is mutant M26's hole verbatim: the apostrophe in` +
+        " \"can't\" opened a phantom string, the scan went blind over everything after it, and a free" +
+        " variable in that region was never looked at",
+    );
+  }
+}
+let freeScanUsed = 0;
+{
+  const code = stripJs(mainSrc);
+  // The blindness M26 exposed was regional, so measure it: a stripper that
+  // swallows code removes far more than main.js's comment and string mass.
+  check(
+    code.replace(/\s+/g, "").length > mainSrc.replace(/\s+/g, "").length * 0.4,
+    `stripping main.js left ${code.replace(/\s+/g, "").length} of` +
+      ` ${mainSrc.replace(/\s+/g, "").length} non-space characters — comments and strings are not that much` +
+      " of this file, so the stripper has swallowed live code and the scan below is blind over it",
+  );
+  const declared = new Set();
+  for (const re of [
+    /\b(?:const|let|var)\s+([A-Z][A-Z0-9_]{2,})\b/g,
+    /^\s{2}([A-Z][A-Z0-9_]{2,}),$/gm, // the import lists
+    /\bimport\s*\{([^}]*)\}/g,
+  ]) {
+    for (const m of code.matchAll(re)) {
+      for (const part of m[1].split(",")) {
+        const id = part.trim().split(/\s+as\s+/).pop().trim();
+        if (/^[A-Z][A-Z0-9_]{2,}$/.test(id)) declared.add(id);
+      }
+    }
+  }
+  const used = new Set();
+  for (const m of code.matchAll(/(^|[^.\w$])([A-Z][A-Z0-9_]{2,})\b(?!\s*:)/g)) used.add(m[2]);
+  freeScanUsed = used.size;
+  // Vacuity guard first: a scan that finds nothing asserts nothing, and this
+  // one is a regex over a language it does not parse.
+  check(
+    used.size >= 20 && declared.size >= 10,
+    `the free-variable scan found ${used.size} SCREAMING_CASE uses and ${declared.size} declarations in` +
+      " main.js — it is matching almost nothing, so every result below is vacuous and the stripper broke",
+  );
+  // The platform's own, whose names happen to be SCREAMING_CASE. Kept as a
+  // named list rather than a looser pattern: this is the only way a real free
+  // variable gets past, so it is meant to be short and to be read.
+  const PLATFORM = new Set(["URL", "JSON"]);
+  const free = [...used].filter((id) => !declared.has(id) && !PLATFORM.has(id));
+  check(
+    free.length === 0,
+    `main.js reads ${JSON.stringify(free)}, which nothing in it declares or imports — this is the REACH bug` +
+      " exactly: no gate can execute main.js, so a free constant builds clean, passes every wall, and throws" +
+      " the first time a player presses the key that reaches it",
+  );
+}
+
+// --- the refusals say something ---------------------------------------------
+// The table's INDEX is the sim's number, and it fell one short the day
+// REFUSE_B_INTACT (9) landed — so repairing a wall that is already whole, the
+// likeliest repair refusal there is, answered `can't build: code 9`.
+const rsRefuseB = [...buildSrc.matchAll(/^pub const REFUSE_B_([A-Z]+): u32 = (\d+);/gm)].map(
+  ([, n, v]) => [n, Number(v)],
+);
+check(
+  rsRefuseB.length >= 9,
+  `only ${rsRefuseB.length} REFUSE_B_* constants parsed out of build.rs — the walk below would be vacuous`,
+);
+check(
+  interact.BUILD_REFUSE_TEXT.length === rsRefuseB.length,
+  `build.rs declares ${rsRefuseB.length} REFUSE_B_* reasons and interact.js has` +
+    ` ${interact.BUILD_REFUSE_TEXT.length} sentences — the short end prints a bare number at a player who is` +
+    " being told why a thing they just tried did not happen",
+);
+for (const [name, code] of rsRefuseB) {
+  check(
+    typeof interact.BUILD_REFUSE_TEXT[code] === "string" &&
+      interact.BUILD_REFUSE_TEXT[code].length > 0,
+    `REFUSE_B_${name} = ${code} has no sentence in interact.js — it would reach the player as "code ${code}"`,
+  );
+  check(
+    interact.buildRefusal(code) !== `code ${code}`,
+    `buildRefusal(${code}) still falls through to the bare code for REFUSE_B_${name}`,
+  );
+}
+check(
+  new Set(interact.BUILD_REFUSE_TEXT).size === interact.BUILD_REFUSE_TEXT.length,
+  `two build refusals share a sentence (${JSON.stringify(interact.BUILD_REFUSE_TEXT)}) — the sim keeps them` +
+    " distinct because they are different news, and 'you cannot afford it' is not 'it is already whole'",
+);
+check(
+  interact.buildRefusal(rsRefuseB.length + 3).startsWith("code "),
+  "buildRefusal invented a sentence for a code the sim does not have — the fallback is what keeps a wire" +
+    " ahead of the client honest rather than mislabelled",
+);
+check(
+  /can't build: \$\{buildRefusal\(r\)\}/.test(mainSrc),
+  "main.js no longer routes its build refusal through interact.buildRefusal — the table is only walkable" +
+    " while it lives in the module node can import",
+);
+
+// --- a repair is not a raid --------------------------------------------------
+// `StructHit` and `PieceRepaired` write the same readout from opposite ends
+// and both raise APPLIED_STRUCT_HIT; only a hit also raises APPLIED_HIT.
+// core.rs:98 says so in prose — "A reader that wants only raid damage checks
+// for both" — and the one reader in this client checked one, so a wall being
+// MENDED announced itself as `breaching 750/750`.
+const rsBit = (name) => {
+  const m = coreSrc.match(new RegExp(`^pub const ${name}: u32 = 1 << (\\d+);`, "m"));
+  if (!m) fail(`core.rs declares no ${name} — this gate reads the flag bits from the source`);
+  return 1 << Number(m[1]);
+};
+const HIT_BIT = rsBit("APPLIED_HIT");
+const STRUCT_BIT = rsBit("APPLIED_STRUCT_HIT");
+check(
+  interact.APPLIED_HIT_BIT === HIT_BIT && interact.APPLIED_STRUCT_HIT_BIT === STRUCT_BIT,
+  `interact.js mirrors APPLIED_HIT/APPLIED_STRUCT_HIT as ${interact.APPLIED_HIT_BIT}/` +
+    `${interact.APPLIED_STRUCT_HIT_BIT}, core.rs says ${HIT_BIT}/${STRUCT_BIT} — a drifted bit reads one` +
+    " event's flag as another's and the readout describes the wrong thing entirely",
+);
+{
+  const packed = (left, max) => ((left << 16) | max) >>> 0;
+  const raid = interact.structNews(HIT_BIT | STRUCT_BIT, packed(300, 750));
+  const mend = interact.structNews(STRUCT_BIT, packed(750, 750));
+  check(
+    raid === "breaching 300/750",
+    `a hit read as ${JSON.stringify(raid)} — the breach readout is what tells a player their base is being` +
+      " broken into, and it must still say so",
+  );
+  check(
+    mend === "repaired 750/750",
+    `a repair read as ${JSON.stringify(mend)} — this is the defect verbatim: PieceRepaired raises` +
+      " APPLIED_STRUCT_HIT too, so a wall you just mended announced itself as a wall being breached, which is" +
+      " the most alarming sentence in the game fired by your own verb",
+  );
+  check(
+    raid !== mend,
+    "a repair and a raid produce the same sentence — then the flag pair is not being read and the player" +
+      " cannot tell the two apart at all",
+  );
+  check(
+    interact.structNews(STRUCT_BIT, packed(750, 0)) === "" &&
+      interact.structNews(HIT_BIT | STRUCT_BIT, packed(300, 0)) === "",
+    "structNews spoke with max = 0 — the piece's def row has not arrived, so there is no denominator and the" +
+      " honest answer is silence, not a bar drawn off a number we do not have",
+  );
+  check(
+    interact.structNews(HIT_BIT, packed(300, 750)) === "" &&
+      interact.structNews(0, packed(300, 750)) === "",
+    "structNews spoke without APPLIED_STRUCT_HIT — the readout is stale by definition unless the flag that" +
+      " means 'the readout was just written' is set, and APPLIED_HIT alone is a player hit, not a structure",
+  );
+}
+check(
+  /structNews\(flags, ex\.client_struct_hit_hp\(\) >>> 0\)/.test(mainSrc) &&
+    !/breaching \$\{/.test(mainSrc),
+  "main.js no longer routes the structure readout through interact.structNews (or has grown the old" +
+    " unconditional `breaching` template back) — the discriminator is only gateable where node can call it",
 );
 
 // =============================================================================
@@ -5027,7 +5838,19 @@ console.log(
     "north paints to the TOP row, four splat channels each to their own colour, sea overrides the law and " +
     "deepens, flat ground exactly the palette, panel closed at load, toggle drives display, #mapref from " +
     `gridLabel, every verb key eaten and M/Escape not, ${mapDom.drawPx} px an integer multiple of MAP_N, ` +
-    "island painted once",
+    "island painted once, the sampler asked about x0+i*step / z0+j*step at every pixel with its own height " +
+    "and moisture, the marker's three drawn vertices track the heading and turn · " +
+    "build prompt: shape/material labels walked against build.rs, the stride-8 def row decoded as " +
+    "arithmetic (item/quantity pair at 4+k*2, first unmet ingredient, exactly-enough is enough), " +
+    "deployables from b+3 of a stride-4 row, [RMB] text with and without a shortfall, and centrePrompt " +
+    "swept over all eight combinations (build > E > swing) with main.js pinned to route through it · " +
+    `the piece's hp half: anchor mirrored off build.rs's own arms with all four LOC_* pinned and the three ` +
+    `distinct locs distinct, nearestPiece callable at all (it read an undeclared REACH and threw, so U was ` +
+    `dead) with nearest-wins order-independent and the reach bound strict either side of ` +
+    `${interact.INTERACT_REACH_M} m, ${freeScanUsed} SCREAMING_CASE uses in main.js all declared or ` +
+    `imported, ${interact.BUILD_REFUSE_TEXT.length} refusal sentences walked by name against build.rs's ` +
+    "REFUSE_B_* (INTACT included) all distinct with the bare-code fallback intact, and a repair told from a " +
+    "raid on the APPLIED_HIT bit read out of core.rs, silent when max is 0",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 

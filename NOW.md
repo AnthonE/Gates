@@ -15,6 +15,94 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0c · RECOVERY: the refusal table fell one short again *(ui lane — done this pass)*
+
+`ci/gates.sh` was red on a clean tree at `ui smoke`: `build.rs` declares 11
+`REFUSE_B_*` reasons and `interact.js` carried 10 sentences. The CODE was
+wrong, not the gate — `REFUSE_B_UNPRICED` (10) landed from the sim lane in
+`65e5110` and this lane's table stayed where it was, so a repair refused on a
+piece whose baked row quotes no price would have reached the player as
+`code 10`. Fixed by adding the sentence ("cannot be repaired"); nothing was
+reverted and nothing was lost.
+
+Worth recording because the gate is now two-for-two on the same class: §W was
+written when `REFUSE_B_INTACT` (9) shipped as a bare number, and it caught the
+very next reason the sim grew, on the run that grew it. A count in prose rots
+the same way — `promptForBuild`'s comment said "nine reasons" and now names no
+number.
+
+**Nothing was masked behind it.** `ui smoke` is the last gate in the code tier,
+so the green run below it is the whole tier, not a fresh first-red. What has
+NOT run is the renderer tier (`browser smoke`, `vantages`) — off for this whole
+run at tier `fast`, not skipped by this pass. If either is red it is still
+red, and the next `all` run is where that shows up.
+
+## 0c2 · The same bug, one file over: `DEPLOY_REFUSE_TEXT` *(ui lane)*
+
+Found while scanning `65e5110` for other unmirrored constants, not built —
+§0c was a recovery pass and this is a feature-shaped fix.
+
+`main.js:160` holds `DEPLOY_REFUSE_TEXT`, 13 entries against `deploy.rs`'s
+`REFUSE_D_KIND`(0)…`REFUSE_D_OWNER`(12). It matches *today*. It is also a
+module-private `const` in `main.js`, so `ui_smoke` cannot import it and no
+gate walks it — which is verbatim the condition `interact.js:736` describes
+as the reason the build table had to move: "cannot live as a bare array in
+`main.js` where nothing can walk it". A fourteenth `REFUSE_D_*` reaches the
+player as `can't place: code 13` (`main.js:1260`), and §0c is the proof that
+the sim does grow these.
+
+The fix is the one already paid for: move the table to `interact.js`, export
+it, and extend `ui_smoke` §W's walk to parse `REFUSE_D_*` out of `deploy.rs`
+the way it parses `REFUSE_B_*` out of `build.rs`. Same shape for
+`main.js:151`'s `REFUSE_TEXT` (5, vs `craft.rs`) and `:57`'s
+`REFUSE_REASONS` (2) while the file is open.
+
+Related and NOT this lane's: `bridge.rs:66` still exports
+`DEPLOY_DEF_ROW_WORDS = 4`, so `SUB_DEPLOY_DEFS`' new `n_costs` + cost rows
+stop at the wasm bridge and `web/src` cannot show what mending a door costs.
+That is a systems-lane export, like §0e.
+
+## 0e · One export the client needs — *(systems lane, cross-lane)*
+
+`crates/client-wasm/src/bridge.rs` exports `client_action_` for all fourteen
+other verbs and none for repair, so `ACT_REPAIR` decodes, the server dispatches
+it, and no client can press it. ~15 lines mirroring `client_action_upgrade`
+(`bridge.rs:735`), whose arg list is the same four (cx, cz, level, loc) minus
+the material. The ui lane has the anchor, the pick and the refusal text
+already landed and will bind the key the pass after it exists.
+
+## 0f · A proposal for the `renderer_touched` list — *(operator act)*
+
+`gates.sh:110` reserves the exemption list to the operator, so this is a
+proposal and not a change. `web/src/interact.js` is now pure, node-imported
+and covered by §Q/§R/§V/§W with eleven mutants of its own; it cannot reach a
+material, a shader or the terrain. A one-line edit to it currently costs the
+~19-minute renderer tier. `map.js` and `invmove.js` have the same shape.
+`main.js` does NOT — it builds three.js scenes and belongs where it is.
+## 0d · The island validates at boot *(systems lane — done this pass)*
+
+Closes the boot-refusal request filed twice — `## 0`'s "A short waystation tier
+is silent on a shard" and `## 1b`'s "Systems lane, one boot-time call please"
+(judge fix 1, inherited twice). Those two bullets are the **world lane's** lines,
+so this lane did not edit them; they are answered, and their owner can delete
+them.
+
+`crates/server/src/boot.rs`: `check_seed(seed)` refuses an island whose authored
+sites are short, called from `spawn_shard` before an identity is loaded or a
+port is bound, so every path that raises a shard refuses the same seed. The
+binary also prints the counter NOW.md said was missing —
+`island ok: 3/3 authored sites`.
+
+**Measured first, and it changes the claim: 0 of 20 000 seeds are short.**
+Seeds 0..20 000 all give `sites_live == 3`; so do all eight seeds this repo
+names. This is a **tripwire, not a live hole** — no seed reachable today takes
+the short branch, and nothing here closes a gap a player can fall into. It
+fires when a change to the ring, the separation floor or the candidate search
+makes a short tier possible. `DECISIONS.md` §open carries the number.
+
+What remains: nothing on this item. The knob-relaxation alternative
+(`WAYSTATION_MIN_SEP_M` moved until the ring fills) was **not** taken — with no
+short seed to relax for, it would be a number invented against no measurement.
 ## 0a · The canopy stands off the road, draws, and is gated *(world lane — done this pass)*
 
 From the judge's **ranked fixes 1–6**, `pass-20260805-074623-04-judge.md`, which
@@ -127,36 +215,44 @@ What remains, and none of it is a UI call:
 `DeployRec` (`deploy.rs:232`, "never the wire"). So the client cannot tell its
 own sleeping bags from anyone's, nor which are ready, nor name one. "Beach or
 each live bag" (`ALPHA.md` §1) is a wire change first — systems lane.
-## 0a · Repair — the piece half landed; the door and the keypress did not
+## 0a · Repair — the door is mended now; nothing still presses the key
 
-Gap pass. Ranked gap **1** of both `findings/pass-20260805-074623-01-judge.md`
-and `-02-judge.md`, verbatim in each and unmoved between them: *"a base can
-only ever be destroyed, so the correct play after any raid is to abandon."*
+Landed this pass, closing the systems half of the item above and the judge's
+ranked fix 1 (`findings/pass-20260805-074623-03-judge.md`, the one failed
+check): `build::repair` reaches a **deployable**, so the door — the breach
+point a raid actually uses — can be bought back. Both blockers answered:
+`Deploys` gained `find_index`/`set_hp`, and the one-item price is replaced by
+the deployable's **recipe**, joined onto `DeployDef::costs` at bake time and
+divided by the same `repair_units` at the same `repair_cost_pct` (no new
+number; `DECISIONS.md` §open, "repair v0, the deployable half").
 
-Landed: `build::repair` — a damaged **piece** bought back to its baked hp,
-priced pro-rata in its own materials (`repair_cost_pct`, `content/balance.toml`,
-`DECISIONS.md` §open "repair v0"), refused under a foreign hearth's claim,
-upkeep clock untouched. Wire v20: `ACT_REPAIR`, `EV_PIECE_REPAIRED`,
-`SUB_PIECE_REPAIRED`, goldens rekeyed and regenerated. Four sim gates plus a
-role check; `REFUSE_B_*` gained a `DOMAINS` row on the way past.
+Wire **v21**: `ACT_REPAIR` and `SUB_PIECE_REPAIRED` carry the leading bit that
+picks the store, because `place_deploy` requires the doorway piece at the
+*identical* address, so a door and its doorway are one address exactly. The
+event reuses `STRUCT_DEPLOY_BIT`. 68 goldens rekeyed `v21_*`, two added (70)
+so both bit values are pinned. `REFUSE_B_UNPRICED` is the eleventh build
+refusal — it also closes a free-heal hole on the piece path, where a zero-cost
+row fell through both cost loops and mended anyway. And `Command::Repair` now
+actually rides `probe.rs`, `tests/replay.rs` and `tests/alloc_zero.rs`, which
+is what the old `build.rs` comment falsely claimed the price alone did.
 
-What remains, both deliberate cuts:
+What remains:
 
-- **Deployables cannot be repaired** — the door is the intended breach point,
-  so this is the half a raid actually notices. Two things block it: `Deploys`
-  exposes no hp setter (`deploy.rs` owns that write today), and a deployable's
-  cost is a single item, so a fractional price of it rounds to the whole thing
-  and needs its own answer rather than reusing the piece formula. **systems.**
-- **Nothing can press it.** `ACT_REPAIR` decodes and the server dispatches it;
-  no client sends one. The browser client needs the verb bound and a prompt —
-  **ui lane** (`web/`); the native client picks it up with `NOW.md` §1 slice 1.
+- **Nothing can press it**, unchanged and now the whole of the gap. The
+  browser client needs the verb bound and a prompt — **ui lane** (`web/`); the
+  native client picks it up with §1 slice 1.
+- ~~The deploy-defs drip carries no price~~ — **landed in the same commit that
+  filed this line, which is why the line was wrong.** `encode_event_deploy_defs`
+  writes `n_costs` and the cost rows, `decode_event` reads them into
+  `DeployDef`, `v21_event_deploy_defs.bin` 22 → 43 B. A client can quote a
+  repair before paying; only the prompt that shows it is left (**ui lane**).
 
-Untested here: no client sent a real repair, so the round trip is proven by
-goldens and unit gates only, not by a live shard.
+Untested here for the same reason as before: no client sent a real repair, so
+the round trip is proven by goldens, role and unit gates, not by a live shard.
 
 ---
 
-## 0 · Half the verbs you own are undiscoverable — *(ui lane; compass done this pass)*
+## 0 · Half the verbs you own are undiscoverable — *(ui lane — both halves done)*
 
 From the judge's **ranked gap 3**, `pass-20260805-063306-01-judge.md`. NOW.md
 held no open ui-lane item, so the gap list supplied this one. Two halves:
@@ -165,10 +261,15 @@ held no open ui-lane item, so the gap list supplied this one. Two halves:
   `index.html`. `ui_smoke` 442 → 510 checks (§S/§T); nine mutants red.
   **+Z is North, +X is East** — `DECISIONS.md` §open has the row and the
   conflict it resolves against `build.rs`'s `LOC_EDGE_N`.
-- **The build prompt — still open, and it is the judge's ranked fix 2.**
-  `interact.js:64-72` resolves `VERB_DOOR`/`BAG`/`BOX`/`HEARTH` and no place
-  verb, so the placement preview exists only for someone who has read
-  `main.js`. Squarely ui-lane; not started.
+- **The build prompt — DONE.** Build mode drew a ghost over the aimed cell
+  while the row under the crosshair advertised `[LMB] CHOP TREE`. It now reads
+  `[RMB] PLACE WOOD WALL`, with the shortfall of the first ingredient you
+  cannot cover, and redraws on B and the wheel. Which of the three verbs gets
+  the one row is `interact.centrePrompt` — pure, swept over all eight
+  combinations (build > E > swing). `describePiece`/`describeDeploy` moved out
+  of `run()` so the stride-8 decode is gateable arithmetic, and the shape and
+  material labels came with them (walked against `build.rs`). `ui_smoke`
+  635 → 1468 checks (§V); §Q/§R re-anchored, not relaxed.
 
 Two things the compass could not carry, both needing another lane:
 
@@ -183,6 +284,58 @@ Two things the compass could not carry, both needing another lane:
   operator word is cheaper than a pass spent guessing.
 
 ---
+## 0c · Nothing in the world names a key *(ui lane)*
+
+What the build prompt could not fix, learned by building it: a contextual hint
+can only describe a mode you have already entered. **B, C, M, T, G, H, U, L and
+Tab are spelled out in exactly one place — `index.html`'s `#hint` paragraph on
+the pre-connect screen — which is gone the moment you join.** A player who
+misses it has no way back to it and no way to discover build mode, crafting or
+the map at all. Every verb this lane has made legible sits behind a key nobody
+is told about.
+
+Two candidate shapes, and the reference has both:
+`Rust Images/choppingtree.jpg` carries an onboarding checklist top-left that
+retires itself as each verb is used; `MENUS.md` surveys the keybinds screen
+that every loader in the reference ecosystem exposes. The checklist is the
+cheaper one and it teaches in the world rather than in a menu.
+
+Not started. Needs no other lane and no operator word — the strings are ours
+(`CONTENT.md` owns names, and these are key names). `ui_smoke` can drive it
+end to end: it is DOM and state, no renderer.
+
+---
+## 0 · The rest of `pass-20260805-074623-01`'s ranked fixes
+
+*(GAP PASS, world lane. Its ranked fix **1** — the authored sites were not
+on the native↔wasm parity surface — landed on `loop/site-parity`; see
+`DECISIONS.md` §open "probe coverage v0". Measured before the fix: of the
+golden's 256 cells, **zero** were inside `in_haven`/`in_waystation` on all
+three probe seeds, so `haven()`'s value reached the digest through nothing
+while `client-wasm` reads it off wasm and the server off native. Its other
+two fixes were left, deliberately, and are below. That report's ranked
+**gaps** 1–3 — projectiles, day/night + AI, the recycler — are all systems
+lane; the newest visual report's gaps are all texture/material work, which
+the operator parked for this lane on 2026-08-04.)*
+
+- **A short waystation tier is silent on a shard** (ranked fix 2). `pick_minor`
+  leaves `Waystation::NONE` when no candidate clears the separation floor.
+  `tests/waystation.rs` refuses that over 16 seeds, but a shard boots whatever
+  seed `shard.toml` names: on a seed the ring cannot fill, the island ships
+  with one or zero waystations and no counter, event or log line. Wants a
+  boot-time refusal in `crates/server` — **not this lane's file.** `probe_sites`
+  now hashes each `live` flag, so a short tier at least moves the fingerprint
+  on the three probe seeds; that is not the same as being loud on an arbitrary
+  one. One-line cross-lane request: sim-core can export a
+  `sites_complete(&Haven) -> bool` for the shard to call at boot.
+- **The tier gradient is gated in containers per m², but a player collects
+  loot** (ranked fix 3). A waystation crate and a pad crate are the same
+  `crate` loot table, so per container the lesser tier pays exactly what the
+  destination pays and only geometry separates them. `ci/haven_prize.mjs` knows
+  nothing about waystations, so giving them their own table — or changing crate
+  yields — moves the real gradient with every gate green. Wants that gate
+  restated in **expected items per site**, not containers per m².
+
 ## 1 · The client is becoming a native Rust desktop app
 
 *(Operator, 2026-08-05. `DECISIONS.md` has the row. This outranks the
@@ -384,8 +537,12 @@ What remains:
   `salvage/ranged-v0` is a judged-**FAIL** attempt (wall 6, the wire
   drifted, reproduced executably). Read the report before rebuilding.
 - **Dropped loot** should land somewhere you can find, not inside the floor.
-- **Base repair, decay and upkeep** — a base can be broken into and cannot
-  be repaired; this is the loop that makes a day matter.
+- ~~Base repair, decay and upkeep~~ — **all three exist**: `build::repair`
+  reaches both stores, `deploy::decay_of` decays what is uncovered, upkeep
+  charges every `UPKEEP_PERIOD_TICKS`. What is hollow is the other side —
+  the satchel is priced, craftable and anchors the raid ratio with **no
+  verb**, so repair defends against nothing faster than a hatchet
+  (`pass-20260805-074623-04-judge.md` gap 2, ranked in -03 and -04).
 - **Death and your own base** — a death evicted you from what you built and
   nothing you built said otherwise.
 
