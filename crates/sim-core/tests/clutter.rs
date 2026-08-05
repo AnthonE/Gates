@@ -11,7 +11,7 @@ use sim_core::terrain::{
     CLUTTER_NONE, CLUTTER_PER_TILE, CLUTTER_TILE_M, LAND_MIN_H,
 };
 
-const SEEDS: [u64; 3] = [0x4741_5445_53, 1, 0xDEAD_BEEF];
+const SEEDS: [u64; 3] = [0x0047_4154_4553, 1, 0xDEAD_BEEF];
 
 /// `ART.md` rule 4, verbatim: "~3 m²".
 const MAX_BARE_M2: f32 = 3.0;
@@ -127,14 +127,12 @@ fn test_no_bare_patch_inside_fifteen_metres() {
 
     assert!(checked > 10_000, "only {checked} land query points sampled");
     let area = core::f32::consts::PI * worst * worst;
-    // Report the margin. A gate that only speaks when it fails cannot tell
-    // the next pass whether it is at 10% of the cap or at 99%.
-    println!(
-        "rule 4: worst bare disc {worst:.3} m = {area:.2} m² of {MAX_BARE_M2} m² \
-         ({:.0}% of cap), {checked} land points over {} seeds",
-        100.0 * area / MAX_BARE_M2,
-        SEEDS.len()
-    );
+    // The margin is NOT printed here. `println!` is a disallowed macro in this
+    // crate — the L3 wall against I/O in the sim — and a test is not an
+    // exemption worth carving. It was measured at 1.50 m², 50% of the cap, and
+    // a measurement's home is `DECISIONS.md`/`TERRAIN.md`, which is where it
+    // is. What a later pass needs from THIS file is the failure message below,
+    // which names the disc, the seed and the point.
     assert!(
         worst <= max_r,
         "ART.md rule 4: a bare disc of radius {worst:.3} m ({area:.2} m²) at \
@@ -202,25 +200,25 @@ fn test_each_kind_stands_on_its_own_splat_channel() {
                 }
                 let k = e.kind as usize - 1;
                 let w = terrain::splat(seed, e.x, e.z);
-                for c in 0..4 {
-                    sums[k][c] += w[c] as f64;
+                for (c, acc) in sums[k].iter_mut().enumerate() {
+                    *acc += w[c] as f64;
                 }
                 counts[k] += 1;
             }
         }
     }
-    for k in 0..4 {
+    for (k, row) in sums.iter().enumerate() {
         assert!(
             counts[k] > 100,
             "kind {k} drew only {} times in the whole scan — too few to judge",
             counts[k]
         );
-        let own = sums[k][k] / counts[k] as f64;
-        for c in 0..4 {
+        let own = row[k] / counts[k] as f64;
+        for (c, total) in row.iter().enumerate() {
             if c == k {
                 continue;
             }
-            let other = sums[k][c] / counts[k] as f64;
+            let other = total / counts[k] as f64;
             assert!(
                 own > other,
                 "kind {k} stands on mean channel-{k} weight {own:.1} but \
