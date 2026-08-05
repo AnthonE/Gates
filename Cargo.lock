@@ -123,6 +123,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "client"
+version = "0.1.0"
+dependencies = [
+ "client-wasm",
+ "protocol",
+ "sim-core",
+ "tokio",
+ "wtransport",
+]
+
+[[package]]
 name = "client-wasm"
 version = "0.1.0"
 dependencies = [
