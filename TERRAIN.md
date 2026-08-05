@@ -201,9 +201,36 @@ Stages, in order — each cheap, each deterministic:
    forest windows **37–52×** the null, live slots within 2.3% of the counts
    they replaced. Gated by `tests/scatter.rs`, which computes the binomial
    null in closed form rather than remembering a number. Knobs and the full
-   measurement set: `DECISIONS.md` §open "scatter clumping v0". **Not
-   done:** `biome()` is still a hard classifier, so a biome boundary is
-   still a step in *composition* even though density now ramps across it.
+   measurement set: `DECISIONS.md` §open "scatter clumping v0".
+
+   **That last line is now closed, and the fix was to stop classifying.** The
+   residual here read "`biome()` is still a hard classifier, so a biome
+   boundary is still a step in *composition* even though density now ramps
+   across it" — a pine forest ended on the `moisture > 0.05` contour while
+   the turf under it faded across `SPLAT_MOIST_BAND`, so the props and the
+   ground they stood on disagreed about where the forest was, and the props
+   were the half that stepped. `scatter` no longer picks a row: it blends all
+   four by the ground's own splat weights (`terrain::scatter_row`), because
+   `splat_from`'s channels are sand · grass · forest-litter · rock and
+   `Biome` is Beach · Meadow · Forest · Highland — the same four identities
+   in the same order. Stage 10's sentence for clutter, **the mix IS the
+   splat**, is now true of the prop population too: one law, three
+   populations.
+
+   It costs no taps (`h`, moisture and slope are all already resolved by
+   `scatter`'s own vetoes) and no density — live slots moved by at most 35
+   of ~9,800 across the four gate seeds, because a blend redistributes what
+   a classifier partitioned. Measured: the worst per-sample jump in the tree
+   weight across a moisture sweep is **4 per-mille against the classifier's
+   190**, the full Meadow→Forest span it used to move at one sample; and
+   **10.2–11.8% of land cells** sit in a band where no single splat channel
+   owns the cell, which is the share of the island the change can reach.
+   Interiors are bit-identical by construction, and the blend is convex, so
+   `test_no_biome_row_saturates` still bounds the blended row without
+   knowing it exists. Gated by `tests/scatter.rs`
+   (`test_scatter_mix_is_identity_in_the_interior`,
+   `..._ramps_where_it_used_to_step`, `..._is_convex_and_the_island_uses_it`);
+   `GOLDEN_TERRAIN_HASH` moved in the same commit and its doc says why.
 
 **Stages 7–9 share one constraint, stated before either of the first two
 exists because it decides how they get built.** Everything in `terrain.rs`

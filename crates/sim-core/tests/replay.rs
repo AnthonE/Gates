@@ -112,7 +112,20 @@ const TICKS: u64 = 900;
 /// moved. The memo behind the query (`World::slot_cache`) is deliberately not
 /// in `state_hash`; it is a pure function's cache, so it cannot move this
 /// number, and holding it out is what keeps that true.
-const GOLDEN_FINAL_HASH: u64 = 0xB09C_FF07_A63B_4581;
+///
+/// Regenerated again from `0xB09C_FF07_A63B_4581` for the composition blend
+/// (`terrain::scatter_row`, TERRAIN.md §1 stage 9): the scatter pass stopped
+/// picking one biome weight row and started blending four by the ground's own
+/// splat weights, so in the ~10% of land cells that sit in a transition band
+/// the script meets a different occupant than it did — a bush where a tree
+/// stood, and the solid-occupant path above then walks the bots somewhere
+/// else. The same evidence as the entry above says this is the intended cause
+/// and not a broken script: **every behavioural floor in `run()` still
+/// passes** — place, deploy, decay, door, eat, drink, craft — and the two runs
+/// still agree tick for tick, which is asserted before this line is reached.
+/// Heights did not move, so nothing about the terrain the bots stand on
+/// changed; only what is scattered on it, and only at biome edges.
+const GOLDEN_FINAL_HASH: u64 = 0x546E_8E60_4598_32CA;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

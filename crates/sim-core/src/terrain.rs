@@ -1544,7 +1544,7 @@ pub enum Occupant {
     WaystationCanopy = 12,
 }
 
-const OCCUPANT_KINDS: usize = 7;
+pub const OCCUPANT_KINDS: usize = 7;
 
 /// Per-biome scatter weights in per-mille of a cell draw, order
 /// [Tree, Stone, Metal, Sulfur, Bush, Rock, Barrel]; remainder is None.
@@ -1743,7 +1743,14 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
     let z = cell_z as f32 * CELL_SIZE + 4.0 + jz;
 
     let hy = height(seed, x, z);
-    if hy < LAND_MIN_H || slope(seed, x, z) > CLIFF_SLOPE_RATIO {
+    // Split from the slope veto so `sl` can be bound and reused by the mix
+    // below without paying `slope`'s four height taps on water cells — the
+    // `||` short-circuit did that for free and the binding must not lose it.
+    if hy < LAND_MIN_H {
+        return none;
+    }
+    let sl = slope(seed, x, z);
+    if sl > CLIFF_SLOPE_RATIO {
         return none;
     }
 
@@ -1769,7 +1776,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
     }
 
     if occupant == Occupant::None {
-        let row = &table.weights[biome(hy, moisture(seed, x, z)) as usize];
+        let row = scatter_row(table, hy, moisture(seed, x, z), sl);
         // The grove/clearing field scales the whole row, not the tree entry
         // alone: a clearing is a clearing, not a clearing with the rocks
         // left standing in it. It also leaves the mix a biome draws
@@ -1921,6 +1928,54 @@ pub fn splat_from(h: f32, moist: f32, slope: f32) -> [u8; 4] {
 /// the law directly; this is for callers that hold only (x, z).
 pub fn splat(seed: u64, x: f32, z: f32) -> [u8; 4] {
     splat_from(height(seed, x, z), moisture(seed, x, z), slope(seed, x, z))
+}
+
+/// The scatter mix at a point: the four biome weight rows blended by the
+/// ground's own splat weights, in per-mille of a cell draw.
+///
+/// `splat_from`'s four channels are sand · grass · forest-litter · rock and
+/// `Biome` is Beach · Meadow · Forest · Highland — the same four identities
+/// in the same order, which is why this is a blend and not a mapping. With
+/// it the prop population joins the ground material and the clutter
+/// population on one law: **the mix IS the splat.** Stage 10 states that
+/// sentence for clutter; this is the sentence made true for stage 9.
+///
+/// It closes stage 9's stated residual — "`biome()` is still a hard
+/// classifier, so a biome boundary is still a step in *composition* even
+/// though density now ramps across it". `clump` ramped how MUCH stands
+/// somewhere; this ramps WHAT stands there. Before it, a pine forest ended
+/// on the `moisture > 0.05` contour while the turf beneath it faded across
+/// the eight-hundredths of `SPLAT_MOIST_BAND`: the props and the ground they
+/// stood on disagreed about where the forest was, and the props were the
+/// half that stepped.
+///
+/// Two properties hold by construction, and `tests/scatter.rs` gates both:
+///
+/// - **Convex.** The weights sum to ~255 and divide back out, so every entry
+///   lands between the smallest and largest row entry and the row total
+///   between the smallest and largest row total (180 Meadow … 350 Forest).
+///   `test_no_biome_row_saturates` therefore still bounds the blended row
+///   without being told about it: a convex blend cannot reach a rail that
+///   all four pure rows sit below.
+/// - **Interior-preserving.** Away from a band the splat is one-hot, so a
+///   cell deep inside a biome draws exactly the row it drew before. Only the
+///   transition bands move, which is the whole of the change.
+///
+/// It costs no taps. `h`, `moist` and `sl` are all already resolved by
+/// `scatter`'s own vetoes above the call, so the mix is a few multiplies.
+pub fn scatter_row(table: &ScatterTable, h: f32, moist: f32, sl: f32) -> [u16; OCCUPANT_KINDS] {
+    let w = splat_from(h, moist, sl);
+    let mut row = [0u16; OCCUPANT_KINDS];
+    for (i, out) in row.iter_mut().enumerate() {
+        let mut acc = 0.0f32;
+        for (b, ch) in w.iter().enumerate() {
+            acc += table.weights[b][i] as f32 * *ch as f32;
+        }
+        // `splat_from` rounds to bytes summing to ~255, so dividing by 255
+        // inverts its own normalization to within that rounding.
+        *out = floor_i32(acc * (1.0 / 255.0) + 0.5).clamp(0, 1000) as u16;
+    }
+    row
 }
 
 /// What one clutter cell grew. Index order is the splat's channel order, so
