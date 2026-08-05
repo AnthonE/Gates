@@ -23,6 +23,11 @@ export class WasmViews {
     this.render = null; // Float32Array over client_render_ptr
     this.remoteIds = null; // Uint32Array over client_remote_ids_ptr
     this.inv = null; // Uint16Array over client_inv_ptr (item,count ×30)
+    // The OPEN container's slots, same (item,count) ×30 layout as `inv` so
+    // one reader draws either (`bridge.rs`'s `client_cont_ptr`). Meaningful
+    // only while `client_cont_kind()` is nonzero; a box fills the first
+    // BOX_SLOTS and the tail stays zero.
+    this.cont = null; // Uint16Array over client_cont_ptr (item,count ×30)
     this.catalog = null; // Uint8Array over client_catalog_ptr (25 B rows)
     this.slotChanges = null; // Uint32Array over client_slot_changes_ptr
     this.craftJobs = null; // Uint16Array over client_craft_jobs_ptr
@@ -52,6 +57,7 @@ export class WasmViews {
     const renderPtr = ex.client_render_ptr();
     const remoteIdsPtr = ex.client_remote_ids_ptr();
     const invPtr = ex.client_inv_ptr();
+    const contPtr = ex.client_cont_ptr();
     const catalogPtr = ex.client_catalog_ptr();
     const slotChangesPtr = ex.client_slot_changes_ptr();
     const craftJobsPtr = ex.client_craft_jobs_ptr();
@@ -74,6 +80,7 @@ export class WasmViews {
     this.render = new Float32Array(buf, renderPtr, 14 + 64 * 8);
     this.remoteIds = new Uint32Array(buf, remoteIdsPtr, 64);
     this.inv = new Uint16Array(buf, invPtr, 30 * 2);
+    this.cont = new Uint16Array(buf, contPtr, 30 * 2);
     this.catalog = new Uint8Array(buf, catalogPtr, 64 * 25);
     this.slotChanges = new Uint32Array(buf, slotChangesPtr, 64 * 2);
     this.craftJobs = new Uint16Array(buf, craftJobsPtr, 4 * 2);

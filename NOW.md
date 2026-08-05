@@ -49,30 +49,26 @@ Done items are deleted, not checked — history lives in git and
      remainder; its diff is adopted here with a real commit message. Its
      salvage worktree is the operator's to remove, not a lane's.
 
-1. **The container panel: contents now cross the wire, and nothing draws
-   them.** *(ui lane. The systems half landed at wire v19 — `DECISIONS.md`
-   §open; the ui lane's cross-lane request 1 is answered.)*
+1. **The container panel is built; two things in `crates/` bound what it can
+   say.** *(ui lane, 2026-08-05. The panel, the cross-container drag, the
+   open key and `ci/ui_smoke.mjs` group O landed — 279 checks, 8 mutants red.)*
 
-   What exists: an open/close action, a per-client "which container is
-   open", and a contents sync unicast to the opener with reach re-proved
-   every tick. Four bridge exports carry it into JS —
-   `client_action_container`, `client_cont_kind`, `client_cont_handle`,
-   `client_cont_ptr` (`INV_SLOTS` × item, count, the same layout as
-   `client_inv_ptr`). `ci/client_smoke.mjs` is their only reader today.
+   - **`client_move_readout` still has no TO kind** (request 2 below, 8 spare
+     bits). So `hud.invMoveVerdict` matches a verdict on three carried fields
+     plus the one-move-in-flight rule, and a self-3-to-box-3 verdict is the
+     same word as a self-3-to-self-3 one. `hud.abandonContainerMove` is what
+     keeps that honest — the moment the open container changes, a move with an
+     end in it is given up rather than matched against whatever is open now.
+     Not a hole; a narrower match than it looks, and gated as such.
+   - **Only BAGS can be opened.** A box is addressed by a packed
+     `box_key(cx, cz, level)` this side would have to mirror, and mirroring a
+     bit layout with no gate on it is the positional-payload trap itself.
+     Needs `ARCH_BOX`'s slots + container address (request 3 below) and then a
+     gate on the packing, in that order.
+   - **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are
+     UNRUN (operator's `GATES_TIER=fast`) and this pass edits `main.js`,
+     `wasm.js` and `index.html`.
 
-   What remains, in order:
-   - **A panel.** `hud.invContainers` draws exactly one container; a
-     second needs cells fed from `client_cont_ptr` and a close when
-     `client_cont_kind` goes to zero on its own — the server shuts a panel
-     when reach is lost, so the panel is never authoritative about its own
-     visibility.
-   - **A key that opens one.** Nothing calls `client_action_container`.
-     `E` already resolves the nearest door/hearth; a box or a bag in reach
-     is the same shape of choice.
-   - **`client_move_readout` still has no TO kind** (request 2 below,
-     8 spare bits). Until it does, `invmove.moveVerdict` must keep
-     rejecting non-self FROM kinds, so a drag INTO the new panel cannot
-     be resolved even once it draws.
 ## 0. The second container panel — gap 1's other half *(ui lane)*
 
 *From `findings/pass-20260804-205133-03-judge.md` gap 1, "there is nowhere to
