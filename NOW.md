@@ -326,6 +326,33 @@ the round trip is proven by goldens, role and unit gates, not by a live shard.
 
 ---
 
+## 0h · Repair is bound — R presses it, and the store bit is gated *(ui lane)*
+
+Closes the `web/` half the item above left open ("nothing can press it"). The
+bridge export had landed; `ui_smoke`'s own comment still said it had not.
+
+- **R sends it**, out of build mode only — R is already the build-level raise,
+  and the two branches sit in one if/else chain, so the binding is their
+  ORDER. Gated as an ordering law, not as a condition (M40).
+- **`nearestRepairable` walks BOTH stores** and reports which won. A door and
+  its doorway share one address exactly, so the leading `deploy` bit is the
+  only thing telling them apart, and it is a `u32` like the other four — the
+  positional class with the discriminator in front. Exact ties go to the
+  deployable; distance still outranks the store both ways.
+- **The prompt ranks last** (build > E > swing > repair): it resolves off the
+  feet, not the crosshair, so it may only fill a row that would be blank.
+- `ui_smoke` 1684 → 1731 (§X); six new mutants, M35–M40. `bridge.rs`'s five
+  parameters are parsed and `deploy` is pinned FIRST, so a systems-lane
+  reorder reddens here.
+
+**Systems lane, one bit please:** `EventMsg::StructHit` carries `deploy` and
+`core.rs`'s `struct_hit` tuple drops it — `(cx, cz, level, loc, left, max)`.
+So the client cannot attribute damage to a store at a shared address, and the
+prompt names the verb but not the hp. Add the bit to the tuple and to
+`client_struct_hit_info`'s spare bits and the row can read `340/500`.
+
+---
+
 ## 0 · Half the verbs you own are undiscoverable — *(ui lane — both halves done)*
 
 From the judge's **ranked gap 3**, `pass-20260805-063306-01-judge.md`. NOW.md

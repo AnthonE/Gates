@@ -3641,6 +3641,16 @@ check(
 // the winning text. These two keep §Q's own claim at the new seam: E's answer
 // still comes from `promptFor(aimPick(...))` and nowhere else, and it still
 // outranks the swing. What §V adds, the old regexes could not say at all.
+// The precedence chain in `interact.centrePrompt`, as ONE pattern with two
+// call sites (§Q here and §R below), rather than the two verbatim copies that
+// stood here until repair became the fourth verb. RE-ANCHORED a third time and
+// again not relaxed: the copies pinned `promptFor(interactPick) ||
+// promptForSwing(swingPick)` on one physical line, so a four-way chain that
+// prettier wraps broke them for a formatting reason. This pins all four in
+// order and tolerates the wrapping — strictly more than the pair it replaces,
+// since it now also fixes where build and repair sit relative to the other two.
+const CENTRE_ORDER =
+  /promptForBuild\(buildPick\)\s*\|\|\s*promptFor\(interactPick\)\s*\|\|\s*promptForSwing\(swingPick\)\s*\|\|\s*promptForRepair\(repairPick\)/;
 check(
   /centrePrompt\([\s\S]{0,80}?aimPick\(pick, VERB_NONE\)/.test(mainSrc) &&
     /promptFor\(interactPick\)/.test(interactSrc),
@@ -3649,7 +3659,7 @@ check(
     " prompt and the key must not be able to differ",
 );
 check(
-  /promptFor\(interactPick\) \|\| promptForSwing\(swingPick\)/.test(interactSrc),
+  CENTRE_ORDER.test(interactSrc),
   "interact.centrePrompt does not put E's pick AHEAD of the swing — E's pick is the half a player cannot" +
     " discover, so anything else drawn under the crosshair sits behind it or the door you are standing at" +
     " loses its hint to a tree",
@@ -4012,14 +4022,19 @@ check(interact.resolveSwing(sPick, P, { cellAt: () => null }).arch === 0, "an un
 // choice: `swingAt()` is now the THIRD argument of `centrePrompt` rather than
 // the second term of a `||` here, and §V exercises the resulting order over
 // all eight combinations instead of matching it as a pattern.
+// Re-anchored again when repair became the fourth: `swingAt()` stopped being
+// the LAST argument, so the old `swingAt())` no longer matched. §V pins the
+// whole four-argument call verbatim, so what is needed here is only that the
+// swing pick still reaches `centrePrompt` — and it is now pinned as a non-final
+// argument, which is the shape the fourth verb requires.
 check(
-  /centrePrompt\([\s\S]{0,110}?swingAt\(\)\)/.test(mainSrc) &&
+  /centrePrompt\([\s\S]{0,110}?swingAt\(\),/.test(mainSrc) &&
     /promptForSwing\(swingPick\)/.test(interactSrc),
   "main.js does not hand swingAt() to centrePrompt, or centrePrompt does not run it through promptForSwing" +
     " — the swing half of the crosshair would compute correctly and never reach the screen",
 );
 check(
-  /promptFor\(interactPick\) \|\| promptForSwing\(swingPick\)/.test(interactSrc),
+  CENTRE_ORDER.test(interactSrc),
   "interact.centrePrompt no longer draws E's prompt ahead of the swing's — the fallback must sit BEHIND the" +
     " interact pick, or the swing hint would outrank a door the player is standing at",
 );
@@ -5437,13 +5452,19 @@ for (const [b, i, s, want, why] of [
 // The pure functions above are only worth their checks if the client calls
 // them. `updatePrompt` is the sole writer of `#prompt` (§Q pins that), so this
 // pins what it writes.
+// Re-anchored 2026-08-05 when repair became the fourth verb: the call is now
+// four arguments over five lines. Every clause the old single-line pattern
+// pinned is still pinned — the four picks, in order, each still gated on the
+// same condition — and the repair argument is pinned as well, so this is a
+// strictly larger claim than the one it replaces, not a loosened one.
 check(
-  /hud\.setPrompt\(\s*centrePrompt\(build\.on \? selDesc\(\) : null, aimPick\(pick, VERB_NONE\), swingAt\(\)\),?\s*\)/.test(
+  /hud\.setPrompt\(\s*centrePrompt\(\s*build\.on \? selDesc\(\) : null,\s*aimPick\(pick, VERB_NONE\),\s*swingAt\(\),\s*build\.on \? null : aimRepair\(\),?\s*\),?\s*\)/.test(
     mainSrc,
   ),
   "main.js's updatePrompt no longer ends in centrePrompt(build.on ? selDesc() : null, aimPick(...)," +
-    " swingAt()) — either the order moved back into this file where no gate can read it, or the build pick" +
-    " stopped being gated on build.on and the hint now offers a placement with no ghost under the crosshair",
+    " swingAt(), build.on ? null : aimRepair()) — either the order moved back into this file where no gate" +
+    " can read it, or the build pick stopped being gated on build.on and the hint now offers a placement" +
+    " with no ghost under the crosshair, or the repair pick stopped being suppressed in build mode",
 );
 // The hint has to redraw on the keys that change what it says, not up to
 // 250 ms later on the HUD timer: a hint that lags its own ghost is the defect.
@@ -5461,12 +5482,12 @@ for (const [what, re] of [
 // =============================================================================
 // W. the piece's other half — what mends it, and the news that it broke
 // =============================================================================
-// Repair v0 landed in the sim (wire v20, `ACT_REPAIR`) and nothing can press
-// it: `client_action_repair` is not exported from the bridge, so the SEND is a
-// systems-lane line in `NOW.md`. Everything else on the client side of a
-// piece's hp is this lane's, and this group is it — which piece a
-// piece-addressed verb aims at, what the sim's refusals say, and whether a
-// player can tell a wall being mended from a wall being broken into.
+// Repair v0 landed in the sim (wire v20, `ACT_REPAIR`) and for two passes
+// nothing could press it. The bridge export landed with v21 and the send is
+// now bound — it and the store bit it turns on are group X, at the end of this
+// file. This group stays what it was: which piece a piece-addressed verb aims
+// at, what the sim's refusals say, and whether a player can tell a wall being
+// mended from a wall being broken into.
 //
 // All three were defects, and all three were invisible for the same structural
 // reason: they sat in `main.js`, which this gate cannot execute (it boots
@@ -6089,6 +6110,292 @@ check(
 );
 
 // =============================================================================
+// X. the repair verb — which of two stores the address names
+// =============================================================================
+// Repair v0 has been in the sim since wire v20 and nothing could press it; the
+// bridge export landed with v21 and this is the client half. The send is one
+// call, and everything worth gating about it is in the FIRST argument.
+//
+// `client_action_repair(deploy, cx, cz, level, loc)` addresses two stores with
+// one address, because `place_deploy` requires the doorway piece at the
+// identical `(cx, cz, level, loc)` — a door and its doorway are the same four
+// numbers. So the store bit is the only thing that distinguishes them, it is a
+// `u32` like every other argument, and sending the wrong one mends the wrong
+// thing at a real address. No encoder changes, no golden moves, `test_replay`
+// stays green: this is exactly the positional-payload class CLAUDE.md's trap
+// list names, with the discriminator promoted to argument one.
+//
+// So the walk below pins three separate things, because any one of them alone
+// would leave the hole open: the bridge's own parameter ORDER (parsed out of
+// `bridge.rs`, so a systems-lane reorder reddens here), the JS scan's store
+// answer including the exact tie the shared address produces, and `main.js`
+// passing the scan's answer through rather than a literal.
+
+// --- the wire's argument order, read off the bridge --------------------------
+{
+  const sig = bridgeSrc.match(/^pub extern "C" fn client_action_repair\(([\s\S]*?)\)\s*->/m);
+  if (!sig) {
+    fail(
+      "bridge.rs no longer declares `pub extern \"C\" fn client_action_repair(...) ->` — either the export" +
+        " was withdrawn (and the client can no longer send a repair at all) or it was renamed, and every" +
+        " check below it is now measuring nothing",
+    );
+  }
+  const params = sig[1]
+    .split(",")
+    .map((s) => s.trim().split(":")[0].trim())
+    .filter(Boolean);
+  check(
+    params.length === 5,
+    `client_action_repair takes ${params.length} parameters (${params.join(", ")}), not the five this` +
+      " client sends — an arity change means main.js is passing a value into the wrong slot",
+  );
+  check(
+    params[0] === "deploy",
+    `client_action_repair's FIRST parameter is '${params[0]}', not 'deploy' — the store discriminator moved,` +
+      " and main.js still passes the store bit first. Every argument is a u32, so the encoder, the goldens" +
+      " and the replay all stay green while a repair addresses the wrong store",
+  );
+  check(
+    params.slice(1).join(",") === "cx,cz,level,loc",
+    `client_action_repair's address parameters are (${params.slice(1).join(", ")}), not (cx, cz, level, loc)` +
+      " — main.js passes them positionally in that order and a transposition here is invisible to every" +
+      " byte-level gate",
+  );
+}
+
+// --- the store constants, and what they mean ---------------------------------
+check(
+  interact.REPAIR_STORE_PIECE === 0 && interact.REPAIR_STORE_DEPLOY === 1,
+  `interact.js says REPAIR_STORE_PIECE=${interact.REPAIR_STORE_PIECE},` +
+    ` REPAIR_STORE_DEPLOY=${interact.REPAIR_STORE_DEPLOY} — the bridge's leading argument is a bool-as-u32` +
+    " where 1 means the deployable store, so these two values ARE the wire and cannot be renumbered freely",
+);
+// `encode_action_repair`'s own reading of the bit, so the JS constants above are
+// pinned to the sim's meaning and not just to each other.
+check(
+  /deploy/.test(bridgeSrc.match(/fn client_action_repair\([\s\S]{0,600}?\n}/)?.[0] || ""),
+  "bridge.rs's client_action_repair body no longer mentions its `deploy` parameter — the bit is being" +
+    " dropped before it reaches encode_action_repair, which would silently route every repair to one store",
+);
+
+// --- the scan, across both stores --------------------------------------------
+{
+  const xCell = 3;
+  const rp = () => interact.newRepairPick();
+  const scan = (pieces, deploys, x, z) =>
+    interact.nearestRepairable(rp(), { x, z }, { cell: xCell, pieces, deploys });
+
+  const fresh = rp();
+  check(
+    fresh.found === false && fresh.store === interact.REPAIR_STORE_PIECE && fresh.what === "",
+    `newRepairPick() starts at found=${fresh.found}, store=${fresh.store}, what='${fresh.what}' — a pick that` +
+      " starts found, or carrying a name, would let a scan that matched nothing draw a prompt for it",
+  );
+
+  // Nothing anywhere.
+  check(scan([], [], 0, 0).found === false, "nearestRepairable found something in two empty stores");
+
+  // A piece alone answers the piece store; a deployable alone answers the
+  // deploy store. Both at the SAME address so only the store can differ.
+  const addr = { cx: 4, cz: 6, level: 0, loc: interact.LOC_EDGE_W, row: 2 };
+  const at = interact.pieceAnchor([0, 0], addr.cx, addr.cz, addr.loc, xCell);
+  const pOnly = scan([addr], [], at[0], at[1]);
+  check(
+    pOnly.found && pOnly.store === interact.REPAIR_STORE_PIECE,
+    `a world holding one built piece and no deployables answered store ${pOnly.store}` +
+      " — a repair sent for it would ask the server to mend a deployable that is not there",
+  );
+  const dOnly = scan([], [addr], at[0], at[1]);
+  check(
+    dOnly.found && dOnly.store === interact.REPAIR_STORE_DEPLOY,
+    `a world holding one deployable and no built pieces answered store ${dOnly.store}` +
+      " — the door is the breach point a raid uses, and this is the case that mends it",
+  );
+  // The whole address comes back, from the deploy side too — not just the bit.
+  for (const [what, got] of [
+    ["piece", pOnly],
+    ["deploy", dOnly],
+  ]) {
+    check(
+      got.cx === addr.cx && got.cz === addr.cz && got.level === addr.level && got.loc === addr.loc,
+      `the ${what} pick came back addressed (${got.cx}, ${got.cz}, ${got.level}, ${got.loc}) for a rec at` +
+        ` (${addr.cx}, ${addr.cz}, ${addr.level}, ${addr.loc}) — a transposed address is a repair on someone` +
+        " else's wall, and every one of these is a small integer that looks fine in a payload dump",
+    );
+    check(got.row === addr.row, `the ${what} pick lost its def row (${got.row}, expected ${addr.row})`);
+  }
+
+  // THE tie: a door in its doorway. Identical address, identical anchor,
+  // identical d2 — the deployable wins, and it wins whichever store is walked
+  // first, because the rule is a total order and not a scan-order accident.
+  const tie = scan([addr], [addr], at[0], at[1]);
+  check(
+    tie.found && tie.store === interact.REPAIR_STORE_DEPLOY,
+    `a door sharing its doorway's exact address resolved to store ${tie.store}, not the deployable` +
+      " — this is the one case the two stores are genuinely ambiguous, and it is the case a raid produces",
+  );
+  check(
+    tie.d2 === scan([addr], [], at[0], at[1]).d2,
+    "the tie changed the distance as well as the store — the two stores are being measured differently",
+  );
+
+  // Distance still outranks the store: a nearer PIECE beats a farther
+  // deployable, or the tie rule has quietly become a store preference.
+  const far = { cx: 5, cz: 6, level: 0, loc: interact.LOC_EDGE_W, row: 3 };
+  const near = scan([addr], [far], at[0], at[1]);
+  check(
+    near.found && near.store === interact.REPAIR_STORE_PIECE && near.cx === addr.cx,
+    `a built piece under the player lost to a deployable a cell away (store ${near.store}, cx ${near.cx})` +
+      " — the deployable only wins an EXACT tie, never on distance",
+  );
+  const near2 = scan([far], [addr], at[0], at[1]);
+  check(
+    near2.found && near2.store === interact.REPAIR_STORE_DEPLOY && near2.cx === addr.cx,
+    "a deployable under the player lost to a built piece a cell away — the scan is preferring a store" +
+      " over distance in the other direction",
+  );
+
+  // The reach bound is strict and is the same one `nearestPiece` uses, because
+  // `build.rs` gates repair and upgrade on the same `BUILD_REACH_M`.
+  const R = interact.INTERACT_REACH_M;
+  const one = (d) => scan([{ cx: 0, cz: 0, level: 0, loc: interact.LOC_PLANE, row: 0 }], [], xCell / 2 + d, xCell / 2);
+  check(one(R + 0.01).found === false, `a piece ${R + 0.01} m away was repairable at reach ${R}`);
+  check(one(R - 0.01).found === true, `a piece ${R - 0.01} m away was out of reach at reach ${R}`);
+  check(one(100).found === false, "a piece 100 m away was repairable");
+
+  // Order independence within a store, the same property group W asserts for
+  // `nearestPiece` — a Map's iteration order is insertion order and a rebuilt
+  // world must not change which wall R mends.
+  const many = [
+    { cx: 9, cz: 9, level: 0, loc: interact.LOC_PLANE, row: 1 },
+    { cx: 4, cz: 6, level: 1, loc: interact.LOC_EDGE_N, row: 5 },
+    { cx: 4, cz: 7, level: 0, loc: interact.LOC_PLANE, row: 2 },
+  ];
+  const fwd = scan(many, [], at[0], at[1]);
+  const rev = scan([...many].reverse(), [], at[0], at[1]);
+  check(
+    fwd.found && rev.found && fwd.cx === rev.cx && fwd.cz === rev.cz && fwd.loc === rev.loc,
+    `reversing the piece list changed which piece R addresses (${fwd.cx},${fwd.cz},${fwd.loc} vs` +
+      ` ${rev.cx},${rev.cz},${rev.loc}) — the pick depends on Map insertion order, so a reconnect moves it`,
+  );
+
+  // `what` is the caller's, and it is reset on every scan: a stale name over a
+  // new address is the prompt lying about which thing R would mend.
+  const stale = rp();
+  stale.what = "STONE WALL";
+  interact.nearestRepairable(stale, { x: at[0], z: at[1] }, { cell: xCell, pieces: [addr], deploys: [] });
+  check(
+    stale.what === "",
+    `nearestRepairable left a previous scan's name ('${stale.what}') on the pick — the prompt would name` +
+      " the last thing in reach while R acted on this one",
+  );
+}
+
+// --- the prompt, and where it ranks ------------------------------------------
+{
+  const named = { found: true, what: "wood wall" };
+  check(
+    interact.promptForRepair(named) === "[R] REPAIR WOOD WALL",
+    `promptForRepair named a target '${interact.promptForRepair(named)}' — the row has to name the KEY,` +
+      " because a verb nobody can find a key for is the gap this item exists to close",
+  );
+  check(
+    interact.promptForRepair({ found: false, what: "wood wall" }) === "" &&
+      interact.promptForRepair({ found: true, what: "" }) === "" &&
+      interact.promptForRepair(null) === "",
+    "promptForRepair drew a row for a target that is not in reach, or one whose def row has not arrived" +
+      " — an unnamed target would read '[R] REPAIR ' with nothing after it",
+  );
+
+  // The precedence sweep: all sixteen combinations of the four verbs. Repair
+  // ranks LAST by design — it is the one prompt resolved off the feet rather
+  // than the crosshair, so it may never displace a verb the player is aiming
+  // at. Group V sweeps the first three; this asserts the fourth's whole claim,
+  // which is that it appears if and only if the other three are silent.
+  const xBuild = { what: "stone wall", need: "" };
+  const xInteract = { verb: interact.VERB_DOOR, found: true };
+  // A genuinely swingable archetype, found rather than hardcoded: arch 0 is
+  // deliberately NOT swingable (§R pins that), so a fixture guessing at one
+  // would make every "swing is present" row below silently a "swing is absent"
+  // row and the sweep would pass while asserting the opposite of its message.
+  const xArch = [1, 2, 3, 4, 5, 6, 7, 8].find((a) => interact.promptForSwing({ arch: a }) !== "");
+  if (xArch === undefined) {
+    fail(
+      "no archetype in 1..8 produces a swing prompt — §X's precedence sweep cannot construct a row where the" +
+        " swing verb is present, so every repair-ranks-last check below it would be vacuous",
+    );
+  }
+  const xSwing = { arch: xArch, cx: 1, cz: 1, d2: 1 };
+  const xRepair = { found: true, what: "wood doorway" };
+  let repairShown = 0;
+  for (let m = 0; m < 16; m++) {
+    const got = interact.centrePrompt(
+      m & 1 ? xBuild : null,
+      m & 2 ? xInteract : interact.newPick(),
+      m & 4 ? xSwing : interact.newSwingPick(),
+      m & 8 ? xRepair : null,
+    );
+    const isRepair = got.startsWith("[R] ");
+    if (isRepair) repairShown++;
+    check(
+      isRepair === ((m & 8) !== 0 && (m & 7) === 0),
+      `centrePrompt drew '${got}' for build=${!!(m & 1)} E=${!!(m & 2)} swing=${!!(m & 4)}` +
+        ` repair=${!!(m & 8)} — repair must appear exactly when it is present AND the other three are` +
+        " silent. Showing it above another verb points the row at something the player is not aiming at;" +
+        " hiding it when the row is blank is the empty row this item exists to fill",
+    );
+  }
+  check(repairShown === 1, `the repair row appeared in ${repairShown} of 16 combinations, expected exactly 1`);
+}
+
+// --- main.js sends the scan's answer, not a literal --------------------------
+check(
+  /ex\.client_action_repair\(\s*best\.store,\s*best\.cx,\s*best\.cz,\s*best\.level,\s*best\.loc,?\s*\)/.test(
+    mainSrc,
+  ),
+  "main.js no longer calls ex.client_action_repair(best.store, best.cx, best.cz, best.level, best.loc)" +
+    " — either the store bit became a literal (which sends every repair to one store, mending the doorway" +
+    " when the player meant the door) or the address arguments were transposed. Both are invisible to the" +
+    " encoder, the goldens and the replay, because all five are u32",
+);
+check(
+  /nearestRepairable\(repairPick, repairAt, repairWorld\)/.test(mainSrc),
+  "main.js no longer routes its repair target through interact.nearestRepairable — a scan rebuilt inline" +
+    " is a scan no node gate can call, which is exactly how `nearestPiece` shipped throwing on its first line",
+);
+check(
+  /repairWorld\.pieces = pieceRecs\.values\(\);\s*\n\s*repairWorld\.deploys = deployRecs\.values\(\);/.test(
+    mainSrc,
+  ),
+  "main.js no longer fills repairWorld from BOTH pieceRecs and deployRecs (or has swapped them) — feeding" +
+    " the deploy store from pieceRecs makes every repair report the wrong store bit for a real address",
+);
+// The mode conflict, as an ORDERING law. R is the build-level raise in build
+// mode and the repair everywhere else, and the two branches live in one
+// if/else chain — so which comes FIRST is the entire binding. Reordering them
+// silently turns every repair press into a floor step.
+{
+  const buildR = mainSrc.indexOf('build.on && (e.code === "KeyR"');
+  const bareR = mainSrc.indexOf('} else if (e.code === "KeyR") {');
+  check(
+    buildR > 0 && bareR > 0,
+    `main.js is missing one of the two KeyR branches (build-mode raise at ${buildR}, repair at ${bareR})` +
+      " — if the repair branch is gone the verb cannot be pressed at all, which is the state this item found",
+  );
+  check(
+    buildR < bareR,
+    "main.js's bare KeyR branch now precedes the build-mode one, so R repairs instead of raising the build" +
+      " level and the level can never be changed — the guard is the ORDER, not a condition on either branch",
+  );
+}
+check(
+  /build\.on \? null : aimRepair\(\)/.test(mainSrc),
+  "main.js's centrePrompt call no longer suppresses the repair row in build mode — in build mode R raises" +
+    " the build level, so a row reading '[R] REPAIR' there names a key that does something else entirely",
+);
+
+// =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
@@ -6129,7 +6436,8 @@ console.log(
     "build prompt: shape/material labels walked against build.rs, the stride-8 def row decoded as " +
     "arithmetic (item/quantity pair at 4+k*2, first unmet ingredient, exactly-enough is enough), " +
     "deployables from b+3 of a stride-4 row, [RMB] text with and without a shortfall, and centrePrompt " +
-    "swept over all eight combinations (build > E > swing) with main.js pinned to route through it · " +
+    "swept over all sixteen combinations (build > E > swing > repair) with main.js pinned to route " +
+    "through it · " +
     `the piece's hp half: anchor mirrored off build.rs's own arms with all four LOC_* pinned and the three ` +
     `distinct locs distinct, nearestPiece callable at all (it read an undeclared REACH and threw, so U was ` +
     `dead) with nearest-wins order-independent and the reach bound strict either side of ` +
@@ -6141,7 +6449,15 @@ console.log(
     "route every one through the importable accessor and to declare no copy of its own; and every sentence " +
     "of those four plus hud.js's move table pinned to its constant's NAME by a keyword no other sentence in " +
     "its table contains, so a renumber under the table is red rather than a player told the wrong refusal; " +
-    "and a repair told from a raid on the APPLIED_HIT bit read out of core.rs, silent when max is 0",
+    "and a repair told from a raid on the APPLIED_HIT bit read out of core.rs, silent when max is 0 · " +
+    "the repair verb bound at last: client_action_repair's five parameters parsed out of bridge.rs with " +
+    "`deploy` pinned FIRST and the address pinned in order, the two store constants pinned to the wire's " +
+    "meaning, nearestRepairable walking both stores with the whole address returned from each, the " +
+    "door-in-its-doorway exact tie going to the deployable whichever store is walked first, distance still " +
+    "outranking the store in both directions, the reach bound strict, order-independent, the name reset on " +
+    "every scan, and main.js pinned to send the scan's own store bit rather than a literal — plus the R " +
+    "mode conflict held as an ORDERING law (build-level raise before repair in the one if/else chain) and " +
+    "the prompt suppressed in build mode to match",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 

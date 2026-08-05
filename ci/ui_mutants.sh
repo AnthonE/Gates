@@ -215,6 +215,48 @@ run_mut "M34 a refusal keyword is softened to one three sentences share" ci/ui_s
   '      HEARTH: "no hearth",' \
   '      HEARTH: "hearth",'
 
+# --- the repair verb's store bit -------------------------------------------
+# M35-M40. `client_action_repair(deploy, cx, cz, level, loc)` reaches two
+# stores through one address, because a door and its doorway occupy the
+# IDENTICAL (cx, cz, level, loc). Every argument is a u32, so none of these six
+# touches the encoder, moves a golden, or changes a state hash — the whole
+# class is invisible to `test_protocol_golden` and `test_replay` alike, which
+# is CLAUDE.md's positional-payload trap with the discriminator in front.
+run_mut "M35 the store bit becomes a literal, so every repair mends a built piece" web/src/main.js \
+  'ex.client_action_repair(best.store, best.cx' \
+  'ex.client_action_repair(0, best.cx'
+run_mut "M36 the repair address transposes cx and cz" web/src/main.js \
+  'best.store, best.cx, best.cz, best.level, best.loc' \
+  'best.store, best.cz, best.cx, best.level, best.loc'
+# The tie is the ONLY case where the two stores are ambiguous, and it is the
+# case a raid produces: the door in its doorway. Flipping who wins it sends
+# every door repair at the doorway behind the door.
+run_mut "M37 the door loses its own doorway's tie" web/src/interact.js \
+  'if (d2 < bestD || (d2 === bestD && out.found && store > out.store)) {' \
+  'if (d2 < bestD) {'
+# The two stores read from one source: the store bit is then always right for
+# the pieces and always wrong for the deployables, and no address changes.
+run_mut "M38 the deploy store is fed from the piece store" web/src/main.js \
+  '    repairWorld.deploys = deployRecs.values();' \
+  '    repairWorld.deploys = pieceRecs.values();'
+# Repair ranks last so it can never displace a verb the player is aiming at.
+# Promoting it is a one-token move that no other check in the file would see.
+run_mut "M39 repair outranks the three verbs resolved off the crosshair" web/src/interact.js \
+  '    promptForBuild(buildPick) ||
+    promptFor(interactPick) ||
+    promptForSwing(swingPick) ||
+    promptForRepair(repairPick)' \
+  '    promptForRepair(repairPick) ||
+    promptForBuild(buildPick) ||
+    promptFor(interactPick) ||
+    promptForSwing(swingPick)'
+# The mode conflict is held by the ORDER of two branches in one if/else chain,
+# not by a condition on either — so the mutation that breaks it is a move, and
+# it leaves both branches present and individually correct.
+run_mut "M40 R stops raising the build level and falls through to repair" web/src/main.js \
+  '    } else if (build.on && (e.code === "KeyR" || e.code === "KeyF")) {' \
+  '    } else if (e.code === "KeyF") {'
+
 echo
 echo "mutants: $red red, $green survived, $broken stale"
 if [ -n "$(git status --porcelain)" ]; then
