@@ -1314,10 +1314,42 @@ check(
 // for `pine_shape.mjs`'s reason: a number restated in a gate is a number that
 // can drift away from the one that ships.
 const invSrc = fs.readFileSync(path.join(root, "crates/sim-core/src/inventory.rs"), "utf8");
-const REFUSE_MAX = Number(invSrc.match(/pub const REFUSE_M_UNSTACKABLE: u32 = (\d+);/)?.[1]);
+
+/**
+ * The NUMBER a `pub const NAME: ty = …;` in `inventory.rs` carries, whether
+ * it is written as a literal (`= 2;`) or as an alias for another const in the
+ * same file (`pub const CONT_MAX: u8 = CONT_BOX;`). `null` when it cannot be
+ * resolved, so a caller goes loudly red rather than comparing against `NaN`.
+ *
+ * Written on 2026-08-04 because the two ceiling checks below both read the
+ * alias WRONG, in the two different ways an alias can be read wrong:
+ *
+ * - `CONT_MAX` pinned the alias's NAME (`contMaxAlias === "CONT_BAG"`) and
+ *   then compared the client's number to the client's own `CONT_BAG`. It
+ *   never read a Rust number at all. When the sim legitimately grew a third
+ *   kind the name moved to `CONT_BOX` and the assertion became one that NO
+ *   value of the client's constant could satisfy — a gate correct code
+ *   cannot pass is testing the wrong thing, not merely an inconvenient one.
+ * - `REFUSE_M_MAX` hardcoded which const the alias points AT
+ *   (`REFUSE_M_UNSTACKABLE`). Green today and green for the wrong reason:
+ *   it would keep passing while the alias moved somewhere else entirely.
+ *
+ * Resolving the alias catches both, and still catches everything the old
+ * pair caught — a kind added on either side of the boundary lands red on the
+ * commit that adds it rather than on the frame the server declines.
+ */
+const rustConst = (name, seen = new Set()) => {
+  if (seen.has(name)) return null; // an alias cycle is unresolvable, not infinite
+  seen.add(name);
+  const m = invSrc.match(new RegExp(`pub const ${name}: \\w+ = (\\w+);`));
+  if (!m) return null;
+  return /^\d+$/.test(m[1]) ? Number(m[1]) : rustConst(m[1], seen);
+};
+
+const REFUSE_MAX = rustConst("REFUSE_M_MAX");
 check(
   Number.isInteger(REFUSE_MAX) && REFUSE_MAX >= 7,
-  `could not read REFUSE_M_UNSTACKABLE out of inventory.rs (got ${REFUSE_MAX}) — the refusal table below` +
+  `could not resolve REFUSE_M_MAX out of inventory.rs (got ${REFUSE_MAX}) — the refusal table below` +
     " would then be checked against nothing, which is the gate-that-matches-nothing class",
 );
 
@@ -1903,24 +1935,43 @@ check(
 //
 // So every address is now a (kind, slot) pair, and this group asserts the two
 // places that can still alias: the verdict matcher, and the rollback.
-const { CONT_BAG: JS_CONT_BAG, CONT_MAX: JS_CONT_MAX } = await import(
-  pathToFileURL(path.join(root, "web/src/invmove.js")).href
+const {
+  CONT_BAG: JS_CONT_BAG,
+  CONT_BOX: JS_CONT_BOX,
+  CONT_MAX: JS_CONT_MAX,
+} = await import(pathToFileURL(path.join(root, "web/src/invmove.js")).href);
+// Every kind the client names, against the number the sim gives it. Read
+// through `rustConst` so a kind written as an alias is resolved rather than
+// string-matched — see its comment for the two ways that went wrong here.
+for (const [name, js] of [
+  ["CONT_BAG", JS_CONT_BAG],
+  ["CONT_BOX", JS_CONT_BOX],
+]) {
+  const rs = rustConst(name);
+  check(
+    Number.isInteger(rs) && js === rs,
+    `invmove.js ${name} (${js}) has drifted from inventory.rs (${rs}) — the panel would form addresses naming a` +
+      " container the sim numbers differently, and every one of them would be answered about somewhere else",
+  );
+}
+// The ceiling the wire range-checks kinds against (`encode_action_move`), and
+// it must EQUAL the sim's — neither direction is survivable. Too high and the
+// client encodes a kind the server decodes as `Malformed` and answers by
+// ending the session, which is exactly how this verb failed in the reference.
+// Too low — which is how this gate went red on 2026-08-04, after the systems
+// lane added `CONT_BOX` in 4d7a926 — and the client silently refuses, on its
+// own side, addresses the sim would have honoured: the box panel this lane is
+// heading for simply never sends.
+const RS_CONT_MAX = rustConst("CONT_MAX");
+check(
+  Number.isInteger(RS_CONT_MAX),
+  "could not resolve inventory.rs's CONT_MAX to a number — the ceiling below would then be checked against" +
+    " nothing, which is the gate-that-matches-nothing class",
 );
 check(
-  JS_CONT_BAG === Number(invSrc.match(/pub const CONT_BAG: u8 = (\d+);/)?.[1]),
-  `invmove.js CONT_BAG (${JS_CONT_BAG}) has drifted from inventory.rs — the panel would form addresses naming a` +
-    " container the sim numbers differently, and every one of them would be answered about somewhere else",
-);
-// `CONT_MAX` is defined in Rust as an alias rather than a literal
-// (`pub const CONT_MAX: u8 = CONT_BAG;`), so the alias is what is read: a pass
-// that adds a third kind moves that alias, and this goes red on the same
-// commit rather than on the frame the server declines.
-const contMaxAlias = invSrc.match(/pub const CONT_MAX: u8 = (\w+);/)?.[1];
-check(
-  contMaxAlias === "CONT_BAG" && JS_CONT_MAX === JS_CONT_BAG,
-  `invmove.js CONT_MAX (${JS_CONT_MAX}) is not inventory.rs's CONT_MAX (= ${contMaxAlias}) — the wire range-checks` +
-    " kinds against it, and a client that thinks the ceiling is higher encodes frames the server answers by" +
-    " ending the session, which is exactly how this verb failed in the reference",
+  JS_CONT_MAX === RS_CONT_MAX,
+  `invmove.js CONT_MAX (${JS_CONT_MAX}) is not inventory.rs's CONT_MAX (${RS_CONT_MAX}) — see above; a kind added` +
+    " on either side of the boundary must move both, and this is the commit that says so",
 );
 
 const addr = await page.evaluate(
