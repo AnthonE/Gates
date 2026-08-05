@@ -400,6 +400,7 @@ The reads a survival map must produce, and which stage buys each:
 | chunks | 64 m, aligned with the netcode grid — one grid, everywhere |
 | scatter cells | 8 m (≈ 65 k cells; ~8–12 k live slots per seed) |
 | clutter cells | 0.64 m (≈ 10 M cells; total coverage on land, streamed in 16 m tiles) |
+| clutter richness | 2nd stratum, rate `RICH_ACCEPT_MAX` = 32 in 256 by splat×clump; ≤ 96 per tile (frame-budget-bound, not design); dispersion 1.40 @ 3.2 m → 8.51 @ 12.8 m |
 | prop skirts | annulus from the footprint edge out `SKIRT_BAND_M` = 0.45 m; 3–16 elements by reach; ≤ 256 per tile (measured max 40) |
 | biomes | 4 (beach/meadow/forest/highland) |
 | roads | 1 coast ring, ~4 m wide |
@@ -438,6 +439,42 @@ Two properties carry it, and both are gated rather than argued:
 
 Water is the only exclusion (the population's own `LAND_MIN_H`). The road
 carriageway is the one splat override: grit, never grass.
+
+**And a second stratum on top, because total coverage is also uniform
+coverage.** One element per cell everywhere on land makes rule 4 provable and
+makes the ground read as evenly dusted — sand carries exactly what a meadow
+does. `findings/pass-20260804-173640-01-visual.md` gap 1 asked for the other
+half in its own words ("so **density** follows the biome"), and
+`reference/SPAWN.md` §9.3 names the same defect from the other side: the
+reference's scatter clusters, ours is per-cell independent, which is why ours
+reads as white noise. `terrain::clutter_rich_cell` is the answer — a SECOND
+element a cell may earn, at a rate the ground sets:
+
+- **Rate, not table.** Grass + forest litter weight (the two growing splat
+  channels) scaled by `clump`, the same grove/clearing field stage 9 scales
+  its whole row by. So the ground thickens where the trees thicken, one cause
+  drives both layers, and there is no third law to drift.
+- **It clusters, and that is measured rather than asserted.** Index of
+  dispersion **1.40** at 3.2 m rising to **8.51** at 12.8 m; an independent
+  coin holds 1.0 at every scale, and the RISE is what a constant rate cannot
+  fake. Growing ground carries **0.088** extra elements per cell against bare
+  ground's **0.005** — 18×.
+- **It is frame-budget-bound, and that is the finding.**
+  `CLUTTER_RICH_PER_TILE = 96` of 625 cells is not a design number: it is what
+  `ci/clutter_shape.mjs` §4's 20%-of-1.5 M triangle share left after the
+  coverage stratum and the skirts. The first draft asked for 256 and a gate
+  refused it. `RICH_ACCEPT_MAX = 32` then keeps the budget a **backstop**
+  — a rate the ground can afford, rather than a truncation of one it cannot,
+  which would have banded every tile's first rows and left the rest bare.
+
+The wall that carries all of this **used to stand in one place.** Its four
+bearings all walked outward from the island centre and the centre qualifies on
+every seed, so twelve origins were three, and 33,852 query points hid it. It
+now takes 24 golden-angle stances per seed from the centre to the shore, and
+asserts its own spread. **It bought a real number:** the worst bare disc it
+measures is **1.73 m² of the 3 m² cap** over 201,651 land points across 72
+vantages, where the one-place stance reported 1.50 m² — the old gate was
+under-reporting the island's worst ground by 15% because it never stood on it.
 
 ### Stage 10b · Prop-base skirts — the grid's blind spot
 

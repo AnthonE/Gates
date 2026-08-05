@@ -15,6 +15,37 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0z · GAP PASS (world lane): the near ground has density now — and a budget *(done this pass)*
+
+*(From `findings/pass-20260804-173640-01-visual.md` ranked gap 1: "populate the
+near ground… so **density** follows the biome". The coverage half had landed;
+this is the density half.)*
+
+Shipped: `terrain::clutter_rich_cell`, a second element a cell may earn at a
+rate the ground sets — grass+litter splat scaled by `clump`, the same field
+scatter scales its rows by. Growing ground **0.088** extra elements/cell vs
+bare **0.005** (18×); dispersion **1.40** @ 3.2 m → **8.51** @ 12.8 m, and the
+RISE is what an independent coin cannot fake (`SPAWN.md` §9.3). 3 new gates.
+
+**Two findings worth more than the slice.**
+
+1. **The rule-4 wall stood in one place.** Its four bearings all walked
+   outward from the island centre, which qualifies on every seed — twelve
+   origins were three, and 201 k query points hid it. Same shape gap 2 names
+   for the chroma gate ("measures at masked vantages the artifact evades").
+   Now 24 golden-angle stances/seed centre-to-shore, asserting its own spread.
+   It bought a number: worst bare disc **1.73 m²**, where the old stance
+   reported 1.50 — under-reporting the island's worst ground by 15%.
+2. **The near ground is FRAME-BUDGET-BOUND, not design-bound.** The draft
+   asked for 256 rich elements/tile; `clutter_shape.mjs` §4 refused it. The
+   20%-of-1.5 M share, a 12-tri tuft and a 5×5 ring leave **119**, and 96
+   ships. Raising it needs a cheaper tuft, a smaller ring or a bigger share —
+   all three above a builder. Knobs in `DECISIONS.md` §open "clutter richness
+   v0", both unspoken.
+
+**Not done:** unverified in a frame — no capture this pass, and `browser_smoke`
+is off, so nothing here rests on a pixel.
+
 ## 0c4 · GAP PASS (ui lane): the refusal walk now reads position, not just length *(done this pass)*
 
 From `findings/pass-20260805-111501-02-judge.md` ranked fix 2 (and -01's fix 3,

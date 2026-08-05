@@ -70,8 +70,19 @@ import { bakedGeometry } from "./props.js";
 
 /** Tile edge in meters — `terrain::CLUTTER_TILE_M`. */
 export const CLUTTER_TILE_M = 16.0;
+/** The coverage stratum, one per cell — `terrain::CLUTTER_BASE_PER_TILE`. */
+export const CLUTTER_BASE_PER_TILE = 625;
+/**
+ * The richness stratum's budget — `terrain::CLUTTER_RICH_PER_TILE`.
+ *
+ * A second element on cells whose ground is rich enough to have earned one:
+ * grass and forest litter thicken, sand and rock do not. Same four kinds
+ * through the same four pools, arriving in the same buffer, so like the
+ * skirts it costs no material, no program and no draw call — only pool.
+ */
+export const CLUTTER_RICH_PER_TILE = 96;
 /** Max grid elements one tile yields — `terrain::CLUTTER_PER_TILE`. */
-export const CLUTTER_PER_TILE = 625;
+export const CLUTTER_PER_TILE = CLUTTER_BASE_PER_TILE + CLUTTER_RICH_PER_TILE;
 /**
  * Max PROP-SKIRT elements one tile yields — `terrain::SKIRT_PER_TILE`.
  *

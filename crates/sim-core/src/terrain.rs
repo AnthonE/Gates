@@ -1869,11 +1869,60 @@ pub const CLUTTER_TILE_M: f32 = 16.0;
 pub const CLUTTER_CELL_M: f32 = 0.64;
 /// Cells per tile side (16.0 / 0.64, exact).
 pub const CLUTTER_CELLS_PER_TILE: i32 = 25;
-/// Elements one tile can produce — the fill buffer's cap, and total coverage
-/// means the cap is also the typical count, not a rare peak.
-pub const CLUTTER_PER_TILE: usize = 625;
+/// The COVERAGE stratum: one element per cell, everywhere on land. This is
+/// the count rule 4's structural argument is about, and it is uniform by
+/// construction — which is exactly what makes it insufficient on its own
+/// (see `CLUTTER_RICH_PER_TILE`).
+/// A literal, not the product, because `ci/clutter_shape.mjs` reads these
+/// numbers out of this source text to hold the JS mirror equal — and the
+/// const-assert below is what keeps the literal honest.
+pub const CLUTTER_BASE_PER_TILE: usize = 625;
+/// The RICHNESS stratum's per-tile budget — a bound, not a measurement, and
+/// the reason the grid layer's cap is no longer just `25 × 25`.
+///
+/// The coverage stratum answers "is there anything here" and is deliberately
+/// blind to biome: sand carries as many elements as a meadow, because the
+/// draw is one-per-cell everywhere. `findings/pass-20260804-173640-01-visual.md`
+/// ranked gap 1 asked for the other half in its own words — populate the near
+/// ground "so **density** follows the biome" — and `reference/SPAWN.md` §9.3
+/// names the same defect from the other side: the reference's scatter CLUSTERS
+/// and ours is per-cell independent, which is why ours reads as white noise.
+/// A second stratum that fires only where the ground is rich answers both: it
+/// thickens grass and forest litter, leaves sand and rock alone, and rides
+/// `clump` so the thickening is spatially correlated instead of dusted.
+///
+/// 96 is NOT a design number — it is what the frame budget left, and the
+/// first draft asked for 256 and was refused by a gate. The arithmetic, so a
+/// later pass does not have to rediscover it: `ci/clutter_shape.mjs` §4 caps
+/// the worst kind's whole-ring fleet at 20% of DESIGN §9's 1.5 M triangles,
+/// the worst kind is the tuft at 12 tris, and the ring is `CLUTTER_RING = 2`
+/// — 5×5 tiles. That gives 300 k / 12 = 25 000 instances of pool, / 25 tiles
+/// = 1 000 per tile, − 256 skirt − 625 coverage = **119 is the ceiling**, and
+/// 96 takes it with margin rather than to the last element.
+///
+/// So the near ground is FRAME-BUDGET-BOUND, not design-bound: 96 of 625
+/// cells is 15%, where the ground itself would thicken far more of a wooded
+/// clump than that. Raising it needs a cheaper tuft, a smaller ring, or a
+/// bigger share of the frame — all three are calls above a builder, and the
+/// knob is in `DECISIONS.md` §open "clutter richness v0" with this number as
+/// its proposed default.
+pub const CLUTTER_RICH_PER_TILE: usize = 96;
+/// Elements one tile's GRID layer can produce — the two strata together, and
+/// the fill buffer's cap for `clutter_fill`. Unlike the base stratum alone
+/// this is a peak and not the typical count: the rich draw is refused on most
+/// cells, which is the whole point of it.
+pub const CLUTTER_PER_TILE: usize = 721;
 /// Clutter cells per island side (2048 / 0.64).
 pub const CLUTTER_CELLS_PER_SIDE: i32 = 3200;
+
+const _: () = {
+    // The coverage stratum really is one element per cell — the premise rule
+    // 4's structural argument rests on, and the thing a later pass would
+    // silently break by moving the total between the two strata.
+    assert!(CLUTTER_BASE_PER_TILE == (CLUTTER_CELLS_PER_TILE * CLUTTER_CELLS_PER_TILE) as usize);
+    // The grid cap is the two strata and nothing else.
+    assert!(CLUTTER_PER_TILE == CLUTTER_BASE_PER_TILE + CLUTTER_RICH_PER_TILE);
+};
 
 // The splat bands — the retired palette's hard thresholds with a ramp hung
 // around each (DECISIONS.md §open, materials v0). These are the SAME numbers
@@ -2111,18 +2160,133 @@ pub fn clutter_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
     }
 }
 
+/// The hash channel for the richness stratum. One stream, independent of
+/// `CH_CLUTTER`, so a cell's second element is not a function of its first —
+/// the next free channel is 105.
+const CH_CLUTTER_RICH: u32 = 104;
+
+/// How rich a cell's ground is, in 0..=255: how much of the splat is the two
+/// growing channels, thinned by the same grove/clearing field the prop layer
+/// draws against.
+///
+/// Two causes, both already in the world, and no third law:
+///
+///  1. THE MIX IS THE SPLAT, again. Grass (channel 1) and forest litter
+///     (channel 2) are the ground identities that grow things; sand and rock
+///     do not thicken, they stay at the one element the coverage stratum
+///     already put there. So density and surface derive from the same
+///     `splat_from` call that decides KIND, and the two cannot disagree —
+///     `findings/pass-20260804-173640-01-visual.md` gap 1's own condition.
+///  2. IT RIDES `clump`. That is the field `scatter` scales its whole row by,
+///     so the ground thickens where the trees thicken and thins in the same
+///     clearings — one cause, two layers, and the correlation is what stops
+///     this reading as dust (`SPAWN.md` §9.3). `clump` is already squared per
+///     §9.4, so the tail is soft and a rich edge is ragged rather than a
+///     contour line of the noise.
+fn clutter_richness_at(seed: u64, x: f32, z: f32, y: f32) -> u32 {
+    // The carriageway is grit and stays grit: the road override that
+    // `clutter_kind_at` makes for kind, made here for count. A road that
+    // grows a thicker lawn than its verge is not a road.
+    if road_band(seed, x, z) == RoadBand::Carriageway {
+        return 0;
+    }
+    let w = splat_from(y, moisture(seed, x, z), slope(seed, x, z));
+    let grow = w[1] as u32 + w[2] as u32; // grass + forest litter
+    let g = clump(seed, x, z).clamp(0.0, 1.0);
+    // `grow` is already 0..=255 (the weights normalize to 255 on land) and `g`
+    // is 0..=1, so the product is a clean 0..=255 before the rate scales it.
+    floor_i32(grow as f32 * g * (RICH_ACCEPT_MAX as f32 / 255.0)).clamp(0, 255) as u32
+}
+
+/// The richness stratum's acceptance ceiling, out of 256 — what the ground at
+/// its richest is allowed to draw, and the number that keeps the budget a
+/// BACKSTOP rather than the normal path.
+///
+/// Without it the rate on wooded ground measured 71% of cells, against a
+/// budget of 96 in a 625-cell tile. `clutter_fill` scans row-major, so the
+/// budget would have been spent in the first few rows of every rich tile and
+/// the rest would carry none — a horizontal band edge every 16 m, which is a
+/// worse artifact than the uniformity this stratum exists to fix. Truncation
+/// is the wrong instrument for a rate; the rate is.
+///
+/// 32/256 = 12.5%, so the fullest possible tile expects 625 × 0.125 = 78
+/// elements against the 96 budget, with sd = 8.3 — the cap sits 2.2 sd out
+/// and is reached rarely and then by a handful of elements, which is what a
+/// backstop should be. `test_richness_is_spread_across_its_tile` is the gate
+/// that says so, and it is the one that reddens if this number is raised
+/// without the budget moving with it.
+const RICH_ACCEPT_MAX: u32 = 32;
+
+/// The richness stratum's draw for one cell: a SECOND element, or none.
+///
+/// Same cell, same jitter law, same four kinds and same `clutter_kind_at`, so
+/// the client draws it through the four InstancedMesh pools it already has —
+/// no new material, no new program (the prewarm count gate's subject), no new
+/// draw call. What differs is that this one is REFUSED most of the time, at a
+/// rate the ground itself sets: on bare sand `clutter_richness_at` is near
+/// zero and this returns `CLUTTER_NONE` on almost every cell, while inside a
+/// wooded clump it fires on most of them.
+///
+/// It cannot break rule 4's coverage guarantee in either direction: it only
+/// ever ADDS to a cell that the coverage stratum has already populated, so
+/// the largest bare disc is unchanged by construction and the wall in
+/// `tests/clutter.rs` re-measures it anyway.
+pub fn clutter_rich_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
+    if !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_x)
+        || !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_z)
+    {
+        return CLUTTER_NONE;
+    }
+    let h = cell_hash(seed, cell_x, cell_z, CH_CLUTTER_RICH);
+
+    let jx = ((h >> 16) & 0xFF) as f32 * (CLUTTER_CELL_M / 255.0);
+    let jz = ((h >> 24) & 0xFF) as f32 * (CLUTTER_CELL_M / 255.0);
+    let x = cell_x as f32 * CLUTTER_CELL_M + jx;
+    let z = cell_z as f32 * CLUTTER_CELL_M + jz;
+
+    let y = height(seed, x, z);
+    if y < LAND_MIN_H {
+        return CLUTTER_NONE;
+    }
+
+    // The acceptance draw. `SPAWN.md` §9.6: the roll is seeded per cell, so
+    // the same cell accepts or refuses identically however the tile is
+    // reached — a streamed tile and a brute-forced query agree.
+    if ((h >> 8) & 0xFF) as u32 >= clutter_richness_at(seed, x, z, y) {
+        return CLUTTER_NONE;
+    }
+
+    ClutterElem {
+        kind: clutter_kind_at(seed, x, z, y, h >> 32),
+        x,
+        y,
+        z,
+        yaw: ((h >> 40) & 0xFF) as u8,
+        scale: 0.75 + ((h >> 48) & 0xFF) as f32 * (0.5 / 255.0),
+    }
+}
+
 /// Fill one tile's elements into a caller-owned buffer, returning the count.
+///
+/// Both strata, in one pass: the coverage element a cell always has, then the
+/// richness element it may have earned. They interleave rather than being
+/// appended in two blocks because a short buffer must thin the field evenly —
+/// a truncation that dropped every rich element first would make a partial
+/// tile a DIFFERENT population, not a smaller one.
 ///
 /// Caller-owned because sim-core allocates nothing: the bridge holds one
 /// static `CLUTTER_PER_TILE` buffer and the client reads it in place, the
 /// same arrangement `terrain_fill_slots` already uses for the scatter grid.
 /// A buffer shorter than `CLUTTER_PER_TILE` is filled to its own length and
 /// the rest of the tile is dropped, so a short buffer is a thinner field and
-/// never an overrun.
+/// never an overrun. The richness stratum carries its own bound on top of
+/// that: `CLUTTER_RICH_PER_TILE` is the budget a client pool is sized for, so
+/// a tile that is rich everywhere stops adding rather than overrunning it.
 pub fn clutter_fill(seed: u64, tile_x: i32, tile_z: i32, out: &mut [ClutterElem]) -> usize {
     let cx0 = tile_x * CLUTTER_CELLS_PER_TILE;
     let cz0 = tile_z * CLUTTER_CELLS_PER_TILE;
     let mut n = 0usize;
+    let mut rich = 0usize;
     for j in 0..CLUTTER_CELLS_PER_TILE {
         for i in 0..CLUTTER_CELLS_PER_TILE {
             if n >= out.len() {
@@ -2132,6 +2296,15 @@ pub fn clutter_fill(seed: u64, tile_x: i32, tile_z: i32, out: &mut [ClutterElem]
             if e.kind != Clutter::None {
                 out[n] = e;
                 n += 1;
+            }
+            if rich >= CLUTTER_RICH_PER_TILE || n >= out.len() {
+                continue;
+            }
+            let r = clutter_rich_cell(seed, cx0 + i, cz0 + j);
+            if r.kind != Clutter::None {
+                out[n] = r;
+                n += 1;
+                rich += 1;
             }
         }
     }
@@ -2205,7 +2378,8 @@ const _: () = {
 
 /// The hash channel span: one stream per (prop cell, element index), so
 /// element 3 of a cell's skirt is independent of element 4 of the same cell's.
-/// 16 wide because `SKIRT_MAX` is 16; the next free channel is 104.
+/// 16 wide because `SKIRT_MAX` is 16; 104 is `CH_CLUTTER_RICH` and the next
+/// free channel is 105.
 const CH_SKIRT: u32 = 88;
 
 /// A prop's skirt reach — its published footprint radius, floored.

@@ -28,9 +28,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  CLUTTER_BASE_PER_TILE,
   CLUTTER_FILLS_PER_FRAME,
   CLUTTER_FLOATS,
   CLUTTER_PER_TILE,
+  CLUTTER_RICH_PER_TILE,
   CLUTTER_POOL_CAP,
   CLUTTER_RING,
   CLUTTER_ROWS,
@@ -106,9 +108,30 @@ check(
   Math.abs(perSide * cellM - CLUTTER_TILE_M) < 1e-6,
   `${perSide} cells of ${cellM} m is not a ${CLUTTER_TILE_M} m tile`,
 );
+// The grid layer is two strata now: one element per cell everywhere (the
+// coverage stratum rule 4's argument rests on) plus a bounded second one on
+// ground rich enough to have earned it. Both halves are checked against the
+// Rust source, so neither can drift and the split cannot be papered over by
+// moving the total between them.
 check(
-  perSide * perSide === CLUTTER_PER_TILE,
-  `a ${perSide}×${perSide} tile holds ${perSide * perSide} cells, not ${CLUTTER_PER_TILE}`,
+  perSide * perSide === CLUTTER_BASE_PER_TILE,
+  `a ${perSide}×${perSide} tile holds ${perSide * perSide} cells, not ` +
+    `${CLUTTER_BASE_PER_TILE} — the coverage stratum is no longer one per cell`,
+);
+check(
+  CLUTTER_BASE_PER_TILE === rustConst(terrainRs, "CLUTTER_BASE_PER_TILE", "terrain.rs"),
+  `CLUTTER_BASE_PER_TILE: clutter.js has ${CLUTTER_BASE_PER_TILE}, terrain.rs has ` +
+    `${rustConst(terrainRs, "CLUTTER_BASE_PER_TILE", "terrain.rs")}`,
+);
+check(
+  CLUTTER_RICH_PER_TILE === rustConst(terrainRs, "CLUTTER_RICH_PER_TILE", "terrain.rs"),
+  `CLUTTER_RICH_PER_TILE: clutter.js has ${CLUTTER_RICH_PER_TILE}, terrain.rs has ` +
+    `${rustConst(terrainRs, "CLUTTER_RICH_PER_TILE", "terrain.rs")}`,
+);
+check(
+  CLUTTER_PER_TILE === CLUTTER_BASE_PER_TILE + CLUTTER_RICH_PER_TILE,
+  `the grid cap ${CLUTTER_PER_TILE} is not ${CLUTTER_BASE_PER_TILE} coverage + ` +
+    `${CLUTTER_RICH_PER_TILE} richness`,
 );
 
 // The ring has to cover the distance ART.md rule 4 is actually about. The
