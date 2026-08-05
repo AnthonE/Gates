@@ -48,6 +48,43 @@ exposes it, so a client learns a destination exists only by standing in its
 chunk. `map.js`'s `resolveMarks` takes world positions and is already gated, so
 this is a caller change on the ui side and not a rewrite. Ranked gap 1 of
 `pass-20260805-111501-04` is the reason; the container verb is the other half.
+## 0z · GAP PASS (world lane): the near ground has density now — and a budget *(done this pass)*
+
+*(From `findings/pass-20260804-173640-01-visual.md` ranked gap 1: "populate the
+near ground… so **density** follows the biome". The coverage half had landed;
+this is the density half.)*
+
+Shipped: `terrain::clutter_rich_cell`, a second element a cell may earn at a
+rate the ground sets — grass+litter splat scaled by `clump`, the same field
+scatter scales its rows by. Growing ground **0.088** extra elements/cell vs
+bare **0.005** (18×); dispersion **1.40** @ 3.2 m → **8.51** @ 12.8 m, and the
+RISE is what an independent coin cannot fake (`SPAWN.md` §9.3). 3 new gates.
+
+**Two findings worth more than the slice.**
+
+1. **The rule-4 wall stood in one place.** Its four bearings all walked
+   outward from the island centre, which qualifies on every seed — twelve
+   origins were three, and 201 k query points hid it. Same shape gap 2 names
+   for the chroma gate ("measures at masked vantages the artifact evades").
+   Now 24 golden-angle stances/seed centre-to-shore, asserting its own spread.
+   It bought a number: worst bare disc **1.73 m²**, where the old stance
+   reported 1.50 — under-reporting the island's worst ground by 15%.
+2. **The near ground is FRAME-BUDGET-BOUND, not design-bound.** The draft
+   asked for 256 rich elements/tile; `clutter_shape.mjs` §4 refused it. The
+   20%-of-1.5 M share, a 12-tri tuft and a 5×5 ring leave **119**, and 96
+   ships. Raising it needs a cheaper tuft, a smaller ring or a bigger share —
+   all three above a builder. Knobs in `DECISIONS.md` §open "clutter richness
+   v0", both unspoken.
+
+**Not done / unverified:** no capture this pass, so nothing here rests on a
+pixel. The code tier is green (`GATES_TIER=fast`, the runner's setting for this
+run). The renderer tier was run anyway because this touches `web/`: it is RED
+both on this branch and on the anchor `e802fdb`, on **different** assertions —
+branch, tab B never reached the world inside the cap; anchor, tab B reached it
+at 91.2 s and never pinned `programsAtInWorld`. Item 3's two-live-renderers
+class, confirmed pre-existing a third time. What that noise cannot resolve is
+an 11% effect, and this raises `CLUTTER_POOL_CAP` by 11% (22 025 → 24 425 a
+kind) — so "my diff did not slow tab B" is *not* something this box can show.
 
 ## 0c4 · GAP PASS (ui lane): the refusal walk now reads position, not just length *(done this pass)*
 
