@@ -37,8 +37,11 @@ here can execute:
 
 The fix and the gate are one move: the anchor, the scan, the table and the
 discriminator are now in `interact.js`, which node calls for real (§W, 1468 →
-1521 checks). `main.js` also gets a free-variable scan — the class, not the
-instance. Seven mutants added (M24–M30).
+1530 checks). `main.js` also gets a free-variable scan — the class, not the
+instance, and it needed a real character-walking stripper: the regex draft
+went blind past `` `can't build:` ``'s apostrophe and M26 survived it.
+**All 21 mutants run, all 21 red** — which also closes `-04`'s ranked fix 3,
+where 7 of 12 had never been executed.
 
 **Not done, and it is the point of the item:** nothing can still *send* a
 repair. `client_action_repair` is not exported from the wasm bridge, so the
@@ -53,6 +56,15 @@ it, and no client can press it. ~15 lines mirroring `client_action_upgrade`
 (`bridge.rs:735`), whose arg list is the same four (cx, cz, level, loc) minus
 the material. The ui lane has the anchor, the pick and the refusal text
 already landed and will bind the key the pass after it exists.
+
+## 0f · A proposal for the `renderer_touched` list — *(operator act)*
+
+`gates.sh:110` reserves the exemption list to the operator, so this is a
+proposal and not a change. `web/src/interact.js` is now pure, node-imported
+and covered by §Q/§R/§V/§W with eleven mutants of its own; it cannot reach a
+material, a shader or the terrain. A one-line edit to it currently costs the
+~19-minute renderer tier. `map.js` and `invmove.js` have the same shape.
+`main.js` does NOT — it builds three.js scenes and belongs where it is.
 
 ## 0b · The map's grid and its arrow, made exact and gated *(ui lane — done this pass)*
 
