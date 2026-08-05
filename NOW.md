@@ -694,6 +694,27 @@ run since 2026-08-04 — not because they are queued work:
 - **`TONAL_MAX_P10`** — p10 luma 112 against a ceiling of 60 (reference bar
   40.5). Retired by item 1.
 
+Reconfirmed 2026-08-05: tab B failed on the `programsAtInWorld` assertion at
+87.9 s, on the salvage pass's branch AND identically on unmodified `main`.
+Fourth confirmation, same class.
+
+---
+
+## 3b · `backpack_wire` cannot run in debug — found 2026-08-05
+
+`cargo test -p server --test backpack_wire` aborts with a **stack overflow**
+in `a_kill_puts_a_bag_on_every_client_and_the_loot_takes_it_off`. Identical
+on a clean tree, so it is not a diff. It is invisible to CI because
+`ci/gates.sh:164` runs `cargo test --workspace --release`, and the release
+frame layout fits — so the gate is green and the suite is still unrunnable
+the way a developer runs it.
+
+Not "widen the stack": a test whose frames only fit under optimization is
+one refactor away from failing in release too, and the wall it guards
+(bag-on-death reaching every client) would go with it. Worth finding what
+is actually oversized — likely a `World` or fixture held by value — rather
+than raising `RUST_MIN_STACK` and calling it fixed.
+
 ---
 
 ## 4 · The event lane's payloads are law with no gate — 24 of 29 now gated
@@ -848,21 +869,40 @@ Systems lane (`crates/protocol`, `crates/sim-core`).
 
 ## 6 · Unmerged work, kept deliberately
 
-Nothing judged PASS is stranded. These failed or were stopped, and the
-harness kept them rather than merging. **Do not merge one to clear the
-list** — failed work in the trunk is the one thing the judge exists to
-prevent. If a lane rebuilds any of these, start from the branch.
+One tag is left and it failed. **Do not merge it to clear the list** —
+failed work in the trunk is the one thing the judge exists to prevent.
 
 | tag | what | why it is here |
 |---|---|---|
-| `salvage/bay-slots` | road bays concentrate what the road pays | **unjudged** — the judge was killed by the 2026-08-05 session limit, so the runner refused to merge or discard it. Coherent-looking; never scored |
-| `salvage/blast-radius` | explosive radius | **unjudged and partial** — tip is the runner's `uncommitted remainder` safety commit from the same outage |
-| `salvage/ranged-v0` | ranged weapons | judged FAIL, wall 6 |
-| `salvage/bark-photo` | bark texture | judged FAIL; textures retired by the pivot |
-| `salvage/m1-surface-grain` | surface grain | stopped unmerged; same |
-| `salvage/container-contents-wire` | container wire v19 | duplicate of what landed |
-| `salvage/container-contents-2` | container wire v19 | duplicate of what landed |
-| `salvage/cont-max-mirror` | `CONT_MAX` fix | absorbed; content-identical to `main` |
+| `salvage/ranged-v0` | ranged weapons — `ranged.rs` (402), `pitch_lut.rs` (285), `tests/shoot.rs` (695), `ci/gen_pitch_lut.py` | judged FAIL, recorded as wall 6. **That reason does not match the diff:** the branch touches no file under `crates/protocol/`, no golden, and adds no `EV_*` emit site. Either the finding was that the shot has no wire representation at all — a client that cannot see the arrow — or the one-line summary was wrong. The judge report was pruned, so the reason is unrecoverable. Re-scope from §5 before rebuilding, not from this note |
+
+Cleared 2026-08-05 (operator pass, not the runner). Every dropped tag's
+work is still held by its `loop/*` branch — the tags went, the commits did
+not:
+
+- **`bay-slots` landed** (`87e7fea`). Reviewed and merged unjudged: it is
+  pure `sim-core`, keeps the yaw LUT (wall 1), redistributes rather than
+  raises so `HAVEN_PRIZE_RATIO_MIN` is undisturbed, and regenerates the
+  terrain golden in the same commit. Full `ci/gates.sh` green.
+- **`blast-radius` landed** (`8f2623d`, corrected in `3c79ad2`) as inert
+  plumbing. Three defects fixed on the way in: an invented knob (its toml
+  comment cited a `DECISIONS.md` row that did not exist — now written as
+  *satchel blast v0*, PROPOSED), five comments asserting a
+  `charge::falloff` that does not exist, and a silent contradiction of
+  `satchel fuse v0`'s stated scope. **Nothing reads `blast_cm`**; the
+  falloff is the next slice, and the content hash has already moved for it.
+- **`container-contents-wire`, `container-contents-2`** — dropped as
+  duplicates; wire v19 is in trunk via `loop/container-sync`. Worth
+  knowing: the **judged-PASS** branch was parked and the **unjudged** one
+  merged (`bd62d33`, "NO JUDGE SCORED THIS"). Outcome fine, route backwards
+  — which is why the old preamble here claimed nothing judged PASS was
+  stranded while `container-contents-2`'s own tip was a PASS merge.
+- **`cont-max-mirror`** — dropped, verified absorbed: `ci/ui_smoke.mjs:1368`
+  carries the identical `rustConst` alias-resolver.
+- **`container-sync`** — dropped, already an ancestor of `main`. It was
+  never listed here at all.
+- **`bark-photo`, `m1-surface-grain`** — dropped. Both are `web/` texture
+  and material work the native pivot retires (§1).
 
 ---
 
