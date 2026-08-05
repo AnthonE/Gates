@@ -47,6 +47,10 @@ const HEIGHTS_MAX_N: usize = 259;
 /// can key instances by cell for harvest/respawn).
 const SLOTS_MAX_CELLS: usize = 8;
 const SLOT_FLOATS: usize = 8;
+/// Clutter fill: one 16 m tile of the sub-metre ground population, 6 floats
+/// per element (kind, x, y, z, yaw, scale). No cell coords — clutter is not
+/// harvested, so nothing downstream needs to key an instance back to a cell.
+const CLUTTER_FLOATS: usize = 6;
 /// Catalog view row: length byte + name bytes.
 const CATALOG_ROW: usize = 1 + MAX_ITEM_NAME_BYTES;
 /// Chat view: speaker id (4 LE bytes), global flag, length, then the
@@ -76,6 +80,7 @@ struct Bridge {
     remote_ids: [u32; MAX_SNAPSHOT_ENTITIES],
     heights: Vec<f32>,
     slots: [f32; SLOTS_MAX_CELLS * SLOTS_MAX_CELLS * SLOT_FLOATS],
+    clutter: [f32; terrain::CLUTTER_PER_TILE * CLUTTER_FLOATS],
     /// The haven pad, memoized by seed. `terrain::haven` is a pure function
     /// of the seed and a global argmax over the whole road ring, and
     /// `terrain_fill_slots` was paying for the whole search once per
@@ -138,6 +143,7 @@ impl Bridge {
             remote_ids: [0; MAX_SNAPSHOT_ENTITIES],
             heights: vec![0.0; HEIGHTS_MAX_N * HEIGHTS_MAX_N],
             slots: [0.0; SLOTS_MAX_CELLS * SLOTS_MAX_CELLS * SLOT_FLOATS],
+            clutter: [0.0; terrain::CLUTTER_PER_TILE * CLUTTER_FLOATS],
             haven: None,
             changes: [0; SLOT_SYNC_BATCH * 2],
             changes_len: 0,
@@ -1457,4 +1463,46 @@ pub extern "C" fn terrain_fill_slots(seed: u64, cx0: i32, cz0: i32, cells: u32) 
 #[no_mangle]
 pub extern "C" fn terrain_slots_ptr() -> *const f32 {
     with(|b| b.slots.as_ptr())
+}
+
+/// The ground material's four identity weights, packed one per byte in
+/// (sand, grass, litter, rock) order, little end first.
+///
+/// This exists so the terrain worker has NO splat law of its own. It used to
+/// carry a JS copy of the bands and the cliff override, which is the exact
+/// arrangement `threejs-procedural-fields` rejects — "geometry and shading
+/// claim the same feature but evaluate different functions" — and it is now
+/// load-bearing twice over, because the clutter population draws its kind
+/// from these same weights. One law, one language, no drift to gate against.
+#[no_mangle]
+pub extern "C" fn terrain_splat_from(h: f32, moist: f32, slope: f32) -> u32 {
+    let w = terrain::splat_from(h, moist, slope);
+    u32::from_le_bytes(w)
+}
+
+/// Fill one 16 m clutter tile. Returns the element count; the floats are at
+/// `terrain_clutter_ptr()`, `CLUTTER_FLOATS` apart, valid until the next
+/// call. Total coverage means this returns ~`CLUTTER_PER_TILE` on land and 0
+/// at sea, so a caller sizing a pool should size it for the cap.
+#[no_mangle]
+pub extern "C" fn terrain_fill_clutter(seed: u64, tile_x: i32, tile_z: i32) -> u32 {
+    with(|b| {
+        let mut buf = [terrain::CLUTTER_NONE; terrain::CLUTTER_PER_TILE];
+        let n = terrain::clutter_fill(seed, tile_x, tile_z, &mut buf);
+        for (i, e) in buf.iter().take(n).enumerate() {
+            let base = i * CLUTTER_FLOATS;
+            b.clutter[base] = e.kind as u8 as f32;
+            b.clutter[base + 1] = e.x;
+            b.clutter[base + 2] = e.y;
+            b.clutter[base + 3] = e.z;
+            b.clutter[base + 4] = e.yaw as f32;
+            b.clutter[base + 5] = e.scale;
+        }
+        n as u32
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn terrain_clutter_ptr() -> *const f32 {
+    with(|b| b.clutter.as_ptr())
 }

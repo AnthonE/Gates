@@ -235,6 +235,16 @@ $NICE npm --prefix web run build || fail "vite build"
 echo "== gate: pine shape (silhouette counts + the SPAWN_CLEAR_M coupling)"
 $NICE node ci/pine_shape.mjs || fail "pine shape"
 
+# The ground population below the scatter grid, same standard and same place
+# in the order for the same reason: it imports `web/src/clutter.js`. ART.md
+# rule 4 itself is measured natively (`crates/sim-core/tests/clutter.rs`, the
+# largest bare disc inside 15 m); this holds the drawn half to the placed half
+# — three constants read from both languages, the kind table checked by name
+# against the Rust enum, and the ring's triangle fleet ASSERTED against a
+# declared share of DESIGN §9's budget rather than printed.
+echo "== gate: clutter shape (the near-ground population + its fleet budget)"
+$NICE node ci/clutter_shape.mjs || fail "clutter shape"
+
 # The haven pad's greybox, same standard and same reason it sits here: it
 # imports the shipped box list out of `web/src/props.js`. Three claims no
 # `cargo test` can reach, because they straddle the Rust/JS line — the mesh
@@ -243,6 +253,17 @@ $NICE node ci/pine_shape.mjs || fail "pine shape"
 # clears a full-scale pine. Arithmetic over a box list: no GPU, no shard.
 echo "== gate: haven shelter (the greybox fits the slot sim-core placed)"
 $NICE node ci/haven_shelter.mjs || fail "haven shelter"
+
+# The volume the server blocks against the mesh the client draws, for every
+# occupant rather than the one the shelter gate covers. `OCCUPANT_R_M` and
+# `OCCUPANT_TOP_M` say of themselves that they are read off `ARCHETYPES`, and
+# nothing checked that sentence: the Rust const-asserts hold the table equal
+# to `occupant_volume()`'s match, but both live in one file and move together
+# under one edit. Sits here for the same reason as its three neighbours — it
+# imports the shipped builders out of `web/src/props.js`. Vertex buffers are
+# arithmetic: no GPU, no shard.
+echo "== gate: occupant volume (the blocked cylinder is the drawn mesh)"
+$NICE node ci/occupant_volume.mjs || fail "occupant volume"
 
 # The interaction surface: a real browser, no renderer. Sits in the CODE tier
 # because it costs under a second — it renders no frames, creates no WebGL

@@ -34,6 +34,48 @@ Left:
   query calls it once per blocking slot. Bounded and off the common path (it is
   asked only after something already blocks), but a late-wipe world with
   thousands of harvested cells pays it in the tick. Measure before fixing.
+## 0. The ground is a population now — done this pass *(world lane)*
+
+GAP PASS. From `findings/pass-20260804-173640-01-visual.md` ranked gap 1:
+"there is no grass geometry anywhere in the client: turf is a shaded plane."
+
+Landed: a second population below the 8 m scatter grid, on a 0.64 m jittered
+grid — pebble · tuft · twig · shard, placed by `terrain::clutter_cell`,
+drawn by `web/src/clutter.js` + `clutterField.js`. Potential, not state: no
+volume, no wire, nothing in `state_hash`.
+
+The two claims that make it more than decoration, both gated:
+- **The mix is the splat.** The ground's four identity weights moved out of
+  `terrainWorker.js` into `terrain::splat_from`; the worker calls the bridge
+  now, so surface and population are one function in one language.
+- **Coverage is total**, so `ART.md` rule 4 is arithmetic. Measured, not
+  argued: worst bare disc **1.50 m² of the 3 m² cap**, 33,852 land points ×
+  3 seeds. `tests/clutter.rs` (8), `ci/clutter_shape.mjs` (52).
+
+Client: solid blades not alpha cards (SwiftShader is fill-bound, `discard`
+defeats early-Z), existing `surfaceMaterial` identities so it adds **zero**
+shader programs, `castShadow = false` so it draws once not once per cascade.
+Worst fleet 188 k tris = 12.5% of DESIGN §9's budget, asserted.
+
+Leaves open:
+- **No distance fade** — the population ends at the ring edge (32-48 m). The
+  cheap recipe needs a per-frame shader term, i.e. a new program, which is the
+  one gate this slice was shaped to avoid. Whether the edge reads is a
+  question for the visual judge, not a guess made here.
+- **Unverified visually.** No frames were captured this pass and
+  `browser_smoke` is the only thing that can see the real frame peak; 188 k is
+  a bound on this population's contribution, not a measurement of the frame.
+- Clutter does not thin under a deployed base or inside the haven pad.
+
+Looked at it (one tab, `art/capture.mjs`, DIAGNOSIS only — no visual judge ran
+and no claim here rests on it). All four kinds draw and stream; no throw, no
+hard ring edge. Two things a visual judge should confirm or refute rather than
+me tuning against one SwiftShader frame: **twigs read as the loudest thing on
+sand** (dark 23 cm sticks on ~200-luma beach — the litter channel is genuinely
+~0.5 in the beach ramp, so placement is honest and it is the value/size that
+may be wrong), and **tufts alias to a green speckle past ~10 m** rather than
+reading as blades, which is the sub-pixel case the fade above would also
+address. Frames: `/tmp/clutter-shots`.
 
 ## 0. E tells you what it does — done this pass *(ui lane)*, kept for what it leaves
 
@@ -254,6 +296,37 @@ Leaves open:
   (operator's `GATES_TIER=fast`) and this pass edits `main.js`.
 - **Building still has no prompt** — the last verb without one.
 
+## 0. The crosshair stops lying: mid-fall trees, and the wire's bearing *(ui lane)*
+
+*Ranked fixes 1 and 2 of `findings/pass-20260805-002720-06-judge.md` — that pass
+PASSED and left both open. Both are `resolveSwing`'s INPUTS, not its rules.*
+
+**The 3.1 s lie.** The resolver skipped a node on `e.hidden` alone, but a tree
+does not vanish when the sim takes it: `setCellHarvested` sets `fellAt` and
+returns with `hidden` still false, and `_stepFells` sets `hidden` only after
+`FELL_TICKS + FELL_SINK_TICKS` = 93 ticks = 3.1 s at 30 Hz. For that window the
+crosshair offered `[LMB] CHOP TREE` over an already-harvested tree. Now
+`hidden || fellAt` — `terrain.js`'s own definition of down.
+
+**The bearing.** `gather::swing` resolves on `yaw_dir(p.frame.yaw)`: 256
+bearings, `yaw >> 8`. Both resolvers were fed `Math.sin(input.yaw)`,
+free-running, up to 0.703° off the bearing the arm actually swings on.
+`input.js` gains `yawDir`/`aimDir` on the sim's grid; `main.js` feeds both picks
+through it. Quantize-both-sides, in its hint-shaped form.
+
+`ui_smoke` §R: **442 checks** (was 433), 13 mutants run, all 13 red. The table is
+pinned to `yaw_lut.rs` by value, all 256 entries, f32 bit-exact — `fround` is
+asserted beside the bits so the comparison's own rounding cannot smuggle in a
+half-ulp tolerance (an f64 table is mutant M8, red).
+
+Leaves open:
+- **The temporal seam is NOT closed** — the prompt is recomputed off the HUD's
+  slow timer and the swing lands on the next frame's yaw. Quantization only;
+  `input.js` says so at `yawDir`.
+- **Building still has no prompt**, unchanged — still the last verb without one.
+- **Nothing here is claimed to boot.** Operator tier `fast`, so `browser_smoke`
+  and `vantages` are UNRUN, and this pass edits `main.js` and `interact.js`.
+
 ## 0. The second container panel — gap 1's other half *(ui lane)*
 
 *From `findings/pass-20260804-205133-03-judge.md` gap 1, "there is nowhere to
@@ -329,19 +402,40 @@ What remains, in the order it is worth doing:
 - The pad is still not carved (3.76 m of relief under a flat-based building —
   the plinth buries 1.4 m of that, which is a cover, not a fix).
 
-## world: the trunk radius is pinned to a builder that no longer ships
+## 0. The blocked cylinder is the drawn mesh now — done this pass *(world lane)*
 
-From `findings/pass-20260805-002720-03-judge.md` ranked fix 4, deliberately
-left by the pass that did the other three. `OCCUPANT_R_M[Tree]` = 0.26 is read
-off `props.js:348`'s `CylinderGeometry(0.13, 0.26, …)`, but the near-ring pine
-now ships from `ez-tree` (`props.js:556`) and the cone is only the LOD1 start.
-So the server's trunk and the drawn trunk agree by assumption, not by gate —
-the same class as the shelter's box list before this pass, one occupant over.
-`ci/pine_shape.mjs` already imports the shipped builder and already prints a
-1.52 m canopy radius, so the fix is one assertion pinning the GENERATED
-trunk's radius to `OCCUPANT_R_M[Tree]`. Not done here because it may not hold:
-if ez-tree's trunk is not 0.26 m the fix is a table change with a real number
-behind it, not a one-line assert, and that deserves its own measurement.
+Was "the trunk radius is pinned to a builder that no longer ships". The item
+asked for one assert on the Tree row; generalising it to all eleven was
+cheaper and found more. `ci/occupant_volume.mjs` (85 checks) measures the
+vertex buffer `ARCHETYPES` actually builds and **sandwiches** every row of
+`OCCUPANT_R_M`/`OCCUPANT_TOP_M`: no vertex below the blocking top may lie
+outside the blocking radius, and the row may not exceed the mesh's own extent.
+Both directions, because a lower bound alone is satisfied forever by widening
+— a mutation widened the shelter a full metre past a spherical upper bound
+before it was tightened to a horizontal one. 18 mutations, each caught by its
+own mechanism. `DECISIONS.md` §open "occupant volume gate v0" has the rest.
+
+Two findings, both real:
+
+- **`CrateSlot` blocked 0.68 against a measured half-diagonal of 0.680074** —
+  inward, which the table's own doc calls "the bug". It is 0.6801 now.
+  `test_replay`'s golden does not move: the five crates sit on the haven pad
+  and 74 µm does not reach the bots' script. No cross-lane cost.
+- **The generated ez-tree pine's trunk is 0.3069 m, 18% wider than the cone's
+  0.26** that `OCCUPANT_R_M[Tree]` is read off. So the answer to the old item
+  is "it does not hold" — and rather than move a table for a tree nobody
+  draws, the Tree pin is written against **whichever builder `ARCHETYPES[1]`
+  selects**. Wiring `parts: pineParts` (the item further down this file) now
+  goes red until the table moves in the same commit.
+
+Leaves open:
+
+- **Nothing verified this by eye.** It is arithmetic over vertex buffers; no
+  frame was captured and `browser_smoke` is off this run.
+- **The tables are still transcribed twice** in `terrain.rs` — the array and
+  `occupant_volume()`'s match — tied only by a const-assert. This gate reads
+  both, so a one-sided edit is caught, but the duplication is still there.
+
 > 3. ~~**`ARCH_BOX` needs slots and a container address**~~ — **answered in
 >    `4d7a926`, 2026-08-04**, before this request was read. `BOX_SLOTS` is on
 >    the wire and `box_key` is the address; the ui half landed 2026-08-05
