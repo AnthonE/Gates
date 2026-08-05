@@ -279,6 +279,16 @@ impl Content {
             }
             bc.pieces[idx] = def;
         }
+        // `validate::structural` has already pinned this to 1..=100, so the
+        // narrow cannot fail on shipped content; it is written as a bake
+        // refusal anyway because `bake_building` is reachable from fixtures
+        // that never ran the validator.
+        bc.repair_pct = u16::try_from(self.balance.globals.repair_cost_pct).map_err(|_| {
+            format!(
+                "bake: repair_cost_pct {} overflows u16",
+                self.balance.globals.repair_cost_pct
+            )
+        })?;
         Ok(bc)
     }
 

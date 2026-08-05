@@ -15,13 +15,100 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0b · The map's grid and its arrow, made exact and gated *(ui lane — done this pass)*
+
+From the judge's **ranked fixes 1–3**, `pass-20260805-074623-02-judge.md`, against
+the map that landed the pass before. Taken ahead of §0's build prompt because both
+were defects already on the trunk, one of them a hole in the gate this lane's speed
+rests on.
+
+- **The off-by-one was neither formula.** The report measured `paintMap`'s index
+  flip against `worldToMap`'s extent flip — "exactly one row, always" — and noted
+  that x came out exact. That asymmetry is the tell: sampling from 0 put every
+  sample on its pixel's CORNER, so the island was painted half a cell out on BOTH
+  axes, and only the flipped axis landed `floor` on a row boundary. Fixed at the
+  origin (`main.js`, `orig = step / 2`), not in either projection. §U now sweeps all
+  16 rows and all 16 columns, reads the painted band back, and asserts the painted
+  row IS the projected row — with the origin read out of `main.js`'s source, because
+  `paintMap` is handed a sampler and cannot see where it was sampled.
+- **The marker's heading had no assertion at all.** M11 (rotation pinned north)
+  survived all eleven of last pass's mutants. `hud.mapDir` parks the drawn direction
+  beside `mapPos`; §U sweeps N/E/S/W plus one off-cardinal and asserts the vectors
+  BY NAME rather than re-deriving `(sin, −cos)`, which would agree with a wrong
+  formula too.
+- **Both cosmetic knobs registered** — `MAP_SHADE_CLAMP`, `MAP_MARKER_PX` — in
+  `DECISIONS.md` §open, now pinned by `ci/knob_registry.mjs`.
+
+`ui_smoke` 561 → 635 checks; nine mutants run, nine red, including last pass's
+survivor. §0a's remainder is untouched and still needs the other two lanes.
+
+---
+
+## 0a · The island has a map now — what it still cannot show *(ui lane)*
+
+From the judge's **ranked gap 3**, `pass-20260805-074623-01-judge.md`: "There is
+nowhere to go", leading with `MENUS.md:102` Map MISSING. **Landed:** M opens
+`#map`; `map.js` paints the island from `terrain::splat_from` through the bridge
+— one wasm fill, the same law the 3D ground blends by — hillshaded, 16×16
+A–P/1–16 grid, your position and heading. `ui_smoke` 510 → 561 (§U); ten mutants
+red, two of them gate holes this pass found and closed. `DECISIONS.md` §open has
+`MAP_GRID_M` and the shade floor's derivation. **Gates ran `fast`** (renderer
+tier off this run by operator act); the diff touches `main.js`, so `auto` would
+schedule it and §3's two clean-trunk reds still stand.
+
+What remains, and none of it is a UI call:
+
+- **Systems lane, one export please:** `terrain_haven_xz(seed)` — the judge's
+  own named item, now with a screen to land on. The map draws no marker at all,
+  so the one authored destination is still unfindable. `terrain::haven` is pure
+  and `bridge.rs:92` memoizes it already.
+- **Operator: may the map pin anything?** `ALPHA.md` §1's "no map position"
+  binds the DEATH screen and the map stays off it. A haven pin, a bag pin and a
+  death marker are three separate calls; `mapstylized.jpg` shows all three.
+- **Looks lane, information only:** the map paints the alpine channel as rock
+  while the world whitens it above `materials.js`'s `SNOW_RANGE`.
+
+**Respawn — the gap's other half — is BLOCKED, measured.** The wire carries
+`Respawn { on_bag: bool }` and nothing else; no owner bit and no cooldown ride
+`DeployRec` (`deploy.rs:232`, "never the wire"). So the client cannot tell its
+own sleeping bags from anyone's, nor which are ready, nor name one. "Beach or
+each live bag" (`ALPHA.md` §1) is a wire change first — systems lane.
+## 0a · Repair — the piece half landed; the door and the keypress did not
+
+Gap pass. Ranked gap **1** of both `findings/pass-20260805-074623-01-judge.md`
+and `-02-judge.md`, verbatim in each and unmoved between them: *"a base can
+only ever be destroyed, so the correct play after any raid is to abandon."*
+
+Landed: `build::repair` — a damaged **piece** bought back to its baked hp,
+priced pro-rata in its own materials (`repair_cost_pct`, `content/balance.toml`,
+`DECISIONS.md` §open "repair v0"), refused under a foreign hearth's claim,
+upkeep clock untouched. Wire v20: `ACT_REPAIR`, `EV_PIECE_REPAIRED`,
+`SUB_PIECE_REPAIRED`, goldens rekeyed and regenerated. Four sim gates plus a
+role check; `REFUSE_B_*` gained a `DOMAINS` row on the way past.
+
+What remains, both deliberate cuts:
+
+- **Deployables cannot be repaired** — the door is the intended breach point,
+  so this is the half a raid actually notices. Two things block it: `Deploys`
+  exposes no hp setter (`deploy.rs` owns that write today), and a deployable's
+  cost is a single item, so a fractional price of it rounds to the whole thing
+  and needs its own answer rather than reusing the piece formula. **systems.**
+- **Nothing can press it.** `ACT_REPAIR` decodes and the server dispatches it;
+  no client sends one. The browser client needs the verb bound and a prompt —
+  **ui lane** (`web/`); the native client picks it up with `NOW.md` §1 slice 1.
+
+Untested here: no client sent a real repair, so the round trip is proven by
+goldens and unit gates only, not by a live shard.
+
+---
+
 ## 0 · Half the verbs you own are undiscoverable — *(ui lane; compass done this pass)*
 
 From the judge's **ranked gap 3**, `pass-20260805-063306-01-judge.md`. NOW.md
 held no open ui-lane item, so the gap list supplied this one. Two halves:
 
 - **A bearing readout — DONE.** Compass strip, top centre, `hud.js` +
-  `index.html`. `ui_smoke` 442 → 507 checks (§S/§T); nine mutants red.
+  `index.html`. `ui_smoke` 442 → 510 checks (§S/§T); nine mutants red.
   **+Z is North, +X is East** — `DECISIONS.md` §open has the row and the
   conflict it resolves against `build.rs`'s `LOC_EDGE_N`.
 - **The build prompt — still open, and it is the judge's ranked fix 2.**
