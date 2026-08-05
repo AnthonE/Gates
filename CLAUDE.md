@@ -41,6 +41,7 @@ pays the same doors and earns the same coins as a human.
 | `ALPHA.md` | the alpha cut, staged economy arming (A1→A2→A3) | |
 | `ART.md` | the art bible: measured targets off `Rust Images/`, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
+| `PARITY.md` | the gap to the reference game, swept against the tree: built · designed-unbuilt · armed content the sim drops · the three primitives · the route through them | **owns nothing** — a survey to cut items from, never a queue. Read before picking combat, projectile or item-physics work |
 | `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
 | `MIGRATION.md` | the renderer move to `WebGPURenderer` + TSL | **SUPERSEDED 2026-08-05** — the client pivot to native Rust moots it; you do not port three.js *and* replace it. Kept for its probe/readback inventory, which the native visual gate still has to answer |
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |

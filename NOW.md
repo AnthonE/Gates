@@ -20,6 +20,31 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0p · `PARITY.md` exists — read it before picking anything below
+
+A gap sweep against the tree (not the docs) landed as `PARITY.md`: what is
+built, what is designed-and-unbuilt, what is armed content the sim throws
+away, and the dependency order through it. It **owns nothing** — this file is
+still the queue — but three of its findings change what is worth picking:
+
+1. **`salvage/ranged-v0` is one commit over a 338-commit-old base**, and it
+   failed on wall 6 alone. Its sim half flies an arrow in i32 millimetres,
+   ships `pitch_lut.rs` and 695 lines of tests, and survives the desktop
+   pivot untouched. Rebase it; do not rebuild it (§6 item 1).
+2. **Three primitives unblock most of the rest** and are mutually
+   independent, so three lanes can take them in one window: a radius
+   parameter on `collide::blocked`, `EV_SHOT` on the wire, and the §8 rewind
+   ring. `PARITY.md` §5.
+3. **A live defect, not a missing feature**: `drop_for` is called inside
+   `die()` at the death address, so a bag dropped mid-air — or on a piece
+   later raided out from under it — hangs there. Nothing re-grounds it.
+   One call in `stand_up` fixes it today (§6 item 11); `NETCODE.md` §6.4's
+   arc-and-settle supersedes it cleanly later.
+
+Also worth knowing before any combat pass: `strike` does not take the
+collision index, so **no line-of-sight test exists in melee** — reach is 2 m
+against a 3 m cell, so the exposure is narrow, but it is real.
+
 ## 0c6 · systems lane request: bridge `terrain::haven(seed)`
 
 One export. `terrain::haven(seed)` already returns the pad and the waystation
