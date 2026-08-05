@@ -4,6 +4,24 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+0. **Recovery, 2026-08-05 — done this pass, kept only for what it leaves open.**
+
+   `ui_smoke`'s `CONT_MAX` check went red on a clean tree. Neither commit was
+   wrong alone: the ui lane's `1fe35b0` pinned the Rust alias by NAME
+   (`contMaxAlias === "CONT_BAG"`), the systems lane's `4d7a926` legitimately
+   grew a third kind and moved that alias to `CONT_BOX`. The merge was red.
+   Fixed as both (a) and (b) — see the commit. Mirror now names `CONT_BOX`;
+   the gate resolves the alias to a NUMBER, so it is strictly stronger.
+
+   Two things this leaves for the next pass:
+   - **No masked gate behind it.** The runner pins `GATES_TIER=fast` this run
+     (`restart.sh`), and `ui_smoke` is the last gate before that tier's exit —
+     so unlike the usual first-red case there is nothing downstream to expect.
+     `browser_smoke` and `vantages` stay UNRUN, by operator config, not by me.
+   - **`loop/cont-max-mirror` is now redundant.** A previous pass's swept
+     remainder; its diff is adopted here with a real commit message. Its
+     salvage worktree is the operator's to remove, not a lane's.
+
 1. **Container contents have never crossed the wire — for a bag either.**
    *(Gap pass, iteration 3, systems lane. From ranked gap 2 of
    `findings/pass-20260804-205133-02-judge.md` ("a raid takes nothing") and
