@@ -126,6 +126,22 @@ async fn main() {
         a.wall_breach_swings[2]
     );
     let seed = cfg.seed;
+    // The island gets the same boot treatment content does. `spawn_shard`
+    // refuses a short one on every path; this call is here for the *counter*,
+    // which is the half that has something to say on a seed that fills — the
+    // shard printed its content hash and its balance anchors and then went
+    // quiet about how much island it had built.
+    match server::boot::check_seed(seed) {
+        Ok(live) => println!(
+            "island ok: {live}/{} authored sites (haven pad + {} waystations)",
+            server::boot::AUTHORED_SITES,
+            sim_core::terrain::WAYSTATIONS
+        ),
+        Err(e) => {
+            eprintln!("shard: {e}");
+            std::process::exit(1);
+        }
+    }
     let handle = match spawn_shard(
         cfg, gather, craft, build, deploy, combat, backpack, survival, loot, catalog,
     )

@@ -17,6 +17,7 @@
 //! channels, and nondeterministic maps crate-wide (net code included — it
 //! never needed them).
 
+pub mod boot;
 pub mod botclient;
 pub mod client;
 pub mod config;
