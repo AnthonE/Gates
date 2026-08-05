@@ -15,6 +15,7 @@ use protocol::{ActionMsg, ChatMsg, EntityState, Nudge};
 use sim_core::craft::CraftJob;
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
+use sim_core::inventory::CONT_SELF;
 use sim_core::limits::{
     CRAFT_QUEUE, INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INV_SLOTS, MAX_PLAYERS,
     MAX_SNAPSHOT_ENTITIES, PENDING_REMOVALS_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS,
@@ -136,6 +137,34 @@ pub struct ClientNetState {
     pub bag_sync_cursor: usize,
     /// The next bag batch carries the reset bit.
     pub bag_sync_reset: bool,
+    /// Which ground container this client has open, or `CONT_SELF` for
+    /// none, with `open_cont_handle` naming it (a bag id, or a packed
+    /// `box_key`) exactly as `Command::Move` names one.
+    ///
+    /// **A subscription, not a permission, and not sim state.** Nothing in
+    /// `sim-core` reads it, no command carries it, it never enters the WAL
+    /// and `World::state_hash` never sees it — a replay produces the same
+    /// hash whether or not anyone had a panel open, which is the only
+    /// answer that keeps wall 5 honest. It cannot grant anything either:
+    /// `inventory::CONT_BAG` already states that reach is proved when a
+    /// move resolves and never when a panel opened, and the container sync
+    /// re-proves reach *every tick* against the same quantized positions
+    /// the move verb will judge on. So the panel a client is fed is always
+    /// a container that client could also move items in — which is the
+    /// quantize-both-sides law (CLAUDE.md) applied to containers: a
+    /// refusal must be computed on the values the client predicted with,
+    /// and it is the same check that decided what it saw.
+    pub open_cont_kind: u8,
+    pub open_cont_handle: u32,
+    /// The next container batch carries the reset bit: the whole container,
+    /// forget what you had. Set by an open, cleared once a batch is away.
+    pub open_cont_reset: bool,
+    /// The open container's slots as last successfully queued to this
+    /// client — the `last_inv` shadow, one container over. Sized to the
+    /// widest container (`INV_SLOTS`); a box uses the first `BOX_SLOTS`
+    /// and the tail stays zero on both sides, so it never manufactures a
+    /// change.
+    pub last_cont: [ItemStack; INV_SLOTS],
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
@@ -185,6 +214,10 @@ impl ClientNetState {
             deploy_sync_reset: true,
             bag_sync_cursor: 0,
             bag_sync_reset: true,
+            open_cont_kind: CONT_SELF,
+            open_cont_handle: 0,
+            open_cont_reset: false,
+            last_cont: [ItemStack::default(); INV_SLOTS],
             pending_action: None,
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -211,7 +244,40 @@ impl ClientNetState {
         self.deploy_sync_reset = true;
         self.bag_sync_cursor = 0;
         self.bag_sync_reset = true;
+        // The open container is *closed*, not resynced. Every other line
+        // here restarts a walk the client is owed; this one is the only
+        // piece of event-lane state the client can hold an opinion about,
+        // and after a ring overflow the two ends no longer agree on what
+        // that opinion was. Re-sending contents for a panel the client may
+        // have shut is worse than making it ask again — an open is one
+        // nine-byte action away, and it is the client's press to make.
+        self.close_container();
         self.last_done_at = u64::MAX;
+    }
+
+    /// Open `handle` of `kind` as this client's container view, or close
+    /// whatever is open when `kind` is `CONT_SELF`. A re-open of the same
+    /// container is a deliberate resync: the shadow is zeroed and the next
+    /// batch carries `reset`, so the panel is redrawn from the truth
+    /// rather than patched onto whatever it had.
+    pub fn open_container(&mut self, kind: u8, handle: u32) {
+        if kind == CONT_SELF {
+            self.close_container();
+            return;
+        }
+        self.open_cont_kind = kind;
+        self.open_cont_handle = handle;
+        self.open_cont_reset = true;
+        self.last_cont = [ItemStack::default(); INV_SLOTS];
+    }
+
+    /// Nothing is open. The shadow is zeroed with it so the next open
+    /// cannot diff against a stale container's slots.
+    pub fn close_container(&mut self) {
+        self.open_cont_kind = CONT_SELF;
+        self.open_cont_handle = 0;
+        self.open_cont_reset = false;
+        self.last_cont = [ItemStack::default(); INV_SLOTS];
     }
 
     /// Arm the slot for a fresh connection. Everything netcode resets; the
