@@ -37,6 +37,16 @@ Leaves open:
   a bound on this population's contribution, not a measurement of the frame.
 - Clutter does not thin under a deployed base or inside the haven pad.
 
+Looked at it (one tab, `art/capture.mjs`, DIAGNOSIS only — no visual judge ran
+and no claim here rests on it). All four kinds draw and stream; no throw, no
+hard ring edge. Two things a visual judge should confirm or refute rather than
+me tuning against one SwiftShader frame: **twigs read as the loudest thing on
+sand** (dark 23 cm sticks on ~200-luma beach — the litter channel is genuinely
+~0.5 in the beach ramp, so placement is honest and it is the value/size that
+may be wrong), and **tufts alias to a green speckle past ~10 m** rather than
+reading as blades, which is the sub-pixel case the fade above would also
+address. Frames: `/tmp/clutter-shots`.
+
 ## 0. E tells you what it does — done this pass *(ui lane)*, kept for what it leaves
 
 From `findings/pass-20260805-002720-04-judge.md` ranked gap 3: "the island
