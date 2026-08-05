@@ -15,6 +15,33 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0d · The island validates at boot *(systems lane — done this pass)*
+
+Closes the boot-refusal request filed twice — `## 0`'s "A short waystation tier
+is silent on a shard" and `## 1b`'s "Systems lane, one boot-time call please"
+(judge fix 1, inherited twice). Those two bullets are the **world lane's** lines,
+so this lane did not edit them; they are answered, and their owner can delete
+them.
+
+`crates/server/src/boot.rs`: `check_seed(seed)` refuses an island whose authored
+sites are short, called from `spawn_shard` before an identity is loaded or a
+port is bound, so every path that raises a shard refuses the same seed. The
+binary also prints the counter NOW.md said was missing —
+`island ok: 3/3 authored sites`.
+
+**Measured first, and it changes the claim: 0 of 20 000 seeds are short.**
+Seeds 0..20 000 all give `sites_live == 3`; so do all eight seeds this repo
+names. This is a **tripwire, not a live hole** — no seed reachable today takes
+the short branch, and nothing here closes a gap a player can fall into. It
+fires when a change to the ring, the separation floor or the candidate search
+makes a short tier possible. `DECISIONS.md` §open carries the number.
+
+What remains: nothing on this item. The knob-relaxation alternative
+(`WAYSTATION_MIN_SEP_M` moved until the ring fills) was **not** taken — with no
+short seed to relax for, it would be a number invented against no measurement.
+
+---
+
 ## 0b · The map's grid and its arrow, made exact and gated *(ui lane — done this pass)*
 
 From the judge's **ranked fixes 1–3**, `pass-20260805-074623-02-judge.md`, against
@@ -99,10 +126,11 @@ What remains:
 - **Nothing can press it**, unchanged and now the whole of the gap. The
   browser client needs the verb bound and a prompt — **ui lane** (`web/`); the
   native client picks it up with §1 slice 1.
-- **The deploy-defs drip carries no price**, so a client cannot quote a repair
-  before paying. Adding `costs` to `SUB_DEPLOY_DEFS` is a wire change and
-  lands with the prompt that would show it — **ui lane** names the need,
-  systems owns `crates/protocol/`.
+- ~~The deploy-defs drip carries no price~~ — **landed in the same commit that
+  filed this line, which is why the line was wrong.** `encode_event_deploy_defs`
+  writes `n_costs` and the cost rows, `decode_event` reads them into
+  `DeployDef`, `v21_event_deploy_defs.bin` 22 → 43 B. A client can quote a
+  repair before paying; only the prompt that shows it is left (**ui lane**).
 
 Untested here for the same reason as before: no client sent a real repair, so
 the round trip is proven by goldens, role and unit gates, not by a live shard.
@@ -394,8 +422,12 @@ What remains:
   `salvage/ranged-v0` is a judged-**FAIL** attempt (wall 6, the wire
   drifted, reproduced executably). Read the report before rebuilding.
 - **Dropped loot** should land somewhere you can find, not inside the floor.
-- **Base repair, decay and upkeep** — a base can be broken into and cannot
-  be repaired; this is the loop that makes a day matter.
+- ~~Base repair, decay and upkeep~~ — **all three exist**: `build::repair`
+  reaches both stores, `deploy::decay_of` decays what is uncovered, upkeep
+  charges every `UPKEEP_PERIOD_TICKS`. What is hollow is the other side —
+  the satchel is priced, craftable and anchors the raid ratio with **no
+  verb**, so repair defends against nothing faster than a hatchet
+  (`pass-20260805-074623-04-judge.md` gap 2, ranked in -03 and -04).
 - **Death and your own base** — a death evicted you from what you built and
   nothing you built said otherwise.
 
