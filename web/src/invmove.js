@@ -49,10 +49,10 @@ export const STREAM_HIGH_BIT = 0x80000000;
  *  `client_applied2()` unconditionally rather than on a flag. */
 export const APPLIED2_MOVE = 1 << 0;
 
-/** `sim-core/src/inventory.rs:56` — the player's own 30 slots. */
+/** `sim-core/src/inventory.rs:57` — the player's own 30 slots. */
 export const CONT_SELF = 0;
 /**
- * `sim-core/src/inventory.rs:61` — a death backpack's slots.
+ * `sim-core/src/inventory.rs:62` — a death backpack's slots.
  *
  * Named on this side for the first time because `hud.js` now forms
  * ADDRESSES (kind + slot) rather than bare slot numbers, and an address
@@ -79,7 +79,7 @@ export const CONT_BOX = 2;
  *  (`pub const CONT_MAX: u8 = CONT_BOX;`), so a fourth kind moves one line
  *  on each side instead of leaving a literal behind. */
 export const CONT_MAX = CONT_BOX;
-/** `sim-core/src/inventory.rs:109` — the largest `REFUSE_M_*`. */
+/** `sim-core/src/inventory.rs:143` — the largest `REFUSE_M_*`. */
 export const REFUSE_M_MAX = 7;
 
 /**
