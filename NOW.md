@@ -87,14 +87,24 @@ Related and NOT this lane's: `bridge.rs:66` still exports
 stop at the wasm bridge and `web/src` cannot show what mending a door costs.
 That is a systems-lane export, like §0e.
 
-## 0e · One export the client needs — *(systems lane, cross-lane)*
+## 0e2 · The deploy-def stride is stale, and this lane cannot fix it alone
+*(systems lane — BLOCKED on a web/ half)*
 
-`crates/client-wasm/src/bridge.rs` exports `client_action_` for all fourteen
-other verbs and none for repair, so `ACT_REPAIR` decodes, the server dispatches
-it, and no client can press it. ~15 lines mirroring `client_action_upgrade`
-(`bridge.rs:735`), whose arg list is the same four (cx, cz, level, loc) minus
-the material. The ui lane has the anchor, the pick and the refusal text
-already landed and will bind the key the pass after it exists.
+Found while doing §0e; both are `bridge.rs` and the handover at line 88 reads
+as if they are the same size. They are not. `DEPLOY_DEF_ROW_WORDS = 4`
+(`bridge.rs:67`) predates `n_costs` + cost rows on `SUB_DEPLOY_DEFS`, so what
+mending a door costs stops at the bridge. The Rust half is four lines,
+mirroring the piece path (`4 + 2 * MAX_PIECE_COSTS`, filled at `bridge.rs:387`).
+
+**The blocker is that the stride is hardcoded in `web/`, which this lane may
+not touch:** `wasm.js:96` views the table as `16 * 4`, `main.js:306/329` index
+`rec.row * 4`, and `interact.js:527` declares it. Widening the Rust alone does
+not redden a gate — it silently re-bases every one of those reads onto the
+wrong words. That is worse than the current state, so it did not land.
+
+**ui lane owns the second half.** The clean version is one commit across both,
+or `interact.js:527`'s constant becoming the single reader that `ui_smoke`
+walks against `bridge.rs` — the shape §W already uses for `REFUSE_B_*`.
 
 ## 0f · A proposal for the `renderer_touched` list — *(operator act)*
 
