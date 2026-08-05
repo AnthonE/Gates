@@ -274,6 +274,10 @@ impl Scratch<Barren> {
                 relief: 0.0,
                 phase: 0,
                 shelter: 0,
+                // No lesser tier either: `Barren` has already made every slot
+                // pass through, and an inert site is what `in_waystation`
+                // tests for first.
+                minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
             },
             harvested: Barren,
             cache: SlotCache::new(),
