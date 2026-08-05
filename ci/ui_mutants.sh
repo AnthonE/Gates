@@ -143,6 +143,40 @@ run_mut "M23 the wheel stops redrawing the centre prompt" web/src/main.js \
       updatePrompt();
 ' ''
 
+# --- the piece's hp half ----------------------------------------------------
+# The anchor is the positional payload here: both reach checks measure to it,
+# so a swapped `half` term is the right value at the wrong corner and every
+# byte-golden stays green while U and repair refuse at a range the server
+# accepts. M24/M25 are the two swaps that matter.
+run_mut "M24 the west edge anchors at the cell centre" web/src/interact.js \
+  'out[0] = loc === LOC_EDGE_W ? x0 : x0 + half;' \
+  'out[0] = x0 + half;'
+run_mut "M25 the two edge anchors are exchanged" web/src/interact.js \
+  'out[0] = loc === LOC_EDGE_W ? x0 : x0 + half;
+  out[1] = loc === LOC_EDGE_N ? z0 : z0 + half;' \
+  'out[0] = loc === LOC_EDGE_N ? x0 : x0 + half;
+  out[1] = loc === LOC_EDGE_W ? z0 : z0 + half;'
+# M26 is the bug this pass fixed, put back verbatim: a free variable in a file
+# no gate can execute. It must be caught by the scanner, not by the call.
+run_mut "M26 main.js reads an undeclared REACH again" web/src/main.js \
+  '  const pieceAt = { x: 0, z: 0 };' \
+  '  const pieceAt = { x: 0, z: REACH };'
+run_mut "M27 the reach bound is not applied to the piece scan" web/src/interact.js \
+  'let bestD = INTERACT_REACH_M * INTERACT_REACH_M;' \
+  'let bestD = Infinity;'
+# The refusal table and the repair/raid discriminator: the two reads that told
+# a player the wrong thing about their own base.
+run_mut "M28 the refusal table loses its last sentence" web/src/interact.js \
+  '  "nothing to upgrade into",
+  "not damaged",' \
+  '  "nothing to upgrade into",'
+run_mut "M29 a repair announces itself as a breach" web/src/interact.js \
+  'return flags & APPLIED_HIT_BIT ? `breaching ${left}/${max}` : `repaired ${left}/${max}`;' \
+  'return `breaching ${left}/${max}`;'
+run_mut "M30 structNews draws a bar off a missing denominator" web/src/interact.js \
+  '  if (max === 0) return "";' \
+  '  if (max === -1) return "";'
+
 echo
 echo "mutants: $red red, $green survived, $broken stale"
 if [ -n "$(git status --porcelain)" ]; then
