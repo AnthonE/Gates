@@ -4,6 +4,37 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+## 0. E tells you what it does — done this pass *(ui lane)*, kept for what it leaves
+
+From `findings/pass-20260805-002720-04-judge.md` ranked gap 3: "the island
+never tells a player what it offers", E five verbs deep in a blind fallthrough
+chain, "does something you did not choose, silently".
+
+Landed: `web/src/interact.js`, the one resolver. Two ranks — **aimed** (in
+front, within `INTERACT_AIM_RADIUS_M` of the aim line; nearest of those wins,
+as a raycast would) always beats **nearby** (everything else in reach, nearest
+wins, which is the old chain's behaviour kept so no verb that worked stops
+working). The five scans in `main.js` are gone; E dispatches on the pick, L's
+lock takes the same pick filtered to `VERB_DOOR`, and `#prompt` under the
+crosshair draws `promptFor` of that same pick off the HUD timer. Archetypes and
+reach are the sim's (`deploy.rs`, `build.rs`), not restated literals.
+`ui_smoke` §Q: 381 checks total, 28 mutants run, all 28 red.
+
+Leaves open:
+- **The aim radius is a proposed default**, `DECISIONS.md` §open (interact aim
+  radius v0). 1.0 m from the deployable's own scale; the operator has not
+  spoken a precision.
+- **Nothing highlights the picked thing in the world.** The prompt names it;
+  the box itself does not light up. That is a looks-lane material change, not
+  ours — a NOW.md line, not a cross-lane request, until someone wants it.
+- ~~**Gathering and building have no prompt**, only deployables do.~~ Gathering
+  closed 2026-08-05 (`## 0. The crosshair answers for the swing too` below).
+  **Building still has none** — placement is a preview mesh with no text, and
+  it is the last verb with nothing under the crosshair.
+- **Unverified in a real browser end to end.** `ui_smoke` drives the DOM and
+  the resolver; `browser_smoke` is off this run, so nothing here claims a box
+  was opened by aiming at one on a live shard.
+
 0. **The collapse path's per-tick budget, and box handle 0 — done this pass
    (systems lane).**
 
@@ -162,6 +193,36 @@ Done items are deleted, not checked — history lives in git and
      UNRUN (operator's `GATES_TIER=fast`) and this pass edits `main.js`,
      `wasm.js` and `index.html`.
 
+## 0. The crosshair answers for the swing too — done this pass *(ui lane)*
+
+*2026-08-05. The top item's own remainder ("gathering and building have no
+prompt"), plus ranked fix 1 of `findings/pass-20260805-002720-05-judge.md`.*
+
+`interact.js` gains a SECOND resolver, `resolveSwing` — not four more verbs in
+the first one, because the two picks share no term: E reaches 5 m and ranks an
+aim radius, a swing reaches `gather::REACH_M` (2 m) through a 30° cone with a
+±3 m window and a point-blank bypass, over a 3×3 block of 8 m terrain cells.
+It transcribes `gather.rs:494-532` and invents nothing: the client sends a
+swing as a button bit and the sim picks the node alone, so any other rule names
+a node the arm does not hit. Nodes come from `terrain.cellEntry`, already
+public. E's pick still wins the line; the swing prompt fills the silence.
+`ui_smoke` §R: 433 checks (was 381), 20 mutants run, all 20 red.
+
+The judge's ranked fix 1 is closed in the same file: `promptFor` was only ever
+called with `{open:false, locked:false}`, so flattening the door's whole
+open/locked branch shipped green (its mutant M14). Now walked at all three
+states.
+
+Leaves open:
+- **Which prompt outranks which is unspoken** — `DECISIONS.md` §open ("swing
+  prompt precedence v0"). E-first is argued, not decided.
+- **The tie test found a hole in its own first version.** A tie between cells
+  (0,0) and (2,2) is kept by (0,0) under BOTH loop nestings, so transposing the
+  loops escaped green; cells (2,0)/(0,2) swap under the transpose and catch it.
+- **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are UNRUN
+  (operator's `GATES_TIER=fast`) and this pass edits `main.js`.
+- **Building still has no prompt** — the last verb without one.
+
 ## 0. The second container panel — gap 1's other half *(ui lane)*
 
 *From `findings/pass-20260804-205133-03-judge.md` gap 1, "there is nowhere to
@@ -220,14 +281,12 @@ directions). `DECISIONS.md` §open "haven shelter v0" has the rest.
 
 What remains, in the order it is worth doing:
 
-- **It is not solid — this lane's half now exists, the wiring does not.**
-  `terrain.rs` has `OCCUPANT_R_M` / `OCCUPANT_TOP_M` and `slot_blocks`, gated by
-  `tests/solid.rs` (8 tests; cover on 19.2–20.5% of land cells ~18 m apart,
-  narrowest clear carriageway 2.62–3.88 m against a 0.80 m body). **Nothing
-  calls it** — see the request below. The shelter itself is still passable and
-  deliberately so: a doorway is the one shape a radius cannot express, so it
-  needs a box list sim-side plus a gate holding it equal to `props.js`'s
-  fourteen boxes. That is the next slice in this item.
+- **This lane's half is now COMPLETE, including the shelter; the wiring is
+  not.** The box list landed (`DECISIONS.md` §open "shelter volume v0"):
+  `terrain::SHELTER_BOXES`, `slot_blocks` routing the shelter to a narrow
+  phase, `tests/solid.rs` at 14 tests, `ci/haven_shelter.mjs` at 156 checks
+  holding all 14 × 6 fields equal to `props.js`. **Nothing calls any of it** —
+  see the request below. Nothing further is owed here from this side.
 - **Nobody has looked at it.** No frame has been captured since it landed; the
   claim "a player can tell they arrived" rests on arithmetic alone. The lane
   charter says to say so when the item flips from "is there a world here" to
@@ -238,6 +297,20 @@ What remains, in the order it is worth doing:
   would move a measured prize ratio; it needs its own pass.
 - The pad is still not carved (3.76 m of relief under a flat-based building —
   the plinth buries 1.4 m of that, which is a cover, not a fix).
+
+## world: the trunk radius is pinned to a builder that no longer ships
+
+From `findings/pass-20260805-002720-03-judge.md` ranked fix 4, deliberately
+left by the pass that did the other three. `OCCUPANT_R_M[Tree]` = 0.26 is read
+off `props.js:348`'s `CylinderGeometry(0.13, 0.26, …)`, but the near-ring pine
+now ships from `ez-tree` (`props.js:556`) and the cone is only the LOD1 start.
+So the server's trunk and the drawn trunk agree by assumption, not by gate —
+the same class as the shelter's box list before this pass, one occupant over.
+`ci/pine_shape.mjs` already imports the shipped builder and already prints a
+1.52 m canopy radius, so the fix is one assertion pinning the GENERATED
+trunk's radius to `OCCUPANT_R_M[Tree]`. Not done here because it may not hold:
+if ez-tree's trunk is not 0.26 m the fix is a table change with a real number
+behind it, not a one-line assert, and that deserves its own measurement.
 > 3. ~~**`ARCH_BOX` needs slots and a container address**~~ — **answered in
 >    `4d7a926`, 2026-08-04**, before this request was read. `BOX_SLOTS` is on
 >    the wire and `box_key` is the address; the ui half landed 2026-08-05
@@ -250,10 +323,17 @@ What remains, in the order it is worth doing:
 > fan plus a `moisture`, a `clump` and a `road_band` per cell and must never be
 > re-derived inside a movement step. `terrain::OCCUPANT_PROBE_CELLS` (= 1) is
 > the neighbourhood to scan and it is proved complete, not assumed: every slot
-> lies strictly inside its own cell (measured worst margin 0.122 m over 38,969
-> slots) while the widest reach is 2.050 m against an 8 m cell. Nothing in
-> `terrain.rs` changed signature and no golden moved. **Unverified in play:**
-> no body has ever been stopped by one of these — `tests/solid.rs` gates the
+> lies inside its own cell, drawn ones by their ±3 m jitter and authored ones
+> because `scatter` only returns them for the cell they fall in. **Updated
+> 2026-08-05: the widest reach is now 5.845 m, not 2.050 m** — the shelter's
+> bounding circle is 4.9498 m and it eats most of the 8 m margin on its own.
+> Still complete, still 1, and the const block still proves it, but the
+> headroom is gone: the next occupant wider than a boulder breaks the 3×3 and
+> the build will say so at the definition.
+> `slot_blocks` **did not change signature** and no golden moved. The shelter
+> is the one occupant with a narrow phase behind the radius — that is internal,
+> the call site is identical for every occupant. **Unverified in play:** no
+> body has ever been stopped by one of these — `tests/solid.rs` gates the
 > shapes and the predicate, and that is all it can gate from this side.
 
 > **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the
