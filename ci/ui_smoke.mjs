@@ -4069,6 +4069,325 @@ check(
 );
 
 // =============================================================================
+// S. the compass — the bearing readout, and the axis it rests on
+// =============================================================================
+// The judge's ranked gap 3 (pass-20260805-063306) asked for "one bearing
+// readout so the island has a direction in it". What makes it gateable rather
+// than decorative is that a compass is an ARITHMETIC claim in two halves that
+// no byte-golden can see:
+//
+//   1. the strip's pixel offset against the wire yaw, and
+//   2. **which world axis is north** — a claim `hud.js` makes and nothing else
+//      in the repo states. `scene.js:56` and `browser_smoke.mjs:282` both read
+//      +Z as north; `build.rs:54-57` names low-z "north" for its build grid and
+//      disagrees. The compass follows the client/CI reading, and §T below
+//      pins it to `yawDir` so the two cannot drift apart in silence.
+//
+// This is the `EV_*` positional-payload class from `CLAUDE.md`'s trap list,
+// wearing a `<div>`: swap a sign or drop the half-window offset and every
+// existing gate stays green while the player is told east is west.
+const compassConsts = await page.evaluate(async () => {
+  const m = await import("/src/hud.js");
+  return {
+    fov: m.COMPASS_FOV_DEG,
+    px: m.COMPASS_PX_PER_DEG,
+    step: m.COMPASS_STEP_DEG,
+    span: m.COMPASS_SPAN_DEG,
+    card: m.COMPASS_CARD_DEG,
+  };
+});
+for (const [k, v] of Object.entries(compassConsts)) {
+  check(
+    typeof v === "number" && Number.isFinite(v) && v > 0,
+    `hud.js no longer exports COMPASS_* constant '${k}' as a positive number (got ${v}) —` +
+      " this whole section reads its expectations out of them, and an undefined here would make" +
+      " every comparison below compare NaN and pass nothing",
+  );
+}
+check(
+  compassConsts.span === 360 + compassConsts.fov,
+  `COMPASS_SPAN_DEG is ${compassConsts.span}, expected 360 + COMPASS_FOV_DEG = ${360 + compassConsts.fov}` +
+    " — the band must be one full turn PLUS one window or setBearing's unconditional write runs off an end",
+);
+check(
+  compassConsts.card === 45,
+  `COMPASS_CARD_DEG is ${compassConsts.card}, expected 45 (eight cardinals over 360)`,
+);
+
+// --- the scaffold, and CSS agreeing with the constants ----------------------
+// `index.html` restates the two widths in px because CSS cannot read a JS
+// constant. That restatement is the drift risk the header of this file keeps
+// naming, so it is asserted rather than trusted.
+const compassBox = await page.evaluate(() => {
+  const win = document.getElementById("compass");
+  const band = document.getElementById("compassband");
+  const now = document.getElementById("compassnow");
+  const cs = win ? getComputedStyle(win) : null;
+  return {
+    haveWin: !!win,
+    haveBand: !!band,
+    haveNow: !!now,
+    winShown: win ? win.style.display : null,
+    nowShown: now ? now.style.display : null,
+    overflow: cs ? cs.overflowX : null,
+    winW: win ? win.clientWidth : 0,
+    bandW: band ? band.offsetWidth : 0,
+    marginLeft: cs ? parseFloat(cs.marginLeft) : 0,
+    scrollMax: win ? win.scrollWidth - win.clientWidth : 0,
+  };
+});
+check(compassBox.haveWin, "#compass is missing from index.html");
+check(compassBox.haveBand, "#compassband is missing from index.html");
+check(compassBox.haveNow, "#compassnow (the fixed centre index) is missing from index.html");
+// Inline, not computed — the same distinction group F draws: `show()` is what
+// puts the strip on screen, and a stylesheet default would hide that lapsing.
+check(
+  compassBox.winShown === "block",
+  `Hud.show() left #compass at inline display:'${compassBox.winShown}', expected 'block'`,
+);
+check(
+  compassBox.nowShown === "block",
+  `Hud.show() left #compassnow at inline display:'${compassBox.nowShown}', expected 'block'`,
+);
+check(
+  compassBox.overflow === "hidden",
+  `#compass overflow-x is '${compassBox.overflow}', expected 'hidden' — the window must CLIP the band,` +
+    " and a visible overflow would both show the whole 450-degree strip and make scrollLeft a no-op",
+);
+check(
+  compassBox.winW === compassConsts.fov * compassConsts.px,
+  `#compass is ${compassBox.winW}px wide; COMPASS_FOV_DEG * COMPASS_PX_PER_DEG =` +
+    ` ${compassConsts.fov * compassConsts.px}px. The CSS width and the JS constants disagree`,
+);
+check(
+  compassBox.bandW === compassConsts.span * compassConsts.px,
+  `#compassband is ${compassBox.bandW}px wide; COMPASS_SPAN_DEG * COMPASS_PX_PER_DEG =` +
+    ` ${compassConsts.span * compassConsts.px}px. The CSS width and the JS constants disagree`,
+);
+check(
+  compassBox.marginLeft === -compassBox.winW / 2,
+  `#compass margin-left is ${compassBox.marginLeft}px, expected ${-compassBox.winW / 2}px —` +
+    " left:50% plus a half-width negative margin is what centres it; off-centre, every bearing below is off",
+);
+// The whole point of a band one window longer than a turn: a full revolution
+// of scroll is reachable. `>=` and not `===` because the end ticks are 40px
+// boxes centred on their bearing, so the last one overhangs the band by half
+// its width and the browser counts that in scrollWidth. The EXACT arithmetic
+// is asserted per-bearing in §T, including the yaw that lands on the maximum.
+check(
+  compassBox.scrollMax >= 360 * compassConsts.px,
+  `#compass can scroll ${compassBox.scrollMax}px; one full turn needs ${360 * compassConsts.px}px.` +
+    " A shorter range means some bearing cannot be reached and the strip clamps instead of turning",
+);
+
+// --- the ticks: two mark sets, absolute-aligned ------------------------------
+const ticks = await page.evaluate(() =>
+  [...document.querySelectorAll("#compassband .ctick")].map((t) => ({
+    left: parseFloat(t.style.left),
+    text: t.textContent,
+    card: t.classList.contains("card"),
+  })),
+);
+// 51 = numbers every 10 over [-40, 400] (45) + letters every 45 over
+// [-45, 405] (11) − the five multiples of 90 that carry both. Pinned as a
+// literal on purpose: a change to COMPASS_FOV_DEG or either stride SHOULD
+// stop here and be recounted, because the two strides are what the reference
+// frame was measured for.
+check(
+  ticks.length === 51,
+  `the compass band built ${ticks.length} ticks, expected 51 — recount if COMPASS_FOV_DEG` +
+    ", COMPASS_STEP_DEG or COMPASS_CARD_DEG moved",
+);
+check(
+  ticks.filter((t) => t.card).length === 11,
+  `${ticks.filter((t) => t.card).length} ticks carry .card, expected 11 (every 45 deg across a 450 deg band)`,
+);
+// Position is the payload here, exactly as it is for an EV_* field: a tick
+// with the right letter at the wrong offset is the failure this catches.
+const half = compassConsts.fov / 2;
+const tickAt = (bearing) =>
+  ticks.find((t) => Math.abs(t.left - (bearing + half) * compassConsts.px) < 0.01);
+for (const [bearing, want] of [
+  [0, "N"],
+  [45, "NE"],
+  [90, "E"],
+  [135, "SE"],
+  [180, "S"],
+  [225, "SW"],
+  [270, "W"],
+  [315, "NW"],
+]) {
+  const t = tickAt(bearing);
+  check(
+    !!t && t.text === want && t.card,
+    `bearing ${bearing} deg should carry the cardinal '${want}' at band offset` +
+      ` ${(bearing + half) * compassConsts.px}px; found ${t ? `'${t.text}' (card=${t.card})` : "no tick"}`,
+  );
+}
+// The duplicated wrap window must agree with its in-range twin, or the strip
+// jumps as the player crosses north.
+for (const [outside, inside] of [
+  [-45, 315],
+  [-40, 320],
+  [360, 0],
+  [405, 45],
+]) {
+  const a = tickAt(outside);
+  const b = tickAt(inside);
+  check(
+    !!a && !!b && a.text === b.text,
+    `the wrap tick at ${outside} deg reads '${a ? a.text : "missing"}' but its twin at ${inside} deg` +
+      ` reads '${b ? b.text : "missing"}' — the same heading must carry the same label on both copies`,
+  );
+}
+// The reference draws NE BETWEEN 40 and 50 rather than replacing one of them.
+for (const n of [40, 50]) {
+  const t = tickAt(n);
+  check(
+    !!t && t.text === String(n) && !t.card,
+    `bearing ${n} deg should still carry its number alongside NE at 45 (crafting/compass reference frame),` +
+      ` found ${t ? `'${t.text}'` : "no tick"}`,
+  );
+}
+
+// =============================================================================
+// T. the compass against the wire — the axis claim, pinned to yawDir
+// =============================================================================
+// `setBearing` takes the WIRE yaw, so its arithmetic is checkable exactly:
+// px = round(yaw * 360/65536 * COMPASS_PX_PER_DEG). And the semantic half —
+// that the letter under the centre index is the direction the sim will
+// actually walk — is pinned by asking `input.js`'s `yawDir` for the same yaw
+// and checking the axis. That is the join that makes north one fact.
+const bearings = await page.evaluate(async () => {
+  const { hud } = globalThis.__ui;
+  const { yawDir } = await import("/src/input.js");
+  const win = document.getElementById("compass");
+  const nowRect = document.getElementById("compassnow").getBoundingClientRect();
+  const centreX = nowRect.left + nowRect.width / 2;
+  const out = [];
+  for (const yaw of [0, 8192, 16384, 24576, 32768, 40960, 49152, 57344, 65535]) {
+    hud.setBearing(yaw);
+    // Which tick is under the fixed centre index, measured in page space so
+    // it accounts for the scroll, the margin and the band offset together.
+    let best = null;
+    let bestD = Infinity;
+    for (const t of document.querySelectorAll("#compassband .ctick")) {
+      const r = t.getBoundingClientRect();
+      const d = Math.abs(r.left + r.width / 2 - centreX);
+      if (d < bestD) {
+        bestD = d;
+        best = t.textContent;
+      }
+    }
+    const dir = yawDir(yaw, { fx: 0, fz: 0 });
+    out.push({ yaw, scrollLeft: win.scrollLeft, centred: best, fx: dir.fx, fz: dir.fz });
+  }
+  return out;
+});
+const pxPerU16 = (360 / 65536) * compassConsts.px;
+let lastScroll = -1;
+for (const b of bearings) {
+  const want = Math.round(b.yaw * pxPerU16);
+  check(
+    b.scrollLeft === want,
+    `setBearing(${b.yaw}) left #compass.scrollLeft at ${b.scrollLeft}px, expected ${want}px` +
+      ` (yaw * 360/65536 * ${compassConsts.px}). The strip and the wire disagree`,
+  );
+  // A sign flip is the single most likely defect here and it is invisible to
+  // every other assertion in this file.
+  check(
+    b.scrollLeft >= lastScroll,
+    `scrollLeft went backwards (${lastScroll} -> ${b.scrollLeft}) as yaw increased to ${b.yaw} —` +
+      " increasing wire yaw turns N->E->S->W, so the strip must scroll one way only",
+  );
+  lastScroll = b.scrollLeft;
+}
+// The four quarter-turns, each checked twice: the letter a player reads, and
+// the axis `yaw_lut` will walk them down. `yawDir` is the sim's own table
+// (input.js re-derives yaw_lut.rs bit-for-bit, asserted elsewhere in this
+// file), so this is the compass measured against the sim and not against
+// itself.
+for (const [yaw, letter, axis] of [
+  [0, "N", "fz+"],
+  [16384, "E", "fx+"],
+  [32768, "S", "fz-"],
+  [49152, "W", "fx-"],
+]) {
+  const b = bearings.find((x) => x.yaw === yaw);
+  check(
+    b.centred === letter,
+    `at wire yaw ${yaw} the centre index reads '${b.centred}', expected '${letter}'`,
+  );
+  const near = (v, t) => Math.abs(v - t) < 1e-6;
+  const ok =
+    axis === "fz+"
+      ? near(b.fz, 1) && near(b.fx, 0)
+      : axis === "fz-"
+        ? near(b.fz, -1) && near(b.fx, 0)
+        : axis === "fx+"
+          ? near(b.fx, 1) && near(b.fz, 0)
+          : near(b.fx, -1) && near(b.fz, 0);
+  check(
+    ok,
+    `the compass says '${letter}' at wire yaw ${yaw}, but yawDir walks (fx=${b.fx}, fz=${b.fz}).` +
+      " hud.js's COMPASS_DEG_PER_U16 rests on +Z being north and +X east; the sim's direction table" +
+      " has moved out from under it (see input.js and crates/sim-core/src/yaw_lut.rs)",
+  );
+}
+
+// The L8 claim in `setBearing`'s doc — it is the one HUD method on the RAF
+// path, and it earns that by not writing when the rounded pixel did not move.
+// Driven rather than read: park a sentinel in scrollLeft and check the
+// repeat call leaves it alone.
+const noWrite = await page.evaluate(() => {
+  const { hud } = globalThis.__ui;
+  const win = document.getElementById("compass");
+  hud.setBearing(20000);
+  const settled = win.scrollLeft;
+  win.scrollLeft = 0; // the sentinel: a write would overwrite this
+  hud.setBearing(20000); // same yaw
+  const afterSame = win.scrollLeft;
+  hud.setBearing(20001); // 0.0055 deg away — same rounded pixel
+  const afterNudge = win.scrollLeft;
+  hud.setBearing(30000); // a real move
+  return { settled, afterSame, afterNudge, afterMove: win.scrollLeft };
+});
+check(
+  noWrite.settled > 0,
+  `setBearing(20000) produced scrollLeft ${noWrite.settled} — expected a nonzero offset, so the` +
+    " sentinel below is actually testing something",
+);
+check(
+  noWrite.afterSame === 0,
+  `setBearing repeated with the same yaw wrote scrollLeft=${noWrite.afterSame} over the sentinel —` +
+    " it must skip the write when the rounded pixel has not moved (L8: nothing spare in the RAF path)",
+);
+check(
+  noWrite.afterNudge === 0,
+  `a sub-pixel yaw nudge (20000 -> 20001) wrote scrollLeft=${noWrite.afterNudge} — the guard compares` +
+    " the ROUNDED pixel, not the raw yaw, or the RAF path writes every frame a mouse moves",
+);
+check(
+  noWrite.afterMove === Math.round(30000 * pxPerU16),
+  `after the sentinel, a real bearing change left scrollLeft at ${noWrite.afterMove}, expected` +
+    ` ${Math.round(30000 * pxPerU16)} — the guard must not latch and stop writing altogether`,
+);
+
+// And the caller: `main.js` must sample the wire yaw ONCE and hand the same
+// value to the bridge and to the compass. Two `yawU16()` calls in one frame
+// would reopen the temporal seam input.js names, between two statements.
+check(
+  /const yaw = input\.yawU16\(\);/.test(mainSrc) && /hud\.setBearing\(yaw\)/.test(mainSrc),
+  "main.js no longer samples the wire yaw into a local and passes that same local to both" +
+    " client_set_input and hud.setBearing — the compass must read the yaw the wire carried",
+);
+check(
+  (mainSrc.match(/input\.yawU16\(\)/g) || []).length === 1,
+  `main.js calls input.yawU16() ${(mainSrc.match(/input\.yawU16\(\)/g) || []).length} times;` +
+    " exactly one sample per frame is the point — a second call is a second yaw",
+);
+
+// =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
@@ -4093,7 +4412,11 @@ console.log(
     "strict tie to the first cell in dz-then-dx order, harvested AND mid-fall skipped, drawn only where E " +
     "is silent · " +
     `both resolvers aim on the wire quantum: all ${rsLutCount} bearings bit-exact against yaw_lut.rs, low byte ` +
-    "ignored as the sim ignores it, aimDir == yawDir(yawU16()), placement's sent-address aim exempt",
+    "ignored as the sim ignores it, aimDir == yawDir(yawU16()), placement's sent-address aim exempt · " +
+    `compass: ${ticks.length} ticks over ${compassConsts.span} deg (letters every ${compassConsts.card}, ` +
+    `numbers every ${compassConsts.step}, wrap copies agree), CSS px == JS constants, scrollLeft == ` +
+    "yaw*360/65536*px monotonic and unclamped, N/E/S/W centred and axis-checked against yawDir " +
+    "(+Z north, +X east), no write on an unchanged pixel, one yawU16() sample per frame",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
