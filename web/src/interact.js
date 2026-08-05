@@ -600,8 +600,8 @@ export function describeDeploy(out, defs, row, itemName, have) {
  * the ordinary case and gets no chrome.
  *
  * Affordability is advisory and stated as a cost, never as a refusal: the
- * server owns whether this placement is legal (`BUILD_REFUSE_TEXT` has nine
- * reasons and materials is one of them), so this line never says "can't".
+ * server owns whether this placement is legal (materials is only one of
+ * `BUILD_REFUSE_TEXT`'s reasons), so this line never says "can't".
  */
 export function promptForBuild(pick) {
   if (!pick || !pick.what) return "";
@@ -740,6 +740,10 @@ export function nearestPiece(out, at, world) {
  * §W now walks it against the constants `build.rs` declares, by name and by
  * value, so the next reason the sim grows lands red on the commit that grows
  * it rather than as a number on a player's screen.
+ *
+ * It has since done exactly that once: `REFUSE_B_UNPRICED` (10) landed from
+ * the sim lane and this table stayed at ten entries, and the gate was red on a
+ * clean tree the same run rather than silent until a player saw `code 10`.
  */
 export const BUILD_REFUSE_TEXT = [
   "no such piece",
@@ -752,6 +756,7 @@ export const BUILD_REFUSE_TEXT = [
   "claimed by a hearth",
   "nothing to upgrade into",
   "not damaged",
+  "cannot be repaired",
 ];
 
 /** The refusal sentence, or the bare code when the sim is ahead of us. */
