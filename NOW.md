@@ -578,8 +578,15 @@ What remains:
 
 ## 5 · Gameplay still missing, in rough order of what a player notices
 
-- **Jump.** Gravity is there, jump is not — and jump is what makes a lintel
-  matter. Wire change, so systems lane only.
+- **Jump — the sim half landed, the key does not exist yet (ui lane).**
+  `BTN_JUMP` (bit 3) and `JUMP_SPEED` ship and are gated (`tests/jump.rs`,
+  and the bots jump so it rides alloc/replay/parity), `PROTO_VER` is 22.
+  **Nothing presses it:** `web/src/input.js:193` assembles the button byte by
+  hand as `(sprint?1:0)|(primary?4:0)`, so the ui lane adds a Space keybind
+  and `|(jump?8:0)` there — one line, and until it lands jump is unreachable
+  in play. Prediction needs nothing: `predict.rs` runs the same
+  `movement::step`. The native client (`crates/client`) needs the same bit in
+  its own input path when §1 slice 1 lands.
 - **Ranged.** There is a revolver in `loot.barrel` and nothing to fire it.
   `salvage/ranged-v0` is a judged-**FAIL** attempt (wall 6, the wire
   drifted, reproduced executably). Read the report before rebuilding.
@@ -675,3 +682,25 @@ prevent. If a lane rebuilds any of these, start from the branch.
 
 Standing rule: anything a playtest breaks jumps this queue; anything a wall
 catches jumps the playtest.
+
+## 5c · The protocol golden has never fuzzed a button above bit 1 *(systems lane)*
+
+Found while landing jump (§5). `goldens.rs:262` draws the input fixture's
+`buttons` from `rng.next_bounded(4)`, so `v22_input_full.bin` exercises only
+`BTN_SPRINT` and `BTN_CROUCH`. `BTN_PRIMARY` has been outside that draw since
+M1 and `BTN_JUMP` is outside it now — the field is 8 bits wide either way, so
+the golden still pins the *layout* correctly and nothing is currently wrong on
+the wire. What it cannot see is a future encoder that masks or reorders the
+high nibble.
+
+Deliberately not fixed in the jump commit: widening the draw changes fixture
+bytes, and changing golden bytes for a reason unrelated to the version's
+meaning muddies the one signal wall 6 reads. It wants its own commit, where
+"the bytes moved because the fuzz widened" is the whole story — and that is a
+`PROTO_VER` judgement call, because the answer may be that a golden's fuzz
+range is not part of the wire contract at all and the bytes may move without a
+turn. Decide that first; it is the actual question.
+
+Same shape one level down: `decode_input` reads all 8 bits with no domain
+check, so bits 4–7 round-trip as meaningless buttons. That is §5b's forgery
+slack, not drift, and belongs with §5b's pass.

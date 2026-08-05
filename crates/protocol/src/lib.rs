@@ -196,7 +196,24 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// payloads grew a bit, which is the case wall 6 exists for: a v20 client
 /// reading a v21 repair would take the bit as the top of `cx` and mend an
 /// address a kilometre away. Fixtures are keyed `v21_*`.
-pub const PROTO_VER: u16 = 21;
+///
+/// v22 gave the player the vertical: jump (`sim-core/input.rs` `BTN_JUMP`,
+/// `movement.rs`). **This is v18's case in its purest form yet — not one bit
+/// of any payload moved, and of the seventy fixtures exactly one changed a
+/// byte: the hello, which carries the version itself.** `buttons` has been a
+/// full unmasked octet since v0 (`encode_input` writes 8, `decode_input`
+/// reads 8), so bit 3 was already crossing the wire intact and was simply
+/// ignored on arrival; nothing about the layout is different.
+///
+/// The version turns because the *meaning* did, and here the mismatch is
+/// worse than v18's declined drag. `movement::step` is shared verbatim by the
+/// server and `client-wasm`'s predictor — that sharing IS the
+/// quantize-both-sides law (`NETCODE.md` §3) — so a v22 client against a v21
+/// server would predict an arc the server never simulates and be hard-snapped
+/// back to the ground on every press. Not a refused action but a permanent,
+/// silent, per-press misprediction, which is the exact failure `PROTO_VER`
+/// exists to convert into a handshake refusal. Fixtures are keyed `v22_*`.
+pub const PROTO_VER: u16 = 22;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
