@@ -68,6 +68,40 @@ pub struct MeleeDef {
     pub reach_cm: u16,
 }
 
+/// One item's ranged row. `damage == 0` ⇒ the item fires nothing, which is
+/// how the whole table starts and how every melee weapon, tool and stack of
+/// wood stays.
+///
+/// Every rate here is already **per tick**, converted once at bake time and
+/// never at tick time. That is the quantize-both-sides law (CLAUDE.md's trap
+/// list) applied to a projectile: the sim integrates in exactly the integers
+/// it was handed, so an arrow's path has no rounding to accumulate and no
+/// per-tick float to drift between native and wasm.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RangedDef {
+    /// Body damage on a hit. No falloff — `content/weapons.toml` has no
+    /// falloff curve to read (CONTENT.md §1 describes one; the schema has
+    /// never had the field).
+    pub damage: u16,
+    /// Muzzle speed in **millimetres per tick**, from `ballistic.speed_mps`.
+    pub speed_mmpt: u16,
+    /// Gravity in **millimetres per tick²**, from `ballistic.drop_mps2`,
+    /// subtracted from the vertical velocity once per tick.
+    pub drop_mmpt2: u16,
+    /// Item index of the round this weapon spends, one per shot. The bake
+    /// resolves `weapons.toml`'s `ammo` id through the same sorted-rank
+    /// mapping every other item index uses.
+    pub ammo: u16,
+    /// Ticks between shots, from `rate_per_min`. A bow does not borrow the
+    /// melee cadence: `SWING_INTERVAL_TICKS` is one shared number and a
+    /// 30/min bow is not a 47/min club.
+    pub rate_ticks: u16,
+    /// Ticks of flight before the arrow expires unspent, derived at bake
+    /// from `range_m` and the muzzle speed and clamped to
+    /// `MAX_ARROW_LIFE_TICKS`.
+    pub life_ticks: u16,
+}
+
 /// The whole combat ruleset the sim knows. Construction input like the
 /// seed and the gather table; the WAL pins the content hash it was baked
 /// from (CONTENT.md §0).
@@ -75,6 +109,10 @@ pub struct MeleeDef {
 pub struct CombatContent {
     /// Indexed by item index (the sorted-rank mapping `bake` owns).
     pub melee: [MeleeDef; MAX_ITEM_DEFS],
+    /// Indexed the same way. A row here and a row in `melee` are not
+    /// exclusive in the type, but nothing in the alpha data is both, and
+    /// `ranged::armed` reads this one first — a bow in hand does not swing.
+    pub ranged: [RangedDef; MAX_ITEM_DEFS],
     /// Max player hp — `content/balance.toml` `globals.player_hp`. Zero is
     /// the inert default and disarms the module entirely: no hp is granted
     /// at join, so no damage is applied and nobody can die.
@@ -87,6 +125,14 @@ impl CombatContent {
             damage: 0,
             structure: 0,
             reach_cm: 0,
+        }; MAX_ITEM_DEFS],
+        ranged: [RangedDef {
+            damage: 0,
+            speed_mmpt: 0,
+            drop_mmpt2: 0,
+            ammo: 0,
+            rate_ticks: 0,
+            life_ticks: 0,
         }; MAX_ITEM_DEFS],
         player_hp: 0,
     };
@@ -167,6 +213,17 @@ impl CombatContent {
     #[inline]
     pub fn held_struct(&self, held: u16) -> Option<MeleeDef> {
         self.held_row(held).filter(|d| d.structure > 0)
+    }
+
+    /// The ranged row of the item a player is holding, or `None` when the
+    /// hand is empty, the held item is off the table, or the item fires
+    /// nothing. Same bounds rule as `held_row`, against the other array.
+    #[inline]
+    pub fn held_ranged(&self, held: u16) -> Option<RangedDef> {
+        if held == NO_ITEM || held as usize >= MAX_ITEM_DEFS {
+            return None;
+        }
+        Some(self.ranged[held as usize]).filter(|d| d.damage > 0)
     }
 }
 

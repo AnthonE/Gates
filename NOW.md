@@ -4,6 +4,36 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+## 0. The bow fires — done this pass *(systems lane)*
+
+From `findings/pass-20260805-053501-01-judge.md` ranked gap 1, "every fight is a
+walk-up club fight — there is no ranged weapon in the sim". `weapons.toml` had
+carried the bow, the crossbow, their ammo and their ballistics through
+validation and the content hash since the content crate was written, and
+`bake_combat` threw every row away at `kind != Melee`. Now `bake_bow` converts
+m/s to **mm/tick** once at boot and `ranged.rs` flies the arrow in integers.
+Design and the six knobs: `DECISIONS.md` §open, ranged v0. `frame.pitch` is read
+by the sim for the first time, through a generated `pitch_lut.rs`; the byte was
+already on the wire, so the wire did not move and `PROTO_VER` did not bump.
+Gated by `tests/shoot.rs` (14 tests, 4 seeds) and two `content.rs` bake gates;
+three mechanisms mutation-checked to go red on their own break.
+`GOLDEN_FINAL_HASH` is **unmoved**, which is the claim: the arrow store hashes
+on the player idiom (skip-if-inactive, no length prefix), so it is invisible to
+the replay until somebody fires.
+
+Left:
+
+- **Nobody can see the arrow.** No wire event, so no client can draw a tracer —
+  a shot arrives as `EV_HIT`/`EV_HEALTH`/`EV_DEATH` and nothing else. The wire
+  half (an `EV_SHOT` code, its subtype, a `PROTO_VER` bump and 66 regenerated
+  goldens) is **systems lane**; the tracer itself is the client lane's.
+- **An arrow stops on a wall instead of chipping it**, and `collide::blocked`
+  bakes `CAPSULE_RADIUS_M` into its own query, so an arrow is as fat as a body:
+  it threads a doorway and never an arrow slit. A radius parameter on `collide`
+  is the fix, and it also wants structure damage. Systems lane.
+- **The revolver still cannot fire.** Hitscan wants M2's rewound raycast, so
+  `bake_combat` drops firearm and throwable rows deliberately, not by omission.
+
 ## 0. The island is solid now — done this pass *(systems lane)*
 
 From `findings/archive-prestamp/pass-20260805-020919-02-judge.md` ranked gap 1,

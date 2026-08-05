@@ -8,7 +8,7 @@
 //! in this module runs on the sim thread.
 
 use crate::schema::{
-    DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, WeaponKind,
+    DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, Weapon, WeaponKind,
 };
 use crate::Content;
 use sim_core::backpack::BackpackContent;
@@ -16,7 +16,7 @@ use sim_core::build::{
     BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
     SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
 };
-use sim_core::combat::{CombatContent, MeleeDef};
+use sim_core::combat::{CombatContent, MeleeDef, RangedDef};
 use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
@@ -24,8 +24,9 @@ use sim_core::deploy::{
 };
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
 use sim_core::limits::{
-    HEARTH_STOCK_ROWS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
-    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
+    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_DEPLOY_DEFS,
+    MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS, MAX_LOOT_TABLES, MAX_PIECE_COSTS,
+    MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
 };
 use sim_core::loot::{LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CRATE};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
@@ -380,10 +381,21 @@ impl Content {
     /// weapon that silently cannot raid is the bug the column exists to
     /// prevent.
     ///
-    /// Only melee crosses in v0. Bow, firearm and throwable rows are
-    /// deliberately dropped here rather than half-baked: a projectile the
-    /// sim can read but not fire is a number that looks armed and is not
-    /// (combat.rs's scope note; `DECISIONS.md` §open, "melee combat v0").
+    /// Melee and **bow** cross. Firearm and throwable rows are still
+    /// deliberately dropped rather than half-baked, on the rule this
+    /// comment has carried since melee v0: a projectile the sim can read
+    /// but not fire is a number that looks armed and is not. Each is
+    /// dropped for its own reason and not for want of a table — the
+    /// revolver is hitscan in the content (no `ballistic` block at all,
+    /// CONTENT.md §1) and a hitscan shot wants the rewound raycast that is
+    /// M2's lag-comp work, and the satchel is a thrown fuse rather than a
+    /// flight (`DECISIONS.md` §open, "ranged v0").
+    ///
+    /// Every ranged rate converts to **per tick** here, once, and the sim
+    /// never converts again: `speed_mps` to mm/tick, `drop_mps2` to
+    /// mm/tick², `rate_per_min` to ticks between shots. That is where the
+    /// quantize-both-sides law lands for a projectile — the arithmetic that
+    /// could round is boot arithmetic, and flight is integer addition.
     pub fn bake_combat(&self) -> Result<CombatContent, String> {
         if self.items.len() > MAX_ITEM_DEFS {
             return Err(format!(
@@ -402,6 +414,10 @@ impl Content {
             return Err("bake: player_hp 0 would disarm combat entirely".to_string());
         }
         for w in &self.weapons {
+            if w.kind == WeaponKind::Bow {
+                self.bake_bow(w, &mut cc)?;
+                continue;
+            }
             if w.kind != WeaponKind::Melee {
                 continue;
             }
@@ -442,6 +458,95 @@ impl Content {
             };
         }
         Ok(cc)
+    }
+
+    /// One `kind = "bow"` row into the sim's ranged table.
+    ///
+    /// `validate.rs` has already refused a bow without a `ballistic` block
+    /// or without an ammo item that exists, so both unwraps below are
+    /// re-checks rather than the first check — kept because a bake that
+    /// trusts a validator it does not call is one refactor away from
+    /// panicking at boot.
+    ///
+    /// The refusal that is genuinely new here is the **sampler wall**. An
+    /// arrow is traced by point samples `ARROW_STEP_MM` apart, at most
+    /// `MAX_ARROW_SUBSTEPS` of them in a tick, so a muzzle speed past their
+    /// product cannot be traced honestly — it would fly through a wall
+    /// between two taps. Content that fast is refused at boot rather than
+    /// shipped and silently clamped, because a clamped projectile is a
+    /// weapon whose reach is a lie the data does not admit to.
+    fn bake_bow(&self, w: &Weapon, cc: &mut CombatContent) -> Result<(), String> {
+        let idx = self
+            .item_index(&w.id)
+            .ok_or_else(|| format!("bake: weapon `{}` arms no item", w.id))?
+            as usize;
+        let b = w
+            .ballistic
+            .as_ref()
+            .ok_or_else(|| format!("bake: bow `{}` has no ballistic block", w.id))?;
+        let ammo_id = w
+            .ammo
+            .as_ref()
+            .ok_or_else(|| format!("bake: bow `{}` names no ammo", w.id))?;
+        let ammo = self
+            .item_index(ammo_id)
+            .ok_or_else(|| format!("bake: bow `{}` ammo `{ammo_id}` is not an item", w.id))?;
+
+        let damage = u16::try_from(w.damage)
+            .map_err(|_| format!("bake: `{}` damage {} overflows u16", w.id, w.damage))?;
+        if damage == 0 {
+            return Err(format!("bake: bow `{}` deals no damage", w.id));
+        }
+        // m/s -> mm/tick. Floor: an arrow that flies a hair slower than the
+        // data says is honest, one that flies faster than it was sampled
+        // for is not.
+        let speed_mmpt = b.speed_mps * 1000 / TICK_HZ;
+        if speed_mmpt == 0 {
+            return Err(format!(
+                "bake: bow `{}` fires slower than one mm a tick",
+                w.id
+            ));
+        }
+        let ceiling = ARROW_STEP_MM as u32 * MAX_ARROW_SUBSTEPS as u32;
+        if speed_mmpt > ceiling {
+            return Err(format!(
+                "bake: bow `{}` at {} m/s is {speed_mmpt} mm/tick, past the {ceiling} mm/tick \
+                 the collision sampler can trace ({ARROW_STEP_MM} mm x {MAX_ARROW_SUBSTEPS} \
+                 samples); it would pass through a wall between two taps",
+                w.id, b.speed_mps
+            ));
+        }
+        let speed_mmpt = u16::try_from(speed_mmpt)
+            .map_err(|_| format!("bake: bow `{}` speed overflows u16 mm/tick", w.id))?;
+        // m/s^2 -> mm/tick^2, over the square of the rate.
+        let drop_mmpt2 = u16::try_from(b.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ))
+            .map_err(|_| format!("bake: bow `{}` drop overflows u16 mm/tick^2", w.id))?;
+        if w.rate_per_min == 0 {
+            return Err(format!("bake: bow `{}` never fires (rate 0)", w.id));
+        }
+        let rate_ticks = u16::try_from((TICK_HZ * 60 / w.rate_per_min).max(1))
+            .map_err(|_| format!("bake: bow `{}` rate overflows u16 ticks", w.id))?;
+        // Ticks to cross `range_m` at the muzzle speed, clamped to the
+        // store's backstop. Derived rather than authored so the one number
+        // the data states about reach — `range_m` — is the one that governs
+        // it, exactly as `reach_cm` does for melee.
+        let life = (w.range_m * 1000 / speed_mmpt as u32).max(1);
+        let life_ticks = u16::try_from(life)
+            .unwrap_or(MAX_ARROW_LIFE_TICKS)
+            .min(MAX_ARROW_LIFE_TICKS);
+
+        if cc.ranged[idx].damage != 0 {
+            return Err(format!("bake: duplicate weapon row for `{}`", w.id));
+        }
+        cc.ranged[idx] = RangedDef {
+            damage,
+            speed_mmpt,
+            drop_mmpt2,
+            ammo,
+            rate_ticks,
+            life_ticks,
+        };
+        Ok(())
     }
 
     /// The survival table: `[survival]`'s meters and rates, plus every

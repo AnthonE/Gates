@@ -384,3 +384,58 @@ pub const SUPPORT_SWEEP_PER_TICK: usize = 32;
 /// stops one hp short so the wall falls to the next swing.
 /// Proposed default, DECISIONS.md §open (collapse budget v0).
 pub const MAX_REMOVALS_PER_TICK: usize = 64;
+
+/// Arrows in flight across the whole shard (`ranged.rs`). Sized off the
+/// fire rate, not off `MAX_PLAYERS`: a bow is 30 rounds/min (2 shots a
+/// second at 30 Hz is 60 ticks apart) and an arrow lives at most
+/// `MAX_ARROW_LIFE_TICKS`, so a shard where every one of the 100 slots is
+/// drawing a bow at full cadence holds well under two arrows per player
+/// at any instant. 128 is that, doubled.
+/// Overflow policy: **refuse the shot** — the store is checked *before*
+/// the ammo leaves the quiver, so a refused shot costs the shooter
+/// nothing but the tick. It is deliberately not drop-oldest: stealing a
+/// live arrow out of the air to make room would make a hit depend on how
+/// many other people were shooting, which is the one thing a projectile
+/// must never do.
+/// Proposed default, DECISIONS.md §open (ranged v0).
+pub const MAX_ARROWS: usize = 128;
+
+/// Ticks an arrow may stay in flight before it expires, whatever the
+/// weapon's own derived life. The backstop that makes `MAX_ARROWS` a
+/// bound on *occupancy* rather than a hope: an arrow that somehow misses
+/// terrain, occupants, pieces and bodies still leaves the store within
+/// four seconds. No overflow policy — this is a lifetime, not a queue.
+/// Proposed default, DECISIONS.md §open (ranged v0).
+pub const MAX_ARROW_LIFE_TICKS: u16 = 120;
+
+/// Millimetres an arrow may advance between two collision samples. Two
+/// separate assumptions pin this number and it is the smaller of them:
+///
+///   * `collide::blocked` documents its endpoint-instead-of-crossing
+///     shortcut as costing "at most a fingertip" while steps stay under
+///     0.19 m (`SPRINT_SPEED * DT` = 0.183 m). A projectile sampling
+///     coarser than that walks through walls the shortcut never promised
+///     to catch.
+///   * The narrowest thing on the island that blocks is a tree, radius
+///     0.26 m at scale 1.0 and 0.234 m at the 0.9 floor — a 0.468 m
+///     diameter. At 170 mm a shot through the trunk's centre takes two
+///     interior samples, so the trunk stops the arrow rather than
+///     flickering past between taps.
+///
+/// A grazing shot at the very edge of a trunk can still slip through
+/// between samples; that is a stated cost of point sampling, not a
+/// defect, and the honest fix is a swept test rather than a smaller step.
+/// Proposed default, DECISIONS.md §open (ranged v0).
+pub const ARROW_STEP_MM: i32 = 170;
+
+/// Collision samples one arrow may take in one tick. With
+/// `ARROW_STEP_MM` this is also a **content wall**: a weapon whose muzzle
+/// speed exceeds `ARROW_STEP_MM * MAX_ARROW_SUBSTEPS` mm/tick (2.72 m per
+/// tick, 81.6 m/s) cannot be sampled finely enough to be honest about
+/// what it hits, and `bake_combat` refuses it at boot rather than
+/// shipping a projectile that tunnels. The bow is 1333 mm/tick and the
+/// crossbow 1833, so both sit inside it with room.
+/// Overflow policy: none reachable — the bake refusal is what keeps the
+/// clamp from ever binding at tick time.
+/// Proposed default, DECISIONS.md §open (ranged v0).
+pub const MAX_ARROW_SUBSTEPS: usize = 16;
