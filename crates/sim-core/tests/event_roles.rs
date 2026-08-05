@@ -1357,6 +1357,7 @@ fn piece_repaired_names_the_cell_then_the_address_then_healed_over_hp() {
     );
     w.tick(&[Command::Repair {
         id: BUILDER,
+        deploy: false,
         cx,
         cz,
         level: GROUND,
@@ -1365,7 +1366,13 @@ fn piece_repaired_names_the_cell_then_the_address_then_healed_over_hp() {
 
     let r = only(&w, EV_PIECE_REPAIRED);
     distinct3(r, "EV_PIECE_REPAIRED");
-    let (level, loc, row) = unpack(r.b);
+    assert_eq!(
+        r.b & STRUCT_DEPLOY_BIT,
+        0,
+        "a PIECE was mended, so STRUCT_DEPLOY_BIT is clear — set it here \
+         and the client mends the door hanging at the same address"
+    );
+    let (level, loc, row) = unpack(r.b & !STRUCT_DEPLOY_BIT);
     distinct_triple(level, loc, row, "EV_PIECE_REPAIRED.b");
     distinct_halves(r.c, "EV_PIECE_REPAIRED.c (healed over hp now)");
     distinct_halves(r.a, "EV_PIECE_REPAIRED.a (the cell key)");
@@ -1450,6 +1457,104 @@ fn struct_hit_on_a_deployable_sets_the_deploy_bit() {
         h.c & 0xffff,
         DOOR_HP - STRUCT_DAMAGE,
         "and the hp LEFT the low half — the door's 60, not the wall's 100"
+    );
+}
+
+/// The deployable half of the repair code, and the same bit doing the same
+/// job on the way back up.
+///
+/// This is the pair `struct_hit_on_a_deployable_sets_the_deploy_bit` makes
+/// on the way down, and it has to exist separately because the emit site is
+/// a different one: `build::repair`'s, not `damage_deploy`'s. A door and its
+/// doorway share one address exactly, so a repair that dropped the bit would
+/// not mislabel anything — it would tell every client to redraw the *piece*
+/// at full hp while the door it hangs in is the thing that was actually paid
+/// for, and the two disagree until something else resyncs the address.
+///
+/// The row is checked against the deploy table on purpose: `DEPLOY_DOOR` and
+/// `PIECE_DOORWAY` are indices into different tables, so a payload carrying
+/// the right number from the wrong one is exactly the class of bug the
+/// positional gates exist for.
+#[test]
+fn repairing_a_deployable_sets_the_deploy_bit() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    place_piece(&mut w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, GROUND, PIECE_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, GROUND, PIECE_EDGE);
+    raid_until(&mut w, cx, cz, EV_STRUCT_HIT);
+
+    // Let go of the swing, for the piece fixture's reason: held, the next
+    // tick lands another hit and the fixture argues with itself about what
+    // the door's hp was when it was paid for.
+    w.tick(&[Command::Input {
+        id: BUILDER,
+        frame: InputFrame {
+            seq: u16::MAX,
+            buttons: 0,
+            yaw: RAID_YAW,
+            pitch: 128,
+            move_x: 0,
+            move_z: 0,
+            sel: 0,
+        },
+    }]);
+    let hurt = w
+        .deploys
+        .find(cx, cz, GROUND, PIECE_EDGE)
+        .expect("the raided door still stands")
+        .hp as u32;
+    assert!(
+        hurt > 0 && hurt < DOOR_HP,
+        "the fixture must hand the repair a door that is damaged and \
+         standing, not one at {hurt} of {DOOR_HP}"
+    );
+    w.tick(&[Command::Repair {
+        id: BUILDER,
+        deploy: true,
+        cx,
+        cz,
+        level: GROUND,
+        loc: PIECE_EDGE,
+    }]);
+
+    let r = only(&w, EV_PIECE_REPAIRED);
+    distinct3(r, "EV_PIECE_REPAIRED (deployable)");
+    distinct_halves(r.c, "EV_PIECE_REPAIRED.c (healed over hp now)");
+    let (level, loc, row) = unpack(r.b & !STRUCT_DEPLOY_BIT);
+
+    assert_eq!(
+        r.b & STRUCT_DEPLOY_BIT,
+        STRUCT_DEPLOY_BIT,
+        "the DOOR was mended, not the doorway it hangs in, so \
+         STRUCT_DEPLOY_BIT is set — clear it and every client redraws the \
+         piece at the same address as though it had been paid for"
+    );
+    assert_eq!(r.a, cell_key(cx, cz), "EV_PIECE_REPAIRED.a is the CELL KEY");
+    assert_eq!(level, GROUND as u32, "the level, under the bit");
+    assert_eq!(loc, PIECE_EDGE as u32, "the loc, under the bit");
+    assert_eq!(
+        row, DEPLOY_DOOR as u32,
+        "the low field is the DEPLOY row, read against the deploy table"
+    );
+    assert_eq!(
+        r.c >> 16,
+        DOOR_HP - hurt,
+        "the HIGH half is what the payment HEALED, the door's missing hp"
+    );
+    assert_eq!(
+        r.c & 0xffff,
+        DOOR_HP,
+        "and the LOW half the hp it stands at NOW — the door's 60, not the \
+         doorway's 100"
+    );
+    assert_eq!(
+        w.deploys
+            .find(cx, cz, GROUND, PIECE_EDGE)
+            .expect("the door still stands")
+            .hp as u32,
+        DOOR_HP,
+        "and the store agrees with the event it just broadcast"
     );
 }
 

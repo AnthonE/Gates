@@ -330,6 +330,29 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 ]);
                 continue;
             }
+            if t % 16 == 9 {
+                // And repairs them. Both stores, alternating on the same
+                // addresses the upgrade arm walks, so the parity, replay
+                // and alloc surfaces carry the verb itself rather than
+                // only the price that makes it possible: a repair mutates
+                // `Pieces` (or `Deploys`) *and* `Player::inv`, which is
+                // exactly `test_replay`'s remit. Most land as refusals —
+                // intact, unpriced, no such address — and refusals are
+                // half of what these gates are for.
+                world.tick(&[
+                    Command::Input { id: 1, frame: f1 },
+                    Command::Input { id: 2, frame: f2 },
+                    Command::Repair {
+                        id: 1,
+                        deploy: (t / 16) % 2 == 0,
+                        cx: own_cell.0,
+                        cz: own_cell.1,
+                        level: ((t / 32) % 2) as u8,
+                        loc: ((t / 16) % 4) as u8,
+                    },
+                ]);
+                continue;
+            }
             if t % 16 == 5 {
                 // Bot 1 also pokes the upgrade verb at the same addresses
                 // it builds on, cycling the whole ladder: wood is the

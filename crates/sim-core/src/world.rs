@@ -202,11 +202,18 @@ pub const EV_MOVED: u8 = 26;
 /// `inventory.rs`, where the reference's three-fixes-in-half-an-hour day
 /// is written down.
 pub const EV_MOVE_REFUSED: u8 = 27;
-/// EV_PIECE_REPAIRED: a = build cell key (cx << 16 | cz), b = level << 16 |
-/// loc << 8 | piece row, c = healed << 16 | hp now.
+/// EV_PIECE_REPAIRED: a = build cell key (cx << 16 | cz), b =
+/// `STRUCT_DEPLOY_BIT` | level << 16 | loc << 8 | row, c = healed << 16 |
+/// hp now.
 ///
-/// `a` and `b` are `EV_PIECE_PLACED`'s exactly, because it is the same
-/// address said the same way; `c` is `EV_STRUCT_HIT`'s exactly — its `c` is
+/// `b` carries `EV_STRUCT_HIT`'s bit in `EV_STRUCT_HIT`'s position and
+/// with its meaning: the address names the deployable store rather than
+/// the piece store. A door stands in its doorway and the two share one
+/// address, so the event has to say which one was mended for the same
+/// reason the hit has to say which one was struck.
+///
+/// `a` and `b` are otherwise `EV_PIECE_PLACED`'s exactly, because it is
+/// the same address said the same way; `c` is `EV_STRUCT_HIT`'s — its `c` is
 /// `dealt << 16 | left`, and a repair is that event's opposite, so the two
 /// halves of a wall's life story pack their numbers in the same order. A
 /// client that mirrors hp off `EV_STRUCT_HIT` reads this with the same
@@ -520,12 +527,18 @@ pub enum Command {
         loc: u8,
         material: u8,
     },
-    /// Repair the piece at the address back to its baked hp, paid in the
-    /// piece's own materials (build.rs validates and refuses by event).
-    /// No amount crosses the wire: how much is missing is the server's
-    /// fact, so a client cannot ask to be healed by a number it chose.
+    /// Repair the structure at the address back to its baked hp, paid in
+    /// its own materials (build.rs validates and refuses by event). No
+    /// amount crosses the wire: how much is missing is the server's fact,
+    /// so a client cannot ask to be healed by a number it chose.
+    ///
+    /// `deploy` picks the store, because a door and its doorway share an
+    /// address — the sender's bit, carried through unexamined, because
+    /// which of the two a player aimed at is not something the server can
+    /// recover after the fact.
     Repair {
         id: u32,
+        deploy: bool,
         cx: u16,
         cz: u16,
         level: u8,
@@ -1315,6 +1328,7 @@ impl World {
             }
             Command::Repair {
                 id,
+                deploy,
                 cx,
                 cz,
                 level,
@@ -1323,9 +1337,11 @@ impl World {
                 if let Some(slot) = self.live_slot_of(id) {
                     build::repair(
                         &self.build,
-                        &self.deploys,
+                        &self.deploy,
+                        &mut self.deploys,
                         &mut self.pieces,
                         &mut self.players[slot],
+                        deploy,
                         cx,
                         cz,
                         level,

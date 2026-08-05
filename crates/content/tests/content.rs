@@ -139,6 +139,58 @@ fn hash_moves_with_values() {
     );
 }
 
+/// A deployable's repair price is its recipe, joined at bake time.
+///
+/// Placement charges one crafted item, and a repair cannot be priced that
+/// way: a fraction of one item rounds up to the whole thing, so mending a
+/// scratched door would cost a whole door and nobody would ever do it. The
+/// bake therefore copies the recipe's inputs onto the deployable row, and
+/// this is the gate that the join actually happened and landed the right
+/// numbers — a `n_costs` of 0 here reads as "unpriced" at runtime and
+/// refuses the verb outright (`build::REFUSE_B_UNPRICED`), so a silent
+/// failure of this join would look exactly like a door that cannot be
+/// repaired at all.
+#[test]
+fn a_deployable_is_priced_for_repair_by_its_own_recipe() {
+    let c = build(&sources()).expect("shipped content bakes");
+    let dc = c.bake_deployables().expect("deploy table bakes");
+    let mut checked = 0;
+    for d in &c.deployables {
+        let row = c.deploy_index(&d.id).expect("own id resolves") as usize;
+        let def = dc.defs[row];
+        let recipe = c
+            .recipe_for(&d.id)
+            .unwrap_or_else(|| panic!("`{}` has no recipe to price a repair against", d.id));
+        assert_eq!(
+            def.n_costs as usize,
+            recipe.inputs.len(),
+            "`{}` must carry every one of its recipe's inputs as a repair \
+             cost row, or the price is quoted against half the materials",
+            d.id
+        );
+        for (n, input) in recipe.inputs.iter().enumerate() {
+            let item = c.item_index(&input.item).expect("input resolves");
+            assert_eq!(
+                def.costs[n],
+                (item, input.count as u16),
+                "`{}` repair cost row {n} must be its recipe's input, item \
+                 and units in that order",
+                d.id
+            );
+        }
+        assert!(
+            def.n_costs > 0,
+            "`{}` bakes unpriced, so it could never be repaired",
+            d.id
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 9,
+        "the alpha set is 9 deployables; only {checked} were priced"
+    );
+}
+
 /// The repair price's two live edges, refused at boot rather than played.
 ///
 /// Both ends are a defect and neither is a taste. At `0` a wall heals for
