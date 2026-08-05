@@ -15,6 +15,33 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0c4 · GAP PASS (ui lane): the refusal walk now reads position, not just length *(done this pass)*
+
+From `findings/pass-20260805-111501-02-judge.md` ranked fix 2 (and -01's fix 3,
+the same hole stated softer). The judge exchanged the VALUES of
+`REFUSE_D_HEARTH` (10) and `REFUSE_D_DOOR` (11) in `deploy.rs`, touched no JS,
+and `ui_smoke` reported `1597 checks passed` while a player placing on a missing
+hearth read "no door there" — `CLAUDE.md`'s positional-payload trap, in this
+lane's own gate.
+
+Closed: `checkNames` ties each sentence to its Rust constant's NAME, over all
+five tables (the four in `refusals.js` plus `hud.js`'s move table, which is read
+off the live panel). Three checks — complete both ways, contains its keyword,
+and the keyword matches exactly ONE sentence in the table, which is what makes
+any transposition red rather than only some. 1597 → 1684 checks. `ui_mutants.sh`
+M31–M34 are the executable version: the judge's mutation verbatim, a JS
+transposition each side, and softening a keyword. M28's anchor was stale (its
+lines moved to `refusals.js`, so it matched zero times and the script was red on
+a clean tree) — re-anchored, not deleted.
+
+What it still does not do: read English. A wrong sentence containing its own
+keyword passes. The ORDER is walled; the prose is not.
+
+**All six ranked gaps in both reports are `crates/`/wire work this lane must not
+touch** — the satchel's raid verb + a structure-damage path into `build::hp`,
+the bow, shore barrels as a second destination class, `jump`, and the wipe.
+Unclaimed, and the two judges rank them above everything else in the repo.
+
 ## 0c3 · RECOVERY (systems lane): the same red, and it was propagation *(done this pass)*
 
 `ci/gates.sh` was red on this lane's clean tree at `ui smoke`, same assertion in

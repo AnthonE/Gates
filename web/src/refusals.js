@@ -29,14 +29,23 @@
  * agree vacuously), the JS length equals the Rust count, every code indexes a
  * non-empty string, no two codes share a sentence, the accessor never falls
  * through to `code N` for a code the sim has, and it DOES fall through past
- * the end. All of that is satisfied by a placeholder — a sentence that exists
- * and is distinct is not a sentence that MEANS the refusal, and no gate here
- * reads English. The walk catches the class that actually shipped twice (a
- * table shorter than the sim), and it is deliberately not claimed to catch a
- * wrong-but-well-formed string. Read it as a length-and-liveness wall.
+ * the end. All of that is satisfied by a placeholder, and by something worse
+ * than a placeholder: correct sentences in the WRONG ORDER. The judge of
+ * pass-20260805-111501-02 exchanged the values of `REFUSE_D_HEARTH` (10) and
+ * `REFUSE_D_DOOR` (11) in `deploy.rs`, touched nothing here, and the gate
+ * stayed green while a player placing on a missing hearth was told "no door
+ * there" — `CLAUDE.md`'s positional-payload trap, in this file.
  *
- * Adding a table: declare it below, add its row to §W's `TABLES`, and the walk
- * covers it. Do not restate one of these arrays at a call site.
+ * So §W also holds each sentence to its constant's NAME: a keyword per code
+ * which that sentence must contain and no other sentence in the table may.
+ * Any transposition is red by construction. It still reads no English — a
+ * wrong-but-well-formed sentence that happens to contain its keyword passes —
+ * but the ORDER, which is the part that actually shipped wrong, is walled.
+ *
+ * Adding a refusal: add the sentence at its code, and add its keyword to that
+ * table's `mean` in `ci/ui_smoke.mjs` — the gate is red until you do, on
+ * purpose. Adding a table: declare it below and add its row to §W's
+ * `REFUSAL_TABLES`. Do not restate one of these arrays at a call site.
  */
 
 /**
