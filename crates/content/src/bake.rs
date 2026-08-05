@@ -16,7 +16,7 @@ use sim_core::build::{
     BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
     SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
 };
-use sim_core::combat::{CombatContent, MeleeDef};
+use sim_core::combat::{CombatContent, MeleeDef, ThrowDef};
 use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
@@ -432,10 +432,13 @@ impl Content {
     /// weapon that silently cannot raid is the bug the column exists to
     /// prevent.
     ///
-    /// Only melee crosses in v0. Bow, firearm and throwable rows are
-    /// deliberately dropped here rather than half-baked: a projectile the
-    /// sim can read but not fire is a number that looks armed and is not
+    /// Melee and throwable cross. Bow and firearm rows are still
+    /// deliberately dropped rather than half-baked: a projectile the sim
+    /// can read but not fire is a number that looks armed and is not
     /// (combat.rs's scope note; `DECISIONS.md` §open, "melee combat v0").
+    /// The throwable stopped being one of those the tick `charge.rs`
+    /// landed — its `structure` is what the raid ratio divides wall hp by,
+    /// so leaving it out of the table was leaving the anchor unexecutable.
     pub fn bake_combat(&self) -> Result<CombatContent, String> {
         if self.items.len() > MAX_ITEM_DEFS {
             return Err(format!(
@@ -454,18 +457,13 @@ impl Content {
             return Err("bake: player_hp 0 would disarm combat entirely".to_string());
         }
         for w in &self.weapons {
-            if w.kind != WeaponKind::Melee {
+            if w.kind != WeaponKind::Melee && w.kind != WeaponKind::Throwable {
                 continue;
             }
             let idx = self
                 .item_index(&w.id)
                 .ok_or_else(|| format!("bake: weapon `{}` arms no item", w.id))?
                 as usize;
-            let damage = u16::try_from(w.damage)
-                .map_err(|_| format!("bake: `{}` damage {} overflows u16", w.id, w.damage))?;
-            if damage == 0 {
-                return Err(format!("bake: melee `{}` deals no damage", w.id));
-            }
             let reach_cm = w
                 .range_m
                 .checked_mul(100)
@@ -477,12 +475,45 @@ impl Content {
                     )
                 })?;
             if reach_cm == 0 {
-                return Err(format!("bake: melee `{}` has no reach", w.id));
+                return Err(format!("bake: `{}` has no reach", w.id));
             }
             let structure = u16::try_from(w.structure)
                 .map_err(|_| format!("bake: `{}` structure {} overflows u16", w.id, w.structure))?;
             if structure == 0 {
-                return Err(format!("bake: melee `{}` deals no structure damage", w.id));
+                return Err(format!("bake: `{}` deals no structure damage", w.id));
+            }
+            if w.kind == WeaponKind::Throwable {
+                // Seconds → ticks, the reach column's treatment: the
+                // division lives here so the sim reads an integer it never
+                // has to scale. A fuse that rounded to zero would blow the
+                // instant it was planted, which is a different verb.
+                let fuse_ticks = (w.fuse_s.unwrap_or(0))
+                    .checked_mul(TICK_HZ)
+                    .and_then(|t| u16::try_from(t).ok())
+                    .ok_or_else(|| {
+                        format!(
+                            "bake: `{}` fuse {} s overflows the wire's tick field",
+                            w.id,
+                            w.fuse_s.unwrap_or(0)
+                        )
+                    })?;
+                if fuse_ticks == 0 {
+                    return Err(format!("bake: throwable `{}` has no fuse", w.id));
+                }
+                if cc.throw[idx].structure != 0 {
+                    return Err(format!("bake: duplicate throwable row for `{}`", w.id));
+                }
+                cc.throw[idx] = ThrowDef {
+                    structure,
+                    fuse_ticks,
+                    reach_cm,
+                };
+                continue;
+            }
+            let damage = u16::try_from(w.damage)
+                .map_err(|_| format!("bake: `{}` damage {} overflows u16", w.id, w.damage))?;
+            if damage == 0 {
+                return Err(format!("bake: melee `{}` deals no damage", w.id));
             }
             if cc.melee[idx].damage != 0 {
                 return Err(format!("bake: duplicate weapon row for `{}`", w.id));

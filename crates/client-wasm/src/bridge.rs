@@ -15,10 +15,10 @@ use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_consume,
     encode_action_container, encode_action_craft, encode_action_deploy, encode_action_drink,
     encode_action_feed, encode_action_lock, encode_action_loot, encode_action_move,
-    encode_action_place, encode_action_repair, encode_action_respawn, encode_action_upgrade,
-    encode_action_use, encode_chat, encode_hello, peek_kind, Hello, CHAT_MAX_BYTES,
-    DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER,
-    SLOT_SYNC_BATCH,
+    encode_action_place, encode_action_repair, encode_action_respawn, encode_action_throw,
+    encode_action_upgrade, encode_action_use, encode_chat, encode_hello, peek_kind, Hello,
+    CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES,
+    PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS,
@@ -790,6 +790,75 @@ pub extern "C" fn client_action_repair(deploy: u32, cx: u32, cz: u32, level: u32
         )
         .map(|n| n as u32)
         .unwrap_or(0)
+    })
+}
+
+/// Plant the held throwable against the structure at the address
+/// (`charge.rs`). `client_action_repair`'s arguments exactly, including
+/// the leading store bit and its meaning: 0 for a built piece, 1 for a
+/// deployable.
+///
+/// Nothing is predicted, and here the reason is sharper than repair's.
+/// Whether the hand actually holds a charge, whether the wall is in reach,
+/// and whether the store has room are all the sim's verdicts; but the one
+/// that matters is that a *predicted* charge would draw a fuse burning on
+/// a wall that the server never armed, and the client would then have to
+/// un-draw an explosion. The refusal arrives as a `REFUSE_B_*` through
+/// `client_build_refusal_pop` — the same five codes repair uses, because
+/// they are the same five facts.
+#[no_mangle]
+pub extern "C" fn client_action_throw(deploy: u32, cx: u32, cz: u32, level: u32, loc: u32) -> u32 {
+    with(|b| {
+        encode_action_throw(
+            deploy != 0,
+            cx as u16,
+            cz as u16,
+            level as u8,
+            loc as u8,
+            &mut b.out_buf,
+        )
+        .map(|n| n as u32)
+        .unwrap_or(0)
+    })
+}
+
+/// The last planted charge's cell key (`cx << 16 | cz`); pair with
+/// `client_charge_info` and `client_charge_fuse`. Valid while
+/// `client_applied2() & APPLIED2_CHARGE` is set.
+#[no_mangle]
+pub extern "C" fn client_charge_key() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => ((core.charge_placed.0 as u32) << 16) | core.charge_placed.1 as u32,
+        None => 0,
+    })
+}
+
+/// That charge's `deploy << 16 | level << 8 | loc`, and its row in the
+/// high byte pair. Packed as `store << 24 | level << 16 | loc << 8 | row`
+/// — `EV_CHARGE_PLACED`'s own `b` field, unchanged, so a caller that
+/// already unpacks a struct hit unpacks this with the same shifts.
+#[no_mangle]
+pub extern "C" fn client_charge_info() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => {
+            (if core.charge_deploy { 1 << 24 } else { 0 })
+                | ((core.charge_placed.2 as u32) << 16)
+                | ((core.charge_placed.3 as u32) << 8)
+                | core.charge_placed.4 as u32
+        }
+        None => 0,
+    })
+}
+
+/// Ticks left on that charge's fuse at the moment it was planted. Never
+/// zero when the flag is set — the sim refuses a zero fuse and the decoder
+/// refuses one on the wire — so a zero here means no charge has landed
+/// yet, not a charge about to blow.
+#[no_mangle]
+pub extern "C" fn client_charge_fuse() -> u32 {
+    with(|b| match &b.core {
+        Some(core) => core.charge_placed.5 as u32,
+        None => 0,
     })
 }
 

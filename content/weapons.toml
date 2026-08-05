@@ -75,3 +75,11 @@ structure = 500
 headshot_mult = 1
 rate_per_min = 10
 range_m = 10
+# Seconds between planting the charge and the blast. The only field that
+# is the throwable's alone: every other column above is shared with the
+# melee rows, and a fuse has no meaning on a swing, so `validate` requires
+# it here and refuses it everywhere else. It is what makes the raid a
+# commitment rather than a click — you are standing at the wall you are
+# breaking, and the defender gets the same seconds you do.
+# Proposed default, DECISIONS.md §open ("satchel fuse v0").
+fuse_s = 10

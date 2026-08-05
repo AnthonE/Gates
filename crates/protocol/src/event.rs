@@ -156,6 +156,12 @@ const SUB_CONT_SYNC: u32 = 38;
 /// Broadcast, and `SUB_STRUCT_HIT`'s mirror image field for field, so the
 /// two writers of a client's hp mirror read the same.
 const SUB_PIECE_REPAIRED: u32 = 39;
+/// A charge was planted and its fuse is burning (`EV_CHARGE_PLACED`, wire
+/// v23). Broadcast, and that is the whole point of it: a burning fuse is
+/// the one fact in this game the *defender* needs more urgently than the
+/// actor. `SUB_PIECE_REPAIRED`'s address layout, with the fuse where its
+/// `healed`/`hp` pair sits.
+const SUB_CHARGE_PLACED: u32 = 40;
 /// The highest live subtype, named rather than counted — `world.rs`'s
 /// `EV_MAX` discipline applied to the wire half.
 ///
@@ -165,7 +171,7 @@ const SUB_PIECE_REPAIRED: u32 = 39;
 /// probe of a **live** code — it caught it here only because the new
 /// decoder arm rejected its all-zero payload, which is luck, not a gate.
 /// Deriving the probe from this constant is what makes it stay a probe.
-const SUB_MAX: u32 = SUB_PIECE_REPAIRED;
+const SUB_MAX: u32 = SUB_CHARGE_PLACED;
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
 /// worst shape of wire drift there is, since both ends would agree on
@@ -458,6 +464,24 @@ pub enum EventMsg {
         row: u8,
         healed: u16,
         hp: u16,
+    },
+    /// A satchel charge is stuck to the structure at the address and will
+    /// blow in `fuse` ticks (broadcast). `PieceRepaired`'s address, field
+    /// for field, so a client already drawing hits and mends on a wall
+    /// learns no new layout to draw a countdown on one.
+    ///
+    /// `fuse` is what remains, not the tick it fires on: a client that
+    /// joined mid-fuse has no shared tick origin to subtract from. It is
+    /// never zero — a zero-fuse charge is refused at bake — so a zero here
+    /// is forged and refuses at both ends.
+    ChargePlaced {
+        deploy: bool,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        row: u8,
+        fuse: u16,
     },
     /// Decay or a raid removed the piece at the address (broadcast;
     /// in-progress piece walks restart server-side).
@@ -975,6 +999,50 @@ pub fn encode_event_piece_repaired(
     w.write(row as u32, row_bits)?;
     w.write(healed as u32, 16)?;
     w.write(hp as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// Encode a planted charge. `encode_event_piece_repaired`'s address
+/// prologue verbatim — including the row-width rule the store bit selects
+/// — with one 16-bit fuse where its two payload fields sit.
+///
+/// `fuse == 0` is refused at both ends for `healed == 0`'s reason: the sim
+/// cannot announce a charge that blows the instant it is planted (the bake
+/// refuses a zero fuse), so a zero on the wire is forged, and a client
+/// that accepted one would draw a countdown that never counts.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_event_charge_placed(
+    deploy: bool,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    row: u8,
+    fuse: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let row_bits = if deploy {
+        DEPLOY_ROW_BITS
+    } else {
+        PIECE_ROW_BITS
+    };
+    if cx as usize >= MAX_BUILD_COORD
+        || cz as usize >= MAX_BUILD_COORD
+        || level as usize >= MAX_BUILD_LEVELS
+        || loc > LOC_EDGE_N
+        || (row as u32) >= (1 << row_bits)
+        || fuse == 0
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_CHARGE_PLACED)?;
+    w.write_bit(deploy)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    w.write(row as u32, row_bits)?;
+    w.write(fuse as u32, 16)?;
     Ok(w.finish())
 }
 
@@ -1820,6 +1888,34 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 row,
                 healed,
                 hp,
+            }
+        }
+        SUB_CHARGE_PLACED => {
+            let deploy = r.read_bit()?;
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            let row = r.read(if deploy {
+                DEPLOY_ROW_BITS
+            } else {
+                PIECE_ROW_BITS
+            })? as u8;
+            let fuse = r.read(16)? as u16;
+            // The encoder's refusals, restated — `PieceRepaired`'s arm
+            // exactly, minus the pair it does not carry. `row` needs no
+            // bound: the width the store bit selected is its domain.
+            if loc > LOC_EDGE_N || fuse == 0 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::ChargePlaced {
+                deploy,
+                cx,
+                cz,
+                level,
+                loc,
+                row,
+                fuse,
             }
         }
         SUB_PIECE_DEFS => {
@@ -3170,6 +3266,10 @@ mod wire_domains {
         Module {
             file: "build.rs",
             src: include_str!("../../sim-core/src/build.rs"),
+        },
+        Module {
+            file: "charge.rs",
+            src: include_str!("../../sim-core/src/charge.rs"),
         },
         Module {
             file: "collide.rs",

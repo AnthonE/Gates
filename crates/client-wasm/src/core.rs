@@ -157,6 +157,21 @@ pub const APPLIED2_MOVE: u32 = 1 << 0;
 /// container otherwise.
 pub const APPLIED2_CONT: u32 = 1 << 1;
 
+/// A satchel charge was planted somewhere in the world and its fuse is
+/// burning — `EventMsg::ChargePlaced`. Re-read `client_charge_key`,
+/// `client_charge_info` and `client_charge_fuse`.
+///
+/// It lands in word 1 rather than word 0 for a reason worth writing down:
+/// **word 0 is full.** Bit 30 is `APPLIED_RESPAWN` and bit 31 is not an
+/// applied-flag at all — it is `client_on_stream`'s error sentinel sharing
+/// the return — so this word is where the next flag was always going to
+/// go, and this is the first one to arrive since it was opened.
+///
+/// Broadcast like the event behind it, so most of these are somebody
+/// else's charge on somebody else's wall. That is the point rather than a
+/// caveat: the charge you most need drawn is the one you did not plant.
+pub const APPLIED2_CHARGE: u32 = 1 << 2;
+
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
 /// (`MAX_SLOT_LIVES` covers every slot a seed produces); a server-driven
@@ -728,6 +743,12 @@ pub struct ClientCore {
     /// a row the defs have not arrived for yet reports `max = 0`, and the
     /// caller draws nothing rather than a lie.
     pub struct_hit: (u16, u16, u8, u8, u16, u16),
+    /// The last charge planted: (cx, cz, level, loc, row, fuse ticks). The
+    /// store bit rides in `charge_deploy` beside it rather than inside the
+    /// tuple, because a caller drawing a countdown on a wall needs the
+    /// address first and the store only to pick which mesh to stick it to.
+    pub charge_placed: (u16, u16, u8, u8, u8, u16),
+    pub charge_deploy: bool,
     /// The last stock ack: hearth address, rows, live row count.
     pub stock_addr: (u16, u16, u8),
     pub stock: [(u16, u32); HEARTH_STOCK_ROWS],
@@ -833,6 +854,8 @@ impl ClientCore {
             pending_door: None,
             removed_addr: (0, 0, 0, 0),
             struct_hit: (0, 0, 0, 0, 0, 0),
+            charge_placed: (0, 0, 0, 0, 0, 0),
+            charge_deploy: false,
             stock_addr: (0, 0, 0),
             stock: [(0, 0); HEARTH_STOCK_ROWS],
             stock_count: 0,
@@ -1221,6 +1244,24 @@ impl ClientCore {
                 // off: nobody was struck.
                 self.struct_hit = (cx, cz, level, loc, hp, hp);
                 flags |= APPLIED_STRUCT_HIT;
+            }
+            EventMsg::ChargePlaced {
+                deploy,
+                cx,
+                cz,
+                level,
+                loc,
+                row,
+                fuse,
+            } => {
+                // Recorded, not predicted, and it touches neither store: a
+                // charge is not a piece and not a deployable, so nothing
+                // here adds to a mirror that a sync walk would then
+                // disagree with. It is a fact with a clock on it, and the
+                // renderer's job is to draw the clock running down.
+                self.charge_placed = (cx, cz, level, loc, row, fuse);
+                self.charge_deploy = deploy;
+                self.applied2 |= APPLIED2_CHARGE;
             }
             EventMsg::PieceRemoved { cx, cz, level, loc } => {
                 if self
