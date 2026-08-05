@@ -13,7 +13,7 @@
 
 use crate::collide::{self, ColIndex};
 use crate::fmath::floor_i32;
-use crate::input::{InputFrame, BTN_SPRINT};
+use crate::input::{InputFrame, BTN_JUMP, BTN_SPRINT};
 use crate::occupy::Occupants;
 use crate::terrain::{self, CLIFF_SLOPE_RATIO, ISLAND_SIZE, SEA_LEVEL};
 use crate::yaw_lut::yaw_dir;
@@ -33,6 +33,25 @@ pub const SPRINT_SPEED: f32 = 5.5;
 pub const GRAVITY: f32 = 20.0;
 pub const TERMINAL_VELOCITY: f32 = 50.0;
 pub const STEP_UP: f32 = 0.6;
+/// Launch velocity of a jump, m/s (DECISIONS.md §open, jump verb v0).
+///
+/// Derived from the two constants it sits between, not chosen for feel. The
+/// apex is `JUMP_SPEED²/(2·GRAVITY)` = 1.22 m, and it has to clear one bound
+/// and stay under the other:
+///
+/// - **Above `STEP_UP` (0.6 m)**, or the verb does nothing walking cannot
+///   already do — the capsule steps 0.6 m for free, so a jump that peaks
+///   below it is an animation. 1.22 m is 2× it, and clears the 0.6 m step
+///   plus a foundation's `PIECE_LIFT_M` (0.3 m) together.
+/// - **Well under `build::LEVEL_H_M` (3.0 m)**, or a wall stops being a wall
+///   and the entire build/raid premise goes with it. 1.22 m is 41% of a
+///   storey, so no piece is ever cleared by jumping and no interior ceiling
+///   is reachable from its own floor.
+///
+/// Both bounds are asserted against those constants in `tests/jump.rs`
+/// rather than left to this comment, so moving `STEP_UP` or `LEVEL_H_M`
+/// without re-deriving this reddens rather than drifts.
+pub const JUMP_SPEED: f32 = 7.0;
 pub const WADE_SPEED_MULT: f32 = 0.5;
 /// Ground at or below this height counts as wading (alpha swim = slow
 /// wade, TERRAIN.md §3).
@@ -183,7 +202,20 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
     // (piece_ground's lid), so a floor overhead is a ceiling, not a lift.
     let ground = terrain::height(seed, nx, nz).max(collide::piece_ground(seed, cols, nx, nz, y));
     let mut ny = y;
-    if body.grounded && ground - y <= STEP_UP && y - ground <= STEP_UP {
+    // A jump is the one thing that takes a *grounded* body off the snap and
+    // onto the ballistic path. `grounded` is the whole gate: it is recomputed
+    // at the bottom of every step and is false for the entire arc, so a held
+    // button cannot double-jump — the second press is simply not grounded.
+    // Landing re-arms it, which makes a held button a hop on every touchdown.
+    // That is the genre's behaviour and it buys no speed here, because this
+    // capsule has no air-control penalty and no ground friction to escape:
+    // horizontal speed is `WALK_SPEED`/`SPRINT_SPEED` in the air exactly as
+    // it is on the ground.
+    let jumping = body.grounded && frame.buttons & BTN_JUMP != 0;
+    if jumping {
+        vy = JUMP_SPEED;
+    }
+    if !jumping && body.grounded && ground - y <= STEP_UP && y - ground <= STEP_UP {
         ny = ground;
         vy = 0.0;
     } else {

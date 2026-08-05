@@ -66,6 +66,33 @@ in the wrong file: beach skirts are thin — 1.19 elements a tile against
 inland's 5.27 — because `scatter` puts 0.22 prop centres a tile on the coast
 against 0.95 inland, not because the skirt thins itself. The two ratios match
 to a tenth. That is the scatter table, not `terrain.rs`'s skirt path.
+## 0r · The raid loop has offence now — what it still cannot do *(from `findings/pass-20260805-113001-02-judge.md` gap 1 and `-03-judge.md` gap 1, both ranked first)*
+
+Landed (systems): `sim-core/charge.rs` — plant the held throwable at an
+address, fuse from content, damage on the tick it runs out through the same
+`damage_piece`/`damage_deploy` a swing uses. `ACT_THROW`/`EV_CHARGE_PLACED`,
+`PROTO_VER` 23. Knobs in `DECISIONS.md` §open ("satchel fuse v0", "raid wire
+v23"). `bake_combat` no longer drops throwable rows, so `balance.toml`'s raid
+ratio finally divides by a number the sim holds.
+
+Remaining, in order:
+
+1. **No key plants one — the ui lane owns this.** `client_action_throw` and
+   `client_charge_{key,info,fuse}` are exported; nothing in `web/src` calls
+   them and nothing draws a countdown on a charged wall. `APPLIED2_CHARGE`
+   is the flag to poll. Without it the raid is gated and unplayed.
+2. **No blast radius** (systems). A charge damages only the address it was
+   planted on. Deliberate for v0 — it keeps the anchor's arithmetic exactly
+   `piece hp ÷ structure` — but it means raiding a base is per-wall, where
+   the reference blows a hole. Wants its own knob and a bounded multi-target
+   scan; `combat::raid`'s 3x3 column-index ring is the shape to copy.
+3. **Nothing is hurt by standing in one** (systems). `EV_CHARGE_PLACED` has
+   no player-damage half, so the defender's seconds are free to spend
+   standing on the charge. Fourth `DEATH_BY_*` if taken.
+4. **The action lane is full** (systems, register not work). `ACT_MAX` = 15.
+   The next C->S verb widens `ACTION_SUB_BITS` and regenerates all 74
+   goldens — read `the_action_lane_has_the_room_it_claims` before proposing
+   one.
 
 ## 0c3 · RECOVERY (systems lane): the same red, and it was propagation *(done this pass)*
 
@@ -655,8 +682,15 @@ What remains:
 
 ## 5 · Gameplay still missing, in rough order of what a player notices
 
-- **Jump.** Gravity is there, jump is not — and jump is what makes a lintel
-  matter. Wire change, so systems lane only.
+- **Jump — the sim half landed, the key does not exist yet (ui lane).**
+  `BTN_JUMP` (bit 3) and `JUMP_SPEED` ship and are gated (`tests/jump.rs`,
+  and the bots jump so it rides alloc/replay/parity), `PROTO_VER` is 22.
+  **Nothing presses it:** `web/src/input.js:193` assembles the button byte by
+  hand as `(sprint?1:0)|(primary?4:0)`, so the ui lane adds a Space keybind
+  and `|(jump?8:0)` there — one line, and until it lands jump is unreachable
+  in play. Prediction needs nothing: `predict.rs` runs the same
+  `movement::step`. The native client (`crates/client`) needs the same bit in
+  its own input path when §1 slice 1 lands.
 - **Ranged.** There is a revolver in `loot.barrel` and nothing to fire it.
   `salvage/ranged-v0` is a judged-**FAIL** attempt (wall 6, the wire
   drifted, reproduced executably). Read the report before rebuilding.
@@ -752,3 +786,25 @@ prevent. If a lane rebuilds any of these, start from the branch.
 
 Standing rule: anything a playtest breaks jumps this queue; anything a wall
 catches jumps the playtest.
+
+## 5c · The protocol golden has never fuzzed a button above bit 1 *(systems lane)*
+
+Found while landing jump (§5). `goldens.rs:262` draws the input fixture's
+`buttons` from `rng.next_bounded(4)`, so `v22_input_full.bin` exercises only
+`BTN_SPRINT` and `BTN_CROUCH`. `BTN_PRIMARY` has been outside that draw since
+M1 and `BTN_JUMP` is outside it now — the field is 8 bits wide either way, so
+the golden still pins the *layout* correctly and nothing is currently wrong on
+the wire. What it cannot see is a future encoder that masks or reorders the
+high nibble.
+
+Deliberately not fixed in the jump commit: widening the draw changes fixture
+bytes, and changing golden bytes for a reason unrelated to the version's
+meaning muddies the one signal wall 6 reads. It wants its own commit, where
+"the bytes moved because the fuzz widened" is the whole story — and that is a
+`PROTO_VER` judgement call, because the answer may be that a golden's fuzz
+range is not part of the wire contract at all and the bytes may move without a
+turn. Decide that first; it is the actual question.
+
+Same shape one level down: `decode_input` reads all 8 bits with no domain
+check, so bits 4–7 round-trip as meaningless buttons. That is §5b's forgery
+slack, not drift, and belongs with §5b's pass.

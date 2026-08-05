@@ -261,6 +261,35 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 }
             }
         }
+        // The fuse belongs to exactly one kind, checked both ways for the
+        // reason `ballistic` is: a throwable without one is a charge that
+        // never blows, and a fuse on a hatchet is a number nothing reads,
+        // which is how a content file starts lying about what it arms.
+        match w.kind {
+            WeaponKind::Throwable => {
+                if w.fuse_s.unwrap_or(0) == 0 {
+                    return Err(format!(
+                        "weapon `{}`: throwables need a nonzero fuse_s",
+                        w.id
+                    ));
+                }
+                // A throwable is the raid tool (balance.rs anchor 1) and
+                // the raid ratio divides wall hp by this column. Zero here
+                // would make that division meaningless *and* plant charges
+                // that take nothing off a wall.
+                if w.structure == 0 {
+                    return Err(format!(
+                        "weapon `{}`: the raid tool must deal structure damage",
+                        w.id
+                    ));
+                }
+            }
+            _ => {
+                if w.fuse_s.is_some() {
+                    return Err(format!("weapon `{}`: only throwables carry a fuse_s", w.id));
+                }
+            }
+        }
     }
 
     // Armor: item-backed, worn in the slot the item declares, sane range.
