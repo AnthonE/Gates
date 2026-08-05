@@ -57,7 +57,7 @@ const TICKS: u64 = 900;
 /// survival module's fields entering `state_hash` while the script left
 /// them all zero, and before that the death backpack's two zero-length
 /// store fields.
-const GOLDEN_FINAL_HASH: u64 = 0xA232_2ECF_032C_E3BA;
+const GOLDEN_FINAL_HASH: u64 = 0x2869_95C7_F9D2_BFA1;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

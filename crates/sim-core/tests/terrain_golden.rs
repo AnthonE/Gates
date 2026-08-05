@@ -10,7 +10,7 @@ const GOLDEN_SEED: u64 = 0x0047_4154_4553; // "GATES"
 
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
-const GOLDEN_TERRAIN_HASH: u64 = 0xFB51_6278_08A9_150E;
+const GOLDEN_TERRAIN_HASH: u64 = 0xD16B_C36C_BC4B_D03C;
 
 #[test]
 fn test_terrain_golden() {

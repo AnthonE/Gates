@@ -35,6 +35,7 @@ const CH_COAST: u32 = 32;
 const CH_MOIST: u32 = 40;
 const CH_RIDGE: u32 = 48;
 const CH_SCATTER: u32 = 64;
+const CH_CLUMP: u32 = 72; // +octave index, 3 octaves
 
 // Generator shape (DECISIONS.md §open: worldgen shape params, golden-pinned).
 const RELIEF_FREQ: f32 = 1.0 / 600.0;
@@ -53,6 +54,43 @@ const RIDGE_FREQ: f32 = 1.0 / 220.0;
 const RIDGE_AMP: f32 = 16.0;
 const RIDGE_START_H: f32 = 52.0;
 const RIDGE_FULL_H: f32 = 80.0;
+
+// The grove/clearing field (`clump`, DECISIONS.md §open: scatter clumping v0).
+/// Base wavelength of the field in meters — the size of one grove, and of
+/// one clearing. Derived from the thing it has to change rather than
+/// chosen: the measurement that says our forest is an orchard counts trees
+/// in a 40 m window, so the field has to be wide enough that a window sits
+/// mostly inside one grove or one clearing rather than averaging several.
+/// 96 m is twelve scatter cells and 2.4 windows; two octaves down it is
+/// still 24 m, so a grove has an edge instead of a contour.
+const CLUMP_FREQ: f32 = 1.0 / 96.0;
+/// `SPAWN.md` §9.3 asks for "a cheap 2–3 octave value-noise channel"; the
+/// top of that range, because the third octave is what stops a clearing
+/// from being an ellipse.
+const CLUMP_OCTAVES: u32 = 3;
+/// Stretch on the fBm before it is remapped to [0, 1] — the same job
+/// `RELIEF_GAIN` does for height, for the same reason (fBm output clusters
+/// well inside [-1, 1]). Above ~2.9 the field spends most of its area
+/// clamped at one rail or the other, which is a stencil, not a field.
+const CLUMP_GAIN: f32 = 2.4;
+/// What a clearing keeps. Not zero: a bald clearing is as unlike the
+/// reference as an orchard, and the roll still has to be able to put a
+/// rock in one. At 0.15 the floor survives the square as 0.0225 before
+/// normalization — a clearing runs at roughly a twentieth of a grove.
+const CLUMP_FLOOR: f32 = 0.15;
+/// Reciprocal of the island mean of the squared factor, so the field
+/// redistributes density without changing how much of it there is —
+/// `TERRAIN.md` §6's live-slot band is a budget, and a texture change is
+/// not allowed to spend it. Derived by measurement, not chosen, and
+/// `tests/scatter.rs` re-derives it independently and fails if the mean has
+/// drifted off 1.0 (the same discipline `Haven::relief` carries).
+///
+/// Measured: the squared factor means 0.3699 / 0.3695 / 0.3692 / 0.3734 on
+/// seeds 0, 1, 7 and 12345 over the 65,536-sample 8 m grid. 2.70 is the
+/// reciprocal of the middle of that, and inside 1% of all four — the
+/// residual is the field's own seed-to-seed wobble, which no single
+/// constant can take out and which the gate's tolerance carries instead.
+const CLUMP_NORM: f32 = 2.70;
 
 /// 8 gradient directions, unit length; diagonals use the std constant
 /// √2/2 — a constant, not a runtime trig call (TERRAIN.md §0).
@@ -165,6 +203,40 @@ pub fn slope(seed: u64, x: f32, z: f32) -> f32 {
 /// Moisture channel in ~[-1, 1] (TERRAIN.md §1 stage 5).
 pub fn moisture(seed: u64, x: f32, z: f32) -> f32 {
     fbm(seed, CH_MOIST, x, z, MOIST_FREQ, 2)
+}
+
+/// The grove/clearing field: a multiplier on the scatter weight row, mean 1
+/// over the island (TERRAIN.md §1 stage 9, `reference/SPAWN.md` §9.3).
+///
+/// This is the whole of our answer to the one defect that file calls "the
+/// highest-value item" in it. The reference gets clumping from a stateful
+/// sampler — `ClusterSizeMin..Max` objects drawn out of one quadtree leaf,
+/// braked by a 20 m local density cap (`SPAWN.md` §3.4) — and we cannot
+/// have that: `scatter` is a pure function of one cell and must stay one,
+/// or every caller that resolves a cell on demand (the client bridge, per
+/// chunk) has to resolve the island instead. So the clumping moves from the
+/// sampler into the *weight*: a cell still decides alone, but what it
+/// decides against is a low-frequency field shared with its neighbours.
+/// Groves where the field is high, clearings where it is low, still O(1),
+/// still one hash draw per cell, one extra fBm read.
+///
+/// Measured on the tree field before it existed: inside the forest biome,
+/// the variance of the tree count in a 40 m window was 1.05x the
+/// independent-draw null on the shipped seed (0.98–1.05 over three seeds),
+/// and 3 windows in 10,000 were empty. That is white noise with a number on
+/// it — `TERRAIN.md` §1 stage 6 asks forest for "cover, low visibility" and
+/// an independent draw delivers an orchard. `tests/scatter.rs` gates both
+/// halves of the fix against that same closed-form null.
+pub fn clump(seed: u64, x: f32, z: f32) -> f32 {
+    let n = fbm(seed, CH_CLUMP, x, z, CLUMP_FREQ, CLUMP_OCTAVES);
+    let t = (n * CLUMP_GAIN * 0.5 + 0.5).clamp(0.0, 1.0);
+    let f = CLUMP_FLOOR + (1.0 - CLUMP_FLOOR) * t;
+    // Squared, per `SPAWN.md` §9.4: the reference accepts a decor candidate
+    // with probability `factor²`, so marginal ground thins out quadratically
+    // and an edge reads as a gradient with a soft tail instead of a step at
+    // the threshold. The same multiply here is what makes a grove edge ragged
+    // rather than a contour line of the noise field.
+    f * f * CLUMP_NORM
 }
 
 /// The four alpha biomes (TERRAIN.md §1 stage 6). Data, not behavior.
@@ -829,10 +901,20 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
 
     if occupant == Occupant::None {
         let row = &table.weights[biome(hy, moisture(seed, x, z)) as usize];
+        // The grove/clearing field scales the whole row, not the tree entry
+        // alone: a clearing is a clearing, not a clearing with the rocks
+        // left standing in it. It also leaves the mix a biome draws
+        // untouched, so the content pass (M1) still owns composition and
+        // this owns only how much of it stands where.
+        //
+        // Deliberately below the road and the pad: a shoulder barrel is the
+        // road's own rate (`ROAD_BARREL_PERMILLE`) and a pad crate is
+        // authored, and neither is weather. Only the biome draw is.
+        let g = clump(seed, x, z);
         let roll = (h % 1000) as u16;
         let mut acc = 0u16;
         for (i, w) in row.iter().enumerate() {
-            acc += w;
+            acc += floor_i32(*w as f32 * g).clamp(0, 1000) as u16;
             if roll < acc {
                 occupant = match i {
                     0 => Occupant::Tree,
