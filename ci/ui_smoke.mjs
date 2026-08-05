@@ -2853,11 +2853,12 @@ check(
     " container that is already gone. This is an ORDERING check and the ordering is the whole trap",
 );
 check(
-  (mainSrc.match(/client_action_container\(/g) || []).length === 2,
+  (mainSrc.match(/client_action_container\(/g) || []).length === 3,
   `main.js calls client_action_container from ${(mainSrc.match(/client_action_container\(/g) || []).length}` +
-    " places, expected 2 (the open, and the close that rides with the inventory) — the close must reach the" +
-    " SIM and not just the screen, or the server keeps unicasting a container's contents to a player who put" +
-    " it away",
+    " places, expected 3 (the bag open, the box open, and the close that rides with the inventory) — the" +
+    " close must reach the SIM and not just the screen, or the server keeps unicasting a container's contents" +
+    " to a player who put it away. The count was 2 until 2026-08-05; §P is the coverage the third one brought" +
+    " with it, per the standing rule that a call site joins this file's world only alongside its own checks",
 );
 check(
   !/hud\.(openContainer|closeContainer)\(/.test(
@@ -2866,6 +2867,219 @@ check(
   "main.js's open-container key draws the panel itself — the view arrives as ContSync on the event lane and" +
     " the server decides whether it opens at all, so drawing on the keypress predicts visibility rather than" +
     " contents",
+);
+
+// =============================================================================
+// P. the box's address — a bit layout mirrored across the wall
+// =============================================================================
+// A death backpack has an id. A deployed box does not: it is addressed by its
+// grid cell, packed into the one `u32` handle the open and move commands carry
+// by `deploy.rs`'s `box_key`. So opening a box means mirroring a bit layout in
+// JS, and CLAUDE.md's trap list is explicit that this is where the reference
+// ecosystem actually bled.
+//
+// What makes THIS layout worse than the average mirror, and the reason the
+// previous pass refused to write it without this section: `box_key` packs
+// `cx << 16 | cz << 4`, and every other packing this client touches packs
+// `cx << 16 | cz` — `deployChanges` word 0 (`bridge.rs:393`), the `deployRecs`
+// map key (`main.js`), `client_removed_key`, `gather::cell_key`. The habitual
+// form is the WRONG one here and it is wrong by twelve bits, which is not a
+// crash but a handle naming a real box in a different cell. Every wall in this
+// repo is blind to it: the handle is one opaque `u32` whose bytes the encoder
+// never inspects (`test_protocol_golden` green), the client's arithmetic is not
+// in `state_hash` (`test_replay` green), and every field is an integer (clippy
+// green). Nothing else can catch this.
+//
+// So the layout is stated ONCE as data in `invmove.js`'s `BOX_KEY_LAYOUT`, and
+// the checks below read the same three numbers back out of `deploy.rs` — this
+// section does not restate the client's opinion and compare it to itself, which
+// is the gate-that-matches-nothing class this file has already shipped twice.
+const { BOX_KEY_LAYOUT, boxKey, MAX_BUILD_COORD, MAX_BUILD_LEVELS } = await import(
+  pathToFileURL(path.join(root, "web/src/invmove.js")).href
+);
+const deploySrc = fs.readFileSync(
+  path.join(root, "crates/sim-core/src/deploy.rs"),
+  "utf8",
+);
+// Anchored at the `fn`, same reason `rustConst` and §N's parameter read are: a
+// doc comment quoting the packing must not be able to stand in for it, and the
+// doc comment directly above `box_key` quotes `cx << 16 | cz` — the WRONG
+// packing, named there precisely to contrast with it. Unanchored, this section
+// could gate the client against the very form it exists to rule out.
+const boxKeyBody = deploySrc.match(
+  /^pub fn box_key\([^)]*\)\s*->\s*u32\s*\{([\s\S]*?)\n\}/m,
+)?.[1];
+const rsCxShift = Number(boxKeyBody?.match(/\(cx as u32\)\s*<<\s*(\d+)/)?.[1]);
+const rsCzShift = Number(boxKeyBody?.match(/\(cz as u32\)\s*<<\s*(\d+)/)?.[1]);
+const rsLevelMask = Number(
+  boxKeyBody?.match(/level as u32\s*&\s*(0x[0-9a-fA-F]+|\d+)/)?.[1],
+);
+check(
+  typeof boxKeyBody === "string" &&
+    Number.isInteger(rsCxShift) &&
+    Number.isInteger(rsCzShift) &&
+    Number.isInteger(rsLevelMask),
+  `could not read box_key's packing out of deploy.rs (cx<<${rsCxShift}, cz<<${rsCzShift}, level&${rsLevelMask})` +
+    " — every check below would then compare the client's layout against nothing, which is the" +
+    " gate-that-matches-nothing class this section exists to avoid",
+);
+// Exactly two `|` in the body, so a FOURTH field added to the address on the
+// Rust side lands red here on the commit that adds it. Without this a new term
+// is invisible: the three the client mirrors keep matching, and the client
+// keeps forming a handle that is now missing a component.
+check(
+  (boxKeyBody.match(/\|/g) || []).length === 2,
+  `deploy.rs's box_key ORs ${(boxKeyBody.match(/\|/g) || []).length} times, expected 2 (cx, cz, level) —` +
+    " a field was added to the box address and the client's mirror does not carry it, so every handle it" +
+    " forms names a different box than the one the player is standing at",
+);
+check(
+  BOX_KEY_LAYOUT.cx_shift === rsCxShift &&
+    BOX_KEY_LAYOUT.cz_shift === rsCzShift &&
+    BOX_KEY_LAYOUT.level_mask === rsLevelMask,
+  `invmove.js BOX_KEY_LAYOUT ${JSON.stringify(BOX_KEY_LAYOUT)} is not deploy.rs's box_key packing` +
+    ` (cx<<${rsCxShift} | cz<<${rsCzShift} | level&${rsLevelMask}) — the client would open, and then move` +
+    " items into, a box in a different grid cell than the one the player is standing at",
+);
+
+// The function against RUST's numbers, not against the client's own constant —
+// so a mirror that packed correctly from a wrong layout, or read the layout and
+// then ignored it, both land red. Probes chosen so every wrong shift is a
+// different number: cx and cz are distinct and non-zero (a transposition
+// shows), the level is non-zero (a dropped `| level` shows), and the pair is
+// asymmetric.
+const rsBoxKey = (cx, cz, level) =>
+  (((cx << rsCxShift) | (cz << rsCzShift) | (level & rsLevelMask)) >>> 0);
+for (const [cx, cz, level] of [
+  [5, 9, 3],
+  [9, 5, 3],
+  [1, 0, 0],
+  [0, 1, 0],
+  [0, 0, 1],
+  [MAX_BUILD_COORD, MAX_BUILD_COORD, MAX_BUILD_LEVELS - 1],
+]) {
+  check(
+    boxKey(cx, cz, level) === rsBoxKey(cx, cz, level),
+    `invmove.boxKey(${cx}, ${cz}, ${level}) = ${boxKey(cx, cz, level)}, but deploy.rs's box_key packs` +
+      ` ${rsBoxKey(cx, cz, level)} — the handle names a box the player is not standing at`,
+  );
+}
+// The near-miss, named outright. `cx << 16 | cz` is the packing this client
+// uses everywhere else, it is one line away in `main.js` (the `deployRecs` key
+// unpacked from `deployChanges`), and for a box it is wrong. Pinning that the
+// two DIFFER is what catches the mirror being "corrected" into the house style.
+check(
+  boxKey(5, 9, 3) !== (((5 << 16) | 9) >>> 0),
+  "invmove.boxKey packs cx<<16|cz — the cell_key form used everywhere else in this client, and the one" +
+    " form box_key deliberately is not (its own doc says so). Every handle would be short by cz<<4",
+);
+
+// The three fields only stay disjoint while the coordinates respect the limits
+// Rust declares. `cz` sits at bits 4.. and `cx` starts at bit 16, so a `cz`
+// past 4095 carries straight into `cx`'s field and silently names another cell.
+// That is not hypothetical maintenance: it is one edit to `MAX_BUILD_COORD`
+// away, and nothing else in the repo would notice.
+for (const [name, js] of [
+  ["MAX_BUILD_COORD", MAX_BUILD_COORD],
+  ["MAX_BUILD_LEVELS", MAX_BUILD_LEVELS],
+]) {
+  const m = limitsSrc.match(new RegExp(`^pub const ${name}: \\w+ = ([\\d_]+);`, "m"));
+  const rs = m ? Number(m[1].replace(/_/g, "")) : null;
+  check(
+    Number.isInteger(rs),
+    `could not read ${name} out of limits.rs — the box address's bounds would then be checked against` +
+      " nothing, which is the gate-that-matches-nothing class",
+  );
+  check(
+    js === rs,
+    `invmove.js ${name} (${js}) has drifted from limits.rs (${rs}) — boxKey would refuse addresses the sim` +
+      " accepts, or form ones it cannot decode",
+  );
+}
+check(
+  (MAX_BUILD_COORD << rsCzShift) < (1 << rsCxShift),
+  `cz at its ceiling (${MAX_BUILD_COORD}) shifted by ${rsCzShift} reaches bit ${rsCxShift} where cx begins —` +
+    " the build grid has outgrown box_key's packing, and two different cells now share one container handle",
+);
+check(
+  rsLevelMask < 1 << rsCzShift,
+  `box_key's level mask (${rsLevelMask}) overlaps cz at bit ${rsCzShift} — a box on an upper storey and a box` +
+    " in a neighbouring cell would share a handle",
+);
+check(
+  MAX_BUILD_LEVELS - 1 <= rsLevelMask,
+  `the top storey (${MAX_BUILD_LEVELS - 1}) does not fit box_key's level mask (${rsLevelMask}) — a box up` +
+    " there would be addressed as one on a lower floor",
+);
+
+// The refusals. An address off the grid must answer null rather than pack one
+// that aliases: `boxKey` is fed straight from `deployRecs`, whose fields are
+// unpacked from the wire, so "a record this client should not have" is a shape
+// it must be able to say no to. Non-integers matter for the same reason they
+// do in `moveArgs` — `undefined << 16` is 0, and 0 is a LEGAL handle here (a
+// box at cell (0,0) level 0), not a sentinel, so a silent coercion would open
+// a real box rather than fail.
+for (const [args, why] of [
+  [[MAX_BUILD_COORD + 1, 0, 0], "cx past the grid"],
+  [[0, MAX_BUILD_COORD + 1, 0], "cz past the grid"],
+  [[0, 0, MAX_BUILD_LEVELS], "a storey above the grid"],
+  [[-1, 0, 0], "a negative cx"],
+  [[0, -1, 0], "a negative cz"],
+  [[0, 0, -1], "a negative level"],
+  [[1.5, 0, 0], "a non-integer cx"],
+  [[undefined, 0, 0], "an undefined cx"],
+  [[0, undefined, 0], "an undefined cz"],
+  [[0, 0, undefined], "an undefined level"],
+]) {
+  check(
+    boxKey(...args) === null,
+    `invmove.boxKey(${args.join(", ")}) packed ${boxKey(...args)} for ${why} — an out-of-range field wraps` +
+      " into its neighbour's bits, so this would address a real box somewhere else on the island",
+  );
+}
+// And the corner that is NOT a refusal, pinned so nobody "fixes" it: cell
+// (0,0) level 0 packs to 0, which is a legal handle the sim decodes
+// (`deploy.rs`'s `box_index` has no zero guard). Biasing it here would put a
+// JS-only fudge inside an address Rust decodes.
+check(
+  boxKey(0, 0, 0) === 0,
+  `invmove.boxKey(0, 0, 0) = ${boxKey(0, 0, 0)}, expected 0 — a box at the grid origin is genuinely handle 0` +
+    " and biasing it on this side desynchronises the address from the one deploy.rs decodes",
+);
+
+// The call site. `main.js` must form the handle THROUGH `boxKey` and restate no
+// shift of its own — the whole defence above is worth nothing if the open verb
+// packs its own.
+const openBoxBody = mainSrc.match(/const tryOpenBox = \(\) => \{[\s\S]*?\n  \};/)?.[0];
+check(
+  typeof openBoxBody === "string",
+  "could not find main.js's tryOpenBox — the checks below would read undefined and pass on nothing," +
+    " the exact shape of the escaped mutant the 2026-08-05 report found in §N's call-site pin",
+);
+check(
+  /boxKey\(/.test(openBoxBody) && !/<<|>>|0x/.test(openBoxBody),
+  "main.js's tryOpenBox packs a handle itself instead of going through invmove.boxKey — a second place the" +
+    " layout is written is a second place it can be written wrong, and this one has no gate on it",
+);
+check(
+  /client_action_container\(\s*CONT_BOX\s*,/.test(openBoxBody),
+  "main.js's tryOpenBox does not open with CONT_BOX — a box opened as a bag is a kind the sim resolves" +
+    " against the wrong store",
+);
+check(
+  new RegExp(`deployDefs\\[[^\\]]*\\]\\s*!==\\s*ARCH_BOX`).test(openBoxBody),
+  "main.js's tryOpenBox does not filter on ARCH_BOX — E would form a box handle for a hearth or a door and" +
+    " the server would answer a container that is not there",
+);
+check(
+  !/hud\.(openContainer|closeContainer)\(/.test(openBoxBody),
+  "main.js's tryOpenBox draws the panel itself — the view arrives as ContSync on the event lane and the" +
+    " server decides whether it opens at all, so drawing on the keypress predicts visibility rather than contents",
+);
+check(
+  /!tryOpenBag\(\) && !tryOpenBox\(\)/.test(mainSrc),
+  "main.js's E key does not reach tryOpenBox — the verb exists and nothing calls it, which is the whole" +
+    " slice landing as dead code",
 );
 
 // =============================================================================
@@ -2882,7 +3096,9 @@ console.log(
     "addresses are (kind, slot): foreign verdict refused, rollback stays in its own container · " +
     `outbound marshalling ${JSON.stringify(MOVE_ARG_ORDER)} against bridge.rs, spread at the one call site · ` +
     `container panel: bag ${INV_SLOTS} / box ${BOX_SLOTS} against limits.rs, cross-container drag both ends, ` +
-    "close abandons what it cannot resolve, sync applied before the verdict",
+    "close abandons what it cannot resolve, sync applied before the verdict · " +
+    `box address cx<<${rsCxShift}|cz<<${rsCzShift}|level&${rsLevelMask} against deploy.rs, disjoint at the ` +
+    `limits.rs ceilings (${MAX_BUILD_COORD}/${MAX_BUILD_LEVELS}), off-grid refused, packed at one call site`,
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
