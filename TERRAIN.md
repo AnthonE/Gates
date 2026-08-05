@@ -125,6 +125,28 @@ Stages, in order — each cheap, each deterministic:
    is the systems lane's. `DECISIONS.md` §open "haven pad v0", "haven crates
    v0", "haven shelter v0" and "shelter volume v0" have the knobs and the
    measurements.
+   **The hook is now used, and the second tier cost no new search.** The
+   argmax above scores `HAVEN_CANDIDATES` bearings and keeps one; the other 63
+   passed the same land and road checks and lost on flatness by centimetres.
+   `WAYSTATIONS = 2` **waystations** are the best of those losers — recorded
+   by the scan that was already running, so no extra shoreline march, no extra
+   bisect and no extra `height` fan — each standing `WAYSTATION_CRATES = 2`
+   containers on a 6.5 m ring inside an 11 m exclusion zone, at least
+   `WAYSTATION_MIN_SEP_M = 600 m` from the pad and from each other. Same
+   archetype as the pad's containers, so no client, wire or protocol change
+   carries them.
+   **What makes it a tier rather than more crates is a gradient, and it is
+   const-asserted both ways**: the lesser tier in aggregate pays less than the
+   one destination (`WAYSTATIONS × WAYSTATION_CRATES < HAVEN_CRATES`, which is
+   what fixes the count at two), *and* it pays less per square metre. The
+   second half is not decoration — the first draft used a 10 m zone and two
+   crates in 314 m² beat five in 804 m², so the site with fewer containers was
+   the better square metre and a player optimizing loot-per-walk would have
+   skipped the haven. Every count was right; only the assert found it. The
+   radius is now derived from the inequality (`> √(2·256/5) = 10.12 m`) rather
+   than chosen. `tests/waystation.rs` measures all three tiers in one unit —
+   pad > waystation > shoulder — and `DECISIONS.md` §open "waystations v0" has
+   the knobs.
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same
@@ -336,8 +358,9 @@ The reads a survival map must produce, and which stage buys each:
 | clutter cells | 0.64 m (≈ 10 M cells; total coverage on land, streamed in 16 m tiles) |
 | biomes | 4 (beach/meadow/forest/highland) |
 | roads | 1 coast ring, ~4 m wide |
-| monuments | 0 — haven pad only; the pad carver is the future hook |
+| authored sites | 3 — one haven pad + 2 waystations, all on the ring |
 | pad containers | 5 crates on a 10 m ring, 2.64× the shoulder's density |
+| waystation containers | 2 crates on a 6.5 m ring, ≥ 600 m from every other site |
 | node respawn | 20–45 min jittered, privilege-vetoed **(knob)** |
 
 ### Stage 10 · Ground clutter — the layer below the scatter grid

@@ -130,6 +130,32 @@ of them. `event_roles.rs` covers part of this now; finish it.
 
 ---
 
+## 4b · The world lane: what the second tier left open
+
+*(From the ranked gaps of `pass-20260805-053501-01` §3 and `-02` §2 — "one
+place on the island worth walking to". `waystations v0` landed the placement
+half: 3 authored sites on the ring instead of 1, gated by
+`tests/waystation.rs`. What it did not close, in order:)*
+
+- **A destination still offers no verb you cannot perform at your own base.**
+  `-02`'s gap 2 names the recycler as the only one of `DESIGN.md` §2's three
+  fixtures not blocked on an operator act (bank is A2/A3, vendor is skins).
+  Container verb + `content/*.toml` yields — **systems lane**, and it is what
+  turns a loot gradient into a reason.
+- **The waystations are two crates on bare ground.** The pad got a greybox
+  when the judge found the clearing indistinguishable from natural scenery;
+  the lesser tier will read the same way once the novelty is gone. It wants a
+  silhouette, and it must be a *different* one — a second copy of
+  `HAVEN_SHELTER` makes the tiers look identical.
+- **The pad carve is still unbuilt** and is the one piece of TERRAIN §7/§8
+  that never got easier: `height` has ~80 call sites in four crates, so it is
+  a cross-lane change, not a detail. Sites are still *found* flat, not made.
+- **Nothing threatens you on the walk between them.** A circulation loop with
+  no risk on it is a longer commute. No AI module exists anywhere in
+  `crates/sim-core/src/`.
+
+---
+
 ## 5 · Gameplay still missing, in rough order of what a player notices
 
 - **Jump.** Gravity is there, jump is not — and jump is what makes a lintel
