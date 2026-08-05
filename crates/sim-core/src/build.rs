@@ -1363,6 +1363,69 @@ mod tests {
         (bc, pieces, nod, ev, p)
     }
 
+    /// `repair`'s doc comment owns a half-cell asymmetry — reach is taken at
+    /// `anchor`, which is where damage is taken, while `place_deploy` takes it
+    /// at the cell centre. It was documented and deliberate and it was
+    /// **ungated**, so a player who could place a door from a spot and not
+    /// mend it from the same spot reddened nothing
+    /// (`pass-20260805-074623-04-judge.md`, ranked fix 2).
+    ///
+    /// This pins the relation rather than the behaviour: for a plane the two
+    /// verbs measure to one identical point, and for an edge they are exactly
+    /// half a cell apart and no more. Whichever way a later pass resolves it —
+    /// move `repair` onto the centre, move `place_deploy` onto the anchor, or
+    /// keep both — it goes red here first and the new relation has to be
+    /// written down. The witness in the third block is the concrete cost:
+    /// 1.5 m of the 5 m reach, on the far side.
+    #[test]
+    fn repair_and_placement_measure_an_edge_from_points_half_a_cell_apart() {
+        let centre = crate::deploy::cell_center(CX, CZ);
+
+        for loc in [LOC_PLANE, LOC_RISER] {
+            assert_eq!(
+                anchor(CX, CZ, loc),
+                centre,
+                "loc {loc} sits on the plane: placement and repair must measure \
+                 reach to one point, so a deployed box is mendable from every \
+                 spot it was placeable from"
+            );
+        }
+
+        let half = BUILD_CELL_M * 0.5;
+        for loc in [LOC_EDGE_W, LOC_EDGE_N] {
+            let (ax, az) = anchor(CX, CZ, loc);
+            let (dx, dz) = (ax - centre.0, az - centre.1);
+            assert_eq!(
+                dx * dx + dz * dz,
+                half * half,
+                "loc {loc}: the two reach centres are {} m apart, not the half \
+                 cell repair's doc comment claims. The offset is the whole of \
+                 the asymmetry — if it moved, the doc is now wrong",
+                // squared, so this only formats on failure
+                dx * dx + dz * dz
+            );
+        }
+
+        // The witness: stand at the far edge of placement reach, on the side
+        // the anchor is offset away from. Placement is exactly in range;
+        // repair is half a cell out of it. Both verbs compare planar squared
+        // distance against BUILD_REACH_M, so this is their arithmetic.
+        let (ax, az) = anchor(CX, CZ, LOC_EDGE_W);
+        let (px, pz) = (centre.0 + BUILD_REACH_M, centre.1);
+        let place_d2 = (px - centre.0) * (px - centre.0) + (pz - centre.1) * (pz - centre.1);
+        let repair_d2 = (px - ax) * (px - ax) + (pz - az) * (pz - az);
+        assert!(
+            place_d2 <= BUILD_REACH_M * BUILD_REACH_M,
+            "the witness must be inside placement reach or it proves nothing"
+        );
+        assert!(
+            repair_d2 > BUILD_REACH_M * BUILD_REACH_M,
+            "a spot at the far edge of placement reach is out of repair reach \
+             by half a cell — if this is no longer true the asymmetry is gone \
+             and repair's doc comment should stop claiming it"
+        );
+    }
+
     /// The wall the whole verb exists to keep: a repaired piece stands at
     /// its baked row's hp and never a point more.
     ///

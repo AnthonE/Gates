@@ -726,7 +726,12 @@ pub fn box_drop_pos(seed: u64, cx: u16, cz: u16, level: u8) -> (f32, f32, f32) {
     (x, terrain::height(seed, x, z) + level as f32 * LEVEL_H_M, z)
 }
 
-fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
+/// The point `place_deploy` measures reach to, for every `loc`. `build.rs`
+/// measures `repair` to `build::anchor` instead, which is this point for a
+/// plane and half a cell off it for an edge; `pub(crate)` so the test that
+/// pins that relation can name both functions rather than re-deriving one of
+/// them and gating its own arithmetic.
+pub(crate) fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
     (
         cx as f32 * crate::build::BUILD_CELL_M + crate::build::BUILD_CELL_M * 0.5,
         cz as f32 * crate::build::BUILD_CELL_M + crate::build::BUILD_CELL_M * 0.5,
