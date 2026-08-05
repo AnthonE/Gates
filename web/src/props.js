@@ -484,6 +484,94 @@ export function shelterGeometry() {
   );
 }
 
+/**
+ * The waystation canopy as nine boxes: `[name, cx, cy, cz, sx, sy, sz]`,
+ * centre and full size, in the slot's own frame, y measured from the slot's
+ * ground. `HAVEN_SHELTER_PARTS`' format exactly.
+ *
+ * **The rows are `terrain::WAYSTATION_CANOPY_BOXES`, and `ci/waystation_canopy.mjs`
+ * refuses a drift between them.** The sim blocks a body against that table
+ * and this file draws this one; nothing in the Rust workspace can see a
+ * triangle and nothing in `web/` can see the sim, so the gate is the only
+ * thing standing between the two.
+ *
+ * It is an open canopy because it must not be a second shelter: a smaller
+ * copy of the same mass is not a second thing at silhouette range, it is the
+ * same thing further away. The pad's greybox is an enclosed 7 m block with a
+ * tower to 9.2 m — opaque and vertical. This is four thin posts under two
+ * stacked plates, 4.1 m at the finial, with no wall above knee height on
+ * three of four sides — transparent and horizontal. `terrain.rs`'s const
+ * block holds the two apart by number so a later edit that shrinks one into
+ * the other fails at the definition.
+ */
+export const WAYSTATION_CANOPY_PARTS = [
+  // name,       cx,   cy,    cz,   sx,   sy,   sz
+  ["deck", 0, -0.25, 0, 5.2, 0.5, 5.2],
+  ["post-nw", -2.2, 1.5, -2.2, 0.36, 3.0, 0.36],
+  ["post-ne", 2.2, 1.5, -2.2, 0.36, 3.0, 0.36],
+  ["post-sw", -2.2, 1.5, 2.2, 0.36, 3.0, 0.36],
+  ["post-se", 2.2, 1.5, 2.2, 0.36, 3.0, 0.36],
+  // The one solid side, knee high — the only thing here a body is stopped by
+  // that is not a post, and the only reason this reads as built rather than
+  // as four sticks.
+  ["parapet", 0, 0.55, -2.2, 4.4, 1.1, 0.36],
+  // Two stacked plates: the wide eave reads as shelter from underneath, the
+  // narrow cap gives the silhouette a second step so it is not one slab.
+  ["eave", 0, 3.15, 0, 5.6, 0.3, 5.6],
+  ["cap", 0, 3.55, 0, 3.6, 0.5, 3.6],
+  ["finial", 0, 3.95, 0, 0.5, 0.3, 0.5],
+];
+
+/** Height of the tallest point of the canopy, meters. */
+export const WAYSTATION_CANOPY_PEAK = WAYSTATION_CANOPY_PARTS.reduce(
+  (m, p) => Math.max(m, p[2] + p[5] * 0.5),
+  0,
+);
+
+/**
+ * The canopy's one colour band, ramped base-dark over the whole structure —
+ * `HAVEN_SHELTER_BAND`'s role, and here for the same reason: `albedoParts`
+ * reports it to `ci/browser_smoke.mjs`'s albedo gate, so a builder owning its
+ * colours privately would be scored on the archetype row's `0xffffff`.
+ *
+ * **Timber against the pad's stone, and that is a gated claim rather than a
+ * preference.** The two greyboxes are the only authored structures on the
+ * island and a player has to be able to tell which tier they are looking at.
+ * Mass does half of it (the const block in `terrain.rs`); material does the
+ * other half, and it is the half that survives at the range where a
+ * silhouette is a dark shape against sky. The pad's ramp is near-neutral
+ * stone — 8 and 13 levels of red-over-blue at its two ends — and this is
+ * openly warm at 40 and 56. `ci/waystation_canopy.mjs` holds the ratio at 3x
+ * or better, so re-greying this into the shelter's palette fails a gate
+ * rather than quietly costing the tier its identity.
+ */
+export const WAYSTATION_CANOPY_BAND = [
+  { part: "canopy", lo: 0x6b5b43, hi: 0xa08a68 },
+];
+
+/**
+ * The canopy as one baked buffer: nine boxes, 108 triangles, one draw call.
+ * `shelterGeometry` with the other table — vertex-coloured over a single
+ * base-dark ramp, because a greybox with no texture goes flat against the sky
+ * without a value gradient.
+ */
+export function canopyGeometry() {
+  return bakedGeometry(
+    WAYSTATION_CANOPY_PARTS.map(([part, cx, cy, cz, sx, sy, sz]) => {
+      const geo = new THREE.BoxGeometry(sx, sy, sz);
+      geo.translate(cx, cy, cz);
+      return {
+        part,
+        geo,
+        lo: WAYSTATION_CANOPY_BAND[0].lo,
+        hi: WAYSTATION_CANOPY_BAND[0].hi,
+        y0: -0.5,
+        y1: WAYSTATION_CANOPY_PEAK,
+      };
+    }),
+  );
+}
+
 // Scatter archetypes, indexed by sim-core Occupant (1..7). `surface` names
 // an authored PBR response in materials.js; `tint` is the amplitude of the
 // deterministic per-instance colour variation (0 = every instance alike).
@@ -533,6 +621,17 @@ export const ARCHETYPES = [
   // OCCUPANT_R_M[9]` and the same for the tops, so shrinking the crate below
   // this box fails at the definition rather than in a frame.
   { geo: () => new THREE.BoxGeometry(0.9, 0.55, 0.7), surface: "wood", lo: 0x6a5940, hi: 0x8b7255, y0: -0.275, y1: 0.275, lift: 0.275, tint: 0.1 },
+  // 12: the waystation's greybox (sim-core `Occupant::WaystationCanopy`).
+  // Row 10's shape — one slot, one structure, the whole thing as a single
+  // archetype's baked mesh — for the lesser tier, and deliberately NOT row
+  // 10's building: an open roof on posts against an enclosed block with a
+  // tower. `lift` is 0 because its deck sits flush with the slot's own
+  // ground rather than on a plinth, which is `WAYSTATION_CANOPY_FLOOR_IX`'s
+  // stated reason and not an oversight. The tint is inert at two instances
+  // and authored anyway, for row 10's reason: an exception for the
+  // one-of-a-kind case is one the next one-of-a-kind archetype inherits
+  // without earning it.
+  { geo: canopyGeometry, composite: true, surface: "wood", lo: 0xffffff, lift: 0, tint: 0.08 },
 ];
 
 /** Client-only archetype index for a felled pine's stump. */
@@ -560,6 +659,7 @@ export function albedoParts(k) {
   if (!a) return [];
   if (a.geo === pineGeometry) return PINE_BANDS;
   if (a.geo === shelterGeometry) return HAVEN_SHELTER_BAND;
+  if (a.geo === canopyGeometry) return WAYSTATION_CANOPY_BAND;
   return [{ part: a.surface, lo: a.lo, hi: a.hi }];
 }
 

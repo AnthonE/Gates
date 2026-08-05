@@ -15,6 +15,78 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0c3 · RECOVERY (systems lane): the same red, and it was propagation *(done this pass)*
+
+`ci/gates.sh` was red on this lane's clean tree at `ui smoke`, same assertion in
+both health runs, so not a flake. **The code was wrong and was already fixed** —
+the ui lane landed the sentence in `b2a48bc`, judged PASS, and it was in `main`
+before this pass started. `lane/systems` had simply not taken `main` since. So
+this lane's red was *propagation lag, not a second defect*, and the fix was to
+take `main` into the branch. Nothing reverted, nothing lost, and the ui lane's
+wording ("cannot be repaired") is not forked — duplicating it here with a
+different sentence is what would have conflicted.
+
+The standing hazard, which is this lane's to carry: **growing `REFUSE_B_*` is a
+two-file act and the second file is `web/`, which this lane may not touch.**
+`ui_smoke` §W walks the constants against `interact.js`, so a sim commit that
+adds a reason reddens *every* lane until the client half lands. Twice now (9,
+then 10). `build.rs` now says so at the constants themselves; the durable fix,
+if one is wanted, is a spoken call on whether the sentence table should be
+generated rather than mirrored — not invented here.
+
+**Expect next:** nothing was masked in the code tier — `ui smoke` is its last
+gate, so the green below is the whole tier. The renderer tier (`browser smoke`,
+`vantages`) has NOT run: tier `fast` for this whole run, and `browser_smoke` is
+off by operator act. If either is red it is still red, and an `all` run is where
+that surfaces.
+
+## 0c · RECOVERY: the refusal table fell one short again *(ui lane — done this pass)*
+
+`ci/gates.sh` was red on a clean tree at `ui smoke`: `build.rs` declares 11
+`REFUSE_B_*` reasons and `interact.js` carried 10 sentences. The CODE was
+wrong, not the gate — `REFUSE_B_UNPRICED` (10) landed from the sim lane in
+`65e5110` and this lane's table stayed where it was, so a repair refused on a
+piece whose baked row quotes no price would have reached the player as
+`code 10`. Fixed by adding the sentence ("cannot be repaired"); nothing was
+reverted and nothing was lost.
+
+Worth recording because the gate is now two-for-two on the same class: §W was
+written when `REFUSE_B_INTACT` (9) shipped as a bare number, and it caught the
+very next reason the sim grew, on the run that grew it. A count in prose rots
+the same way — `promptForBuild`'s comment said "nine reasons" and now names no
+number.
+
+**Nothing was masked behind it.** `ui smoke` is the last gate in the code tier,
+so the green run below it is the whole tier, not a fresh first-red. What has
+NOT run is the renderer tier (`browser smoke`, `vantages`) — off for this whole
+run at tier `fast`, not skipped by this pass. If either is red it is still
+red, and the next `all` run is where that shows up.
+
+## 0c2 · The same bug, one file over: `DEPLOY_REFUSE_TEXT` *(ui lane)*
+
+Found while scanning `65e5110` for other unmirrored constants, not built —
+§0c was a recovery pass and this is a feature-shaped fix.
+
+`main.js:160` holds `DEPLOY_REFUSE_TEXT`, 13 entries against `deploy.rs`'s
+`REFUSE_D_KIND`(0)…`REFUSE_D_OWNER`(12). It matches *today*. It is also a
+module-private `const` in `main.js`, so `ui_smoke` cannot import it and no
+gate walks it — which is verbatim the condition `interact.js:736` describes
+as the reason the build table had to move: "cannot live as a bare array in
+`main.js` where nothing can walk it". A fourteenth `REFUSE_D_*` reaches the
+player as `can't place: code 13` (`main.js:1260`), and §0c is the proof that
+the sim does grow these.
+
+The fix is the one already paid for: move the table to `interact.js`, export
+it, and extend `ui_smoke` §W's walk to parse `REFUSE_D_*` out of `deploy.rs`
+the way it parses `REFUSE_B_*` out of `build.rs`. Same shape for
+`main.js:151`'s `REFUSE_TEXT` (5, vs `craft.rs`) and `:57`'s
+`REFUSE_REASONS` (2) while the file is open.
+
+Related and NOT this lane's: `bridge.rs:66` still exports
+`DEPLOY_DEF_ROW_WORDS = 4`, so `SUB_DEPLOY_DEFS`' new `n_costs` + cost rows
+stop at the wasm bridge and `web/src` cannot show what mending a door costs.
+That is a systems-lane export, like §0e.
+
 ## 0e · One export the client needs — *(systems lane, cross-lane)*
 
 `crates/client-wasm/src/bridge.rs` exports `client_action_` for all fourteen
@@ -68,6 +140,57 @@ makes a short tier possible. `DECISIONS.md` §open carries the number.
 What remains: nothing on this item. The knob-relaxation alternative
 (`WAYSTATION_MIN_SEP_M` moved until the ring fills) was **not** taken — with no
 short seed to relax for, it would be a number invented against no measurement.
+## 0a · The canopy stands off the road, draws, and is gated *(world lane — done this pass)*
+
+From the judge's **ranked fixes 1–6**, `pass-20260805-074623-04-judge.md`, which
+FAILED `loop/waystation-canopy`. All six landed. Knob row: `DECISIONS.md` §open.
+
+**Then `-05` FAILED it again on one wall, and that fix landed too** — this branch
+carries both passes and is judged as one diff.
+
+- **The weakened assert is restored as a law, not as the old line.** `-05` fix 1:
+  `cleared >= 1` per seed became an aggregate, which is a loosening. The judge's own
+  prescription is what shipped — keep `assert_eq!(furnished, want_furnished)`, keep
+  the aggregate displacement, and add the per-seed claim the old line was reaching
+  for: the control arm had an **opportunity**, i.e. the zones cover ≥ 1 scatter cell
+  whose ground `scatter` would not veto outright. It is a law, not a draw —
+  **measured worst 7 cells against a floor of 1** — and mutation-proved live *past*
+  `furnished`, which asserts first and would otherwise mask it (`-05` check 2's own
+  warning, applied to this test).
+- **The stale "walks through the parapet" claim was in four files, not two.**
+  `-05` fix 2 named `NOW.md` and `ci/waystation_canopy.mjs`; `ci/haven_shelter.mjs`
+  and `TERRAIN.md` stage 8 carried it verbatim. All four now name the narrower
+  residual with the line that proves it — see **Left behind** below.
+
+- **Cause, not the sentence:** it stood at the site centre, and a waystation's
+  centre is the coast road's centre line — `pick_minor` scores only candidates off
+  the ring, and `haven_shelter_bearing`'s doc already said so. It now stands in a
+  gap in the container pair at `WAYSTATION_CANOPY_OFF_M` (= the ring radius), on a
+  bearing `waystation_canopy_bearing` accepts, folded into the phase search because
+  the gaps move with the rotation. The road test is the **footprint's** — anchor ±
+  the bounding radius along the island radial, the axis `road_band` measures on.
+- `GOLDEN_TERRAIN_HASH` regenerated in the same commit; worldgen moved twice.
+- **It draws:** `props.js` gained `WAYSTATION_CANOPY_PARTS`/`_PEAK`/`_BAND`,
+  `canopyGeometry()` and `ARCHETYPES` row 12. `ci/waystation_canopy.mjs` is written
+  and wired (97 checks) — `haven_shelter.mjs`'s sibling asserting the opposite
+  shape, a roof not a room; negative-tested four ways. The five false doc claims
+  are true now, and the parapet's bare `< 1.2` is `CAPSULE_HEIGHT_M * 2/3`.
+- **Unverified:** nothing here was seen. No frame captured, `browser_smoke` off at
+  the operator's tier — "it draws" means the buffer matches the sim, not that it is
+  lit, sited or legible at range.
+
+**Left behind:**
+- *(systems)* Bodies **are** stopped — `movement.rs:158` → `occupy.rs::blocks` →
+  `terrain::slot_blocks`, gated by `tests/solid.rs`. The old bullet here said the
+  opposite and was false in four files; all four are corrected. The two real holes
+  are each one grep: `combat.rs` carries no occupant term, so a shot passes through
+  the parapet that stops a body (TERRAIN §1 stage 6 asks the forest for cover and
+  gets none); and `collide::piece_ground` (`collide.rs:339`) reads built pieces
+  only, so nothing scattered is standable — the deck and the pad's plinth are
+  kerbs you sink into.
+- *(any)* `tests/box_container.rs` overflows its stack in a **debug** build on a
+  clean `lane/looks` — confirmed on a worktree at 750fd53, not from any diff here.
+  `ci/gates.sh` runs `--release`, where it passes, so CI cannot see it.
 
 ---
 

@@ -120,11 +120,14 @@ Stages, in order — each cheap, each deterministic:
    row-for-row mirror of the client's, with `ci/haven_shelter.mjs` holding all
    14 × 6 fields equal across the language seam. The plinth is floor rather
    than the fourteenth wall (`SHELTER_FLOOR_IX`), or the building seals from
-   outside. **Nothing calls it yet**: `collide.rs` knows only built pieces, so
-   a player still walks through these walls — the shape is proven, the wiring
-   is the systems lane's. `DECISIONS.md` §open "haven pad v0", "haven crates
-   v0", "haven shelter v0" and "shelter volume v0" have the knobs and the
-   measurements.
+   outside. **It is called now** — `movement.rs:158` → `occupy.rs`'s `blocks`
+   → `terrain::slot_blocks`, so these walls stop a body. What is still missing
+   is narrower than the sentence that stood here: `combat.rs` carries no
+   occupant term, so a shot passes through a wall that stops a body; and
+   `collide::piece_ground` (`collide.rs:339`) reads built pieces only, so the
+   plinth is a kerb you sink into rather than a floor. `DECISIONS.md` §open
+   "haven pad v0", "haven crates v0", "haven shelter v0" and "shelter volume
+   v0" have the knobs and the measurements.
    **The hook is now used, and the second tier cost no new search.** The
    argmax above scores `HAVEN_CANDIDATES` bearings and keeps one; the other 63
    passed the same land and road checks and lost on flatness by centimetres.
@@ -375,6 +378,7 @@ The reads a survival map must produce, and which stage buys each:
 | authored sites | 3 — one haven pad + 2 waystations, all on the ring |
 | pad containers | 5 `crate` on a 10 m ring, 2.64× the shoulder's density |
 | waystation containers | 2 `cache` on a 6.5 m ring, ≥ 600 m from every other site |
+| greyboxes | 2 kinds, one per tier: the pad's enclosed 7 m block to a 9.2 m tower, and the waystation's open canopy — 4 posts, one knee-high parapet, 4.1 m — standing in a gap in that 6.5 m ring rather than at the site centre, which is the road (`ci/waystation_canopy.mjs`) |
 | tier prices | E[items] per container barrel 14.3 < cache 20.8 < crate 33.1; per site pad 165 > waystation 42 (`ci/haven_prize.mjs`) |
 | node respawn | 20–45 min jittered, privilege-vetoed **(knob)** |
 
