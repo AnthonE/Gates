@@ -19,6 +19,7 @@ pub mod inventory;
 pub mod limits;
 pub mod loot;
 pub mod movement;
+pub mod occupy;
 pub mod probe;
 pub mod rng;
 pub mod survival;

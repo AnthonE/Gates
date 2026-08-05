@@ -12,6 +12,7 @@ use sim_core::collide::ColIndex;
 use sim_core::input::InputFrame;
 use sim_core::limits::MAX_INPUT_FRAMES;
 use sim_core::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
+use sim_core::occupy::Occupants;
 
 /// Predicted-body ring depth, keyed by seq: covers the unacked tail plus
 /// acks in flight (32 seqs ≈ 1 s of input history).
@@ -80,7 +81,7 @@ impl Predictor {
     /// client piece mirror's collision index — the predictor collides
     /// with the same walls the server does, one in-flight placement of
     /// skew at most (a mismatch there is just a reconcile).
-    pub fn step(&mut self, frame: InputFrame, cols: &ColIndex) {
+    pub fn step(&mut self, frame: InputFrame, cols: &ColIndex, occ: &mut Occupants) {
         if self.tail_len == MAX_INPUT_FRAMES {
             self.tail.copy_within(1.., 0);
             self.tail_len -= 1;
@@ -88,7 +89,7 @@ impl Predictor {
         self.tail[self.tail_len] = frame;
         self.tail_len += 1;
         if self.started {
-            movement::step(self.seed, cols, &mut self.body, &frame);
+            movement::step(self.seed, cols, occ, &mut self.body, &frame);
             self.record(frame.seq);
         }
     }
@@ -117,7 +118,13 @@ impl Predictor {
     /// One snapshot's authoritative own state. Drops the acked tail
     /// prefix; confirms the ring or rewinds-and-replays (the replay
     /// collides through `cols` like the live steps did).
-    pub fn reconcile(&mut self, own: &EntityState, last_executed: u16, cols: &ColIndex) {
+    pub fn reconcile(
+        &mut self,
+        own: &EntityState,
+        last_executed: u16,
+        cols: &ColIndex,
+        occ: &mut Occupants,
+    ) {
         let mut keep = 0;
         for i in 0..self.tail_len {
             let ahead = self.tail[i].seq.wrapping_sub(last_executed);
@@ -144,7 +151,7 @@ impl Predictor {
         self.body = Self::adopt(own);
         for i in 0..self.tail_len {
             let f = self.tail[i];
-            movement::step(self.seed, cols, &mut self.body, &f);
+            movement::step(self.seed, cols, occ, &mut self.body, &f);
             self.record(f.seq);
         }
         if self.started {
@@ -206,6 +213,8 @@ mod tests {
     use sim_core::input::BTN_SPRINT;
     use sim_core::world::World;
 
+    use sim_core::occupy::Scratch;
+
     const SEED: u64 = 0xC11E27;
 
     fn frame(seq: u16, move_z: i8) -> InputFrame {
@@ -242,14 +251,16 @@ mod tests {
         let mut world = World::new(SEED);
         world.tick(&[Command::Join { id: 7 }]);
         let cols = Box::new(ColIndex::new());
+        // The predictor collides with the same island the server does.
+        let mut occ = Scratch::live(SEED);
         let mut p = Predictor::new(SEED);
-        p.reconcile(&own_state(&world, 7), 0, &cols); // adopt spawn
+        p.reconcile(&own_state(&world, 7), 0, &cols, &mut occ.occupants()); // adopt spawn
 
         for seq in 1..=200u16 {
             let f = frame(seq, 127);
-            p.step(f, &cols);
+            p.step(f, &cols, &mut occ.occupants());
             world.tick(&[Command::Input { id: 7, frame: f }]);
-            p.reconcile(&own_state(&world, 7), seq, &cols);
+            p.reconcile(&own_state(&world, 7), seq, &cols, &mut occ.occupants());
         }
         assert_eq!(p.mispredictions, 0);
         assert_eq!(p.confirmations, 200);
@@ -299,8 +310,10 @@ mod tests {
             cols.add(r.cx, r.cz, r.level, r.loc, shape);
         }
 
+        // The predictor collides with the same island the server does.
+        let mut occ = Scratch::live(seed);
         let mut p = Predictor::new(seed);
-        p.reconcile(&own_state(&world, 7), 0, &cols);
+        p.reconcile(&own_state(&world, 7), 0, &cols, &mut occ.occupants());
         for seq in 1..=150u16 {
             // Strafe -x into the west wall, forever.
             let f = InputFrame {
@@ -308,9 +321,9 @@ mod tests {
                 move_x: -127,
                 ..InputFrame::default()
             };
-            p.step(f, &cols);
+            p.step(f, &cols, &mut occ.occupants());
             world.tick(&[Command::Input { id: 7, frame: f }]);
-            p.reconcile(&own_state(&world, 7), seq, &cols);
+            p.reconcile(&own_state(&world, 7), seq, &cols, &mut occ.occupants());
         }
         assert_eq!(p.mispredictions, 0, "mirror and server must agree");
         let x = p.position()[0];
@@ -328,13 +341,15 @@ mod tests {
         let mut world = World::new(SEED);
         world.tick(&[Command::Join { id: 7 }]);
         let cols = Box::new(ColIndex::new());
+        // The predictor collides with the same island the server does.
+        let mut occ = Scratch::live(SEED);
         let mut p = Predictor::new(SEED);
-        p.reconcile(&own_state(&world, 7), 0, &cols);
+        p.reconcile(&own_state(&world, 7), 0, &cols, &mut occ.occupants());
 
         // Client predicts 4 unacked walks the server never saw the same
         // way: server executes a different input for seq 1.
         for seq in 1..=4u16 {
-            p.step(frame(seq, 127), &cols);
+            p.step(frame(seq, 127), &cols, &mut occ.occupants());
         }
         let lie = InputFrame {
             move_z: -127,
@@ -342,7 +357,7 @@ mod tests {
         };
         world.tick(&[Command::Input { id: 7, frame: lie }]);
         let auth = own_state(&world, 7);
-        p.reconcile(&auth, 1, &cols);
+        p.reconcile(&auth, 1, &cols, &mut occ.occupants());
         assert_eq!(p.mispredictions, 1);
         assert_eq!(p.tail().len(), 3, "acked prefix dropped");
         assert!(p.error_magnitude() > 0.0, "visual error captured");
@@ -355,9 +370,11 @@ mod tests {
     #[test]
     fn tail_drops_oldest_at_the_wire_cap() {
         let cols = Box::new(ColIndex::new());
+        // The predictor collides with the same island the server does.
+        let mut occ = Scratch::live(SEED);
         let mut p = Predictor::new(SEED);
         for seq in 1..=(MAX_INPUT_FRAMES as u16 + 5) {
-            p.step(frame(seq, 0), &cols);
+            p.step(frame(seq, 0), &cols, &mut occ.occupants());
         }
         assert_eq!(p.tail().len(), MAX_INPUT_FRAMES);
         assert_eq!(p.tail()[0].seq, 6, "oldest dropped first");

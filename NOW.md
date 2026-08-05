@@ -4,6 +4,37 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+## 0. The island is solid now — done this pass *(systems lane)*
+
+From `findings/archive-prestamp/pass-20260805-020919-02-judge.md` ranked gap 1,
+"nothing on this island is solid". `occupy.rs` is the consumer half of the seam
+`terrain.rs` drew: `movement::step` now asks it on every candidate move, so
+trees, boulders, nodes, barrels, crates and the shelter's walls stop a body.
+Answers the world lane's standing request ("the occupant query exists, please
+call it") and the systems bullet of "nothing in the world is solid". Cache
+design and the reasoning: `DECISIONS.md` §open, occupant collision v0.
+Gated by `tests/walk.rs` (7 tests, 4 seeds); each of the four mechanisms was
+mutation-checked to go red on its own break. Wire did not move — no
+`PROTO_VER` bump, `test_protocol_golden` untouched. `GOLDEN_FINAL_HASH`
+regenerated in the same commit; every behavioural floor in `replay.rs::run`
+still passes, so the bots' script survives a solid world.
+
+Left:
+
+- **You still cannot stand ON anything.** The ground query is the other half of
+  the same seam and it is not built — `terrain.rs:1197` names the cost: the
+  shelter's plinth reads as a 0.2 m kerb you sink into rather than a step.
+  Crate and boulder tops are the same. It belongs beside `collide::piece_ground`
+  and wants a `slot_ground` next to `slot_blocks`; the fourteen-box table is
+  already there for it. Systems lane.
+- **The client draws no collision it can see.** Nothing here changed `web/`, so
+  a player learns a trunk is solid by bumping it. Not a defect, just untested by
+  eye — no vantage was captured this pass. *(ui/looks lane, if it wants it.)*
+- **`SlotLives::find` is a linear scan** over up to 16,384 entries, and the
+  query calls it once per blocking slot. Bounded and off the common path (it is
+  asked only after something already blocks), but a late-wipe world with
+  thousands of harvested cells pays it in the tick. Measure before fixing.
+
 ## 0. E tells you what it does — done this pass *(ui lane)*, kept for what it leaves
 
 From `findings/pass-20260805-002720-04-judge.md` ranked gap 3: "the island
