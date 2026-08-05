@@ -55,6 +55,7 @@ fn box_fixture() -> DeployContent {
         placement: PLACE_FOUNDATION,
         hp: 100,
         item: BOX_ITEM,
+        ..DeployDef::INERT
     };
     d.def_count = 5;
     d

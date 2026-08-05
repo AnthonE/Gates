@@ -209,6 +209,13 @@ pub const COL_INDEX_SLOTS: usize = 16_384;
 /// Structural cap like `MAX_PIECE_DEFS`.
 pub const MAX_DEPLOY_DEFS: usize = 16;
 
+/// Cost rows one deployable may carry, for pricing its repair. A
+/// deployable's *placement* costs one crafted item; its repair is priced
+/// against the recipe that made that item, so this is the recipe's input
+/// width and the bake refuses past it. Structural cap like
+/// `MAX_PIECE_COSTS`, not a knob.
+pub const MAX_DEPLOY_COSTS: usize = MAX_RECIPE_INPUTS;
+
 /// Placed deployables per shard. Overflow policy: **refuse** the
 /// placement with an integer reason code (EV_DEPLOY_REFUSED) — same
 /// posture as `MAX_PIECES`. Proposed default, DECISIONS.md §open

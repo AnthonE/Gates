@@ -447,7 +447,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
             };
             hearth_cell = (cell(b.qx), cell(b.qz));
         }
-        if (150..=164).contains(&t) {
+        if (150..=166).contains(&t) {
             let (cx, cz) = hearth_cell;
             let id = world.players[0].id;
             match t {
@@ -545,6 +545,23 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_W,
                     locked: t == 158,
+                }),
+                // Then the repair verb, on the one address that names two
+                // things: the doorway placed at 152 and the door hung in
+                // it at 153 share `LOC_EDGE_W` exactly, so 163 and 164 are
+                // the same four coordinates differing only in the bit that
+                // picks the store. The upkeep leaps above have been
+                // draining both by then, so these land as real payments
+                // rather than as `REFUSE_B_INTACT` — and a repair mutates
+                // a structure store *and* `Player::inv`, which is what
+                // puts the verb inside this gate instead of beside it.
+                163 | 164 => cmds.push(Command::Repair {
+                    id,
+                    deploy: t == 164,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: sim_core::build::LOC_EDGE_W,
                 }),
                 _ => cmds.push(Command::Feed {
                     id,
