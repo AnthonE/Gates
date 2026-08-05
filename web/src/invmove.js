@@ -55,6 +55,14 @@ export const STREAM_HIGH_BIT = 0x80000000;
  *  `client_applied2()` unconditionally rather than on a flag. */
 export const APPLIED2_MOVE = 1 << 0;
 
+/** `core.rs`'s `APPLIED2_CONT` — bit 1 of the second applied word. The open
+ *  container's view changed: it opened, it took a diff, it was re-aimed at
+ *  another container, or the SERVER closed it because the thing despawned
+ *  or the player walked out of reach. All four arrive the same way, which
+ *  is why the panel reads `client_cont_kind()` on this flag rather than
+ *  keeping its own idea of whether something is open. */
+export const APPLIED2_CONT = 1 << 1;
+
 /** `sim-core/src/inventory.rs:57` — the player's own 30 slots. */
 export const CONT_SELF = 0;
 /**
@@ -88,6 +96,39 @@ export const CONT_MAX = CONT_BOX;
 /** `sim-core/src/inventory.rs:143` — the largest `REFUSE_M_*`. */
 export const REFUSE_M_MAX = 7;
 
+/** `sim-core/src/limits.rs:100` — the player's own container, and the width
+ *  of the wire's container view (`client_cont_ptr` is `INV_SLOTS` × two
+ *  u16 words whatever kind is open). */
+export const INV_SLOTS = 30;
+/** `sim-core/src/limits.rs:262` — a deployed box is NARROWER than the view
+ *  that carries it. The tail of `client_cont_ptr` stays zero for a box, so
+ *  a panel that drew all 30 would draw twelve slots and eighteen lies. */
+export const BOX_SLOTS = 12;
+
+/**
+ * `sim-core/src/inventory.rs:88`'s `slots_in`, mirrored — how many slots
+ * container `kind` actually has.
+ *
+ * This is load-bearing on BOTH sides of the wire and the two sides disagree
+ * on purpose. `world.rs:820` bounds each slot against *its own* container's
+ * width and answers `REFUSE_M_SLOT`; `encode_action_move`
+ * (`protocol/src/lib.rs:624`) bounds both against a flat `INV_SLOTS` and
+ * lets box slot 20 encode. That gap is deliberate — `event.rs:1225` says a
+ * tight check in the encoder would make an over-wide slot a FRAME error,
+ * and a frame error ends the session, which is the reference's
+ * disconnect-on-a-container-bug failure exactly. So the encoder stays loose
+ * and the sim refuses politely.
+ *
+ * Which leaves the client owing the check. Without it a drop on box slot 20
+ * encodes, goes out, and comes back `REFUSE_M_SLOT` — a round trip and a
+ * rolled-back prediction for a move this side could see was malformed.
+ * Refusing it here is the quantize-both-sides law: the panel must not draw
+ * a move it cannot address.
+ */
+export function slotsIn(kind) {
+  return kind === CONT_BOX ? BOX_SLOTS : INV_SLOTS;
+}
+
 /**
  * Unpack a `client_move_readout()` word, or `null` if it is not a verdict
  * this panel can act on.
@@ -107,23 +148,44 @@ export const REFUSE_M_MAX = 7;
  * - **`reason` is past `REFUSE_M_MAX`.** The sim cannot emit it, so the
  *   word was not a verdict — and the panel would otherwise toast a
  *   refusal string for a reason that does not exist.
- * - **`from === to`.** `hud.dropInvDrag` refuses `to === from`, so no
- *   move this panel sent can come back addressed to one slot. It is also
- *   what a bridge with no core returns (`unwrap_or(0)`): readout 0 unpacks
- *   to (0, 0), and that must never resolve a drag.
- *   NOTE the coupling: this holds while the panel addresses only its own
- *   container. When it grows bag moves the *to kind* has to enter this
- *   readout — the sim can then legitimately move self slot 3 to bag slot
- *   3 — and this check moves with it.
- *   The panel has since grown the addresses (`hud.js`: the drag, the
- *   pending record and the verdict match all carry a kind), so this word
- *   is now the only thing left in the way, and it is a `crates/` change
- *   the ui lane may not make. The one-line request is on `NOW.md`. Until
- *   it lands, the two rejections above are what keeps a container verdict
- *   from resolving a self move — they are load-bearing, not vestigial.
+ * - **`from slot` is past its own container's width.** `slotsIn` — a box
+ *   has twelve slots and the view carrying it has thirty, so slot 20 of a
+ *   box is a shape the sim cannot have moved FROM.
+ *
+ * ## What used to be here: `from === to`, and why removing it is a fix
+ *
+ * This rejected any readout addressing one slot, on two grounds: the panel
+ * refuses `to === from`, and readout 0 (what a bridge with no core returns)
+ * unpacks to (0, 0) and must never resolve a drag.
+ *
+ * The first ground stopped being true the moment a second container opened.
+ * `hud.dropInvDrag` refuses a repeated ADDRESS, not a repeated slot NUMBER —
+ * self slot 3 to box slot 3 is a real move the sim answers, and this word
+ * has no room for the *to kind* (`bridge.rs`'s `client_move_readout` packs
+ * `reason | to slot | from kind | from slot` and drops it). So a landed
+ * self-3-to-box-3 came back looking exactly like the degenerate word, was
+ * dropped here, and `invPending` was never cleared — every later drag
+ * refused with "still moving that", permanently. The check was not merely
+ * stale; it was a stuck panel waiting for the pass that opened a container.
+ * Worse at slot 0: self 0 → box 0 LANDED encodes as the all-zero word.
+ *
+ * The second ground is real and is now held where it belongs. A readout is
+ * only read under `client_applied2() & APPLIED2_MOVE` (`main.js`), and a
+ * bridge with no core sets no flag — so the no-core word never reaches this
+ * function at all. Behind that, `hud.invMoveVerdict` matches all four
+ * address parts against the move actually in flight, and `dropInvDrag`
+ * cannot have created a self-0-to-self-0 pending (same address). Two
+ * independent defences, neither of which needs this word to be non-zero.
+ * `ci/ui_smoke.mjs` §O pins the flag-before-readout ordering in `main.js`,
+ * because that is now the load-bearing half.
  *
  * The address is checked AGAIN by `hud.invMoveVerdict` against the drag it
- * actually has in flight; this route is not trusted to have matched.
+ * actually has in flight; this route is not trusted to have matched. That
+ * check is the only thing that can tell WHICH container a verdict belongs
+ * to — `last_move` carries no handle and no sequence number (`core.rs`), so
+ * a verdict arriving after the open container changed would otherwise be
+ * matched against a container that is not the one the move was sent for.
+ * `hud.closeContainer` abandons such a move rather than letting it resolve.
  */
 export function moveVerdict(readout) {
   const r = readout >>> 0;
@@ -131,10 +193,10 @@ export function moveVerdict(readout) {
   const to = (r >>> 16) & 0xff;
   const fromKind = (r >>> 8) & 0xff;
   const from = r & 0xff;
-  if (fromKind !== CONT_SELF) return null;
+  if (fromKind > CONT_MAX) return null;
   if (reason > REFUSE_M_MAX) return null;
-  if (from === to) return null;
-  return { reason, from, to };
+  if (from >= slotsIn(fromKind)) return null;
+  return { reason, from, to, fromKind };
 }
 
 /**
@@ -183,33 +245,78 @@ export const MOVE_ARG_ORDER = Object.freeze([
  * the same bug class one index over, so §N probes it with an item and a count
  * that differ.
  *
- * Three refusals, and the first two are the reason this is not yet a general
- * container verb. A non-self SOURCE has no count here — `inv` is the own
- * mirror, and reading a bag's stack size out of it is the label bug again. A
- * non-self DESTINATION needs the `bag` handle the sim addresses containers
- * by, and this client has ids for dropped bags but no notion of which one a
- * panel is open on, so the `bag: 0` below would name whichever container the
- * sim indexes at 0. Both unblock together when the container-contents
- * message lands (`NOW.md`) — that is the judge's ranked gap 1, and it is a
- * `crates/` change this lane may not make.
+ * `bag` is the OPEN container's handle — `client_cont_handle()`, a bag id or
+ * a packed `box_key` — and it is a parameter rather than the hardcoded `0`
+ * it was until 2026-08-05. That was the judge's ranked fix 2, and it is not
+ * cosmetic: while every one of `bag`, `from_kind` and `to_kind` was 0 on
+ * every call this client could legally make, no value probe could tell the
+ * three apart, so transposing two of them in the named object below was a
+ * green mutant. A real handle is a large distinct number, which is what
+ * makes that transposition visible — see `ci/ui_smoke.mjs` §N.
  *
- * The third refusal, a count that is not a positive integer, is the one that
- * was load-bearing by accident. An out-of-range slot indexes past `inv` and
- * yields `undefined`, and `undefined <= 0` is FALSE — so the old inline test
- * passed `undefined` down to wasm, where it coerced to 0, failed
- * `encode_action_move`'s `count == 0` range check, and came back as a 0
- * length the host read as refusal. Correct, through three layers, by luck.
- * Refusing it here makes it local.
+ * `cont` is the open container's own view (`client_cont_ptr`, the same
+ * 30 × (item, count) u16 layout as `inv`), and the count comes off whichever
+ * of the two the SOURCE lives in. Reading a container's stack size out of
+ * `inv` is the label bug one array over: same shape, different container,
+ * and the sim would be handed a count the client never drew.
+ *
+ * The refusals, in the order they are checked, and the order is the point —
+ * every one of them runs before anything is marshalled, because CLAUDE.md's
+ * trap is validation ORDERING against the mutation:
+ *
+ * 1. **A kind past `CONT_MAX`.** `encode_action_move` range-checks it too,
+ *    but a refusal that has to cross the wall to happen is a refusal the
+ *    panel has already drawn a prediction for.
+ * 2. **Two DIFFERENT ground containers.** The command carries ONE handle
+ *    (`world.rs:834`), so bag→box is a destination the message cannot
+ *    address and the sim answers `REFUSE_M_NO_CONTAINER`. Same-kind is
+ *    legal and passes: rearranging one open box is box→box.
+ * 3. **A slot past its own container's width**, by `slotsIn` — see there
+ *    for why the encoder deliberately does not do this.
+ * 4. **The same address twice.** Same slot NUMBER is fine across kinds.
+ * 5. **A ground end with a zero handle.** Not defensive tidying:
+ *    `deploy.rs:424`'s `box_index` has no zero guard and
+ *    `box_key(0, 0, 0) == 0`, so a box standing at cell (0,0) level 0 is
+ *    genuinely addressed by handle 0 — sending 0 for "no container known"
+ *    would move items in a stranger's box rather than being refused.
+ *    (`backpack.rs:333` does guard zero; the two disagree, so this side
+ *    cannot rely on either.)
+ *
+ *    The mirror case is NORMALIZED rather than refused: a self→self move
+ *    sends zero whatever the caller passed. `world.rs:880` never reads the
+ *    field for such a move and `encode_action_move` does not range-check it
+ *    (unlike its sibling `encode_action_container`, `lib.rs:596`, which
+ *    refuses exactly that shape), so a stray handle would cross the wire
+ *    and enter the WAL as a value nothing validates — which is where a
+ *    wrong value lives forever. Normalizing here means the caller hands
+ *    over `client_cont_handle()` unconditionally and has no `ground` of its
+ *    own to compute, so there is no second place the rule is written.
+ * 6. **A count that is not a positive integer.** The one that was
+ *    load-bearing by accident: an out-of-range slot indexes past the view
+ *    and yields `undefined`, and `undefined <= 0` is FALSE — so the old
+ *    inline test passed `undefined` down to wasm, where it coerced to 0,
+ *    failed `encode_action_move`'s `count == 0` check, and came back as a 0
+ *    length the host read as refusal. Correct, through three layers, by
+ *    luck. Refusing it here makes it local.
  *
  * A six-element array per drag is an allocation, and deliberately not one the
  * hot-path law is about: this runs on a pointer release, not in the RAF loop.
  */
-export function moveArgs(fromKind, from, toKind, to, inv) {
-  if (fromKind !== CONT_SELF || toKind !== CONT_SELF) return null;
-  const count = inv?.[from * 2 + 1];
+export function moveArgs(bag, fromKind, from, toKind, to, inv, cont) {
+  if (!isContKind(fromKind) || !isContKind(toKind)) return null;
+  const ground =
+    fromKind !== CONT_SELF ? fromKind : toKind !== CONT_SELF ? toKind : CONT_SELF;
+  if (fromKind !== CONT_SELF && toKind !== CONT_SELF && fromKind !== toKind) return null;
+  if (!inSlot(from, fromKind) || !inSlot(to, toKind)) return null;
+  if (fromKind === toKind && from === to) return null;
+  if (!Number.isInteger(bag)) return null;
+  const handle = ground === CONT_SELF ? 0 : bag >>> 0;
+  if (ground !== CONT_SELF && handle === 0) return null;
+  const src = fromKind === CONT_SELF ? inv : cont;
+  const count = src?.[from * 2 + 1];
   if (!Number.isInteger(count) || count <= 0) return null;
   const named = {
-    bag: 0,
+    bag: handle,
     from_kind: fromKind,
     from_slot: from,
     to_kind: toKind,
@@ -217,4 +324,14 @@ export function moveArgs(fromKind, from, toKind, to, inv) {
     count,
   };
   return MOVE_ARG_ORDER.map((name) => named[name]);
+}
+
+/** A container kind the wire's 2-bit field will carry. */
+function isContKind(kind) {
+  return Number.isInteger(kind) && kind >= CONT_SELF && kind <= CONT_MAX;
+}
+
+/** A slot inside container `kind`'s own width. */
+function inSlot(slot, kind) {
+  return Number.isInteger(slot) && slot >= 0 && slot < slotsIn(kind);
 }

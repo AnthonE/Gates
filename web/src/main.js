@@ -17,10 +17,14 @@ import { GameScene } from "./scene.js";
 import { Terrain } from "./terrain.js";
 import { Hud } from "./hud.js";
 import {
+  APPLIED2_CONT,
   APPLIED2_MOVE,
+  CONT_BAG,
+  CONT_SELF,
   STREAM_HIGH_BIT,
   moveArgs,
   moveVerdict,
+  slotsIn,
 } from "./invmove.js";
 import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
 
@@ -446,10 +450,63 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // E is the one interact key, and its order is deliberate: a door is
   // aimed at, a bag is stood on, and a hearth is the thing you meant if
   // neither is there.
+  // Open the nearest death backpack as a CONTAINER — the panel, not the
+  // blind take-all `tryLoot` sends. The handle is the bag id the client
+  // already has (`views.bagIds`), so nothing here restates a packing: a box
+  // is addressed by a `box_key(cx, cz, level)` this side would have to
+  // mirror, and mirroring a bit layout with no gate on it is the
+  // positional-payload trap itself. Boxes wait for `ARCH_BOX`'s slots and
+  // container address (the systems request on `NOW.md`); there is nothing
+  // to open as one yet.
+  //
+  // The panel is only visible with the inventory up — every drag it exists
+  // for crosses between the two — so opening one opens that as well.
+  const tryOpenBag = () => {
+    const R = views.render;
+    const n = ex.client_bags_len();
+    let best = -1;
+    let bestD = REACH * REACH;
+    for (let i = 0; i < n; i++) {
+      const dx = views.bagPos[i * 3] - R[1];
+      const dz = views.bagPos[i * 3 + 2] - R[3];
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD) {
+        bestD = d2;
+        best = i;
+      }
+    }
+    if (best < 0) return false;
+    const len = ex.client_action_container(CONT_BAG, views.bagIds[best] >>> 0);
+    views.refresh();
+    if (len === 0) return false;
+    if (!actions.send(views.output, len)) return false;
+    // Nothing is drawn here. The view arrives as `ContSync` on the event
+    // lane and `hud.openContainer` draws it then — the server owns whether
+    // this container is open at all, so a panel that opened itself on the
+    // keypress would be predicting visibility rather than contents.
+    if (!hud.invOpen && hud.toggleInv()) document.exitPointerLock();
+    return true;
+  };
+  // Putting the inventory away puts the container away, and that has to
+  // reach the SIM and not just the screen: the server keeps a per-client
+  // "which container is open" and syncs its contents every tick to whoever
+  // holds it. A panel that vanished locally would leave that unicast
+  // running for a container nobody is looking at. The close is the same
+  // action with `CONT_SELF`, and the panel still waits for the server's
+  // answer to actually clear — `hud.closeContainer` runs off `ContSync`.
+  const closeOpenContainer = () => {
+    if ((ex.client_cont_kind() >>> 0) === CONT_SELF) return false;
+    const len = ex.client_action_container(CONT_SELF, 0);
+    views.refresh();
+    if (len === 0) return false;
+    return actions.send(views.output, len);
+  };
   const tryUse = () => {
     const best = nearestDoor();
     if (best) sendUse(best.cx, best.cz, best.level, best.loc);
-    else if (!tryLoot()) tryFeed();
+    // Opening beats emptying: `tryLoot` is the payload-free take-all and
+    // stays as the fallback for a bag the open action would not encode.
+    else if (!tryOpenBag() && !tryLoot()) tryFeed();
   };
   // L locks or unlocks it. Whether the door is yours is the server's
   // verdict — the wire carries the lock bit but never the owner — so the
@@ -636,7 +693,24 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // and divergence is what the reference kept shipping as a disconnect.
   hud.onInvMove = (fromKind, from, toKind, to) => {
     views.refresh();
-    const args = moveArgs(fromKind, from, toKind, to, views.inv);
+    // The handle comes off the BRIDGE, not off the panel — `client_cont_handle`
+    // is the sim's own answer to "which container is open", and the panel's
+    // `contHandle` is a copy of it that a stale frame could have left behind.
+    // A move that named the wrong container is the divergence CLAUDE.md's trap
+    // list is about, and `deploy.rs`'s `box_index` has no zero guard
+    // (`box_key(0,0,0) == 0`), so a wrong handle is not harmlessly refused —
+    // it addresses a real box. Handed over unconditionally: `moveArgs` zeroes
+    // it for a self→self move and refuses a ground end that has none, so there
+    // is no rule about the handle written a second time here.
+    const args = moveArgs(
+      ex.client_cont_handle() >>> 0,
+      fromKind,
+      from,
+      toKind,
+      to,
+      views.inv,
+      views.cont,
+    );
     if (args === null) return false;
     const len = ex.client_action_move(...args);
     views.refresh();
@@ -668,11 +742,13 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     // or Tab walks the browser's own focus ring off the canvas.
     if (e.code === "Tab") {
       if (hud.toggleInv()) document.exitPointerLock();
+      else closeOpenContainer();
       e.preventDefault();
       return;
     }
     if (hud.invOpen && e.code === "Escape") {
       hud.toggleInv();
+      closeOpenContainer();
       e.preventDefault();
       return;
     }
@@ -779,6 +855,20 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     );
     nameCache.set(idx, name);
     return name;
+  };
+
+  // The open container's cells, slot-indexed, exactly as the inventory pump
+  // formats its own. Only the slots that container KIND actually has — a box
+  // is twelve inside a thirty-slot view and the tail is zero, so formatting
+  // all thirty would draw eighteen empty cells the sim would refuse a drop
+  // into (`slotsIn`, and `hud.openContainer` hides them for the same reason).
+  const contTexts = (kind) => {
+    const out = [];
+    for (let s = 0; s < slotsIn(kind); s++) {
+      const count = views.cont[s * 2 + 1];
+      out.push(count > 0 ? `${itemName(views.cont[s * 2])} ×${count}` : "");
+    }
+    return out;
   };
 
   // The reliable event lane: gather payouts, inventory, node vanish /
@@ -1060,13 +1150,28 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       // returned early, and the inventory diff riding the same message
       // went with it. Landing the verdict after the word-0 dispatch makes
       // that failure unrepresentable rather than fixed.
+      // The open container, BEFORE the move verdict. The order is the
+      // point: a `ContSync` that re-aims or closes the view invalidates a
+      // move in flight against the old one (`hud.abandonContainerMove` —
+      // the verdict word carries no handle and no sequence number, so there
+      // is nothing in it that could tell them apart). Applying the verdict
+      // first would resolve it against a container that is already gone.
+      if (applied2 & APPLIED2_CONT) {
+        // `client_on_stream` above can have grown wasm memory and detached
+        // every view with it — the boot bug no native gate could see.
+        views.refresh();
+        const kind = ex.client_cont_kind() >>> 0;
+        if (kind === CONT_SELF) hud.closeContainer();
+        else hud.openContainer(kind, ex.client_cont_handle() >>> 0, contTexts(kind));
+      }
       if (applied2 & APPLIED2_MOVE) {
         const v = moveVerdict(ex.client_move_readout());
         if (v) {
           // `invMoveVerdict` re-checks the address against its own pending
           // record before it unwinds anything — this route is not trusted
-          // to have matched.
-          hud.invMoveVerdict(v.reason, v.from, v.to);
+          // to have matched. The TO kind is not in the word at all, so it
+          // is not passed: see `hud.invMoveVerdict`.
+          hud.invMoveVerdict(v.reason, v.from, v.to, v.fromKind);
           views.refresh();
         } else {
           // The sim said a move resolved and handed us a word that is not
@@ -1473,6 +1578,14 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       // healthy set from the first.
       bagsKnown: ex.client_bags_len(),
       bags: scene.bags.size,
+      // The open container, as the BRIDGE reports it beside what the panel
+      // drew. Two values rather than one on purpose: they disagreeing is
+      // the container divergence, and a probe that only read the panel
+      // could not see it.
+      contKind: ex.client_cont_kind() >>> 0,
+      contHandle: ex.client_cont_handle() >>> 0,
+      panelContKind: hud.contKind,
+      panelContHandle: hud.contHandle,
       // The lighting rig's structural facts plus last frame's draw counts
       // (DESIGN §9's < 300 calls / < 1.5 M tris). Read off the scene, not
       // recomputed — what the gate asserts is what the renderer did.
