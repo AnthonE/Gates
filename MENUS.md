@@ -95,11 +95,11 @@ that persists across a wipe.
 | Craft panel + queue | `crafting.png` | **PARTIAL** | flat list, click to enqueue, shift-click ×5. The reference frame has categories, search, a detail pane with craft time and workbench requirement, an AMOUNT/ITEM TYPE/TOTAL/HAVE ingredient table, favourites and a quantity stepper |
 | Build strip / ghost | `building.jpeg` | **HAVE** | wheel cycles row, R/F change level, RMB places |
 | Compass strip | `gameplayfoundbase.jpeg`, `mapstylized.jpg` | **HAVE** | `hud.js`, 90° window on a 450° band, letters every 45 / numbers every 10. Bearing only — the reference also pins markers to it (death skull, map pin) and ours carries none, because no world position is exposed client-side and `ALPHA.md` §1 has a rule about position that an operator should read first |
-| **Inventory grid** | `inventory.jpeg` — 6×4 main + wear doll + quick-craft | **MISSING** | |
-| **Container panel** | `storageandtoolchest.jpeg` | **MISSING** | |
+| **Inventory grid** | `inventory.jpeg` — 6×4 main + wear doll + quick-craft | **PARTIAL** | 30 gated slots (6 belt + 24 grid), slot-indexed and drag/drop against the sim's move verb; no wear doll and no quick-craft, which is what keeps it off HAVE |
+| **Container panel** | `storageandtoolchest.jpeg` | **HAVE** | bag 30 / box 12 against `limits.rs`, cross-container drag both ends, close abandons what it cannot resolve. Was marked MISSING here long after it shipped — the judge's ranked fix 2 on `pass-20260805-074623-01` |
 | **Loot panel (bags)** | — | **PARTIAL** | `backpack.rs` says a container UI "is its own slice" |
 | **Wear / armor doll** | `inventory.jpeg`, four protection % readouts | **MISSING** | |
-| **Map** | `mapraw.jpg`, `mapstylized.jpg` | **MISSING** | |
+| **Map** | `mapraw.jpg`, `mapstylized.jpg` | **PARTIAL** | M opens it. `map.js` paints the whole island from the SAME `terrain::splat_from` the 3D ground blends by, hillshaded; 16×16 grid, A–P west-east and 1–16 north-south; your position and heading. No markers of any kind: the haven pad has no bridge export (`terrain::haven`), and what may be pinned at all is a design call — see `#0` in `NOW.md` |
 | **Respawn screen** | — | **MISSING** | |
 | **Team / contacts** | `inventory.jpeg` — `CONTACTS` tab, `CREATE TEAM` | **MISSING** | cut from v1 |
 | **Code-lock keypad** | — | **MISSING** | |
