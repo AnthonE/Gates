@@ -23,8 +23,7 @@ highest-leverage gap in the project". Its named mechanism is `crates/` work (see
 0c6 below); this is the other half of the same sentence and it is entirely
 client-side. Leaving a base is a ROUND TRIP, and the map drew the island, a grid
 and one triangle — no bed, no hearth, no dropped bag, while `mapstylized.jpg` is
-made almost entirely of markers. A player who cannot see where home is cannot
-afford to walk away from it, whatever ends up in the crate.
+made almost entirely of markers.
 
 Landed: `map.js` gains `resolveMarks` — three kinds (bed / hearth / backpack)
 off data the client already holds (deploy records + standing bags), through the
@@ -36,8 +35,10 @@ player's own pixel, in node and again in the browser off the parked array.
 `ui_mutants.sh` M49-M58, including a second projection carrying its own
 north-up flip and the bed/hearth transposition verbatim.
 
-Not done, and it is the reason 0c6 is written: the haven pad and the
-waystations are NOT marked. The client cannot know where they are.
+Not done, and it is why 0c6 exists: the haven pad and the waystations are NOT
+marked — the client cannot know where they are. Unverified: `browser_smoke` is
+off this run (`GATES_TIER=fast`), so main.js's wiring is held by source scan
+only — the same bound every main.js check in `ui_smoke` already has.
 
 ## 0c6 · systems lane request: bridge `terrain::haven(seed)`
 
