@@ -187,7 +187,27 @@ const REFUSE_M_BITS: u32 = 3;
 /// and not three because a cause is a *closed* set the sim owns: a fourth
 /// way to die is a wire change, which is the point of wall 6.
 const DEATH_CAUSE_BITS: u32 = 2;
-const DEATH_CAUSE_MAX: u8 = 2;
+/// **Derived, never restated.** This was the literal `2`, and a literal
+/// here is a copy of a fact that lives in another crate — which is exactly
+/// how the 2026-08-05 FAIL shipped: the sim grew `DEATH_BY_ARROW = 3`, the
+/// literal stayed 2, and every arrow kill hit the `Err(Range)` arm below.
+/// Nothing caught it, because nothing *could*: the golden pins layout and
+/// no layout moved. Taking the bound from the sim's own ledger makes the
+/// two ends impossible to disagree — a new cause changes this constant on
+/// the next build rather than on the next reader's memory.
+const DEATH_CAUSE_MAX: u8 = sim_core::world::DEATH_BY_MAX;
+/// And the field must hold it — `SUB_MAX`'s compile-time posture, applied
+/// to the domain. A cause past `DEATH_CAUSE_BITS` would truncate on the
+/// way out and decode as a *different, live* cause: both ends agreeing on
+/// bytes that mean two different deaths. Compile-time, so widening the
+/// sim's ledger past the field cannot reach a test run — it stops `cargo
+/// build`, and the message says which bump was forgotten.
+const _: () = assert!(
+    (DEATH_CAUSE_MAX as u32) < (1 << DEATH_CAUSE_BITS),
+    "sim_core::world::DEATH_BY_MAX no longer fits DEATH_CAUSE_BITS — a new \
+     death cause needs the field widened, PROTO_VER bumped and the goldens \
+     regenerated in this same commit (CLAUDE.md wall 6)"
+);
 
 /// Consume-refusal reason width (`survival::REFUSE_C_*`: three codes
 /// today, and zero is reserved as "no reason", which the codec refuses).
@@ -2835,5 +2855,378 @@ mod tests {
             (top >> (8 - KIND_BITS)) as u8,
         ];
         assert_eq!(decode_event(&raw[..2]), Err(WireError::Malformed));
+    }
+}
+
+/// The wire's value domains, gated against the sim's — the half wall 6
+/// does not reach.
+///
+/// `test_protocol_golden` pins **layout**: which field, how wide, in what
+/// order. Every constant below is a *domain* — which values a field of
+/// already-fixed width is allowed to carry — and a domain can drift
+/// without moving one byte of layout. `sim-core` grows a seventh archetype
+/// or a fourth death cause, the encoder's range check still reads the old
+/// bound, and the golden is green because the packet it pins never
+/// contained the new value. The only witness is `Err(Range)` at runtime,
+/// on the exact path a player notices and a test suite does not.
+///
+/// That is not a hypothetical; it is a judged **FAIL** on 2026-08-05.
+/// `DEATH_BY_ARROW = 3` landed against `DEATH_CAUSE_MAX = 2`, every arrow
+/// kill failed to encode, the server counted the range error and sent
+/// nothing, and the victim's client never learned it had died. Golden
+/// green, replay green, clippy green. `reference/FINDINGS.md` §1 measured
+/// the same class in the reference ecosystem — ~27 Oxide commits
+/// correcting a payload that had already shipped wrong, against an
+/// `MSILHash` that is the exact analogue of our golden and caught none of
+/// them.
+///
+/// So this reads the sim's constant blocks as text and checks each domain
+/// still fits the field that carries it. Parsing source is the deliberate
+/// choice `event_roles.rs` documents and it is the same reason here: the
+/// fact under assertion is *what the constant block contains*, and no
+/// amount of importing can see a constant the importer was never told
+/// about. `use sim_core::deploy::*` would not notice `ARCH_TURRET`;
+/// reading the block does.
+#[cfg(test)]
+mod wire_domains {
+    use super::*;
+
+    /// One coupled pair: a `sim-core` value domain, and the wire field
+    /// this module spends on it.
+    struct Domain {
+        /// Named in the failure, so a red gate says which pair drifted.
+        what: &'static str,
+        /// Where the domain is declared, and where the width is.
+        sim_site: &'static str,
+        wire_site: &'static str,
+        /// The sim source, read at compile time.
+        src: &'static str,
+        /// `pub const <prefix>NAME<ty> = <literal>;` — the shape scraped.
+        /// The type is part of the match on purpose: it is what keeps
+        /// `craft.rs`'s `STATION_RADIUS_M: f32 = 5.0` out of `STATION_*`,
+        /// a real collision and the only cross-type one in the ten.
+        prefix: &'static str,
+        ty: &'static str,
+        /// Members that name the ledger rather than sit in it. These are
+        /// declared as an alias (`CONT_MAX = CONT_BOX`), so they would
+        /// fail the literal parse below — skipping them is not a
+        /// convenience, it is the difference between a gate and a panic.
+        exempt: &'static [&'static str],
+        /// Below this the parser has stopped seeing the block and the
+        /// gate is reading nothing. A gate that silently stops looking is
+        /// worse than one that fails.
+        min_members: u32,
+        /// The width the wire spends, in bits.
+        bits: u32,
+        /// The largest value the sim can emit **today**, pinned.
+        ///
+        /// The fit check below is necessary and not sufficient. A fourth
+        /// death cause is `3`, and `3` fits `DEATH_CAUSE_BITS` — so
+        /// widening the domain into spare headroom passes every numeric
+        /// check while changing what a bit pattern *means*: a value both
+        /// ends previously refused as forged is now a live fact. `lib.rs`
+        /// is explicit that this is a wire change — "a widened meaning is
+        /// a wire change even when the layout is byte-identical, and
+        /// PROTO_VER is the only thing that catches a mismatched build" —
+        /// and no golden can see it, because the golden pins packets that
+        /// never carried the new value. Pinning the maximum is what makes
+        /// the widening require a sentence from whoever does it.
+        live_max: u32,
+    }
+
+    /// All ten domains this module bounds. Widths are the private consts
+    /// above, so this table cannot drift from the encoder — it *is* the
+    /// encoder's constants.
+    ///
+    /// Note the two shapes of headroom, both deliberate and both stated
+    /// so a later reader does not "tidy" one into the other. `PLACE_*`
+    /// saturates its two bits exactly (0..=3, all live), so no value is
+    /// forgeable and the decoder needs no domain check. `REFUSE_C_*` and
+    /// `BAG_GONE_*` do **not** saturate, and neither bounds its upper end
+    /// against the domain — values above the live set round-trip intact.
+    /// That is a forgery slack rather than the drift this gate catches
+    /// (the sim can never emit one), and it is written up as its own
+    /// `NOW.md` item rather than fixed here, because narrowing what
+    /// decodes is a wire act and this pass is a gate.
+    const DOMAINS: &[Domain] = &[
+        Domain {
+            what: "death cause",
+            sim_site: "world.rs DEATH_BY_*",
+            wire_site: "DEATH_CAUSE_BITS",
+            src: include_str!("../../sim-core/src/world.rs"),
+            prefix: "pub const DEATH_BY_",
+            ty: ": u8 = ",
+            exempt: &["MAX"],
+            min_members: 3,
+            bits: DEATH_CAUSE_BITS,
+            live_max: 2,
+        },
+        Domain {
+            what: "move refusal",
+            sim_site: "inventory.rs REFUSE_M_*",
+            wire_site: "REFUSE_M_BITS",
+            src: include_str!("../../sim-core/src/inventory.rs"),
+            prefix: "pub const REFUSE_M_",
+            ty: ": u32 = ",
+            exempt: &["MAX"],
+            min_members: 7,
+            bits: REFUSE_M_BITS,
+            live_max: 7,
+        },
+        Domain {
+            what: "consume refusal",
+            sim_site: "survival.rs REFUSE_C_*",
+            wire_site: "REFUSE_C_BITS",
+            src: include_str!("../../sim-core/src/survival.rs"),
+            prefix: "pub const REFUSE_C_",
+            ty: ": u32 = ",
+            exempt: &[],
+            min_members: 3,
+            bits: REFUSE_C_BITS,
+            live_max: 3,
+        },
+        Domain {
+            what: "container kind",
+            sim_site: "inventory.rs CONT_*",
+            wire_site: "CONT_KIND_BITS",
+            src: include_str!("../../sim-core/src/inventory.rs"),
+            prefix: "pub const CONT_",
+            ty: ": u8 = ",
+            exempt: &["MAX"],
+            min_members: 3,
+            bits: CONT_KIND_BITS,
+            live_max: 2,
+        },
+        Domain {
+            what: "piece shape",
+            sim_site: "build.rs SHAPE_*",
+            wire_site: "SHAPE_BITS",
+            src: include_str!("../../sim-core/src/build.rs"),
+            prefix: "pub const SHAPE_",
+            ty: ": u8 = ",
+            exempt: &[],
+            min_members: 6,
+            bits: SHAPE_BITS,
+            live_max: 5,
+        },
+        Domain {
+            what: "piece material",
+            sim_site: "build.rs MAT_*",
+            wire_site: "MATERIAL_BITS",
+            src: include_str!("../../sim-core/src/build.rs"),
+            prefix: "pub const MAT_",
+            ty: ": u8 = ",
+            exempt: &[],
+            min_members: 3,
+            bits: MATERIAL_BITS,
+            live_max: 2,
+        },
+        Domain {
+            what: "deploy archetype",
+            sim_site: "deploy.rs ARCH_*",
+            wire_site: "ARCH_BITS",
+            src: include_str!("../../sim-core/src/deploy.rs"),
+            prefix: "pub const ARCH_",
+            ty: ": u8 = ",
+            exempt: &[],
+            min_members: 7,
+            bits: ARCH_BITS,
+            live_max: 6,
+        },
+        Domain {
+            what: "deploy placement",
+            sim_site: "deploy.rs PLACE_*",
+            wire_site: "PLACEMENT_BITS",
+            src: include_str!("../../sim-core/src/deploy.rs"),
+            prefix: "pub const PLACE_",
+            ty: ": u8 = ",
+            exempt: &[],
+            min_members: 4,
+            bits: PLACEMENT_BITS,
+            live_max: 3,
+        },
+        Domain {
+            what: "craft station",
+            sim_site: "craft.rs STATION_*",
+            wire_site: "STATION_BITS",
+            src: include_str!("../../sim-core/src/craft.rs"),
+            prefix: "pub const STATION_",
+            ty: ": u8 = ",
+            exempt: &[],
+            min_members: 3,
+            bits: STATION_BITS,
+            live_max: 2,
+        },
+        Domain {
+            what: "bag-removal reason",
+            sim_site: "backpack.rs BAG_GONE_*",
+            wire_site: "BAG_GONE_BITS",
+            src: include_str!("../../sim-core/src/backpack.rs"),
+            prefix: "pub const BAG_GONE_",
+            ty: ": u32 = ",
+            exempt: &[],
+            min_members: 3,
+            bits: BAG_GONE_BITS,
+            live_max: 2,
+        },
+    ];
+
+    /// Scrape one domain's live members out of its declaring source.
+    ///
+    /// Deliberately line-oriented and not block-terminated: four of the
+    /// ten families interleave doc comments between members, so a scan
+    /// that stops at the first non-`const` line reads two of `world.rs`'s
+    /// three causes and calls the domain covered.
+    fn members(d: &Domain) -> Vec<(&'static str, u32)> {
+        let mut found = Vec::new();
+        for line in d.src.lines() {
+            let Some(rest) = line.trim().strip_prefix(d.prefix) else {
+                continue;
+            };
+            let Some((name, value)) = rest.split_once(d.ty) else {
+                continue;
+            };
+            if d.exempt.contains(&name) {
+                continue;
+            }
+            let value = value.trim_end_matches(';');
+            let v: u32 = value.parse().unwrap_or_else(|_| {
+                panic!(
+                    "{}: {}{} is declared as `{value}`, which is not a \
+                     literal. This gate reads the constant block as text to \
+                     learn the domain's range; a non-literal member makes \
+                     that range unknowable, so either give it a literal or \
+                     add it to `exempt` because it names the ledger rather \
+                     than sitting in it.",
+                    d.what, d.prefix, name
+                )
+            });
+            found.push((name, v));
+        }
+        found
+    }
+
+    /// Every sim-side domain still fits the wire field that carries it.
+    ///
+    /// This is the assertion that would have failed the 2026-08-05 FAIL at
+    /// `cargo test` instead of at a player's death screen.
+    #[test]
+    fn every_domain_fits_its_wire_field() {
+        for d in DOMAINS {
+            let found = members(d);
+
+            assert!(
+                found.len() as u32 >= d.min_members,
+                "{}: only {} members parsed out of {} — the constant \
+                 block's shape changed and this gate is now reading \
+                 nothing, which is worse than failing. Fix the scrape \
+                 before trusting the green.",
+                d.what,
+                found.len(),
+                d.sim_site
+            );
+
+            let highest = found.iter().map(|(_, v)| *v).max().unwrap();
+            let capacity = 1u32 << d.bits;
+            assert!(
+                highest < capacity,
+                "{}: {} declares a value {highest}, and {} is {} bits — \
+                 which holds 0..={}. The encoder would refuse every event \
+                 carrying it with Err(Range), the server would count the \
+                 error and send nothing, and the client would never learn \
+                 the fact happened. Widen the field, bump PROTO_VER and \
+                 regenerate the goldens in this same commit (CLAUDE.md \
+                 wall 6) — a widened meaning is a wire change even when no \
+                 layout moves (lib.rs).",
+                d.what,
+                d.sim_site,
+                d.wire_site,
+                d.bits,
+                capacity - 1
+            );
+
+            // And the domain has not been widened into spare headroom.
+            // This is the check the fit test above cannot make: a fourth
+            // death cause fits two bits, so every numeric wall stays green
+            // while a pattern both ends refused as forged becomes a live
+            // fact. That is a wire change with no layout change, which is
+            // the one thing wall 6's byte-golden is structurally blind to.
+            assert_eq!(
+                highest, d.live_max,
+                "{}: {} now tops out at {highest}, pinned here as {}. If \
+                 that is deliberate it is still a wire change — a value \
+                 both ends used to refuse is now meaningful, so an old \
+                 client and a new server disagree about a packet whose \
+                 bytes are identical. Bump PROTO_VER, regenerate the \
+                 goldens and move this pin, all in this same commit \
+                 (CLAUDE.md wall 6; lib.rs on widened meanings).",
+                d.what, d.sim_site, d.live_max
+            );
+        }
+    }
+
+    /// The table itself must stay honest about which domains exist.
+    ///
+    /// Ten is not a count of convenience: it is every private `*_BITS` in
+    /// this module that bounds a `sim-core` enumeration rather than a
+    /// length, an index or a quantity. Widths like `INV_COUNT_BITS` or
+    /// `NAME_LEN_BITS` bound a *magnitude* the sim computes and are not
+    /// domains — they have no constant block to drift against. If a
+    /// later pass spends a width on a new enumeration, this number moves
+    /// with it, and the reviewer has to say which kind it added.
+    #[test]
+    fn the_domain_table_states_its_own_coverage() {
+        assert_eq!(
+            DOMAINS.len(),
+            10,
+            "the wire-domain table changed size. Every entry is a field \
+             width spent on a sim-core enumeration; add the new pair here \
+             in the same commit that adds the width, or state why the \
+             width bounds a magnitude rather than a domain."
+        );
+    }
+
+    /// The one domain whose bound is *derived* rather than restated stays
+    /// derived, and the largest live value actually survives the encoder.
+    ///
+    /// The numeric checks above are necessary and not sufficient: they
+    /// prove the value fits the field, not that the range check in
+    /// `encode_event_death` agrees. This drives the real encoder with the
+    /// highest cause the sim can produce and asserts bytes came out — the
+    /// judge's own reproduction of the FAIL, kept as a gate rather than a
+    /// report.
+    #[test]
+    fn the_highest_live_death_cause_encodes() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        for cause in 0..=sim_core::world::DEATH_BY_MAX {
+            let n = encode_event_death(7, 9, cause, 3, 250, &mut buf).unwrap_or_else(|e| {
+                panic!(
+                    "death cause {cause} is live in the sim and the wire \
+                     refused it ({e:?}). This is the 2026-08-05 failure \
+                     exactly: the victim's client never learns it died, so \
+                     the death screen never opens and the body is parked \
+                     until it is killed again."
+                )
+            });
+            match decode_event(&buf[..n]) {
+                Ok(EventMsg::Death { cause: got, .. }) => assert_eq!(
+                    got, cause,
+                    "death cause {cause} did not survive the round trip"
+                ),
+                other => panic!("death cause {cause} decoded as {other:?}"),
+            }
+        }
+
+        // And the first pattern past the domain is still refused at both
+        // ends — the closed-set posture the domain comment claims.
+        let forged = sim_core::world::DEATH_BY_MAX + 1;
+        if (forged as u32) < (1 << DEATH_CAUSE_BITS) {
+            assert_eq!(
+                encode_event_death(7, 9, forged, 3, 250, &mut buf),
+                Err(WireError::Range),
+                "cause {forged} is not a live death and the encoder let it \
+                 through — the domain is no longer closed"
+            );
+        }
     }
 }
