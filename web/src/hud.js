@@ -148,7 +148,11 @@ const INV_GRID = 24;
  * A reason the sim grows and this table has not is caught by ui_smoke,
  * which walks 1..REFUSE_M_MAX and requires a distinct non-empty string for
  * each — a silent `undefined` here would tell the player nothing at the one
- * moment the panel owes them a sentence.
+ * moment the panel owes them a sentence. Since 2026-08-05 it also holds each
+ * sentence to its `REFUSE_M_*` constant by NAME (`MOVE_MEAN`), because
+ * everything else here passes on a table of correct sentences in the wrong
+ * order, and `inventory.rs` renumbering underneath this array is the same
+ * defect as the array being short.
  */
 /** What the open container calls itself. Generic nouns — `CONTENT.md` owns
  * item names; these two name a KIND, and the kinds are the sim's. */
