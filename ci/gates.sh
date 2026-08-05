@@ -254,6 +254,17 @@ $NICE node ci/clutter_shape.mjs || fail "clutter shape"
 echo "== gate: haven shelter (the greybox fits the slot sim-core placed)"
 $NICE node ci/haven_shelter.mjs || fail "haven shelter"
 
+# The volume the server blocks against the mesh the client draws, for every
+# occupant rather than the one the shelter gate covers. `OCCUPANT_R_M` and
+# `OCCUPANT_TOP_M` say of themselves that they are read off `ARCHETYPES`, and
+# nothing checked that sentence: the Rust const-asserts hold the table equal
+# to `occupant_volume()`'s match, but both live in one file and move together
+# under one edit. Sits here for the same reason as its three neighbours — it
+# imports the shipped builders out of `web/src/props.js`. Vertex buffers are
+# arithmetic: no GPU, no shard.
+echo "== gate: occupant volume (the blocked cylinder is the drawn mesh)"
+$NICE node ci/occupant_volume.mjs || fail "occupant volume"
+
 # The interaction surface: a real browser, no renderer. Sits in the CODE tier
 # because it costs under a second — it renders no frames, creates no WebGL
 # context, loads no wasm and starts no shard, so none of what makes the two

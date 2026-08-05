@@ -5,6 +5,7 @@ members = [
     "crates/protocol",
     "crates/server",
     "crates/client-wasm",
+    "crates/client",
     "crates/content",
 ]
 
