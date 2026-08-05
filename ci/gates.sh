@@ -265,6 +265,17 @@ $NICE node ci/clutter_shape.mjs || fail "clutter shape"
 echo "== gate: haven shelter (the greybox fits the slot sim-core placed)"
 $NICE node ci/haven_shelter.mjs || fail "haven shelter"
 
+# The lesser tier's greybox, the sibling above's opposite claim. The shelter
+# gate proves a room — walls that enclose, a doorway that is passable and stops
+# being passable when filled in. This proves a roof: solid on exactly one side,
+# open on the other three to the sim's own capsule, covered overhead, and NOT
+# the pad's building at 0.6 scale (under half its height, squatter in aspect,
+# timber against stone). Same place in the order for the same reason as its
+# three neighbours — it imports the shipped box list out of `web/src/props.js`.
+# Arithmetic over nine boxes: no GPU, no shard.
+echo "== gate: waystation canopy (the second greybox is not the first, smaller)"
+$NICE node ci/waystation_canopy.mjs || fail "waystation canopy"
+
 # The volume the server blocks against the mesh the client draws, for every
 # occupant rather than the one the shelter gate covers. `OCCUPANT_R_M` and
 # `OCCUPANT_TOP_M` say of themselves that they are read off `ARCHETYPES`, and

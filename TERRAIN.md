@@ -375,6 +375,7 @@ The reads a survival map must produce, and which stage buys each:
 | authored sites | 3 — one haven pad + 2 waystations, all on the ring |
 | pad containers | 5 `crate` on a 10 m ring, 2.64× the shoulder's density |
 | waystation containers | 2 `cache` on a 6.5 m ring, ≥ 600 m from every other site |
+| greyboxes | 2 kinds, one per tier: the pad's enclosed 7 m block to a 9.2 m tower, and the waystation's open canopy — 4 posts, one knee-high parapet, 4.1 m — standing in a gap in that 6.5 m ring rather than at the site centre, which is the road (`ci/waystation_canopy.mjs`) |
 | tier prices | E[items] per container barrel 14.3 < cache 20.8 < crate 33.1; per site pad 165 > waystation 42 (`ci/haven_prize.mjs`) |
 | node respawn | 20–45 min jittered, privilege-vetoed **(knob)** |
 

@@ -15,6 +15,37 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0a · The canopy stands off the road, draws, and is gated *(world lane — done this pass)*
+
+From the judge's **ranked fixes 1–6**, `pass-20260805-074623-04-judge.md`, which
+FAILED `loop/waystation-canopy`. All six landed. Knob row: `DECISIONS.md` §open.
+
+- **Cause, not the sentence:** it stood at the site centre, and a waystation's
+  centre is the coast road's centre line — `pick_minor` scores only candidates off
+  the ring, and `haven_shelter_bearing`'s doc already said so. It now stands in a
+  gap in the container pair at `WAYSTATION_CANOPY_OFF_M` (= the ring radius), on a
+  bearing `waystation_canopy_bearing` accepts, folded into the phase search because
+  the gaps move with the rotation. The road test is the **footprint's** — anchor ±
+  the bounding radius along the island radial, the axis `road_band` measures on.
+- `GOLDEN_TERRAIN_HASH` regenerated in the same commit; worldgen moved twice.
+- **It draws:** `props.js` gained `WAYSTATION_CANOPY_PARTS`/`_PEAK`/`_BAND`,
+  `canopyGeometry()` and `ARCHETYPES` row 12. `ci/waystation_canopy.mjs` is written
+  and wired (97 checks) — `haven_shelter.mjs`'s sibling asserting the opposite
+  shape, a roof not a room; negative-tested four ways. The five false doc claims
+  are true now, and the parapet's bare `< 1.2` is `CAPSULE_HEIGHT_M * 2/3`.
+- **Unverified:** nothing here was seen. No frame captured, `browser_smoke` off at
+  the operator's tier — "it draws" means the buffer matches the sim, not that it is
+  lit, sited or legible at range.
+
+**Left behind:**
+- *(systems)* `collide.rs` knows only built pieces, so a body walks through the
+  parapet and through the pad's walls. `slot_blocks` is ready and uncalled.
+- *(any)* `tests/box_container.rs` overflows its stack in a **debug** build on a
+  clean `lane/looks` — confirmed on a worktree at 750fd53, not from any diff here.
+  `ci/gates.sh` runs `--release`, where it passes, so CI cannot see it.
+
+---
+
 ## 0b · The map's grid and its arrow, made exact and gated *(ui lane — done this pass)*
 
 From the judge's **ranked fixes 1–3**, `pass-20260805-074623-02-judge.md`, against
