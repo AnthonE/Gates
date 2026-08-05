@@ -271,6 +271,58 @@ run_mut "M40 R stops raising the build level and falls through to repair" web/sr
   '    } else if (build.on && (e.code === "KeyR" || e.code === "KeyF")) {' \
   '    } else if (e.code === "KeyF") {'
 
+# --- the getting-started checklist (ui_smoke group Y) -----------------------
+# The one that matters most: correct descriptions in the WRONG ORDER. Every
+# count, every uniqueness check and every DOM read stays green — the drawn rows
+# are compared against the same table that drew them — and the client tells a
+# new player that B crafts and C builds. This is the exact shape the judge of
+# pass-20260805-111501-02 landed on the refusal tables, one surface over, and
+# only the per-code keyword wall can see it.
+run_mut "M41 the checklist transposes B and C" web/src/hud.js \
+  '  { code: "KeyC", what: "craft something" },
+  { code: "KeyB", what: "enter build mode" },' \
+  '  { code: "KeyC", what: "enter build mode" },
+  { code: "KeyB", what: "craft something" },'
+# Drawing the rows backwards: the table is untouched and correct, so this is
+# invisible to everything except the positional read of the DOM.
+run_mut "M42 the constructor draws the checklist bottom-up" web/src/hud.js \
+  '    for (const t of LEARN_TASKS) {' \
+  '    for (const t of [...LEARN_TASKS].reverse()) {'
+# A row struck through by position rather than by code — the transposed payload
+# in the one place this file addresses a list by number.
+run_mut "M43 learnUse checks off the first open row, not the pressed one" web/src/hud.js \
+  '    const row = this.learnRow.get(code);' \
+  '    const row = [...this.learnRow.values()].find((r) => !r.classList.contains("ldone"));'
+# The repeat guard. Without it a player who presses B twice retires two rows
+# worth of counter and the panel leaves the screen with rows still open.
+run_mut "M44 learnUse double-counts a repeat" web/src/hud.js \
+  '    if (!row || row.classList.contains("ldone")) return false;' \
+  '    if (!row) return false;'
+# show() stops reading learnLeft: the completed checklist comes back on every
+# join and there is no key to dismiss it.
+run_mut "M45 show() puts the completed checklist back up" web/src/hud.js \
+  '    this.learn.style.display = this.learnLeft > 0 ? "block" : "none";' \
+  '    this.learn.style.display = "block";'
+# The one-liner that reads as tidier code and quietly breaks the whole law: a
+# single mark at the top of the dispatch strikes rows through for keys the
+# composer swallowed and keys eatsKey refused.
+run_mut "M46 main.js marks the checklist from e.code at one call site" web/src/main.js \
+  '      hud.learnUse("KeyE");' \
+  '      hud.learnUse(e.code);'
+# A key that stops being classified. The forward walk is the half that closes
+# the CLASS rather than the ten instances someone remembered to pin.
+run_mut "M47 a bound key leaves the checklist unclassified" web/src/hud.js \
+  '  { code: "KeyL", what: "lock a door" },' \
+  ''
+# R in build mode raises a floor; marking the row there is a checklist that
+# lies about what the player just did. The guard is the ORDER of the two
+# branches, so the mutation is a move and both branches stay individually
+# correct — M40's shape, one law over.
+run_mut "M48 the repair row is marked from the build-level branch" web/src/main.js \
+  '      build.level = Math.max(0, Math.min(MAX_LEVEL, build.level + d));' \
+  '      build.level = Math.max(0, Math.min(MAX_LEVEL, build.level + d));
+      hud.learnUse("KeyR");'
+
 echo
 echo "mutants: $red red, $green survived, $broken stale"
 if [ -n "$(git status --porcelain)" ]; then

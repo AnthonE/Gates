@@ -157,7 +157,13 @@ const HUD_IDS = [...hudSrc.matchAll(/getElementById\("([^"]+)"\)/g)].map((m) => 
 // 2026-08-04: 16 → 20, the inventory screen's #inv/#invgrid/#invbelt/#invdetail.
 // 2026-08-05: 20 → 23, the open container's #cont/#conttitle/#contgrid.
 // 2026-08-05: 23 → 24, the interaction prompt's #prompt.
-const HUD_ID_COUNT = 24;
+// 2026-08-05: 24 → 32. Two of those are this commit's #learn/#learnrows; the
+// other six had already landed under a ratchet that was never raised with
+// them, which is the ratchet doing nothing for six elements. Caught by reading
+// the count this gate prints (32) against the constant it clears (24) — the
+// check is `>=`, so drift UPWARD is silent by construction and only a re-read
+// finds it. Raised to what actually ships, which is the whole discipline.
+const HUD_ID_COUNT = 32;
 check(
   HUD_IDS.length >= HUD_ID_COUNT,
   `parsed ${HUD_IDS.length} getElementById ids out of hud.js, expected at least ${HUD_ID_COUNT}` +
@@ -6396,6 +6402,329 @@ check(
 );
 
 // =============================================================================
+// Y. the getting-started checklist — every bound key classified, both ways
+// =============================================================================
+// The defect this walls: B, C, M, T, G, H, U, L, R and Tab were spelled out in
+// exactly ONE place, `index.html`'s `#hint` paragraph on the pre-connect
+// screen, which is gone the moment you join. `hud.js`'s LEARN_TASKS names them
+// in the world instead. That is a feature; what makes it a GATE is the walk
+// below, which is the §W shape applied to keys rather than refusal codes.
+//
+// Both directions, because either alone is a table that drifts:
+//
+//   forward — every key literal in `main.js` and `input.js` is either a task
+//     or a NAMED alias. Bind a twelfth verb key and this is red until the
+//     player is told about it. That is the class closed, not the instance:
+//     the previous state of this file could only ever have pinned the ten
+//     keys someone remembered to pin.
+//   reverse — every task has a `hud.learnUse("<code>")` call site in main.js
+//     AND a dispatch branch that compares against the same literal, so a row
+//     cannot advertise a key nothing binds or a key nothing checks off.
+//
+// The forward walk reads source TEXT, comments included, so it over-collects
+// (`input.js` names "Digit1" and "Digit6" only in a comment). That is the safe
+// direction: over-collecting fails loudly and demands a classification, where
+// under-collecting would let a bound key escape silently.
+const inputSrc = fs.readFileSync(path.join(root, "web/src/input.js"), "utf8");
+const KEY_LITERAL = /"(Key[A-Z]|Digit[0-9]|Tab|Escape|Enter|Space|Arrow[A-Za-z]+)"/g;
+const boundKeys = [
+  ...new Set([
+    ...[...mainSrc.matchAll(KEY_LITERAL)].map((m) => m[1]),
+    ...[...inputSrc.matchAll(KEY_LITERAL)].map((m) => m[1]),
+  ]),
+].sort();
+// Anti-vacuity, and a ratchet rather than a floor — the same argument
+// HUD_ID_COUNT makes above. A regex that stopped matching would make every
+// classification check below pass over an empty list, which is the "gate that
+// matches nothing" class this repo calls its worst.
+const BOUND_KEY_COUNT = 21;
+check(
+  boundKeys.length >= BOUND_KEY_COUNT,
+  `parsed ${boundKeys.length} key-code literals out of main.js + input.js, expected at least` +
+    ` ${BOUND_KEY_COUNT} — either the parse broke (every check in this group is then vacuous) or a` +
+    " whole family of binds left the client; if keys were removed on purpose, move this constant" +
+    " in the same commit",
+);
+const learn = await page.evaluate(async () => {
+  const m = await import("/src/hud.js");
+  return {
+    tasks: m.LEARN_TASKS,
+    aliases: m.LEARN_ALIASES,
+    // The derivation, sampled against literals rather than restated as a
+    // column: a second literal column here would be the hand-maintained key
+    // column LEARN_TASKS exists to avoid.
+    labels: ["KeyB", "Tab", "Digit1", "Escape"].map((c) => m.learnKeyLabel(c)),
+    // What each row's chip SHOULD read, from the same function the constructor
+    // used. Pinned as an order, not as text: the text is pinned by `labels`.
+    taskKeys: m.LEARN_TASKS.map((t) => m.learnKeyLabel(t.code)),
+  };
+});
+const taskCodes = learn.tasks.map((t) => t.code);
+check(
+  learn.tasks.length > 0 && Object.keys(learn.aliases).length > 0,
+  "hud.js exports an empty LEARN_TASKS or LEARN_ALIASES — the classification below would be vacuous",
+);
+check(
+  new Set(taskCodes).size === taskCodes.length,
+  `LEARN_TASKS repeats a code (${taskCodes.join(", ")}) — the second row for a key can never be` +
+    " checked off, because learnRow is a Map and the later entry wins",
+);
+check(
+  learn.tasks.every((t) => typeof t.what === "string" && t.what.trim().length > 0),
+  "a LEARN_TASKS row carries an empty description — a checklist row that names a key and no verb" +
+    " teaches strictly less than the #hint paragraph it replaced",
+);
+check(
+  new Set(learn.tasks.map((t) => t.what)).size === learn.tasks.length,
+  "two LEARN_TASKS rows share a description — two keys said to do the same thing is the transposed" +
+    " payload wearing a different hat, and the player cannot tell which key they wanted",
+);
+// --- the meaning wall, the §W shape applied to keys --------------------------
+// Everything above is satisfied by correct descriptions in the WRONG ORDER:
+// the drawn rows are compared against the same table that drew them, so
+// exchanging KeyB's and KeyC's `what` leaves every count, every uniqueness
+// check and every DOM read green while the client tells a player that B
+// crafts. That is exactly the transposition the judge of pass-...-02 landed on
+// the refusal tables, and §W answers it by holding each sentence to its
+// constant's NAME. There is no Rust const under a keybind, so the anchor here
+// is the KEY itself: a keyword per code, which that row's description must
+// contain and no other row's may.
+//
+// Same stated limit as §W: it reads no English. A wrong-but-well-formed
+// description containing its keyword still passes. The ORDER is walled, which
+// is the part that actually ships wrong.
+const LEARN_MEAN = {
+  Tab: "pack",
+  KeyC: "craft",
+  KeyB: "build",
+  KeyE: "face",
+  KeyG: "eat",
+  KeyH: "drink",
+  KeyU: "upgrade",
+  KeyR: "repair",
+  KeyL: "lock",
+  KeyM: "map",
+  KeyT: "say",
+};
+check(
+  learn.tasks.every((t) => typeof LEARN_MEAN[t.code] === "string"),
+  `LEARN_TASKS carries a code with no keyword in LEARN_MEAN (${learn.tasks
+    .filter((t) => !LEARN_MEAN[t.code])
+    .map((t) => t.code)
+    .join(", ")}) — a new row must join the meaning wall in the same commit, or it is the one row a` +
+    " transposition can hide under. The gate is red until you add it, on purpose",
+);
+for (const t of learn.tasks) {
+  const word = LEARN_MEAN[t.code];
+  if (!word) continue;
+  check(
+    t.what.toLowerCase().includes(word),
+    `LEARN_TASKS['${t.code}'] reads ${JSON.stringify(t.what)}, which does not contain '${word}' —` +
+      " the description no longer describes the key it sits against, which is a checklist teaching" +
+      " the wrong key for the right verb",
+  );
+  const others = learn.tasks.filter((o) => o.code !== t.code && o.what.toLowerCase().includes(word));
+  check(
+    others.length === 0,
+    `'${word}' is meant to identify '${t.code}' alone but also appears in ${others
+      .map((o) => `${o.code} (${JSON.stringify(o.what)})`)
+      .join(", ")} — a keyword two rows share cannot tell a swap of those two rows apart`,
+  );
+}
+for (const [code, why] of Object.entries(learn.aliases)) {
+  check(
+    typeof why === "string" && why.trim().length > 0,
+    `LEARN_ALIASES['${code}'] carries no reason — "we chose not to teach this" and "we forgot this` +
+      ' exists" must not look identical to this gate, which is the entire point of the list',
+  );
+  check(
+    !taskCodes.includes(code),
+    `'${code}' is BOTH a LEARN_TASKS row and a LEARN_ALIASES entry — the client both teaches it and` +
+      " states it is not worth teaching",
+  );
+}
+check(
+  JSON.stringify(learn.labels) === JSON.stringify(["B", "TAB", "1", "ESCAPE"]),
+  `learnKeyLabel derived ${JSON.stringify(learn.labels)} for KeyB/Tab/Digit1/Escape, expected` +
+    ' ["B","TAB","1","ESCAPE"] — the chip is derived from the dispatch code so the two cannot drift',
+);
+// --- forward: nothing the client binds is left unclassified ------------------
+for (const code of boundKeys) {
+  check(
+    taskCodes.includes(code) || code in learn.aliases,
+    `main.js or input.js dispatches on '${code}' and hud.js neither teaches it (LEARN_TASKS) nor says` +
+      " why it does not (LEARN_ALIASES). A key named nowhere after the join is the defect this whole" +
+      " group exists to stop: add a row, or add an alias with its reason",
+  );
+}
+// --- reverse: nothing taught is decorative ----------------------------------
+for (const t of learn.tasks) {
+  check(
+    mainSrc.includes(`hud.learnUse("${t.code}")`),
+    `LEARN_TASKS teaches '${t.code}' and main.js never calls hud.learnUse("${t.code}") — the row can` +
+      " never be checked off, so the checklist would sit on screen for the whole session telling a" +
+      " player who has already done it to do it again",
+  );
+  check(
+    mainSrc.includes(`e.code === "${t.code}"`),
+    `LEARN_TASKS teaches '${t.code}' and main.js's dispatch never compares against it — the row names` +
+      " a key that does nothing",
+  );
+}
+// Every call site passes a LITERAL from the table, never `e.code`. This is
+// what makes the swallowed-key law structural rather than a comment: one
+// `hud.learnUse(e.code)` at the top of the handler would strike rows through
+// for keys the composer ate and keys `eatsKey` refused, and it would read as
+// tidier code while doing it.
+const learnCalls = [...mainSrc.matchAll(/hud\.learnUse\(([^)]*)\)/g)].map((m) => m[1]);
+check(
+  learnCalls.length === learn.tasks.length,
+  `main.js has ${learnCalls.length} hud.learnUse call sites for ${learn.tasks.length} tasks —` +
+    " one per verb branch is the contract; a spare call is a row struck through from somewhere the" +
+    " verb did not run",
+);
+for (const arg of learnCalls) {
+  check(
+    /^"[^"]+"$/.test(arg) && taskCodes.includes(arg.slice(1, -1)),
+    `main.js calls hud.learnUse(${arg}) — every call site must pass a literal code that LEARN_TASKS` +
+      " has. A variable here (hud.learnUse(e.code)) checks rows off for keys that were swallowed",
+  );
+}
+// R is the sharp case and the reason the marks are per-branch. In build mode R
+// raises the build level; only the repair branch may check the row off, and
+// the guard is the ORDER of the two branches in the one if/else chain — the
+// same law group X holds for the branches themselves.
+check(
+  mainSrc.indexOf('hud.learnUse("KeyR")') >
+    mainSrc.indexOf('build.on && (e.code === "KeyR" || e.code === "KeyF")'),
+  'main.js marks the repair row BEFORE its build-mode branch — R in build mode raises a floor and' +
+    " repairs nothing, so a checklist struck through there is a checklist that lies about what the" +
+    " player just did",
+);
+
+// --- the panel itself, in the browser ---------------------------------------
+const learnDom = await page.evaluate(() => {
+  const rows = [...document.querySelectorAll("#learnrows .ltask")];
+  return {
+    haveBox: !!document.getElementById("learn"),
+    haveTitle: !!document.getElementById("learntitle"),
+    haveRows: !!document.getElementById("learnrows"),
+    // Inline, not computed — the same distinction group F draws: `show()` is
+    // what puts the checklist on screen and a stylesheet default would hide
+    // that lapsing.
+    shown: document.getElementById("learn")?.style.display,
+    n: rows.length,
+    keys: rows.map((r) => r.querySelector(".lkey")?.textContent),
+    whats: rows.map((r) => r.querySelector(".lwhat")?.textContent),
+    done: rows.filter((r) => r.classList.contains("ldone")).length,
+  };
+});
+check(learnDom.haveBox, "#learn is missing from index.html — the checklist has nowhere to draw");
+check(learnDom.haveTitle, "#learntitle is missing from index.html");
+check(learnDom.haveRows, "#learnrows is missing from index.html");
+check(
+  learnDom.shown === "block",
+  `Hud.show() left #learn at inline display:'${learnDom.shown}' on a session where no verb has been` +
+    " used — the one surface that names the keys is hidden at exactly the moment a new player needs it",
+);
+check(
+  learnDom.n === learn.tasks.length,
+  `#learnrows drew ${learnDom.n} rows for ${learn.tasks.length} tasks`,
+);
+check(learnDom.done === 0, `${learnDom.done} rows are struck through before any verb was used`);
+// Position is the payload. A checklist with the right keys against the wrong
+// verbs is `CLAUDE.md`'s positional-payload trap in a list of eleven, and it
+// is invisible to a count.
+for (let i = 0; i < learn.tasks.length; i++) {
+  check(
+    learnDom.keys[i] === learn.taskKeys[i] && learnDom.whats[i] === learn.tasks[i].what,
+    `checklist row ${i} reads '${learnDom.keys[i]}' / '${learnDom.whats[i]}', expected` +
+      ` '${learn.taskKeys[i]}' / '${learn.tasks[i].what}' — the rows are drawn in LEARN_TASKS order` +
+      " and a key sitting against another row's verb is the transposition byte-level checks cannot see",
+  );
+}
+// --- the transition ---------------------------------------------------------
+const learnUsed = await page.evaluate((codes) => {
+  const hud = globalThis.__ui.hud;
+  const row = (c) => [...document.querySelectorAll("#learnrows .ltask")][codes.indexOf(c)];
+  const doneCodes = () =>
+    codes.filter((c) => row(c).classList.contains("ldone")).join(",");
+  const first = hud.learnUse("KeyB");
+  const afterFirst = doneCodes();
+  const again = hud.learnUse("KeyB");
+  const afterAgain = doneCodes();
+  // A key the client does not teach: no throw, no row, no count.
+  const unknown = hud.learnUse("KeyZ");
+  const afterUnknown = doneCodes();
+  const shownMid = document.getElementById("learn").style.display;
+  // Now the rest, and the panel must retire itself on the last one.
+  const rest = codes.filter((c) => c !== "KeyB").map((c) => hud.learnUse(c));
+  return {
+    first,
+    afterFirst,
+    again,
+    afterAgain,
+    unknown,
+    afterUnknown,
+    shownMid,
+    restAllTrue: rest.every(Boolean),
+    shownEnd: document.getElementById("learn").style.display,
+    doneEnd: document.querySelectorAll("#learnrows .ltask.ldone").length,
+  };
+}, taskCodes);
+check(
+  learnUsed.first === true && learnUsed.afterFirst === "KeyB",
+  `learnUse("KeyB") returned ${learnUsed.first} and left '${learnUsed.afterFirst}' struck through,` +
+    " expected true and KeyB alone — a verb must check off ITS row and only its row",
+);
+check(
+  learnUsed.again === false && learnUsed.afterAgain === "KeyB",
+  `a second learnUse("KeyB") returned ${learnUsed.again} — a repeat must be a no-op, or the host` +
+    " double-counts and the panel retires while rows are still open",
+);
+check(
+  learnUsed.unknown === false && learnUsed.afterUnknown === "KeyB",
+  `learnUse on an untaught code returned ${learnUsed.unknown} and left '${learnUsed.afterUnknown}'` +
+    " — an unbound key must not throw and must not strike anything through",
+);
+check(
+  learnUsed.shownMid === "block",
+  `#learn went to '${learnUsed.shownMid}' with rows still open — the panel retires when the LAST` +
+    " verb is used, not the first",
+);
+check(
+  learnUsed.restAllTrue,
+  "one of the remaining verbs failed to check its row off — every task must be reachable through" +
+    " learnUse or the panel can never retire",
+);
+check(
+  learnUsed.doneEnd === learn.tasks.length && learnUsed.shownEnd === "none",
+  `with all ${learn.tasks.length} verbs used, ${learnUsed.doneEnd} rows are struck through and #learn` +
+    ` reads '${learnUsed.shownEnd}' — a checklist a player has completed must leave the screen`,
+);
+// And it stays gone across a re-show: `show()` reads learnLeft, so a rejoin
+// does not teach a player their own verbs a second time.
+const learnReshow = await page.evaluate(() => {
+  globalThis.__ui.hud.show();
+  return document.getElementById("learn").style.display;
+});
+check(
+  learnReshow === "none",
+  `Hud.show() put the completed checklist back at '${learnReshow}' — show() must read the same` +
+    " learnLeft the transition writes, or the two disagree about whether the panel is up",
+);
+// The checklist owns no keyboard. It is read-only chrome, and a panel that
+// started eating keys would strand every verb under itself.
+const learnEats = await page.evaluate(() =>
+  ["KeyB", "KeyC", "KeyE", "Tab"].map((c) => globalThis.__ui.hud.eatsKey(c)),
+);
+check(
+  learnEats.every((v) => v === false),
+  `the checklist made eatsKey answer ${JSON.stringify(learnEats)} on a page with no panel open —` +
+    " it is pointer-events:none chrome and must claim nothing",
+);
+
+// =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
@@ -6457,7 +6786,14 @@ console.log(
     "outranking the store in both directions, the reach bound strict, order-independent, the name reset on " +
     "every scan, and main.js pinned to send the scan's own store bit rather than a literal — plus the R " +
     "mode conflict held as an ORDERING law (build-level raise before repair in the one if/else chain) and " +
-    "the prompt suppressed in build mode to match",
+    "the prompt suppressed in build mode to match · " +
+    `the getting-started checklist: all ${boundKeys.length} key literals in main.js + input.js ` +
+    `classified, ${learn.tasks.length} taught and ${Object.keys(learn.aliases).length} aliased with a ` +
+    "stated reason, no code both, each task carrying a learnUse call site AND a dispatch branch, every " +
+    "call site a literal (never e.code, so a swallowed key checks nothing off), the repair mark pinned " +
+    "BELOW the build-mode R branch, the chip derived from the code, rows drawn in table order key " +
+    "against verb, and the transition: own row only, repeat a no-op, untaught code a no-op, panel up " +
+    "while one is open, gone on the last and still gone across show()",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
