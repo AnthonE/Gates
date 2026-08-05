@@ -29,6 +29,7 @@ import {
 } from "./invmove.js";
 import {
   INTERACT_REACH_M,
+  REPAIR_STORE_DEPLOY,
   VERB_BAG,
   VERB_BOX,
   VERB_DOOR,
@@ -38,8 +39,10 @@ import {
   describeDeploy,
   describePiece,
   nearestPiece,
+  nearestRepairable,
   newPick,
   newPiecePick,
+  newRepairPick,
   newSwingPick,
   resolveInteract,
   resolveSwing,
@@ -549,7 +552,12 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       return;
     }
     hud.setPrompt(
-      centrePrompt(build.on ? selDesc() : null, aimPick(pick, VERB_NONE), swingAt()),
+      centrePrompt(
+        build.on ? selDesc() : null,
+        aimPick(pick, VERB_NONE),
+        swingAt(),
+        build.on ? null : aimRepair(),
+      ),
     );
   };
   // ===========================================================================
@@ -695,6 +703,58 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       return;
     }
     const len = ex.client_action_upgrade(best.cx, best.cz, best.level, best.loc, material);
+    views.refresh();
+    if (len > 0) actions.send(views.output, len);
+  };
+  // R buys a damaged thing back — the other half of the piece's life story,
+  // and until now the half nothing could press. Unlike U it addresses BOTH
+  // stores: the door is the breach point a raid actually uses, and a repair
+  // that could only reach built pieces would refuse to mend the one thing
+  // most likely to be broken. `nearestRepairable` reports which store won
+  // and that answer rides the wire as the leading argument — see the store
+  // constants in `interact.js` for why getting it wrong is invisible.
+  //
+  // Nothing is predicted. A repair moves no collision and spends materials
+  // the server owns the count of, so the client asks and reads the answer
+  // back: either `SUB_PIECE_REPAIRED` (the `repaired left/max` toast, via
+  // `structNews`) or a build refusal (`refusals.js`, "not damaged" and
+  // "cannot be repaired" among them).
+  const repairPick = newRepairPick();
+  const repairAt = { x: 0, z: 0 };
+  const repairWorld = { cell: BUILD_CELL, pieces: [], deploys: [] };
+  const repairDesc = { what: "", costs: "", need: "" };
+  const aimRepair = () => {
+    const R = views.render;
+    repairAt.x = R[1];
+    repairAt.z = R[3];
+    // Both `values()` calls are one-shot iterators, so they are taken fresh.
+    repairWorld.pieces = pieceRecs.values();
+    repairWorld.deploys = deployRecs.values();
+    nearestRepairable(repairPick, repairAt, repairWorld);
+    // The name is the caller's to fill (the def tables and the wasm string
+    // table are both out of `interact.js`'s reach), and it is what decides
+    // whether the prompt draws at all. A row that has not dripped yet leaves
+    // `what` empty and the prompt stays blank rather than reading "REPAIR ?".
+    if (repairPick.found) {
+      const deploy = repairPick.store === REPAIR_STORE_DEPLOY;
+      const have = deploy
+        ? (ex.client_deploy_defs_state() >>> 0) & 0xffff
+        : (ex.client_piece_defs_state() >>> 0) & 0xffff;
+      if (repairPick.row < have) {
+        repairPick.what = deploy
+          ? describeDeploy(repairDesc, views.deployDefs, repairPick.row, itemName, invHave).what
+          : describePiece(repairDesc, views.pieceDefs, repairPick.row, itemName, invHave).what;
+      }
+    }
+    return repairPick;
+  };
+  const tryRepair = () => {
+    const best = aimRepair();
+    if (!best.found) {
+      hud.toast("nothing to repair in reach");
+      return;
+    }
+    const len = ex.client_action_repair(best.store, best.cx, best.cz, best.level, best.loc);
     views.refresh();
     if (len > 0) actions.send(views.output, len);
   };
@@ -956,6 +1016,15 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       e.preventDefault();
     } else if (e.code === "KeyU") {
       tryUpgrade();
+      e.preventDefault();
+    } else if (e.code === "KeyR") {
+      // Repair, and ONLY out of build mode. R is already the build-level
+      // raise, and that branch sits above this one in this same chain — the
+      // ordering is the binding, so it is asserted in `ui_smoke` §X rather
+      // than left to whoever next reorders these branches. `updatePrompt`
+      // reads the same `build.on` question the other way round, so the row
+      // never advertises `[R] REPAIR` while R would step a floor up.
+      tryRepair();
       e.preventDefault();
     }
   });
