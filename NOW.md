@@ -4,6 +4,34 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+0. **A base comes down when you take its legs out — landed this pass
+   (systems lane).**
+   *(Gap pass. From `findings/archive-prestamp/pass-20260805-011412-01-judge.md`,
+   ranked gap 3: "`supported()` runs at placement and nowhere else".)*
+
+   `build::collapse_from` re-checks support around each removed address and
+   drops what no longer stands, breadth-first over `dependents()` — the exact
+   inverse of `supported()`, sitting beside it, gated by removing **every**
+   piece of six fixtures in turn and requiring the same world a naive fixed
+   point reaches. Wired into both death paths (a raid swing and the decay
+   sweep). Capped at `MAX_COLLAPSE_PIECES = 64` a tick, derived from the
+   256-slot event ring, with `support_sweep` finishing the remainder on later
+   ticks so the cap costs latency and not correctness. Replay golden
+   regenerated — checked, not assumed: with the new hash field held out and
+   the sweep disabled the world still differs, so the cascade is really
+   changing what the script replays.
+
+   What it does **not** do, ranked:
+   - A collapsed piece pays nothing back. `drop_piece` drops no loot and
+     refunds no material, so a raid's whole reward is still what was in the
+     containers it broke. Whether rubble should pay is unspoken — a
+     `DECISIONS.md` §open row, not a number to invent. systems lane.
+   - A large collapse arrives as a burst of `EV_PIECE_REMOVED` in one tick.
+     The wire carries it and nobody has watched a client take one. ui lane.
+   - The rest of that judge gap is untouched: `combat.rs` is still melee-only
+     (its own item below), and what a raid is *for* is the container panel
+     (ui lane).
+
 0. **The outbound move marshalling is gated — done this pass (ui lane), kept
    for what it leaves open.**
 
@@ -380,19 +408,6 @@ perform.
    then frozen. `sim-core` has exactly one dependency and it stays that way — a
    rigid-body crate breaks walls 1, 2 and 5 at once, and cosmetic shards when a
    barrel breaks are client-only and never feed back.
-
-1. **A base collapses when you take its legs out — today it floats.**
-   *(Operator, 2026-08-04. systems lane.)*
-
-   `supported()` runs at PLACEMENT (`build.rs:452`) and nowhere else. Destroy a
-   foundation and everything above keeps hanging in the air. Rust collapses it,
-   and that is central to how raiding feels — the raid is the game.
-
-   Wanted: support re-evaluated when a piece dies, propagating to what rested on
-   it. It is a graph reachability problem over the piece store, not physics —
-   walk from grounded pieces, orphans fall. Bound the sweep in `limits.rs` and
-   state the overflow policy; an unbounded cascade on a 500-piece base is a
-   tick-time bomb, which is wall 4.
 
 1. **There is a revolver in the loot table and nothing to fire it.**
    *(Operator, 2026-08-04. systems lane, after the three items above.)*

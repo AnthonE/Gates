@@ -343,8 +343,17 @@ fn test_alloc_zero() {
     // record exists would be satisfied by the warmup's and say nothing
     // about the window it names.
     let rung_count = |w: &World| w.pieces.entries().iter().filter(|p| p.row == 4).count();
-    let placed_before = world.pieces.len();
-    let rung_before = rung_count(&world);
+    // Watched per tick rather than compared end to end. Bot 5 raids inside
+    // this same window and a broken piece now takes what it held down with
+    // it (build.rs `collapse_from`), so the store's net size at the end is
+    // a proxy that a collapse can cancel out — it would read "no placement
+    // ran" for a window in which several did. A tick where the store grew
+    // is an insert, and a tick where a row-4 record appeared is the
+    // upgrade's re-row (nothing else in the cycle can reach row 4).
+    let mut pieces_prev = world.pieces.len();
+    let mut rung_prev = rung_count(&world);
+    let mut placed_in_window = 0u32;
+    let mut rung_ups = 0u32;
     // Bot 5 is the raider: stood on a plane piece the warmup actually
     // left standing, holding fixture item 0 (34 structure damage) and
     // swinging every tick. A plane's anchor is its cell center, so the
@@ -491,6 +500,16 @@ fn test_alloc_zero() {
             on_bag: false,
         };
         world.tick(&all);
+        let pieces_now = world.pieces.len();
+        if pieces_now > pieces_prev {
+            placed_in_window += 1;
+        }
+        pieces_prev = pieces_now;
+        let rung_now = rung_count(&world);
+        if rung_now > rung_prev {
+            rung_ups += 1;
+        }
+        rung_prev = rung_now;
         events_dropped += world.events.dropped;
         for ev in world.events.entries() {
             if ev.code == EV_BAG_DROPPED {
@@ -563,12 +582,12 @@ fn test_alloc_zero() {
     // what keep the build arms above honest: a gate that only ever drove
     // refusals would count nothing the write paths do.
     assert!(
-        world.pieces.len() > placed_before,
+        placed_in_window > 0,
         "no piece was placed inside the counted window — the build write path \
          fell out of the alloc gate"
     );
     assert!(
-        rung_count(&world) > rung_before,
+        rung_ups > 0,
         "nothing reached the fixture's stone rung inside the counted window — \
          the upgrade write path fell out of the alloc gate"
     );
