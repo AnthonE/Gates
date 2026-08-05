@@ -402,19 +402,40 @@ What remains, in the order it is worth doing:
 - The pad is still not carved (3.76 m of relief under a flat-based building —
   the plinth buries 1.4 m of that, which is a cover, not a fix).
 
-## world: the trunk radius is pinned to a builder that no longer ships
+## 0. The blocked cylinder is the drawn mesh now — done this pass *(world lane)*
 
-From `findings/pass-20260805-002720-03-judge.md` ranked fix 4, deliberately
-left by the pass that did the other three. `OCCUPANT_R_M[Tree]` = 0.26 is read
-off `props.js:348`'s `CylinderGeometry(0.13, 0.26, …)`, but the near-ring pine
-now ships from `ez-tree` (`props.js:556`) and the cone is only the LOD1 start.
-So the server's trunk and the drawn trunk agree by assumption, not by gate —
-the same class as the shelter's box list before this pass, one occupant over.
-`ci/pine_shape.mjs` already imports the shipped builder and already prints a
-1.52 m canopy radius, so the fix is one assertion pinning the GENERATED
-trunk's radius to `OCCUPANT_R_M[Tree]`. Not done here because it may not hold:
-if ez-tree's trunk is not 0.26 m the fix is a table change with a real number
-behind it, not a one-line assert, and that deserves its own measurement.
+Was "the trunk radius is pinned to a builder that no longer ships". The item
+asked for one assert on the Tree row; generalising it to all eleven was
+cheaper and found more. `ci/occupant_volume.mjs` (85 checks) measures the
+vertex buffer `ARCHETYPES` actually builds and **sandwiches** every row of
+`OCCUPANT_R_M`/`OCCUPANT_TOP_M`: no vertex below the blocking top may lie
+outside the blocking radius, and the row may not exceed the mesh's own extent.
+Both directions, because a lower bound alone is satisfied forever by widening
+— a mutation widened the shelter a full metre past a spherical upper bound
+before it was tightened to a horizontal one. 18 mutations, each caught by its
+own mechanism. `DECISIONS.md` §open "occupant volume gate v0" has the rest.
+
+Two findings, both real:
+
+- **`CrateSlot` blocked 0.68 against a measured half-diagonal of 0.680074** —
+  inward, which the table's own doc calls "the bug". It is 0.6801 now.
+  `test_replay`'s golden does not move: the five crates sit on the haven pad
+  and 74 µm does not reach the bots' script. No cross-lane cost.
+- **The generated ez-tree pine's trunk is 0.3069 m, 18% wider than the cone's
+  0.26** that `OCCUPANT_R_M[Tree]` is read off. So the answer to the old item
+  is "it does not hold" — and rather than move a table for a tree nobody
+  draws, the Tree pin is written against **whichever builder `ARCHETYPES[1]`
+  selects**. Wiring `parts: pineParts` (the item further down this file) now
+  goes red until the table moves in the same commit.
+
+Leaves open:
+
+- **Nothing verified this by eye.** It is arithmetic over vertex buffers; no
+  frame was captured and `browser_smoke` is off this run.
+- **The tables are still transcribed twice** in `terrain.rs` — the array and
+  `occupant_volume()`'s match — tied only by a const-assert. This gate reads
+  both, so a one-sided edit is caught, but the duplication is still there.
+
 > 3. ~~**`ARCH_BOX` needs slots and a container address**~~ — **answered in
 >    `4d7a926`, 2026-08-04**, before this request was read. `BOX_SLOTS` is on
 >    the wire and `box_key` is the address; the ui half landed 2026-08-05
