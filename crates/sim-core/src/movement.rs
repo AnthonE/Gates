@@ -14,6 +14,7 @@
 use crate::collide::{self, ColIndex};
 use crate::fmath::floor_i32;
 use crate::input::{InputFrame, BTN_SPRINT};
+use crate::occupy::Occupants;
 use crate::terrain::{self, CLIFF_SLOPE_RATIO, ISLAND_SIZE, SEA_LEVEL};
 use crate::yaw_lut::yaw_dir;
 
@@ -87,7 +88,10 @@ fn climbable(from_y: f32, to_ground: f32, run: f32) -> bool {
 /// One fixed-timestep step of one capsule. Pure: same inputs, same result,
 /// native or wasm. `cols` is the placed-piece collision index — the
 /// server's store and the client's mirror step through this same code.
-pub fn step(seed: u64, cols: &ColIndex, body: &mut Body, frame: &InputFrame) {
+/// `occ` is the scattered-world collision bundle (occupy.rs) and is here for
+/// the same reason `cols` is: a wall only one side knows about is a
+/// misprediction every time a player leans on a tree.
+pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, frame: &InputFrame) {
     let x = body.qx as f32 * POS_XZ_Q;
     let y = body.qy as f32 * POS_Y_Q;
     let z = body.qz as f32 * POS_XZ_Q;
@@ -126,6 +130,9 @@ pub fn step(seed: u64, cols: &ColIndex, body: &mut Body, frame: &InputFrame) {
     let dz = wz * speed * DT;
     let mut nx = x;
     let mut nz = z;
+    // Whether the body is ALREADY inside an occupant, resolved at most once
+    // and only if a candidate is vetoed by one. See the veto below.
+    let mut inside: Option<bool> = None;
     if len2 > 0.0 {
         let clamp_x = |v: f32| v.clamp(BORDER_MARGIN, ISLAND_SIZE - BORDER_MARGIN);
         let candidates = [(x + dx, z + dz), (x + dx, z), (x, z + dz)];
@@ -138,6 +145,23 @@ pub fn step(seed: u64, cols: &ColIndex, body: &mut Body, frame: &InputFrame) {
             }
             if collide::blocked(seed, cols, x, z, cx, cz, y) {
                 continue;
+            }
+            // Trees, boulders, barrels, crates and the shelter's walls
+            // (occupy.rs). A destination test, not a swept one, which the
+            // const block there proves cannot tunnel at sprint speed.
+            //
+            // The veto lifts when the body is already inside an occupant —
+            // a node can respawn around a standing player, and a rule that
+            // vetoed every candidate would then pin them there forever with
+            // no verb that frees them. Walking out is the only escape a
+            // capsule has, so being stuck must never be absorbing.
+            if occ.blocks(seed, cx, cz, y) {
+                if inside.is_none() {
+                    inside = Some(occ.blocks(seed, x, z, y));
+                }
+                if inside != Some(true) {
+                    continue;
+                }
             }
             let g = terrain::height(seed, cx, cz);
             let pg = collide::piece_ground(seed, cols, cx, cz, y);

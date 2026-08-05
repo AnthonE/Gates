@@ -15,7 +15,7 @@ use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
     BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK,
-    MAX_PLAYERS, STATE_HASH_INTERVAL,
+    MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
 };
 use crate::loot::{LootContent, LOOT_BARREL};
 use crate::movement::{self, quant_xz, quant_y, Body};
@@ -594,6 +594,13 @@ pub struct World {
     pub sweep_support: u32,
     /// Sparse harvested/damaged slot records (TERRAIN.md §2).
     pub slot_lives: SlotLives,
+    /// Memo of `terrain::scatter` behind the occupant collision query
+    /// (occupy.rs). **Not sim state and deliberately not hashed** — a memo of
+    /// a pure function, where which lines happen to be resident changes only
+    /// how long an answer took, never the answer. Boxed for the reason
+    /// `backpacks` is: `World` is built on the stack and this is 24 kB of
+    /// fixed capacity. One allocation at construction, none in the tick.
+    pub slot_cache: Box<crate::occupy::SlotCache>,
     /// This tick's outbound events; cleared at tick start.
     pub events: EventQueue,
     /// Hash stamped every `STATE_HASH_INTERVAL` ticks (0 until the first).
@@ -631,6 +638,7 @@ impl World {
             sweep_deploy: 0,
             sweep_support: 0,
             slot_lives: SlotLives::new(),
+            slot_cache: Box::new(crate::occupy::SlotCache::new()),
             events: EventQueue::default(),
             last_hash: 0,
             dev_spawn: None,
@@ -1337,6 +1345,17 @@ impl World {
         }
         let seed = self.seed;
         let tick = self.tick;
+        // The tick's structural removal budget, spent by every path that
+        // takes a piece out of the store — a raider's killing blow below,
+        // the decay sweep, the support backstop, and every cascade they
+        // seed. A tick-local, reset here with the ring it protects: a
+        // removal that finds it empty is deferred to a later tick, never
+        // dropped, so this bounds latency and not what comes down.
+        //
+        // Deliberately not a `World` field. It is spent and forgotten
+        // inside one tick exactly as `events` is, and a store that lives
+        // across ticks is a store `state_hash` has to answer for.
+        let mut removals = MAX_REMOVALS_PER_TICK;
         // Slot order, and inside a slot: move, swing, craft. The swing is
         // one arm — `gather::swing` gets first claim on it (a tree in
         // reach is always the nearer target) and hands it on only when
@@ -1359,7 +1378,18 @@ impl World {
                     sel: self.players[i].frame.sel,
                     ..InputFrame::default()
                 };
-                movement::step(seed, self.pieces.cols(), &mut self.players[i].body, &frame);
+                movement::step(
+                    seed,
+                    self.pieces.cols(),
+                    &mut crate::occupy::Occupants {
+                        table: &self.scatter,
+                        haven: &self.haven,
+                        harvested: &self.slot_lives,
+                        cache: &mut self.slot_cache,
+                    },
+                    &mut self.players[i].body,
+                    &frame,
+                );
                 continue;
             }
             // The clock runs before the arm. A body that starves this tick
@@ -1374,7 +1404,18 @@ impl World {
                 continue;
             }
             let frame = self.players[i].frame;
-            movement::step(seed, self.pieces.cols(), &mut self.players[i].body, &frame);
+            movement::step(
+                seed,
+                self.pieces.cols(),
+                &mut crate::occupy::Occupants {
+                    table: &self.scatter,
+                    haven: &self.haven,
+                    harvested: &self.slot_lives,
+                    cache: &mut self.slot_cache,
+                },
+                &mut self.players[i].body,
+                &frame,
+            );
             let swung = gather::swing(
                 seed,
                 tick,
@@ -1446,6 +1487,7 @@ impl World {
                             &self.players[i],
                             &mut self.pieces,
                             &mut self.deploys,
+                            &mut removals,
                             &mut self.events,
                         );
                     }
@@ -1465,6 +1507,7 @@ impl World {
             tick,
             &mut self.sweep_piece,
             &mut self.sweep_deploy,
+            &mut removals,
             &mut self.events,
         );
         // The structural backstop, after the sweep that can create work for
@@ -1476,6 +1519,7 @@ impl World {
             &mut self.pieces,
             &mut self.deploys,
             &mut self.sweep_support,
+            &mut removals,
             &mut self.events,
         );
         // Boxes that came apart this tick — raided in the player loop

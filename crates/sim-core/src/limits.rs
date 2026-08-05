@@ -158,6 +158,20 @@ pub const CHAT_LOCAL_CM: i64 = 2_000;
 /// the hit. Proposed default, DECISIONS.md §open (gather bounds row).
 pub const MAX_SLOT_LIVES: usize = 16_384;
 
+/// Lines in the direct-mapped memo of `terrain::scatter` that makes the
+/// occupant collision query affordable (occupy.rs). Sized past the
+/// `MAX_PLAYERS * 9` cells a full shard can have under probe at once, so a
+/// spread-out server still mostly hits.
+///
+/// **It has no overflow policy, and that is not an omission.** Every other
+/// cap here bounds a store whose contents are state, where dropping an entry
+/// loses something; this bounds a memo of a pure function, where a collision
+/// re-resolves and the answer is bit-identical either way. Nothing can be
+/// lost, so there is nothing to refuse or evict. Must stay a power of two —
+/// occupy.rs masks with it and a const block asserts it.
+/// Proposed default, DECISIONS.md §open (occupant collision v0 row).
+pub const SLOT_CACHE_SLOTS: usize = 1_024;
+
 /// Building-piece definitions the sim preallocates for (the alpha set is
 /// 18 rows — 6 shapes × 3 materials, content/building.toml). The content
 /// bake refuses a set past this. Structural cap like `MAX_ITEM_DEFS`.
@@ -343,3 +357,30 @@ pub const MAX_COLLAPSE_PIECES: usize = 64;
 /// a rate, not a queue; the cursor wraps and nothing is skipped.
 /// Proposed default, DECISIONS.md §open (collapse v0).
 pub const SUPPORT_SWEEP_PER_TICK: usize = 32;
+
+/// Structural piece removals the whole **tick** may make, across every
+/// path that takes a piece out of the store: a raider's killing blow
+/// (`deploy::damage_piece`), the decay sweep (`deploy::upkeep_sweep`), the
+/// standing-support backstop (`build::support_sweep`), and every cascade
+/// any of them seeds (`build::collapse_from`).
+///
+/// `MAX_COLLAPSE_PIECES` bounds one cascade and cannot bound a tick,
+/// because a tick holds many: `upkeep_sweep` does not stop at its first
+/// removal the way `support_sweep` does, so its 64 visits can each seed a
+/// cascade, and up to `MAX_PLAYERS` raiders can land a killing blow
+/// besides. The composed worst case is thousands of `EV_PIECE_REMOVED`
+/// against a 256-slot drop-newest ring, and a dropped removal is the one
+/// event whose loss is permanent — the piece stays drawn on every screen
+/// for the rest of the session. The per-cascade cap stays (it is also what
+/// sizes `collapse_from`'s stack array); this is the bound that composes.
+///
+/// Sized off `MAX_EVENTS_PER_TICK`: a removal spends one event slot, two
+/// when a deployable stood at the same address, so 64 removals is at most
+/// 128 of 256 and leaves half the ring for everything else the tick says.
+/// Overflow policy: **defer** — a refused removal is refused *before* the
+/// piece leaves the store, so nothing is lost and nothing is half-removed.
+/// The decay sweep rewinds its cursor to retry the same entry, a cascade
+/// leaves the rest hanging for `support_sweep`, and a raid's killing blow
+/// stops one hp short so the wall falls to the next swing.
+/// Proposed default, DECISIONS.md §open (collapse budget v0).
+pub const MAX_REMOVALS_PER_TICK: usize = 64;

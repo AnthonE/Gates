@@ -421,7 +421,23 @@ impl Deploys {
     /// when no box stands there. The index is transient — swap-remove
     /// invalidates it — which is exactly why the handle on the wire is the
     /// address and never this.
+    ///
+    /// Handle 0 is not a box, here or anywhere: it is what every layer
+    /// already says when it means *no container open* (`bridge.rs`'s
+    /// "nothing is open", `core.rs`'s server-side close, `CONT_SELF`'s
+    /// zeroed handle field). `box_key(0, 0, 0)` packs to 0 and would
+    /// otherwise be a real address, so the two readings collide on one
+    /// cell — and the client, unable to tell them apart, has to refuse a
+    /// ground handle of 0 outright. The collision is closed on both sides
+    /// the way `Backpacks` already closes it: **the handle is never
+    /// minted** (`place_deploy` refuses a box at that address with
+    /// `REFUSE_D_SPOT`, as `next_id: 1` refuses it for bags) and **the
+    /// decode guards it** (here, as `index_of_id` does). Either half alone
+    /// leaves one side unable to trust the other.
     pub fn box_index(&self, key: u32) -> Option<usize> {
+        if key == 0 {
+            return None;
+        }
         self.boxes.entries[..self.boxes.len]
             .iter()
             .position(|b| box_key(b.cx, b.cz, b.level) == key)
@@ -725,6 +741,14 @@ pub fn place_deploy(
         || (level as usize) >= MAX_BUILD_LEVELS
         || !loc_fits_placement(def.placement, loc)
         || deploys.find(cx, cz, level, loc).is_some()
+        // The one address a box may not have: `box_key(0, 0, 0)` is 0, and
+        // 0 is the reserved "no container" handle (`box_index`). Refusing
+        // it here is the minting half of that pair — a box placed at this
+        // one cell could be opened by nobody, and a spot that refuses is
+        // strictly better than an item store that swallows. It costs one
+        // build cell at the world's origin corner and nothing else; every
+        // other level of that cell, and every other cell, is unaffected.
+        || (def.arch == ARCH_BOX && box_key(cx, cz, level) == 0)
     {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
         return;
@@ -1066,6 +1090,7 @@ fn drop_deploy(
 /// hp is otherwise sim-only (build.rs) — a raid is the one case where the
 /// number has to cross, because a wall that shows no progress under thirty
 /// swings reads as an invulnerable wall.
+#[allow(clippy::too_many_arguments)]
 pub fn damage_piece(
     dc: &DeployContent,
     bc: &BuildContent,
@@ -1073,10 +1098,21 @@ pub fn damage_piece(
     deploys: &mut Deploys,
     i: usize,
     amount: u16,
+    budget: &mut usize,
     events: &mut EventQueue,
 ) -> bool {
     let rec = pieces.entries()[i];
-    let left = rec.hp.saturating_sub(amount);
+    let mut left = rec.hp.saturating_sub(amount);
+    if left == 0 && *budget == 0 {
+        // The tick's removal budget is spent (limits.rs
+        // `MAX_REMOVALS_PER_TICK`), so the wall stops at its last hp and
+        // the next swing takes it. Deferring here rather than after the
+        // subtraction is what keeps a standing piece's hp at 1 or more:
+        // parking a 0-hp piece in the store would leave a wall that no
+        // sweep removes and every swing re-reports as already broken.
+        // The raider is told the truth — this hit reads as 0 dealt.
+        left = 1;
+    }
     let dealt = rec.hp - left;
     events.push(
         EV_STRUCT_HIT,
@@ -1093,6 +1129,7 @@ pub fn damage_piece(
             bc.pieces[rec.row as usize].shape,
             events,
         );
+        *budget -= 1;
         // Take the legs out and the base comes down: everything that
         // rested on this address is re-checked against the same support
         // rule that let it be placed (build.rs).
@@ -1102,6 +1139,7 @@ pub fn damage_piece(
             pieces,
             deploys,
             (rec.cx, rec.cz, rec.level, rec.loc),
+            budget,
             events,
         );
         return true;
@@ -1153,6 +1191,7 @@ pub fn upkeep_sweep(
     tick: u64,
     piece_cursor: &mut u32,
     deploy_cursor: &mut u32,
+    budget: &mut usize,
     events: &mut EventQueue,
 ) {
     if dc.mat_count == 0 {
@@ -1224,16 +1263,35 @@ pub fn upkeep_sweep(
             uh = h_now; // bounded catch-up: the missed hours are forgiven
         }
         if removed {
+            if *budget == 0 {
+                // The tick's removal budget is spent (limits.rs
+                // `MAX_REMOVALS_PER_TICK`). Defer *before* the removal and
+                // before `set_upkeep`, so this entry keeps the hp and the
+                // upkeep hour it came in with and the whole computation
+                // above is simply redone next tick. Rewind the cursor onto
+                // this entry rather than past it: the sweep advances by
+                // visiting, and a deferred entry has not been served.
+                //
+                // `break`, not `return`: only the piece half spends this
+                // budget. Deployable decay below removes at most one
+                // record per visit with no cascade under it, so it is
+                // already bounded by `UPKEEP_SWEEP_PER_TICK` and stopping
+                // it here would be a second, unstated cap.
+                *piece_cursor = i as u32;
+                break;
+            }
             // Same removal path a raid takes — cascade included, and the
             // structural collapse with it: a floor whose wall decayed out
             // from under it falls exactly as one a raider broke would.
             drop_piece(dc, pieces, deploys, i, def.shape, events);
+            *budget -= 1;
             crate::build::collapse_from(
                 dc,
                 bc,
                 pieces,
                 deploys,
                 (rec.cx, rec.cz, rec.level, rec.loc),
+                budget,
                 events,
             );
             *piece_cursor = (i as u32).min(pieces.len().saturating_sub(1) as u32);
@@ -1291,6 +1349,15 @@ mod tests {
     use super::*;
     use crate::build::{BuildContent, Pieces, LOC_PLANE};
     use crate::gather::ItemStack;
+    use crate::limits::MAX_REMOVALS_PER_TICK;
+
+    /// One tick's structural removal budget, as `World::tick` hands it
+    /// out — these fixtures never approach it (build.rs owns the tests
+    /// that do).
+    fn tick_budget() -> usize {
+        MAX_REMOVALS_PER_TICK
+    }
+
     use crate::movement::Body;
     use crate::world::{EventQueue, Player};
 
@@ -1924,6 +1991,7 @@ mod tests {
             tick,
             &mut pc,
             &mut dcur,
+            &mut tick_budget(),
             &mut ev,
         );
         assert_eq!(deploys.hearths()[0].stock[0], FEED_CHUNK - 1);
@@ -1976,6 +2044,7 @@ mod tests {
                 hour * UPKEEP_PERIOD_TICKS + 1,
                 &mut pc,
                 &mut dcur,
+                &mut tick_budget(),
                 &mut ev,
             );
             if pieces.is_empty() {
@@ -2073,6 +2142,7 @@ mod tests {
             UPKEEP_PERIOD_TICKS + 1,
             &mut pc,
             &mut dcur,
+            &mut tick_budget(),
             &mut ev,
         );
         assert_eq!(
@@ -2129,8 +2199,11 @@ mod tests {
             CZ as f32 * crate::build::BUILD_CELL_M + 1.5,
         );
         let f = walk_west();
+        // The door is what this fixture is about; a pine standing where it
+        // walks is not (occupy::Barren).
+        let mut occ = crate::occupy::Scratch::barren();
         for _ in 0..120 {
-            crate::movement::step(SEED, pieces.cols(), &mut b, &f);
+            crate::movement::step(SEED, pieces.cols(), &mut occ.occupants(), &mut b, &f);
         }
         b.qx as f32 * crate::movement::POS_XZ_Q
     }
@@ -2471,6 +2544,7 @@ mod tests {
                 hour * UPKEEP_PERIOD_TICKS + 1,
                 &mut pc,
                 &mut dcur,
+                &mut tick_budget(),
                 &mut ev,
             );
             if pieces.is_empty() && deploys.is_empty() {

@@ -4,6 +4,79 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+## 0. The island is solid now — done this pass *(systems lane)*
+
+From `findings/archive-prestamp/pass-20260805-020919-02-judge.md` ranked gap 1,
+"nothing on this island is solid". `occupy.rs` is the consumer half of the seam
+`terrain.rs` drew: `movement::step` now asks it on every candidate move, so
+trees, boulders, nodes, barrels, crates and the shelter's walls stop a body.
+Answers the world lane's standing request ("the occupant query exists, please
+call it") and the systems bullet of "nothing in the world is solid". Cache
+design and the reasoning: `DECISIONS.md` §open, occupant collision v0.
+Gated by `tests/walk.rs` (7 tests, 4 seeds); each of the four mechanisms was
+mutation-checked to go red on its own break. Wire did not move — no
+`PROTO_VER` bump, `test_protocol_golden` untouched. `GOLDEN_FINAL_HASH`
+regenerated in the same commit; every behavioural floor in `replay.rs::run`
+still passes, so the bots' script survives a solid world.
+
+Left:
+
+- **You still cannot stand ON anything.** The ground query is the other half of
+  the same seam and it is not built — `terrain.rs:1197` names the cost: the
+  shelter's plinth reads as a 0.2 m kerb you sink into rather than a step.
+  Crate and boulder tops are the same. It belongs beside `collide::piece_ground`
+  and wants a `slot_ground` next to `slot_blocks`; the fourteen-box table is
+  already there for it. Systems lane.
+- **The client draws no collision it can see.** Nothing here changed `web/`, so
+  a player learns a trunk is solid by bumping it. Not a defect, just untested by
+  eye — no vantage was captured this pass. *(ui/looks lane, if it wants it.)*
+- **`SlotLives::find` is a linear scan** over up to 16,384 entries, and the
+  query calls it once per blocking slot. Bounded and off the common path (it is
+  asked only after something already blocks), but a late-wipe world with
+  thousands of harvested cells pays it in the tick. Measure before fixing.
+## 0. The ground is a population now — done this pass *(world lane)*
+
+GAP PASS. From `findings/pass-20260804-173640-01-visual.md` ranked gap 1:
+"there is no grass geometry anywhere in the client: turf is a shaded plane."
+
+Landed: a second population below the 8 m scatter grid, on a 0.64 m jittered
+grid — pebble · tuft · twig · shard, placed by `terrain::clutter_cell`,
+drawn by `web/src/clutter.js` + `clutterField.js`. Potential, not state: no
+volume, no wire, nothing in `state_hash`.
+
+The two claims that make it more than decoration, both gated:
+- **The mix is the splat.** The ground's four identity weights moved out of
+  `terrainWorker.js` into `terrain::splat_from`; the worker calls the bridge
+  now, so surface and population are one function in one language.
+- **Coverage is total**, so `ART.md` rule 4 is arithmetic. Measured, not
+  argued: worst bare disc **1.50 m² of the 3 m² cap**, 33,852 land points ×
+  3 seeds. `tests/clutter.rs` (8), `ci/clutter_shape.mjs` (52).
+
+Client: solid blades not alpha cards (SwiftShader is fill-bound, `discard`
+defeats early-Z), existing `surfaceMaterial` identities so it adds **zero**
+shader programs, `castShadow = false` so it draws once not once per cascade.
+Worst fleet 188 k tris = 12.5% of DESIGN §9's budget, asserted.
+
+Leaves open:
+- **No distance fade** — the population ends at the ring edge (32-48 m). The
+  cheap recipe needs a per-frame shader term, i.e. a new program, which is the
+  one gate this slice was shaped to avoid. Whether the edge reads is a
+  question for the visual judge, not a guess made here.
+- **Unverified visually.** No frames were captured this pass and
+  `browser_smoke` is the only thing that can see the real frame peak; 188 k is
+  a bound on this population's contribution, not a measurement of the frame.
+- Clutter does not thin under a deployed base or inside the haven pad.
+
+Looked at it (one tab, `art/capture.mjs`, DIAGNOSIS only — no visual judge ran
+and no claim here rests on it). All four kinds draw and stream; no throw, no
+hard ring edge. Two things a visual judge should confirm or refute rather than
+me tuning against one SwiftShader frame: **twigs read as the loudest thing on
+sand** (dark 23 cm sticks on ~200-luma beach — the litter channel is genuinely
+~0.5 in the beach ramp, so placement is honest and it is the value/size that
+may be wrong), and **tufts alias to a green speckle past ~10 m** rather than
+reading as blades, which is the sub-pixel case the fade above would also
+address. Frames: `/tmp/clutter-shots`.
+
 ## 0. E tells you what it does — done this pass *(ui lane)*, kept for what it leaves
 
 From `findings/pass-20260805-002720-04-judge.md` ranked gap 3: "the island
@@ -35,6 +108,32 @@ Leaves open:
   the resolver; `browser_smoke` is off this run, so nothing here claims a box
   was opened by aiming at one on a live shard.
 
+0. **The collapse path's per-tick budget, and box handle 0 — done this pass
+   (systems lane).**
+
+   *(2026-08-05. Judge `pass-20260805-020919-01`'s ranked fixes 1 and 2, plus
+   the ui lane's cross-lane request 4 — NOW.md's top systems item.)*
+
+   `MAX_COLLAPSE_PIECES` bounds one cascade and a tick holds many:
+   `upkeep_sweep` never returned after a removal the way `support_sweep`
+   does, so its 64 visits could each seed a cascade, and raiders add up to
+   `MAX_PLAYERS` more. Measured with the budget removed: **103 removals in
+   one tick** against the 64 the 256-slot ring was sized for. Now one
+   tick-local `MAX_REMOVALS_PER_TICK` threaded through raid, decay, support
+   sweep and cascade; overflow **defers before the piece leaves the store**.
+   `DECISIONS.md` §open "collapse budget v0".
+
+   Request 4 answered without moving a bit of the packing: `box_index`
+   guards handle 0 and `place_deploy` refuses the one address that mints it
+   — the pair `Backpacks` already has. `BOX_KEY_LAYOUT` and `ui_smoke` §P
+   untouched. **ui lane: `moveArgs` may now trust that 0 is never a box.**
+
+   Left: `EV_PIECE_REMOVED`'s payload is pinned for the collapse producer
+   only (judge fix 2); the raid and decay producers are still counted, not
+   read. And judge fix 3 — **a box on a collapsing floor** — is still
+   ungated: every collapse test uses `DeployContent::EMPTY`, so
+   `EV_DEPLOY_REMOVED` and the `world.rs` spill drain have no collapse-side
+   coverage. Both are systems lane.
 
 0. **A box can be opened — done this pass (ui lane), kept for what it leaves.**
 

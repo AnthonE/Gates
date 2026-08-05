@@ -235,6 +235,16 @@ $NICE npm --prefix web run build || fail "vite build"
 echo "== gate: pine shape (silhouette counts + the SPAWN_CLEAR_M coupling)"
 $NICE node ci/pine_shape.mjs || fail "pine shape"
 
+# The ground population below the scatter grid, same standard and same place
+# in the order for the same reason: it imports `web/src/clutter.js`. ART.md
+# rule 4 itself is measured natively (`crates/sim-core/tests/clutter.rs`, the
+# largest bare disc inside 15 m); this holds the drawn half to the placed half
+# — three constants read from both languages, the kind table checked by name
+# against the Rust enum, and the ring's triangle fleet ASSERTED against a
+# declared share of DESIGN §9's budget rather than printed.
+echo "== gate: clutter shape (the near-ground population + its fleet budget)"
+$NICE node ci/clutter_shape.mjs || fail "clutter shape"
+
 # The haven pad's greybox, same standard and same reason it sits here: it
 # imports the shipped box list out of `web/src/props.js`. Three claims no
 # `cargo test` can reach, because they straddle the Rust/JS line — the mesh

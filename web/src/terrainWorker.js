@@ -62,47 +62,29 @@ self.onmessage = async (e) => {
   }
 };
 
-// The band edges, each the retired palette's hard threshold with a ramp
-// hung around it (DECISIONS.md §open, materials v0).
-const BEACH_BAND = [1.0, 3.0]; // was: beach below h 2.0
-const ALPINE_BAND = [44.0, 60.0]; // was: highland above h 52.0
-const MOIST_BAND = [0.01, 0.09]; // was: forest above moisture 0.05
-const CLIFF_SLOPE = 1.19; // tan(50°), the sim's cliff threshold
-const CLIFF_BAND = [CLIFF_SLOPE * 0.8, CLIFF_SLOPE * 1.2];
-
-function ramp(lo, hi, v) {
-  const t = Math.max(0, Math.min((v - lo) / (hi - lo), 1));
-  return t * t * (3 - 2 * t);
-}
+// The splat law does not live here any more.
+//
+// It used to: five band constants, a `ramp`, and the cliff override, in JS,
+// beside a Rust `biome()` that decided on the same three channels. That is the
+// arrangement `threejs-procedural-fields` names in its rejection list —
+// "geometry and shading claim the same feature but evaluate different
+// functions" — and it went from latent to load-bearing the moment the ground
+// grew a population: `terrain::clutter_cell` picks a tuft or a pebble from
+// these same four weights, so a JS copy drifting by one rounding step would
+// put grass geometry on sand. One law, in `crates/sim-core/src/terrain.rs`
+// (`splat_from`), reached through the bridge. `ci/splat_parity.mjs` pins its
+// behaviour; the band numbers and their derivation went with it.
 
 /**
- * Four identity weights — sand · grass · forest litter · rock — from the
- * three channels the sim's biome() decides on. Written as bytes: these are
- * a blend, and 1/255 of a weight is far below what the shader's break-up
- * moves them by.
+ * Four identity weights — sand · grass · forest litter · rock — as bytes,
+ * from the three channels the sim's biome() decides on.
  */
 function splatWeights(h, moist, slope, out, o) {
-  const sand = 1 - ramp(BEACH_BAND[0], BEACH_BAND[1], h);
-  const alpine = ramp(ALPINE_BAND[0], ALPINE_BAND[1], h);
-  const wood = ramp(MOIST_BAND[0], MOIST_BAND[1], moist);
-  const cliff = ramp(CLIFF_BAND[0], CLIFF_BAND[1], slope);
-  const land = 1 - sand;
-  let w0 = sand;
-  let w1 = land * (1 - alpine) * (1 - wood);
-  let w2 = land * (1 - alpine) * wood;
-  let w3 = land * alpine;
-  // The cliff mask forces rock (TERRAIN.md §4) — the one veto that
-  // overrides the biome rather than blending with it.
-  w0 += (0 - w0) * cliff;
-  w1 += (0 - w1) * cliff;
-  w2 += (0 - w2) * cliff;
-  w3 += (1 - w3) * cliff;
-  const sum = w0 + w1 + w2 + w3 || 1;
-  const k = 255 / sum;
-  out[o] = (w0 * k + 0.5) | 0;
-  out[o + 1] = (w1 * k + 0.5) | 0;
-  out[o + 2] = (w2 * k + 0.5) | 0;
-  out[o + 3] = (w3 * k + 0.5) | 0;
+  const p = ex.terrain_splat_from(h, moist, slope);
+  out[o] = p & 255;
+  out[o + 1] = (p >>> 8) & 255;
+  out[o + 2] = (p >>> 16) & 255;
+  out[o + 3] = (p >>> 24) & 255;
 }
 
 /**

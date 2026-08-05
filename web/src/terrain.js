@@ -24,6 +24,7 @@
 // all of it still one draw call per archetype.
 
 import * as THREE from "three";
+import { ClutterField } from "./clutterField.js";
 import {
   albedoLuma,
   makeTerrainCostVariants,
@@ -243,8 +244,12 @@ export class Terrain {
     // depth material, which otherwise links when the far mesh first casts.
     // The group carries them through boot and the first in-world shadow
     // pass, then disposes them.
+    // The layer below the scatter grid: ART.md rule 4's near-ground
+    // population, placed by worldgen and drawn here (clutter.js).
+    this.clutter = new ClutterField(scene, seed, ex);
+
     this.prewarmObjects = () => {
-      const objs = [];
+      const objs = [...this.clutter.prewarmObjects()];
       const pool = (this.pools.find(Boolean) || [])[0];
       if (pool) {
         const m = new THREE.InstancedMesh(
@@ -959,6 +964,7 @@ export class Terrain {
   update(px, pz, tick) {
     this._tick = tick;
     setWindTime(tick * (1 / 30));
+    this.clutter.update(px, pz);
     if (this._felling.length) this._stepFells();
     const ccx = Math.floor(px / CHUNK);
     const ccz = Math.floor(pz / CHUNK);
