@@ -1147,6 +1147,83 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
 // that genuinely is a box list with a hole in it, the shelter, is NOT given a
 // volume here; see `OCCUPANT_R_M`'s note on index 10.
 
+/// The shelter's fourteen boxes in the slot's LOCAL frame, as
+/// `[cx, cy, cz, sx, sy, sz]` — center and FULL size, meters, ground at
+/// y = 0 and the doorway on +Z.
+///
+/// A row-for-row mirror of `web/src/props.js`'s `HAVEN_SHELTER_PARTS` minus
+/// the part name, and `ci/haven_shelter.mjs` holds the two equal number for
+/// number. That gate is the whole reason this is a table rather than a shape:
+/// a building is the one occupant whose volume cannot be checked by eye
+/// against its mesh, because the interesting part is the hole in it. Drift
+/// here is not a wrong radius, it is a doorway the client draws and the
+/// server walls off — the positional-payload failure `CLAUDE.md` records,
+/// with the two halves in different languages.
+///
+/// Local +Z is the direction `yaw_lut::yaw_dir` hands back for the slot's
+/// yaw, which is the same convention `terrain.js` rotates the mesh by, so the
+/// two frames agree by construction rather than by comment.
+pub const SHELTER_BOXES: [[f32; 6]; 14] = [
+    [0.0, -0.6, 0.0, 7.0, 1.6, 7.0], // plinth  — FLOOR, see SHELTER_FLOOR_IX
+    [0.0, 2.0, -2.9, 6.2, 3.6, 0.4], // wall-back
+    [-2.9, 2.0, 0.0, 0.4, 3.6, 5.4], // wall-left
+    [2.9, 2.0, 0.0, 0.4, 3.6, 5.4],  // wall-right
+    [-2.15, 2.0, 2.9, 1.9, 3.6, 0.4], // jamb-left
+    [2.15, 2.0, 2.9, 1.9, 3.6, 0.4], // jamb-right
+    [0.0, 3.4, 2.9, 2.4, 0.8, 0.4],  // lintel
+    [0.0, 4.0, 0.0, 7.0, 0.4, 7.0],  // roof
+    [-2.9, 2.8, -2.9, 0.7, 5.2, 0.7], // post-nw
+    [2.9, 2.8, -2.9, 0.7, 5.2, 0.7], // post-ne
+    [-2.9, 2.8, 2.9, 0.7, 5.2, 0.7], // post-sw
+    [2.9, 2.8, 2.9, 0.7, 5.2, 0.7],  // post-se
+    [0.0, 6.4, -1.4, 2.2, 4.8, 2.2], // tower
+    [0.0, 9.0, -1.4, 2.8, 0.4, 2.8], // tower-cap
+];
+
+/// The plinth's row. It is FLOOR, not wall, and `slot_blocks` skips it.
+///
+/// A 7 × 7 box spanning y ∈ [−1.4, 0.2] would otherwise seal the building
+/// from the outside: a body standing on pad ground has its feet at 0.0, which
+/// overlaps that interval, so the "walls" a player met would be the floor's
+/// rim and the doorway would never be reachable. Standing ON a thing is the
+/// ground query's business and this predicate is the wall query.
+///
+/// The exception is structural rather than a threshold, so it cannot drift
+/// onto a wall: the const block below asserts this box's top is exactly the
+/// lowest bottom of every other box — the plinth is, by measurement, the
+/// thing the walls stand on. Widen it into a wall and it stops being the
+/// floor line and the build stops.
+///
+/// **What this costs today:** nothing here makes a body stand on the plinth
+/// either, so at 0.2 m the floor reads as a kerb a player sinks into rather
+/// than steps onto. That is the ground-query half of the same seam and it
+/// lives in the systems lane's `collide.rs`; this table is what it will need.
+pub const SHELTER_FLOOR_IX: usize = 0;
+
+/// Bounding radius of the shelter's boxes about the slot, meters — the
+/// broad-phase reject before the fourteen-box loop, and the value
+/// `OCCUPANT_R_M` publishes for `HavenShelter`.
+///
+/// The widest boxes are the 7 × 7 plinth and roof, so this is their
+/// half-diagonal, 3.5·√2, rounded UP: erring outward costs one extra box
+/// loop, erring inward drops a wall. The const block proves the rounding went
+/// the right way by squared compare, which needs no `sqrt` in a const.
+pub const SHELTER_CORNER_R_M: f32 = 4.9498;
+
+/// Height of the shelter's tallest point above its own ground, meters —
+/// `props.js`'s `HAVEN_SHELTER_PEAK`, and `OCCUPANT_TOP_M`'s row 10.
+pub const SHELTER_PEAK_M: f32 = 9.2;
+
+/// `|v|` in a const context, which `f32::abs` is not. Sign flip only — no
+/// libm, nothing outside the L1 float set.
+const fn abs_const(v: f32) -> f32 {
+    if v < 0.0 {
+        -v
+    } else {
+        v
+    }
+}
+
 /// Blocking radius per `Occupant`, meters, at a slot `scale` of 1.0.
 ///
 /// Read off the client's authored geometry (`web/src/props.js` `ARCHETYPES`)
@@ -1163,31 +1240,29 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
 ///   all — the enum skips the discriminant and this table keeps the hole, for
 ///   the reason the enum states: the two tables stay aligned by construction
 ///   or they drift silently.
-/// - **10, the haven shelter, is 0.0 and that is DEFERRED, not "walk through
-///   a building on purpose".** Its volume is a wall list with a doorway in it,
-///   which is the one shape a radius cannot express — a cylinder either seals
-///   the entrance or blocks nothing. Doing it properly means the sim owning a
-///   box list that must not drift from `props.js`'s fourteen boxes, plus the
-///   gate that keeps the two equal, and that is its own slice. Until then the
-///   deliberate zero is pinned by `tests/solid.rs` so it cannot be mistaken
-///   for a tuned value.
+/// - **10, the haven shelter, is a BROAD PHASE, not the volume.** Its real
+///   volume is `SHELTER_BOXES` — a wall list with a doorway in it, the one
+///   shape a radius cannot express, because a cylinder either seals the
+///   entrance or blocks nothing. This row is the bounding circle that rejects
+///   the fourteen-box loop cheaply, so it is the only row that is deliberately
+///   wider than what it blocks: inside it, `slot_blocks` asks the boxes.
 ///
 /// The bush is the third zero and the only one that is a design call: a bush
 /// you cannot push through is a wall you cannot see over, which is worse than
 /// no bush. It reads as cover and costs nothing to cross, which is what the
 /// reference does with the same prop.
 pub const OCCUPANT_R_M: [f32; 11] = [
-    0.0,  // None
-    0.26, // Tree — the TRUNK, not the canopy: `CylinderGeometry(0.13, 0.26)`
-    1.0,  // StoneNode  — DodecahedronGeometry(1.0)
-    1.0,  // MetalNode  — DodecahedronGeometry(1.0)
-    1.0,  // SulfurNode — DodecahedronGeometry(1.0)
-    0.0,  // Bush — deliberately passable
-    1.5,  // Rock — DodecahedronGeometry(1.5)
-    0.45, // BarrelSlot — CylinderGeometry(0.45, 0.45, 0.95)
-    0.0,  // 8: the client's stump. Not a sim occupant; the hole is the point.
-    0.68, // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
-    0.0,  // HavenShelter — DEFERRED, see above
+    0.0,                // None
+    0.26,               // Tree — the TRUNK, not the canopy: `CylinderGeometry(0.13, 0.26)`
+    1.0,                // StoneNode  — DodecahedronGeometry(1.0)
+    1.0,                // MetalNode  — DodecahedronGeometry(1.0)
+    1.0,                // SulfurNode — DodecahedronGeometry(1.0)
+    0.0,                // Bush — deliberately passable
+    1.5,                // Rock — DodecahedronGeometry(1.5)
+    0.45,               // BarrelSlot — CylinderGeometry(0.45, 0.45, 0.95)
+    0.0,                // 8: the client's stump. Not a sim occupant; the hole is the point.
+    0.68,               // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
+    SHELTER_CORNER_R_M, // HavenShelter — broad phase; SHELTER_BOXES is the volume
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -1205,17 +1280,17 @@ pub const OCCUPANT_R_M: [f32; 11] = [
 /// costs nothing today and is the correct shape when something flies or a
 /// tree falls. (knob, DECISIONS.md §open: occupant volume v0.)
 pub const OCCUPANT_TOP_M: [f32; 11] = [
-    0.0,  // None
-    5.7,  // Tree — PINE_TRUNK_H
-    1.5,  // StoneNode  — lift 0.5 + radius 1.0
-    1.5,  // MetalNode
-    1.5,  // SulfurNode
-    0.0,  // Bush
-    2.05, // Rock — lift 0.55 + radius 1.5
-    0.95, // BarrelSlot — lift 0.5 + half-height 0.475, rounded down to the mesh
-    0.0,  // 8: the stump
-    0.8,  // CrateSlot — lift 0.4 + half-height 0.4
-    0.0,  // HavenShelter — DEFERRED
+    0.0,            // None
+    5.7,            // Tree — PINE_TRUNK_H
+    1.5,            // StoneNode  — lift 0.5 + radius 1.0
+    1.5,            // MetalNode
+    1.5,            // SulfurNode
+    0.0,            // Bush
+    2.05,           // Rock — lift 0.55 + radius 1.5
+    0.975,          // BarrelSlot — lift 0.5 + half-height 0.475
+    0.0,            // 8: the stump
+    0.8,            // CrateSlot — lift 0.4 + half-height 0.4
+    SHELTER_PEAK_M, // HavenShelter — tower-cap at 9.0 + 0.2
 ];
 
 /// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
@@ -1224,25 +1299,141 @@ pub const SLOT_SCALE_MAX: f32 = 1.1;
 
 /// Cells either side of a body's own that can hold a slot touching it.
 ///
-/// One, and the const block below proves it rather than asserting it by
-/// eye: a slot's jitter is ±3 m about its cell's center, so every slot lies
-/// strictly inside its own cell, and the widest reach any slot has is
-/// `max(OCCUPANT_R_M) * SLOT_SCALE_MAX + CAPSULE_RADIUS_M`. While that stays
-/// under `CELL_SIZE` a 3×3 neighbourhood is not a heuristic — it is complete.
+/// One, and the const block below proves it rather than asserting it by eye.
+/// The invariant is that **every slot lies inside its own cell** — a drawn
+/// slot by its ±3 m jitter, an authored one because `scatter` only returns it
+/// for the cell its position falls in — so a body and a slot are each within
+/// half a cell of their own centers, and two cells more than one apart are
+/// `CELL_SIZE` beyond touching. While the widest reach any slot has,
+/// `max(OCCUPANT_R_M) * SLOT_SCALE_MAX + CAPSULE_RADIUS_M`, stays under
+/// `CELL_SIZE`, a 3×3 neighbourhood is not a heuristic — it is complete.
+///
+/// The shelter is the widest thing in that max at `SHELTER_CORNER_R_M`, and
+/// it is the reason the bound is stated as the general one: it eats 5.85 m of
+/// the 8 m on its own.
 ///
 /// Published so the movement path does not have to re-derive it, and so that
 /// widening an occupant past the margin fails HERE, at the definition, rather
 /// than as bodies clipping through the far side of a boulder.
 pub const OCCUPANT_PROBE_CELLS: i32 = 1;
 
+/// The volume of an occupant as `(radius, top)`, both meters at a slot
+/// `scale` of 1.0 — and the LAW, where the two tables above are its published
+/// view for the gates and tests that read them.
+///
+/// This is an exhaustive `match` rather than an index for a reason that cost
+/// a real bug. The const block used to assert `OCCUPANT_R_M.len() == 11` and
+/// `HavenShelter as usize == len() - 1` and call itself the guard against
+/// adding an occupant without a volume — but **both of those hold on an enum
+/// edit and only fail on a table edit**, which is the opposite of what the
+/// comment claimed. Adding `Foo = 11` left every assert green, the build
+/// succeeded, and the first `Foo` slot probed indexed `OCCUPANT_R_M[11]` and
+/// panicked. Not a hypothetical: `examples/terrain_stats.rs` carried a
+/// `[0u32; 10]` bucket array through the `HavenShelter = 10` commit and
+/// crashed on the first haven cell of every seed, exactly this way.
+///
+/// A `match` cannot be left behind, because a new variant makes it
+/// non-exhaustive and the build stops at the definition — which is the point.
+/// It also takes the last unchecked index off the sim path: `slot_blocks`
+/// runs per body per tick and now cannot panic on an out-of-range occupant,
+/// because it no longer indexes anything.
+pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
+    match o {
+        Occupant::None => (0.0, 0.0),
+        Occupant::Tree => (0.26, 5.7),
+        Occupant::StoneNode => (1.0, 1.5),
+        Occupant::MetalNode => (1.0, 1.5),
+        Occupant::SulfurNode => (1.0, 1.5),
+        Occupant::Bush => (0.0, 0.0),
+        Occupant::Rock => (1.5, 2.05),
+        Occupant::BarrelSlot => (0.45, 0.975),
+        Occupant::CrateSlot => (0.68, 0.8),
+        Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
+    }
+}
+
 const _: () = {
-    // The table is indexed by `Occupant as usize` and the largest
-    // discriminant is `HavenShelter = 10`. If an occupant is ever added
-    // above it, this stops the build instead of indexing out of bounds in
-    // the movement path.
-    assert!(OCCUPANT_R_M.len() == 11);
-    assert!(OCCUPANT_TOP_M.len() == 11);
-    assert!(Occupant::HavenShelter as usize == OCCUPANT_R_M.len() - 1);
+    // The published tables ARE the match, row for row. Written out rather
+    // than looped because a loop would need the variant list this file is
+    // trying not to keep twice; here the compiler checks the pairing and the
+    // match checks the completeness.
+    assert!(OCCUPANT_R_M.len() == 11 && OCCUPANT_TOP_M.len() == 11);
+    // Index 8 is the client's stump and has no variant, so it is the one row
+    // the match cannot speak for; it is a hole and stays zero.
+    assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);
+    assert!(occupant_volume(Occupant::None).0 == OCCUPANT_R_M[0]);
+    assert!(occupant_volume(Occupant::Tree).0 == OCCUPANT_R_M[1]);
+    assert!(occupant_volume(Occupant::StoneNode).0 == OCCUPANT_R_M[2]);
+    assert!(occupant_volume(Occupant::MetalNode).0 == OCCUPANT_R_M[3]);
+    assert!(occupant_volume(Occupant::SulfurNode).0 == OCCUPANT_R_M[4]);
+    assert!(occupant_volume(Occupant::Bush).0 == OCCUPANT_R_M[5]);
+    assert!(occupant_volume(Occupant::Rock).0 == OCCUPANT_R_M[6]);
+    assert!(occupant_volume(Occupant::BarrelSlot).0 == OCCUPANT_R_M[7]);
+    assert!(occupant_volume(Occupant::CrateSlot).0 == OCCUPANT_R_M[9]);
+    assert!(occupant_volume(Occupant::HavenShelter).0 == OCCUPANT_R_M[10]);
+    assert!(occupant_volume(Occupant::None).1 == OCCUPANT_TOP_M[0]);
+    assert!(occupant_volume(Occupant::Tree).1 == OCCUPANT_TOP_M[1]);
+    assert!(occupant_volume(Occupant::StoneNode).1 == OCCUPANT_TOP_M[2]);
+    assert!(occupant_volume(Occupant::MetalNode).1 == OCCUPANT_TOP_M[3]);
+    assert!(occupant_volume(Occupant::SulfurNode).1 == OCCUPANT_TOP_M[4]);
+    assert!(occupant_volume(Occupant::Bush).1 == OCCUPANT_TOP_M[5]);
+    assert!(occupant_volume(Occupant::Rock).1 == OCCUPANT_TOP_M[6]);
+    assert!(occupant_volume(Occupant::BarrelSlot).1 == OCCUPANT_TOP_M[7]);
+    assert!(occupant_volume(Occupant::CrateSlot).1 == OCCUPANT_TOP_M[9]);
+    assert!(occupant_volume(Occupant::HavenShelter).1 == OCCUPANT_TOP_M[10]);
+
+    // --- the shelter's boxes ------------------------------------------
+    //
+    // The floor exception is structural: the plinth's top is exactly the
+    // lowest bottom of every other box, which is what "the walls stand on
+    // it" means as a number. Thicken the plinth into something a body should
+    // meet and it stops being the floor line, and this stops the build
+    // rather than silently sealing the doorway from outside.
+    let floor_top = SHELTER_BOXES[SHELTER_FLOOR_IX][1] + SHELTER_BOXES[SHELTER_FLOOR_IX][4] * 0.5;
+    let mut lowest_wall = f32::MAX;
+    let mut b = 0;
+    while b < SHELTER_BOXES.len() {
+        // Every box has positive size in all three axes, or it is not a box.
+        assert!(
+            SHELTER_BOXES[b][3] > 0.0 && SHELTER_BOXES[b][4] > 0.0 && SHELTER_BOXES[b][5] > 0.0
+        );
+        if b != SHELTER_FLOOR_IX {
+            let bottom = SHELTER_BOXES[b][1] - SHELTER_BOXES[b][4] * 0.5;
+            if bottom < lowest_wall {
+                lowest_wall = bottom;
+            }
+        }
+        b += 1;
+    }
+    // Tolerance because the two sides are different float paths to the same
+    // 0.2 m (`-0.6 + 1.6/2` against `2.0 - 3.6/2`), not because the rule is
+    // approximate: 0.1 mm is four orders below the centimetres any real edit
+    // to the plinth or the wall base would move it.
+    assert!(abs_const(floor_top - lowest_wall) < 1.0e-4);
+
+    // The published radius really does contain every box's far corner, and
+    // the rounding went OUTWARD. Squared, because `sqrt` is not const — and
+    // because the squared form is the acceptance test rather than an
+    // optimization of one (`reference/SPAWN.md` §9.4).
+    let mut c = 0;
+    while c < SHELTER_BOXES.len() {
+        let ex = abs_const(SHELTER_BOXES[c][0]) + SHELTER_BOXES[c][3] * 0.5;
+        let ez = abs_const(SHELTER_BOXES[c][2]) + SHELTER_BOXES[c][5] * 0.5;
+        assert!(ex * ex + ez * ez <= SHELTER_CORNER_R_M * SHELTER_CORNER_R_M);
+        c += 1;
+    }
+    // And the peak is the tallest box's top, not a number beside it.
+    let mut peak = 0.0f32;
+    let mut p = 0;
+    while p < SHELTER_BOXES.len() {
+        let top = SHELTER_BOXES[p][1] + SHELTER_BOXES[p][4] * 0.5;
+        if top > peak {
+            peak = top;
+        }
+        p += 1;
+    }
+    assert!(peak == SHELTER_PEAK_M);
+
     // A volume is a radius AND a height, or it is neither. A radius with no
     // height is a body that stops at nothing; a height with no radius is a
     // shape with no width. The pairing is what `tests/solid.rs` walks.
@@ -1301,16 +1492,77 @@ pub fn slot_blocks(
     capsule_r: f32,
     capsule_h: f32,
 ) -> bool {
-    let k = slot.occupant as usize;
-    let r = OCCUPANT_R_M[k];
+    let (r, top) = occupant_volume(slot.occupant);
     if r <= 0.0 {
         return false;
     }
-    if feet_y >= slot.y + OCCUPANT_TOP_M[k] * slot.scale || feet_y + capsule_h <= slot.y {
+    if feet_y >= slot.y + top * slot.scale || feet_y + capsule_h <= slot.y {
         return false;
     }
+    // Broad phase, and for every occupant but one it is also the answer.
     let reach = r * slot.scale + capsule_r;
     let dx = x - slot.x;
     let dz = z - slot.z;
-    dx * dx + dz * dz < reach * reach
+    if dx * dx + dz * dz >= reach * reach {
+        return false;
+    }
+    if slot.occupant == Occupant::HavenShelter {
+        return shelter_blocks(slot, dx, dz, feet_y, capsule_r, capsule_h);
+    }
+    true
+}
+
+/// The fourteen-box narrow phase, called only after the shelter's bounding
+/// circle has already accepted. `dx`/`dz` are the query's offset from the
+/// slot in WORLD axes; this rotates them into the building's frame.
+///
+/// The horizontal test is a cylinder against an axis-aligned rectangle done
+/// the exact way — clamp the point into the rectangle and measure to the
+/// clamped point — rather than by growing the rectangle by `capsule_r`, which
+/// would round the corners the wrong way and stop a body that is diagonally
+/// past a jamb. Squared throughout, so there is still no `sqrt` on the path.
+fn shelter_blocks(
+    slot: &Slot,
+    dx: f32,
+    dz: f32,
+    feet_y: f32,
+    capsule_r: f32,
+    capsule_h: f32,
+) -> bool {
+    // World → local. `yaw_dir` hands back (sin, cos) for the slot's yaw and
+    // local +Z is that direction, so local +X is (cos, −sin); this is the
+    // inverse of that basis, which needs no trig and no matrix.
+    let (s, c) = crate::yaw_lut::yaw_dir((slot.yaw as u16) << 8);
+    let lx = dx * c - dz * s;
+    let lz = dx * s + dz * c;
+
+    let head_y = feet_y + capsule_h;
+    let mut i = 0;
+    while i < SHELTER_BOXES.len() {
+        let b = &SHELTER_BOXES[i];
+        let is_floor = i == SHELTER_FLOOR_IX;
+        i += 1;
+        if is_floor {
+            continue; // floor, not wall — see SHELTER_FLOOR_IX
+        }
+        let hx = b[3] * 0.5 * slot.scale;
+        let hy = b[4] * 0.5 * slot.scale;
+        let hz = b[5] * 0.5 * slot.scale;
+        let cy = slot.y + b[1] * slot.scale;
+        // Same interval overlap as above, per box: a lintel you walk under
+        // and a roof you walk beneath must not stop you.
+        if feet_y >= cy + hy || head_y <= cy - hy {
+            continue;
+        }
+        let cx = b[0] * slot.scale;
+        let cz = b[2] * slot.scale;
+        let qx = (lx - cx).clamp(-hx, hx);
+        let qz = (lz - cz).clamp(-hz, hz);
+        let ex = lx - cx - qx;
+        let ez = lz - cz - qz;
+        if ex * ex + ez * ez < capsule_r * capsule_r {
+            return true;
+        }
+    }
+    false
 }

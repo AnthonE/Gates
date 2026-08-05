@@ -73,7 +73,12 @@ fn main() {
     let haven = terrain::haven(seed);
     // Indexed by `Occupant as usize`, which skips 8 (see the enum): sized to
     // the largest discriminant + 1, not to the number of variants.
-    let mut counts = [0u32; 10];
+    //
+    // This was `[0u32; 10]` through the commit that added `HavenShelter = 10`
+    // and panicked on the first haven cell of every seed — the exact hole
+    // `terrain::occupant_volume`'s doc records, caught here because an example
+    // is not a gate. Widen it with the enum.
+    let mut counts = [0u32; 11];
     let mut trees = vec![0u8; (CELLS_PER_SIDE * CELLS_PER_SIDE) as usize];
     let mut land = vec![0u8; (CELLS_PER_SIDE * CELLS_PER_SIDE) as usize];
     for cz in 0..CELLS_PER_SIDE {
@@ -92,7 +97,8 @@ fn main() {
     }
     let live: u32 = counts[1..].iter().sum();
     println!(
-        "slots: live {live} (tree {} stone {} metal {} sulfur {} bush {} rock {} barrel {} crate {})",
+        "slots: live {live} (tree {} stone {} metal {} sulfur {} bush {} rock {} barrel {} \
+         crate {} shelter {})",
         counts[Occupant::Tree as usize],
         counts[Occupant::StoneNode as usize],
         counts[Occupant::MetalNode as usize],
@@ -101,6 +107,7 @@ fn main() {
         counts[Occupant::Rock as usize],
         counts[Occupant::BarrelSlot as usize],
         counts[Occupant::CrateSlot as usize],
+        counts[Occupant::HavenShelter as usize],
     );
 
     // Texture of the tree field, the numbers `tests/scatter.rs` gates. A
