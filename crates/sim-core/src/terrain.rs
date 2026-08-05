@@ -486,6 +486,34 @@ pub const HAVEN_PHASE_TRIES: i32 = 16;
 /// anchor gap (256 / `HAVEN_CRATES`) as evenly as integers allow.
 pub const HAVEN_PHASE_STEP: i32 = 256 / HAVEN_CRATES / HAVEN_PHASE_TRIES;
 
+/// Half the shelter's outer footprint, meters — the one number the sim knows
+/// about the greybox standing on the pad, and the one the client's mesh is
+/// gated against (`ci/haven_shelter.mjs`, the `PINE_MAX_R` pattern).
+///
+/// The sim does not care what the structure looks like; it cares that the
+/// thing occupies its corner of the pad without reaching a container or the
+/// rim, and that is a distance (knob, DECISIONS.md §open: haven shelter v0).
+pub const HAVEN_SHELTER_HALF_M: f32 = 3.5;
+/// How far off the pad center the shelter stands, meters.
+///
+/// **Not zero, and the road gate is why.** The pad center is the road's own
+/// center line — that is how stage 8 places it — so a structure at the
+/// center stands ON the carriageway, and `tests/road.rs` requires that
+/// surface clear so the loop stays walkable. It caught this on the first
+/// run. The correction is the one the reference already makes: a
+/// destination sits BESIDE the road it is reached by, and the road runs
+/// past it. Inside the container ring so the composition still reads as one
+/// place (knob, DECISIONS.md §open: haven shelter v0).
+pub const HAVEN_SHELTER_R_M: f32 = 6.5;
+/// LUT steps from the container ring's phase to the first bearing the
+/// shelter is tried on. Derived, not chosen: half an anchor gap, so the
+/// structure stands in a gap between two containers rather than behind one.
+pub const HAVEN_SHELTER_YAW_STEP: i32 = 256 / HAVEN_CRATES / 2;
+/// Bearings the shelter may be tried on before the site is refused.
+/// Derived, not chosen: one per gap in the container ring, because the gaps
+/// are exactly the bearings that clear the containers by construction.
+pub const HAVEN_SHELTER_TRIES: i32 = HAVEN_CRATES;
+
 // Wall 4 at the definition, not in a test: the search is capped, and both
 // counts must divide the 256-entry yaw LUT evenly or the bearings bunch.
 // The crate count is exempt from the divisibility rule — it indexes the LUT
@@ -507,6 +535,27 @@ const _: () = {
     // `scatter`'s broad phase tests |cell - haven cell| <= 2, which covers
     // every anchor iff the ring is inside two cells of the center.
     assert!(HAVEN_CRATE_R_M <= 2.0 * CELL_SIZE);
+    // The shelter, footprint and all, stands on ground the exclusion zone
+    // already cleared — otherwise a tree grows through a wall. 1.5 stands
+    // in for √2 on the half-diagonal: larger, exact in binary, and no sqrt
+    // in a const block.
+    assert!(HAVEN_SHELTER_HALF_M > 0.0);
+    assert!(HAVEN_SHELTER_R_M > 0.0);
+    assert!(HAVEN_SHELTER_R_M + 1.5 * HAVEN_SHELTER_HALF_M < HAVEN_RADIUS_M);
+    // `scatter`'s broad phase is the pad's cell plus two in each direction;
+    // the shelter has to be inside it or the branch never fires.
+    assert!(HAVEN_SHELTER_R_M <= 2.0 * CELL_SIZE);
+    // Half an anchor gap, to within the truncation an odd crate count
+    // forces: at 5 the gap is 51 LUT steps and half is 25.5, so the tried
+    // bearing sits 0.5 steps (0.7 degrees) off the gap's center. Stated as
+    // a bound rather than an equality because the equality is false, and a
+    // false assert is worse than no assert.
+    assert!(HAVEN_SHELTER_YAW_STEP > 0);
+    assert!(2 * HAVEN_SHELTER_YAW_STEP <= 256 / HAVEN_CRATES);
+    assert!(2 * HAVEN_SHELTER_YAW_STEP + 1 >= 256 / HAVEN_CRATES);
+    // One tried bearing per gap: fewer would leave a gap unreachable,
+    // more would try a bearing that is not a gap at all.
+    assert!(HAVEN_SHELTER_TRIES == HAVEN_CRATES);
 };
 
 /// The haven pad site: a pure function of the seed, resolved once.
@@ -525,6 +574,10 @@ pub struct Haven {
     /// pad — the client, the server and the gate all ask for anchor `k` and
     /// have to be told the same place.
     pub phase: u8,
+    /// Outward bearing the shelter stands on, as a yaw-LUT index. Carried
+    /// for the same reason `phase` is, and it costs more: resolving it reads
+    /// `road_band`, and `scatter` runs 65,536 times an island.
+    pub shelter: u8,
 }
 
 /// Max−min height over the pad footprint at (x, z): center plus a rim
@@ -564,6 +617,7 @@ fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             y: 0.0,
             relief: 0.0,
             phase,
+            shelter: 0,
         };
         let mut k = 0i32;
         let mut ok = true;
@@ -578,6 +632,63 @@ fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
         }
         if ok {
             return Some(phase);
+        }
+    }
+    None
+}
+
+/// The first gap in the container ring the shelter can stand in, or `None`
+/// if the site cannot hold it at any of them.
+///
+/// The tried bearings are the ring's own gaps — `HAVEN_SHELTER_YAW_STEP`
+/// past each anchor — because a gap clears both its neighbouring containers
+/// by construction, and picking bearings some other way would put the
+/// distance check back in charge of a property the geometry already has.
+///
+/// Three conditions, the same posture as the ring's: on land, off the
+/// carriageway (the pad's center IS the road's center line, so this is the
+/// condition that moved the structure off center at all), and in a scatter
+/// cell no container has taken. The third cannot be sized away — the
+/// shelter and the containers are 6 m apart against an 11.3 m cell diagonal,
+/// so whether they share a cell is a property of where the pad's grid
+/// alignment fell, not of either radius. A shared cell would silently
+/// delete one of the two. `reference/SPAWN.md` §5: refuse the position,
+/// never patch the object.
+fn haven_shelter_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
+    let probe = Haven {
+        x,
+        z,
+        y: 0.0,
+        relief: 0.0,
+        phase,
+        shelter: 0,
+    };
+    let mut t = 0i32;
+    while t < HAVEN_SHELTER_TRIES {
+        let bearing = ((t as u32 * 256) / HAVEN_CRATES as u32
+            + phase as u32
+            + HAVEN_SHELTER_YAW_STEP as u32) as u8;
+        t += 1;
+        let (dx, dz) = crate::yaw_lut::yaw_dir((bearing as u16) << 8);
+        let sx = x + dx * HAVEN_SHELTER_R_M;
+        let sz = z + dz * HAVEN_SHELTER_R_M;
+        if height(seed, sx, sz) < LAND_MIN_H || road_band(seed, sx, sz) == RoadBand::Carriageway {
+            continue;
+        }
+        let scx = (sx * (1.0 / CELL_SIZE)) as i32;
+        let scz = (sz * (1.0 / CELL_SIZE)) as i32;
+        let mut k = 0i32;
+        let mut ok = true;
+        while k < HAVEN_CRATES {
+            let (ax, az, _) = haven_crate(&probe, k);
+            if (ax * (1.0 / CELL_SIZE)) as i32 == scx && (az * (1.0 / CELL_SIZE)) as i32 == scz {
+                ok = false;
+                break;
+            }
+            k += 1;
+        }
+        if ok {
+            return Some(bearing);
         }
     }
     None
@@ -674,12 +785,20 @@ pub fn haven(seed: u64) -> Haven {
             Some(p) => p,
             None => continue,
         };
+        // Same chain, one link further along: a site that cannot stand its
+        // structure anywhere is refused rather than shipped without one.
+        // Ordered after the ring because the gaps it tries are the ring's.
+        let shelter = match haven_shelter_bearing(seed, x, z, phase) {
+            Some(b) => b,
+            None => continue,
+        };
         let site = Haven {
             x,
             z,
             y,
             relief,
             phase,
+            shelter,
         };
 
         if relaxed.is_none() || score < relaxed_score {
@@ -701,6 +820,7 @@ pub fn haven(seed: u64) -> Haven {
         y: height(seed, c, c),
         relief: 0.0,
         phase: 0,
+        shelter: 0,
     })
 }
 
@@ -738,6 +858,41 @@ pub fn haven_crate(haven: &Haven, k: i32) -> (f32, f32, u8) {
     )
 }
 
+/// The pad's greybox: position and the yaw it faces, a pure function of the
+/// pad exactly as `haven_crate` is.
+///
+/// It stands at the center — not at an authored offset — because the center
+/// is the only place on the pad with room. The packing is arithmetic, not
+/// taste: five containers on a 10 m ring inside a 32 m circle, with every
+/// pair required to clear the 11.31 m cell diagonal, already spends the
+/// circle's budget (five 5.66 m disks is 503 m² of the pad's 804 m², and a
+/// sixth anywhere inside the ring is closer than the diagonal to two of
+/// them). So the structure takes the one cell the ring encircles, and
+/// `haven_ring_phase` is what keeps that cell its own.
+///
+/// It stands in a gap in the container ring, `HAVEN_SHELTER_R_M` off the
+/// pad center, on the bearing `haven_shelter_bearing` accepted — beside the
+/// road rather than across it, with the containers to either side.
+///
+/// **The yaw is the INWARD facing, back at the pad center, exactly as
+/// `haven_crate`'s is.** One convention for both, deliberately: the first
+/// draft made this one an OUTWARD bearing and the doorway landed exactly on
+/// container 3 at every seed, because `phase + 25` in bearing space is
+/// `phase + 153 + 128` in facing space and the two collide identically. No
+/// type saw it — the arity was right, the field was right, and the value
+/// meant something else. CLAUDE.md's positional-payload trap in three lines.
+/// What caught it was `tests/haven.rs` asserting the ANGLE rather than the
+/// number, which is the only kind of assert that can.
+pub fn haven_shelter(haven: &Haven) -> (f32, f32, u8) {
+    let (dx, dz) = crate::yaw_lut::yaw_dir((haven.shelter as u16) << 8);
+    (
+        haven.x + dx * HAVEN_SHELTER_R_M,
+        haven.z + dz * HAVEN_SHELTER_R_M,
+        // Facing in: half a turn from the outward bearing it stands on.
+        haven.shelter.wrapping_add(128),
+    )
+}
+
 /// What a scatter cell holds (TERRAIN.md §1 stage 9's occupant list).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -759,6 +914,13 @@ pub enum Occupant {
     // aligned by construction, which is the only kind of alignment that
     // survives (CLAUDE.md's positional-payload trap).
     CrateSlot = 9,
+    /// The greybox standing at the pad's center. One slot, one structure:
+    /// a scatter cell holds a single occupant and the pad has no room for a
+    /// second authored anchor (five containers on a 10 m ring already spend
+    /// the 32 m circle's packing budget at the 11.31 m cell diagonal), so
+    /// the whole building is one archetype's mesh rather than a kit of
+    /// wall-sized slots. `web/src/props.js` index 10.
+    HavenShelter = 10,
 }
 
 const OCCUPANT_KINDS: usize = 7;
@@ -805,9 +967,9 @@ pub struct Slot {
 
 /// One hash draw decides a cell's occupant, offset, yaw, scale
 /// (TERRAIN.md §1 stage 9). Slope, water, road and haven veto — except on
-/// the `HAVEN_CRATES` cells the pad's container ring stands in, where the
-/// pad PRODUCES a slot instead of clearing one, at an authored position no
-/// draw contributed to.
+/// the pad's own `HAVEN_CRATES` + 1 authored cells (the container ring and
+/// the shelter at its center), where the pad PRODUCES a slot instead of
+/// clearing one, at a position no draw contributed to.
 ///
 /// The haven arrives as a parameter rather than being resolved here on
 /// purpose: `haven` costs ~1,000 `height` taps and `scatter` is called
@@ -839,6 +1001,24 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
     let hcx = (haven.x * (1.0 / CELL_SIZE)) as i32;
     let hcz = (haven.z * (1.0 / CELL_SIZE)) as i32;
     if (cell_x - hcx).abs() <= 2 && (cell_z - hcz).abs() <= 2 {
+        // The shelter ahead of the containers, so that if the two ever did
+        // want the same cell the loss would be a CONTAINER — which
+        // `tests/haven.rs` counts islandwide and would fail loudly on —
+        // rather than the structure, which nothing counts. The failure a
+        // one-slot-per-cell rule can actually have is a silent drop, so the
+        // ordering picks which drop is audible. `haven_ring_phase` is what
+        // stops it happening at all.
+        let (sx, sz, syaw) = haven_shelter(haven);
+        if (sx * (1.0 / CELL_SIZE)) as i32 == cell_x && (sz * (1.0 / CELL_SIZE)) as i32 == cell_z {
+            return Slot {
+                occupant: Occupant::HavenShelter,
+                x: sx,
+                y: height(seed, sx, sz),
+                z: sz,
+                yaw: syaw,
+                scale: 1.0,
+            };
+        }
         let mut k = 0i32;
         while k < HAVEN_CRATES {
             let (ax, az, yaw) = haven_crate(haven, k);
@@ -941,4 +1121,196 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
         yaw: ((h >> 28) & 0xFF) as u8,
         scale: 0.9 + ((h >> 36) & 0xFF) as f32 * (0.2 / 255.0),
     }
+}
+
+// ── Occupant volume ────────────────────────────────────────────────────────
+//
+// What a slot does to a body that walks into it. Four passes built a road, a
+// pad, a container ring and a building, and every one of them is walk-through:
+// `collide.rs` and `movement.rs` contain zero references to `Occupant`, so
+// `TERRAIN.md` §1 stage 6 asks the forest for "wood, cover, low visibility"
+// and cover does not exist — there is nothing on this island you can break
+// line of sight on.
+//
+// The volume belongs here rather than in `collide.rs` for the same reason the
+// occupant enum does: whether a pine has a trunk you stop at is a property of
+// the pine, not of the movement code. This module owns the shapes and the
+// per-slot test; the movement path owns which slots it asks about and how it
+// indexes them. That seam is deliberate — `scatter` costs a `height` fan, a
+// `moisture`, a `clump` and a `road_band` per cell, so a movement step must
+// never re-derive slots by calling it, and nothing here invites that.
+//
+// Cylinders, not boxes. Every scattered archetype is radially symmetric about
+// its own axis except the crate, and a cylinder needs no yaw and therefore no
+// trig — the L1 wall bans libm outright, and the yaw LUT would otherwise have
+// to be dragged into a test that runs per body per tick. The one archetype
+// that genuinely is a box list with a hole in it, the shelter, is NOT given a
+// volume here; see `OCCUPANT_R_M`'s note on index 10.
+
+/// Blocking radius per `Occupant`, meters, at a slot `scale` of 1.0.
+///
+/// Read off the client's authored geometry (`web/src/props.js` `ARCHETYPES`)
+/// rather than chosen, because the defect being fixed is walking through
+/// drawn geometry: the rule is the mesh's maximum horizontal extent, so the
+/// server never lets a body reach a triangle the client is rendering. Erring
+/// outward blocks a little air at a dodecahedron's flats; erring inward is
+/// the bug. (knob, DECISIONS.md §open: occupant volume v0.)
+///
+/// Indexed by `Occupant as usize`, so the array is 11 long and two entries
+/// are structural rather than tuned:
+///
+/// - **8 is the client's felled-pine stump**, which is not a sim occupant at
+///   all — the enum skips the discriminant and this table keeps the hole, for
+///   the reason the enum states: the two tables stay aligned by construction
+///   or they drift silently.
+/// - **10, the haven shelter, is 0.0 and that is DEFERRED, not "walk through
+///   a building on purpose".** Its volume is a wall list with a doorway in it,
+///   which is the one shape a radius cannot express — a cylinder either seals
+///   the entrance or blocks nothing. Doing it properly means the sim owning a
+///   box list that must not drift from `props.js`'s fourteen boxes, plus the
+///   gate that keeps the two equal, and that is its own slice. Until then the
+///   deliberate zero is pinned by `tests/solid.rs` so it cannot be mistaken
+///   for a tuned value.
+///
+/// The bush is the third zero and the only one that is a design call: a bush
+/// you cannot push through is a wall you cannot see over, which is worse than
+/// no bush. It reads as cover and costs nothing to cross, which is what the
+/// reference does with the same prop.
+pub const OCCUPANT_R_M: [f32; 11] = [
+    0.0,  // None
+    0.26, // Tree — the TRUNK, not the canopy: `CylinderGeometry(0.13, 0.26)`
+    1.0,  // StoneNode  — DodecahedronGeometry(1.0)
+    1.0,  // MetalNode  — DodecahedronGeometry(1.0)
+    1.0,  // SulfurNode — DodecahedronGeometry(1.0)
+    0.0,  // Bush — deliberately passable
+    1.5,  // Rock — DodecahedronGeometry(1.5)
+    0.45, // BarrelSlot — CylinderGeometry(0.45, 0.45, 0.95)
+    0.0,  // 8: the client's stump. Not a sim occupant; the hole is the point.
+    0.68, // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
+    0.0,  // HavenShelter — DEFERRED, see above
+];
+
+/// How high above the slot's own ground each occupant blocks, meters, at a
+/// slot `scale` of 1.0.
+///
+/// Also read off `ARCHETYPES`, where a row's `lift` is the mesh's half-height
+/// and therefore the offset that sets it ON the ground: a top is `lift` plus
+/// the geometry's half-extent in y. The nodes are lifted less than their own
+/// radius on purpose — a dodecahedron of radius 1 lifted 0.5 is buried half a
+/// meter so it reads as embedded rather than dropped — so their tops are 1.5
+/// and not 2.0.
+///
+/// The tree stops at the trunk's height, not the crown's: you walk *under* a
+/// canopy, and a body is 1.7 m against a 5.7 m trunk, so the distinction
+/// costs nothing today and is the correct shape when something flies or a
+/// tree falls. (knob, DECISIONS.md §open: occupant volume v0.)
+pub const OCCUPANT_TOP_M: [f32; 11] = [
+    0.0,  // None
+    5.7,  // Tree — PINE_TRUNK_H
+    1.5,  // StoneNode  — lift 0.5 + radius 1.0
+    1.5,  // MetalNode
+    1.5,  // SulfurNode
+    0.0,  // Bush
+    2.05, // Rock — lift 0.55 + radius 1.5
+    0.95, // BarrelSlot — lift 0.5 + half-height 0.475, rounded down to the mesh
+    0.0,  // 8: the stump
+    0.8,  // CrateSlot — lift 0.4 + half-height 0.4
+    0.0,  // HavenShelter — DEFERRED
+];
+
+/// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
+/// so this is the exact supremum and not a rounded one.
+pub const SLOT_SCALE_MAX: f32 = 1.1;
+
+/// Cells either side of a body's own that can hold a slot touching it.
+///
+/// One, and the const block below proves it rather than asserting it by
+/// eye: a slot's jitter is ±3 m about its cell's center, so every slot lies
+/// strictly inside its own cell, and the widest reach any slot has is
+/// `max(OCCUPANT_R_M) * SLOT_SCALE_MAX + CAPSULE_RADIUS_M`. While that stays
+/// under `CELL_SIZE` a 3×3 neighbourhood is not a heuristic — it is complete.
+///
+/// Published so the movement path does not have to re-derive it, and so that
+/// widening an occupant past the margin fails HERE, at the definition, rather
+/// than as bodies clipping through the far side of a boulder.
+pub const OCCUPANT_PROBE_CELLS: i32 = 1;
+
+const _: () = {
+    // The table is indexed by `Occupant as usize` and the largest
+    // discriminant is `HavenShelter = 10`. If an occupant is ever added
+    // above it, this stops the build instead of indexing out of bounds in
+    // the movement path.
+    assert!(OCCUPANT_R_M.len() == 11);
+    assert!(OCCUPANT_TOP_M.len() == 11);
+    assert!(Occupant::HavenShelter as usize == OCCUPANT_R_M.len() - 1);
+    // A volume is a radius AND a height, or it is neither. A radius with no
+    // height is a body that stops at nothing; a height with no radius is a
+    // shape with no width. The pairing is what `tests/solid.rs` walks.
+    let mut i = 0;
+    while i < OCCUPANT_R_M.len() {
+        assert!((OCCUPANT_R_M[i] > 0.0) == (OCCUPANT_TOP_M[i] > 0.0));
+        assert!(OCCUPANT_R_M[i] >= 0.0 && OCCUPANT_TOP_M[i] >= 0.0);
+        i += 1;
+    }
+    // The 3×3 probe is complete, not merely usual. `Rock` is the widest at
+    // 1.5; at the widest scale and with a capsule on top that is 2.05 m,
+    // against an 8 m cell. Written as the general bound so that raising a
+    // radius past the margin fails the build.
+    let mut widest = 0.0f32;
+    let mut j = 0;
+    while j < OCCUPANT_R_M.len() {
+        if OCCUPANT_R_M[j] > widest {
+            widest = OCCUPANT_R_M[j];
+        }
+        j += 1;
+    }
+    assert!(widest * SLOT_SCALE_MAX + crate::collide::CAPSULE_RADIUS_M < CELL_SIZE);
+    assert!(OCCUPANT_PROBE_CELLS >= 1);
+};
+
+/// Does the slot stop a capsule standing at (`x`, `z`) with its feet at
+/// `feet_y`?
+///
+/// Pure, one slot, no seed and no world: the caller has already resolved the
+/// slot, which is the whole point of the seam — `scatter` is far too
+/// expensive to run inside a movement step, and a signature that took a seed
+/// would invite exactly that.
+///
+/// Squared distance, so there is no `sqrt` on the path at all.
+///
+/// The vertical test is an INTERVAL OVERLAP, not a ceiling, and the first
+/// draft got that wrong in a way worth recording because it type-checks and
+/// reads fine: `feet_y < slot.y + top` alone makes a boulder on a clifftop
+/// block a body standing at sea level forty metres beneath it, since a body
+/// below the top is "not above" it. A slot occupies `[slot.y, slot.y + top]`
+/// and a body occupies `[feet_y, feet_y + capsule_h]`; they stop each other
+/// only where those overlap.
+///
+/// Both ends are half-open at the top and closed at the bottom, which puts
+/// the two degenerate cases on the side that matches what a player sees:
+/// feet exactly at the top of a crate are standing ON it (the ground query's
+/// business, not this one's), and a slot whose base is exactly at the body's
+/// head height is overhead clearance rather than a wall. Below the slot's own
+/// ground there is nothing to test — that volume is inside the terrain, and
+/// the terrain already stops you.
+pub fn slot_blocks(
+    slot: &Slot,
+    x: f32,
+    z: f32,
+    feet_y: f32,
+    capsule_r: f32,
+    capsule_h: f32,
+) -> bool {
+    let k = slot.occupant as usize;
+    let r = OCCUPANT_R_M[k];
+    if r <= 0.0 {
+        return false;
+    }
+    if feet_y >= slot.y + OCCUPANT_TOP_M[k] * slot.scale || feet_y + capsule_h <= slot.y {
+        return false;
+    }
+    let reach = r * slot.scale + capsule_r;
+    let dx = x - slot.x;
+    let dz = z - slot.z;
+    dx * dx + dz * dz < reach * reach
 }

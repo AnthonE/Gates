@@ -103,8 +103,22 @@ Stages, in order — each cheap, each deterministic:
    and the site is refused if none is clear). `SPAWN.md` §5's placement-check
    chain, arrived at from the other direction: **refuse the position, never
    patch the object.** The carve is still not built.
-   `DECISIONS.md` §open "haven pad v0" and "haven crates v0" have the knobs
-   and the measurements.
+   **A greybox now stands on it, and it stands BESIDE the road rather than
+   on it.** The clearing stopped being self-evidently made the moment stage 9
+   gave the island natural clearings — 2.2–4.1% of forest windows are empty
+   by design now — so arrival needed a positive silhouette rather than an
+   absence of trees. One `Occupant::HavenShelter` slot carries the whole
+   structure (a cell holds one slot, and five containers on a 10 m ring
+   already spend the pad's packing budget at the 11.31 m cell diagonal), and
+   the client draws it as fourteen boxes: a 6.2 m room with a 2.4 × 2.8 m
+   doorway, corner posts overrunning the roof, and a tower to 9.2 m against a
+   6.6 m pine. It stands `HAVEN_SHELTER_R_M` off center in a gap in the ring,
+   on a bearing searched against `road_band` — because the pad's center IS
+   the road's center line, and `tests/road.rs` caught the first draft
+   blocking the loop it exists to serve. **Nothing is solid**: no scatter
+   occupant collides, so a player walks through these walls today.
+   `DECISIONS.md` §open "haven pad v0", "haven crates v0" and "haven shelter
+   v0" have the knobs and the measurements.
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same

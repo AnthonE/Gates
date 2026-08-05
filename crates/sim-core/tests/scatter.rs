@@ -50,7 +50,7 @@ const WIN_CELLS: i32 = (2 * R + 1) * (2 * R + 1);
 struct Field {
     tree: Vec<bool>,
     forest: Vec<bool>,
-    counts: [u32; 10],
+    counts: [u32; 11],
 }
 
 fn build(seed: u64) -> Field {
@@ -62,7 +62,7 @@ fn build(seed: u64) -> Field {
         forest: vec![false; n],
         // Indexed by `Occupant as usize`, which skips 8: sized to the
         // largest discriminant + 1, not to the number of variants.
-        counts: [0u32; 10],
+        counts: [0u32; 11],
     };
     for cz in 0..CELLS_PER_SIDE {
         for cx in 0..CELLS_PER_SIDE {
@@ -336,6 +336,12 @@ fn test_clump_leaves_authored_slots_alone() {
             HAVEN_CRATES as u32,
             "seed {seed}: the pad's container ring lost a crate — the clump \
              field is meant to sit below the haven branch in `scatter`."
+        );
+        assert_eq!(
+            f.counts[Occupant::HavenShelter as usize],
+            1,
+            "seed {seed}: the pad's shelter is not standing — same branch, \
+             same rule: authored slots sit above the field, not in it."
         );
         assert!(
             f.counts[Occupant::BarrelSlot as usize] > 50,

@@ -129,6 +129,69 @@ export function slotsIn(kind) {
   return kind === CONT_BOX ? BOX_SLOTS : INV_SLOTS;
 }
 
+/** `sim-core/src/limits.rs:179` — the build grid's coordinate ceiling.
+ *  Cells index 0..=MAX_BUILD_COORD on each axis. */
+export const MAX_BUILD_COORD = 1024;
+/** `sim-core/src/limits.rs:184` — storeys, so levels are 0..MAX_BUILD_LEVELS. */
+export const MAX_BUILD_LEVELS = 8;
+
+/**
+ * `deploy.rs:316`'s `box_key`, stated as a LAYOUT rather than buried in the
+ * function below — the same shape `MOVE_ARG_ORDER` takes and for the same
+ * reason. `ci/ui_smoke.mjs` §P reads the three numbers back out of
+ * `deploy.rs` and compares them, so this is checked against Rust rather than
+ * against the client's own opinion of what Rust does.
+ *
+ * A bit layout mirrored across the wall with no gate on it is the
+ * positional-payload trap in its purest form: every field is an integer,
+ * every wrong answer is an integer, and the only thing downstream of a wrong
+ * shift is *a handle that addresses somebody else's box*. `test_protocol_golden`
+ * cannot see it — the handle is one opaque `u32` in a packet whose bytes are
+ * unchanged — and `test_replay` cannot see it either, because the client's
+ * arithmetic is not in `state_hash`. This gate is the only thing there is.
+ */
+export const BOX_KEY_LAYOUT = Object.freeze({
+  cx_shift: 16,
+  cz_shift: 4,
+  level_mask: 0xf,
+});
+
+/**
+ * Pack a deployed box's grid address into the single container handle the
+ * open and move commands carry — the JS mirror of `deploy.rs:316`.
+ *
+ * Returns `null` for an address this client will not send, and the refusals
+ * are the point rather than tidying:
+ *
+ * - **Out of the build grid**, by `MAX_BUILD_COORD`/`MAX_BUILD_LEVELS`. The
+ *   three fields only stay disjoint while the coordinates respect those
+ *   ceilings: `cz` sits at bits 4..14 and `cx` starts at bit 16, so a `cz`
+ *   past 4095 would carry straight into `cx`'s field and silently name a
+ *   different cell. §P asserts that disjointness at the maxima the Rust
+ *   limits actually declare, so growing `MAX_BUILD_COORD` past the packing
+ *   turns a gate red instead of corrupting handles.
+ * - **A non-integer**, which would otherwise coerce through `<<` to 0 — and
+ *   0 is a legal handle here, not a sentinel. See below.
+ *
+ * ## `box_key(0, 0, 0) === 0`, and why this cannot fix that
+ *
+ * A box standing at cell (0,0) on level 0 is genuinely addressed by handle
+ * 0, and `moveArgs` refuses a ground end whose handle is 0 because
+ * `deploy.rs:424`'s `box_index` has no zero guard — so that one box can be
+ * opened and then not moved into. This function returning 0 for it is
+ * CORRECT, and papering over it here (an off-by-one, a sentinel bias) would
+ * put a JS-only fudge into an address the sim decodes, which is worse than
+ * the corner it hides. The fix is a zero guard in `deploy.rs`; the ui lane
+ * does not own `crates/`. `NOW.md` carries the request.
+ */
+export function boxKey(cx, cz, level) {
+  if (!Number.isInteger(cx) || cx < 0 || cx > MAX_BUILD_COORD) return null;
+  if (!Number.isInteger(cz) || cz < 0 || cz > MAX_BUILD_COORD) return null;
+  if (!Number.isInteger(level) || level < 0 || level >= MAX_BUILD_LEVELS) return null;
+  const { cx_shift, cz_shift, level_mask } = BOX_KEY_LAYOUT;
+  return (((cx << cx_shift) | (cz << cz_shift) | (level & level_mask)) >>> 0);
+}
+
 /**
  * Unpack a `client_move_readout()` word, or `null` if it is not a verdict
  * this panel can act on.
