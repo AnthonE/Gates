@@ -3282,6 +3282,11 @@ const interact = await import(pathToFileURL(path.join(root, "web/src/interact.js
 const rsArch = (name) =>
   Number(deploySrc.match(new RegExp(`^pub const ${name}: u8 = (\\d+);`, "m"))?.[1]);
 for (const [jsName, rsName] of [
+  // ARCH_BAG is here and not in map.js because interact.js is the one mirror
+  // site — it is the map's marker table that reads it (group Z), not E, and a
+  // second copy of the number in that file is a second thing to renumber with
+  // only the first of them pinned to Rust.
+  ["ARCH_BAG", "ARCH_BAG"],
   ["ARCH_HEARTH", "ARCH_HEARTH"],
   ["ARCH_BOX", "ARCH_BOX"],
   ["ARCH_DOOR", "ARCH_DOOR"],
@@ -6725,6 +6730,425 @@ check(
 );
 
 // =============================================================================
+// Z. the map's markers — the trip's other end, projected ONCE
+// =============================================================================
+// The judge of `pass-20260805-111501-04` ranks first "the destinations pay
+// nothing, so there is still no reason to leave your base". Its mechanism is
+// the missing verb that opens a world container, which is `crates/` work and
+// `NOW.md` carries the request. This gates the half that is not: leaving a
+// base is a ROUND TRIP, and until the marker layer landed the map drew the
+// island, a grid and one triangle and nothing else — no bed, no hearth, no
+// dropped bag. `mapstylized.jpg`, the frame the panel was drawn from, is made
+// almost entirely of markers.
+//
+// The defect class this exists for is positional, which is the class
+// `CLAUDE.md`'s trap list names and the one this lane keeps finding: a marker
+// layer that carries its OWN copy of the north-is-up flip draws a perfect
+// island, a perfect player, and your bed exactly as far south of you as it is
+// north — and every check on the island and on the triangle stays green. So
+// the load-bearing assertion below is an identity, not a formula: a marker at
+// the player's own position must land on the player's own pixel.
+const marksModOk =
+  typeof map.resolveMarks === "function" && typeof map.newMarks === "function";
+check(
+  marksModOk,
+  "map.js exports no resolveMarks/newMarks — the marker layer is the map's second half and every check" +
+    " below would read undefined",
+);
+
+// --- the kind table: complete, and distinct on both channels ----------------
+// The walk 1..MARK_MAX is the anti-drift half. A kind added to map.js with no
+// fill, no shape or no draw branch would be a marker silently rendered in the
+// previous kind's colour — a map that lies about which anchor is which, which
+// is worse than one that omits it.
+check(
+  Number.isInteger(map.MARK_MAX) && map.MARK_MAX >= 1 && map.MARK_NONE === 0,
+  `map.js MARK_MAX = ${map.MARK_MAX} / MARK_NONE = ${map.MARK_NONE} — the walk below needs a positive` +
+    " ceiling, and the zero has to stay unused so a stale array slot cannot draw a bed",
+);
+const markKinds = [];
+for (let k = 1; k <= map.MARK_MAX; k++) markKinds.push(k);
+for (const k of markKinds) {
+  check(
+    typeof map.MARK_LABEL[k] === "string" && map.MARK_LABEL[k].length > 0,
+    `map.js MARK_LABEL has no name for kind ${k} — a marker with no noun cannot be named by a legend or` +
+      " by this gate, and 1..MARK_MAX is the contract",
+  );
+  check(
+    typeof map.MARK_FILL[k] === "string" && /^#[0-9a-f]{6}$/i.test(map.MARK_FILL[k]),
+    `map.js MARK_FILL[${k}] = ${JSON.stringify(map.MARK_FILL[k])} is not a six-digit hex colour — drawMap` +
+      " skips a kind with no fill rather than defaulting, so this kind would silently stop being drawn",
+  );
+  check(
+    typeof map.MARK_SHAPE[k] === "string" && map.MARK_SHAPE[k].length > 0,
+    `map.js MARK_SHAPE[${k}] = ${JSON.stringify(map.MARK_SHAPE[k])} is not a shape name — same skip, same` +
+      " silent disappearance",
+  );
+}
+// Distinct on BOTH channels. Colour alone is what a player reading a 512-pixel
+// panel in a hurry confuses; shape alone is what a screenshot at this scale
+// does. Two kinds sharing either one is two anchors a player cannot tell apart
+// at the moment they are deciding whether they can afford to walk away.
+for (const [what, tbl] of [
+  ["MARK_LABEL", map.MARK_LABEL],
+  ["MARK_FILL", map.MARK_FILL],
+  ["MARK_SHAPE", map.MARK_SHAPE],
+]) {
+  const vals = markKinds.map((k) => tbl[k]);
+  check(
+    new Set(vals).size === vals.length,
+    `map.js ${what} gives two marker kinds the same value (${JSON.stringify(vals)}) — a bed and a hearth` +
+      " that read identically are a map that names neither",
+  );
+}
+// Every shape the table uses has a branch in drawMap. The `else` is the square
+// and is deliberately not searched for: what this catches is a FOURTH shape
+// added to the table, which would fall into the square branch and draw a bed.
+const drawMapSrc = hudSrc.slice(hudSrc.indexOf("  drawMap() {"));
+for (const shape of new Set(markKinds.map((k) => map.MARK_SHAPE[k]))) {
+  if (shape === "square") continue;
+  check(
+    drawMapSrc.includes(`shape === "${shape}"`),
+    `hud.js drawMap has no branch for MARK_SHAPE ${JSON.stringify(shape)} — it would fall through to the` +
+      " square, and a hearth drawn as a bed is the transposition this table exists to prevent",
+  );
+}
+
+// --- which archetype becomes which marker, and which becomes none -----------
+// The archetypes NOT in the table are the point of it: a base is a dozen boxes
+// and a door per room, and marking them turns the panel into a solid block of
+// icons over the one square the player already knows how to find.
+const archMarkKeys = Object.keys(map.ARCH_MARK).map(Number);
+check(
+  archMarkKeys.length > 0 && archMarkKeys.every((a) => Number.isInteger(a)),
+  `map.js ARCH_MARK is keyed by ${JSON.stringify(Object.keys(map.ARCH_MARK))} — it must be archetype` +
+    " ordinals, which is what defs[row * 4] carries",
+);
+for (const a of archMarkKeys) {
+  const k = map.ARCH_MARK[a];
+  check(
+    markKinds.includes(k),
+    `map.js ARCH_MARK maps archetype ${a} to kind ${k}, which is not in 1..${map.MARK_MAX} — an archetype` +
+      " pointed at a kind that has no fill and no shape is a deployable that stops being drawn",
+  );
+}
+check(
+  map.ARCH_MARK[interact.ARCH_BAG] === map.MARK_BED &&
+    map.ARCH_MARK[interact.ARCH_HEARTH] === map.MARK_HEARTH,
+  `map.js ARCH_MARK reads {bag: ${map.ARCH_MARK[interact.ARCH_BAG]}, hearth: ` +
+    `${map.ARCH_MARK[interact.ARCH_HEARTH]}} — expected {bag: ${map.MARK_BED}, hearth: ` +
+    `${map.MARK_HEARTH}}. Exchanging these two is the positional mutation CLAUDE.md's trap list names:` +
+    " every count, every distinctness check and every projection check above stays green while the map" +
+    " sends a player who wants their bed to their fire",
+);
+check(
+  map.ARCH_MARK[interact.ARCH_BOX] === undefined &&
+    map.ARCH_MARK[interact.ARCH_DOOR] === undefined,
+  "map.js ARCH_MARK marks a box or a door — those are the archetypes a base has a dozen of, and marking" +
+    " them buries the two anchors that are worth drawing",
+);
+// Every kind is REACHABLE. A kind with a fill and a shape that nothing ever
+// produces is a table entry no player can see, and the walk above cannot tell
+// the difference.
+const producible = new Set([...archMarkKeys.map((a) => map.ARCH_MARK[a]), map.MARK_BAG]);
+for (const k of markKinds) {
+  check(
+    producible.has(k),
+    `map.js kind ${k} (${map.MARK_LABEL[k]}) has a label, a fill and a shape and NOTHING produces it —` +
+      " resolveMarks emits it from no archetype and it is not the bag, so it is a marker no map can draw",
+  );
+}
+
+// --- the projection is the triangle's, and it is the only one ---------------
+// Everything here is arithmetic against a synthetic world, in node.
+const MARK_CANVAS = 512;
+const markDefs = new Uint16Array(16 * 4);
+// defs is stride-4 rows of (arch, ...) — the same decode interact.js reads.
+markDefs[0 * 4] = interact.ARCH_BAG;
+markDefs[1 * 4] = interact.ARCH_HEARTH;
+markDefs[2 * 4] = interact.ARCH_BOX;
+markDefs[3 * 4] = interact.ARCH_DOOR;
+const markCell = 3;
+const mkWorld = (recs, bags) => ({
+  cell: markCell,
+  defs: markDefs,
+  recs: new Map(recs.map((r, i) => [i, r])),
+  bagCount: bags.length / 3,
+  bagPos: new Float32Array(bags),
+});
+const marksAt = (recs, bags, out) => {
+  const m = out || map.newMarks();
+  map.resolveMarks(m, mkWorld(recs, bags), MARK_CANVAS);
+  const list = [];
+  for (let i = 0; i < m.count; i++) {
+    list.push({ kind: m.a[i * 3], px: m.a[i * 3 + 1], py: m.a[i * 3 + 2] });
+  }
+  return { m, list };
+};
+const proj = (x, z) => map.worldToMap({ px: 0, py: 0 }, x, z, MARK_CANVAS);
+
+// A box and a door in the same world as a bed and a hearth: two marked, two not.
+const mixed = marksAt(
+  [
+    { cx: 10, cz: 20, row: 0 },
+    { cx: 11, cz: 21, row: 1 },
+    { cx: 12, cz: 22, row: 2 },
+    { cx: 13, cz: 23, row: 3 },
+  ],
+  [100, 5, 200],
+);
+check(
+  mixed.list.length === 3,
+  `resolveMarks drew ${mixed.list.length} markers for a bed, a hearth, a box, a door and one bag —` +
+    " expected 3. Either an unmarked archetype is being marked or a marked one is being dropped",
+);
+check(
+  mixed.list.map((e) => e.kind).join(",") ===
+    [map.MARK_BED, map.MARK_HEARTH, map.MARK_BAG].join(","),
+  `resolveMarks emitted kinds ${JSON.stringify(mixed.list.map((e) => e.kind))} — expected` +
+    ` [${map.MARK_BED}, ${map.MARK_HEARTH}, ${map.MARK_BAG}] in that order`,
+);
+// The deployable's marker sits on the CELL CENTRE, which is where interact.js
+// measures its reach to and where drawDeploy puts the mesh. A marker on the
+// cell corner is up to half a cell off the thing it names.
+{
+  const want = proj(10 * markCell + markCell / 2, 20 * markCell + markCell / 2);
+  check(
+    Math.abs(mixed.list[0].px - want.px) < 1e-9 && Math.abs(mixed.list[0].py - want.py) < 1e-9,
+    `resolveMarks put the bed at (${mixed.list[0].px}, ${mixed.list[0].py}), expected the cell CENTRE at` +
+      ` (${want.px}, ${want.py}) — a marker on the cell's corner names the wrong square`,
+  );
+}
+// The bag carries a world position, not a cell, and its z is the THIRD term of
+// a stride-3 row. Reading bagPos[i*3+1] (the y) instead is a marker placed at
+// the player's altitude, which on this island is a thin band near the top of
+// the map for every bag in the world.
+{
+  const want = proj(100, 200);
+  check(
+    Math.abs(mixed.list[2].px - want.px) < 1e-9 && Math.abs(mixed.list[2].py - want.py) < 1e-9,
+    `resolveMarks put the bag at (${mixed.list[2].px}, ${mixed.list[2].py}), expected (${want.px},` +
+      ` ${want.py}) from bagPos x and z — the stride-3 row's y is not a map axis`,
+  );
+}
+// THE identity. A bed on the player's own square must land on the player's own
+// pixel, and this is stated against `worldToMap` — the function the triangle
+// is placed by — rather than against a second copy of the formula. A marker
+// layer with its own north-is-up flip is red here and green everywhere else.
+for (const [x, z] of [
+  [0, 0],
+  [1, map.WORLD_M - 1],
+  [map.WORLD_M - 1, 1],
+  [map.WORLD_M / 2, map.WORLD_M / 2],
+  [512.25, 1600.75],
+]) {
+  const one = marksAt([], [x, 0, z]);
+  const want = proj(x, z);
+  check(
+    one.list.length === 1 &&
+      Math.abs(one.list[0].px - want.px) < 1e-9 &&
+      Math.abs(one.list[0].py - want.py) < 1e-9,
+    `a marker at world (${x}, ${z}) landed at (${one.list[0]?.px}, ${one.list[0]?.py}) but worldToMap —` +
+      ` the projection the player's triangle uses — puts that position at (${want.px}, ${want.py}). The` +
+      " marker layer is carrying a second projection, which draws a correct island under a marker that is" +
+      " somewhere the thing is not",
+  );
+}
+// The flip, stated as an ORDERING so it cannot be satisfied by a constant.
+// North is +z and the image's y grows south, so the more northerly marker has
+// the SMALLER py; east is +x and px grows with it.
+{
+  const ns = marksAt([], [400, 0, 300, 400, 0, 1700]);
+  check(
+    ns.list[1].py < ns.list[0].py && Math.abs(ns.list[1].px - ns.list[0].px) < 1e-9,
+    `two markers at z = 300 and z = 1700 came out at py ${ns.list[0].py} and ${ns.list[1].py} — the` +
+      " northerly one must be HIGHER on the image (smaller py), which is the flip paintMap applies to its" +
+      " rows. A marker layer that skipped the flip mirrors the whole island about its equator",
+  );
+  const ew = marksAt([], [300, 0, 400, 1700, 0, 400]);
+  check(
+    ew.list[1].px > ew.list[0].px && Math.abs(ew.list[1].py - ew.list[0].py) < 1e-9,
+    `two markers at x = 300 and x = 1700 came out at px ${ew.list[0].px} and ${ew.list[1].px} — east is` +
+      " +x and px grows west to east. px and py transposed passes every distance check and draws the" +
+      " island's markers reflected about its diagonal",
+  );
+}
+
+// --- the cap is a wall, and it is not silent --------------------------------
+// CLAUDE.md §4: bounded everything, with a stated overflow policy. And its
+// trap list: no silent caps — a truncation that reports nothing reads as
+// "everything is drawn" when it is not.
+{
+  const over = 5;
+  const many = [];
+  for (let i = 0; i < map.MAP_MARKS_MAX + over; i++) many.push({ cx: i, cz: i, row: 0 });
+  const capped = marksAt(many, []);
+  check(
+    capped.m.count === map.MAP_MARKS_MAX && capped.m.dropped === over,
+    `resolveMarks given ${map.MAP_MARKS_MAX + over} markers kept ${capped.m.count} and reported` +
+      ` ${capped.m.dropped} dropped — expected ${map.MAP_MARKS_MAX} and ${over}. An uncapped layer writes` +
+      " past the end of a fixed Float64Array (silently, since a typed array ignores the write) and a cap" +
+      " that does not count what it refused cannot be told from one that refused nothing",
+  );
+  check(
+    capped.m.a.length === map.MAP_MARKS_MAX * 3,
+    `map.js newMarks allocated ${capped.m.a.length} slots for ${map.MAP_MARKS_MAX} markers — the array is` +
+      " flat (kind, px, py) triples and the cap is what keeps the two in step",
+  );
+}
+// Reuse: the same object, resolved twice, must not accumulate and must not
+// leave a stale marker live. `drawMap` calls this four times a second on ONE
+// object, so a count that never shrinks draws a bed at a bag the player picked
+// up ten minutes ago.
+{
+  const reused = map.newMarks();
+  const arr = reused.a;
+  marksAt([{ cx: 1, cz: 1, row: 0 }], [10, 0, 10, 20, 0, 20], reused);
+  const first = reused.count;
+  const second = marksAt([], [], reused);
+  check(
+    first === 3 && second.m.count === 0 && second.m.dropped === 0,
+    `resolveMarks reused an object and went ${first} markers -> ${second.m.count} on an empty world —` +
+      " expected 3 -> 0. A count that does not reset draws markers for things that are gone",
+  );
+  check(
+    reused.a === arr,
+    "map.js resolveMarks replaced the marker array rather than filling it — drawMap runs off the HUD" +
+      " timer and CLAUDE.md's client law is no per-frame allocations",
+  );
+}
+// The Map, not a spent iterator. This is the whole reason resolveMarks takes
+// `recs.values()` itself: drawMap is called from toggleMap AND from the timer,
+// and an iterator consumed by the first draws a blank map on the second.
+{
+  const w = mkWorld([{ cx: 4, cz: 4, row: 1 }], []);
+  const a = map.newMarks();
+  const b = map.newMarks();
+  map.resolveMarks(a, w, MARK_CANVAS);
+  map.resolveMarks(b, w, MARK_CANVAS);
+  check(
+    a.count === 1 && b.count === 1,
+    `resolveMarks answered ${a.count} then ${b.count} for the SAME world object — the second call got a` +
+      " spent iterator, which is a map that goes blank the moment it is redrawn",
+  );
+}
+// A null world is a real state: the panel opens before the first deployable
+// arrives, and the HUD timer would go down with a throw.
+{
+  const empty = map.newMarks();
+  let threw = false;
+  try {
+    map.resolveMarks(empty, null, MARK_CANVAS);
+  } catch {
+    threw = true;
+  }
+  check(
+    !threw && empty.count === 0 && empty.dropped === 0,
+    `resolveMarks(null) ${threw ? "threw" : `answered ${empty.count}/${empty.dropped}`} — the map is` +
+      " openable before main.js has a world to hand it, and a throw here takes the HUD timer with it",
+  );
+}
+
+// --- the DOM half: what the CONTEXT got, not what the module computed -------
+// Everything above scores map.js. This scores hud.js, and it is a separate
+// question for the reason the judge's M9 made it one: the module can be exact
+// while the canvas receives something else, one line apart. `hud.mapMarks` is
+// what drawMap walks the 2D context out of.
+const markDom = await page.evaluate(
+  async ({ cell, defs, at, bed }) => {
+    const { hud } = globalThis.__ui;
+    const n = 4;
+    hud.setMapTerrain(new Uint8ClampedArray(n * n * 4).fill(200), n);
+    const world = {
+      cell,
+      defs: Uint16Array.from(defs),
+      // A bed on the player's own square, plus one bag somewhere else.
+      recs: new Map([[0, { cx: bed[0], cz: bed[1], row: 0 }]]),
+      bagCount: 1,
+      bagPos: Float32Array.from([300, 0, 900]),
+    };
+    hud.setMapWorld(world);
+    if (!hud.mapOpen) hud.toggleMap();
+    hud.setMapView(at[0], at[1], 0);
+    const read = () => {
+      const M = hud.mapMarks;
+      const out = [];
+      for (let i = 0; i < M.count; i++) {
+        out.push({ kind: M.a[i * 3], px: M.a[i * 3 + 1], py: M.a[i * 3 + 2] });
+      }
+      return { list: out, count: M.count, dropped: M.dropped };
+    };
+    const drawn = read();
+    const playerPx = { px: hud.mapPos.px, py: hud.mapPos.py };
+    // Now take the world away and redraw. A layer that never clears leaves the
+    // markers up over a base the player no longer has.
+    world.recs = new Map();
+    world.bagCount = 0;
+    hud.setMapView(at[0], at[1], 0);
+    const cleared = read();
+    if (hud.mapOpen) hud.toggleMap();
+    return { drawn, playerPx, cleared };
+  },
+  {
+    cell: markCell,
+    defs: Array.from(markDefs),
+    // The player stands at the centre of build cell (200, 200).
+    at: [200 * markCell + markCell / 2, 200 * markCell + markCell / 2],
+    bed: [200, 200],
+  },
+);
+check(
+  markDom.drawn.count === 2,
+  `hud.drawMap parked ${markDom.drawn.count} markers for one bed and one bag — expected 2. An unparked` +
+    " layer means every check below reads an empty array and passes on nothing",
+);
+// The identity again, this time end to end: the bed is on the player's own
+// square, so the marker drawMap handed the context must be the pixel it drew
+// the player's triangle at. This is the check a second projection cannot pass.
+check(
+  markDom.drawn.list[0] &&
+    Math.abs(markDom.drawn.list[0].px - markDom.playerPx.px) < 1e-9 &&
+    Math.abs(markDom.drawn.list[0].py - markDom.playerPx.py) < 1e-9,
+  `hud.drawMap drew a bed on the player's own square at (${markDom.drawn.list[0]?.px},` +
+    ` ${markDom.drawn.list[0]?.py}) while drawing the player at (${markDom.playerPx.px},` +
+    ` ${markDom.playerPx.py}) — the two projections have diverged, which is a map whose island and whose` +
+    " player are both right and whose anchors are somewhere else",
+);
+check(
+  markDom.drawn.list[0]?.kind === map.MARK_BED && markDom.drawn.list[1]?.kind === map.MARK_BAG,
+  `hud.drawMap parked kinds ${JSON.stringify(markDom.drawn.list.map((e) => e.kind))} — expected` +
+    ` [${map.MARK_BED}, ${map.MARK_BAG}]. The kind is the field that decides the colour and the shape, so` +
+    " a transposed one draws the right marker in the wrong identity",
+);
+check(
+  markDom.cleared.count === 0,
+  `hud.drawMap still had ${markDom.cleared.count} markers parked after the world emptied — the layer is` +
+    " resolved fresh on every draw or it draws a base the player has lost",
+);
+// The ORDER: markers first, the player's triangle last. A triangle drawn under
+// its own bed is the panel failing at the one question it is opened to answer.
+check(
+  drawMapSrc.indexOf("resolveMarks(M, this.mapWorld, D)") <
+    drawMapSrc.indexOf("const T = this.mapTri;"),
+  "hud.js drawMap builds the player's triangle BEFORE the markers — the marker fills over it, and" +
+    " standing on your own bed hides you from yourself on the panel you opened to find yourself",
+);
+// And the caller: main.js refreshes the world before BOTH draw sites. The
+// markers are resolved inside the draw, so a refresh after the call is a first
+// frame showing the world as it stood when the map was last closed.
+for (const [site, re] of [
+  ["the M key", /refreshMapWorld\(\);\n *if \(hud\.toggleMap\(\)\)/],
+  ["the HUD timer", /refreshMapWorld\(\);\n *hud\.setMapView\(/],
+]) {
+  check(
+    re.test(mainSrc),
+    `main.js does not call refreshMapWorld() immediately before ${site}'s draw — the marker set is read` +
+      " inside that draw, so a stale world is drawn for at least one frame and, on the toggle path, for" +
+      " the whole time the panel is open if the player never moves",
+  );
+}
+
+// =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
@@ -6793,7 +7217,14 @@ console.log(
     "call site a literal (never e.code, so a swallowed key checks nothing off), the repair mark pinned " +
     "BELOW the build-mode R branch, the chip derived from the code, rows drawn in table order key " +
     "against verb, and the transition: own row only, repeat a no-op, untaught code a no-op, panel up " +
-    "while one is open, gone on the last and still gone across show()",
+    "while one is open, gone on the last and still gone across show() · " +
+    `the map's markers: ${map.MARK_MAX} kinds each with a label, a fill, a shape and a draw branch, all ` +
+    "three channels distinct, every kind reachable, bag+hearth against interact.js's ARCH codes (box and " +
+    "door unmarked), deployables on the cell CENTRE and bags off stride-3 x/z, a marker on the player's " +
+    "square landing on the player's own pixel in node AND in the browser, north-up and east-right stated " +
+    `as orderings, cap ${map.MAP_MARKS_MAX} counting what it dropped, the array reused and reset, the ` +
+    "recs Map re-iterable, a null world empty rather than a throw, markers drawn before the triangle, " +
+    "and main.js refreshing the world before both draw sites",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 

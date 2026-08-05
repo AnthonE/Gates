@@ -323,6 +323,77 @@ run_mut "M48 the repair row is marked from the build-level branch" web/src/main.
   '      build.level = Math.max(0, Math.min(MAX_LEVEL, build.level + d));
       hud.learnUse("KeyR");'
 
+# --- the map's markers (ui_smoke group Z) -----------------------------------
+# The class first: a marker layer carrying its OWN copy of the projection. The
+# island is painted by paintMap, the player is placed by worldToMap, and both
+# stay perfectly correct while every anchor is drawn as far south of the player
+# as it is north. This is CLAUDE.md's positional-payload trap with the fields
+# one file apart, and it is why group Z asserts an IDENTITY against worldToMap
+# rather than recomputing the formula.
+run_mut "M49 the marker layer projects with its own north-up flip" web/src/map.js \
+    'worldToMap(out.p, x, z, size);' \
+    '    out.p.px = (x / WORLD_M) * size;
+    out.p.py = (z / WORLD_M) * size;'
+# The transposition, verbatim in the judge's own shape: exchange the two
+# archetype rows. Every count, every distinctness check and every projection
+# check stays green, and the map sends a player who wants their bed to their
+# fire.
+run_mut "M50 ARCH_MARK exchanges the bed and the hearth" web/src/map.js \
+  '  [ARCH_BAG]: MARK_BED,
+  [ARCH_HEARTH]: MARK_HEARTH,' \
+  '  [ARCH_BAG]: MARK_HEARTH,
+  [ARCH_HEARTH]: MARK_BED,'
+# The cap holds and stops counting: the bound is intact, the array is intact,
+# and the only thing lost is the report that anything was refused. CLAUDE.md's
+# trap list names exactly this — a silent truncation reads as "everything is
+# drawn" when it is not.
+run_mut "M51 the cap truncates silently" web/src/map.js \
+  '      out.dropped++;
+      return;' \
+  '      return;'
+# The cap removed outright. A fixed Float64Array ignores a write past its end,
+# so this loses markers with no error and no exception anywhere.
+run_mut "M52 the marker cap is gone" web/src/map.js \
+  '    if (out.count >= MAP_MARKS_MAX) {' \
+  '    if (false) {'
+# Two kinds drawn in one colour. The shapes still differ, so this is the half
+# of the identity a player reading a 512-pixel panel in a hurry actually uses.
+run_mut "M53 the hearth is drawn in the bed's colour" web/src/map.js \
+  '  [MARK_HEARTH]: "#ff9d5c",' \
+  '  [MARK_HEARTH]: "#7fb3ff",'
+# The reused object never resets. drawMap runs this four times a second on ONE
+# marks object, so the panel accumulates markers for every anchor the player
+# has ever had — including the bag they picked up ten minutes ago.
+run_mut "M54 resolveMarks accumulates instead of resetting" web/src/map.js \
+  '  out.count = 0;
+  out.dropped = 0;
+  if (!world) return out;' \
+  '  if (!world) return out;'
+# The bag's z read off the stride-3 row's y. Every bag in the world lands in a
+# thin band near the top of the map, and the deployable markers stay exact.
+run_mut "M55 a bag marker reads its altitude as its northing" web/src/map.js \
+  '    push(MARK_BAG, world.bagPos[i * 3], world.bagPos[i * 3 + 2]);' \
+  '    push(MARK_BAG, world.bagPos[i * 3], world.bagPos[i * 3 + 1]);'
+# The Map contract. `for (const rec of world.recs)` over a Map yields [key,
+# value] pairs, so `rec.row` is undefined and no deployable is ever marked —
+# and it reads as the tidier line.
+run_mut "M56 resolveMarks iterates the Map instead of its values" web/src/map.js \
+  '  for (const rec of world.recs.values()) {' \
+  '  for (const rec of world.recs) {'
+# Draw order. The markers fill over the player's own triangle, so standing on
+# your own bed hides you from yourself on the panel you opened to find yourself.
+run_mut "M57 drawMap draws the markers over the player" web/src/hud.js \
+  '    const M = this.mapMarks;
+    resolveMarks(M, this.mapWorld, D);' \
+  '    const M = this.mapMarks;'
+# The caller half: the world refreshed AFTER the draw that reads it. On the
+# toggle path this shows the world as it stood when the map was last closed,
+# for as long as the player stands still.
+run_mut "M58 main.js refreshes the map world after the toggle draws it" web/src/main.js \
+  '      refreshMapWorld();
+      if (hud.toggleMap()) {' \
+  '      if (hud.toggleMap()) {'
+
 echo
 echo "mutants: $red red, $green survived, $broken stale"
 if [ -n "$(git status --porcelain)" ]; then

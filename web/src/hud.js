@@ -11,7 +11,16 @@ import { CONT_SELF, CONT_BAG, CONT_BOX, INV_SLOTS, slotsIn } from "./invmove.js"
 // line above and for the same reason: `drawMap` needs a projection and a grid
 // label, and a second copy of either here would be a marker that could
 // disagree with the island it is drawn on.
-import { GRID_COLS, GRID_LETTERS, gridLabel, worldToMap } from "./map.js";
+import {
+  GRID_COLS,
+  GRID_LETTERS,
+  MARK_FILL,
+  MARK_SHAPE,
+  gridLabel,
+  newMarks,
+  resolveMarks,
+  worldToMap,
+} from "./map.js";
 
 /** Toast lifetime and cap (cosmetic; the stack reads like the reference
  * gather feedback — stacking "+N Thing" lines that fade). */
@@ -117,6 +126,13 @@ export const MAP_DRAW_PX = 512;
  * 512 square, small enough that it names a grid square rather than covering
  * one (a square is `MAP_DRAW_PX / GRID_COLS` = 32 px). */
 export const MAP_MARKER_PX = 7;
+
+/** A world marker's half-size, in canvas pixels — a bed, a hearth, a dropped
+ * backpack. Smaller than `MAP_MARKER_PX` on purpose: the player's own triangle
+ * is the one thing on the panel that must win the eye, and a marker the same
+ * size as it competes with the answer to "where am I". Proposed default,
+ * `DECISIONS.md` §open (map marker cap v0). */
+export const MAP_MARK_PX = 4;
 
 /** Degrees per wire yaw unit — the same quantum `COMPASS_DEG_PER_U16` is, and
  * deliberately the same NUMBER: the marker's heading and the compass strip's
@@ -386,6 +402,24 @@ export class Hud {
      * path (`CLAUDE.md` trap list).
      */
     this.mapTri = new Float64Array(6);
+    /**
+     * The world the markers are resolved out of — `{cell, defs, recs,
+     * bagCount, bagPos}`, main.js's, handed over once at wire-up and refreshed
+     * in place. Null until then, and `resolveMarks` answers an empty set for
+     * null rather than throwing: the map is openable before the first
+     * deployable arrives, and a panel that threw on the first M press would
+     * take the HUD timer down with it.
+     */
+    this.mapWorld = null;
+    /**
+     * The markers as `drawMap` last handed them to the 2D context: flat
+     * `[kind, px, py]` triples, `count` of them live.
+     *
+     * Parked for the reason `mapTri` is, and it is the same judge's lesson —
+     * M9 kept a correct heading and drew a hard-coded vertex. What a gate can
+     * read has to be what the canvas received, or the two drift one line apart.
+     */
+    this.mapMarks = newMarks();
     this.mapLastRef = "";
     this.craftOpen = false;
     this.last = "";
@@ -975,6 +1009,16 @@ export class Hud {
     if (this.mapOpen) this.drawMap();
   }
 
+  /**
+   * Hand over the world the markers are read from. Called once at wire-up
+   * with an object main.js then refreshes in place — the same arrangement
+   * `interactWorld` has, and for the same reason: `CLAUDE.md`'s client law is
+   * no per-frame allocations and this is read four times a second.
+   */
+  setMapWorld(world) {
+    this.mapWorld = world;
+  }
+
   /** Toggle the map screen; returns whether it is now open. */
   toggleMap() {
     this.mapOpen = !this.mapOpen;
@@ -1026,6 +1070,49 @@ export class Hud {
       for (let c = 0; c < cells; c++) {
         ctx.fillText(`${GRID_LETTERS[c]}${r + 1}`, c * step + 2, r * step + 2);
       }
+    }
+
+    // Yours. Everything the player has an anchor at, drawn BEFORE the player's
+    // own triangle so standing on your own bed never hides you from yourself —
+    // the panel's first job is "where am I" and a marker on top of the answer
+    // costs more than it pays.
+    //
+    // The positions come out of `map.js`'s `resolveMarks`, through the same
+    // `worldToMap` the triangle below uses. Nothing here recomputes a
+    // projection; a second copy of the north-is-up flip is the exact defect
+    // `resolveMarks` documents and `ui_smoke` closes.
+    const M = this.mapMarks;
+    resolveMarks(M, this.mapWorld, D);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "#0b1016";
+    const r = MAP_MARK_PX;
+    for (let i = 0; i < M.count; i++) {
+      const kind = M.a[i * 3];
+      const mx = M.a[i * 3 + 1];
+      const my = M.a[i * 3 + 2];
+      const shape = MARK_SHAPE[kind];
+      const fill = MARK_FILL[kind];
+      // A kind with no shape or no fill is not drawn as a default: a marker
+      // silently rendered in the previous kind's colour is a map that lies
+      // about which anchor is which, which is worse than one that omits it.
+      // `ui_smoke` requires both for every kind, so this branch is unreachable
+      // on a correct table and is here to keep it that way.
+      if (!shape || !fill) continue;
+      ctx.beginPath();
+      if (shape === "disc") {
+        ctx.arc(mx, my, r, 0, Math.PI * 2);
+      } else if (shape === "diamond") {
+        ctx.moveTo(mx, my - r);
+        ctx.lineTo(mx + r, my);
+        ctx.lineTo(mx, my + r);
+        ctx.lineTo(mx - r, my);
+        ctx.closePath();
+      } else {
+        ctx.rect(mx - r, my - r, r * 2, r * 2);
+      }
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.stroke();
     }
 
     // You. A triangle pointing along the bearing, not a dot: the map answers
