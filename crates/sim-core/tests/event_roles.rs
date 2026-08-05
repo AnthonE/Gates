@@ -77,9 +77,11 @@
 use sim_core::backpack::BackpackContent;
 use sim_core::build::{
     foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE,
+    REFUSE_B_COST, REFUSE_B_PIECE,
 };
 use sim_core::combat::CombatContent;
-use sim_core::deploy::DeployContent;
+use sim_core::craft::{CraftContent, REFUSE_INPUTS, REFUSE_RECIPE};
+use sim_core::deploy::{DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
 use sim_core::gather::{cell_key, GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
@@ -88,11 +90,12 @@ use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
 use sim_core::world::{
-    Command, SimEvent, World, DEATH_BY_MAX, EV_BAG_DROPPED, EV_CHARGE_PLACED, EV_CONSUMED,
-    EV_CONSUME_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK,
-    EV_GATHER, EV_HEALTH, EV_HIT, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED,
-    EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_SLOT_HARVESTED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS,
-    STRUCT_DEPLOY_BIT,
+    Command, SimEvent, World, DEATH_BY_MAX, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
+    EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH,
+    EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER,
+    EV_HEALTH, EV_HIT, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT,
+    EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -193,6 +196,18 @@ const UPPER: u8 = 1;
 /// and `distinct3` would (correctly) refuse the check. Moving the id is the
 /// smaller move than flattening the storey back down.
 const BUILDER: u32 = 4;
+
+/// A table row no baked table has, for the refusal family's first cause.
+///
+/// Every one of the three refusal codes checked below leads its validation
+/// chain with a range test on the row it was handed — `row >= piece_count`,
+/// `row >= def_count`, `recipe >= recipe_count` — so one out-of-range value
+/// drives the first refusal in all three without depending on terrain, on
+/// reach, or on what the fixture happens to hold. It is deliberately far
+/// past every fixture's count rather than one past it: a table that grows
+/// must not quietly turn this cause into a *successful* placement, which
+/// would leave the test asserting on an event that never fired.
+const NO_SUCH_ROW: u16 = 9999;
 
 /// Which edges carry which check, and why they differ.
 ///
@@ -818,6 +833,242 @@ fn consume_refused_names_the_player_then_why() {
         not_food.b, no_water.b,
         "two different refusals reported the same reason code — `b` is not \
          carrying the cause, so pinning it against one constant proves nothing"
+    );
+}
+
+// ---------------------------------------------------------------------
+// The refusal family: EV_CRAFT_REFUSED, EV_BUILD_REFUSED,
+// EV_DEPLOY_REFUSED.
+//
+// Three codes, one sentence between them — `a = player id, b = the reason
+// ordinal, c = 0` — and together they are the largest emit population in
+// the lane by a wide margin: 31 sites for `EV_BUILD_REFUSED`, 18 for
+// `EV_DEPLOY_REFUSED`, 6 for `EV_CRAFT_REFUSED`, against 103 pushes in all
+// of `sim-core`. Until this section they had no role check of any kind,
+// which is the wrong way round: a family this repetitive is exactly where
+// a copied-and-edited emit line goes in with its two arguments the wrong
+// way round, and every wall stays green when it does.
+//
+// `EV_CONSUME_REFUSED` above already carries the discipline these three
+// need, because `c` is always zero here and `distinct3` therefore cannot
+// apply: drive **two different causes** and require `b` to move between
+// them. A field pinned against one reason constant would pass just as well
+// if the emit site hard-coded it; two causes prove `b` is the reason
+// channel and `a` is the player in both.
+//
+// What is new here is the second half of that discipline, and this lane
+// needs it in a way the consume lane did not — see `refused`.
+// ---------------------------------------------------------------------
+
+/// One refusal, checked in the seat the sentence gives it.
+///
+/// The `a != b` guard is not decoration and it is not automatic. This
+/// file's fixture builder is player id 4, and `REFUSE_B_REACH` and
+/// `REFUSE_D_REACH` are both the ordinal **4** — so "place it out of
+/// reach", the most obvious refusal in either table to drive, is precisely
+/// the one cause where a swapped `a` and `b` satisfy every assertion below
+/// and the check reads green over the bug it exists to find. Discipline 1
+/// of this file's header, met by choosing a different cause rather than by
+/// weakening the assertion.
+///
+/// The `c == 0` check is the family's third field stated rather than
+/// ignored: `world.rs` gives the refusal codes no role for `c`, and a
+/// future emit site that starts smuggling the address into it should have
+/// to say so here first.
+fn refused(e: SimEvent, who: u32, why: u32, what: &str) {
+    assert_ne!(
+        who, why,
+        "{what}: the reason ordinal and the player id are both {who}, so a \
+         swapped `a` and `b` would satisfy every check below. Drive a \
+         different cause; do not relax the assertion."
+    );
+    assert_eq!(e.a, who, "{what}: `a` is who was refused");
+    assert_eq!(e.b, why, "{what}: `b` is why");
+    assert_eq!(
+        e.c, 0,
+        "{what}: the refusal family states no role for `c` in world.rs, so \
+         it must stay zero — a value here is an undocumented field"
+    );
+}
+
+/// `EV_CRAFT_REFUSED: a = player id, b = craft::REFUSE_*`.
+#[test]
+fn craft_refused_names_the_player_then_why() {
+    let mut w = lone_world();
+    w.craft = CraftContent::probe_fixture();
+    // Both causes want an empty hand, and the join must not be trusted to
+    // have left one: cause two is "you cannot pay the inputs", which a
+    // granted stack would turn into a successful enqueue and a vacuous
+    // `only`.
+    for s in w.players[0].inv.iter_mut() {
+        *s = ItemStack::default();
+    }
+
+    // Cause one: a recipe row the table does not have.
+    w.tick(&[Command::Craft {
+        id: BODY,
+        recipe: NO_SUCH_ROW,
+        count: 1,
+    }]);
+    let bad_row = only(&w, EV_CRAFT_REFUSED);
+    refused(
+        bad_row,
+        BODY,
+        REFUSE_RECIPE,
+        "EV_CRAFT_REFUSED (no such recipe)",
+    );
+
+    // Cause two: a real recipe, and nothing in hand to pay it with. The
+    // fixture's row 0 is station-free and takes three of item 0, so the
+    // chain reaches the input test rather than stopping at a station or a
+    // full queue.
+    w.tick(&[Command::Craft {
+        id: BODY,
+        recipe: 0,
+        count: 1,
+    }]);
+    let broke = only(&w, EV_CRAFT_REFUSED);
+    refused(
+        broke,
+        BODY,
+        REFUSE_INPUTS,
+        "EV_CRAFT_REFUSED (cannot pay the inputs)",
+    );
+
+    assert_ne!(
+        bad_row.b, broke.b,
+        "two different craft refusals reported the same reason code — `b` \
+         is not carrying the cause, so pinning it against one constant \
+         proves nothing"
+    );
+    assert!(
+        w.players[0].jobs.iter().all(|j| j.remaining == 0),
+        "a refused craft queued a job anyway — the event under test is not \
+         announcing a refusal at all"
+    );
+}
+
+/// `EV_BUILD_REFUSED: a = player id, b = build::REFUSE_B_*`.
+///
+/// Neither cause may be the reach test: `REFUSE_B_REACH` is 4 and so is
+/// `BUILDER`. See `refused`.
+#[test]
+fn build_refused_names_the_player_then_why() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+
+    // Cause one: a piece row the table does not have.
+    w.tick(&[Command::Place {
+        id: BUILDER,
+        row: NO_SUCH_ROW,
+        cx,
+        cz,
+        level: GROUND,
+        loc: LOC_PLANE,
+    }]);
+    let bad_row = only(&w, EV_BUILD_REFUSED);
+    refused(
+        bad_row,
+        BUILDER,
+        REFUSE_B_PIECE,
+        "EV_BUILD_REFUSED (no such piece row)",
+    );
+
+    // Cause two: the placement `builder_world` was arranged to make legal
+    // in every other respect — the cell is one `foundation_terrain_ok`
+    // accepted and the body is standing on it — with the payment taken
+    // away. `REFUSE_B_COST` is the last test in the chain, so reaching it
+    // is also a statement that the seven before it passed.
+    for s in w.players[0].inv.iter_mut() {
+        *s = ItemStack::default();
+    }
+    w.tick(&[Command::Place {
+        id: BUILDER,
+        row: PIECE_FOUNDATION,
+        cx,
+        cz,
+        level: GROUND,
+        loc: LOC_PLANE,
+    }]);
+    let broke = only(&w, EV_BUILD_REFUSED);
+    refused(
+        broke,
+        BUILDER,
+        REFUSE_B_COST,
+        "EV_BUILD_REFUSED (cannot pay)",
+    );
+
+    assert_ne!(
+        bad_row.b, broke.b,
+        "two different build refusals reported the same reason code — `b` \
+         is not carrying the cause, so pinning it against one constant \
+         proves nothing"
+    );
+    assert_eq!(
+        w.pieces.len(),
+        0,
+        "a refused placement put a piece in the world — the event under \
+         test is not announcing a refusal at all"
+    );
+}
+
+/// `EV_DEPLOY_REFUSED: a = player id, b = deploy::REFUSE_D_*`.
+///
+/// Neither cause may be the reach test here either: `REFUSE_D_REACH` is
+/// also 4. See `refused`.
+#[test]
+fn deploy_refused_names_the_player_then_why() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+
+    // Cause one: a deployable row the table does not have.
+    w.tick(&[Command::PlaceDeploy {
+        id: BUILDER,
+        row: NO_SUCH_ROW,
+        cx,
+        cz,
+        level: GROUND,
+        loc: LOC_PLANE,
+    }]);
+    let bad_row = only(&w, EV_DEPLOY_REFUSED);
+    refused(
+        bad_row,
+        BUILDER,
+        REFUSE_D_KIND,
+        "EV_DEPLOY_REFUSED (no such deployable row)",
+    );
+
+    // Cause two: a real hearth at an address off the top of the build
+    // stack. A level past `MAX_BUILD_LEVELS` is a client-driven value the
+    // sim must refuse by event rather than by index, which is the half of
+    // wall 4 this lane carries.
+    w.tick(&[Command::PlaceDeploy {
+        id: BUILDER,
+        row: DEPLOY_HEARTH,
+        cx,
+        cz,
+        level: u8::MAX,
+        loc: LOC_PLANE,
+    }]);
+    let no_spot = only(&w, EV_DEPLOY_REFUSED);
+    refused(
+        no_spot,
+        BUILDER,
+        REFUSE_D_SPOT,
+        "EV_DEPLOY_REFUSED (no such address)",
+    );
+
+    assert_ne!(
+        bad_row.b, no_spot.b,
+        "two different deploy refusals reported the same reason code — `b` \
+         is not carrying the cause, so pinning it against one constant \
+         proves nothing"
+    );
+    assert_eq!(
+        w.deploys.len(),
+        0,
+        "a refused deployment put a deployable in the world — the event \
+         under test is not announcing a refusal at all"
     );
 }
 
@@ -1928,61 +2179,212 @@ fn charge_placed_names_the_cell_then_the_address_then_the_fuse() {
     );
 }
 
-/// Coverage, stated rather than implied.
+/// Is `name` read by an `only(&w, …)` call anywhere in this file?
 ///
-/// A gate that checks five of twenty-five codes and says nothing about the
-/// other twenty reads, to the next person, as "the event lane is covered."
-/// It is not. This pins the ledger so the number cannot drift silently and
-/// a new `EV_*` cannot land without someone deciding whether it needs a
-/// role check. Closing the remaining twenty is queued work
-/// (`reference/FINDINGS.md` §1), not a reason to leave the five unchecked.
+/// `only` is this file's universal idiom for "I drove a real cause and
+/// exactly one event of this code landed", so a code that appears in one
+/// is a code that was actually put through the world — which is precisely
+/// the claim the ledger below makes on its behalf. Nothing else in the
+/// file is a reliable witness: a bare mention of `EV_FOO` proves only that
+/// someone imported it.
+///
+/// Matches on the line rather than on a built pattern because wall 3
+/// disallows `String` and `format!` in this crate and it is right to bind
+/// a test too. The trailing `)` is load-bearing: without it `EV_DEPLOY`
+/// would match `only(&w, EV_DEPLOY_PLACED)` and a prefix of any code name
+/// would inherit its neighbour's coverage.
+///
+/// One consequence worth stating, because it is a way to make this gate
+/// lie: writing `only(&w, EV_FOO)` inside a *doc comment* counts. Do not.
+fn read_by_only(src: &str, name: &str) -> bool {
+    for line in src.lines() {
+        let Some((_, rest)) = line.split_once("only(&w, ") else {
+            continue;
+        };
+        if let Some(tail) = rest.strip_prefix(name) {
+            if tail.starts_with(')') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Every `pub const EV_*: u8 = <literal>;` in `world.rs`, name and value.
+///
+/// Parsing a source file in a test is not a habit worth spreading, and it
+/// is right twice here: the fact under assertion is *what the constant
+/// block contains*, and no amount of importing can see a constant the
+/// importer was never told about — nor catch a ledger entry that pairs one
+/// code's name with another code's value, which is the same
+/// right-value-wrong-seat defect this whole file exists for, committed
+/// against the gate instead of against the sim.
+fn declared_event_codes() -> Vec<(&'static str, u8)> {
+    const SRC: &str = include_str!("../src/world.rs");
+
+    // Borrowed out of `SRC`, never built: wall 3 disallows `String` and
+    // `format!` in this crate, and it is right to bind a test too — the
+    // names here are `'static` slices of the source and copying them would
+    // buy nothing but a wall violation.
+    let mut seen: Vec<(&str, u8)> = Vec::new();
+    for line in SRC.lines() {
+        let line = line.trim();
+        if !line.starts_with("pub const EV_") {
+            continue;
+        }
+        let rest = &line["pub const ".len()..];
+        let Some((name, value)) = rest.split_once(": u8 = ") else {
+            continue;
+        };
+        // `EV_MAX` is the bound itself, and it is defined as `EV_RESPAWN`
+        // rather than a digit — it is not one of the codes being bounded.
+        if name == "EV_MAX" {
+            continue;
+        }
+        let value = value.trim_end_matches(';');
+        let code: u8 = value.parse().unwrap_or_else(|_| {
+            panic!(
+                "{name} is declared as `{value}`, which is not a literal \
+                 code — this parser reads the constant block in `world.rs` \
+                 and a non-literal there makes the ledger's range unknowable"
+            )
+        });
+        seen.push((name, code));
+    }
+    seen
+}
+
+/// Coverage, stated rather than implied — and now earned rather than
+/// asserted.
+///
+/// A gate that checks a third of the codes and says nothing about the rest
+/// reads, to the next person, as "the event lane is covered." It is not.
+/// This pins the ledger so the number cannot drift silently and a new
+/// `EV_*` cannot land without someone deciding whether it needs a role
+/// check.
+///
+/// The ledger used to be a bare list of values, and it could lie in two
+/// directions that its own arithmetic could not see. Adding `EV_FOO` to
+/// `COVERED` bought the claim of coverage without a test behind it —
+/// nothing checked that a listed code had ever been driven — and writing a
+/// role check *without* listing it left the gate reporting the lane as
+/// less covered than it was, which is the milder fault but the same
+/// unearned-arithmetic shape. Both are closed here: every code is named as
+/// well as numbered, the name and the number are both checked against
+/// `world.rs`'s own declaration, and each side of the ledger is checked
+/// against whether an `only(&w, …)` call for it actually exists in this
+/// file.
+///
+/// Closing the five that remain is queued work (`NOW.md` §4,
+/// `reference/FINDINGS.md` §1), not a reason to leave the rest unchecked.
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [u8; 21] = [
-        EV_GATHER,
-        EV_SLOT_HARVESTED,
-        EV_HIT,
-        EV_HEALTH,
-        EV_DEATH,
-        EV_BAG_DROPPED,
-        EV_VITALS,
-        EV_CONSUMED,
-        EV_CONSUME_REFUSED,
-        EV_DRANK,
-        EV_PIECE_PLACED,
-        EV_DEPLOY_PLACED,
-        EV_DOOR,
-        EV_STOCK,
-        EV_STRUCT_HIT,
-        EV_PIECE_REMOVED,
-        EV_DEPLOY_REMOVED,
-        EV_MOVED,
-        EV_MOVE_REFUSED,
-        EV_PIECE_REPAIRED,
-        EV_CHARGE_PLACED,
+    const COVERED: [(&str, u8); 24] = [
+        ("EV_GATHER", EV_GATHER),
+        ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
+        ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
+        ("EV_PIECE_PLACED", EV_PIECE_PLACED),
+        ("EV_BUILD_REFUSED", EV_BUILD_REFUSED),
+        ("EV_DEPLOY_PLACED", EV_DEPLOY_PLACED),
+        ("EV_DEPLOY_REFUSED", EV_DEPLOY_REFUSED),
+        ("EV_PIECE_REMOVED", EV_PIECE_REMOVED),
+        ("EV_DEPLOY_REMOVED", EV_DEPLOY_REMOVED),
+        ("EV_STOCK", EV_STOCK),
+        ("EV_DOOR", EV_DOOR),
+        ("EV_HIT", EV_HIT),
+        ("EV_HEALTH", EV_HEALTH),
+        ("EV_DEATH", EV_DEATH),
+        ("EV_BAG_DROPPED", EV_BAG_DROPPED),
+        ("EV_STRUCT_HIT", EV_STRUCT_HIT),
+        ("EV_VITALS", EV_VITALS),
+        ("EV_CONSUMED", EV_CONSUMED),
+        ("EV_CONSUME_REFUSED", EV_CONSUME_REFUSED),
+        ("EV_DRANK", EV_DRANK),
+        ("EV_MOVED", EV_MOVED),
+        ("EV_MOVE_REFUSED", EV_MOVE_REFUSED),
+        ("EV_PIECE_REPAIRED", EV_PIECE_REPAIRED),
+        ("EV_CHARGE_PLACED", EV_CHARGE_PLACED),
     ];
-    /// What is knowingly still byte-golden only. Change this number in the
-    /// same commit that changes `COVERED`, never on its own.
-    const UNCOVERED: usize = 8;
+    /// What is knowingly still byte-golden only. Named, not just counted,
+    /// so the gate can check that none of these quietly grew a check.
+    const NOT_COVERED: [(&str, u8); 5] = [
+        ("EV_SLOT_RESPAWNED", EV_SLOT_RESPAWNED),
+        ("EV_WEAK_MARK", EV_WEAK_MARK),
+        ("EV_CRAFT_DONE", EV_CRAFT_DONE),
+        ("EV_BAG_REMOVED", EV_BAG_REMOVED),
+        ("EV_RESPAWN", EV_RESPAWN),
+    ];
+    /// Change this number in the same commit that changes `NOT_COVERED`,
+    /// never on its own.
+    const UNCOVERED: usize = 5;
 
-    let mut counted = 0usize;
-    for code in 1..=EV_MAX {
-        if !COVERED.contains(&code) {
-            counted += 1;
-        }
-    }
+    const SELF_SRC: &str = include_str!("event_roles.rs");
+
     assert_eq!(
-        counted, UNCOVERED,
-        "the coverage ledger is stale: {counted} of the {EV_MAX} event codes \
-         have no role check, but this test claims {UNCOVERED}. A new EV_* \
-         landed, or one gained a check without the ledger moving."
+        NOT_COVERED.len(),
+        UNCOVERED,
+        "the uncovered ledger lists {} codes but claims {UNCOVERED}",
+        NOT_COVERED.len()
     );
     assert_eq!(
         COVERED.len() + UNCOVERED,
         EV_MAX as usize,
         "the ledger does not add up to the code range"
     );
+
+    // Every code in 1..=EV_MAX is classified exactly once.
+    for code in 1..=EV_MAX {
+        let in_covered = COVERED.iter().filter(|(_, c)| *c == code).count();
+        let in_open = NOT_COVERED.iter().filter(|(_, c)| *c == code).count();
+        assert_eq!(
+            in_covered + in_open,
+            1,
+            "event code {code} is classified {} times by the ledger — a new \
+             EV_* landed unclassified, or one is listed on both sides",
+            in_covered + in_open
+        );
+    }
+
+    // The names and the numbers both come from `world.rs`, so a ledger
+    // entry cannot pair one code's name with another's value.
+    let declared = declared_event_codes();
+    for (name, code) in COVERED.iter().chain(NOT_COVERED.iter()) {
+        let found = declared.iter().find(|(n, _)| n == name);
+        let Some((_, real)) = found else {
+            panic!(
+                "the ledger names {name}, which world.rs does not declare — \
+                 a code was renamed or removed without the ledger moving"
+            )
+        };
+        assert_eq!(
+            real, code,
+            "the ledger pairs {name} with {code}, but world.rs declares it \
+             as {real} — the ledger has the right value in the wrong seat, \
+             which is the defect this whole file exists to catch"
+        );
+    }
+
+    // The claim of coverage is earned by a real `only(&w, …)` call.
+    for (name, _) in COVERED.iter() {
+        assert!(
+            read_by_only(SELF_SRC, name),
+            "the ledger claims {name} is covered, but no `only(&w, {name})` \
+             call exists in this file — nothing ever drove that code through \
+             a world, so the claim is arithmetic and not a check"
+        );
+    }
+
+    // And the admission of no coverage is checked the same way, so a role
+    // check cannot land without the ledger moving with it.
+    for (name, _) in NOT_COVERED.iter() {
+        assert!(
+            !read_by_only(SELF_SRC, name),
+            "{name} is read by an `only(&w, …)` call, so it has a role check \
+             — move it to COVERED and drop UNCOVERED by one in the same \
+             commit"
+        );
+    }
 }
 
 /// The ledger's own range is derived, not asserted.
@@ -2002,36 +2404,9 @@ fn coverage_is_stated_not_implied() {
 /// importer was never told about.
 #[test]
 fn every_event_code_is_in_range() {
-    const SRC: &str = include_str!("../src/world.rs");
-
-    // Borrowed out of `SRC`, never built: wall 3 disallows `String` and
-    // `format!` in this crate, and it is right to bind a test too — the
-    // names here are `'static` slices of the source and copying them would
-    // buy nothing but a wall violation.
-    let mut seen: Vec<(&str, u8)> = Vec::new();
-    for line in SRC.lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix("pub const EV_") else {
-            continue;
-        };
-        let Some((name, value)) = rest.split_once(": u8 = ") else {
-            continue;
-        };
-        // `EV_MAX` is the bound itself, and it is defined as `EV_RESPAWN`
-        // rather than a digit — it is not one of the codes being bounded.
-        if name == "MAX" {
-            continue;
-        }
-        let value = value.trim_end_matches(';');
-        let code: u8 = value.parse().unwrap_or_else(|_| {
-            panic!(
-                "EV_{name} is declared as `{value}`, which is not a literal \
-                 code — this parser reads the constant block in `world.rs` \
-                 and a non-literal there makes the ledger's range unknowable"
-            )
-        });
-        seen.push((name, code));
-    }
+    // Shared with `coverage_is_stated_not_implied`, which needs the same
+    // declarations to check the ledger's names as well as its values.
+    let seen = declared_event_codes();
 
     assert!(
         seen.len() >= 25,
