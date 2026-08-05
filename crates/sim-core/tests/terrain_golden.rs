@@ -20,25 +20,23 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
 ///
-/// Regenerated here from `0xD9E1_A3B9_4C95_6DD6` because worldgen moved
-/// twice, both times at the waystations and both intentionally.
+/// Regenerated here from `0x77E3_89F5_F2FC_E643` because the scatter pass
+/// stopped choosing a biome row and started blending four
+/// (`terrain::scatter_row`, TERRAIN.md §1 stage 9's last open line).
 ///
-/// One: each site now emits a third authored slot, the `WaystationCanopy`,
-/// in a cell that previously carried whatever the biome draw put there. Two —
-/// and this is the larger delta — the site SEARCH got stricter, so some seeds
-/// pick a different candidate off the road ring than they did: a rotation is
-/// now accepted only if the container pair stands AND one of the two gaps in
-/// that pair can hold the canopy clear of the carriageway. A candidate that
-/// cannot house the whole arrangement is not a site, so `pick_minor` walks
-/// past it (`reference/SPAWN.md` §5).
+/// Heights did not move and neither did the ring, the pad, the waystations
+/// or any authored slot — this delta is entirely in the biome draw, and only
+/// where the ground itself is in a transition. `tests/scatter.rs` measures
+/// that reach: **10.2–11.8% of land cells** sit in a band where no single
+/// splat channel owns the cell outright, and those are exactly the cells
+/// whose mix can differ. The other ~89% draw the row they always drew, which
+/// `test_scatter_mix_is_identity_in_the_interior` asserts directly.
 ///
-/// The change this replaces is why: the canopy shipped at the site centre,
-/// which is the coast road's own centre line, and `tests/road.rs`,
-/// `tests/scatter.rs` and `tests/waystation.rs` all read the same two slots
-/// standing on the carriageway. Everything outside the site windows is
-/// bit-identical — heights, the ring, the biome draw and every scattered
-/// slot on the rest of the island are untouched.
-const GOLDEN_TERRAIN_HASH: u64 = 0x77E3_89F5_F2FC_E643;
+/// The previous regeneration, kept because it explains the value above:
+/// worldgen moved twice at the waystations, once for the third authored slot
+/// (`WaystationCanopy`) and once — the larger delta — because the site SEARCH
+/// got stricter, so some seeds pick a different candidate off the road ring.
+const GOLDEN_TERRAIN_HASH: u64 = 0xB48C_A5C2_A979_096A;
 
 #[test]
 fn test_terrain_golden() {

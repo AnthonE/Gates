@@ -494,12 +494,27 @@ half: 3 authored sites on the ring instead of 1, gated by
   the lesser tier will read the same way once the novelty is gone. It wants a
   silhouette, and it must be a *different* one — a second copy of
   `HAVEN_SHELTER` makes the tiers look identical.
-- **The pad carve is still unbuilt** and is the one piece of TERRAIN §7/§8
-  that never got easier: `height` has ~80 call sites in four crates, so it is
-  a cross-lane change, not a detail. Sites are still *found* flat, not made.
+- **The pad carve is still unbuilt**, and it is smaller than this file has
+  been saying. Counted this pass: `height` has **18 production call sites in
+  3 crates** (world 6, movement 4, deploy 2, bridge 2, collide 1, build 1,
+  survival 1, probe 1), not the "~80 in four crates" that stood here — the
+  other 86 are tests and examples. `DECISIONS.md`'s "~50 sites" and its
+  "~1,000 height taps per `haven()`" are both stale too; `haven()` measures
+  **12,463 taps mean** over 16 seeds. Still cross-lane, but re-scope it
+  against 18 before assuming it cannot be a pass. Sites are still *found*
+  flat, not made — and `DECISIONS.md` §open (waystation canopy v0) records
+  that whether a tier should carve at all is **open for the operator**.
 - **Nothing threatens you on the walk between them.** A circulation loop with
   no risk on it is a longer commute. No AI module exists anywhere in
   `crates/sim-core/src/`.
+- ~~Composition steps at a biome edge~~ — **done this pass**
+  (`loop/scatter-splat-mix`): `scatter` blends the four biome rows by the
+  ground's own splat weights instead of picking one, so the props ramp across
+  a boundary the way the material and the clutter under them already did.
+  Worst per-sample jump 4 per-mille against the classifier's 190; reaches
+  10.2–11.8% of land cells; density unmoved. `DECISIONS.md` §open "scatter
+  mix v0" has the measurements and the one operator question (the cliff term
+  puts scree on steep walkable ground — say if props should ignore it).
 ## 4b · The domain gate reads the crate now — three residuals
 
 Landed 2026-08-05 (`loop/domain-gate-whole-crate`), from the
