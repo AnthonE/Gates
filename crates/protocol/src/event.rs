@@ -151,6 +151,10 @@ const SUB_MOVE_REFUSED: u32 = 37;
 /// the client that asked, for exactly as long as the server can still
 /// prove it is in reach.
 const SUB_CONT_SYNC: u32 = 38;
+/// A piece was bought back to full (`EV_PIECE_REPAIRED`, wire v20).
+/// Broadcast, and `SUB_STRUCT_HIT`'s mirror image field for field, so the
+/// two writers of a client's hp mirror read the same.
+const SUB_PIECE_REPAIRED: u32 = 39;
 /// The highest live subtype, named rather than counted — `world.rs`'s
 /// `EV_MAX` discipline applied to the wire half.
 ///
@@ -160,7 +164,7 @@ const SUB_CONT_SYNC: u32 = 38;
 /// probe of a **live** code — it caught it here only because the new
 /// decoder arm rejected its all-zero payload, which is luck, not a gate.
 /// Deriving the probe from this constant is what makes it stay a probe.
-const SUB_MAX: u32 = SUB_CONT_SYNC;
+const SUB_MAX: u32 = SUB_PIECE_REPAIRED;
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
 /// worst shape of wire drift there is, since both ends would agree on
@@ -212,6 +216,16 @@ const _: () = assert!(
 /// Consume-refusal reason width (`survival::REFUSE_C_*`: three codes
 /// today, and zero is reserved as "no reason", which the codec refuses).
 const REFUSE_C_BITS: u32 = 4;
+/// Build-refusal reason width (`build::REFUSE_B_*`: ten codes today, and
+/// zero is a live one — `REFUSE_B_PIECE`).
+///
+/// It was the literal `8` at both ends until v20, which meant the one
+/// refusal enumeration with the most members was the one enumeration the
+/// domain gate could not see: `every_enumeration_width_is_classified`
+/// scrapes `*_BITS` names, and a bare literal has no name to scrape. Same
+/// bytes, same width — what changes is that adding an eleventh reason now
+/// has a gate to answer to.
+const REFUSE_B_BITS: u32 = 8;
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
 const SYNC_COUNT_BITS: u32 = 7;
@@ -422,6 +436,19 @@ pub enum EventMsg {
         loc: u8,
         damage: u16,
         left: u16,
+    },
+    /// The piece at the address was bought back to full (broadcast).
+    /// `StructHit`'s mirror image: `healed` is what the payment restored,
+    /// `hp` where the piece now stands. `row` rides along so a client that
+    /// has not yet walked this address can place it without waiting.
+    PieceRepaired {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        row: u8,
+        healed: u16,
+        hp: u16,
     },
     /// Decay or a raid removed the piece at the address (broadcast;
     /// in-progress piece walks restart server-side).
@@ -882,7 +909,52 @@ pub fn encode_event_piece_sync(
 
 pub fn encode_event_build_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_BUILD_REFUSED)?;
-    w.write(reason as u32, 8)?;
+    w.write(reason as u32, REFUSE_B_BITS)?;
+    Ok(w.finish())
+}
+
+/// A piece bought back to full: the address, how much life the payment
+/// restored, and what it stands at now.
+///
+/// `hp` rides along rather than being implied by "full", because a client
+/// that has not received the piece-defs drip for this row does not know
+/// what full is — the same reason `StructHit` sends `left` instead of a
+/// delta alone. `healed == 0` is refused at both ends: the sim never
+/// announces a repair that bought nothing, and a decoder that accepted one
+/// would let a forged frame zero a client's hp mirror for free.
+// Its mirror `encode_event_struct_hit` carries the same allow for the same
+// reason: an address is four fields before any payload, and bundling them
+// into a struct here would put a second definition of "an address" beside
+// the one `PieceRec` already is.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_event_piece_repaired(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    row: u8,
+    healed: u16,
+    hp: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= MAX_BUILD_COORD
+        || cz as usize >= MAX_BUILD_COORD
+        || level as usize >= MAX_BUILD_LEVELS
+        || loc > LOC_EDGE_N
+        || healed == 0
+        || hp == 0
+        || healed > hp
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_PIECE_REPAIRED)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    w.write(row as u32, PIECE_ROW_BITS)?;
+    w.write(healed as u32, 16)?;
+    w.write(hp as u32, 16)?;
     Ok(w.finish())
 }
 
@@ -1683,8 +1755,33 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
         }
         SUB_BUILD_REFUSED => EventMsg::BuildRefused {
-            reason: r.read(8)? as u8,
+            reason: r.read(REFUSE_B_BITS)? as u8,
         },
+        SUB_PIECE_REPAIRED => {
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            let row = r.read(PIECE_ROW_BITS)? as u8;
+            let healed = r.read(16)? as u16;
+            let hp = r.read(16)? as u16;
+            // The encoder's own refusals, restated: two bits hold four
+            // `loc` values and all four are live, but a zero heal, a zero
+            // ceiling, or a heal past the ceiling are all forgeable and
+            // all would corrupt an hp mirror.
+            if loc > LOC_EDGE_N || healed == 0 || hp == 0 || healed > hp {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::PieceRepaired {
+                cx,
+                cz,
+                level,
+                loc,
+                row,
+                healed,
+                hp,
+            }
+        }
         SUB_PIECE_DEFS => {
             let total = r.read(PIECE_DEFS_TOTAL_BITS)? as usize;
             let first = r.read(PIECE_DEFS_TOTAL_BITS)? as usize;
@@ -3109,6 +3206,18 @@ mod wire_domains {
             live_max: 3,
         },
         Domain {
+            what: "build refusal",
+            sim_site: "build.rs REFUSE_B_*",
+            wire_site: "REFUSE_B_BITS",
+            home: "build.rs",
+            prefix: "pub const REFUSE_B_",
+            ty: ": u32 = ",
+            exempt: &[],
+            min_members: 10,
+            bits: REFUSE_B_BITS,
+            live_max: 9,
+        },
+        Domain {
             what: "container kind",
             sim_site: "inventory.rs CONT_*",
             wire_site: "CONT_KIND_BITS",
@@ -3332,7 +3441,7 @@ mod wire_domains {
     fn the_domain_table_states_its_own_coverage() {
         assert_eq!(
             DOMAINS.len(),
-            10,
+            11,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \

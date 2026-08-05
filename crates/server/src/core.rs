@@ -15,11 +15,12 @@ use protocol::{
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
     encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
     encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_respawn,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
-    encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
-    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
+    encode_event_removed, encode_event_respawn, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
+    ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder,
+    SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
@@ -35,8 +36,9 @@ use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
     EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED,
     EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT,
-    EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_RESPAWN, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESPAWN,
+    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK,
+    STRUCT_DEPLOY_BIT,
 };
 
 /// Unpack `sim_core::inventory::addr` — from kind, from slot, to kind, to
@@ -312,6 +314,13 @@ impl ShardCore {
                         level,
                         loc,
                         material,
+                    },
+                    ActionMsg::Repair { cx, cz, level, loc } => Command::Repair {
+                        id: c.id,
+                        cx,
+                        cz,
+                        level,
+                        loc,
                     },
                     ActionMsg::Loot => Command::Loot { id: c.id },
                     ActionMsg::Consume { slot } => Command::Consume { id: c.id, slot },
@@ -902,6 +911,42 @@ impl ShardCore {
                         row,
                         damage,
                         left,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_PIECE_REPAIRED => {
+                    // The mirror of the arm above, unpacked with the same
+                    // shifts because the sim packs it the same way, and
+                    // broadcast for the same reason: a wall coming back up
+                    // is news to the person outside it, not only to the
+                    // person who paid. No sync walk moves — the address
+                    // held this row before and holds it after.
+                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let (level, loc, row) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8, ev.b as u8);
+                    let (healed, hp) = ((ev.c >> 16) as u16, ev.c as u16);
+                    match encode_event_piece_repaired(
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        row,
+                        healed,
+                        hp,
                         &mut self.ev_buf,
                     ) {
                         Ok(len) => {

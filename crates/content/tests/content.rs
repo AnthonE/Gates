@@ -122,6 +122,44 @@ fn hash_moves_with_values() {
         build(&srcs).unwrap().hash(),
         "the barrel's hits-to-open must move the content hash"
     );
+
+    // The repair price. It reaches the sim through `bake_building` into
+    // `BuildContent::repair_pct`, so two shards disagreeing about it play
+    // a materially different raid — one where a wall costs its own worth
+    // to mend and one where it costs a fraction. A replay handed a WAL
+    // header that matched across that difference would resim a base back
+    // to full on materials the recorded session never had.
+    let mut srcs = sources();
+    let b = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    b.1 = b.1.replace("repair_cost_pct = 100", "repair_cost_pct = 60");
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the repair price must move the content hash"
+    );
+}
+
+/// The repair price's two live edges, refused at boot rather than played.
+///
+/// Both ends are a defect and neither is a taste. At `0` a wall heals for
+/// nothing and no raid on the shard can ever land; over `100` a mend costs
+/// more than the damage destroyed, which is a rebuild with extra steps and
+/// makes the verb dead weight. `100` itself is the ceiling and must stay
+/// legal — it is the shipped default (`DECISIONS.md` §open, repair v0).
+#[test]
+fn repair_price_bands_refused() {
+    for bad in ["0", "101", "1000"] {
+        refuses(
+            "balance.toml",
+            "repair_cost_pct = 100",
+            &format!("repair_cost_pct = {bad}"),
+            "repair_cost_pct",
+        );
+    }
+    let mut srcs = sources();
+    let b = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    b.1 = b.1.replace("repair_cost_pct = 100", "repair_cost_pct = 1");
+    build(&srcs).expect("1% is legal — cheap is the operator's call to make");
 }
 
 #[test]

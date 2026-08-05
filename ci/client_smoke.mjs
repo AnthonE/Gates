@@ -183,7 +183,7 @@ for (let i = 0; i < slotCount; i++) {
 // one gate that notices a version move into a gate that cannot.
 // 19: the container view (`event.rs` `SUB_CONT_SYNC`, `lib.rs`
 // `ACT_CONTAINER`).
-check(ex.client_proto_ver() === 19, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 20, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
