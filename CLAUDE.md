@@ -73,10 +73,11 @@ that disagrees with a passing gate is wrong — fix the doc.
    `content/*.toml` only, validated at boot, content hash pinned into the
    WAL header (a replay replays the content it was played under). →
    `test_content`.
-8. **Money is appearance-only from the house.** The never-table
-   (`DESIGN.md` §3.3) is a wall, not a knob. Economy stages (A1/A2/A3)
-   arm only by operator act. Tickers are bare: SCRY, OBOL, MYRRH — never
-   a `$` prefix.
+8. **The house never sells power.** It sells appearance and the game
+   itself; the never-table (`DESIGN.md` §3.3) is a wall, not a knob, and
+   a uniform entry price is not on it — a *better door than the next
+   player's* still is. Economy stages (A1/A2/A3) arm only by operator
+   act. Tickers are bare: SCRY, OBOL, MYRRH — never a `$` prefix.
 
 ## Traps already paid for (learned from research or scry production —
 do not rediscover)
@@ -108,6 +109,18 @@ do not rediscover)
   "untextured" was really diffuse contrast crushed by an earlier fix for
   "too bright", and the correct change was the opposite of the feedback's
   direction. Diagnose the mechanism before acting on a ranked gap.
+- **A pixel statistic cannot see whether the frame is a picture of
+  anything, and ours proved it.** On 2026-08-05 `ci/vantages.mjs` passed
+  all 36 checks on a beige smear with no sky, no horizon and no object in
+  it — scoring the *highest* detail of four vantages (14.28 luma/px). Every
+  assertion in that gate is contrast, chroma or luma neutrality, and a
+  featureless wash satisfies all three. Two consequences, both load-bearing:
+  a visual gate needs a structural assertion (sky above horizon, N distinct
+  objects framed) **before** any statistic is read; and a ranked visual gap
+  is not evidence about shading until someone has looked at the frame. The
+  same day's captures showed the real gap was **content density** — grass,
+  understory, branches, props — against which no amount of surface field
+  scores a point. Look at the picture before tuning the number.
 - **A byte-golden is blind to what a field means.** Positional payloads
   are where the reference ecosystem actually bled: 49 of Oxide.Rust's
   commits touch a hook's arguments and ~27 correct a payload that had
@@ -226,7 +239,13 @@ the suite is correct and the box is short a protocol family. Same class, same
 check: `wasm32-unknown-unknown` is not always installed, and the wasm gates
 fail with `can't find crate for core` until `rustup target add
 wasm32-unknown-unknown` — install it rather than skipping the gate, because a
-wall that cannot run is not a wall. Neither of these repeals the rule above:
+wall that cannot run is not a wall. Third of the same kind: a box whose
+Playwright build does not match the pinned version fails both renderer gates at
+`chromium failed to launch`, and the fix is the override both renderer gates
+already carry — **`VANTAGE_CHROME`** (read by `vantages.mjs` *and*
+`browser_smoke.mjs`) pointed at the installed binary, e.g.
+`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`; never
+`npx playwright install` into a managed image. Neither of these repeals the rule above:
 they are missing capabilities, which are diagnosable and permanent, not timing,
 which is neither.
 

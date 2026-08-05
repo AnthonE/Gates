@@ -89,9 +89,15 @@ replay — the deterministic replay is the dupe investigation tool.
   longer blocks anything public.
 - **Landing page**: one static page on the game domain — what it is, the
   never-table (what money can't buy, verbatim from DESIGN §3.3), wipe
-  clock, "play" button, browser requirements line (iOS < 26.4 honestly
-  excluded). A card on scry's build page links here at A3, not before
-  **(operator)**.
+  clock, wipe/uptime numbers, and **two** buttons rather than one
+  (`DECISIONS.md` 2026-08-05): *buy* (the native client, the official
+  armed shards) and *try it in the browser* (the demo, unarmed shards,
+  browser requirements line — iOS < 26.4 honestly excluded). Price and
+  what the purchase gates are §open, so the page cannot be finished until
+  they are spoken. A card on scry's build page links here at A3, not
+  before **(operator)**.
+- **Alpha predates the store**: the A1 cohort below plays free — there is
+  nothing armed to gate and no counter open yet (`DECISIONS.md` §open).
 - **Playtest cohort**: the SCRY holder community is a real, waiting
   audience — that's the documented state of the town — so A1's 10–20
   testers come from there via the operator's channels when he chooses.
