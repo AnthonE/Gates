@@ -6,6 +6,68 @@
 const TWO_PI = Math.PI * 2;
 const PITCH_LIMIT = Math.PI / 2 - 0.02;
 
+/**
+ * How many bearings the SIM can actually face: `yaw_lut.rs` is 256 entries and
+ * `yaw_dir` indexes it `yaw >> 8`, so the top eight bits of the wire yaw are
+ * the whole of the direction. The low eight are carried and never read.
+ */
+export const YAW_BEARINGS = 256;
+
+/**
+ * The 256 bearings, as f32, interleaved `[dx, dz, dx, dz, …]`.
+ *
+ * This is `crates/sim-core/src/yaw_lut.rs`'s `YAW_LUT_BITS` re-derived rather
+ * than re-typed, and it is bit-identical to it: `ci/ui_smoke.mjs` reads all 256
+ * pairs out of that file and compares them to this array as f32 bit patterns,
+ * with no tolerance. That holds because the Rust table is `ci/gen_yaw_lut.py`'s
+ * `sin`/`cos` of the same angles rounded to f32, and `Float32Array` performs the
+ * identical rounding — measured over all 512 values, worst difference 0 ulp.
+ *
+ * `sim-core` may not call trig at runtime (CLAUDE.md wall 1) and so ships the
+ * table as bits; this client has no such wall, so it computes the same numbers
+ * at import. Built once — a `Float32Array` at module scope, never in the RAF
+ * loop — because the client is a hot path too.
+ */
+const YAW_DIR = new Float32Array(YAW_BEARINGS * 2);
+for (let i = 0; i < YAW_BEARINGS; i++) {
+  const th = i * (TWO_PI / YAW_BEARINGS);
+  // Index 0 faces +Z and increasing index rotates toward +X — the convention
+  // this file's header states, and the one `yaw_lut.rs` states in its own.
+  YAW_DIR[i * 2] = Math.sin(th);
+  YAW_DIR[i * 2 + 1] = Math.cos(th);
+}
+
+/**
+ * The look direction the SIM will use for a wire yaw — `yaw_lut::yaw_dir`, in
+ * JS, on the same 256-bearing grid.
+ *
+ * Why this exists at all: CLAUDE.md's "quantize both sides or prediction drifts
+ * by rounding — the server sims on the values it transmits." A client that
+ * judges an aim cone on its own free-running `this.yaw` is testing a bearing
+ * the arm will never swing on. The bearings are 360/256 = 1.40625 deg apart, so
+ * the free-running value sits up to HALF that — 0.703 deg — off the one
+ * `gather::swing` runs its 30 deg cone with, and a target inside the cone on one
+ * side of that seam is outside it on the other. That is a prompt naming a tree
+ * the swing misses, and nothing on the wire can see the disagreement: the client
+ * sends a swing as a button bit and the sim picks the node alone.
+ *
+ * What it does NOT close, said plainly: the prompt is recomputed off the HUD's
+ * slow timer and the swing lands on whatever yaw the next input frame carries,
+ * so the two can still differ because TIME passed. This closes the quantization
+ * seam, not the temporal one.
+ *
+ * @param yawU16 the wire yaw, 0..65535 — `yawU16()` below, or a value read back
+ *               off the wire; only bits 8..15 are read, exactly as the sim does.
+ * @param out    `{fx, fz}`, mutated in place and returned. No allocation: the
+ *               callers reach this from the HUD timer and the frame path.
+ */
+export function yawDir(yawU16, out) {
+  const i = (yawU16 >>> 8) & (YAW_BEARINGS - 1);
+  out.fx = YAW_DIR[i * 2];
+  out.fz = YAW_DIR[i * 2 + 1];
+  return out;
+}
+
 export class InputTracker {
   constructor(canvas) {
     this.yaw = 0; // radians, free-running
@@ -101,6 +163,18 @@ export class InputTracker {
     let t = this.yaw / TWO_PI;
     t -= Math.floor(t);
     return Math.round(t * 65536) & 0xffff;
+  }
+
+  /**
+   * The look direction to resolve a pick with — this tracker's own yaw, put
+   * through the wire quantum first.
+   *
+   * Every aim resolver goes through here rather than through `Math.sin(yaw)`,
+   * so the cone a prompt is computed with is the cone the arm swings. See
+   * `yawDir` above for the seam and for the half of it this does not close.
+   */
+  aimDir(out) {
+    return yawDir(this.yawU16(), out);
   }
 
   pitchU8() {
