@@ -23,14 +23,21 @@
 import { boxKey } from "./invmove.js";
 
 /**
- * The deployable archetypes this resolver can offer, mirrored from
+ * The deployable archetypes the client names, mirrored from
  * `crates/sim-core/src/deploy.rs`. They arrive on the wire as
- * `deployDefs[row * 4]` and until now `main.js` restated all three as bare
+ * `deployDefs[row * 4]` and `main.js` used to restate three of them as bare
  * literals at four scan sites (`1` for a hearth, `ARCH_BOX = 2`, `6` for a
- * door). `ci/ui_smoke.mjs` §Q reads these three back out of `deploy.rs`, so an
- * archetype renumbered on the Rust side lands red on the commit that renumbers
- * it rather than as E silently opening the wrong kind of thing.
+ * door). `ci/ui_smoke.mjs` §Q reads every one of them back out of `deploy.rs`,
+ * so an archetype renumbered on the Rust side lands red on the commit that
+ * renumbers it rather than as E silently opening the wrong kind of thing.
+ *
+ * This is the ONE mirror site, which is why `ARCH_BAG` lives here even though
+ * E does not offer it: a deployed sleeping bag is not an E target (`VERB_BAG`
+ * below is the DEATH backpack, a different thing with the same word in it),
+ * but `map.js` marks one on the map, and a second copy of the number in that
+ * file is a second thing to renumber and one gate reading only the first.
  */
+export const ARCH_BAG = 0;
 export const ARCH_HEARTH = 1;
 export const ARCH_BOX = 2;
 export const ARCH_DOOR = 6;

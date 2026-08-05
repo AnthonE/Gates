@@ -15,6 +15,40 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0c5 · GAP PASS (ui lane): the map draws the trip's other end *(done this pass)*
+
+From `findings/pass-20260805-111501-04-judge.md` ranked gap 1 — "the destinations
+pay nothing, so there is still no reason to leave your base", ranked "the
+highest-leverage gap in the project". Its named mechanism is `crates/` work (see
+0c6 below); this is the other half of the same sentence and it is entirely
+client-side. Leaving a base is a ROUND TRIP, and the map drew the island, a grid
+and one triangle — no bed, no hearth, no dropped bag, while `mapstylized.jpg` is
+made almost entirely of markers.
+
+Landed: `map.js` gains `resolveMarks` — three kinds (bed / hearth / backpack)
+off data the client already holds (deploy records + standing bags), through the
+SAME `worldToMap` the player's triangle uses. Bounded at `MAP_MARKS_MAX` with
+the refused count kept, not silent (`DECISIONS.md` §open, map marker cap v0).
+`ui_smoke` §Z: 1684 -> 1911 checks, and its load-bearing check is an identity
+rather than a formula — a marker on the player's own square must land on the
+player's own pixel, in node and again in the browser off the parked array.
+`ui_mutants.sh` M49-M58, including a second projection carrying its own
+north-up flip and the bed/hearth transposition verbatim.
+
+Not done, and it is why 0c6 exists: the haven pad and the waystations are NOT
+marked — the client cannot know where they are. Unverified: `browser_smoke` is
+off this run (`GATES_TIER=fast`), so main.js's wiring is held by source scan
+only — the same bound every main.js check in `ui_smoke` already has.
+
+## 0c6 · systems lane request: bridge `terrain::haven(seed)`
+
+One export. `terrain::haven(seed)` already returns the pad and the waystation
+array in one struct (`terrain.rs:799`); nothing in `client-wasm/src/bridge.rs`
+exposes it, so a client learns a destination exists only by standing in its
+chunk. `map.js`'s `resolveMarks` takes world positions and is already gated, so
+this is a caller change on the ui side and not a rewrite. Ranked gap 1 of
+`pass-20260805-111501-04` is the reason; the container verb is the other half.
+
 ## 0c4 · GAP PASS (ui lane): the refusal walk now reads position, not just length *(done this pass)*
 
 From `findings/pass-20260805-111501-02-judge.md` ranked fix 2 (and -01's fix 3,
