@@ -91,18 +91,21 @@ pub struct MeleeDef {
 /// sentinel `MeleeDef::damage` uses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ThrowDef {
-    /// Damage the blast takes off a *player* standing in it at the
-    /// epicentre, falling off to zero at `blast_cm`. The same `damage`
-    /// column the melee rows read, which the bake discarded for
-    /// throwables until the blast had anyone to hurt. Zero is a legal
-    /// row and means a charge that breaks walls and not people — the
-    /// counted fixtures below rely on it.
+    /// Damage the blast is intended to take off a *player* standing in it
+    /// at the epicentre. The same `damage` column the melee rows read,
+    /// which the bake discarded for throwables until the blast had anyone
+    /// to hurt. Zero is a legal row and means a charge that breaks walls
+    /// and not people — the counted fixtures below rely on it.
+    ///
+    /// **Carried, not applied**: no sim code reads it, so a charge hurts
+    /// nobody today.
     pub damage: u16,
     /// Damage the blast takes off the piece or deployable it was planted
     /// on — the same `structure` column the melee rows read, and the
     /// number `balance.toml`'s raid ratio divides wall hp by. It arrives
-    /// whole only at the planted address; a neighbour inside `blast_cm`
-    /// takes the same linear falloff a player does.
+    /// whole at the planted address, and today that is the ONLY address it
+    /// reaches: no neighbour takes anything, because nothing applies a
+    /// falloff yet.
     pub structure: u16,
     /// Ticks between planting and the blast, baked from `fuse_s` against
     /// `TICK_HZ` so the sim never divides a content number itself. `u16`
@@ -113,10 +116,17 @@ pub struct ThrowDef {
     /// How far from the anchor a charge may be planted — `range_m × 100`,
     /// `MeleeDef::reach_cm`'s treatment of the same column.
     pub reach_cm: u16,
-    /// Blast radius, `blast_m × 100`. Both damage columns fall off
-    /// linearly to zero here, so it is also the divisor in
-    /// `charge::falloff` — which is why `validate` and the bake both
-    /// refuse a zero rather than the sim guarding one every tick.
+    /// Blast radius, `blast_m × 100`.
+    ///
+    /// **Nothing reads this.** `charge.rs` has `place` and `tick_fuses`
+    /// and no falloff, so the radius is carried from content to the sim
+    /// and stops. It is landed ahead of its consumer deliberately: the
+    /// content boundary (schema · validate · canon · bake) is the half
+    /// that has gates, and the arithmetic is the half that does not exist.
+    /// When a falloff lands, both damage columns are meant to fall off
+    /// linearly to zero here and this becomes its divisor — which is why
+    /// `validate` and the bake already refuse a zero rather than leaving
+    /// the sim to guard one every tick.
     pub blast_cm: u16,
 }
 
@@ -273,10 +283,11 @@ impl CombatContent {
             return None;
         }
         let d = self.throw[held as usize];
-        // `blast_cm` joins the liveness test because it is a divisor, not
-        // because a zero radius would be a strange charge: an inert row
-        // that reached `falloff` would divide by zero, and wall 1's float
-        // rules have no NaN to fall back on.
+        // `blast_cm` joins the liveness test because it is a divisor-to-be,
+        // not because a zero radius would be a strange charge: an inert row
+        // reaching a future falloff would divide by zero, and wall 1's
+        // float rules have no NaN to fall back on. Asserted here now so the
+        // consumer inherits the invariant instead of having to add it.
         (d.structure > 0 && d.fuse_ticks > 0 && d.blast_cm > 0).then_some(d)
     }
 }

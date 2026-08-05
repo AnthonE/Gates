@@ -83,16 +83,18 @@ range_m = 10
 # breaking, and the defender gets the same seconds you do.
 # Proposed default, DECISIONS.md §open ("satchel fuse v0").
 fuse_s = 10
-# Blast radius in metres — one build cell, so the hole a charge clears is
-# the cell it was planted on: the wall you stuck it to, the floor under
-# that wall, and whatever shares the cell's corner. Both damage columns
-# fall off linearly to zero at this distance, and at the planted address
-# the distance is zero, so `structure` still arrives whole there and
-# balance.rs anchor 1 still divides wall hp by exactly this row's 500.
-# `damage` above stops being a discarded column at the same time: it is
-# what the blast takes off a player standing in it, on the same curve, so
-# 500 is lethal inside 2.4 m against a 100 hp player and survivable at the
-# rim. You are standing at the wall you are breaking — the fuse is the
-# raider's cost, and this is what it buys the defender.
+# Blast radius in metres — one build cell, so the hole a charge is INTENDED
+# to clear is the cell it was planted on: the wall you stuck it to, the
+# floor under that wall, and whatever shares the cell's corner.
+#
+# NOTHING READS THIS YET. The column is baked, validated and hashed, and no
+# sim code consumes the result: `charge.rs` has `place` and `tick_fuses`
+# and no falloff. So a charge today still damages the one address it was
+# planted on, exactly as `satchel fuse v0` says it does, and `balance.rs`
+# anchor 1 still divides wall hp by this row's 500 undisturbed. The
+# intended curve — both damage columns falling linearly to zero at this
+# distance, `structure` whole at the planted address because the distance
+# there is zero, and `damage` becoming what the blast takes off a player
+# standing in it — is the NEXT slice's, not this one's.
 # Proposed default, DECISIONS.md §open ("satchel blast v0").
 blast_m = 3

@@ -504,10 +504,10 @@ impl Content {
                 }
                 // Metres → cm, the reach column's treatment. Zero is
                 // refused here as well as in `validate` because this is
-                // the number `charge::falloff` divides by, and a bake that
-                // let a zero through would put the division one call away
-                // from a NaN the determinism gates would then have to
-                // catch for it.
+                // the number a falloff will divide by once one exists, and
+                // a bake that let a zero through would put that division
+                // one call away from a NaN the determinism gates would
+                // then have to catch for it.
                 let blast_cm = (w.blast_m.unwrap_or(0))
                     .checked_mul(100)
                     .and_then(|cm| u16::try_from(cm).ok())

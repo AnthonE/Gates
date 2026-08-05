@@ -178,13 +178,15 @@ pub struct Weapon {
     /// content number reaches the sim.
     pub fuse_s: Option<u32>,
     /// Blast radius in metres — required on `throwable`, refused on every
-    /// other kind, `fuse_s`'s treatment for `fuse_s`'s reason. It is the
-    /// one number that makes a breach a *hole* rather than a wall taken
-    /// down one address at a time, and it scales both damage columns: the
+    /// other kind, `fuse_s`'s treatment for `fuse_s`'s reason. Baked to cm
+    /// like `range_m`, so no float from a content file reaches the sim.
+    ///
+    /// **No sim code reads the baked value yet.** It is intended to be the
+    /// number that makes a breach a *hole* rather than a wall taken down
+    /// one address at a time, scaling both damage columns — the
     /// `structure` a neighbouring piece takes and the `damage` a player
-    /// standing in it takes both fall off linearly to zero at this
-    /// distance. Baked to cm like `range_m`, so no float from a content
-    /// file reaches the sim.
+    /// standing in it takes, both falling off linearly to zero at this
+    /// distance. That consumer does not exist; see `combat::ThrowDef`.
     pub blast_m: Option<u32>,
 }
 

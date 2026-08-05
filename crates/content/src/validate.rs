@@ -283,9 +283,10 @@ pub fn structural(c: &Content) -> Result<(), String> {
                         w.id
                     ));
                 }
-                // A zero radius is not "no splash", it is a division the
-                // falloff cannot do (`charge::falloff` divides by it), so
-                // it is refused here rather than guarded at every use.
+                // A zero radius is not "no splash", it is a division no
+                // falloff can do — it will be the divisor once a consumer
+                // exists — so it is refused at the door rather than
+                // guarded at every future use.
                 if w.blast_m.unwrap_or(0) == 0 {
                     return Err(format!(
                         "weapon `{}`: throwables need a nonzero blast_m",
