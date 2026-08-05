@@ -5075,7 +5075,16 @@ check(
 // checks green, and the arrow always claims north, one line below where M11
 // was closed. Closing the INSTANCE is not closing the class. So the triangle
 // `drawMap` handed to `ctx` is now parked in `hud.mapTri`, and this reads it.
-const markerPx = Number(/export const MAP_MARKER_PX = ([\d.]+);/.exec(hudSrc)?.[1]);
+// Built from a name variable rather than written as a regex LITERAL, and that
+// is load-bearing: `ci/knob_registry.mjs` scans every `.mjs` in the repo with
+// `\bconst\s+<NAME>\s*=\s*([^;]+);`, so a literal `/export const MAP_MARKER_PX
+// = ([\d.]+);/` here reads to that gate as a second declaration of the knob —
+// initialized to `([\d.]+)`, which it correctly refuses to parse as a number.
+// Do not "simplify" this back into a literal; it reddens the knob registry.
+const MARKER_KNOB = "MAP_MARKER_PX";
+const markerPx = Number(
+  new RegExp(`export const ${MARKER_KNOB} = ([\\d.]+);`).exec(hudSrc)?.[1],
+);
 check(
   Number.isFinite(markerPx) && markerPx > 0,
   `could not read MAP_MARKER_PX out of hud.js (got ${markerPx}) — every triangle check below would compare` +
@@ -5384,7 +5393,12 @@ console.log(
     "north paints to the TOP row, four splat channels each to their own colour, sea overrides the law and " +
     "deepens, flat ground exactly the palette, panel closed at load, toggle drives display, #mapref from " +
     `gridLabel, every verb key eaten and M/Escape not, ${mapDom.drawPx} px an integer multiple of MAP_N, ` +
-    "island painted once",
+    "island painted once, the sampler asked about x0+i*step / z0+j*step at every pixel with its own height " +
+    "and moisture, the marker's three drawn vertices track the heading and turn · " +
+    "build prompt: shape/material labels walked against build.rs, the stride-8 def row decoded as " +
+    "arithmetic (item/quantity pair at 4+k*2, first unmet ingredient, exactly-enough is enough), " +
+    "deployables from b+3 of a stride-4 row, [RMB] text with and without a shortfall, and centrePrompt " +
+    "swept over all eight combinations (build > E > swing) with main.js pinned to route through it",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
