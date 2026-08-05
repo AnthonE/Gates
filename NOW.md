@@ -4,6 +4,49 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+0. **A box can be opened — done this pass (ui lane), kept for what it leaves.**
+
+   *(2026-08-05. Report 03's ranked gap 2, "you can deploy a box and never
+   open it — there is no storage, only looting.")*
+
+   Its stated blocker was already gone: `ARCH_BOX`'s slots and container
+   address (cross-lane request 3 below) landed in the systems lane's
+   `4d7a926` on 2026-08-04, and the ui comment saying they were awaited was
+   written a day AFTER them. `deployRecs` has held `cx`/`cz`/`level` as
+   integers all along. So the whole job was the one thing the request
+   sequenced last — a gate on the packing — plus `tryOpenBox` on E.
+
+   `invmove.boxKey` mirrors `deploy.rs:316`, layout stated as data
+   (`BOX_KEY_LAYOUT`) and read back out of `deploy.rs` by `ui_smoke` §P.
+   Why it needed a gate at all: `box_key` packs `cx<<16 | cz<<4`, and every
+   other packing this client touches is `cx<<16 | cz`. The habitual form is
+   wrong here by twelve bits — not a crash, a handle naming a real box in
+   another cell — and no wall in the repo can see it. 313 checks, 12 mutants
+   red, including the three that only a structural check catches: the
+   packing restated at the call site with the value CORRECT, a fourth term
+   added in `deploy.rs` with the value IDENTICAL, and the build grid
+   outgrowing the packing with both sides agreeing.
+
+   Three things it leaves:
+   - **A box at grid origin (0,0,0) can be opened and not moved into.**
+     `box_key(0,0,0) == 0` and `moveArgs` refuses a ground handle of 0,
+     correctly — `deploy.rs:424`'s `box_index` has no zero guard, so 0 is a
+     real address. Request 4 below. Biasing it client-side was refused: a
+     JS-only fudge inside an address Rust decodes is worse than the corner.
+   - **Cross-container drag into a box still waits on request 2** (the TO
+     kind in `client_move_readout`). E opens the panel; the drag between it
+     and the inventory is what that request unblocks.
+   - **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are
+     UNRUN (operator's `GATES_TIER=fast`) and this pass edits `main.js`.
+
+> **Cross-lane request → systems (ui lane, 2026-08-05). Request 4: give
+> `deploy.rs:424`'s `box_index` a zero guard, or bias `box_key` so no valid
+> address packs to 0.** `backpack.rs:333` already guards zero and
+> `box_index` does not, so the two disagree and neither side can rely on
+> either. Until then a box at cell (0,0) level 0 is openable but not a legal
+> move destination, because `moveArgs` must refuse handle 0 to avoid sending
+> "no container known" as a real address.
+
 0. **The outbound move marshalling is gated — done this pass (ui lane), kept
    for what it leaves open.**
 
@@ -60,11 +103,7 @@ Done items are deleted, not checked — history lives in git and
      keeps that honest — the moment the open container changes, a move with an
      end in it is given up rather than matched against whatever is open now.
      Not a hole; a narrower match than it looks, and gated as such.
-   - **Only BAGS can be opened.** A box is addressed by a packed
-     `box_key(cx, cz, level)` this side would have to mirror, and mirroring a
-     bit layout with no gate on it is the positional-payload trap itself.
-     Needs `ARCH_BOX`'s slots + container address (request 3 below) and then a
-     gate on the packing, in that order.
+   - ~~**Only BAGS can be opened.**~~ Closed 2026-08-05 — item 0 above.
    - **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are
      UNRUN (operator's `GATES_TIER=fast`) and this pass edits `main.js`,
      `wasm.js` and `index.html`.
@@ -139,6 +178,10 @@ What remains, in the order it is worth doing:
   would move a measured prize ratio; it needs its own pass.
 - The pad is still not carved (3.76 m of relief under a flat-based building —
   the plinth buries 1.4 m of that, which is a cover, not a fix).
+> 3. ~~**`ARCH_BOX` needs slots and a container address**~~ — **answered in
+>    `4d7a926`, 2026-08-04**, before this request was read. `BOX_SLOTS` is on
+>    the wire and `box_key` is the address; the ui half landed 2026-08-05
+>    (item 0 above). (2) is the one still open.
 
 > **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the
 > world lane's to make.** `ci/gates.sh` went RED then GREEN on an unchanged
