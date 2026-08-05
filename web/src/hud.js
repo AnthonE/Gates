@@ -74,7 +74,7 @@ const COMPASS_DEG_PER_U16 = 360 / 65536;
  * `bearing / COMPASS_CARD_DEG`, so the table doubles as the check for "is
  * this a cardinal" — a lookup that misses returns undefined and the tick
  * falls back to its number. */
-const COMPASS_CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+export const COMPASS_CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
 /**
  * The letters sit every 45 degrees and the numbers every 10, and 45 is not
@@ -83,8 +83,16 @@ const COMPASS_CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
  * exactly that: `… 30 40 NE 50 60 …`, with NE between two numbers rather
  * than replacing one. A single stride of 10 from the band's left edge
  * would not even land on north.
+ *
+ * A literal 45 and not `360 / COMPASS_CARDINALS.length`, which is what it
+ * means: `ci/knob_registry.mjs` pins every registered knob by reading its
+ * initializer out of the source, and a computed one is a knob it cannot
+ * check against `DECISIONS.md`. The relationship is not lost by writing
+ * the number down — `ci/ui_smoke.mjs` §S asserts
+ * `COMPASS_CARD_DEG * COMPASS_CARDINALS.length === 360`, so the two still
+ * cannot disagree, and now BOTH gates can see it.
  */
-export const COMPASS_CARD_DEG = 360 / COMPASS_CARDINALS.length;
+export const COMPASS_CARD_DEG = 45;
 
 /** The inventory screen's LAYOUT split, ALPHA.md §1's "6 hotbar slots, 24
  * inventory". The total they must sum to is `INV_SLOTS`, and that one is

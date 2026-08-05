@@ -4094,9 +4094,11 @@ const compassConsts = await page.evaluate(async () => {
     step: m.COMPASS_STEP_DEG,
     span: m.COMPASS_SPAN_DEG,
     card: m.COMPASS_CARD_DEG,
+    cardinals: m.COMPASS_CARDINALS,
   };
 });
 for (const [k, v] of Object.entries(compassConsts)) {
+  if (k === "cardinals") continue;
   check(
     typeof v === "number" && Number.isFinite(v) && v > 0,
     `hud.js no longer exports COMPASS_* constant '${k}' as a positive number (got ${v}) —` +
@@ -4104,6 +4106,26 @@ for (const [k, v] of Object.entries(compassConsts)) {
       " every comparison below compare NaN and pass nothing",
   );
 }
+// `COMPASS_CARD_DEG` is written as a literal 45 so `ci/knob_registry.mjs` can
+// read it off the source and pin it to DECISIONS.md. This is the derivation
+// that literal stands for, kept as an assertion so the number and the table
+// still cannot drift apart — adding a ninth cardinal without changing the
+// stride, or vice versa, is red here.
+check(
+  Array.isArray(compassConsts.cardinals) && compassConsts.cardinals.length === 8,
+  `hud.js exports ${compassConsts.cardinals?.length} cardinals, expected 8 (N NE E SE S SW W NW)`,
+);
+check(
+  compassConsts.card * compassConsts.cardinals.length === 360,
+  `COMPASS_CARD_DEG (${compassConsts.card}) * ${compassConsts.cardinals.length} cardinals =` +
+    ` ${compassConsts.card * compassConsts.cardinals.length}, expected 360 — the stride and the` +
+    " table disagree, so some cardinal is drawn at a bearing that is not its own",
+);
+check(
+  compassConsts.cardinals[0] === "N" && compassConsts.cardinals[2] === "E",
+  `the cardinal table starts ${JSON.stringify(compassConsts.cardinals.slice(0, 3))} — index is` +
+    " bearing/45, so index 0 must be N and index 2 must be E for +Z north / +X east to hold",
+);
 check(
   compassConsts.span === 360 + compassConsts.fov,
   `COMPASS_SPAN_DEG is ${compassConsts.span}, expected 360 + COMPASS_FOV_DEG = ${360 + compassConsts.fov}` +
