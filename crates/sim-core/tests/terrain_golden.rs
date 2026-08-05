@@ -3,14 +3,29 @@
 //! assertion runs in ci/gates.sh via ci/parity.mjs against the same pin.
 //! Plus shape sanity: the generator must produce an island, not a puddle.
 
-use sim_core::probe::probe_terrain;
+use sim_core::probe::{
+    probe_road_point, probe_terrain, probe_window_origin, PROBE_ROAD_BEARINGS, PROBE_ROAD_RADII,
+    PROBE_WINDOW_CELLS,
+};
 use sim_core::terrain::{self, Occupant, ScatterTable, CELLS_PER_SIDE};
 
 const GOLDEN_SEED: u64 = 0x0047_4154_4553; // "GATES"
 
+/// The seeds `examples/probe.rs` and `ci/parity.mjs` drive, kept in lockstep
+/// with both by hand exactly as they are with each other. The coverage
+/// assertion below is a claim about the parity surface, so it is worth
+/// nothing unless it is made over the seeds that surface actually runs.
+const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
+
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
-const GOLDEN_TERRAIN_HASH: u64 = 0xD16B_C36C_BC4B_D03C;
+///
+/// Regenerated here from `0xD16B_C36C_BC4B_D03C` because `probe_terrain`
+/// grew the three site windows and the `probe_sites` fold. Worldgen itself
+/// did not move: `terrain.rs` is untouched by this commit, and the pad,
+/// waystations and road all answer exactly what they answered before. What
+/// moved is what the fingerprint can SEE.
+const GOLDEN_TERRAIN_HASH: u64 = 0xEE0C_0328_6045_86AA;
 
 #[test]
 fn test_terrain_golden() {
@@ -22,6 +37,116 @@ fn test_terrain_golden() {
     );
     // A different seed produces a different island.
     assert_ne!(probe_terrain(GOLDEN_SEED ^ 1), GOLDEN_TERRAIN_HASH);
+}
+
+/// Count the authored occupants inside the probe's scatter window at a
+/// position — over exactly the cells `probe_window_origin` hands the digest,
+/// never a second copy of that arithmetic. A coverage test that recomputes
+/// the window is a test of itself.
+fn window_occupants(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> (i32, i32) {
+    let table = ScatterTable::alpha_default();
+    let (cx0, cz0) = probe_window_origin(x, z);
+    let (mut shelters, mut crates) = (0i32, 0i32);
+    for cz in cz0..cz0 + PROBE_WINDOW_CELLS {
+        for cx in cx0..cx0 + PROBE_WINDOW_CELLS {
+            match terrain::scatter(seed, &table, haven, cx, cz).occupant {
+                Occupant::HavenShelter => shelters += 1,
+                Occupant::CrateSlot => crates += 1,
+                _ => {}
+            }
+        }
+    }
+    (shelters, crates)
+}
+
+/// The golden's COVERAGE, asserted as a count rather than trusted.
+///
+/// `GOLDEN_TERRAIN_HASH` moving is what catches worldgen drift, but a hash
+/// cannot say WHAT it covers, and for the island's whole authored half the
+/// answer used to be nothing. `probe_terrain` resolved `haven(seed)` and then
+/// hashed only cells 120..136 — a ±64 m window on the island center — while
+/// every authored site sits on the 600..1000 m road ring. Measured on these
+/// three seeds before this gate existed, of that block's 256 cells the number
+/// inside `in_haven` or `in_waystation` was **zero on all three**: the pad,
+/// both waystations, all five pad crates, the shelter and all four waystation
+/// crates could each have taken different coordinates on wasm than on native
+/// with `test_terrain_golden` and `test_parity_wasm` both green, while
+/// `client-wasm` reads the wasm answer and the server reads the native one.
+///
+/// So coverage is its own assertion. Re-centre a site window on empty sea and
+/// the golden regenerates perfectly clean over nothing at all; this fails
+/// instead, and names which site went dark.
+#[test]
+fn test_golden_covers_authored_sites() {
+    for seed in PROBE_SEEDS {
+        let h = terrain::haven(seed);
+
+        // Sites are `WAYSTATION_MIN_SEP_M` (600 m) apart and a window is
+        // 128 m across, so no window can be counting a neighbour's crates.
+        let (shelters, crates) = window_occupants(seed, &h, h.x, h.z);
+        assert_eq!(
+            shelters, 1,
+            "seed {seed:#x}: the pad's greybox is not inside the golden's window at the pad"
+        );
+        assert_eq!(
+            crates,
+            terrain::HAVEN_CRATES,
+            "seed {seed:#x}: the golden's window at the pad holds {crates} of \
+             {} containers — the digest is not covering the pad it names",
+            terrain::HAVEN_CRATES
+        );
+
+        for (i, ws) in h.minor.iter().enumerate() {
+            assert!(
+                ws.live,
+                "seed {seed:#x}: waystation {i} is not live, so the parity \
+                 surface is covering `Waystation::NONE` at the island corner \
+                 rather than a site (tests/waystation.rs owns the tier itself)"
+            );
+            let (shelters, crates) = window_occupants(seed, &h, ws.x, ws.z);
+            assert_eq!(
+                crates,
+                terrain::WAYSTATION_CRATES,
+                "seed {seed:#x}: the golden's window at waystation {i} holds \
+                 {crates} of {} containers",
+                terrain::WAYSTATION_CRATES
+            );
+            // The greybox is the destination's alone — it is what makes the
+            // pad read as the better place on sight, and the gradient the
+            // lesser tier exists to create depends on it staying there.
+            assert_eq!(
+                shelters, 0,
+                "seed {seed:#x}: waystation {i} grew a shelter — the tier \
+                 gradient says the greybox belongs to the pad alone"
+            );
+        }
+
+        // The road half of `probe_sites`, asserted for the same reason: a
+        // sweep that never crosses the road hashes a constant, and a
+        // constant pins nothing while looking exactly like coverage. At the
+        // first draft's 8 radii this was 9–15 of 64 bearings.
+        let mut bearings_hit = 0u16;
+        let mut b = 0u16;
+        while b < 256 {
+            let mut hit = false;
+            for r in 0..PROBE_ROAD_RADII {
+                let (px, pz) = probe_road_point(b, r);
+                if terrain::road_band(seed, px, pz) != terrain::RoadBand::Off {
+                    hit = true;
+                }
+            }
+            if hit {
+                bearings_hit += 1;
+            }
+            b += 256 / PROBE_ROAD_BEARINGS;
+        }
+        assert_eq!(
+            bearings_hit, PROBE_ROAD_BEARINGS,
+            "seed {seed:#x}: the road sweep found the coast road on only \
+             {bearings_hit} of {PROBE_ROAD_BEARINGS} bearings — the radial \
+             step is too coarse to cross it, so those bearings hash a constant"
+        );
+    }
 }
 
 #[test]

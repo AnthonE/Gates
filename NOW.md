@@ -74,6 +74,36 @@ Two things the compass could not carry, both needing another lane:
   operator word is cheaper than a pass spent guessing.
 
 ---
+## 0 · The rest of `pass-20260805-074623-01`'s ranked fixes
+
+*(GAP PASS, world lane. Its ranked fix **1** — the authored sites were not
+on the native↔wasm parity surface — landed on `loop/site-parity`; see
+`DECISIONS.md` §open "probe coverage v0". Measured before the fix: of the
+golden's 256 cells, **zero** were inside `in_haven`/`in_waystation` on all
+three probe seeds, so `haven()`'s value reached the digest through nothing
+while `client-wasm` reads it off wasm and the server off native. Its other
+two fixes were left, deliberately, and are below. That report's ranked
+**gaps** 1–3 — projectiles, day/night + AI, the recycler — are all systems
+lane; the newest visual report's gaps are all texture/material work, which
+the operator parked for this lane on 2026-08-04.)*
+
+- **A short waystation tier is silent on a shard** (ranked fix 2). `pick_minor`
+  leaves `Waystation::NONE` when no candidate clears the separation floor.
+  `tests/waystation.rs` refuses that over 16 seeds, but a shard boots whatever
+  seed `shard.toml` names: on a seed the ring cannot fill, the island ships
+  with one or zero waystations and no counter, event or log line. Wants a
+  boot-time refusal in `crates/server` — **not this lane's file.** `probe_sites`
+  now hashes each `live` flag, so a short tier at least moves the fingerprint
+  on the three probe seeds; that is not the same as being loud on an arbitrary
+  one. One-line cross-lane request: sim-core can export a
+  `sites_complete(&Haven) -> bool` for the shard to call at boot.
+- **The tier gradient is gated in containers per m², but a player collects
+  loot** (ranked fix 3). A waystation crate and a pad crate are the same
+  `crate` loot table, so per container the lesser tier pays exactly what the
+  destination pays and only geometry separates them. `ci/haven_prize.mjs` knows
+  nothing about waystations, so giving them their own table — or changing crate
+  yields — moves the real gradient with every gate green. Wants that gate
+  restated in **expected items per site**, not containers per m².
 
 ## 1 · The client is becoming a native Rust desktop app
 
@@ -213,6 +243,32 @@ half: 3 authored sites on the ring instead of 1, gated by
 - **Nothing threatens you on the walk between them.** A circulation loop with
   no risk on it is a longer commute. No AI module exists anywhere in
   `crates/sim-core/src/`.
+## 4b · The domain gate reads the crate now — three residuals
+
+Landed 2026-08-05 (`loop/domain-gate-whole-crate`), from the
+`pass-20260805-074623-01-judge.md` ranked fixes 1 and 2. The domain gate
+scraped **one file per domain**, so `DEATH_BY_ARROW = 3` in `combat.rs`
+left all three checks green while `encode_event_death` still returned
+`Err(Range)` — the 2026-08-05 failure, one module over, with the gate
+written to catch it watching the wrong file. Reproduced red-then-green,
+all three below.
+
+Now: `SOURCES` reads all 22 `sim-core` modules, members carry their file
+and must sit in the domain's declared `home`;
+`the_source_table_covers_the_whole_crate` checks `SOURCES` against
+`lib.rs`'s own `mod` list both ways; `every_enumeration_width_is_classified`
+scrapes `event.rs`'s 33 `*_BITS` and forces each into DOMAINS or a named
+magnitude list. No wire move — `PROTO_VER` 19, goldens green.
+
+What remains:
+
+- **§4's other half.** Role coverage is still 19 of `EV_MAX` codes, 8
+  uncovered (`coverage_is_stated_not_implied`). The a/b swap gate is the
+  unfinished part; the value gate is done.
+- **`death_causes_are_a_closed_ledger`** (`event_roles.rs`) still scrapes
+  `world.rs` alone. Narrow now — the protocol gate catches a stray value
+  crate-wide — but its *contiguity* claim is still file-local.
+- **§5b below** is untouched and still wants its own pass.
 
 ---
 
