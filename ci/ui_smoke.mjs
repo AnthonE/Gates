@@ -1341,7 +1341,12 @@ const invSrc = fs.readFileSync(path.join(root, "crates/sim-core/src/inventory.rs
 const rustConst = (name, seen = new Set()) => {
   if (seen.has(name)) return null; // an alias cycle is unresolvable, not infinite
   seen.add(name);
-  const m = invSrc.match(new RegExp(`pub const ${name}: \\w+ = (\\w+);`));
+  // Anchored to the start of a LINE (`m`), per the 2026-08-05 judge report's
+  // ranked fix 1. Unanchored it took the first such form anywhere in the
+  // file, a doc comment included — and `inventory.rs` already quotes const
+  // declarations in prose near these very names, so a future comment could
+  // silently shadow the declaration it was explaining.
+  const m = invSrc.match(new RegExp(`^pub const ${name}: \\w+ = (\\w+);`, "m"));
   if (!m) return null;
   return /^\d+$/.test(m[1]) ? Number(m[1]) : rustConst(m[1], seen);
 };
@@ -2135,6 +2140,161 @@ check(
 );
 
 // =============================================================================
+// N. the move verb's OUTBOUND half — six positional u32s into the bridge
+// =============================================================================
+// The 2026-08-05 judge report's ranked fix 4, verbatim: "the third hop of
+// report 03's ranked fix 1 — `main.js`'s marshalling of (fromKind, from,
+// toKind, to) into the wasm call — is covered only by `browser_smoke`, which
+// is off this run. Closing it needs the marshalling extracted into something
+// node-importable."
+//
+// Why it is worth a section of its own. `client_action_move` takes SIX `u32`s
+// and every wall in this repo is blind to swapping two of them: the encoder is
+// untouched so `test_protocol_golden` is green, the action queue is not in
+// `state_hash` so `test_replay` is green, and all six are the same type so
+// clippy is green. That is precisely CLAUDE.md's positional-payload trap —
+// ~27 of Oxide's shipped corrections were the right value in the wrong
+// position, four hooks corrected more than once, and their per-method
+// `MSILHash`, the exact analogue of our protocol golden, caught none of them.
+// It is also the verb the same trap list names as the most bug-prone thing in
+// the reference, whose failures all landed as *the server disconnecting the
+// client*, because an action frame the server cannot decode ends the reader
+// task (`bridge.rs`'s own doc says so).
+//
+// The shape of the fix is the point: the order is stated ONCE, as names, in
+// `invmove.js`'s `MOVE_ARG_ORDER`, and the first check below reads the same
+// names out of `bridge.rs`. So this does not restate the client's opinion of
+// the order and compare it to itself — the gate that matches nothing, which
+// this file has already shipped twice. A systems-lane reorder of that ABI
+// lands red here on the commit that makes it, rather than on the frame the
+// server declines.
+const { MOVE_ARG_ORDER, moveArgs } = await import(
+  pathToFileURL(path.join(root, "web/src/invmove.js")).href
+);
+const bridgeSrc = fs.readFileSync(
+  path.join(root, "crates/client-wasm/src/bridge.rs"),
+  "utf8",
+);
+// The parameter list as Rust declares it, in order. Anchored at the `fn` so a
+// doc comment quoting the call cannot stand in for the declaration — the same
+// hole the judge's ranked fix 1 found in `rustConst` above.
+const rsParams = bridgeSrc
+  .match(/^pub extern "C" fn client_action_move\(([\s\S]*?)\)\s*->/m)?.[1]
+  ?.split(",")
+  .map((p) => p.trim().split(":")[0].trim())
+  .filter(Boolean);
+check(
+  Array.isArray(rsParams) && rsParams.length === 6,
+  `could not read client_action_move's parameter list out of bridge.rs (got ${JSON.stringify(rsParams)}) —` +
+    " every check below would then compare the client's order against nothing, which is the" +
+    " gate-that-matches-nothing class this section exists to avoid",
+);
+check(
+  JSON.stringify(MOVE_ARG_ORDER) === JSON.stringify(rsParams),
+  `invmove.js MOVE_ARG_ORDER ${JSON.stringify(MOVE_ARG_ORDER)} is not client_action_move's parameter list` +
+    ` ${JSON.stringify(rsParams)} — the client would spread six u32s into the wrong slots of the same-typed` +
+    " signature, the encoder would accept them, and the server would answer the forged frame by ending the session",
+);
+
+// Slot 3 holds item 9 ×4, slot 7 holds item 5 ×11. Four distinct numbers, so
+// the count cannot be confused with the item id beside it (stride), with the
+// destination's count (wrong end), or with either slot number.
+const PROBE_INV = new Uint16Array(30 * 2);
+PROBE_INV[3 * 2] = 9;
+PROBE_INV[3 * 2 + 1] = 4;
+PROBE_INV[7 * 2] = 5;
+PROBE_INV[7 * 2 + 1] = 11;
+const probe = moveArgs(JS_CONT_SELF, 3, JS_CONT_SELF, 7, PROBE_INV);
+check(
+  Array.isArray(probe) && probe.length === 6,
+  `moveArgs did not return six arguments for a legal self-to-self drag (${JSON.stringify(probe)})`,
+);
+// Positions are taken BY NAME out of the Rust-checked order, never as literal
+// indices: a check that hardcoded `probe[2]` would have to be edited in step
+// with any real reorder, and would then agree with whatever it was edited to.
+const at = (name) => probe?.[MOVE_ARG_ORDER.indexOf(name)];
+check(
+  at("from_slot") === 3 && at("to_slot") === 7,
+  `moveArgs put the drag's ends at ${JSON.stringify([at("from_slot"), at("to_slot")])} rather than [3, 7] —` +
+    " the two slot numbers are transposed, so the sim moves the destination's contents onto the source",
+);
+check(
+  at("count") === 4,
+  `moveArgs sent count ${at("count")} for a drag out of slot 3, which holds item 9 ×4 — 9 means it read the` +
+    " ITEM ID at the even index of the (item, count) pair, 11 means it read the DESTINATION's count, and" +
+    " either sends the server a quantity the panel never drew, which is the quantize-both-sides law broken",
+);
+check(
+  at("bag") === 0,
+  `moveArgs sent bag handle ${at("bag")} for a self move — the sim addresses containers by this field and 0` +
+    " is the only value that means the player's own inventory",
+);
+check(
+  at("from_kind") === 0 && at("to_kind") === 0,
+  `moveArgs sent kinds ${JSON.stringify([at("from_kind"), at("to_kind")])} for a self-to-self drag`,
+);
+// Honest about the residual: bag, from_kind and to_kind are all 0 on every
+// call this client can legally make today, so no VALUE probe can tell those
+// three apart. The name-order check above is what covers them, and they
+// become separable by value on the pass that opens a second container — which
+// is the same pass that makes `bag` non-zero.
+
+// The refusals, each with the reason it is not merely defensive.
+check(
+  moveArgs(JS_CONT_BAG, 3, JS_CONT_SELF, 7, PROBE_INV) === null,
+  "moveArgs marshalled a drag OUT of a bag — `inv` is the own-inventory mirror, so the count it would send is" +
+    " the player's own stack size standing in for a container's, which is the label bug one layer down",
+);
+check(
+  moveArgs(JS_CONT_SELF, 3, JS_CONT_BAG, 7, PROBE_INV) === null,
+  "moveArgs marshalled a drag INTO a bag — the `bag` field would stay 0, which names whichever container the" +
+    " sim indexes at 0 rather than the one the panel is open on",
+);
+check(
+  moveArgs(JS_CONT_SELF, 5, JS_CONT_SELF, 7, PROBE_INV) === null,
+  "moveArgs marshalled a drag out of an EMPTY slot (5 holds nothing) — the sim refuses it and the panel has" +
+    " already drawn it, which is the container divergence the reference kept shipping as a disconnect",
+);
+check(
+  moveArgs(JS_CONT_SELF, 30, JS_CONT_SELF, 7, PROBE_INV) === null,
+  "moveArgs marshalled a drag out of slot 30, one past the view — the count reads `undefined` there, and" +
+    " `undefined <= 0` is FALSE, so the old inline test let it through to wasm and was correct only because" +
+    " three layers below it a coerced 0 failed encode_action_move's range check",
+);
+check(
+  moveArgs(JS_CONT_SELF, 3, JS_CONT_SELF, 7, undefined) === null,
+  "moveArgs marshalled a drag with no inventory view at all — `views.inv` is null until the first refresh",
+);
+
+// And the call site, because an extraction nothing is held to is a suggestion.
+// `main.js` is renderer-tier and cannot be imported here (it boots three.js),
+// so this is a source assertion — the same standing this file already gives
+// the HUD ids and the Rust constants it reads as text.
+const mainSrc = fs.readFileSync(path.join(root, "web/src/main.js"), "utf8");
+const hostBody = mainSrc.match(/hud\.onInvMove = \([^)]*\) => \{([\s\S]*?)\n  \};/)?.[1];
+check(
+  typeof hostBody === "string" && hostBody.includes("moveArgs("),
+  "main.js's move host does not go through moveArgs — the marshalling is back inline, where the only gate that" +
+    " can see it is browser_smoke",
+);
+const spreadBinding = hostBody?.match(/const (\w+) = moveArgs\(/)?.[1];
+check(
+  typeof spreadBinding === "string" &&
+    new RegExp(`client_action_move\\(\\.\\.\\.${spreadBinding}\\)`).test(hostBody),
+  "main.js does not spread moveArgs's own result into client_action_move — a longhand argument list is exactly" +
+    " the six-u32 transposition this section was written to make unrepresentable",
+);
+check(
+  (mainSrc.match(/client_action_move\(/g) || []).length === 1,
+  "main.js calls client_action_move from more than one place — the second call site is unmarshalled and ungated",
+);
+check(
+  !hostBody?.includes("views.inv["),
+  "main.js's move host still indexes views.inv directly — the (item, count) stride is arithmetic and belongs in" +
+    " invmove.js where node can probe it, not in a file only a 19-minute renderer gate can reach",
+);
+
+// =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
@@ -2145,7 +2305,8 @@ console.log(
     `craft gate/×5 · queue index · inventory ${INV_SLOTS} slots positional + eatsKey · ` +
     `move ordering (send-before-draw, address-matched verdict, diff outranks rollback, ${REFUSE_MAX} reasons) · ` +
     "unarmed panel starts no drag · verdict on APPLIED2_MOVE, bit 31 unshared · " +
-    "addresses are (kind, slot): one container drawn, foreign verdict refused, rollback stays in it",
+    "addresses are (kind, slot): one container drawn, foreign verdict refused, rollback stays in it · " +
+    `outbound marshalling ${JSON.stringify(MOVE_ARG_ORDER)} against bridge.rs, spread at the one call site`,
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
