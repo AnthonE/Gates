@@ -15,7 +15,7 @@ use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
     BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK,
-    MAX_PLAYERS, STATE_HASH_INTERVAL,
+    MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
 };
 use crate::loot::{LootContent, LOOT_BARREL};
 use crate::movement::{self, quant_xz, quant_y, Body};
@@ -1337,6 +1337,17 @@ impl World {
         }
         let seed = self.seed;
         let tick = self.tick;
+        // The tick's structural removal budget, spent by every path that
+        // takes a piece out of the store — a raider's killing blow below,
+        // the decay sweep, the support backstop, and every cascade they
+        // seed. A tick-local, reset here with the ring it protects: a
+        // removal that finds it empty is deferred to a later tick, never
+        // dropped, so this bounds latency and not what comes down.
+        //
+        // Deliberately not a `World` field. It is spent and forgotten
+        // inside one tick exactly as `events` is, and a store that lives
+        // across ticks is a store `state_hash` has to answer for.
+        let mut removals = MAX_REMOVALS_PER_TICK;
         // Slot order, and inside a slot: move, swing, craft. The swing is
         // one arm — `gather::swing` gets first claim on it (a tree in
         // reach is always the nearer target) and hands it on only when
@@ -1446,6 +1457,7 @@ impl World {
                             &self.players[i],
                             &mut self.pieces,
                             &mut self.deploys,
+                            &mut removals,
                             &mut self.events,
                         );
                     }
@@ -1465,6 +1477,7 @@ impl World {
             tick,
             &mut self.sweep_piece,
             &mut self.sweep_deploy,
+            &mut removals,
             &mut self.events,
         );
         // The structural backstop, after the sweep that can create work for
@@ -1476,6 +1489,7 @@ impl World {
             &mut self.pieces,
             &mut self.deploys,
             &mut self.sweep_support,
+            &mut removals,
             &mut self.events,
         );
         // Boxes that came apart this tick — raided in the player loop

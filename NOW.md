@@ -4,6 +4,33 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+0. **The collapse path's per-tick budget, and box handle 0 — done this pass
+   (systems lane).**
+
+   *(2026-08-05. Judge `pass-20260805-020919-01`'s ranked fixes 1 and 2, plus
+   the ui lane's cross-lane request 4 — NOW.md's top systems item.)*
+
+   `MAX_COLLAPSE_PIECES` bounds one cascade and a tick holds many:
+   `upkeep_sweep` never returned after a removal the way `support_sweep`
+   does, so its 64 visits could each seed a cascade, and raiders add up to
+   `MAX_PLAYERS` more. Measured with the budget removed: **103 removals in
+   one tick** against the 64 the 256-slot ring was sized for. Now one
+   tick-local `MAX_REMOVALS_PER_TICK` threaded through raid, decay, support
+   sweep and cascade; overflow **defers before the piece leaves the store**.
+   `DECISIONS.md` §open "collapse budget v0".
+
+   Request 4 answered without moving a bit of the packing: `box_index`
+   guards handle 0 and `place_deploy` refuses the one address that mints it
+   — the pair `Backpacks` already has. `BOX_KEY_LAYOUT` and `ui_smoke` §P
+   untouched. **ui lane: `moveArgs` may now trust that 0 is never a box.**
+
+   Left: `EV_PIECE_REMOVED`'s payload is pinned for the collapse producer
+   only (judge fix 2); the raid and decay producers are still counted, not
+   read. And judge fix 3 — **a box on a collapsing floor** — is still
+   ungated: every collapse test uses `DeployContent::EMPTY`, so
+   `EV_DEPLOY_REMOVED` and the `world.rs` spill drain have no collapse-side
+   coverage. Both are systems lane.
+
 0. **A box can be opened — done this pass (ui lane), kept for what it leaves.**
 
    *(2026-08-05. Report 03's ranked gap 2, "you can deploy a box and never

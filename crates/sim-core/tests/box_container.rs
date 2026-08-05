@@ -572,3 +572,43 @@ fn the_box_address_is_injective_over_every_legal_cell() {
         }
     }
 }
+
+/// **Handle 0 is not a box.** The decode half of the pair; `build.rs`'s
+/// `a_box_is_refused_at_the_one_address_that_packs_to_zero` owns the
+/// minting half, because standing a foundation at grid origin needs a
+/// fixture that can bypass terrain and this file's boxes go up through
+/// the real build verb.
+///
+/// `box_key(0, 0, 0)` packs to 0, and 0 is what every other layer already
+/// says when it means *no container is open*: `CONT_SELF` zeroes the
+/// handle field, the client bridge answers 0 for "nothing open", and a
+/// server-side close writes 0. One build cell therefore minted an address
+/// indistinguishable from the absence of one, and the client had to
+/// refuse a ground handle of 0 outright to avoid sending "no container
+/// known" as a real destination (`invmove.js`, and the ui lane's request
+/// this answers).
+///
+/// `Backpacks` never had the problem because it closes it twice: ids
+/// start at 1 so 0 is never minted, and `index_of_id` guards 0 anyway.
+/// Boxes now close it the same way, and the two halves are gated apart
+/// because either alone leaves a side unable to trust the other.
+#[test]
+fn the_zero_handle_never_resolves_to_a_box() {
+    let (w, key, _cx, _cz) = box_world();
+
+    assert_eq!(box_key(0, 0, 0), 0, "the corner this guards has moved");
+    assert!(!w.deploys.boxes().is_empty(), "the fixture needs its box");
+    assert!(
+        w.deploys.box_index(key).is_some(),
+        "the fixture's own box stopped resolving"
+    );
+
+    // A non-empty store is the case a bare `position()` over records gets
+    // wrong: with the guard removed this answers `Some` for any box that
+    // happened to stand at the origin, and `None` only by luck otherwise.
+    assert_eq!(
+        w.deploys.box_index(0),
+        None,
+        "handle 0 resolved to a box; the client cannot tell it from 'nothing open'"
+    );
+}

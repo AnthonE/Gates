@@ -483,7 +483,16 @@ pub(crate) fn stands(pieces: &Pieces, bc: &BuildContent, i: usize) -> bool {
 
 /// A piece at `from` has just been removed: re-evaluate what rested on it
 /// and drop whatever no longer stands, breadth-first, until the front is
-/// empty or `MAX_COLLAPSE_PIECES` is reached. Returns how many fell.
+/// empty, `MAX_COLLAPSE_PIECES` is reached, or the tick's shared removal
+/// budget runs out. Returns how many fell.
+///
+/// Two caps, and they are not the same cap. `MAX_COLLAPSE_PIECES` bounds
+/// *this* cascade and sizes the stack array below. `budget` is the whole
+/// tick's, spent by every removal path there is, and it is the one that
+/// keeps the event ring from being filled by a tick that collapses many
+/// bases at once (limits.rs `MAX_REMOVALS_PER_TICK`). Both defer to
+/// `support_sweep` on the following ticks, so either running out costs
+/// latency and never correctness.
 ///
 /// Graph reachability over the piece store, not physics. Each removal
 /// re-checks only the ≤ 5 addresses whose `supported()` test reads the one
@@ -503,6 +512,7 @@ pub(crate) fn collapse_from(
     pieces: &mut Pieces,
     deploys: &mut Deploys,
     from: Addr,
+    budget: &mut usize,
     events: &mut EventQueue,
 ) -> usize {
     // One slot per possible removal, plus the seed: `tail` advances only
@@ -513,7 +523,7 @@ pub(crate) fn collapse_from(
     let mut tail = 1usize;
     let mut fell = 0usize;
     let mut kids = [(0u16, 0u16, 0u8, 0u8); MAX_DEPENDENTS];
-    while head < tail && fell < MAX_COLLAPSE_PIECES {
+    while head < tail && fell < MAX_COLLAPSE_PIECES && *budget > 0 {
         let (cx, cz, level, loc) = front[head];
         head += 1;
         let n = dependents(cx, cz, level, loc, &mut kids);
@@ -529,10 +539,11 @@ pub(crate) fn collapse_from(
             }
             let shape = bc.pieces[pieces.entries()[i].row as usize].shape;
             crate::deploy::drop_piece(dc, pieces, deploys, i, shape, events);
+            *budget -= 1;
             front[tail] = (kx, kz, kl, kloc);
             tail += 1;
             fell += 1;
-            if fell == MAX_COLLAPSE_PIECES {
+            if fell == MAX_COLLAPSE_PIECES || *budget == 0 {
                 break; // deferred to `support_sweep` (limits.rs)
             }
         }
@@ -557,10 +568,11 @@ pub(crate) fn support_sweep(
     pieces: &mut Pieces,
     deploys: &mut Deploys,
     cursor: &mut u32,
+    budget: &mut usize,
     events: &mut EventQueue,
 ) {
     let mut visits = 0usize;
-    while visits < SUPPORT_SWEEP_PER_TICK && !pieces.is_empty() {
+    while visits < SUPPORT_SWEEP_PER_TICK && !pieces.is_empty() && *budget > 0 {
         visits += 1;
         let i = (*cursor as usize) % pieces.len();
         *cursor = ((i + 1) % pieces.len()) as u32;
@@ -570,12 +582,14 @@ pub(crate) fn support_sweep(
         let r = pieces.entries()[i];
         let shape = bc.pieces[r.row as usize].shape;
         crate::deploy::drop_piece(dc, pieces, deploys, i, shape, events);
+        *budget -= 1;
         collapse_from(
             dc,
             bc,
             pieces,
             deploys,
             (r.cx, r.cz, r.level, r.loc),
+            budget,
             events,
         );
         // The swap-remove moved the last entry into `i`; resume there so a
@@ -779,7 +793,19 @@ pub fn upgrade(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deploy::UPKEEP_PERIOD_TICKS;
     use crate::gather::ItemStack;
+    use crate::limits::MAX_REMOVALS_PER_TICK;
+
+    /// One tick's structural removal budget, as `World::tick` hands it
+    /// out. These fixtures collapse or raid one structure at a time and
+    /// never approach it — the bound itself is asserted by
+    /// `a_tick_that_collapses_many_bases_at_once_drops_no_removal` and
+    /// `many_raiders_in_one_tick_share_one_budget_and_the_last_wall_survives`.
+    fn tick_budget() -> usize {
+        MAX_REMOVALS_PER_TICK
+    }
+
     use crate::movement::Body;
     use crate::world::{EventQueue, Player};
 
@@ -1699,8 +1725,15 @@ mod tests {
                 };
                 let i = fast.find_index(vx, vz, vl, vloc).unwrap();
                 fast.remove_at(i, shape);
-                let fell =
-                    collapse_from(&dc, &bc, &mut fast, &mut nod, (vx, vz, vl, vloc), &mut ev);
+                let fell = collapse_from(
+                    &dc,
+                    &bc,
+                    &mut fast,
+                    &mut nod,
+                    (vx, vz, vl, vloc),
+                    &mut tick_budget(),
+                    &mut ev,
+                );
 
                 let j = slow.find_index(vx, vz, vl, vloc).unwrap();
                 slow.remove_at(j, shape);
@@ -1737,6 +1770,7 @@ mod tests {
         let mut ev = EventQueue::default();
         grow_from_one_foundation(&mut pieces, CX, CZ, 40);
         let n = pieces.len();
+        let before: Vec<PieceRec> = pieces.entries().to_vec();
 
         let i = pieces.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
         crate::deploy::drop_piece(&dc, &mut pieces, &mut nod, i, SHAPE_FOUNDATION, &mut ev);
@@ -1746,6 +1780,7 @@ mod tests {
             &mut pieces,
             &mut nod,
             (CX, CZ, 0, LOC_PLANE),
+            &mut tick_budget(),
             &mut ev,
         );
 
@@ -1770,6 +1805,41 @@ mod tests {
             n
         );
         assert_eq!(ev.dropped, 0, "the collapse overflowed the event ring");
+
+        // Counting the removals says they happened; it does not say they
+        // named the right pieces. `EV_PIECE_REMOVED`'s payload is law with
+        // no gate (CLAUDE.md's positional trap): swap `a` and `b` at the
+        // emit site, or shift `level`/`loc`/`row` inside the packed `b`,
+        // and the encoder is untouched (`test_protocol_golden` green), the
+        // ring is not in `state_hash` (`test_replay` green), and every
+        // field is a `u32` (clippy green). This collapse is a third
+        // producer of that code and this is the pin: the multiset of
+        // (a, b) the tick announced against the addresses the fixture
+        // actually stood, built here from the store snapshot rather than
+        // from anything the emit site said.
+        //
+        // The fixture is what makes it sharp — it spans many cells, all
+        // eight levels, all four locs and five rows, so no two subfields
+        // hold the same value everywhere and a shift between them cannot
+        // survive the compare.
+        let mut expect: Vec<(u32, u32)> = before
+            .iter()
+            .map(|r| {
+                (
+                    crate::gather::cell_key(r.cx, r.cz),
+                    ((r.level as u32) << 16) | ((r.loc as u32) << 8) | r.row as u32,
+                )
+            })
+            .collect();
+        let mut got: Vec<(u32, u32)> = ev
+            .entries()
+            .iter()
+            .filter(|e| e.code == crate::world::EV_PIECE_REMOVED)
+            .map(|e| (e.a, e.b))
+            .collect();
+        expect.sort_unstable();
+        got.sort_unstable();
+        assert_eq!(got, expect, "a removal named the wrong piece");
     }
 
     /// The other half, and the one an over-eager cascade fails: a piece
@@ -1807,6 +1877,7 @@ mod tests {
             &mut pieces,
             &mut nod,
             (CX, CZ, 0, LOC_PLANE),
+            &mut tick_budget(),
             &mut ev,
         );
 
@@ -1842,6 +1913,7 @@ mod tests {
             &mut pieces,
             &mut nod,
             (CX, CZ, 0, LOC_PLANE),
+            &mut tick_budget(),
             &mut ev,
         );
 
@@ -1860,9 +1932,287 @@ mod tests {
                 pieces.len()
             );
             ev.clear();
-            support_sweep(&dc, &bc, &mut pieces, &mut nod, &mut cursor, &mut ev);
+            support_sweep(
+                &dc,
+                &bc,
+                &mut pieces,
+                &mut nod,
+                &mut cursor,
+                &mut tick_budget(),
+                &mut ev,
+            );
             assert_eq!(ev.dropped, 0, "a sweep tick overflowed the event ring");
         }
+    }
+
+    /// The cap that composes, driven through `World::tick` — the only
+    /// level it can be checked at, because the hole was never inside one
+    /// cascade. `MAX_COLLAPSE_PIECES` bounds a cascade and a tick holds
+    /// many: `upkeep_sweep` does not stop at its first removal the way
+    /// `support_sweep` does, so its 64 visits can each seed one. Every
+    /// unit test above passes a fresh budget and would pass unchanged with
+    /// no per-tick bound at all; this is the one that would not.
+    ///
+    /// Armed rather than waited for: every piece is set to 1 hp and an
+    /// unpaid upkeep hour, so the sweep's next visit kills it outright and
+    /// the whole wave lands in one tick instead of over three real decay
+    /// periods. No hearth stands, so nothing pays. Nobody has joined, so
+    /// no other producer is competing for the ring — a `dropped` here is
+    /// this path's and nothing else's.
+    #[test]
+    fn a_tick_that_collapses_many_bases_at_once_drops_no_removal() {
+        const TOWERS: u16 = 8;
+        const SPACING: u16 = 32; // wider than the diamond a tower spreads
+
+        let mut w = crate::world::World::new(SEED);
+        w.build = collapse_content();
+        // `mat_count` non-zero is what arms decay at all (`upkeep_sweep`
+        // returns early on an inert table).
+        w.deploy = DeployContent::probe_fixture();
+        // `grow_from_one_foundation`'s target is the whole store, not this
+        // tower — so it climbs.
+        for k in 0..TOWERS {
+            grow_from_one_foundation(&mut w.pieces, CX + k * SPACING, CZ, 40 * (k as usize + 1));
+        }
+        let standing = w.pieces.len();
+        assert!(
+            standing > MAX_REMOVALS_PER_TICK * 2,
+            "the fixture must outrun one tick's budget: {standing} pieces"
+        );
+        for i in 0..standing {
+            w.pieces.set_upkeep(i, 1, 0);
+        }
+        w.tick = UPKEEP_PERIOD_TICKS; // one upkeep hour due on everything
+
+        let mut removed = 0usize;
+        let mut ticks = 0usize;
+        let mut worst = 0usize;
+        while !w.pieces.is_empty() {
+            ticks += 1;
+            assert!(ticks < 4096, "{} pieces never came down", w.pieces.len());
+            let before = w.pieces.len();
+            w.tick(&[]);
+            let fell = before - w.pieces.len();
+            // The assertion the whole slice exists for. A dropped removal
+            // is the one event whose loss is permanent: the piece is gone
+            // from the store and drawn on every screen for the rest of the
+            // session, and no later tick re-announces it.
+            assert_eq!(
+                w.events.dropped, 0,
+                "tick {ticks} overflowed the event ring: {fell} pieces fell"
+            );
+            assert!(
+                fell <= MAX_REMOVALS_PER_TICK,
+                "tick {ticks} removed {fell} pieces, over the budget"
+            );
+            worst = worst.max(fell);
+            removed += fell;
+        }
+
+        // Deferred, never lost: the budget costs ticks and not pieces.
+        assert_eq!(removed, standing, "the defer policy lost a piece");
+        assert!(w.pieces.cols().is_empty(), "the collision view outlived it");
+        // And it really did press against the budget — a fixture that
+        // never reached it would assert nothing.
+        assert_eq!(
+            worst, MAX_REMOVALS_PER_TICK,
+            "the fixture never spent a whole tick's budget, so the bound was untested"
+        );
+        assert!(
+            ticks > 1,
+            "one tick took the lot, so nothing was ever deferred"
+        );
+    }
+
+    /// **A box may not stand at the one address that packs to handle 0.**
+    /// The minting half of the pair `deploy::box_index` guards on decode;
+    /// `tests/box_container.rs` owns the decode half.
+    ///
+    /// `box_key(0, 0, 0)` is 0, and 0 is the reserved "no container open"
+    /// handle on every layer that carries one. A box there could be opened
+    /// by nobody, so the address is refused as a spot rather than left to
+    /// swallow a player's items — the same posture `Backpacks` takes by
+    /// starting its ids at 1.
+    ///
+    /// It lives here rather than beside the other box tests because the
+    /// address is at the world's origin corner, which is water under every
+    /// seed: `Command::Place` cannot stand the foundation the box needs,
+    /// and a test that let terrain do the refusing would assert nothing.
+    /// `try_put` writes the piece straight in, so what refuses below is
+    /// the address arithmetic and only that.
+    #[test]
+    fn a_box_is_refused_at_the_one_address_that_packs_to_zero() {
+        use crate::deploy::{box_key, place_deploy, DeployDef, ARCH_BOX, ARCH_HEARTH};
+        use crate::world::EV_DEPLOY_REFUSED;
+
+        assert_eq!(box_key(0, 0, 0), 0, "the corner this guards has moved");
+
+        let mut dc = DeployContent::EMPTY;
+        dc.def_count = 2;
+        dc.defs[0] = DeployDef {
+            arch: ARCH_BOX,
+            placement: crate::deploy::PLACE_FOUNDATION,
+            hp: 100,
+            item: 0,
+        };
+        // A second, non-box deployable on the identical footing: the
+        // refusal must be about the *handle*, not about the cell, and
+        // nothing without a container handle has anything to lose here.
+        dc.defs[1] = DeployDef {
+            arch: ARCH_HEARTH,
+            placement: crate::deploy::PLACE_FOUNDATION,
+            hp: 100,
+            item: 0,
+        };
+        let bc = collapse_content();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+
+        assert!(try_put(&mut pieces, 0, 0, 0, LOC_PLANE, SHAPE_FOUNDATION));
+
+        let mut p = Player {
+            id: 7,
+            active: true,
+            body: Body::at(SEED, 0.5 * BUILD_CELL_M, 0.5 * BUILD_CELL_M),
+            ..Player::default()
+        };
+        p.inv[0] = ItemStack { item: 0, count: 9 };
+
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            0,
+            0,
+            0,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 0, "a box took the handle-0 address");
+        assert_eq!(
+            last(&ev),
+            (EV_DEPLOY_REFUSED, p.id, crate::deploy::REFUSE_D_SPOT),
+            "refused, but not as a spot — the placer has to hear why"
+        );
+
+        // The same cell, the same footing, a deployable with no container
+        // handle: allowed. The refusal is one address of one arch, not a
+        // dead cell.
+        ev.clear();
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            1,
+            0,
+            0,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 1, "a hearth was refused the same cell");
+
+        // And a box one storey up is fine, because that address is not 0.
+        assert_ne!(box_key(0, 0, 1), 0);
+    }
+
+    /// The other half of the composition, and the one with no bound of its
+    /// own at all: the decay sweep is at least held to
+    /// `UPKEEP_SWEEP_PER_TICK` visits, but nothing limits how many raiders
+    /// land a killing blow in the same tick. `MAX_PLAYERS` is 100 and each
+    /// swing can seed a cascade of `MAX_COLLAPSE_PIECES`, so the arithmetic
+    /// runs to thousands of removals against a 256-slot ring.
+    ///
+    /// One budget, many swings — the same `&mut usize` `World::tick` hands
+    /// every path. The assertion is that the budget binds *across* calls
+    /// and that running out is a deferral and not a loss: the wall that
+    /// could not be removed is still standing, still in the collision
+    /// view, and still at hp the next swing can take off.
+    #[test]
+    fn many_raiders_in_one_tick_share_one_budget_and_the_last_wall_survives() {
+        let bc = collapse_content();
+        let dc = DeployContent::EMPTY;
+        let mut pieces = Pieces::new();
+        let mut nod = Deploys::new();
+        let mut ev = EventQueue::default();
+
+        // Free-standing foundations: no cascades, so the count is exactly
+        // the number of killing blows and the budget is the only thing
+        // that can stop them.
+        let walls = MAX_REMOVALS_PER_TICK + 8;
+        for k in 0..walls {
+            assert!(try_put(
+                &mut pieces,
+                CX + (k as u16) * 4,
+                CZ,
+                0,
+                LOC_PLANE,
+                SHAPE_FOUNDATION
+            ));
+        }
+        assert_eq!(pieces.len(), walls);
+
+        let mut budget = MAX_REMOVALS_PER_TICK;
+        let mut fell = 0usize;
+        for k in 0..walls {
+            let i = pieces
+                .find_index(CX + (k as u16) * 4, CZ, 0, LOC_PLANE)
+                .unwrap();
+            if crate::deploy::damage_piece(
+                &dc,
+                &bc,
+                &mut pieces,
+                &mut nod,
+                i,
+                100,
+                &mut budget,
+                &mut ev,
+            ) {
+                fell += 1;
+            }
+        }
+
+        assert_eq!(fell, MAX_REMOVALS_PER_TICK, "the budget did not bind");
+        assert_eq!(budget, 0);
+        assert_eq!(ev.dropped, 0, "the tick overflowed the event ring");
+
+        // Deferred, not lost. The eight that outlived the budget are still
+        // standing, still solid, and still killable — each stopped one hp
+        // short rather than being parked at zero, which is the state no
+        // sweep would ever clear.
+        assert_eq!(pieces.len(), walls - MAX_REMOVALS_PER_TICK);
+        for r in pieces.entries() {
+            assert_eq!(r.hp, 1, "a deferred piece was left at a resting hp");
+        }
+        assert!(!pieces.cols().is_empty(), "the collision view lost them");
+
+        // And the next tick's budget takes them, which is what makes the
+        // deferral cost latency rather than correctness.
+        let mut next = MAX_REMOVALS_PER_TICK;
+        ev.clear();
+        while !pieces.is_empty() {
+            crate::deploy::damage_piece(
+                &dc,
+                &bc,
+                &mut pieces,
+                &mut nod,
+                0,
+                100,
+                &mut next,
+                &mut ev,
+            );
+        }
+        assert_eq!(ev.dropped, 0);
     }
 
     /// The wiring, not the function: `damage_piece` is what a raid swing
@@ -1885,7 +2235,16 @@ mod tests {
         assert_eq!(pieces.len(), 5);
 
         let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
-        let died = crate::deploy::damage_piece(&dc, &bc, &mut pieces, &mut nod, i, 100, &mut ev);
+        let died = crate::deploy::damage_piece(
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut nod,
+            i,
+            100,
+            &mut tick_budget(),
+            &mut ev,
+        );
 
         assert!(died);
         assert_eq!(addresses(&pieces), vec![(CX, CZ, 0, LOC_PLANE)]);
