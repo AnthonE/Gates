@@ -102,7 +102,17 @@ const TICKS: u64 = 900;
 /// replays. Pieces that used to hang in the air after the thing under them
 /// broke now come down, which is the point. Determinism itself is
 /// unaffected and asserted above: both runs agree tick for tick.
-const GOLDEN_FINAL_HASH: u64 = 0x9974_FB51_987A_1EF3;
+/// Regenerated again for occupant solidity (occupy.rs): trees, boulders,
+/// nodes, barrels, crates and the haven shelter now stop a body, so the same
+/// input script walks a different path than it did through a hollow island.
+/// The evidence that this is the intended cause and not a broken script is
+/// that **every behavioural floor in `run()` still passes** — the bots place,
+/// deploy, decay, door, eat, drink and craft exactly as before, and the two
+/// runs still agree tick for tick. Only where they stood when they did it
+/// moved. The memo behind the query (`World::slot_cache`) is deliberately not
+/// in `state_hash`; it is a pure function's cache, so it cannot move this
+/// number, and holding it out is what keeps that true.
+const GOLDEN_FINAL_HASH: u64 = 0xB09C_FF07_A63B_4581;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

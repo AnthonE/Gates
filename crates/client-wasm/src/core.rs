@@ -24,6 +24,8 @@ use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_DEPLOYS,
     MAX_PIECES, MAX_SLOT_LIVES,
 };
+use sim_core::occupy::{Harvested, Occupants, SlotCache};
+use sim_core::terrain::{self, Haven, ScatterTable};
 
 /// Gather toasts buffered for the HUD (drop-oldest — a toast is cosmetic).
 pub const TOAST_RING: usize = 8;
@@ -197,6 +199,15 @@ impl HarvestedSet {
 
     fn clear(&mut self) {
         self.len = 0;
+    }
+}
+
+/// The client's half of `occupy::Harvested`. Same question the server's
+/// `SlotLives` answers, off a bare key set: a mirror needs no hit counts and
+/// no respawn ticks, only whether the node is standing right now.
+impl Harvested for HarvestedSet {
+    fn is_harvested(&self, cx: u16, cz: u16) -> bool {
+        self.contains(cell_key(cx, cz))
     }
 }
 
@@ -551,6 +562,18 @@ pub struct ClientCore {
     /// the server's shadow holds too.
     pub cont: [ItemStack; INV_SLOTS],
     pub harvested: HarvestedSet,
+    /// The three parts the occupant collision query needs beyond the
+    /// harvested mirror above (`sim_core::occupy`). They live here rather
+    /// than in `Predictor` for the same reason `pieces` does: the predictor
+    /// is handed its collision view, it does not own one.
+    ///
+    /// `haven` is resolved once here because `terrain::haven` is a bounded
+    /// argmax over the whole road ring — measured at ~5.4 k height taps — and
+    /// `scatter` needs it for every cell. Join-time cost, never a frame's.
+    scatter_table: ScatterTable,
+    haven: Haven,
+    /// Boxed: 24 kB of fixed capacity against wasm's 1 MB shadow stack.
+    slot_cache: Box<SlotCache>,
     pub catalog: ItemCatalog,
     /// Cell changes the last `on_stream` call produced: (key, harvested).
     slot_changes: [(u32, bool); protocol::SLOT_SYNC_BATCH],
@@ -734,6 +757,9 @@ impl ClientCore {
             cont_handle: 0,
             cont: [ItemStack::default(); INV_SLOTS],
             harvested: HarvestedSet::new(),
+            scatter_table: ScatterTable::alpha_default(),
+            haven: terrain::haven(seed),
+            slot_cache: Box::new(SlotCache::new()),
             catalog: ItemCatalog::EMPTY,
             slot_changes: [(0, false); protocol::SLOT_SYNC_BATCH],
             n_slot_changes: 0,
@@ -1606,7 +1632,16 @@ impl ClientCore {
             };
             self.next_seq = self.next_seq.wrapping_add(1);
             self.clock.client_tick = self.clock.client_tick.wrapping_add(1);
-            self.predict.step(frame, self.pieces.cols());
+            self.predict.step(
+                frame,
+                self.pieces.cols(),
+                &mut Occupants {
+                    table: &self.scatter_table,
+                    haven: &self.haven,
+                    harvested: &self.harvested,
+                    cache: &mut self.slot_cache,
+                },
+            );
             self.input_due = true;
         }
         steps
@@ -1660,8 +1695,17 @@ impl ClientCore {
                 }
                 self.clock.on_snapshot(header.tick, header.nudge);
                 if let Some(own) = self.view.get(self.player_id).copied() {
-                    self.predict
-                        .reconcile(&own, header.last_executed_seq, self.pieces.cols());
+                    self.predict.reconcile(
+                        &own,
+                        header.last_executed_seq,
+                        self.pieces.cols(),
+                        &mut Occupants {
+                            table: &self.scatter_table,
+                            haven: &self.haven,
+                            harvested: &self.harvested,
+                            cache: &mut self.slot_cache,
+                        },
+                    );
                 }
                 if delta {
                     Ingest::AppliedDelta
