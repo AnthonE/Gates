@@ -145,6 +145,32 @@ of them. `event_roles.rs` covers part of this now; finish it.
 
 ---
 
+## 5b · The wire accepts values the sim can never mean
+
+`every_domain_fits_its_wire_field` (`protocol/src/event.rs`) now gates ten
+value domains against the fields that carry them — a sim domain outgrowing
+its wire field is the shape of the 2026-08-05 FAIL, and it is caught now.
+Writing it measured two live holes running the *other* way, left unfixed on
+purpose: narrowing what decodes is a wire act, and that pass was a gate.
+
+- **`BAG_GONE_*`** — `encode_event_bag_removed` bounds against the *width*
+  (`why >= 1 << BAG_GONE_BITS`), not the domain (largest live is 2), and
+  the decoder does not bound it at all. `why == 3` round-trips as a
+  removal reason that means nothing.
+- **`REFUSE_C_*`** — 4 bits for a domain topping out at 3, and neither end
+  bounds the upper edge; only `reason == 0` is refused. Values 4..15 cross
+  intact.
+
+Both are forgery slack, not drift: the sim cannot emit either today, so
+nothing is broken for a player. The fix is the closed-set posture
+`DEATH_BY_*` now has — a derived `*_MAX` on the sim side, checked at both
+ends — and it wants its own pass because it changes what decodes, which
+means deciding whether a narrowing owes `PROTO_VER` a bump.
+
+Systems lane (`crates/protocol`, `crates/sim-core`).
+
+---
+
 ## 6 · Unmerged work, kept deliberately
 
 Nothing judged PASS is stranded. These failed or were stopped, and the

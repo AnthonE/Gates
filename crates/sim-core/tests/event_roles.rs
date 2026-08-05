@@ -88,10 +88,10 @@ use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
 use sim_core::world::{
-    Command, SimEvent, World, EV_BAG_DROPPED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH,
-    EV_DEPLOY_PLACED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_MAX,
-    EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_SLOT_HARVESTED, EV_STOCK,
-    EV_STRUCT_HIT, EV_VITALS, STRUCT_DEPLOY_BIT,
+    Command, SimEvent, World, DEATH_BY_MAX, EV_BAG_DROPPED, EV_CONSUMED, EV_CONSUME_REFUSED,
+    EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT,
+    EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_SLOT_HARVESTED,
+    EV_STOCK, EV_STRUCT_HIT, EV_VITALS, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -1727,6 +1727,112 @@ fn every_event_code_is_in_range() {
             *code,
             i as u8 + 1,
             "the event codes are not 1..=EV_MAX with no gaps: {:?}",
+            seen
+        );
+    }
+}
+
+/// The same ledger discipline, applied to a **value domain** rather than a
+/// code space — and it is the half the byte-golden provably cannot cover.
+///
+/// `every_event_code_is_in_range` above protects *which events exist*. This
+/// protects *which values a live event's field may carry*, and the two fail
+/// differently. A new `EV_*` at least changes a subtype the decoder has
+/// never seen. A new `DEATH_BY_*` changes nothing the wire can see at all:
+/// `EV_DEATH`'s layout is untouched, so `test_protocol_golden` is green;
+/// the event ring is not in `state_hash`, so `test_replay` is green; every
+/// cause is a `u8`, so clippy is green. The only witness is a runtime
+/// `Err(Range)` inside the encoder, on the one path nobody runs twice — a
+/// death.
+///
+/// That gap shipped. On 2026-08-05 a branch added `DEATH_BY_ARROW = 3`
+/// against a wire whose `DEATH_CAUSE_MAX` was 2; every arrow kill failed to
+/// encode, the server counted the range error and sent nothing, and the
+/// victim's client never learned it had died — a corpse parked behind a
+/// death screen that never opened. The judge reproduced it as
+/// `DEATH_BY_HAND -> Ok(14 bytes)` / `DEATH_BY_ARROW -> Err(Range)` and
+/// failed the pass on it. `DEATH_CAUSE_MAX` is now *derived* from
+/// `DEATH_BY_MAX` rather than restated, which makes the two ends unable to
+/// disagree — but a derived bound is only as honest as the constant it is
+/// derived from, and nothing yet stopped `DEATH_BY_MAX` from being left
+/// behind by a fourth cause. That is what this parses the file to check.
+///
+/// Parsing source in a test is the same deliberate choice `SRC` is used for
+/// above, and for the same reason stated there: the fact under assertion is
+/// *what the constant block contains*, and no amount of importing can see a
+/// constant the importer was never told about. `use sim_core::world::*` in
+/// a hundred tests would not notice `DEATH_BY_ARROW`; reading the block
+/// does.
+#[test]
+fn death_causes_are_a_closed_ledger() {
+    const SRC: &str = include_str!("../src/world.rs");
+
+    // Borrowed out of `SRC`, never built — wall 3's `String`/`format!` ban
+    // binds a test too, and the names here are `'static` slices already.
+    let mut seen: Vec<(&str, u8)> = Vec::new();
+    for line in SRC.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("pub const DEATH_BY_") else {
+            continue;
+        };
+        let Some((name, value)) = rest.split_once(": u8 = ") else {
+            continue;
+        };
+        // `DEATH_BY_MAX` is the bound itself, written as `DEATH_BY_SALT`
+        // rather than a digit — it names the ledger, it is not in it.
+        if name == "MAX" {
+            continue;
+        }
+        let value = value.trim_end_matches(';');
+        let cause: u8 = value.parse().unwrap_or_else(|_| {
+            panic!(
+                "DEATH_BY_{name} is declared as `{value}`, which is not a \
+                 literal cause — this parser reads the constant block in \
+                 `world.rs`, and a non-literal there makes the domain's \
+                 range unknowable to the wire that has to bound it"
+            )
+        });
+        seen.push((name, cause));
+    }
+
+    // The `>= 3` guard is the parser's own liveness. If the block's shape
+    // changes — a doc comment reflowed onto the declaration, a type that
+    // stops being `u8` — every `strip_prefix` above misses and this test
+    // passes while reading nothing at all. A gate that silently stops
+    // looking is worse than one that fails.
+    assert!(
+        seen.len() >= 3,
+        "only {} death causes parsed out of world.rs — the constant block's \
+         shape changed and this gate is now reading nothing, which is worse \
+         than failing",
+        seen.len()
+    );
+
+    let highest = seen.iter().map(|(_, c)| *c).max().unwrap();
+    assert_eq!(
+        highest, DEATH_BY_MAX,
+        "world.rs declares a death cause {highest} but DEATH_BY_MAX is \
+         {DEATH_BY_MAX}. protocol derives DEATH_CAUSE_MAX from DEATH_BY_MAX, \
+         so this gap is not cosmetic: `encode_event_death` refuses cause \
+         {highest} with Err(Range), the server drops the packet, and a body \
+         killed that way never learns it died. Move DEATH_BY_MAX in the same \
+         commit as the new cause."
+    );
+    assert_eq!(
+        seen.len(),
+        DEATH_BY_MAX as usize + 1,
+        "world.rs declares {} death causes but DEATH_BY_MAX is \
+         {DEATH_BY_MAX} — the causes are 0..=DEATH_BY_MAX with no gaps and \
+         no duplicates, and the wire's range check assumes exactly that.",
+        seen.len()
+    );
+
+    let mut sorted: Vec<u8> = seen.iter().map(|(_, c)| *c).collect();
+    sorted.sort_unstable();
+    for (i, cause) in sorted.iter().enumerate() {
+        assert_eq!(
+            *cause, i as u8,
+            "the death causes are not 0..=DEATH_BY_MAX with no gaps: {:?}",
             seen
         );
     }
