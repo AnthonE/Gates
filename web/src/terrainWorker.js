@@ -72,8 +72,11 @@ self.onmessage = async (e) => {
 // grew a population: `terrain::clutter_cell` picks a tuft or a pebble from
 // these same four weights, so a JS copy drifting by one rounding step would
 // put grass geometry on sand. One law, in `crates/sim-core/src/terrain.rs`
-// (`splat_from`), reached through the bridge. `ci/splat_parity.mjs` pins its
-// behaviour; the band numbers and their derivation went with it.
+// (`splat_from`), reached through the bridge — held by CONSTRUCTION, since
+// deleting the copy left nothing to hold equal. The band numbers and their
+// derivation went with it. (This line used to cite a `ci/splat_parity.mjs`
+// that has never existed in `ci/`; a wall claimed only in prose is the mood
+// CLAUDE.md warns about, so the claim goes rather than the arrangement.)
 
 /**
  * Four identity weights — sand · grass · forest litter · rock — as bytes,

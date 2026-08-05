@@ -81,7 +81,7 @@ struct Bridge {
     remote_ids: [u32; MAX_SNAPSHOT_ENTITIES],
     heights: Vec<f32>,
     slots: [f32; SLOTS_MAX_CELLS * SLOTS_MAX_CELLS * SLOT_FLOATS],
-    clutter: [f32; terrain::CLUTTER_PER_TILE * CLUTTER_FLOATS],
+    clutter: [f32; terrain::CLUTTER_TILE_CAP * CLUTTER_FLOATS],
     /// The haven pad, memoized by seed. `terrain::haven` is a pure function
     /// of the seed and a global argmax over the whole road ring, and
     /// `terrain_fill_slots` was paying for the whole search once per
@@ -144,7 +144,7 @@ impl Bridge {
             remote_ids: [0; MAX_SNAPSHOT_ENTITIES],
             heights: vec![0.0; HEIGHTS_MAX_N * HEIGHTS_MAX_N],
             slots: [0.0; SLOTS_MAX_CELLS * SLOTS_MAX_CELLS * SLOT_FLOATS],
-            clutter: [0.0; terrain::CLUTTER_PER_TILE * CLUTTER_FLOATS],
+            clutter: [0.0; terrain::CLUTTER_TILE_CAP * CLUTTER_FLOATS],
             haven: None,
             changes: [0; SLOT_SYNC_BATCH * 2],
             changes_len: 0,
@@ -1514,15 +1514,39 @@ pub extern "C" fn terrain_splat_from(h: f32, moist: f32, slope: f32) -> u32 {
     u32::from_le_bytes(w)
 }
 
-/// Fill one 16 m clutter tile. Returns the element count; the floats are at
-/// `terrain_clutter_ptr()`, `CLUTTER_FLOATS` apart, valid until the next
-/// call. Total coverage means this returns ~`CLUTTER_PER_TILE` on land and 0
-/// at sea, so a caller sizing a pool should size it for the cap.
+/// Fill one 16 m clutter tile: the uniform grid, then the prop-base skirts.
+/// Returns the element count; the floats are at `terrain_clutter_ptr()`,
+/// `CLUTTER_FLOATS` apart, valid until the next call. Total coverage means
+/// this returns ~`CLUTTER_PER_TILE` on land and 0 at sea, plus up to
+/// `SKIRT_PER_TILE` of skirt — so a caller sizing a pool sizes it for
+/// `CLUTTER_TILE_CAP`.
+///
+/// The two populations share one buffer, one call and one element layout on
+/// purpose: they are the same four kinds drawn through the same four pools,
+/// so the client streams them together and pays no second material, no second
+/// program (the prewarm count gate's subject) and no second draw call.
 #[no_mangle]
 pub extern "C" fn terrain_fill_clutter(seed: u64, tile_x: i32, tile_z: i32) -> u32 {
     with(|b| {
-        let mut buf = [terrain::CLUTTER_NONE; terrain::CLUTTER_PER_TILE];
-        let n = terrain::clutter_fill(seed, tile_x, tile_z, &mut buf);
+        let mut buf = [terrain::CLUTTER_NONE; terrain::CLUTTER_TILE_CAP];
+        let grid =
+            terrain::clutter_fill(seed, tile_x, tile_z, &mut buf[..terrain::CLUTTER_PER_TILE]);
+        // The skirts need the scatter grid resolved, which needs the same
+        // once-per-session haven `terrain_fill_slots` memoizes. Same key, same
+        // reason: the argmax sweeps the whole road ring.
+        let table = ScatterTable::alpha_default();
+        let haven = match b.haven {
+            Some((s, h)) if s == seed => h,
+            _ => {
+                let h = terrain::haven(seed);
+                b.haven = Some((seed, h));
+                h
+            }
+        };
+        let mut skirt = [terrain::CLUTTER_NONE; terrain::SKIRT_PER_TILE];
+        let ns = terrain::skirt_fill(seed, &table, &haven, tile_x, tile_z, &mut skirt);
+        buf[grid..grid + ns].copy_from_slice(&skirt[..ns]);
+        let n = grid + ns;
         for (i, e) in buf.iter().take(n).enumerate() {
             let base = i * CLUTTER_FLOATS;
             b.clutter[base] = e.kind as u8 as f32;

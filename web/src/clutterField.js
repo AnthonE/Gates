@@ -11,10 +11,10 @@ import { surfaceMaterial } from "./materials.js";
 import {
   CLUTTER_FILLS_PER_FRAME,
   CLUTTER_FLOATS,
-  CLUTTER_PER_TILE,
   CLUTTER_POOL_CAP,
   CLUTTER_RING,
   CLUTTER_ROWS,
+  CLUTTER_TILE_CAP,
   CLUTTER_TILE_M,
 } from "./clutter.js";
 
@@ -59,7 +59,7 @@ export class ClutterField {
         tz: 0,
         n: 0,
         loaded: false,
-        data: new Float32Array(CLUTTER_PER_TILE * CLUTTER_FLOATS),
+        data: new Float32Array(CLUTTER_TILE_CAP * CLUTTER_FLOATS),
       });
     }
     /** Slot indices still to fill, drained `CLUTTER_FILLS_PER_FRAME` a frame. */
@@ -187,7 +187,7 @@ export class ClutterField {
       );
       tile.data.set(src);
     }
-    tile.n = Math.min(n, CLUTTER_PER_TILE);
+    tile.n = Math.min(n, CLUTTER_TILE_CAP);
     tile.loaded = true;
     this.dirty = true;
   }

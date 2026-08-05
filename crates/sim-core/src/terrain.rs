@@ -1839,8 +1839,14 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
 //     "geometry and shading claim the same feature but evaluate different
 //     functions". Sandy ground grows pebbles, grass grows tufts, forest litter
 //     grows twigs, rock grows shards, and the population cannot drift from the
-//     surface it stands on because there is nothing to drift from.
-//     `ci/splat_parity.mjs` holds the two languages to it.
+//     surface it stands on because there is nothing to drift from. Held by
+//     CONSTRUCTION, not by a gate: the worker deleted its copy and calls
+//     `terrain_splat_from` through the bridge, so there is no second law to
+//     hold equal. (Three comments here and in `terrainWorker.js` used to cite
+//     a `ci/splat_parity.mjs` that has never existed — a wall claimed in prose
+//     and absent from `ci/`, which is the mood CLAUDE.md warns a law without a
+//     gate becomes. The claim is removed rather than a gate written for a copy
+//     that is gone; if a JS copy ever returns, it needs the gate, not this.)
 //  2. THE WEIGHTS SUM TO 255 ON LAND, so every land cell yields an element and
 //     coverage is TOTAL by construction. Rule 4's 3 m² then reduces to a
 //     property of the grid alone: a disc of radius `CLUTTER_CELL_M * √2`
@@ -1871,8 +1877,8 @@ pub const CLUTTER_CELLS_PER_SIDE: i32 = 3200;
 
 // The splat bands — the retired palette's hard thresholds with a ramp hung
 // around each (DECISIONS.md §open, materials v0). These are the SAME numbers
-// `web/src/terrainWorker.js` shipped; they moved here rather than being
-// copied, and `ci/splat_parity.mjs` fails if the two ever disagree.
+// `web/src/terrainWorker.js` shipped; they MOVED here rather than being
+// copied, so there is no second copy to disagree — see the header above.
 const SPLAT_BEACH_BAND: (f32, f32) = (1.0, 3.0);
 const SPLAT_ALPINE_BAND: (f32, f32) = (44.0, 60.0);
 const SPLAT_MOIST_BAND: (f32, f32) = (0.01, 0.09);
@@ -2020,6 +2026,55 @@ pub const CLUTTER_NONE: ClutterElem = ClutterElem {
     scale: 1.0,
 };
 
+/// Which of the four kinds grows at a point — the ONE kind law, called by the
+/// uniform grid below and by the prop skirts below that.
+///
+/// Extracted rather than copied on purpose. The header's property 1 says the
+/// mix IS the splat "because there is nothing to drift from"; a second
+/// population resolving its own kind would have put the drift straight back,
+/// and it would have drifted at exactly the place a player's eye is — the foot
+/// of a prop, where a grid tuft and a skirt tuft stand 20 cm apart.
+///
+/// `roll_bits` is the caller's already-drawn hash, shifted to whichever slice
+/// it is spending here, so this adds no draw of its own.
+fn clutter_kind_at(seed: u64, x: f32, z: f32, y: f32, roll_bits: u64) -> Clutter {
+    // The carriageway keeps its grit and loses its grass. This is the one
+    // place clutter overrides the splat, and it is the same override the
+    // scatter grid already makes for the same reason: a road that grows a
+    // continuous lawn is not a road, and `TERRAIN.md` §1 stage 7 wants the
+    // ring legible from a distance without a road material existing yet.
+    if road_band(seed, x, z) == RoadBand::Carriageway {
+        return Clutter::Pebble;
+    }
+    let w = splat_from(y, moisture(seed, x, z), slope(seed, x, z));
+    let mut total: u32 = 0;
+    for v in w.iter() {
+        total += *v as u32;
+    }
+    if total == 0 {
+        // Unreachable while the weights are normalized to 255, but a rounding
+        // change upstream must degrade to a pebble rather than punching a hole
+        // in the coverage guarantee.
+        return Clutter::Pebble;
+    }
+    let roll = (roll_bits as u32) % total;
+    let mut acc = 0u32;
+    let mut k = Clutter::Shard;
+    for (i, v) in w.iter().enumerate() {
+        acc += *v as u32;
+        if roll < acc {
+            k = match i {
+                0 => Clutter::Pebble,
+                1 => Clutter::Tuft,
+                2 => Clutter::Twig,
+                _ => Clutter::Shard,
+            };
+            break;
+        }
+    }
+    k
+}
+
 /// One hash draw decides a clutter cell's jitter, kind, yaw and scale.
 ///
 /// Full-stratum jitter (the offset spans the whole cell, not a fraction of
@@ -2044,43 +2099,7 @@ pub fn clutter_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
         return CLUTTER_NONE;
     }
 
-    // The carriageway keeps its grit and loses its grass. This is the one
-    // place clutter overrides the splat, and it is the same override the
-    // scatter grid already makes for the same reason: a road that grows a
-    // continuous lawn is not a road, and `TERRAIN.md` §1 stage 7 wants the
-    // ring legible from a distance without a road material existing yet.
-    let kind = if road_band(seed, x, z) == RoadBand::Carriageway {
-        Clutter::Pebble
-    } else {
-        let w = splat_from(y, moisture(seed, x, z), slope(seed, x, z));
-        let mut total: u32 = 0;
-        for v in w.iter() {
-            total += *v as u32;
-        }
-        if total == 0 {
-            // Unreachable while the weights are normalized to 255, but a
-            // rounding change upstream must degrade to a pebble rather than
-            // punching a hole in the coverage guarantee.
-            Clutter::Pebble
-        } else {
-            let roll = ((h >> 32) as u32) % total;
-            let mut acc = 0u32;
-            let mut k = Clutter::Shard;
-            for (i, v) in w.iter().enumerate() {
-                acc += *v as u32;
-                if roll < acc {
-                    k = match i {
-                        0 => Clutter::Pebble,
-                        1 => Clutter::Tuft,
-                        2 => Clutter::Twig,
-                        _ => Clutter::Shard,
-                    };
-                    break;
-                }
-            }
-            k
-        }
-    };
+    let kind = clutter_kind_at(seed, x, z, y, h >> 32);
 
     ClutterElem {
         kind,
@@ -2111,6 +2130,196 @@ pub fn clutter_fill(seed: u64, tile_x: i32, tile_z: i32, out: &mut [ClutterElem]
             }
             let e = clutter_cell(seed, cx0 + i, cz0 + j);
             if e.kind != Clutter::None {
+                out[n] = e;
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+// ── Prop-base skirts (ART.md rule 2) ───────────────────────────────────────
+//
+// The uniform grid above answers rule 4 — no bare patch — and it is blind to
+// props by construction: 0.64 m cells that do not know a boulder is standing
+// in them. That blindness is what the visual judge named twice in one report
+// (`findings/pass-20260804-173640-01-visual.md`, ranked gaps 1 and 3): gap 1
+// asked for the grid AND to "crowd tufts and pebbles at every prop base,
+// which pays for rule 2 a second time"; gap 3 named the symptom the missing
+// half leaves — "a razor-clean intersection at its base" — against rule 2
+// verbatim, "nothing sits ON the ground, everything sits IN it".
+//
+// A skirt is a stratified ring of the SAME four kinds hugging a prop's
+// footprint edge. Three things make it cheap rather than a second system:
+//
+//  1. IT IS THE SAME POPULATION. Same `ClutterElem`, same four kinds, same
+//     `clutter_kind_at` law, so the client draws it through the four
+//     InstancedMesh pools it already has — no new material, no new program
+//     (the prewarm count gate's subject), no new draw call.
+//  2. IT IS TILE-OWNED. Elements are clipped to the clutter tile that emits
+//     them, so a prop straddling a tile edge is skirted once and not twice,
+//     and a tile is self-contained however its neighbours stream.
+//  3. IT COSTS NO NEW GEOMETRY DECISION. Reach comes off `occupant_volume`,
+//     which is already the published footprint table every other consumer
+//     measures against, so a prop that changes size drags its skirt with it.
+//
+// Not collision, not gathered, not networked, not in `state_hash` — the same
+// standing as the grid, for the same reason.
+
+/// Reach floor in meters. `occupant_volume` publishes COLLISION radii, and a
+/// pine's is its 0.26 m trunk while a bush's is 0.0 — neither describes the
+/// ground the prop visually covers. The floor is what stops a thin prop from
+/// getting a skirt tighter than one tuft is wide.
+pub const SKIRT_MIN_R_M: f32 = 0.30;
+/// How far past the footprint edge the ring reaches. The band starts AT the
+/// edge, not inside it: an element drawn inside the prop's own radius is
+/// buried in its mesh, which spends a triangle to hide a triangle.
+pub const SKIRT_BAND_M: f32 = 0.45;
+/// Elements per meter of reach — folds 2π and a spacing into one number, so
+/// count follows circumference and a boulder is not skirted as thinly as a
+/// barrel.
+pub const SKIRT_PER_M: f32 = 12.0;
+/// Floor on the count, so the thinnest prop still breaks its own contact line.
+pub const SKIRT_MIN: usize = 3;
+/// Ceiling on the count. Also the term that makes `SKIRT_PER_TILE` a bound
+/// rather than an estimate.
+pub const SKIRT_MAX: usize = 16;
+/// Scatter cells a clutter tile covers, per side (16.0 / 8.0, exact).
+pub const SKIRT_TILE_CELLS: i32 = 2;
+/// Scatter cells scanned per side: the ones the tile covers plus a one-cell
+/// apron, because a prop jittered toward the edge skirts across it.
+pub const SKIRT_SCAN_CELLS: i32 = SKIRT_TILE_CELLS + 2;
+/// Skirt elements one tile can produce. A literal so `ci/clutter_shape.mjs`
+/// can read it out of this source, and a bound rather than a measurement:
+/// every scanned cell holding a max-reach prop, all of it landing inside.
+pub const SKIRT_PER_TILE: usize = 256;
+/// Elements one tile can produce in total — the fill buffer's real cap, and
+/// what a client pool has to be sized for.
+pub const CLUTTER_TILE_CAP: usize = CLUTTER_PER_TILE + SKIRT_PER_TILE;
+
+const _: () = {
+    assert!(SKIRT_TILE_CELLS as usize * 8 == CLUTTER_TILE_M as usize);
+    assert!(SKIRT_PER_TILE == (SKIRT_SCAN_CELLS * SKIRT_SCAN_CELLS) as usize * SKIRT_MAX);
+    assert!(SKIRT_MIN <= SKIRT_MAX);
+};
+
+/// The hash channel span: one stream per (prop cell, element index), so
+/// element 3 of a cell's skirt is independent of element 4 of the same cell's.
+/// 16 wide because `SKIRT_MAX` is 16; the next free channel is 104.
+const CH_SKIRT: u32 = 88;
+
+/// A prop's skirt reach — its published footprint radius, floored.
+pub fn skirt_base_r(o: Occupant) -> f32 {
+    let (r, _) = occupant_volume(o);
+    if r > SKIRT_MIN_R_M {
+        r
+    } else {
+        SKIRT_MIN_R_M
+    }
+}
+
+/// How many elements ring a prop: proportional to reach, bounded both ends.
+pub fn skirt_count(o: Occupant) -> usize {
+    if o == Occupant::None {
+        return 0;
+    }
+    let n = floor_i32(skirt_base_r(o) * SKIRT_PER_M) as usize;
+    n.clamp(SKIRT_MIN, SKIRT_MAX)
+}
+
+/// Element `i` of `n` around a prop, stratified by angle.
+///
+/// The stratification is the fields-pack discipline the grid already uses on
+/// position, turned 90°: each element owns one angular stratum of `256 / n`
+/// LUT steps and jitters across the WHOLE of it. Free jitter over the whole
+/// circle would let two of a boulder's sixteen tufts land in the same 5°, and
+/// leave a bald arc opposite them — a ring that is visibly a ring on one side
+/// and absent on the other reads worse than no skirt.
+///
+/// `yaw_dir` rather than trig because sim-core may not call libm (wall 1); the
+/// LUT is 256 entries of authored f32 bit patterns, so this is bit-identical
+/// native and wasm by construction.
+pub fn skirt_elem(
+    seed: u64,
+    cell_x: i32,
+    cell_z: i32,
+    slot: &Slot,
+    i: usize,
+    n: usize,
+) -> ClutterElem {
+    let h = cell_hash(seed, cell_x, cell_z, CH_SKIRT + i as u32);
+
+    // Angle: stratum base + full-stratum jitter, in LUT steps.
+    let stride = 256u32 / n as u32;
+    let jitter = (((h >> 16) & 0xFF) as u32 * stride) >> 8;
+    let idx = ((i as u32 * 256) / n as u32 + jitter) & 0xFF;
+    let (dx, dz) = crate::yaw_lut::yaw_dir((idx as u16) << 8);
+
+    // Radius: the band OUTSIDE the footprint edge, uniformly drawn.
+    let r = skirt_base_r(slot.occupant) + ((h >> 24) & 0xFF) as f32 * (SKIRT_BAND_M / 255.0);
+    let x = slot.x + dx * r;
+    let z = slot.z + dz * r;
+
+    let y = height(seed, x, z);
+    if y < LAND_MIN_H {
+        // A prop on the waterline skirts only the half of its ring that is on
+        // land. Cheaper and truer than vetoing the whole skirt.
+        return CLUTTER_NONE;
+    }
+
+    ClutterElem {
+        kind: clutter_kind_at(seed, x, z, y, h >> 32),
+        x,
+        y,
+        z,
+        yaw: ((h >> 40) & 0xFF) as u8,
+        scale: 0.75 + ((h >> 48) & 0xFF) as f32 * (0.5 / 255.0),
+    }
+}
+
+/// Fill one tile's skirt elements into a caller-owned buffer, returning the
+/// count. Same contract as `clutter_fill`: a short buffer is a thinner skirt,
+/// never an overrun.
+///
+/// Costs 16 `scatter` resolves per tile against the grid's 625 cells, so it
+/// is under a tenth of a fill it rides along with.
+pub fn skirt_fill(
+    seed: u64,
+    table: &ScatterTable,
+    haven: &Haven,
+    tile_x: i32,
+    tile_z: i32,
+    out: &mut [ClutterElem],
+) -> usize {
+    let x0 = tile_x as f32 * CLUTTER_TILE_M;
+    let z0 = tile_z as f32 * CLUTTER_TILE_M;
+    let x1 = x0 + CLUTTER_TILE_M;
+    let z1 = z0 + CLUTTER_TILE_M;
+    // The cells this tile covers, plus the one-cell apron. Exact integers:
+    // a tile is `SKIRT_TILE_CELLS` scatter cells wide, by the const assert.
+    let c0x = tile_x * SKIRT_TILE_CELLS - 1;
+    let c0z = tile_z * SKIRT_TILE_CELLS - 1;
+
+    let mut n = 0usize;
+    for dz in 0..SKIRT_SCAN_CELLS {
+        for dx in 0..SKIRT_SCAN_CELLS {
+            let cx = c0x + dx;
+            let cz = c0z + dz;
+            let slot = scatter(seed, table, haven, cx, cz);
+            let count = skirt_count(slot.occupant);
+            for i in 0..count {
+                if n >= out.len() {
+                    return n;
+                }
+                let e = skirt_elem(seed, cx, cz, &slot, i, count);
+                if e.kind == Clutter::None {
+                    continue;
+                }
+                // Tile ownership: half-open on both axes, so an element on a
+                // shared edge belongs to exactly one of the two tiles.
+                if e.x < x0 || e.x >= x1 || e.z < z0 || e.z >= z1 {
+                    continue;
+                }
                 out[n] = e;
                 n += 1;
             }

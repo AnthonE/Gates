@@ -400,6 +400,7 @@ The reads a survival map must produce, and which stage buys each:
 | chunks | 64 m, aligned with the netcode grid — one grid, everywhere |
 | scatter cells | 8 m (≈ 65 k cells; ~8–12 k live slots per seed) |
 | clutter cells | 0.64 m (≈ 10 M cells; total coverage on land, streamed in 16 m tiles) |
+| prop skirts | annulus from the footprint edge out `SKIRT_BAND_M` = 0.45 m; 3–16 elements by reach; ≤ 256 per tile (measured max 40) |
 | biomes | 4 (beach/meadow/forest/highland) |
 | roads | 1 coast ring, ~4 m wide |
 | authored sites | 3 — one haven pad + 2 waystations, all on the ring |
@@ -437,6 +438,41 @@ Two properties carry it, and both are gated rather than argued:
 
 Water is the only exclusion (the population's own `LAND_MIN_H`). The road
 carriageway is the one splat override: grit, never grass.
+
+### Stage 10b · Prop-base skirts — the grid's blind spot
+
+The grid answers rule 4 and is blind to props by construction: 0.64 m cells
+that do not know a boulder stands in them. `ART.md` rule 2 is the other half —
+*nothing sits ON the ground, everything sits IN it* — and a uniform grid cannot
+give it, because what breaks a contact line is clutter crowded AT the base, not
+clutter distributed evenly past it.
+
+`terrain::skirt_fill` rings every scatter prop with the same four kinds in a
+stratified annulus starting at the prop's footprint edge. Reach is
+`occupant_volume`'s published radius (floored, since a pine's is its 0.26 m
+trunk and a bush's is 0), so a prop that changes size drags its skirt with it.
+
+It is deliberately not a second system:
+
+- **Same population.** Same `ClutterElem`, same four pools, arriving in the
+  same `terrain_fill_clutter` buffer behind the grid — no new material, no new
+  program, no new draw call.
+- **One kind law.** `clutter_kind_at` is extracted, not copied, so grid and
+  skirt cannot drift at the one place a player's eye is: the foot of a prop,
+  where a grid tuft and a skirt tuft stand 20 cm apart.
+- **Tile-owned.** Elements are clipped half-open to the emitting tile, so a
+  prop on a tile edge is skirted once however its neighbours stream.
+
+Angular stratification with full-stratum jitter — the same discipline the grid
+uses on position, turned 90°. Free jitter over the circle clumps and leaves a
+bald arc; `test_a_skirt_is_spread_not_clumped` gates the quadrant occupancy.
+No trig: `yaw_lut::yaw_dir`, per wall 1.
+
+Measured over 1,875 tiles × 3 seeds: **max 40 elements per tile against the 256
+bound**, peak 5×5 ring 15,930 of the 22,025 the pools size for, worst triangle
+fleet 264 k = 17.6% of `DESIGN.md` §9's frame budget, inside the 20% share this
+population declared. **None of it has been seen** — no frames this pass, and
+`browser_smoke`'s renderer tier is off by operator config.
 
 ## 7 · Gates
 
