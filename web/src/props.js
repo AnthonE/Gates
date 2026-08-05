@@ -392,6 +392,98 @@ export function stumpGeometry() {
   ]);
 }
 
+/**
+ * The haven shelter, as a box list rather than as geometry.
+ *
+ * Exported because the SPEC is what `ci/haven_shelter.mjs` scores — the
+ * doorway's clear width, the headroom, the reachability of the interior and
+ * the footprint against sim-core's `HAVEN_SHELTER_HALF_M` are all statements
+ * about these fourteen boxes, and none of them is recoverable from a triangle
+ * soup without guessing. Same standard as `PINE_BANDS`: the gate reads the
+ * authored data, not a rendering of it.
+ *
+ * Local space, ground at y = 0, and **the doorway faces +Z** because that is
+ * where sim-core's yaw points: `yaw_lut` documents LUT index 0 as facing +Z,
+ * and `terrain.js` turns a slot's `yaw8` into a rotation about +Y, which
+ * carries local +Z onto exactly the `(sin, cos)` the LUT hands back. The
+ * slot's yaw faces IN at the pad center (`terrain::haven_shelter`), so a
+ * player walking in off the road sees the opening rather than the back wall.
+ *
+ * The plinth reaches 1.4 m below the floor on purpose. The pad is *found*
+ * flat, not carved flat — worst measured relief 3.76 m over 32 m — so a
+ * structure with a flat base on natural ground would show daylight under one
+ * corner. Burying the base is what a greybox can do about that without the
+ * carve, and it pays ART.md rule 2 (nothing sits ON the ground) for free.
+ */
+export const HAVEN_SHELTER_PARTS = [
+  // name,        cx,    cy,   cz,    sx,   sy,   sz
+  ["plinth", 0, -0.6, 0, 7.0, 1.6, 7.0],
+  ["wall-back", 0, 2.0, -2.9, 6.2, 3.6, 0.4],
+  ["wall-left", -2.9, 2.0, 0, 0.4, 3.6, 5.4],
+  ["wall-right", 2.9, 2.0, 0, 0.4, 3.6, 5.4],
+  // The front wall is two jambs and a lintel: a 2.4 m doorway with 2.8 m of
+  // headroom over it, which is the whole reason this is a building and not
+  // a monolith.
+  ["jamb-left", -2.15, 2.0, 2.9, 1.9, 3.6, 0.4],
+  ["jamb-right", 2.15, 2.0, 2.9, 1.9, 3.6, 0.4],
+  ["lintel", 0, 3.4, 2.9, 2.4, 0.8, 0.4],
+  ["roof", 0, 4.0, 0, 7.0, 0.4, 7.0],
+  // Corner posts overrun the roof line. They cost 48 triangles and they are
+  // what stops the silhouette reading as one box at the distance the
+  // silhouette is all there is.
+  ["post-nw", -2.9, 2.8, -2.9, 0.7, 5.2, 0.7],
+  ["post-ne", 2.9, 2.8, -2.9, 0.7, 5.2, 0.7],
+  ["post-sw", -2.9, 2.8, 2.9, 0.7, 5.2, 0.7],
+  ["post-se", 2.9, 2.8, 2.9, 0.7, 5.2, 0.7],
+  // The tower is the part that does the actual job: a pine is 6.6 m and
+  // scatter scales it to at most 7.26, so 9.2 m is the first thing on this
+  // island that stands above its own forest.
+  ["tower", 0, 6.4, -1.4, 2.2, 4.8, 2.2],
+  ["tower-cap", 0, 9.0, -1.4, 2.8, 0.4, 2.8],
+];
+
+/** Height of the tallest point of the shelter, meters. */
+export const HAVEN_SHELTER_PEAK = HAVEN_SHELTER_PARTS.reduce(
+  (m, p) => Math.max(m, p[2] + p[5] * 0.5),
+  0,
+);
+
+/**
+ * The shelter's one colour band, ramped base-dark over the whole building.
+ *
+ * Held here rather than inline in `shelterGeometry` for the reason
+ * `PINE_BANDS` is: `albedoParts` reports it to `ci/browser_smoke.mjs`'s
+ * albedo gate, and a builder that owned its own colours privately would be
+ * scored on the archetype row's `0xffffff` — which is not a colour, it is the
+ * flag that says the vertex colours are the albedo.
+ */
+export const HAVEN_SHELTER_BAND = [
+  { part: "shelter", lo: 0x4f4c47, hi: 0x8c887f },
+];
+
+/**
+ * The shelter as one baked buffer: fourteen boxes, 168 triangles, one draw
+ * call. Vertex-coloured over a single ramp so the base reads darker than the
+ * tower — a greybox with no texture still needs a value gradient or it goes
+ * flat against the sky.
+ */
+export function shelterGeometry() {
+  return bakedGeometry(
+    HAVEN_SHELTER_PARTS.map(([part, cx, cy, cz, sx, sy, sz]) => {
+      const geo = new THREE.BoxGeometry(sx, sy, sz);
+      geo.translate(cx, cy, cz);
+      return {
+        part,
+        geo,
+        lo: HAVEN_SHELTER_BAND[0].lo,
+        hi: HAVEN_SHELTER_BAND[0].hi,
+        y0: -1.4,
+        y1: HAVEN_SHELTER_PEAK,
+      };
+    }),
+  );
+}
+
 // Scatter archetypes, indexed by sim-core Occupant (1..7). `surface` names
 // an authored PBR response in materials.js; `tint` is the amplitude of the
 // deterministic per-instance colour variation (0 = every instance alike).
@@ -409,8 +501,10 @@ export const ARCHETYPES = [
   // and retired when the slot respawns. It rides every other path a scatter
   // entry does (chunk lists, swap-remove on stream-out, the tint), so the
   // index has to be a real archetype rather than a special case bolted to the
-  // side; `_addScatter` only ever reads occupants 1..7 out of the slot buffer,
-  // so 8 cannot collide with one.
+  // side. `_addScatter` casts the slot's occupant straight into this table
+  // and never range-checks it, so 8 is kept clear the only way that holds:
+  // sim-core's enum skips it, and every occupant added since has taken the
+  // next free discriminant above.
   { geo: stumpGeometry, composite: true, surface: "wood", lo: PINE_BANDS[0].lo, hi: PINE_BANDS[0].hi, lift: 0.17, tint: 0.11 },
   // 9: the haven pad's container (sim-core `Occupant::CrateSlot`). The enum
   // skips 8 rather than this table shifting to make room — the stump index is
@@ -419,6 +513,16 @@ export const ARCHETYPES = [
   // index 7 so the destination reads different from the route at silhouette
   // distance, which is the only range at which either is legible.
   { geo: () => new THREE.BoxGeometry(1.1, 0.8, 0.8), surface: "wood", lo: 0x6b5334, hi: 0x8a6d47, y0: -0.4, y1: 0.4, lift: 0.4, tint: 0.09 },
+  // 10: the haven pad's greybox (sim-core `Occupant::HavenShelter`). One
+  // slot, one building — a scatter cell holds a single occupant and the pad
+  // has no room for a second authored anchor, so the whole structure is one
+  // archetype's mesh rather than a kit of wall-sized slots. `lift` is 0
+  // because it stands on its own plinth at its own authored ground. The tint
+  // is inert at one instance, but it is authored like every other row rather
+  // than zeroed: `browser_smoke` asserts no scatter archetype has a zero
+  // amplitude, and an exception for the one-of-a-kind case is an exception
+  // the next one-of-a-kind archetype inherits without earning.
+  { geo: shelterGeometry, composite: true, surface: "rock", lo: 0xffffff, lift: 0, tint: 0.07 },
 ];
 
 /** Client-only archetype index for a felled pine's stump. */
@@ -429,14 +533,24 @@ export const ARCH_TREE = 1;
 /**
  * Every authored colour band an archetype bakes, as `{part, lo, hi}`.
  *
- * The pine is the only archetype built from more than one band, and its bands
- * live in `PINE_BANDS` because the geometry builder and the albedo gate both
- * need them. Everything else carries its ramp on the archetype row itself.
+ * Two archetypes build from bands their row does not carry — the pine out of
+ * `PINE_BANDS` and the shelter out of `HAVEN_SHELTER_BAND` — because in both
+ * cases the geometry builder and the albedo gate need the same numbers and
+ * only one of them can own them. Everything else carries its ramp on the
+ * archetype row itself.
+ *
+ * A composite archetype that is NOT listed here reports its row's `lo`, which
+ * for both of these is the `0xffffff` that means "the vertex colours are the
+ * albedo". `ci/browser_smoke.mjs` reads this function to score every
+ * archetype's albedo against `ALBEDO_LUMA_BAND`, so an omission here does not
+ * read as "unknown" — it reads as a pure white prop, and goes red saying so.
  */
 export function albedoParts(k) {
   const a = ARCHETYPES[k];
   if (!a) return [];
-  return a.geo === pineGeometry ? PINE_BANDS : [{ part: a.surface, lo: a.lo, hi: a.hi }];
+  if (a.geo === pineGeometry) return PINE_BANDS;
+  if (a.geo === shelterGeometry) return HAVEN_SHELTER_BAND;
+  return [{ part: a.surface, lo: a.lo, hi: a.hi }];
 }
 
 // --- the real pine ----------------------------------------------------------
