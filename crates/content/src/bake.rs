@@ -27,7 +27,9 @@ use sim_core::limits::{
     HEARTH_STOCK_ROWS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
     MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
 };
-use sim_core::loot::{LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CRATE};
+use sim_core::loot::{
+    LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
+};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
@@ -588,6 +590,7 @@ impl Content {
             let which = match l.container.as_str() {
                 "barrel" => LOOT_BARREL,
                 "crate" => LOOT_CRATE,
+                "cache" => LOOT_CACHE,
                 other => {
                     return Err(format!(
                         "bake: loot `{}` names container `{other}`, which the sim has no verb for",

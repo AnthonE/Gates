@@ -50,8 +50,19 @@ const WIN_CELLS: i32 = (2 * R + 1) * (2 * R + 1);
 struct Field {
     tree: Vec<bool>,
     forest: Vec<bool>,
-    counts: [u32; 11],
+    counts: [u32; OCCUPANT_SLOTS],
 }
+
+/// Bucket count for an array indexed by `Occupant as usize` — the largest
+/// discriminant plus one, which is NOT the number of variants (index 8 is
+/// the client's stump and has no variant).
+///
+/// Derived from the shipped table rather than written as a literal, because
+/// a literal here is the exact bug `terrain.rs`'s `occupant_volume` doc
+/// records: `examples/terrain_stats.rs` carried `[0u32; 10]` through the
+/// `HavenShelter = 10` commit and panicked on the first haven cell of every
+/// seed. `CacheSlot = 11` would have done it again.
+const OCCUPANT_SLOTS: usize = terrain::OCCUPANT_R_M.len();
 
 fn build(seed: u64) -> Field {
     let table = ScatterTable::alpha_default();
@@ -62,7 +73,7 @@ fn build(seed: u64) -> Field {
         forest: vec![false; n],
         // Indexed by `Occupant as usize`, which skips 8: sized to the
         // largest discriminant + 1, not to the number of variants.
-        counts: [0u32; 11],
+        counts: [0u32; OCCUPANT_SLOTS],
     };
     for cz in 0..CELLS_PER_SIDE {
         for cx in 0..CELLS_PER_SIDE {
@@ -331,18 +342,26 @@ fn test_clump_leaves_authored_slots_alone() {
     let table = ScatterTable::alpha_default();
     for seed in SEEDS {
         let f = build(seed);
-        // Both authored tiers, counted together, because the field must sit
-        // below BOTH branches: the pad's five and the lesser tier's pairs are
-        // placed because a site is there, and a grove may thin neither.
-        // `tests/haven.rs` is what proves the split between them is right;
-        // this only proves the field never reached either.
+        // Both authored tiers, counted SEPARATELY, because each draws its own
+        // container kind and therefore its own loot table: the pad's five
+        // `CrateSlot` and the lesser tier's pairs of `CacheSlot` are placed
+        // because a site is there, and a grove may thin neither. Counting
+        // them together — which this did while both tiers placed `CrateSlot`
+        // — cannot see a crate appearing where a cache should, which is the
+        // whole tier gradient landing on the wrong table.
         let live = terrain::haven(seed).minor.iter().filter(|w| w.live).count() as u32;
-        let authored = HAVEN_CRATES as u32 + live * terrain::WAYSTATION_CRATES as u32;
         assert_eq!(
             f.counts[Occupant::CrateSlot as usize],
-            authored,
-            "seed {seed}: an authored container ring lost a crate — the clump \
+            HAVEN_CRATES as u32,
+            "seed {seed}: the pad's container ring lost a crate — the clump \
              field is meant to sit below the haven branch in `scatter`."
+        );
+        assert_eq!(
+            f.counts[Occupant::CacheSlot as usize],
+            live * terrain::WAYSTATION_CRATES as u32,
+            "seed {seed}: the lesser tier's {live} site(s) do not carry \
+             {} cache(s) apiece — same rule one tier down.",
+            terrain::WAYSTATION_CRATES
         );
         assert_eq!(
             f.counts[Occupant::HavenShelter as usize],

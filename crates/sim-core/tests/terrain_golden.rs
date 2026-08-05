@@ -20,12 +20,16 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
 ///
-/// Regenerated here from `0xD16B_C36C_BC4B_D03C` because `probe_terrain`
-/// grew the three site windows and the `probe_sites` fold. Worldgen itself
-/// did not move: `terrain.rs` is untouched by this commit, and the pad,
-/// waystations and road all answer exactly what they answered before. What
-/// moved is what the fingerprint can SEE.
-const GOLDEN_TERRAIN_HASH: u64 = 0xEE0C_0328_6045_86AA;
+/// Regenerated here from `0xEE0C_0328_6045_86AA` because worldgen DID move
+/// this time: a waystation's containers resolve `Occupant::CacheSlot = 11`
+/// where they resolved the pad's `CrateSlot = 9`, so four cells on every
+/// island hash a different occupant ordinal. Nothing else changed —
+/// positions, yaws, heights and every drawn slot are bit-identical, which is
+/// why the delta is confined to the site windows the previous regeneration
+/// put on the surface in the first place. (Before those windows existed this
+/// change would have moved nothing at all: the golden could not see a
+/// waystation.)
+const GOLDEN_TERRAIN_HASH: u64 = 0xD9E1_A3B9_4C95_6DD6;
 
 #[test]
 fn test_terrain_golden() {
@@ -43,20 +47,21 @@ fn test_terrain_golden() {
 /// position — over exactly the cells `probe_window_origin` hands the digest,
 /// never a second copy of that arithmetic. A coverage test that recomputes
 /// the window is a test of itself.
-fn window_occupants(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> (i32, i32) {
+fn window_occupants(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> (i32, i32, i32) {
     let table = ScatterTable::alpha_default();
     let (cx0, cz0) = probe_window_origin(x, z);
-    let (mut shelters, mut crates) = (0i32, 0i32);
+    let (mut shelters, mut crates, mut caches) = (0i32, 0i32, 0i32);
     for cz in cz0..cz0 + PROBE_WINDOW_CELLS {
         for cx in cx0..cx0 + PROBE_WINDOW_CELLS {
             match terrain::scatter(seed, &table, haven, cx, cz).occupant {
                 Occupant::HavenShelter => shelters += 1,
                 Occupant::CrateSlot => crates += 1,
+                Occupant::CacheSlot => caches += 1,
                 _ => {}
             }
         }
     }
-    (shelters, crates)
+    (shelters, crates, caches)
 }
 
 /// The golden's COVERAGE, asserted as a count rather than trusted.
@@ -83,7 +88,7 @@ fn test_golden_covers_authored_sites() {
 
         // Sites are `WAYSTATION_MIN_SEP_M` (600 m) apart and a window is
         // 128 m across, so no window can be counting a neighbour's crates.
-        let (shelters, crates) = window_occupants(seed, &h, h.x, h.z);
+        let (shelters, crates, caches) = window_occupants(seed, &h, h.x, h.z);
         assert_eq!(
             shelters, 1,
             "seed {seed:#x}: the pad's greybox is not inside the golden's window at the pad"
@@ -95,6 +100,16 @@ fn test_golden_covers_authored_sites() {
              {} containers — the digest is not covering the pad it names",
             terrain::HAVEN_CRATES
         );
+        // The KIND is on the parity surface too, not only the count. A
+        // container's kind is what selects its loot table, so a pad that
+        // resolved `CacheSlot` on one target and `CrateSlot` on the other
+        // would be two islands paying two different prices with the digest
+        // unable to say so — the count alone cannot see it.
+        assert_eq!(
+            caches, 0,
+            "seed {seed:#x}: {caches} lesser-tier container(s) inside the pad's \
+             window — the destination is drawing the tier below it"
+        );
 
         for (i, ws) in h.minor.iter().enumerate() {
             assert!(
@@ -103,13 +118,23 @@ fn test_golden_covers_authored_sites() {
                  surface is covering `Waystation::NONE` at the island corner \
                  rather than a site (tests/waystation.rs owns the tier itself)"
             );
-            let (shelters, crates) = window_occupants(seed, &h, ws.x, ws.z);
+            let (shelters, crates, caches) = window_occupants(seed, &h, ws.x, ws.z);
             assert_eq!(
-                crates,
+                caches,
                 terrain::WAYSTATION_CRATES,
                 "seed {seed:#x}: the golden's window at waystation {i} holds \
-                 {crates} of {} containers",
+                 {caches} of {} containers",
                 terrain::WAYSTATION_CRATES
+            );
+            // The pad's own container kind is the pad's alone, for the same
+            // reason its greybox is: a `CrateSlot` here would be the lesser
+            // tier drawing `loot.crate`, which is precisely what it did until
+            // the two kinds were split.
+            assert_eq!(
+                crates, 0,
+                "seed {seed:#x}: waystation {i} stands {crates} of the pad's \
+                 own container kind — the lesser tier is paying the \
+                 destination's loot table"
             );
             // The greybox is the destination's alone — it is what makes the
             // pad read as the better place on sight, and the gradient the
