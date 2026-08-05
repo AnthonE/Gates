@@ -422,10 +422,12 @@ export function newSwingPick() {
  *   test is on its absolute value against the window.
  *
  * The harvested bit is the client's, not the sim's: `lives.is_harvested` there
- * is `entry.hidden` here, which the event lane keeps current
- * (`EV_SLOT_HARVESTED` → `terrain.setCellHarvested`). A node the client has
- * not streamed has no entry at all and is skipped — the prompt describes what
- * this client can see, which is the honest bound on a client-side hint.
+ * is `entry.hidden || entry.fellAt` here — BOTH, because a felled tree spends
+ * 93 ticks down-but-not-yet-hidden and is already gone as far as the sim is
+ * concerned. The event lane keeps them current (`EV_SLOT_HARVESTED` →
+ * `terrain.setCellHarvested`). A node the client has not streamed has no entry
+ * at all and is skipped — the prompt describes what this client can see, which
+ * is the honest bound on a client-side hint.
  *
  * @param out   a pick from `newSwingPick()`, mutated in place and returned
  * @param aim   `{x, y, z, fx, fz}` — feet position (y included: the swing has
@@ -460,7 +462,18 @@ export function resolveSwing(out, aim, world) {
       // which includes the client-only stump archetype standing where a felled
       // tree was: a stump is the CONSEQUENCE of a harvest, never a target.
       if (!(arch >= OCC_TREE && arch <= OCC_BUSH) && arch !== OCC_BARREL) continue;
-      if (e.hidden) continue; // harvested, standing only on this client's clock
+      // Down, on this client's clock only — and "down" is `hidden` OR falling.
+      //
+      // `terrain.js`'s `setCellHarvested` defines the same state that way
+      // (`entry.hidden || entry.fellAt !== 0`) and this must not define it
+      // differently. A tree does not vanish when the sim harvests it: the event
+      // sets `fellAt` and RETURNS, leaving `hidden` false while `_stepFells`
+      // animates the fall, and only sets `hidden` once the trunk has landed and
+      // sunk — `FELL_TICKS + FELL_SINK_TICKS` = 33 + 60 = 93 ticks, which at
+      // `TICK_HZ` 30 is 3.1 seconds. Reading `hidden` alone therefore offered
+      // "[LMB] CHOP TREE" for three seconds over a tree the sim had already
+      // taken, and the swing it invited would whiff.
+      if (e.hidden || e.fellAt) continue;
       const dx = e.x - aim.x;
       const dy = e.y - aim.y;
       const dz = e.z - aim.z;

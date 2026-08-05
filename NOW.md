@@ -296,6 +296,37 @@ Leaves open:
   (operator's `GATES_TIER=fast`) and this pass edits `main.js`.
 - **Building still has no prompt** — the last verb without one.
 
+## 0. The crosshair stops lying: mid-fall trees, and the wire's bearing *(ui lane)*
+
+*Ranked fixes 1 and 2 of `findings/pass-20260805-002720-06-judge.md` — that pass
+PASSED and left both open. Both are `resolveSwing`'s INPUTS, not its rules.*
+
+**The 3.1 s lie.** The resolver skipped a node on `e.hidden` alone, but a tree
+does not vanish when the sim takes it: `setCellHarvested` sets `fellAt` and
+returns with `hidden` still false, and `_stepFells` sets `hidden` only after
+`FELL_TICKS + FELL_SINK_TICKS` = 93 ticks = 3.1 s at 30 Hz. For that window the
+crosshair offered `[LMB] CHOP TREE` over an already-harvested tree. Now
+`hidden || fellAt` — `terrain.js`'s own definition of down.
+
+**The bearing.** `gather::swing` resolves on `yaw_dir(p.frame.yaw)`: 256
+bearings, `yaw >> 8`. Both resolvers were fed `Math.sin(input.yaw)`,
+free-running, up to 0.703° off the bearing the arm actually swings on.
+`input.js` gains `yawDir`/`aimDir` on the sim's grid; `main.js` feeds both picks
+through it. Quantize-both-sides, in its hint-shaped form.
+
+`ui_smoke` §R: **442 checks** (was 433), 13 mutants run, all 13 red. The table is
+pinned to `yaw_lut.rs` by value, all 256 entries, f32 bit-exact — `fround` is
+asserted beside the bits so the comparison's own rounding cannot smuggle in a
+half-ulp tolerance (an f64 table is mutant M8, red).
+
+Leaves open:
+- **The temporal seam is NOT closed** — the prompt is recomputed off the HUD's
+  slow timer and the swing lands on the next frame's yaw. Quantization only;
+  `input.js` says so at `yawDir`.
+- **Building still has no prompt**, unchanged — still the last verb without one.
+- **Nothing here is claimed to boot.** Operator tier `fast`, so `browser_smoke`
+  and `vantages` are UNRUN, and this pass edits `main.js` and `interact.js`.
+
 ## 0. The second container panel — gap 1's other half *(ui lane)*
 
 *From `findings/pass-20260804-205133-03-judge.md` gap 1, "there is nowhere to
