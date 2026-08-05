@@ -449,10 +449,11 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     const R = views.render;
     interactAim.x = R[1];
     interactAim.z = R[3];
-    // Forward in XZ. `(sin yaw, cos yaw)` is the client's own look direction,
-    // the same basis the build placement aim uses above.
-    interactAim.fx = Math.sin(input.yaw);
-    interactAim.fz = Math.cos(input.yaw);
+    // Forward in XZ, on the wire's 256-bearing grid — `input.aimDir` is
+    // `yaw_lut::yaw_dir`, not `Math.sin(input.yaw)`. The free-running yaw sits
+    // up to 0.703 deg off the bearing the sim resolves with, and this pick is a
+    // prediction of the sim's, so it has to be judged on the sim's value.
+    input.aimDir(interactAim);
     interactAim.only = only || VERB_NONE;
     interactWorld.defs = views.deployDefs;
     interactWorld.recs = deployRecs.values();
@@ -537,8 +538,10 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     swingAim.x = R[1];
     swingAim.y = R[2];
     swingAim.z = R[3];
-    swingAim.fx = Math.sin(input.yaw);
-    swingAim.fz = Math.cos(input.yaw);
+    // The same quantum, and here it is the one that matters most: `gather::swing`
+    // runs a 30 deg cone off `yaw_dir(p.frame.yaw)`, so a bearing half a
+    // quantum out puts a node on the far side of the cone edge from the arm.
+    input.aimDir(swingAim);
     return resolveSwing(swingPick, swingAim, swingWorld);
   };
   /**

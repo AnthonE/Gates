@@ -3748,6 +3748,9 @@ const gAt = (cx, cz, over) => ({
   y: 0,
   z: cz * GCELL,
   hidden: false,
+  // Both halves of "down", because `terrain.js` keeps them in two fields and a
+  // fixture carrying only one would let the resolver read only one.
+  fellAt: 0,
   ...over,
 });
 const sPick = interact.newSwingPick();
@@ -3805,6 +3808,34 @@ check(
   swingAt([gAt(1, 1, { x: P.x + 1.0, z: P.z, hidden: true })]).arch === 0,
   "a HARVESTED node still prompted — `terrain.setCellHarvested` is the event lane telling this client the" +
     " thing is down, and a hint over a stump is the clearest possible lie",
+);
+// Mid-fall: the SAME lie, in the window where `hidden` has not caught up yet.
+//
+// A tree is the one occupant that does not vanish when the sim takes it.
+// `setCellHarvested` sets `fellAt` and RETURNS — `hidden` stays false — and
+// `_stepFells` only sets `hidden` once the trunk has landed and sunk, at
+// `FELL_TICKS + FELL_SINK_TICKS` = 33 + 60 = 93 ticks, which is 3.1 s at
+// `TICK_HZ` 30. For that whole window `cellEntry` hands back a non-hidden tree
+// at a cell the sim has already harvested, so reading `hidden` alone offered
+// "[LMB] CHOP TREE" over it and the swing it invited would whiff.
+//
+// `terrain.js`'s own `setCellHarvested` defines the state as
+// `entry.hidden || entry.fellAt !== 0`; this pins the resolver to that same
+// definition rather than to half of it.
+check(
+  swingAt([gAt(1, 1, { x: P.x + 1.0, z: P.z, fellAt: 1 })]).arch === 0,
+  "a tree MID-FALL still prompted — `hidden` is false for the 93 ticks (3.1 s) between the harvest event and" +
+    " the trunk landing, and terrain.js calls that state down; a resolver reading only `hidden` promises a" +
+    " chop on a tree the sim has already taken",
+);
+// And the pair is read as an OR, not as an AND or as `fellAt` alone: a node
+// that is hidden with no fall recorded (every non-tree harvest, and a tree
+// whose fall has retired) must still be skipped.
+check(
+  swingAt([gAt(1, 1, { x: P.x + 1.0, z: P.z, hidden: true, fellAt: 1 })]).arch === 0 &&
+    swingAt([gAt(1, 1, { x: P.x + 1.0, z: P.z, hidden: true, fellAt: 0 })]).arch === 0,
+  "the two halves of `down` are not read as an OR — a rock harvest sets `hidden` with no `fellAt`, and a" +
+    " landed tree carries `hidden` with `fellAt` cleared, so either alone must be enough to skip the cell",
 );
 // The window is 3×3 CELLS, not a radius: the sim never looks further, so a
 // node inside the 2 m reach whose cell is two away cannot be hit.
@@ -3896,6 +3927,147 @@ check(
     " trig on purpose (fmath's whole discipline), and a recomputed cosine is a second source for one number",
 );
 
+// --- the bearing both resolvers are judged on --------------------------------
+// Every constant above is pinned against Rust. The one INPUT was not, and that
+// is the hole: `gather::swing` does not resolve on the yaw the player holds. It
+// runs `yaw_dir(p.frame.yaw)` = `YAW_LUT_BITS[yaw >> 8]` — 256 bearings,
+// 360/256 = 1.40625 deg apart — and the 30 deg cone, the point-blank bypass and
+// nearest-wins are all computed against THAT vector. A client judging the same
+// cone on `Math.sin(input.yaw)` predicts the sim's pick from a bearing the sim
+// will never use, by up to half a quantum: 0.703 deg. A node just inside the
+// cone edge on the client's bearing is just outside it on the sim's.
+//
+// This is CLAUDE.md's "quantize both sides or prediction drifts by rounding —
+// the server sims on the values it transmits", in its hint-shaped form, and
+// nothing else in the repo can see it: the client sends a swing as a button
+// bit, so no packet carries its opinion of the target. The protocol golden, the
+// replay hash and clippy are all untouched by a wrong bearing.
+//
+// So the client's table is held to the Rust one BY VALUE, all 256 entries, as
+// f32 bit patterns with NO tolerance — including no half-ulp one hidden inside
+// the comparison, see the `fround` note in the loop. That is achievable rather
+// than merely desirable: `yaw_lut.rs` is `ci/gen_yaw_lut.py`'s sin/cos rounded
+// to f32, and `Float32Array` rounds identically — measured at 0 ulp across all
+// 512 values. A tolerance would let a convention flip hide inside it (sin/cos
+// swapped, index 0 facing +X, rotation reversed), and a swapped pair is
+// precisely the positional-payload class this file exists for.
+const inputMod = await import(pathToFileURL(path.join(root, "web/src/input.js")).href);
+const yawLutSrc = fs.readFileSync(path.join(root, "crates/sim-core/src/yaw_lut.rs"), "utf8");
+const rsLut = [];
+for (
+  let re = /\[(0x[0-9A-Fa-f]{8}), (0x[0-9A-Fa-f]{8})\], \/\/\s*(\d+)$/gm, m = re.exec(yawLutSrc);
+  m;
+  m = re.exec(yawLutSrc)
+) {
+  rsLut[Number(m[3])] = [parseInt(m[1], 16) >>> 0, parseInt(m[2], 16) >>> 0];
+}
+// Counted with an explicit loop, not `every`: `Array.prototype.every` SKIPS
+// holes, so a sparse parse would sail through it reporting length 256 while
+// comparing nothing — the gate-that-matches-nothing class, one level subtler.
+let rsLutCount = 0;
+for (let i = 0; i < 256; i++) if (Array.isArray(rsLut[i])) rsLutCount++;
+check(
+  rsLutCount === 256 && inputMod.YAW_BEARINGS === 256,
+  `parsed ${rsLutCount} of 256 bearings out of yaw_lut.rs against input.js's YAW_BEARINGS =` +
+    ` ${inputMod.YAW_BEARINGS} — a table this gate cannot read compares nothing at all`,
+);
+const f32bits = (() => {
+  const buf = new ArrayBuffer(4);
+  const f = new Float32Array(buf);
+  const u = new Uint32Array(buf);
+  return (x) => {
+    f[0] = x;
+    return u[0] >>> 0;
+  };
+})();
+const yawOut = { fx: 0, fz: 0 };
+let lutBad = 0;
+let lutFirst = "";
+for (let i = 0; i < rsLutCount; i++) {
+  inputMod.yawDir(i << 8, yawOut);
+  const gx = f32bits(yawOut.fx);
+  const gz = f32bits(yawOut.fz);
+  // `f32bits` ROUNDS to f32, so comparing bits alone would accept an f64 table
+  // whose values merely round to Rust's — a half-ulp tolerance smuggled in by
+  // the comparison itself. `fround(v) === v` closes it: the shipped value has
+  // to already BE the f32, which is what makes "bit-exact" a fact and not a
+  // description of the assertion's own rounding.
+  const isF32 = Math.fround(yawOut.fx) === yawOut.fx && Math.fround(yawOut.fz) === yawOut.fz;
+  if (isF32 && gx === rsLut[i][0] && gz === rsLut[i][1]) continue;
+  if (!lutBad) {
+    lutFirst =
+      `first at index ${i}: input.js (0x${gx.toString(16)}, 0x${gz.toString(16)})` +
+      ` vs yaw_lut.rs (0x${rsLut[i][0].toString(16)}, 0x${rsLut[i][1].toString(16)})`;
+  }
+  lutBad++;
+}
+check(
+  lutBad === 0 && rsLutCount === 256,
+  `${lutBad} of ${rsLutCount} bearings differ from sim-core's yaw_lut.rs — ${lutFirst}. Every aim cone in the` +
+    " client would then be resolved on a direction the sim does not swing on, and no wire golden, replay hash" +
+    " or clippy wall can see the difference",
+);
+// Only bits 8..15 carry the direction. The sim indexes `yaw >> 8` and discards
+// the low byte outright, so the low byte must not move the client's bearing
+// either — otherwise the aim is continuous again, merely in smaller steps —
+// and the next index up must move it, or the table is degenerate.
+const loA = inputMod.yawDir(0x1234, { fx: 0, fz: 0 });
+const loB = inputMod.yawDir(0x12ff, { fx: 0, fz: 0 });
+const loC = inputMod.yawDir(0x1300, { fx: 0, fz: 0 });
+check(
+  loA.fx === loB.fx && loA.fz === loB.fz && (loC.fx !== loA.fx || loC.fz !== loA.fz),
+  `yawDir let the low byte of the wire yaw move the bearing, or the next index did not move it —` +
+    ` 0x1234 -> (${loA.fx}, ${loA.fz}), 0x12ff -> (${loB.fx}, ${loB.fz}), 0x1300 -> (${loC.fx}, ${loC.fz}).` +
+    " The sim reads yaw >> 8; a client reading more or less than that is quantized to a different grid",
+);
+// The METHOD the call sites use, against the FUNCTION the 256-entry table pins.
+// These can drift — `aimDir` could quantize a different yaw (a stale copy, the
+// render view's rather than the tracker's) and every check above would stay
+// green. Built with `Object.create` off the prototype rather than `new`: the
+// real methods and the real prototype chain, without the constructor, which
+// wants a canvas and a document this gate's page never gives it.
+const proto = inputMod.InputTracker.prototype;
+const yawCases = [0, 0.001, 0.7, Math.PI / 2, Math.PI, 4.2, 6.28, -0.9, 123.456];
+let aimBad = 0;
+for (const yaw of yawCases) {
+  const self = Object.assign(Object.create(proto), { yaw, pitch: 0 });
+  const viaMethod = self.aimDir({ fx: 0, fz: 0 });
+  const viaFn = inputMod.yawDir(self.yawU16(), { fx: 0, fz: 0 });
+  if (viaMethod.fx !== viaFn.fx || viaMethod.fz !== viaFn.fz) aimBad++;
+}
+check(
+  aimBad === 0,
+  `aimDir disagrees with yawDir(yawU16()) at ${aimBad} of ${yawCases.length} yaws — the method is what main.js` +
+    " calls and the function is what the table above pins, so a drift between the two is ungated on both sides",
+);
+// The wiring. The quantum is worth nothing if the resolvers are still fed the
+// free-running value, and both call sites have to move together: E's pick and
+// the swing's are separate resolvers reading the same tracker.
+check(
+  /input\.aimDir\(interactAim\)/.test(mainSrc) && /input\.aimDir\(swingAim\)/.test(mainSrc),
+  "main.js does not feed BOTH resolvers through input.aimDir — whichever one still computes its own look" +
+    " direction is judged on a bearing gather.rs and deploy.rs never see",
+);
+check(
+  !/(interactAim|swingAim)\.f[xz] = /.test(mainSrc),
+  "main.js still assigns a resolver's fx/fz directly — that is where the free-running Math.sin(input.yaw) was," +
+    " and input.aimDir is what replaced it; an assignment beside the call would silently win by running second",
+);
+// And the one aim that must KEEP the free-running yaw, stated so a later pass
+// does not "fix" it by symmetry: `buildTarget` computes a grid address the
+// client SENDS — `client_action_place(row, cx, cz, level, loc)`. The sim does
+// not re-derive that cell from yaw, so the client's opinion IS the payload and
+// there is no second value for it to agree with. Quantizing there would only
+// coarsen the preview to 1.4 deg steps for no one's benefit. The exemption
+// rests on both halves, so both are checked: if either changes it needs
+// deciding again rather than inheriting.
+check(
+  /R\[1\] \+ Math\.sin\(input\.yaw\)/.test(mainSrc) &&
+    /client_action_place\(row, cx, cz, level, loc\)/.test(mainSrc),
+  "buildTarget no longer aims with the free-running yaw, or placement no longer sends its own cell — those" +
+    " two facts together are why placement is exempt from the quantum above, and neither may lapse silently",
+);
+
 // =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
@@ -3918,7 +4090,10 @@ console.log(
     "the chain's five scans are gone, prompt hidden at load and text-only, door prompt reads open/locked · " +
     `the swing is the other resolver: reach ${rsReachG} m / cone ${rsCone} / dy ${rsDy} / blank ${rsBlank} ` +
     `against gather.rs, occupant ordinals against terrain.rs (rock and stump pass through), 3x3 cell window, ` +
-    "strict tie to the first cell in dz-then-dx order, harvested skipped, drawn only where E is silent",
+    "strict tie to the first cell in dz-then-dx order, harvested AND mid-fall skipped, drawn only where E " +
+    "is silent · " +
+    `both resolvers aim on the wire quantum: all ${rsLutCount} bearings bit-exact against yaw_lut.rs, low byte ` +
+    "ignored as the sim ignores it, aimDir == yawDir(yawU16()), placement's sent-address aim exempt",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
