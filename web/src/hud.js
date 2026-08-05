@@ -7,6 +7,11 @@
 // here. Every address this panel forms names its container explicitly — see
 // the note on `invContainers` in the constructor.
 import { CONT_SELF, CONT_BAG, CONT_BOX, INV_SLOTS, slotsIn } from "./invmove.js";
+// The map's geography, from the module that owns it. Same arrangement as the
+// line above and for the same reason: `drawMap` needs a projection and a grid
+// label, and a second copy of either here would be a marker that could
+// disagree with the island it is drawn on.
+import { GRID_COLS, GRID_LETTERS, gridLabel, worldToMap } from "./map.js";
 
 /** Toast lifetime and cap (cosmetic; the stack reads like the reference
  * gather feedback — stacking "+N Thing" lines that fade). */
@@ -93,6 +98,31 @@ export const COMPASS_CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
  * cannot disagree, and now BOTH gates can see it.
  */
 export const COMPASS_CARD_DEG = 45;
+
+/**
+ * The map canvas, in pixels — backing store and CSS size both, so nothing the
+ * browser draws is resampled by the browser.
+ *
+ * 512 is exactly 2x `map.js`'s `MAP_N` (256, one sample per 8 m terrain cell),
+ * and the integer factor is the point: `drawMap` upscales with
+ * `imageSmoothingEnabled = false`, and a non-integer factor there gives some
+ * output pixels one sample and some two, which puts a moiré over a coastline.
+ * It also fits with the hotbar and the vitals stack still clear on a 720-tall
+ * viewport, which is the reference frame's arrangement
+ * (`Rust Images/mapstylized.jpg` keeps both over the map).
+ */
+export const MAP_DRAW_PX = 512;
+
+/** The player marker's half-height, in canvas pixels. Big enough to find on a
+ * 512 square, small enough that it names a grid square rather than covering
+ * one (a square is `MAP_DRAW_PX / GRID_COLS` = 32 px). */
+export const MAP_MARKER_PX = 7;
+
+/** Degrees per wire yaw unit — the same quantum `COMPASS_DEG_PER_U16` is, and
+ * deliberately the same NUMBER: the marker's heading and the compass strip's
+ * bearing are one fact shown twice, so they are converted once each from the
+ * same units rather than derived from each other. */
+const MAP_DEG_PER_U16 = COMPASS_DEG_PER_U16;
 
 /** The inventory screen's LAYOUT split, ALPHA.md §1's "6 hotbar slots, 24
  * inventory". The total they must sum to is `INV_SLOTS`, and that one is
@@ -202,6 +232,28 @@ export class Hud {
     this.compassNow = document.getElementById("compassnow");
     this.bearingPx = -1;
     this.buildCompass();
+
+    // The map screen. Element refs only: the island is painted once by
+    // main.js (which owns the wasm sampler) and handed here as bytes, and
+    // everything drawn on top of it — grid, labels, the marker — is redrawn
+    // from the cached terrain each time the view moves. Nothing is allocated
+    // per redraw; `mapImage` and `mapPos` below are the two reused objects.
+    this.map = document.getElementById("map");
+    this.mapCanvas = document.getElementById("mapcanvas");
+    this.mapRef = document.getElementById("mapref");
+    this.mapOpen = false;
+    /** The painted island, as an offscreen canvas. Null until main.js hands
+     * the bytes over, and `drawMap` returns early without it — a grid and a
+     * marker on an empty canvas say "you are here" about nowhere. */
+    this.mapTile = null;
+    this.mapTileSize = 0;
+    this.mapX = 0;
+    this.mapZ = 0;
+    this.mapYaw = 0;
+    /** Reused by `drawMap`'s projection: the map redraws four times a second
+     * while open and `CLAUDE.md`'s client law is no per-frame allocations. */
+    this.mapPos = { px: 0, py: 0 };
+    this.mapLastRef = "";
     this.craftOpen = false;
     this.last = "";
     this.lastBuild = "";
@@ -704,6 +756,148 @@ export class Hud {
     return this.invOpen;
   }
 
+  // -------------------------------------------------------------------------
+  // The map screen.
+  //
+  // The split with `map.js` is the same one `interact.js` has with the keypress
+  // handler: `map.js` owns the geography — where a position lands, which grid
+  // square it is in, what colour the ground is — and is pure, so `ui_smoke` §U
+  // scores all of it in node. This owns the canvas and nothing else. Neither
+  // file has a second copy of the other's arithmetic: `drawMap` below asks
+  // `worldToMap` where the marker goes rather than repeating the projection,
+  // because a marker drawn by a second projection is a marker that disagrees
+  // with the island under it and nothing on screen would say which was wrong.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Hand the painted island over — `paintMap`'s RGBA bytes and the side they
+   * were painted at. Called once per seed by main.js, which owns the wasm
+   * sampler; this keeps it as an offscreen canvas so every later redraw is one
+   * `drawImage` instead of a re-blit of 256 KB.
+   */
+  setMapTerrain(rgba, size) {
+    const tile = document.createElement("canvas");
+    tile.width = size;
+    tile.height = size;
+    const tctx = tile.getContext("2d");
+    const img = tctx.createImageData(size, size);
+    img.data.set(rgba);
+    tctx.putImageData(img, 0, 0);
+    this.mapTile = tile;
+    this.mapTileSize = size;
+    if (this.mapOpen) this.drawMap();
+  }
+
+  /**
+   * Where the player is and which way they are facing. `yawU16` is the wire's
+   * own bearing quantum, the same value `setBearing` takes — the marker and the
+   * compass strip must not be able to disagree about which way is forward, and
+   * they cannot if they are told in the same units.
+   *
+   * main.js calls this only while the map is open — the readout lives inside
+   * the panel, so a closed map redrawing four times a second would be paying
+   * for pixels nobody is looking at, which is the rule the inventory's own
+   * timer branch already follows. The `textContent` write is still behind a
+   * change guard: standing still is the common case and it should cost one
+   * string compare, not one layout.
+   */
+  setMapView(x, z, yawU16) {
+    this.mapX = x;
+    this.mapZ = z;
+    this.mapYaw = yawU16;
+    const ref = gridLabel(x, z);
+    const text = ref ? `grid ${ref}` : "off the island";
+    if (text !== this.mapLastRef) {
+      this.mapLastRef = text;
+      this.mapRef.textContent = text;
+    }
+    if (this.mapOpen) this.drawMap();
+  }
+
+  /** Toggle the map screen; returns whether it is now open. */
+  toggleMap() {
+    this.mapOpen = !this.mapOpen;
+    this.map.style.display = this.mapOpen ? "flex" : "none";
+    if (this.mapOpen) this.drawMap();
+    return this.mapOpen;
+  }
+
+  /**
+   * One frame of the map: the island, the grid over it, the labels, and you.
+   *
+   * Never on the RAF timer. This is called from `setMapView` off the HUD's
+   * quarter-second timer and from `toggleMap`, so an open map costs four blits
+   * a second and a closed one costs nothing — `DESIGN.md` §9's rule that the UI
+   * is never in the render loop, and `CLAUDE.md`'s that the client is a hot
+   * path too.
+   */
+  drawMap() {
+    if (!this.mapTile) return;
+    const ctx = this.mapCanvas.getContext("2d");
+    const D = MAP_DRAW_PX;
+    // Nearest-neighbour, and it is load-bearing rather than a preference: the
+    // island is 256 samples wide and the browser's default bilinear upscale
+    // spreads every coastline sample over four output pixels, which reads as
+    // fog exactly where the map has to be sharpest.
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this.mapTile, 0, 0, this.mapTileSize, this.mapTileSize, 0, 0, D, D);
+
+    // The grid. `mapstylized.jpg` puts a hairline on every square boundary and
+    // the label inside the square's top-left corner, which is what makes a
+    // reference like "H11" mean a place rather than a direction.
+    const cells = GRID_COLS;
+    const step = D / cells;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(10, 15, 20, 0.35)";
+    ctx.beginPath();
+    for (let k = 1; k < cells; k++) {
+      const p = Math.round(k * step) + 0.5;
+      ctx.moveTo(p, 0);
+      ctx.lineTo(p, D);
+      ctx.moveTo(0, p);
+      ctx.lineTo(D, p);
+    }
+    ctx.stroke();
+    ctx.font = "9px monospace";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "rgba(10, 15, 20, 0.55)";
+    for (let r = 0; r < cells; r++) {
+      for (let c = 0; c < cells; c++) {
+        ctx.fillText(`${GRID_LETTERS[c]}${r + 1}`, c * step + 2, r * step + 2);
+      }
+    }
+
+    // You. A triangle pointing along the bearing, not a dot: the map answers
+    // "where am I" and the compass answers "which way am I facing", and a
+    // player holding both open should not have to hold the second one in their
+    // head to read the first.
+    //
+    // The heading is rotated into IMAGE space, which is not world space — the
+    // image's y grows south while +z is north, so the same flip `paintMap`
+    // applies to its rows applies here to the direction. World +z (north) must
+    // point UP the canvas.
+    worldToMap(this.mapPos, this.mapX || 0, this.mapZ || 0, D);
+    const rad = ((this.mapYaw || 0) * MAP_DEG_PER_U16 * Math.PI) / 180;
+    // Bearing 0 is north; sin/cos give the world direction, and negating the
+    // north term puts it up the image.
+    const dx = Math.sin(rad);
+    const dy = -Math.cos(rad);
+    const px = this.mapPos.px;
+    const py = this.mapPos.py;
+    ctx.beginPath();
+    ctx.moveTo(px + dx * MAP_MARKER_PX, py + dy * MAP_MARKER_PX);
+    ctx.lineTo(px - dy * MAP_MARKER_PX * 0.6 - dx * MAP_MARKER_PX * 0.5,
+               py + dx * MAP_MARKER_PX * 0.6 - dy * MAP_MARKER_PX * 0.5);
+    ctx.lineTo(px + dy * MAP_MARKER_PX * 0.6 - dx * MAP_MARKER_PX * 0.5,
+               py - dx * MAP_MARKER_PX * 0.6 - dy * MAP_MARKER_PX * 0.5);
+    ctx.closePath();
+    ctx.fillStyle = "#e6edf3";
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "#0b1016";
+    ctx.stroke();
+  }
+
   /** Show the container block only when there is one open AND the inventory
    *  it drags against is on screen. One writer for that display. */
   drawContPanel() {
@@ -723,10 +917,23 @@ export class Hud {
    * The panel's own toggle and close keys are excluded, so the answer is
    * self-contained: main.js handles those two first, but nothing here
    * depends on it doing so.
+   *
+   * The map joined on 2026-08-05 with its own two exclusions. It has to: a
+   * map is a screen you read while deciding where to walk, and every verb key
+   * under it spends something — U upgrades a wall you cannot see, L locks a
+   * door you are not looking at, and E is resolved against a crosshair that is
+   * behind a 512-pixel panel. The reference's own map is the same kind of
+   * screen (`Rust Images/mapstylized.jpg`: the world is not visible behind it
+   * at all).
    */
   eatsKey(code) {
-    if (!this.invOpen) return false;
-    return code !== "Tab" && code !== "Escape";
+    if (!this.invOpen && !this.mapOpen) return false;
+    // A key any OPEN panel claims as its own is not eaten — the union, not the
+    // first match. Both can be up at once (Tab then M), and asking only about
+    // the first would strand the other panel's close key under it.
+    if (this.invOpen && (code === "Tab" || code === "Escape")) return false;
+    if (this.mapOpen && (code === "KeyM" || code === "Escape")) return false;
+    return true;
   }
 
   /**
