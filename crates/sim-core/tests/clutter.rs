@@ -7,10 +7,10 @@
 //! it. Everything else here defends a premise that measurement rests on.
 
 use sim_core::terrain::{
-    self, Clutter, ClutterElem, Haven, Occupant, ScatterTable, CELL_SIZE, CLUTTER_CELLS_PER_SIDE,
-    CLUTTER_CELLS_PER_TILE, CLUTTER_CELL_M, CLUTTER_NONE, CLUTTER_PER_TILE, CLUTTER_TILE_M,
-    LAND_MIN_H, OCCUPANT_R_M, SKIRT_BAND_M, SKIRT_MAX, SKIRT_MIN, SKIRT_MIN_R_M, SKIRT_PER_TILE,
-    SKIRT_SCAN_CELLS, SKIRT_TILE_CELLS,
+    self, Clutter, ClutterElem, Haven, Occupant, ScatterTable, CELL_SIZE, CLUTTER_BASE_PER_TILE,
+    CLUTTER_CELLS_PER_SIDE, CLUTTER_CELLS_PER_TILE, CLUTTER_CELL_M, CLUTTER_NONE, CLUTTER_PER_TILE,
+    CLUTTER_RICH_PER_TILE, CLUTTER_TILE_M, LAND_MIN_H, OCCUPANT_R_M, SKIRT_BAND_M, SKIRT_MAX,
+    SKIRT_MIN, SKIRT_MIN_R_M, SKIRT_PER_TILE, SKIRT_SCAN_CELLS, SKIRT_TILE_CELLS,
 };
 
 const SEEDS: [u64; 3] = [0x0047_4154_4553, 1, 0xDEAD_BEEF];
@@ -20,7 +20,9 @@ const MAX_BARE_M2: f32 = 3.0;
 /// The near field the rule is about.
 const NEAR_R_M: f32 = 15.0;
 
-/// Every element within `r` of (ox, oz), brute-forced off the cell grid.
+/// Every element within `r` of (ox, oz), brute-forced off the cell grid —
+/// BOTH strata, because a query that saw only the coverage draw would measure
+/// a population the client does not draw.
 fn elements_near(seed: u64, ox: f32, oz: f32, r: f32) -> Vec<ClutterElem> {
     let c0x = ((ox - r) / CLUTTER_CELL_M) as i32 - 1;
     let c1x = ((ox + r) / CLUTTER_CELL_M) as i32 + 1;
@@ -29,37 +31,66 @@ fn elements_near(seed: u64, ox: f32, oz: f32, r: f32) -> Vec<ClutterElem> {
     let mut out = Vec::new();
     for cz in c0z..=c1z {
         for cx in c0x..=c1x {
-            let e = terrain::clutter_cell(seed, cx, cz);
-            if e.kind != Clutter::None {
-                out.push(e);
+            for e in [
+                terrain::clutter_cell(seed, cx, cz),
+                terrain::clutter_rich_cell(seed, cx, cz),
+            ] {
+                if e.kind != Clutter::None {
+                    out.push(e);
+                }
             }
         }
     }
     out
 }
 
-/// A land point near the island centre to stand on, for a seed.
-fn a_land_origin(seed: u64, bearing: usize) -> (f32, f32) {
+/// How many distinct stances the wall below takes per seed.
+const ORIGINS_PER_SEED: usize = 24;
+
+/// A land point to stand on, for a seed and a stance index.
+///
+/// THIS FUNCTION USED TO RETURN ONE POINT. It walked outward from the island
+/// centre along four axis rays, stopping at the first sample that was land —
+/// and the centre itself qualifies on every seed here, so all four bearings
+/// returned (1024, 1024) and the wall's twelve origins were three. It sampled
+/// 10 000+ query points and reported a worst disc, which is why nothing about
+/// it looked thin; the coverage it actually had was one interior vantage per
+/// seed. That is the shape `findings/pass-20260804-173640-01-visual.md` gap 2
+/// names for a different gate in the same breath — "the gate measures at two
+/// masked vantages that the artifact evades" — and the fix is the same one:
+/// stand where the population is thinnest, not where it is convenient.
+///
+/// So the stance is now a spiral of `ORIGINS_PER_SEED` distinct bearings AND
+/// radii, reaching from the island centre to the shore. Two things follow
+/// that the old walk could not see: the ring crosses every biome the splat
+/// has (the beach band is the outer radii, where `clutter_rich_cell` refuses
+/// nearly every draw), and it crosses the coast road, whose carriageway is
+/// the one place clutter is deliberately overridden.
+fn a_land_origin(seed: u64, stance: usize) -> (f32, f32) {
     let c = 1024.0f32;
-    // Walk outward on one of eight rays until the ground is comfortably land
-    // and not a cliff — the same conditions a spawn would want.
-    let (dx, dz) = match bearing % 4 {
-        0 => (1.0, 0.0),
-        1 => (0.0, 1.0),
-        2 => (-1.0, 0.0),
-        _ => (0.0, -1.0),
-    };
-    let mut r = 0.0f32;
-    while r < 700.0 {
-        let (x, z) = (c + dx * r, c + dz * r);
-        if terrain::height(seed, x, z) > LAND_MIN_H + 3.0
-            && terrain::slope(seed, x, z) < 0.6
-            && terrain::height(seed, x + 20.0, z + 20.0) > LAND_MIN_H
-            && terrain::height(seed, x - 20.0, z - 20.0) > LAND_MIN_H
-        {
+    // A golden-angle spiral: successive stances are far apart in bearing AND
+    // in radius, so no two land in the same neighbourhood. Bearings come off
+    // the yaw LUT rather than trig — sim-core forbids libm, and a test is in
+    // the crate the wall applies to.
+    // 157/256 of a turn is the golden angle to the nearest LUT index, so 24
+    // stances spread without ever repeating a bearing.
+    let idx = ((stance * 157) % 256) as u16;
+    let (ux, uz) = sim_core::yaw_dir(idx << 8);
+    // Reach outward across the whole island radius as the stance advances,
+    // so the far stances are genuinely coastal and not just off-centre.
+    let want = 40.0 + (stance as f32 / ORIGINS_PER_SEED as f32) * 860.0;
+
+    // March in from the wanted radius until the ground is land and standable
+    // — the same conditions a spawn would want. Marching INWARD rather than
+    // outward is what keeps a coastal stance coastal: an outward walk that
+    // starts at the centre always answers with the centre.
+    let mut r = want;
+    while r > 8.0 {
+        let (x, z) = (c + ux * r, c + uz * r);
+        if terrain::height(seed, x, z) > LAND_MIN_H + 1.0 && terrain::slope(seed, x, z) < 0.9 {
             return (x, z);
         }
-        r += 8.0;
+        r -= 4.0;
     }
     (c, c)
 }
@@ -81,9 +112,11 @@ fn test_no_bare_patch_inside_fifteen_metres() {
     let mut worst_where = (0u64, 0.0f32, 0.0f32);
     let mut checked = 0usize;
 
+    let mut stood: Vec<(f32, f32)> = Vec::new();
     for &seed in SEEDS.iter() {
-        for bearing in 0..4 {
+        for bearing in 0..ORIGINS_PER_SEED {
             let (ox, oz) = a_land_origin(seed, bearing);
+            stood.push((ox, oz));
             // Elements out to 15 m + a margin, so a query point at the rim
             // still sees everything that could be its nearest neighbour.
             let els = elements_near(seed, ox, oz, NEAR_R_M + 3.0);
@@ -128,6 +161,33 @@ fn test_no_bare_patch_inside_fifteen_metres() {
     }
 
     assert!(checked > 10_000, "only {checked} land query points sampled");
+
+    // THE STANCE IS PART OF THE WALL. `checked` counts query points, and a
+    // gate can have a hundred thousand of those and still be standing in one
+    // place — which is exactly what this test did before this pass: four
+    // bearings that all resolved to the island centre, three real vantages
+    // across three seeds, and a query count that hid it. Assert the spread
+    // directly, so a future edit to `a_land_origin` that collapses it fails
+    // HERE rather than quietly narrowing what the disc measurement covers.
+    let mut apart = 0usize;
+    for (i, a) in stood.iter().enumerate() {
+        for b in stood.iter().skip(i + 1) {
+            let (dx, dz) = (a.0 - b.0, a.1 - b.1);
+            if dx * dx + dz * dz > 4.0 * NEAR_R_M * NEAR_R_M {
+                apart += 1;
+            }
+        }
+    }
+    let pairs = stood.len() * (stood.len() - 1) / 2;
+    assert!(
+        stood.len() == SEEDS.len() * ORIGINS_PER_SEED && apart * 10 >= pairs * 9,
+        "the wall stands in one place: {} origins, only {apart} of {pairs} pairs \
+         more than {} m apart — the disc below is measured wherever these land, \
+         so a collapsed stance is a gate that asserts less than it appears to",
+        stood.len(),
+        2.0 * NEAR_R_M
+    );
+
     let area = core::f32::consts::PI * worst * worst;
     // The margin is NOT printed here. `println!` is a disallowed macro in this
     // crate — the L3 wall against I/O in the sim — and a test is not an
@@ -143,6 +203,262 @@ fn test_no_bare_patch_inside_fifteen_metres() {
         worst_where.0,
         worst_where.1,
         worst_where.2
+    );
+}
+
+/// Elements in one clutter tile, both strata, and the tile's mean splat.
+fn tile_census(seed: u64, tx: i32, tz: i32) -> (usize, usize, [u32; 4]) {
+    let (cx0, cz0) = (tx * CLUTTER_CELLS_PER_TILE, tz * CLUTTER_CELLS_PER_TILE);
+    let (mut base, mut rich, mut w) = (0usize, 0usize, [0u32; 4]);
+    for j in 0..CLUTTER_CELLS_PER_TILE {
+        for i in 0..CLUTTER_CELLS_PER_TILE {
+            let (cx, cz) = (cx0 + i, cz0 + j);
+            if terrain::clutter_cell(seed, cx, cz).kind != Clutter::None {
+                base += 1;
+                let (x, z) = (cx as f32 * CLUTTER_CELL_M, cz as f32 * CLUTTER_CELL_M);
+                let s = terrain::splat(seed, x, z);
+                for (k, v) in s.iter().enumerate() {
+                    w[k] += *v as u32;
+                }
+            }
+            if terrain::clutter_rich_cell(seed, cx, cz).kind != Clutter::None {
+                rich += 1;
+            }
+        }
+    }
+    (base, rich, w)
+}
+
+/// DENSITY FOLLOWS THE BIOME — the half of `ART.md` rule 4 the coverage
+/// stratum cannot answer, and the one the visual report asked for in its own
+/// words ("populate the near ground… so density follows the biome").
+///
+/// The coverage stratum is uniform BY CONSTRUCTION: one element per land
+/// cell, sand and meadow alike. That makes rule 4 provable and makes the
+/// ground read as evenly dusted, which is the defect `reference/SPAWN.md` §9.3
+/// names from the other side. So this asserts the opposite property about the
+/// SECOND stratum: growing ground (grass + forest litter) must carry
+/// materially more of it than bare ground (sand + rock) does.
+///
+/// It is a ratio, not a count, so it survives any future change to the
+/// budget: `CLUTTER_RICH_PER_TILE` sets how much richness is affordable, and
+/// this sets that the richness lands where the ground grows.
+#[test]
+fn test_richness_follows_the_biome() {
+    let mut grow = (0usize, 0usize); // (rich elements, base elements)
+    let mut bare = (0usize, 0usize);
+    for &seed in SEEDS.iter() {
+        for stance in 0..ORIGINS_PER_SEED {
+            let (x, z) = a_land_origin(seed, stance);
+            let (tx, tz) = ((x / CLUTTER_TILE_M) as i32, (z / CLUTTER_TILE_M) as i32);
+            let (base, rich, w) = tile_census(seed, tx, tz);
+            if base < 100 {
+                continue; // mostly sea — not a ground sample
+            }
+            // Which identity owns this tile: the two growing channels against
+            // the two bare ones, off the same `splat` the population reads.
+            let bucket = if w[1] + w[2] > w[0] + w[3] {
+                &mut grow
+            } else {
+                &mut bare
+            };
+            bucket.0 += rich;
+            bucket.1 += base;
+        }
+    }
+    assert!(
+        grow.1 > 0 && bare.1 > 0,
+        "the stance ring found only one ground type ({} growing cells, {} bare) — \
+         the comparison this gate makes is vacuous",
+        grow.1,
+        bare.1
+    );
+    // Per base element, so tiles of different land area compare directly.
+    let grow_rate = grow.0 as f32 / grow.1 as f32;
+    let bare_rate = bare.0 as f32 / bare.1 as f32;
+    assert!(
+        grow_rate > bare_rate * 2.0,
+        "richness does not follow the biome: growing ground carries {grow_rate:.3} extra \
+         elements per cell and bare ground {bare_rate:.3} — under the 2× this stratum \
+         exists to produce. ({} rich / {} cells growing, {} / {} bare.)",
+        grow.0,
+        grow.1,
+        bare.0,
+        bare.1
+    );
+}
+
+/// AND IT CLUSTERS. `reference/SPAWN.md` §9.3, the diagnosis this pass did not
+/// have to make: the reference's scatter clusters and ours is per-cell
+/// independent, which is why ours reads as white noise. A second stratum drawn
+/// off an independent coin per cell would be exactly that defect at a new
+/// density — so this measures whether the acceptances are spatially
+/// correlated, and it is the assertion that would fail if a later pass
+/// simplified `clutter_richness_at` down to a constant rate.
+///
+/// The instrument is the index of dispersion. For independent draws the
+/// variance of a per-block count equals its mean (Poisson); a field that
+/// clusters puts the same total into fewer, fuller blocks and drives the
+/// variance above it. Anything at or under 1.0 is dust.
+/// Index of dispersion of the rich count over `block`×`block`-cell blocks,
+/// with the block count, measured only on blocks that are entirely land.
+fn rich_dispersion(block: i32) -> (f32, f32, usize) {
+    let mut counts: Vec<f32> = Vec::new();
+    for &seed in SEEDS.iter() {
+        for stance in 0..ORIGINS_PER_SEED {
+            let (x, z) = a_land_origin(seed, stance);
+            let (cx0, cz0) = (
+                (x / CLUTTER_CELL_M) as i32 / block * block,
+                (z / CLUTTER_CELL_M) as i32 / block * block,
+            );
+            for bj in 0..5 {
+                for bi in 0..5 {
+                    let mut n = 0f32;
+                    let mut land = 0;
+                    for j in 0..block {
+                        for i in 0..block {
+                            let cx = cx0 + (bi - 2) * block + i;
+                            let cz = cz0 + (bj - 2) * block + j;
+                            if terrain::clutter_cell(seed, cx, cz).kind != Clutter::None {
+                                land += 1;
+                            }
+                            if terrain::clutter_rich_cell(seed, cx, cz).kind != Clutter::None {
+                                n += 1.0;
+                            }
+                        }
+                    }
+                    // Whole-land blocks only: a block half in the sea has a
+                    // low count for a reason that is not clustering.
+                    if land == block * block {
+                        counts.push(n);
+                    }
+                }
+            }
+        }
+    }
+    let mean = counts.iter().sum::<f32>() / counts.len().max(1) as f32;
+    let var =
+        counts.iter().map(|c| (c - mean) * (c - mean)).sum::<f32>() / counts.len().max(1) as f32;
+    (mean, var, counts.len())
+}
+
+#[test]
+fn test_richness_clusters_rather_than_dusting() {
+    // Two scales, because ONE scale cannot tell clustering from noise. For
+    // independent draws the index of dispersion is 1.0 at EVERY block size;
+    // for a field whose rate is spatially correlated it exceeds 1 and RISES
+    // with the block, because enlarging the window adds correlated cells
+    // rather than independent ones. So the load-bearing assertion is the
+    // second one — the rise — and it is the thing a constant acceptance rate
+    // could not fake at any tuning.
+    //
+    // The fine block is 3.2 m, near the cell scale; the coarse one is 12.8 m,
+    // nearer the scale `clump` actually varies at. Measured 1.40 fine, 8.51
+    // coarse when written — a sixfold rise across two doublings of the window.
+    let (fine_m, fine_v, fine_n) = rich_dispersion(5);
+    let (coarse_m, coarse_v, coarse_n) = rich_dispersion(20);
+    assert!(
+        fine_n > 200 && coarse_n > 20,
+        "only {fine_n} fine and {coarse_n} coarse whole-land blocks — too few to \
+         speak about variance"
+    );
+    assert!(
+        fine_m > 0.5 && coarse_m > 0.5,
+        "the richness stratum is near-empty (means {fine_m:.3} / {coarse_m:.3}) — \
+         a gate on its shape cannot mean anything"
+    );
+    let (fine_d, coarse_d) = (fine_v / fine_m, coarse_v / coarse_m);
+    assert!(
+        fine_d > 1.2,
+        "the richness stratum dusts rather than clusters: dispersion {fine_d:.2} over \
+         {fine_n} blocks of 3.2 m, and 1.0 is an independent coin per cell — \
+         SPAWN.md §9.3's exact defect"
+    );
+    assert!(
+        coarse_d > fine_d * 1.3,
+        "the richness stratum's dispersion does not RISE with scale — {fine_d:.2} at \
+         3.2 m against {coarse_d:.2} at 12.8 m. A correlated field gains dispersion as \
+         the window grows; an independent coin holds ~1.0 at every scale, so a flat \
+         profile means the rate is not following anything spatial"
+    );
+}
+
+/// THE BUDGET IS A BACKSTOP, NOT THE NORMAL PATH — and this is the gate that
+/// holds it, because the failure it catches is one this pass shipped and then
+/// measured its way out of.
+///
+/// `clutter_fill` scans row-major and stops adding richness at
+/// `CLUTTER_RICH_PER_TILE`. The first draft accepted 71% of cells on wooded
+/// ground against a budget of 96 in 625, so the budget was spent in the tile's
+/// first few rows and every row after them carried none: a horizontal band
+/// edge every 16 m, which is a worse artifact than the uniformity the stratum
+/// exists to fix. `RICH_ACCEPT_MAX` is the fix — a RATE the ground can afford,
+/// rather than a truncation of one it cannot.
+///
+/// So: fill real tiles, split each one's richness by which half of the tile it
+/// landed in, and assert the two halves are comparable. A tile that spent its
+/// budget early fails this even though every other test in this file passes,
+/// which is exactly the point.
+#[test]
+fn test_richness_is_spread_across_its_tile() {
+    let mut near = 0usize; // rich elements in the first half of the tile
+    let mut far = 0usize; // ... and in the second
+    let mut tiles = 0usize;
+    let mut at_budget = 0usize;
+    for &seed in SEEDS.iter() {
+        for stance in 0..ORIGINS_PER_SEED {
+            let (x, z) = a_land_origin(seed, stance);
+            let (tx, tz) = ((x / CLUTTER_TILE_M) as i32, (z / CLUTTER_TILE_M) as i32);
+            let (base, _, _) = tile_census(seed, tx, tz);
+            if base < 600 {
+                continue; // a tile with a shoreline in it is not a fair split
+            }
+            tiles += 1;
+            let half = tz as f32 * CLUTTER_TILE_M + CLUTTER_TILE_M * 0.5;
+            let mut rich = 0usize;
+            let (cx0, cz0) = (tx * CLUTTER_CELLS_PER_TILE, tz * CLUTTER_CELLS_PER_TILE);
+            for j in 0..CLUTTER_CELLS_PER_TILE {
+                for i in 0..CLUTTER_CELLS_PER_TILE {
+                    let e = terrain::clutter_rich_cell(seed, cx0 + i, cz0 + j);
+                    if e.kind == Clutter::None {
+                        continue;
+                    }
+                    rich += 1;
+                    if rich > CLUTTER_RICH_PER_TILE {
+                        break; // what `clutter_fill` would have dropped
+                    }
+                    if e.z < half {
+                        near += 1;
+                    } else {
+                        far += 1;
+                    }
+                }
+            }
+            if rich >= CLUTTER_RICH_PER_TILE {
+                at_budget += 1;
+            }
+        }
+    }
+    assert!(
+        tiles > 20 && near + far > 500,
+        "only {tiles} whole-land tiles and {} elements — too little to judge a split",
+        near + far
+    );
+    // A tile that spends its budget in row 0 puts everything in `near`.
+    let (lo, hi) = (near.min(far) as f32, near.max(far) as f32);
+    assert!(
+        lo > hi * 0.6,
+        "the richness stratum bands: {near} elements in the near half of a tile against \
+         {far} in the far half over {tiles} tiles. Row-major truncation against \
+         CLUTTER_RICH_PER_TILE={CLUTTER_RICH_PER_TILE} is what does this, and the rate — \
+         not the cap — is where it is fixed."
+    );
+    // And the backstop must actually be a backstop.
+    assert!(
+        at_budget * 4 <= tiles,
+        "{at_budget} of {tiles} tiles hit the {CLUTTER_RICH_PER_TILE}-element budget — \
+         it is the normal path, not a backstop, so most rich tiles are being cut off \
+         rather than populated at a rate they can afford"
     );
 }
 
@@ -359,9 +675,19 @@ fn test_the_grid_divides_exactly() {
         CLUTTER_TILE_M,
         "a tile is not a whole number of cells"
     );
+    // The COVERAGE stratum is one element per cell — that is the premise the
+    // guarantee below rests on, and it is asserted against the cell count
+    // rather than against the grid cap, which now also carries the richness
+    // stratum. Moving the total between the two strata fails here.
+    assert_eq!(
+        CLUTTER_BASE_PER_TILE,
+        (CLUTTER_CELLS_PER_TILE * CLUTTER_CELLS_PER_TILE) as usize,
+        "the coverage stratum is no longer one element per cell"
+    );
     assert_eq!(
         CLUTTER_PER_TILE,
-        (CLUTTER_CELLS_PER_TILE * CLUTTER_CELLS_PER_TILE) as usize
+        CLUTTER_BASE_PER_TILE + CLUTTER_RICH_PER_TILE,
+        "the grid cap is not the two strata"
     );
     assert_eq!(
         CLUTTER_CELLS_PER_SIDE as f32 * CLUTTER_CELL_M,
@@ -393,22 +719,59 @@ fn test_the_grid_divides_exactly() {
 // spread rather than clumped on one side, and that no tile can overrun the
 // buffer the client sized for it.
 
+/// Does this tile hold a prop whose ring is big enough to judge spread on?
+/// `test_a_skirt_is_spread_not_clumped` needs one, and a tile that merely has
+/// SOME skirt need not have one — so the fixture below looks for it rather
+/// than hoping, which is what it used to do.
+fn tile_has_a_full_ring(seed: u64, table: &ScatterTable, haven: &Haven, tx: i32, tz: i32) -> bool {
+    let c0x = tx * SKIRT_TILE_CELLS - 1;
+    let c0z = tz * SKIRT_TILE_CELLS - 1;
+    for dz in 0..4 {
+        for dx in 0..4 {
+            let slot = terrain::scatter(seed, table, haven, c0x + dx, c0z + dz);
+            if terrain::skirt_count(slot.occupant) >= 8 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// A tile with props in it, for a seed — the fixture the skirt tests stand on.
+///
+/// It searches the whole stance ring rather than one origin. It used to walk
+/// east from `a_land_origin(seed, 0)` alone, which was the island centre for
+/// every seed here; widening the wall's stance moved that point and this
+/// fixture went with it, and the tile it landed on had props but no full ring
+/// (`test_a_skirt_is_spread_not_clumped` said so). A fixture that depends on
+/// one arbitrary point is the same defect as a wall that stands at one — so
+/// this scans, prefers a tile that can answer every skirt test, and falls
+/// back to any skirted tile rather than to a panic.
 fn a_tile_with_props(seed: u64) -> (i32, i32, Haven, ScatterTable) {
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(seed);
-    let (x, z) = a_land_origin(seed, 0);
-    let (t0x, t0z) = ((x / CLUTTER_TILE_M) as i32, (z / CLUTTER_TILE_M) as i32);
-    // Walk a few tiles until one actually holds a prop; a single tile is 16 m
-    // and the scatter grid is sparse enough that the first can be empty.
-    for d in 0..24 {
-        let (tx, tz) = (t0x + d, t0z);
-        let mut buf = [CLUTTER_NONE; SKIRT_PER_TILE];
-        if terrain::skirt_fill(seed, &table, &haven, tx, tz, &mut buf) > 0 {
-            return (tx, tz, haven, table);
+    let mut fallback: Option<(i32, i32)> = None;
+    for stance in 0..ORIGINS_PER_SEED {
+        let (x, z) = a_land_origin(seed, stance);
+        let (t0x, t0z) = ((x / CLUTTER_TILE_M) as i32, (z / CLUTTER_TILE_M) as i32);
+        // A single tile is 16 m and the scatter grid is sparse enough that the
+        // first can be empty, so walk a few from each stance.
+        for d in 0..8 {
+            let (tx, tz) = (t0x + d, t0z);
+            let mut buf = [CLUTTER_NONE; SKIRT_PER_TILE];
+            if terrain::skirt_fill(seed, &table, &haven, tx, tz, &mut buf) == 0 {
+                continue;
+            }
+            if tile_has_a_full_ring(seed, &table, &haven, tx, tz) {
+                return (tx, tz, haven, table);
+            }
+            fallback.get_or_insert((tx, tz));
         }
     }
-    panic!("seed {seed:#x}: no tile within 24 of the land origin holds a skirted prop");
+    let (tx, tz) = fallback.unwrap_or_else(|| {
+        panic!("seed {seed:#x}: no tile on the stance ring holds a skirted prop")
+    });
+    (tx, tz, haven, table)
 }
 
 /// A skirt exists at all, and it is made of the same four kinds the grid is.
