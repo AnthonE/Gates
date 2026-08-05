@@ -3289,6 +3289,34 @@ check(
     " that is not there",
 );
 
+// The door's own state, which the walk above cannot see.
+//
+// The 2026-08-05 judge report's ranked fix 1, as a check. The walk calls
+// `promptFor` with `{open: false, locked: false}` for every verb, so the
+// `open`/`locked` branch (`interact.js:300-302`) is never exercised: replacing
+// that whole line with a flat `[E] OPEN ${label}` passed all 381 checks, which
+// is a prompt reading "OPEN DOOR" over a door that is already open shipping
+// green. The door is the one verb whose TEXT is a function of state the wire
+// carries, so it is the one verb a per-verb walk under-covers.
+const doorPrompt = (open, locked) =>
+  interact.promptFor({ verb: interact.VERB_DOOR, open, locked });
+check(
+  doorPrompt(false, false) !== doorPrompt(true, false),
+  `promptFor answers ${JSON.stringify(doorPrompt(false, false))} for a door whether it is open or closed —` +
+    " E toggles it, so a prompt blind to `open` names the opposite action half the time",
+);
+check(
+  /\bCLOSE\b/.test(doorPrompt(true, false)) && !/\bCLOSE\b/.test(doorPrompt(false, false)),
+  `an OPEN door prompts ${JSON.stringify(doorPrompt(true, false))} and a closed one` +
+    ` ${JSON.stringify(doorPrompt(false, false))} — the open one is the one that must say CLOSE, and a` +
+    " reversed pair is the right value in the wrong position rather than a missing branch",
+);
+check(
+  doorPrompt(false, true) !== doorPrompt(false, false) && /LOCKED/.test(doorPrompt(false, true)),
+  `a LOCKED door prompts ${JSON.stringify(doorPrompt(false, true))}, the same as an unlocked one — the wire` +
+    " carries the lock bit and the player would learn about it only from a refusal",
+);
+
 // --- the pick itself: aim decides, and reach is honoured ---------------------
 // The judge's exact sentence, as arithmetic. Two things in reach, one aimed at
 // and one not; the aimed one must win, and turning round must reverse it.
@@ -3492,10 +3520,26 @@ check(
   "main.js's aimPick does not end in resolveInteract — the one place the client is allowed to decide what E" +
     " acts on has stopped being the place that decides it",
 );
+// The E prompt's text comes from `promptFor(aimPick(...))` and reaches the
+// screen unaltered.
+//
+// This was one regex — `hud.setPrompt(promptFor(aimPick(` — until the swing
+// prompt landed behind it and the call became two lines. RE-ANCHORED, not
+// relaxed: the old form pinned that the two were composed in one expression,
+// and these pin the same composition plus the thing the old one could not say,
+// which is that whatever else `setPrompt` is handed, E's answer OUTRANKS it.
+// A mutant that draws E's prompt from a second resolver still fails the first;
+// a mutant that reorders the `||` so the swing hint wins fails the second.
 check(
-  /hud\.setPrompt\(promptFor\(aimPick\(/.test(mainSrc),
-  "main.js does not draw the prompt from promptFor(aimPick(...)) — a prompt computed any other way is a" +
-    " second opinion, and the judge's gap 3 is that the prompt and the key must not be able to differ",
+  /const text = promptFor\(aimPick\(pick, VERB_NONE\)\);/.test(mainSrc),
+  "main.js does not compute the prompt text from promptFor(aimPick(...)) — a prompt computed any other way" +
+    " is a second opinion, and the judge's gap 3 is that the prompt and the key must not be able to differ",
+);
+check(
+  /hud\.setPrompt\(text \|\| /.test(mainSrc),
+  "main.js does not hand `text` to setPrompt as the FIRST term of the fallback — E's pick is the half a" +
+    " player cannot discover, so anything else drawn under the crosshair sits behind it or the door you are" +
+    " standing at loses its hint to a tree",
 );
 // And it is CALLED. Pinning only the definition let a mutant that commented
 // out the one call site pass green: the prompt would be correct code that
@@ -3580,6 +3624,279 @@ check(
 );
 
 // =============================================================================
+// R. the OTHER crosshair answer: what a swing would hit
+// =============================================================================
+// `resolveSwing` mirrors `gather::swing`'s target selection, and the reason it
+// needs a gate rather than a reading is that NOTHING ELSE IN THE REPO CAN SEE A
+// DIVERGENCE. The client sends a swing as a button bit (`BTN_PRIMARY`) and the
+// sim picks the node on its own: no packet carries the client's opinion of the
+// target, so the protocol golden is untouched by any error here, the replay
+// hash is untouched, and clippy sees ordinary float arithmetic. A prompt that
+// names the wrong tree is invisible to every wall — it is CLAUDE.md's
+// positional-payload class again, one level up: the right rule computed against
+// the wrong constant.
+//
+// So the constants are read back out of Rust rather than restated, and the
+// behaviour is probed at the boundaries the sim's own tests would move.
+const gatherSrc = fs.readFileSync(path.join(root, "crates/sim-core/src/gather.rs"), "utf8");
+const terrainSrc = fs.readFileSync(path.join(root, "crates/sim-core/src/terrain.rs"), "utf8");
+const rsFloat = (src, file, name) => {
+  const m = src.match(new RegExp(`^pub const ${name}: f32 = ([\\d._]+);`, "m"));
+  check(
+    m !== null,
+    `could not read ${name} out of ${file} — every check keyed to it below would then compare against NaN,` +
+      " which is the gate-that-matches-nothing class",
+  );
+  return m ? Number(m[1].replace(/_/g, "")) : NaN;
+};
+const rsReachG = rsFloat(gatherSrc, "gather.rs", "REACH_M");
+const rsCone = rsFloat(gatherSrc, "gather.rs", "CONE_COS");
+const rsDy = rsFloat(gatherSrc, "gather.rs", "DY_MAX_M");
+const rsBlank = rsFloat(gatherSrc, "gather.rs", "POINT_BLANK_M2");
+const rsCell = rsFloat(terrainSrc, "terrain.rs", "CELL_SIZE");
+// The mirrors, each against the constant it claims to be. `CONE_COS` is
+// authored to seven places in `gather.rs` precisely so no trig runs at
+// runtime; a JS `Math.cos(Math.PI/6)` would be a DIFFERENT number and the
+// cone would disagree with the sim's at its edge, which is the only place a
+// cone is ever wrong.
+for (const [name, js, rs, file] of [
+  ["GATHER_REACH_M", interact.GATHER_REACH_M, rsReachG, "gather.rs REACH_M"],
+  ["GATHER_CONE_COS", interact.GATHER_CONE_COS, rsCone, "gather.rs CONE_COS"],
+  ["GATHER_DY_MAX_M", interact.GATHER_DY_MAX_M, rsDy, "gather.rs DY_MAX_M"],
+  ["GATHER_POINT_BLANK_M2", interact.GATHER_POINT_BLANK_M2, rsBlank, "gather.rs POINT_BLANK_M2"],
+  ["TERRAIN_CELL_M", interact.TERRAIN_CELL_M, rsCell, "terrain.rs CELL_SIZE"],
+]) {
+  check(
+    js === rs,
+    `interact.js ${name} = ${js} but ${file} = ${rs} — the prompt would describe a swing the arm does not` +
+      " make, and no wire golden, replay hash or clippy wall can see the difference",
+  );
+}
+// The occupant ordinals, out of the enum itself. Renumbering `Occupant` is the
+// mutation this catches: `props.js` indexes its archetype table by the same
+// ordinals, so a renumber would move the DRAWN thing and the PROMPTED thing
+// together in the renderer and apart here.
+const occOrd = (name) =>
+  Number(terrainSrc.match(new RegExp(`^\\s*${name} = (\\d+),`, "m"))?.[1]);
+for (const [name, js] of [
+  ["Tree", interact.OCC_TREE],
+  ["StoneNode", interact.OCC_STONE],
+  ["MetalNode", interact.OCC_METAL],
+  ["SulfurNode", interact.OCC_SULFUR],
+  ["Bush", interact.OCC_BUSH],
+  ["Rock", interact.OCC_ROCK],
+  ["BarrelSlot", interact.OCC_BARREL],
+]) {
+  const rs = occOrd(name);
+  check(
+    Number.isInteger(rs) && rs === js,
+    `interact.js has ${name} at ${js}, terrain.rs's Occupant enum has it at ${rs} — a swing prompt keyed to` +
+      " the wrong ordinal names whatever archetype now sits at that number",
+  );
+}
+// `GATHERABLE_KINDS` bounds the run 1..=N, and ROCK sitting one past it is the
+// whole reason the prompt has to exclude something: `gather.rs` calls Rock and
+// an empty cell "the two things a swing passes through".
+const rsGatherable = Number(
+  gatherSrc.match(/^pub const GATHERABLE_KINDS: usize = (\d+);/m)?.[1],
+);
+check(
+  rsGatherable === interact.OCC_BUSH && interact.OCC_ROCK === rsGatherable + 1,
+  `gather.rs GATHERABLE_KINDS = ${rsGatherable}, so occupants 1..=${rsGatherable} gather and ROCK is` +
+    ` ${interact.OCC_ROCK} — interact.js's run must end exactly where the enum's does`,
+);
+// A label for every swingable ordinal and for nothing else. A missing row is a
+// node that draws no prompt; a spare row is a prompt for a thing a swing
+// passes through, and the second is worse because it reads as a promise.
+const swingable = [1, 2, 3, 4, 5, 7];
+for (let occ = 0; occ <= 8; occ++) {
+  const text = interact.promptForSwing({ arch: occ });
+  const want = swingable.includes(occ);
+  check(
+    want === (text !== ""),
+    `promptForSwing(arch ${occ}) = ${JSON.stringify(text)} but ${want ? "is" : "is not"} swingable —` +
+      " occupant 6 is ROCK and 8 is the client-only stump, and a prompt over either offers a swing that whiffs",
+  );
+}
+check(
+  interact.promptForSwing({ arch: 0 }) === "" && interact.promptForSwing(null) === "",
+  "promptForSwing answers text for a whiff — the hint would stay on screen over empty ground",
+);
+const swingTexts = swingable.map((o) => interact.promptForSwing({ arch: o }));
+check(
+  new Set(swingTexts).size === swingTexts.length,
+  `the swing prompts are not distinct (${JSON.stringify(swingTexts)}) — two nodes sharing a hint is the` +
+    " prompt naming one thing while the arm hits another",
+);
+check(
+  swingTexts.every((t) => t.startsWith("[LMB] ")),
+  `a swing prompt does not name its button (${JSON.stringify(swingTexts)}) — the key is the half of the hint` +
+    " the player cannot guess, which is the whole reason the E prompt names E",
+);
+
+// --- the pick, against the sim's own scan ------------------------------------
+// A world of one cell entry, addressed the way `terrain.js`'s `cellIndex` is.
+const GCELL = interact.TERRAIN_CELL_M;
+const swingWorldOf = (entries) => ({
+  cellAt: (cx, cz) => entries.find((e) => e.cx === cx && e.cz === cz) || null,
+});
+const gAt = (cx, cz, over) => ({
+  cx,
+  cz,
+  arch: interact.OCC_TREE,
+  x: cx * GCELL,
+  y: 0,
+  z: cz * GCELL,
+  hidden: false,
+  ...over,
+});
+const sPick = interact.newSwingPick();
+// The player stands at the centre of cell (1,1) looking +X, and every case
+// below moves ONE term.
+const P = { x: GCELL + GCELL / 2, y: 0, z: GCELL + GCELL / 2, fx: 1, fz: 0 };
+const swingAt = (entries, over) =>
+  interact.resolveSwing(sPick, { ...P, ...over }, swingWorldOf(entries));
+// Reach: the sim's test is `d2 <= REACH_M * REACH_M`, planar.
+const inReach = gAt(1, 1, { x: P.x + rsReachG - 0.05, z: P.z });
+const outReach = gAt(1, 1, { x: P.x + rsReachG + 0.05, z: P.z });
+check(
+  swingAt([inReach]).arch === interact.OCC_TREE,
+  `a tree ${(rsReachG - 0.05).toFixed(2)} m ahead is inside gather.rs's ${rsReachG} m reach and resolved to` +
+    ` ${swingAt([inReach]).arch}`,
+);
+check(
+  swingAt([outReach]).arch === 0,
+  `a tree ${(rsReachG + 0.05).toFixed(2)} m ahead is OUTSIDE the ${rsReachG} m reach and still prompted —` +
+    " the hint would offer a swing the sim answers with a whiff, and the cooldown is paid on a whiff",
+);
+// The cone. A node at 90° is in reach and behind the cone's edge; the same
+// node dead ahead is inside it. This is the term that separates a cone from a
+// radius, and dropping it entirely is the mutation it catches.
+const side = gAt(1, 1, { x: P.x, z: P.z + 1.0 });
+const ahead = gAt(1, 1, { x: P.x + 1.0, z: P.z });
+check(
+  swingAt([ahead]).arch === interact.OCC_TREE && swingAt([side]).arch === 0,
+  `a tree 1 m dead ahead resolved to ${swingAt([ahead]).arch} and one 1 m to the SIDE to` +
+    ` ${swingAt([side]).arch} — the side one is outside a ${rsCone} cone and a swing at it whiffs`,
+);
+// Point-blank bypasses the cone: inside `POINT_BLANK_M2` there is no bearing.
+const under = gAt(1, 1, { x: P.x, z: P.z + Math.sqrt(rsBlank) * 0.5 });
+check(
+  swingAt([under]).arch === interact.OCC_TREE,
+  "a tree inside POINT_BLANK_M2 to the side did not resolve — the sim bypasses the cone there because a" +
+    " zero-length offset has no direction to test, and a prompt that keeps testing it goes blank underfoot",
+);
+// The vertical window, which nothing else in this file has an analogue of.
+check(
+  swingAt([gAt(1, 1, { x: P.x + 1.0, z: P.z, y: rsDy - 0.05 })]).arch === interact.OCC_TREE &&
+    swingAt([gAt(1, 1, { x: P.x + 1.0, z: P.z, y: rsDy + 0.05 })]).arch === 0,
+  `the ±${rsDy} m vertical window is not honoured — a node on a ledge above the player is in planar reach` +
+    " and out of the sim's, so the prompt would offer a swing at something overhead",
+);
+// ROCK is in reach, dead ahead, and must still answer nothing.
+check(
+  swingAt([gAt(1, 1, { x: P.x + 1.0, z: P.z, arch: interact.OCC_ROCK })]).arch === 0,
+  "a ROCK dead ahead resolved to a swing target — gather.rs passes straight through it, so the prompt would" +
+    " promise a payout that never arrives",
+);
+// Harvested: standing on this client's clock only, and the whole reason
+// `entry.hidden` is read rather than the archetype alone.
+check(
+  swingAt([gAt(1, 1, { x: P.x + 1.0, z: P.z, hidden: true })]).arch === 0,
+  "a HARVESTED node still prompted — `terrain.setCellHarvested` is the event lane telling this client the" +
+    " thing is down, and a hint over a stump is the clearest possible lie",
+);
+// The window is 3×3 CELLS, not a radius: the sim never looks further, so a
+// node inside the 2 m reach whose cell is two away cannot be hit.
+check(
+  swingAt([gAt(3, 1, { x: P.x + 1.0, z: P.z })]).arch === 0,
+  "a node two cells away resolved even though gather.rs scans a 3x3 cell block around the player's own cell" +
+    " — the prompt must be bounded by the scan, not by the reach alone",
+);
+// The tiebreak. Two nodes at an exact tie, and the sim walks dz outer, dx
+// inner with a STRICT `<`, so the first one found keeps it. Reversing either
+// the loop order or the comparison flips this.
+// The two cells are (2,0) and (0,2) for a reason, and it is the one thing a
+// first version of this check got wrong: a tie between (0,0) and (2,2) is kept
+// by (0,0) under BOTH nestings, so transposing the loops escaped the gate
+// green. These two swap places when the loops swap — dz outer reaches (2,0)
+// first, dx outer reaches (0,2) first — which is what makes the walk order
+// observable rather than merely stated in a comment.
+const tieA = gAt(2, 0, { x: P.x + 1.0, z: P.z, arch: interact.OCC_STONE });
+const tieB = gAt(0, 2, { x: P.x + 1.0, z: P.z, arch: interact.OCC_METAL });
+check(
+  swingAt([tieA, tieB]).arch === interact.OCC_STONE &&
+    swingAt([tieB, tieA]).arch === interact.OCC_STONE,
+  `an exact distance tie resolved to ${swingAt([tieA, tieB]).arch} and is order-dependent — gather.rs walks` +
+    " dz outer, dx inner and compares strictly, so the FIRST cell in that order keeps the tie whatever order" +
+    " the entries arrive in",
+);
+// Nearest wins inside the cone, which is the ordinary case.
+// One scatter slot per cell, so the two nodes sit in two cells — which is also
+// why the further one is listed FIRST: it is found first in the dz/dx walk, so
+// nearest-wins has to actively overtake it rather than merely be found later.
+check(
+  swingAt([
+    gAt(0, 1, { x: P.x + 1.6, z: P.z, arch: interact.OCC_METAL }),
+    gAt(1, 1, { x: P.x + 0.6, z: P.z, arch: interact.OCC_BUSH }),
+  ]).arch === interact.OCC_BUSH,
+  "the FURTHER of two aimed nodes won the swing — nearest-wins is the sim's rule and the near one is what" +
+    " the arm reaches",
+);
+// Turning round reverses it, which is the same sentence the E resolver's own
+// aim check makes and the reason both exist.
+check(
+  swingAt([ahead], { fx: -1, fz: 0 }).arch === 0,
+  "a tree in front still prompted with the player facing AWAY from it — the cone is the whole difference" +
+    " between a swing target and a thing that happens to be nearby",
+);
+// A zero-length look vector must not throw or resolve everything: it degrades
+// to the point-blank case, exactly as the sim's does.
+check(
+  swingAt([ahead], { fx: 0, fz: 0 }).arch === 0 && swingAt([under], { fx: 0, fz: 0 }).arch !== 0,
+  "a zero-length look vector did not degrade to point-blank only — a client can hold one at spawn, and" +
+    " normalising it to NaN would make the prompt name whatever the last cell scanned was",
+);
+// A cell the client has not streamed has no entry, and must be skipped rather
+// than crash the HUD timer.
+check(interact.resolveSwing(sPick, P, { cellAt: () => null }).arch === 0, "an unstreamed world threw or resolved");
+
+// --- the wiring, in main.js --------------------------------------------------
+// Same discipline as §Q: the resolver being right is worth nothing if the
+// prompt is drawn from something else.
+check(
+  /hud\.setPrompt\(text \|\| promptForSwing\(swingAt\(\)\)\)/.test(mainSrc),
+  "main.js does not fall back to promptForSwing(swingAt()) when E has no pick — the swing half of the" +
+    " crosshair would compute correctly and never reach the screen",
+);
+check(
+  /const text = promptFor\(aimPick\(pick, VERB_NONE\)\)/.test(mainSrc),
+  "main.js no longer draws E's prompt through promptFor(aimPick(...)) — the fallback must sit BEHIND the" +
+    " interact pick, or the swing hint would outrank a door the player is standing at",
+);
+check(
+  /terrain\.cellEntry\(/.test(mainSrc) && /cx << 16\) \| cz/.test(mainSrc),
+  "main.js's swing world does not read terrain.cellEntry at cx<<16|cz — that packing is gather::cell_key and" +
+    " terrain.js's cellIndex agreeing, and a different one names another cell",
+);
+check(
+  /cx >= 0 && cz >= 0 && cx <= 0xffff && cz <= 0xffff/.test(mainSrc),
+  "main.js's cell key is formed without bounding cx/cz — a negative cell off the island shifts into a" +
+    " positive key naming a real cell somewhere else, which is the twelve-bit box_key trap this client has" +
+    " already paid for once",
+);
+// The cone constant, as a LITERAL in the shipped file. Every check above reads
+// `interact.GATHER_CONE_COS` as a value, so computing it with `Math.cos` would
+// satisfy all of them while producing a different number than the one
+// `gather.rs` authored offline — and the cone would then disagree with the
+// sim's at exactly the edge where a cone is ever wrong.
+check(
+  /export const GATHER_CONE_COS = [\d.]+;/.test(interactSrc) && !/Math\.(cos|acos)/.test(interactSrc),
+  "interact.js computes its cone cosine rather than carrying gather.rs's authored literal — the sim runs no" +
+    " trig on purpose (fmath's whole discipline), and a recomputed cosine is a second source for one number",
+);
+
+// =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
@@ -3598,7 +3915,10 @@ console.log(
     `limits.rs ceilings (${MAX_BUILD_COORD}/${MAX_BUILD_LEVELS}), off-grid refused, packed at one call site \u00b7 ` +
     `E is one resolver: ${VERB_NAMES.length} verbs each with a prompt and a dispatch branch, ` +
     `archetypes + reach ${rsReach} m against deploy.rs/build.rs, aim beats nearby (underfoot does not trump), ` +
-    "the chain's five scans are gone, prompt hidden at load and text-only",
+    "the chain's five scans are gone, prompt hidden at load and text-only, door prompt reads open/locked · " +
+    `the swing is the other resolver: reach ${rsReachG} m / cone ${rsCone} / dy ${rsDy} / blank ${rsBlank} ` +
+    `against gather.rs, occupant ordinals against terrain.rs (rock and stump pass through), 3x3 cell window, ` +
+    "strict tie to the first cell in dz-then-dx order, harvested skipped, drawn only where E is silent",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
