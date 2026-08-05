@@ -523,6 +523,16 @@ export const ARCHETYPES = [
   // amplitude, and an exception for the one-of-a-kind case is an exception
   // the next one-of-a-kind archetype inherits without earning.
   { geo: shelterGeometry, composite: true, surface: "rock", lo: 0xffffff, lift: 0, tint: 0.07 },
+  // 11: the waystation's container (sim-core `Occupant::CacheSlot`). The
+  // lesser tier's own kind, not a second `CrateSlot`: a container's kind is
+  // the only thing `content/loot.toml` selects a table by, so while both
+  // rings placed index 9 the waystation paid exactly what the pad paid.
+  // Smaller than the crate in all three axes and greyer in the ramp, because
+  // the two tiers have to be tellable apart at the range either is legible
+  // from — `terrain.rs`'s const block holds `OCCUPANT_R_M[11] <
+  // OCCUPANT_R_M[9]` and the same for the tops, so shrinking the crate below
+  // this box fails at the definition rather than in a frame.
+  { geo: () => new THREE.BoxGeometry(0.9, 0.55, 0.7), surface: "wood", lo: 0x6a5940, hi: 0x8b7255, y0: -0.275, y1: 0.275, lift: 0.275, tint: 0.1 },
 ];
 
 /** Client-only archetype index for a felled pine's stump. */

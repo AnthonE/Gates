@@ -20,6 +20,13 @@ component_minutes = { "item.gears" = 4, "item.rope" = 4, "item.tarp" = 4, "item.
 # Upkeep drains this % of build cost per day (DESIGN §2; anchor 3 holds
 # a solo's daily upkeep under upkeep_solo_daily_max_min).
 upkeep_pct_per_day = 10
+# Repairing a damaged piece back to full costs this % of the pro-rata
+# share of its own build cost — 100 = you pay exactly the materials the
+# damage destroyed, so a repair is never cheaper than the hp it buys and
+# a defender cannot out-heal a raid on economics alone. Rust's hammer is
+# cheaper than this; 100 is the conservative end, and only the operator
+# loosens it. Proposed default, DECISIONS.md §open ("repair v0").
+repair_cost_pct = 100
 
 [bands]
 # Anchor 2 — TTK in body hits, no armor; per weapon kind.

@@ -132,9 +132,16 @@ Stages, in order — each cheap, each deterministic:
    by the scan that was already running, so no extra shoreline march, no extra
    bisect and no extra `height` fan — each standing `WAYSTATION_CRATES = 2`
    containers on a 6.5 m ring inside an 11 m exclusion zone, at least
-   `WAYSTATION_MIN_SEP_M = 600 m` from the pad and from each other. Same
-   archetype as the pad's containers, so no client, wire or protocol change
-   carries them.
+   `WAYSTATION_MIN_SEP_M = 600 m` from the pad and from each other.
+   **Its containers are their own kind, `Occupant::CacheSlot`, and that is
+   what lets the tier have its own price.** They were the pad's `CrateSlot`
+   for a day and therefore drew `loot.crate`: per container the lesser tier
+   paid exactly what the destination paid, and only geometry separated them.
+   A container's KIND is the only thing a loot table is selected by
+   (`bake.rs`: the name is content, the index is `loot::LOOT_*`), so the tier
+   needed its own kind before it could have its own price —
+   `content/loot.toml`'s `loot.cache`, between the shoulder's barrel and the
+   pad's crate on rolls, on expected items and on swings to open.
    **What makes it a tier rather than more crates is a gradient, and it is
    const-asserted both ways**: the lesser tier in aggregate pays less than the
    one destination (`WAYSTATIONS × WAYSTATION_CRATES < HAVEN_CRATES`, which is
@@ -147,6 +154,13 @@ Stages, in order — each cheap, each deterministic:
    than chosen. `tests/waystation.rs` measures all three tiers in one unit —
    pad > waystation > shoulder — and `DECISIONS.md` §open "waystations v0" has
    the knobs.
+   **Density is not the quantity a player collects, though, and gating only
+   density was the hole.** `ci/haven_prize.mjs` now states the same gradient
+   in **expected items per site** — container count × what that container
+   pays — against the shoulder each site stands on and therefore replaces:
+   the pad 15.4× that opportunity cost, a waystation 5.7×, and the whole
+   lesser tier still under the one destination. A yields edit moves that
+   number; it could not move containers per m².
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same
@@ -359,8 +373,9 @@ The reads a survival map must produce, and which stage buys each:
 | biomes | 4 (beach/meadow/forest/highland) |
 | roads | 1 coast ring, ~4 m wide |
 | authored sites | 3 — one haven pad + 2 waystations, all on the ring |
-| pad containers | 5 crates on a 10 m ring, 2.64× the shoulder's density |
-| waystation containers | 2 crates on a 6.5 m ring, ≥ 600 m from every other site |
+| pad containers | 5 `crate` on a 10 m ring, 2.64× the shoulder's density |
+| waystation containers | 2 `cache` on a 6.5 m ring, ≥ 600 m from every other site |
+| tier prices | E[items] per container barrel 14.3 < cache 20.8 < crate 33.1; per site pad 165 > waystation 42 (`ci/haven_prize.mjs`) |
 | node respawn | 20–45 min jittered, privilege-vetoed **(knob)** |
 
 ### Stage 10 · Ground clutter — the layer below the scatter grid

@@ -73,6 +73,32 @@ What remains, and none of it is a UI call:
 `DeployRec` (`deploy.rs:232`, "never the wire"). So the client cannot tell its
 own sleeping bags from anyone's, nor which are ready, nor name one. "Beach or
 each live bag" (`ALPHA.md` §1) is a wire change first — systems lane.
+## 0a · Repair — the piece half landed; the door and the keypress did not
+
+Gap pass. Ranked gap **1** of both `findings/pass-20260805-074623-01-judge.md`
+and `-02-judge.md`, verbatim in each and unmoved between them: *"a base can
+only ever be destroyed, so the correct play after any raid is to abandon."*
+
+Landed: `build::repair` — a damaged **piece** bought back to its baked hp,
+priced pro-rata in its own materials (`repair_cost_pct`, `content/balance.toml`,
+`DECISIONS.md` §open "repair v0"), refused under a foreign hearth's claim,
+upkeep clock untouched. Wire v20: `ACT_REPAIR`, `EV_PIECE_REPAIRED`,
+`SUB_PIECE_REPAIRED`, goldens rekeyed and regenerated. Four sim gates plus a
+role check; `REFUSE_B_*` gained a `DOMAINS` row on the way past.
+
+What remains, both deliberate cuts:
+
+- **Deployables cannot be repaired** — the door is the intended breach point,
+  so this is the half a raid actually notices. Two things block it: `Deploys`
+  exposes no hp setter (`deploy.rs` owns that write today), and a deployable's
+  cost is a single item, so a fractional price of it rounds to the whole thing
+  and needs its own answer rather than reusing the piece formula. **systems.**
+- **Nothing can press it.** `ACT_REPAIR` decodes and the server dispatches it;
+  no client sends one. The browser client needs the verb bound and a prompt —
+  **ui lane** (`web/`); the native client picks it up with `NOW.md` §1 slice 1.
+
+Untested here: no client sent a real repair, so the round trip is proven by
+goldens and unit gates only, not by a live shard.
 
 ---
 
@@ -202,6 +228,32 @@ retired — the shader-arithmetic, texture-photograph, shadow-distance and
 capture-drift items. All are in git before this commit. `web/` still
 builds and is still gated; nothing is deleted until the native client can
 replace it.
+
+---
+
+## 1b · One call the shard owes the world lane — *(world lane, cross-lane)*
+
+*(This sits BELOW the operator's §1 on purpose. The last two world-lane
+items were filed as `## 0` above it and the judge's fix 4 on
+`pass-20260805-074623-02` was right that position is a claim: a leftover
+does not outrank a spoken call. Both of those items are now done — see
+`DECISIONS.md` §open "probe coverage v0" and "the tier gradient is paid in
+items, not density".)*
+
+- **Systems lane, one boot-time call please.** `terrain::sites_complete(&Haven)
+  -> bool` and `sites_live(&Haven) -> u32` now exist and are pure.
+  `pick_minor` leaves `Waystation::NONE` when no candidate clears the
+  separation floor; `tests/waystation.rs` refuses that over 16 seeds and
+  `test_golden_covers_authored_sites` over 3, but a shard boots whatever seed
+  `shard.toml` names, so a seed outside those 19 ships an island a third
+  smaller with **no counter, event or log line**. The refusal — or a
+  knob-registered relaxation of `WAYSTATION_MIN_SEP_M` until the ring fills —
+  belongs in `crates/server` at boot. Judge fix 1, inherited twice now.
+- **What the tier still lacks is a silhouette, not a price.** The containers
+  differ now (`CacheSlot`, smaller and greyer than the pad's crate) and so do
+  their tables. The site itself is still two boxes on bare ground; §4b below
+  holds that item and its rule — a second copy of `HAVEN_SHELTER` would make
+  the two tiers look identical, so it has to be a *different* structure.
 
 ---
 

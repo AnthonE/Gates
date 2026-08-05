@@ -36,7 +36,7 @@ use crate::limits::{
     MAX_PIECE_DEFS, SUPPORT_SWEEP_PER_TICK,
 };
 use crate::terrain;
-use crate::world::{EventQueue, Player, EV_BUILD_REFUSED, EV_PIECE_PLACED};
+use crate::world::{EventQueue, Player, EV_BUILD_REFUSED, EV_PIECE_PLACED, EV_PIECE_REPAIRED};
 
 /// Shape codes (schema order: CONTENT.md §1 building_piece).
 pub const SHAPE_FOUNDATION: u8 = 0;
@@ -73,6 +73,10 @@ pub const REFUSE_B_CLAIM: u32 = 7;
 /// The upgrade verb's own refusal: the named material is not a rung above
 /// this piece's, or the table holds no such rung for its shape.
 pub const REFUSE_B_TIER: u32 = 8;
+/// The repair verb's own refusal: the piece is already at its baked hp, so
+/// there is nothing to buy. Also the answer on an unbaked table
+/// (`repair_pct == 0`), where healing free is the alternative.
+pub const REFUSE_B_INTACT: u32 = 9;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
 /// Proposed default, DECISIONS.md §open ("build grid v0").
@@ -117,6 +121,12 @@ impl PieceDef {
 pub struct BuildContent {
     pub pieces: [PieceDef; MAX_PIECE_DEFS],
     pub piece_count: u16,
+    /// Repair price, percent of the pro-rata share of a piece's own build
+    /// cost (`content/balance.toml` `repair_cost_pct`; 100 = the damage's
+    /// worth exactly). Content validates 1..=100, so a zero here means the
+    /// table was never baked — and `repair` refuses on a zero rather than
+    /// healing free.
+    pub repair_pct: u16,
 }
 
 impl BuildContent {
@@ -125,6 +135,7 @@ impl BuildContent {
     pub const EMPTY: Self = Self {
         pieces: [PieceDef::INERT; MAX_PIECE_DEFS],
         piece_count: 0,
+        repair_pct: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
@@ -137,6 +148,9 @@ impl BuildContent {
     pub fn probe_fixture() -> Self {
         let mut b = Self::EMPTY;
         b.piece_count = 5;
+        // The shipped default, so the repair verb is inside the parity,
+        // replay and alloc gates rather than beside them.
+        b.repair_pct = 100;
         b.pieces[0] = PieceDef {
             shape: SHAPE_FOUNDATION,
             material: MAT_WOOD,
@@ -790,6 +804,115 @@ pub fn upgrade(
     );
 }
 
+/// What one cost row owes to buy back `missing` hp of a piece whose full
+/// life is `max_hp`: the pro-rata share of that row, scaled by the content
+/// percent, rounded up, and never free while any hp is missing.
+///
+/// `u64` deliberately. `units` and `missing` are both `u16`, so their
+/// product times a percent tops out past `u32` even though shipped content
+/// sits three orders below it — and a wrap here would sell a metal wall's
+/// worth of repair for one wood.
+fn repair_units(units: u16, missing: u16, max_hp: u16, repair_pct: u16) -> u32 {
+    if units == 0 || missing == 0 || max_hp == 0 {
+        return 0;
+    }
+    let num = units as u64 * missing as u64 * repair_pct as u64;
+    let den = max_hp as u64 * 100;
+    // Round up, then floor at one: a repair that restores hp for nothing
+    // is the free heal the whole price exists to refuse.
+    num.div_ceil(den).max(1) as u32
+}
+
+/// Buy a damaged piece back to its baked hp, priced in its own materials.
+///
+/// The shape is `upgrade`'s, checked in the same order, because the two
+/// verbs answer the same question about the same address and a player who
+/// learns one refusal has learned both. What differs is the ending: an
+/// upgrade re-rows the address and carries damage across as a fraction
+/// (`DECISIONS.md`, upgrade v0 — "never heals"), while a repair leaves the
+/// row alone and pays cash for the hp. Neither touches the upkeep clock:
+/// materials are not rent.
+///
+/// Pieces carry no owner, so "yours" means what it means everywhere else
+/// in this file — no *foreign* hearth claims the anchor. Outside every
+/// claim anyone may repair anyone's wall, the same door `place` and
+/// `upgrade` already leave open.
+#[allow(clippy::too_many_arguments)]
+pub fn repair(
+    bc: &BuildContent,
+    deploys: &Deploys,
+    pieces: &mut Pieces,
+    p: &mut Player,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    events: &mut EventQueue,
+) {
+    let Some(i) = pieces.find_index(cx, cz, level, loc) else {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
+        return;
+    };
+    let rec = pieces.entries()[i];
+    // Re-validated for the same reason `upgrade` re-validates: a content
+    // table swapped under a live store must refuse, never index out of
+    // bounds, and never divide by the inert row's zero (wall 5).
+    if rec.row as u16 >= bc.piece_count || bc.pieces[rec.row as usize].hp == 0 {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
+        return;
+    }
+    let def = bc.pieces[rec.row as usize];
+    let (ax, az) = anchor(cx, cz, loc);
+    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
+        return;
+    }
+    if deploys.foreign_claim(ax, az, p.id) {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
+        return;
+    }
+    // Nothing to buy. `saturating_sub` also answers the swapped-table case
+    // where the store holds more hp than the row now allows — refusing is
+    // right there, because trimming a stranger's wall is not this verb.
+    // A zero percent means the table was never baked, and the alternative
+    // to refusing is healing free.
+    let missing = def.hp.saturating_sub(rec.hp);
+    if missing == 0 || bc.repair_pct == 0 {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_INTACT, 0);
+        return;
+    }
+    // Check every row, then take every row — `place`'s split, for
+    // `place`'s reason. A half-paid repair leaves the client's mirror and
+    // the server's store disagreeing about an inventory, which is the
+    // divergence class `CLAUDE.md`'s trap list names one verb over.
+    for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
+        if inv_count(&p.inv, item) < repair_units(units, missing, def.hp, bc.repair_pct) {
+            events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_COST, 0);
+            return;
+        }
+    }
+    for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
+        inv_take(
+            &mut p.inv,
+            item,
+            repair_units(units, missing, def.hp, bc.repair_pct),
+        );
+    }
+    // The wall: a repaired piece *is* its baked row's hp and never a point
+    // more. Written as an assignment rather than an add-and-clamp so there
+    // is no arithmetic between the store and the ceiling to get wrong.
+    pieces.set_hp(i, def.hp);
+    events.push(
+        EV_PIECE_REPAIRED,
+        crate::gather::cell_key(cx, cz),
+        ((level as u32) << 16) | ((loc as u32) << 8) | rec.row as u32,
+        ((missing as u32) << 16) | def.hp as u32,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1155,6 +1278,303 @@ mod tests {
             assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
         }
         (bc, pieces, nod, ev, p)
+    }
+
+    /// The wall the whole verb exists to keep: a repaired piece stands at
+    /// its baked row's hp and never a point more.
+    ///
+    /// Three damage levels rather than one, because "restore to full" and
+    /// "add back the difference" agree on every case except the ones that
+    /// overflow — and the second is the shape that would eventually be
+    /// written here by someone adding a partial repair. The last case is
+    /// the one no arithmetic reaches: a store holding *more* hp than the
+    /// row now allows, which is what a content table swapped under a live
+    /// world looks like. It refuses rather than trimming, because
+    /// shortening a stranger's wall is not this verb, and it refuses
+    /// rather than paying, because there is nothing to buy.
+    #[test]
+    fn a_repaired_piece_never_exceeds_its_baked_hp() {
+        let full = BuildContent::probe_fixture().pieces[1].hp;
+        for standing in [1u16, 40, full - 1] {
+            let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100)]);
+            let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+            pieces.set_upkeep(i, standing, 3);
+            repair(
+                &bc,
+                &nod,
+                &mut pieces,
+                &mut p,
+                CX,
+                CZ,
+                0,
+                LOC_EDGE_W,
+                &mut ev,
+            );
+            let rec = *pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+            assert_eq!(
+                rec.hp, full,
+                "a wall repaired from {standing} stands at its baked hp, \
+                 not at {} ",
+                rec.hp
+            );
+            assert_eq!(
+                rec.uh, 3,
+                "materials are not rent: the upkeep clock does not move"
+            );
+            assert_eq!(rec.row, 1, "a repair is not an upgrade");
+            // And a second press buys nothing, at no charge.
+            let paid = inv_count(&p.inv, 0);
+            repair(
+                &bc,
+                &nod,
+                &mut pieces,
+                &mut p,
+                CX,
+                CZ,
+                0,
+                LOC_EDGE_W,
+                &mut ev,
+            );
+            assert_eq!(
+                last(&ev),
+                (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_INTACT)
+            );
+            assert_eq!(inv_count(&p.inv, 0), paid, "an intact piece is free");
+        }
+
+        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100)]);
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        pieces.set_hp(i, full + 50);
+        let before = inv_count(&p.inv, 0);
+        repair(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_INTACT)
+        );
+        assert_eq!(
+            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            full + 50,
+            "an over-hp record is left alone, not trimmed to the row"
+        );
+        assert_eq!(inv_count(&p.inv, 0), before, "and nothing was charged");
+    }
+
+    /// The price is the damage's own worth, rounded up, floored at one —
+    /// and unpayable is a refusal that costs nothing.
+    ///
+    /// The fixture wall is 100 hp for 3 wood, so a 60 hp hole is 1.8 wood
+    /// and must round to 2: rounding down would sell the last fifth of
+    /// every repair free, and repeated presses would then heal a base for
+    /// nothing. The one-hp scratch is the same argument at the bottom of
+    /// the range, where rounding down reaches zero outright.
+    #[test]
+    fn repair_is_priced_pro_rata_rounded_up_and_never_free() {
+        // 100 wood in, 5 for the foundation and 3 for the wall: 92 left.
+        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100)]);
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        pieces.set_hp(i, 40);
+        repair(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            inv_count(&p.inv, 0),
+            90,
+            "60 hp of a 100 hp / 3 wood wall is 1.8 wood, charged as 2"
+        );
+
+        pieces.set_hp(i, 99);
+        repair(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            inv_count(&p.inv, 0),
+            89,
+            "a one-hp scratch is 0.03 wood and is charged as 1 — free \
+             repair is the whole failure mode the price exists to refuse"
+        );
+
+        // Exactly enough wood to build, and none to mend with.
+        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 8)]);
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        pieces.set_hp(i, 40);
+        repair(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_COST)
+        );
+        assert_eq!(
+            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            40,
+            "a refused repair heals nothing"
+        );
+        assert_eq!(inv_count(&p.inv, 0), 0, "and takes nothing");
+    }
+
+    /// An unbaked table refuses rather than healing free.
+    ///
+    /// `BuildContent::EMPTY` carries `repair_pct == 0`, and content
+    /// validation pins the shipped value to 1..=100 — so the only way a
+    /// zero reaches here is a table nobody baked. The dangerous reading of
+    /// a zero percent is "costs nothing", which is a free heal for every
+    /// wall on the shard; the safe one is "no price is known", which is a
+    /// refusal.
+    #[test]
+    fn an_unpriced_table_refuses_the_repair_rather_than_giving_it_away() {
+        let (mut bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100)]);
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        pieces.set_hp(i, 40);
+        bc.repair_pct = 0;
+        let before = inv_count(&p.inv, 0);
+        repair(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_INTACT)
+        );
+        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp, 40);
+        assert_eq!(inv_count(&p.inv, 0), before);
+    }
+
+    /// Privilege, the same rule `place` and `upgrade` already carry: a
+    /// foreign hearth's claim refuses, and its owner is unaffected.
+    ///
+    /// Worth its own case rather than trusting the shared shape, because
+    /// this is the verb where getting it wrong is *generous* — a repair
+    /// refused wrongly is an annoyance, a repair allowed wrongly lets a
+    /// raider heal the wall they are standing outside of, which is not a
+    /// bug anyone would think to look for.
+    #[test]
+    fn repair_refuses_under_a_foreign_claim() {
+        let bc = BuildContent::probe_fixture();
+        let dc = DeployContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut owner = player_at_cell_center(&[(0, 100), (1, 100), (2, 100), (3, 100)]);
+        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+            place(
+                SEED,
+                &bc,
+                &deploys,
+                &mut pieces,
+                &mut owner,
+                0,
+                row,
+                CX,
+                CZ,
+                0,
+                loc,
+                &mut ev,
+            );
+            assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        }
+        let hearth = (0..dc.def_count)
+            .find(|&r| dc.defs[r as usize].arch == crate::deploy::ARCH_HEARTH)
+            .expect("fixture holds a hearth");
+        crate::deploy::place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            0,
+            hearth,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED, "hearth stands");
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        pieces.set_hp(i, 40);
+
+        let mut stranger = player_at_cell_center(&[(0, 100)]);
+        stranger.id = 9;
+        repair(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 9, REFUSE_B_CLAIM)
+        );
+        assert_eq!(
+            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            40,
+            "a stranger inside someone's claim cannot mend their wall"
+        );
+        assert_eq!(inv_count(&stranger.inv, 0), 100, "and pays nothing to try");
+
+        repair(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut owner,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            bc.pieces[1].hp,
+            "the hearth's owner mends their own wall"
+        );
     }
 
     #[test]

@@ -90,9 +90,14 @@ pub const APPLIED_DEATH: u32 = 1 << 24;
 /// one small mesh at a point, so re-reading ≤ `MAX_BACKPACKS` of them is
 /// cheaper than the bookkeeping a delta would need.
 pub const APPLIED_BAGS: u32 = 1 << 25;
-/// A structure took a raid hit and is still standing (`EventMsg::StructHit`).
-/// `struct_hit` names the address and how much of it is left. Always set
-/// alongside `APPLIED_HIT`, which is what drains the hitmarker ring.
+/// A structure's hp at an address changed and it is still standing —
+/// `EventMsg::StructHit` taking it down, `EventMsg::PieceRepaired` putting
+/// it back. `struct_hit` names the address and where the piece now stands
+/// out of its maximum.
+///
+/// A hit sets this **and** `APPLIED_HIT`, which is what drains the
+/// hitmarker ring; a repair sets this alone, because nobody was struck.
+/// A reader that wants only raid damage checks for both.
 pub const APPLIED_STRUCT_HIT: u32 = 1 << 26;
 /// Own food/water changed (`EventMsg::Vitals`).
 pub const APPLIED_VITALS: u32 = 1 << 27;
@@ -1193,6 +1198,24 @@ impl ClientCore {
                 // landed. One flag would either strand the ring or make
                 // every caller of the marker learn about addresses.
                 flags |= APPLIED_HIT | APPLIED_STRUCT_HIT;
+            }
+            EventMsg::PieceRepaired {
+                cx,
+                cz,
+                level,
+                loc,
+                row: _,
+                healed: _,
+                hp,
+            } => {
+                // The same readout `StructHit` writes, from the other
+                // direction — and no hitmarker, so `APPLIED_HIT` stays
+                // off: nobody was struck. `hp` is both halves of the pair
+                // by construction, because the verb's whole contract is
+                // that a repaired piece stands at its baked row's hp and
+                // never a point over; there is nothing to look up.
+                self.struct_hit = (cx, cz, level, loc, hp, hp);
+                flags |= APPLIED_STRUCT_HIT;
             }
             EventMsg::PieceRemoved { cx, cz, level, loc } => {
                 if self
