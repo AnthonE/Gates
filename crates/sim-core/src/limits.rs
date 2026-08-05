@@ -391,3 +391,22 @@ pub const SUPPORT_SWEEP_PER_TICK: usize = 32;
 /// stops one hp short so the wall falls to the next swing.
 /// Proposed default, DECISIONS.md §open (collapse budget v0).
 pub const MAX_REMOVALS_PER_TICK: usize = 64;
+
+/// Live satchel charges standing on the world with a fuse burning
+/// (`charge.rs`). This is a **client-driven** store — one action plants
+/// one charge — so wall 4 applies at its sharpest: without a cap, a
+/// client spamming the plant verb grows a per-tick scan without bound.
+///
+/// Sized off what a raid actually is rather than off a player count: a
+/// stone wall at 1750 hp takes four of the alpha's 500-structure charges,
+/// so 64 is sixteen simultaneous walls coming down — more than any raid
+/// this shard's `MAX_PLAYERS` can mount at once, and small enough that the
+/// fuse scan is 64 integer compares a tick.
+///
+/// Overflow policy: **refuse** — the plant is refused with `REFUSE_B_FULL`
+/// and the charge stays in the raider's inventory. Refusing costs the
+/// raider a click; the alternative, evicting someone else's live charge,
+/// would let one player disarm another's raid by planting into a full
+/// store, which is a grief verb rather than a cap.
+/// Proposed default, DECISIONS.md §open (satchel fuse v0).
+pub const MAX_LIVE_CHARGES: usize = 64;

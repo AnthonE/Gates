@@ -223,6 +223,27 @@ pub const EV_MOVE_REFUSED: u8 = 27;
 /// standing outside it has more use for the news than the owner does.
 pub const EV_PIECE_REPAIRED: u8 = 28;
 
+/// EV_CHARGE_PLACED: a = build cell key (cx << 16 | cz), b =
+/// `STRUCT_DEPLOY_BIT` | level << 16 | loc << 8 | row, c = fuse ticks
+/// until the blast.
+///
+/// `a` and `b` are `EV_PIECE_REPAIRED`'s exactly — the same address said
+/// the same way, store bit at 24 — so a client that can draw a hit or a
+/// mend on a wall can stick a charge to it with no new layout to learn.
+///
+/// `c` is the fuse **remaining**, not the tick it fires on. A client has
+/// no shared tick origin to subtract an absolute deadline from, and a
+/// countdown is what it draws either way; the sim keeps the deadline
+/// (`charge::ChargeRec::fires_at`) because a deadline cannot drift and a
+/// decremented counter can.
+///
+/// Broadcast, not unicast, and that is the point of the event: a burning
+/// fuse is the one piece of news in this game that the *defender* needs
+/// more than the actor does. The blast itself has no event of its own — it
+/// arrives as `EV_STRUCT_HIT` from `charge::tick_fuses`, which is the same
+/// news a swing makes and is already drawn.
+pub const EV_CHARGE_PLACED: u8 = 29;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -230,7 +251,7 @@ pub const EV_PIECE_REPAIRED: u8 = 28;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_PIECE_REPAIRED;
+pub const EV_MAX: u8 = EV_CHARGE_PLACED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -544,6 +565,23 @@ pub enum Command {
         level: u8,
         loc: u8,
     },
+    /// Plant the held throwable against the structure at the address, with
+    /// its content fuse burning (`charge.rs`). `Repair`'s fields exactly,
+    /// including the store bit and for the same reason — and, like
+    /// `Repair`, no amount and no fuse crosses: what the charge takes off
+    /// and how long it burns are the throwable's content row, so neither
+    /// is a number a client can choose.
+    ///
+    /// The one thing this verb does *not* inherit from `Repair` is its
+    /// claim check. See `charge::place`.
+    Throw {
+        id: u32,
+        deploy: bool,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
     /// Take everything that fits from the nearest backpack in reach
     /// (backpack.rs). No target crosses: the pick is the sim's, the same
     /// shape a swing's is.
@@ -636,6 +674,10 @@ pub struct World {
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
     pub deploys: Deploys,
+    /// Planted satchel charges with a fuse burning — sim state, hashed.
+    /// Small enough to sit inline (`MAX_LIVE_CHARGES` × 24 B ≈ 1.5 kB)
+    /// beside the stores it damages, unlike `backpacks` next door.
+    pub charges: crate::charge::Charges,
     /// Death backpacks standing on the ground — sim state, hashed.
     /// Boxed, and for one reason: the store is 38 kB of fixed capacity and
     /// `World` is built on the stack (`ShardCore::new`, every wire test),
@@ -693,6 +735,7 @@ impl World {
             loot: LootContent::EMPTY,
             pieces: Pieces::new(),
             deploys: Deploys::new(),
+            charges: crate::charge::Charges::new(),
             backpacks: Box::new(Backpacks::new()),
             sweep_piece: 0,
             sweep_deploy: 0,
@@ -1350,6 +1393,33 @@ impl World {
                     );
                 }
             }
+            Command::Throw {
+                id,
+                deploy,
+                cx,
+                cz,
+                level,
+                loc,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    crate::charge::place(
+                        &self.build,
+                        &self.deploy,
+                        &self.combat,
+                        &mut self.charges,
+                        &self.deploys,
+                        &self.pieces,
+                        &mut self.players[slot],
+                        self.tick,
+                        deploy,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        &mut self.events,
+                    );
+                }
+            }
             Command::Consume { id, slot: inv } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     survival::consume(
@@ -1578,6 +1648,25 @@ impl World {
                 }
             }
         }
+        // Fuses burn after the player loop that can light one and before
+        // the sweeps that clean up after a collapse. A charge planted this
+        // tick cannot fire on it — `validate` refuses `fuse_s = 0` — so
+        // the ordering never lets a plant and its blast land in one tick's
+        // event ring, which is what would make the fuse invisible.
+        //
+        // `removals` is the same allowance the swings above just spent:
+        // wall 4 does not hand out a second one because the damage arrived
+        // on a timer.
+        crate::charge::tick_fuses(
+            &self.build,
+            &self.deploy,
+            &mut self.charges,
+            &mut self.pieces,
+            &mut self.deploys,
+            tick,
+            &mut removals,
+            &mut self.events,
+        );
         self.slot_lives.respawn_due(tick, &mut self.events);
         // Bags time out on the sim's clock, before the tick advances, so
         // a bag dropped at tick T with a lifetime of L is gone the tick
@@ -1754,6 +1843,28 @@ impl World {
             buf[11..15].copy_from_slice(&d.owner.to_le_bytes());
             buf[15] = d.open as u8;
             buf[16] = d.locked as u8;
+            h.update(&buf);
+        }
+        // Burning fuses. State as plainly as anything here: two shards
+        // that disagree about a live charge disagree about whether a base
+        // is standing ten seconds from now, and `fires_at` is hashed
+        // rather than a remaining count for the reason the record keeps a
+        // deadline — the absolute tick is the fact, and a remainder is a
+        // view of it that a replay resuming mid-fuse would have to rebuild.
+        h.update(&(self.charges.len() as u64).to_le_bytes());
+        for c in self.charges.entries() {
+            let mut buf = [0u8; 21];
+            buf[0..2].copy_from_slice(&c.cx.to_le_bytes());
+            buf[2..4].copy_from_slice(&c.cz.to_le_bytes());
+            buf[4] = c.level;
+            buf[5] = c.loc;
+            buf[6] = c.deploy as u8;
+            buf[7..9].copy_from_slice(&c.structure.to_le_bytes());
+            buf[9..17].copy_from_slice(&c.fires_at.to_le_bytes());
+            // The planter rides the digest too: it is on the wire off this
+            // record, so a replay that reproduced the blast while
+            // inventing the raider would put a different name on it.
+            buf[17..21].copy_from_slice(&c.owner.to_le_bytes());
             h.update(&buf);
         }
         // The bag cooldowns, in their own pass rather than widening the

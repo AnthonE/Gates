@@ -263,7 +263,21 @@ for (let i = 0; i < slotCount; i++) {
 // one gate that notices a version move into a gate that cannot.
 // 19: the container view (`event.rs` `SUB_CONT_SYNC`, `lib.rs`
 // `ACT_CONTAINER`).
-check(ex.client_proto_ver() === 21, "proto ver drifted without this gate hearing");
+// 22: jump (`sim-core/input.rs` `BTN_JUMP`, `movement.rs` `JUMP_SPEED`). The
+// purest case this tripwire has had to catch: not one payload bit moved and
+// only the hello's bytes changed, because `buttons` has been a full unmasked
+// octet since v0 and bit 3 was already crossing the wire ignored. What moved
+// is the meaning — and this file is on the *client's* side of exactly the
+// mismatch that makes that matter, since `movement::step` is shared verbatim
+// with `client-wasm`'s predictor, so a v22 client against a v21 server would
+// predict an arc the server never runs and be snapped back on every press.
+// 23: the raid verb (`lib.rs` `ACT_THROW`, `event.rs` `SUB_CHARGE_PLACED`,
+// `sim-core/charge.rs`). Two new subtypes, no existing message moved a bit —
+// and the mismatch this side would suffer is the batch-drop kind: a v22
+// client handed a `SUB_CHARGE_PLACED` decodes it as unknown, calls the whole
+// event message malformed, and loses every event that shared the datagram
+// with it. Walls would lose hp with nothing drawn to say why.
+check(ex.client_proto_ver() === 23, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13

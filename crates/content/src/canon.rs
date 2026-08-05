@@ -118,6 +118,18 @@ pub fn hash(c: &Content) -> u64 {
             }
         }
         h.opt_s(w.ammo.as_deref());
+        // The fuse walks here for the reason the `[survival]` and
+        // `[backpack]` comments above give: a field that reaches the sim
+        // and not the digest lets two contents that play differently
+        // canonicalise identically. This one reaches `ThrowDef` (bake.rs),
+        // so it walks.
+        match w.fuse_s {
+            None => h.u(0),
+            Some(f) => {
+                h.u(1);
+                h.u(f);
+            }
+        }
     }
 
     h.s("armor");

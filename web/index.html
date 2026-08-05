@@ -450,6 +450,55 @@
         color: #d7e6c8;
         text-align: right;
       }
+      /* The getting-started checklist, docked top-left exactly where the
+         reference puts it (Rust Images/choppingtree.jpg). Every verb key
+         named in the world, each row struck through the first time that verb
+         is used, the panel gone once they all are — `Hud.learnUse`. It is the
+         only place after the join that names B, C, M, T, G, H, U, L, R or Tab:
+         #hint below belongs to the pre-connect screen and vanishes with it. */
+      #learn {
+        position: fixed;
+        left: 12px;
+        top: 12px;
+        display: none;
+        z-index: 5;
+        pointer-events: none;
+        font: 12px monospace;
+        color: #e6edf3;
+        text-shadow: 0 0 3px #000;
+      }
+      #learntitle {
+        margin: 0 0 4px;
+        letter-spacing: 0.08em;
+        color: #cfe0a0;
+      }
+      .ltask {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        padding: 1px 0;
+      }
+      .lkey {
+        min-width: 28px;
+        text-align: center;
+        padding: 0 4px;
+        border: 1px solid #3a5064;
+        border-radius: 3px;
+        background: rgba(10, 15, 20, 0.55);
+      }
+      /* A checked row stays on screen wearing its tick, the way the reference
+         frame shows the done ones — the list has to read as progress, and a
+         row that vanished would read as one that was never there. */
+      .ltask.ldone .lwhat {
+        text-decoration: line-through;
+        opacity: 0.5;
+      }
+      .ltask.ldone .lkey {
+        opacity: 0.5;
+      }
+      .ltask.ldone .lkey::after {
+        content: " ✓";
+      }
       /* Craft panel — plain DOM over the live world (clarity over chrome
          at alpha; the reference renders its menus the same way). */
       #craft {
@@ -733,6 +782,10 @@
     <div id="cont">
       <p id="conttitle">CONTAINER</p>
       <div id="contgrid"></div>
+    </div>
+    <div id="learn">
+      <p id="learntitle">GETTING STARTED</p>
+      <div id="learnrows"></div>
     </div>
     <div id="vitals"></div>
     <div id="toasts"></div>
