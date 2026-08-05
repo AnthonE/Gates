@@ -4,11 +4,13 @@
 //! identical, the fixture just isn't a file yet. The final hash is also
 //! pinned: any accidental drift in sim behavior reddens this gate.
 
+use sim_core::backpack::BackpackContent;
 use sim_core::bots::bot_frame;
 use sim_core::build::BuildContent;
 use sim_core::craft::CraftContent;
 use sim_core::gather::GatherContent;
 use sim_core::limits::{STATE_HASH_INTERVAL, TICK_HZ};
+use sim_core::loot::LootContent;
 use sim_core::rng::Pcg32;
 use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World};
@@ -19,9 +21,35 @@ const TICKS: u64 = 900;
 /// Pinned end-state hash for (SEED, the script below). Regenerates only
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
 ///
-/// Regenerated this commit, and **structurally rather than behaviourally**
-/// — the distinction matters, because only one of the two is evidence that
-/// a new rule runs here. The death screen put five fields on every
+/// Regenerated this commit, and **structurally rather than
+/// behaviourally**: the deployed box became a container, so the box
+/// store's length entered the digest. This script places no box, so the
+/// number below moved by exactly eight zero bytes — one `u64` count and
+/// not one record. That distinction is the whole value of the note: this
+/// regeneration is *not* evidence that a box move runs here, and
+/// `crates/sim-core/tests/box_container.rs` is what owns that behaviour.
+/// The move verb itself is unchanged on this surface — no bot sends one.
+///
+/// The regeneration before it was **behavioural: the barrel loop runs on
+/// this surface.** Bot 31 is held on four scanned barrel cells in turn and
+/// swings them apart, so the number below is a function of the weighted
+/// pick, the count draw, the stack rule that files the roll into a
+/// container, and the container's own address and timer. Change a weight,
+/// the Lemire multiply-shift, the roll-count band or `hits`, and this
+/// reddens.
+///
+/// It first went green *without* covering any of that, which is the more
+/// useful half of this note: arming `LootContent` moved the hash on barrel
+/// **hits** alone — `slot_lives` is hashed, so counting a hit is visible
+/// even when nothing ever breaks — and the run made zero containers. A
+/// bot walks out of a barrel's 2 m reach long before the second of two
+/// swings 38 ticks apart, so a teleport-once fixture reproduces hits
+/// forever and a smash never. The `made > 0` assert below exists so that
+/// cannot recur silently: a moved hash is not evidence, and the count is.
+///
+/// The regeneration before this one was **structural rather than
+/// behavioural** — the distinction matters, because only one of the two is
+/// evidence that a new rule runs here. The death screen put five fields on every
 /// `Player` (`dead` and the four facts the wire encodes off it) and all
 /// five are in the state digest, so the number below moved by ten bytes
 /// per active body. It moved for no other reason: **nothing on this
@@ -57,7 +85,16 @@ const TICKS: u64 = 900;
 /// survival module's fields entering `state_hash` while the script left
 /// them all zero, and before that the death backpack's two zero-length
 /// store fields.
-const GOLDEN_FINAL_HASH: u64 = 0x2869_95C7_F9D2_BFA1;
+/// Regenerated for a MERGE, which is a case the notes above never cover and
+/// the one that most deserves suspicion. Two lanes each moved this hash on
+/// their own trunk — `main` to `0x66B6_0CC0_1555_D451` (the container wire and
+/// the box store), `lane/looks` to `0x2869_95C7_F9D2_BFA1` (scatter clumping,
+/// the road and the haven pad) — and the merged sim is neither. Taking either
+/// side would have been the dangerous resolution: green would then mean one
+/// lane's behaviour had been dropped, and this gate exists to notice exactly
+/// that. The number below is read off a run of the merged tree and confirmed
+/// stable across repeated runs, not carried over from a side.
+const GOLDEN_FINAL_HASH: u64 = 0x81DF_FCAA_4B37_D99F;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
@@ -84,6 +121,39 @@ fn shoreline(seed: u64) -> (f32, f32) {
         x += 4.0;
     }
     panic!("this island has no coast — the generator changed under this gate");
+}
+
+/// The first `n` barrel cells on the island, scanned off `terrain::scatter`
+/// rather than typed in — same reason `shoreline` scans: a cell that held
+/// a barrel at one seed and one weight table is a fixture that silently
+/// stops meaning what it says.
+///
+/// Returns the barrel's own world position, because the smasher is stood
+/// exactly on it: `POINT_BLANK_M2` bypasses the aim cone, so the swing
+/// lands without the script also having to reproduce a yaw.
+fn barrel_cells(seed: u64, scatter: &sim_core::terrain::ScatterTable, n: usize) -> Vec<(f32, f32)> {
+    let mut out = Vec::new();
+    // The same haven the sim resolves at init: it vetoes scatter, so a script
+    // built without it could aim a swing at a barrel the world never placed.
+    let haven = sim_core::terrain::haven(seed);
+    let span = (sim_core::terrain::ISLAND_SIZE / sim_core::terrain::CELL_SIZE) as i32;
+    let mut cz = 0;
+    while cz < span && out.len() < n {
+        let mut cx = 0;
+        while cx < span && out.len() < n {
+            let s = sim_core::terrain::scatter(seed, scatter, &haven, cx, cz);
+            if s.occupant == sim_core::terrain::Occupant::BarrelSlot {
+                out.push((s.x, s.z));
+            }
+            cx += 1;
+        }
+        cz += 1;
+    }
+    assert!(
+        !out.is_empty(),
+        "this island has no barrels — the scatter table changed under this gate"
+    );
+    out
 }
 
 /// Stand a kitted bot on ground that will hold a foundation.
@@ -134,6 +204,17 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     world.craft = CraftContent::probe_fixture();
     world.build = BuildContent::probe_fixture();
     world.deploy = sim_core::deploy::DeployContent::probe_fixture();
+    // Barrels, on the replayed surface. Both halves are needed or the
+    // gate watches nothing: the loot table decides a barrel is breakable
+    // at all, and the despawn ladder is what lets the container it breaks
+    // into actually stand up. Armed together, a smashed barrel writes to
+    // both hashed stores — `slot_lives` (the slot's bit and its jittered
+    // respawn) and `backpacks` (the container, its address, its timer and
+    // its rolled contents) — so the weighted walk, the count draw and the
+    // stacking rule are all functions of the number below.
+    world.loot = LootContent::probe_fixture();
+    world.backpack = BackpackContent::probe_fixture();
+    let barrels = barrel_cells(seed, &world.scatter, 4);
     // The clock, on the replayed surface: meters granted at join, drained
     // every tick by the rational accumulator, and eaten back up by the
     // scripted consumes below — so a change to `survival::step`'s
@@ -327,6 +408,18 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         if t == 200 && world.players[20].active {
             let (x, z) = shoreline(seed);
             world.players[20].body = sim_core::movement::Body::at(seed, x, z);
+        }
+        // The smasher. Held on a scanned barrel rather than teleported once,
+        // because a barrel wants two landed swings 38 ticks apart and a bot
+        // walks out of its 2 m reach long before the second: teleport-once
+        // reproduced barrel *hits* and never a single smash, which is how
+        // this surface first went green while covering nothing. Rotating it
+        // through four barrels every 200 ticks means four different cells
+        // roll four different tables, so the weighted walk is in the hash
+        // and not just the slot bit.
+        if world.players[30].active {
+            let (x, z) = barrels[(t as usize / 200) % barrels.len()];
+            world.players[30].body = sim_core::movement::Body::at(seed, x, z);
         }
         if t == 150 {
             let b = &world.players[0].body;
@@ -584,6 +677,23 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         world.players[20].hp_max, 0,
         "the drinker has hp on this surface now — the drink's hp debit is live \
          here and the comment above it, which says it is not, has gone stale"
+    );
+    // The barrel loop ran on this surface, and the golden below is only
+    // evidence of the roll while this holds. Bots swing on a beach where a
+    // quarter of the cells hold a barrel, so an empty container store means
+    // the smash never fired and the pinned hash has quietly stopped
+    // watching it — the exact failure the loot slice found here, where the
+    // gate went green because the fixture was unarmed rather than because
+    // the code was right.
+    // `next_id` is monotonic from 1, so it counts containers *created*
+    // rather than containers still standing — the fixture's despawn ladder
+    // is short enough that an end-state count would read zero on a surface
+    // that smashed plenty.
+    let made = world.backpacks.next_id() - 1;
+    assert!(
+        made >= 2,
+        "only {made} containers stood up in {TICKS} ticks — the barrel smash \
+         is not running on this surface and the golden no longer covers it"
     );
     (hashes, world.state_hash())
 }

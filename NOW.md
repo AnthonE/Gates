@@ -4,6 +4,106 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+0. **The outbound move marshalling is gated — done this pass (ui lane), kept
+   for what it leaves open.**
+
+   *(Gap pass, iteration 2. From ranked fix 4 of
+   `findings/pass-20260805-002720-01-judge.md`: "main.js's marshalling of
+   (fromKind, from, toKind, to) into the wasm call is covered only by
+   `browser_smoke`, which is off this run. Closing it needs the marshalling
+   extracted into something node-importable." Ranked fix 1 of the same report
+   — `rustConst`'s unanchored regex — is folded in.)*
+
+   `client_action_move` takes six `u32`s and every wall here is blind to
+   swapping two: encoder untouched, action queue not in `state_hash`, one
+   type throughout. Now `invmove.moveArgs()`, pure and node-imported, and the
+   order is stated once as NAMES (`MOVE_ARG_ORDER`) which `ui_smoke` §N reads
+   back out of `bridge.rs` — so it is checked against Rust, not against the
+   client's own opinion. `main.js` spreads the result, leaving nothing at the
+   call site to transpose. 11 mutants run, all 11 red, including an ABI
+   reorder and a rename made in `bridge.rs` alone.
+
+   Two things it leaves:
+   - **`bag`, `from_kind`, `to_kind` are all 0 on every call this client can
+     legally make**, so no value probe separates those three; the name-order
+     check is what covers them. They become separable on the pass that opens
+     a second container — the same pass that makes `bag` non-zero.
+   - **`browser_smoke` and `vantages` are UNRUN** (operator's `GATES_TIER=fast`),
+     and this pass edits `main.js`. Nothing here is claimed to boot.
+
+1. **Recovery, 2026-08-05 — done, kept only for what it leaves open.**
+
+   `ui_smoke`'s `CONT_MAX` check went red on a clean tree. Neither commit was
+   wrong alone: the ui lane's `1fe35b0` pinned the Rust alias by NAME
+   (`contMaxAlias === "CONT_BAG"`), the systems lane's `4d7a926` legitimately
+   grew a third kind and moved that alias to `CONT_BOX`. The merge was red.
+   Fixed as both (a) and (b) — see the commit. Mirror now names `CONT_BOX`;
+   the gate resolves the alias to a NUMBER, so it is strictly stronger.
+
+   Two things this leaves for the next pass:
+   - **No masked gate behind it.** The runner pins `GATES_TIER=fast` this run
+     (`restart.sh`), and `ui_smoke` is the last gate before that tier's exit —
+     so unlike the usual first-red case there is nothing downstream to expect.
+     `browser_smoke` and `vantages` stay UNRUN, by operator config, not by me.
+   - **`loop/cont-max-mirror` is now redundant.** A previous pass's swept
+     remainder; its diff is adopted here with a real commit message. Its
+     salvage worktree is the operator's to remove, not a lane's.
+
+1. **The container panel is built; two things in `crates/` bound what it can
+   say.** *(ui lane, 2026-08-05. The panel, the cross-container drag, the
+   open key and `ci/ui_smoke.mjs` group O landed — 279 checks, 8 mutants red.)*
+
+   - **`client_move_readout` still has no TO kind** (request 2 below, 8 spare
+     bits). So `hud.invMoveVerdict` matches a verdict on three carried fields
+     plus the one-move-in-flight rule, and a self-3-to-box-3 verdict is the
+     same word as a self-3-to-self-3 one. `hud.abandonContainerMove` is what
+     keeps that honest — the moment the open container changes, a move with an
+     end in it is given up rather than matched against whatever is open now.
+     Not a hole; a narrower match than it looks, and gated as such.
+   - **Only BAGS can be opened.** A box is addressed by a packed
+     `box_key(cx, cz, level)` this side would have to mirror, and mirroring a
+     bit layout with no gate on it is the positional-payload trap itself.
+     Needs `ARCH_BOX`'s slots + container address (request 3 below) and then a
+     gate on the packing, in that order.
+   - **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are
+     UNRUN (operator's `GATES_TIER=fast`) and this pass edits `main.js`,
+     `wasm.js` and `index.html`.
+
+## 0. The second container panel — gap 1's other half *(ui lane)*
+
+*From `findings/pass-20260804-205133-03-judge.md` gap 1, "there is nowhere to
+put anything, so a base is scenery" — picked as this lane's gap-pass item.*
+
+Landed this pass (the half that needed no `crates/` change): every address the
+panel forms is a **(kind, slot) pair**, not a slot number. Bag slot 3 and self
+slot 3 were the same integer, so the drag, the pending record, the verdict
+match and the rollback all aliased; `ui_smoke` §M drives each. Report 03's
+ranked fix 1 (only `len > 0` was asserted, so a transposed move encoded
+green) is closed at two of its three hops: §M pins the panel→host argument
+order, and `client_smoke` now decodes `client_action_move`'s bytes field by
+field. **The third hop closed on 2026-08-05** — the marshalling is
+`invmove.moveArgs()` and `ui_smoke` §N holds its order to `bridge.rs`; see
+item 0.
+
+Remaining otherwise, all `crates/` — the requests below. The panel still draws
+exactly ONE container and says so (`hud.invContainers`); listing a second
+there without cells and a contents source would promise a draw it cannot
+perform.
+
+> **Cross-lane request → systems, three items, all for gap 1** *(ui lane,
+> 2026-08-04)*. In dependency order:
+> 1. ~~**Container contents on the wire.**~~ **Answered at wire v19** —
+>    `EventMsg::ContSync` carries (kind, handle, slots) to the opener alone.
+>    Item 1 above has the four bridge exports it arrives through.
+> 2. **`client_move_readout` must carry the TO kind.** It packs
+>    `reason<<24 | to_slot<<16 | from_kind<<8 | from_slot` — 8 bits spare.
+>    `invmove.moveVerdict` therefore rejects every non-self FROM kind, which
+>    is correct and load-bearing today: without the to-kind a bag verdict
+>    cannot be told apart from a self one. That rejection is the last thing
+>    between the panel and cross-container drags.
+> 3. **`ARCH_BOX` needs slots and a container address** (`deploy.rs:80`), the
+>    piece the judge named. (2) unblocks the panel; (3) gives it something
+>    worth opening.
 > **Cross-lane request, systems lane: nothing in the world is solid.**
 > `collide.rs` knows only built pieces — `blocked`/`piece_ground` take a
 > `ColIndex` and never a `Slot`. So a player walks through every tree, boulder,
@@ -51,6 +151,68 @@ What remains, in the order it is worth doing:
 > from here would only conflict on the same line. Merge theirs. Until then
 > `UI_SMOKE_PORT=<free>` is the documented override.
 
+> **Cross-lane, not an item: the ui lane's flag-word blocker is cleared, and
+> the read changed.** *(systems lane, 2026-08-04. Read this before wiring the
+> drag.)* `APPLIED_MOVE` and `STREAM_ERR` were both `1 << 31`. Bit 31 stays the
+> error sentinel — `main.js:759` already reads it that way and the fix must not
+> need `web/` — so the move verdict moved to a **second applied word**:
+> `core::APPLIED2_MOVE`, read through the new export **`client_applied2()`**.
+> Word 0 cannot announce word 1 (bits 0..30 are flags, 31 is the sentinel), so
+> call `client_applied2()` after *every* `client_on_stream`; it is zero on any
+> message that set nothing, so an unconditional read cannot see a stale
+> verdict. The ui half is unchanged otherwise: `client_move_readout()` into
+> `invMoveVerdict`, on `APPLIED2_MOVE` instead of `APPLIED_MOVE`. Gated by
+> `applied_word_is_full_and_bit_31_is_the_error_sentinel` (core.rs — the word
+> is asserted *exactly* full, so the next flag cannot land on the sentinel) and
+> by `ci/client_smoke.mjs` through the real C ABI. **Unverified in a browser:**
+> `browser_smoke` is operator-disabled this run, so "the console.error is gone"
+> is a claim the native and ABI gates support and no browser has checked.
+00. **systems: the error must leave the flag word — it is NOT a one-line change.**
+   *(Gap pass, ui lane. Gap 1 of BOTH `findings/pass-20260804-205133-01-judge.md`
+   and `-02-judge.md`: "a player still cannot move a single item".)*
+
+   The client half landed this pass — main.js arms `onInvMove` and routes the
+   verdict, so a player can drag. It is armed over a workaround, and this is
+   what retires it.
+
+   Both reports call the cure "one constant in `crates/client-wasm`". **It is
+   not, and a pass that starts there will hit a wall in ten minutes.**
+   `core.rs:38-122` assigns every bit 0..31 of the `APPLIED_*` word — bit 31
+   (`APPLIED_MOVE`) is the last one, and `core.rs:115-121` says so in its own
+   comment. So `APPLIED_MOVE` has nowhere to move to. The thing that must
+   leave the word is **`STREAM_ERR`** (`bridge.rs:64`), because it is not a
+   flag at all — it is an error channel multiplexed into a full flag set by
+   `client_on_stream`, which returns both.
+
+   Cheapest shape: `client_on_datagram`'s, which already does this right —
+   return a code, not flags. Or an out-of-band `client_stream_err()`. Either
+   way `ci/client_smoke.mjs:543,807,816,822` assert the error meaning of bit 31
+   and `:572,587` assert the move meaning, so both sides move in that commit.
+
+   When it lands: delete `web/src/invmove.js` and its call site in `main.js`,
+   and test bit 31 as `APPLIED_MOVE` directly. `ci/ui_smoke.mjs` group L
+   already goes red on that commit and says exactly this in its failure text.
+
+> **Cross-lane, not an item: `browser_smoke` is red on a CLEAN tree, and it is
+> tab B, not the prop-contrast probe.** Measured 2026-08-04 from the ui lane,
+> both on `lane/ui` HEAD `ecf1985` with nothing applied and on a branch off it:
+> the same assertion both times — *"tab B: never reached the world —
+> unresponsive"*, `__gatesDebug` never published, `2 tab(s) live`, ~68–70 s of
+> liveness cap. Tab A reaches the world in under a second in both runs. This is
+> the two-live-renderers class CLAUDE.md already names (2026-08-01), on a box
+> with no GPU where Chromium is on SwiftShader — not a diff, and not a timeout
+> to widen. The operator has `browser_smoke` switched off this run. Anything
+> touching `web/` therefore cannot honestly claim the renderer tier; say so.
+
+0. **world: the haven pad, and the road the client cannot see.**
+   *(Gap pass. Both judge reports named "the island has nowhere to go" as their
+   own top-or-second gap — `findings/archive-prestamp/pass-20260804-173640-01-judge.md`
+   gap 3 and `-02-judge.md` gap 2. The coast road half landed this pass; this is
+   what it leaves.)*
+0. **world: the pad exists but nothing is on it, and the road is invisible.**
+   *(The pad's placement + exclusion zone landed — `DECISIONS.md` §open "haven
+   pad v0", `tests/haven.rs`. This is what it leaves.)*
+0. **world: the pad pays now, but it is still bare ground.**
 > **Cross-lane, not an item: `browser_smoke` is RED on a clean trunk, and it
 > is the lighting gap, not a regression.** The renderer tier is switched off
 > this run (`GATES_TIER=fast`), so the loop is not seeing it. Run in full on
@@ -187,6 +349,29 @@ What remains, in the order it is worth doing:
    these branches rather than from scratch; if they are never un-parked, delete
    them in a commit that says so, as a stated decision rather than a skip.
 
+1. **The barrel's systems half is done — the loop now waits on world and ui.**
+   *(systems lane, 2026-08-04. Read this before picking the barrel item below.)*
+
+   `BarrelSlot` is smashable: `hits` swings (content, `loot.toml`) open it, the
+   table rolls by weight, and the roll stands up a **ground container** at the
+   barrel's own address — `backpack.rs`'s store, not a new one, so `CONT_BAG`,
+   the move verb, the loot verb, the sync walk and the wire all work unchanged.
+   **`PROTO_VER` did not move.** Gates: `tests/loot.rs` (8), two `event_roles`
+   payload checks (`EV_SLOT_HARVESTED` is off the uncovered ledger, 9→8),
+   `bake_loot` + refusals in `content.rs`, and `test_replay`'s golden
+   regenerated **behaviourally** with a `made >= 2` assert so it cannot go
+   green on an unarmed fixture again.
+
+   What is left, and neither is systems':
+   - **world:** barrels only spawn on the beach today (`terrain.rs` weight row).
+     `TERRAIN.md` §7's coast road is what puts them somewhere worth walking.
+   - **ui:** the loot panel. It is a `CONT_BAG` container like a death bag, so
+     one panel serves both — no new protocol to write against.
+
+   Two §open rows landed with it: "barrel smash hits" and the call to reuse the
+   ground-container store (which shares `MAX_BACKPACKS` 256 and its evict
+   policy with death bags — stated there, not discovered later).
+
 1. **Smash a barrel, pick up the loot. The whole loop, and most of it exists.**
    *(Operator, 2026-08-04. First concrete target of the playability item above.)*
 
@@ -259,30 +444,6 @@ What remains, in the order it is worth doing:
 
 1. **The container verb has no UI and no gate — and the systems half is not
    ours.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.)*
-1. **A box holds nothing: `ARCH_BOX` still has no storage and no address.**
-   *(Gap pass, iteration 3. Ranked gap 1 in BOTH `findings/pass-20260804-173640-01-judge.md`
-   and `-02`; the move verb half of it landed this pass, this is the rest.)*
-
-   `Command::Move` now spans `CONT_SELF` and `CONT_BAG` (`inventory.rs`,
-   wire v17), so a player can arrange a hotbar, split a stack and take one
-   slot at a time from a bag. A **base** still holds nothing: `ARCH_BOX`
-   (`deploy.rs:80`) bakes, places, and has no contents array and no verb.
-   That is the judges' "a raid takes nothing" half, and it is now purely
-   additive — a third `CONT_*` kind, resolved against a new store, and not
-   one line of `plan_move` moves.
-
-   What it needs: a `BoxRec { cx, cz, level, owner, items }` parallel dense
-   list on `Deploys`, the way `HearthRec` already is; allocate on a
-   `PlaceDeploy` of an `ARCH_BOX` row and free on removal; address it by
-   cell key like a hearth feed, not by an index. **Watch the stack** — the
-   item below says `World` is ~416 kB against a 2 MB debug limit and
-   already overflows, so box the store at construction rather than
-   discovering it in a red `cargo test`.
-
-   Two open questions for `DECISIONS.md` §open when it is picked up: the
-   box's slot count (reusing `INV_SLOTS` costs 30 KB at `MAX_BOXES` 256),
-   and whether a box is owner-only or open to anyone standing in reach
-   (lock v0 is already §open and unanswered — the same question).
 
 1. **The container panel: the refusal path exists now, so the UI is
    startable.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.
@@ -314,6 +475,30 @@ What remains, in the order it is worth doing:
    `client_move_readout()` on `APPLIED_MOVE` into `invMoveVerdict`. That touches
    `main.js`, so it pays the renderer tier. Stack split and the loot/container
    panel are the slices after it.
+1. **The drag's release side is closed; the arming decision is made.**
+   *(ui lane, 2026-08-04, from the judge's ranked fixes 1–3,
+   `findings/pass-20260804-205133-01-judge.md`. Not a new item — what remains
+   of the drag is the systems blocker in the item above.)*
+
+   The cancel was bound to `#inv`, so a release on the world — the release a
+   player actually makes — was never seen: `invDrag` stayed on the source and
+   the next press's release ran the drop against it. Press cell 8, sim asked to
+   move cell 3. Now on `window` (`pointerup`, `pointercancel`, `blur`), scoped
+   to the `pointerId` that began the drag.
+
+   Two more of the same class found while in there, both fixed: a **second
+   pointer's release** finished the first pointer's drag (the one-drag guard
+   refuses the second *press* and never had anything to say about its
+   *release*), and it must not cancel the live drag either. And ranked fix 3 is
+   answered by **not offering the gesture**: `beginInvDrag` refuses while
+   `onInvMove` is still `Hud.NO_MOVE_HOST`, so nothing dims and nothing toasts
+   until a host claims the verb — arming is identity against that sentinel, so
+   `main.js` assigning it is the whole of the arming step.
+
+   Gated in `ui_smoke` group K (175 checks). Nine assertions added; eight
+   mutants of `hud.js` run, all eight red. The ninth mutant — `cancelInvDrag`
+   leaving `invDragPointer` set — **escaped** the first eight and is why the
+   `doors` case exists: the two fields are one piece of state.
 1. **The props' photograph: `wood` and `foliage` still have none.**
    *(From the visual judge's ranked gap 1, `findings/pass-20260804-153032-01-visual.md`:
    "the terrain got a sourced photograph this pass and the props did not — this

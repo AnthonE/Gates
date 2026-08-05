@@ -10,14 +10,15 @@ use crate::combat::{self, CombatContent};
 use crate::craft::{self, CraftContent, CraftJob};
 use crate::deploy::{self, DeployContent, Deploys};
 use crate::fmath::floor_i32;
-use crate::gather::{self, GatherContent, ItemStack, SlotLives, NO_CELL, NO_ITEM};
+use crate::gather::{self, cell_key, GatherContent, ItemStack, SlotLives, Swing, NO_CELL, NO_ITEM};
 use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
-    CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS,
-    STATE_HASH_INTERVAL,
+    BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK,
+    MAX_PLAYERS, STATE_HASH_INTERVAL,
 };
-use crate::movement::{self, Body};
+use crate::loot::{LootContent, LOOT_BARREL};
+use crate::movement::{self, quant_xz, quant_y, Body};
 use crate::rng::cell_hash;
 use crate::survival::{self, SurvivalContent};
 use crate::terrain::{self, ScatterTable};
@@ -66,7 +67,14 @@ const SPAWN_CLEAR_M: f32 = 4.0;
 /// deliberately — the client's `+N Item` toast is the right feedback for
 /// both, and loot pays in the currency gathering already pays in.
 pub const EV_GATHER: u8 = 1;
-/// EV_SLOT_HARVESTED: a = cell key (cx << 16 | cz), b = gatherable index.
+/// EV_SLOT_HARVESTED: a = cell key (cx << 16 | cz), b = terrain occupant
+/// ordinal (`terrain::Occupant as u32`) — *what* stopped standing there,
+/// not which row of the gather table it came from. It read "gatherable
+/// index" while only nodes could be exhausted, and that was the same
+/// number minus one; a barrel has no gather row at all, so the event now
+/// names the occupant and covers both. The wire is unaffected either way:
+/// the server sends the cell alone (`encode_event_slot_change`) and the
+/// client re-derives the occupant from shared worldgen.
 pub const EV_SLOT_HARVESTED: u8 = 2;
 /// EV_SLOT_RESPAWNED: a = cell key, b = 0.
 pub const EV_SLOT_RESPAWNED: u8 = 3;
@@ -113,10 +121,13 @@ pub const EV_HEALTH: u8 = 16;
 /// (equal to `a` if that ever becomes possible; today nothing but another
 /// hand can kill). Broadcast — a death is a world fact like a placement.
 pub const EV_DEATH: u8 = 17;
-/// EV_BAG_DROPPED: a = backpack id, b = the player whose body it came
-/// off. Broadcast — a bag on the ground is a world fact like a placement;
-/// the wire reads its position out of the store at encode, the way a
-/// hearth's stock is read (backpack.rs).
+/// EV_BAG_DROPPED: a = container id, b = the container's owner — the
+/// player whose body it came off for a death bag, the smasher for a
+/// barrel's loot (`backpack::stand_up`). Broadcast — a container on the
+/// ground is a world fact like a placement; the wire reads its position
+/// out of the store at encode, the way a hearth's stock is read
+/// (backpack.rs), and carries no owner at all, so `b` is a sim-side fact
+/// only.
 pub const EV_BAG_DROPPED: u8 = 18;
 /// EV_BAG_REMOVED: a = backpack id, b = `backpack::BAG_GONE_*` (despawn,
 /// emptied, evicted). Broadcast, and it restarts in-progress bag sync
@@ -476,20 +487,21 @@ pub enum Command {
     Loot {
         id: u32,
     },
-    /// Move `count` items between two slots (`inventory.rs`). `bag` names
-    /// the ground container either side may address — zero when the move
-    /// is inside the sender's own inventory, and ignored when neither kind
-    /// is `CONT_BAG`.
+    /// Move `count` items between two slots (`inventory.rs`). `cont` names
+    /// the one ground container this move touches — a bag id for
+    /// `CONT_BAG`, a packed `deploy::box_key` address for `CONT_BOX`, zero
+    /// when the move is inside the sender's own inventory.
     ///
     /// Unlike `Loot`, this one *does* carry a target, and it has to: the
     /// whole verb is the player choosing which slot, which is the choice
     /// `Loot` takes away by moving everything that fits. What the sim
     /// keeps is the verdict — a forged kind, a slot past the container, a
-    /// bag out of reach and a count past the stack all land on the same
-    /// announced `EV_MOVE_REFUSED`, and none of them on a dropped session.
+    /// container out of reach and a count past the stack all land on the
+    /// same announced `EV_MOVE_REFUSED`, and none of them on a dropped
+    /// session.
     Move {
         id: u32,
-        bag: u32,
+        cont: u32,
         from_kind: u8,
         from_slot: u8,
         to_kind: u8,
@@ -553,6 +565,10 @@ pub struct World {
     /// input too; the inert default leaves the world without a clock, which
     /// is the game that existed before the module.
     pub survival: SurvivalContent,
+    /// Baked loot tables (loot.rs). Construction input too; the inert
+    /// default leaves barrels standing, because a barrel that broke into
+    /// nothing would be worse than one that does not break.
+    pub loot: LootContent,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
@@ -599,6 +615,7 @@ impl World {
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
             survival: SurvivalContent::EMPTY,
+            loot: LootContent::EMPTY,
             pieces: Pieces::new(),
             deploys: Deploys::new(),
             backpacks: Box::new(Backpacks::new()),
@@ -761,11 +778,31 @@ impl World {
     ///
     /// Every exit before the writes announces itself. There is no silent
     /// path and no path that ends the session.
+    /// One slot of whichever container `kind` names, by value. `ci` is the
+    /// resolved ground-container index and is only read when the kind is a
+    /// ground container — the caller has already proved it resolves.
+    fn cont_slot(&self, slot: usize, kind: u8, s: u8, ci: usize) -> ItemStack {
+        match kind {
+            inventory::CONT_BAG => self.backpacks.slot(ci, s as usize),
+            inventory::CONT_BOX => self.deploys.box_slot(ci, s as usize),
+            _ => self.players[slot].inv[s as usize],
+        }
+    }
+
+    /// The mirror of `cont_slot`, and the only place a move writes.
+    fn set_cont_slot(&mut self, slot: usize, kind: u8, s: u8, ci: usize, v: ItemStack) {
+        match kind {
+            inventory::CONT_BAG => self.backpacks.set_slot(ci, s as usize, v),
+            inventory::CONT_BOX => self.deploys.set_box_slot(ci, s as usize, v),
+            _ => self.players[slot].inv[s as usize] = v,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn move_item(
         &mut self,
         slot: usize,
-        bag: u32,
+        cont: u32,
         from_kind: u8,
         from_slot: u8,
         to_kind: u8,
@@ -775,12 +812,13 @@ impl World {
         let pid = self.players[slot].id;
         let addr = inventory::addr(from_kind, from_slot, to_kind, to_slot);
 
-        // 1. Is that an address at all? Kind, both slot indices, and the
-        //    move-onto-itself case. Nothing has been read yet.
+        // 1. Is that an address at all? Kind, both slot indices against
+        //    *their own* container's size, and the move-onto-itself case.
+        //    Nothing has been read yet.
         if from_kind > inventory::CONT_MAX
             || to_kind > inventory::CONT_MAX
-            || from_slot as usize >= INV_SLOTS
-            || to_slot as usize >= INV_SLOTS
+            || from_slot as usize >= inventory::slots_in(from_kind)
+            || to_slot as usize >= inventory::slots_in(to_kind)
             || (from_kind == to_kind && from_slot == to_slot)
         {
             self.events
@@ -788,41 +826,67 @@ impl World {
             return;
         }
 
-        // 2. Resolve the ground container, if either side names one. A bag
-        //    that left the world and a bag out of arm's reach are separate
-        //    reasons because they are separate player-facing facts: one
-        //    means "it is gone", the other "walk back".
-        let touches_bag = from_kind == inventory::CONT_BAG || to_kind == inventory::CONT_BAG;
-        let bag_idx = if touches_bag {
-            let Some(i) = self.backpacks.index_of_id(bag) else {
-                self.events
-                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
-                return;
-            };
-            if !self.backpacks.in_reach(i, &self.players[slot]) {
-                self.events
-                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
-                return;
-            }
-            Some(i)
+        // 2. Resolve the ground container, if either side names one. The
+        //    command carries **one** handle, so at most one side may be a
+        //    ground container — two different ones is a destination the
+        //    message cannot address, not a rule about what players may do
+        //    (`REFUSE_M_NO_CONTAINER`).
+        if from_kind != inventory::CONT_SELF
+            && to_kind != inventory::CONT_SELF
+            && from_kind != to_kind
+        {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
+            return;
+        }
+        let ground = if from_kind != inventory::CONT_SELF {
+            from_kind
         } else {
-            None
+            to_kind
         };
-        // Safe past the guard above: `bag_idx` is `Some` whenever either
-        // kind is `CONT_BAG`, and the zero is never indexed otherwise.
-        let bi = bag_idx.unwrap_or(0);
+        // A container that left the world and a container out of arm's
+        // reach are separate reasons because they are separate
+        // player-facing facts: one means "it is gone", the other "walk
+        // back". Both kinds answer them the same way — a bag by id, a box
+        // by packed address — which is the whole of what a third kind
+        // costs here.
+        let cont_idx = match ground {
+            inventory::CONT_BAG => {
+                let Some(i) = self.backpacks.index_of_id(cont) else {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
+                    return;
+                };
+                if !self.backpacks.in_reach(i, &self.players[slot]) {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
+                    return;
+                }
+                Some(i)
+            }
+            inventory::CONT_BOX => {
+                let Some(i) = self.deploys.box_index(cont) else {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
+                    return;
+                };
+                if !self.deploys.box_in_reach(i, &self.players[slot]) {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
+                    return;
+                }
+                Some(i)
+            }
+            _ => None,
+        };
+        // Safe past the guard above: `cont_idx` is `Some` whenever either
+        // kind is a ground container, and the zero is never indexed
+        // otherwise.
+        let ci = cont_idx.unwrap_or(0);
 
         // 3. Read both sides as copies.
-        let src = if from_kind == inventory::CONT_BAG {
-            self.backpacks.slot(bi, from_slot as usize)
-        } else {
-            self.players[slot].inv[from_slot as usize]
-        };
-        let dst = if to_kind == inventory::CONT_BAG {
-            self.backpacks.slot(bi, to_slot as usize)
-        } else {
-            self.players[slot].inv[to_slot as usize]
-        };
+        let src = self.cont_slot(slot, from_kind, from_slot, ci);
+        let dst = self.cont_slot(slot, to_kind, to_slot, ci);
 
         // 4. Plan. This is the whole of the validation, and it holds no
         //    reference to anything it could damage.
@@ -837,16 +901,8 @@ impl World {
         let (new_src, new_dst) = inventory::resolve(plan, src, dst);
 
         // 5. Mutate. Every check is behind us and both writes always land.
-        if from_kind == inventory::CONT_BAG {
-            self.backpacks.set_slot(bi, from_slot as usize, new_src);
-        } else {
-            self.players[slot].inv[from_slot as usize] = new_src;
-        }
-        if to_kind == inventory::CONT_BAG {
-            self.backpacks.set_slot(bi, to_slot as usize, new_dst);
-        } else {
-            self.players[slot].inv[to_slot as usize] = new_dst;
-        }
+        self.set_cont_slot(slot, from_kind, from_slot, ci, new_src);
+        self.set_cont_slot(slot, to_kind, to_slot, ci, new_dst);
         self.events.push(
             EV_MOVED,
             pid,
@@ -854,9 +910,12 @@ impl World {
             ((count as u32) << 16) | src.item as u32,
         );
         // A bag a withdrawal emptied leaves by `loot_nearest`'s route, so
-        // the wire sees one removal contract however it was emptied.
-        if let Some(i) = bag_idx {
-            self.backpacks.drop_if_empty(i, &mut self.events);
+        // the wire sees one removal contract however it was emptied. A box
+        // does **not** take that route and that is the difference between
+        // the two: a bag is litter with a timer, a box is furniture you
+        // paid for and placed. Emptying one leaves it standing.
+        if ground == inventory::CONT_BAG {
+            self.backpacks.drop_if_empty(ci, &mut self.events);
         }
     }
 
@@ -1231,7 +1290,7 @@ impl World {
             }
             Command::Move {
                 id,
-                bag,
+                cont,
                 from_kind,
                 from_slot,
                 to_kind,
@@ -1239,7 +1298,7 @@ impl World {
                 count,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    self.move_item(slot, bag, from_kind, from_slot, to_kind, to_slot, count);
+                    self.move_item(slot, cont, from_kind, from_slot, to_kind, to_slot, count);
                 }
             }
             Command::Respawn { id, on_bag } => {
@@ -1307,10 +1366,11 @@ impl World {
             }
             let frame = self.players[i].frame;
             movement::step(seed, self.pieces.cols(), &mut self.players[i].body, &frame);
-            let free = gather::swing(
+            let swung = gather::swing(
                 seed,
                 tick,
                 &self.gather,
+                &self.loot,
                 &self.scatter,
                 &self.haven,
                 &mut self.slot_lives,
@@ -1324,7 +1384,38 @@ impl World {
                 &mut self.players[i],
                 &mut self.events,
             );
-            if free {
+            if let Swing::Smashed { cx, cz, qx, qy, qz } = swung {
+                // The barrel is already gone (gather.rs marked the slot and
+                // announced it). What falls out is decided here, because
+                // this is where the container store lives: gather owns the
+                // slot bit, loot owns the table, and neither owns the other.
+                //
+                // An empty roll stands nothing up — `stand_up` refuses it —
+                // and that is correct rather than a lost drop: the barrel
+                // still broke, still respawns on its timer, and the player
+                // still paid three swings for a bad table.
+                let mut items = [ItemStack::default(); INV_SLOTS];
+                self.loot.roll_into(
+                    LOOT_BARREL,
+                    &self.gather,
+                    seed,
+                    cell_key(cx, cz),
+                    tick,
+                    &mut items,
+                );
+                let owner = self.players[i].id;
+                self.backpacks.stand_up(
+                    &self.backpack,
+                    qx,
+                    qy,
+                    qz,
+                    owner,
+                    &items,
+                    tick,
+                    &mut self.events,
+                );
+            }
+            if swung == Swing::Free {
                 // node → player → structure: the arm passes on only what
                 // nothing nearer absorbed.
                 match combat::strike(&self.combat, i, &mut self.players, &mut self.events) {
@@ -1367,6 +1458,35 @@ impl World {
             &mut self.sweep_deploy,
             &mut self.events,
         );
+        // Boxes that came apart this tick — raided in the player loop
+        // above, or decayed by the sweep just now — empty onto the floor
+        // they stood on. Drained here rather than at the removal because
+        // that path (`deploy::drop_deploy`) holds neither the bag store
+        // nor the clock, and because doing it last means one bag per box
+        // however the box died.
+        //
+        // The same `stand_up` a corpse and a barrel use, so a broken box
+        // is looted by every route that already exists and the wire sees
+        // one bag contract, not a third kind of litter. An empty box
+        // parks nothing (`remove_at`), so this loop is dead code on a base
+        // that decayed with nothing in it.
+        for i in 0..self.deploys.box_spill_len() {
+            let bx = self.deploys.box_spill_at(i);
+            let (x, y, z) = deploy::box_drop_pos(seed, bx.cx, bx.cz, bx.level);
+            let mut items = [ItemStack::default(); INV_SLOTS];
+            items[..BOX_SLOTS].copy_from_slice(&bx.items);
+            self.backpacks.stand_up(
+                &self.backpack,
+                quant_xz(x),
+                quant_y(y),
+                quant_xz(z),
+                bx.owner,
+                &items,
+                tick,
+                &mut self.events,
+            );
+        }
+        self.deploys.clear_box_spill();
         self.tick += 1;
         if self.tick.is_multiple_of(STATE_HASH_INTERVAL) {
             self.last_hash = self.state_hash();
@@ -1508,6 +1628,25 @@ impl World {
             h.update(&buf);
             for s in hr.stock.iter() {
                 h.update(&s.to_le_bytes());
+            }
+        }
+        // Box contents, in the dense list's own order — which is
+        // placement order rewritten by swap-remove, and deterministic for
+        // the same reason `entries` above is: every insert and every
+        // removal is a command's consequence, replayed in the same order.
+        h.update(&(self.deploys.boxes().len() as u64).to_le_bytes());
+        for bx in self.deploys.boxes() {
+            let mut buf = [0u8; 9];
+            buf[0..2].copy_from_slice(&bx.cx.to_le_bytes());
+            buf[2..4].copy_from_slice(&bx.cz.to_le_bytes());
+            buf[4] = bx.level;
+            buf[5..9].copy_from_slice(&bx.owner.to_le_bytes());
+            h.update(&buf);
+            for s in bx.items.iter() {
+                let mut sb = [0u8; 4];
+                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
+                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                h.update(&sb);
             }
         }
         h.update(&(self.backpacks.len() as u64).to_le_bytes());

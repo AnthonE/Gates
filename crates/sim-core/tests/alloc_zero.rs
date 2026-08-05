@@ -226,6 +226,10 @@ fn test_alloc_zero() {
     // the duelists stand inside each other, so every death lands a bag at
     // the survivor's feet and the loot commands below open it.
     world.backpack = BackpackContent::probe_fixture();
+    // A barrel smash rolls a table and stands a container up, both inside
+    // the tick. Neither may allocate: the roll writes into a caller-owned
+    // array and the store is fixed-capacity.
+    world.loot = sim_core::loot::LootContent::probe_fixture();
     // The survival fixture puts the drain, the announcement, the eat and
     // the clock's own death and respawn-grant inside the counted window.
     // Its spans are seconds, so a hundred bodies drain all the way to

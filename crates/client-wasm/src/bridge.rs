@@ -13,11 +13,11 @@
 use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_consume,
-    encode_action_craft, encode_action_deploy, encode_action_drink, encode_action_feed,
-    encode_action_lock, encode_action_loot, encode_action_move, encode_action_place,
-    encode_action_respawn, encode_action_upgrade, encode_action_use, encode_chat, encode_hello,
-    peek_kind, Hello, CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME,
-    MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
+    encode_action_container, encode_action_craft, encode_action_deploy, encode_action_drink,
+    encode_action_feed, encode_action_lock, encode_action_loot, encode_action_move,
+    encode_action_place, encode_action_respawn, encode_action_upgrade, encode_action_use,
+    encode_chat, encode_hello, peek_kind, Hello, CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE,
+    KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS,
@@ -61,7 +61,11 @@ const PIECE_DEF_ROW_WORDS: usize = 4 + 2 * MAX_PIECE_COSTS;
 /// Deploy-def view row, u16 words: arch, placement, hp, item.
 const DEPLOY_DEF_ROW_WORDS: usize = 4;
 /// `client_on_stream` error flag (high bit; real flags are low bits).
-const STREAM_ERR: u32 = 1 << 31;
+///
+/// Defined in `core.rs` beside the `APPLIED_*` flags it shares the word
+/// with, not here: two files each holding half of one bit layout is how
+/// `APPLIED_MOVE` came to be assigned this exact value.
+const STREAM_ERR: u32 = crate::core::STREAM_ERR;
 
 struct Bridge {
     core: Option<ClientCore>,
@@ -86,6 +90,9 @@ struct Bridge {
     changes_len: u32,
     /// Own inventory view: item, count per slot.
     inv: [u16; INV_SLOTS * 2],
+    /// Open container view: item, count per slot, same layout as `inv`
+    /// so a panel can draw either with one reader.
+    cont: [u16; INV_SLOTS * 2],
     /// Item names: `CATALOG_ROW` bytes per item index.
     catalog: Box<[u8; MAX_ITEM_DEFS * CATALOG_ROW]>,
     /// Craft queue view: recipe, remaining per job slot.
@@ -135,6 +142,7 @@ impl Bridge {
             changes: [0; SLOT_SYNC_BATCH * 2],
             changes_len: 0,
             inv: [0; INV_SLOTS * 2],
+            cont: [0; INV_SLOTS * 2],
             catalog: Box::new([0; MAX_ITEM_DEFS * CATALOG_ROW]),
             craft_jobs: [0; CRAFT_QUEUE * 2],
             recipes: Box::new([0; MAX_RECIPES * RECIPE_ROW_WORDS]),
@@ -265,6 +273,11 @@ pub extern "C" fn client_on_datagram(len: u32) -> u32 {
 /// Returns the `core::APPLIED_*` flags, or the high bit on a decode error
 /// / missing client. Refreshes whichever views the flags point at: the
 /// slot-change pairs, the inventory words, the catalog rows.
+///
+/// **This word is word 0 of two, and it cannot announce word 1** — bits
+/// 0..30 are flags and bit 31 is the error above, so there is no spare bit
+/// to announce with. A caller that wants the `APPLIED2_*` flags reads
+/// `client_applied2()` after this returns, unconditionally; see it for why.
 #[no_mangle]
 pub extern "C" fn client_on_stream(len: u32) -> u32 {
     with(|b| {
@@ -275,6 +288,7 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             changes,
             changes_len,
             inv,
+            cont,
             catalog,
             craft_jobs,
             recipes,
@@ -309,6 +323,17 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             for (i, s) in core.inv.iter().enumerate() {
                 inv[i * 2] = s.item;
                 inv[i * 2 + 1] = s.count;
+            }
+        }
+        // Word 1, not word 0 — the container flag lives in `applied2`
+        // because word 0 is full (`core.rs`). Read unconditionally after
+        // the decode: `applied2` is rebuilt per message, so a message that
+        // touched no container leaves it clear and this cannot republish a
+        // stale view.
+        if core.applied2() & crate::core::APPLIED2_CONT != 0 {
+            for (i, s) in core.cont.iter().enumerate() {
+                cont[i * 2] = s.item;
+                cont[i * 2 + 1] = s.count;
             }
         }
         if flags & crate::core::APPLIED_CATALOG != 0 {
@@ -492,6 +517,33 @@ pub extern "C" fn client_action_move(
         };
         encode_action_move(bag, fk, fs, tk, ts, n, &mut b.out_buf)
             .map(|len| len as u32)
+            .unwrap_or(0)
+    })
+}
+
+/// Encode an open-container request into the out buffer, or a close when
+/// `kind` is `CONT_SELF` (0); returns its length, or 0 if the arguments
+/// are not a shape the wire will carry.
+///
+/// Zero on refusal for `client_action_move`'s reason, and it is the same
+/// failure: a nonsense open frame ends the reader task server-side, so a
+/// panel bug would arrive as the player being disconnected. A close must
+/// carry `cont = 0` — the encoder refuses the pair rather than quietly
+/// dropping the handle, because a handle on a close means the caller
+/// thinks it is opening something.
+///
+/// What comes back is `EventMsg::ContSync` on the event lane, read through
+/// `client_cont_kind` / `client_cont_handle` / `client_cont_ptr` after any
+/// `client_applied2() & APPLIED2_CONT`. The server may send a close of its
+/// own at any time — the container despawned, or the player walked out of
+/// reach — so the panel is never authoritative about its own visibility.
+#[no_mangle]
+pub extern "C" fn client_action_container(kind: u32, cont: u32) -> u32 {
+    with(|b| {
+        u8::try_from(kind)
+            .ok()
+            .and_then(|k| encode_action_container(k, cont, &mut b.out_buf).ok())
+            .map(|n| n as u32)
             .unwrap_or(0)
     })
 }
@@ -896,13 +948,29 @@ pub extern "C" fn client_hit_pop() -> u32 {
     })
 }
 
+/// Word 1 of the applied word — the `core::APPLIED2_*` flags for the last
+/// `client_on_stream`, valid until the next one.
+///
+/// Read it after **every** `client_on_stream`, not on a bit of the word 0
+/// return: that word has no spare bit to announce this one with, which is
+/// the whole reason word 1 exists. It is cheap (a load, no view refresh)
+/// and it is zero on any message that set nothing in it, so an
+/// unconditional read cannot see a stale verdict.
+///
+/// Today it carries one flag, `APPLIED2_MOVE` — the move verdict the panel
+/// reads through `client_move_readout` and `client_move_payload`.
+#[no_mangle]
+pub extern "C" fn client_applied2() -> u32 {
+    with(|b| b.core.as_ref().map_or(0, |c| c.applied2()))
+}
+
 /// The last move's verdict: `refusal reason << 24 | to slot << 16 |
 /// from kind << 8 | from slot`, with the *to kind* deducible from the
 /// pair the panel sent. Zero reason ⇒ the move landed, and
 /// `client_move_payload` then holds what actually moved.
 ///
 /// Packed rather than returned as five calls because the panel reads it
-/// on one `APPLIED_MOVE` flag and must not see half of one verdict beside
+/// on one `APPLIED2_MOVE` flag and must not see half of one verdict beside
 /// half of the next — `client_consume`'s shape, for `client_consume`'s
 /// reason.
 #[no_mangle]
@@ -1106,6 +1174,33 @@ pub extern "C" fn client_slot_changes_len() -> u32 {
 #[no_mangle]
 pub extern "C" fn client_inv_ptr() -> *const u16 {
     with(|b| b.inv.as_ptr())
+}
+
+/// Open container view: `INV_SLOTS` × (item, count) u16 words, the same
+/// layout as `client_inv_ptr`. Meaningful only while `client_cont_kind()`
+/// is nonzero; a box fills the first `BOX_SLOTS` and the tail stays zero.
+#[no_mangle]
+pub extern "C" fn client_cont_ptr() -> *const u16 {
+    with(|b| b.cont.as_ptr())
+}
+
+/// Which container is open: `inventory::CONT_SELF` (0) for none, else
+/// `CONT_BAG` or `CONT_BOX`. **The server owns this, not the panel** — it
+/// goes to zero on its own when the container despawns or the player walks
+/// out of reach, so a panel that draws on a nonzero value can never
+/// outlive the reach a move will be judged against.
+#[no_mangle]
+pub extern "C" fn client_cont_kind() -> u32 {
+    with(|b| b.core.as_ref().map(|c| c.cont_kind as u32).unwrap_or(0))
+}
+
+/// The open container's handle — a bag id, or a packed `box_key`. Zero
+/// when nothing is open. This is the value a move must carry as its `bag`
+/// argument to `client_action_move`, and passing anything else is how the
+/// two ends come to disagree about which container a drag touched.
+#[no_mangle]
+pub extern "C" fn client_cont_handle() -> u32 {
+    with(|b| b.core.as_ref().map(|c| c.cont_handle).unwrap_or(0))
 }
 
 /// Item-name rows: `1 + MAX_ITEM_NAME_BYTES` bytes per index (len, bytes).

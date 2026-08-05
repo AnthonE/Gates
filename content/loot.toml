@@ -4,6 +4,10 @@
 # "revolver: barrel drop or craft-only". Respawn timing is the §open
 # node/barrel knob, not a content field.
 #
+# `hits` is how many swings open the container. It IS a content field —
+# re-pricing the walk between barrels is a balance pass — and its value is
+# the §open row "barrel smash hits", proposed, not yet spoken.
+#
 # The two tables are the two ends of a walk, and the ORDERING between them is
 # structural rather than a balance call: `barrel` is what the coast road's
 # shoulder pays, `crate` is what the haven pad pays, and the pad has to be
@@ -22,6 +26,7 @@ id = "loot.barrel"
 container = "barrel"
 rolls_min = 1
 rolls_max = 2
+hits = 3
 
 entries = [
     { item = "item.cloth", weight = 20, count_min = 10, count_max = 20 },
@@ -39,6 +44,7 @@ id = "loot.crate"
 container = "crate"
 rolls_min = 2
 rolls_max = 3
+hits = 5
 
 entries = [
     { item = "item.metal_frags", weight = 15, count_min = 25, count_max = 50 },

@@ -14,6 +14,37 @@ fail() {
   exit 1
 }
 
+# The toolchain, resolved ONCE and named when it is absent.
+#
+# `rustup` installs cargo into `$HOME/.cargo/bin` and puts it on PATH from
+# `$HOME/.cargo/env` — which Ubuntu's `.bashrc` sources only for INTERACTIVE
+# shells and `.profile` only for LOGIN shells. A runner respawned into a shell
+# that is neither has a working, installed cargo it cannot see, and on
+# 2026-08-04 that is exactly what happened: the steward restarted a dead lane
+# runner, and the rustfmt gate died as
+#
+#   ionice: failed to execute cargo: No such file or directory
+#
+# — an error naming `ionice`, 110 lines into the run, for a toolchain that was
+# installed and working the whole time. Sourcing the file rustup wrote is what
+# an interactive shell already does; it enables the gate and changes no
+# assertion in it. CLAUDE.md's rule for the sibling case (`wasm32-unknown-
+# unknown` missing) is the same one: a wall that cannot run is not a wall, so
+# make it run rather than skip it.
+if ! command -v cargo >/dev/null 2>&1 && [ -f "$HOME/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.cargo/env"
+fi
+# And if it is genuinely missing, say so HERE — before any gate — rather than
+# leaving each shell-out to report it in whatever words its process prefix
+# happens to use. Every binary this script execs, in one place.
+for _tool in cargo node npm; do
+  command -v "$_tool" >/dev/null 2>&1 ||
+    fail "$_tool is not on PATH — every gate that shells out to it cannot run." \
+      "This is a missing capability, not a defect in the tree: install it (cargo:" \
+      "rustup, and source \$HOME/.cargo/env) rather than skipping the gates that need it."
+done
+
 # Tiers (operator, 2026-08-04). Everything above the renderer gates is code:
 # deterministic, headless, and it finishes in a couple of minutes. The two
 # renderer gates are neither — they boot Chromium against swiftshader on a box

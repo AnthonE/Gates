@@ -108,12 +108,20 @@ const REQUIRED = [
   "client_death_weapon",
   "client_action_respawn",
   "client_action_move",
+  "client_applied2",
   "client_move_readout",
   "client_move_payload",
   "client_bag_ids_ptr",
   "client_bags_ptr",
   "client_bags_len",
   "client_action_loot",
+  // Wire v19, the container view. Four exports and no panel reads them yet
+  // — which is exactly when a C ABI drifts unseen, so they are pinned here
+  // the pass they land rather than the pass something depends on them.
+  "client_action_container",
+  "client_cont_ptr",
+  "client_cont_kind",
+  "client_cont_handle",
 ];
 
 let failed = 0;
@@ -165,7 +173,14 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 17, "proto ver drifted without this gate hearing");
+// Deliberately a literal, unlike the fixture path below it: this is the
+// tripwire, not a mirror. A bump has to be typed here in the commit that
+// bumps `PROTO_VER`, which is wall 6's "in the same commit" made mechanical
+// on the client's side of the wire. Deriving it from the Rust would turn the
+// one gate that notices a version move into a gate that cannot.
+// 19: the container view (`event.rs` `SUB_CONT_SYNC`, `lib.rs`
+// `ACT_CONTAINER`).
+check(ex.client_proto_ver() === 19, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -556,11 +571,20 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   // variant to test — the absence of a payload IS the range check.
   check(ex.client_action_drink() > 0, "the drink verb must encode");
 
-  // The move verb, both directions (wire v17). APPLIED_MOVE = 1 << 31,
-  // which reads as a negative int32 out of the C ABI — hence the `>>> 0`
-  // on the flag word here and nowhere above it. It is the last bit in that
-  // word; a thirty-third flag needs a second one.
-  const MOVE = 2147483648; // 1 << 31
+  // The move verb, both directions (wire v17). The move verdict is the
+  // one applied-flag that is NOT in the word `client_on_stream` returns:
+  // bits 0..30 of that word are spent and bit 31 is the bridge's error
+  // sentinel, so it rides word 1 and is read through `client_applied2`.
+  //
+  // That is the whole point of these two checks. `APPLIED_MOVE` was
+  // `1 << 31` — the sentinel's own value — so the first move of a session
+  // reached the client as a decode error, which logs and returns early,
+  // taking the rest of that pump iteration with it. Asserting bit 31 is
+  // CLEAR on a verdict is the C-ABI half of the ledger test in `core.rs`:
+  // that one proves no constant can reach the bit, this one proves the
+  // browser's actual calling path does not hand one to JS.
+  const MOVE2 = 1; // core::APPLIED2_MOVE, word 1 bit 0
+  const STREAM_ERR = 2147483648; // 1 << 31, and nothing else may be it
 
   // Moved: sub 36 · from (kind 1, slot 9) · to (kind 0, slot 22) · count 7
   // · item 5. Every part distinct from every other, so a transposed pair
@@ -569,7 +593,9 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   // is the exact shape ~27 of the reference's corrections landed on.
   f = evFrame(36, [[1, 2], [9, 5], [0, 2], [22, 5], [7, 16], [5, 16]]);
   writeIn(f);
-  check((ex.client_on_stream(f.length) >>> 0) === MOVE, "a move must apply with the MOVE flag");
+  let mflags = ex.client_on_stream(f.length) >>> 0;
+  check((mflags & STREAM_ERR) === 0, "a move must not read as a stream error");
+  check(ex.client_applied2() === MOVE2, "a move must apply with the MOVE flag in word 1");
   check(
     (ex.client_move_readout() >>> 0) === ((22 << 16) | (1 << 8) | 9),
     "move readout mismatch: reason 0, to slot 22, from kind 1, from slot 9",
@@ -584,7 +610,9 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   // landed move above, which is why it rides the high byte.
   f = evFrame(37, [[4, 3], [0, 2], [11, 5], [1, 2], [26, 5]]);
   writeIn(f);
-  check((ex.client_on_stream(f.length) >>> 0) === MOVE, "a refusal must apply with the MOVE flag");
+  mflags = ex.client_on_stream(f.length) >>> 0;
+  check((mflags & STREAM_ERR) === 0, "a refusal must not read as a stream error");
+  check(ex.client_applied2() === MOVE2, "a refusal must apply with the MOVE flag in word 1");
   check((ex.client_move_readout() >>> 0) >>> 24 === 4, "move refusal reason mismatch");
   check(
     (ex.client_move_readout() >>> 0 & 0xffff) === 11,
@@ -592,15 +620,252 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   );
   check(ex.client_move_payload() === 0, "a refusal moved nothing");
 
+  // Word 1 describes ONE message. JS has to read it unconditionally —
+  // word 0 has no spare bit to announce it with — so a verdict that
+  // outlived its message would be read as the answer to a drag the server
+  // has not answered yet, and the panel would roll back a live move.
+  f = evFrame(33, [[3, 4]]); // a consume, which sets nothing in word 1
+  writeIn(f);
+  ex.client_on_stream(f.length);
+  check(ex.client_applied2() === 0, "a stale move verdict outlived its message");
+
   // And the move verb crosses C->S. A real drag encodes; a forged kind, a
   // slot past INV_SLOTS and a zero count do not — the bridge refuses them
   // locally rather than handing the server a frame it answers by ending
   // the session, which is precisely how this verb failed in the reference.
   check(ex.client_action_move(0, 0, 3, 0, 7, 5) > 0, "a real move must encode");
   check(ex.client_action_move(9001, 1, 0, 0, 4, 1) > 0, "a bag move must encode");
-  check(ex.client_action_move(0, 2, 3, 0, 7, 5) === 0, "a kind past CONT_MAX must not encode");
+  // Wire v18 made kind 2 the deployed box, so the boundary moved by one
+  // and both sides of it are checked: a box move encodes, and the first
+  // forgeable kind above it still does not. `CONT_KIND_BITS` is 2, so 3 is
+  // the last value that fits in the field and there is nothing past it to
+  // test — a fourth kind would have to widen the field.
+  check(
+    ex.client_action_move(0x0155_d450, 2, 3, 0, 7, 5) > 0,
+    "a box move must encode (CONT_BOX, wire v18)",
+  );
+  check(
+    ex.client_action_move(0x0155_d450, 0, 3, 2, 11, 5) > 0,
+    "a box move must encode in the deposit direction too",
+  );
+  check(ex.client_action_move(0, 3, 3, 0, 7, 5) === 0, "a kind past CONT_MAX must not encode");
   check(ex.client_action_move(0, 0, 30, 0, 7, 5) === 0, "a slot past INV_SLOTS must not encode");
   check(ex.client_action_move(0, 0, 3, 0, 7, 0) === 0, "a zero count is not a move");
+
+  // --- and the BYTES, field by field ---------------------------------------
+  // The five checks above are the whole of what pinned this call until now,
+  // and every one of them asks the same question: did a frame come out. So
+  // `client_action_move(0, 0, 7, 0, 3, 5)` is exactly as green as
+  // `(0, 0, 3, 0, 7, 5)` — a `from`/`to` transposition, or a kind swapped
+  // with the slot beside it, produces a valid frame of the same length and
+  // no gate in this repo looks at it. That is CLAUDE.md's positional-payload
+  // trap on the client's own outbound edge: ~27 of the reference ecosystem's
+  // shipped corrections were the right value in the wrong position, four
+  // hooks corrected more than once, and their per-method hash — the exact
+  // analogue of `test_protocol_golden` — caught none of them, because the
+  // encoder is untouched when the CALLER swaps two arguments.
+  //
+  // `test_protocol_golden` owns the byte shape; this owns which value the
+  // browser's calling path puts in each of those bytes. The widths come out
+  // of `protocol/src/lib.rs` rather than being restated, for the reason the
+  // event frames above already give: wire v13 moved every field by a bit,
+  // and a literal cannot tell a typo from a real drift.
+  const protoSrc = readFileSync(join(root, "crates/protocol/src/lib.rs"), "utf8");
+  const protoConst = (name) => {
+    const m = protoSrc.match(new RegExp(`const ${name}: u32 = (\\d+);`));
+    const v = Number(m?.[1]);
+    check(
+      Number.isInteger(v),
+      `could not read ${name} out of protocol/src/lib.rs — this decode would then be checked against` +
+        " nothing, which is the gate-that-matches-nothing class",
+    );
+    return v;
+  };
+  const fieldBits = {
+    kind: protoConst("KIND_BITS"),
+    sub: protoConst("ACTION_SUB_BITS"),
+    contKind: protoConst("CONT_KIND_BITS"),
+    slot: protoConst("ACTION_SLOT_BITS"),
+    count: protoConst("MOVE_COUNT_BITS"),
+  };
+  // Lower-camel deliberately: `ci/knob_registry.mjs` pins every SHOUTY
+  // constant it can see against `DECISIONS.md`, and these are read out of the
+  // Rust at run time rather than declared here, so a registry that tried to
+  // parse them would be pinning a function call.
+  const kindAction = protoConst("KIND_ACTION");
+  const actMove = protoConst("ACT_MOVE");
+  /// LSB-first, the mirror of `packed` above and of `protocol/src/bits.rs`.
+  const unpack = (buf, widths) => {
+    let bit = 0;
+    return widths.map((n) => {
+      let v = 0;
+      for (let i = 0; i < n; i++, bit++)
+        if ((buf[bit >> 3] >> (bit & 7)) & 1) v += 2 ** i;
+      return v;
+    });
+  };
+  // Every field a distinct value, and distinct from every other field's, so
+  // a transposition cannot pass by coincidence: bag 9001, from (kind 1, slot
+  // 6), to (kind 0, slot 21), count 13. The two kinds differ, the two slots
+  // differ, and no slot equals a kind.
+  const mlen = ex.client_action_move(9001, 1, 6, 0, 21, 13);
+  check(mlen > 0, "the field-by-field move must encode at all");
+  const mbuf = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), mlen).slice();
+  const [mKind, mSub, mBag, mFromKind, mFromSlot, mToKind, mToSlot, mCount] = unpack(mbuf, [
+    fieldBits.kind, fieldBits.sub, 32, fieldBits.contKind, fieldBits.slot, fieldBits.contKind, fieldBits.slot, fieldBits.count,
+  ]);
+  check(
+    mKind === kindAction && mSub === actMove,
+    `the move frame is not an ACT_MOVE action (kind ${mKind}, sub ${mSub}) — the decode below would then be` +
+      " reading some other message's fields and calling them a move",
+  );
+  check(mBag === 9001, `move bag encoded as ${mBag}, not 9001 — the sim addresses the container by this id`);
+  check(
+    mFromKind === 1 && mFromSlot === 6,
+    `the move's FROM encoded as (kind ${mFromKind}, slot ${mFromSlot}), not (1, 6) — a kind and the slot beside` +
+      " it are both small integers in adjacent fields, and swapping them is a valid frame the server acts on",
+  );
+  check(
+    mToKind === 0 && mToSlot === 21,
+    `the move's TO encoded as (kind ${mToKind}, slot ${mToSlot}), not (0, 21)`,
+  );
+  check(
+    mCount === 13,
+    `move count encoded as ${mCount}, not 13 — the count is what the server sims on, so a wrong one here is the` +
+      " quantize-both-sides law broken at its own call site",
+  );
+  // The transposition itself, driven rather than reasoned about: the same
+  // call with `from` and `to` exchanged must produce a DIFFERENT frame. If
+  // these compare equal the encoder is symmetric in the pair and every check
+  // above is satisfied by a client that has them the wrong way round — which
+  // is the single shape the reference corrected most often.
+  const tlen = ex.client_action_move(9001, 0, 21, 1, 6, 13);
+  const tbuf = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), tlen).slice();
+  check(
+    tlen === mlen && !mbuf.every((b, i) => b === tbuf[i]),
+    "exchanging the move's from and to produced a byte-identical frame — the two ends are the same position on" +
+      " the wire, so nothing downstream can tell a move from its reverse",
+  );
+
+  // --- the container view, both directions (wire v19) ----------------------
+  // Nothing in `web/` opens a panel yet, so every one of these four exports
+  // has exactly one reader today: this gate. That is the reason to write it
+  // now rather than with the panel — a C ABI nobody calls is a C ABI that
+  // drifts silently, and the four functions are the whole contract the ui
+  // lane will build against.
+  //
+  // The claim that matters is the ECHO: a batch names the container it
+  // belongs to, and the client drops one that names a different container.
+  // Without that a diff for a box the player already closed lands in
+  // whatever panel is open — the positional-payload defect one level up,
+  // where the values are right and the destination is wrong.
+  {
+    const CONT2 = 2; // core::APPLIED2_CONT, word 1 bit 1
+    const contKindBits = fieldBits.contKind;
+    const evSlotBits = 5; // event.rs INV_SLOT_BITS
+    const contCountBits = 6; // event.rs CONT_COUNT_BITS
+    const SUB_CONT_SYNC = 38;
+    const BOX = 0x0155_d450; // the same packed box_key the move above uses
+    const contFrame = (kind, handle, reset, rows) =>
+      evFrame(SUB_CONT_SYNC, [
+        [kind, contKindBits],
+        [handle, 32],
+        [reset ? 1 : 0, 1],
+        [rows.length, contCountBits],
+        ...rows.flatMap(([s, item, n]) => [
+          [s, evSlotBits],
+          [item, 16],
+          [n, 16],
+        ]),
+      ]);
+    const contView = () =>
+      new Uint16Array(ex.memory.buffer, ex.client_cont_ptr(), 30 * 2).slice();
+
+    check(ex.client_cont_kind() === 0, "nothing may be open before a sync says so");
+    check(ex.client_cont_handle() === 0, "a closed panel must name no container");
+
+    // The open: kind 2 (CONT_BOX), reset, two rows. Every number distinct
+    // from every other — slot 0 / item 5 / count 40 and slot 11 / item 31 /
+    // count 3 — so a (slot, item, count) rotation cannot pass.
+    f = contFrame(2, BOX, true, [[0, 5, 40], [11, 31, 3]]);
+    writeIn(f);
+    let cflags = ex.client_on_stream(f.length) >>> 0;
+    check((cflags & STREAM_ERR) === 0, "a container sync must not read as a stream error");
+    check(ex.client_applied2() === CONT2, "an open must apply with the CONT flag in word 1");
+    check(ex.client_cont_kind() === 2, `the open panel must name CONT_BOX: ${ex.client_cont_kind()}`);
+    check(
+      (ex.client_cont_handle() >>> 0) === BOX,
+      `the open panel lost its handle: ${ex.client_cont_handle() >>> 0} — a move typed against the wrong` +
+        " address is the container divergence the reference answered by disconnecting the client",
+    );
+    {
+      const v = contView();
+      check(v[0] === 5 && v[1] === 40, `container slot 0 mismatch: ${v[0]}/${v[1]}`);
+      check(v[22] === 31 && v[23] === 3, `container slot 11 mismatch: ${v[22]}/${v[23]}`);
+      check(v[2] === 0 && v[3] === 0, "a reset must leave the untouched slots empty");
+    }
+
+    // A diff for the SAME container, emptying slot 0. Item 0 count 0 is a
+    // real change and not a no-op — "that is gone" has to be sayable.
+    f = contFrame(2, BOX, false, [[0, 0, 0]]);
+    writeIn(f);
+    ex.client_on_stream(f.length);
+    check(ex.client_applied2() === CONT2, "a diff must apply with the CONT flag");
+    {
+      const v = contView();
+      check(v[0] === 0 && v[1] === 0, "an emptied slot must clear");
+      check(v[22] === 31 && v[23] === 3, "a diff must not disturb the slots it did not name");
+    }
+
+    // And a diff for a container this client does NOT have open: dropped
+    // whole. Same kind, one bit of the handle different, which is the
+    // cheapest thing an echo check can get wrong.
+    f = contFrame(2, BOX ^ 1, false, [[11, 7, 99]]);
+    writeIn(f);
+    check((ex.client_on_stream(f.length) & STREAM_ERR) === 0, "a foreign diff must still decode");
+    check(ex.client_applied2() === 0, "a diff for another container must apply nothing");
+    {
+      const v = contView();
+      check(v[22] === 31 && v[23] === 3, "a foreign diff reached this panel's slots");
+    }
+
+    // The server's close: kind 0, no handle, no slots, reset set.
+    f = contFrame(0, 0, true, []);
+    writeIn(f);
+    ex.client_on_stream(f.length);
+    check(ex.client_applied2() === CONT2, "a close must apply with the CONT flag");
+    check(ex.client_cont_kind() === 0, "a close must shut the panel");
+    check(ex.client_cont_handle() === 0, "a close must forget the handle");
+
+    // C->S. The two shapes the encoder owes a refusal, refused locally
+    // rather than handed to a server that answers a bad frame by ending the
+    // session — the same posture as the move verb above.
+    check(ex.client_action_container(1, 9001) > 0, "opening a bag must encode");
+    check(ex.client_action_container(2, BOX) > 0, "opening a box must encode");
+    check(ex.client_action_container(0, 0) > 0, "a close must encode");
+    check(ex.client_action_container(0, 1) === 0, "a close naming a container must not encode");
+    check(ex.client_action_container(3, 0) === 0, "a kind past CONT_MAX must not encode");
+
+    // The bytes, field by field: which value the browser's calling path puts
+    // in each field, which `test_protocol_golden` cannot see because the
+    // encoder is untouched when the CALLER swaps two arguments.
+    const actContainer = protoConst("ACT_CONTAINER");
+    const clen = ex.client_action_container(2, BOX);
+    const cbuf = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), clen).slice();
+    const [cKind, cSub, cContKind, cHandle] = unpack(cbuf, [
+      fieldBits.kind, fieldBits.sub, contKindBits, 32,
+    ]);
+    check(
+      cKind === kindAction && cSub === actContainer,
+      `the open frame is not an ACT_CONTAINER action (kind ${cKind}, sub ${cSub})`,
+    );
+    check(cContKind === 2, `the open's container kind encoded as ${cContKind}, not 2`);
+    check(
+      (cHandle >>> 0) === BOX,
+      `the open's handle encoded as ${cHandle >>> 0}, not ${BOX} — the server resolves the container by this` +
+        " value and answers a handle it cannot resolve with silence, so a wrong one is a panel that never draws",
+    );
+  }
 
   // Hit: sub 24 · victim 4242 · damage 25.
   check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring starts empty");

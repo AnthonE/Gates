@@ -16,7 +16,8 @@
 
 use crate::input::BTN_PRIMARY;
 use crate::limits::{INV_SLOTS, MAX_ITEM_DEFS, MAX_SLOT_LIVES};
-use crate::movement::{POS_XZ_Q, POS_Y_Q};
+use crate::loot::{LootContent, LOOT_BARREL};
+use crate::movement::{quant_xz, quant_y, POS_XZ_Q, POS_Y_Q};
 use crate::rng::{cell_hash, splitmix64};
 use crate::terrain::{self, Occupant, ScatterTable, CELL_SIZE};
 use crate::world::{EventQueue, Player, EV_GATHER, EV_SLOT_HARVESTED, EV_WEAK_MARK};
@@ -29,8 +30,21 @@ pub const NO_ITEM: u16 = u16::MAX;
 pub const NO_CELL: u32 = u32::MAX;
 
 /// Occupants that can be gathered: Tree, StoneNode, MetalNode, SulfurNode,
-/// Bush — terrain `Occupant` 1..=5. Rock and BarrelSlot are not nodes.
+/// Bush — terrain `Occupant` 1..=5. Rock is not a node and never will be.
+///
+/// BarrelSlot is not a node either, and is now swingable anyway: it takes
+/// hits and exhausts on the same `SlotLives` bit and the same respawn
+/// timer, but it has no `NodeDef`, no per-tool yield, no weak spot, and it
+/// pays nothing into the swinger's hands. It comes apart into a container
+/// (`Swing::Smashed` → `loot.rs`), which is the difference between a tree
+/// and a barrel: a tree is a resource and a barrel is a reward.
 pub const GATHERABLE_KINDS: usize = 5;
+
+/// Scan-target index for a barrel slot — one past the gatherable range,
+/// so the 3×3 scan ranks nodes and barrels against each other by distance
+/// with one comparison. One arm, one target: a tree standing nearer than
+/// a barrel still wins the swing.
+const BARREL_TARGET: usize = GATHERABLE_KINDS;
 
 /// Tool rows one node archetype can carry (alpha data uses ≤ 4 + hand;
 /// bake refuses past this). Structural cap, not a knob.
@@ -207,6 +221,74 @@ pub fn node_index(o: Occupant) -> Option<usize> {
     }
 }
 
+/// What the 3×3 scan may aim at: a gatherable index, or `BARREL_TARGET`.
+/// `None` for Rock and empty cells — the two things a swing passes through.
+#[inline]
+fn target_index(o: Occupant) -> Option<usize> {
+    match node_index(o) {
+        Some(ni) => Some(ni),
+        None if o == Occupant::BarrelSlot => Some(BARREL_TARGET),
+        None => None,
+    }
+}
+
+/// Terrain occupant ordinal of a scan target — the value
+/// `EV_SLOT_HARVESTED` names in field `b`. The event says *what* stopped
+/// standing there, not which row of the gather table it came from: a
+/// barrel has no row, and "gatherable index" was only ever the occupant
+/// ordinal minus one anyway.
+#[inline]
+fn occupant_of(target: usize) -> u32 {
+    if target == BARREL_TARGET {
+        Occupant::BarrelSlot as u32
+    } else {
+        target as u32 + 1
+    }
+}
+
+/// The 3×3 scan's pick: the nearest swingable slot in reach and inside the
+/// aim cone. A named struct rather than a tuple because it grew a seventh
+/// member (the slot's own world position, which a smashed barrel needs to
+/// stand its container up at) and a seven-tuple is where a positional
+/// payload starts going wrong — the exact failure mode `event_roles.rs`
+/// exists to catch one layer up.
+struct Target {
+    /// Planar distance², for the nearest-wins comparison.
+    d2: f32,
+    /// Slot→player planar offset, for the weak-spot sector test.
+    ox: f32,
+    oz: f32,
+    cx: u16,
+    cz: u16,
+    /// Gatherable index, or `BARREL_TARGET`.
+    ni: usize,
+    /// The slot's world position (m).
+    pos: (f32, f32, f32),
+}
+
+/// What a swing did, for the caller that owns the stores gather does not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Swing {
+    /// No swing this tick (button up, or still on cooldown), or a node
+    /// absorbed it. Either way the arm is not free.
+    Absorbed,
+    /// A swing was taken and nothing absorbed it — the cadence is paid and
+    /// the arm is still moving, so the caller hands it to `combat::strike`.
+    Free,
+    /// A barrel came apart. The swing is spent; what falls out is the
+    /// caller's to roll, because it owns the container store and gather
+    /// deliberately does not. Address is the smashed slot's own quantized
+    /// position — the sim sims on the values it transmits, so the
+    /// container stands exactly where the client drew the barrel.
+    Smashed {
+        cx: u16,
+        cz: u16,
+        qx: i32,
+        qy: i32,
+        qz: i32,
+    },
+}
+
 /// One inventory slot. Empty ⇔ `count == 0`; emptied slots zero both
 /// fields so the state hash stays canonical.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -378,24 +460,27 @@ pub fn weak_mark8(seed: u64, cx: u16, cz: u16, pid: u32, n: u16) -> u8 {
 /// every active player, after movement — bounded: 3×3 scatter cells
 /// scanned only on a swing tick.
 ///
-/// Returns **true when a swing was taken and no node absorbed it** — the
-/// cadence is paid and the arm is still moving, so the caller hands it to
-/// `combat::strike`. False means either no swing this tick (button up, or
-/// still on cooldown) or a node took the hit: one arm, one target, and a
-/// tree is always the nearer claim on it.
+/// Returns `Swing::Free` when a swing was taken and nothing absorbed it —
+/// the cadence is paid and the arm is still moving, so the caller hands it
+/// to `combat::strike`. `Absorbed` means either no swing this tick (button
+/// up, or still on cooldown) or a node took the hit: one arm, one target,
+/// and the nearest standing thing is always the nearer claim on it.
+/// `Smashed` is a barrel that came apart — absorbed, and with a container
+/// owed at the address it names.
 #[allow(clippy::too_many_arguments)]
 pub fn swing(
     seed: u64,
     tick: u64,
     gc: &GatherContent,
+    lc: &LootContent,
     scatter: &ScatterTable,
     haven: &terrain::Haven,
     lives: &mut SlotLives,
     events: &mut EventQueue,
     p: &mut Player,
-) -> bool {
+) -> Swing {
     if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {
-        return false;
+        return Swing::Absorbed;
     }
     p.next_swing = tick + SWING_INTERVAL_TICKS;
 
@@ -406,9 +491,8 @@ pub fn swing(
     let pcx = crate::fmath::floor_i32(px / CELL_SIZE);
     let pcz = crate::fmath::floor_i32(pz / CELL_SIZE);
 
-    // Nearest standing gatherable slot in reach, inside the aim cone.
-    // (d2, node→player planar offset, cell, gatherable index.)
-    let mut best: Option<(f32, f32, f32, u16, u16, usize)> = None;
+    // Nearest standing swingable slot in reach, inside the aim cone.
+    let mut best: Option<Target> = None;
     let mut dz_cell = -1;
     while dz_cell <= 1 {
         let mut dx_cell = -1;
@@ -416,7 +500,7 @@ pub fn swing(
             let cx = pcx + dx_cell;
             let cz = pcz + dz_cell;
             let s = terrain::scatter(seed, scatter, haven, cx, cz);
-            if let Some(ni) = node_index(s.occupant) {
+            if let Some(ni) = target_index(s.occupant) {
                 let dx = s.x - px;
                 let dy = s.y - py;
                 let dz = s.z - pz;
@@ -428,26 +512,47 @@ pub fn swing(
                 if d2 <= REACH_M * REACH_M
                     && crate::fmath::fabs(dy) <= DY_MAX_M
                     && aimed
-                    && best.is_none_or(|(bd2, ..)| d2 < bd2)
+                    && best.as_ref().is_none_or(|b| d2 < b.d2)
                     && !lives.is_harvested(cx as u16, cz as u16)
                 {
-                    best = Some((d2, -dx, -dz, cx as u16, cz as u16, ni));
+                    best = Some(Target {
+                        d2,
+                        ox: -dx,
+                        oz: -dz,
+                        cx: cx as u16,
+                        cz: cz as u16,
+                        ni,
+                        pos: (s.x, s.y, s.z),
+                    });
                 }
             }
             dx_cell += 1;
         }
         dz_cell += 1;
     }
-    let Some((d2, ox, oz, cx, cz, ni)) = best else {
-        return true; // whiff — the cooldown is paid, the arm is free
+    let Some(Target {
+        d2,
+        ox,
+        oz,
+        cx,
+        cz,
+        ni,
+        pos,
+    }) = best
+    else {
+        return Swing::Free; // whiff — the cooldown is paid, the arm is free
     };
+
+    if ni == BARREL_TARGET {
+        return smash(lc, seed, tick, cx, cz, pos, lives, events, p);
+    }
 
     let def = &gc.nodes[ni];
     if def.output == NO_ITEM || def.output as usize >= MAX_ITEM_DEFS {
-        return true; // inert content (or a table the bake would have refused)
+        return Swing::Free; // inert content (or a table the bake would have refused)
     }
     let Some(life) = lives.find_or_insert(cx, cz) else {
-        return true; // store exhausted by harvested entries — refuse the hit
+        return Swing::Free; // store exhausted by harvested entries — refuse the hit
     };
     life.hits += 1;
     let exhausted = life.hits >= def.hits;
@@ -509,10 +614,12 @@ pub fn swing(
         events.push(EV_GATHER, p.id, ((sec_item as u32) << 16) | got as u32, 0);
     }
     if exhausted {
-        events.push(EV_SLOT_HARVESTED, ck, ni as u32, 0);
+        events.push(EV_SLOT_HARVESTED, ck, occupant_of(ni), 0);
         p.ws_cell = NO_CELL;
         p.ws_hits = 0;
-    } else if def.weak_pct > 0 {
+        return Swing::Absorbed;
+    }
+    if def.weak_pct > 0 {
         let next = weak_mark8(seed, cx, cz, p.id, p.ws_hits);
         events.push(
             EV_WEAK_MARK,
@@ -521,7 +628,62 @@ pub fn swing(
             ((weak_hit as u32) << 8) | next as u32,
         );
     }
-    false // the node took it
+    Swing::Absorbed // the node took it
+}
+
+/// A swing that landed on a barrel slot.
+///
+/// A barrel is not a node and this is not `NodeDef` with the fields blanked
+/// out: no tool row, no hand yield, no weak spot, no payout into the
+/// swinger's hands. What it shares with a node is the *bit* — the same
+/// `SlotLives` entry, the same jittered respawn window (DECISIONS.md §open
+/// "node/barrel respawn 20–45 min" names both), and the same
+/// `EV_SLOT_HARVESTED` on the way out, so a client that already hides a
+/// felled tree hides a smashed barrel with no wire change at all.
+#[allow(clippy::too_many_arguments)]
+fn smash(
+    lc: &LootContent,
+    seed: u64,
+    tick: u64,
+    cx: u16,
+    cz: u16,
+    spos: (f32, f32, f32),
+    lives: &mut SlotLives,
+    events: &mut EventQueue,
+    p: &mut Player,
+) -> Swing {
+    let hits = lc.hits(LOOT_BARREL);
+    if hits == 0 {
+        return Swing::Free; // inert loot content: nothing here to break
+    }
+    // A barrel has no glint to chase, so aiming at one ends any chase in
+    // progress rather than leaving the mark pointed at a cell that pays no
+    // bonus.
+    p.ws_cell = NO_CELL;
+    p.ws_hits = 0;
+
+    let Some(life) = lives.find_or_insert(cx, cz) else {
+        return Swing::Free; // store exhausted by harvested entries
+    };
+    life.hits += 1;
+    if life.hits < hits {
+        return Swing::Absorbed;
+    }
+    let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
+    life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
+    events.push(
+        EV_SLOT_HARVESTED,
+        cell_key(cx, cz),
+        occupant_of(BARREL_TARGET),
+        0,
+    );
+    Swing::Smashed {
+        cx,
+        cz,
+        qx: quant_xz(spos.0),
+        qy: quant_y(spos.1),
+        qz: quant_xz(spos.2),
+    }
 }
 
 #[cfg(test)]

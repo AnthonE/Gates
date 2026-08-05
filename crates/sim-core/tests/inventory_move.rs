@@ -160,7 +160,7 @@ fn snapshot(w: &World) -> (Vec<ItemStack>, Vec<ItemStack>) {
 #[allow(clippy::too_many_arguments)]
 fn do_move(
     w: &mut World,
-    bag: u32,
+    cont: u32,
     from_kind: u8,
     from_slot: u8,
     to_kind: u8,
@@ -169,7 +169,7 @@ fn do_move(
 ) -> (u8, u32, u32) {
     w.tick(&[Command::Move {
         id: PLAYER,
-        bag,
+        cont,
         from_kind,
         from_slot,
         to_kind,
@@ -187,7 +187,7 @@ fn do_move(
         found.len(),
         1,
         "a move must answer exactly once — got {} events for \
-         ({from_kind}:{from_slot} -> {to_kind}:{to_slot} x{count}, bag {bag})",
+         ({from_kind}:{from_slot} -> {to_kind}:{to_slot} x{count}, container {cont})",
         found.len()
     );
     found[0]
@@ -616,7 +616,7 @@ fn a_corpse_cannot_move_anything() {
 
     w.tick(&[Command::Move {
         id: PLAYER,
-        bag: 0,
+        cont: 0,
         from_kind: CONT_SELF,
         from_slot: 0,
         to_kind: CONT_SELF,

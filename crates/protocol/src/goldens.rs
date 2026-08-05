@@ -27,71 +27,78 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 61] = [
-    "v17_input_acks_only.bin",
-    "v17_input_full.bin",
-    "v17_snapshot_keyframe.bin",
-    "v17_snapshot_delta.bin",
-    "v17_snapshot_cap.bin",
-    "v17_hello.bin",
-    "v17_welcome.bin",
-    "v17_refuse_full.bin",
-    "v17_event_gather.bin",
-    "v17_event_inv.bin",
-    "v17_event_slot_harvested.bin",
-    "v17_event_slot_respawned.bin",
-    "v17_event_slot_sync.bin",
-    "v17_event_catalog.bin",
-    "v17_event_weak_mark.bin",
-    "v17_event_craft_q.bin",
-    "v17_event_craft_done.bin",
-    "v17_event_craft_refused.bin",
-    "v17_event_recipes.bin",
-    "v17_action_craft.bin",
-    "v17_action_cancel.bin",
-    "v17_action_place.bin",
-    "v17_event_piece_placed.bin",
-    "v17_event_piece_sync.bin",
-    "v17_event_build_refused.bin",
-    "v17_event_piece_defs.bin",
-    "v17_action_deploy.bin",
-    "v17_action_feed.bin",
-    "v17_event_deploy_placed.bin",
-    "v17_event_deploy_sync.bin",
-    "v17_event_deploy_refused.bin",
-    "v17_event_deploy_defs.bin",
-    "v17_event_piece_removed.bin",
-    "v17_event_deploy_removed.bin",
-    "v17_event_stock.bin",
-    "v17_action_use.bin",
-    "v17_action_lock.bin",
-    "v17_event_door.bin",
-    "v17_action_upgrade.bin",
-    "v17_chat.bin",
-    "v17_event_chat.bin",
-    "v17_event_hit.bin",
-    "v17_event_health.bin",
-    "v17_event_death.bin",
-    "v17_action_loot.bin",
-    "v17_event_bag_dropped.bin",
-    "v17_event_bag_sync.bin",
-    "v17_event_bag_removed.bin",
-    "v17_event_struct_hit_piece.bin",
-    "v17_event_struct_hit_deploy.bin",
-    "v17_event_vitals.bin",
-    "v17_event_consumed.bin",
-    "v17_event_consume_refused.bin",
-    "v17_action_consume.bin",
-    "v17_event_drank.bin",
-    "v17_action_drink.bin",
-    "v17_event_respawn.bin",
-    "v17_action_respawn.bin",
-    "v17_action_move.bin",
-    "v17_event_moved.bin",
-    "v17_event_move_refused.bin",
+pub const FIXTURES: [&str; 66] = [
+    "v19_input_acks_only.bin",
+    "v19_input_full.bin",
+    "v19_snapshot_keyframe.bin",
+    "v19_snapshot_delta.bin",
+    "v19_snapshot_cap.bin",
+    "v19_hello.bin",
+    "v19_welcome.bin",
+    "v19_refuse_full.bin",
+    "v19_event_gather.bin",
+    "v19_event_inv.bin",
+    "v19_event_slot_harvested.bin",
+    "v19_event_slot_respawned.bin",
+    "v19_event_slot_sync.bin",
+    "v19_event_catalog.bin",
+    "v19_event_weak_mark.bin",
+    "v19_event_craft_q.bin",
+    "v19_event_craft_done.bin",
+    "v19_event_craft_refused.bin",
+    "v19_event_recipes.bin",
+    "v19_action_craft.bin",
+    "v19_action_cancel.bin",
+    "v19_action_place.bin",
+    "v19_event_piece_placed.bin",
+    "v19_event_piece_sync.bin",
+    "v19_event_build_refused.bin",
+    "v19_event_piece_defs.bin",
+    "v19_action_deploy.bin",
+    "v19_action_feed.bin",
+    "v19_event_deploy_placed.bin",
+    "v19_event_deploy_sync.bin",
+    "v19_event_deploy_refused.bin",
+    "v19_event_deploy_defs.bin",
+    "v19_event_piece_removed.bin",
+    "v19_event_deploy_removed.bin",
+    "v19_event_stock.bin",
+    "v19_action_use.bin",
+    "v19_action_lock.bin",
+    "v19_event_door.bin",
+    "v19_action_upgrade.bin",
+    "v19_chat.bin",
+    "v19_event_chat.bin",
+    "v19_event_hit.bin",
+    "v19_event_health.bin",
+    "v19_event_death.bin",
+    "v19_action_loot.bin",
+    "v19_event_bag_dropped.bin",
+    "v19_event_bag_sync.bin",
+    "v19_event_bag_removed.bin",
+    "v19_event_struct_hit_piece.bin",
+    "v19_event_struct_hit_deploy.bin",
+    "v19_event_vitals.bin",
+    "v19_event_consumed.bin",
+    "v19_event_consume_refused.bin",
+    "v19_action_consume.bin",
+    "v19_event_drank.bin",
+    "v19_action_drink.bin",
+    "v19_event_respawn.bin",
+    "v19_action_respawn.bin",
+    "v19_action_move.bin",
+    "v19_event_moved.bin",
+    "v19_event_move_refused.bin",
+    "v19_action_move_box.bin",
+    "v19_action_container.bin",
+    "v19_action_container_close.bin",
+    "v19_event_cont_sync.bin",
+    "v19_event_cont_close.bin",
 ];
 
-/// The move action: bag id, from (kind, slot), to (kind, slot), count.
+/// The move action: container handle (a bag id, or a packed
+/// `box_key(cx, cz, level)` — the kinds say which), from (kind, slot), to
+/// (kind, slot), count.
 ///
 /// Every part is distinguishable from every other, which on this message
 /// is not decoration — it is the entire defence. `reference/FINDINGS.md`
@@ -120,6 +127,95 @@ pub fn event_moved() -> (u8, u8, u8, u8, u16, u16) {
 /// being written as a bool.
 pub fn event_move_refused() -> (u8, u8, u8, u8, u8) {
     (4, 0, 11, 1, 26)
+}
+
+/// A move into a **box** — the meaning wire v18 added and never pinned.
+///
+/// `action_move` above encodes a `CONT_SELF`→`CONT_BAG` move and is
+/// byte-identical to the fixture v17 shipped, so the third container kind
+/// crossed the wire for a whole version with no fixture exercising it: the
+/// bytes that decode as "put it in the box at this address" were checked
+/// by nothing. This is that case.
+///
+/// The handle is a real `deploy::box_key(291, 744, 5)` — `cx << 16 |
+/// cz << 4 | level` — and not a round number, because the whole risk on a
+/// packed address is a field sliding within it, and three parts that are
+/// each distinguishable from the other two is what makes a slide move
+/// bytes. It is also nothing like `action_move`'s bag id, so a fixture
+/// copied from that one shows up as drifted bytes rather than as two
+/// fixtures agreeing with each other.
+///
+/// The destination slot is inside `BOX_SLOTS`, so this is a move the sim
+/// would also accept — a fixture that only the wire would take is a
+/// weaker statement about the same bytes.
+pub fn action_move_box() -> (u32, u8, u8, u8, u8, u16) {
+    (0x0123_2E85, 0, 6, 2, 9, 13)
+}
+
+/// Opening a box (wire v19). The kind is the packed-address one on
+/// purpose: the bag case is the easy one, and an address that loses a
+/// field is the failure this lane actually has.
+///
+/// A different `box_key` from `action_move_box` — `box_key(88, 1001, 3)`
+/// — for the same reason its handle differs from `action_move`'s: two
+/// fixtures that share a constant cannot catch a copy-paste between them.
+pub fn action_container() -> (u8, u32) {
+    (2, 0x0058_3E93)
+}
+
+/// Closing whatever is open. The one legal shape of a close, pinned
+/// because "one field, three meanings" is a design a later reader could
+/// reasonably talk themselves into widening: the day someone adds a
+/// handle to a close, or an `open` bit beside the kind, these bytes move.
+pub fn action_container_close() -> (u8, u32) {
+    (0, 0)
+}
+
+/// An open container's contents, as a **diff** (`reset` false) over a
+/// bag — the kind with thirty addressable slots, so the widest slot index
+/// on this message is exercised.
+///
+/// `reset` is deliberately false here and true in `event_cont_close`, so
+/// the bit is pinned in both states across the fixture set. A bool that
+/// only ever crosses as `true` is a bool no golden has actually checked.
+///
+/// Three rows, and no two of them share a value in any position: a
+/// transposed pair of rows, or a slot that swapped with an item, moves
+/// bytes. The slots are spread to the ends of the range rather than
+/// bunched, because an off-by-one in the slot field is invisible between
+/// 3 and 4 and obvious between 2 and 28.
+pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
+    (
+        1,
+        0x0BA6_2C07,
+        false,
+        [
+            InvSlot {
+                slot: 2,
+                stack: ItemStack { item: 5, count: 40 },
+            },
+            InvSlot {
+                slot: 17,
+                stack: ItemStack { item: 31, count: 3 },
+            },
+            InvSlot {
+                slot: 28,
+                stack: ItemStack {
+                    item: 12,
+                    count: 77,
+                },
+            },
+        ],
+    )
+}
+
+/// The server shutting a panel: nothing is open, no handle, no slots, and
+/// `reset` set. Its own fixture and not a variant of the one above,
+/// because this is the message that carries the security property — a
+/// client walking out of reach is told, and told in bytes that cannot
+/// drift into "here are some contents" without failing here first.
+pub fn event_cont_close() -> (u8, u32, bool) {
+    (0, 0, true)
 }
 
 /// The drink acknowledgement: water restored and the hp it cost. Both

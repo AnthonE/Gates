@@ -9,22 +9,23 @@ use crate::stats::ShardStats;
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_chat,
-    encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_move_refused, encode_event_moved,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog,
-    SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
+    encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
+    encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_respawn,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
+    encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
+    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
+    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
 use sim_core::deploy::DeployRec;
 use sim_core::gather::{ItemStack, NO_ITEM};
+use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF};
 use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, CHAT_LOCAL_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES,
     HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
@@ -221,6 +222,22 @@ impl ShardCore {
             }
             if let Some(act) = c.pending_action.take() {
                 cmds[n] = match act {
+                    // The one action that is not a command, and it says so
+                    // where the table says everything else: it changes what
+                    // this connection is *shown*, not what the world *is*.
+                    // No `Command` carries it, the sim never hears it, the
+                    // WAL never records it, and `World::state_hash` is
+                    // identical either way. The `continue` is the whole
+                    // statement — the arm's type is `!`, so no command is
+                    // written and none is counted, and a future reader
+                    // cannot add a `Command::Container` without deleting
+                    // this sentence. It still spends the same one-action-
+                    // per-tick hand as every other action, so an open
+                    // cannot be spammed to jump the queue.
+                    ActionMsg::Container { kind, cont } => {
+                        c.open_container(kind, cont);
+                        continue;
+                    }
                     ActionMsg::Craft { recipe, count } => Command::Craft {
                         id: c.id,
                         recipe,
@@ -301,7 +318,7 @@ impl ShardCore {
                     ActionMsg::Drink => Command::Drink { id: c.id },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
                     ActionMsg::Move {
-                        bag,
+                        cont,
                         from_kind,
                         from_slot,
                         to_kind,
@@ -309,7 +326,7 @@ impl ShardCore {
                         count,
                     } => Command::Move {
                         id: c.id,
-                        bag,
+                        cont,
                         from_kind,
                         from_slot,
                         to_kind,
@@ -1217,6 +1234,111 @@ impl ShardCore {
                     }
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // The open container's contents — unicast, and re-proved every
+        // tick rather than trusted from the open.
+        //
+        // This is the whole security argument for the message, so it is
+        // written here rather than left to the reader: an open grants
+        // nothing. Every tick the server resolves the handle again and
+        // spends the *same* `in_reach` the move verb will spend, on the
+        // same quantized body position, against the same store. A forged
+        // open of a box across the map resolves and fails reach, so it
+        // yields the close below and not one slot. A real open of a box
+        // the player then walks away from does the same. The set of
+        // containers a client can see is therefore exactly the set it can
+        // move items in — which is the quantize-both-sides law applied to
+        // containers, and the reason a refusal can never disagree with
+        // what the panel was drawn from.
+        let c = &self.clients[slot];
+        if c.own_wslot != usize::MAX && c.open_cont_kind != CONT_SELF {
+            let (kind, handle) = (c.open_cont_kind, c.open_cont_handle);
+            let p = &self.world.players[c.own_wslot];
+            let live = match kind {
+                CONT_BAG => self
+                    .world
+                    .backpacks
+                    .index_of_id(handle)
+                    .filter(|&i| self.world.backpacks.in_reach(i, p)),
+                CONT_BOX => self
+                    .world
+                    .deploys
+                    .box_index(handle)
+                    .filter(|&i| self.world.deploys.box_in_reach(i, p)),
+                _ => None,
+            };
+            match live {
+                // Gone, or out of reach. Same message either way, and
+                // deliberately: "the bag despawned" and "you walked away"
+                // are one fact to a panel, which is that it must shut. The
+                // client is told rather than left holding a view the
+                // server has stopped feeding — a stale panel is where a
+                // player drags into a container that is not there and
+                // reads the refusal as the game breaking.
+                None => match encode_event_cont_sync(CONT_SELF, 0, true, &[], &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            self.clients[slot].close_container();
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                },
+                Some(i) => {
+                    let width = slots_in(kind);
+                    let mut now = [ItemStack::default(); INV_SLOTS];
+                    for (s, out) in now.iter_mut().enumerate().take(width) {
+                        *out = if kind == CONT_BAG {
+                            self.world.backpacks.slot(i, s)
+                        } else {
+                            self.world.deploys.box_slot(i, s)
+                        };
+                    }
+                    // At most `width` slots can differ and `width` is at
+                    // most `INV_SLOTS`, which is `CONT_SYNC_BATCH` — so the
+                    // diff never overflows the message and never needs a
+                    // cursor. That is why this walk has no `reset` to
+                    // restart, unlike every sync above it.
+                    let mut changed = [InvSlot::default(); CONT_SYNC_BATCH];
+                    let mut n_changed = 0usize;
+                    for (s, (now, last)) in now.iter().zip(c.last_cont.iter()).enumerate() {
+                        if now != last {
+                            changed[n_changed] = InvSlot {
+                                slot: s as u8,
+                                stack: *now,
+                            };
+                            n_changed += 1;
+                        }
+                    }
+                    // An open sends even when nothing changed: "you opened
+                    // an empty box" is a fact, and a panel with no message
+                    // behind it is a panel that never draws.
+                    if c.open_cont_reset || n_changed > 0 {
+                        match encode_event_cont_sync(
+                            kind,
+                            handle,
+                            c.open_cont_reset,
+                            &changed[..n_changed],
+                            &mut self.ev_buf,
+                        ) {
+                            Ok(len) => {
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                    let c = &mut self.clients[slot];
+                                    c.open_cont_reset = false;
+                                    c.last_cont = now;
+                                } else {
+                                    return;
+                                }
+                            }
+                            Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                        }
+                    }
+                }
             }
         }
 

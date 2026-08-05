@@ -2,6 +2,12 @@
 // plain DOM outside the loop). Toasts are event-driven — they fire from
 // the event-lane pump, which is also not the RAF path.
 
+// The container kinds, taken from the module that already restates them from
+// `sim-core/src/inventory.rs` under a gate, rather than restated a third time
+// here. Every address this panel forms names its container explicitly — see
+// the note on `invContainers` in the constructor.
+import { CONT_SELF, CONT_BAG, CONT_BOX, INV_SLOTS, slotsIn } from "./invmove.js";
+
 /** Toast lifetime and cap (cosmetic; the stack reads like the reference
  * gather feedback — stacking "+N Thing" lines that fade). */
 const TOAST_MS = 1600;
@@ -13,15 +19,18 @@ const TOAST_CAP = 8;
 const CHAT_CAP = 8;
 const CHAT_FADE_MS = 12000;
 
-/** The inventory screen's shape, mirroring what the sim already owns:
- * `INV_SLOTS = 30` (crates/sim-core/src/limits.rs) read as `30 * 2` u16
- * words at web/src/wasm.js:76, split by ALPHA.md §1 into "6 hotbar slots,
- * 24 inventory". These are not new numbers — they are the shipped ones,
- * named here so the panel's layout and the wire's slot indices cannot
- * drift apart silently. */
+/** The inventory screen's LAYOUT split, ALPHA.md §1's "6 hotbar slots, 24
+ * inventory". The total they must sum to is `INV_SLOTS`, and that one is
+ * imported rather than restated here: it is the sim's
+ * (`crates/sim-core/src/limits.rs`), read as `30 * 2` u16 words at
+ * web/src/wasm.js:76, and until 2026-08-05 it was declared in this file AND
+ * in `invmove.js` AND a third time as a bare `30` inside the gate. The
+ * judge's ranked fix 1 caught the third: widening a probe array made the
+ * gate green while it silently stopped testing what its own failure message
+ * described. One declaration, pinned to Rust by `ci/ui_smoke.mjs`, is the
+ * shape that cannot drift — a number restated is a number that will. */
 const INV_BELT = 6;
 const INV_GRID = 24;
-const INV_SLOTS = 30;
 
 /**
  * What a refused move tells the player, indexed by `REFUSE_M_*`
@@ -36,6 +45,13 @@ const INV_SLOTS = 30;
  * each — a silent `undefined` here would tell the player nothing at the one
  * moment the panel owes them a sentence.
  */
+/** What the open container calls itself. Generic nouns — `CONTENT.md` owns
+ * item names; these two name a KIND, and the kinds are the sim's. */
+const CONT_NAMES = {
+  [CONT_BAG]: "BACKPACK",
+  [CONT_BOX]: "BOX",
+};
+
 const MOVE_REFUSALS = [
   "",
   "that slot is not there",
@@ -48,6 +64,17 @@ const MOVE_REFUSALS = [
 ];
 
 export class Hud {
+  /**
+   * The `onInvMove` a panel has while no host has claimed the move verb.
+   *
+   * Identity, not behaviour: a host arms the drag by assigning over this,
+   * and `beginInvDrag` compares against it. Static rather than a private
+   * module const so `ci/ui_smoke.mjs` can put the unarmed state back and
+   * assert the panel offers no gesture it cannot perform — an arming rule
+   * with no gate would be the comment-with-no-gate class again.
+   */
+  static NO_MOVE_HOST = () => false;
+
   constructor() {
     this.el = document.getElementById("hud");
     this.cross = document.getElementById("cross");
@@ -118,14 +145,23 @@ export class Hud {
     // below are the move verb, and the ordering law they enforce is the
     // one CLAUDE.md's item-move trap is about.
     //
-    // NOT YET WIRED TO THE SIM, and deliberately so. `APPLIED_MOVE`
-    // (client-wasm `core.rs:122`) is `1 << 31` and `STREAM_ERR`
-    // (`bridge.rs:64`) is also `1 << 31`, so the verdict this panel waits
-    // for arrives at `main.js:759` as a decode error: it logs
-    // `console.error`, which fails the browser gates, and returns early,
-    // dropping the inventory diff riding with it. That is a `crates/`
-    // collision and the systems lane owns it (NOW.md). Until it clears,
-    // `onInvMove` stays at its default and no drag reaches the wire.
+    // WIRED TO THE SIM — main.js claims the verb, both directions. The
+    // outbound half encodes with `client_action_move`; the inbound half
+    // reads `APPLIED2_MOVE` off `client_applied2()` and unpacks the
+    // verdict with `web/src/invmove.js`. That flag lives in a SECOND
+    // applied word because word 0's bit 31 is `STREAM_ERR`: the verdict
+    // shared that bit until the systems lane split it, and while it did,
+    // a landed move and "undecodable bytes" arrived as the same word.
+    // `invmove.js` has the history and what the split closed.
+    //
+    // A host claims the verb by assigning over `NO_MOVE_HOST`, and until
+    // one does the gesture does not START. An affordance
+    // that always refuses is worse than one that is absent: every drop
+    // would dim a cell and toast "that will not move", which teaches the
+    // player the panel is broken rather than that the verb is unbuilt.
+    // `beginInvDrag` therefore refuses outright until a host claims the
+    // verb, and a host claims it by assigning over `NO_MOVE_HOST` — there
+    // is nothing separate to remember, so nothing separate to forget.
     this.inv = document.getElementById("inv");
     this.invGrid = document.getElementById("invgrid");
     this.invBelt = document.getElementById("invbelt");
@@ -136,7 +172,14 @@ export class Hud {
     /** Set by main.js: (slot 0..INV_BELT-1) → void. Belt cells only. */
     this.onInvSelect = () => {};
     /**
-     * Set by main.js: (from, to) → did the frame go out?
+     * Set by main.js: (fromKind, from, toKind, to) → did the frame go out?
+     *
+     * Both ends are ADDRESSES — a container kind and a slot within it —
+     * because `Command::Move` has always taken two of them and this side
+     * was passing `CONT_SELF` twice as a literal at the one call site. A
+     * slot number alone is not an address: bag slot 3 and self slot 3 are
+     * the same integer and different items, which is the aliasing that
+     * makes the second panel gap 1 asks for unbuildable.
      *
      * The host owns the count, not this panel: `setInventory` is handed
      * strings and a string is not a stack size, so a panel that parsed
@@ -144,12 +187,42 @@ export class Hud {
      * main.js reads the count off the same authoritative array it drew
      * from — the quantize-both-sides law, applied to containers.
      *
-     * Returning false means the wire refused the shape
-     * (`client_action_move` → 0) and nothing is drawn.
+     * Returning false means the host would not carry that shape — either
+     * the wire refused it (`client_action_move` → 0) or the host cannot
+     * address that container yet — and nothing is drawn.
      */
-    this.onInvMove = () => false;
+    this.onInvMove = Hud.NO_MOVE_HOST;
+    /**
+     * The containers this panel DRAWS, and therefore the only ones whose
+     * cells it may mutate, predict on, or roll back.
+     *
+     * `CONT_SELF` always; the open container's kind is appended by
+     * `openContainer` and removed by `closeContainer`. An address naming a
+     * container that is not in this list is refused rather than guessed at,
+     * so the panel can never draw a prediction over a cell it does not own.
+     */
+    this.invContainers = [CONT_SELF];
     /** The slot being dragged, or -1. */
     this.invDrag = -1;
+    /**
+     * The container the dragged slot lives in, or -1 when nothing is held.
+     *
+     * Kept beside `invDrag` rather than folded into it because a slot
+     * number is what every cell, every text array and every wire field is
+     * keyed by; the kind is the second half of the address, not a
+     * replacement for the first.
+     */
+    this.invDragKind = -1;
+    /**
+     * The `pointerId` that began the live drag, or null.
+     *
+     * One item is picked up by one pointer, so only that pointer may put it
+     * down or call it off. Without this a second finger's release reaches
+     * `dropInvDrag` holding the FIRST finger's source and sends a move
+     * nobody gestured — the one-drag guard refuses the second pointer's
+     * press but has never had anything to say about its release.
+     */
+    this.invDragPointer = null;
     /** The one move in flight, or null. See `dropInvDrag`. */
     this.invPending = null;
     this.invCells = [];
@@ -166,19 +239,94 @@ export class Hud {
       // `pointerup` drops, so the press and the release can land on
       // different cells — which is the whole gesture. A release outside any
       // cell is handled on the panel below, not here.
+      // These thirty cells ARE the self container, so they say so rather
+      // than leaning on the argument default: the cell that names its own
+      // container is the one thing a second panel's cells cannot get wrong
+      // by copying.
       cell.addEventListener("pointerdown", (e) => {
-        if (e.button === 0) this.beginInvDrag(s);
+        if (e.button === 0) this.beginInvDrag(s, e.pointerId, CONT_SELF);
       });
-      cell.addEventListener("pointerup", () => this.dropInvDrag(s));
+      cell.addEventListener("pointerup", (e) => this.dropInvDrag(s, e.pointerId, CONT_SELF));
       this.invCells.push(label);
       this.invDivs.push(cell);
       this.invTexts.push("");
     }
-    // Released on the panel but not on a cell: the drag ends and nothing
-    // moves. Without this the next click anywhere would drop a stale drag
-    // into whatever it landed on.
-    this.inv.addEventListener("pointerup", () => this.cancelInvDrag());
-    this.inv.addEventListener("pointercancel", () => this.cancelInvDrag());
+    // --- the open container -------------------------------------------------
+    //
+    // A second block of cells, built once and shown by kind. The server owns
+    // whether this is visible at all (`client_cont_kind` goes to zero on its
+    // own when the container despawns or the player walks out of reach), so
+    // there is deliberately no "close" the player can press: a panel that
+    // could outlive the reach a move is judged against is a panel drawing
+    // predictions the sim will refuse.
+    this.cont = document.getElementById("cont");
+    this.contTitle = document.getElementById("conttitle");
+    this.contGrid = document.getElementById("contgrid");
+    /** Which container is open — `CONT_SELF` (0) for none. Mirrors
+     *  `client_cont_kind()`; never set by the panel on its own. */
+    this.contKind = CONT_SELF;
+    /** Its handle: a bag id or a packed `box_key`. This is the value a move
+     *  must carry as `client_action_move`'s `bag` argument, and passing
+     *  anything else is how the two ends come to disagree about which
+     *  container a drag touched (`bridge.rs`'s `client_cont_handle`). */
+    this.contHandle = 0;
+    // All INV_SLOTS built, only `slotsIn(kind)` shown. A box is twelve slots
+    // inside a thirty-slot view and the tail stays zero on the wire — an
+    // empty cell drawn there would invite a drop the sim answers
+    // REFUSE_M_SLOT, so the cells that are not slots are hidden, not blanked.
+    this.contCells = [];
+    this.contDivs = [];
+    this.contTexts = [];
+    for (let s = 0; s < INV_SLOTS; s++) {
+      const cell = document.createElement("div");
+      cell.className = "invcell";
+      const label = document.createElement("span");
+      cell.appendChild(label);
+      cell.style.display = "none";
+      this.contGrid.appendChild(cell);
+      // These cells name their own container the same way the thirty above
+      // do — by reading `this.contKind` at the moment of the gesture, not by
+      // capturing a kind in the closure. The kind can change under a player
+      // (the server re-aims the view), and a cell holding a stale kind would
+      // address the container that WAS open.
+      cell.addEventListener("pointerdown", (e) => {
+        if (e.button === 0) this.beginInvDrag(s, e.pointerId, this.contKind);
+      });
+      cell.addEventListener("pointerup", (e) =>
+        this.dropInvDrag(s, e.pointerId, this.contKind),
+      );
+      this.contCells.push(label);
+      this.contDivs.push(cell);
+      this.contTexts.push("");
+    }
+    // A drag ends wherever the pointer is released, and in real play that is
+    // usually NOT over the panel: press a cell, walk the cursor onto the
+    // world, let go. Bound on `window` for exactly that case. With the
+    // listener on `#inv` — where it was — that release was never seen at
+    // all: `invDrag` kept pointing at the source, the cell kept its mark,
+    // and the player's NEXT press was refused by the one-drag guard while
+    // that press's release ran the drop against the stale source. Press
+    // cell 8, and the sim is asked to move cell 3.
+    //
+    // Which is the item-move verb failing as an unasked-for mutation on a
+    // container, i.e. the exact shape CLAUDE.md's trap list says the
+    // reference shipped three times in 28 minutes. It is not a cosmetic
+    // stuck highlight.
+    //
+    // Cell handlers still run first — they are deeper in the same bubble
+    // path — so a real drop has already cleared the drag by the time this
+    // sees the event and `cancelInvDrag` no-ops. Scoped to the pointer that
+    // began the drag: another finger releasing elsewhere is not this drag
+    // ending. `blur` is not scoped and cannot be — once the page loses
+    // focus the release will never arrive at all, so a drag that survived
+    // a blur survives forever.
+    this.onWinPointerUp = (e) => {
+      if (e.pointerId === this.invDragPointer) this.cancelInvDrag();
+    };
+    this.onWinBlur = () => this.cancelInvDrag();
+    window.addEventListener("pointerup", this.onWinPointerUp);
+    window.addEventListener("pointercancel", this.onWinPointerUp);
+    window.addEventListener("blur", this.onWinBlur);
   }
 
   show() {
@@ -355,11 +503,25 @@ export class Hud {
   toggleInv() {
     this.invOpen = !this.invOpen;
     this.inv.style.display = this.invOpen ? "flex" : "none";
+    // The container rides with the inventory, because every drag it exists
+    // for crosses between the two and a container you can see without your
+    // own slots has nowhere to drag TO. It is still the server that decides
+    // whether one is open at all — this only decides whether an open one is
+    // on screen. main.js sends the close action alongside, so the sim is not
+    // left holding a container the player has walked away from visually.
+    this.drawContPanel();
     // A drag cannot survive the panel it was started in. Closing mid-drag
     // and reopening would otherwise leave a cell marked and the next click
     // would drop into it.
     this.cancelInvDrag();
     return this.invOpen;
+  }
+
+  /** Show the container block only when there is one open AND the inventory
+   *  it drags against is on screen. One writer for that display. */
+  drawContPanel() {
+    this.cont.style.display =
+      this.invOpen && this.contKind !== CONT_SELF ? "flex" : "none";
   }
 
   /**
@@ -405,7 +567,18 @@ export class Hud {
       // after this must NOT put the snapshot back — see `invMoveVerdict`.
       // Marked before the write, because the write is what makes the
       // snapshot stale.
-      if (p && (s === p.from || s === p.to)) p.restated = true;
+      //
+      // `texts` is the SELF container (this is the own-inventory diff), so
+      // only an end of the pending move that is itself in self can be the
+      // slot being restated. Without the kind, a bag-slot-3 to self-slot-7
+      // move would count a write to self slot 3 as its own restatement and
+      // give up a rollback it still owed.
+      if (
+        p &&
+        ((p.fromKind === CONT_SELF && s === p.from) ||
+          (p.toKind === CONT_SELF && s === p.to))
+      )
+        p.restated = true;
       this.setInvText(s, t);
     }
   }
@@ -445,19 +618,196 @@ export class Hud {
    * nothing somewhere, and letting it start would make every later step
    * reason about a move with no item in it.
    */
-  beginInvDrag(s) {
+  beginInvDrag(s, pointerId = null, kind = CONT_SELF) {
+    if (this.onInvMove === Hud.NO_MOVE_HOST) return false;
     if (this.invDrag >= 0) return false;
-    if (!this.invTexts[s]) return false;
+    // A container this panel does not draw has no cell to pick up from and
+    // no text array to read, so the address is refused before anything is
+    // marked. Checked here and not only at the drop, because a drag that
+    // starts somewhere unownable has already put a mark on the screen.
+    if (!this.drawsContainer(kind)) return false;
+    // Its own container's width, not a flat 30: a box has twelve slots
+    // inside a thirty-slot view (`slotsIn`), and the cells past that are
+    // hidden rather than empty — so a press on one is a press on something
+    // that is not a slot.
+    if (!(s >= 0 && s < slotsIn(kind))) return false;
+    const texts = this.textsFor(kind);
+    if (!texts || !texts[s]) return false;
     this.invDrag = s;
-    this.invDivs[s].classList.add("drag");
+    this.invDragKind = kind;
+    this.invDragPointer = pointerId;
+    this.divsFor(kind)[s].classList.add("drag");
     return true;
   }
 
-  /** Abort a drag without moving anything: pointercancel, blur, Escape. */
+  /** The cell divs for container `kind`. Only ever called for a kind the
+   *  panel draws — `beginInvDrag` and `cancelInvDrag` both check first. */
+  divsFor(kind) {
+    return kind === CONT_SELF ? this.invDivs : this.contDivs;
+  }
+
+  /** Does this panel draw container `kind`? See `invContainers`. */
+  drawsContainer(kind) {
+    return this.invContainers.includes(kind);
+  }
+
+  /**
+   * The text mirror for container `kind`, or null when the panel does not
+   * draw it. One accessor rather than a branch at every call site: the
+   * aliasing this whole change removes is exactly "a slot number reached the
+   * wrong array", and a router that answers null is what makes that a
+   * refusal instead of a write.
+   */
+  textsFor(kind) {
+    if (kind === CONT_SELF) return this.invTexts;
+    return kind === this.contKind && kind !== CONT_SELF ? this.contTexts : null;
+  }
+
+  /** One cell's label in container `kind`. Routes to `setInvText` for self
+   *  so the self path keeps its single writer. */
+  setSlotText(kind, s, t) {
+    if (kind === CONT_SELF) {
+      this.setInvText(s, t);
+      return true;
+    }
+    if (kind !== this.contKind || kind === CONT_SELF) return false;
+    this.contTexts[s] = t;
+    this.contCells[s].textContent = t;
+    return true;
+  }
+
+  /**
+   * Open (or re-aim) the container view. `kind` is `client_cont_kind()` —
+   * `CONT_SELF` (0) means nothing is open, and this closes.
+   *
+   * The server owns this word, so this is a report and not a request: it may
+   * arrive with a different handle than the one already showing, and it may
+   * arrive as a close the player did not ask for. Both re-aim the panel, and
+   * both must abandon a move in flight — see `abandonContainerMove`.
+   */
+  openContainer(kind, handle, texts) {
+    if (kind === CONT_SELF) return this.closeContainer();
+    const h = handle >>> 0;
+    // A different container behind the same panel is a close and an open,
+    // not an update. The verdict word carries no handle (`core.rs`'s
+    // `last_move`), so a move sent against the OLD handle whose verdict
+    // arrives now would be matched against the new container purely because
+    // the kinds and slots line up.
+    if (this.contKind !== kind || this.contHandle !== h) {
+      this.abandonContainerMove();
+      for (let s = 0; s < INV_SLOTS; s++) {
+        this.contTexts[s] = "";
+        this.contCells[s].textContent = "";
+      }
+    }
+    this.contKind = kind;
+    this.contHandle = h;
+    this.invContainers = [CONT_SELF, kind];
+    const n = slotsIn(kind);
+    for (let s = 0; s < INV_SLOTS; s++) {
+      this.contDivs[s].style.display = s < n ? "flex" : "none";
+    }
+    this.contTitle.textContent = CONT_NAMES[kind] || "CONTAINER";
+    this.drawContPanel();
+    if (texts) this.setContainer(texts);
+    return true;
+  }
+
+  /**
+   * Close the container view. Called when `client_cont_kind()` reads zero —
+   * which the server does on its own — and never from a key.
+   */
+  closeContainer() {
+    if (this.contKind === CONT_SELF) return false;
+    this.abandonContainerMove();
+    this.contKind = CONT_SELF;
+    this.contHandle = 0;
+    this.invContainers = [CONT_SELF];
+    this.drawContPanel();
+    for (let s = 0; s < INV_SLOTS; s++) {
+      this.contTexts[s] = "";
+      this.contCells[s].textContent = "";
+      this.contDivs[s].style.display = "none";
+    }
+    return true;
+  }
+
+  /**
+   * Give up on a move with an end in the container that is going away, and
+   * on a drag picked up out of it.
+   *
+   * This is the container-divergence defence, and it is here because the
+   * wire cannot supply it: `client_move_readout` carries a reason and two
+   * slots, and `core.rs`'s `last_move` carries no handle and no sequence
+   * number. So once the open container changes there is nothing in an
+   * arriving verdict that distinguishes "the move you sent, answered" from
+   * "a move about the container you were looking at a moment ago". Matching
+   * it would unwind a cell the server never spoke about — CLAUDE.md's trap
+   * list, one level up from the encoder, and the shape that reached the
+   * reference as the server disconnecting the client.
+   *
+   * The self end is put back if the panel drew it and the server has not
+   * since restated it; the container end is not, because its cells are
+   * being cleared anyway. Both self-heal on the next authoritative diff —
+   * this only decides what is on screen until then, and a stale value the
+   * player can see is better than a pending move that never clears and
+   * refuses every later drag with "still moving that".
+   */
+  abandonContainerMove() {
+    const p = this.invPending;
+    if (this.invDrag >= 0 && this.invDragKind !== CONT_SELF) this.cancelInvDrag();
+    if (!p) return false;
+    if (p.fromKind === CONT_SELF && p.toKind === CONT_SELF) return false;
+    this.invPending = null;
+    if (!p.restated) {
+      if (p.fromKind === CONT_SELF) this.setInvText(p.from, p.wasFrom);
+      if (p.toKind === CONT_SELF) this.setInvText(p.to, p.wasTo);
+    }
+    return true;
+  }
+
+  /**
+   * Draw the open container's slots. `texts` is SLOT-INDEXED within that
+   * container, exactly as `setInventory` is within self, and only the slots
+   * the open kind actually has are read.
+   *
+   * The pending-move bookkeeping is the same as `setInventory`'s and for the
+   * same reason: a server restatement of a slot this panel is predicting on
+   * is newer than the rollback snapshot, so a refusal arriving after it must
+   * not put the snapshot back.
+   */
+  setContainer(texts) {
+    if (this.contKind === CONT_SELF) return false;
+    const p = this.invPending;
+    const n = slotsIn(this.contKind);
+    for (let s = 0; s < n; s++) {
+      const t = texts[s] || "";
+      if (t === this.contTexts[s]) continue;
+      if (
+        p &&
+        ((p.fromKind === this.contKind && s === p.from) ||
+          (p.toKind === this.contKind && s === p.to))
+      )
+        p.restated = true;
+      this.setSlotText(this.contKind, s, t);
+    }
+    return true;
+  }
+
+  /**
+   * Abort a drag without moving anything. Four callers and all four are
+   * wired: `pointerup` and `pointercancel` away from a cell and `blur`, all
+   * three on `window` from the constructor, and Escape via `toggleInv`.
+   *
+   * Unconditional by design — the pointer-scoping lives at the window
+   * listener, because `blur` and Escape have no pointer to scope to.
+   */
   cancelInvDrag() {
     if (this.invDrag < 0) return false;
-    this.invDivs[this.invDrag].classList.remove("drag");
+    this.divsFor(this.invDragKind)[this.invDrag].classList.remove("drag");
     this.invDrag = -1;
+    this.invDragKind = -1;
+    this.invDragPointer = null;
     return true;
   }
 
@@ -471,9 +821,14 @@ export class Hud {
    *
    * So the order here is fixed, and every step of it is gated:
    *
-   *   1. validate the address BEFORE touching a cell — same slot, no drag,
-   *      out of range, empty source. A refused drag mutates nothing, so
-   *      there is nothing to roll back and no frame goes out.
+   *   1. validate the address BEFORE touching a cell — no drag, a release
+   *      from a pointer that never picked this up, same slot, out of range,
+   *      empty source. A refused drag mutates nothing, so there is nothing
+   *      to roll back and no frame goes out. The pointer check in
+   *      particular has to sit above `cancelInvDrag` and not below it, or a
+   *      foreign release calls off a drag that is still under a finger —
+   *      the validation-ordering law applied to the abort as well as to
+   *      the move.
    *   2. snapshot exactly the two labels about to change.
    *   3. ask the host to encode and send. `client_action_move` returns 0
    *      for a shape the wire will not carry, and a drawn move with no
@@ -486,28 +841,53 @@ export class Hud {
    * reference actually shipped three times, and serialising is cheaper than
    * reconciling two predictions against one authoritative diff.
    */
-  dropInvDrag(to) {
+  dropInvDrag(to, pointerId = null, toKind = CONT_SELF) {
     const from = this.invDrag;
+    const fromKind = this.invDragKind;
     if (from < 0) return false;
+    // Only the pointer that picked the item up may put it down. A second
+    // finger's release arriving here holds the FIRST finger's `from`, and
+    // honouring it sends a move the player never gestured — the same
+    // unasked-for mutation the window-level cancel closes, by the other
+    // door. Above the cancel, so a foreign release neither moves nor aborts.
+    if (pointerId !== this.invDragPointer) return false;
     this.cancelInvDrag();
     if (this.invPending) {
       this.toast("still moving that");
       return false;
     }
-    if (to === from) return false;
-    if (!(to >= 0 && to < INV_SLOTS)) return false;
-    if (!this.invTexts[from]) return false;
-    const wasFrom = this.invTexts[from];
-    const wasTo = this.invTexts[to];
-    if (!this.onInvMove(from, to)) {
-      // The wire refused the shape. Nothing was drawn, so nothing unwinds —
-      // and the player still has to learn the drag did not happen.
+    // Same ADDRESS, not same slot number. Self slot 3 to bag slot 3 is a
+    // real move and the sim answers it; refusing it as a no-op because the
+    // integers match is the aliasing this whole change exists to remove.
+    if (to === from && toKind === fromKind) return false;
+    // Bounded by the DESTINATION's own container width. `encode_action_move`
+    // bounds both ends against a flat `INV_SLOTS` and would happily carry
+    // box slot 20 (`protocol/src/lib.rs:624`, loose on purpose — a tight
+    // check there makes an over-wide slot a frame error, and a frame error
+    // ends the session). The sim then answers `REFUSE_M_SLOT`. Refusing it
+    // here costs the round trip and the rolled-back prediction instead.
+    if (!(to >= 0 && to < slotsIn(toKind))) return false;
+    // Both ends have to be containers this panel draws: the prediction below
+    // writes two cells, and a cell in a container the panel does not own does
+    // not exist to write.
+    if (!this.drawsContainer(toKind)) return false;
+    const fromTexts = this.textsFor(fromKind);
+    const toTexts = this.textsFor(toKind);
+    if (!fromTexts || !toTexts) return false;
+    if (!fromTexts[from]) return false;
+    const wasFrom = fromTexts[from];
+    const wasTo = toTexts[to];
+    if (!this.onInvMove(fromKind, from, toKind, to)) {
+      // The host would not carry that shape — the wire refused it, or the
+      // host cannot address that container yet. Nothing was drawn, so
+      // nothing unwinds, and the player still has to learn the drag did
+      // not happen.
       this.toast("that will not move");
       return false;
     }
-    this.invPending = { from, to, wasFrom, wasTo, restated: false };
-    this.setInvText(from, "");
-    this.setInvText(to, wasFrom);
+    this.invPending = { fromKind, from, toKind, to, wasFrom, wasTo, restated: false };
+    this.setSlotText(fromKind, from, "");
+    this.setSlotText(toKind, to, wasFrom);
     return true;
   }
 
@@ -521,11 +901,27 @@ export class Hud {
    * move back on it would corrupt a slot the server never spoke about.
    * That is the same positional-payload shape CLAUDE.md names — the right
    * value in the wrong position — one level up from the encoder.
+   *
+   * `fromKind` is matched too. `toKind` is `null` when the caller has none
+   * to give, which is every caller today: the readout word packs `reason |
+   * to slot | from kind | from slot` and has no room for the TO kind at all
+   * (`bridge.rs`'s `client_move_readout`), so the wire cannot state it.
+   * Widening that word is the systems request on `NOW.md`, and until it
+   * lands the three parts that ARE carried plus the one-move-in-flight rule
+   * are the whole of the match. That is weaker than it reads: a self-3 to
+   * box-3 verdict and a self-3 to self-3 verdict are the same word, and
+   * only the fact that the panel sent one of them tells them apart.
+   *
+   * What keeps that honest is `abandonContainerMove` — the moment the open
+   * container changes, a move with an end in it stops being resolvable and
+   * is given up rather than matched against whatever is open now.
    */
-  invMoveVerdict(reason, from, to) {
+  invMoveVerdict(reason, from, to, fromKind = CONT_SELF, toKind = null) {
     const p = this.invPending;
     if (!p) return false;
     if (from !== p.from || to !== p.to) return false;
+    if (fromKind !== p.fromKind) return false;
+    if (toKind !== null && toKind !== p.toKind) return false;
     this.invPending = null;
     if (reason === 0) return true;
     // Roll back to what was drawn over — UNLESS an authoritative
@@ -534,9 +930,13 @@ export class Hud {
     // the snapshot over it would put back an item the sim has since moved
     // somewhere else. This flag is the whole reason `setInventory` knows
     // about pending moves at all.
+    // Only cells this panel actually drew are put back. A move with one end
+    // in a container the panel does not draw drew ONE cell, and restoring
+    // the other would write a slot number into the self grid that named a
+    // different container's item — the aliasing, arriving by the back door.
     if (!p.restated) {
-      this.setInvText(p.from, p.wasFrom);
-      this.setInvText(p.to, p.wasTo);
+      this.setSlotText(p.fromKind, p.from, p.wasFrom);
+      this.setSlotText(p.toKind, p.to, p.wasTo);
     }
     this.toast(MOVE_REFUSALS[reason] || "that will not move");
     return true;
