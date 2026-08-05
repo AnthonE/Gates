@@ -4,28 +4,28 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
-1. **Container contents have never crossed the wire — for a bag either.**
-   *(Gap pass, iteration 3, systems lane. From ranked gap 2 of
-   `findings/pass-20260804-205133-02-judge.md` ("a raid takes nothing") and
-   gap 1 of `-01`; the storage-and-address half landed this pass at wire
-   v18, this is what it uncovered.)*
-
-   `WireBag` carries an id and three position quanta and says contents
-   "deliberately never cross". So the loot panel both judges rank first is
-   not blocked on boxes — **it has no bag contents to draw either**, and
-   `Command::Loot`'s take-all is the only container verb a client can
-   express. A box changes nothing about that; it just makes the hole
-   visible in a second place.
-
-   The shape, and it is one slice for both containers: an open/close
-   action subtype (12 of 16 used, three left), per-client "which container
-   is open" state, and a contents sync sent **only to the opener** — not
-   to everyone in AOI, which would be an ESP leak and a bandwidth bill for
-   a panel nobody has open. Then `EV_MOVED` already tells the opener what
-   changed. Wire bump + regenerated goldens, systems lane.
-
-   Until it lands the ui lane cannot draw a container panel, and that is
-   the honest blocker to quote rather than the box.
+> **Cross-lane, not an item: container contents cross the wire now — the
+> panel is unblocked, and here is its ABI.** *(systems lane, 2026-08-05,
+> wire v19. This retires the "no container contents cross for a bag or a
+> box" blocker the ui lane was told to quote.)*
+> `client_action_open(kind, cont)` subscribes — `CONT_BAG`/`CONT_BOX` with
+> the same handle `client_action_move` takes (a bag id, a `box_key`), and
+> `CONT_SELF` closes. The server answers a live open with contents and
+> everything else (no such container, out of reach, it left the world, you
+> walked away) by closing the panel with a reason. Read after every
+> `client_on_stream` that sets **`APPLIED2_CONT`** (`client_applied2()`,
+> bit 1): `client_cont_readout()` packs `slots << 16 | close_why << 8 |
+> kind` — kind 0 means nothing is open and `close_why` says why the last
+> one went — `client_cont_handle()` names it, and `client_cont_ptr()` is
+> `INV_SLOTS × (item, count)` u16s, the same layout as `client_inv_ptr()`
+> so one panel draws either. Only the first `slots` cells are real.
+> **Do not draw a container until a sync for it has landed** — until then
+> the client does not know the server agrees it is there. The drag reuses
+> the move verb; do not grow a second move path (`CLAUDE.md`'s trap is
+> about exactly that second splice point).
+> Unverified in a browser: `browser_smoke` is operator-disabled this run,
+> so the ABI is gated natively (`ci/client_smoke.mjs`, `container_wire`)
+> and no browser has drawn it.
 
 > **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the
 > world lane's to make.** `ci/gates.sh` went RED then GREEN on an unchanged

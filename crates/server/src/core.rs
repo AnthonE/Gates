@@ -9,8 +9,9 @@ use crate::stats::ShardStats;
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_chat,
-    encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_closed,
+    encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
+    encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
     encode_event_hit, encode_event_inv, encode_event_move_refused, encode_event_moved,
@@ -25,6 +26,7 @@ use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
 use sim_core::deploy::DeployRec;
 use sim_core::gather::{ItemStack, NO_ITEM};
+use sim_core::inventory::{slots_in, CLOSE_ASKED, CONT_SELF};
 use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, CHAT_LOCAL_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES,
     HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
@@ -171,7 +173,40 @@ impl ShardCore {
     /// (defensive — the contract keeps it unreachable).
     pub fn push_action(&mut self, slot: usize, act: ActionMsg) {
         let c = &mut self.clients[slot];
-        if c.connected && c.pending_action.is_none() {
+        if !c.connected {
+            return;
+        }
+        // The open/close verb never becomes a `Command` and never reaches
+        // the sim. It changes what this connection is *told*, not what the
+        // world *is* — there is no sim state for it to write and, by the
+        // design note on `ClientNetState::open_kind`, there must never be.
+        //
+        // Handling it here rather than through the hand is also what keeps
+        // opening a box from costing a craft: the hand holds one action per
+        // tick and a panel is not a transaction, so a drag that opens a
+        // container and immediately moves an item would otherwise spend two
+        // ticks and could arrive in either order. This one lands
+        // immediately and the move keeps the hand.
+        if let ActionMsg::Open { kind, cont } = act {
+            if kind == CONT_SELF {
+                c.close_cont();
+                // The acknowledgement the client asked for. `pump_events`
+                // owns every other close; this is the one the player made
+                // happen, and it goes out by the same route so that a panel
+                // is only ever shut by a `cont_closed`.
+                c.pending_close = Some(CLOSE_ASKED);
+            } else if c.open_kind != kind || c.open_cont != cont {
+                // A different container: drop the old subscription's
+                // shadow before the new one can be diffed against it. Same
+                // container asked for twice is left alone — a client that
+                // re-sends its open should not get the whole box again.
+                c.close_cont();
+                c.open_kind = kind;
+                c.open_cont = cont;
+            }
+            return;
+        }
+        if c.pending_action.is_none() {
             c.pending_action = Some(act);
         }
     }
@@ -316,6 +351,14 @@ impl ShardCore {
                         to_slot,
                         count,
                     },
+                    // Unreachable by contract: `push_action` consumes the
+                    // open verb and never puts it in the hand, because it
+                    // is a subscription and there is no `Command` for it.
+                    // Matched rather than caught by a wildcard so that a
+                    // future action added to the wire cannot slip in here
+                    // and be silently dropped — the arm has to be written,
+                    // and writing this one meant saying why.
+                    ActionMsg::Open { .. } => continue,
                 };
                 n += 1;
             }
@@ -1217,6 +1260,91 @@ impl ShardCore {
                     }
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // The open container's contents, for the client that opened it and
+        // for nobody else. There is no AOI loop here and there must never
+        // be one: a container's contents fanned out over AOI is an ESP feed
+        // of every stash within 176 m, which is the argument
+        // `EventMsg::BagDropped` already makes for keeping contents off a
+        // broadcast. One subscriber, `slot`, addressed directly.
+        //
+        // The subscription is re-earned every time it is served. `cont_view`
+        // resolves the handle and checks reach *now* — the same two steps
+        // `move_item` takes before it will write, so the panel closes on
+        // exactly the step where moves would have started being refused.
+        // Walk away and it shuts; break the box and it shuts.
+        let c = &self.clients[slot];
+        if let Some(why) = c.pending_close {
+            match encode_event_cont_closed(why, &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].pending_close = None;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+        let c = &self.clients[slot];
+        if c.open_kind != CONT_SELF {
+            let (kind, cont) = (c.open_kind, c.open_cont);
+            match self.world.cont_view(c.id, kind, cont) {
+                Err(why) => {
+                    // Forget it first, announce it second: the close is
+                    // owed even if the ring refuses the message this tick,
+                    // and a subscription that outlived its container must
+                    // not survive one failed send.
+                    let c = &mut self.clients[slot];
+                    c.close_cont();
+                    c.pending_close = Some(why);
+                }
+                Ok(ci) => {
+                    let n_slots = slots_in(kind);
+                    let mut changed = [InvSlot::default(); INV_SLOTS];
+                    let mut n_changed = 0usize;
+                    for i in 0..n_slots {
+                        let now = self.world.cont_view_slot(kind, ci, i);
+                        if now != c.last_cont[i] || c.cont_reset {
+                            changed[n_changed] = InvSlot {
+                                slot: i as u8,
+                                stack: now,
+                            };
+                            n_changed += 1;
+                        }
+                    }
+                    // A reset sends the container whole — including the
+                    // empty slots, which is the only way a client can tell
+                    // "slot 4 is empty" from "slot 4 was never mentioned".
+                    // Without a reset an unchanged container sends nothing.
+                    if n_changed > 0 || c.cont_reset {
+                        let reset = c.cont_reset;
+                        match encode_event_cont_sync(
+                            kind,
+                            cont,
+                            reset,
+                            &changed[..n_changed],
+                            &mut self.ev_buf,
+                        ) {
+                            Ok(len) => {
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                    let c = &mut self.clients[slot];
+                                    c.cont_reset = false;
+                                    for s in &changed[..n_changed] {
+                                        c.last_cont[s.slot as usize] = s.stack;
+                                    }
+                                } else {
+                                    return;
+                                }
+                            }
+                            Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                        }
+                    }
+                }
             }
         }
 

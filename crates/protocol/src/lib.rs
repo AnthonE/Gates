@@ -35,8 +35,9 @@ pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     decode_event, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_chat,
-    encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_closed,
+    encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
+    encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
     encode_event_hit, encode_event_inv, encode_event_move_refused, encode_event_moved,
@@ -157,7 +158,26 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// move verb exists to never cause. A widened *meaning* is a wire change
 /// even when the layout is byte-identical, and `PROTO_VER` is the only
 /// thing that catches a mismatched build. Fixtures are keyed `v18_*`.
-pub const PROTO_VER: u16 = 18;
+/// v19 let a container's contents cross, which no version before it did
+/// for a bag or a box: the open action (**fourteenth** of v12's sixteen)
+/// and the `cont_sync` / `cont_closed` events (the **39th** and **40th**
+/// of v13's sixty-four). Again nothing existing moved a bit.
+///
+/// The shape is a **subscription, not an authority**. Opening grants
+/// nothing: `World::move_item` still resolves and reach-checks the
+/// container on every single move, exactly as `inventory.rs` says it must
+/// ("the sim never trusts that the client noticed"). So the open state is
+/// netcode state (`ClientNetState`), not `Player` state — it is not
+/// hashed, not in the WAL, and a replay is unchanged by it, which is the
+/// whole reason it may be a per-connection fact at all.
+///
+/// And the sync goes to the opener **alone**. A container's contents
+/// broadcast over AOI would be an ESP feed — every stash on the island on
+/// every wire — which is the argument `EventMsg::BagDropped` already
+/// makes against putting contents in a broadcast. One subscriber, one
+/// message, re-authorised by reach every tick it is sent.
+/// Fixtures are keyed `v19_*`.
+pub const PROTO_VER: u16 = 19;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -356,6 +376,17 @@ const ACT_RESPAWN: u32 = 11;
 /// The move verb (wire v17, `inventory.rs`). Thirteenth of the sixteen,
 /// so no width moved for it either — three action codes remain.
 const ACT_MOVE: u32 = 12;
+/// Open a container's panel, or close whichever one is open (wire v19,
+/// `server/src/core.rs`). Fourteenth of the sixteen, so no width moved
+/// for it either — **two action codes remain**.
+///
+/// One code, not two, and the close is `CONT_SELF`. Your own inventory is
+/// never an "open" target — it is synced unconditionally by `SUB_INV` for
+/// as long as you are connected — so kind zero on this action is the one
+/// value that could only ever have been a refusal. Spending it as the
+/// close saves an action code that a repair or a throw will want
+/// (`NOW.md`), and removes a refusal path rather than adding one.
+const ACT_OPEN: u32 = 13;
 /// Container-kind width on the move action. Two bits for two live kinds
 /// (`inventory::CONT_SELF`, `CONT_BAG`), so 2 and 3 are forgeable and
 /// refuse at decode — the `BUILD_MAT_BITS` posture, and deliberately not
@@ -522,6 +553,19 @@ pub enum ActionMsg {
         to_slot: u8,
         count: u16,
     },
+    /// Subscribe this connection to one ground container's contents, or
+    /// unsubscribe. `kind` is `CONT_BAG` or `CONT_BOX` with `cont` naming
+    /// it the same way the move action does — a bag id, a `box_key`
+    /// address — and `CONT_SELF` means **close**, with `cont` ignored.
+    ///
+    /// It asks for nothing and is allowed nothing. The server answers a
+    /// live open with `cont_sync` and answers everything else — a handle
+    /// that resolves to no container, a container out of reach, a
+    /// container that leaves or that you walk away from — with
+    /// `cont_closed` and a reason. Being open is re-earned every tick it
+    /// is served, so this message can never become a claim the sim has to
+    /// keep believing.
+    Open { kind: u8, cont: u32 },
 }
 
 /// The move verb — see `ActionMsg::Move`. Range-checks every field it can
@@ -555,6 +599,25 @@ pub fn encode_action_move(
     w.write(to_kind as u32, CONT_KIND_BITS)?;
     w.write(to_slot as u32, ACTION_SLOT_BITS)?;
     w.write(count as u32, MOVE_COUNT_BITS)?;
+    Ok(w.finish())
+}
+
+/// The open/close verb — see `ActionMsg::Open`. The only shape check the
+/// wire can make is the kind: two bits hold three values and the fourth
+/// is forgeable, so it refuses here as `Range` and at decode as
+/// `Malformed`, the same posture as every other kind field. Whether the
+/// handle names a container that exists, and whether it is in reach, is
+/// not a question this lane can answer and is deliberately not asked —
+/// the server answers both with `cont_closed`, every tick, forever.
+pub fn encode_action_open(kind: u8, cont: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if kind > sim_core::inventory::CONT_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_OPEN, ACTION_SUB_BITS)?;
+    w.write(kind as u32, CONT_KIND_BITS)?;
+    w.write(cont, 32)?;
     Ok(w.finish())
 }
 
@@ -905,6 +968,21 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 to_slot,
                 count,
             }
+        }
+        ACT_OPEN => {
+            let kind = r.read(CONT_KIND_BITS)? as u8;
+            let cont = r.read(32)?;
+            // Two bits hold three kinds, so the fourth is forgeable and
+            // refuses. Nothing else here is checkable and nothing else is
+            // checked: a handle naming no container is a legal shape and
+            // an answerable ask, and it is answered with `cont_closed`
+            // rather than with a frame the reader declines by ending the
+            // session — the disconnect the container lane exists to never
+            // cause (`inventory.rs`).
+            if kind > sim_core::inventory::CONT_MAX {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Open { kind, cont }
         }
         _ => return Err(WireError::Malformed),
     };

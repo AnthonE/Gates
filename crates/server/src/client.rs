@@ -15,6 +15,7 @@ use protocol::{ActionMsg, ChatMsg, EntityState, Nudge};
 use sim_core::craft::CraftJob;
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
+use sim_core::inventory::CONT_SELF;
 use sim_core::limits::{
     CRAFT_QUEUE, INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INV_SLOTS, MAX_PLAYERS,
     MAX_SNAPSHOT_ENTITIES, PENDING_REMOVALS_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS,
@@ -136,6 +137,36 @@ pub struct ClientNetState {
     pub bag_sync_cursor: usize,
     /// The next bag batch carries the reset bit.
     pub bag_sync_reset: bool,
+    /// Which ground container this connection has a panel open on:
+    /// `CONT_BAG` or `CONT_BOX` with `open_cont` naming it the way the
+    /// move action does, or `CONT_SELF` for none.
+    ///
+    /// **Netcode state, deliberately — not `Player` state.** Opening a
+    /// container grants nothing and proves nothing: `World::move_item`
+    /// re-resolves and re-reach-checks on every move whether or not a
+    /// panel is open, so this cannot be forged into an authority. It is a
+    /// subscription and only a subscription, which is why it may live on
+    /// the connection rather than in the hash and the WAL — a replay of
+    /// the same commands produces the same world whatever anyone had
+    /// open, and that would stop being true the moment a verb consulted
+    /// this field. Nothing may.
+    pub open_kind: u8,
+    pub open_cont: u32,
+    /// The open container's contents as last successfully queued to this
+    /// client — `last_inv`'s mechanism, applied to somebody else's box.
+    /// Sized to the largest container (`INV_SLOTS`, a bag); a box uses
+    /// the first `BOX_SLOTS` and the rest stay empty and match.
+    pub last_cont: [ItemStack; INV_SLOTS],
+    /// The next contents batch carries the reset bit: a fresh open, or an
+    /// event-lane resync. Until it has been sent, the shadow above is not
+    /// yet a claim about what the client has.
+    pub cont_reset: bool,
+    /// A `cont_closed` this client is owed, and its `CLOSE_*` reason.
+    /// Every close goes out through here — the one the player asked for
+    /// and the ones the world imposed — so a panel is shut by exactly one
+    /// message on exactly one path, and a client that never gets it is a
+    /// client whose event ring overflowed and is being resynced anyway.
+    pub pending_close: Option<u8>,
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
@@ -185,6 +216,11 @@ impl ClientNetState {
             deploy_sync_reset: true,
             bag_sync_cursor: 0,
             bag_sync_reset: true,
+            open_kind: CONT_SELF,
+            open_cont: 0,
+            last_cont: [ItemStack::default(); INV_SLOTS],
+            cont_reset: true,
+            pending_close: None,
             pending_action: None,
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -212,6 +248,26 @@ impl ClientNetState {
         self.bag_sync_cursor = 0;
         self.bag_sync_reset = true;
         self.last_done_at = u64::MAX;
+        // The subscription survives a resync and its shadow does not: the
+        // client is still standing at the same box and still wants to see
+        // it, but everything the server believed it had told them about
+        // the contents went into the ring that overflowed. Re-send the
+        // whole container rather than a diff against a shadow no message
+        // ever landed for — the inventory's shadow can re-diff itself
+        // because the world holds the truth for it, and a container's
+        // cannot, because the truth is "what this client last received".
+        self.cont_reset = true;
+    }
+
+    /// Forget the container subscription and its shadow. The caller sends
+    /// the `cont_closed` that says why — this is only the state, and it
+    /// is one function so that no path can clear half of it and leave a
+    /// shadow that a later open would diff against.
+    pub fn close_cont(&mut self) {
+        self.open_kind = CONT_SELF;
+        self.open_cont = 0;
+        self.last_cont = [ItemStack::default(); INV_SLOTS];
+        self.cont_reset = true;
     }
 
     /// Arm the slot for a fresh connection. Everything netcode resets; the

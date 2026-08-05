@@ -25,6 +25,20 @@ pipeline. Nothing rides the snapshot path unless it moves.**
 | **S — structural** | building blocks, doors, tool cupboards, storage, settled items, death backpacks, **sleepers** | discrete events (placed, damaged, opened, looted, slept) | reliable **chunk event streams** with version numbers (§5) | zero between events |
 | **G — global** | time of day, wipe clock, shard notices | slow | a few bytes in every snapshot header + reliable notices | ~free |
 
+There is a fourth audience, and it is not a class: **subscription**. A
+container's contents (`SUB_CONT_SYNC`, wire v19) go to the one client that
+opened it and to nobody else — not to AOI, which is what class S means by
+"reliable chunk event streams". The distinction is a security boundary
+rather than a bandwidth one: a stash's contents fanned out over §7's 176 m
+grid is an ESP feed of everything anyone has stored, and no budget in §9
+would notice, because the bytes are small. So the rule is stated here
+rather than left to the encoder — **contents are addressed to a subscriber,
+never broadcast** — and the subscription is *re-authorised every tick it is
+served (`World::cont_view`)*, so walking away or breaking the box ends it
+inside one tick. Gated by `crates/server/tests/container_wire.rs`, whose
+load-bearing assertion is the negative one: the non-opener receives zero
+sync messages.
+
 Entities **transition**: a dropped item is D while it falls (≤ ~2 s), then a
 `settle` event moves it to S with a resting transform. A player is D while
 connected and becomes S the moment they disconnect (a sleeper is a player
@@ -437,6 +451,17 @@ where the sim says.
 
 ## 11 · Added CI gates
 
+- `container_wire` (**landed**, wire v19): the subscription audience, both
+  directions. Two clients standing on the same bag, one opens it, and the
+  other must receive **zero** contents messages — asserted by counting what
+  the server put on the lane, not by checking a client mirror stayed empty.
+  Then: walking out of reach closes the panel and stops the feed inside a
+  tick, a container leaving the world closes it with a different reason, and
+  a handle naming no container at all is answered with a close rather than
+  the disconnect the reference shipped three times in one day
+  (`CLAUDE.md`'s trap list). Both leak directions are mutation-checked —
+  subscribing every connected client, and dropping the reach re-check, each
+  turn it red.
 - `test_chunk_epoch`: fuzz subscribe/unsubscribe/re-subscribe against a
   mutating chunk; client-reconstructed state must equal server state at
   every version.

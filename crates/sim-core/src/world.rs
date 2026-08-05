@@ -798,6 +798,74 @@ impl World {
         }
     }
 
+    /// May `viewer` see the contents of the ground container `kind`/`cont`
+    /// **right now**? `Ok` is its index in the matching store; `Err` is an
+    /// `inventory::CLOSE_*` reason to send and forget the subscription
+    /// with.
+    ///
+    /// This is the whole of the read authority, and it is deliberately the
+    /// same three steps `move_item` takes before it will write: resolve the
+    /// handle, then reach. Two verbs that disagree about which containers
+    /// you can touch is precisely the divergence `inventory.rs` opens by
+    /// describing — a container the client is still drawing while the sim
+    /// has started refusing moves into it — so the read is gated on the
+    /// same facts as the write, measured at the same moment: **now**, not
+    /// when a panel opened.
+    ///
+    /// That "now" is why this is called every tick a sync is served rather
+    /// than once at open. Walking away closes the panel; so does someone
+    /// breaking the box you are standing in front of. A subscription is
+    /// re-earned, never granted.
+    ///
+    /// `CONT_SELF` is not openable and reads as `CLOSE_GONE`: your own
+    /// inventory has no handle, no reach and no store to index, and it is
+    /// already synced unconditionally by the inventory diff. A dead
+    /// viewer, or one whose id is not in the world, reads the same way —
+    /// there is nobody to measure reach from.
+    pub fn cont_view(&self, viewer: u32, kind: u8, cont: u32) -> Result<usize, u8> {
+        let Some(slot) = self.live_slot_of(viewer) else {
+            return Err(inventory::CLOSE_GONE);
+        };
+        let p = &self.players[slot];
+        match kind {
+            inventory::CONT_BAG => {
+                let i = self
+                    .backpacks
+                    .index_of_id(cont)
+                    .ok_or(inventory::CLOSE_GONE)?;
+                if !self.backpacks.in_reach(i, p) {
+                    return Err(inventory::CLOSE_REACH);
+                }
+                Ok(i)
+            }
+            inventory::CONT_BOX => {
+                let i = self.deploys.box_index(cont).ok_or(inventory::CLOSE_GONE)?;
+                if !self.deploys.box_in_reach(i, p) {
+                    return Err(inventory::CLOSE_REACH);
+                }
+                Ok(i)
+            }
+            _ => Err(inventory::CLOSE_GONE),
+        }
+    }
+
+    /// One slot of a ground container a `cont_view` has already resolved,
+    /// by value. Total: an index or slot past the store reads empty, the
+    /// same posture `backpacks.slot` and `deploys.box_slot` already take,
+    /// so a stale index cannot read another container's items.
+    ///
+    /// Ground kinds only — `CONT_SELF` reads empty here rather than
+    /// falling through to some player's inventory, because a caller that
+    /// reached this with kind zero has a bug and the honest answer to it
+    /// is nothing, not somebody's hotbar.
+    pub fn cont_view_slot(&self, kind: u8, ci: usize, s: usize) -> ItemStack {
+        match kind {
+            inventory::CONT_BAG => self.backpacks.slot(ci, s),
+            inventory::CONT_BOX => self.deploys.box_slot(ci, s),
+            _ => ItemStack::default(),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn move_item(
         &mut self,

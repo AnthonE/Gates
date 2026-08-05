@@ -245,6 +245,29 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
     }
 }
 
+/// Why a container panel stopped being served — the `why` of
+/// `cont_closed` (wire v19). A close is never silent: whatever ends a
+/// subscription says which of these it was, because "it is gone" and
+/// "walk back" are different sentences to a player and the client would
+/// otherwise have to guess by watching a panel go stale.
+///
+/// The player asked. The only reason a client already knows, sent anyway
+/// so that exactly one code path closes a panel.
+pub const CLOSE_ASKED: u8 = 0;
+/// The container left the world — a bag looted empty or expired, a box
+/// broken open. `REFUSE_M_NO_CONTAINER`'s sentence, on the read side.
+pub const CLOSE_GONE: u8 = 1;
+/// The container is real and out of arm's reach. Measured the same way
+/// `REFUSE_M_REACH` measures it and against the same containers, so a
+/// panel closes on exactly the step that would have started refusing
+/// moves — the container half of the quantize-both-sides law: the client
+/// must never be looking at a container whose moves the sim would now
+/// decline.
+pub const CLOSE_REACH: u8 = 2;
+/// The largest reason above. Two bits hold `0..=3`, which is what the
+/// wire spends; a fourth reason is free and a fifth needs the width.
+pub const CLOSE_MAX: u8 = CLOSE_REACH;
+
 /// Pack a move's address into one `u32` for the event lane:
 /// `from_kind << 24 | from_slot << 16 | to_kind << 8 | to_slot`.
 ///

@@ -142,6 +142,12 @@ pub const STREAM_ERR: u32 = 1 << 31;
 /// flag for both, `APPLIED_CONSUME`'s shape: the panel's response to
 /// either is to re-read `client_move_readout`, which says which it was.
 pub const APPLIED2_MOVE: u32 = 1 << 0;
+/// The open container changed — its contents, or the fact that it is no
+/// longer open (`EventMsg::ContSync` / `ContClosed`). One flag for both,
+/// `APPLIED2_MOVE`'s shape: the panel's response to either is to re-read
+/// `client_cont_readout`, which says whether there is still a container
+/// and, if not, why it went.
+pub const APPLIED2_CONT: u32 = 1 << 1;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -527,6 +533,26 @@ pub struct ClientCore {
     // --- event lane (reliable stream, protocol::event) ---
     /// Authoritative own inventory as last announced by the server.
     pub inv: [ItemStack; INV_SLOTS],
+    /// The open container's contents as last announced. Sized to the
+    /// largest container (a bag's `INV_SLOTS`); a box uses the first
+    /// `BOX_SLOTS` and `cont_slots` says how many are real, so a panel
+    /// draws twelve cells for a box rather than thirty with eighteen
+    /// permanently empty ones.
+    pub cont: [ItemStack; INV_SLOTS],
+    /// Which container `cont` holds, `inventory::CONT_SELF` for none —
+    /// the same handle pair the open action sent, echoed back by the
+    /// server. A panel that drew a different box than the one the sync
+    /// describes is the container-divergence bug `inventory.rs` is about,
+    /// so the handle is kept and can be compared rather than assumed.
+    pub cont_kind: u8,
+    pub cont_handle: u32,
+    /// How many of `cont`'s slots this container actually has.
+    pub cont_slots: u8,
+    /// Why the last container closed (`inventory::CLOSE_*`), valid only
+    /// when `cont_kind` is `CONT_SELF` and a close has been seen. Kept
+    /// past the close on purpose: "it is gone" and "walk back" are the
+    /// sentences the panel shows *after* it shuts.
+    pub cont_close_why: u8,
     pub harvested: HarvestedSet,
     pub catalog: ItemCatalog,
     /// Cell changes the last `on_stream` call produced: (key, harvested).
@@ -707,6 +733,11 @@ impl ClientCore {
             snapshots_no_baseline: 0,
             decode_errors: 0,
             inv: [ItemStack::default(); INV_SLOTS],
+            cont: [ItemStack::default(); INV_SLOTS],
+            cont_kind: sim_core::inventory::CONT_SELF,
+            cont_handle: 0,
+            cont_slots: 0,
+            cont_close_why: sim_core::inventory::CLOSE_ASKED,
             harvested: HarvestedSet::new(),
             catalog: ItemCatalog::EMPTY,
             slot_changes: [(0, false); protocol::SLOT_SYNC_BATCH],
@@ -1173,6 +1204,43 @@ impl ClientCore {
             EventMsg::ConsumeRefused { reason } => {
                 self.last_eat_refused = reason;
                 flags |= APPLIED_CONSUME;
+            }
+            EventMsg::ContSync {
+                kind,
+                cont,
+                reset,
+                slots,
+                count,
+            } => {
+                // A reset is the whole container, so the mirror is wiped
+                // first: without that, reopening a box that lost items
+                // while it was shut would leave the vanished stacks drawn
+                // in the slots the new sync does not mention.
+                if reset || kind != self.cont_kind || cont != self.cont_handle {
+                    self.cont = [ItemStack::default(); INV_SLOTS];
+                }
+                self.cont_kind = kind;
+                self.cont_handle = cont;
+                self.cont_slots = sim_core::inventory::slots_in(kind) as u8;
+                for s in slots.iter().take(count as usize) {
+                    if (s.slot as usize) < INV_SLOTS {
+                        self.cont[s.slot as usize] = s.stack;
+                    }
+                }
+                self.applied2 |= APPLIED2_CONT;
+            }
+            EventMsg::ContClosed { why } => {
+                // The contents go with the panel. A mirror that outlived
+                // its subscription is a container the client can still
+                // read and the server has stopped authorising — which is
+                // the ESP hole this lane exists to not have, one tick
+                // late.
+                self.cont = [ItemStack::default(); INV_SLOTS];
+                self.cont_kind = sim_core::inventory::CONT_SELF;
+                self.cont_handle = 0;
+                self.cont_slots = 0;
+                self.cont_close_why = why;
+                self.applied2 |= APPLIED2_CONT;
             }
             EventMsg::Moved {
                 from_kind,

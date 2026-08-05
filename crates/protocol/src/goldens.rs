@@ -27,68 +27,72 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 61] = [
-    "v18_input_acks_only.bin",
-    "v18_input_full.bin",
-    "v18_snapshot_keyframe.bin",
-    "v18_snapshot_delta.bin",
-    "v18_snapshot_cap.bin",
-    "v18_hello.bin",
-    "v18_welcome.bin",
-    "v18_refuse_full.bin",
-    "v18_event_gather.bin",
-    "v18_event_inv.bin",
-    "v18_event_slot_harvested.bin",
-    "v18_event_slot_respawned.bin",
-    "v18_event_slot_sync.bin",
-    "v18_event_catalog.bin",
-    "v18_event_weak_mark.bin",
-    "v18_event_craft_q.bin",
-    "v18_event_craft_done.bin",
-    "v18_event_craft_refused.bin",
-    "v18_event_recipes.bin",
-    "v18_action_craft.bin",
-    "v18_action_cancel.bin",
-    "v18_action_place.bin",
-    "v18_event_piece_placed.bin",
-    "v18_event_piece_sync.bin",
-    "v18_event_build_refused.bin",
-    "v18_event_piece_defs.bin",
-    "v18_action_deploy.bin",
-    "v18_action_feed.bin",
-    "v18_event_deploy_placed.bin",
-    "v18_event_deploy_sync.bin",
-    "v18_event_deploy_refused.bin",
-    "v18_event_deploy_defs.bin",
-    "v18_event_piece_removed.bin",
-    "v18_event_deploy_removed.bin",
-    "v18_event_stock.bin",
-    "v18_action_use.bin",
-    "v18_action_lock.bin",
-    "v18_event_door.bin",
-    "v18_action_upgrade.bin",
-    "v18_chat.bin",
-    "v18_event_chat.bin",
-    "v18_event_hit.bin",
-    "v18_event_health.bin",
-    "v18_event_death.bin",
-    "v18_action_loot.bin",
-    "v18_event_bag_dropped.bin",
-    "v18_event_bag_sync.bin",
-    "v18_event_bag_removed.bin",
-    "v18_event_struct_hit_piece.bin",
-    "v18_event_struct_hit_deploy.bin",
-    "v18_event_vitals.bin",
-    "v18_event_consumed.bin",
-    "v18_event_consume_refused.bin",
-    "v18_action_consume.bin",
-    "v18_event_drank.bin",
-    "v18_action_drink.bin",
-    "v18_event_respawn.bin",
-    "v18_action_respawn.bin",
-    "v18_action_move.bin",
-    "v18_event_moved.bin",
-    "v18_event_move_refused.bin",
+pub const FIXTURES: [&str; 65] = [
+    "v19_input_acks_only.bin",
+    "v19_input_full.bin",
+    "v19_snapshot_keyframe.bin",
+    "v19_snapshot_delta.bin",
+    "v19_snapshot_cap.bin",
+    "v19_hello.bin",
+    "v19_welcome.bin",
+    "v19_refuse_full.bin",
+    "v19_event_gather.bin",
+    "v19_event_inv.bin",
+    "v19_event_slot_harvested.bin",
+    "v19_event_slot_respawned.bin",
+    "v19_event_slot_sync.bin",
+    "v19_event_catalog.bin",
+    "v19_event_weak_mark.bin",
+    "v19_event_craft_q.bin",
+    "v19_event_craft_done.bin",
+    "v19_event_craft_refused.bin",
+    "v19_event_recipes.bin",
+    "v19_action_craft.bin",
+    "v19_action_cancel.bin",
+    "v19_action_place.bin",
+    "v19_event_piece_placed.bin",
+    "v19_event_piece_sync.bin",
+    "v19_event_build_refused.bin",
+    "v19_event_piece_defs.bin",
+    "v19_action_deploy.bin",
+    "v19_action_feed.bin",
+    "v19_event_deploy_placed.bin",
+    "v19_event_deploy_sync.bin",
+    "v19_event_deploy_refused.bin",
+    "v19_event_deploy_defs.bin",
+    "v19_event_piece_removed.bin",
+    "v19_event_deploy_removed.bin",
+    "v19_event_stock.bin",
+    "v19_action_use.bin",
+    "v19_action_lock.bin",
+    "v19_event_door.bin",
+    "v19_action_upgrade.bin",
+    "v19_chat.bin",
+    "v19_event_chat.bin",
+    "v19_event_hit.bin",
+    "v19_event_health.bin",
+    "v19_event_death.bin",
+    "v19_action_loot.bin",
+    "v19_event_bag_dropped.bin",
+    "v19_event_bag_sync.bin",
+    "v19_event_bag_removed.bin",
+    "v19_event_struct_hit_piece.bin",
+    "v19_event_struct_hit_deploy.bin",
+    "v19_event_vitals.bin",
+    "v19_event_consumed.bin",
+    "v19_event_consume_refused.bin",
+    "v19_action_consume.bin",
+    "v19_event_drank.bin",
+    "v19_action_drink.bin",
+    "v19_event_respawn.bin",
+    "v19_action_respawn.bin",
+    "v19_action_move.bin",
+    "v19_event_moved.bin",
+    "v19_event_move_refused.bin",
+    "v19_action_move_box.bin",
+    "v19_action_open.bin",
+    "v19_event_cont_sync.bin",
+    "v19_event_cont_closed.bin",
 ];
 
 /// The move action: bag id, from (kind, slot), to (kind, slot), count.
@@ -104,6 +108,75 @@ pub const FIXTURES: [&str; 61] = [
 /// `test_protocol_golden`.
 pub fn action_move() -> (u32, u8, u8, u8, u8, u16) {
     (0x0BA6_1D01, 0, 3, 1, 17, 42)
+}
+
+/// The same verb against a **box**, and this fixture exists because
+/// nothing pinned `CONT_BOX`'s bytes when v18 made a box a container: the
+/// v18 `action_move` fixture was byte-identical to v17's and still
+/// encoded a self→bag move, so the third kind shipped with no golden
+/// under it. The merge-gate judge named the hole on the pass that landed
+/// it (`findings/archive-prestamp/pass-20260804-205133-03-judge.md`,
+/// ranked fix 3) and this is it, closed.
+///
+/// The handle is a real `box_key(cx, cz, level)` rather than a round
+/// number, so a pack that swapped `cx` and `cz` would move these bytes:
+/// `cx = 0x0BA6`, `cz = 0x1D0`, `level = 1`. The direction runs box→self
+/// (a withdrawal) where `action_move` runs self→bag, so neither fixture
+/// can be produced by copy-pasting the other. The from-slot is inside
+/// `BOX_SLOTS` because a box only has twelve; the to-slot is not, which
+/// is the asymmetry that catches the two being read in the wrong order.
+pub fn action_move_box() -> (u32, u8, u8, u8, u8, u16) {
+    (0x0BA6_1D01, 2, 5, 0, 23, 9)
+}
+
+/// The open action: a box, by the same packed address the move carries.
+/// The handle is deliberately *not* `action_move_box`'s — two messages
+/// that agree by accident cannot show a handle being read from the wrong
+/// field — and the kind is `CONT_BOX` rather than `CONT_BAG` so the value
+/// is neither of the two a one-bit field could have held.
+pub fn action_open() -> (u8, u32) {
+    (2, 0x03E7_2F42)
+}
+
+/// A container's contents. Deliberately **not** a full container: seven
+/// of a bag's thirty slots, at indices that are not `0..7`, because the
+/// bug this shape has is a decoder that walks slots positionally and
+/// ignores the index it was given. If the fixture's slots were the first
+/// seven, that decoder would pass.
+///
+/// `reset` is false for the same reason: the reset path is the easy one
+/// and a fixture pinned to it would leave the diff path — the one that
+/// runs on every move for as long as a panel is open — with no golden.
+/// The counts are all different from each other and from every slot
+/// index, so a slot/count transposition moves bytes.
+pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; INV_SLOTS], usize) {
+    let mut slots = [InvSlot::default(); INV_SLOTS];
+    for (i, (at, item, count)) in [
+        (2u8, 11u16, 3u16),
+        (5, 27, 64),
+        (6, 4, 1000),
+        (13, 61, 17),
+        (19, 40, 250),
+        (23, 8, 5),
+        (29, 33, 999),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        slots[i] = InvSlot {
+            slot: at,
+            stack: ItemStack { item, count },
+        };
+    }
+    (1, 0x0000_2BC3, false, slots, 7)
+}
+
+/// A closed panel, and the reason is `CLOSE_REACH` — the middle of the
+/// three, so a fixture pinned to it would fail against a field written as
+/// a bool in either direction, which neither `CLOSE_ASKED` (zero) nor a
+/// two-value guess would.
+pub fn event_cont_closed() -> u8 {
+    2
 }
 
 /// The move acknowledgement. The kinds run the *other* way from

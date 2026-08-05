@@ -115,6 +115,10 @@ const REQUIRED = [
   "client_bags_ptr",
   "client_bags_len",
   "client_action_loot",
+  "client_action_open",
+  "client_cont_ptr",
+  "client_cont_readout",
+  "client_cont_handle",
 ];
 
 let failed = 0;
@@ -166,7 +170,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 18, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 19, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -637,6 +641,68 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   check(ex.client_action_move(0, 3, 3, 0, 7, 5) === 0, "a kind past CONT_MAX must not encode");
   check(ex.client_action_move(0, 0, 30, 0, 7, 5) === 0, "a slot past INV_SLOTS must not encode");
   check(ex.client_action_move(0, 0, 3, 0, 7, 0) === 0, "a zero count is not a move");
+
+  // The container lane, both directions (wire v19). This is the first
+  // message whose audience is a *subscription* rather than AOI or the
+  // actor, and the C-ABI half of that is narrow but load-bearing: the
+  // panel's only wake-up is `APPLIED2_CONT`, because word 0 has no bit
+  // left to announce it with. A sync or a close that did not raise it
+  // would be invisible to a client that is not polling — which, for the
+  // close, means a panel still drawing a container the server has stopped
+  // authorising.
+  const CONT2 = 2; // core::APPLIED2_CONT, word 1 bit 1
+
+  // ContSync: sub 38 · kind 2 (CONT_BOX) · handle · reset · 2 slots. The
+  // two slots are at indices that are not 0 and 1, and their items and
+  // counts differ from each other and from the indices, so a decoder that
+  // walks positionally or transposes (slot, item, count) cannot pass.
+  f = evFrame(38, [
+    [2, 2], [0x0155_d450, 32], [1, 1], [2, 5],
+    [4, 5], [11, 16], [42, 16],
+    [9, 5], [3, 16], [7, 16],
+  ]);
+  writeIn(f);
+  let cflags = ex.client_on_stream(f.length) >>> 0;
+  check((cflags & STREAM_ERR) === 0, "a container sync must not read as a stream error");
+  check(ex.client_applied2() === CONT2, "a container sync must apply with the CONT flag in word 1");
+  check(
+    (ex.client_cont_readout() >>> 0) === ((12 << 16) | (0 << 8) | 2),
+    "cont readout must pack slots<<16 | why<<8 | kind — a box is 12 slots",
+  );
+  check(
+    (ex.client_cont_handle() >>> 0) === 0x0155_d450,
+    "the handle the panel drew must be the one the server named",
+  );
+  {
+    const cont = new Uint16Array(ex.memory.buffer, ex.client_cont_ptr(), 30 * 2);
+    check(cont[4 * 2] === 11 && cont[4 * 2 + 1] === 42, "cont slot 4 mismatch");
+    check(cont[9 * 2] === 3 && cont[9 * 2 + 1] === 7, "cont slot 9 mismatch");
+    check(cont[0] === 0 && cont[1] === 0, "an unmentioned slot must stay empty");
+  }
+
+  // ContClosed: sub 39 · why 2 (CLOSE_REACH). The contents go with it —
+  // a mirror that outlives its subscription is the leak one tick late.
+  f = evFrame(39, [[2, 2]]);
+  writeIn(f);
+  check((ex.client_on_stream(f.length) >>> 0 & STREAM_ERR) === 0, "a close must not read as an error");
+  check(ex.client_applied2() === CONT2, "a close must apply with the CONT flag too");
+  check(
+    (ex.client_cont_readout() >>> 0) === ((0 << 16) | (2 << 8) | 0),
+    "after a close: no kind, no slots, and the reason kept for the panel",
+  );
+  check((ex.client_cont_handle() >>> 0) === 0, "a closed panel names no container");
+  {
+    const cont = new Uint16Array(ex.memory.buffer, ex.client_cont_ptr(), 30 * 2);
+    check(cont[4 * 2] === 0 && cont[9 * 2] === 0, "a close must clear the contents it was drawing");
+  }
+
+  // And the open verb crosses C->S: a bag, a box, the close, and the one
+  // forgeable kind above CONT_MAX, which the bridge refuses locally rather
+  // than handing the server a frame it answers by ending the session.
+  check(ex.client_action_open(1, 9001) > 0, "opening a bag must encode");
+  check(ex.client_action_open(2, 0x0155_d450) > 0, "opening a box must encode");
+  check(ex.client_action_open(0, 0) > 0, "closing (CONT_SELF) must encode");
+  check(ex.client_action_open(3, 0) === 0, "a kind past CONT_MAX must not encode");
 
   // Hit: sub 24 · victim 4242 · damage 25.
   check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring starts empty");

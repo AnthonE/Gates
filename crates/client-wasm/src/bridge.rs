@@ -14,10 +14,10 @@ use crate::core::ClientCore;
 use protocol::{
     decode_refuse, decode_welcome, encode_action_cancel, encode_action_consume,
     encode_action_craft, encode_action_deploy, encode_action_drink, encode_action_feed,
-    encode_action_lock, encode_action_loot, encode_action_move, encode_action_place,
-    encode_action_respawn, encode_action_upgrade, encode_action_use, encode_chat, encode_hello,
-    peek_kind, Hello, CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME,
-    MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
+    encode_action_lock, encode_action_loot, encode_action_move, encode_action_open,
+    encode_action_place, encode_action_respawn, encode_action_upgrade, encode_action_use,
+    encode_chat, encode_hello, peek_kind, Hello, CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE,
+    KIND_WELCOME, MAX_ITEM_NAME_BYTES, PIECE_SYNC_BATCH, PROTO_VER, SLOT_SYNC_BATCH,
 };
 use sim_core::limits::{
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS,
@@ -81,6 +81,10 @@ struct Bridge {
     changes_len: u32,
     /// Own inventory view: item, count per slot.
     inv: [u16; INV_SLOTS * 2],
+    /// Open container view, the same layout as `inv` so one panel can
+    /// draw either. Sized to the largest container (a bag's `INV_SLOTS`);
+    /// `client_cont_readout` says how many cells are the container's.
+    cont: [u16; INV_SLOTS * 2],
     /// Item names: `CATALOG_ROW` bytes per item index.
     catalog: Box<[u8; MAX_ITEM_DEFS * CATALOG_ROW]>,
     /// Craft queue view: recipe, remaining per job slot.
@@ -129,6 +133,7 @@ impl Bridge {
             changes: [0; SLOT_SYNC_BATCH * 2],
             changes_len: 0,
             inv: [0; INV_SLOTS * 2],
+            cont: [0; INV_SLOTS * 2],
             catalog: Box::new([0; MAX_ITEM_DEFS * CATALOG_ROW]),
             craft_jobs: [0; CRAFT_QUEUE * 2],
             recipes: Box::new([0; MAX_RECIPES * RECIPE_ROW_WORDS]),
@@ -274,6 +279,7 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             changes,
             changes_len,
             inv,
+            cont,
             catalog,
             craft_jobs,
             recipes,
@@ -308,6 +314,17 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             for (i, s) in core.inv.iter().enumerate() {
                 inv[i * 2] = s.item;
                 inv[i * 2 + 1] = s.count;
+            }
+        }
+        // The container mirror rides word 1, so it is keyed off
+        // `applied2()` rather than off `flags` — word 0 has no bit left to
+        // announce it with (`core.rs`), which is the whole reason word 1
+        // exists. `applied2` is cleared by every `on_stream`, so an
+        // unconditional read here cannot copy a stale container.
+        if core.applied2() & crate::core::APPLIED2_CONT != 0 {
+            for (i, s) in core.cont.iter().enumerate() {
+                cont[i * 2] = s.item;
+                cont[i * 2 + 1] = s.count;
             }
         }
         if flags & crate::core::APPLIED_CATALOG != 0 {
@@ -490,6 +507,30 @@ pub extern "C" fn client_action_move(
             return 0;
         };
         encode_action_move(bag, fk, fs, tk, ts, n, &mut b.out_buf)
+            .map(|len| len as u32)
+            .unwrap_or(0)
+    })
+}
+
+/// Encode an open/close request for a ground container into the out
+/// buffer; returns its length. `kind` is `CONT_BAG` or `CONT_BOX` with
+/// `cont` naming it exactly as `client_action_move`'s handle does — a bag
+/// id, a `box_key` address — and `CONT_SELF` (0) closes whatever is open,
+/// ignoring `cont`.
+///
+/// It asks and is told. Nothing here is a claim: the server answers a live
+/// open with contents (`client_cont_ptr`) and everything else — no such
+/// container, out of reach, it left the world, you walked away — by
+/// closing the panel with a reason (`client_cont_readout`). A caller must
+/// not draw a container until a sync for it has landed, because until
+/// then it does not know the server agrees the container is there.
+#[no_mangle]
+pub extern "C" fn client_action_open(kind: u32, cont: u32) -> u32 {
+    with(|b| {
+        let Ok(k) = u8::try_from(kind) else {
+            return 0;
+        };
+        encode_action_open(k, cont, &mut b.out_buf)
             .map(|len| len as u32)
             .unwrap_or(0)
     })
@@ -1121,6 +1162,54 @@ pub extern "C" fn client_slot_changes_len() -> u32 {
 #[no_mangle]
 pub extern "C" fn client_inv_ptr() -> *const u16 {
     with(|b| b.inv.as_ptr())
+}
+
+/// Open container view: the same `INV_SLOTS` × (item, count) u16 layout
+/// as `client_inv_ptr`, so one panel draws either. Only the first
+/// `client_cont_readout() >> 16 & 0xFF` slots are the container's; the
+/// rest are zero and are not cells.
+#[no_mangle]
+pub extern "C" fn client_cont_ptr() -> *const u16 {
+    with(|b| b.cont.as_ptr())
+}
+
+/// What the open container is, packed
+/// `slots << 16 | close_why << 8 | kind`.
+///
+/// `kind` is `inventory::CONT_*`: zero (`CONT_SELF`) means **no container
+/// is open**, and then `close_why` is the `CLOSE_*` reason the last one
+/// went — asked, gone, out of reach. A nonzero kind means the container
+/// is open, `slots` is how many of `client_cont_ptr`'s cells are real,
+/// and `client_cont_handle` says which container it is.
+///
+/// Packed rather than three calls for the reason every readout here is:
+/// the panel reacts to one `APPLIED2_CONT` flag and must not see a new
+/// kind beside a stale reason. Read it after every `client_on_stream`
+/// that sets `APPLIED2_CONT`.
+#[no_mangle]
+pub extern "C" fn client_cont_readout() -> u32 {
+    with(|b| {
+        b.core
+            .as_ref()
+            .map(|c| {
+                ((c.cont_slots as u32) << 16)
+                    | ((c.cont_close_why as u32) << 8)
+                    | c.cont_kind as u32
+            })
+            .unwrap_or(0)
+    })
+}
+
+/// The open container's handle — a bag id or a `box_key` address, the
+/// same value `client_action_move` takes. Zero when nothing is open.
+///
+/// This is the field that makes a panel checkable rather than assumed: a
+/// client that opened box A and is handed a sync for box B can *see* it,
+/// which is precisely the container divergence the move verb's history is
+/// made of (`inventory.rs`).
+#[no_mangle]
+pub extern "C" fn client_cont_handle() -> u32 {
+    with(|b| b.core.as_ref().map(|c| c.cont_handle).unwrap_or(0))
 }
 
 /// Item-name rows: `1 + MAX_ITEM_NAME_BYTES` bytes per index (len, bytes).
