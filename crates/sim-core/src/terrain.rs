@@ -383,6 +383,94 @@ pub fn road_band(seed: u64, x: f32, z: f32) -> RoadBand {
     band
 }
 
+// --- Bays: where the route stops being uniform (TERRAIN.md §1 stage 7) ----
+//
+// Stage 7 asks for "junk piles at bay mouths, slightly denser slots". The
+// road as built pays the same per-mille the whole way round, so the loop is
+// a constant-value treadmill: no stretch of it is worth preferring, and a
+// circulation loop with no preferred stretch is a commute. What follows is
+// the smallest thing that makes the ring have PLACES on it.
+//
+// The measurement reuses stage 7's own trick — never locate the coastline,
+// only test against it. For a sample on the ring, its own shoreline sits at
+// r = d + ROAD_INLAND_M along its outward radial (that IS the road's
+// definition). Probe `height` at the SAME radius r on the two bearings
+// BAY_SPAN_YAW to either side and ask only whether each is land:
+//
+//   * in a bay, our shoreline is indented, so the neighbours' shorelines are
+//     farther out and radius r is still inland of them  -> land, land
+//   * on a headland, ours is the one that juts, so r is past theirs -> sea
+//   * on straight coast the probes land on the shoreline itself and split
+//
+// So `votes == 2` is "the coast curves around water here", which is the
+// sheltered arc flotsam collects in and the thing a player can learn the
+// shape of. Two `height` taps, no march, no bisect, no memo — the same
+// budget road_band already spends, and paid only on the shoulder.
+//
+// It is deliberately a REDISTRIBUTION, not a raise. `tests/haven.rs`'s
+// HAVEN_PRIZE_RATIO_MIN and `ci/haven_prize.mjs` both price the pad against
+// the shoulder it replaces, and its own doc says the floor is set "high
+// enough that ... doubling the shoulder rate does" trip it. Inflating the
+// route to make bays interesting would have spent the destination's lead to
+// buy it. Conserving the mean says the same thing better anyway: the road
+// pays what it always paid, and now WHERE you walk it decides what you get.
+
+/// Half the angular span between the two coast probes, in yaw-LUT units
+/// (65,536 = one turn). 2,048 = 1/32 turn ≈ 188 m of arc at the ring's
+/// ~960 m radius, about a quarter of the coast wobble's dominant lobe
+/// (COAST_FREQ = 1/900 m), so the probes sit on the headlands flanking a
+/// bay rather than inside it (DECISIONS.md §open: bay slots v0).
+pub const BAY_SPAN_YAW: u16 = 2048;
+/// Per-mille of sheltered (bay) shoulder cells that become barrel slots.
+pub const ROAD_BAY_BARREL_PERMILLE: u16 = 430;
+/// Per-mille on the open coast — headlands and straight shore. Set with the
+/// above so the measured island-wide shoulder mean stays on
+/// ROAD_BARREL_PERMILLE (DECISIONS.md §open: bay slots v0).
+pub const ROAD_OPEN_BARREL_PERMILLE: u16 = 170;
+
+const _: () = {
+    // The bay is the denser end or the whole thing is decoration, and the
+    // open coast is the sparser end or the "redistribution" is a raise.
+    assert!(ROAD_BAY_BARREL_PERMILLE > ROAD_BARREL_PERMILLE);
+    assert!(ROAD_OPEN_BARREL_PERMILLE < ROAD_BARREL_PERMILLE);
+    // Both are per-mille of a 1,000-sided draw, so neither may saturate it:
+    // a rate at 1,000 would line the shoulder solid and stop being a rate.
+    assert!(ROAD_BAY_BARREL_PERMILLE < 1000);
+    assert!(ROAD_OPEN_BARREL_PERMILLE > 0);
+    // A zero span would put both probes on the sample's own bearing, which
+    // reads every point as its own neighbour and classifies the ring
+    // constant — the failure mode that looks like a working gate.
+    assert!(BAY_SPAN_YAW > 0);
+};
+
+/// Is this point on a sheltered arc of coast — a bay rather than a headland
+/// or open shore? Pure, two `height` taps, and meaningful only near the ring
+/// (it asks about the coastline the sample's own radial crosses).
+pub fn in_bay(seed: u64, x: f32, z: f32) -> bool {
+    let c = ISLAND_SIZE * 0.5;
+    let dx = x - c;
+    let dz = z - c;
+    let d = (dx * dx + dz * dz).sqrt();
+    if d < ROAD_R_MIN {
+        // Inside the bracket the road can live in there is no coastline to
+        // be sheltered by, and the normalize below would be unguarded.
+        return false;
+    }
+    let ux = dx / d;
+    let uz = dz / d;
+    // The sample's own shoreline, by the road's definition of one.
+    let r = d + ROAD_INLAND_M;
+
+    // Rotate the radial by ±BAY_SPAN_YAW. The LUT is the only trig this
+    // crate has (wall 1), and one lookup serves both signs.
+    let (cs, sn) = crate::yaw_lut::yaw_dir(BAY_SPAN_YAW);
+    let (ax, az) = (ux * cs - uz * sn, ux * sn + uz * cs);
+    let (bx, bz) = (ux * cs + uz * sn, uz * cs - ux * sn);
+
+    height(seed, c + ax * r, c + az * r) > SEA_LEVEL
+        && height(seed, c + bx * r, c + bz * r) > SEA_LEVEL
+}
+
 // --- The haven pad (TERRAIN.md §1 stage 8) --------------------------------
 //
 // The one destination the coast road runs to, and the hook every later
@@ -1768,7 +1856,16 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
     match road_band(seed, x, z) {
         RoadBand::Carriageway => return none,
         RoadBand::Shoulder => {
-            if (((h >> 44) % 1000) as u16) < ROAD_BARREL_PERMILLE {
+            // Same draw, two thresholds: the bay concentrates what the open
+            // coast gives up, so the loop's total pay is unmoved and its
+            // shape is not. The roll is untouched, so which cells change is
+            // decided by the coastline, never by a reshuffle.
+            let rate = if in_bay(seed, x, z) {
+                ROAD_BAY_BARREL_PERMILLE
+            } else {
+                ROAD_OPEN_BARREL_PERMILLE
+            };
+            if (((h >> 44) % 1000) as u16) < rate {
                 occupant = Occupant::BarrelSlot;
             }
         }

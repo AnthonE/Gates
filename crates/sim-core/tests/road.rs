@@ -15,8 +15,8 @@
 
 use sim_core::terrain::{
     self, Occupant, RoadBand, ScatterTable, CELLS_PER_SIDE, CELL_SIZE, CLIFF_SLOPE_RATIO,
-    ISLAND_SIZE, ROAD_BARREL_PERMILLE, ROAD_HALF_W, ROAD_INLAND_M, ROAD_R_MAX, ROAD_R_MIN,
-    ROAD_SHOULDER_HALF_W, SEA_LEVEL,
+    ISLAND_SIZE, ROAD_BARREL_PERMILLE, ROAD_BAY_BARREL_PERMILLE, ROAD_HALF_W, ROAD_INLAND_M,
+    ROAD_OPEN_BARREL_PERMILLE, ROAD_R_MAX, ROAD_R_MIN, ROAD_SHOULDER_HALF_W, SEA_LEVEL,
 };
 use sim_core::yaw_dir;
 
@@ -311,3 +311,293 @@ fn road_widths_stay_inside_the_scatter_grid() {
         );
     }
 }
+
+// ── Bays: the route stops being uniform (TERRAIN.md §1 stage 7) ────────────
+//
+// Three separable claims, because the item can fail three ways and only one
+// of them is "the numbers are wrong":
+//
+//   1. the classification is COHERENT — bays are arcs a player can learn,
+//      not per-cell speckle (`reference/SPAWN.md` §9.3, applied to the road)
+//   2. both populations EXIST on every seed — a classifier that answers
+//      constant is the failure that looks most like a working gate
+//   3. the bay PAYS MORE while the route's total pay is CONSERVED
+//
+// Claim 3's second half is the load-bearing one. `tests/haven.rs`'s
+// HAVEN_PRIZE_RATIO_MIN prices the pad against the shoulder it replaces and
+// its own doc says the floor sits high enough that doubling the shoulder
+// rate trips it, so a bay bought by inflating the road would have been paid
+// for out of the destination's lead. Asserting the mean here is what stops a
+// later pass from tuning ROAD_BAY_BARREL_PERMILLE up on its own.
+
+/// Bearings swept for the coherence claim. The same 64 the ring-closure test
+/// above proves a crossing on — deliberately not finer. A first draft swept
+/// 128 and died on seed 0xDEADBEEF bearing 53, a radial with no carriageway
+/// crossing at any radius in the bracket. That is a real, newly measured
+/// fact about the ring and it is recorded in `NOW.md`; it is NOT this test's
+/// to assert, because a radial that misses the road does not prove a break a
+/// player could walk into — inside an inlet the ring doubles back, and one
+/// radial can miss a road that continues. Diagnosing that wants its own
+/// pass. Sweeping the proven resolution keeps this test measuring bays.
+const BAY_BEARINGS: u16 = 64;
+
+/// A bay is an arc, not a speckle: walking the ring you cross the boundary a
+/// handful of times, not on every other step.
+///
+/// This is the property that separates "the coast decides" from "the hash
+/// decides". `in_bay` reads the coastline through two `height` taps, and a
+/// coastline is smooth at the ~900 m wavelength COAST_FREQ gives it — so a
+/// correct classifier MUST come out in runs. One that came out speckled
+/// would still pass a density ratio (half the cells would still be denser);
+/// it would just mean nothing to a player, who cannot learn a pattern with
+/// no extent. Counting transitions is the cheapest way to say that.
+#[test]
+fn bays_are_arcs_of_coast_not_speckle() {
+    let c = center();
+    let mut worst_runs = 0usize;
+    let mut worst_share = (f32::MAX, f32::MIN);
+
+    for seed in SEEDS {
+        // Classify one point per bearing: the first carriageway crossing on
+        // that radial, so the sweep tracks the ring's wobble rather than a
+        // circle drawn through it.
+        let mut ring: Vec<bool> = Vec::with_capacity(BAY_BEARINGS as usize);
+        for b in 0..BAY_BEARINGS {
+            let (ux, uz) = yaw_dir((b * (256 / BAY_BEARINGS)) << 8);
+            let mut d = ROAD_R_MIN;
+            let mut found = false;
+            while d <= ROAD_R_MAX {
+                let (px, pz) = (c + ux * d, c + uz * d);
+                if terrain::road_band(seed, px, pz) == RoadBand::Carriageway {
+                    ring.push(terrain::in_bay(seed, px, pz));
+                    found = true;
+                    break;
+                }
+                d += MARCH_M;
+            }
+            assert!(
+                found,
+                "seed {seed:#x} bearing {b}: no carriageway on this radial, \
+                 which `road_ring_is_closed_on_every_bearing` asserts against \
+                 on these same 64 bearings — so that test reddens too, and it \
+                 is the one that owns this claim. The sweep below would be \
+                 classifying a gap as coast"
+            );
+        }
+
+        // Transitions around the closed ring, so the wrap is counted once.
+        let n = ring.len();
+        let mut transitions = 0usize;
+        for i in 0..n {
+            if ring[i] != ring[(i + 1) % n] {
+                transitions += 1;
+            }
+        }
+        // Transitions come in pairs on a closed loop (every arc you enter
+        // you leave), so arcs = transitions / 2.
+        let arcs = transitions / 2;
+        let bays = ring.iter().filter(|b| **b).count();
+        let share = bays as f32 / n as f32;
+        println!(
+            "bay arcs seed {seed:#x}: {bays}/{n} bearings sheltered ({:.0}%), \
+             {arcs} arc(s), {transitions} transitions",
+            share * 100.0
+        );
+
+        // CLAIM 2 — both populations exist. A classifier stuck at either rail
+        // makes claim 3 vacuous (one of its two samples would be empty) and
+        // is exactly what a broken probe returns.
+        assert!(
+            bays > 0 && bays < n,
+            "seed {seed:#x}: `in_bay` answers a constant {} on all {n} \
+             bearings — the coast probes are not reading the coastline, so \
+             the whole redistribution is a no-op wearing two constants",
+            bays > 0
+        );
+        worst_share.0 = worst_share.0.min(share);
+        worst_share.1 = worst_share.1.max(share);
+
+        // CLAIM 1 — coherence. The coast wobble is a 2-octave fBm at
+        // COAST_FREQ = 1/900 m, so around a ~6 km ring it makes a handful of
+        // lobes; half of each is a bay. The cap is set BETWEEN two
+        // measurements rather than from theory: the shipped classifier gives
+        // 2-5 arcs across these seeds, and `in_bay` mutated to per-cell
+        // parity — the cheapest speckle there is — gives 14, 14, 17, 15.
+        // n/4 = 16 was the first draft and it caught only the third of those,
+        // which is a gate that passes the defect it names. n/8 = 8 is 60%
+        // above the worst real seed and 43% under the weakest speckle one.
+        assert!(
+            arcs > 0 && arcs <= (n / 8),
+            "seed {seed:#x}: {arcs} bay arcs over {n} bearings — the \
+             classification is speckle, not coastline. A bay a player cannot \
+             walk the length of is a per-cell dice roll with a nautical name"
+        );
+        worst_runs = worst_runs.max(arcs);
+    }
+    println!(
+        "bay arcs: worst {worst_runs} arcs; sheltered share spans \
+         {:.0}-{:.0}% across {} seeds",
+        worst_share.0 * 100.0,
+        worst_share.1 * 100.0,
+        SEEDS.len()
+    );
+}
+
+/// The bay pays more than the open coast, and the road pays what it always
+/// paid. Both halves, or the item is a raise with a story.
+#[test]
+fn bays_concentrate_the_route_without_enriching_it() {
+    let table = ScatterTable::alpha_default();
+    let mut worst_ratio = f32::MAX;
+    let mut agg_barrels = 0usize;
+    let mut agg_cells = 0usize;
+    let mut agg_bay_cells = 0usize;
+
+    for seed in SEEDS {
+        let haven = terrain::haven(seed);
+        let (mut bay_cells, mut bay_barrels) = (0usize, 0usize);
+        let (mut open_cells, mut open_barrels) = (0usize, 0usize);
+
+        for cx in 0..CELLS_PER_SIDE {
+            for cz in 0..CELLS_PER_SIDE {
+                // Cell centers, like `the_pad_outpays_the_road_that_leads_to_it`
+                // and for the same reason: the band a cell is counted in must
+                // not depend on where its jitter landed. Both populations pay
+                // the same distortion, so the ratio between them is clean.
+                let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                if terrain::road_band(seed, x, z) != RoadBand::Shoulder {
+                    continue;
+                }
+                let barrel =
+                    terrain::scatter(seed, &table, &haven, cx, cz).occupant == Occupant::BarrelSlot;
+                if terrain::in_bay(seed, x, z) {
+                    bay_cells += 1;
+                    bay_barrels += usize::from(barrel);
+                } else {
+                    open_cells += 1;
+                    open_barrels += usize::from(barrel);
+                }
+            }
+        }
+
+        assert!(
+            bay_cells > 0 && open_cells > 0,
+            "seed {seed:#x}: {bay_cells} bay / {open_cells} open shoulder \
+             cells — one population is empty, so the comparison below is not \
+             a comparison"
+        );
+        let bay_rate = bay_barrels as f32 / bay_cells as f32;
+        let open_rate = open_barrels as f32 / open_cells as f32;
+        assert!(
+            open_rate > 0.0,
+            "seed {seed:#x}: the open coast carries no barrels at all — the \
+             redistribution emptied the route instead of shaping it"
+        );
+        let ratio = bay_rate / open_rate;
+        println!(
+            "bay slots seed {seed:#x}: bay {bay_barrels}/{bay_cells} = \
+             {:.0} per-mille; open {open_barrels}/{open_cells} = {:.0} \
+             per-mille; ratio {ratio:.2}x",
+            bay_rate * 1000.0,
+            open_rate * 1000.0
+        );
+        worst_ratio = worst_ratio.min(ratio);
+        agg_barrels += bay_barrels + open_barrels;
+        agg_cells += bay_cells + open_cells;
+        agg_bay_cells += bay_cells;
+    }
+
+    // CLAIM 3a — the bay is worth walking to. The knobs are set 430/170
+    // per-mille = 2.53x, and the floor is under the measured worst seed with
+    // room for coastline variance, not under the knob ratio: what a player
+    // meets is the realized rate, and the two differ because the shoulder's
+    // biome draw fires on cells the road draw declines.
+    assert!(
+        worst_ratio >= BAY_RATIO_MIN,
+        "the bay carries only {worst_ratio:.2}x the open coast's barrels — \
+         under the {BAY_RATIO_MIN}x floor a player cannot tell the two \
+         stretches apart, which is the uniform road this replaced"
+    );
+
+    // CLAIM 3b — and the route as a whole was not enriched to pay for it.
+    // This is the assert that keeps the item honest: raising
+    // ROAD_BAY_BARREL_PERMILLE alone reddens here, because the pad's lead
+    // over the shoulder (tests/haven.rs, HAVEN_PRIZE_RATIO_MIN) is priced
+    // off exactly this mean.
+    //
+    // Stated twice, because the two halves fail for different reasons.
+    //
+    // NOMINAL: the two knobs weighted by the sheltered share this island
+    // actually has must come back to ROAD_BARREL_PERMILLE. This is the
+    // design claim, in the knobs' own units, and it is what reddens if a
+    // later pass raises one rate without lowering the other.
+    let share = agg_bay_cells as f32 / agg_cells as f32;
+    let nominal =
+        share * ROAD_BAY_BARREL_PERMILLE as f32 + (1.0 - share) * ROAD_OPEN_BARREL_PERMILLE as f32;
+    // `f32::abs` is off the wall-1 float list, in the test crate too
+    // (`0555b07`). max of the two differences is the same number.
+    let nominal_drift =
+        (nominal - ROAD_BARREL_PERMILLE as f32).max(ROAD_BARREL_PERMILLE as f32 - nominal);
+
+    // REALIZED: and what the island actually grows must not move either.
+    // The realized rate is well under the nominal one — 116 against 261 —
+    // because the shoulder branch fires on the slot's JITTERED position while
+    // this sweep counts by cell center, and because the land, slope and pad
+    // vetoes take cells before the road draw is reached. That leakage is not
+    // this item's to fix; it applies identically to both arms, which is why
+    // the ratio above is clean. What matters is that it did not move:
+    // measured 2026-08-05 over these same four seeds, with BOTH rates pinned
+    // to ROAD_BARREL_PERMILLE, the shoulder grew 239 barrels over 2,033 cells
+    // = 117.6 per-mille. The split grows 236 = 116.1. That 1.3% is the whole
+    // evidence for the word "redistribution" and it is why this constant is a
+    // measurement rather than an intention.
+    let realized = agg_barrels as f32 / agg_cells as f32 * 1000.0;
+    let realized_drift =
+        (realized - BAY_FLAT_REALIZED_PERMILLE).max(BAY_FLAT_REALIZED_PERMILLE - realized);
+    println!(
+        "bay slots: sheltered share {:.0}%; nominal {nominal:.0} per-mille vs \
+         ROAD_BARREL_PERMILLE {ROAD_BARREL_PERMILLE} (drift {nominal_drift:.0}); \
+         realized {realized:.0} vs flat-rate {BAY_FLAT_REALIZED_PERMILLE:.0} \
+         (drift {realized_drift:.0}); worst bay:open ratio {worst_ratio:.2}x",
+        share * 100.0
+    );
+    assert!(
+        nominal_drift <= BAY_MEAN_DRIFT_PERMILLE,
+        "the two rates weighted by the {:.0}% sheltered share come to \
+         {nominal:.0} per-mille against the {ROAD_BARREL_PERMILLE} they are \
+         supposed to conserve (drift {nominal_drift:.0} > \
+         {BAY_MEAN_DRIFT_PERMILLE}) — the bay was bought by inflating the \
+         road, which spends the haven pad's lead over it",
+        share * 100.0
+    );
+    assert!(
+        realized_drift <= BAY_MEAN_DRIFT_PERMILLE,
+        "the shoulder actually grows {realized:.0} per-mille against the \
+         {BAY_FLAT_REALIZED_PERMILLE:.0} measured under a flat rate (drift \
+         {realized_drift:.0} > {BAY_MEAN_DRIFT_PERMILLE}) — whatever moved, \
+         the route's total pay is no longer the number every gate downstream \
+         of it was tuned against"
+    );
+}
+
+/// Floor on the bay:open barrel-rate ratio. Knobs give 430/170 = 2.53x;
+/// measured worst realized 2.29x across the four gate seeds, floored ~15%
+/// under it — low enough that coastline variance cannot trip it, high enough
+/// that halving the gap between the two rates does
+/// (DECISIONS.md §open: bay slots v0).
+const BAY_RATIO_MIN: f32 = 1.95;
+
+/// How far either conservation claim may drift, in per-mille. The two rates
+/// are set against the MEASURED sheltered share, which moves with the seed's
+/// coastline, so exact conservation is not available: worst nominal drift
+/// across the four gate seeds is 19 (seed 0x5EED, 23.4% sheltered) and worst
+/// realized drift is 2. 25 of 250 is 10%, inside the ~15% headroom
+/// HAVEN_PRIZE_RATIO_MIN was given (DECISIONS.md §open: bay slots v0).
+const BAY_MEAN_DRIFT_PERMILLE: f32 = 25.0;
+
+/// What the shoulder grows per-mille of its cells under a FLAT rate —
+/// measured 2026-08-05 on these four seeds with both bay rates pinned to
+/// ROAD_BARREL_PERMILLE: 239 barrels over 2,033 shoulder cells. The baseline
+/// the redistribution must not move (DECISIONS.md §open: bay slots v0).
+const BAY_FLAT_REALIZED_PERMILLE: f32 = 117.6;
