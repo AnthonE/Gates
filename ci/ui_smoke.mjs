@@ -5700,47 +5700,162 @@ let freeScanUsed = 0;
 }
 
 // --- the refusals say something ---------------------------------------------
-// The table's INDEX is the sim's number, and it fell one short the day
-// REFUSE_B_INTACT (9) landed — so repairing a wall that is already whole, the
-// likeliest repair refusal there is, answered `can't build: code 9`.
-const rsRefuseB = [...buildSrc.matchAll(/^pub const REFUSE_B_([A-Z]+): u32 = (\d+);/gm)].map(
-  ([, n, v]) => [n, Number(v)],
-);
+// The table's INDEX is the sim's number, and the build table fell one short
+// TWICE — the day REFUSE_B_INTACT (9) landed, so repairing a wall that is
+// already whole answered `can't build: code 9`, and again one run after this
+// walk was written, when REFUSE_B_UNPRICED (10) arrived from the sim lane.
+//
+// That second catch is why the walk is now table-driven rather than bespoke.
+// Three more arrays of exactly this shape were module-private consts in
+// `main.js` — a file this gate cannot execute and `browser_smoke` never
+// presses the keys that reach — so nothing walked them at all, and `deploy.rs`
+// alone declares thirteen reasons behind an array that answered `code 13` for
+// the fourteenth. All four now live in `web/src/refusals.js`, and one loop
+// holds each against the Rust that declares its codes.
+//
+// WHAT THIS PROVES, stated because it is weaker than it looks: contiguity,
+// count, non-emptiness, distinctness, and that the accessor neither falls
+// through inside the range nor invents a sentence outside it. Every one of
+// those is satisfied by a placeholder string. No check here reads English, so
+// this is a length-and-liveness wall on the class that actually shipped twice
+// — a client table shorter than the sim — and it is not evidence that any
+// given sentence MEANS its refusal.
+const craftSrc = fs.readFileSync(path.join(root, "crates/sim-core/src/craft.rs"), "utf8");
+const protoSrc = fs.readFileSync(path.join(root, "crates/protocol/src/lib.rs"), "utf8");
+const refusals = await import(pathToFileURL(path.join(root, "web/src/refusals.js")).href);
+
+// (the Rust source, the const prefix and its type, the exported array and its
+// accessor, and the call site in main.js that must route through it). `min` is
+// the count known when the row was written: a regex that stops matching goes
+// red here instead of making every check under it vacuous.
+const REFUSAL_TABLES = [
+  {
+    what: "connect",
+    rs: "protocol/src/lib.rs",
+    src: protoSrc,
+    prefix: "REFUSE_",
+    ty: "u8",
+    min: 2,
+    table: refusals.CONNECT_REFUSE_TEXT,
+    fn: refusals.connectRefusal,
+    fnName: "connectRefusal",
+    callSite: /refused: \$\{connectRefusal\(hs\[5\]\)\}/,
+  },
+  {
+    what: "craft",
+    rs: "sim-core/src/craft.rs",
+    src: craftSrc,
+    prefix: "REFUSE_",
+    ty: "u32",
+    min: 5,
+    table: refusals.CRAFT_REFUSE_TEXT,
+    fn: refusals.craftRefusal,
+    fnName: "craftRefusal",
+    callSite: /can't craft: \$\{craftRefusal\(r\)\}/,
+  },
+  {
+    what: "build",
+    rs: "sim-core/src/build.rs",
+    src: buildSrc,
+    prefix: "REFUSE_B_",
+    ty: "u32",
+    min: 11,
+    table: refusals.BUILD_REFUSE_TEXT,
+    fn: refusals.buildRefusal,
+    fnName: "buildRefusal",
+    callSite: /can't build: \$\{buildRefusal\(r\)\}/,
+  },
+  {
+    what: "deploy",
+    rs: "sim-core/src/deploy.rs",
+    src: deploySrc,
+    prefix: "REFUSE_D_",
+    ty: "u32",
+    min: 13,
+    table: refusals.DEPLOY_REFUSE_TEXT,
+    fn: refusals.deployRefusal,
+    fnName: "deployRefusal",
+    callSite: /can't place: \$\{deployRefusal\(r\)\}/,
+  },
+];
 check(
-  rsRefuseB.length >= 9,
-  `only ${rsRefuseB.length} REFUSE_B_* constants parsed out of build.rs — the walk below would be vacuous`,
+  REFUSAL_TABLES.length === 4,
+  `the refusal walk covers ${REFUSAL_TABLES.length} tables — every array whose index is a sim refusal code` +
+    " belongs in refusals.js and in this list, and one left out is one nothing walks",
 );
-check(
-  interact.BUILD_REFUSE_TEXT.length === rsRefuseB.length,
-  `build.rs declares ${rsRefuseB.length} REFUSE_B_* reasons and interact.js has` +
-    ` ${interact.BUILD_REFUSE_TEXT.length} sentences — the short end prints a bare number at a player who is` +
-    " being told why a thing they just tried did not happen",
-);
-for (const [name, code] of rsRefuseB) {
+for (const t of REFUSAL_TABLES) {
+  const re = new RegExp(`^pub const ${t.prefix}([A-Z0-9_]+): ${t.ty} = (\\d+);`, "gm");
+  const rs = [...t.src.matchAll(re)].map(([, n, v]) => [n, Number(v)]);
+  // Vacuity first: a walk whose parse came back empty asserts nothing at all.
   check(
-    typeof interact.BUILD_REFUSE_TEXT[code] === "string" &&
-      interact.BUILD_REFUSE_TEXT[code].length > 0,
-    `REFUSE_B_${name} = ${code} has no sentence in interact.js — it would reach the player as "code ${code}"`,
+    rs.length >= t.min,
+    `only ${rs.length} ${t.prefix}*: ${t.ty} constants parsed out of ${t.rs}, and this row was written` +
+      ` against ${t.min} — either the sim deleted refusals or the pattern stopped matching, and the` +
+      " second makes every check below it vacuous",
+  );
+  // Contiguous from zero, or the count agreeing proves nothing: declare
+  // codes 0 and 20 and the length check below passes with nineteen holes.
+  const codes = rs.map(([, c]) => c).sort((a, b) => a - b);
+  check(
+    codes.every((c, i) => c === i),
+    `${t.rs}'s ${t.prefix}* codes are ${JSON.stringify(codes)}, which is not 0..${codes.length - 1} —` +
+      " the client indexes this table BY the sim's number, so a gap is a hole that reads as a bare code" +
+      " while the counts still agree",
   );
   check(
-    interact.buildRefusal(code) !== `code ${code}`,
-    `buildRefusal(${code}) still falls through to the bare code for REFUSE_B_${name}`,
+    t.table.length === rs.length,
+    `${t.rs} declares ${rs.length} ${t.prefix}* reasons and refusals.js has ${t.table.length} sentences —` +
+      " the short end prints a bare number at a player who is being told why a thing they just tried did" +
+      " not happen",
+  );
+  for (const [name, code] of rs) {
+    check(
+      typeof t.table[code] === "string" && t.table[code].length > 0,
+      `${t.prefix}${name} = ${code} has no sentence in refusals.js — it would reach the player as` +
+        ` "code ${code}"`,
+    );
+    check(
+      t.fn(code) !== `code ${code}`,
+      `${t.fnName}(${code}) still falls through to the bare code for ${t.prefix}${name}`,
+    );
+  }
+  check(
+    new Set(t.table).size === t.table.length,
+    `two ${t.what} refusals share a sentence (${JSON.stringify(t.table)}) — the sim keeps them distinct` +
+      " because they are different news, and 'you cannot afford it' is not 'it is already whole'",
+  );
+  check(
+    t.fn(rs.length + 3).startsWith("code "),
+    `${t.fnName} invented a sentence for a code the sim does not have — the fallback is what keeps a wire` +
+      " ahead of the client honest rather than mislabelled",
+  );
+  check(
+    t.callSite.test(mainSrc),
+    `main.js no longer routes its ${t.what} refusal through ${t.fnName} (${t.callSite}) — the table is only` +
+      " walkable while the call site reads the module node can import, and a local copy beside it is the" +
+      " exact state this whole group exists to end",
+  );
+}
+// And the copies must be GONE, not merely bypassed. A private array left in
+// main.js beside the import is the original defect with an extra step: the
+// three that moved were `REFUSE_REASONS`, `REFUSE_TEXT` and
+// `DEPLOY_REFUSE_TEXT`, and `BUILD_REFUSE_TEXT` had already left.
+for (const gone of [
+  "REFUSE_REASONS",
+  "const REFUSE_TEXT",
+  "const DEPLOY_REFUSE_TEXT",
+  "const BUILD_REFUSE_TEXT",
+]) {
+  check(
+    !stripJs(mainSrc).includes(gone),
+    `main.js declares ${gone} again — a refusal table in the file no gate can execute is precisely the` +
+      " condition that let the build table fall behind the sim twice; it belongs in refusals.js",
   );
 }
 check(
-  new Set(interact.BUILD_REFUSE_TEXT).size === interact.BUILD_REFUSE_TEXT.length,
-  `two build refusals share a sentence (${JSON.stringify(interact.BUILD_REFUSE_TEXT)}) — the sim keeps them` +
-    " distinct because they are different news, and 'you cannot afford it' is not 'it is already whole'",
-);
-check(
-  interact.buildRefusal(rsRefuseB.length + 3).startsWith("code "),
-  "buildRefusal invented a sentence for a code the sim does not have — the fallback is what keeps a wire" +
-    " ahead of the client honest rather than mislabelled",
-);
-check(
-  /can't build: \$\{buildRefusal\(r\)\}/.test(mainSrc),
-  "main.js no longer routes its build refusal through interact.buildRefusal — the table is only walkable" +
-    " while it lives in the module node can import",
+  !stripJs(interactSrc).includes("const BUILD_REFUSE_TEXT"),
+  "interact.js declares BUILD_REFUSE_TEXT again — there is one home for these tables and a second copy is" +
+    " a table that can disagree with itself",
 );
 
 // --- a repair is not a raid --------------------------------------------------
@@ -5848,9 +5963,12 @@ console.log(
     `distinct locs distinct, nearestPiece callable at all (it read an undeclared REACH and threw, so U was ` +
     `dead) with nearest-wins order-independent and the reach bound strict either side of ` +
     `${interact.INTERACT_REACH_M} m, ${freeScanUsed} SCREAMING_CASE uses in main.js all declared or ` +
-    `imported, ${interact.BUILD_REFUSE_TEXT.length} refusal sentences walked by name against build.rs's ` +
-    "REFUSE_B_* (INTACT included) all distinct with the bare-code fallback intact, and a repair told from a " +
-    "raid on the APPLIED_HIT bit read out of core.rs, silent when max is 0",
+    `imported, ${REFUSAL_TABLES.reduce((n, t) => n + t.table.length, 0)} refusal sentences across ` +
+    `${REFUSAL_TABLES.length} tables (${REFUSAL_TABLES.map((t) => `${t.what} ${t.table.length}`).join(", ")}) ` +
+    "walked by name against the prefixed consts in protocol/craft/build/deploy, each contiguous from zero, " +
+    "all distinct, no in-range fall-through, the bare-code fallback intact past the end, main.js pinned to " +
+    "route every one through the importable accessor and to declare no copy of its own, and a repair told " +
+    "from a raid on the APPLIED_HIT bit read out of core.rs, silent when max is 0",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
