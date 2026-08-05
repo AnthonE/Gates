@@ -506,3 +506,131 @@ export function promptForSwing(pick) {
   if (!label) return "";
   return `[LMB] ${label}`;
 }
+
+// ---------------------------------------------------------------------------
+// The third half of the crosshair: what a PLACEMENT would put there.
+//
+// Build mode was the one verb with no centre hint at all. `main.js:287` calls
+// it "the plain-UI stand-in for the radial at alpha" and it draws a green
+// wireframe ghost 3.5 m ahead, but the only text naming the button that
+// commits it is the bottom strip 96 px above the hotbar — and until this
+// landed, the hint UNDER the crosshair went on advertising `[LMB] CHOP TREE`
+// while the ghost sat over the aimed cell. The player's eye is on the ghost;
+// the row that describes it was somewhere else.
+// ---------------------------------------------------------------------------
+
+/** Stride of one row of the wasm piece-def table (`views.pieceDefs`). */
+export const PIECE_DEF_STRIDE = 8;
+/** Where a piece row's ingredient pairs start, and how wide a pair is. */
+export const PIECE_COST_AT = 4;
+export const PIECE_COST_STRIDE = 2;
+/** Stride of one row of the wasm deployable-def table (`views.deployDefs`). */
+export const DEPLOY_DEF_STRIDE = 4;
+// UI labels for sim-core `build.rs`'s shape and material codes — labels, not
+// content: `CONTENT.md` owns every number and these name none of them. They sat
+// in `main.js` beside the one function that read them; they moved here so the
+// decode below could move here, and `ci/ui_smoke.mjs` §V walks both against
+// `build.rs`'s own enums.
+export const BUILD_SHAPE_LABEL = ["foundation", "wall", "doorway", "floor", "stairs", "roof"];
+export const BUILD_MAT_LABEL = ["wood", "stone", "metal"];
+
+/**
+ * Decode one row of the piece-def table into `{ what, costs, need }`.
+ *
+ * Pure, and here rather than in `main.js` for exactly one reason: it is a
+ * POSITIONAL read of a flat table — shape at `b`, material at `b + 1`, the
+ * ingredient count at `b + 3`, and the pairs at `b + 4 + k*2` — and
+ * `CLAUDE.md`'s trap list names that shape as where the reference ecosystem
+ * actually bled (49 Oxide commits touching a hook's arguments, ~27 correcting
+ * a payload that had already shipped wrong). Swap the item and the quantity in
+ * that pair and the client asks for "3 stone wall" instead of "200 wood": a
+ * byte-golden cannot see it, every field is a number, and nothing else here
+ * would go red. In `main.js` it was a closure inside `run()` that no gate could
+ * import. Here `ci/ui_smoke.mjs` §V evaluates it against a hand-built table.
+ *
+ * `itemName` and `have` are injected because both are the caller's: item names
+ * come from the wasm string table and inventory counts from `views.inv`, and
+ * this file may not reach either. Fills a caller-owned object — the client is a
+ * hot path and this runs off the HUD timer four times a second.
+ */
+export function describePiece(out, defs, row, itemName, have) {
+  const b = row * PIECE_DEF_STRIDE;
+  out.what = `${BUILD_MAT_LABEL[defs[b + 1]] || "?"} ${BUILD_SHAPE_LABEL[defs[b]] || "?"}`;
+  out.need = "";
+  const parts = [];
+  for (let k = 0; k < defs[b + 3]; k++) {
+    const item = defs[b + PIECE_COST_AT + k * PIECE_COST_STRIDE];
+    const qty = defs[b + PIECE_COST_AT + k * PIECE_COST_STRIDE + 1];
+    parts.push(`${qty} ${itemName(item)}`);
+    // First unmet ingredient only. The build strip already lists every cost;
+    // the hint is ONE row, and the actionable number for a player standing at
+    // a ghost is how much more to go and get.
+    const gap = qty - have(item);
+    if (gap > 0 && !out.need) out.need = `${gap} more ${itemName(item)}`;
+  }
+  out.costs = parts.join(" + ");
+  return out;
+}
+
+/**
+ * Decode one row of the deployable-def table into the same shape.
+ *
+ * A deployable is placed FROM the stack rather than crafted in place, so its
+ * cost is one of itself — and the item id is at `b + 3`, the same positional
+ * read with a different stride.
+ */
+export function describeDeploy(out, defs, row, itemName, have) {
+  const item = defs[row * DEPLOY_DEF_STRIDE + 3];
+  out.what = itemName(item);
+  out.costs = `1 ${out.what}`;
+  out.need = have(item) < 1 ? `1 ${out.what}` : "";
+  return out;
+}
+
+/**
+ * What the prompt says for a build pick, or `""` when build mode is off (or
+ * the piece table has not arrived, which is `what === ""`).
+ *
+ * `[RMB]` for the same reason the swing says `[LMB]`: right-click is what
+ * commits the placement (`main.js`'s `mousedown`, button 2), and the button is
+ * the thing the text has to connect to. `need` is the SHORTFALL of the first
+ * ingredient the player is missing, not the piece's total cost — the total is
+ * already on the build strip, and the number a player standing at a ghost
+ * wants is how much more wood to go and get. `""` means affordable, which is
+ * the ordinary case and gets no chrome.
+ *
+ * Affordability is advisory and stated as a cost, never as a refusal: the
+ * server owns whether this placement is legal (`BUILD_REFUSE_TEXT` has nine
+ * reasons and materials is one of them), so this line never says "can't".
+ */
+export function promptForBuild(pick) {
+  if (!pick || !pick.what) return "";
+  const head = `[RMB] PLACE ${pick.what.toUpperCase()}`;
+  return pick.need ? `${head} · NEED ${pick.need.toUpperCase()}` : head;
+}
+
+/**
+ * The one centre hint, chosen — the whole of `#prompt`'s policy, in one pure
+ * function so it can be gated.
+ *
+ * The reference's centre hint is a SINGLE row (`Rust Images/choppingtree.jpg`)
+ * and two stacked prompts under a crosshair is a menu, not a hint — so three
+ * candidate verbs have to become one, and the ordering is the entire decision.
+ * It was three chained `||`s inside `main.js`'s RAF-adjacent `updatePrompt`
+ * with nothing asserting it, which is precisely the positional shape
+ * `CLAUDE.md`'s trap list names: swap two of these and every other gate stays
+ * green while the crosshair advertises a verb the button will not perform.
+ *
+ * Build outranks E outranks the swing, and the reason is which verb the
+ * player's own attention is already on. In build mode there is a ghost drawn
+ * over the aimed cell and right-click is about to act on it; E still works
+ * (the build strip says so) but it is not what the eye is on. Off build mode,
+ * E outranks the swing because the mouse button is already held down while
+ * nothing on screen would ever suggest pressing E — the half a player cannot
+ * otherwise discover wins the row.
+ */
+export function centrePrompt(buildPick, interactPick, swingPick) {
+  return (
+    promptForBuild(buildPick) || promptFor(interactPick) || promptForSwing(swingPick)
+  );
+}

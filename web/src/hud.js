@@ -267,6 +267,18 @@ export class Hud {
      * wanted is the DIRECTION the triangle was built from, which is this.
      */
     this.mapDir = { dx: 0, dy: 0 };
+    /**
+     * The marker triangle's three vertices in canvas pixels, as `drawMap` last
+     * handed them to the 2D context: `[noseX, noseY, leftX, leftY, rightX,
+     * rightY]`.
+     *
+     * `mapDir` above is the direction the triangle was BUILT from, and the
+     * judge's M9 walked between the two — heading correct, nose hard-coded
+     * north, gate green. This is what the canvas actually receives. Reused and
+     * not reallocated: `drawMap` runs on the HUD timer and the client is a hot
+     * path (`CLAUDE.md` trap list).
+     */
+    this.mapTri = new Float64Array(6);
     this.mapLastRef = "";
     this.craftOpen = false;
     this.last = "";
@@ -900,12 +912,29 @@ export class Hud {
     this.mapDir.dy = dy;
     const px = this.mapPos.px;
     const py = this.mapPos.py;
+    // The three vertices are PARKED before they are drawn, and the path is
+    // then walked out of the array rather than recomputed into the ctx calls.
+    //
+    // That is not tidiness. `mapDir` above closed the judge's M11 — a rotation
+    // hard-coded to zero — but only as an instance: M9 on
+    // `pass-20260805-074623-03` left `mapDir` correct and hard-coded the
+    // TRIANGLE's own nose to `(px + 0*MARKER, py + -1*MARKER)`, and the whole
+    // gate ran green with an arrow that always claims north. The heading a
+    // gate can read and the heading the canvas receives were two different
+    // facts one line apart. Now there is one: `ctx` gets exactly what
+    // `ui_smoke` §U asserts on, so a nose pinned north has to be pinned in the
+    // array, where it is read.
+    const T = this.mapTri;
+    T[0] = px + dx * MAP_MARKER_PX;
+    T[1] = py + dy * MAP_MARKER_PX;
+    T[2] = px - dy * MAP_MARKER_PX * 0.6 - dx * MAP_MARKER_PX * 0.5;
+    T[3] = py + dx * MAP_MARKER_PX * 0.6 - dy * MAP_MARKER_PX * 0.5;
+    T[4] = px + dy * MAP_MARKER_PX * 0.6 - dx * MAP_MARKER_PX * 0.5;
+    T[5] = py - dx * MAP_MARKER_PX * 0.6 - dy * MAP_MARKER_PX * 0.5;
     ctx.beginPath();
-    ctx.moveTo(px + dx * MAP_MARKER_PX, py + dy * MAP_MARKER_PX);
-    ctx.lineTo(px - dy * MAP_MARKER_PX * 0.6 - dx * MAP_MARKER_PX * 0.5,
-               py + dx * MAP_MARKER_PX * 0.6 - dy * MAP_MARKER_PX * 0.5);
-    ctx.lineTo(px + dy * MAP_MARKER_PX * 0.6 - dx * MAP_MARKER_PX * 0.5,
-               py - dx * MAP_MARKER_PX * 0.6 - dy * MAP_MARKER_PX * 0.5);
+    ctx.moveTo(T[0], T[1]);
+    ctx.lineTo(T[2], T[3]);
+    ctx.lineTo(T[4], T[5]);
     ctx.closePath();
     ctx.fillStyle = "#e6edf3";
     ctx.fill();
