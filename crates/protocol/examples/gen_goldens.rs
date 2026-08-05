@@ -290,11 +290,27 @@ fn main() {
     let len = encode_event_cont_sync(kind, cont, reset, &[], &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[65], &buf[..len]);
 
-    let (cx, cz, level, loc) = goldens::action_repair();
-    let len = encode_action_repair(cx, cz, level, loc, &mut buf).unwrap();
-    write_fixture(goldens::FIXTURES[66], &buf[..len]);
+    for (n, (deploy, cx, cz, level, loc)) in [
+        goldens::action_repair_piece(),
+        goldens::action_repair_deploy(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let len = encode_action_repair(deploy, cx, cz, level, loc, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[66 + n], &buf[..len]);
+    }
 
-    let (cx, cz, level, loc, row, healed, hp) = goldens::event_piece_repaired();
-    let len = encode_event_piece_repaired(cx, cz, level, loc, row, healed, hp, &mut buf).unwrap();
-    write_fixture(goldens::FIXTURES[67], &buf[..len]);
+    for (n, (deploy, cx, cz, level, loc, row, healed, hp)) in [
+        goldens::event_piece_repaired_piece(),
+        goldens::event_piece_repaired_deploy(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let len =
+            encode_event_piece_repaired(deploy, cx, cz, level, loc, row, healed, hp, &mut buf)
+                .unwrap();
+        write_fixture(goldens::FIXTURES[68 + n], &buf[..len]);
+    }
 }

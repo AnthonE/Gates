@@ -73,32 +73,39 @@ What remains, and none of it is a UI call:
 `DeployRec` (`deploy.rs:232`, "never the wire"). So the client cannot tell its
 own sleeping bags from anyone's, nor which are ready, nor name one. "Beach or
 each live bag" (`ALPHA.md` §1) is a wire change first — systems lane.
-## 0a · Repair — the piece half landed; the door and the keypress did not
+## 0a · Repair — the door is mended now; nothing still presses the key
 
-Gap pass. Ranked gap **1** of both `findings/pass-20260805-074623-01-judge.md`
-and `-02-judge.md`, verbatim in each and unmoved between them: *"a base can
-only ever be destroyed, so the correct play after any raid is to abandon."*
+Landed this pass, closing the systems half of the item above and the judge's
+ranked fix 1 (`findings/pass-20260805-074623-03-judge.md`, the one failed
+check): `build::repair` reaches a **deployable**, so the door — the breach
+point a raid actually uses — can be bought back. Both blockers answered:
+`Deploys` gained `find_index`/`set_hp`, and the one-item price is replaced by
+the deployable's **recipe**, joined onto `DeployDef::costs` at bake time and
+divided by the same `repair_units` at the same `repair_cost_pct` (no new
+number; `DECISIONS.md` §open, "repair v0, the deployable half").
 
-Landed: `build::repair` — a damaged **piece** bought back to its baked hp,
-priced pro-rata in its own materials (`repair_cost_pct`, `content/balance.toml`,
-`DECISIONS.md` §open "repair v0"), refused under a foreign hearth's claim,
-upkeep clock untouched. Wire v20: `ACT_REPAIR`, `EV_PIECE_REPAIRED`,
-`SUB_PIECE_REPAIRED`, goldens rekeyed and regenerated. Four sim gates plus a
-role check; `REFUSE_B_*` gained a `DOMAINS` row on the way past.
+Wire **v21**: `ACT_REPAIR` and `SUB_PIECE_REPAIRED` carry the leading bit that
+picks the store, because `place_deploy` requires the doorway piece at the
+*identical* address, so a door and its doorway are one address exactly. The
+event reuses `STRUCT_DEPLOY_BIT`. 68 goldens rekeyed `v21_*`, two added (70)
+so both bit values are pinned. `REFUSE_B_UNPRICED` is the eleventh build
+refusal — it also closes a free-heal hole on the piece path, where a zero-cost
+row fell through both cost loops and mended anyway. And `Command::Repair` now
+actually rides `probe.rs`, `tests/replay.rs` and `tests/alloc_zero.rs`, which
+is what the old `build.rs` comment falsely claimed the price alone did.
 
-What remains, both deliberate cuts:
+What remains:
 
-- **Deployables cannot be repaired** — the door is the intended breach point,
-  so this is the half a raid actually notices. Two things block it: `Deploys`
-  exposes no hp setter (`deploy.rs` owns that write today), and a deployable's
-  cost is a single item, so a fractional price of it rounds to the whole thing
-  and needs its own answer rather than reusing the piece formula. **systems.**
-- **Nothing can press it.** `ACT_REPAIR` decodes and the server dispatches it;
-  no client sends one. The browser client needs the verb bound and a prompt —
-  **ui lane** (`web/`); the native client picks it up with `NOW.md` §1 slice 1.
+- **Nothing can press it**, unchanged and now the whole of the gap. The
+  browser client needs the verb bound and a prompt — **ui lane** (`web/`); the
+  native client picks it up with §1 slice 1.
+- **The deploy-defs drip carries no price**, so a client cannot quote a repair
+  before paying. Adding `costs` to `SUB_DEPLOY_DEFS` is a wire change and
+  lands with the prompt that would show it — **ui lane** names the need,
+  systems owns `crates/protocol/`.
 
-Untested here: no client sent a real repair, so the round trip is proven by
-goldens and unit gates only, not by a live shard.
+Untested here for the same reason as before: no client sent a real repair, so
+the round trip is proven by goldens, role and unit gates, not by a live shard.
 
 ---
 

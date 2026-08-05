@@ -183,7 +183,20 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// The event is deliberately `EV_STRUCT_HIT`'s mirror image and packs its
 /// numbers the same way, so a client's hp mirror gains a second writer
 /// rather than a second rule. Fixtures are keyed `v20_*`.
-pub const PROTO_VER: u16 = 20;
+///
+/// v21 let the repair verb reach a deployable — the door, which is what a
+/// raid actually comes through. Both of v20's repair messages grew the one
+/// bit that says which store the address names, because a door stands *in*
+/// its doorway and the two share an address exactly. This is not a new
+/// idea on this wire: `SUB_STRUCT_HIT` has carried the same leading bit,
+/// for the same reason, since damage first had to say what it hit — repair
+/// now reaches precisely what damage reaches and says so identically.
+///
+/// No field moved and no subtype was added. The version turns because two
+/// payloads grew a bit, which is the case wall 6 exists for: a v20 client
+/// reading a v21 repair would take the bit as the top of `cx` and mend an
+/// address a kilometre away. Fixtures are keyed `v21_*`.
+pub const PROTO_VER: u16 = 21;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -488,11 +501,16 @@ pub enum ActionMsg {
         level: u8,
         loc: u8,
     },
-    /// Repair the piece at the address back to its baked hp (repair v0).
-    /// Address only, for `Use`'s reason turned around: the amount is the
-    /// sim's arithmetic over its own store, so nothing about *how much*
-    /// crosses and nothing about how much can be forged.
+    /// Repair the structure at the address back to its baked hp (repair
+    /// v0). Address plus one bit, for `Use`'s reason turned around: the
+    /// amount is the sim's arithmetic over its own store, so nothing about
+    /// *how much* crosses and nothing about how much can be forged.
+    ///
+    /// `deploy` picks the store the address names — `StructHit`'s bit, for
+    /// `StructHit`'s reason: the door in a doorway and the doorway itself
+    /// share one address, so a verb that guessed would mend the wrong one.
     Repair {
+        deploy: bool,
         cx: u16,
         cz: u16,
         level: u8,
@@ -823,6 +841,7 @@ pub fn encode_action_use(
 }
 
 pub fn encode_action_repair(
+    deploy: bool,
     cx: u16,
     cz: u16,
     level: u8,
@@ -839,6 +858,9 @@ pub fn encode_action_repair(
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_REPAIR, ACTION_SUB_BITS)?;
+    // Leading, like `encode_event_struct_hit`'s: the bit that says which
+    // store an address means is written before the address, both ways.
+    w.write_bit(deploy)?;
     w.write(cx as u32, BUILD_CELL_BITS)?;
     w.write(cz as u32, BUILD_CELL_BITS)?;
     w.write(level as u32, BUILD_LEVEL_BITS)?;
@@ -967,10 +989,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             level: r.read(BUILD_LEVEL_BITS)? as u8,
             loc: r.read(BUILD_LOC_BITS)? as u8,
         },
-        // Address only, every width exact — and deliberately no amount:
-        // how much hp is missing and what that costs are the server's
-        // facts, so there is no number here for a client to choose.
+        // Address + one bit, every width exact — and deliberately no
+        // amount: how much hp is missing and what that costs are the
+        // server's facts, so there is no number here for a client to
+        // choose. The bit picks the store, and both its values are live,
+        // so there is nothing here to bound either.
         ACT_REPAIR => ActionMsg::Repair {
+            deploy: r.read_bit()?,
             cx: r.read(BUILD_CELL_BITS)? as u16,
             cz: r.read(BUILD_CELL_BITS)? as u16,
             level: r.read(BUILD_LEVEL_BITS)? as u8,

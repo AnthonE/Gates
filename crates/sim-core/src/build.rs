@@ -32,11 +32,13 @@ use crate::craft::{inv_count, inv_take};
 use crate::deploy::{DeployContent, Deploys, UPKEEP_PERIOD_TICKS};
 use crate::fmath::floor_i32;
 use crate::limits::{
-    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_COLLAPSE_PIECES, MAX_PIECES, MAX_PIECE_COSTS,
-    MAX_PIECE_DEFS, SUPPORT_SWEEP_PER_TICK,
+    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_COLLAPSE_PIECES, MAX_DEPLOY_COSTS, MAX_PIECES,
+    MAX_PIECE_COSTS, MAX_PIECE_DEFS, SUPPORT_SWEEP_PER_TICK,
 };
 use crate::terrain;
-use crate::world::{EventQueue, Player, EV_BUILD_REFUSED, EV_PIECE_PLACED, EV_PIECE_REPAIRED};
+use crate::world::{
+    EventQueue, Player, EV_BUILD_REFUSED, EV_PIECE_PLACED, EV_PIECE_REPAIRED, STRUCT_DEPLOY_BIT,
+};
 
 /// Shape codes (schema order: CONTENT.md §1 building_piece).
 pub const SHAPE_FOUNDATION: u8 = 0;
@@ -77,6 +79,13 @@ pub const REFUSE_B_TIER: u32 = 8;
 /// there is nothing to buy. Also the answer on an unbaked table
 /// (`repair_pct == 0`), where healing free is the alternative.
 pub const REFUSE_B_INTACT: u32 = 9;
+/// The repair verb's second refusal: the target's baked row quotes no
+/// price at all (`n_costs == 0`), so there is nothing to charge. A cost
+/// loop over zero rows takes zero materials and mends anyway, which is the
+/// free heal the whole price exists to refuse — this is that hole named
+/// and closed for both stores. A deployable reaches it when content
+/// carries no recipe for its item.
+pub const REFUSE_B_UNPRICED: u32 = 10;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
 /// Proposed default, DECISIONS.md §open ("build grid v0").
@@ -148,8 +157,13 @@ impl BuildContent {
     pub fn probe_fixture() -> Self {
         let mut b = Self::EMPTY;
         b.piece_count = 5;
-        // The shipped default, so the repair verb is inside the parity,
-        // replay and alloc gates rather than beside them.
+        // The shipped default, so a repair driven through this fixture is
+        // priced the way a shard prices one. Setting it makes the verb
+        // *possible* here and nothing more — what puts it inside the
+        // parity, replay and alloc gates is those gates issuing
+        // `Command::Repair`, which `probe.rs`, `tests/replay.rs` and
+        // `tests/alloc_zero.rs` each do. An earlier version of this
+        // comment claimed the price alone did it; it did not.
         b.repair_pct = 100;
         b.pieces[0] = PieceDef {
             shape: SHAPE_FOUNDATION,
@@ -823,7 +837,24 @@ fn repair_units(units: u16, missing: u16, max_hp: u16, repair_pct: u16) -> u32 {
     num.div_ceil(den).max(1) as u32
 }
 
-/// Buy a damaged piece back to its baked hp, priced in its own materials.
+/// The wider of the two cost tables, so one price loop serves both stores.
+const MAX_REPAIR_COSTS: usize = MAX_DEPLOY_COSTS;
+const _: () = assert!(
+    MAX_PIECE_COSTS <= MAX_REPAIR_COSTS,
+    "repair copies a piece's cost rows into a deployable-width buffer"
+);
+
+/// Buy a damaged structure back to its baked hp, priced in its own
+/// materials. `deploy` picks the store the address names.
+///
+/// **The address alone is ambiguous and always was.** A door stands *in*
+/// its doorway — `place_deploy`'s `PLACE_DOORWAY` arm requires the piece
+/// at the identical `(cx, cz, level, loc)` — so both stores answer to one
+/// address and a verb that guessed would mend the wrong thing. The wire
+/// therefore carries a bit, which is not a new idea here: `EV_STRUCT_HIT`
+/// settled the same ambiguity with `STRUCT_DEPLOY_BIT` when damage first
+/// had to say which store it hit. Repair reaches exactly what damage
+/// reaches, and says so the same way.
 ///
 /// The shape is `upgrade`'s, checked in the same order, because the two
 /// verbs answer the same question about the same address and a player who
@@ -833,35 +864,67 @@ fn repair_units(units: u16, missing: u16, max_hp: u16, repair_pct: u16) -> u32 {
 /// row alone and pays cash for the hp. Neither touches the upkeep clock:
 /// materials are not rent.
 ///
-/// Pieces carry no owner, so "yours" means what it means everywhere else
-/// in this file — no *foreign* hearth claims the anchor. Outside every
-/// claim anyone may repair anyone's wall, the same door `place` and
-/// `upgrade` already leave open.
+/// Pieces carry no owner and a deployable's is deliberately never on the
+/// wire (`DeployRec::owner`), so "yours" means what it means everywhere
+/// else in this file for both — no *foreign* hearth claims the anchor.
+/// Outside every claim anyone may repair anyone's wall, the same door
+/// `place` and `upgrade` already leave open.
+///
+/// Reach and claim are both taken at `anchor`, for both stores. That puts
+/// a door and the doorway it stands in at one point as well as one
+/// address, which is the whole property this verb depends on; it differs
+/// by half a cell from the cell centre `place_deploy` reaches an edge
+/// deployable at, and that is the build lane's origin function winning
+/// inside a build-lane verb rather than an oversight.
 #[allow(clippy::too_many_arguments)]
 pub fn repair(
     bc: &BuildContent,
-    deploys: &Deploys,
+    dc: &DeployContent,
+    deploys: &mut Deploys,
     pieces: &mut Pieces,
     p: &mut Player,
+    deploy: bool,
     cx: u16,
     cz: u16,
     level: u8,
     loc: u8,
     events: &mut EventQueue,
 ) {
-    let Some(i) = pieces.find_index(cx, cz, level, loc) else {
+    let found = if deploy {
+        deploys.find_index(cx, cz, level, loc)
+    } else {
+        pieces.find_index(cx, cz, level, loc)
+    };
+    let Some(i) = found else {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
         return;
     };
-    let rec = pieces.entries()[i];
+    // Row, hp now, hp full, and the price rows — read out of whichever
+    // table the bit named, then one body prices and pays for both.
+    //
     // Re-validated for the same reason `upgrade` re-validates: a content
     // table swapped under a live store must refuse, never index out of
     // bounds, and never divide by the inert row's zero (wall 5).
-    if rec.row as u16 >= bc.piece_count || bc.pieces[rec.row as usize].hp == 0 {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
-        return;
-    }
-    let def = bc.pieces[rec.row as usize];
+    let mut costs = [(0u16, 0u16); MAX_REPAIR_COSTS];
+    let (row, hp_now, hp_full, n_costs) = if deploy {
+        let rec = deploys.entries()[i];
+        if rec.row as u16 >= dc.def_count || dc.defs[rec.row as usize].hp == 0 {
+            events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
+            return;
+        }
+        let def = dc.defs[rec.row as usize];
+        costs[..def.costs.len()].copy_from_slice(&def.costs);
+        (rec.row, rec.hp, def.hp, def.n_costs)
+    } else {
+        let rec = pieces.entries()[i];
+        if rec.row as u16 >= bc.piece_count || bc.pieces[rec.row as usize].hp == 0 {
+            events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
+            return;
+        }
+        let def = bc.pieces[rec.row as usize];
+        costs[..def.costs.len()].copy_from_slice(&def.costs);
+        (rec.row, rec.hp, def.hp, def.n_costs)
+    };
     let (ax, az) = anchor(cx, cz, loc);
     let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
@@ -879,37 +942,57 @@ pub fn repair(
     // right there, because trimming a stranger's wall is not this verb.
     // A zero percent means the table was never baked, and the alternative
     // to refusing is healing free.
-    let missing = def.hp.saturating_sub(rec.hp);
+    let missing = hp_full.saturating_sub(hp_now);
     if missing == 0 || bc.repair_pct == 0 {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_INTACT, 0);
+        return;
+    }
+    // A row with no price rows would fall straight through both loops
+    // below, take nothing, and mend anyway. That is the free heal the
+    // price exists to refuse, so it is refused by name rather than by the
+    // loops happening to be non-empty.
+    let n_costs = (n_costs as usize).min(costs.len());
+    if n_costs == 0 {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_UNPRICED, 0);
         return;
     }
     // Check every row, then take every row — `place`'s split, for
     // `place`'s reason. A half-paid repair leaves the client's mirror and
     // the server's store disagreeing about an inventory, which is the
     // divergence class `CLAUDE.md`'s trap list names one verb over.
-    for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
-        if inv_count(&p.inv, item) < repair_units(units, missing, def.hp, bc.repair_pct) {
+    for &(item, units) in costs.iter().take(n_costs) {
+        if inv_count(&p.inv, item) < repair_units(units, missing, hp_full, bc.repair_pct) {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_COST, 0);
             return;
         }
     }
-    for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
+    for &(item, units) in costs.iter().take(n_costs) {
         inv_take(
             &mut p.inv,
             item,
-            repair_units(units, missing, def.hp, bc.repair_pct),
+            repair_units(units, missing, hp_full, bc.repair_pct),
         );
     }
-    // The wall: a repaired piece *is* its baked row's hp and never a point
-    // more. Written as an assignment rather than an add-and-clamp so there
-    // is no arithmetic between the store and the ceiling to get wrong.
-    pieces.set_hp(i, def.hp);
+    // The wall: a repaired structure *is* its baked row's hp and never a
+    // point more. Written as an assignment rather than an add-and-clamp so
+    // there is no arithmetic between the store and the ceiling to get
+    // wrong.
+    if deploy {
+        deploys.set_hp(i, hp_full);
+    } else {
+        pieces.set_hp(i, hp_full);
+    }
     events.push(
         EV_PIECE_REPAIRED,
         crate::gather::cell_key(cx, cz),
-        ((level as u32) << 16) | ((loc as u32) << 8) | rec.row as u32,
-        ((missing as u32) << 16) | def.hp as u32,
+        // The same bit in the same place `EV_STRUCT_HIT` puts it, because
+        // it means the same thing: level, loc and row are 8-bit fields
+        // below it, so bit 24 is the first free one.
+        if deploy { STRUCT_DEPLOY_BIT } else { 0 }
+            | ((level as u32) << 16)
+            | ((loc as u32) << 8)
+            | row as u32,
+        ((missing as u32) << 16) | hp_full as u32,
     );
 }
 
@@ -1296,14 +1379,16 @@ mod tests {
     fn a_repaired_piece_never_exceeds_its_baked_hp() {
         let full = BuildContent::probe_fixture().pieces[1].hp;
         for standing in [1u16, 40, full - 1] {
-            let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100)]);
+            let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
             let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
             pieces.set_upkeep(i, standing, 3);
             repair(
                 &bc,
-                &nod,
+                &DeployContent::EMPTY,
+                &mut nod,
                 &mut pieces,
                 &mut p,
+                false,
                 CX,
                 CZ,
                 0,
@@ -1326,9 +1411,11 @@ mod tests {
             let paid = inv_count(&p.inv, 0);
             repair(
                 &bc,
-                &nod,
+                &DeployContent::EMPTY,
+                &mut nod,
                 &mut pieces,
                 &mut p,
+                false,
                 CX,
                 CZ,
                 0,
@@ -1342,15 +1429,17 @@ mod tests {
             assert_eq!(inv_count(&p.inv, 0), paid, "an intact piece is free");
         }
 
-        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100)]);
+        let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
         let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
         pieces.set_hp(i, full + 50);
         let before = inv_count(&p.inv, 0);
         repair(
             &bc,
-            &nod,
+            &DeployContent::EMPTY,
+            &mut nod,
             &mut pieces,
             &mut p,
+            false,
             CX,
             CZ,
             0,
@@ -1380,14 +1469,16 @@ mod tests {
     #[test]
     fn repair_is_priced_pro_rata_rounded_up_and_never_free() {
         // 100 wood in, 5 for the foundation and 3 for the wall: 92 left.
-        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100)]);
+        let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
         let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
         pieces.set_hp(i, 40);
         repair(
             &bc,
-            &nod,
+            &DeployContent::EMPTY,
+            &mut nod,
             &mut pieces,
             &mut p,
+            false,
             CX,
             CZ,
             0,
@@ -1403,9 +1494,11 @@ mod tests {
         pieces.set_hp(i, 99);
         repair(
             &bc,
-            &nod,
+            &DeployContent::EMPTY,
+            &mut nod,
             &mut pieces,
             &mut p,
+            false,
             CX,
             CZ,
             0,
@@ -1420,14 +1513,16 @@ mod tests {
         );
 
         // Exactly enough wood to build, and none to mend with.
-        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 8)]);
+        let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 8)]);
         let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
         pieces.set_hp(i, 40);
         repair(
             &bc,
-            &nod,
+            &DeployContent::EMPTY,
+            &mut nod,
             &mut pieces,
             &mut p,
+            false,
             CX,
             CZ,
             0,
@@ -1456,16 +1551,18 @@ mod tests {
     /// refusal.
     #[test]
     fn an_unpriced_table_refuses_the_repair_rather_than_giving_it_away() {
-        let (mut bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100)]);
+        let (mut bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
         let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
         pieces.set_hp(i, 40);
         bc.repair_pct = 0;
         let before = inv_count(&p.inv, 0);
         repair(
             &bc,
-            &nod,
+            &DeployContent::EMPTY,
+            &mut nod,
             &mut pieces,
             &mut p,
+            false,
             CX,
             CZ,
             0,
@@ -1539,9 +1636,11 @@ mod tests {
         stranger.id = 9;
         repair(
             &bc,
-            &deploys,
+            &DeployContent::EMPTY,
+            &mut deploys,
             &mut pieces,
             &mut stranger,
+            false,
             CX,
             CZ,
             0,
@@ -1561,9 +1660,11 @@ mod tests {
 
         repair(
             &bc,
-            &deploys,
+            &DeployContent::EMPTY,
+            &mut deploys,
             &mut pieces,
             &mut owner,
+            false,
             CX,
             CZ,
             0,
@@ -2474,6 +2575,7 @@ mod tests {
             placement: crate::deploy::PLACE_FOUNDATION,
             hp: 100,
             item: 0,
+            ..DeployDef::INERT
         };
         // A second, non-box deployable on the identical footing: the
         // refusal must be about the *handle*, not about the cell, and
@@ -2483,6 +2585,7 @@ mod tests {
             placement: crate::deploy::PLACE_FOUNDATION,
             hp: 100,
             item: 0,
+            ..DeployDef::INERT
         };
         let bc = collapse_content();
         let mut pieces = Pieces::new();
