@@ -158,6 +158,32 @@ of them. `event_roles.rs` covers part of this now; finish it.
 
 ---
 
+## 4b · The world lane: what the second tier left open
+
+*(From the ranked gaps of `pass-20260805-053501-01` §3 and `-02` §2 — "one
+place on the island worth walking to". `waystations v0` landed the placement
+half: 3 authored sites on the ring instead of 1, gated by
+`tests/waystation.rs`. What it did not close, in order:)*
+
+- **A destination still offers no verb you cannot perform at your own base.**
+  `-02`'s gap 2 names the recycler as the only one of `DESIGN.md` §2's three
+  fixtures not blocked on an operator act (bank is A2/A3, vendor is skins).
+  Container verb + `content/*.toml` yields — **systems lane**, and it is what
+  turns a loot gradient into a reason.
+- **The waystations are two crates on bare ground.** The pad got a greybox
+  when the judge found the clearing indistinguishable from natural scenery;
+  the lesser tier will read the same way once the novelty is gone. It wants a
+  silhouette, and it must be a *different* one — a second copy of
+  `HAVEN_SHELTER` makes the tiers look identical.
+- **The pad carve is still unbuilt** and is the one piece of TERRAIN §7/§8
+  that never got easier: `height` has ~80 call sites in four crates, so it is
+  a cross-lane change, not a detail. Sites are still *found* flat, not made.
+- **Nothing threatens you on the walk between them.** A circulation loop with
+  no risk on it is a longer commute. No AI module exists anywhere in
+  `crates/sim-core/src/`.
+
+---
+
 ## 5 · Gameplay still missing, in rough order of what a player notices
 
 - **Jump.** Gravity is there, jump is not — and jump is what makes a lintel
@@ -170,6 +196,32 @@ of them. `event_roles.rs` covers part of this now; finish it.
   be repaired; this is the loop that makes a day matter.
 - **Death and your own base** — a death evicted you from what you built and
   nothing you built said otherwise.
+
+---
+
+## 5b · The wire accepts values the sim can never mean
+
+`every_domain_fits_its_wire_field` (`protocol/src/event.rs`) now gates ten
+value domains against the fields that carry them — a sim domain outgrowing
+its wire field is the shape of the 2026-08-05 FAIL, and it is caught now.
+Writing it measured two live holes running the *other* way, left unfixed on
+purpose: narrowing what decodes is a wire act, and that pass was a gate.
+
+- **`BAG_GONE_*`** — `encode_event_bag_removed` bounds against the *width*
+  (`why >= 1 << BAG_GONE_BITS`), not the domain (largest live is 2), and
+  the decoder does not bound it at all. `why == 3` round-trips as a
+  removal reason that means nothing.
+- **`REFUSE_C_*`** — 4 bits for a domain topping out at 3, and neither end
+  bounds the upper edge; only `reason == 0` is refused. Values 4..15 cross
+  intact.
+
+Both are forgery slack, not drift: the sim cannot emit either today, so
+nothing is broken for a player. The fix is the closed-set posture
+`DEATH_BY_*` now has — a derived `*_MAX` on the sim side, checked at both
+ends — and it wants its own pass because it changes what decodes, which
+means deciding whether a narrowing owes `PROTO_VER` a bump.
+
+Systems lane (`crates/protocol`, `crates/sim-core`).
 
 ---
 

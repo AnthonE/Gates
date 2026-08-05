@@ -331,10 +331,17 @@ fn test_clump_leaves_authored_slots_alone() {
     let table = ScatterTable::alpha_default();
     for seed in SEEDS {
         let f = build(seed);
+        // Both authored tiers, counted together, because the field must sit
+        // below BOTH branches: the pad's five and the lesser tier's pairs are
+        // placed because a site is there, and a grove may thin neither.
+        // `tests/haven.rs` is what proves the split between them is right;
+        // this only proves the field never reached either.
+        let live = terrain::haven(seed).minor.iter().filter(|w| w.live).count() as u32;
+        let authored = HAVEN_CRATES as u32 + live * terrain::WAYSTATION_CRATES as u32;
         assert_eq!(
             f.counts[Occupant::CrateSlot as usize],
-            HAVEN_CRATES as u32,
-            "seed {seed}: the pad's container ring lost a crate — the clump \
+            authored,
+            "seed {seed}: an authored container ring lost a crate — the clump \
              field is meant to sit below the haven branch in `scatter`."
         );
         assert_eq!(
