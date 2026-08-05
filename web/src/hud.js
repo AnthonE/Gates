@@ -172,6 +172,85 @@ const MOVE_REFUSALS = [
   "those do not stack",
 ];
 
+/**
+ * The getting-started checklist: every verb key, named in the world.
+ *
+ * WHY THIS EXISTS. Until now B, C, M, T, G, H, U, L, R and Tab were spelled
+ * out in exactly ONE place — `index.html`'s `#hint` paragraph on the
+ * pre-connect screen, which is gone the moment you join. A player who missed
+ * it had no way back to it and no way to discover build mode, crafting or the
+ * map at all: every verb this client has made legible sat behind a key nobody
+ * was told about. The contextual `#prompt` cannot fix that, because a
+ * contextual hint can only describe a mode you have already entered.
+ *
+ * The shape is the reference's (`Rust Images/choppingtree.jpg`): a short
+ * checklist docked top-left, a row per verb, each row checked off the first
+ * time that verb is actually used, and the whole panel gone once they all
+ * are. It teaches in the world rather than in a menu, and it retires itself
+ * rather than needing a key of its own to dismiss — which would be one more
+ * undiscoverable key, the exact bug being fixed.
+ *
+ * THE CODE IS THE KEY THE HOST DISPATCHES ON. `code` is a `KeyboardEvent.code`
+ * and it is the same literal `main.js` compares against, so the two cannot
+ * drift apart silently: `ci/ui_smoke.mjs` group Y walks the key literals out
+ * of `main.js` AND `input.js` and requires every one of them to be either a
+ * task here or a named entry in `LEARN_ALIASES` below. Bind a new key and the
+ * gate is red until the player is told about it — which is the whole defect,
+ * closed as a class instead of as ten instances.
+ *
+ * The label on the chip is DERIVED (`learnKeyLabel`) rather than carried as a
+ * second column: a hand-maintained key column is a positional payload waiting
+ * to be transposed, and `CLAUDE.md`'s trap list is about exactly that.
+ */
+export const LEARN_TASKS = [
+  { code: "Tab", what: "open your pack" },
+  { code: "KeyC", what: "craft something" },
+  { code: "KeyB", what: "enter build mode" },
+  { code: "KeyE", what: "use what you face" },
+  { code: "KeyG", what: "eat from the belt" },
+  { code: "KeyH", what: "drink at the water" },
+  { code: "KeyU", what: "upgrade a piece" },
+  { code: "KeyR", what: "repair the damaged" },
+  { code: "KeyL", what: "lock a door" },
+  { code: "KeyM", what: "read the map" },
+  { code: "KeyT", what: "say something" },
+];
+
+/**
+ * The keys the checklist deliberately does NOT teach, each with the reason.
+ *
+ * This is not a suppression list, it is the other half of the walk. Group Y
+ * demands that every key literal in `main.js`/`input.js` be classified, and a
+ * key that is genuinely not worth a row still has to say so out loud here —
+ * so "we chose not to teach this" and "we forgot this exists" stop looking
+ * identical to the gate.
+ */
+export const LEARN_ALIASES = {
+  Enter: "a second way into the composer that T already teaches",
+  Escape: "closes a panel you had to open first, so you are already in it",
+  KeyF: "an alias twice over — build level down, and the death screen's second button",
+  Digit1: "the death screen's first button, and hotbar slot 1; both are labelled where they act",
+  Digit2: "the death screen's second button, labelled on the button",
+  Digit6: "hotbar slot 6, drawn as a number on the cell it selects",
+  KeyW: "movement, the first thing anyone presses; a row retiring before it is read teaches nothing",
+  KeyA: "movement, as KeyW",
+  KeyS: "movement, as KeyW",
+  KeyD: "movement, as KeyW",
+};
+
+/**
+ * The chip text for a `KeyboardEvent.code`: `KeyB` → `B`, `Tab` → `TAB`.
+ *
+ * Exported because group Y asserts the derivation rather than the output —
+ * a label read back off the DOM and compared to a second literal would just
+ * be the hand-maintained column this avoids.
+ */
+export function learnKeyLabel(code) {
+  if (code.startsWith("Key")) return code.slice(3);
+  if (code.startsWith("Digit")) return code.slice(5);
+  return code.toUpperCase();
+}
+
 export class Hud {
   /**
    * The `onInvMove` a panel has while no host has claimed the move verb.
@@ -236,6 +315,30 @@ export class Hud {
     this.compassNow = document.getElementById("compassnow");
     this.bearingPx = -1;
     this.buildCompass();
+
+    // The getting-started checklist. Built once, here, for the same reason as
+    // the compass: the rows are a fixed set and the only thing that changes is
+    // which of them are struck through. `learnRow` is code-keyed rather than
+    // index-keyed so a row cannot be checked off by position — the transposed
+    // payload, again, in the one place a list is being addressed by number.
+    this.learn = document.getElementById("learn");
+    this.learnRows = document.getElementById("learnrows");
+    this.learnRow = new Map();
+    this.learnLeft = LEARN_TASKS.length;
+    for (const t of LEARN_TASKS) {
+      const row = document.createElement("div");
+      row.className = "ltask";
+      const key = document.createElement("span");
+      key.className = "lkey";
+      key.textContent = learnKeyLabel(t.code);
+      const what = document.createElement("span");
+      what.className = "lwhat";
+      what.textContent = t.what;
+      row.appendChild(key);
+      row.appendChild(what);
+      this.learnRows.appendChild(row);
+      this.learnRow.set(t.code, row);
+    }
 
     // The map screen. Element refs only: the island is painted once by
     // main.js (which owns the wasm sampler) and handed here as bytes, and
@@ -582,6 +685,34 @@ export class Hud {
     this.chatlog.style.display = "block";
     this.compass.style.display = "block";
     this.compassNow.style.display = "block";
+    // The checklist is the one surface `show()` may leave HIDDEN: a player who
+    // has already used every verb this session is not taught them again on the
+    // next join. `learnLeft` is the only thing that decides it, here and in
+    // `learnUse`, so the two cannot disagree about whether the panel is up.
+    this.learn.style.display = this.learnLeft > 0 ? "block" : "none";
+  }
+
+  /**
+   * Check off the verb behind `code`, if it is a taught key and still open.
+   *
+   * Called by the host from INSIDE each verb's own branch, never once at the
+   * top of the dispatch — a key the composer swallowed, or one an open panel
+   * ate (`eatsKey`), taught the player nothing and must not retire its row.
+   * R is the sharp case and the reason this is per-branch: in build mode R
+   * raises the build level and does not repair, so only the repair branch
+   * marks it. `ci/ui_smoke.mjs` group Y holds that ordering as source.
+   *
+   * @returns {boolean} true if this call retired a row that was still open —
+   *   false for an unknown code and false for a repeat, so a host cannot
+   *   double-count and a stray key cannot throw.
+   */
+  learnUse(code) {
+    const row = this.learnRow.get(code);
+    if (!row || row.classList.contains("ldone")) return false;
+    row.classList.add("ldone");
+    this.learnLeft--;
+    if (this.learnLeft <= 0) this.learn.style.display = "none";
+    return true;
   }
 
   /**

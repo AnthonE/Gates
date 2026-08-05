@@ -116,30 +116,33 @@ NOT run is the renderer tier (`browser smoke`, `vantages`) — off for this whol
 run at tier `fast`, not skipped by this pass. If either is red it is still
 red, and the next `all` run is where that shows up.
 
-## 0c2 · The same bug, one file over: `DEPLOY_REFUSE_TEXT` *(ui lane)*
+## 0i · The checklist landed — two things it did not do *(ui lane)*
 
-Found while scanning `65e5110` for other unmirrored constants, not built —
-§0c was a recovery pass and this is a feature-shaped fix.
+§0c is closed: `LEARN_TASKS` names all eleven verb keys in the world, each row
+struck through on first use, and `ui_smoke` group Y classifies all 21 key
+literals in `main.js` + `input.js` — a twelfth bind is red until the player is
+told about it. 1731 → 1861 checks; mutants M41–M48, all red.
 
-`main.js:160` holds `DEPLOY_REFUSE_TEXT`, 13 entries against `deploy.rs`'s
-`REFUSE_D_KIND`(0)…`REFUSE_D_OWNER`(12). It matches *today*. It is also a
-module-private `const` in `main.js`, so `ui_smoke` cannot import it and no
-gate walks it — which is verbatim the condition `interact.js:736` describes
-as the reason the build table had to move: "cannot live as a bare array in
-`main.js` where nothing can walk it". A fourteenth `REFUSE_D_*` reaches the
-player as `can't place: code 13` (`main.js:1260`), and §0c is the proof that
-the sim does grow these.
+What it did not do:
 
-The fix is the one already paid for: move the table to `interact.js`, export
-it, and extend `ui_smoke` §W's walk to parse `REFUSE_D_*` out of `deploy.rs`
-the way it parses `REFUSE_B_*` out of `build.rs`. Same shape for
-`main.js:151`'s `REFUSE_TEXT` (5, vs `craft.rs`) and `:57`'s
-`REFUSE_REASONS` (2) while the file is open.
+1. **No keybinds SCREEN.** `MENUS.md` surveys one and the reference ecosystem
+   exposes one; the checklist teaches the default binds and cannot rebind
+   anything. That is a bigger item and it needs an operator word on whether
+   binds are persisted (localStorage is the obvious answer and is not mine to
+   invent). Not blocking: nothing is undiscoverable now.
+2. **`ci/ui_mutants.sh` staleness is still ungated** — judge -04's ranked fix
+   2, untouched here. `e743b59` shipped four stale mutants and nothing was red
+   until a human ran the script; this pass added eight more anchors that can
+   rot the same way. Wants a `--check` mode (parse `run_mut`, assert each
+   anchor matches its file exactly once, no writes) wired into `gates.sh`'s
+   code tier. Wrinkle the judge already found: M23's `to` argument is the
+   empty string, so a naive whitespace filter drops the record.
 
-Related and NOT this lane's: `bridge.rs:66` still exports
-`DEPLOY_DEF_ROW_WORDS = 4`, so `SUB_DEPLOY_DEFS`' new `n_costs` + cost rows
-stop at the wasm bridge and `web/src` cannot show what mending a door costs.
-That is a systems-lane export, like §0e.
+Seen, but only as DOM: a throwaway browser built the real `Hud` over the
+shipped `index.html` and screenshotted the overlay — it sits top-left, clear
+of the compass, ticks where it should. That is diagnosis, not evidence. No
+shard, no renderer, no capture; `browser_smoke` is off this run, so nothing
+above rests on it.
 
 ## 0e2 · The deploy-def stride is stale, and this lane cannot fix it alone
 *(systems lane — BLOCKED on a web/ half)*
@@ -339,9 +342,9 @@ is what the old `build.rs` comment falsely claimed the price alone did.
 
 What remains:
 
-- **Nothing can press it**, unchanged and now the whole of the gap. The
-  browser client needs the verb bound and a prompt — **ui lane** (`web/`); the
-  native client picks it up with §1 slice 1.
+- ~~Nothing can press it~~ — **landed in pass-20260805-111501-04, see §0h.**
+  R presses it, the prompt is fourth in `CENTRE_ORDER`, and the store bit is
+  gated. The native client still picks it up with §1 slice 1.
 - ~~The deploy-defs drip carries no price~~ — **landed in the same commit that
   filed this line, which is why the line was wrong.** `encode_event_deploy_defs`
   writes `n_costs` and the cost rows, `decode_event` reads them into
@@ -412,27 +415,7 @@ Two things the compass could not carry, both needing another lane:
   operator word is cheaper than a pass spent guessing.
 
 ---
-## 0c · Nothing in the world names a key *(ui lane)*
 
-What the build prompt could not fix, learned by building it: a contextual hint
-can only describe a mode you have already entered. **B, C, M, T, G, H, U, L and
-Tab are spelled out in exactly one place — `index.html`'s `#hint` paragraph on
-the pre-connect screen — which is gone the moment you join.** A player who
-misses it has no way back to it and no way to discover build mode, crafting or
-the map at all. Every verb this lane has made legible sits behind a key nobody
-is told about.
-
-Two candidate shapes, and the reference has both:
-`Rust Images/choppingtree.jpg` carries an onboarding checklist top-left that
-retires itself as each verb is used; `MENUS.md` surveys the keybinds screen
-that every loader in the reference ecosystem exposes. The checklist is the
-cheaper one and it teaches in the world rather than in a menu.
-
-Not started. Needs no other lane and no operator word — the strings are ours
-(`CONTENT.md` owns names, and these are key names). `ui_smoke` can drive it
-end to end: it is DOM and state, no renderer.
-
----
 ## 0 · The rest of `pass-20260805-074623-01`'s ranked fixes
 
 *(GAP PASS, world lane. Its ranked fix **1** — the authored sites were not

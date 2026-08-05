@@ -916,6 +916,12 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     }
     if (e.code === "KeyT" || e.code === "Enter") {
       hud.openChat();
+      // The getting-started checklist is checked off from INSIDE each verb's
+      // own branch and never once at the top of this handler: a key the
+      // composer swallowed, or one `eatsKey` ate, taught nothing. Enter marks
+      // the T row because T is the key the checklist names; the alias is
+      // declared as one in `hud.js`'s LEARN_ALIASES.
+      hud.learnUse("KeyT");
       document.exitPointerLock();
       e.preventDefault();
       return;
@@ -927,6 +933,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     if (e.code === "Tab") {
       if (hud.toggleInv()) document.exitPointerLock();
       else closeOpenContainer();
+      hud.learnUse("Tab");
       e.preventDefault();
       return;
     }
@@ -952,6 +959,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         paintIsland();
         document.exitPointerLock();
       }
+      hud.learnUse("KeyM");
       e.preventDefault();
       return;
     }
@@ -973,11 +981,13 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         document.exitPointerLock();
         craftDirty = true;
       }
+      hud.learnUse("KeyC");
       e.preventDefault();
     } else if (e.code === "KeyB") {
       build.on = !build.on;
       if (!build.on) scene.hideGhost();
       buildStrip();
+      hud.learnUse("KeyB");
       // The centre hint changes owner on this key — into and out of the build
       // row — so it is redrawn on the keypress and not up to 250 ms later on
       // the HUD timer. A hint that lags the ghost it describes is the defect.
@@ -990,6 +1000,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       e.preventDefault();
     } else if (e.code === "KeyE") {
       tryUse();
+      hud.learnUse("KeyE");
       e.preventDefault();
     } else if (e.code === "KeyG") {
       // Eat what is in the selected hotbar slot. G rather than a
@@ -1000,6 +1011,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       const len = ex.client_action_consume(input.sel);
       views.refresh();
       if (len > 0) actions.send(views.output, len);
+      hud.learnUse("KeyG");
       e.preventDefault();
     } else if (e.code === "KeyH") {
       // Drink from the water at your feet. H because G is already the
@@ -1010,12 +1022,15 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       const len = ex.client_action_drink();
       views.refresh();
       if (len > 0) actions.send(views.output, len);
+      hud.learnUse("KeyH");
       e.preventDefault();
     } else if (e.code === "KeyL") {
       tryLock();
+      hud.learnUse("KeyL");
       e.preventDefault();
     } else if (e.code === "KeyU") {
       tryUpgrade();
+      hud.learnUse("KeyU");
       e.preventDefault();
     } else if (e.code === "KeyR") {
       // Repair, and ONLY out of build mode. R is already the build-level
@@ -1024,7 +1039,14 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       // than left to whoever next reorders these branches. `updatePrompt`
       // reads the same `build.on` question the other way round, so the row
       // never advertises `[R] REPAIR` while R would step a floor up.
+      //
+      // The checklist mark belongs HERE and not in the build-level branch
+      // above for the same reason: in build mode R raised a floor, it did not
+      // repair anything, and a row struck through by a keypress that did
+      // something else is a checklist that lies. `ui_smoke` group Y pins this
+      // call below that branch as source.
       tryRepair();
+      hud.learnUse("KeyR");
       e.preventDefault();
     }
   });
