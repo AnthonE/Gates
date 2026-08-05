@@ -331,10 +331,28 @@ pub fn road_band(seed: u64, x: f32, z: f32) -> RoadBand {
 // and whether the carve is optional or mandatory (DECISIONS.md §open).
 //
 // Cost: `HAVEN_CANDIDATES` bearings, each a bracket + `HAVEN_BISECT_ITERS`
-// halvings + a `HAVEN_PROBES`-point rosette — under 1,000 `height` taps,
-// once, at world init and never in a tick (wall 2). Bounded by
+// halvings + a `HAVEN_PROBES`-point rosette + the ring check chain below —
+// bounded above by roughly 28,000 `height` taps and typically far under it,
+// once, at world init and never in a tick (wall 2). The "under 1,000" this
+// comment used to claim was wrong before the check chain was added: the
+// march to the shoreline alone is up to 100 taps per bearing, and the judge
+// measured 5,453 mean on the client's path. Bounded by
 // `limits::MAX_HAVEN_CANDIDATES` (wall 4), and float-walled like everything
-// else here, so native and wasm agree bit for bit (wall 1).
+// else here, so native and wasm agree bit for bit (wall 1). The two callers
+// that could pay it repeatedly hold it instead: `World` at init, and the
+// client bridge memoizes it on the seed.
+//
+// The hook is three parts — "carve pad + exclusion zone + scatter table"
+// (TERRAIN.md §1 stage 8) — and the third is the one the carve does not
+// block. `HAVEN_CRATES` containers on a ring is that third part: it is what
+// makes the destination pay more than the route to it, which is the defect
+// the road left behind (`ROAD_BARREL_PERMILLE` is literally the beach row's
+// own rate, so the loop paid what standing still paid). It also gives
+// `content/loot.toml`'s `loot.crate` its first spawn site — that table was
+// parsed, validated and hashed with nothing in the world able to produce
+// its container. What it does NOT do is open one: no verb opens a container
+// yet (`crates/content/src/validate.rs`), so the table is reachable content
+// rather than reachable loot, and that half is the systems lane's.
 
 /// Pad radius in meters: inside this, scatter places nothing. Sized to read
 /// as a clearing rather than a gap — 32 m across clears ~12 scatter cells
@@ -363,12 +381,60 @@ pub const HAVEN_BISECT_ITERS: i32 = 12;
 /// elevation only breaks near-ties toward the shore (knob).
 pub const HAVEN_HEIGHT_W: f32 = 0.25;
 
+/// Containers standing on the pad — the third of the monument hook, after
+/// the exclusion zone and ahead of the carve. Not invented: it is the
+/// reference `SpawnGroup`'s default `maxPopulation` (`reference/SPAWN.md`
+/// §10), the one per-destination container count either document names
+/// (knob, DECISIONS.md §open: haven crates v0).
+pub const HAVEN_CRATES: i32 = 5;
+/// Radius of the ring they stand on, meters. Bounded on both sides by
+/// arithmetic rather than taste: above `CELL_SIZE * 1.5 / sin(180/N)` so no
+/// two anchors can share a scatter cell (one cell holds one slot, so a
+/// closer ring would silently drop a crate), and far enough inside
+/// `HAVEN_RADIUS_M` to leave a walkable rim. `tests/haven.rs` measures the
+/// separation it actually buys (knob, DECISIONS.md §open: haven crates v0).
+pub const HAVEN_CRATE_R_M: f32 = 10.0;
+/// Rotations of the ring a candidate site may try before it is refused.
+///
+/// The pad stands ON the road — that is the point of it — so a ring centred
+/// on the pad crosses the carriageway at two bearings, and `tests/road.rs`
+/// requires the carriageway clear so the loop stays walkable. Rotating the
+/// ring is the only degree of freedom that fixes it without moving the pad,
+/// shrinking the ring into its own cell, or exempting the pad from the road
+/// rule. The alternative was to derive the road's local direction from the
+/// pad's bearing and phase away from it analytically; that is an
+/// approximation of a coastline that wobbles between 630 and 920 m of
+/// radius, and the margin at 5 crates on a 10 m ring is 6.8 degrees of
+/// road-direction error. Testing `road_band` at the anchor is exact and the
+/// search is bounded, which is the trade `SPAWN.md` §2 records the reference
+/// making (10,000 rejection-sampled attempts against a check chain, never a
+/// closed form) (knob, DECISIONS.md §open: haven crates v0).
+pub const HAVEN_PHASE_TRIES: i32 = 16;
+/// LUT steps between tried phases. Derived, not chosen: the tries divide one
+/// anchor gap (256 / `HAVEN_CRATES`) as evenly as integers allow.
+pub const HAVEN_PHASE_STEP: i32 = 256 / HAVEN_CRATES / HAVEN_PHASE_TRIES;
+
 // Wall 4 at the definition, not in a test: the search is capped, and both
 // counts must divide the 256-entry yaw LUT evenly or the bearings bunch.
+// The crate count is exempt from the divisibility rule — it indexes the LUT
+// by truncating division, which spreads the 1-index remainder over one
+// bearing instead of bunching, and `tests/haven.rs` gates the separation
+// that actually matters. What it is not exempt from is the ring fitting
+// inside the pad and inside the broad phase `scatter` uses to find it.
 const _: () = {
     assert!(HAVEN_CANDIDATES as usize <= crate::limits::MAX_HAVEN_CANDIDATES);
     assert!(HAVEN_CANDIDATES > 0 && 256 % HAVEN_CANDIDATES == 0);
     assert!(HAVEN_PROBES > 0 && 256 % HAVEN_PROBES == 0);
+    assert!(HAVEN_CRATES > 0 && HAVEN_CRATES <= 256);
+    // The tried phases must not run past one anchor gap: beyond that the
+    // ring repeats and the extra tries are the same rings again.
+    assert!(HAVEN_PHASE_TRIES > 0);
+    assert!(HAVEN_PHASE_TRIES * HAVEN_PHASE_STEP <= 256 / HAVEN_CRATES);
+    // A walkable rim: the ring is strictly inside the exclusion zone.
+    assert!(HAVEN_CRATE_R_M > 0.0 && HAVEN_CRATE_R_M < HAVEN_RADIUS_M);
+    // `scatter`'s broad phase tests |cell - haven cell| <= 2, which covers
+    // every anchor iff the ring is inside two cells of the center.
+    assert!(HAVEN_CRATE_R_M <= 2.0 * CELL_SIZE);
 };
 
 /// The haven pad site: a pure function of the seed, resolved once.
@@ -382,6 +448,11 @@ pub struct Haven {
     pub z: f32,
     pub y: f32,
     pub relief: f32,
+    /// Rotation of the container ring, as a yaw-LUT index. Carried rather
+    /// than recomputed because `haven_crate` must be a pure function of the
+    /// pad — the client, the server and the gate all ask for anchor `k` and
+    /// have to be told the same place.
+    pub phase: u8,
 }
 
 /// Max−min height over the pad footprint at (x, z): center plus a rim
@@ -400,6 +471,44 @@ fn haven_relief(seed: u64, x: f32, z: f32) -> f32 {
         j += 1;
     }
     hi - lo
+}
+
+/// The first ring rotation at (x, z) every container can stand on, or
+/// `None` if the site cannot hold its containers at any tried rotation.
+///
+/// Two conditions, both re-testing the real thing rather than a proxy for
+/// it: every anchor is on land, and no anchor stands on the carriageway
+/// (`tests/road.rs` requires that surface clear, and the pad is on the road
+/// by construction — see `HAVEN_PHASE_TRIES`). Cheap test first, and the
+/// anchor loop breaks on the first failure, so the common case is one pass.
+fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
+    let mut t = 0i32;
+    while t < HAVEN_PHASE_TRIES {
+        let phase = (t * HAVEN_PHASE_STEP) as u8;
+        t += 1;
+        let probe = Haven {
+            x,
+            z,
+            y: 0.0,
+            relief: 0.0,
+            phase,
+        };
+        let mut k = 0i32;
+        let mut ok = true;
+        while k < HAVEN_CRATES {
+            let (ax, az, _) = haven_crate(&probe, k);
+            if height(seed, ax, az) < LAND_MIN_H || road_band(seed, ax, az) == RoadBand::Carriageway
+            {
+                ok = false;
+                break;
+            }
+            k += 1;
+        }
+        if ok {
+            return Some(phase);
+        }
+    }
+    None
 }
 
 /// Resolve the haven pad for a seed (TERRAIN.md §1 stage 8).
@@ -475,7 +584,32 @@ pub fn haven(seed: u64) -> Haven {
 
         let relief = haven_relief(seed, x, z);
         let score = relief + HAVEN_HEIGHT_W * (y - LAND_MIN_H);
-        let site = Haven { x, z, y, relief };
+
+        // A site has to hold what stands on it, and `y >= LAND_MIN_H` above
+        // tests one point — the center — which is a different question.
+        // Seed 555555 puts a center at 0.69 m on a shore shelf whose whole
+        // container ring sits under the land line at every radius tried
+        // (measured 0.50 m at 6 m out; shrinking the ring cannot save it,
+        // the shelf falls away in all directions). Flatness does not catch
+        // it either — 1.75 m of relief is unremarkable.
+        //
+        // So this is the check chain `reference/SPAWN.md` §5 describes and
+        // §9 told us to steal: refuse the position, do not patch the object
+        // afterwards. It runs on the shipped anchor geometry rather than on
+        // a radius of its own, so the constraint cannot drift away from the
+        // thing it constrains.
+        let phase = match haven_ring_phase(seed, x, z) {
+            Some(p) => p,
+            None => continue,
+        };
+        let site = Haven {
+            x,
+            z,
+            y,
+            relief,
+            phase,
+        };
+
         if relaxed.is_none() || score < relaxed_score {
             relaxed = Some(site);
             relaxed_score = score;
@@ -494,6 +628,7 @@ pub fn haven(seed: u64) -> Haven {
         z: c,
         y: height(seed, c, c),
         relief: 0.0,
+        phase: 0,
     })
 }
 
@@ -504,6 +639,31 @@ pub fn in_haven(haven: &Haven, x: f32, z: f32) -> bool {
     let dx = x - haven.x;
     let dz = z - haven.z;
     dx * dx + dz * dz < HAVEN_RADIUS_M * HAVEN_RADIUS_M
+}
+
+/// Anchor `k` of the pad's container ring: position and the yaw that faces
+/// it back at the pad center.
+///
+/// Authored positions, not a draw — and that is the point rather than a
+/// shortcut. `SPAWN.md` §6 records that the reference's `SpawnGroup` hangs
+/// its loot on a set of hand-placed child spawn points with no spacing rule
+/// at all, so the ring is the faithful analogue: a destination should read
+/// as arranged, where scatter reads as weather. It also sidesteps §9.3's
+/// complaint about our per-cell independence in the one place where noise
+/// would be actively wrong.
+///
+/// The bearing truncates 256/`HAVEN_CRATES`, so the last gap carries the
+/// remainder; at 5 that is 52 LUT steps against 51, which is 2% of one gap
+/// and below the jitter every other slot already gets.
+pub fn haven_crate(haven: &Haven, k: i32) -> (f32, f32, u8) {
+    let idx = ((k as u32 * 256) / HAVEN_CRATES as u32 + haven.phase as u32) as u16 & 0xFF;
+    let (dx, dz) = crate::yaw_lut::yaw_dir(idx << 8);
+    (
+        haven.x + dx * HAVEN_CRATE_R_M,
+        haven.z + dz * HAVEN_CRATE_R_M,
+        // Facing in: half a turn from the outward bearing it stands on.
+        (idx as u8).wrapping_add(128),
+    )
 }
 
 /// What a scatter cell holds (TERRAIN.md §1 stage 9's occupant list).
@@ -518,6 +678,15 @@ pub enum Occupant {
     Bush = 5,
     Rock = 6,
     BarrelSlot = 7,
+    // 8 is deliberately skipped: the client's archetype table is indexed by
+    // this enum and its slot 8 is the felled-pine stump, which is a
+    // CONSEQUENCE of an occupant rather than one (`web/src/props.js`).
+    // Taking 8 here would land every pad crate in the stump pool — no
+    // compile error, no golden move, no clippy wall, and a crate drawn as a
+    // tree stump. Skipping the index costs nothing and keeps the two tables
+    // aligned by construction, which is the only kind of alignment that
+    // survives (CLAUDE.md's positional-payload trap).
+    CrateSlot = 9,
 }
 
 const OCCUPANT_KINDS: usize = 7;
@@ -563,7 +732,10 @@ pub struct Slot {
 }
 
 /// One hash draw decides a cell's occupant, offset, yaw, scale
-/// (TERRAIN.md §1 stage 9). Slope, water, road and haven veto.
+/// (TERRAIN.md §1 stage 9). Slope, water, road and haven veto — except on
+/// the `HAVEN_CRATES` cells the pad's container ring stands in, where the
+/// pad PRODUCES a slot instead of clearing one, at an authored position no
+/// draw contributed to.
 ///
 /// The haven arrives as a parameter rather than being resolved here on
 /// purpose: `haven` costs ~1,000 `height` taps and `scatter` is called
@@ -581,6 +753,46 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
     if !(0..CELLS_PER_SIDE).contains(&cell_x) || !(0..CELLS_PER_SIDE).contains(&cell_z) {
         return none;
     }
+
+    // The pad's own occupants, ahead of every other rule including the hash.
+    // A crate is placed because the pad is there, not because a cell rolled
+    // one, so nothing below may veto it and nothing below may move it: its
+    // position is the anchor's, not the cell's jitter.
+    //
+    // Broad phase first — five anchor tests would otherwise run on all
+    // 65,536 cells. The pad's own cell plus two in each direction covers the
+    // ring by the const assert on `HAVEN_CRATE_R_M`; the world is positive
+    // in both axes here (the ring bracket is 600..1000 m from a center at
+    // half of `ISLAND_SIZE`), so the truncating cast is a floor.
+    let hcx = (haven.x * (1.0 / CELL_SIZE)) as i32;
+    let hcz = (haven.z * (1.0 / CELL_SIZE)) as i32;
+    if (cell_x - hcx).abs() <= 2 && (cell_z - hcz).abs() <= 2 {
+        let mut k = 0i32;
+        while k < HAVEN_CRATES {
+            let (ax, az, yaw) = haven_crate(haven, k);
+            k += 1;
+            if (ax * (1.0 / CELL_SIZE)) as i32 != cell_x
+                || (az * (1.0 / CELL_SIZE)) as i32 != cell_z
+            {
+                continue;
+            }
+            // First anchor wins, so a ring that ever put two in one cell
+            // would drop the second rather than fight over it — which is
+            // exactly what `tests/haven.rs` counts, because a silent drop
+            // is the failure this arrangement can actually have.
+            return Slot {
+                occupant: Occupant::CrateSlot,
+                x: ax,
+                y: height(seed, ax, az),
+                z: az,
+                yaw,
+                // Authored, not drawn: a monument's containers are placed,
+                // and a size wobble would read as scatter.
+                scale: 1.0,
+            };
+        }
+    }
+
     let h = cell_hash(seed, cell_x, cell_z, CH_SCATTER);
 
     // Jittered position first: vetoes apply where the thing would stand.
