@@ -235,7 +235,14 @@ fn every_site_carries_its_containers() {
         for cx in 0..CELLS_PER_SIDE {
             for cz in 0..CELLS_PER_SIDE {
                 let s = terrain::scatter(seed, &table, &haven, cx, cz);
-                if s.occupant != Occupant::CrateSlot || !terrain::in_waystation(&haven, s.x, s.z) {
+                // `CacheSlot`, the lesser tier's OWN container kind. It was
+                // the pad's `CrateSlot` until 2026-08-05, and while it was,
+                // this sweep could not tell the two tiers apart: a pad crate
+                // that somehow landed inside a waystation zone would have
+                // counted here as a waystation's own. The kind is what
+                // selects the loot table, so counting it is counting the
+                // price the site pays.
+                if s.occupant != Occupant::CacheSlot || !terrain::in_waystation(&haven, s.x, s.z) {
                     continue;
                 }
                 found += 1;
@@ -270,7 +277,7 @@ fn every_site_carries_its_containers() {
         assert_eq!(
             found,
             live * WAYSTATION_CRATES as usize,
-            "seed {seed}: {found} crate(s) stand across {live} waystation(s) \
+            "seed {seed}: {found} cache(s) stand across {live} waystation(s) \
              against {WAYSTATION_CRATES} apiece. Fewer means two anchors \
              landed in one scatter cell and the second was dropped without a \
              word — widen WAYSTATION_CRATE_R_M until the separation below \
@@ -367,8 +374,14 @@ fn the_zones_are_clear_and_would_not_have_been() {
         for cx in 0..CELLS_PER_SIDE {
             for cz in 0..CELLS_PER_SIDE {
                 let s = terrain::scatter(seed, &table, &haven, cx, cz);
+                // The site's own containers are `CacheSlot` and are the only
+                // thing allowed inside the zone. `CrateSlot` is deliberately
+                // NOT exempted any more: the pad's kind standing in a
+                // waystation would be the lesser tier drawing `loot.crate`,
+                // which is the defect the two kinds were split to remove, so
+                // it must count as an intruder here rather than be waved past.
                 if s.occupant != Occupant::None
-                    && s.occupant != Occupant::CrateSlot
+                    && s.occupant != Occupant::CacheSlot
                     && terrain::in_waystation(&haven, s.x, s.z)
                 {
                     inside += 1;

@@ -26,7 +26,14 @@ pub const PROBE_WINDOW_CELLS: i32 = 16;
 /// never crosses the road hashes a constant and pins nothing, so the radial
 /// step has to be under the road's widest band — the shoulder, at
 /// `ROAD_SHOULDER_HALF_W * 2` = 10 m. 51 radii puts a sample every
-/// `(ROAD_R_MAX - ROAD_R_MIN) / 50` = 8 m, the first step under it.
+/// `(ROAD_R_MAX - ROAD_R_MIN) / 50` = 8 m, which clears it.
+///
+/// It is NOT the first count that clears it, and this comment used to say so:
+/// 42 radii gives a 9.76 m step and is strictly earlier
+/// (`pass-20260805-074623-02-judge.md` fix 3). 8 m is the coarsest step that
+/// is an integer number of metres AND divides the 400 m span evenly, which is
+/// a tidiness argument rather than a derivation — the load-bearing half is
+/// the measurement below, not the superlative.
 ///
 /// Measured on the three probe seeds rather than assumed: at 8 radii (a 57 m
 /// step) only 9–15 of the 64 bearings saw any road at all, so most of the

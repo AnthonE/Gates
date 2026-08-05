@@ -29,10 +29,16 @@ const CH_LOOT: u32 = 99;
 /// an archetype string to a row: content may re-price a barrel, it may not
 /// invent a container the sim has no verb for.
 pub const LOOT_BARREL: usize = 0;
-/// Baked table index for `container = "crate"`. Nothing spawns one yet —
-/// the table is authored, and the monument that holds it is the world
-/// lane's (`TERRAIN.md` §8).
+/// Baked table index for `container = "crate"` — the haven pad's container
+/// (`terrain::Occupant::CrateSlot`). No verb opens one yet.
 pub const LOOT_CRATE: usize = 1;
+/// Baked table index for `container = "cache"` — the waystations', the tier
+/// between the road's barrel and the pad's crate
+/// (`terrain::Occupant::CacheSlot`). It exists as its own index because the
+/// container's KIND is the only thing a table is selected by: while the
+/// lesser tier placed `CrateSlot`, it paid the destination's table and the
+/// gradient was geometry alone. `ci/haven_prize.mjs` gates the ordering.
+pub const LOOT_CACHE: usize = 2;
 
 /// One weighted row. Counts are inclusive bounds.
 #[derive(Clone, Copy, Debug)]

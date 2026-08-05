@@ -129,37 +129,6 @@ Two things the compass could not carry, both needing another lane:
   operator word is cheaper than a pass spent guessing.
 
 ---
-## 0 · The rest of `pass-20260805-074623-01`'s ranked fixes
-
-*(GAP PASS, world lane. Its ranked fix **1** — the authored sites were not
-on the native↔wasm parity surface — landed on `loop/site-parity`; see
-`DECISIONS.md` §open "probe coverage v0". Measured before the fix: of the
-golden's 256 cells, **zero** were inside `in_haven`/`in_waystation` on all
-three probe seeds, so `haven()`'s value reached the digest through nothing
-while `client-wasm` reads it off wasm and the server off native. Its other
-two fixes were left, deliberately, and are below. That report's ranked
-**gaps** 1–3 — projectiles, day/night + AI, the recycler — are all systems
-lane; the newest visual report's gaps are all texture/material work, which
-the operator parked for this lane on 2026-08-04.)*
-
-- **A short waystation tier is silent on a shard** (ranked fix 2). `pick_minor`
-  leaves `Waystation::NONE` when no candidate clears the separation floor.
-  `tests/waystation.rs` refuses that over 16 seeds, but a shard boots whatever
-  seed `shard.toml` names: on a seed the ring cannot fill, the island ships
-  with one or zero waystations and no counter, event or log line. Wants a
-  boot-time refusal in `crates/server` — **not this lane's file.** `probe_sites`
-  now hashes each `live` flag, so a short tier at least moves the fingerprint
-  on the three probe seeds; that is not the same as being loud on an arbitrary
-  one. One-line cross-lane request: sim-core can export a
-  `sites_complete(&Haven) -> bool` for the shard to call at boot.
-- **The tier gradient is gated in containers per m², but a player collects
-  loot** (ranked fix 3). A waystation crate and a pad crate are the same
-  `crate` loot table, so per container the lesser tier pays exactly what the
-  destination pays and only geometry separates them. `ci/haven_prize.mjs` knows
-  nothing about waystations, so giving them their own table — or changing crate
-  yields — moves the real gradient with every gate green. Wants that gate
-  restated in **expected items per site**, not containers per m².
-
 ## 1 · The client is becoming a native Rust desktop app
 
 *(Operator, 2026-08-05. `DECISIONS.md` has the row. This outranks the
@@ -202,6 +171,32 @@ retired — the shader-arithmetic, texture-photograph, shadow-distance and
 capture-drift items. All are in git before this commit. `web/` still
 builds and is still gated; nothing is deleted until the native client can
 replace it.
+
+---
+
+## 1b · One call the shard owes the world lane — *(world lane, cross-lane)*
+
+*(This sits BELOW the operator's §1 on purpose. The last two world-lane
+items were filed as `## 0` above it and the judge's fix 4 on
+`pass-20260805-074623-02` was right that position is a claim: a leftover
+does not outrank a spoken call. Both of those items are now done — see
+`DECISIONS.md` §open "probe coverage v0" and "the tier gradient is paid in
+items, not density".)*
+
+- **Systems lane, one boot-time call please.** `terrain::sites_complete(&Haven)
+  -> bool` and `sites_live(&Haven) -> u32` now exist and are pure.
+  `pick_minor` leaves `Waystation::NONE` when no candidate clears the
+  separation floor; `tests/waystation.rs` refuses that over 16 seeds and
+  `test_golden_covers_authored_sites` over 3, but a shard boots whatever seed
+  `shard.toml` names, so a seed outside those 19 ships an island a third
+  smaller with **no counter, event or log line**. The refusal — or a
+  knob-registered relaxation of `WAYSTATION_MIN_SEP_M` until the ring fills —
+  belongs in `crates/server` at boot. Judge fix 1, inherited twice now.
+- **What the tier still lacks is a silhouette, not a price.** The containers
+  differ now (`CacheSlot`, smaller and greyer than the pad's crate) and so do
+  their tables. The site itself is still two boxes on bare ground; §4b below
+  holds that item and its rule — a second copy of `HAVEN_SHELTER` would make
+  the two tiers look identical, so it has to be a *different* structure.
 
 ---
 
