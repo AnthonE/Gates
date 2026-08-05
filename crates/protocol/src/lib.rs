@@ -41,12 +41,12 @@ pub use event::{
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
     encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
     encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_respawn,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
-    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
-    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
+    encode_event_removed, encode_event_respawn, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
+    EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH,
+    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
+    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -171,7 +171,19 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// goes only to the client holding the container open, and only while the
 /// server can still prove that client is in reach of it. Fixtures are
 /// keyed `v19_*`.
-pub const PROTO_VER: u16 = 19;
+///
+/// v20 gave a base a second direction to move in: the repair verb
+/// (`build.rs`). Two messages, both inside fields earlier versions
+/// widened — the repair action, the **fifteenth** of v12's sixteen and the
+/// last free one, and `SUB_PIECE_REPAIRED`, the **40th** of v13's
+/// sixty-four. Nothing existing moved a bit; the version turns because a
+/// subtype that used to be `Malformed` now decodes, and both ends must
+/// agree on which.
+///
+/// The event is deliberately `EV_STRUCT_HIT`'s mirror image and packs its
+/// numbers the same way, so a client's hp mirror gains a second writer
+/// rather than a second rule. Fixtures are keyed `v20_*`.
+pub const PROTO_VER: u16 = 20;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -374,18 +386,22 @@ const ACT_MOVE: u32 = 12;
 /// Fourteenth of the sixteen, so no width moved for it — two action codes
 /// remain.
 const ACT_CONTAINER: u32 = 13;
+/// Buy a damaged piece back to full, in its own materials (wire v20,
+/// `build.rs`). Fifteenth of the sixteen — the last code the four-bit
+/// field has to give away for free. A sixteenth costs a width bump, which
+/// is a `PROTO_VER` bump and every golden regenerated.
+const ACT_REPAIR: u32 = 14;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
 /// It is worth more here than there, because this lane's field is four
-/// bits and two codes from full while the event lane's is six bits and
-/// twenty-five from full. A fifteenth and a sixteenth action are already
-/// named in `NOW.md` (a repair, a throw); the seventeenth truncates into a
-/// live code, and both ends would then agree on bytes that mean two
-/// different things — the worst shape of wire drift there is. The assert
-/// below is what turns that from a comment someone must remember into a
-/// build failure.
-const ACT_MAX: u32 = ACT_CONTAINER;
+/// bits and **one** code from full while the event lane's is six bits and
+/// twenty-four from full. A sixteenth action is already named in `NOW.md`
+/// (a throw); the seventeenth truncates into a live code, and both ends
+/// would then agree on bytes that mean two different things — the worst
+/// shape of wire drift there is. The assert below is what turns that from
+/// a comment someone must remember into a build failure.
+const ACT_MAX: u32 = ACT_REPAIR;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -467,6 +483,16 @@ pub enum ActionMsg {
     /// the client wants, because a toggle raced against another player's
     /// toggle would then fight; the sim flips what it has and announces.
     Use {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
+    /// Repair the piece at the address back to its baked hp (repair v0).
+    /// Address only, for `Use`'s reason turned around: the amount is the
+    /// sim's arithmetic over its own store, so nothing about *how much*
+    /// crosses and nothing about how much can be forged.
+    Repair {
         cx: u16,
         cz: u16,
         level: u8,
@@ -796,6 +822,30 @@ pub fn encode_action_use(
     Ok(w.finish())
 }
 
+pub fn encode_action_repair(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || loc > sim_core::build::LOC_EDGE_N
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_REPAIR, ACTION_SUB_BITS)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    Ok(w.finish())
+}
+
 pub fn encode_action_lock(
     cx: u16,
     cz: u16,
@@ -912,6 +962,15 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         // Address only, every width exact: nothing here can be forged
         // out of range, and the sim refuses an address holding no door.
         ACT_USE => ActionMsg::Use {
+            cx: r.read(BUILD_CELL_BITS)? as u16,
+            cz: r.read(BUILD_CELL_BITS)? as u16,
+            level: r.read(BUILD_LEVEL_BITS)? as u8,
+            loc: r.read(BUILD_LOC_BITS)? as u8,
+        },
+        // Address only, every width exact — and deliberately no amount:
+        // how much hp is missing and what that costs are the server's
+        // facts, so there is no number here for a client to choose.
+        ACT_REPAIR => ActionMsg::Repair {
             cx: r.read(BUILD_CELL_BITS)? as u16,
             cz: r.read(BUILD_CELL_BITS)? as u16,
             level: r.read(BUILD_LEVEL_BITS)? as u8,
@@ -1761,14 +1820,16 @@ mod tests {
     /// `ACT_MAX`'s compile-time assert proves nothing *truncates*; this
     /// says how close the lane is to needing a width bump, so the pass
     /// that spends the last code has to change a line that says so rather
-    /// than discover it. Two left after the container verb, and `NOW.md`
-    /// already names two more C→S verbs (a repair, a throw).
+    /// than discover it. **One** left after the repair verb, and `NOW.md`
+    /// names one more C→S verb (a throw) — so the next action after that
+    /// one is a width bump, a `PROTO_VER` turn and every golden
+    /// regenerated, and this is the line that says so in advance.
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        assert_eq!(ACT_MAX, ACT_CONTAINER);
+        assert_eq!(ACT_MAX, ACT_REPAIR);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            2,
+            1,
             "the spare action codes moved — say so where the count is written"
         );
     }

@@ -202,6 +202,19 @@ pub const EV_MOVED: u8 = 26;
 /// `inventory.rs`, where the reference's three-fixes-in-half-an-hour day
 /// is written down.
 pub const EV_MOVE_REFUSED: u8 = 27;
+/// EV_PIECE_REPAIRED: a = build cell key (cx << 16 | cz), b = level << 16 |
+/// loc << 8 | piece row, c = healed << 16 | hp now.
+///
+/// `a` and `b` are `EV_PIECE_PLACED`'s exactly, because it is the same
+/// address said the same way; `c` is `EV_STRUCT_HIT`'s exactly — its `c` is
+/// `dealt << 16 | left`, and a repair is that event's opposite, so the two
+/// halves of a wall's life story pack their numbers in the same order. A
+/// client that mirrors hp off `EV_STRUCT_HIT` reads this with the same
+/// shifts and no new rule.
+///
+/// Broadcast, not unicast: a wall's hp is a world fact, and the attacker
+/// standing outside it has more use for the news than the owner does.
+pub const EV_PIECE_REPAIRED: u8 = 28;
 
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
@@ -210,7 +223,7 @@ pub const EV_MOVE_REFUSED: u8 = 27;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_MOVE_REFUSED;
+pub const EV_MAX: u8 = EV_PIECE_REPAIRED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -506,6 +519,17 @@ pub enum Command {
         level: u8,
         loc: u8,
         material: u8,
+    },
+    /// Repair the piece at the address back to its baked hp, paid in the
+    /// piece's own materials (build.rs validates and refuses by event).
+    /// No amount crosses the wire: how much is missing is the server's
+    /// fact, so a client cannot ask to be healed by a number it chose.
+    Repair {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
     },
     /// Take everything that fits from the nearest backpack in reach
     /// (backpack.rs). No target crosses: the pick is the sim's, the same
@@ -1285,6 +1309,27 @@ impl World {
                         level,
                         loc,
                         material,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Repair {
+                id,
+                cx,
+                cz,
+                level,
+                loc,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    build::repair(
+                        &self.build,
+                        &self.deploys,
+                        &mut self.pieces,
+                        &mut self.players[slot],
+                        cx,
+                        cz,
+                        level,
+                        loc,
                         &mut self.events,
                     );
                 }

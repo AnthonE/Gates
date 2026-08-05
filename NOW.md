@@ -15,6 +15,35 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0a · Repair — the piece half landed; the door and the keypress did not
+
+Gap pass. Ranked gap **1** of both `findings/pass-20260805-074623-01-judge.md`
+and `-02-judge.md`, verbatim in each and unmoved between them: *"a base can
+only ever be destroyed, so the correct play after any raid is to abandon."*
+
+Landed: `build::repair` — a damaged **piece** bought back to its baked hp,
+priced pro-rata in its own materials (`repair_cost_pct`, `content/balance.toml`,
+`DECISIONS.md` §open "repair v0"), refused under a foreign hearth's claim,
+upkeep clock untouched. Wire v20: `ACT_REPAIR`, `EV_PIECE_REPAIRED`,
+`SUB_PIECE_REPAIRED`, goldens rekeyed and regenerated. Four sim gates plus a
+role check; `REFUSE_B_*` gained a `DOMAINS` row on the way past.
+
+What remains, both deliberate cuts:
+
+- **Deployables cannot be repaired** — the door is the intended breach point,
+  so this is the half a raid actually notices. Two things block it: `Deploys`
+  exposes no hp setter (`deploy.rs` owns that write today), and a deployable's
+  cost is a single item, so a fractional price of it rounds to the whole thing
+  and needs its own answer rather than reusing the piece formula. **systems.**
+- **Nothing can press it.** `ACT_REPAIR` decodes and the server dispatches it;
+  no client sends one. The browser client needs the verb bound and a prompt —
+  **ui lane** (`web/`); the native client picks it up with `NOW.md` §1 slice 1.
+
+Untested here: no client sent a real repair, so the round trip is proven by
+goldens and unit gates only, not by a live shard.
+
+---
+
 ## 0 · Half the verbs you own are undiscoverable — *(ui lane; compass done this pass)*
 
 From the judge's **ranked gap 3**, `pass-20260805-063306-01-judge.md`. NOW.md

@@ -179,6 +179,20 @@ pub fn structural(c: &Content) -> Result<(), String> {
             }
         }
     }
+    // Repair is priced as a percent of the pro-rata share of the piece's
+    // own build cost, so both ends of the range are a live defect rather
+    // than a taste: at 0 a wall heals free and no raid can ever land, and
+    // above 100 repairing costs strictly more than the damage destroyed —
+    // which is a rebuild with extra steps, and makes the verb dead weight.
+    // The ceiling is 100 exactly for that reason; loosening past it is an
+    // operator act, not a data edit.
+    let rp = c.balance.globals.repair_cost_pct;
+    if rp == 0 || rp > 100 {
+        return Err(format!(
+            "globals: repair_cost_pct {rp} must be 1..=100 — 0 heals a base \
+             for free, over 100 costs more than rebuilding"
+        ));
+    }
     let piece_hp = |shape: Shape, material: Material| -> Option<u32> {
         c.pieces
             .iter()
