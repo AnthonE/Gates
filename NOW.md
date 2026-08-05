@@ -15,6 +15,56 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0d · A piece's hp, client side — three reads, all wrong *(ui lane — done this pass)*
+
+Gap pass. Ranked gap **3** of `findings/pass-20260805-074623-04-judge.md`
+(and gap **1** of `-03`): the sim half of a base's life story landed and the
+player-facing half did not. This is that half, as far as `web/` can carry it.
+
+Three defects, all found by reading, all in `main.js` — the one file no gate
+here can execute:
+
+- **U was dead.** `nearestPiece` read `bestD = REACH * REACH` against a `REACH`
+  declared nowhere in the repo, so it threw a `ReferenceError` on its first
+  line and upgrade had never worked from the browser. A free variable is not a
+  syntax error, so the bundle built clean.
+- **A repair announced itself as a raid.** `PieceRepaired` raises
+  `APPLIED_STRUCT_HIT` too; only a hit also raises `APPLIED_HIT`. `core.rs:98`
+  says so in prose and the one reader checked one bit, so mending a wall
+  toasted `breaching 750/750`.
+- **`BUILD_REFUSE_TEXT` was one short** — `REFUSE_B_INTACT` (9) reached the
+  player as `can't build: code 9`, the likeliest repair refusal there is.
+
+The fix and the gate are one move: the anchor, the scan, the table and the
+discriminator are now in `interact.js`, which node calls for real (§W, 1468 →
+1530 checks). `main.js` also gets a free-variable scan — the class, not the
+instance, and it needed a real character-walking stripper: the regex draft
+went blind past `` `can't build:` ``'s apostrophe and M26 survived it.
+**All 21 mutants run, all 21 red** — which also closes `-04`'s ranked fix 3,
+where 7 of 12 had never been executed.
+
+**Not done, and it is the point of the item:** nothing can still *send* a
+repair. `client_action_repair` is not exported from the wasm bridge, so the
+key has nothing to call — see §0e. Untested on a live shard: no client sent a
+repair, and `browser_smoke` was off this run.
+
+## 0e · One export the client needs — *(systems lane, cross-lane)*
+
+`crates/client-wasm/src/bridge.rs` exports `client_action_` for all fourteen
+other verbs and none for repair, so `ACT_REPAIR` decodes, the server dispatches
+it, and no client can press it. ~15 lines mirroring `client_action_upgrade`
+(`bridge.rs:735`), whose arg list is the same four (cx, cz, level, loc) minus
+the material. The ui lane has the anchor, the pick and the refusal text
+already landed and will bind the key the pass after it exists.
+
+## 0f · A proposal for the `renderer_touched` list — *(operator act)*
+
+`gates.sh:110` reserves the exemption list to the operator, so this is a
+proposal and not a change. `web/src/interact.js` is now pure, node-imported
+and covered by §Q/§R/§V/§W with eleven mutants of its own; it cannot reach a
+material, a shader or the terrain. A one-line edit to it currently costs the
+~19-minute renderer tier. `map.js` and `invmove.js` have the same shape.
+`main.js` does NOT — it builds three.js scenes and belongs where it is.
 ## 0d · The island validates at boot *(systems lane — done this pass)*
 
 Closes the boot-refusal request filed twice — `## 0`'s "A short waystation tier
