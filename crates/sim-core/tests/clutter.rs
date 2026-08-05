@@ -730,8 +730,8 @@ fn waterline_tiles(seed: u64) -> Vec<(i32, i32)> {
 /// the same ground every skirt test above already stands on.
 fn inland_tiles(seed: u64) -> Vec<(i32, i32)> {
     let (ix, iz) = a_land_origin(seed, 0);
-    let tx0 = (ix / CLUTTER_TILE_M).floor() as i32 - COAST_BLOCK / 2;
-    let tz0 = (iz / CLUTTER_TILE_M).floor() as i32 - COAST_BLOCK / 2;
+    let tx0 = (ix / CLUTTER_TILE_M) as i32 - COAST_BLOCK / 2;
+    let tz0 = (iz / CLUTTER_TILE_M) as i32 - COAST_BLOCK / 2;
     let mut out = Vec::new();
     for dz in 0..COAST_BLOCK {
         for dx in 0..COAST_BLOCK {
@@ -764,8 +764,8 @@ fn a_coast_block(seed: u64) -> (i32, i32, Haven, ScatterTable) {
     }
     let shore =
         shore.unwrap_or_else(|| panic!("seed {seed:#x}: the +x ray never reaches open sea"));
-    let stx = ((c + shore) / CLUTTER_TILE_M).floor() as i32;
-    let stz = (c / CLUTTER_TILE_M).floor() as i32;
+    let stx = ((c + shore) / CLUTTER_TILE_M) as i32;
+    let stz = (c / CLUTTER_TILE_M) as i32;
     // Two tiles seaward of the shoreline tile, the remaining nine inland.
     (stx + 3 - COAST_BLOCK, stz - COAST_BLOCK / 2, haven, table)
 }
@@ -972,10 +972,14 @@ fn test_a_prop_is_skirted_by_exactly_one_tile() {
                             }
                             // The tile whose half-open bounds contain it. Only
                             // block tiles have an emitted list to check.
-                            let otx = (e.x / CLUTTER_TILE_M).floor() as i32;
-                            let otz = (e.z / CLUTTER_TILE_M).floor() as i32;
+                            // Floor-by-cast, wall 1's form: island coordinates
+                            // are positive, so truncation IS floor here — and
+                            // if it ever were not, the owner would be wrong and
+                            // the assertion below would say so out loud.
+                            let otx = (e.x / CLUTTER_TILE_M) as i32;
+                            let otz = (e.z / CLUTTER_TILE_M) as i32;
                             let (bx, bz) = (otx - tx0, otz - tz0);
-                            if bx < 0 || bx >= COAST_BLOCK || bz < 0 || bz >= COAST_BLOCK {
+                            if !(0..COAST_BLOCK).contains(&bx) || !(0..COAST_BLOCK).contains(&bz) {
                                 continue;
                             }
                             let hits: usize = emitted
