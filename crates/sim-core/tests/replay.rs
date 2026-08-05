@@ -94,7 +94,15 @@ const TICKS: u64 = 900;
 /// lane's behaviour had been dropped, and this gate exists to notice exactly
 /// that. The number below is read off a run of the merged tree and confirmed
 /// stable across repeated runs, not carried over from a side.
-const GOLDEN_FINAL_HASH: u64 = 0x81DF_FCAA_4B37_D99F;
+/// Regenerated again for structural collapse (build.rs `collapse_from`).
+/// Two causes, and both were checked rather than assumed: `sweep_support`
+/// joins `state_hash` beside the other two sweep cursors, and — with that
+/// field held out of the digest and the sweep disabled — the final hash
+/// still moved, so the cascade genuinely changes the world this script
+/// replays. Pieces that used to hang in the air after the thing under them
+/// broke now come down, which is the point. Determinism itself is
+/// unaffected and asserted above: both runs agree tick for tick.
+const GOLDEN_FINAL_HASH: u64 = 0x9974_FB51_987A_1EF3;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
