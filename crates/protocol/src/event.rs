@@ -24,8 +24,9 @@ use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_DOOR, PLACE_ANY
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
 use sim_core::limits::{
-    CRAFT_QUEUE, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOY_DEFS,
-    MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+    CRAFT_QUEUE, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOY_COSTS,
+    MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
+    MAX_RECIPE_INPUTS,
 };
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
@@ -247,6 +248,12 @@ const PIECE_DEFS_COUNT_BITS: u32 = 3;
 const SHAPE_BITS: u32 = 3;
 const MATERIAL_BITS: u32 = 2;
 const N_COSTS_BITS: u32 = 2;
+/// A deployable's repair-cost row count. Wider than `N_COSTS_BITS` because
+/// a deployable is priced from its *recipe*, so the ceiling is
+/// `MAX_DEPLOY_COSTS` (= `MAX_RECIPE_INPUTS`, 4) rather than a piece's 2 —
+/// and unlike a piece, zero is a live value here: a deployable content
+/// quotes no recipe for bakes unpriced and `build::repair` refuses it.
+const DEPLOY_COSTS_BITS: u32 = 3;
 const DEPLOY_SYNC_COUNT_BITS: u32 = 5;
 const DEPLOY_DEFS_TOTAL_BITS: u32 = 5;
 const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
@@ -437,11 +444,13 @@ pub enum EventMsg {
         damage: u16,
         left: u16,
     },
-    /// The piece at the address was bought back to full (broadcast).
-    /// `StructHit`'s mirror image: `healed` is what the payment restored,
-    /// `hp` where the piece now stands. `row` rides along so a client that
-    /// has not yet walked this address can place it without waiting.
+    /// The structure at the address was bought back to full (broadcast).
+    /// `StructHit`'s mirror image, down to the leading `deploy` bit and
+    /// the row width it selects: `healed` is what the payment restored,
+    /// `hp` where the structure now stands. `row` rides along so a client
+    /// that has not yet walked this address can place it without waiting.
     PieceRepaired {
+        deploy: bool,
         cx: u16,
         cz: u16,
         level: u8,
@@ -928,6 +937,7 @@ pub fn encode_event_build_refused(reason: u8, buf: &mut [u8]) -> Result<usize, W
 // the one `PieceRec` already is.
 #[allow(clippy::too_many_arguments)]
 pub fn encode_event_piece_repaired(
+    deploy: bool,
     cx: u16,
     cz: u16,
     level: u8,
@@ -937,10 +947,19 @@ pub fn encode_event_piece_repaired(
     hp: u16,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
+    // `encode_event_struct_hit`'s row-width rule, verbatim: a deployable
+    // row is four bits and a piece row eight, so the bit that names the
+    // store also sizes the field after it.
+    let row_bits = if deploy {
+        DEPLOY_ROW_BITS
+    } else {
+        PIECE_ROW_BITS
+    };
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
         || level as usize >= MAX_BUILD_LEVELS
         || loc > LOC_EDGE_N
+        || (row as u32) >= (1 << row_bits)
         || healed == 0
         || hp == 0
         || healed > hp
@@ -948,11 +967,12 @@ pub fn encode_event_piece_repaired(
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_PIECE_REPAIRED)?;
+    w.write_bit(deploy)?;
     w.write(cx as u32, BUILD_CELL_BITS)?;
     w.write(cz as u32, BUILD_CELL_BITS)?;
     w.write(level as u32, BUILD_LEVEL_BITS)?;
     w.write(loc as u32, BUILD_LOC_BITS)?;
-    w.write(row as u32, PIECE_ROW_BITS)?;
+    w.write(row as u32, row_bits)?;
     w.write(healed as u32, 16)?;
     w.write(hp as u32, 16)?;
     Ok(w.finish())
@@ -1087,10 +1107,22 @@ pub fn encode_event_deploy_defs(
         if def.arch > ARCH_DOOR || def.placement > PLACE_ANY || def.hp == 0 {
             return Err(WireError::Range);
         }
+        if def.n_costs as usize > MAX_DEPLOY_COSTS {
+            return Err(WireError::Range);
+        }
         w.write(def.arch as u32, ARCH_BITS)?;
         w.write(def.placement as u32, PLACEMENT_BITS)?;
         w.write(def.hp as u32, 16)?;
         w.write(def.item as u32, 16)?;
+        // The repair price, the same way `SUB_PIECE_DEFS` carries a
+        // piece's. Without it a client can quote what a wall costs to mend
+        // and not what a door costs, which is the half of the verb a raid
+        // actually meets. Zero rows is legal and means unpriced.
+        w.write(def.n_costs as u32, DEPLOY_COSTS_BITS)?;
+        for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
+            w.write(item as u32, 16)?;
+            w.write(units as u32, 16)?;
+        }
     }
     Ok((w.finish(), count))
 }
@@ -1758,21 +1790,29 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             reason: r.read(REFUSE_B_BITS)? as u8,
         },
         SUB_PIECE_REPAIRED => {
+            let deploy = r.read_bit()?;
             let cx = r.read(BUILD_CELL_BITS)? as u16;
             let cz = r.read(BUILD_CELL_BITS)? as u16;
             let level = r.read(BUILD_LEVEL_BITS)? as u8;
             let loc = r.read(BUILD_LOC_BITS)? as u8;
-            let row = r.read(PIECE_ROW_BITS)? as u8;
+            let row = r.read(if deploy {
+                DEPLOY_ROW_BITS
+            } else {
+                PIECE_ROW_BITS
+            })? as u8;
             let healed = r.read(16)? as u16;
             let hp = r.read(16)? as u16;
             // The encoder's own refusals, restated: two bits hold four
             // `loc` values and all four are live, but a zero heal, a zero
             // ceiling, or a heal past the ceiling are all forgeable and
-            // all would corrupt an hp mirror.
+            // all would corrupt an hp mirror. `row` needs no bound — the
+            // width the bit selected is exactly its domain, which is why
+            // the field is read at that width rather than masked after.
             if loc > LOC_EDGE_N || healed == 0 || hp == 0 || healed > hp {
                 return Err(WireError::Malformed);
             }
             EventMsg::PieceRepaired {
+                deploy,
                 cx,
                 cz,
                 level,
@@ -1865,14 +1905,21 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let placement = r.read(PLACEMENT_BITS)? as u8;
                 let hp = r.read(16)? as u16;
                 let item = r.read(16)? as u16;
-                if arch > ARCH_DOOR || hp == 0 {
+                let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
+                if arch > ARCH_DOOR || hp == 0 || n_costs as usize > MAX_DEPLOY_COSTS {
                     return Err(WireError::Malformed);
+                }
+                let mut costs = [(0u16, 0u16); MAX_DEPLOY_COSTS];
+                for cost in costs.iter_mut().take(n_costs as usize) {
+                    *cost = (r.read(16)? as u16, r.read(16)? as u16);
                 }
                 *row = DeployDef {
                     arch,
                     placement,
                     hp,
                     item,
+                    n_costs,
+                    costs,
                 };
             }
             EventMsg::DeployDefs {
@@ -2613,6 +2660,49 @@ mod tests {
             encode_event_deploy_defs(&bad, 0, &mut buf),
             Err(WireError::Range)
         );
+        // A cost count past the table refuses too — the decoder bounds it
+        // at `MAX_DEPLOY_COSTS`, so an encoder that wrote more would emit
+        // a message its own reader calls malformed.
+        let mut wide = dc;
+        wide.defs[0].n_costs = MAX_DEPLOY_COSTS as u8 + 1;
+        assert_eq!(
+            encode_event_deploy_defs(&wide, 0, &mut buf),
+            Err(WireError::Range)
+        );
+
+        // The worst batch this subtype can emit still fits the cap: a full
+        // `DEPLOY_DEFS_BATCH` of rows each carrying the maximum cost rows.
+        // The price rows are new in v21 and they are the widest part of the
+        // row, so the cap needs asserting rather than assuming.
+        let mut full = DeployContent::EMPTY;
+        full.def_count = DEPLOY_DEFS_BATCH as u16;
+        for (n, row) in full.defs.iter_mut().take(DEPLOY_DEFS_BATCH).enumerate() {
+            *row = DeployDef {
+                arch: sim_core::deploy::ARCH_BOX,
+                placement: sim_core::deploy::PLACE_ANY,
+                hp: u16::MAX,
+                item: u16::MAX,
+                n_costs: MAX_DEPLOY_COSTS as u8,
+                costs: [(u16::MAX, u16::MAX); MAX_DEPLOY_COSTS],
+            };
+            let _ = n;
+        }
+        let (len, took) = encode_event_deploy_defs(&full, 0, &mut buf).unwrap();
+        assert_eq!(took, DEPLOY_DEFS_BATCH, "a full batch rides");
+        assert!(
+            len <= MAX_EVENT_MSG_BYTES,
+            "a full priced deploy-defs batch is {len} B against a \
+             {MAX_EVENT_MSG_BYTES} B cap"
+        );
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::DeployDefs { rows, .. } => {
+                assert_eq!(
+                    rows[DEPLOY_DEFS_BATCH - 1],
+                    full.defs[DEPLOY_DEFS_BATCH - 1]
+                )
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
         // The 16-row cap shape drips in two batches.
         let mut full = DeployContent::EMPTY;
         full.def_count = MAX_DEPLOY_DEFS as u16;
@@ -2622,6 +2712,7 @@ mod tests {
                 placement: (i % 4) as u8,
                 hp: u16::MAX,
                 item: u16::MAX,
+                ..DeployDef::INERT
             };
         }
         let (len, took) = encode_event_deploy_defs(&full, 0, &mut buf).unwrap();
@@ -3213,9 +3304,9 @@ mod wire_domains {
             prefix: "pub const REFUSE_B_",
             ty: ": u32 = ",
             exempt: &[],
-            min_members: 10,
+            min_members: 11,
             bits: REFUSE_B_BITS,
-            live_max: 9,
+            live_max: 10,
         },
         Domain {
             what: "container kind",
@@ -3552,6 +3643,7 @@ mod wire_domains {
             "PIECE_DEFS_TOTAL_BITS",
             "PIECE_DEFS_COUNT_BITS",
             "N_COSTS_BITS",
+            "DEPLOY_COSTS_BITS",
             "DEPLOY_SYNC_COUNT_BITS",
             "DEPLOY_DEFS_TOTAL_BITS",
             "DEPLOY_DEFS_COUNT_BITS",
