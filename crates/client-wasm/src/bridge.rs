@@ -77,6 +77,15 @@ struct Bridge {
     remote_ids: [u32; MAX_SNAPSHOT_ENTITIES],
     heights: Vec<f32>,
     slots: [f32; SLOTS_MAX_CELLS * SLOTS_MAX_CELLS * SLOT_FLOATS],
+    /// The haven pad, memoized by seed. `terrain::haven` is a pure function
+    /// of the seed and a global argmax over the whole road ring, and
+    /// `terrain_fill_slots` was paying for the whole search once per
+    /// streamed chunk — measured 5,453 height taps mean per call against a
+    /// doc claim of ~1,000 (`findings/pass-20260804-205133-02-judge.md`),
+    /// and the ring-phase check chain this pass added to the selector makes
+    /// each of those searches dearer. Caching cannot change what is drawn:
+    /// the key is the only input.
+    haven: Option<(u64, terrain::Haven)>,
     /// (cell key, harvested) pairs from the last stream message.
     changes: [u32; SLOT_SYNC_BATCH * 2],
     changes_len: u32,
@@ -130,6 +139,7 @@ impl Bridge {
             remote_ids: [0; MAX_SNAPSHOT_ENTITIES],
             heights: vec![0.0; HEIGHTS_MAX_N * HEIGHTS_MAX_N],
             slots: [0.0; SLOTS_MAX_CELLS * SLOTS_MAX_CELLS * SLOT_FLOATS],
+            haven: None,
             changes: [0; SLOT_SYNC_BATCH * 2],
             changes_len: 0,
             inv: [0; INV_SLOTS * 2],
@@ -1411,9 +1421,17 @@ pub extern "C" fn terrain_fill_slots(seed: u64, cx0: i32, cz0: i32, cells: u32) 
     with(|b| {
         let cells = (cells as usize).min(SLOTS_MAX_CELLS) as i32;
         let table = ScatterTable::alpha_default();
-        // Once per batch, not once per cell: the argmax is ~1,000 height
-        // taps and this loop runs up to SLOTS_MAX_CELLS² of them.
-        let haven = terrain::haven(seed);
+        // Once per SESSION, not once per batch and certainly not per cell:
+        // the argmax sweeps the whole road ring. Keyed on the seed, which is
+        // its only input, so a shard change re-resolves and nothing else can.
+        let haven = match b.haven {
+            Some((s, h)) if s == seed => h,
+            _ => {
+                let h = terrain::haven(seed);
+                b.haven = Some((seed, h));
+                h
+            }
+        };
         let mut n = 0usize;
         for dz in 0..cells {
             for dx in 0..cells {
