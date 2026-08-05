@@ -2199,8 +2199,11 @@ mod tests {
             CZ as f32 * crate::build::BUILD_CELL_M + 1.5,
         );
         let f = walk_west();
+        // The door is what this fixture is about; a pine standing where it
+        // walks is not (occupy::Barren).
+        let mut occ = crate::occupy::Scratch::barren();
         for _ in 0..120 {
-            crate::movement::step(SEED, pieces.cols(), &mut b, &f);
+            crate::movement::step(SEED, pieces.cols(), &mut occ.occupants(), &mut b, &f);
         }
         b.qx as f32 * crate::movement::POS_XZ_Q
     }

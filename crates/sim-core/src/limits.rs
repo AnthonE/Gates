@@ -158,6 +158,20 @@ pub const CHAT_LOCAL_CM: i64 = 2_000;
 /// the hit. Proposed default, DECISIONS.md §open (gather bounds row).
 pub const MAX_SLOT_LIVES: usize = 16_384;
 
+/// Lines in the direct-mapped memo of `terrain::scatter` that makes the
+/// occupant collision query affordable (occupy.rs). Sized past the
+/// `MAX_PLAYERS * 9` cells a full shard can have under probe at once, so a
+/// spread-out server still mostly hits.
+///
+/// **It has no overflow policy, and that is not an omission.** Every other
+/// cap here bounds a store whose contents are state, where dropping an entry
+/// loses something; this bounds a memo of a pure function, where a collision
+/// re-resolves and the answer is bit-identical either way. Nothing can be
+/// lost, so there is nothing to refuse or evict. Must stay a power of two —
+/// occupy.rs masks with it and a const block asserts it.
+/// Proposed default, DECISIONS.md §open (occupant collision v0 row).
+pub const SLOT_CACHE_SLOTS: usize = 1_024;
+
 /// Building-piece definitions the sim preallocates for (the alpha set is
 /// 18 rows — 6 shapes × 3 materials, content/building.toml). The content
 /// bake refuses a set past this. Structural cap like `MAX_ITEM_DEFS`.

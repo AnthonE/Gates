@@ -1126,11 +1126,10 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
 // ── Occupant volume ────────────────────────────────────────────────────────
 //
 // What a slot does to a body that walks into it. Four passes built a road, a
-// pad, a container ring and a building, and every one of them is walk-through:
-// `collide.rs` and `movement.rs` contain zero references to `Occupant`, so
-// `TERRAIN.md` §1 stage 6 asks the forest for "wood, cover, low visibility"
-// and cover does not exist — there is nothing on this island you can break
-// line of sight on.
+// pad, a container ring and a building and every one of them was
+// walk-through; `occupy.rs` is the consumer that closed that, so
+// `TERRAIN.md` §1 stage 6's "wood, cover, low visibility" is now something a
+// body can actually stand behind.
 //
 // The volume belongs here rather than in `collide.rs` for the same reason the
 // occupant enum does: whether a pine has a trunk you stop at is a property of
@@ -1139,6 +1138,8 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
 // indexes them. That seam is deliberate — `scatter` costs a `height` fan, a
 // `moisture`, a `clump` and a `road_band` per cell, so a movement step must
 // never re-derive slots by calling it, and nothing here invites that.
+// `occupy.rs` answers it with a memo rather than a re-derivation, which is
+// exact because `scatter` is a pure function of `(seed, cell)`.
 //
 // Cylinders, not boxes. Every scattered archetype is radially symmetric about
 // its own axis except the crate, and a cylinder needs no yaw and therefore no
