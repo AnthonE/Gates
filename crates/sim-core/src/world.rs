@@ -233,6 +233,29 @@ pub const DEATH_BY_CLOCK: u8 = 1;
 /// happened to them.
 pub const DEATH_BY_SALT: u8 = 2;
 
+/// The highest cause above, named rather than counted — `EV_MAX`'s
+/// discipline applied to a *value domain* instead of a code ledger.
+///
+/// The difference matters, because this is the half wall 6 does not cover.
+/// `test_protocol_golden` pins the **layout** of `EV_DEATH`, and a fourth
+/// cause moves no layout: `DEATH_CAUSE_BITS` is 2, three values are spent,
+/// and the fourth bit pattern is already on the wire being *refused* by
+/// both ends. So a new `DEATH_BY_*` lands with the golden green, the
+/// replay green (the event ring is not in `state_hash`) and clippy green
+/// (every cause is a `u8`) — and the encoder returns `Err(Range)` for
+/// every death by that cause, forever. The server counts the error and
+/// drops the packet, so the victim is a corpse whose death screen never
+/// opens.
+///
+/// That is not hypothetical: it is the shape of a judged **FAIL** on
+/// 2026-08-05, reproduced executably by the judge before it was believed.
+/// Protocol derives `DEATH_CAUSE_MAX` from this constant rather than
+/// restating it, and `death_causes_are_a_closed_ledger` parses this file
+/// so a cause declared past this line fails loudly instead of silently.
+/// A widened *meaning* is still a wire change (`protocol/src/lib.rs`) —
+/// this makes the widening impossible to do by accident, not permitted.
+pub const DEATH_BY_MAX: u8 = DEATH_BY_SALT;
+
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
 /// 8-bit fields below it, so bit 24 is the first free one.
