@@ -130,6 +130,16 @@ pub fn hash(c: &Content) -> u64 {
                 h.u(f);
             }
         }
+        // The radius walks for the fuse's reason: it reaches `ThrowDef`
+        // (bake.rs) and scales both damage columns, so two contents whose
+        // satchels clear different holes must not canonicalise the same.
+        match w.blast_m {
+            None => h.u(0),
+            Some(b) => {
+                h.u(1);
+                h.u(b);
+            }
+        }
     }
 
     h.s("armor");
