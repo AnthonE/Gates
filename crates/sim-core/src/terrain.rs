@@ -559,6 +559,179 @@ const _: () = {
     assert!(HAVEN_SHELTER_TRIES == HAVEN_CRATES);
 };
 
+// ── Waystations: the second tier of destination ────────────────────────────
+//
+// `TERRAIN.md`'s own numbers table read `monuments | 0 — haven pad only`, and
+// both judge reports of 2026-08-05 named the consequence rather than the
+// count: "there is one place on the island worth walking to". A ring road
+// with a single bead on it is a commute, not a circulation loop — a player
+// leaves the base for one destination or not at all, and the two players who
+// were supposed to meet on the way there have exactly one place to be.
+//
+// The fix is a SECOND TIER, not a second haven, and the whole of it comes out
+// of work `haven()` already does and throws away. That search scores
+// `HAVEN_CANDIDATES` bearings and keeps the argmin; the other 63 are sites
+// that passed the same land and road checks and lost on flatness by
+// centimetres. Taking the best of the losers costs no new shoreline march, no
+// new bisect and no new `height` fan — one array, filled in the loop that was
+// already running.
+//
+// **The tier is defined by the gradient, and the gradient is const-asserted.**
+// A waystation is a smaller place holding fewer of the same containers, so
+// `haven > waystation > shoulder` in containers per square metre, and the
+// LESSER TIER IN AGGREGATE STILL DOES NOT OUTPAY THE ONE DESTINATION. That
+// last clause is what fixes the count at two: it is the bound
+// `WAYSTATIONS * WAYSTATION_CRATES < HAVEN_CRATES`, and at two crates apiece
+// — the fewest that can still read as arranged rather than as one drawn
+// barrel — it admits two sites and refuses three. The count is derived from
+// the rule, not chosen; widening either factor fails the const block below
+// rather than quietly making the haven the second-best place on the island.
+//
+// What this is NOT: it is not the carve (`height` has ~80 call sites in four
+// crates, so a carve is a cross-lane change and still open, `TERRAIN.md` §7),
+// and it is not new art. A waystation is `Occupant::CrateSlot` — the
+// archetype the pad ring already ships — so no client, wire or protocol
+// change carries this, and nothing here is in `state_hash`.
+
+/// Lesser sites on the road ring. Derived, not chosen: the const block below
+/// holds `WAYSTATIONS * WAYSTATION_CRATES < HAVEN_CRATES`, so the whole
+/// second tier put together still pays less than the one destination
+/// (knob, DECISIONS.md §open: waystations v0).
+pub const WAYSTATIONS: usize = 2;
+/// Containers on a waystation's ring. Two is the floor, not a taste: one
+/// container is a drawn barrel with extra steps and reads as weather, and
+/// `SPAWN.md` §6's point about a destination is that it reads as ARRANGED.
+/// Two anchors is the smallest arrangement there is (knob).
+pub const WAYSTATION_CRATES: i32 = 2;
+/// Exclusion radius, meters.
+///
+/// **Derived from the gradient, and the first draft got it backwards** — which
+/// is worth recording, because it type-checked, it looked obviously right, and
+/// only writing the assert found it. At 10 m the lesser tier was DENSER than
+/// the pad: two containers in 314 m² is 0.00637 per m² against the pad's five
+/// in 804 m², 0.00622. The site with fewer crates was the better square metre,
+/// so the gradient the whole tier exists to create pointed the wrong way, and
+/// a player optimizing for loot-per-walk would have skipped the haven.
+///
+/// The floor is arithmetic: density stays below the pad's iff
+/// `WAYSTATION_CRATES / R² < HAVEN_CRATES / HAVEN_RADIUS_M²`, so
+/// `R > sqrt(2 × 256 / 5) = 10.12 m`. 11.0 clears it with margin, stays well
+/// inside `HAVEN_RADIUS_M` so the lesser tier still reads as a smaller place
+/// on sight, and the const block below asserts the inequality itself rather
+/// than the number — widen the crate count and it is the ASSERT that fails,
+/// not the design (knob, DECISIONS.md §open: waystations v0).
+pub const WAYSTATION_RADIUS_M: f32 = 11.0;
+/// Radius of the container ring, meters. Bounded on both sides by arithmetic,
+/// the same way `HAVEN_CRATE_R_M` is. Below `CELL_SIZE`, so an anchor is
+/// never more than one scatter cell from the site center and `scatter`'s
+/// broad phase is complete rather than approximate. Above `0.75 * CELL_SIZE`,
+/// so the two diametrically opposite anchors are `2 * R = 13 m` apart against
+/// an 11.31 m cell diagonal and CANNOT share a cell — a shared cell would
+/// silently drop a container, which is the one failure this shape can have
+/// (knob, DECISIONS.md §open: waystations v0).
+pub const WAYSTATION_CRATE_R_M: f32 = 6.5;
+/// Ring rotations a candidate may try before it is refused, and the LUT step
+/// between them. Same mechanism as `HAVEN_PHASE_TRIES` and for the same
+/// reason: the site stands ON the road, so its ring crosses the carriageway
+/// at two bearings and `tests/road.rs` requires that surface clear. The step
+/// is derived — the tries divide one anchor gap (256 / `WAYSTATION_CRATES`)
+/// evenly (knob).
+pub const WAYSTATION_PHASE_TRIES: i32 = 16;
+/// LUT steps between tried phases. Derived, not chosen.
+pub const WAYSTATION_PHASE_STEP: i32 = 256 / WAYSTATION_CRATES / WAYSTATION_PHASE_TRIES;
+/// Minimum center-to-center separation between any two sites, meters —
+/// waystation to waystation and waystation to pad.
+///
+/// Derived from the ring it sits on rather than picked. Three sites spread
+/// around the tightest ring the coast road can take (`ROAD_R_MIN`) are 120°
+/// apart, and the chord of 120° at 600 m is 1039 m — so a floor of
+/// `ROAD_R_MIN` itself is satisfiable by construction on the worst ring while
+/// still forcing roughly-thirds spacing on every seed. It is also far outside
+/// any exclusion zone, so "separate sites" is a statement about the walk
+/// between them and not about their footprints (knob).
+pub const WAYSTATION_MIN_SEP_M: f32 = ROAD_R_MIN;
+
+// Wall 4 at the definition, as the haven block does it. Every one of these is
+// a property of the shape rather than a preference, so a later pass that
+// widens a number fails HERE instead of shipping a dropped container or a
+// second-best haven.
+const _: () = {
+    // THE GRADIENT, half one: the whole lesser tier, added up, still pays
+    // less than the one destination — the rule that fixes `WAYSTATIONS` at
+    // two, and the reason a third site is a compile error rather than a
+    // balance discussion.
+    assert!(WAYSTATIONS as i32 * WAYSTATION_CRATES < HAVEN_CRATES);
+    // THE GRADIENT, half two: and it pays less PER SQUARE METRE, so the pad
+    // is not merely bigger but richer. `containers / (π r²)` with the π
+    // cancelled off both sides, which is why this reads cross-multiplied. The
+    // haven's own gate states the pad's edge over the road in exactly these
+    // units (`tests/haven.rs`, 2.30× the shoulder), so all three tiers are
+    // one comparable number and the middle one is genuinely in the middle.
+    assert!(
+        (WAYSTATION_CRATES as f32) * HAVEN_RADIUS_M * HAVEN_RADIUS_M
+            < (HAVEN_CRATES as f32) * WAYSTATION_RADIUS_M * WAYSTATION_RADIUS_M
+    );
+    // A destination reads as arranged; one anchor is a barrel with a story.
+    assert!(WAYSTATION_CRATES >= 2);
+    // A smaller place, and a walkable rim inside it.
+    assert!(WAYSTATION_RADIUS_M > 0.0 && WAYSTATION_RADIUS_M < HAVEN_RADIUS_M);
+    assert!(WAYSTATION_CRATE_R_M > 0.0 && WAYSTATION_CRATE_R_M < WAYSTATION_RADIUS_M);
+    // `scatter`'s broad phase is the site's cell plus ONE in each direction.
+    // That is complete iff no anchor is a full cell from the center: a
+    // displacement under `CELL_SIZE` can move a floor-divided index by at
+    // most one, whatever the site's alignment inside its cell.
+    assert!(WAYSTATION_CRATE_R_M < CELL_SIZE);
+    // No two anchors in one cell. The pair is exactly diametric (256 /
+    // `WAYSTATION_CRATES` is 128 LUT steps), so the separation is `2 * R`,
+    // and 1.5 stands in for √2 on the cell diagonal — larger, exact in
+    // binary, and no sqrt in a const block, the same substitution the shelter
+    // block above makes.
+    assert!(2.0 * WAYSTATION_CRATE_R_M > 1.5 * CELL_SIZE);
+    // The phase search is capped and covers exactly one anchor gap: beyond
+    // that the ring repeats and the extra tries are the same rings again.
+    assert!(WAYSTATION_PHASE_TRIES > 0 && WAYSTATION_PHASE_STEP > 0);
+    assert!(WAYSTATION_PHASE_TRIES * WAYSTATION_PHASE_STEP <= 256 / WAYSTATION_CRATES);
+    // Separate places, not overlapping footprints — by a wide margin, so the
+    // word "separation" means the walk and not the geometry.
+    assert!(WAYSTATION_MIN_SEP_M > 2.0 * (HAVEN_RADIUS_M + WAYSTATION_RADIUS_M));
+    // Every candidate the search can offer lies on the road ring, so a floor
+    // above the ring's own diameter could never be met at all.
+    assert!(WAYSTATION_MIN_SEP_M < 2.0 * ROAD_R_MIN);
+};
+
+/// One lesser site: position, the rotation its container pair stands at, and
+/// whether the search found it at all.
+///
+/// `live` rather than a parked coordinate because `scatter` tests this
+/// 65,536 times per island and a bool is the cheapest possible rejection —
+/// and because "this seed's road ring had room for one site, not two" is a
+/// real answer the gate should be able to read, not something to encode as a
+/// position a million metres out to sea.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Waystation {
+    pub x: f32,
+    pub z: f32,
+    pub y: f32,
+    /// Rotation of the container pair, as a yaw-LUT index — carried for the
+    /// same reason `Haven::phase` is: `waystation_crate` must be a pure
+    /// function of the site, and the client, the server and the gate all ask
+    /// for anchor `k` and have to be told the same place.
+    pub phase: u8,
+    pub live: bool,
+}
+
+impl Waystation {
+    /// A site the search did not fill. Every field is inert; `live` is what
+    /// every reader tests.
+    pub const NONE: Waystation = Waystation {
+        x: 0.0,
+        z: 0.0,
+        y: 0.0,
+        phase: 0,
+        live: false,
+    };
+}
+
 /// The haven pad site: a pure function of the seed, resolved once.
 ///
 /// `relief` is the max−min height over the scored footprint — the size of
@@ -579,6 +752,20 @@ pub struct Haven {
     /// for the same reason `phase` is, and it costs more: resolving it reads
     /// `road_band`, and `scatter` runs 65,536 times an island.
     pub shelter: u8,
+    /// The island's lesser destinations, the second tier of the same search.
+    ///
+    /// **They live inside `Haven` rather than beside it, and the reason is a
+    /// lane rule rather than taste.** `scatter(seed, table, haven, cx, cz)` is
+    /// called from `gather.rs`, `world.rs`, `bridge.rs` and their tests —
+    /// files another lane owns and is editing in parallel — and on
+    /// 2026-08-04 adding one parameter to this exact function blocked this
+    /// lane for two passes when git merged three of the five call sites clean
+    /// and they compiled green on both trunks. Widening a struct that only
+    /// `terrain::haven` constructs moves no caller at all. So this field is
+    /// the whole of "where the authored sites are", and `Haven` is now that
+    /// answer rather than one pad: the pad is `x`/`z`, the lesser tier is
+    /// here, and no signature moved.
+    pub minor: [Waystation; WAYSTATIONS],
 }
 
 /// Max−min height over the pad footprint at (x, z): center plus a rim
@@ -619,6 +806,7 @@ fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             relief: 0.0,
             phase,
             shelter: 0,
+            minor: [Waystation::NONE; WAYSTATIONS],
         };
         let mut k = 0i32;
         let mut ok = true;
@@ -663,6 +851,7 @@ fn haven_shelter_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
         relief: 0.0,
         phase,
         shelter: 0,
+        minor: [Waystation::NONE; WAYSTATIONS],
     };
     let mut t = 0i32;
     while t < HAVEN_SHELTER_TRIES {
@@ -719,6 +908,12 @@ pub fn haven(seed: u64) -> Haven {
     let mut best_score = 0.0f32;
     let mut relaxed: Option<Haven> = None;
     let mut relaxed_score = 0.0f32;
+    // The second tier's candidate list: every on-ring site this scan scored,
+    // as `(x, z, y, score)`. Fixed capacity, bounded by the same limit the
+    // bearing count is (wall 4 — the cap check below can never bite, and it
+    // is written anyway because a push on a bounded path carries one).
+    let mut cand = [(0.0f32, 0.0f32, 0.0f32, 0.0f32); crate::limits::MAX_HAVEN_CANDIDATES];
+    let mut n_cand = 0usize;
 
     let mut i = 0i32;
     while i < HAVEN_CANDIDATES {
@@ -769,6 +964,28 @@ pub fn haven(seed: u64) -> Haven {
         let relief = haven_relief(seed, x, z);
         let score = relief + HAVEN_HEIGHT_W * (y - LAND_MIN_H);
 
+        // The second tier's candidates, recorded by the scan that was already
+        // running — no extra march, no extra bisect, no extra `height` fan.
+        //
+        // Recorded HERE, ahead of the pad's own ring and shelter checks,
+        // because a waystation needs neither of them: it stands two
+        // containers on a smaller ring and no structure at all, so a site the
+        // pad refuses for want of a shelter bearing is still a place. Its own
+        // check chain is `waystation_ring_phase`, applied in `pick_minor`
+        // below to the few sites that survive the separation floor rather
+        // than to all 64 here.
+        //
+        // The road test is the pad's own, lifted a few lines earlier so both
+        // tiers can read one answer. `road_band` is a pure function, so
+        // asking it of more candidates cannot change what any of them says —
+        // the pad's branch below now reads this value instead of recomputing
+        // it, and its site is bit-identical to what it was.
+        let on_road = road_band(seed, x, z) != RoadBand::Off;
+        if on_road && n_cand < crate::limits::MAX_HAVEN_CANDIDATES {
+            cand[n_cand] = (x, z, y, score);
+            n_cand += 1;
+        }
+
         // A site has to hold what stands on it, and `y >= LAND_MIN_H` above
         // tests one point — the center — which is a different question.
         // Seed 555555 puts a center at 0.69 m on a shore shelf whose whole
@@ -800,13 +1017,14 @@ pub fn haven(seed: u64) -> Haven {
             relief,
             phase,
             shelter,
+            minor: [Waystation::NONE; WAYSTATIONS],
         };
 
         if relaxed.is_none() || score < relaxed_score {
             relaxed = Some(site);
             relaxed_score = score;
         }
-        if road_band(seed, x, z) == RoadBand::Off {
+        if !on_road {
             continue;
         }
         if best.is_none() || score < best_score {
@@ -815,14 +1033,179 @@ pub fn haven(seed: u64) -> Haven {
         }
     }
 
-    best.or(relaxed).unwrap_or(Haven {
+    let mut pad = best.or(relaxed).unwrap_or(Haven {
         x: c,
         z: c,
         y: height(seed, c, c),
         relief: 0.0,
         phase: 0,
         shelter: 0,
-    })
+        minor: [Waystation::NONE; WAYSTATIONS],
+    });
+    // The pad is resolved before the lesser tier is chosen, and that order is
+    // the design: a waystation is defined as "far from the destination", so
+    // the destination has to exist first. It also means nothing below can
+    // move the pad, which is what keeps `tests/haven.rs` and the terrain
+    // golden answering exactly what they answered before.
+    pad.minor = pick_minor(seed, &pad, &cand[..n_cand]);
+    pad
+}
+
+/// Choose the lesser tier out of the pad search's own scored candidates.
+///
+/// Greedy, `WAYSTATIONS` times: take the best-scoring candidate that clears
+/// `WAYSTATION_MIN_SEP_M` from the pad and from every site already taken, and
+/// can stand its container pair at some rotation. Greedy rather than an
+/// argmin over subsets because the separation floor is a *constraint* and not
+/// a term — there is no trade to make between "flat" and "far", and a site
+/// that fails the floor is not a worse site, it is the same place twice.
+///
+/// **Deterministic by the same construction the pad uses**: the scan runs the
+/// candidate array in ascending index order — which is ascending bearing —
+/// and takes only a STRICT improvement, so ties go to the lowest bearing and
+/// the answer does not depend on evaluation order. Nothing here reads a
+/// clock, a map or a float outside the L1 set.
+///
+/// `waystation_ring_phase` is asked LAST because it is the only expensive
+/// test in the chain — the cheap rejections (score, then two squared
+/// distances) run first, so the ~110-tap ring check runs on the handful of
+/// candidates that could actually win rather than on all 64.
+///
+/// A seed whose ring cannot hold a full tier gets a short one: the loop
+/// breaks and the remaining entries stay `Waystation::NONE`, `live == false`.
+/// `tests/waystation.rs` asserts a full tier on every seed it sweeps, so a
+/// short one is a finding rather than a silent degradation.
+fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystation; WAYSTATIONS] {
+    let mut out = [Waystation::NONE; WAYSTATIONS];
+    let sep2 = WAYSTATION_MIN_SEP_M * WAYSTATION_MIN_SEP_M;
+    let mut filled = 0usize;
+
+    while filled < WAYSTATIONS {
+        let mut take: Option<Waystation> = None;
+        let mut take_score = 0.0f32;
+
+        let mut i = 0usize;
+        while i < cand.len() {
+            let (x, z, y, score) = cand[i];
+            i += 1;
+            if take.is_some() && score >= take_score {
+                continue;
+            }
+            let dx = x - pad.x;
+            let dz = z - pad.z;
+            if dx * dx + dz * dz < sep2 {
+                continue;
+            }
+            let mut j = 0usize;
+            let mut clear = true;
+            while j < filled {
+                let ex = x - out[j].x;
+                let ez = z - out[j].z;
+                if ex * ex + ez * ez < sep2 {
+                    clear = false;
+                    break;
+                }
+                j += 1;
+            }
+            if !clear {
+                continue;
+            }
+            let phase = match waystation_ring_phase(seed, x, z) {
+                Some(p) => p,
+                None => continue,
+            };
+            take = Some(Waystation {
+                x,
+                z,
+                y,
+                phase,
+                live: true,
+            });
+            take_score = score;
+        }
+
+        match take {
+            Some(w) => {
+                out[filled] = w;
+                filled += 1;
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// The first rotation at (x, z) both containers can stand on, or `None` if
+/// the site cannot hold them at any tried rotation.
+///
+/// The pad's `haven_ring_phase` with the pad's numbers swapped out, and
+/// deliberately a separate function rather than a shared generic one: the two
+/// tiers are allowed to diverge — a later POI kind with a different check
+/// chain is the point of the hook — and a shared body would make the next
+/// one's constraint a parameter of this one's.
+fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
+    let mut t = 0i32;
+    while t < WAYSTATION_PHASE_TRIES {
+        let phase = (t * WAYSTATION_PHASE_STEP) as u8;
+        t += 1;
+        let probe = Waystation {
+            x,
+            z,
+            y: 0.0,
+            phase,
+            live: true,
+        };
+        let mut k = 0i32;
+        let mut ok = true;
+        while k < WAYSTATION_CRATES {
+            let (ax, az, _) = waystation_crate(&probe, k);
+            if height(seed, ax, az) < LAND_MIN_H || road_band(seed, ax, az) == RoadBand::Carriageway
+            {
+                ok = false;
+                break;
+            }
+            k += 1;
+        }
+        if ok {
+            return Some(phase);
+        }
+    }
+    None
+}
+
+/// Anchor `k` of a waystation's container pair: position and the yaw that
+/// faces it back at the site center — `haven_crate`'s convention exactly,
+/// because a second convention is how the shelter's yaw shipped wrong once
+/// already (see `haven_shelter`).
+pub fn waystation_crate(ws: &Waystation, k: i32) -> (f32, f32, u8) {
+    let idx = ((k as u32 * 256) / WAYSTATION_CRATES as u32 + ws.phase as u32) as u16 & 0xFF;
+    let (dx, dz) = crate::yaw_lut::yaw_dir(idx << 8);
+    (
+        ws.x + dx * WAYSTATION_CRATE_R_M,
+        ws.z + dz * WAYSTATION_CRATE_R_M,
+        // Facing in: half a turn from the outward bearing it stands on.
+        (idx as u8).wrapping_add(128),
+    )
+}
+
+/// True if (x, z) stands inside any live waystation's exclusion zone.
+/// Squared compare throughout, `in_haven`'s posture and `SPAWN.md` §9.4's
+/// point: the squared form is the acceptance test, not an optimization of one.
+pub fn in_waystation(haven: &Haven, x: f32, z: f32) -> bool {
+    let mut w = 0usize;
+    while w < WAYSTATIONS {
+        let ws = &haven.minor[w];
+        w += 1;
+        if !ws.live {
+            continue;
+        }
+        let dx = x - ws.x;
+        let dz = z - ws.z;
+        if dx * dx + dz * dz < WAYSTATION_RADIUS_M * WAYSTATION_RADIUS_M {
+            return true;
+        }
+    }
+    false
 }
 
 /// True if (x, z) stands inside the pad — the exclusion zone. Squared
@@ -1046,6 +1429,49 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
         }
     }
 
+    // The lesser tier's own anchors, on the same terms and after the pad's:
+    // authored, unvetoable, and first-anchor-wins. Ordered second so that if
+    // two zones could ever want one cell the loss would be a WAYSTATION
+    // crate, which `tests/waystation.rs` counts islandwide — the ordering
+    // picks which drop is audible, exactly as the shelter/container ordering
+    // above does. `WAYSTATION_MIN_SEP_M` is what stops it happening at all.
+    //
+    // The broad phase is ±1 cell, not the pad's ±2, because the const block
+    // holds `WAYSTATION_CRATE_R_M < CELL_SIZE`: a displacement under one cell
+    // moves a floor-divided index by at most one, whatever the site's
+    // alignment inside its own cell. That is a proof, not a margin.
+    let mut w = 0usize;
+    while w < WAYSTATIONS {
+        let ws = &haven.minor[w];
+        w += 1;
+        if !ws.live {
+            continue;
+        }
+        let wcx = (ws.x * (1.0 / CELL_SIZE)) as i32;
+        let wcz = (ws.z * (1.0 / CELL_SIZE)) as i32;
+        if (cell_x - wcx).abs() > 1 || (cell_z - wcz).abs() > 1 {
+            continue;
+        }
+        let mut k = 0i32;
+        while k < WAYSTATION_CRATES {
+            let (ax, az, yaw) = waystation_crate(ws, k);
+            k += 1;
+            if (ax * (1.0 / CELL_SIZE)) as i32 != cell_x
+                || (az * (1.0 / CELL_SIZE)) as i32 != cell_z
+            {
+                continue;
+            }
+            return Slot {
+                occupant: Occupant::CrateSlot,
+                x: ax,
+                y: height(seed, ax, az),
+                z: az,
+                yaw,
+                scale: 1.0,
+            };
+        }
+    }
+
     let h = cell_hash(seed, cell_x, cell_z, CH_SCATTER);
 
     // Jittered position first: vetoes apply where the thing would stand.
@@ -1062,7 +1488,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
     // The pad clears before the road does, because the pad sits ON the road
     // and the shoulder rule below would otherwise line the destination with
     // the same barrels as the route to it (TERRAIN.md §1 stage 8).
-    if in_haven(haven, x, z) {
+    if in_haven(haven, x, z) || in_waystation(haven, x, z) {
         return none;
     }
 

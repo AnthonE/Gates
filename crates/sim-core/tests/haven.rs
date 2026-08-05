@@ -59,6 +59,7 @@ fn no_haven() -> Haven {
         relief: 0.0,
         phase: 0,
         shelter: 0,
+        minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
     }
 }
 
@@ -83,6 +84,7 @@ fn ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             relief: 0.0,
             phase,
             shelter: 0,
+            minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
         };
         let ok = (0..HAVEN_CRATES).all(|k| {
             let (ax, az, _) = terrain::haven_crate(&probe, k);
@@ -522,18 +524,41 @@ fn the_pad_carries_the_containers_it_placed() {
     for seed in SWEEP_SEEDS {
         let haven = terrain::haven(seed);
         let mut found = 0usize;
+        let mut minor_found = 0usize;
         for cx in 0..CELLS_PER_SIDE {
             for cz in 0..CELLS_PER_SIDE {
                 let s = terrain::scatter(seed, &table, &haven, cx, cz);
                 if s.occupant != Occupant::CrateSlot {
                     continue;
                 }
-                found += 1;
-                // It is inside the pad, and it is on the pad's own ground.
+                // PARTITIONED BY SITE, not filtered down to the pad's own.
+                // The lesser tier (`terrain::WAYSTATIONS`) stands the same
+                // `CrateSlot` archetype elsewhere on the ring, so the old
+                // "every crate islandwide is on the pad" is now false — but
+                // the weaker reading of it, "the pad's crates are on the
+                // pad", would stop counting the thing this test exists for.
+                // So every crate must belong to EXACTLY ONE site and the
+                // counts are asserted per tier below: a crate in neither zone
+                // fails here, and a crate in both is impossible by
+                // `WAYSTATION_MIN_SEP_M`. That is strictly more than the
+                // single count it replaces — it now pins both tiers and the
+                // emptiness of everywhere else.
+                let on_pad = terrain::in_haven(&haven, s.x, s.z);
+                let on_minor = terrain::in_waystation(&haven, s.x, s.z);
                 assert!(
-                    terrain::in_haven(&haven, s.x, s.z),
-                    "seed {seed}: a crate stands outside the {HAVEN_RADIUS_M} m pad"
+                    on_pad != on_minor,
+                    "seed {seed}: a crate at ({}, {}) belongs to {} site(s) — \
+                     every placed container is the anchor of exactly one, and \
+                     an unclaimed one means an anchor escaped its own zone",
+                    s.x,
+                    s.z,
+                    on_pad as u8 + on_minor as u8
                 );
+                if on_minor {
+                    minor_found += 1;
+                    continue;
+                }
+                found += 1;
                 assert!(
                     s.y >= LAND_MIN_H,
                     "seed {seed}: a crate stands at y {} — below the land line \
@@ -553,11 +578,23 @@ fn the_pad_carries_the_containers_it_placed() {
         }
         assert_eq!(
             found, HAVEN_CRATES as usize,
-            "seed {seed}: {found} crate(s) stand islandwide against \
+            "seed {seed}: {found} crate(s) stand on the pad against \
              HAVEN_CRATES = {HAVEN_CRATES}. Fewer means two anchors landed in \
              one scatter cell and the second was dropped without a word — \
              widen HAVEN_CRATE_R_M or cut the count until the separation \
              below clears one cell diagonal"
+        );
+        // The other half of the partition, so the sweep pins the whole island
+        // and not just the pad. `tests/waystation.rs` owns the lesser tier's
+        // own geometry; this only refuses to let it go uncounted here.
+        let live = haven.minor.iter().filter(|w| w.live).count();
+        assert_eq!(
+            minor_found,
+            live * terrain::WAYSTATION_CRATES as usize,
+            "seed {seed}: {minor_found} crate(s) stand on {live} waystation(s) \
+             against {} apiece — same silent-drop failure as the pad's, one \
+             tier down",
+            terrain::WAYSTATION_CRATES
         );
     }
 
@@ -871,6 +908,7 @@ fn the_pad_carries_the_shelter_at_its_center() {
             relief: 0.0,
             phase: 0,
             shelter: HAVEN_SHELTER_YAW_STEP as u8,
+            minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
         };
         let (px, pz, _) = terrain::haven_shelter(&probe);
         if (0..HAVEN_CRATES).any(|k| {
