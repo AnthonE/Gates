@@ -255,14 +255,12 @@ directions). `DECISIONS.md` §open "haven shelter v0" has the rest.
 
 What remains, in the order it is worth doing:
 
-- **It is not solid — this lane's half now exists, the wiring does not.**
-  `terrain.rs` has `OCCUPANT_R_M` / `OCCUPANT_TOP_M` and `slot_blocks`, gated by
-  `tests/solid.rs` (8 tests; cover on 19.2–20.5% of land cells ~18 m apart,
-  narrowest clear carriageway 2.62–3.88 m against a 0.80 m body). **Nothing
-  calls it** — see the request below. The shelter itself is still passable and
-  deliberately so: a doorway is the one shape a radius cannot express, so it
-  needs a box list sim-side plus a gate holding it equal to `props.js`'s
-  fourteen boxes. That is the next slice in this item.
+- **This lane's half is now COMPLETE, including the shelter; the wiring is
+  not.** The box list landed (`DECISIONS.md` §open "shelter volume v0"):
+  `terrain::SHELTER_BOXES`, `slot_blocks` routing the shelter to a narrow
+  phase, `tests/solid.rs` at 14 tests, `ci/haven_shelter.mjs` at 156 checks
+  holding all 14 × 6 fields equal to `props.js`. **Nothing calls any of it** —
+  see the request below. Nothing further is owed here from this side.
 - **Nobody has looked at it.** No frame has been captured since it landed; the
   claim "a player can tell they arrived" rests on arithmetic alone. The lane
   charter says to say so when the item flips from "is there a world here" to
@@ -273,6 +271,20 @@ What remains, in the order it is worth doing:
   would move a measured prize ratio; it needs its own pass.
 - The pad is still not carved (3.76 m of relief under a flat-based building —
   the plinth buries 1.4 m of that, which is a cover, not a fix).
+
+## world: the trunk radius is pinned to a builder that no longer ships
+
+From `findings/pass-20260805-002720-03-judge.md` ranked fix 4, deliberately
+left by the pass that did the other three. `OCCUPANT_R_M[Tree]` = 0.26 is read
+off `props.js:348`'s `CylinderGeometry(0.13, 0.26, …)`, but the near-ring pine
+now ships from `ez-tree` (`props.js:556`) and the cone is only the LOD1 start.
+So the server's trunk and the drawn trunk agree by assumption, not by gate —
+the same class as the shelter's box list before this pass, one occupant over.
+`ci/pine_shape.mjs` already imports the shipped builder and already prints a
+1.52 m canopy radius, so the fix is one assertion pinning the GENERATED
+trunk's radius to `OCCUPANT_R_M[Tree]`. Not done here because it may not hold:
+if ez-tree's trunk is not 0.26 m the fix is a table change with a real number
+behind it, not a one-line assert, and that deserves its own measurement.
 > 3. ~~**`ARCH_BOX` needs slots and a container address**~~ — **answered in
 >    `4d7a926`, 2026-08-04**, before this request was read. `BOX_SLOTS` is on
 >    the wire and `box_key` is the address; the ui half landed 2026-08-05
@@ -285,10 +297,17 @@ What remains, in the order it is worth doing:
 > fan plus a `moisture`, a `clump` and a `road_band` per cell and must never be
 > re-derived inside a movement step. `terrain::OCCUPANT_PROBE_CELLS` (= 1) is
 > the neighbourhood to scan and it is proved complete, not assumed: every slot
-> lies strictly inside its own cell (measured worst margin 0.122 m over 38,969
-> slots) while the widest reach is 2.050 m against an 8 m cell. Nothing in
-> `terrain.rs` changed signature and no golden moved. **Unverified in play:**
-> no body has ever been stopped by one of these — `tests/solid.rs` gates the
+> lies inside its own cell, drawn ones by their ±3 m jitter and authored ones
+> because `scatter` only returns them for the cell they fall in. **Updated
+> 2026-08-05: the widest reach is now 5.845 m, not 2.050 m** — the shelter's
+> bounding circle is 4.9498 m and it eats most of the 8 m margin on its own.
+> Still complete, still 1, and the const block still proves it, but the
+> headroom is gone: the next occupant wider than a boulder breaks the 3×3 and
+> the build will say so at the definition.
+> `slot_blocks` **did not change signature** and no golden moved. The shelter
+> is the one occupant with a narrow phase behind the radius — that is internal,
+> the call site is identical for every occupant. **Unverified in play:** no
+> body has ever been stopped by one of these — `tests/solid.rs` gates the
 > shapes and the predicate, and that is all it can gate from this side.
 
 > **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the

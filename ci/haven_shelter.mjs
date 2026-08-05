@@ -30,12 +30,14 @@
 //      it to at most 1.1x, so a silhouette that does not clear that is not a
 //      silhouette, it is undergrowth.
 //
-// What it deliberately does NOT assert is that anything is COLLIDABLE. It is
-// not: `crates/sim-core/src/collide.rs` knows only built pieces, and no
-// scatter occupant — not a tree, not a boulder, not this — stops a player.
-// A player walks through these walls today. That is the systems lane's path
-// and it is left as a one-line request in `NOW.md` rather than reached into
-// from here.
+// What it deliberately does NOT assert is that anything is COLLIDABLE in
+// play. The sim now owns the volume — `terrain::SHELTER_BOXES` and
+// `slot_blocks`, gated for shape in `crates/sim-core/tests/solid.rs` and held
+// equal to the mesh below in section 6 — but nothing CALLS it:
+// `crates/sim-core/src/collide.rs` knows only built pieces, so a player still
+// walks through these walls. That last step is the systems lane's path and it
+// is left as a one-line request in `NOW.md` rather than reached into from
+// here.
 
 import "./dom_shim.mjs";
 import fs from "node:fs";
@@ -358,6 +360,89 @@ check(a.length === b.length, "shelterGeometry() is not deterministic in size");
 let same = true;
 for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) same = false;
 check(same, "shelterGeometry() is not deterministic float-for-float");
+
+// ------------------------------------- 6. the sim's box list IS this one
+//
+// The seam this file exists on. `terrain.rs`'s `SHELTER_BOXES` is the volume
+// the server stops bodies with; `HAVEN_SHELTER_PARTS` is the mesh the client
+// draws. Nothing in either language can notice them disagreeing — rustc
+// compiles, `test_terrain_golden` is unmoved (the golden hashes slots, not
+// shapes), `browser_smoke` still renders a building — and the failure mode is
+// a doorway one side has and the other walls off, or a wall the client draws
+// and the server lets you through. That is `CLAUDE.md`'s positional-payload
+// trap with the two halves in different languages, so they are compared here
+// number for number, in order, by index.
+const FIELD = ["cx", "cy", "cz", "sx", "sy", "sz"];
+const boxSrc = terrainSrc.match(
+  /pub const SHELTER_BOXES:\s*\[\[f32;\s*6\];\s*(\d+)\]\s*=\s*\[([\s\S]*?)\n\];/,
+);
+if (!boxSrc) fail("SHELTER_BOXES not found in crates/sim-core/src/terrain.rs");
+const simBoxes = [...boxSrc[2].matchAll(/\[([^\]]+)\]/g)].map((m) =>
+  m[1].split(",").map((v) => parseFloat(v.trim())),
+);
+check(
+  parseInt(boxSrc[1], 10) === HAVEN_SHELTER_PARTS.length,
+  `sim-core declares SHELTER_BOXES as ${boxSrc[1]} boxes; props.js authors ` +
+    `${HAVEN_SHELTER_PARTS.length}`,
+);
+check(
+  simBoxes.length === HAVEN_SHELTER_PARTS.length,
+  `sim-core lists ${simBoxes.length} shelter boxes; props.js authors ` +
+    `${HAVEN_SHELTER_PARTS.length}`,
+);
+for (let i = 0; i < HAVEN_SHELTER_PARTS.length; i++) {
+  const [name, ...want] = HAVEN_SHELTER_PARTS[i];
+  const got = simBoxes[i];
+  check(
+    got && got.length === 6,
+    `sim-core shelter box ${i} (props.js calls it "${name}") is not six numbers`,
+  );
+  for (let j = 0; j < 6; j++) {
+    check(
+      Math.abs(got[j] - want[j]) < 1e-6,
+      `shelter box ${i} "${name}" field ${FIELD[j]}: props.js draws ${want[j]}, ` +
+        `sim-core blocks ${got[j]} — the server and the client disagree about ` +
+        `the shape of the building`,
+    );
+  }
+}
+
+// The floor exception points at the plinth by NAME, not by luck. sim-core
+// skips this index when it asks whether a body is stopped; if a reorder ever
+// moved a wall into slot 0 the building would silently open on that side.
+const floorIx = parseInt(
+  terrainSrc.match(/^pub const SHELTER_FLOOR_IX: usize = (\d+);/m)?.[1] ?? "-1",
+  10,
+);
+check(
+  HAVEN_SHELTER_PARTS[floorIx]?.[0] === "plinth",
+  `sim-core's SHELTER_FLOOR_IX is ${floorIx}, which props.js calls ` +
+    `"${HAVEN_SHELTER_PARTS[floorIx]?.[0]}" — the box the server treats as ` +
+    `floor is not the plinth`,
+);
+check(
+  Math.abs(rustConst("SHELTER_PEAK_M") - HAVEN_SHELTER_PEAK) < 1e-6,
+  `sim-core's SHELTER_PEAK_M is ${rustConst("SHELTER_PEAK_M")}, props.js ` +
+    `computes ${HAVEN_SHELTER_PEAK}`,
+);
+// And the broad phase really does contain the mesh the client draws — read
+// off props.js's own boxes, so it cannot be satisfied by sim-core agreeing
+// with itself.
+const cornerR = rustConst("SHELTER_CORNER_R_M");
+for (const [name, cx, , cz, sx, , sz] of HAVEN_SHELTER_PARTS) {
+  const ex = Math.abs(cx) + sx * 0.5;
+  const ez = Math.abs(cz) + sz * 0.5;
+  check(
+    Math.hypot(ex, ez) <= cornerR + 1e-6,
+    `"${name}" reaches ${Math.hypot(ex, ez).toFixed(3)} m but sim-core's ` +
+      `broad phase rejects past ${cornerR} m — bodies never reach the box test`,
+  );
+}
+console.log(
+  `haven shelter: sim-core and props.js agree on all ` +
+    `${HAVEN_SHELTER_PARTS.length} boxes x 6 fields, floor at index ${floorIx} ` +
+    `("plinth"), broad phase ${cornerR} m`,
+);
 
 console.log(
   `haven shelter: ${HAVEN_SHELTER_PARTS.length} parts, ${tris} tris, ` +
