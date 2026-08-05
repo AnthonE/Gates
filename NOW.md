@@ -22,28 +22,30 @@ Done items are deleted, not checked — history lives in git and
      remainder; its diff is adopted here with a real commit message. Its
      salvage worktree is the operator's to remove, not a lane's.
 
-1. **Container contents have never crossed the wire — for a bag either.**
-   *(Gap pass, iteration 3, systems lane. From ranked gap 2 of
-   `findings/pass-20260804-205133-02-judge.md` ("a raid takes nothing") and
-   gap 1 of `-01`; the storage-and-address half landed this pass at wire
-   v18, this is what it uncovered.)*
+1. **The container panel: contents now cross the wire, and nothing draws
+   them.** *(ui lane. The systems half landed at wire v19 — `DECISIONS.md`
+   §open; the ui lane's cross-lane request 1 is answered.)*
 
-   `WireBag` carries an id and three position quanta and says contents
-   "deliberately never cross". So the loot panel both judges rank first is
-   not blocked on boxes — **it has no bag contents to draw either**, and
-   `Command::Loot`'s take-all is the only container verb a client can
-   express. A box changes nothing about that; it just makes the hole
-   visible in a second place.
+   What exists: an open/close action, a per-client "which container is
+   open", and a contents sync unicast to the opener with reach re-proved
+   every tick. Four bridge exports carry it into JS —
+   `client_action_container`, `client_cont_kind`, `client_cont_handle`,
+   `client_cont_ptr` (`INV_SLOTS` × item, count, the same layout as
+   `client_inv_ptr`). `ci/client_smoke.mjs` is their only reader today.
 
-   The shape, and it is one slice for both containers: an open/close
-   action subtype (12 of 16 used, three left), per-client "which container
-   is open" state, and a contents sync sent **only to the opener** — not
-   to everyone in AOI, which would be an ESP leak and a bandwidth bill for
-   a panel nobody has open. Then `EV_MOVED` already tells the opener what
-   changed. Wire bump + regenerated goldens, systems lane.
-
-   Until it lands the ui lane cannot draw a container panel, and that is
-   the honest blocker to quote rather than the box.
+   What remains, in order:
+   - **A panel.** `hud.invContainers` draws exactly one container; a
+     second needs cells fed from `client_cont_ptr` and a close when
+     `client_cont_kind` goes to zero on its own — the server shuts a panel
+     when reach is lost, so the panel is never authoritative about its own
+     visibility.
+   - **A key that opens one.** Nothing calls `client_action_container`.
+     `E` already resolves the nearest door/hearth; a box or a bag in reach
+     is the same shape of choice.
+   - **`client_move_readout` still has no TO kind** (request 2 below,
+     8 spare bits). Until it does, `invmove.moveVerdict` must keep
+     rejecting non-self FROM kinds, so a drag INTO the new panel cannot
+     be resolved even once it draws.
 ## 0. The second container panel — gap 1's other half *(ui lane)*
 
 *From `findings/pass-20260804-205133-03-judge.md` gap 1, "there is nowhere to
@@ -67,10 +69,9 @@ perform.
 
 > **Cross-lane request → systems, three items, all for gap 1** *(ui lane,
 > 2026-08-04)*. In dependency order:
-> 1. **Container contents on the wire.** No S→C message carries them:
->    `EventMsg::Inv` has no container id and `WireBag` is id + position, its
->    own doc saying contents stay sim-side. Without one a loot panel has
->    nothing to draw. Needs `(container id, slots)`; 26 event subtypes free.
+> 1. ~~**Container contents on the wire.**~~ **Answered at wire v19** —
+>    `EventMsg::ContSync` carries (kind, handle, slots) to the opener alone.
+>    Item 1 above has the four bridge exports it arrives through.
 > 2. **`client_move_readout` must carry the TO kind.** It packs
 >    `reason<<24 | to_slot<<16 | from_kind<<8 | from_slot` — 8 bits spare.
 >    `invmove.moveVerdict` therefore rejects every non-self FROM kind, which

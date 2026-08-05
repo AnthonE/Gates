@@ -19,6 +19,7 @@ use sim_core::craft::CraftContent;
 use sim_core::deploy::{DeployContent, DeployRec, ARCH_DOOR};
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
+use sim_core::inventory::CONT_SELF;
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_DEPLOYS,
     MAX_PIECES, MAX_SLOT_LIVES,
@@ -142,6 +143,12 @@ pub const STREAM_ERR: u32 = 1 << 31;
 /// flag for both, `APPLIED_CONSUME`'s shape: the panel's response to
 /// either is to re-read `client_move_readout`, which says which it was.
 pub const APPLIED2_MOVE: u32 = 1 << 0;
+/// The open container's view changed (`EventMsg::ContSync`) — contents
+/// arrived, or the server shut the panel. One flag for both, and for
+/// `APPLIED2_MOVE`'s reason: the panel's response to either is to re-read
+/// `client_cont_kind()`, which is zero when nothing is open and names the
+/// container otherwise.
+pub const APPLIED2_CONT: u32 = 1 << 1;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -527,6 +534,22 @@ pub struct ClientCore {
     // --- event lane (reliable stream, protocol::event) ---
     /// Authoritative own inventory as last announced by the server.
     pub inv: [ItemStack; INV_SLOTS],
+    /// The container this client has open as the server last said it —
+    /// `CONT_SELF` for none, else the kind and the handle it was opened
+    /// with, echoed back by every batch.
+    ///
+    /// The echo is what makes the panel safe to draw: a batch whose kind
+    /// and handle do not match what this client believes is open is
+    /// dropped, so contents can never land in a panel the player already
+    /// closed or re-aimed. Two opens in flight and an open crossing a
+    /// server-sent close both resolve that way rather than by trusting
+    /// arrival order.
+    pub cont_kind: u8,
+    pub cont_handle: u32,
+    /// The open container's slots. Sized to the widest container; a box
+    /// fills the first `BOX_SLOTS` and the rest stay empty, which is what
+    /// the server's shadow holds too.
+    pub cont: [ItemStack; INV_SLOTS],
     pub harvested: HarvestedSet,
     pub catalog: ItemCatalog,
     /// Cell changes the last `on_stream` call produced: (key, harvested).
@@ -707,6 +730,9 @@ impl ClientCore {
             snapshots_no_baseline: 0,
             decode_errors: 0,
             inv: [ItemStack::default(); INV_SLOTS],
+            cont_kind: CONT_SELF,
+            cont_handle: 0,
+            cont: [ItemStack::default(); INV_SLOTS],
             harvested: HarvestedSet::new(),
             catalog: ItemCatalog::EMPTY,
             slot_changes: [(0, false); protocol::SLOT_SYNC_BATCH],
@@ -1022,6 +1048,41 @@ impl ClientCore {
                         flags |= APPLIED_BAGS;
                     }
                 }
+            }
+            EventMsg::ContSync {
+                kind,
+                cont,
+                reset,
+                slots,
+                count,
+            } => {
+                if kind == CONT_SELF {
+                    // The server shut the panel: gone, or out of reach.
+                    self.cont_kind = CONT_SELF;
+                    self.cont_handle = 0;
+                    self.cont = [ItemStack::default(); INV_SLOTS];
+                    self.applied2 |= APPLIED2_CONT;
+                } else if reset {
+                    // The whole container, and the only message that may
+                    // change which container is open — so a diff can never
+                    // silently re-aim the panel at something else.
+                    self.cont_kind = kind;
+                    self.cont_handle = cont;
+                    self.cont = [ItemStack::default(); INV_SLOTS];
+                    for s in slots.iter().take(count as usize) {
+                        self.cont[s.slot as usize] = s.stack;
+                    }
+                    self.applied2 |= APPLIED2_CONT;
+                } else if kind == self.cont_kind && cont == self.cont_handle {
+                    for s in slots.iter().take(count as usize) {
+                        self.cont[s.slot as usize] = s.stack;
+                    }
+                    self.applied2 |= APPLIED2_CONT;
+                }
+                // else: a diff for a container this client no longer has
+                // open. Dropped rather than applied — the alternative is
+                // slots landing in a panel aimed somewhere else, which is
+                // the positional-payload defect one level up.
             }
             EventMsg::BagRemoved { id, why: _ } => {
                 // The reason is on the wire for a feed line the HUD does

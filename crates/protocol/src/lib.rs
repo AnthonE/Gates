@@ -35,17 +35,18 @@ pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     decode_event, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_chat,
-    encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
-    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_move_refused, encode_event_moved,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH,
-    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
-    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
+    encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
+    encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_respawn,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
+    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
+    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -157,7 +158,20 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// move verb exists to never cause. A widened *meaning* is a wire change
 /// even when the layout is byte-identical, and `PROTO_VER` is the only
 /// thing that catches a mismatched build. Fixtures are keyed `v18_*`.
-pub const PROTO_VER: u16 = 18;
+/// v19 opened a container to the client that opened it (`event.rs`
+/// `SUB_CONT_SYNC`, `server/core.rs`'s container view). Two messages, both
+/// inside fields earlier versions widened: the container action, the
+/// **fourteenth** of v12's sixteen, and the contents sync, the **39th** of
+/// v13's sixty-four. Nothing existing moved a bit.
+///
+/// It is the first S→C message whose *audience* is one client rather than
+/// everyone in AOI, and that is the design, not an optimization: a
+/// container's contents fanned out to the neighbourhood is an ESP feed —
+/// a raider reading a base's boxes from outside its walls — so the sync
+/// goes only to the client holding the container open, and only while the
+/// server can still prove that client is in reach of it. Fixtures are
+/// keyed `v19_*`.
+pub const PROTO_VER: u16 = 19;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -356,12 +370,35 @@ const ACT_RESPAWN: u32 = 11;
 /// The move verb (wire v17, `inventory.rs`). Thirteenth of the sixteen,
 /// so no width moved for it either — three action codes remain.
 const ACT_MOVE: u32 = 12;
-/// Container-kind width on the move action. Two bits for two live kinds
-/// (`inventory::CONT_SELF`, `CONT_BAG`), so 2 and 3 are forgeable and
-/// refuse at decode — the `BUILD_MAT_BITS` posture, and deliberately not
-/// a single bit: the spare pair is where a deployed box lands, and
-/// spending the width now is what keeps that change from moving this
-/// message. See `inventory::CONT_MAX`.
+/// Open or close a ground container (wire v19, `server/core.rs`).
+/// Fourteenth of the sixteen, so no width moved for it — two action codes
+/// remain.
+const ACT_CONTAINER: u32 = 13;
+/// The highest live action code, named rather than counted — the event
+/// lane's `SUB_MAX` discipline, which this lane did not have.
+///
+/// It is worth more here than there, because this lane's field is four
+/// bits and two codes from full while the event lane's is six bits and
+/// twenty-five from full. A fifteenth and a sixteenth action are already
+/// named in `NOW.md` (a repair, a throw); the seventeenth truncates into a
+/// live code, and both ends would then agree on bytes that mean two
+/// different things — the worst shape of wire drift there is. The assert
+/// below is what turns that from a comment someone must remember into a
+/// build failure.
+const ACT_MAX: u32 = ACT_CONTAINER;
+const _: () = assert!(
+    ACT_MAX < (1 << ACTION_SUB_BITS),
+    "an action subtype past the field width would truncate into a live code"
+);
+/// Container-kind width, on the move action and now the container verb.
+/// Two bits for **three** live kinds (`inventory::CONT_SELF`, `CONT_BAG`,
+/// `CONT_BOX`), so only 3 is forgeable and it refuses at decode — the
+/// `BUILD_MAT_BITS` posture. Spending the pair at v17 rather than one bit
+/// is what let the box land at v18 and the container verb at v19 without
+/// moving a single existing message; the width is now full, and a fourth
+/// kind widens this field and every fixture with it. Every check is
+/// against `inventory::CONT_MAX`, never against this width — the two are
+/// deliberately not the same number.
 const CONT_KIND_BITS: u32 = 2;
 /// Move-count width. Full `u16`, matching `ItemStack::count` and the
 /// stack ladder's own type, so no count a container can legally hold is
@@ -522,6 +559,50 @@ pub enum ActionMsg {
         to_slot: u8,
         count: u16,
     },
+    /// Open a ground container, or close whatever is open (wire v19).
+    ///
+    /// **One field, three meanings, and no combination to validate.** The
+    /// obvious shape is an `open: bool` beside a kind, and it is the wrong
+    /// one: two fields that must agree is two fields a forged frame can
+    /// disagree, and then the decoder owns a rule instead of a range.
+    /// Here `kind` alone says it — `CONT_SELF` is "nothing is open", which
+    /// is not a pun on the enum but the literal statement the server
+    /// stores, and `CONT_BAG` / `CONT_BOX` name the thing. The only cross-
+    /// field rule left is that a close carries no handle, and that is a
+    /// zero check rather than a state machine.
+    ///
+    /// `cont` is the same handle `Move` carries and means the same thing:
+    /// a bag id for `CONT_BAG`, a packed `box_key(cx, cz, level)` for
+    /// `CONT_BOX`. Deliberately the same field in the same order, because
+    /// a client that can name a container to open must name it *identically*
+    /// to open it and to move inside it — a second addressing scheme is
+    /// how the reference's move verb bled (`inventory.rs`).
+    ///
+    /// **This grants nothing.** It is a subscription, not a permission:
+    /// `inventory::CONT_BAG` states that reach is checked when the move
+    /// resolves and never when a panel opened, and this message does not
+    /// bend that. The server re-proves reach every tick before it sends a
+    /// single slot, so a forged open of a box across the map yields no
+    /// contents, and a real open of a box you then walk away from stops
+    /// yielding them. Nothing here reaches the sim, nothing here enters
+    /// the WAL, and `World::state_hash` never sees it.
+    Container { kind: u8, cont: u32 },
+}
+
+/// The container verb — see `ActionMsg::Container`. A kind past
+/// `CONT_MAX` and a close carrying a handle are both refused here, so the
+/// decoder's checks and the encoder's are the same two.
+pub fn encode_action_container(kind: u8, cont: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if kind > sim_core::inventory::CONT_MAX || (kind == sim_core::inventory::CONT_SELF && cont != 0)
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_CONTAINER, ACTION_SUB_BITS)?;
+    w.write(kind as u32, CONT_KIND_BITS)?;
+    w.write(cont, 32)?;
+    Ok(w.finish())
 }
 
 /// The move verb — see `ActionMsg::Move`. Range-checks every field it can
@@ -905,6 +986,29 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 to_slot,
                 count,
             }
+        }
+        ACT_CONTAINER => {
+            let kind = r.read(CONT_KIND_BITS)? as u8;
+            let cont = r.read(32)?;
+            // Two bits hold three kinds, so value 3 is forgeable. The
+            // handle is *not* range-checked and deliberately: a bag id and
+            // a packed box address have no shape a decoder could tell apart
+            // from a wrong one, and "that container does not exist" is a
+            // fact only the sim's stores hold. The server answers it by
+            // sending no contents, never by refusing the frame — refusing
+            // it here would end the session, which is the disconnect the
+            // container verbs exist to never cause (`inventory.rs`).
+            //
+            // What *is* checked is the one cross-field rule: a close names
+            // no container. A handle riding a `CONT_SELF` close is a client
+            // that thinks it is opening something, and letting it decode
+            // would leave the two ends disagreeing about what is open.
+            if kind > sim_core::inventory::CONT_MAX
+                || (kind == sim_core::inventory::CONT_SELF && cont != 0)
+            {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Container { kind, cont }
         }
         _ => return Err(WireError::Malformed),
     };
@@ -1595,5 +1699,77 @@ mod tests {
         let len = encode_input(&dg, &mut buf).unwrap();
         // One spare byte after a valid packet must fail the strict tail.
         assert_eq!(decode_input(&buf[..len + 1]), Err(WireError::Malformed));
+    }
+
+    /// The container action's shape, and the two things it refuses.
+    ///
+    /// The handle is deliberately *not* refused for any value, including
+    /// `u32::MAX`, and that is asserted rather than left to inference: it
+    /// is the difference between "the server sends you nothing" and "the
+    /// server ends your session", and the second is the disconnect the
+    /// reference's own move verb kept causing (`inventory.rs`).
+    #[test]
+    fn container_action_round_trips_and_refuses_only_its_two_shapes() {
+        use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_MAX, CONT_SELF};
+        let mut buf = [0u8; 64];
+
+        for (kind, cont) in [
+            (CONT_BAG, 1u32),
+            (CONT_BOX, 0x0123_2E85),
+            (CONT_BAG, u32::MAX),
+            (CONT_SELF, 0),
+        ] {
+            let len = encode_action_container(kind, cont, &mut buf).unwrap();
+            assert_eq!(
+                decode_action(&buf[..len]).unwrap(),
+                ActionMsg::Container { kind, cont },
+                "kind {kind} handle {cont}"
+            );
+            assert_eq!(peek_kind(&buf[..len]).unwrap(), KIND_ACTION);
+        }
+
+        // A kind past the live set.
+        assert_eq!(
+            encode_action_container(CONT_MAX + 1, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        // A close that names a container.
+        assert_eq!(
+            encode_action_container(CONT_SELF, 1, &mut buf),
+            Err(WireError::Range)
+        );
+        // And both again off the wire, forged past what the encoder emits.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_ACTION, KIND_BITS).unwrap();
+        w.write(ACT_CONTAINER, ACTION_SUB_BITS).unwrap();
+        w.write(CONT_MAX as u32 + 1, CONT_KIND_BITS).unwrap();
+        w.write(0, 32).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_action(&buf[..len]), Err(WireError::Malformed));
+
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_ACTION, KIND_BITS).unwrap();
+        w.write(ACT_CONTAINER, ACTION_SUB_BITS).unwrap();
+        w.write(CONT_SELF as u32, CONT_KIND_BITS).unwrap();
+        w.write(1, 32).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_action(&buf[..len]), Err(WireError::Malformed));
+    }
+
+    /// The action subtype field's spare room, stated as a number.
+    ///
+    /// `ACT_MAX`'s compile-time assert proves nothing *truncates*; this
+    /// says how close the lane is to needing a width bump, so the pass
+    /// that spends the last code has to change a line that says so rather
+    /// than discover it. Two left after the container verb, and `NOW.md`
+    /// already names two more C→S verbs (a repair, a throw).
+    #[test]
+    fn the_action_lane_has_the_room_it_claims() {
+        assert_eq!(ACT_MAX, ACT_CONTAINER);
+        assert_eq!(
+            (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
+            2,
+            "the spare action codes moved — say so where the count is written"
+        );
     }
 }
