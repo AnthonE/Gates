@@ -209,6 +209,47 @@
         opacity: 0.45;
         border-style: dashed;
       }
+      /* The open container, beside the inventory rather than over it —
+         `inventory.jpeg` puts the thing you are looting and the thing you
+         are carrying in one frame, because every drag crosses between
+         them and a panel you have to close to see the other end is a
+         panel that cannot be dragged out of.
+
+         Visibility is the SERVER's (`bridge.rs`'s `client_cont_kind`): it
+         goes to zero on its own when the container despawns or you walk
+         out of reach, so this is shown by `hud.openContainer` answering
+         that word and never by the player closing a panel. */
+      #cont {
+        position: fixed;
+        left: 434px;
+        top: 48px;
+        display: none;
+        flex-direction: column;
+        gap: 6px;
+        background: rgba(10, 15, 20, 0.82);
+        border: 1px solid #2a3642;
+        border-radius: 6px;
+        padding: 8px;
+        z-index: 6;
+        font: 11px monospace;
+        color: #cdd9e4;
+      }
+      #conttitle {
+        margin: 0;
+        font: 11px monospace;
+        color: #7d8fa0;
+        letter-spacing: 1px;
+      }
+      /* Three columns, not the inventory's six: a box is twelve slots
+         (`limits.rs` BOX_SLOTS) and a bag thirty, so the width that suits
+         both is the narrow one. Cells past the open kind's own width are
+         hidden outright rather than drawn empty — an empty cell invites a
+         drop the sim would answer REFUSE_M_SLOT. */
+      #contgrid {
+        display: grid;
+        grid-template-columns: repeat(3, 66px);
+        gap: 3px;
+      }
       /* Chat: log bottom-left (the reference's kill/contacts feed sits
          there), composer directly under it. Plain DOM, outside the RAF
          path like every other panel. */
@@ -522,6 +563,10 @@
       <div id="invgrid"></div>
       <div id="invbelt"></div>
       <p id="invdetail"></p>
+    </div>
+    <div id="cont">
+      <p id="conttitle">CONTAINER</p>
+      <div id="contgrid"></div>
     </div>
     <div id="vitals"></div>
     <div id="toasts"></div>
