@@ -827,6 +827,8 @@ prevent. If a lane rebuilds any of these, start from the branch.
 
 | tag | what | why it is here |
 |---|---|---|
+| `salvage/bay-slots` | road bays concentrate what the road pays | **unjudged** — the judge was killed by the 2026-08-05 session limit, so the runner refused to merge or discard it. Coherent-looking; never scored |
+| `salvage/blast-radius` | explosive radius | **unjudged and partial** — tip is the runner's `uncommitted remainder` safety commit from the same outage |
 | `salvage/ranged-v0` | ranged weapons | judged FAIL, wall 6 |
 | `salvage/bark-photo` | bark texture | judged FAIL; textures retired by the pivot |
 | `salvage/m1-surface-grain` | surface grain | stopped unmerged; same |
