@@ -15,6 +15,18 @@ Done items are deleted, not checked — history lives in git and
 > from here would only conflict on the same line. Merge theirs. Until then
 > `UI_SMOKE_PORT=<free>` is the documented override.
 
+> **Cross-lane, not an item: `browser_smoke` is RED on a clean trunk, and it
+> is the lighting gap, not a regression.** The renderer tier is switched off
+> this run (`GATES_TIER=fast`), so the loop is not seeing it. Run in full on
+> 2026-08-05 it fails `TONAL_MAX_P10`: **p10 luma 112 against a ceiling of
+> 60** (reference bar 40.5), register `p10 112 · p50 143 · p90 187`.
+> **Confirmed pre-existing** — `lane/looks` unmodified fails with the
+> identical assertion and the identical number, so the trap list's `git
+> stash` check has already been paid. It is the visual judge's own ranked
+> "cut ambient fill, restore darkness through AO not exposure", and by
+> `CLAUDE.md` tonemap/sky/exposure/fog are **one owner, sequential** — not
+> this lane's, and not four parallel passes'.
+
 0. **world: the forest clusters now; the biome edge is still a step.**
    *(`terrain::clump` landed — `DECISIONS.md` §open "scatter clumping v0",
    `crates/sim-core/tests/scatter.rs`. Dispersion 0.98–1.05 → 2.90–3.34
