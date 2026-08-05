@@ -34,7 +34,6 @@ import {
   VERB_DOOR,
   VERB_HEARTH,
   VERB_NONE,
-  buildRefusal,
   centrePrompt,
   describeDeploy,
   describePiece,
@@ -47,6 +46,7 @@ import {
   structNews,
 } from "./interact.js";
 import { MAP_N, WORLD_M, paintMap } from "./map.js";
+import { buildRefusal, connectRefusal, craftRefusal, deployRefusal } from "./refusals.js";
 import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
 
 // Resolved against the document, not the origin root: the page is served
@@ -54,7 +54,6 @@ import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
 // an absolute "/client_wasm.wasm" 404s under a subpath. Absolute by the time
 // the terrain worker receives it, which is what the worker needs.
 const WASM_URL = new URL("client_wasm.wasm", document.baseURI).href;
-const REFUSE_REASONS = ["protocol version mismatch", "shard is full"];
 const MARK_TO_RAD = (Math.PI * 2) / 256;
 
 const $ = (id) => document.getElementById(id);
@@ -129,7 +128,7 @@ async function boot(url, certHex) {
   const hs = new Uint32Array(ex.memory.buffer, ex.client_hs_ptr(), 7);
   if (kind === 2) {
     throw new Error(
-      `refused: ${REFUSE_REASONS[hs[5]] || `code ${hs[5]}`}`,
+      `refused: ${connectRefusal(hs[5])}`,
     );
   }
   if (kind !== 1) throw new Error("unrecognized handshake reply");
@@ -148,30 +147,12 @@ async function boot(url, certHex) {
   run(ex, views, wt, seed, playerId, reader, writer, leftover, dev);
 }
 
-const REFUSE_TEXT = [
-  "no such recipe",
-  "bad count",
-  "needs a station",
-  "queue full",
-  "missing ingredients",
-];
 const STATION_TEXT = ["", "needs workbench", "needs furnace"];
-// sim-core deploy.rs REFUSE_D_* order.
-const DEPLOY_REFUSE_TEXT = [
-  "no such deployable",
-  "spot taken",
-  "needs support",
-  "bad ground",
-  "out of reach",
-  "item not in inventory",
-  "world is full",
-  "claimed by a hearth",
-  "too close to a hearth",
-  "bag limit reached",
-  "no hearth there",
-  "no door there",
-  "not your door",
-];
+// The craft, deploy and connect refusal tables moved to
+// `web/src/refusals.js` beside the build one, for the reason that file's
+// header gives: a bare array in here is one nothing can walk, and the build
+// table fell behind the sim twice while it lived that way. Gated together by
+// `ui_smoke` §W. Route a refusal through the accessor, never through a copy.
 // The shape/material labels moved to `web/src/interact.js` beside
 // `describePiece`, the one function that read them (gated: `ui_smoke` §V).
 const BUILD_CELL = 3;
@@ -1184,7 +1165,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         for (;;) {
           const r = ex.client_craft_refusal_pop() >>> 0;
           if (r === 0xffffffff) break;
-          hud.toast(`can't craft: ${REFUSE_TEXT[r] || `code ${r}`}`);
+          hud.toast(`can't craft: ${craftRefusal(r)}`);
         }
       }
       if (flags & 64 /* CRAFT_Q */) {
@@ -1257,7 +1238,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         for (;;) {
           const r = ex.client_deploy_refusal_pop() >>> 0;
           if (r === 0xffffffff) break;
-          hud.toast(`can't place: ${DEPLOY_REFUSE_TEXT[r] || `code ${r}`}`);
+          hud.toast(`can't place: ${deployRefusal(r)}`);
         }
       }
       if (flags & 2097152 /* CHAT */) {
