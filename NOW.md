@@ -4,6 +4,36 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+## 0. The island is solid now — done this pass *(systems lane)*
+
+From `findings/archive-prestamp/pass-20260805-020919-02-judge.md` ranked gap 1,
+"nothing on this island is solid". `occupy.rs` is the consumer half of the seam
+`terrain.rs` drew: `movement::step` now asks it on every candidate move, so
+trees, boulders, nodes, barrels, crates and the shelter's walls stop a body.
+Answers the world lane's standing request ("the occupant query exists, please
+call it") and the systems bullet of "nothing in the world is solid". Cache
+design and the reasoning: `DECISIONS.md` §open, occupant collision v0.
+Gated by `tests/walk.rs` (7 tests, 4 seeds); each of the four mechanisms was
+mutation-checked to go red on its own break. Wire did not move — no
+`PROTO_VER` bump, `test_protocol_golden` untouched. `GOLDEN_FINAL_HASH`
+regenerated in the same commit; every behavioural floor in `replay.rs::run`
+still passes, so the bots' script survives a solid world.
+
+Left:
+
+- **You still cannot stand ON anything.** The ground query is the other half of
+  the same seam and it is not built — `terrain.rs:1197` names the cost: the
+  shelter's plinth reads as a 0.2 m kerb you sink into rather than a step.
+  Crate and boulder tops are the same. It belongs beside `collide::piece_ground`
+  and wants a `slot_ground` next to `slot_blocks`; the fourteen-box table is
+  already there for it. Systems lane.
+- **The client draws no collision it can see.** Nothing here changed `web/`, so
+  a player learns a trunk is solid by bumping it. Not a defect, just untested by
+  eye — no vantage was captured this pass. *(ui/looks lane, if it wants it.)*
+- **`SlotLives::find` is a linear scan** over up to 16,384 entries, and the
+  query calls it once per blocking slot. Bounded and off the common path (it is
+  asked only after something already blocks), but a late-wipe world with
+  thousands of harvested cells pays it in the tick. Measure before fixing.
 ## 0. The ground is a population now — done this pass *(world lane)*
 
 GAP PASS. From `findings/pass-20260804-173640-01-visual.md` ranked gap 1:
@@ -70,13 +100,40 @@ Leaves open:
 - **Nothing highlights the picked thing in the world.** The prompt names it;
   the box itself does not light up. That is a looks-lane material change, not
   ours — a NOW.md line, not a cross-lane request, until someone wants it.
-- **Gathering and building have no prompt**, only deployables do. A tree and a
-  rock answer a swing, not E, so they were out of the resolver's scope; the
-  reference prompts on them too (`Rust Images/choppingtree.jpg`).
+- ~~**Gathering and building have no prompt**, only deployables do.~~ Gathering
+  closed 2026-08-05 (`## 0. The crosshair answers for the swing too` below).
+  **Building still has none** — placement is a preview mesh with no text, and
+  it is the last verb with nothing under the crosshair.
 - **Unverified in a real browser end to end.** `ui_smoke` drives the DOM and
   the resolver; `browser_smoke` is off this run, so nothing here claims a box
   was opened by aiming at one on a live shard.
 
+0. **The collapse path's per-tick budget, and box handle 0 — done this pass
+   (systems lane).**
+
+   *(2026-08-05. Judge `pass-20260805-020919-01`'s ranked fixes 1 and 2, plus
+   the ui lane's cross-lane request 4 — NOW.md's top systems item.)*
+
+   `MAX_COLLAPSE_PIECES` bounds one cascade and a tick holds many:
+   `upkeep_sweep` never returned after a removal the way `support_sweep`
+   does, so its 64 visits could each seed a cascade, and raiders add up to
+   `MAX_PLAYERS` more. Measured with the budget removed: **103 removals in
+   one tick** against the 64 the 256-slot ring was sized for. Now one
+   tick-local `MAX_REMOVALS_PER_TICK` threaded through raid, decay, support
+   sweep and cascade; overflow **defers before the piece leaves the store**.
+   `DECISIONS.md` §open "collapse budget v0".
+
+   Request 4 answered without moving a bit of the packing: `box_index`
+   guards handle 0 and `place_deploy` refuses the one address that mints it
+   — the pair `Backpacks` already has. `BOX_KEY_LAYOUT` and `ui_smoke` §P
+   untouched. **ui lane: `moveArgs` may now trust that 0 is never a box.**
+
+   Left: `EV_PIECE_REMOVED`'s payload is pinned for the collapse producer
+   only (judge fix 2); the raid and decay producers are still counted, not
+   read. And judge fix 3 — **a box on a collapsing floor** — is still
+   ungated: every collapse test uses `DeployContent::EMPTY`, so
+   `EV_DEPLOY_REMOVED` and the `world.rs` spill drain have no collapse-side
+   coverage. Both are systems lane.
 
 0. **A box can be opened — done this pass (ui lane), kept for what it leaves.**
 
@@ -208,6 +265,36 @@ Leaves open:
    - **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are
      UNRUN (operator's `GATES_TIER=fast`) and this pass edits `main.js`,
      `wasm.js` and `index.html`.
+
+## 0. The crosshair answers for the swing too — done this pass *(ui lane)*
+
+*2026-08-05. The top item's own remainder ("gathering and building have no
+prompt"), plus ranked fix 1 of `findings/pass-20260805-002720-05-judge.md`.*
+
+`interact.js` gains a SECOND resolver, `resolveSwing` — not four more verbs in
+the first one, because the two picks share no term: E reaches 5 m and ranks an
+aim radius, a swing reaches `gather::REACH_M` (2 m) through a 30° cone with a
+±3 m window and a point-blank bypass, over a 3×3 block of 8 m terrain cells.
+It transcribes `gather.rs:494-532` and invents nothing: the client sends a
+swing as a button bit and the sim picks the node alone, so any other rule names
+a node the arm does not hit. Nodes come from `terrain.cellEntry`, already
+public. E's pick still wins the line; the swing prompt fills the silence.
+`ui_smoke` §R: 433 checks (was 381), 20 mutants run, all 20 red.
+
+The judge's ranked fix 1 is closed in the same file: `promptFor` was only ever
+called with `{open:false, locked:false}`, so flattening the door's whole
+open/locked branch shipped green (its mutant M14). Now walked at all three
+states.
+
+Leaves open:
+- **Which prompt outranks which is unspoken** — `DECISIONS.md` §open ("swing
+  prompt precedence v0"). E-first is argued, not decided.
+- **The tie test found a hole in its own first version.** A tie between cells
+  (0,0) and (2,2) is kept by (0,0) under BOTH loop nestings, so transposing the
+  loops escaped green; cells (2,0)/(0,2) swap under the transpose and catch it.
+- **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are UNRUN
+  (operator's `GATES_TIER=fast`) and this pass edits `main.js`.
+- **Building still has no prompt** — the last verb without one.
 
 ## 0. The second container panel — gap 1's other half *(ui lane)*
 

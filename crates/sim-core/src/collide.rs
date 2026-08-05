@@ -575,6 +575,9 @@ mod tests {
 
     #[test]
     fn wall_blocks_doorway_opens_posts_block() {
+        // Pieces are what this fixture is about; a pine standing where it
+        // walks is not (occupy::Barren).
+        let mut occ = crate::occupy::Scratch::barren();
         let bc = free_table();
         let wall_x = CX as f32 * BUILD_CELL_M; // 1023: the west edge plane
 
@@ -584,7 +587,13 @@ mod tests {
         put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_W, 1);
         let mut b = body_at(1024.5, 1024.5);
         for _ in 0..120 {
-            movement::step(SEED, pieces.cols(), &mut b, &walk(-127, 0));
+            movement::step(
+                SEED,
+                pieces.cols(),
+                &mut occ.occupants(),
+                &mut b,
+                &walk(-127, 0),
+            );
         }
         let (x, _, _) = pos(&b);
         let r = WALL_THICKNESS_M * 0.5 + CAPSULE_RADIUS_M;
@@ -600,7 +609,13 @@ mod tests {
         put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_W, 2);
         let mut b = body_at(1024.5, 1024.5);
         for _ in 0..120 {
-            movement::step(SEED, pieces.cols(), &mut b, &walk(-127, 0));
+            movement::step(
+                SEED,
+                pieces.cols(),
+                &mut occ.occupants(),
+                &mut b,
+                &walk(-127, 0),
+            );
         }
         assert!(
             pos(&b).0 < wall_x - 0.5,
@@ -611,7 +626,13 @@ mod tests {
         // Aimed at a post (z inside the south post span): blocked.
         let mut b = body_at(1024.5, CZ as f32 * BUILD_CELL_M + 0.45);
         for _ in 0..120 {
-            movement::step(SEED, pieces.cols(), &mut b, &walk(-127, 0));
+            movement::step(
+                SEED,
+                pieces.cols(),
+                &mut occ.occupants(),
+                &mut b,
+                &walk(-127, 0),
+            );
         }
         assert!(
             pos(&b).0 >= wall_x + r - POS_XZ_Q,
@@ -630,7 +651,13 @@ mod tests {
         put(&bc, &mut pieces, CX, CZ, 1, crate::build::LOC_EDGE_W, 1);
         let mut b = body_at(1024.5, 1024.5);
         for _ in 0..120 {
-            movement::step(SEED, pieces.cols(), &mut b, &walk(-127, 0));
+            movement::step(
+                SEED,
+                pieces.cols(),
+                &mut occ.occupants(),
+                &mut b,
+                &walk(-127, 0),
+            );
         }
         assert!(
             pos(&b).0 < wall_x - 0.5,
@@ -641,6 +668,9 @@ mod tests {
 
     #[test]
     fn planes_are_ground_and_edges_drop_off() {
+        // Pieces are what this fixture is about; a pine standing where it
+        // walks is not (occupy::Barren).
+        let mut occ = crate::occupy::Scratch::barren();
         let bc = free_table();
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
@@ -648,7 +678,13 @@ mod tests {
 
         // Standing in the cell snaps up onto the slab (lift ≤ step-up)…
         let mut b = body_at(1024.5, 1024.5);
-        movement::step(SEED, pieces.cols(), &mut b, &walk(0, 0));
+        movement::step(
+            SEED,
+            pieces.cols(),
+            &mut occ.occupants(),
+            &mut b,
+            &walk(0, 0),
+        );
         let (_, y, _) = pos(&b);
         assert!(
             fabs(y - base) <= POS_Y_Q,
@@ -659,7 +695,13 @@ mod tests {
         put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_W, 1);
         put(&bc, &mut pieces, CX, CZ, 1, crate::build::LOC_EDGE_W, 1);
         put(&bc, &mut pieces, CX, CZ, 2, LOC_PLANE, 3);
-        movement::step(SEED, pieces.cols(), &mut b, &walk(0, 0));
+        movement::step(
+            SEED,
+            pieces.cols(),
+            &mut occ.occupants(),
+            &mut b,
+            &walk(0, 0),
+        );
         let (_, y, _) = pos(&b);
         assert!(
             fabs(y - base) <= POS_Y_Q,
@@ -669,7 +711,13 @@ mod tests {
         // Walking east off the slab falls back to terrain.
         let mut b = body_at(1024.5, 1024.5);
         for _ in 0..240 {
-            movement::step(SEED, pieces.cols(), &mut b, &walk(127, 0));
+            movement::step(
+                SEED,
+                pieces.cols(),
+                &mut occ.occupants(),
+                &mut b,
+                &walk(127, 0),
+            );
         }
         let (x, y, z) = pos(&b);
         let terr = terrain::height(SEED, x, z);
@@ -682,6 +730,9 @@ mod tests {
 
     #[test]
     fn stairs_ramp_climbs_the_storey() {
+        // Pieces are what this fixture is about; a pine standing where it
+        // walks is not (occupy::Barren).
+        let mut occ = crate::occupy::Scratch::barren();
         let bc = free_table();
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
@@ -693,7 +744,13 @@ mod tests {
         let mut last_y = pos(&b).1;
         let mut top_y = last_y;
         for _ in 0..180 {
-            movement::step(SEED, pieces.cols(), &mut b, &walk(0, 127));
+            movement::step(
+                SEED,
+                pieces.cols(),
+                &mut occ.occupants(),
+                &mut b,
+                &walk(0, 127),
+            );
             let (_, y, z) = pos(&b);
             if z < (CZ + 1) as f32 * BUILD_CELL_M {
                 assert!(y >= last_y - POS_Y_Q, "ramp descended while walking up");
@@ -783,6 +840,9 @@ mod tests {
 
     #[test]
     fn decay_removal_clears_the_column() {
+        // Pieces are what this fixture is about; a pine standing where it
+        // walks is not (occupy::Barren).
+        let mut occ = crate::occupy::Scratch::barren();
         let bc = free_table();
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
@@ -799,7 +859,13 @@ mod tests {
         assert_eq!(pieces.cols().get(CX, CZ).planes, 1, "the slab stays");
         let mut b = body_at(1024.5, 1024.5);
         for _ in 0..120 {
-            movement::step(SEED, pieces.cols(), &mut b, &walk(-127, 0));
+            movement::step(
+                SEED,
+                pieces.cols(),
+                &mut occ.occupants(),
+                &mut b,
+                &walk(-127, 0),
+            );
         }
         assert!(
             pos(&b).0 < CX as f32 * BUILD_CELL_M - 0.5,

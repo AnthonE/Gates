@@ -9,10 +9,12 @@
 //! forest is cover or decoration — and the **road's clearance**, because a
 //! circulation loop that a boulder blocks is not a loop.
 //!
-//! What it deliberately does NOT test is anybody calling this. `collide.rs`
-//! and `movement.rs` are the systems lane's files and contain zero references
-//! to `Occupant` today; this suite gates the shapes and the predicate so that
-//! wiring them is a one-line call against a surface that is already proven.
+//! What it does not test is anybody calling this — and that half now exists.
+//! `movement::step` asks `occupy::Occupants::blocks` on every candidate move,
+//! and `tests/walk.rs` drives real bodies into real trunks, boulders and the
+//! shelter's walls. The split stands: this suite is the geometry, that one is
+//! the wiring, and a failure here means the shape is wrong rather than the
+//! caller.
 
 // The measurements ARE the gate's output — same reasoning and same allow as
 // `tests/road.rs` and `tests/haven.rs`: the L5 wall bans format/print in SIM

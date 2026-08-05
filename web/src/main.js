@@ -35,8 +35,11 @@ import {
   VERB_HEARTH,
   VERB_NONE,
   newPick,
+  newSwingPick,
   promptFor,
+  promptForSwing,
   resolveInteract,
+  resolveSwing,
 } from "./interact.js";
 import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
 
@@ -508,13 +511,54 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         hud.toast("nothing in reach");
     }
   };
-  /** The prompt, off the HUD's slow timer. Same resolver, same arguments. */
+  // What a SWING would hit, on the sim's own terms. `terrain.cellEntry` is the
+  // streamed scatter entry at a cell — the client's copy of the thing
+  // `gather::swing` scans for — and the accessor is bound once here rather
+  // than rebuilt per call, for the same no-per-frame-allocation reason the
+  // world adapter above is reused.
+  const swingPick = newSwingPick();
+  const swingAim = { x: 0, y: 0, z: 0, fx: 0, fz: 0 };
+  const swingWorld = {
+    cellAt: (cx, cz) =>
+      cx >= 0 && cz >= 0 && cx <= 0xffff && cz <= 0xffff
+        ? terrain.cellEntry((((cx << 16) | cz) >>> 0))
+        : null,
+  };
+  /**
+   * Resolve what a swing would connect with right now. The cell key is
+   * `cx<<16|cz`, which is `gather::cell_key` and `terrain.js`'s `cellIndex`
+   * agreeing; the guard is what keeps a negative cell off the island from
+   * packing into a positive key that names a real cell somewhere else — the
+   * twelve-bit `box_key` trap this client already paid for once, in the one
+   * other place it shifts a coordinate.
+   */
+  const swingAt = () => {
+    const R = views.render;
+    swingAim.x = R[1];
+    swingAim.y = R[2];
+    swingAim.z = R[3];
+    swingAim.fx = Math.sin(input.yaw);
+    swingAim.fz = Math.cos(input.yaw);
+    return resolveSwing(swingPick, swingAim, swingWorld);
+  };
+  /**
+   * The prompt, off the HUD's slow timer. Same resolver, same arguments.
+   *
+   * E's pick wins when it has one, and the swing prompt fills the silence.
+   * Both are true at once whenever you stand at a box inside 2 m of a tree, so
+   * something has to choose, and E is the half a player cannot otherwise
+   * discover: the mouse button is already held down, while nothing on screen
+   * would ever suggest pressing E. It also keeps the line to ONE verb — the
+   * reference's centre hint is a single row (`Rust Images/choppingtree.jpg`)
+   * and two stacked prompts under a crosshair is a menu, not a hint.
+   */
   const updatePrompt = () => {
     if (views.render[0] !== 1) {
       hud.setPrompt("");
       return;
     }
-    hud.setPrompt(promptFor(aimPick(pick, VERB_NONE)));
+    const text = promptFor(aimPick(pick, VERB_NONE));
+    hud.setPrompt(text || promptForSwing(swingAt()));
   };
   const closeOpenContainer = () => {
     if ((ex.client_cont_kind() >>> 0) === CONT_SELF) return false;
