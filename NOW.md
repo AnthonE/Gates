@@ -15,7 +15,31 @@ Done items are deleted, not checked — history lives in git and
 > from here would only conflict on the same line. Merge theirs. Until then
 > `UI_SMOKE_PORT=<free>` is the documented override.
 
-0. **world: the pad pays now, but it is still bare ground.**
+0. **world: the forest clusters now; the biome edge is still a step.**
+   *(`terrain::clump` landed — `DECISIONS.md` §open "scatter clumping v0",
+   `crates/sim-core/tests/scatter.rs`. Dispersion 0.98–1.05 → 2.90–3.34
+   against a closed-form null, density held. This is what it leaves.)*
+
+   - **`SPAWN.md` §9.4's other half is not done.** Density now ramps across
+     a biome boundary but *composition* still snaps: `biome()` is a hard
+     classifier (`h > 52.0`, `moist > 0.05`), so one cell draws from the
+     forest row and its neighbour from the meadow row. The fix is blending
+     the two rows over a band, and it is not a local edit — `biome()` is
+     also read by the client splat and by spawn selection, so softening it
+     is a decision about what `biome()` returns.
+   - **One field scales every occupant.** Trees, bushes and rocks clump on
+     the same noise. Right for a clearing, wrong for ore: a metal node has
+     no reason to care where the trees are. A second channel for the
+     mineral rows is the obvious next slice, and it is cheap — the machinery
+     is now in `terrain.rs` and the gate generalises.
+   - **The forest row peaks at 945 of 1,000 per-mille in a grove.**
+     `test_no_biome_row_saturates` holds it, but that is 5.5% of headroom:
+     the next pass that raises a weight row or the clump ceiling hits the
+     rail, and past it density falls silently. Budget it before spending it.
+   - **Nobody has looked at a grove.** The claim is arithmetic only; no
+     frame has been captured since the field landed.
+
+1. **world: the pad pays now, but it is still bare ground.**
    *(Placement, exclusion zone and the container ring have landed —
    `DECISIONS.md` §open "haven pad v0" + "haven crates v0", `tests/haven.rs`,
    `ci/haven_prize.mjs`. This is what they leave.)*
