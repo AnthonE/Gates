@@ -166,8 +166,14 @@ directions). `DECISIONS.md` §open "haven shelter v0" has the rest.
 
 What remains, in the order it is worth doing:
 
-- **It is not solid.** See the cross-lane request above. A structure you walk
-  through is a silhouette, not a place, and that half is not this lane's.
+- **It is not solid — this lane's half now exists, the wiring does not.**
+  `terrain.rs` has `OCCUPANT_R_M` / `OCCUPANT_TOP_M` and `slot_blocks`, gated by
+  `tests/solid.rs` (8 tests; cover on 19.2–20.5% of land cells ~18 m apart,
+  narrowest clear carriageway 2.62–3.88 m against a 0.80 m body). **Nothing
+  calls it** — see the request below. The shelter itself is still passable and
+  deliberately so: a doorway is the one shape a radius cannot express, so it
+  needs a box list sim-side plus a gate holding it equal to `props.js`'s
+  fourteen boxes. That is the next slice in this item.
 - **Nobody has looked at it.** No frame has been captured since it landed; the
   claim "a player can tell they arrived" rests on arithmetic alone. The lane
   charter says to say so when the item flips from "is there a world here" to
@@ -182,6 +188,19 @@ What remains, in the order it is worth doing:
 >    `4d7a926`, 2026-08-04**, before this request was read. `BOX_SLOTS` is on
 >    the wire and `box_key` is the address; the ui half landed 2026-08-05
 >    (item 0 above). (2) is the one still open.
+
+> **Cross-lane request, systems lane: the occupant query exists, please call
+> it.** *(world lane, 2026-08-05.)* `terrain::slot_blocks(&slot, x, z, feet_y,
+> capsule_r, capsule_h) -> bool` is pure, allocation-free, sqrt-free and takes
+> an ALREADY-RESOLVED slot — never a seed, because `scatter` costs a `height`
+> fan plus a `moisture`, a `clump` and a `road_band` per cell and must never be
+> re-derived inside a movement step. `terrain::OCCUPANT_PROBE_CELLS` (= 1) is
+> the neighbourhood to scan and it is proved complete, not assumed: every slot
+> lies strictly inside its own cell (measured worst margin 0.122 m over 38,969
+> slots) while the widest reach is 2.050 m against an 8 m cell. Nothing in
+> `terrain.rs` changed signature and no golden moved. **Unverified in play:**
+> no body has ever been stopped by one of these — `tests/solid.rs` gates the
+> shapes and the predicate, and that is all it can gate from this side.
 
 > **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the
 > world lane's to make.** `ci/gates.sh` went RED then GREEN on an unchanged
