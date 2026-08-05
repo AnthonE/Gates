@@ -333,11 +333,41 @@ The reads a survival map must produce, and which stage buys each:
 | relief amplitude | ~90 m, sea level at 0 |
 | chunks | 64 m, aligned with the netcode grid — one grid, everywhere |
 | scatter cells | 8 m (≈ 65 k cells; ~8–12 k live slots per seed) |
+| clutter cells | 0.64 m (≈ 10 M cells; total coverage on land, streamed in 16 m tiles) |
 | biomes | 4 (beach/meadow/forest/highland) |
 | roads | 1 coast ring, ~4 m wide |
 | monuments | 0 — haven pad only; the pad carver is the future hook |
 | pad containers | 5 crates on a 10 m ring, 2.64× the shoulder's density |
 | node respawn | 20–45 min jittered, privilege-vetoed **(knob)** |
+
+### Stage 10 · Ground clutter — the layer below the scatter grid
+
+`ART.md` §1 calls the near ground the single largest structural difference
+between our frames and the references, and rule 4 makes it a number: no
+visible ground patch larger than ~3 m² inside 15 m without scatter. Stage 9
+cannot answer that at any weight — two adjacent 8 m cells at full occupancy
+still leave ~60 m² of bare ground between their two props.
+
+So there is a second population on a **0.64 m jittered grid**, resolved by
+`terrain::clutter_cell`: four kinds (pebble · tuft · twig · shard), full-cell
+jitter, yaw and scale off one hash draw. It is **potential, not state** — like
+a `Slot`, and less: no volume, no harvest, no wire, nothing in `state_hash`.
+
+Two properties carry it, and both are gated rather than argued:
+
+- **The mix IS the splat.** The ground material's four identity weights live
+  in `terrain::splat_from` — moved there out of the terrain worker, which now
+  calls the bridge — so the population and the surface under it evaluate one
+  function. A tuft stands where the ground is grass because it is the same
+  number that made the ground grass.
+- **Coverage is total by construction.** Those weights normalize to 255 on
+  land, so every land cell yields an element, and rule 4 becomes a property of
+  the grid alone: a disc of radius `CLUTTER_CELL_M`·√2 contains a whole cell
+  wherever it is centred. `tests/clutter.rs` measures it instead of trusting
+  it — worst bare disc **1.50 m² of the 3 m² cap** over 33,852 land points.
+
+Water is the only exclusion (the population's own `LAND_MIN_H`). The road
+carriageway is the one splat override: grit, never grass.
 
 ## 7 · Gates
 

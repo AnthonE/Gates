@@ -36,6 +36,7 @@ const CH_MOIST: u32 = 40;
 const CH_RIDGE: u32 = 48;
 const CH_SCATTER: u32 = 64;
 const CH_CLUMP: u32 = 72; // +octave index, 3 octaves
+const CH_CLUTTER: u32 = 80; // the sub-metre ground population
 
 // Generator shape (DECISIONS.md §open: worldgen shape params, golden-pinned).
 const RELIEF_FREQ: f32 = 1.0 / 600.0;
@@ -1121,6 +1122,258 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
         yaw: ((h >> 28) & 0xFF) as u8,
         scale: 0.9 + ((h >> 36) & 0xFF) as f32 * (0.2 / 255.0),
     }
+}
+
+// ── Ground clutter (ART.md rule 4) ─────────────────────────────────────────
+//
+// `ART.md` §1 calls the near ground "the single largest structural difference
+// between our frames and the references", and rule 4 makes it checkable: any
+// visible ground patch larger than ~3 m² inside 15 m carries scatter. The 8 m
+// scatter grid cannot answer that at any weight — two adjacent cells at full
+// occupancy still leave ~60 m² of bare turf between their two props. This is
+// the layer BELOW it: tufts, pebbles, twigs and shards on a sub-metre grid,
+// with no gameplay meaning and no sim state. Worldgen POTENTIAL, exactly like
+// a `Slot` — resolved by whoever draws it, never stored, never in a snapshot.
+//
+// Two properties make it gateable arithmetic rather than a shader.
+//
+//  1. THE MIX IS THE SPLAT — not a second table beside it. `splat_from` below
+//     is the ground material's own four identity weights, lifted out of
+//     `web/src/terrainWorker.js` so both sides evaluate ONE function. The
+//     fields-pack failure this closes is named in its rejection list:
+//     "geometry and shading claim the same feature but evaluate different
+//     functions". Sandy ground grows pebbles, grass grows tufts, forest litter
+//     grows twigs, rock grows shards, and the population cannot drift from the
+//     surface it stands on because there is nothing to drift from.
+//     `ci/splat_parity.mjs` holds the two languages to it.
+//  2. THE WEIGHTS SUM TO 255 ON LAND, so every land cell yields an element and
+//     coverage is TOTAL by construction. Rule 4's 3 m² then reduces to a
+//     property of the grid alone: a disc of radius `CLUTTER_CELL_M * √2`
+//     contains a whole cell wherever it is centred, so the largest bare disc
+//     is 0.905 m — 2.57 m², inside the rule with margin. `tests/clutter.rs`
+//     MEASURES the largest empty disc rather than trusting that argument.
+//
+// What this is not: it is not collision (nothing here has a volume, and a
+// tuft you stop at would be a bug), not gathered, not networked, and not in
+// `state_hash`. A shard that never draws behaves identically without it.
+
+/// Clutter tile edge in meters — the streaming unit, sized so the client can
+/// hold a ring of them inside the ~30 m band ART.md rule 4 is about rather
+/// than paying for a 64 m terrain chunk's worth of grass to reach 15 m.
+pub const CLUTTER_TILE_M: f32 = 16.0;
+/// Clutter cell edge in meters: the stratum of the jittered grid, and the
+/// only number rule 4's guarantee depends on (`CLUTTER_CELL_M * √2` is the
+/// largest disc that can miss every cell). 0.64 divides 16.0 exactly 25 ways,
+/// so a tile is a whole number of cells and no cell straddles two tiles.
+pub const CLUTTER_CELL_M: f32 = 0.64;
+/// Cells per tile side (16.0 / 0.64, exact).
+pub const CLUTTER_CELLS_PER_TILE: i32 = 25;
+/// Elements one tile can produce — the fill buffer's cap, and total coverage
+/// means the cap is also the typical count, not a rare peak.
+pub const CLUTTER_PER_TILE: usize = 625;
+/// Clutter cells per island side (2048 / 0.64).
+pub const CLUTTER_CELLS_PER_SIDE: i32 = 3200;
+
+// The splat bands — the retired palette's hard thresholds with a ramp hung
+// around each (DECISIONS.md §open, materials v0). These are the SAME numbers
+// `web/src/terrainWorker.js` shipped; they moved here rather than being
+// copied, and `ci/splat_parity.mjs` fails if the two ever disagree.
+const SPLAT_BEACH_BAND: (f32, f32) = (1.0, 3.0);
+const SPLAT_ALPINE_BAND: (f32, f32) = (44.0, 60.0);
+const SPLAT_MOIST_BAND: (f32, f32) = (0.01, 0.09);
+/// tan(50°) — the sim's cliff threshold, to the two decimals the worker's
+/// copy carried. Kept distinct from `CLIFF_SLOPE_RATIO` on purpose: this one
+/// is a shading band edge that has always been 1.19, and silently promoting
+/// it to the collision constant's precision would move every ground pixel.
+const SPLAT_CLIFF: f32 = 1.19;
+const SPLAT_CLIFF_BAND: (f32, f32) = (SPLAT_CLIFF * 0.8, SPLAT_CLIFF * 1.2);
+
+/// Smoothstep, written out — the worker's `ramp`, which is where the ground's
+/// four identities get their soft edges instead of `biome()`'s hard ones.
+#[inline]
+fn ramp(lo: f32, hi: f32, v: f32) -> f32 {
+    let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The four ground identity weights — sand · grass · forest litter · rock —
+/// as bytes summing to ~255, from the three channels `biome()` decides on.
+/// The ground material blends its textures by these and, from this pass, the
+/// clutter population draws its kind from them.
+pub fn splat_from(h: f32, moist: f32, slope: f32) -> [u8; 4] {
+    let sand = 1.0 - ramp(SPLAT_BEACH_BAND.0, SPLAT_BEACH_BAND.1, h);
+    let alpine = ramp(SPLAT_ALPINE_BAND.0, SPLAT_ALPINE_BAND.1, h);
+    let wood = ramp(SPLAT_MOIST_BAND.0, SPLAT_MOIST_BAND.1, moist);
+    let cliff = ramp(SPLAT_CLIFF_BAND.0, SPLAT_CLIFF_BAND.1, slope);
+    let land = 1.0 - sand;
+    let mut w = [
+        sand,
+        land * (1.0 - alpine) * (1.0 - wood),
+        land * (1.0 - alpine) * wood,
+        land * alpine,
+    ];
+    // The cliff mask FORCES rock (TERRAIN.md §4) — the one veto that
+    // overrides the biome rather than blending with it.
+    w[0] += -w[0] * cliff;
+    w[1] += -w[1] * cliff;
+    w[2] += -w[2] * cliff;
+    w[3] += (1.0 - w[3]) * cliff;
+    let sum = w[0] + w[1] + w[2] + w[3];
+    let k = 255.0 / if sum > 0.0 { sum } else { 1.0 };
+    [
+        floor_i32(w[0] * k + 0.5).clamp(0, 255) as u8,
+        floor_i32(w[1] * k + 0.5).clamp(0, 255) as u8,
+        floor_i32(w[2] * k + 0.5).clamp(0, 255) as u8,
+        floor_i32(w[3] * k + 0.5).clamp(0, 255) as u8,
+    ]
+}
+
+/// `splat_from` at a world position, resolving the three channels itself.
+/// The client's terrain worker already holds all three per vertex and calls
+/// the law directly; this is for callers that hold only (x, z).
+pub fn splat(seed: u64, x: f32, z: f32) -> [u8; 4] {
+    splat_from(height(seed, x, z), moisture(seed, x, z), slope(seed, x, z))
+}
+
+/// What one clutter cell grew. Index order is the splat's channel order, so
+/// `kind as usize - 1` indexes the weight that produced it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Clutter {
+    None = 0,
+    /// Sand channel: grit, shells, small water-worn stones.
+    Pebble = 1,
+    /// Grass channel: the standing blades ART.md §1 is about.
+    Tuft = 2,
+    /// Forest-litter channel: fallen needles, sticks, cones.
+    Twig = 3,
+    /// Rock channel: angular scree off the cliff mask.
+    Shard = 4,
+}
+
+/// One resolved clutter element. Deliberately the same shape as `Slot` minus
+/// the things clutter does not have (an occupant identity the sim knows, a
+/// volume, a harvest state).
+#[derive(Clone, Copy, Debug)]
+pub struct ClutterElem {
+    pub kind: Clutter,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub yaw: u8,
+    /// Visual scale in [0.75, 1.25] — a wider band than a `Slot`'s [0.9, 1.1]
+    /// because a uniform tuft field reads as a printed texture, and at this
+    /// size nothing downstream measures against the scale.
+    pub scale: f32,
+}
+
+/// The empty cell — water, or off the island.
+pub const CLUTTER_NONE: ClutterElem = ClutterElem {
+    kind: Clutter::None,
+    x: 0.0,
+    y: 0.0,
+    z: 0.0,
+    yaw: 0,
+    scale: 1.0,
+};
+
+/// One hash draw decides a clutter cell's jitter, kind, yaw and scale.
+///
+/// Full-stratum jitter (the offset spans the whole cell, not a fraction of
+/// it) is what keeps the grid invisible while leaving the coverage guarantee
+/// intact: the element never leaves its own cell, so a disc that contains a
+/// cell contains an element, whatever the draw did.
+pub fn clutter_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
+    if !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_x)
+        || !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_z)
+    {
+        return CLUTTER_NONE;
+    }
+    let h = cell_hash(seed, cell_x, cell_z, CH_CLUTTER);
+
+    let jx = ((h >> 16) & 0xFF) as f32 * (CLUTTER_CELL_M / 255.0);
+    let jz = ((h >> 24) & 0xFF) as f32 * (CLUTTER_CELL_M / 255.0);
+    let x = cell_x as f32 * CLUTTER_CELL_M + jx;
+    let z = cell_z as f32 * CLUTTER_CELL_M + jz;
+
+    let y = height(seed, x, z);
+    if y < LAND_MIN_H {
+        return CLUTTER_NONE;
+    }
+
+    // The carriageway keeps its grit and loses its grass. This is the one
+    // place clutter overrides the splat, and it is the same override the
+    // scatter grid already makes for the same reason: a road that grows a
+    // continuous lawn is not a road, and `TERRAIN.md` §1 stage 7 wants the
+    // ring legible from a distance without a road material existing yet.
+    let kind = if road_band(seed, x, z) == RoadBand::Carriageway {
+        Clutter::Pebble
+    } else {
+        let w = splat_from(y, moisture(seed, x, z), slope(seed, x, z));
+        let mut total: u32 = 0;
+        for v in w.iter() {
+            total += *v as u32;
+        }
+        if total == 0 {
+            // Unreachable while the weights are normalized to 255, but a
+            // rounding change upstream must degrade to a pebble rather than
+            // punching a hole in the coverage guarantee.
+            Clutter::Pebble
+        } else {
+            let roll = ((h >> 32) as u32) % total;
+            let mut acc = 0u32;
+            let mut k = Clutter::Shard;
+            for (i, v) in w.iter().enumerate() {
+                acc += *v as u32;
+                if roll < acc {
+                    k = match i {
+                        0 => Clutter::Pebble,
+                        1 => Clutter::Tuft,
+                        2 => Clutter::Twig,
+                        _ => Clutter::Shard,
+                    };
+                    break;
+                }
+            }
+            k
+        }
+    };
+
+    ClutterElem {
+        kind,
+        x,
+        y,
+        z,
+        yaw: ((h >> 40) & 0xFF) as u8,
+        scale: 0.75 + ((h >> 48) & 0xFF) as f32 * (0.5 / 255.0),
+    }
+}
+
+/// Fill one tile's elements into a caller-owned buffer, returning the count.
+///
+/// Caller-owned because sim-core allocates nothing: the bridge holds one
+/// static `CLUTTER_PER_TILE` buffer and the client reads it in place, the
+/// same arrangement `terrain_fill_slots` already uses for the scatter grid.
+/// A buffer shorter than `CLUTTER_PER_TILE` is filled to its own length and
+/// the rest of the tile is dropped, so a short buffer is a thinner field and
+/// never an overrun.
+pub fn clutter_fill(seed: u64, tile_x: i32, tile_z: i32, out: &mut [ClutterElem]) -> usize {
+    let cx0 = tile_x * CLUTTER_CELLS_PER_TILE;
+    let cz0 = tile_z * CLUTTER_CELLS_PER_TILE;
+    let mut n = 0usize;
+    for j in 0..CLUTTER_CELLS_PER_TILE {
+        for i in 0..CLUTTER_CELLS_PER_TILE {
+            if n >= out.len() {
+                return n;
+            }
+            let e = clutter_cell(seed, cx0 + i, cz0 + j);
+            if e.kind != Clutter::None {
+                out[n] = e;
+                n += 1;
+            }
+        }
+    }
+    n
 }
 
 // ── Occupant volume ────────────────────────────────────────────────────────
