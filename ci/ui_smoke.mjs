@@ -221,7 +221,10 @@ try {
       "  install it: (cd web && npm install --include=dev)",
   );
 }
-for (const rel of ["index.html", "src/hud.js", "src/input.js"]) {
+// `src/map.js` joins the list because `hud.js` imports it: the page loads it
+// raw, so a missing file is a module-resolution error inside a page evaluate
+// rather than the plain sentence below.
+for (const rel of ["index.html", "src/hud.js", "src/input.js", "src/map.js"]) {
   if (!fs.existsSync(path.join(WEB, rel))) fail(`web/${rel} missing — nothing to smoke`);
 }
 
@@ -4410,6 +4413,585 @@ check(
 );
 
 // =============================================================================
+// U. the map — the island, its grid, and which way is up
+// =============================================================================
+// The judge's ranked gap 3 (`pass-20260805-074623-01`) opens "There is nowhere
+// to go" and leads with `MENUS.md:102`, Map MISSING. `web/src/map.js` is the
+// answer and it is almost entirely arithmetic, so almost all of this is node.
+//
+// Three classes of claim, and they fail in different ways:
+//
+//   1. The map's constants are the WORLD's. A map drawn at the wrong extent
+//      is not slightly wrong, it is a different island, and nothing on screen
+//      would say so — the player would simply never find anything. Read back
+//      out of `terrain.rs` and `bridge.rs`, the discipline §Q and §R already
+//      use for the reach and the cone.
+//   2. Orientation. `CLAUDE.md`'s trap list is explicit that a byte-golden is
+//      blind to what a field MEANS and that positional payloads are where the
+//      reference ecosystem actually bled. `paintMap` writes image row
+//      `size-1-j` for height row `j` — one subtraction between "north is up"
+//      and "the island is upside down", in a file with no golden at all. So a
+//      synthetic field that is land in the north and sea in the south is
+//      painted and read back, and the grid labels are checked at all four
+//      corners rather than at one.
+//   3. The palette is the SPLAT law's, blended and shaded, not a second biome
+//      opinion. Flat ground must come out at exactly the palette colour, which
+//      is what makes `MAP_SHADE_FLOOR`'s derivation a checkable claim instead
+//      of a taste; and a pure weight must produce its own colour, which is
+//      what stops the four channels being wired up in the wrong order.
+//
+// No wasm anywhere, which is why this stays in the code tier: `paintMap` takes
+// the sampler from its caller and the fakes below are three arrow functions.
+const map = await import(pathToFileURL(path.join(root, "web/src/map.js")).href);
+
+// --- 1. the constants are the world's ---------------------------------------
+const rsIsland = Number(terrainSrc.match(/^pub const ISLAND_SIZE: f32 = ([\d.]+);/m)?.[1]);
+const rsSea = Number(terrainSrc.match(/^pub const SEA_LEVEL: f32 = ([\d.]+);/m)?.[1]);
+const rsCells = Number(terrainSrc.match(/^pub const CELLS_PER_SIDE: i32 = (\d+);/m)?.[1]);
+const rsCellSize = Number(terrainSrc.match(/^pub const CELL_SIZE: f32 = ([\d.]+);/m)?.[1]);
+check(
+  Number.isFinite(rsIsland) && Number.isFinite(rsSea) && Number.isInteger(rsCells),
+  "could not read ISLAND_SIZE / SEA_LEVEL / CELLS_PER_SIDE out of terrain.rs — every extent check" +
+    " below would compare the map against nothing, which is the gate-that-matches-nothing class",
+);
+check(
+  map.WORLD_M === rsIsland,
+  `map.js WORLD_M = ${map.WORLD_M}, terrain.rs ISLAND_SIZE = ${rsIsland} — the map would paint a` +
+    " different island from the one the player walks on, and every grid reference on it would be wrong",
+);
+check(
+  map.SEA_LEVEL === rsSea,
+  `map.js SEA_LEVEL = ${map.SEA_LEVEL}, terrain.rs SEA_LEVEL = ${rsSea} — the coastline is the one` +
+    " line on this screen a player navigates by",
+);
+check(
+  map.MAP_N === rsCells,
+  `map.js MAP_N = ${map.MAP_N}, terrain.rs CELLS_PER_SIDE = ${rsCells} — one map sample is meant to be` +
+    " one scatter cell, so the map cannot claim detail the world does not have",
+);
+check(
+  map.MAP_N * (map.WORLD_M / map.MAP_N) === map.WORLD_M &&
+    map.WORLD_M / map.MAP_N === rsCellSize,
+  `map.js samples every ${map.WORLD_M / map.MAP_N} m, terrain.rs CELL_SIZE = ${rsCellSize}`,
+);
+// The one-call claim, and it is load-bearing: `terrain_fill_heights` refuses a
+// side above HEIGHTS_MAX_N by RETURNING 0 and leaving the scratch buffer as it
+// was, so a MAP_N raised past the cap would paint a stale buffer rather than
+// throw. main.js checks the count; this pins the inequality that makes the
+// check pass, so raising MAP_N lands red HERE on the commit that raises it.
+const rsHeightsMax = Number(bridgeSrc.match(/^const HEIGHTS_MAX_N: usize = (\d+);/m)?.[1]);
+check(
+  Number.isInteger(rsHeightsMax),
+  "could not read HEIGHTS_MAX_N out of bridge.rs — the apron check below would compare against nothing",
+);
+check(
+  map.MAP_N + 2 <= rsHeightsMax,
+  `map.js MAP_N = ${map.MAP_N} needs a ${map.MAP_N + 2}-square fill (one-sample apron) but` +
+    ` bridge.rs HEIGHTS_MAX_N = ${rsHeightsMax}. terrain_fill_heights REFUSES above the cap and returns 0` +
+    " without touching the buffer, so the map would paint whatever the last caller left there",
+);
+check(
+  /if \(wrote !== g \* g\)/.test(mainSrc),
+  "main.js no longer checks terrain_fill_heights' returned count against g*g — a refusal returns 0 and" +
+    " leaves the previous fill in the shared scratch buffer, which paints as a map of somewhere else",
+);
+// The grid divides the world exactly, and every column has a letter. A
+// GRID_LETTERS one short of GRID_COLS would put `undefined` in the last
+// column's label rather than fail anywhere.
+check(
+  map.GRID_COLS === map.WORLD_M / map.MAP_GRID_M && Number.isInteger(map.GRID_COLS),
+  `map.js GRID_COLS = ${map.GRID_COLS} does not divide WORLD_M ${map.WORLD_M} by MAP_GRID_M` +
+    ` ${map.MAP_GRID_M} exactly — a partial square on two edges has no honest label`,
+);
+check(
+  map.GRID_LETTERS.length === map.GRID_COLS,
+  `map.js GRID_LETTERS has ${map.GRID_LETTERS.length} letters for ${map.GRID_COLS} columns — the short` +
+    " end would label its squares 'undefined13'",
+);
+
+// --- 2. orientation: north is up, and the corners prove it -------------------
+// Both halves of the flip are checked, because they are separate subtractions
+// in separate functions and either one alone would be a map that disagrees
+// with its own labels.
+for (const [x, z, want, where] of [
+  [1, map.WORLD_M - 1, "A1", "north-west"],
+  [map.WORLD_M - 1, map.WORLD_M - 1, "P1", "north-east"],
+  [1, 1, "A16", "south-west"],
+  [map.WORLD_M - 1, 1, "P16", "south-east"],
+]) {
+  const got = map.gridLabel(x, z);
+  check(
+    got === want,
+    `map.js gridLabel(${x}, ${z}) — the ${where} corner — is '${got}', expected '${want}'.` +
+      " Columns run A..P west to east and rows 1..16 NORTH to south (+Z is north, DECISIONS.md §open" +
+      " compass axes v0), which is the same axis the compass strip rests on",
+  );
+}
+check(
+  map.gridLabel(-1, 5) === "" && map.gridLabel(5, map.WORLD_M) === "",
+  "map.js gridLabel answers a label for a position off the island — a reference to a square that does" +
+    " not exist is worse than no reference",
+);
+// The southern and eastern edges are exactly on a boundary and must land in
+// the LAST square rather than one past it.
+check(
+  map.gridLabel(map.WORLD_M - 0.001, 0) === "P16",
+  `map.js gridLabel at the exact south-east corner is '${map.gridLabel(map.WORLD_M - 0.001, 0)}',` +
+    " expected 'P16' — z = 0 floors to one row past the last",
+);
+// The projection agrees with the labels: +z must move UP the image (py down).
+const mp = {};
+map.worldToMap(mp, 0, map.WORLD_M, 100);
+check(
+  mp.px === 0 && mp.py === 0,
+  `map.js worldToMap of the north-west corner is (${mp.px}, ${mp.py}), expected (0, 0) — image y grows` +
+    " SOUTH while +z is north",
+);
+map.worldToMap(mp, map.WORLD_M, 0, 100);
+check(
+  mp.px === 100 && mp.py === 100,
+  `map.js worldToMap of the south-east corner is (${mp.px}, ${mp.py}), expected (100, 100)`,
+);
+const mw = {};
+map.mapToWorld(mw, 25, 25, 100);
+map.worldToMap(mp, mw.x, mw.z, 100);
+check(
+  Math.abs(mp.px - 25) < 1e-9 && Math.abs(mp.py - 25) < 1e-9,
+  `map.js worldToMap(mapToWorld(25, 25)) came back (${mp.px}, ${mp.py}) — the two projections are` +
+    " inverses or the marker sits somewhere the island is not",
+);
+
+// The painted image itself. Land in the north half, sea in the south half; if
+// `paintMap`'s row flip is dropped or inverted, this comes back upside down.
+const PAINT_N = 16;
+const paintProbe = (heightAt, splat) => {
+  const g = PAINT_N + 2;
+  const H = new Float32Array(g * g);
+  // j grows with +z (north), exactly what terrain_fill_heights writes.
+  for (let j = 0; j < g; j++) {
+    for (let i = 0; i < g; i++) H[j * g + i] = heightAt(i - 1, j - 1);
+  }
+  const out = new Uint8ClampedArray(PAINT_N * PAINT_N * 4);
+  map.paintMap(out, PAINT_N, {
+    heights: H,
+    step: 1,
+    x0: 0,
+    z0: 0,
+    moistAt: () => 0,
+    splatAt: () => splat,
+  });
+  return (i, py) => [
+    out[(py * PAINT_N + i) * 4],
+    out[(py * PAINT_N + i) * 4 + 1],
+    out[(py * PAINT_N + i) * 4 + 2],
+    out[(py * PAINT_N + i) * 4 + 3],
+  ];
+};
+// Pure grass (channel 1 of sand/grass/litter/rock, little end first).
+const GRASS_ONLY = 0x0000ff00;
+const northLand = paintProbe((_i, j) => (j >= PAINT_N / 2 ? 20 : -20), GRASS_ONLY);
+const top = northLand(8, 0);
+const bottom = northLand(8, PAINT_N - 1);
+check(
+  top[0] === map.MAP_GRASS[0] && top[1] === map.MAP_GRASS[1] && top[2] === map.MAP_GRASS[2],
+  `map.js paintMap put (${top.slice(0, 3)}) at the TOP of the image for a field that is land in the` +
+    ` north and sea in the south; expected the grass colour (${map.MAP_GRASS}). The image is upside` +
+    " down: height row j grows with +z (NORTH) and image row py grows DOWNWARD (south), so py = size-1-j",
+);
+check(
+  bottom[2] > bottom[0] && bottom[2] > bottom[1],
+  `map.js paintMap put (${bottom.slice(0, 3)}) at the BOTTOM of that same field — the southern half is` +
+    " sea and sea is blue-dominant. Same flip, seen from the other end",
+);
+// Alpha. An ImageData with a zero alpha anywhere is a hole in the island and
+// nothing else in this file would notice.
+let opaque = true;
+for (let py = 0; py < PAINT_N && opaque; py++) {
+  for (let i = 0; i < PAINT_N; i++) if (northLand(i, py)[3] !== 255) opaque = false;
+}
+check(opaque, "map.js paintMap left a non-opaque pixel — the map would ghost the world through itself");
+
+// --- 2b. the sample grid IS the pixel grid ----------------------------------
+// The judge's ranked fix 1 on `pass-20260805-074623-02`. `paintMap` flips rows
+// by sample INDEX (`py = size - 1 - j`), `worldToMap` flips by continuous
+// EXTENT, and until this block nothing held the two together: the checks above
+// pin each formula on its own and both were, separately, correct.
+//
+// The report measured the disagreement at exactly one row, always, and noted
+// that the x axis came out exact. That asymmetry is the tell, and it points
+// past both formulas to the grid underneath them. Sampling from 0 put sample
+// (i, j) on the low-x, low-z CORNER of the pixel it fills instead of in the
+// middle of it, so the island was painted half a cell out on BOTH axes; on the
+// flipped axis that half cell lands `worldToMap` exactly on the boundary
+// between two rows, and `floor` takes the row to the south. On x the same
+// offset lands on the low edge of the column, where `floor` comes out right —
+// right by luck of the half-open interval, not by construction, which is why
+// only one axis showed a defect.
+//
+// So the fix was neither formula. It is the origin, and the origin belongs to
+// `main.js`: `paintMap` is handed a sampler and cannot see where it sampled.
+// That is why the first half of this block reads the caller's source. A gate
+// that carried its own `step / 2` would agree with itself forever while the
+// shipped map went back to painting a half cell out — the gate-that-matches-
+// nothing class, and the exact hole this block exists to close.
+const mapOrig = mainSrc.match(/const orig = ([^;]+);/)?.[1]?.trim();
+check(
+  mapOrig === "step / 2",
+  `main.js paints the island from a sample origin of '${mapOrig}', expected 'step / 2' — the samples` +
+    " must sit at the CENTRES of the pixels they fill. An origin of 0 puts them on the corners, which" +
+    " paints the island half a cell out on both axes and puts worldToMap exactly on a row boundary",
+);
+const mapFillArgs = mainSrc.match(
+  /terrain_fill_heights\(\s*seed,\s*([^,]+),\s*([^,]+),\s*g,\s*step\s*\)/,
+);
+check(
+  mapFillArgs &&
+    mapFillArgs[1].trim() === "orig - step" &&
+    mapFillArgs[2].trim() === "orig - step",
+  `main.js fills the map's heights from (${mapFillArgs?.[1]?.trim()}, ${mapFillArgs?.[2]?.trim()}),` +
+    " expected ('orig - step', 'orig - step') — the one-sample apron is one step BELOW the origin on" +
+    " both axes, and an apron that disagrees with the origin shifts the whole island by a pixel",
+);
+const mapPaintSrc = mainSrc.match(/paintMap\(rgba, size, \{([\s\S]*?)\n\s*\}\);/)?.[1] ?? "";
+check(
+  /\bx0:\s*orig,/.test(mapPaintSrc) && /\bz0:\s*orig,/.test(mapPaintSrc),
+  "main.js hands paintMap an x0/z0 that is not the `orig` it filled from — paintMap uses those to ask" +
+    " the splat law where it is, so the colours would come from a different place than the heights",
+);
+
+// And the arithmetic that origin buys, swept over every row and every column
+// rather than sampled at one. A field that is land in exactly ONE sample row is
+// painted and read back, and the row it actually landed in must be both the
+// index flip AND the floor of the projection — which is the whole claim, in one
+// equality, in the only place the two conventions meet.
+const CELL_M = map.WORLD_M / PAINT_N;
+const CELL_ORIG = CELL_M / 2;
+const bandProbe = (isLand) => {
+  const g = PAINT_N + 2;
+  const H = new Float32Array(g * g);
+  for (let j = 0; j < g; j++) {
+    for (let i = 0; i < g; i++) H[j * g + i] = isLand(i - 1, j - 1) ? 20 : -20;
+  }
+  const out = new Uint8ClampedArray(PAINT_N * PAINT_N * 4);
+  map.paintMap(out, PAINT_N, {
+    heights: H,
+    step: CELL_M,
+    x0: CELL_ORIG,
+    z0: CELL_ORIG,
+    moistAt: () => 0,
+    splatAt: () => GRASS_ONLY,
+  });
+  // Land is grass here and grass is green-dominant; water is blue-dominant at
+  // every depth. One comparison, so this reads the image without a second copy
+  // of the palette that the palette section below could then drift from.
+  const rows = new Set();
+  const cols = new Set();
+  for (let py = 0; py < PAINT_N; py++) {
+    for (let i = 0; i < PAINT_N; i++) {
+      const o = (py * PAINT_N + i) * 4;
+      if (out[o + 1] > out[o + 2]) {
+        rows.add(py);
+        cols.add(i);
+      }
+    }
+  }
+  return { rows: [...rows], cols: [...cols] };
+};
+const mps = {};
+for (let j = 0; j < PAINT_N; j++) {
+  const { rows } = bandProbe((_i, jj) => jj === j);
+  const zj = CELL_ORIG + j * CELL_M;
+  map.worldToMap(mps, 0, zj, PAINT_N);
+  check(
+    rows.length === 1 && rows[0] === PAINT_N - 1 - j && Math.floor(mps.py) === rows[0],
+    `map.js: a field that is land only in sample row ${j} painted rows [${rows}] — expected exactly` +
+      ` [${PAINT_N - 1 - j}] — while worldToMap projects that row's own world z (${zj}) to py` +
+      ` ${mps.py}, which floors to ${Math.floor(mps.py)}. The painted row and the projected row must` +
+      " be the same row or the marker sits off the ground it claims to be standing on",
+  );
+  check(
+    Math.abs(mps.py - Math.floor(mps.py) - 0.5) < 1e-9,
+    `map.js: sample row ${j} projects to py ${mps.py}, which is ${mps.py - Math.floor(mps.py)} of the` +
+      " way into its pixel, expected exactly 0.5. A sample lands in the MIDDLE of the pixel it fills;" +
+      " 0 means the samples went back to the pixel corners and floor is one rounding from wrong",
+  );
+}
+for (let i = 0; i < PAINT_N; i++) {
+  const { cols } = bandProbe((ii) => ii === i);
+  const xi = CELL_ORIG + i * CELL_M;
+  map.worldToMap(mps, xi, 0, PAINT_N);
+  check(
+    cols.length === 1 && cols[0] === i && Math.floor(mps.px) === i,
+    `map.js: a field that is land only in sample column ${i} painted columns [${cols}] — expected` +
+      ` exactly [${i}] — while worldToMap projects that column's world x (${xi}) to px ${mps.px}.` +
+      " The x axis has no flip and was already exact, and it is swept anyway: it is the axis that" +
+      " proves the fix was the shared origin and not a subtraction bolted onto the flipped one",
+  );
+  check(
+    Math.abs(mps.px - Math.floor(mps.px) - 0.5) < 1e-9,
+    `map.js: sample column ${i} projects to px ${mps.px}, expected exactly half a pixel into its own` +
+      " column — the same centre law as the rows, on the axis whose defect floor was hiding",
+  );
+}
+// The round trip the two now close, at a pixel's own centre rather than its
+// corner — which is what `mapToWorld`'s doc claims and what nothing checked.
+map.mapToWorld(mw, 7 + 0.5, PAINT_N - 1 - 3 + 0.5, PAINT_N);
+check(
+  Math.abs(mw.x - (CELL_ORIG + 7 * CELL_M)) < 1e-9 &&
+    Math.abs(mw.z - (CELL_ORIG + 3 * CELL_M)) < 1e-9,
+  `map.js mapToWorld of the centre of the pixel holding sample (7, 3) is (${mw.x}, ${mw.z}),` +
+    ` expected (${CELL_ORIG + 7 * CELL_M}, ${CELL_ORIG + 3 * CELL_M}) — the world position of that` +
+    " very sample. This is the inverse stated as the paint's own geometry rather than as a round trip" +
+    " through an arbitrary pixel, which two consistently-wrong projections would also pass",
+);
+
+// --- 3. the palette is the splat law's --------------------------------------
+// Flat ground: lambert is exactly MAP_LIGHT[1] and the shade term is therefore
+// exactly 1, so the palette colour survives untouched. That is what makes the
+// derivation in MAP_SHADE_FLOOR's doc a claim this gate can hold.
+check(
+  Math.abs(map.MAP_SHADE_FLOOR + map.MAP_SHADE_GAIN * map.MAP_LIGHT[1] - 1) < 1e-9,
+  `map.js MAP_SHADE_FLOOR ${map.MAP_SHADE_FLOOR} + MAP_SHADE_GAIN ${map.MAP_SHADE_GAIN} * lambert-on-flat` +
+    ` ${map.MAP_LIGHT[1]} = ${map.MAP_SHADE_FLOOR + map.MAP_SHADE_GAIN * map.MAP_LIGHT[1]}, expected 1.` +
+    " Flat ground must come out at the measured palette colour or the palette is a starting point, not a claim",
+);
+check(
+  Math.abs(Math.hypot(...map.MAP_LIGHT) - 1) < 1e-6,
+  `map.js MAP_LIGHT is not a unit vector (length ${Math.hypot(...map.MAP_LIGHT)}) — the lambert term` +
+    " would scale the whole map by its length and the flat-ground identity above would be a coincidence",
+);
+check(
+  map.MAP_LIGHT[0] < 0 && map.MAP_LIGHT[2] > 0 && map.MAP_LIGHT[1] > 0,
+  `map.js MAP_LIGHT ${map.MAP_LIGHT} does not point down-and-from-the-north-west (-x, +y, +z) — every` +
+    " printed relief map lights from the upper left and `Rust Images/mapraw.jpg` does too; the other" +
+    " direction reads as valleys where there are ridges",
+);
+// Each of the four channels paints its own colour. Wiring the unpack in the
+// wrong order is invisible to every check above — the island would still have
+// the right shape, in the wrong biomes.
+for (const [shift, name, want] of [
+  [0, "sand", map.MAP_SAND],
+  [8, "grass", map.MAP_GRASS],
+  [16, "litter", map.MAP_LITTER],
+  [24, "rock", map.MAP_ROCK],
+]) {
+  const flat = paintProbe(() => 20, (255 << shift) >>> 0)(0, 0);
+  check(
+    flat[0] === want[0] && flat[1] === want[1] && flat[2] === want[2],
+    `map.js paintMap painted (${flat.slice(0, 3)}) for a pure ${name} weight (byte ${shift / 8} of` +
+      ` terrain_splat_from, little end first), expected ${want}. The four weight bytes are unpacked in` +
+      " the wrong order — the island keeps its shape and changes all its biomes",
+  );
+}
+// Water: below sea level the splat law is not consulted at all (down there it
+// describes the sea FLOOR, sand all the way, and a map that painted it would
+// draw an island four times too big), and deeper is darker.
+const shelf = paintProbe(() => -0.0001, 0x000000ff)(0, 0);
+const deep = paintProbe(() => -map.MAP_DEEP_M, 0x000000ff)(0, 0);
+check(
+  shelf[2] > shelf[0] && deep[2] > deep[0],
+  `map.js paintMap painted sea-floor rock (${shelf.slice(0, 3)} / ${deep.slice(0, 3)}) instead of water` +
+    " — the splat law describes the ground under the sea and the map must override it, not read it",
+);
+check(
+  deep[0] + deep[1] + deep[2] < shelf[0] + shelf[1] + shelf[2],
+  `map.js paintMap made deep water (${deep.slice(0, 3)}) no darker than the shelf (${shelf.slice(0, 3)})` +
+    " — the depth ramp is what separates a bay you can swim from open ocean",
+);
+
+// --- the DOM half -----------------------------------------------------------
+// Four things a browser is actually needed for: the panel is closed at load,
+// the toggle drives it, the readout tracks the projection, and the key law
+// holds. Everything else above was arithmetic.
+const mapDom = await page.evaluate(async ({ probe, yaws, at }) => {
+  const { hud } = globalThis.__ui;
+  const { MAP_DRAW_PX } = await import("/src/hud.js");
+  const el = document.getElementById("map");
+  const canvas = document.getElementById("mapcanvas");
+  // COMPUTED at load, not inline: the panel is hidden by the stylesheet and
+  // only ever gets an inline value from `toggleMap`, so the inline field is
+  // empty here and reading it would assert nothing. Same reading `#death`
+  // gets in group A, and for the same reason.
+  const atLoad = getComputedStyle(el).display;
+  // A tiny painted island so `drawMap` has something to blit — the real one
+  // comes out of wasm, which this gate deliberately never loads.
+  const n = 4;
+  const rgba = new Uint8ClampedArray(n * n * 4).fill(200);
+  hud.setMapTerrain(rgba, n);
+  const opened = hud.toggleMap();
+  const openDisplay = el.style.display;
+  const refs = [];
+  const marks = [];
+  for (const [x, z] of probe) {
+    hud.setMapView(x, z, 0);
+    refs.push(document.getElementById("mapref").textContent);
+    // Where drawMap actually put the marker. Read as client state and not off
+    // the canvas — `hud.mapPos` is what the triangle was drawn from, and a
+    // pixel probe here would be this gate growing the thing it exists not to
+    // be. It catches the defect a pixel probe would: a second projection
+    // written out beside the island's, which puts the marker somewhere the
+    // player is not while the map underneath stays perfectly correct.
+    marks.push({ px: hud.mapPos.px, py: hud.mapPos.py });
+  }
+  // Which way the triangle POINTS, swept, at one fixed position. The loop above
+  // reads `mapPos` and nothing else, so the marker's bearing had no assertion
+  // at all — the judge's M11 on `pass-20260805-074623-02` hard-coded the
+  // rotation to zero (a map whose arrow always claims north) and was the one
+  // survivor of eleven mutants. `mapDir` is the direction the triangle was
+  // built from, so this reads the drawn heading and not a recomputation of it.
+  const heads = [];
+  for (const yaw of yaws) {
+    hud.setMapView(at[0], at[1], yaw);
+    heads.push({ yaw, dx: hud.mapDir.dx, dy: hud.mapDir.dy });
+  }
+  // Every verb key must be eaten while the map is up; its own two must not.
+  //
+  // The inventory is FORCED shut first, and that is not tidiness: `eatsKey`
+  // answers for the union of the open panels, so with §I's inventory still up
+  // every one of these reads true whatever the map does — the check would pass
+  // against a `eatsKey` that had never heard of a map. `invWasOpen` is
+  // returned so the assertion can prove the probe actually isolated it.
+  if (hud.invOpen) hud.toggleInv();
+  const invWasOpen = hud.invOpen;
+  const eaten = {};
+  for (const code of ["KeyE", "KeyU", "KeyL", "KeyB", "KeyG", "KeyM", "Escape"]) {
+    eaten[code] = hud.eatsKey(code);
+  }
+  const closed = hud.toggleMap();
+  return {
+    atLoad,
+    opened,
+    openDisplay,
+    closedAfter: closed,
+    closedDisplay: el.style.display,
+    refs,
+    marks,
+    heads,
+    eaten,
+    invWasOpen,
+    drawPx: MAP_DRAW_PX,
+    canvasW: canvas.width,
+    canvasH: canvas.height,
+  };
+}, {
+  probe: [
+    [10, map.WORLD_M - 10],
+    [map.WORLD_M / 2, map.WORLD_M / 2],
+    [-5, -5],
+  ],
+  // North, east, south, west — and one off the cardinals, which is what pins
+  // the QUANTUM rather than the four right angles. 8192 is 45 degrees only if
+  // a wire unit is 360/65536 of a turn.
+  yaws: [0, 16384, 32768, 49152, 8192],
+  at: [map.WORLD_M / 2, map.WORLD_M / 2],
+});
+check(
+  mapDom.atLoad === "none",
+  `#map has inline display '${mapDom.atLoad}' at load, expected 'none' — a map covering the world on` +
+    " the frame a player joins is the same class as the death screen being up before anyone died",
+);
+check(
+  mapDom.opened === true && mapDom.openDisplay === "flex",
+  `hud.toggleMap() returned ${mapDom.opened} and left #map at '${mapDom.openDisplay}', expected true and` +
+    " 'flex' — main.js drops pointer lock on the returned value, so a toggle that lies leaves the player" +
+    " locked to a mouse they cannot use",
+);
+check(
+  mapDom.closedAfter === false && mapDom.closedDisplay === "none",
+  `the second hud.toggleMap() returned ${mapDom.closedAfter} at display '${mapDom.closedDisplay}'`,
+);
+check(
+  mapDom.canvasW === mapDom.drawPx && mapDom.canvasH === mapDom.drawPx,
+  `#mapcanvas has a ${mapDom.canvasW}x${mapDom.canvasH} backing store against hud.js MAP_DRAW_PX` +
+    ` ${mapDom.drawPx} — they must match or the browser resamples what drawMap deliberately did not`,
+);
+check(
+  mapDom.drawPx % map.MAP_N === 0,
+  `hud.js MAP_DRAW_PX ${mapDom.drawPx} is not an integer multiple of map.js MAP_N ${map.MAP_N} — a` +
+    " nearest-neighbour upscale at a fractional factor gives some output pixels one sample and some two," +
+    " which puts a moiré across the coastline",
+);
+for (const [i, [x, z]] of [
+  [10, map.WORLD_M - 10],
+  [map.WORLD_M / 2, map.WORLD_M / 2],
+  [-5, -5],
+].entries()) {
+  const label = map.gridLabel(x, z);
+  const want = label ? `grid ${label}` : "off the island";
+  check(
+    mapDom.refs[i] === want,
+    `hud.setMapView(${x}, ${z}) left #mapref at '${mapDom.refs[i]}', expected '${want}' — the readout` +
+      " must come from map.js's gridLabel and not from a second copy of the grid arithmetic",
+  );
+  // The marker's own projection, against map.js's. hud.js imports worldToMap
+  // rather than owning a copy, and this is what holds that: a second
+  // projection written out in drawMap would leave the island right and put
+  // the player somewhere they are not, which is worse than no marker.
+  map.worldToMap(mp, x, z, mapDom.drawPx);
+  check(
+    Math.abs(mapDom.marks[i].px - mp.px) < 1e-9 && Math.abs(mapDom.marks[i].py - mp.py) < 1e-9,
+    `hud.drawMap put the marker at (${mapDom.marks[i].px}, ${mapDom.marks[i].py}) for world` +
+      ` (${x}, ${z}), but map.js worldToMap says (${mp.px}, ${mp.py}) — the marker is projected by` +
+      " something other than the projection that painted the island under it",
+  );
+}
+// The marker's heading, by name. Written out as four cardinal vectors rather
+// than as `(sin, -cos)` of the same yaw hud.js used: recomputing the formula
+// here would agree with any formula drawMap happened to hold, including a
+// wrong one, and the claim being made is not "the arithmetic is the arithmetic"
+// but "north points UP the image". That is a positional payload one field wide,
+// which `CLAUDE.md`'s trap list names as where the reference ecosystem actually
+// bled, and it is the assertion M11 walked through.
+const R2 = Math.SQRT1_2;
+for (const [yaw, wdx, wdy, name, where] of [
+  [0, 0, -1, "north", "UP the image — image y grows south while +z is north"],
+  [16384, 1, 0, "east", "RIGHT"],
+  [32768, 0, 1, "south", "DOWN"],
+  [49152, -1, 0, "west", "LEFT"],
+  [8192, R2, -R2, "north-east", "up and to the right, at exactly 45 degrees"],
+]) {
+  const h = mapDom.heads.find((e) => e.yaw === yaw);
+  check(
+    h && Math.abs(h.dx - wdx) < 1e-9 && Math.abs(h.dy - wdy) < 1e-9,
+    `hud.drawMap pointed the marker along (${h?.dx}, ${h?.dy}) at wire yaw ${yaw} (${name}), expected` +
+      ` (${wdx}, ${wdy}) — ${where}. The map's arrow and the compass strip's bearing are one fact shown` +
+      " twice; an arrow that does not turn is a map that tells a lost player they are facing north",
+  );
+}
+check(
+  new Set(mapDom.heads.map((h) => `${h.dx},${h.dy}`)).size === mapDom.heads.length,
+  "hud.drawMap drew two different wire yaws along the SAME image direction — the rotation is dropped or" +
+    " collapsed, which every check above would still pass if it were pinned to one convenient angle",
+);
+check(
+  mapDom.invWasOpen === false,
+  "the map's key-ownership probe ran with the inventory still open — eatsKey answers for the UNION of" +
+    " the open panels, so every check below would read true whether or not the map contributed anything",
+);
+for (const code of ["KeyE", "KeyU", "KeyL", "KeyB", "KeyG"]) {
+  check(
+    mapDom.eaten[code] === true,
+    `hud.eatsKey('${code}') is ${mapDom.eaten[code]} with the map open — every verb below main.js's` +
+      " eatsKey question spends something, and a player reading a map is aiming at a 512-pixel panel",
+  );
+}
+for (const code of ["KeyM", "Escape"]) {
+  check(
+    mapDom.eaten[code] === false,
+    `hud.eatsKey('${code}') is ${mapDom.eaten[code]} with the map open — the panel's own toggle and` +
+      " close keys are excluded so the answer is self-contained, which is the rule the inventory set",
+  );
+}
+// And the caller: the island is painted ONCE. 66,564 height samples through
+// wasm on every open would be a quarter-second stall on a key a player presses
+// to orient themselves, which is the moment it can least afford one.
+check(
+  /if \(islandPainted\) return;/.test(mainSrc) && /islandPainted = true;/.test(mainSrc),
+  "main.js no longer guards paintIsland with a once-only flag — the whole-island fill is 66k height" +
+    " samples and it is a function of the seed alone",
+);
+
+// =============================================================================
 // J. no page errors anywhere in the above
 // =============================================================================
 check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
@@ -4438,7 +5020,14 @@ console.log(
     `compass: ${ticks.length} ticks over ${compassConsts.span} deg (letters every ${compassConsts.card}, ` +
     `numbers every ${compassConsts.step}, wrap copies agree), CSS px == JS constants, scrollLeft == ` +
     "yaw*360/65536*px monotonic and unclamped, N/E/S/W centred and axis-checked against yawDir " +
-    "(+Z north, +X east), no write on an unchanged pixel, one yawU16() sample per frame",
+    "(+Z north, +X east), no write on an unchanged pixel, one yawU16() sample per frame · " +
+    `map: ${map.WORLD_M} m / ${map.MAP_N} samples / sea ${map.SEA_LEVEL} against terrain.rs, apron fits ` +
+    `HEIGHTS_MAX_N ${rsHeightsMax} and the refused-fill count is checked, ${map.GRID_COLS}x${map.GRID_COLS} ` +
+    "grid lettered A..P west-east and numbered 1..16 NORTH-south, all four corners, projection inverts, " +
+    "north paints to the TOP row, four splat channels each to their own colour, sea overrides the law and " +
+    "deepens, flat ground exactly the palette, panel closed at load, toggle drives display, #mapref from " +
+    `gridLabel, every verb key eaten and M/Escape not, ${mapDom.drawPx} px an integer multiple of MAP_N, ` +
+    "island painted once",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 

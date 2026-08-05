@@ -15,6 +15,64 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0b · The map's grid and its arrow, made exact and gated *(ui lane — done this pass)*
+
+From the judge's **ranked fixes 1–3**, `pass-20260805-074623-02-judge.md`, against
+the map that landed the pass before. Taken ahead of §0's build prompt because both
+were defects already on the trunk, one of them a hole in the gate this lane's speed
+rests on.
+
+- **The off-by-one was neither formula.** The report measured `paintMap`'s index
+  flip against `worldToMap`'s extent flip — "exactly one row, always" — and noted
+  that x came out exact. That asymmetry is the tell: sampling from 0 put every
+  sample on its pixel's CORNER, so the island was painted half a cell out on BOTH
+  axes, and only the flipped axis landed `floor` on a row boundary. Fixed at the
+  origin (`main.js`, `orig = step / 2`), not in either projection. §U now sweeps all
+  16 rows and all 16 columns, reads the painted band back, and asserts the painted
+  row IS the projected row — with the origin read out of `main.js`'s source, because
+  `paintMap` is handed a sampler and cannot see where it was sampled.
+- **The marker's heading had no assertion at all.** M11 (rotation pinned north)
+  survived all eleven of last pass's mutants. `hud.mapDir` parks the drawn direction
+  beside `mapPos`; §U sweeps N/E/S/W plus one off-cardinal and asserts the vectors
+  BY NAME rather than re-deriving `(sin, −cos)`, which would agree with a wrong
+  formula too.
+- **Both cosmetic knobs registered** — `MAP_SHADE_CLAMP`, `MAP_MARKER_PX` — in
+  `DECISIONS.md` §open, now pinned by `ci/knob_registry.mjs`.
+
+`ui_smoke` 561 → 635 checks; nine mutants run, nine red, including last pass's
+survivor. §0a's remainder is untouched and still needs the other two lanes.
+
+---
+
+## 0a · The island has a map now — what it still cannot show *(ui lane)*
+
+From the judge's **ranked gap 3**, `pass-20260805-074623-01-judge.md`: "There is
+nowhere to go", leading with `MENUS.md:102` Map MISSING. **Landed:** M opens
+`#map`; `map.js` paints the island from `terrain::splat_from` through the bridge
+— one wasm fill, the same law the 3D ground blends by — hillshaded, 16×16
+A–P/1–16 grid, your position and heading. `ui_smoke` 510 → 561 (§U); ten mutants
+red, two of them gate holes this pass found and closed. `DECISIONS.md` §open has
+`MAP_GRID_M` and the shade floor's derivation. **Gates ran `fast`** (renderer
+tier off this run by operator act); the diff touches `main.js`, so `auto` would
+schedule it and §3's two clean-trunk reds still stand.
+
+What remains, and none of it is a UI call:
+
+- **Systems lane, one export please:** `terrain_haven_xz(seed)` — the judge's
+  own named item, now with a screen to land on. The map draws no marker at all,
+  so the one authored destination is still unfindable. `terrain::haven` is pure
+  and `bridge.rs:92` memoizes it already.
+- **Operator: may the map pin anything?** `ALPHA.md` §1's "no map position"
+  binds the DEATH screen and the map stays off it. A haven pin, a bag pin and a
+  death marker are three separate calls; `mapstylized.jpg` shows all three.
+- **Looks lane, information only:** the map paints the alpine channel as rock
+  while the world whitens it above `materials.js`'s `SNOW_RANGE`.
+
+**Respawn — the gap's other half — is BLOCKED, measured.** The wire carries
+`Respawn { on_bag: bool }` and nothing else; no owner bit and no cooldown ride
+`DeployRec` (`deploy.rs:232`, "never the wire"). So the client cannot tell its
+own sleeping bags from anyone's, nor which are ready, nor name one. "Beach or
+each live bag" (`ALPHA.md` §1) is a wire change first — systems lane.
 ## 0a · Repair — the piece half landed; the door and the keypress did not
 
 Gap pass. Ranked gap **1** of both `findings/pass-20260805-074623-01-judge.md`
@@ -50,7 +108,7 @@ From the judge's **ranked gap 3**, `pass-20260805-063306-01-judge.md`. NOW.md
 held no open ui-lane item, so the gap list supplied this one. Two halves:
 
 - **A bearing readout — DONE.** Compass strip, top centre, `hud.js` +
-  `index.html`. `ui_smoke` 442 → 507 checks (§S/§T); nine mutants red.
+  `index.html`. `ui_smoke` 442 → 510 checks (§S/§T); nine mutants red.
   **+Z is North, +X is East** — `DECISIONS.md` §open has the row and the
   conflict it resolves against `build.rs`'s `LOC_EDGE_N`.
 - **The build prompt — still open, and it is the judge's ranked fix 2.**
@@ -71,6 +129,36 @@ Two things the compass could not carry, both needing another lane:
   operator word is cheaper than a pass spent guessing.
 
 ---
+## 0 · The rest of `pass-20260805-074623-01`'s ranked fixes
+
+*(GAP PASS, world lane. Its ranked fix **1** — the authored sites were not
+on the native↔wasm parity surface — landed on `loop/site-parity`; see
+`DECISIONS.md` §open "probe coverage v0". Measured before the fix: of the
+golden's 256 cells, **zero** were inside `in_haven`/`in_waystation` on all
+three probe seeds, so `haven()`'s value reached the digest through nothing
+while `client-wasm` reads it off wasm and the server off native. Its other
+two fixes were left, deliberately, and are below. That report's ranked
+**gaps** 1–3 — projectiles, day/night + AI, the recycler — are all systems
+lane; the newest visual report's gaps are all texture/material work, which
+the operator parked for this lane on 2026-08-04.)*
+
+- **A short waystation tier is silent on a shard** (ranked fix 2). `pick_minor`
+  leaves `Waystation::NONE` when no candidate clears the separation floor.
+  `tests/waystation.rs` refuses that over 16 seeds, but a shard boots whatever
+  seed `shard.toml` names: on a seed the ring cannot fill, the island ships
+  with one or zero waystations and no counter, event or log line. Wants a
+  boot-time refusal in `crates/server` — **not this lane's file.** `probe_sites`
+  now hashes each `live` flag, so a short tier at least moves the fingerprint
+  on the three probe seeds; that is not the same as being loud on an arbitrary
+  one. One-line cross-lane request: sim-core can export a
+  `sites_complete(&Haven) -> bool` for the shard to call at boot.
+- **The tier gradient is gated in containers per m², but a player collects
+  loot** (ranked fix 3). A waystation crate and a pad crate are the same
+  `crate` loot table, so per container the lesser tier pays exactly what the
+  destination pays and only geometry separates them. `ci/haven_prize.mjs` knows
+  nothing about waystations, so giving them their own table — or changing crate
+  yields — moves the real gradient with every gate green. Wants that gate
+  restated in **expected items per site**, not containers per m².
 
 ## 1 · The client is becoming a native Rust desktop app
 

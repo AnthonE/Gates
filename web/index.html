@@ -599,6 +599,63 @@
         z-index: 5;
         pointer-events: none;
       }
+      /* The map screen (judge ranked gap 3, `pass-20260805-074623-01`:
+         "There is nowhere to go"). Centred and large, because the thing it
+         has to answer is "where am I on the island" and a thumbnail cannot;
+         but NOT fullscreen and NOT opaque, for the same reason #inv is
+         neither — `Rust Images/mapstylized.jpg` keeps the hotbar and the
+         vitals stack visible over the map, and a player reading a map is
+         still standing somewhere. z-index 6 is the panel rung #inv and #cont
+         already sit on; nothing needs to be open at the same time as this. */
+      #map {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        display: none;
+        flex-direction: column;
+        gap: 6px;
+        background: rgba(10, 15, 20, 0.82);
+        border: 1px solid #2a3642;
+        border-radius: 6px;
+        padding: 8px;
+        z-index: 6;
+        font: 11px monospace;
+        color: #cdd9e4;
+      }
+      /* Backing store and CSS size are the same number (`MAP_DRAW_PX`, hud.js)
+         so nothing is resampled by the browser: the island is painted at
+         MAP_N = 256 — one sample per 8 m terrain cell — and hud.js upscales it
+         2x with `imageSmoothingEnabled = false`, then draws the grid, the
+         labels and the marker at full resolution on top. A smooth upscale
+         would turn a 256-sample coastline into a soft gradient, and a
+         coastline you cannot place is this screen's one failure mode; drawing
+         the LABELS at 256 and letting CSS stretch them would be the same
+         mistake pointed at the text. */
+      #mapcanvas {
+        width: 512px;
+        height: 512px;
+        display: block;
+        background: #0b1016;
+        border: 1px solid #2a3642;
+        border-radius: 4px;
+      }
+      #maptitle,
+      #mapref {
+        margin: 0;
+        font: 11px monospace;
+      }
+      #maptitle {
+        color: #7d8fa0;
+        letter-spacing: 1px;
+      }
+      /* The grid square the player is standing in. The reference labels every
+         square on the map itself and this names the one you are in, which is
+         the half a player says out loud. */
+      #mapref {
+        color: #a9cf8f;
+        min-height: 13px;
+      }
       #build {
         position: fixed;
         left: 50%;
@@ -662,6 +719,11 @@
     <div id="build"></div>
     <div id="craftq"></div>
     <div id="craft"></div>
+    <div id="map">
+      <p id="maptitle">MAP</p>
+      <canvas id="mapcanvas" width="512" height="512"></canvas>
+      <p id="mapref"></p>
+    </div>
     <div id="inv">
       <p id="invtitle">INVENTORY</p>
       <div id="invgrid"></div>
