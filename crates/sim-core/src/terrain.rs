@@ -486,6 +486,34 @@ pub const HAVEN_PHASE_TRIES: i32 = 16;
 /// anchor gap (256 / `HAVEN_CRATES`) as evenly as integers allow.
 pub const HAVEN_PHASE_STEP: i32 = 256 / HAVEN_CRATES / HAVEN_PHASE_TRIES;
 
+/// Half the shelter's outer footprint, meters — the one number the sim knows
+/// about the greybox standing on the pad, and the one the client's mesh is
+/// gated against (`ci/haven_shelter.mjs`, the `PINE_MAX_R` pattern).
+///
+/// The sim does not care what the structure looks like; it cares that the
+/// thing occupies its corner of the pad without reaching a container or the
+/// rim, and that is a distance (knob, DECISIONS.md §open: haven shelter v0).
+pub const HAVEN_SHELTER_HALF_M: f32 = 3.5;
+/// How far off the pad center the shelter stands, meters.
+///
+/// **Not zero, and the road gate is why.** The pad center is the road's own
+/// center line — that is how stage 8 places it — so a structure at the
+/// center stands ON the carriageway, and `tests/road.rs` requires that
+/// surface clear so the loop stays walkable. It caught this on the first
+/// run. The correction is the one the reference already makes: a
+/// destination sits BESIDE the road it is reached by, and the road runs
+/// past it. Inside the container ring so the composition still reads as one
+/// place (knob, DECISIONS.md §open: haven shelter v0).
+pub const HAVEN_SHELTER_R_M: f32 = 6.5;
+/// LUT steps from the container ring's phase to the first bearing the
+/// shelter is tried on. Derived, not chosen: half an anchor gap, so the
+/// structure stands in a gap between two containers rather than behind one.
+pub const HAVEN_SHELTER_YAW_STEP: i32 = 256 / HAVEN_CRATES / 2;
+/// Bearings the shelter may be tried on before the site is refused.
+/// Derived, not chosen: one per gap in the container ring, because the gaps
+/// are exactly the bearings that clear the containers by construction.
+pub const HAVEN_SHELTER_TRIES: i32 = HAVEN_CRATES;
+
 // Wall 4 at the definition, not in a test: the search is capped, and both
 // counts must divide the 256-entry yaw LUT evenly or the bearings bunch.
 // The crate count is exempt from the divisibility rule — it indexes the LUT
@@ -507,6 +535,27 @@ const _: () = {
     // `scatter`'s broad phase tests |cell - haven cell| <= 2, which covers
     // every anchor iff the ring is inside two cells of the center.
     assert!(HAVEN_CRATE_R_M <= 2.0 * CELL_SIZE);
+    // The shelter, footprint and all, stands on ground the exclusion zone
+    // already cleared — otherwise a tree grows through a wall. 1.5 stands
+    // in for √2 on the half-diagonal: larger, exact in binary, and no sqrt
+    // in a const block.
+    assert!(HAVEN_SHELTER_HALF_M > 0.0);
+    assert!(HAVEN_SHELTER_R_M > 0.0);
+    assert!(HAVEN_SHELTER_R_M + 1.5 * HAVEN_SHELTER_HALF_M < HAVEN_RADIUS_M);
+    // `scatter`'s broad phase is the pad's cell plus two in each direction;
+    // the shelter has to be inside it or the branch never fires.
+    assert!(HAVEN_SHELTER_R_M <= 2.0 * CELL_SIZE);
+    // Half an anchor gap, to within the truncation an odd crate count
+    // forces: at 5 the gap is 51 LUT steps and half is 25.5, so the tried
+    // bearing sits 0.5 steps (0.7 degrees) off the gap's center. Stated as
+    // a bound rather than an equality because the equality is false, and a
+    // false assert is worse than no assert.
+    assert!(HAVEN_SHELTER_YAW_STEP > 0);
+    assert!(2 * HAVEN_SHELTER_YAW_STEP <= 256 / HAVEN_CRATES);
+    assert!(2 * HAVEN_SHELTER_YAW_STEP + 1 >= 256 / HAVEN_CRATES);
+    // One tried bearing per gap: fewer would leave a gap unreachable,
+    // more would try a bearing that is not a gap at all.
+    assert!(HAVEN_SHELTER_TRIES == HAVEN_CRATES);
 };
 
 /// The haven pad site: a pure function of the seed, resolved once.
@@ -525,6 +574,10 @@ pub struct Haven {
     /// pad — the client, the server and the gate all ask for anchor `k` and
     /// have to be told the same place.
     pub phase: u8,
+    /// Outward bearing the shelter stands on, as a yaw-LUT index. Carried
+    /// for the same reason `phase` is, and it costs more: resolving it reads
+    /// `road_band`, and `scatter` runs 65,536 times an island.
+    pub shelter: u8,
 }
 
 /// Max−min height over the pad footprint at (x, z): center plus a rim
@@ -564,6 +617,7 @@ fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             y: 0.0,
             relief: 0.0,
             phase,
+            shelter: 0,
         };
         let mut k = 0i32;
         let mut ok = true;
@@ -578,6 +632,63 @@ fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
         }
         if ok {
             return Some(phase);
+        }
+    }
+    None
+}
+
+/// The first gap in the container ring the shelter can stand in, or `None`
+/// if the site cannot hold it at any of them.
+///
+/// The tried bearings are the ring's own gaps — `HAVEN_SHELTER_YAW_STEP`
+/// past each anchor — because a gap clears both its neighbouring containers
+/// by construction, and picking bearings some other way would put the
+/// distance check back in charge of a property the geometry already has.
+///
+/// Three conditions, the same posture as the ring's: on land, off the
+/// carriageway (the pad's center IS the road's center line, so this is the
+/// condition that moved the structure off center at all), and in a scatter
+/// cell no container has taken. The third cannot be sized away — the
+/// shelter and the containers are 6 m apart against an 11.3 m cell diagonal,
+/// so whether they share a cell is a property of where the pad's grid
+/// alignment fell, not of either radius. A shared cell would silently
+/// delete one of the two. `reference/SPAWN.md` §5: refuse the position,
+/// never patch the object.
+fn haven_shelter_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
+    let probe = Haven {
+        x,
+        z,
+        y: 0.0,
+        relief: 0.0,
+        phase,
+        shelter: 0,
+    };
+    let mut t = 0i32;
+    while t < HAVEN_SHELTER_TRIES {
+        let bearing = ((t as u32 * 256) / HAVEN_CRATES as u32
+            + phase as u32
+            + HAVEN_SHELTER_YAW_STEP as u32) as u8;
+        t += 1;
+        let (dx, dz) = crate::yaw_lut::yaw_dir((bearing as u16) << 8);
+        let sx = x + dx * HAVEN_SHELTER_R_M;
+        let sz = z + dz * HAVEN_SHELTER_R_M;
+        if height(seed, sx, sz) < LAND_MIN_H || road_band(seed, sx, sz) == RoadBand::Carriageway {
+            continue;
+        }
+        let scx = (sx * (1.0 / CELL_SIZE)) as i32;
+        let scz = (sz * (1.0 / CELL_SIZE)) as i32;
+        let mut k = 0i32;
+        let mut ok = true;
+        while k < HAVEN_CRATES {
+            let (ax, az, _) = haven_crate(&probe, k);
+            if (ax * (1.0 / CELL_SIZE)) as i32 == scx && (az * (1.0 / CELL_SIZE)) as i32 == scz {
+                ok = false;
+                break;
+            }
+            k += 1;
+        }
+        if ok {
+            return Some(bearing);
         }
     }
     None
@@ -674,12 +785,20 @@ pub fn haven(seed: u64) -> Haven {
             Some(p) => p,
             None => continue,
         };
+        // Same chain, one link further along: a site that cannot stand its
+        // structure anywhere is refused rather than shipped without one.
+        // Ordered after the ring because the gaps it tries are the ring's.
+        let shelter = match haven_shelter_bearing(seed, x, z, phase) {
+            Some(b) => b,
+            None => continue,
+        };
         let site = Haven {
             x,
             z,
             y,
             relief,
             phase,
+            shelter,
         };
 
         if relaxed.is_none() || score < relaxed_score {
@@ -701,6 +820,7 @@ pub fn haven(seed: u64) -> Haven {
         y: height(seed, c, c),
         relief: 0.0,
         phase: 0,
+        shelter: 0,
     })
 }
 
@@ -738,6 +858,41 @@ pub fn haven_crate(haven: &Haven, k: i32) -> (f32, f32, u8) {
     )
 }
 
+/// The pad's greybox: position and the yaw it faces, a pure function of the
+/// pad exactly as `haven_crate` is.
+///
+/// It stands at the center — not at an authored offset — because the center
+/// is the only place on the pad with room. The packing is arithmetic, not
+/// taste: five containers on a 10 m ring inside a 32 m circle, with every
+/// pair required to clear the 11.31 m cell diagonal, already spends the
+/// circle's budget (five 5.66 m disks is 503 m² of the pad's 804 m², and a
+/// sixth anywhere inside the ring is closer than the diagonal to two of
+/// them). So the structure takes the one cell the ring encircles, and
+/// `haven_ring_phase` is what keeps that cell its own.
+///
+/// It stands in a gap in the container ring, `HAVEN_SHELTER_R_M` off the
+/// pad center, on the bearing `haven_shelter_bearing` accepted — beside the
+/// road rather than across it, with the containers to either side.
+///
+/// **The yaw is the INWARD facing, back at the pad center, exactly as
+/// `haven_crate`'s is.** One convention for both, deliberately: the first
+/// draft made this one an OUTWARD bearing and the doorway landed exactly on
+/// container 3 at every seed, because `phase + 25` in bearing space is
+/// `phase + 153 + 128` in facing space and the two collide identically. No
+/// type saw it — the arity was right, the field was right, and the value
+/// meant something else. CLAUDE.md's positional-payload trap in three lines.
+/// What caught it was `tests/haven.rs` asserting the ANGLE rather than the
+/// number, which is the only kind of assert that can.
+pub fn haven_shelter(haven: &Haven) -> (f32, f32, u8) {
+    let (dx, dz) = crate::yaw_lut::yaw_dir((haven.shelter as u16) << 8);
+    (
+        haven.x + dx * HAVEN_SHELTER_R_M,
+        haven.z + dz * HAVEN_SHELTER_R_M,
+        // Facing in: half a turn from the outward bearing it stands on.
+        haven.shelter.wrapping_add(128),
+    )
+}
+
 /// What a scatter cell holds (TERRAIN.md §1 stage 9's occupant list).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -759,6 +914,13 @@ pub enum Occupant {
     // aligned by construction, which is the only kind of alignment that
     // survives (CLAUDE.md's positional-payload trap).
     CrateSlot = 9,
+    /// The greybox standing at the pad's center. One slot, one structure:
+    /// a scatter cell holds a single occupant and the pad has no room for a
+    /// second authored anchor (five containers on a 10 m ring already spend
+    /// the 32 m circle's packing budget at the 11.31 m cell diagonal), so
+    /// the whole building is one archetype's mesh rather than a kit of
+    /// wall-sized slots. `web/src/props.js` index 10.
+    HavenShelter = 10,
 }
 
 const OCCUPANT_KINDS: usize = 7;
@@ -805,9 +967,9 @@ pub struct Slot {
 
 /// One hash draw decides a cell's occupant, offset, yaw, scale
 /// (TERRAIN.md §1 stage 9). Slope, water, road and haven veto — except on
-/// the `HAVEN_CRATES` cells the pad's container ring stands in, where the
-/// pad PRODUCES a slot instead of clearing one, at an authored position no
-/// draw contributed to.
+/// the pad's own `HAVEN_CRATES` + 1 authored cells (the container ring and
+/// the shelter at its center), where the pad PRODUCES a slot instead of
+/// clearing one, at a position no draw contributed to.
 ///
 /// The haven arrives as a parameter rather than being resolved here on
 /// purpose: `haven` costs ~1,000 `height` taps and `scatter` is called
@@ -839,6 +1001,24 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
     let hcx = (haven.x * (1.0 / CELL_SIZE)) as i32;
     let hcz = (haven.z * (1.0 / CELL_SIZE)) as i32;
     if (cell_x - hcx).abs() <= 2 && (cell_z - hcz).abs() <= 2 {
+        // The shelter ahead of the containers, so that if the two ever did
+        // want the same cell the loss would be a CONTAINER — which
+        // `tests/haven.rs` counts islandwide and would fail loudly on —
+        // rather than the structure, which nothing counts. The failure a
+        // one-slot-per-cell rule can actually have is a silent drop, so the
+        // ordering picks which drop is audible. `haven_ring_phase` is what
+        // stops it happening at all.
+        let (sx, sz, syaw) = haven_shelter(haven);
+        if (sx * (1.0 / CELL_SIZE)) as i32 == cell_x && (sz * (1.0 / CELL_SIZE)) as i32 == cell_z {
+            return Slot {
+                occupant: Occupant::HavenShelter,
+                x: sx,
+                y: height(seed, sx, sz),
+                z: sz,
+                yaw: syaw,
+                scale: 1.0,
+            };
+        }
         let mut k = 0i32;
         while k < HAVEN_CRATES {
             let (ax, az, yaw) = haven_crate(haven, k);

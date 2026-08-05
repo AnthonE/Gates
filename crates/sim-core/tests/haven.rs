@@ -19,8 +19,9 @@
 use sim_core::terrain::{
     self, Haven, Occupant, RoadBand, ScatterTable, CELLS_PER_SIDE, CELL_SIZE, CLIFF_SLOPE_RATIO,
     HAVEN_CANDIDATES, HAVEN_CRATES, HAVEN_CRATE_R_M, HAVEN_HEIGHT_W, HAVEN_PHASE_STEP,
-    HAVEN_PHASE_TRIES, HAVEN_RADIUS_M, ISLAND_SIZE, LAND_MIN_H, ROAD_INLAND_M, ROAD_R_MAX,
-    ROAD_R_MIN, SEA_LEVEL,
+    HAVEN_PHASE_TRIES, HAVEN_RADIUS_M, HAVEN_SHELTER_HALF_M, HAVEN_SHELTER_R_M,
+    HAVEN_SHELTER_YAW_STEP, ISLAND_SIZE, LAND_MIN_H, ROAD_INLAND_M, ROAD_R_MAX, ROAD_R_MIN,
+    SEA_LEVEL,
 };
 use sim_core::yaw_dir;
 
@@ -57,7 +58,15 @@ fn no_haven() -> Haven {
         y: 0.0,
         relief: 0.0,
         phase: 0,
+        shelter: 0,
     }
+}
+
+/// The scatter cell a world position falls in. The world is positive in
+/// both axes over the road bracket, so the truncating cast is a floor —
+/// the same one `scatter` uses to find the pad.
+fn cell_of(x: f32, z: f32) -> (i32, i32) {
+    ((x / CELL_SIZE) as i32, (z / CELL_SIZE) as i32)
 }
 
 /// The selector's ring-phase search, re-derived: the first rotation whose
@@ -73,6 +82,7 @@ fn ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             y: 0.0,
             relief: 0.0,
             phase,
+            shelter: 0,
         };
         let ok = (0..HAVEN_CRATES).all(|k| {
             let (ax, az, _) = terrain::haven_crate(&probe, k);
@@ -433,7 +443,8 @@ fn the_pad_is_clear_and_would_not_have_been() {
                 if s.occupant != Occupant::None {
                     live += 1;
                     if terrain::in_haven(&haven, s.x, s.z) {
-                        if s.occupant == Occupant::CrateSlot {
+                        if s.occupant == Occupant::CrateSlot || s.occupant == Occupant::HavenShelter
+                        {
                             crates_inside += 1;
                         } else {
                             inside += 1;
@@ -683,4 +694,199 @@ fn the_pad_fits_inside_the_world_it_is_placed_in() {
         // The ring's outer bracket plus the pad radius stays on the map.
         assert!(ROAD_R_MAX + HAVEN_RADIUS_M < ISLAND_SIZE * 0.5);
     };
+}
+
+/// The pad carries its shelter — one of it, at the center, facing a gap in
+/// the ring, on a cell no container can take.
+///
+/// Same failure class as the containers and the same method: a scatter cell
+/// holds one slot, so a structure that lost its cell would simply not be
+/// there — no panic, no golden move, no clippy wall, and a destination that
+/// is once again a circle where the trees stop. The count is re-derived by
+/// sweeping all 65,536 cells rather than trusting the branch that writes it.
+///
+/// It also asserts the two arithmetic claims the greybox rests on, because
+/// neither is visible from the mesh: the footprint clears every container it
+/// stands among, and the whole of it stands on ground the exclusion zone
+/// already cleared. `ci/haven_shelter.mjs` holds the client to the same two
+/// numbers from the other side.
+#[test]
+fn the_pad_carries_the_shelter_at_its_center() {
+    let table = ScatterTable::alpha_default();
+    // Half the footprint's diagonal: the circle that circumscribes the
+    // structure whatever yaw it is drawn at, which is what a distance test
+    // against an unrotated square would miss.
+    let corner = HAVEN_SHELTER_HALF_M * (2.0f32).sqrt();
+    // Half an anchor gap, one LUT step in from it to absorb the truncation
+    // an odd crate count forces — as a COSINE, read off the same 256-entry
+    // LUT the bearings come from, so the bound needs no trig and no
+    // second-hand degree value (wall 1). The cosine is the SECOND component:
+    // `yaw_lut` documents index 0 as facing +Z, so an entry is (sin, cos).
+    // Reading the first as a bound gave 0.556 for 33.75 degrees and would
+    // have failed a structure that was correctly placed.
+    let gap = 256 / HAVEN_CRATES;
+    let (_, gap_cos_max) = yaw_dir(((gap / 2 - 1) as u16) << 8);
+    let mut worst_clearance = f32::MAX;
+    let mut worst_clearance_seed = 0u64;
+
+    for seed in SWEEP_SEEDS {
+        let haven = terrain::haven(seed);
+        let (sx, sz, syaw) = terrain::haven_shelter(&haven);
+
+        let mut found = 0usize;
+        let mut standing: Option<terrain::Slot> = None;
+        for cx in 0..CELLS_PER_SIDE {
+            for cz in 0..CELLS_PER_SIDE {
+                let s = terrain::scatter(seed, &table, &haven, cx, cz);
+                if s.occupant == Occupant::HavenShelter {
+                    found += 1;
+                    standing = Some(s);
+                }
+            }
+        }
+        assert_eq!(
+            found, 1,
+            "seed {seed}: {found} shelter(s) islandwide, expected exactly 1 — \
+             a scatter cell holds one slot, so anything but 1 is a silent \
+             drop or a duplicate the pad never authored"
+        );
+        let s = standing.unwrap();
+
+        // Placed, not drawn: the slot is the pure function's answer, bit for
+        // bit, with no cell jitter and no scale wobble anywhere in it.
+        assert_eq!(
+            (s.x, s.z),
+            (sx, sz),
+            "seed {seed}: shelter is not standing where haven_shelter put it"
+        );
+        assert_eq!(
+            s.yaw, syaw,
+            "seed {seed}: shelter yaw is not the authored facing"
+        );
+        assert_eq!(
+            s.scale, 1.0,
+            "seed {seed}: the shelter is scaled — a monument is not weather"
+        );
+        assert_eq!(
+            s.y,
+            terrain::height(seed, s.x, s.z),
+            "seed {seed}: the shelter is not standing on its own ground"
+        );
+        assert!(
+            s.y >= LAND_MIN_H,
+            "seed {seed}: shelter at {:.2} m is under the land line",
+            s.y
+        );
+
+        // The structure stands beside the loop, not across it — the whole
+        // reason it is off center at all, and the condition `tests/road.rs`
+        // caught when this first shipped at the pad's middle.
+        assert!(
+            terrain::road_band(seed, sx, sz) != RoadBand::Carriageway,
+            "seed {seed}: the shelter stands on the carriageway, blocking \
+             the road the pad is reached by"
+        );
+        let off_center = ((sx - haven.x) * (sx - haven.x) + (sz - haven.z) * (sz - haven.z)).sqrt();
+        assert!(
+            (off_center - HAVEN_SHELTER_R_M).max(HAVEN_SHELTER_R_M - off_center) < 0.01,
+            "seed {seed}: shelter stands {off_center:.3} m off center, not \
+             {HAVEN_SHELTER_R_M} m"
+        );
+
+        // The whole footprint stands on ground the exclusion zone cleared,
+        // so no tree can grow through a wall. Tested at the corners, which
+        // is where a square first leaves a circle, and from the pad's own
+        // center rather than the structure's.
+        for k in 0..4u16 {
+            let (dx, dz) = yaw_dir((k * 64) << 8);
+            let (px, pz) = (sx + dx * corner, sz + dz * corner);
+            assert!(
+                terrain::in_haven(&haven, px, pz),
+                "seed {seed}: a shelter corner at ({px:.1}, {pz:.1}) reaches \
+                 outside the {HAVEN_RADIUS_M} m pad, onto ground scatter fills"
+            );
+        }
+
+        // No container stands inside a wall, and none shares the shelter's
+        // cell — the second is what `haven_ring_phase` refuses sites for,
+        // re-derived here from the shipped anchors rather than believed.
+        let scell = cell_of(sx, sz);
+        for k in 0..HAVEN_CRATES {
+            let (ax, az, _) = terrain::haven_crate(&haven, k);
+            let d = ((ax - sx) * (ax - sx) + (az - sz) * (az - sz)).sqrt();
+            assert!(
+                d > corner,
+                "seed {seed}: container {k} at {d:.2} m is inside the \
+                 shelter's {corner:.2} m corner radius"
+            );
+            assert_ne!(
+                cell_of(ax, az),
+                scell,
+                "seed {seed}: container {k} shares the shelter's scatter \
+                 cell — one of the two is not in the world"
+            );
+            if d - corner < worst_clearance {
+                worst_clearance = d - corner;
+                worst_clearance_seed = seed;
+            }
+
+            // The structure stands in a GAP in the ring, not behind a
+            // container. Measured as an ANGLE off the pad center between
+            // the two shipped positions, deliberately: comparing the yaw
+            // bytes is what put the first draft exactly on container 3 at
+            // every seed, because `haven_crate`'s yaw faces IN and that
+            // draft's faced OUT, and the collision is invisible in the
+            // numbers. A dot product cannot be fooled by which end of a
+            // heading a field means.
+            let dot = ((ax - haven.x) * (sx - haven.x) + (az - haven.z) * (sz - haven.z))
+                / (HAVEN_CRATE_R_M * HAVEN_SHELTER_R_M);
+            assert!(
+                dot < gap_cos_max,
+                "seed {seed}: the shelter's bearing is within {dot:.3} \
+                 cosine of container {k} (bound {gap_cos_max:.3}) — it \
+                 should stand in a gap between two of them"
+            );
+        }
+    }
+    println!(
+        "haven shelter: tightest container clearance {worst_clearance:.2} m \
+         past the {corner:.2} m corner radius (seed {worst_clearance_seed})"
+    );
+
+    // Non-vacuity for the shared-cell rule, by construction rather than by
+    // seed luck. The shelter and a container are ~6 m apart against an
+    // 11.31 m cell diagonal, so a shared cell is not merely possible, it is
+    // ordinary: place a pad so that a gap bearing and its neighbouring
+    // anchor fall in one cell and the search must reject that bearing. If
+    // this ever stops being reachable the rule is dead code, and a dead
+    // guard reads exactly like a working one.
+    let mut reachable = 0usize;
+    for i in 0..64u32 {
+        // Sub-cell offsets sweep the pad across its own grid alignment,
+        // which is the variable the collision actually depends on.
+        let probe = Haven {
+            x: 8.0 * CELL_SIZE + (i % 8) as f32 * (CELL_SIZE / 8.0),
+            z: 8.0 * CELL_SIZE + (i / 8) as f32 * (CELL_SIZE / 8.0),
+            y: 0.0,
+            relief: 0.0,
+            phase: 0,
+            shelter: HAVEN_SHELTER_YAW_STEP as u8,
+        };
+        let (px, pz, _) = terrain::haven_shelter(&probe);
+        if (0..HAVEN_CRATES).any(|k| {
+            let (ax, az, _) = terrain::haven_crate(&probe, k);
+            cell_of(ax, az) == cell_of(px, pz)
+        }) {
+            reachable += 1;
+        }
+    }
+    println!(
+        "haven shelter: the shared-cell collision the search refuses is \
+         reachable at {reachable} of 64 sub-cell alignments"
+    );
+    assert!(
+        reachable > 0,
+        "the collision the shared-cell rule exists to refuse is not \
+         reachable at all — either the rule or this construction is stale"
+    );
 }
