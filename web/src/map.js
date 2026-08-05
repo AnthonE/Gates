@@ -186,7 +186,12 @@ export function worldToMap(out, x, z, size) {
   return out;
 }
 
-/** The inverse of `worldToMap`, for a pixel's own centre. */
+/**
+ * The inverse of `worldToMap`. Both take fractional pixels, so a pixel's own
+ * CENTRE is `(i + 0.5, py + 0.5)` and not `(i, py)` — hand it those and it
+ * returns the world position of the sample `paintMap` drew there, which is the
+ * round trip `ui_smoke` §U closes against the paint.
+ */
 export function mapToWorld(out, px, py, size) {
   out.x = (px / size) * WORLD_M;
   out.z = WORLD_M - (py / size) * WORLD_M;
@@ -208,7 +213,12 @@ export function mapToWorld(out, px, py, size) {
  *     difference, so the coastline is shaded like everywhere else instead of
  *     going flat in the last pixel.
  *   - `step`: metres between samples.
- *   - `x0`, `z0`: the world position of the un-aproned sample (0, 0).
+ *   - `x0`, `z0`: the world position of the un-aproned sample (0, 0), which
+ *     must be the CENTRE of the pixel that sample fills and not its corner —
+ *     `step / 2`, for a fill that covers `[0, WORLD_M]`. This is a contract on
+ *     the caller because the sampler is the caller's, and it is the half of
+ *     the projection `worldToMap` cannot state on its own: see the positional
+ *     note below.
  *   - `moistAt(x, z)`: `terrain_moisture_at`.
  *   - `splatAt(h, moist, slope)`: `terrain_splat_from` — the packed u32, four
  *     weight bytes little end first.
@@ -222,6 +232,19 @@ export function mapToWorld(out, px, py, size) {
  * a file with no golden at all, so `ui_smoke` §U asserts it with a height
  * field that is land in the north and sea in the south and reads the image
  * back.
+ *
+ * And the second positional fact, which cost the pass that shipped this file:
+ * that flip is by sample INDEX while `worldToMap` is by continuous EXTENT, and
+ * the only thing that makes the two agree is where the samples sit. A fill
+ * starting at 0 puts sample (i, j) on the low-x, low-z CORNER of the pixel it
+ * fills; the pixel's extent then runs from that sample to the next one, so the
+ * painted island is half a cell out on both axes, and on the flipped axis
+ * `worldToMap` returns the boundary between two rows — `floor` takes the one
+ * to the south, every time. Sampling at the pixel centres (`x0 = z0 =
+ * step / 2`) makes sample (i, j) project to `px = i + 0.5`, `py = size - 1 - j
+ * + 0.5`: strictly inside the pixel it was painted in, on both axes, with no
+ * boundary to tip over. Neither formula here changed to fix that, because
+ * neither was wrong.
  */
 export function paintMap(out, size, src) {
   const g = size + 2;

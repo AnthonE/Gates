@@ -15,6 +15,35 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0b · The map's grid and its arrow, made exact and gated *(ui lane — done this pass)*
+
+From the judge's **ranked fixes 1–3**, `pass-20260805-074623-02-judge.md`, against
+the map that landed the pass before. Taken ahead of §0's build prompt because both
+were defects already on the trunk, one of them a hole in the gate this lane's speed
+rests on.
+
+- **The off-by-one was neither formula.** The report measured `paintMap`'s index
+  flip against `worldToMap`'s extent flip — "exactly one row, always" — and noted
+  that x came out exact. That asymmetry is the tell: sampling from 0 put every
+  sample on its pixel's CORNER, so the island was painted half a cell out on BOTH
+  axes, and only the flipped axis landed `floor` on a row boundary. Fixed at the
+  origin (`main.js`, `orig = step / 2`), not in either projection. §U now sweeps all
+  16 rows and all 16 columns, reads the painted band back, and asserts the painted
+  row IS the projected row — with the origin read out of `main.js`'s source, because
+  `paintMap` is handed a sampler and cannot see where it was sampled.
+- **The marker's heading had no assertion at all.** M11 (rotation pinned north)
+  survived all eleven of last pass's mutants. `hud.mapDir` parks the drawn direction
+  beside `mapPos`; §U sweeps N/E/S/W plus one off-cardinal and asserts the vectors
+  BY NAME rather than re-deriving `(sin, −cos)`, which would agree with a wrong
+  formula too.
+- **Both cosmetic knobs registered** — `MAP_SHADE_CLAMP`, `MAP_MARKER_PX` — in
+  `DECISIONS.md` §open, now pinned by `ci/knob_registry.mjs`.
+
+`ui_smoke` 561 → 635 checks; nine mutants run, nine red, including last pass's
+survivor. §0a's remainder is untouched and still needs the other two lanes.
+
+---
+
 ## 0a · The island has a map now — what it still cannot show *(ui lane)*
 
 From the judge's **ranked gap 3**, `pass-20260805-074623-01-judge.md`: "There is

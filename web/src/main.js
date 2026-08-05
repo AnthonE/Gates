@@ -590,13 +590,37 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     const size = MAP_N;
     const g = size + 2;
     const step = WORLD_M / size;
+    // Where sample (0, 0) sits in the world: the CENTRE of the pixel it fills,
+    // not that pixel's corner. Half a step, and the reason is the whole of the
+    // judge's ranked fix 1 on `pass-20260805-074623-02`.
+    //
+    // That report named the symptom — `paintMap` flips rows by sample index
+    // while `worldToMap` flips by continuous extent, "and the two disagree by
+    // exactly one row, always" — and observed that the x axis is exact. The
+    // asymmetry is the tell, and it points past the two formulas to the grid
+    // under them: sampling from 0 put every sample on the LOW-x, LOW-z corner
+    // of the pixel's extent, so the painted island is half a cell out on both
+    // axes, and the row flip turns that half cell into a whole row. Sample j
+    // at z = j*step projects to py = size - j exactly, which is the boundary
+    // between rows, and `floor` takes the row to the south of the one it was
+    // painted in. On x the same half-cell offset lands on the low edge of the
+    // column, where `floor` happens to come out right — right by luck of the
+    // half-open interval, not by construction.
+    //
+    // So neither formula was wrong; the sample grid was offset from the pixel
+    // grid. Move the samples to the pixel centres and both are correct as
+    // written: sample (i, j) lands at px = i + 0.5, py = size - 1 - j + 0.5 —
+    // strictly INSIDE the pixel it is painted in, on both axes, with no
+    // boundary for `floor` to tip over. `ui_smoke` §U asserts that agreement
+    // directly rather than either formula alone.
+    const orig = step / 2;
     // One call for the whole island: `terrain_fill_heights` refuses any side
     // above `HEIGHTS_MAX_N` (259) and 258 fits. It refuses by RETURNING 0 and
     // leaving the buffer untouched, so an unchecked call would paint whatever
     // was in the scratch buffer — hence the exact-count check, which is
     // `terrainWorker.js:98`'s, and `ui_smoke` §U pins the inequality that
     // makes it pass.
-    const wrote = ex.terrain_fill_heights(seed, -step, -step, g, step);
+    const wrote = ex.terrain_fill_heights(seed, orig - step, orig - step, g, step);
     if (wrote !== g * g) {
       hud.toast("map unavailable");
       return;
@@ -606,8 +630,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     paintMap(rgba, size, {
       heights,
       step,
-      x0: 0,
-      z0: 0,
+      x0: orig,
+      z0: orig,
       moistAt: (x, z) => ex.terrain_moisture_at(seed, x, z),
       splatAt: (h, moist, slope) => ex.terrain_splat_from(h, moist, slope),
     });
