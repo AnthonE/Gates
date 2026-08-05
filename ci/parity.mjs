@@ -35,10 +35,11 @@ try {
 }
 
 const { instance } = await WebAssembly.instantiate(bytes, {});
-const { probe_terrain, probe_parity, probe_combat, probe_bags } =
+const { probe_terrain, probe_sites, probe_parity, probe_combat, probe_bags } =
   instance.exports;
 if (
   typeof probe_terrain !== "function" ||
+  typeof probe_sites !== "function" ||
   typeof probe_parity !== "function" ||
   typeof probe_combat !== "function" ||
   typeof probe_bags !== "function"
@@ -50,6 +51,10 @@ if (
 const hex = (v) => "0x" + v.toString(16).padStart(16, "0");
 for (const seed of TERRAIN_SEEDS) {
   console.log(`terrain ${hex(seed)} ${hex(BigInt.asUintN(64, probe_terrain(seed)))}`);
+}
+// The authored half on its own line — see examples/probe.rs for why.
+for (const seed of TERRAIN_SEEDS) {
+  console.log(`sites ${hex(seed)} ${hex(BigInt.asUintN(64, probe_sites(seed)))}`);
 }
 const p = BigInt.asUintN(
   64,

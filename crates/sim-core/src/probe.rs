@@ -13,10 +13,173 @@ use crate::terrain::{self, ScatterTable};
 use crate::world::{Command, World};
 use xxhash_rust::xxh3::Xxh3;
 
-/// Golden terrain fingerprint: 64×64 heights sampled on a 32 m grid, then
-/// the 256 scatter cells of the island-center 16×16 block (cells 120..136;
-/// the corner block would be all sea and pin nothing). Hashes f32 bit
-/// patterns — bit-identical or bust.
+/// Side of a probe scatter window, in cells. 16, the block size the
+/// island-center window has always used, so a site window and the center
+/// window contribute the same 256 cells and neither dominates the digest.
+/// Public with `probe_window_origin`, and for the same reason.
+pub const PROBE_WINDOW_CELLS: i32 = 16;
+
+/// Bearings and radii of the road-ring sweep in `probe_sites`.
+///
+/// 64 bearings divide the 256-entry yaw LUT evenly (step 4). The radii count
+/// is the derived half, and the derivation is the whole point: a sweep that
+/// never crosses the road hashes a constant and pins nothing, so the radial
+/// step has to be under the road's widest band — the shoulder, at
+/// `ROAD_SHOULDER_HALF_W * 2` = 10 m. 51 radii puts a sample every
+/// `(ROAD_R_MAX - ROAD_R_MIN) / 50` = 8 m, the first step under it.
+///
+/// Measured on the three probe seeds rather than assumed: at 8 radii (a 57 m
+/// step) only 9–15 of the 64 bearings saw any road at all, so most of the
+/// sweep was hashing `Off`. At 51 every one of the 64 bearings sees road on
+/// all three seeds, for ~2 ms. `tests/terrain_golden.rs` asserts that
+/// instead of trusting this comment.
+pub const PROBE_ROAD_BEARINGS: u16 = 64;
+pub const PROBE_ROAD_RADII: i32 = 51;
+
+/// World position of one road-sweep sample, off the island center on the
+/// yaw LUT — wall 1 bans libm, and the LUT is the exact table the rest of
+/// worldgen turns bearings with, so these are the points worldgen would
+/// pick. Public and shared with the coverage test for the same reason
+/// `probe_window_origin` is: a test that recomputes the sweep is a test of
+/// itself, not of the digest.
+pub fn probe_road_point(bearing: u16, radius_ix: i32) -> (f32, f32) {
+    let c = terrain::ISLAND_SIZE * 0.5;
+    let span = terrain::ROAD_R_MAX - terrain::ROAD_R_MIN;
+    let (dx, dz) = crate::yaw_lut::yaw_dir(bearing << 8);
+    let d = terrain::ROAD_R_MIN + span * (radius_ix as f32 / (PROBE_ROAD_RADII - 1) as f32);
+    (c + dx * d, c + dz * d)
+}
+
+/// Origin cell of the probe's scatter window around a world position.
+///
+/// Public because `tests/terrain_golden.rs` asserts the digest's coverage
+/// over exactly the cells the digest hashes; a coverage test that recomputes
+/// this arithmetic is a test of itself. Clamped to the grid so a site near
+/// the island edge still contributes exactly 256 cells — a short window
+/// would make the digest's byte count seed-dependent, which is legal and
+/// makes a diff unreadable. Positive coords only (the ring bracket is
+/// 600..1000 m from a center at half of `ISLAND_SIZE`), so the truncating
+/// cast is a floor, as it is in `terrain::scatter`.
+pub fn probe_window_origin(x: f32, z: f32) -> (i32, i32) {
+    let w = PROBE_WINDOW_CELLS;
+    let hi = terrain::CELLS_PER_SIDE - w;
+    let cx = ((x * (1.0 / terrain::CELL_SIZE)) as i32 - w / 2).clamp(0, hi);
+    let cz = ((z * (1.0 / terrain::CELL_SIZE)) as i32 - w / 2).clamp(0, hi);
+    (cx, cz)
+}
+
+fn hash_f32(h: &mut Xxh3, v: f32) {
+    h.update(&v.to_bits().to_le_bytes());
+}
+
+fn hash_scatter_window(h: &mut Xxh3, seed: u64, haven: &terrain::Haven, x: f32, z: f32) {
+    let table = ScatterTable::alpha_default();
+    let (cx0, cz0) = probe_window_origin(x, z);
+    for cz in cz0..cz0 + PROBE_WINDOW_CELLS {
+        for cx in cx0..cx0 + PROBE_WINDOW_CELLS {
+            let s = terrain::scatter(seed, &table, haven, cx, cz);
+            h.update(&[s.occupant as u8, s.yaw]);
+            hash_f32(h, s.x);
+            hash_f32(h, s.y);
+            hash_f32(h, s.z);
+            hash_f32(h, s.scale);
+        }
+    }
+}
+
+/// The island's authored half, as VALUES: the haven pad's own fields, its
+/// shelter, its five containers, both waystations and their containers, then
+/// the coast road ring all three stand on.
+///
+/// A separate export rather than more bytes inside `probe_terrain`, so that
+/// when the two targets disagree the diff NAMES the authored geometry
+/// instead of moving one opaque terrain digest. `examples/probe.rs` and
+/// `ci/parity.mjs` both print it on its own line and `ci/gates.sh` requires
+/// that line to be present.
+///
+/// It exists because `probe_terrain` could not see any of this. Its scatter
+/// block is cells 120..136 — a ±64 m window on the island center — and every
+/// authored site sits on the 600..1000 m road ring. Measured on the three
+/// seeds `examples/probe.rs` drives, not reasoned about: of that block's 256
+/// cells, the number inside `in_haven` or `in_waystation` was **zero on all
+/// three**. So `haven(seed)` was resolved by the probe and reached the digest
+/// through nothing at all — the pad, both waystations, all five pad crates,
+/// the shelter and all four waystation crates could each have taken different
+/// coordinates on wasm than on native with `test_terrain_golden` and
+/// `test_parity_wasm` both green.
+///
+/// That is not hypothetical drift. `client-wasm` resolves `terrain::haven`
+/// on the WASM build (`bridge.rs`, `core.rs`) and the server resolves it
+/// natively, so those two answers agreeing IS the client↔server contract for
+/// where the island's destinations are, and nothing was holding it.
+#[no_mangle]
+pub extern "C" fn probe_sites(seed: u64) -> u64 {
+    let mut h = Xxh3::new();
+    let haven = terrain::haven(seed);
+    hash_f32(&mut h, haven.x);
+    hash_f32(&mut h, haven.z);
+    hash_f32(&mut h, haven.y);
+    hash_f32(&mut h, haven.relief);
+    h.update(&[haven.phase, haven.shelter]);
+    let (sx, sz, syaw) = terrain::haven_shelter(&haven);
+    hash_f32(&mut h, sx);
+    hash_f32(&mut h, sz);
+    h.update(&[syaw]);
+    let mut k = 0i32;
+    while k < terrain::HAVEN_CRATES {
+        let (ax, az, yaw) = terrain::haven_crate(&haven, k);
+        hash_f32(&mut h, ax);
+        hash_f32(&mut h, az);
+        h.update(&[yaw]);
+        k += 1;
+    }
+    // `live` is hashed with the geometry on purpose: a seed whose ring
+    // cannot hold a full tier leaves `Waystation::NONE` at (0,0), and that
+    // is a worldgen answer the fingerprint should carry rather than a hole
+    // it should paper over.
+    for ws in &haven.minor {
+        hash_f32(&mut h, ws.x);
+        hash_f32(&mut h, ws.z);
+        hash_f32(&mut h, ws.y);
+        h.update(&[ws.phase, ws.live as u8]);
+        let mut c = 0i32;
+        while c < terrain::WAYSTATION_CRATES {
+            let (ax, az, yaw) = terrain::waystation_crate(ws, c);
+            hash_f32(&mut h, ax);
+            hash_f32(&mut h, az);
+            h.update(&[yaw]);
+            c += 1;
+        }
+    }
+    // The road itself, on the same bracket that hid the sites — it is what
+    // the three of them stand on and what carries the barrel band.
+    let mut b = 0u16;
+    while b < 256 {
+        let mut r = 0i32;
+        while r < PROBE_ROAD_RADII {
+            let (px, pz) = probe_road_point(b, r);
+            h.update(&[terrain::road_band(seed, px, pz) as u8]);
+            r += 1;
+        }
+        b += 256 / PROBE_ROAD_BEARINGS;
+    }
+    h.digest()
+}
+
+/// Golden terrain fingerprint, in four stages: 64×64 heights sampled on a
+/// 32 m grid, the 256 scatter cells of the island-center 16×16 block (cells
+/// 120..136; the corner block would be all sea and pin nothing), a 256-cell
+/// scatter window on each of the three authored sites, and `probe_sites`
+/// folded in whole. Hashes f32 bit patterns — bit-identical or bust.
+///
+/// The site windows are what put the authored OCCUPANTS on the surface —
+/// the `HavenShelter` and `CrateSlot` slots `scatter` places, and the
+/// `in_haven` / `in_waystation` veto that clears the ground around them.
+/// `probe_sites` covers the anchors those slots are computed from. Neither
+/// subsumes the other: the anchors could hold while `scatter` stopped
+/// emitting them, and `tests/terrain_golden.rs` asserts the window coverage
+/// as a count so that re-centring a window on empty sea fails loudly rather
+/// than regenerating a clean golden over nothing.
 #[no_mangle]
 pub extern "C" fn probe_terrain(seed: u64) -> u64 {
     let mut h = Xxh3::new();
@@ -39,6 +202,11 @@ pub extern "C" fn probe_terrain(seed: u64) -> u64 {
             h.update(&s.scale.to_bits().to_le_bytes());
         }
     }
+    hash_scatter_window(&mut h, seed, &haven, haven.x, haven.z);
+    for ws in &haven.minor {
+        hash_scatter_window(&mut h, seed, &haven, ws.x, ws.z);
+    }
+    h.update(&probe_sites(seed).to_le_bytes());
     h.digest()
 }
 
