@@ -289,6 +289,14 @@ fn opening_a_box_sends_its_contents_to_the_opener_and_to_nobody_else() {
         syncs_to(&seen, 1).is_empty(),
         "a player who opened nothing was told a box's contents"
     );
+    // ...and that negative is not vacuous: slot 1's lane was live the
+    // whole time. Without this a broken `seen`, a disconnected client or
+    // a drip that stopped for everyone would all read as "no ESP leak",
+    // which is the shape of a pass a test did not earn.
+    assert!(
+        seen.iter().any(|(s, _)| *s == 1),
+        "slot 1 received no events at all, so the ESP assertion proved nothing"
+    );
 
     // 3. The client landed it where the panel reads from.
     let c = &clients[0].1;

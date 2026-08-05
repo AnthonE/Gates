@@ -108,7 +108,12 @@ const REQUIRED = [
   "client_death_weapon",
   "client_action_respawn",
   "client_action_move",
+  "client_action_open",
   "client_applied2",
+  "client_cont_handle",
+  "client_cont_kind",
+  "client_cont_ptr",
+  "client_cont_slots",
   "client_move_readout",
   "client_move_payload",
   "client_bag_ids_ptr",
@@ -166,7 +171,7 @@ for (let i = 0; i < slotCount; i++) {
 }
 
 // --- client lifecycle: create, tick, emit an input datagram ---------------
-check(ex.client_proto_ver() === 18, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 19, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -637,6 +642,68 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   check(ex.client_action_move(0, 3, 3, 0, 7, 5) === 0, "a kind past CONT_MAX must not encode");
   check(ex.client_action_move(0, 0, 30, 0, 7, 5) === 0, "a slot past INV_SLOTS must not encode");
   check(ex.client_action_move(0, 0, 3, 0, 7, 0) === 0, "a zero count is not a move");
+
+  // The container lane (wire v19) — the thing that had never crossed at
+  // all. Same word-1 discipline as the move verdict above and for the same
+  // reason: word 0 is exactly full, so `APPLIED2_CONT` is the only way JS
+  // hears that a panel must repaint.
+  const CONT2 = 2; // core::APPLIED2_CONT, word 1 bit 1
+  const CONT_SELF = 0;
+  const CONT_BOX = 2;
+  const BOX_ADDR = 0x00a3_002c;
+
+  check(ex.client_cont_kind() === CONT_SELF, "nothing is open before an open");
+  check(ex.client_cont_slots() === 0, "a closed panel has no grid");
+
+  // ContSync: sub 38 · kind CONT_BOX · handle · reset · 2 rows. The rows
+  // are the same shape the goldens pin, and neither is slot 0 — a fixture
+  // that only ever names the first slot passes while the index field is
+  // being dropped.
+  f = evFrame(38, [
+    [CONT_BOX, 2], [BOX_ADDR, 32], [1, 1], [2, 4],
+    [2, 5], [7, 16], [31, 16],
+    [11, 5], [19, 16], [4, 16],
+  ]);
+  writeIn(f);
+  let cflags = ex.client_on_stream(f.length) >>> 0;
+  check((cflags & STREAM_ERR) === 0, "a contents sync must not read as a stream error");
+  check(ex.client_applied2() === CONT2, "contents must apply with the CONT flag in word 1");
+  check(ex.client_cont_kind() === CONT_BOX, "the panel does not know a box is open");
+  check((ex.client_cont_handle() >>> 0) === BOX_ADDR, "the open handle drifted");
+  check(ex.client_cont_slots() === 12, "a box grid is BOX_SLOTS, not INV_SLOTS");
+  {
+    const cont = new Uint16Array(ex.memory.buffer, ex.client_cont_ptr(), 30 * 2);
+    check(cont[2 * 2] === 7 && cont[2 * 2 + 1] === 31, "cont slot 2 mismatch");
+    check(cont[11 * 2] === 19 && cont[11 * 2 + 1] === 4, "cont slot 11 mismatch");
+    check(cont[0] === 0 && cont[1] === 0, "an unsent slot was written");
+  }
+
+  // Closed: the SAME subtype with CONT_SELF, no handle, no rows. This is
+  // the one message in the lane whose meaning does not follow from its
+  // fields, so it is asserted rather than assumed — a reader that took
+  // CONT_SELF for "your backpack opened" would pass everything else here.
+  f = evFrame(38, [[CONT_SELF, 2], [0, 32], [1, 1], [0, 4]]);
+  writeIn(f);
+  cflags = ex.client_on_stream(f.length) >>> 0;
+  check((cflags & STREAM_ERR) === 0, "a close must not read as a stream error");
+  check(ex.client_applied2() === CONT2, "a close must apply with the CONT flag");
+  check(ex.client_cont_kind() === CONT_SELF, "the panel stayed open after a close");
+  check(ex.client_cont_slots() === 0, "a closed panel still reports a grid");
+
+  // Word 1 describes ONE message, the container half. A consume sets
+  // nothing in it, so a panel reading it unconditionally must not repaint.
+  f = evFrame(33, [[3, 4]]);
+  writeIn(f);
+  ex.client_on_stream(f.length);
+  check((ex.client_applied2() & CONT2) === 0, "a stale contents flag outlived its message");
+
+  // And the open verb crosses C->S. CONT_SELF encodes — it is the close —
+  // and a kind past CONT_MAX does not, refused locally rather than handed
+  // to a server that answers a bad action frame by ending the session.
+  check(ex.client_action_open(CONT_BOX, BOX_ADDR) > 0, "opening a box must encode");
+  check(ex.client_action_open(1, 9001) > 0, "opening a bag must encode");
+  check(ex.client_action_open(CONT_SELF, 0) > 0, "the close verb must encode");
+  check(ex.client_action_open(3, 0) === 0, "a kind past CONT_MAX must not encode");
 
   // Hit: sub 24 · victim 4242 · damage 25.
   check(ex.client_hit_pop() >>> 0 === 0xffffffff, "the hit ring starts empty");
