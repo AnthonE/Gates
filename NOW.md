@@ -30,6 +30,50 @@ Done items are deleted, not checked — history lives in git and
    floor is genuinely wrong for a whorled canopy, that is a measurement and a
    spoken number, not an edit.
 
+1. **The world is empty, and that — not shading — is why it reads plain.**
+   *(Operator, 2026-08-05, on captured frames: "the screenshots look like
+   trash lol I think we spun our wheels".)*
+
+   **Measured by looking.** Four `ci/vantages.mjs` captures against
+   `Rust Images/genericview.jpeg`. Ours: a heightfield, pines that are stacked
+   cones, rocks that are flat-shaded dodecahedrons, a cloudless gradient sky.
+   Theirs: thousands of instanced grass blades as real geometry, an understory
+   of bushes and flowers, trees with branch structure and leaf masses, a stone
+   building, water, a character. **The difference is mesh density and content,
+   not pixel math** — which is why eight passes of surface-field work (61 tuned
+   constants, triplanar fields, analytic gradients, chroma neutrality) could
+   not close it. `CLAUDE.md`'s "a judge names the symptom; fix the cause",
+   second instance.
+
+   **The work, roughly in order of visible return**: ground-cover instancing
+   (the single largest gap in the comparison) · an understory layer · trees
+   with branches instead of cone whorls — `@dgreenheck/ez-tree` is already a
+   dependency and `PINE_VARIANTS = 1` says how little of it we use · a second
+   species. Each is an instanced-geometry budget question against DESIGN §9's
+   1.5 M triangle cap (frame peak measured 1.06 M), not a shader question.
+
+   **Not this item**: any renderer change. Today's frames settle that TSL and
+   wgpu both address the wrong cause (`DECISIONS.md` 2026-08-05).
+
+1. **`ci/vantages.mjs` passes frames that contain no scene.** *(Found
+   2026-08-05 while capturing the above.)*
+
+   `slope.png` — a beige-and-blue streaked smear with no sky, no horizon and
+   no object in it — **passed all 36 checks and scored the highest detail of
+   the four vantages**: `detail 14.28 luma/px (flat 4.34, x3.3), chroma
+   0.111`. The worst-looking frame scored best.
+
+   The cause is that every assertion is a per-pixel statistic — contrast
+   ratio, chroma spread, luma neutrality — and none of them can see whether
+   the frame is a picture of anything. A gate that green-lights a sceneless
+   frame is why statistics kept improving while the frames did not.
+
+   The fix is a structural assertion, not a tighter threshold: a vantage must
+   contain sky above a horizon and a countable number of distinct objects
+   (props `terrain.nearestProps` already resolves) before any pixel statistic
+   is read. A vantage that frames neither is a FAIL, never a skip — the same
+   posture prop probe 15f already takes.
+
 1. **Tab B should be a bot, not a second browser.** *(Operator, 2026-08-04:
    "i think we need the tab stuff every few hours at this rate". The tiering
    half landed; this is the half that removes the flakes. `DECISIONS.md`
@@ -61,11 +105,15 @@ Done items are deleted, not checked — history lives in git and
    "for the record i am upgrading asap the graphics". `DECISIONS.md` §Spoken.
    The costed plan is `MIGRATION.md` — read §6 before picking this up.)*
 
-   *Read before picking this up: the browser client became **second class** on
-   2026-08-05, so this single-owner migration is now aimed at the demo. It is
-   **not** held — the 2026-08-04 word stands until the operator moves it — but
-   the sequencing is an open knob (`DECISIONS.md` §open, "TSL migration
-   sequencing after the demotion"). Confirm before spending a pass this size.*
+   *Read before picking this up. Two things changed on 2026-08-05. The browser
+   client became **second class** (direction: desktop primary, web the demo),
+   so this single-owner migration is aimed at the demo. And the captured frames
+   say the visual gap is **content density, not shading** — cone trees and
+   dodecahedron rocks against a reference full of instanced grass and branched
+   canopies — so no renderer change scores against it. Item 2 is the one that
+   does. This is **not** held: the 2026-08-04 word stands until the operator
+   moves it. But it is not next, the sequencing is an open knob
+   (`DECISIONS.md` §open), and a pass this size should be confirmed first.*
 
    Four steps, in order, because each one done later costs more. **Do not
    compress them into one pass.**
