@@ -182,6 +182,17 @@ diff -u "$native_out" "$wasm_out" \
 grep -q '^parity ' "$native_out" || fail "probe output empty — parity not exercised"
 grep -q '^combat ' "$native_out" || fail "probe output has no combat line — melee not exercised"
 grep -q '^bags ' "$native_out" || fail "probe output has no bags line — respawn-on-bag not exercised"
+# The terrain and sites lines, asserted by COUNT rather than presence. The
+# `diff` above cannot see an empty loop: drop the seed table on both sides and
+# the two outputs still match exactly, so worldgen leaves the parity surface
+# with every gate green. Three is the length of TERRAIN_SEEDS, duplicated by
+# hand in examples/probe.rs and ci/parity.mjs; a divergence between those two
+# shows as the diff, a truncation of both shows here.
+for line in terrain sites; do
+  n="$(grep -c "^$line " "$native_out" || true)"
+  [ "$n" = "3" ] \
+    || fail "test_parity_wasm: expected 3 '$line' lines from the probe, got '$n' — worldgen is not on the parity surface"
+done
 # The bags line carries a COUNT before its digest, and this reads it. Two
 # targets can agree byte-for-byte about a path that never ran on either —
 # a digest is only evidence of parity, never of coverage. `probe_bags`
