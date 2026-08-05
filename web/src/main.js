@@ -20,8 +20,10 @@ import {
   APPLIED2_CONT,
   APPLIED2_MOVE,
   CONT_BAG,
+  CONT_BOX,
   CONT_SELF,
   STREAM_HIGH_BIT,
+  boxKey,
   moveArgs,
   moveVerdict,
   slotsIn,
@@ -168,6 +170,11 @@ const SHAPE_TEXT = ["foundation", "wall", "doorway", "floor", "stairs", "roof"];
 const MAT_TEXT = ["wood", "stone", "metal"];
 const BUILD_CELL = 3;
 const MAX_LEVEL = 7;
+// `sim-core/src/deploy.rs:83` — the deployable archetype a storage box is,
+// as read out of `views.deployDefs[row * 4]`. Named rather than left a bare
+// `2` at the pick site because the hearth (1) and door (6) tests above it
+// are already bare numbers and a third would stop reading as a table.
+const ARCH_BOX = 2;
 
 function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLeftover, dev) {
   const canvas = $("gl");
@@ -452,12 +459,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // neither is there.
   // Open the nearest death backpack as a CONTAINER — the panel, not the
   // blind take-all `tryLoot` sends. The handle is the bag id the client
-  // already has (`views.bagIds`), so nothing here restates a packing: a box
-  // is addressed by a `box_key(cx, cz, level)` this side would have to
-  // mirror, and mirroring a bit layout with no gate on it is the
-  // positional-payload trap itself. Boxes wait for `ARCH_BOX`'s slots and
-  // container address (the systems request on `NOW.md`); there is nothing
-  // to open as one yet.
+  // already has (`views.bagIds`), so nothing here restates a packing.
   //
   // The panel is only visible with the inventory up — every drag it exists
   // for crosses between the two — so opening one opens that as well.
@@ -494,6 +496,52 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // running for a container nobody is looking at. The close is the same
   // action with `CONT_SELF`, and the panel still waits for the server's
   // answer to actually clear — `hud.closeContainer` runs off `ContSync`.
+  // Open the nearest deployed BOX as a container. Same shape as the bag
+  // above and one difference that is the whole reason this took a pass: a
+  // box has no id. It is addressed by its grid cell, packed by
+  // `deploy.rs:316`'s `box_key` — and that packing is `cx << 16 | cz << 4`,
+  // where EVERY other packing this client touches is `cx << 16 | cz`
+  // (`deployChanges` word 0 right above, the `deployRecs` map key,
+  // `client_removed_key`, `gather::cell_key`). Writing the habitual one here
+  // would compile, encode, pass every wall in the repo, and open a stranger's
+  // box four cells away. So the mirror lives in `invmove.boxKey` with its
+  // layout stated as data, and `ci/ui_smoke.mjs` §P reads the three numbers
+  // back out of `deploy.rs` — this call site restates nothing.
+  //
+  // Reach is measured to the cell CENTRE, which is the metric
+  // `deploy.rs`'s `box_in_reach` gates on, so a pick this side makes is a
+  // pick the server accepts rather than a round trip and a refusal.
+  const tryOpenBox = () => {
+    const R = views.render;
+    let best = null;
+    let bestD = REACH * REACH;
+    for (const rec of deployRecs.values()) {
+      if (views.deployDefs[rec.row * 4] !== ARCH_BOX) continue;
+      const dx = rec.cx * BUILD_CELL + BUILD_CELL / 2 - R[1];
+      const dz = rec.cz * BUILD_CELL + BUILD_CELL / 2 - R[3];
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD) {
+        bestD = d2;
+        best = rec;
+      }
+    }
+    if (!best) return false;
+    // `boxKey` answers null for an address outside the build grid rather
+    // than packing one that would alias into a neighbouring cell's handle.
+    // A record off the grid is a record this client should not have, so the
+    // honest answer is to send nothing and let E fall through.
+    const key = boxKey(best.cx, best.cz, best.level);
+    if (key === null) return false;
+    const len = ex.client_action_container(CONT_BOX, key);
+    views.refresh();
+    if (len === 0) return false;
+    if (!actions.send(views.output, len)) return false;
+    // Nothing is drawn here, for the same reason `tryOpenBag` draws nothing:
+    // the server owns whether this container is open, and the view arrives
+    // as `ContSync` for `hud.openContainer` to draw.
+    if (!hud.invOpen && hud.toggleInv()) document.exitPointerLock();
+    return true;
+  };
   const closeOpenContainer = () => {
     if ((ex.client_cont_kind() >>> 0) === CONT_SELF) return false;
     const len = ex.client_action_container(CONT_SELF, 0);
@@ -505,8 +553,11 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     const best = nearestDoor();
     if (best) sendUse(best.cx, best.cz, best.level, best.loc);
     // Opening beats emptying: `tryLoot` is the payload-free take-all and
-    // stays as the fallback for a bag the open action would not encode.
-    else if (!tryOpenBag() && !tryLoot()) tryFeed();
+    // stays as the fallback for a bag the open action would not encode. The
+    // box sits after the bag deliberately — a backpack expires and a box
+    // does not, so when you are standing on both the transient one is the
+    // one you meant.
+    else if (!tryOpenBag() && !tryOpenBox() && !tryLoot()) tryFeed();
   };
   // L locks or unlocks it. Whether the door is yours is the server's
   // verdict — the wire carries the lock bit but never the owner — so the
