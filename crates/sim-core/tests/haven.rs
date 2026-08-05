@@ -17,9 +17,10 @@
 #![allow(clippy::disallowed_macros)]
 
 use sim_core::terrain::{
-    self, Haven, Occupant, RoadBand, ScatterTable, CELLS_PER_SIDE, CLIFF_SLOPE_RATIO,
-    HAVEN_CANDIDATES, HAVEN_HEIGHT_W, HAVEN_RADIUS_M, ISLAND_SIZE, LAND_MIN_H, ROAD_INLAND_M,
-    ROAD_R_MAX, ROAD_R_MIN, SEA_LEVEL,
+    self, Haven, Occupant, RoadBand, ScatterTable, CELLS_PER_SIDE, CELL_SIZE, CLIFF_SLOPE_RATIO,
+    HAVEN_CANDIDATES, HAVEN_CRATES, HAVEN_CRATE_R_M, HAVEN_HEIGHT_W, HAVEN_PHASE_STEP,
+    HAVEN_PHASE_TRIES, HAVEN_RADIUS_M, ISLAND_SIZE, LAND_MIN_H, ROAD_INLAND_M, ROAD_R_MAX,
+    ROAD_R_MIN, SEA_LEVEL,
 };
 use sim_core::yaw_dir;
 
@@ -55,7 +56,34 @@ fn no_haven() -> Haven {
         z: -1.0e6,
         y: 0.0,
         relief: 0.0,
+        phase: 0,
     }
+}
+
+/// The selector's ring-phase search, re-derived: the first rotation whose
+/// every anchor is on land and off the carriageway, or `None`. Independent
+/// of `haven`'s copy on purpose — `haven_ring_phase` is private, and a test
+/// that called the function under test would only prove it is deterministic.
+fn ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
+    for t in 0..HAVEN_PHASE_TRIES {
+        let phase = (t * HAVEN_PHASE_STEP) as u8;
+        let probe = Haven {
+            x,
+            z,
+            y: 0.0,
+            relief: 0.0,
+            phase,
+        };
+        let ok = (0..HAVEN_CRATES).all(|k| {
+            let (ax, az, _) = terrain::haven_crate(&probe, k);
+            terrain::height(seed, ax, az) >= LAND_MIN_H
+                && terrain::road_band(seed, ax, az) != RoadBand::Carriageway
+        });
+        if ok {
+            return Some(phase);
+        }
+    }
+    None
 }
 
 /// Relief over a far denser footprint than the 48-tap selector used: two
@@ -321,6 +349,15 @@ fn the_shipped_site_is_the_best_candidate_on_the_ring() {
             if y < LAND_MIN_H || terrain::road_band(seed, x, z) == RoadBand::Off {
                 continue;
             }
+            // The same check chain the selector applies. It has to be here:
+            // a search that scores sites the selector is forbidden to pick
+            // is not an independent re-derivation of the argmax, it is a
+            // different argmax. Measured — with the ring rule on one side
+            // only, seed 555555 "beats" the shipped pad by 2.06 m with a
+            // site whose entire container ring is under the land line.
+            if ring_phase(seed, x, z).is_none() {
+                continue;
+            }
             accepted += 1;
             let (mut lo, mut hi) = (y, y);
             for k in 0..8u16 {
@@ -373,8 +410,9 @@ fn the_shipped_site_is_the_best_candidate_on_the_ring() {
 /// plus margin (DECISIONS.md §open: haven pad v0).
 const HAVEN_SCORE_SLACK_M: f32 = 0.5;
 
-/// The exclusion zone is real and it is not a no-op: nothing scatters
-/// inside the pad, and the pad is somewhere that would otherwise have been
+/// The exclusion zone is real and it is not a no-op: nothing SCATTERS
+/// inside the pad, the only things standing there are the ones the pad
+/// itself placed, and the pad is somewhere that would otherwise have been
 /// full. Re-derived from the slot list, never from the veto's return value.
 #[test]
 fn the_pad_is_clear_and_would_not_have_been() {
@@ -385,6 +423,7 @@ fn the_pad_is_clear_and_would_not_have_been() {
     for seed in SWEEP_SEEDS {
         let haven = terrain::haven(seed);
         let mut inside = 0usize;
+        let mut crates_inside = 0usize;
         let mut cleared = 0usize;
         let mut live = 0usize;
 
@@ -394,7 +433,11 @@ fn the_pad_is_clear_and_would_not_have_been() {
                 if s.occupant != Occupant::None {
                     live += 1;
                     if terrain::in_haven(&haven, s.x, s.z) {
-                        inside += 1;
+                        if s.occupant == Occupant::CrateSlot {
+                            crates_inside += 1;
+                        } else {
+                            inside += 1;
+                        }
                     }
                 }
                 // The same cell with the pad parked off-island: what stage
@@ -406,12 +449,14 @@ fn the_pad_is_clear_and_would_not_have_been() {
             }
         }
         println!(
-            "haven seed {seed:>12}: {inside} slot(s) inside the pad, {cleared} cleared \
-             by it, {live} live islandwide"
+            "haven seed {seed:>12}: {inside} scattered + {crates_inside} placed slot(s) \
+             inside the pad, {cleared} cleared by it, {live} live islandwide"
         );
         assert_eq!(
             inside, 0,
-            "seed {seed}: {inside} scatter slot(s) stand inside the {HAVEN_RADIUS_M} m pad"
+            "seed {seed}: {inside} SCATTERED slot(s) stand inside the {HAVEN_RADIUS_M} m \
+             pad — the exclusion zone leaks (the pad's own crates are counted \
+             separately and asserted by `the_pad_carries_the_containers_it_placed`)"
         );
         worst_cleared = worst_cleared.min(cleared);
         total_cleared += cleared;
@@ -441,6 +486,191 @@ fn the_pad_is_clear_and_would_not_have_been() {
 
 /// Measured total clearance minus margin (DECISIONS.md §open: haven pad v0).
 const HAVEN_MIN_CLEARED_TOTAL: usize = 12;
+
+/// Every container the pad placed is standing, exactly once, where it was
+/// put — and the arithmetic that makes that true rather than lucky.
+///
+/// The failure this exists to catch is silent. A scatter cell holds one
+/// slot, so two anchors sharing a cell means the second crate simply is not
+/// there: no panic, no golden move (the crate that survives hashes the same
+/// bytes), no clippy wall. Nothing in the codebase would say a word. So the
+/// count is re-derived by sweeping all 65,536 cells and comparing against
+/// `HAVEN_CRATES`, and the separation that guarantees the count is measured
+/// against the longest distance that fits inside one cell.
+#[test]
+fn the_pad_carries_the_containers_it_placed() {
+    let table = ScatterTable::alpha_default();
+    // The longest line that fits inside one 8 m cell. Two anchors further
+    // apart than this cannot share a cell whatever the pad's offset against
+    // the grid — which is the whole proof, and it does not depend on a seed.
+    let cell_diag = (CELL_SIZE * CELL_SIZE * 2.0).sqrt();
+    let mut worst_sep = f32::MAX;
+    let mut worst_sep_seed = 0u64;
+    let mut worst_ring_err = 0.0f32;
+
+    for seed in SWEEP_SEEDS {
+        let haven = terrain::haven(seed);
+        let mut found = 0usize;
+        for cx in 0..CELLS_PER_SIDE {
+            for cz in 0..CELLS_PER_SIDE {
+                let s = terrain::scatter(seed, &table, &haven, cx, cz);
+                if s.occupant != Occupant::CrateSlot {
+                    continue;
+                }
+                found += 1;
+                // It is inside the pad, and it is on the pad's own ground.
+                assert!(
+                    terrain::in_haven(&haven, s.x, s.z),
+                    "seed {seed}: a crate stands outside the {HAVEN_RADIUS_M} m pad"
+                );
+                assert!(
+                    s.y >= LAND_MIN_H,
+                    "seed {seed}: a crate stands at y {} — below the land line \
+                     {LAND_MIN_H}. The pad is the flattest site on the ring and \
+                     placement does not veto, so this says the argmax picked \
+                     ground the ring cannot support, not that the crate is wrong",
+                    s.y
+                );
+                assert_eq!(
+                    s.y,
+                    terrain::height(seed, s.x, s.z),
+                    "seed {seed}: a crate's y is not the terrain under it"
+                );
+                // Placed, not drawn: no jitter, no size wobble.
+                assert_eq!(s.scale, 1.0, "seed {seed}: a placed crate was scaled");
+            }
+        }
+        assert_eq!(
+            found, HAVEN_CRATES as usize,
+            "seed {seed}: {found} crate(s) stand islandwide against \
+             HAVEN_CRATES = {HAVEN_CRATES}. Fewer means two anchors landed in \
+             one scatter cell and the second was dropped without a word — \
+             widen HAVEN_CRATE_R_M or cut the count until the separation \
+             below clears one cell diagonal"
+        );
+    }
+
+    // The ring itself, on every seed and not only the swept four: each anchor
+    // sits at `HAVEN_CRATE_R_M` from the center, and adjacent anchors clear a
+    // cell diagonal. Pure geometry, so it runs 16 seeds for the price of none.
+    for seed in SEEDS {
+        let haven = terrain::haven(seed);
+        let mut pts = [(0.0f32, 0.0f32); 256];
+        for k in 0..HAVEN_CRATES {
+            let (ax, az, yaw) = terrain::haven_crate(&haven, k);
+            pts[k as usize] = (ax, az);
+            let (dx, dz) = (ax - haven.x, az - haven.z);
+            let r = (dx * dx + dz * dz).sqrt();
+            let err = (r - HAVEN_CRATE_R_M).max(HAVEN_CRATE_R_M - r);
+            worst_ring_err = worst_ring_err.max(err);
+            // Faces the center: the inward unit vector and the yaw's own
+            // direction agree, so a crate never has its back to the pad.
+            let (fx, fz) = yaw_dir((yaw as u16) << 8);
+            let dot = fx * (-dx / r) + fz * (-dz / r);
+            assert!(
+                dot > 0.99,
+                "seed {seed}: crate {k}'s yaw points {dot} at the pad center — \
+                 the inward half-turn is off"
+            );
+        }
+        for a in 0..HAVEN_CRATES as usize {
+            for b in (a + 1)..HAVEN_CRATES as usize {
+                let (dx, dz) = (pts[a].0 - pts[b].0, pts[a].1 - pts[b].1);
+                let sep = (dx * dx + dz * dz).sqrt();
+                if sep < worst_sep {
+                    worst_sep = sep;
+                    worst_sep_seed = seed;
+                }
+            }
+        }
+    }
+    println!(
+        "haven crates: {HAVEN_CRATES} on a {HAVEN_CRATE_R_M} m ring; closest pair \
+         {worst_sep:.3} m (seed {worst_sep_seed}) against a {cell_diag:.3} m cell \
+         diagonal; worst radius error {worst_ring_err:.4} m"
+    );
+    assert!(
+        worst_sep > cell_diag,
+        "the closest two anchors are {worst_sep:.3} m apart and one scatter cell \
+         is {cell_diag:.3} m corner to corner — two crates can now land in one \
+         cell, and the loser vanishes silently"
+    );
+    assert!(
+        worst_ring_err < 0.01,
+        "worst anchor is {worst_ring_err:.4} m off the {HAVEN_CRATE_R_M} m ring"
+    );
+}
+
+/// The destination outpays the route to it — the defect the coast road left
+/// behind, as a number.
+///
+/// `ROAD_BARREL_PERMILLE` was sourced from the beach row of the biome table,
+/// so walking the loop paid exactly what standing on the spawn beach paid
+/// (`findings/pass-20260804-205133-01-judge.md`, ranked gap 2). This
+/// compares containers per square meter at the two ends of that walk. It
+/// deliberately measures the shoulder's area by counting its cells rather
+/// than by an annulus formula: the ring wobbles with the coastline, and an
+/// idealized area would flatter whichever side the arithmetic was written
+/// for.
+#[test]
+fn the_pad_outpays_the_road_that_leads_to_it() {
+    let table = ScatterTable::alpha_default();
+    let cell_area = CELL_SIZE * CELL_SIZE;
+    let pad_area = core::f32::consts::PI * HAVEN_RADIUS_M * HAVEN_RADIUS_M;
+    let mut worst_ratio = f32::MAX;
+
+    for seed in SWEEP_SEEDS {
+        let haven = terrain::haven(seed);
+        let mut shoulder_cells = 0usize;
+        let mut shoulder_barrels = 0usize;
+        for cx in 0..CELLS_PER_SIDE {
+            for cz in 0..CELLS_PER_SIDE {
+                // Cell center, so the band a cell is counted in does not
+                // depend on where its slot's jitter happened to land.
+                let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                if terrain::road_band(seed, x, z) != RoadBand::Shoulder {
+                    continue;
+                }
+                shoulder_cells += 1;
+                if terrain::scatter(seed, &table, &haven, cx, cz).occupant == Occupant::BarrelSlot {
+                    shoulder_barrels += 1;
+                }
+            }
+        }
+        assert!(
+            shoulder_barrels > 0,
+            "seed {seed}: no barrels on the shoulder — the comparison below \
+             would divide by the road not existing"
+        );
+        let road_density = shoulder_barrels as f32 / (shoulder_cells as f32 * cell_area);
+        let pad_density = HAVEN_CRATES as f32 / pad_area;
+        let ratio = pad_density / road_density;
+        println!(
+            "haven prize seed {seed:>12}: pad {HAVEN_CRATES} container(s) over \
+             {pad_area:.0} m2 = 1 per {:.0} m2; shoulder {shoulder_barrels} over \
+             {} m2 = 1 per {:.0} m2; ratio {ratio:.2}x",
+            pad_area / HAVEN_CRATES as f32,
+            shoulder_cells as f32 * cell_area,
+            1.0 / road_density,
+        );
+        worst_ratio = worst_ratio.min(ratio);
+    }
+    println!("haven prize: worst container-density ratio {worst_ratio:.2}x pad over road");
+    assert!(
+        worst_ratio >= HAVEN_PRIZE_RATIO_MIN,
+        "the pad concentrates containers only {worst_ratio:.2}x denser than the \
+         road shoulder — below the {HAVEN_PRIZE_RATIO_MIN}x floor, the \
+         destination is a stretch of road with a circle drawn on it"
+    );
+}
+
+/// Containers per square meter on the pad, over the same on the road
+/// shoulder. Measured worst 2.30 across the swept seeds; floored ~15% under
+/// it, low enough that coastline variance cannot trip it and high enough
+/// that losing a crate or doubling the shoulder rate does
+/// (DECISIONS.md §open: haven crates v0).
+const HAVEN_PRIZE_RATIO_MIN: f32 = 2.0;
 
 /// The pad's footprint fits the constants it is defined by: it clears whole
 /// scatter cells, and it cannot reach off the island. Compile-time, so it

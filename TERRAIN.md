@@ -81,8 +81,30 @@ Stages, in order — each cheap, each deterministic:
    call sites in four crates, so it is a cross-lane change and not a
    detail — v0 therefore *finds* a flat site rather than *making* one, and
    `Haven::relief` publishes how flat it got (worst 3.76 m over a 32 m pad
-   across 16 seeds). Also not built: the pad's loot table and any mesh.
-   `DECISIONS.md` §open "haven pad v0" has the knobs and the measurements.
+   across 16 seeds).
+   **The scatter table — the third of the hook — is now built, and it is the
+   part the carve does not block.** `HAVEN_CRATES = 5` containers stand on a
+   `HAVEN_CRATE_R_M = 10.0` ring, at authored positions rather than drawn
+   ones: `reference/SPAWN.md` §6 records that the reference hangs monument
+   loot on hand-placed child spawn points with no spacing rule, so a
+   destination reads as arranged where scatter reads as weather. They are
+   `Occupant::CrateSlot`, whose container is `content/loot.toml`'s
+   `loot.crate` — a table that until now had no spawn site in the world at
+   all. That is what makes the pad outpay the route: **2.64× the container
+   density of the road shoulder, holding a container worth 2.31× a barrel in
+   expected items, five of them reachable nowhere else.**
+   **Placing something on the pad made the pad's own selector stricter,
+   which is the general lesson for every later POI.** Two checks joined the
+   candidate chain, both because the gate caught them and neither by review:
+   a site's whole ring must be on land (seed 555555 centred a pad at 0.69 m
+   on a shore shelf whose ring is under the land line at *every* radius), and
+   no container may stand on the carriageway (the pad is on the road by
+   construction, so `HAVEN_PHASE_TRIES = 16` rotations of the ring are tried
+   and the site is refused if none is clear). `SPAWN.md` §5's placement-check
+   chain, arrived at from the other direction: **refuse the position, never
+   patch the object.** The carve is still not built.
+   `DECISIONS.md` §open "haven pad v0" and "haven crates v0" have the knobs
+   and the measurements.
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same
@@ -260,6 +282,7 @@ The reads a survival map must produce, and which stage buys each:
 | biomes | 4 (beach/meadow/forest/highland) |
 | roads | 1 coast ring, ~4 m wide |
 | monuments | 0 — haven pad only; the pad carver is the future hook |
+| pad containers | 5 crates on a 10 m ring, 2.64× the shoulder's density |
 | node respawn | 20–45 min jittered, privilege-vetoed **(knob)** |
 
 ## 7 · Gates
