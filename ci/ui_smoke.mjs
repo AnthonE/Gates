@@ -5517,17 +5517,152 @@ check(
 // The class behind `REACH`, not just the instance. `main.js` is the one file
 // no gate here can execute, so an undeclared SCREAMING_CASE constant in it is
 // invisible: it builds clean, it is not a syntax error, and it throws only
-// when a player presses the key. Comments and string literals are stripped
-// first — `main.js` legitimately NAMES Rust constants in its prose.
+// when a player presses the key.
+//
+// Comments and string literals have to come out first, because `main.js`
+// legitimately NAMES Rust constants in its prose — and the stripper is a
+// character walk rather than a stack of `replace`s for a reason this pass
+// paid for. The regex version put `'(?:[^'\\]|\\.)*'` last, and `main.js`
+// contains the template `` `can't build: ${…}` ``: the apostrophe in "can't"
+// opened a phantom string that ran to the next apostrophe hundreds of lines
+// away and swallowed the code between. The scan still reported 26 identifiers
+// and passed its own vacuity guard while being blind to a whole region —
+// mutant M26 (a reintroduced `REACH`) survived in exactly that hole. A gate
+// that is quietly blind over part of its input is worse than no gate, so this
+// one is verified against a fixture below before it is trusted on main.js.
+const stripJs = (src) => {
+  let out = "";
+  let i = 0;
+  // `tpl` is a stack: a template literal can hold `${}` which can hold
+  // another template. Depth is what tells a closing brace from a code one.
+  const tpl = [];
+  let prev = ""; // last significant character, for the regex/division call
+  while (i < src.length) {
+    const c = src[i];
+    const two = src.slice(i, i + 2);
+    // Template TEXT is checked FIRST, before quotes and comments. Put it
+    // anywhere later and the apostrophe in `can't build:` is read as a string
+    // opener again — which is the bug this whole block replaces, and it
+    // reappeared here on the first draft.
+    if (tpl.length > 0 && tpl[tpl.length - 1] === 0) {
+      if (two === "${") {
+        tpl[tpl.length - 1] = 1;
+        i += 2;
+        out += " ";
+        prev = "{";
+        continue;
+      }
+      if (c === "`") {
+        tpl.pop();
+        i++;
+        out += '""';
+        prev = '"';
+        continue;
+      }
+      i += c === "\\" ? 2 : 1;
+      continue;
+    }
+    if (two === "//") {
+      while (i < src.length && src[i] !== "\n") i++;
+      continue;
+    }
+    if (two === "/*") {
+      i += 2;
+      while (i < src.length && src.slice(i, i + 2) !== "*/") i++;
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      i++;
+      while (i < src.length && src[i] !== c) i += src[i] === "\\" ? 2 : 1;
+      i++;
+      out += '""';
+      prev = '"';
+      continue;
+    }
+    if (c === "`") {
+      i++;
+      tpl.push(0);
+      out += " ";
+      continue;
+    }
+    if (c === "}" && tpl.length > 0 && tpl[tpl.length - 1] === 1) {
+      tpl[tpl.length - 1] = 0;
+      i++;
+      out += " ";
+      continue;
+    }
+    if (c === "/" && /[(,=:[!&|?{};+\-*%~^\n]|^$/.test(prev)) {
+      // A regex literal, by the standard "what can precede a division"
+      // heuristic. Character classes may contain an unescaped `/`.
+      i++;
+      let cls = false;
+      while (i < src.length && (cls || src[i] !== "/")) {
+        if (src[i] === "\\") i++;
+        else if (src[i] === "[") cls = true;
+        else if (src[i] === "]") cls = false;
+        i++;
+      }
+      i++;
+      while (i < src.length && /[a-z]/.test(src[i])) i++;
+      out += '""';
+      prev = '"';
+      continue;
+    }
+    out += c;
+    if (!/\s/.test(c)) prev = c;
+    i++;
+  }
+  return out;
+};
+// The stripper, against the three shapes that actually appear in main.js and
+// the one that defeated its predecessor. If this fixture ever stops behaving,
+// every result below is unreliable and the gate says so here rather than
+// passing over a blind region.
+{
+  const fixture = [
+    "const A_DECLARED = 1;",
+    "// a comment naming COMMENT_ONLY",
+    "/* a block naming BLOCK_ONLY */",
+    'const s = "a string naming STRING_ONLY";',
+    "const t = `can't build: ${A_DECLARED} and ${TEMPLATE_CODE} TEMPLATE_TEXT_ONLY`;",
+    "const re = /LITERAL_IN_REGEX/;",
+    "const bad = A_FREE_ONE;",
+  ].join("\n");
+  const got = stripJs(fixture);
+  for (const gone of [
+    "COMMENT_ONLY",
+    "BLOCK_ONLY",
+    "STRING_ONLY",
+    "LITERAL_IN_REGEX",
+    "TEMPLATE_TEXT_ONLY",
+  ]) {
+    check(
+      !got.includes(gone),
+      `the stripper left ${gone} in the code it hands the scan — prose and string content would be read as` +
+        " identifiers, and main.js names Rust constants in its comments on nearly every screen",
+    );
+  }
+  for (const kept of ["A_DECLARED", "A_FREE_ONE", "TEMPLATE_CODE"]) {
+    check(
+      got.includes(kept),
+      `the stripper ate ${kept}, which is CODE — this is mutant M26's hole verbatim: the apostrophe in` +
+        " \"can't\" opened a phantom string, the scan went blind over everything after it, and a free" +
+        " variable in that region was never looked at",
+    );
+  }
+}
 let freeScanUsed = 0;
 {
-  const code = mainSrc
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/^\s*\/\/.*$/gm, " ")
-    .replace(/([^:])\/\/.*$/gm, "$1")
-    .replace(/`(?:[^`\\$]|\\.|\$(?!\{))*`/g, '""')
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\]|\\.)*'/g, '""');
+  const code = stripJs(mainSrc);
+  // The blindness M26 exposed was regional, so measure it: a stripper that
+  // swallows code removes far more than main.js's comment and string mass.
+  check(
+    code.replace(/\s+/g, "").length > mainSrc.replace(/\s+/g, "").length * 0.4,
+    `stripping main.js left ${code.replace(/\s+/g, "").length} of` +
+      ` ${mainSrc.replace(/\s+/g, "").length} non-space characters — comments and strings are not that much` +
+      " of this file, so the stripper has swallowed live code and the scan below is blind over it",
+  );
   const declared = new Set();
   for (const re of [
     /\b(?:const|let|var)\s+([A-Z][A-Z0-9_]{2,})\b/g,
