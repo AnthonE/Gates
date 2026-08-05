@@ -341,6 +341,7 @@ pub fn raid(
     attacker: &Player,
     pieces: &mut Pieces,
     deploys: &mut Deploys,
+    budget: &mut usize,
     events: &mut EventQueue,
 ) -> bool {
     if !attacker.active || attacker.hp == 0 {
@@ -446,7 +447,7 @@ pub fn raid(
             // by type and refusing beats indexing on a promise.
             match pieces.find_index(cx, cz, level, loc) {
                 Some(i) => {
-                    damage_piece(dc, bc, pieces, deploys, i, def.structure, events);
+                    damage_piece(dc, bc, pieces, deploys, i, def.structure, budget, events);
                     true
                 }
                 None => false,
@@ -472,6 +473,15 @@ fn aimed_at_rec(
 mod tests {
     use super::*;
     use crate::gather::ItemStack;
+    use crate::limits::MAX_REMOVALS_PER_TICK;
+
+    /// One tick's structural removal budget, as `World::tick` hands it
+    /// out — these fixtures never approach it (build.rs owns the tests
+    /// that do).
+    fn tick_budget() -> usize {
+        MAX_REMOVALS_PER_TICK
+    }
+
     use crate::movement::Body;
     use crate::world::{EV_DEPLOY_REMOVED, EV_PIECE_REMOVED, EV_STRUCT_HIT};
 
@@ -572,6 +582,7 @@ mod tests {
                 &p,
                 &mut pieces,
                 &mut deploys,
+                &mut tick_budget(),
                 &mut ev
             ));
             let e = ev.entries()[0];
@@ -595,6 +606,7 @@ mod tests {
             &p,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
         assert_eq!(
@@ -615,6 +627,7 @@ mod tests {
             &p,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
         assert!(ev.is_empty());
@@ -635,6 +648,7 @@ mod tests {
             &far,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
 
@@ -650,6 +664,7 @@ mod tests {
             &turned,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
 
@@ -693,6 +708,7 @@ mod tests {
                 &p,
                 &mut pieces,
                 &mut deploys,
+                &mut tick_budget(),
                 &mut ev
             ));
             assert_eq!(
@@ -718,6 +734,7 @@ mod tests {
             &p,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
         assert_eq!(pieces.entries()[0].hp, 66);
@@ -833,6 +850,7 @@ mod tests {
             &foe,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
         assert_eq!(
@@ -849,6 +867,7 @@ mod tests {
             &foe,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
         assert!(deploys.is_empty(), "the door fell to force");
@@ -870,6 +889,7 @@ mod tests {
                 &foe,
                 &mut pieces,
                 &mut deploys,
+                &mut tick_budget(),
                 &mut ev,
             );
         }
@@ -896,6 +916,7 @@ mod tests {
             &ground,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
         assert_eq!(pieces.entries()[0].hp, 66, "from the ground, reachable");
@@ -913,6 +934,7 @@ mod tests {
             &aloft,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
         assert_eq!(pieces.entries()[0].hp, 66, "two storeys up, untouched");
@@ -932,6 +954,7 @@ mod tests {
             &p,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
         assert_eq!(pieces.entries()[0].hp, 100);
@@ -953,6 +976,7 @@ mod tests {
             &dead,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
 
@@ -966,6 +990,7 @@ mod tests {
             &empty,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
 
@@ -979,6 +1004,7 @@ mod tests {
             &gone,
             &mut pieces,
             &mut deploys,
+            &mut tick_budget(),
             &mut ev
         ));
 

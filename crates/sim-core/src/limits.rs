@@ -343,3 +343,30 @@ pub const MAX_COLLAPSE_PIECES: usize = 64;
 /// a rate, not a queue; the cursor wraps and nothing is skipped.
 /// Proposed default, DECISIONS.md §open (collapse v0).
 pub const SUPPORT_SWEEP_PER_TICK: usize = 32;
+
+/// Structural piece removals the whole **tick** may make, across every
+/// path that takes a piece out of the store: a raider's killing blow
+/// (`deploy::damage_piece`), the decay sweep (`deploy::upkeep_sweep`), the
+/// standing-support backstop (`build::support_sweep`), and every cascade
+/// any of them seeds (`build::collapse_from`).
+///
+/// `MAX_COLLAPSE_PIECES` bounds one cascade and cannot bound a tick,
+/// because a tick holds many: `upkeep_sweep` does not stop at its first
+/// removal the way `support_sweep` does, so its 64 visits can each seed a
+/// cascade, and up to `MAX_PLAYERS` raiders can land a killing blow
+/// besides. The composed worst case is thousands of `EV_PIECE_REMOVED`
+/// against a 256-slot drop-newest ring, and a dropped removal is the one
+/// event whose loss is permanent — the piece stays drawn on every screen
+/// for the rest of the session. The per-cascade cap stays (it is also what
+/// sizes `collapse_from`'s stack array); this is the bound that composes.
+///
+/// Sized off `MAX_EVENTS_PER_TICK`: a removal spends one event slot, two
+/// when a deployable stood at the same address, so 64 removals is at most
+/// 128 of 256 and leaves half the ring for everything else the tick says.
+/// Overflow policy: **defer** — a refused removal is refused *before* the
+/// piece leaves the store, so nothing is lost and nothing is half-removed.
+/// The decay sweep rewinds its cursor to retry the same entry, a cascade
+/// leaves the rest hanging for `support_sweep`, and a raid's killing blow
+/// stops one hp short so the wall falls to the next swing.
+/// Proposed default, DECISIONS.md §open (collapse budget v0).
+pub const MAX_REMOVALS_PER_TICK: usize = 64;
