@@ -34,10 +34,11 @@ import {
   VERB_DOOR,
   VERB_HEARTH,
   VERB_NONE,
+  centrePrompt,
+  describeDeploy,
+  describePiece,
   newPick,
   newSwingPick,
-  promptFor,
-  promptForSwing,
   resolveInteract,
   resolveSwing,
 } from "./interact.js";
@@ -179,9 +180,8 @@ const DEPLOY_REFUSE_TEXT = [
   "no door there",
   "not your door",
 ];
-// sim-core build.rs shape/material code order (UI labels, not content).
-const SHAPE_TEXT = ["foundation", "wall", "doorway", "floor", "stairs", "roof"];
-const MAT_TEXT = ["wood", "stone", "metal"];
+// The shape/material labels moved to `web/src/interact.js` beside
+// `describePiece`, the one function that read them (gated: `ui_smoke` §V).
 const BUILD_CELL = 3;
 const MAX_LEVEL = 7;
 // The three deployable archetypes E can act on used to be restated here and
@@ -373,35 +373,42 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     bTarget.row = sel.row;
     return bTarget;
   };
+  // What the selected build row IS: its name, its full cost, and the shortfall
+  // of the first ingredient the player cannot cover.
+  //
+  // One decode of the def tables, read by two rows of the HUD — the strip at
+  // the bottom and the centre hint under the crosshair. It was the strip's
+  // alone; a second copy for the prompt would have been a second reading of a
+  // stride-8 table whose ingredient pairs live at `4 + k*2`, which is the
+  // positional-payload shape `CLAUDE.md`'s trap list names as where the
+  // reference ecosystem actually bled. `what` is `""` when the piece table has
+  // not arrived, which is what both callers branch on.
+  //
+  // One reused object: this runs off the HUD timer, not the RAF path, but the
+  // prompt asks for it four times a second and the client is a hot path too.
+  const desc = { what: "", costs: "", need: "" };
+  const selDesc = () => {
+    desc.what = "";
+    desc.costs = "";
+    desc.need = "";
+    if (pieceTotal() === 0) return desc;
+    const sel = selRow();
+    return sel.deploy
+      ? describeDeploy(desc, views.deployDefs, sel.row, itemName, invHave)
+      : describePiece(desc, views.pieceDefs, sel.row, itemName, invHave);
+  };
   const buildStrip = () => {
     if (!build.on) {
       hud.setBuild("");
       return;
     }
-    const pt = pieceTotal();
-    if (pt === 0) {
+    const d = selDesc();
+    if (!d.what) {
       hud.setBuild("build: waiting for piece table…");
       return;
     }
-    const sel = selRow();
-    let what;
-    let costs;
-    if (sel.deploy) {
-      const b = sel.row * 4;
-      what = itemName(views.deployDefs[b + 3]);
-      costs = `1 ${what}`;
-    } else {
-      const D = views.pieceDefs;
-      const b = sel.row * 8;
-      what = `${MAT_TEXT[D[b + 1]] || "?"} ${SHAPE_TEXT[D[b]] || "?"}`;
-      const parts = [];
-      for (let k = 0; k < D[b + 3]; k++) {
-        parts.push(`${D[b + 4 + k * 2 + 1]} ${itemName(D[b + 4 + k * 2])}`);
-      }
-      costs = parts.join(" + ");
-    }
     hud.setBuild(
-      `build: ${what} · L${build.level} · ${costs}` +
+      `build: ${d.what} · L${build.level} · ${d.costs}` +
         ` — wheel piece · R/F level · right-click place · E use door / feed hearth` +
         ` · L lock door · U upgrade · B close`,
     );
@@ -546,23 +553,31 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
     return resolveSwing(swingPick, swingAim, swingWorld);
   };
   /**
-   * The prompt, off the HUD's slow timer. Same resolver, same arguments.
+   * The prompt, off the HUD's slow timer. Same resolvers, same arguments as
+   * the keys that act.
    *
-   * E's pick wins when it has one, and the swing prompt fills the silence.
-   * Both are true at once whenever you stand at a box inside 2 m of a tree, so
-   * something has to choose, and E is the half a player cannot otherwise
-   * discover: the mouse button is already held down, while nothing on screen
-   * would ever suggest pressing E. It also keeps the line to ONE verb — the
-   * reference's centre hint is a single row (`Rust Images/choppingtree.jpg`)
-   * and two stacked prompts under a crosshair is a menu, not a hint.
+   * Three verbs can be true at once — a ghost over the aimed cell, a box in
+   * reach, a tree inside 2 m — and the row holds one. Which one is
+   * `interact.centrePrompt`'s call and not this file's: it was three chained
+   * `||`s here with nothing asserting the order, and `ci/ui_smoke.mjs` §V now
+   * sweeps all eight combinations of the three in node. The ordering and its
+   * reasons are documented at the function.
+   *
+   * This costs the short-circuit the `||` chain used to have — all three picks
+   * are resolved every call now, where a door in reach used to skip the swing
+   * scan. That is four times a second against two bounded scans (deploy recs
+   * and bags; a 3x3 terrain cell block), off the slow timer and never the RAF
+   * path, and it allocates nothing: the picks and `desc` are all reused
+   * objects. Gating the order is worth a scan the worst case already paid.
    */
   const updatePrompt = () => {
     if (views.render[0] !== 1) {
       hud.setPrompt("");
       return;
     }
-    const text = promptFor(aimPick(pick, VERB_NONE));
-    hud.setPrompt(text || promptForSwing(swingAt()));
+    hud.setPrompt(
+      centrePrompt(build.on ? selDesc() : null, aimPick(pick, VERB_NONE), swingAt()),
+    );
   };
   // ===========================================================================
   // The map's one wasm call.
@@ -936,6 +951,10 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       build.on = !build.on;
       if (!build.on) scene.hideGhost();
       buildStrip();
+      // The centre hint changes owner on this key — into and out of the build
+      // row — so it is redrawn on the keypress and not up to 250 ms later on
+      // the HUD timer. A hint that lags the ghost it describes is the defect.
+      updatePrompt();
       e.preventDefault();
     } else if (build.on && (e.code === "KeyR" || e.code === "KeyF")) {
       const d = e.code === "KeyR" ? 1 : -1;
@@ -980,6 +999,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
       const d = e.deltaY > 0 ? 1 : total - 1;
       build.row = (build.row + d) % total;
       buildStrip();
+      // The wheel changes WHICH piece the hint names, so it redraws here too.
+      updatePrompt();
     }
   });
   document.addEventListener("contextmenu", (e) => e.preventDefault());

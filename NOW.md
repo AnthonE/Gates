@@ -102,7 +102,7 @@ goldens and unit gates only, not by a live shard.
 
 ---
 
-## 0 · Half the verbs you own are undiscoverable — *(ui lane; compass done this pass)*
+## 0 · Half the verbs you own are undiscoverable — *(ui lane — both halves done)*
 
 From the judge's **ranked gap 3**, `pass-20260805-063306-01-judge.md`. NOW.md
 held no open ui-lane item, so the gap list supplied this one. Two halves:
@@ -111,10 +111,15 @@ held no open ui-lane item, so the gap list supplied this one. Two halves:
   `index.html`. `ui_smoke` 442 → 510 checks (§S/§T); nine mutants red.
   **+Z is North, +X is East** — `DECISIONS.md` §open has the row and the
   conflict it resolves against `build.rs`'s `LOC_EDGE_N`.
-- **The build prompt — still open, and it is the judge's ranked fix 2.**
-  `interact.js:64-72` resolves `VERB_DOOR`/`BAG`/`BOX`/`HEARTH` and no place
-  verb, so the placement preview exists only for someone who has read
-  `main.js`. Squarely ui-lane; not started.
+- **The build prompt — DONE.** Build mode drew a ghost over the aimed cell
+  while the row under the crosshair advertised `[LMB] CHOP TREE`. It now reads
+  `[RMB] PLACE WOOD WALL`, with the shortfall of the first ingredient you
+  cannot cover, and redraws on B and the wheel. Which of the three verbs gets
+  the one row is `interact.centrePrompt` — pure, swept over all eight
+  combinations (build > E > swing). `describePiece`/`describeDeploy` moved out
+  of `run()` so the stride-8 decode is gateable arithmetic, and the shape and
+  material labels came with them (walked against `build.rs`). `ui_smoke`
+  635 → 1468 checks (§V); §Q/§R re-anchored, not relaxed.
 
 Two things the compass could not carry, both needing another lane:
 
@@ -129,6 +134,58 @@ Two things the compass could not carry, both needing another lane:
   operator word is cheaper than a pass spent guessing.
 
 ---
+## 0c · Nothing in the world names a key *(ui lane)*
+
+What the build prompt could not fix, learned by building it: a contextual hint
+can only describe a mode you have already entered. **B, C, M, T, G, H, U, L and
+Tab are spelled out in exactly one place — `index.html`'s `#hint` paragraph on
+the pre-connect screen — which is gone the moment you join.** A player who
+misses it has no way back to it and no way to discover build mode, crafting or
+the map at all. Every verb this lane has made legible sits behind a key nobody
+is told about.
+
+Two candidate shapes, and the reference has both:
+`Rust Images/choppingtree.jpg` carries an onboarding checklist top-left that
+retires itself as each verb is used; `MENUS.md` surveys the keybinds screen
+that every loader in the reference ecosystem exposes. The checklist is the
+cheaper one and it teaches in the world rather than in a menu.
+
+Not started. Needs no other lane and no operator word — the strings are ours
+(`CONTENT.md` owns names, and these are key names). `ui_smoke` can drive it
+end to end: it is DOM and state, no renderer.
+
+---
+## 0 · The rest of `pass-20260805-074623-01`'s ranked fixes
+
+*(GAP PASS, world lane. Its ranked fix **1** — the authored sites were not
+on the native↔wasm parity surface — landed on `loop/site-parity`; see
+`DECISIONS.md` §open "probe coverage v0". Measured before the fix: of the
+golden's 256 cells, **zero** were inside `in_haven`/`in_waystation` on all
+three probe seeds, so `haven()`'s value reached the digest through nothing
+while `client-wasm` reads it off wasm and the server off native. Its other
+two fixes were left, deliberately, and are below. That report's ranked
+**gaps** 1–3 — projectiles, day/night + AI, the recycler — are all systems
+lane; the newest visual report's gaps are all texture/material work, which
+the operator parked for this lane on 2026-08-04.)*
+
+- **A short waystation tier is silent on a shard** (ranked fix 2). `pick_minor`
+  leaves `Waystation::NONE` when no candidate clears the separation floor.
+  `tests/waystation.rs` refuses that over 16 seeds, but a shard boots whatever
+  seed `shard.toml` names: on a seed the ring cannot fill, the island ships
+  with one or zero waystations and no counter, event or log line. Wants a
+  boot-time refusal in `crates/server` — **not this lane's file.** `probe_sites`
+  now hashes each `live` flag, so a short tier at least moves the fingerprint
+  on the three probe seeds; that is not the same as being loud on an arbitrary
+  one. One-line cross-lane request: sim-core can export a
+  `sites_complete(&Haven) -> bool` for the shard to call at boot.
+- **The tier gradient is gated in containers per m², but a player collects
+  loot** (ranked fix 3). A waystation crate and a pad crate are the same
+  `crate` loot table, so per container the lesser tier pays exactly what the
+  destination pays and only geometry separates them. `ci/haven_prize.mjs` knows
+  nothing about waystations, so giving them their own table — or changing crate
+  yields — moves the real gradient with every gate green. Wants that gate
+  restated in **expected items per site**, not containers per m².
+
 ## 1 · The client is becoming a native Rust desktop app
 
 *(Operator, 2026-08-05. `DECISIONS.md` has the row. This outranks the

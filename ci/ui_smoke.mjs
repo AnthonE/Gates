@@ -3533,16 +3533,25 @@ check(
 // which is that whatever else `setPrompt` is handed, E's answer OUTRANKS it.
 // A mutant that draws E's prompt from a second resolver still fails the first;
 // a mutant that reorders the `||` so the swing hint wins fails the second.
+// RE-ANCHORED a second time, and again not relaxed. The build prompt made the
+// row a three-way choice, so the `||` chain moved out of `main.js` into
+// `interact.centrePrompt` where it can be EXERCISED rather than pattern-
+// matched — §V sweeps all eight combinations of the three verbs and asserts
+// the winning text. These two keep §Q's own claim at the new seam: E's answer
+// still comes from `promptFor(aimPick(...))` and nowhere else, and it still
+// outranks the swing. What §V adds, the old regexes could not say at all.
 check(
-  /const text = promptFor\(aimPick\(pick, VERB_NONE\)\);/.test(mainSrc),
-  "main.js does not compute the prompt text from promptFor(aimPick(...)) — a prompt computed any other way" +
-    " is a second opinion, and the judge's gap 3 is that the prompt and the key must not be able to differ",
+  /centrePrompt\([\s\S]{0,80}?aimPick\(pick, VERB_NONE\)/.test(mainSrc) &&
+    /promptFor\(interactPick\)/.test(interactSrc),
+  "main.js does not hand aimPick(pick, VERB_NONE) to centrePrompt, or centrePrompt does not run it through" +
+    " promptFor — a prompt computed any other way is a second opinion, and the judge's gap 3 is that the" +
+    " prompt and the key must not be able to differ",
 );
 check(
-  /hud\.setPrompt\(text \|\| /.test(mainSrc),
-  "main.js does not hand `text` to setPrompt as the FIRST term of the fallback — E's pick is the half a" +
-    " player cannot discover, so anything else drawn under the crosshair sits behind it or the door you are" +
-    " standing at loses its hint to a tree",
+  /promptFor\(interactPick\) \|\| promptForSwing\(swingPick\)/.test(interactSrc),
+  "interact.centrePrompt does not put E's pick AHEAD of the swing — E's pick is the half a player cannot" +
+    " discover, so anything else drawn under the crosshair sits behind it or the door you are standing at" +
+    " loses its hint to a tree",
 );
 // And it is CALLED. Pinning only the definition let a mutant that commented
 // out the one call site pass green: the prompt would be correct code that
@@ -3898,14 +3907,19 @@ check(interact.resolveSwing(sPick, P, { cellAt: () => null }).arch === 0, "an un
 // --- the wiring, in main.js --------------------------------------------------
 // Same discipline as §Q: the resolver being right is worth nothing if the
 // prompt is drawn from something else.
+// Re-anchored with §Q's pair when the build prompt made the row a three-way
+// choice: `swingAt()` is now the THIRD argument of `centrePrompt` rather than
+// the second term of a `||` here, and §V exercises the resulting order over
+// all eight combinations instead of matching it as a pattern.
 check(
-  /hud\.setPrompt\(text \|\| promptForSwing\(swingAt\(\)\)\)/.test(mainSrc),
-  "main.js does not fall back to promptForSwing(swingAt()) when E has no pick — the swing half of the" +
-    " crosshair would compute correctly and never reach the screen",
+  /centrePrompt\([\s\S]{0,110}?swingAt\(\)\)/.test(mainSrc) &&
+    /promptForSwing\(swingPick\)/.test(interactSrc),
+  "main.js does not hand swingAt() to centrePrompt, or centrePrompt does not run it through promptForSwing" +
+    " — the swing half of the crosshair would compute correctly and never reach the screen",
 );
 check(
-  /const text = promptFor\(aimPick\(pick, VERB_NONE\)\)/.test(mainSrc),
-  "main.js no longer draws E's prompt through promptFor(aimPick(...)) — the fallback must sit BEHIND the" +
+  /promptFor\(interactPick\) \|\| promptForSwing\(swingPick\)/.test(interactSrc),
+  "interact.centrePrompt no longer draws E's prompt ahead of the swing's — the fallback must sit BEHIND the" +
     " interact pick, or the swing hint would outrank a door the player is standing at",
 );
 check(
@@ -4745,6 +4759,86 @@ check(
     " through an arbitrary pixel, which two consistently-wrong projections would also pass",
 );
 
+// --- what the SAMPLER was actually asked, per pixel -------------------------
+// The two sweeps above stub the sampler flat (`splatAt: () => GRASS_ONLY`,
+// `moistAt: () => 0`) and decide land from the height index, so they see the
+// height field's geometry and nothing else. The judge's M7 on
+// `pass-20260805-074623-03` is what that costs: mirror the world x handed to
+// the sampler — `const x = src.x0 + (size - 1 - i) * src.step` — and all 635
+// checks run green while the island ships with its BIOME COLOURS flipped
+// east-west over a correct shape. The height index is still `i`; only the
+// question asked of the terrain moved.
+//
+// So this records the sampler's arguments instead of stubbing them. Every
+// pixel is land (the sampler is not called for sea), which makes the call
+// order exactly the loop's own: j outer, i inner.
+const sampled = [];
+{
+  const g = PAINT_N + 2;
+  const H = new Float32Array(g * g);
+  // A height that NAMES its cell, so `splatAt`'s first argument identifies the
+  // sample it belongs to rather than merely being positive.
+  const hOf = (i, j) => 10 + i + j * 100;
+  for (let j = 0; j < g; j++) {
+    for (let i = 0; i < g; i++) H[j * g + i] = hOf(i - 1, j - 1);
+  }
+  map.paintMap(new Uint8ClampedArray(PAINT_N * PAINT_N * 4), PAINT_N, {
+    heights: H,
+    step: CELL_M,
+    x0: CELL_ORIG,
+    z0: CELL_ORIG,
+    // A moisture that names its cell too, so the value cannot be confused with
+    // the slope in `splatAt`'s three-argument payload — the same positional
+    // shape `CLAUDE.md`'s trap list names, three fields wide.
+    moistAt: (x, z) => {
+      sampled.push({ x, z, moist: NaN, h: NaN });
+      return x * 1000 + z;
+    },
+    splatAt: (h, moist, slope) => {
+      const last = sampled[sampled.length - 1];
+      if (last) {
+        last.h = h;
+        last.moist = moist;
+        last.slope = slope;
+      }
+      return GRASS_ONLY;
+    },
+  });
+  check(
+    sampled.length === PAINT_N * PAINT_N,
+    `map.paintMap asked the sampler ${sampled.length} times over an all-land ${PAINT_N}x${PAINT_N} field,` +
+      ` expected ${PAINT_N * PAINT_N} — one call per pixel. A short count means the recording below is` +
+      " reading a partial sweep and the mirror it exists to catch could hide in the pixels never asked about",
+  );
+  for (let j = 0; j < PAINT_N; j++) {
+    for (let i = 0; i < PAINT_N; i++) {
+      const s = sampled[j * PAINT_N + i];
+      const wx = CELL_ORIG + i * CELL_M;
+      const wz = CELL_ORIG + j * CELL_M;
+      check(
+        s && Math.abs(s.x - wx) < 1e-9 && Math.abs(s.z - wz) < 1e-9,
+        `map.paintMap asked the terrain about world (${s?.x}, ${s?.z}) for sample (${i}, ${j}), expected` +
+          ` (${wx}, ${wz}) = x0 + i*step, z0 + j*step. The pixel the answer is PAINTED into is chosen by` +
+          " the index; the ground it describes is chosen by this. Mirror or transpose one and the island" +
+          " keeps its shape and wears another cell's biome — which is exactly what the height-field sweeps" +
+          " above cannot see, because they stub the sampler flat",
+      );
+      check(
+        s && Math.abs(s.h - (10 + i + j * 100)) < 1e-9,
+        `map.paintMap handed splatAt height ${s?.h} for sample (${i}, ${j}), expected ${10 + i + j * 100} —` +
+          " the height at that very sample. A splat read off a neighbour's height is a biome boundary one" +
+          " pixel out at every coast",
+      );
+      check(
+        s && Math.abs(s.moist - (wx * 1000 + wz)) < 1e-9,
+        `map.paintMap handed splatAt moisture ${s?.moist} for sample (${i}, ${j}), expected the` +
+          ` ${wx * 1000 + wz} that moistAt returned for that sample. The three arguments are (h, moist,` +
+          " slope) positionally and nothing else here would notice two of them swapped",
+      );
+    }
+  }
+}
+
 // --- 3. the palette is the splat law's --------------------------------------
 // Flat ground: lambert is exactly MAP_LIGHT[1] and the shade term is therefore
 // exactly 1, so the palette colour survives untouched. That is what makes the
@@ -4842,7 +4936,18 @@ const mapDom = await page.evaluate(async ({ probe, yaws, at }) => {
   const heads = [];
   for (const yaw of yaws) {
     hud.setMapView(at[0], at[1], yaw);
-    heads.push({ yaw, dx: hud.mapDir.dx, dy: hud.mapDir.dy });
+    // `mapDir` is the heading the triangle was built FROM; `mapTri` is what the
+    // 2D context was actually handed. Both, because the judge's M9 on
+    // `pass-20260805-074623-03` walked between them — it left `mapDir` correct
+    // and hard-coded the nose vertex north, and every check below passed.
+    heads.push({
+      yaw,
+      dx: hud.mapDir.dx,
+      dy: hud.mapDir.dy,
+      tri: [...hud.mapTri],
+      px: hud.mapPos.px,
+      py: hud.mapPos.py,
+    });
   }
   // Every verb key must be eaten while the map is up; its own two must not.
   //
@@ -4963,6 +5068,74 @@ check(
   "hud.drawMap drew two different wire yaws along the SAME image direction — the rotation is dropped or" +
     " collapsed, which every check above would still pass if it were pinned to one convenient angle",
 );
+// --- the vertices the CONTEXT got, not the heading they were built from -----
+// Everything above reads `mapDir`, and `mapDir` is not what the canvas draws.
+// The judge's M9 on `pass-20260805-074623-03` is the proof: leave `mapDir`
+// exact and hard-code the nose to `(px + 0*MARKER, py + -1*MARKER)` — all 635
+// checks green, and the arrow always claims north, one line below where M11
+// was closed. Closing the INSTANCE is not closing the class. So the triangle
+// `drawMap` handed to `ctx` is now parked in `hud.mapTri`, and this reads it.
+// Built from a name variable rather than written as a regex LITERAL, and that
+// is load-bearing: `ci/knob_registry.mjs` scans every `.mjs` in the repo with
+// `\bconst\s+<NAME>\s*=\s*([^;]+);`, so a literal `/export const MAP_MARKER_PX
+// = ([\d.]+);/` here reads to that gate as a second declaration of the knob —
+// initialized to `([\d.]+)`, which it correctly refuses to parse as a number.
+// Do not "simplify" this back into a literal; it reddens the knob registry.
+const MARKER_KNOB = "MAP_MARKER_PX";
+const markerPx = Number(
+  new RegExp(`export const ${MARKER_KNOB} = ([\\d.]+);`).exec(hudSrc)?.[1],
+);
+check(
+  Number.isFinite(markerPx) && markerPx > 0,
+  `could not read MAP_MARKER_PX out of hud.js (got ${markerPx}) — every triangle check below would compare` +
+    " against NaN and pass on nothing",
+);
+for (const h of mapDom.heads) {
+  check(
+    h.tri?.length === 6 && h.tri.every((n) => Number.isFinite(n)),
+    `hud.drawMap parked ${JSON.stringify(h.tri)} for the marker triangle at yaw ${h.yaw} — expected six` +
+      " finite canvas coordinates. An unparked triangle means the checks below read undefined",
+  );
+  // The nose sits one marker-length along the heading from the player's own
+  // pixel. This is the assertion M9 walked through: it is stated against
+  // `mapDir` AND `mapPos`, so a nose pinned to a constant direction is red
+  // here whatever `mapDir` says, and a triangle drawn at the wrong place is
+  // red too.
+  check(
+    Math.abs(h.tri[0] - (h.px + h.dx * markerPx)) < 1e-9 &&
+      Math.abs(h.tri[1] - (h.py + h.dy * markerPx)) < 1e-9,
+    `hud.drawMap put the marker's NOSE at (${h.tri?.[0]}, ${h.tri?.[1]}) at wire yaw ${h.yaw}, expected` +
+      ` (${h.px + h.dx * markerPx}, ${h.py + h.dy * markerPx}) — the player's pixel plus ${markerPx} px` +
+      " along the heading it reported. A nose that does not track the heading is an arrow that lies about" +
+      " which way the player faces, and reading mapDir alone cannot see it",
+  );
+  // The two tail corners straddle the axis: equal and opposite across it, and
+  // both BEHIND the pixel. Stated as a symmetry rather than as the same
+  // formula again — recomputing `±0.6/−0.5` here would agree with whatever
+  // drawMap held, including a collapsed triangle.
+  const midX = (h.tri[2] + h.tri[4]) / 2;
+  const midY = (h.tri[3] + h.tri[5]) / 2;
+  check(
+    Math.abs(midX - (h.px - h.dx * markerPx * 0.5)) < 1e-9 &&
+      Math.abs(midY - (h.py - h.dy * markerPx * 0.5)) < 1e-9,
+    `hud.drawMap's two tail corners at yaw ${h.yaw} have midpoint (${midX}, ${midY}), which is not on the` +
+      " heading axis behind the player's pixel — the triangle is skewed or its base does not follow the nose",
+  );
+  const spanX = h.tri[4] - h.tri[2];
+  const spanY = h.tri[5] - h.tri[3];
+  check(
+    Math.abs(spanX * h.dx + spanY * h.dy) < 1e-9 &&
+      Math.hypot(spanX, spanY) > markerPx * 0.5,
+    `hud.drawMap's tail span at yaw ${h.yaw} is (${spanX}, ${spanY}) — it must be PERPENDICULAR to the` +
+      " heading and wider than half a marker. A span along the heading, or a zero one, is a triangle that" +
+      " has collapsed to a line and points nowhere",
+  );
+}
+check(
+  new Set(mapDom.heads.map((h) => h.tri.join(","))).size === mapDom.heads.length,
+  "hud.drawMap handed the 2D context the SAME three vertices for two different wire yaws — the marker does" +
+    " not turn, whatever mapDir reports",
+);
 check(
   mapDom.invWasOpen === false,
   "the map's key-ownership probe ran with the inventory still open — eatsKey answers for the UNION of" +
@@ -4990,6 +5163,199 @@ check(
   "main.js no longer guards paintIsland with a once-only flag — the whole-island fill is 66k height" +
     " samples and it is a function of the seed alone",
 );
+
+// =============================================================================
+// V. the build prompt — the third verb under the crosshair, and which one wins
+// =============================================================================
+// `NOW.md` §0: "the build prompt — `interact.js` resolves VERB_DOOR/BAG/BOX/
+// HEARTH and no place verb, so the placement preview exists only for someone
+// who has read `main.js`". Build mode drew a green wireframe ghost over the
+// aimed cell while the hint UNDER the crosshair went on advertising
+// `[LMB] CHOP TREE` — the player's eye is on the ghost and the row describing
+// it was 96 px above the hotbar.
+//
+// Three things are gated here and all three are positional, which is the class
+// `CLAUDE.md`'s trap list names: the def-table decode (a stride-8 row whose
+// ingredient PAIRS sit at `4 + k*2`), the prompt's own text, and above all the
+// ORDER the three candidate verbs resolve in — which was three chained `||`s
+// inside `main.js` with nothing asserting them.
+
+// --- the labels, against build.rs's own enums -------------------------------
+// They lived in `main.js` as bare arrays whose INDEX was the sim's code, with
+// no gate: renumber a shape in `build.rs` and the client cheerfully calls a
+// doorway a floor. Walked by name, so a shape added to the sim with no label
+// lands red on the commit that adds it.
+for (const [table, prefix, names] of [
+  [interact.BUILD_SHAPE_LABEL, "SHAPE", ["FOUNDATION", "WALL", "DOORWAY", "FLOOR", "STAIRS", "ROOF"]],
+  [interact.BUILD_MAT_LABEL, "MAT", ["WOOD", "STONE", "METAL"]],
+]) {
+  const rs = [...buildSrc.matchAll(new RegExp(`^pub const ${prefix}_([A-Z]+): u8 = (\\d+);`, "gm"))];
+  check(
+    rs.length === table.length && rs.length === names.length,
+    `interact.js ${prefix} labels have ${table.length} entries, build.rs declares ${rs.length} ${prefix}_*` +
+      ` constants and this walk names ${names.length} — a code the sim can send with no label prints "?"` +
+      " in the build strip and in the centre hint, and a stale parse makes every check below vacuous",
+  );
+  for (const [, name, code] of rs) {
+    check(
+      table[Number(code)] === name.toLowerCase(),
+      `build.rs ${prefix}_${name} = ${code}, but interact.js's label at ${code} is` +
+        ` ${JSON.stringify(table[Number(code)])} — the prompt would name the wrong piece, and the ghost the` +
+        " player is looking at would be the right one. A renumbered enum is exactly how that happens",
+    );
+    check(
+      names.includes(name),
+      `build.rs declares ${prefix}_${name}, which this walk does not name — the sim grew a piece and the` +
+        " client's labels were not extended with it",
+    );
+  }
+}
+
+// --- the decode, as arithmetic ----------------------------------------------
+// A hand-built table with the ingredient pair DELIBERATELY asymmetric (item 7,
+// quantity 200) so item-vs-quantity cannot be swapped silently: the swap would
+// read "7 more <item 200>" and this reads the string.
+const NAMES = { 7: "wood", 9: "stone", 11: "cloth" };
+const nameOf = (i) => NAMES[i] || `item${i}`;
+const dOut = { what: "", costs: "", need: "" };
+// Row 0: wood wall, 200 wood. Row 1: stone floor, 300 stone + 20 wood.
+const DEFS = new Uint16Array(2 * interact.PIECE_DEF_STRIDE);
+DEFS.set([1, 0, 0, 1, 7, 200, 0, 0], 0);
+DEFS.set([3, 1, 0, 2, 9, 300, 7, 20], interact.PIECE_DEF_STRIDE);
+interact.describePiece(dOut, DEFS, 0, nameOf, () => 1000);
+check(
+  dOut.what === "wood wall" && dOut.costs === "200 wood" && dOut.need === "",
+  `interact.describePiece of a wood wall costing 200 wood, with 1000 of everything, gave` +
+    ` ${JSON.stringify(dOut)} — expected what "wood wall", costs "200 wood", need "". The pair is` +
+    " (item, quantity) positionally: read it backwards and this says \"7 more item200\"",
+);
+interact.describePiece(dOut, DEFS, 1, nameOf, () => 1000);
+check(
+  dOut.what === "stone floor" && dOut.costs === "300 stone + 20 wood",
+  `interact.describePiece of the two-ingredient row gave ${JSON.stringify(dOut)} — expected "stone floor"` +
+    ' costing "300 stone + 20 wood". Both pairs, in table order, at 4 + k*2',
+);
+// The shortfall, and that it is the FIRST unmet ingredient and not the last.
+interact.describePiece(dOut, DEFS, 1, nameOf, (i) => (i === 9 ? 40 : 0));
+check(
+  dOut.need === "260 more stone",
+  `interact.describePiece with 40 stone and no wood said need ${JSON.stringify(dOut.need)} — expected` +
+    ' "260 more stone", the first ingredient the player cannot cover. Reporting the last one instead sends' +
+    " a player after 20 wood while 260 stone is what is actually stopping the placement",
+);
+interact.describePiece(dOut, DEFS, 1, nameOf, (i) => (i === 9 ? 300 : 0));
+check(
+  dOut.need === "20 more wood",
+  `interact.describePiece with the stone covered and no wood said need ${JSON.stringify(dOut.need)} —` +
+    ' expected "20 more wood". A shortfall that stops at the first ingredient WHETHER OR NOT it is unmet' +
+    " would go silent here and the hint would claim an affordable piece",
+);
+// Exactly-enough is affordable: the boundary, which a `<` / `<=` slip moves.
+interact.describePiece(dOut, DEFS, 0, nameOf, () => 200);
+check(
+  dOut.need === "",
+  `interact.describePiece with exactly the 200 wood it costs said need ${JSON.stringify(dOut.need)} —` +
+    " expected none. Exactly enough is enough, and the server agrees; an off-by-one here tells a player to" +
+    " go and fetch 0 more wood",
+);
+// A deployable: placed FROM the stack, item id at b + 3 of a stride-4 row.
+const DDEFS = new Uint16Array(2 * interact.DEPLOY_DEF_STRIDE);
+DDEFS.set([0, 0, 0, 11], interact.DEPLOY_DEF_STRIDE);
+interact.describeDeploy(dOut, DDEFS, 1, nameOf, () => 1);
+check(
+  dOut.what === "cloth" && dOut.costs === "1 cloth" && dOut.need === "",
+  `interact.describeDeploy of row 1 gave ${JSON.stringify(dOut)} — expected "cloth" at 1, held. The item` +
+    " id is at b + 3 of a stride-4 row and reading b + 1 there would name whatever the archetype code is",
+);
+interact.describeDeploy(dOut, DDEFS, 1, nameOf, () => 0);
+check(
+  dOut.need === "1 cloth",
+  `interact.describeDeploy with none in the pack said need ${JSON.stringify(dOut.need)} — expected` +
+    ' "1 cloth". A deployable you do not have is the single commonest refusal ("item not in inventory")',
+);
+
+// --- the prompt text --------------------------------------------------------
+check(
+  interact.promptForBuild(null) === "" &&
+    interact.promptForBuild(undefined) === "" &&
+    interact.promptForBuild({ what: "" }) === "",
+  "interact.promptForBuild drew a hint with no piece — build mode off, or the piece table not yet arrived," +
+    " must leave the crosshair alone rather than print an empty pill",
+);
+check(
+  interact.promptForBuild({ what: "wood wall", need: "" }) === "[RMB] PLACE WOOD WALL",
+  `interact.promptForBuild of an affordable wood wall = ` +
+    `${JSON.stringify(interact.promptForBuild({ what: "wood wall", need: "" }))} — expected` +
+    ' "[RMB] PLACE WOOD WALL". The BUTTON is named for the same reason the swing says [LMB]: it is what' +
+    " the player has to connect the text to, and right-click is what commits the placement",
+);
+check(
+  interact.promptForBuild({ what: "wood wall", need: "143 more wood" }) ===
+    "[RMB] PLACE WOOD WALL · NEED 143 MORE WOOD",
+  `interact.promptForBuild of an unaffordable wall = ` +
+    `${JSON.stringify(interact.promptForBuild({ what: "wood wall", need: "143 more wood" }))} — expected` +
+    " the shortfall appended. It is stated as a COST and never as a refusal: the server owns whether the" +
+    " placement is legal and materials is one of nine reasons it can say no",
+);
+
+// --- which verb wins, swept over all eight combinations ---------------------
+// The ordering was three chained `||`s in `main.js` that no gate could reach.
+// Build outranks E outranks the swing; swap any two and the crosshair
+// advertises a verb the button will not perform, with every other gate green.
+const BUILD_P = { what: "wood wall", need: "" };
+const INTER_P = { verb: interact.VERB_BOX };
+const SWING_P = { arch: interact.OCC_TREE };
+const B_TEXT = "[RMB] PLACE WOOD WALL";
+const I_TEXT = interact.promptFor(INTER_P);
+const S_TEXT = interact.promptForSwing(SWING_P);
+check(
+  I_TEXT.startsWith("[E] ") && S_TEXT.startsWith("[LMB] "),
+  `the ordering sweep's own fixtures are wrong (E = ${JSON.stringify(I_TEXT)}, swing =` +
+    ` ${JSON.stringify(S_TEXT)}) — every check below would compare two empty strings and pass`,
+);
+for (const [b, i, s, want, why] of [
+  [1, 1, 1, B_TEXT, "all three true: the ghost is what the player is looking at"],
+  [1, 1, 0, B_TEXT, "build outranks a box in reach"],
+  [1, 0, 1, B_TEXT, "build outranks a tree in swing range"],
+  [1, 0, 0, B_TEXT, "build alone"],
+  [0, 1, 1, I_TEXT, "E outranks the swing — the mouse is already held down, nothing suggests pressing E"],
+  [0, 1, 0, I_TEXT, "E alone"],
+  [0, 0, 1, S_TEXT, "the swing fills the silence"],
+  [0, 0, 0, "", "nothing in reach leaves the crosshair clean"],
+]) {
+  const got = interact.centrePrompt(b ? BUILD_P : null, i ? INTER_P : null, s ? SWING_P : null);
+  check(
+    got === want,
+    `interact.centrePrompt(build=${b}, interact=${i}, swing=${s}) = ${JSON.stringify(got)}, expected` +
+      ` ${JSON.stringify(want)} — ${why}. The reference's centre hint is a SINGLE row` +
+      " (Rust Images/choppingtree.jpg); three verbs can be true at once and exactly one gets the row",
+  );
+}
+
+// --- main.js actually routes through it -------------------------------------
+// The pure functions above are only worth their checks if the client calls
+// them. `updatePrompt` is the sole writer of `#prompt` (§Q pins that), so this
+// pins what it writes.
+check(
+  /hud\.setPrompt\(\s*centrePrompt\(build\.on \? selDesc\(\) : null, aimPick\(pick, VERB_NONE\), swingAt\(\)\),?\s*\)/.test(
+    mainSrc,
+  ),
+  "main.js's updatePrompt no longer ends in centrePrompt(build.on ? selDesc() : null, aimPick(...)," +
+    " swingAt()) — either the order moved back into this file where no gate can read it, or the build pick" +
+    " stopped being gated on build.on and the hint now offers a placement with no ghost under the crosshair",
+);
+// The hint has to redraw on the keys that change what it says, not up to
+// 250 ms later on the HUD timer: a hint that lags its own ghost is the defect.
+for (const [what, re] of [
+  ["B (build mode on/off)", /build\.on = !build\.on;[\s\S]{0,400}?updatePrompt\(\);/],
+  ["the wheel (which piece)", /build\.row = \(build\.row \+ d\) % total;[\s\S]{0,300}?updatePrompt\(\);/],
+]) {
+  check(
+    re.test(mainSrc),
+    `main.js changes the build selection on ${what} without redrawing the centre prompt — the ghost moves` +
+      " or appears and the row describing it keeps the previous verb until the next HUD tick",
+  );
+}
 
 // =============================================================================
 // J. no page errors anywhere in the above
@@ -5027,7 +5393,12 @@ console.log(
     "north paints to the TOP row, four splat channels each to their own colour, sea overrides the law and " +
     "deepens, flat ground exactly the palette, panel closed at load, toggle drives display, #mapref from " +
     `gridLabel, every verb key eaten and M/Escape not, ${mapDom.drawPx} px an integer multiple of MAP_N, ` +
-    "island painted once",
+    "island painted once, the sampler asked about x0+i*step / z0+j*step at every pixel with its own height " +
+    "and moisture, the marker's three drawn vertices track the heading and turn · " +
+    "build prompt: shape/material labels walked against build.rs, the stride-8 def row decoded as " +
+    "arithmetic (item/quantity pair at 4+k*2, first unmet ingredient, exactly-enough is enough), " +
+    "deployables from b+3 of a stride-4 row, [RMB] text with and without a shortfall, and centrePrompt " +
+    "swept over all eight combinations (build > E > swing) with main.js pinned to route through it",
 );
 console.log(`ui smoke: ${checks} checks passed`);
 
