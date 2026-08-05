@@ -15,53 +15,6 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0c · RECOVERY: the refusal table fell one short again *(ui lane — done this pass)*
-
-`ci/gates.sh` was red on a clean tree at `ui smoke`: `build.rs` declares 11
-`REFUSE_B_*` reasons and `interact.js` carried 10 sentences. The CODE was
-wrong, not the gate — `REFUSE_B_UNPRICED` (10) landed from the sim lane in
-`65e5110` and this lane's table stayed where it was, so a repair refused on a
-piece whose baked row quotes no price would have reached the player as
-`code 10`. Fixed by adding the sentence ("cannot be repaired"); nothing was
-reverted and nothing was lost.
-
-Worth recording because the gate is now two-for-two on the same class: §W was
-written when `REFUSE_B_INTACT` (9) shipped as a bare number, and it caught the
-very next reason the sim grew, on the run that grew it. A count in prose rots
-the same way — `promptForBuild`'s comment said "nine reasons" and now names no
-number.
-
-**Nothing was masked behind it.** `ui smoke` is the last gate in the code tier,
-so the green run below it is the whole tier, not a fresh first-red. What has
-NOT run is the renderer tier (`browser smoke`, `vantages`) — off for this whole
-run at tier `fast`, not skipped by this pass. If either is red it is still
-red, and the next `all` run is where that shows up.
-
-## 0c2 · The same bug, one file over: `DEPLOY_REFUSE_TEXT` *(ui lane)*
-
-Found while scanning `65e5110` for other unmirrored constants, not built —
-§0c was a recovery pass and this is a feature-shaped fix.
-
-`main.js:160` holds `DEPLOY_REFUSE_TEXT`, 13 entries against `deploy.rs`'s
-`REFUSE_D_KIND`(0)…`REFUSE_D_OWNER`(12). It matches *today*. It is also a
-module-private `const` in `main.js`, so `ui_smoke` cannot import it and no
-gate walks it — which is verbatim the condition `interact.js:736` describes
-as the reason the build table had to move: "cannot live as a bare array in
-`main.js` where nothing can walk it". A fourteenth `REFUSE_D_*` reaches the
-player as `can't place: code 13` (`main.js:1260`), and §0c is the proof that
-the sim does grow these.
-
-The fix is the one already paid for: move the table to `interact.js`, export
-it, and extend `ui_smoke` §W's walk to parse `REFUSE_D_*` out of `deploy.rs`
-the way it parses `REFUSE_B_*` out of `build.rs`. Same shape for
-`main.js:151`'s `REFUSE_TEXT` (5, vs `craft.rs`) and `:57`'s
-`REFUSE_REASONS` (2) while the file is open.
-
-Related and NOT this lane's: `bridge.rs:66` still exports
-`DEPLOY_DEF_ROW_WORDS = 4`, so `SUB_DEPLOY_DEFS`' new `n_costs` + cost rows
-stop at the wasm bridge and `web/src` cannot show what mending a door costs.
-That is a systems-lane export, like §0e.
-
 ## 0e · One export the client needs — *(systems lane, cross-lane)*
 
 `crates/client-wasm/src/bridge.rs` exports `client_action_` for all fourteen
@@ -79,6 +32,18 @@ and covered by §Q/§R/§V/§W with eleven mutants of its own; it cannot reach a
 material, a shader or the terrain. A one-line edit to it currently costs the
 ~19-minute renderer tier. `map.js` and `invmove.js` have the same shape.
 `main.js` does NOT — it builds three.js scenes and belongs where it is.
+`web/src/refusals.js` (new) is the strongest case on the list: four string
+tables and one accessor, no imports at all, fully walked by §W with fourteen
+mutants red. It is NOT exempt today and correctly costs the renderer tier.
+
+## 0g · The deploy-def cost rows stop at the bridge *(systems lane, cross-lane)*
+
+Carried out of the finished §0c2 so it is not lost with it. `bridge.rs:66`
+exports `DEPLOY_DEF_ROW_WORDS = 4`, so `SUB_DEPLOY_DEFS`' new `n_costs` and
+its cost rows never reach `web/src` — the client cannot show what mending a
+door costs, and `describeDeploy` reads `b+3` of a stride-4 row because that is
+all there is. Same shape as §0e: a widened export, ~10 lines.
+
 ## 0d · The island validates at boot *(systems lane — done this pass)*
 
 Closes the boot-refusal request filed twice — `## 0`'s "A short waystation tier
