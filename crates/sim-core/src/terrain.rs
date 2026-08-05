@@ -1122,3 +1122,195 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
         scale: 0.9 + ((h >> 36) & 0xFF) as f32 * (0.2 / 255.0),
     }
 }
+
+// ── Occupant volume ────────────────────────────────────────────────────────
+//
+// What a slot does to a body that walks into it. Four passes built a road, a
+// pad, a container ring and a building, and every one of them is walk-through:
+// `collide.rs` and `movement.rs` contain zero references to `Occupant`, so
+// `TERRAIN.md` §1 stage 6 asks the forest for "wood, cover, low visibility"
+// and cover does not exist — there is nothing on this island you can break
+// line of sight on.
+//
+// The volume belongs here rather than in `collide.rs` for the same reason the
+// occupant enum does: whether a pine has a trunk you stop at is a property of
+// the pine, not of the movement code. This module owns the shapes and the
+// per-slot test; the movement path owns which slots it asks about and how it
+// indexes them. That seam is deliberate — `scatter` costs a `height` fan, a
+// `moisture`, a `clump` and a `road_band` per cell, so a movement step must
+// never re-derive slots by calling it, and nothing here invites that.
+//
+// Cylinders, not boxes. Every scattered archetype is radially symmetric about
+// its own axis except the crate, and a cylinder needs no yaw and therefore no
+// trig — the L1 wall bans libm outright, and the yaw LUT would otherwise have
+// to be dragged into a test that runs per body per tick. The one archetype
+// that genuinely is a box list with a hole in it, the shelter, is NOT given a
+// volume here; see `OCCUPANT_R_M`'s note on index 10.
+
+/// Blocking radius per `Occupant`, meters, at a slot `scale` of 1.0.
+///
+/// Read off the client's authored geometry (`web/src/props.js` `ARCHETYPES`)
+/// rather than chosen, because the defect being fixed is walking through
+/// drawn geometry: the rule is the mesh's maximum horizontal extent, so the
+/// server never lets a body reach a triangle the client is rendering. Erring
+/// outward blocks a little air at a dodecahedron's flats; erring inward is
+/// the bug. (knob, DECISIONS.md §open: occupant volume v0.)
+///
+/// Indexed by `Occupant as usize`, so the array is 11 long and two entries
+/// are structural rather than tuned:
+///
+/// - **8 is the client's felled-pine stump**, which is not a sim occupant at
+///   all — the enum skips the discriminant and this table keeps the hole, for
+///   the reason the enum states: the two tables stay aligned by construction
+///   or they drift silently.
+/// - **10, the haven shelter, is 0.0 and that is DEFERRED, not "walk through
+///   a building on purpose".** Its volume is a wall list with a doorway in it,
+///   which is the one shape a radius cannot express — a cylinder either seals
+///   the entrance or blocks nothing. Doing it properly means the sim owning a
+///   box list that must not drift from `props.js`'s fourteen boxes, plus the
+///   gate that keeps the two equal, and that is its own slice. Until then the
+///   deliberate zero is pinned by `tests/solid.rs` so it cannot be mistaken
+///   for a tuned value.
+///
+/// The bush is the third zero and the only one that is a design call: a bush
+/// you cannot push through is a wall you cannot see over, which is worse than
+/// no bush. It reads as cover and costs nothing to cross, which is what the
+/// reference does with the same prop.
+pub const OCCUPANT_R_M: [f32; 11] = [
+    0.0,  // None
+    0.26, // Tree — the TRUNK, not the canopy: `CylinderGeometry(0.13, 0.26)`
+    1.0,  // StoneNode  — DodecahedronGeometry(1.0)
+    1.0,  // MetalNode  — DodecahedronGeometry(1.0)
+    1.0,  // SulfurNode — DodecahedronGeometry(1.0)
+    0.0,  // Bush — deliberately passable
+    1.5,  // Rock — DodecahedronGeometry(1.5)
+    0.45, // BarrelSlot — CylinderGeometry(0.45, 0.45, 0.95)
+    0.0,  // 8: the client's stump. Not a sim occupant; the hole is the point.
+    0.68, // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
+    0.0,  // HavenShelter — DEFERRED, see above
+];
+
+/// How high above the slot's own ground each occupant blocks, meters, at a
+/// slot `scale` of 1.0.
+///
+/// Also read off `ARCHETYPES`, where a row's `lift` is the mesh's half-height
+/// and therefore the offset that sets it ON the ground: a top is `lift` plus
+/// the geometry's half-extent in y. The nodes are lifted less than their own
+/// radius on purpose — a dodecahedron of radius 1 lifted 0.5 is buried half a
+/// meter so it reads as embedded rather than dropped — so their tops are 1.5
+/// and not 2.0.
+///
+/// The tree stops at the trunk's height, not the crown's: you walk *under* a
+/// canopy, and a body is 1.7 m against a 5.7 m trunk, so the distinction
+/// costs nothing today and is the correct shape when something flies or a
+/// tree falls. (knob, DECISIONS.md §open: occupant volume v0.)
+pub const OCCUPANT_TOP_M: [f32; 11] = [
+    0.0,  // None
+    5.7,  // Tree — PINE_TRUNK_H
+    1.5,  // StoneNode  — lift 0.5 + radius 1.0
+    1.5,  // MetalNode
+    1.5,  // SulfurNode
+    0.0,  // Bush
+    2.05, // Rock — lift 0.55 + radius 1.5
+    0.95, // BarrelSlot — lift 0.5 + half-height 0.475, rounded down to the mesh
+    0.0,  // 8: the stump
+    0.8,  // CrateSlot — lift 0.4 + half-height 0.4
+    0.0,  // HavenShelter — DEFERRED
+];
+
+/// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
+/// so this is the exact supremum and not a rounded one.
+pub const SLOT_SCALE_MAX: f32 = 1.1;
+
+/// Cells either side of a body's own that can hold a slot touching it.
+///
+/// One, and the const block below proves it rather than asserting it by
+/// eye: a slot's jitter is ±3 m about its cell's center, so every slot lies
+/// strictly inside its own cell, and the widest reach any slot has is
+/// `max(OCCUPANT_R_M) * SLOT_SCALE_MAX + CAPSULE_RADIUS_M`. While that stays
+/// under `CELL_SIZE` a 3×3 neighbourhood is not a heuristic — it is complete.
+///
+/// Published so the movement path does not have to re-derive it, and so that
+/// widening an occupant past the margin fails HERE, at the definition, rather
+/// than as bodies clipping through the far side of a boulder.
+pub const OCCUPANT_PROBE_CELLS: i32 = 1;
+
+const _: () = {
+    // The table is indexed by `Occupant as usize` and the largest
+    // discriminant is `HavenShelter = 10`. If an occupant is ever added
+    // above it, this stops the build instead of indexing out of bounds in
+    // the movement path.
+    assert!(OCCUPANT_R_M.len() == 11);
+    assert!(OCCUPANT_TOP_M.len() == 11);
+    assert!(Occupant::HavenShelter as usize == OCCUPANT_R_M.len() - 1);
+    // A volume is a radius AND a height, or it is neither. A radius with no
+    // height is a body that stops at nothing; a height with no radius is a
+    // shape with no width. The pairing is what `tests/solid.rs` walks.
+    let mut i = 0;
+    while i < OCCUPANT_R_M.len() {
+        assert!((OCCUPANT_R_M[i] > 0.0) == (OCCUPANT_TOP_M[i] > 0.0));
+        assert!(OCCUPANT_R_M[i] >= 0.0 && OCCUPANT_TOP_M[i] >= 0.0);
+        i += 1;
+    }
+    // The 3×3 probe is complete, not merely usual. `Rock` is the widest at
+    // 1.5; at the widest scale and with a capsule on top that is 2.05 m,
+    // against an 8 m cell. Written as the general bound so that raising a
+    // radius past the margin fails the build.
+    let mut widest = 0.0f32;
+    let mut j = 0;
+    while j < OCCUPANT_R_M.len() {
+        if OCCUPANT_R_M[j] > widest {
+            widest = OCCUPANT_R_M[j];
+        }
+        j += 1;
+    }
+    assert!(widest * SLOT_SCALE_MAX + crate::collide::CAPSULE_RADIUS_M < CELL_SIZE);
+    assert!(OCCUPANT_PROBE_CELLS >= 1);
+};
+
+/// Does the slot stop a capsule standing at (`x`, `z`) with its feet at
+/// `feet_y`?
+///
+/// Pure, one slot, no seed and no world: the caller has already resolved the
+/// slot, which is the whole point of the seam — `scatter` is far too
+/// expensive to run inside a movement step, and a signature that took a seed
+/// would invite exactly that.
+///
+/// Squared distance, so there is no `sqrt` on the path at all.
+///
+/// The vertical test is an INTERVAL OVERLAP, not a ceiling, and the first
+/// draft got that wrong in a way worth recording because it type-checks and
+/// reads fine: `feet_y < slot.y + top` alone makes a boulder on a clifftop
+/// block a body standing at sea level forty metres beneath it, since a body
+/// below the top is "not above" it. A slot occupies `[slot.y, slot.y + top]`
+/// and a body occupies `[feet_y, feet_y + capsule_h]`; they stop each other
+/// only where those overlap.
+///
+/// Both ends are half-open at the top and closed at the bottom, which puts
+/// the two degenerate cases on the side that matches what a player sees:
+/// feet exactly at the top of a crate are standing ON it (the ground query's
+/// business, not this one's), and a slot whose base is exactly at the body's
+/// head height is overhead clearance rather than a wall. Below the slot's own
+/// ground there is nothing to test — that volume is inside the terrain, and
+/// the terrain already stops you.
+pub fn slot_blocks(
+    slot: &Slot,
+    x: f32,
+    z: f32,
+    feet_y: f32,
+    capsule_r: f32,
+    capsule_h: f32,
+) -> bool {
+    let k = slot.occupant as usize;
+    let r = OCCUPANT_R_M[k];
+    if r <= 0.0 {
+        return false;
+    }
+    if feet_y >= slot.y + OCCUPANT_TOP_M[k] * slot.scale || feet_y + capsule_h <= slot.y {
+        return false;
+    }
+    let reach = r * slot.scale + capsule_r;
+    let dx = x - slot.x;
+    let dz = z - slot.z;
+    dx * dx + dz * dz < reach * reach
+}
