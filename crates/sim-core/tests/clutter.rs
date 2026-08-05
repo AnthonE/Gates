@@ -7,9 +7,10 @@
 //! it. Everything else here defends a premise that measurement rests on.
 
 use sim_core::terrain::{
-    self, Clutter, ClutterElem, Haven, Occupant, ScatterTable, CLUTTER_CELLS_PER_SIDE,
+    self, Clutter, ClutterElem, Haven, Occupant, ScatterTable, CELL_SIZE, CLUTTER_CELLS_PER_SIDE,
     CLUTTER_CELLS_PER_TILE, CLUTTER_CELL_M, CLUTTER_NONE, CLUTTER_PER_TILE, CLUTTER_TILE_M,
-    LAND_MIN_H, SKIRT_BAND_M, SKIRT_MAX, SKIRT_MIN, SKIRT_PER_TILE, SKIRT_TILE_CELLS,
+    LAND_MIN_H, OCCUPANT_R_M, SKIRT_BAND_M, SKIRT_MAX, SKIRT_MIN, SKIRT_MIN_R_M, SKIRT_PER_TILE,
+    SKIRT_SCAN_CELLS, SKIRT_TILE_CELLS,
 };
 
 const SEEDS: [u64; 3] = [0x0047_4154_4553, 1, 0xDEAD_BEEF];
@@ -655,4 +656,359 @@ fn test_skirts_are_deterministic_and_seed_dependent() {
     let nc = terrain::skirt_fill(SEEDS[1], &table, &haven2, tx, tz, &mut c);
     let same = na == nc && (0..na.min(nc)).all(|i| a[i].x == c[i].x && a[i].z == c[i].z);
     assert!(!same, "two seeds skirted the same tile identically");
+}
+
+// ── The coast: the ground every skirt test above walks past ────────────────
+//
+// The six skirt tests stand on `a_tile_with_props`, which walks east from a
+// land origin near the island CENTRE. That is inland ground, and inland ground
+// has no sand: swept over 900 inland tiles on these three seeds the skirt draws
+// 4,745 elements and NOT ONE is a Pebble, while `skirt_elem`'s waterline veto
+// returns `CLUTTER_NONE` exactly zero times out of 18,883 candidates.
+//
+// So two shipped branches had no test standing on them — the sand kind, and
+// the veto itself. Both only exist where the land ends, which is also where a
+// player spawns and where `TERRAIN.md` §7's coast road is meant to run.
+//
+// What the same sweep says is NOT wrong: beach skirts are thin (1.19 elements
+// a tile against inland's 5.27), and that is prop density upstream in
+// `scatter` — 0.22 prop centres a tile against 0.95 — not the skirt thinning
+// itself. The ratios match to within a tenth. Nothing below gates a count per
+// tile for that reason; a count would be gating the scatter table through the
+// wrong file.
+
+/// Tiles per side of the coastal block the three tests below sweep. It
+/// straddles the waterline: the two seaward tiles are seabed and the rest
+/// walks inland, so one block holds both the sand channel and the veto.
+const COAST_BLOCK: i32 = 12;
+
+/// Tiles the waterline actually runs through: some ground above `LAND_MIN_H`
+/// and some below, inside the coastal annulus.
+///
+/// Defined by GROUND, never by yield. A first cut anchored one block on the
+/// seed's +x ray and it landed on cliff coast — 517 skirt elements, 4.4%
+/// Pebble and not one veto, because a cliff has no shallow margin for a ring
+/// to cross. Searching for a block that produced Pebbles instead would have
+/// been tuning the fixture to the assertion; this asks for the shape of the
+/// ground and reports whatever stands on it.
+fn waterline_tiles(seed: u64) -> Vec<(i32, i32)> {
+    let c = 1024.0f32;
+    let mut out = Vec::new();
+    let span = (1050.0 / CLUTTER_TILE_M) as i32;
+    let ct = (c / CLUTTER_TILE_M) as i32;
+    for tz in (ct - span)..=(ct + span) {
+        for tx in (ct - span)..=(ct + span) {
+            let (mx, mz) = (
+                tx as f32 * CLUTTER_TILE_M + CLUTTER_TILE_M * 0.5,
+                tz as f32 * CLUTTER_TILE_M + CLUTTER_TILE_M * 0.5,
+            );
+            let d = ((mx - c) * (mx - c) + (mz - c) * (mz - c)).sqrt();
+            if !(600.0..=1050.0).contains(&d) {
+                continue;
+            }
+            let (mut land, mut sea) = (false, false);
+            for j in 0..3 {
+                for i in 0..3 {
+                    let x = tx as f32 * CLUTTER_TILE_M + i as f32 * (CLUTTER_TILE_M * 0.5);
+                    let z = tz as f32 * CLUTTER_TILE_M + j as f32 * (CLUTTER_TILE_M * 0.5);
+                    if terrain::height(seed, x, z) < LAND_MIN_H {
+                        sea = true;
+                    } else {
+                        land = true;
+                    }
+                }
+            }
+            if land && sea {
+                out.push((tx, tz));
+            }
+        }
+    }
+    out
+}
+
+/// The inland control: a square block of tiles around a seed's land origin,
+/// the same ground every skirt test above already stands on.
+fn inland_tiles(seed: u64) -> Vec<(i32, i32)> {
+    let (ix, iz) = a_land_origin(seed, 0);
+    let tx0 = (ix / CLUTTER_TILE_M) as i32 - COAST_BLOCK / 2;
+    let tz0 = (iz / CLUTTER_TILE_M) as i32 - COAST_BLOCK / 2;
+    let mut out = Vec::new();
+    for dz in 0..COAST_BLOCK {
+        for dx in 0..COAST_BLOCK {
+            out.push((tx0 + dx, tz0 + dz));
+        }
+    }
+    out
+}
+
+/// A CONTIGUOUS block straddling the shoreline on a seed's +x ray — the
+/// partition sweep needs neighbouring tiles, which a coastline scan does not
+/// guarantee.
+fn a_coast_block(seed: u64) -> (i32, i32, Haven, ScatterTable) {
+    let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(seed);
+    let c = 1024.0f32;
+    // March out until the ground is sea and STAYS sea — an inland dip below
+    // the waterline is a pond, and skirting a pond is not what this measures.
+    let mut r = 200.0f32;
+    let mut shore = None;
+    while r < 1000.0 {
+        if terrain::height(seed, c + r, c) < LAND_MIN_H
+            && terrain::height(seed, c + r + 16.0, c) < LAND_MIN_H
+            && terrain::height(seed, c + r + 32.0, c) < LAND_MIN_H
+        {
+            shore = Some(r);
+            break;
+        }
+        r += 4.0;
+    }
+    let shore =
+        shore.unwrap_or_else(|| panic!("seed {seed:#x}: the +x ray never reaches open sea"));
+    let stx = ((c + shore) / CLUTTER_TILE_M) as i32;
+    let stz = (c / CLUTTER_TILE_M) as i32;
+    // Two tiles seaward of the shoreline tile, the remaining nine inland.
+    (stx + 3 - COAST_BLOCK, stz - COAST_BLOCK / 2, haven, table)
+}
+
+/// Skirt elements over a set of tiles, counted by kind.
+fn skirt_mix(
+    seed: u64,
+    table: &ScatterTable,
+    haven: &Haven,
+    tiles: &[(i32, i32)],
+) -> ([usize; 5], usize) {
+    let mut by_kind = [0usize; 5];
+    let mut total = 0usize;
+    for &(tx, tz) in tiles {
+        let mut buf = [CLUTTER_NONE; SKIRT_PER_TILE];
+        let n = terrain::skirt_fill(seed, table, haven, tx, tz, &mut buf);
+        for e in buf.iter().take(n) {
+            by_kind[e.kind as usize] += 1;
+            total += 1;
+        }
+    }
+    (by_kind, total)
+}
+
+/// The sand path, swept. The skirt shares `clutter_kind_at` with the grid, so
+/// what it draws is whatever the splat under it says — and sand is a coastal
+/// channel, which is why no inland sweep has ever exercised it.
+///
+/// Asserted as a CONTRAST rather than a threshold: the same generator over the
+/// same number of tiles draws Pebbles on the coast and measurably fewer
+/// inland. That is the claim "the kind tracks the ground" actually makes, and
+/// unlike a fixed share it does not have to be re-tuned when the scatter table
+/// moves. The margin is wide — the sweep behind this reads 43% against 0%.
+#[test]
+fn test_the_skirt_reaches_the_sand() {
+    for seed in SEEDS {
+        let table = ScatterTable::alpha_default();
+        let haven = terrain::haven(seed);
+        let coast_tiles = waterline_tiles(seed);
+        assert!(
+            coast_tiles.len() > 100,
+            "seed {seed:#x}: only {} tiles on the waterline — the coastline scan missed the \
+             island, so nothing below is measuring the coast",
+            coast_tiles.len()
+        );
+        let (coast, coast_n) = skirt_mix(seed, &table, &haven, &coast_tiles);
+        assert!(
+            coast_n > 0,
+            "seed {seed:#x}: {} waterline tiles skirt nothing at all",
+            coast_tiles.len()
+        );
+        assert!(
+            coast[Clutter::Pebble as usize] > 0,
+            "seed {seed:#x}: {coast_n} skirt elements on the coast and not one Pebble — the \
+             sand channel is unreachable from the skirt path"
+        );
+
+        let (inland, inland_n) = skirt_mix(seed, &table, &haven, &inland_tiles(seed));
+        assert!(
+            inland_n > 0,
+            "seed {seed:#x}: the inland control block skirts nothing, so there is nothing to \
+             contrast the coast against"
+        );
+        let coast_share = coast[Clutter::Pebble as usize] as f32 / coast_n as f32;
+        let inland_share = inland[Clutter::Pebble as usize] as f32 / inland_n as f32;
+        assert!(
+            coast_share > inland_share + 0.10,
+            "seed {seed:#x}: Pebble is {:.1}% of {coast_n} coastal skirt elements against \
+             {:.1}% of {inland_n} inland — the skirt is not reading the sand splat",
+            coast_share * 100.0,
+            inland_share * 100.0
+        );
+    }
+}
+
+/// The waterline veto, executed. `skirt_elem` drops any element whose ground
+/// is below `LAND_MIN_H` — "a prop on the waterline skirts only the half of
+/// its ring that is on land". Inland that branch never runs, so until this
+/// test it was shipped code no gate had entered.
+///
+/// Two halves, and the first is the one that rots quietly: the branch FIRES
+/// somewhere on the coastline (a veto count of zero means the sweep missed the
+/// water or the veto stopped working, and both are failures), and nothing that
+/// survives it stands in the sea.
+#[test]
+fn test_the_waterline_veto_fires_where_the_land_ends() {
+    for seed in SEEDS {
+        let table = ScatterTable::alpha_default();
+        let haven = terrain::haven(seed);
+        let tiles = waterline_tiles(seed);
+        assert!(
+            tiles.len() > 100,
+            "seed {seed:#x}: only {} tiles on the waterline — the coastline scan missed the \
+             island",
+            tiles.len()
+        );
+        let mut vetoed = 0usize;
+        let mut kept = 0usize;
+        for &(tx, tz) in tiles.iter() {
+            let c0x = tx * SKIRT_TILE_CELLS - 1;
+            let c0z = tz * SKIRT_TILE_CELLS - 1;
+            for cz in 0..SKIRT_SCAN_CELLS {
+                for cx in 0..SKIRT_SCAN_CELLS {
+                    let (gx, gz) = (c0x + cx, c0z + cz);
+                    let slot = terrain::scatter(seed, &table, &haven, gx, gz);
+                    let n = terrain::skirt_count(slot.occupant);
+                    for i in 0..n {
+                        let e = terrain::skirt_elem(seed, gx, gz, &slot, i, n);
+                        if e.kind == Clutter::None {
+                            vetoed += 1;
+                        } else {
+                            kept += 1;
+                            assert!(
+                                e.y >= LAND_MIN_H,
+                                "seed {seed:#x}: a surviving skirt element stands at y={}, \
+                                 below the {LAND_MIN_H} waterline",
+                                e.y
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            kept > 0,
+            "seed {seed:#x}: {} waterline tiles generated no skirt candidates",
+            tiles.len()
+        );
+        assert!(
+            vetoed > 0,
+            "seed {seed:#x}: {kept} skirt candidates across a block straddling the shoreline \
+             and the waterline veto never fired once — either the sweep missed the coast or \
+             the branch is dead"
+        );
+    }
+}
+
+/// "A prop straddling a tile edge is skirted once and not twice" — the tile
+/// ownership claim in `terrain.rs`'s skirt note, which until now was a comment.
+///
+/// It rests on an arithmetic premise nobody had written down: a tile scans a
+/// ONE-CELL apron, so the claim holds only while no prop's skirt reaches
+/// further than one scatter cell. The widest is the haven shelter's 4.9498 m
+/// plus the 0.45 m band, against an 8 m cell — 2.6 m of margin, and a wider
+/// authored occupant would spend it in silence. The elements would be
+/// generated by cells that no owning tile visits, so they would simply not be
+/// drawn: no panic, no golden move, no clippy wall.
+///
+/// Part one gates that premise off the published radius table, so it grows
+/// when a row does. Part two sweeps the coast and checks the partition element
+/// by element — every candidate the block's cells generate is emitted by
+/// exactly one of its tiles, and by the tile whose bounds contain it.
+#[test]
+fn test_a_prop_is_skirted_by_exactly_one_tile() {
+    for (i, r) in OCCUPANT_R_M.iter().enumerate() {
+        let base = if *r > SKIRT_MIN_R_M {
+            *r
+        } else {
+            SKIRT_MIN_R_M
+        };
+        let reach = base + SKIRT_BAND_M;
+        assert!(
+            reach <= CELL_SIZE,
+            "occupant row {i} reaches {reach} m, past the {CELL_SIZE} m apron `skirt_fill` \
+             scans — its skirt would be generated by cells no owning tile visits"
+        );
+    }
+
+    for seed in SEEDS {
+        let (tx0, tz0, haven, table) = a_coast_block(seed);
+        let mut emitted: Vec<Vec<ClutterElem>> = Vec::new();
+        for dz in 0..COAST_BLOCK {
+            for dx in 0..COAST_BLOCK {
+                let mut buf = [CLUTTER_NONE; SKIRT_PER_TILE];
+                let n = terrain::skirt_fill(seed, &table, &haven, tx0 + dx, tz0 + dz, &mut buf);
+                // The partition is only legible on an untruncated fill: a
+                // capped tile drops elements by contract, and this sweep could
+                // not tell one of those from an unowned one.
+                assert!(
+                    n < SKIRT_PER_TILE,
+                    "seed {seed:#x}: tile ({},{}) filled its {SKIRT_PER_TILE}-element buffer",
+                    tx0 + dx,
+                    tz0 + dz
+                );
+                emitted.push(buf[..n].to_vec());
+            }
+        }
+
+        // Every cell any block tile scans — the block plus its one-tile apron,
+        // which is a superset of the four-cell aprons the fills walked.
+        let mut checked = 0usize;
+        for dz in -1..=COAST_BLOCK {
+            for dx in -1..=COAST_BLOCK {
+                for cz in 0..SKIRT_TILE_CELLS {
+                    for cx in 0..SKIRT_TILE_CELLS {
+                        let gx = (tx0 + dx) * SKIRT_TILE_CELLS + cx;
+                        let gz = (tz0 + dz) * SKIRT_TILE_CELLS + cz;
+                        let slot = terrain::scatter(seed, &table, &haven, gx, gz);
+                        let n = terrain::skirt_count(slot.occupant);
+                        for i in 0..n {
+                            let e = terrain::skirt_elem(seed, gx, gz, &slot, i, n);
+                            if e.kind == Clutter::None {
+                                continue;
+                            }
+                            // The tile whose half-open bounds contain it. Only
+                            // block tiles have an emitted list to check.
+                            // Floor-by-cast, wall 1's form: island coordinates
+                            // are positive, so truncation IS floor here — and
+                            // if it ever were not, the owner would be wrong and
+                            // the assertion below would say so out loud.
+                            let otx = (e.x / CLUTTER_TILE_M) as i32;
+                            let otz = (e.z / CLUTTER_TILE_M) as i32;
+                            let (bx, bz) = (otx - tx0, otz - tz0);
+                            if !(0..COAST_BLOCK).contains(&bx) || !(0..COAST_BLOCK).contains(&bz) {
+                                continue;
+                            }
+                            let hits: usize = emitted
+                                .iter()
+                                .map(|t| t.iter().filter(|q| q.x == e.x && q.z == e.z).count())
+                                .sum();
+                            assert_eq!(
+                                hits, 1,
+                                "seed {seed:#x}: element {i} of cell ({gx},{gz}) at ({},{}) \
+                                 was emitted by {hits} tiles of the block, not by 1",
+                                e.x, e.z
+                            );
+                            let own = &emitted[(bz * COAST_BLOCK + bx) as usize];
+                            assert!(
+                                own.iter().any(|q| q.x == e.x && q.z == e.z),
+                                "seed {seed:#x}: the element at ({},{}) was emitted, but not \
+                                 by tile ({otx},{otz}) whose bounds contain it",
+                                e.x,
+                                e.z
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "seed {seed:#x}: the coastal block owns no skirt element to partition"
+        );
+    }
 }
