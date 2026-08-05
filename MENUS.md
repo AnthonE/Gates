@@ -94,6 +94,7 @@ that persists across a wipe.
 | Chat + log | — | **HAVE** | local 20 m default, `/g` global |
 | Craft panel + queue | `crafting.png` | **PARTIAL** | flat list, click to enqueue, shift-click ×5. The reference frame has categories, search, a detail pane with craft time and workbench requirement, an AMOUNT/ITEM TYPE/TOTAL/HAVE ingredient table, favourites and a quantity stepper |
 | Build strip / ghost | `building.jpeg` | **HAVE** | wheel cycles row, R/F change level, RMB places |
+| Compass strip | `gameplayfoundbase.jpeg`, `mapstylized.jpg` | **HAVE** | `hud.js`, 90° window on a 450° band, letters every 45 / numbers every 10. Bearing only — the reference also pins markers to it (death skull, map pin) and ours carries none, because no world position is exposed client-side and `ALPHA.md` §1 has a rule about position that an operator should read first |
 | **Inventory grid** | `inventory.jpeg` — 6×4 main + wear doll + quick-craft | **MISSING** | |
 | **Container panel** | `storageandtoolchest.jpeg` | **MISSING** | |
 | **Loot panel (bags)** | — | **PARTIAL** | `backpack.rs` says a container UI "is its own slice" |
