@@ -6,7 +6,7 @@
 // format/print in SIM code; an example binary is not sim code.
 #![allow(clippy::disallowed_macros)]
 
-use sim_core::probe::{probe_bags, probe_combat, probe_parity, probe_terrain};
+use sim_core::probe::{probe_bags, probe_combat, probe_parity, probe_sites, probe_terrain};
 
 // Keep in lockstep with ci/parity.mjs — a mismatch shows up as a diff.
 const TERRAIN_SEEDS: [u64; 3] = [0x0047_4154_4553, 0x1, 0xDEAD_BEEF];
@@ -28,6 +28,12 @@ const BAGS_TICKS: u32 = 600;
 fn main() {
     for seed in TERRAIN_SEEDS {
         println!("terrain {seed:#018x} {:#018x}", probe_terrain(seed));
+    }
+    // The authored half on its own line, so a native/wasm divergence in the
+    // pad, the waystations or the road NAMES itself instead of moving the
+    // terrain digest and leaving you to bisect worldgen for it.
+    for seed in TERRAIN_SEEDS {
+        println!("sites {seed:#018x} {:#018x}", probe_sites(seed));
     }
     println!(
         "parity {PARITY_MASTER_SEED:#018x} {PARITY_SEQUENCES} {PARITY_TICKS} {:#018x}",
