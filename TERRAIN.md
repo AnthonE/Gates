@@ -108,9 +108,43 @@ Stages, in order — each cheap, each deterministic:
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same
-   hash. Densities come from the biome table. Slope and road/haven/water
-   masks veto. Result: a deterministic **slot list** both sides can
-   enumerate for any chunk.
+   hash. Densities come from the biome table, **scaled by the grove field**
+   (below). Slope and road/haven/water masks veto. Result: a deterministic
+   **slot list** both sides can enumerate for any chunk.
+
+   **The grove field — why the draw is per-cell and the forest still is
+   not.** One hash per cell decides that cell alone, and independent draws
+   are white noise: no groves, no clearings, uniform speckle at whatever the
+   biome weight says. Stage 6 asks forest for "wood, cover, low visibility"
+   and an orchard is not cover. Measured, conditioning on the forest biome
+   so biome structure could not be mistaken for clumping: the variance of
+   the tree count in a 40 m window was **1.05 / 1.03 / 0.98× the
+   independent-draw null** on seeds 0 / 1 / 7, with **3 windows in 10,000**
+   empty. `reference/SPAWN.md` §9.3 names this the highest-value defect in
+   that file, and the reference's own fix — clusters drawn from one quadtree
+   leaf, braked by a local density cap — needs a stateful sampler we cannot
+   have without giving up the property the constraint block below is about.
+
+   So the clumping moves out of the sampler and into the **weight**: a cell
+   still decides alone, but it decides against `biome_weight × clump(seed,
+   x, z)`, a 3-octave field at a 96 m base wavelength shared with its
+   neighbours. Groves where it is high, clearings where it is low, one extra
+   fBm read, still O(1) per cell and still no state. The factor is squared
+   (`SPAWN.md` §9.4) so a grove edge is a soft tail rather than a contour
+   line, and normalized to island-mean 1 so the field **redistributes**
+   density without spending §6's live-slot budget. It scales the whole biome
+   row, not the tree entry — a clearing is a clearing, not a clearing with
+   the rocks left standing — and it sits below the road and pad branches,
+   because a shoulder barrel is drawn at the road's own rate and a pad crate
+   is authored. Neither is weather.
+
+   Result in the same units as the defect: dispersion **2.90–3.34**, empty
+   forest windows **37–52×** the null, live slots within 2.3% of the counts
+   they replaced. Gated by `tests/scatter.rs`, which computes the binomial
+   null in closed form rather than remembering a number. Knobs and the full
+   measurement set: `DECISIONS.md` §open "scatter clumping v0". **Not
+   done:** `biome()` is still a hard classifier, so a biome boundary is
+   still a step in *composition* even though density now ramps across it.
 
 **Stages 7–9 share one constraint, stated before either of the first two
 exists because it decides how they get built.** Everything in `terrain.rs`
