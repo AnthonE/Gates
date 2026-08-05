@@ -4,6 +4,39 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+## 0. The ground is a population now — done this pass *(world lane)*
+
+GAP PASS. From `findings/pass-20260804-173640-01-visual.md` ranked gap 1:
+"there is no grass geometry anywhere in the client: turf is a shaded plane."
+
+Landed: a second population below the 8 m scatter grid, on a 0.64 m jittered
+grid — pebble · tuft · twig · shard, placed by `terrain::clutter_cell`,
+drawn by `web/src/clutter.js` + `clutterField.js`. Potential, not state: no
+volume, no wire, nothing in `state_hash`.
+
+The two claims that make it more than decoration, both gated:
+- **The mix is the splat.** The ground's four identity weights moved out of
+  `terrainWorker.js` into `terrain::splat_from`; the worker calls the bridge
+  now, so surface and population are one function in one language.
+- **Coverage is total**, so `ART.md` rule 4 is arithmetic. Measured, not
+  argued: worst bare disc **1.50 m² of the 3 m² cap**, 33,852 land points ×
+  3 seeds. `tests/clutter.rs` (8), `ci/clutter_shape.mjs` (52).
+
+Client: solid blades not alpha cards (SwiftShader is fill-bound, `discard`
+defeats early-Z), existing `surfaceMaterial` identities so it adds **zero**
+shader programs, `castShadow = false` so it draws once not once per cascade.
+Worst fleet 188 k tris = 12.5% of DESIGN §9's budget, asserted.
+
+Leaves open:
+- **No distance fade** — the population ends at the ring edge (32-48 m). The
+  cheap recipe needs a per-frame shader term, i.e. a new program, which is the
+  one gate this slice was shaped to avoid. Whether the edge reads is a
+  question for the visual judge, not a guess made here.
+- **Unverified visually.** No frames were captured this pass and
+  `browser_smoke` is the only thing that can see the real frame peak; 188 k is
+  a bound on this population's contribution, not a measurement of the frame.
+- Clutter does not thin under a deployed base or inside the haven pad.
+
 ## 0. E tells you what it does — done this pass *(ui lane)*, kept for what it leaves
 
 From `findings/pass-20260805-002720-04-judge.md` ranked gap 3: "the island
