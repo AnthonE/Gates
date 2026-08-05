@@ -8,8 +8,8 @@ use crate::client::ClientNetState;
 use crate::stats::ShardStats;
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_build_refused, encode_event_catalog, encode_event_chat,
-    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_event_build_refused, encode_event_catalog, encode_event_charge_placed,
+    encode_event_chat, encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
     encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
@@ -34,11 +34,11 @@ use sim_core::limits::{
 };
 use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
-    EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED,
-    EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT,
-    EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESPAWN,
-    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK,
-    STRUCT_DEPLOY_BIT,
+    EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH,
+    EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER,
+    EV_HEALTH, EV_HIT, EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT,
+    EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 
 /// Unpack `sim_core::inventory::addr` — from kind, from slot, to kind, to
@@ -322,6 +322,20 @@ impl ShardCore {
                         level,
                         loc,
                     } => Command::Repair {
+                        id: c.id,
+                        deploy,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    },
+                    ActionMsg::Throw {
+                        deploy,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    } => Command::Throw {
                         id: c.id,
                         deploy,
                         cx,
@@ -956,6 +970,45 @@ impl ShardCore {
                         row,
                         healed,
                         hp,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_CHARGE_PLACED => {
+                    // `EV_PIECE_REPAIRED`'s arm, unpacked with the same
+                    // shifts because the sim packs the address the same
+                    // way. Broadcast, and here that is not merely the
+                    // cheaper choice — a burning fuse is the one piece of
+                    // news the *defender* needs more than the actor, and
+                    // unicasting it to the raider would be a raid nobody
+                    // can answer. No sync walk moves: a charge is not in
+                    // either store, so the address holds what it held.
+                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let deploy = ev.b & STRUCT_DEPLOY_BIT != 0;
+                    let (level, loc, row) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8, ev.b as u8);
+                    let fuse = ev.c as u16;
+                    match encode_event_charge_placed(
+                        deploy,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        row,
+                        fuse,
                         &mut self.ev_buf,
                     ) {
                         Ok(len) => {

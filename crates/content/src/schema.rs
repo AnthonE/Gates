@@ -171,6 +171,12 @@ pub struct Weapon {
     /// Required for projectile kinds; absent on a firearm = hitscan.
     pub ballistic: Option<Ballistic>,
     pub ammo: Option<String>,
+    /// Fuse seconds — required on `throwable`, refused on every other
+    /// kind (`validate.rs`), because it is the one column a swing has no
+    /// meaning for. The bake turns it into ticks against `TICK_HZ` the
+    /// way `range_m` becomes `reach_cm`, so no float rounding of a
+    /// content number reaches the sim.
+    pub fuse_s: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

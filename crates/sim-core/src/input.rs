@@ -8,9 +8,34 @@
 /// no sim effect yet — it lands with the combat pass). PRIMARY is the
 /// swing/use button: gather now (M1), attack with M2. A new bit in an
 /// already-sized field — the wire layout does not move.
+///
+/// JUMP is the fourth, and it moves **no bit and no byte**: `buttons` is
+/// written and read as a full unmasked octet (`protocol/lib.rs` —
+/// `w.write(f.buttons as u32, 8)` / `r.read(8)`), so bit 3 has been crossing
+/// intact since v0 and was merely ignored on arrival.
+///
+/// **It still turns `PROTO_VER` (21 ⇒ 22), and that is wall 6 working rather
+/// than an exception to it.** The precedent is v18's, stated at
+/// `protocol/lib.rs`: *a widened meaning is a wire change even when the
+/// layout is byte-identical.* Here the consequence is worse than v18's
+/// declined drag, because this bit feeds prediction. `movement::step` is
+/// shared verbatim by the server and `client-wasm`'s predictor, so a v22
+/// client against a v21 server would predict an arc the server never runs and
+/// be hard-snapped back to the ground on every single press — a permanent,
+/// silent misprediction, which is precisely the class NETCODE's
+/// quantize-both-sides law and `PROTO_VER` exist to make impossible. The
+/// handshake refusing the pairing outright is the correct outcome.
+///
+/// One coverage hole worth naming and NOT closing here: `goldens.rs` draws
+/// `buttons` from `rng.next_bounded(4)`, so the protocol golden's fuzz has
+/// only ever exercised bits 0–1 — `BTN_PRIMARY` is outside it too, and has
+/// been since M1. Widening that draw would change fixture bytes for a reason
+/// unrelated to this version's meaning, which muddies exactly the signal wall
+/// 6 reads. It is filed in `NOW.md` as its own item.
 pub const BTN_SPRINT: u8 = 1 << 0;
 pub const BTN_CROUCH: u8 = 1 << 1;
 pub const BTN_PRIMARY: u8 = 1 << 2;
+pub const BTN_JUMP: u8 = 1 << 3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct InputFrame {

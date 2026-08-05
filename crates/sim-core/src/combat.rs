@@ -36,11 +36,26 @@
 //! headshots (aim is planar until M2's rewound raycasts, so there is no
 //! head to hit), no armor reduction, no per-weapon cadence (every swing
 //! rides gather's one interval, which is the melee rows' own rate), no
-//! throwables (the satchel is priced but has no verb — the raid ratio
-//! bands data M2 arms), no repair verb, no structural collapse (a
-//! foundation broken under a wall leaves the wall standing; only the
-//! deployable at the exact same address falls with it), and no corpse:
+//! ranged of any kind (`weapons.toml` prices a revolver and `bake_combat`
+//! still drops bow and firearm rows — a projectile the sim could read but
+//! not fire is a number that looks armed and is not), and no corpse:
 //! death drops what you carried into a backpack where you fell.
+//!
+//! Three clauses that used to stand here have since landed and are named
+//! rather than deleted, because each is a place this module's shape was
+//! decided by something outside it: **repair** (`build::repair`, wire
+//! v21), **structural collapse** (`build::collapse_from` — a foundation
+//! broken under a wall now takes the wall with it), and **throwables**
+//! (`charge.rs`, wire v23 — the satchel had a price and no verb for
+//! fifteen wire versions, which is the gap that made the raid ratio in
+//! `balance.toml` a ratio of nothing).
+//!
+//! The throwable's damage does not flow through this module's swing arm at
+//! all, and that is the design rather than an omission: a charge resolves
+//! on the tick its fuse runs out, not on the tick a button was pressed, so
+//! it is `World::tick`'s phase list that owns it. What it shares with a
+//! swing is the *ending* — both spend the same `MAX_REMOVALS_PER_TICK`
+//! allowance and both land through `deploy::damage_piece`.
 
 use crate::build::{
     anchor, BuildContent, Pieces, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE,
@@ -68,6 +83,29 @@ pub struct MeleeDef {
     pub reach_cm: u16,
 }
 
+/// One item's throwable row — the raid tool (`charge.rs`). Separate from
+/// `MeleeDef` rather than a nullable column on it because the two are
+/// read by different verbs at different times: a melee row answers a
+/// swing this tick, a throwable row plants something that resolves
+/// `fuse_ticks` later. `structure == 0` ⇒ not a throwable, the same inert
+/// sentinel `MeleeDef::damage` uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ThrowDef {
+    /// Damage the blast takes off the piece or deployable it was planted
+    /// on — the same `structure` column the melee rows read, and the
+    /// number `balance.toml`'s raid ratio divides wall hp by.
+    pub structure: u16,
+    /// Ticks between planting and the blast, baked from `fuse_s` against
+    /// `TICK_HZ` so the sim never divides a content number itself. `u16`
+    /// because the wire carries it (`EV_CHARGE_PLACED`'s `c`) at that
+    /// width — the bake refuses a longer fuse rather than letting the
+    /// encoder be the first thing that notices.
+    pub fuse_ticks: u16,
+    /// How far from the anchor a charge may be planted — `range_m × 100`,
+    /// `MeleeDef::reach_cm`'s treatment of the same column.
+    pub reach_cm: u16,
+}
+
 /// The whole combat ruleset the sim knows. Construction input like the
 /// seed and the gather table; the WAL pins the content hash it was baked
 /// from (CONTENT.md §0).
@@ -75,6 +113,9 @@ pub struct MeleeDef {
 pub struct CombatContent {
     /// Indexed by item index (the sorted-rank mapping `bake` owns).
     pub melee: [MeleeDef; MAX_ITEM_DEFS],
+    /// Throwable rows, indexed the same way. Every entry inert until the
+    /// bake installs the throwable rows of `content/weapons.toml`.
+    pub throw: [ThrowDef; MAX_ITEM_DEFS],
     /// Max player hp — `content/balance.toml` `globals.player_hp`. Zero is
     /// the inert default and disarms the module entirely: no hp is granted
     /// at join, so no damage is applied and nobody can die.
@@ -86,6 +127,11 @@ impl CombatContent {
         melee: [MeleeDef {
             damage: 0,
             structure: 0,
+            reach_cm: 0,
+        }; MAX_ITEM_DEFS],
+        throw: [ThrowDef {
+            structure: 0,
+            fuse_ticks: 0,
             reach_cm: 0,
         }; MAX_ITEM_DEFS],
         player_hp: 0,
@@ -115,6 +161,18 @@ impl CombatContent {
             };
             i += 1;
         }
+        // Item 3 is also the fixture's throwable, so the plant verb has a
+        // row to read in the counted gates. Its structure damage is the
+        // whole of the build fixture's 100 hp piece, so one charge is one
+        // wall — a demolition a replay can see land in a single event
+        // rather than one it has to sum. Four ticks of fuse for the same
+        // reason the reach is 2 m: everything here has to resolve inside a
+        // counted window, not a play session.
+        c.throw[3] = ThrowDef {
+            structure: 100,
+            fuse_ticks: 4,
+            reach_cm: 200,
+        };
         c
     }
 
@@ -133,6 +191,15 @@ impl CombatContent {
             c.melee[i] = MeleeDef {
                 damage: 0,
                 structure: 1,
+                reach_cm: 200,
+            };
+            // One point a blast, for the swing's reason: `probe_parity`'s
+            // bots must keep the base they built standing long enough to
+            // reach the upgrade rung, and a fixture charge that flattened
+            // a wall would hollow out the coverage the probe exists for.
+            c.throw[i] = ThrowDef {
+                structure: 1,
+                fuse_ticks: 4,
                 reach_cm: 200,
             };
             i += 1;
@@ -167,6 +234,26 @@ impl CombatContent {
     #[inline]
     pub fn held_struct(&self, held: u16) -> Option<MeleeDef> {
         self.held_row(held).filter(|d| d.structure > 0)
+    }
+
+    /// The throwable row of the item a player is holding — what the plant
+    /// verb reads (`charge.rs`). Both columns are required, because a row
+    /// missing either is a charge that cannot hurt a wall or one that
+    /// never goes off, and planting either would take the item and give
+    /// nothing back.
+    ///
+    /// **The held item is the cost.** There is no separate price row for a
+    /// charge: you plant what is in your hand, which is why this returns
+    /// the row without also naming an item. It keeps the raid tool a
+    /// content decision — any `throwable` in `content/weapons.toml` is one
+    /// — instead of a name the sim would have to know.
+    #[inline]
+    pub fn held_throw(&self, held: u16) -> Option<ThrowDef> {
+        if held == NO_ITEM || held as usize >= MAX_ITEM_DEFS {
+            return None;
+        }
+        let d = self.throw[held as usize];
+        (d.structure > 0 && d.fuse_ticks > 0).then_some(d)
     }
 }
 
