@@ -30,14 +30,17 @@
 //      it to at most 1.1x, so a silhouette that does not clear that is not a
 //      silhouette, it is undergrowth.
 //
-// What it deliberately does NOT assert is that anything is COLLIDABLE in
-// play. The sim now owns the volume — `terrain::SHELTER_BOXES` and
-// `slot_blocks`, gated for shape in `crates/sim-core/tests/solid.rs` and held
-// equal to the mesh below in section 6 — but nothing CALLS it:
-// `crates/sim-core/src/collide.rs` knows only built pieces, so a player still
-// walks through these walls. That last step is the systems lane's path and it
-// is left as a one-line request in `NOW.md` rather than reached into from
-// here.
+// What it does NOT assert is anything about play — and that is narrower now
+// than when this header was written, because the seam closed underneath it.
+// The sim owns the volume (`terrain::SHELTER_BOXES` and `slot_blocks`, gated
+// for shape in `crates/sim-core/tests/solid.rs` and held equal to the mesh
+// below in section 6), and `movement.rs:158` now CALLS it through
+// `occupy.rs`'s `blocks`, so these walls stop a body today. Two narrower
+// holes remain, each provable by one grep: `crates/sim-core/src/combat.rs`
+// carries no occupant term at all, so a shot passes through a wall that stops
+// a body; and `collide::piece_ground` (`collide.rs:339`) reads built pieces
+// only, so nothing scattered contributes standable ground and the plinth is a
+// kerb you sink into rather than a floor. Both are the systems lane's path.
 
 import "./dom_shim.mjs";
 import fs from "node:fs";

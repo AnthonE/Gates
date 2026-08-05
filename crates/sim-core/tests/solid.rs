@@ -1028,3 +1028,174 @@ fn the_placed_shelter_is_solid_and_faces_its_door_at_the_pad() {
         }
     }
 }
+
+// ── the canopy: the other occupant whose volume is a hole, the other way ────
+
+/// Is a body at local (lx, lz) stopped by the canopy standing at the origin
+/// with the given yaw? `shelter_hits` with the other table, and the same
+/// local→world rotation for the same reason: the test drives the predicate
+/// through the frame change it performs, so a sign error there cannot cancel
+/// itself.
+fn canopy_hits(yaw: u8, lx: f32, lz: f32) -> bool {
+    let mut slot = at_origin(Occupant::WaystationCanopy);
+    slot.yaw = yaw;
+    let (s, c) = yaw_dir((yaw as u16) << 8);
+    // local +X is (c, -s), local +Z is (s, c)
+    let x = lx * c + lz * s;
+    let z = -lx * s + lz * c;
+    terrain::slot_blocks(&slot, x, z, FEET, CAPSULE_RADIUS_M, CAPSULE_HEIGHT_M)
+}
+
+/// **A body walks clean through the canopy on three of its four sides, and
+/// the parapet stops it on the fourth.**
+///
+/// The shelter's pair of tests inverted, which is the whole claim the second
+/// box list makes: the pad's greybox is a room with one hole and this is a
+/// roof with one wall. Asserting only that a body passes would be satisfied
+/// by a predicate that never blocks, and asserting only the parapet by one
+/// that always does — the pair is what says the shape is a canopy.
+///
+/// Local −Z is the parapet, because `WAYSTATION_CANOPY_BOXES`' parapet row is
+/// centred at z = −2.2. The march runs between the posts on each open side:
+/// the posts stand at local (±2.2, ±2.2) and are 0.36 m square, so a lane
+/// down local x = 0 or z = 0 clears them by 1.84 m against a body radius the
+/// assert below prints if it ever stops being enough.
+#[test]
+fn a_body_walks_under_the_canopy_and_the_parapet_stops_it() {
+    let span = terrain::WAYSTATION_CANOPY_R_M + 2.0;
+    for yaw in [0u8, 17, 64, 128, 200, 255] {
+        // The three open sides: in along +Z, and across on ±X, all the way
+        // through and out the other side. Nothing may touch the body.
+        for (ux, uz) in [(0.0f32, 1.0f32), (1.0, 0.0), (-1.0, 0.0)] {
+            let mut t = span;
+            let mut blocked_at: Option<f32> = None;
+            while t >= -span {
+                // Stop at the parapet's own face, grown by the body — walking
+                // OUT through −Z is the parapet's business, asserted next, and
+                // marching into it here would fail on the wall doing its job
+                // (`a_body_walks_in_through_the_door`'s first draft made
+                // exactly that mistake). Derived from the parapet row and the
+                // capsule, so thickening either moves this with it.
+                let p = &terrain::WAYSTATION_CANOPY_BOXES[terrain::WAYSTATION_CANOPY_PARAPET_IX];
+                let face = p[2] + p[5] * 0.5 + CAPSULE_RADIUS_M;
+                let lz = uz * t;
+                if lz < face {
+                    break;
+                }
+                if canopy_hits(yaw, ux * t, lz) && blocked_at.is_none() {
+                    blocked_at = Some(t);
+                }
+                t -= 0.05;
+            }
+            assert!(
+                blocked_at.is_none(),
+                "yaw {yaw}: the lane along local ({ux}, {uz}) is blocked at \
+                 {:.2} m — a body {CAPSULE_RADIUS_M} m wide cannot walk under \
+                 the canopy, so it is a shed and not a canopy",
+                blocked_at.unwrap_or(0.0)
+            );
+        }
+        // And the fourth side is solid: the parapet stops the same body.
+        assert!(
+            canopy_hits(yaw, 0.0, -2.2),
+            "yaw {yaw}: the body walked out through the parapet, so the canopy \
+             has no solid side at all and the silhouette is four posts"
+        );
+    }
+}
+
+/// The plates overhead are overhead: a body standing under them is not
+/// stopped, and the same body lifted to the eave is.
+///
+/// `the_lintel_and_the_roof_are_overhead` for the other table. Without it
+/// `OCCUPANT_TOP_M[12]` is a number that agrees with the const block and with
+/// nothing a player does — the canopy's whole point is that you stand under
+/// it, and its top is 4.1 m for the same reason the shelter's is 9.2.
+#[test]
+fn the_canopy_plates_are_overhead() {
+    // Under the middle of the deck, feet on the ground: clear.
+    let slot = {
+        let mut s = at_origin(Occupant::WaystationCanopy);
+        s.yaw = 0;
+        s
+    };
+    assert!(
+        !terrain::slot_blocks(&slot, 0.0, 0.0, FEET, CAPSULE_RADIUS_M, CAPSULE_HEIGHT_M),
+        "the centre of the canopy is blocked at head height — the eave hangs \
+         into the body, so nobody can shelter under it"
+    );
+    // The same body with its feet at the eave's underside is inside the
+    // plate and must be stopped. The eave row is centred 3.15 with a 0.3
+    // slab, so its underside is 3.0.
+    assert!(
+        terrain::slot_blocks(&slot, 0.0, 0.0, 3.0, CAPSULE_RADIUS_M, CAPSULE_HEIGHT_M),
+        "a body at the eave's underside is not stopped — the roof is not solid, \
+         so the box list draws a plate the sim does not have"
+    );
+    // And above the finial nothing blocks, which is what OCCUPANT_TOP_M says.
+    assert!(
+        !terrain::slot_blocks(
+            &slot,
+            0.0,
+            0.0,
+            terrain::WAYSTATION_CANOPY_PEAK_M + 0.01,
+            CAPSULE_RADIUS_M,
+            CAPSULE_HEIGHT_M
+        ),
+        "the canopy blocks above its own published peak"
+    );
+}
+
+/// The placed canopy is solid where it stands, faces its site, and shares no
+/// ground with either cache.
+///
+/// `the_placed_shelter_is_solid_and_faces_its_door_at_the_pad` for the lesser
+/// tier, and the same reason it exists: every test above stands the structure
+/// at the origin at an authored yaw, and none of them asks whether the thing
+/// worldgen actually placed is that structure. Two authored solids sharing
+/// ground is a cache a player can see and never reach.
+#[test]
+fn the_placed_canopy_is_solid_and_clears_its_caches_at_every_site() {
+    for seed in [1u64, 42, 20_260_804, 0xDEAD_BEEF] {
+        let haven = terrain::haven(seed);
+        for w in 0..terrain::WAYSTATIONS {
+            let ws = haven.minor[w];
+            assert!(ws.live, "seed {seed:#x}: site {w} is not live");
+            let (kx, kz, kyaw) = terrain::waystation_canopy(&ws);
+            let feet = terrain::height(seed, kx, kz);
+            let slot = Slot {
+                occupant: Occupant::WaystationCanopy,
+                x: kx,
+                y: feet,
+                z: kz,
+                yaw: kyaw,
+                scale: 1.0,
+            };
+            // A post is where a post should be: the body at a post's local
+            // corner is stopped, which is the cheapest proof the frame the
+            // slot carries is the frame the boxes are read in.
+            let (s, c) = yaw_dir((kyaw as u16) << 8);
+            let (px, pz) = (2.2f32, 2.2f32);
+            let wx = kx + px * c + pz * s;
+            let wz = kz - px * s + pz * c;
+            assert!(
+                terrain::slot_blocks(&slot, wx, wz, feet, CAPSULE_RADIUS_M, CAPSULE_HEIGHT_M),
+                "seed {seed:#x} site {w}: the placed canopy has no post at its \
+                 own local (2.2, 2.2) — the yaw frame is not the frame the \
+                 boxes are in"
+            );
+            // The caches stand outside it. This is the assert the first draft
+            // of this structure could not have passed: it stood at the site
+            // centre, 6.5 m from each cache, and the eave reached 2.8 m of
+            // that on the diagonal.
+            let (cache_r, _) = terrain::occupant_volume(Occupant::CacheSlot);
+            for k in 0..terrain::WAYSTATION_CRATES {
+                let (ax, az, _) = terrain::waystation_crate(&ws, k);
+                assert!(
+                    !terrain::slot_blocks(&slot, ax, az, feet, cache_r, CAPSULE_HEIGHT_M),
+                    "seed {seed:#x} site {w}: cache {k} stands inside the canopy"
+                );
+            }
+        }
+    }
+}
