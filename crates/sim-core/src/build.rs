@@ -29,10 +29,11 @@
 //! collision, a higher material's hp and upkeep. Piece damage is M2.
 
 use crate::craft::{inv_count, inv_take};
-use crate::deploy::{Deploys, UPKEEP_PERIOD_TICKS};
+use crate::deploy::{DeployContent, Deploys, UPKEEP_PERIOD_TICKS};
 use crate::fmath::floor_i32;
 use crate::limits::{
-    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_PIECES, MAX_PIECE_COSTS, MAX_PIECE_DEFS,
+    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_COLLAPSE_PIECES, MAX_PIECES, MAX_PIECE_COSTS,
+    MAX_PIECE_DEFS, SUPPORT_SWEEP_PER_TICK,
 };
 use crate::terrain;
 use crate::world::{EventQueue, Player, EV_BUILD_REFUSED, EV_PIECE_PLACED};
@@ -389,6 +390,198 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
             }
         }
         _ => false,
+    }
+}
+
+/// A grid address: (cx, cz, level, loc). What the collapse front carries.
+type Addr = (u16, u16, u8, u8);
+
+/// The most addresses `dependents` can name — a plane's five.
+const MAX_DEPENDENTS: usize = 5;
+
+/// The inverse of `supported()`: every address whose support test **reads**
+/// `(cx, cz, level, loc)`. Change one of the two and you must change the
+/// other; `collapse_matches_a_naive_fixed_point` is the gate that says so,
+/// and it is the whole reason the pair sits in one place.
+///
+/// Read straight off `supported()` above, clause by clause:
+/// - the stairs branch probes `plane_at(cx, cz, level)`, and both wall
+///   branches probe `plane_at(.., level)` in the two cells the edge
+///   adjoins — so a **plane** is read by the riser in its own cell and by
+///   the four edges of its own cell, all at its own level;
+/// - the floor/roof branch probes four edges at `level - 1`, and the wall
+///   branch probes `edge_at(cx, cz, level - 1, loc)` — so an **edge** is
+///   read by the planes one level up in the two cells it adjoins and by
+///   the edge directly above it;
+/// - nothing anywhere probes `LOC_RISER`, so a **riser** is read by
+///   nothing: take the stairs out and the floor above still stands.
+///
+/// Foundations appear here as planes like any other; they are simply never
+/// dropped themselves, because their own clause is unconditional.
+fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDENTS]) -> usize {
+    match loc {
+        LOC_PLANE => {
+            out[0] = (cx, cz, level, LOC_RISER);
+            out[1] = (cx, cz, level, LOC_EDGE_W);
+            out[2] = (cx.saturating_add(1), cz, level, LOC_EDGE_W);
+            out[3] = (cx, cz, level, LOC_EDGE_N);
+            out[4] = (cx, cz.saturating_add(1), level, LOC_EDGE_N);
+            5
+        }
+        LOC_EDGE_W | LOC_EDGE_N => {
+            let up = level.saturating_add(1);
+            if up >= MAX_BUILD_LEVELS as u8 {
+                return 0; // nothing can be addressed above the top storey
+            }
+            out[0] = (cx, cz, up, LOC_PLANE);
+            out[1] = (cx, cz, up, loc);
+            let other = if loc == LOC_EDGE_W {
+                cx.checked_sub(1).map(|x| (x, cz))
+            } else {
+                cz.checked_sub(1).map(|z| (cx, z))
+            };
+            match other {
+                Some((bx, bz)) => {
+                    out[2] = (bx, bz, up, LOC_PLANE);
+                    3
+                }
+                None => 2, // the grid's low border: the edge adjoins one cell
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Whether any piece stands at the address — the O(1) column-index probe
+/// (collide.rs), so a cascade only pays a store scan for a candidate that
+/// actually exists. The index is kept in lockstep by `Pieces` itself and
+/// `col_index_churn_matches_a_naive_shadow` gates that; here it is a
+/// filter in front of `find_index`, never the answer.
+fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+    if level >= MAX_BUILD_LEVELS as u8 {
+        return false;
+    }
+    let m = pieces.cols().get(cx, cz);
+    let field = match loc {
+        LOC_PLANE => m.planes,
+        LOC_RISER => m.stairs,
+        LOC_EDGE_W => m.walls_w | m.doors_w,
+        _ => m.walls_n | m.doors_n,
+    };
+    field & (1u8 << level) != 0
+}
+
+/// Does the piece at store index `i` still have what holds it up? The one
+/// question `collapse_from` and `support_sweep` both ask, asked through
+/// the same `supported()` that refused the placement — so a base can never
+/// stand on a rule it could not have been built under.
+pub(crate) fn stands(pieces: &Pieces, bc: &BuildContent, i: usize) -> bool {
+    let r = pieces.entries()[i];
+    let shape = bc.pieces[r.row as usize].shape;
+    supported(pieces, shape, r.cx, r.cz, r.level, r.loc)
+}
+
+/// A piece at `from` has just been removed: re-evaluate what rested on it
+/// and drop whatever no longer stands, breadth-first, until the front is
+/// empty or `MAX_COLLAPSE_PIECES` is reached. Returns how many fell.
+///
+/// Graph reachability over the piece store, not physics. Each removal
+/// re-checks only the ≤ 5 addresses whose `supported()` test reads the one
+/// that just went (`dependents`), so the work is proportional to what
+/// actually falls and not to the size of the island. Removal goes through
+/// `deploy::drop_piece` — the one removal path — so a collapsed floor
+/// takes the box standing on it exactly the way a decayed one does, and
+/// every piece announces itself with `EV_PIECE_REMOVED`.
+///
+/// The seed address is the piece that already went; it is never itself a
+/// candidate, so this cannot re-enter on it. Nor can any address enter the
+/// front twice: an address is pushed only when a piece is removed from it,
+/// and after that `occupied_at` reads false there.
+pub(crate) fn collapse_from(
+    dc: &DeployContent,
+    bc: &BuildContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    from: Addr,
+    events: &mut EventQueue,
+) -> usize {
+    // One slot per possible removal, plus the seed: `tail` advances only
+    // where `fell` does, so the front can never outrun this.
+    let mut front = [(0u16, 0u16, 0u8, 0u8); MAX_COLLAPSE_PIECES + 1];
+    front[0] = from;
+    let mut head = 0usize;
+    let mut tail = 1usize;
+    let mut fell = 0usize;
+    let mut kids = [(0u16, 0u16, 0u8, 0u8); MAX_DEPENDENTS];
+    while head < tail && fell < MAX_COLLAPSE_PIECES {
+        let (cx, cz, level, loc) = front[head];
+        head += 1;
+        let n = dependents(cx, cz, level, loc, &mut kids);
+        for &(kx, kz, kl, kloc) in kids.iter().take(n) {
+            if !occupied_at(pieces, kx, kz, kl, kloc) {
+                continue;
+            }
+            let Some(i) = pieces.find_index(kx, kz, kl, kloc) else {
+                continue;
+            };
+            if stands(pieces, bc, i) {
+                continue;
+            }
+            let shape = bc.pieces[pieces.entries()[i].row as usize].shape;
+            crate::deploy::drop_piece(dc, pieces, deploys, i, shape, events);
+            front[tail] = (kx, kz, kl, kloc);
+            tail += 1;
+            fell += 1;
+            if fell == MAX_COLLAPSE_PIECES {
+                break; // deferred to `support_sweep` (limits.rs)
+            }
+        }
+    }
+    fell
+}
+
+/// Walk the piece store on a cursor, `SUPPORT_SWEEP_PER_TICK` entries a
+/// tick, and drop the first piece found standing on nothing — with its own
+/// cascade. The backstop that makes `MAX_COLLAPSE_PIECES` a cap rather
+/// than a promise: what one tick's cascade defers, a later tick finds.
+///
+/// At most one collapse a tick, for the same reason the cap exists: the
+/// event ring is 256 and a removal no client hears is a piece drawn for
+/// the rest of the session. On a shard where nothing is hanging this is a
+/// bounded scan that removes nothing, which is the normal case — a piece
+/// can only lose its support by another piece being removed, and that path
+/// already collapses itself.
+pub(crate) fn support_sweep(
+    dc: &DeployContent,
+    bc: &BuildContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    cursor: &mut u32,
+    events: &mut EventQueue,
+) {
+    let mut visits = 0usize;
+    while visits < SUPPORT_SWEEP_PER_TICK && !pieces.is_empty() {
+        visits += 1;
+        let i = (*cursor as usize) % pieces.len();
+        *cursor = ((i + 1) % pieces.len()) as u32;
+        if stands(pieces, bc, i) {
+            continue;
+        }
+        let r = pieces.entries()[i];
+        let shape = bc.pieces[r.row as usize].shape;
+        crate::deploy::drop_piece(dc, pieces, deploys, i, shape, events);
+        collapse_from(
+            dc,
+            bc,
+            pieces,
+            deploys,
+            (r.cx, r.cz, r.level, r.loc),
+            events,
+        );
+        // The swap-remove moved the last entry into `i`; resume there so a
+        // long cascade cannot walk the cursor off the end of the store.
+        *cursor = (i as u32).min(pieces.len().saturating_sub(1) as u32);
+        return;
     }
 }
 
@@ -1268,5 +1461,449 @@ mod tests {
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+    }
+
+    // ---- structural collapse -------------------------------------------
+
+    /// One row per shape, at the row index equal to its own shape code, so
+    /// a fixture reads `SHAPE_FLOOR` where the store reads `row`. Covers
+    /// all six — the probe fixture has no stairs and no roof, and both are
+    /// clauses of the support rule this section is about.
+    fn collapse_content() -> BuildContent {
+        let shapes = [
+            SHAPE_FOUNDATION,
+            SHAPE_WALL,
+            SHAPE_DOORWAY,
+            SHAPE_FLOOR,
+            SHAPE_STAIRS,
+            SHAPE_ROOF,
+        ];
+        let mut b = BuildContent::EMPTY;
+        b.piece_count = shapes.len() as u16;
+        for (row, &shape) in shapes.iter().enumerate() {
+            b.pieces[row] = PieceDef {
+                shape,
+                material: MAT_WOOD,
+                hp: 100,
+                n_costs: 0,
+                costs: [(0, 0); MAX_PIECE_COSTS],
+            };
+        }
+        b
+    }
+
+    /// Put a piece straight in the store, and only where the same
+    /// `supported()` the place verb runs would have taken it: a fixture
+    /// that could never have been built is not evidence about a base.
+    fn try_put(pieces: &mut Pieces, cx: u16, cz: u16, level: u8, loc: u8, shape: u8) -> bool {
+        if !loc_fits_shape(shape, loc)
+            || level >= MAX_BUILD_LEVELS as u8
+            || pieces.find(cx, cz, level, loc).is_some()
+            || !supported(pieces, shape, cx, cz, level, loc)
+        {
+            return false;
+        }
+        pieces.insert(
+            PieceRec {
+                cx,
+                cz,
+                level,
+                loc,
+                row: shape,
+                hp: 100,
+                uh: 0,
+            },
+            shape,
+        )
+    }
+
+    /// Grow a base up and out from a single foundation, taking every piece
+    /// the rules accept, until `target` stand. Nothing else in it touches
+    /// the ground, so what that foundation's removal owes is the whole
+    /// structure — and the count is the assertion.
+    fn grow_from_one_foundation(pieces: &mut Pieces, cx: u16, cz: u16, target: usize) {
+        assert!(try_put(pieces, cx, cz, 0, LOC_PLANE, SHAPE_FOUNDATION));
+        let r = MAX_BUILD_LEVELS as u16 + 1; // the diamond spreads one cell a storey
+        let top = MAX_BUILD_LEVELS as u8 - 1;
+        for level in 0..MAX_BUILD_LEVELS as u8 {
+            for pass in 0..2 {
+                for dz in 0..=2 * r {
+                    for dx in 0..=2 * r {
+                        if pieces.len() >= target {
+                            return;
+                        }
+                        let (x, z) = (cx + dx - r, cz + dz - r);
+                        if pass == 0 {
+                            // Risers and edges on whatever stands here now,
+                            // one at a time so `target` lands exactly. The
+                            // wall/doorway roles alternate across the grid:
+                            // `supported()` treats the two alike but the
+                            // column index files them in different masks,
+                            // and a fixture that only ever puts doorways on
+                            // north edges never probes the west one.
+                            let alt = (x as u32 + z as u32 + level as u32).is_multiple_of(2);
+                            let (we, ne) = if alt {
+                                (SHAPE_WALL, SHAPE_DOORWAY)
+                            } else {
+                                (SHAPE_DOORWAY, SHAPE_WALL)
+                            };
+                            for &(loc, shape) in &[
+                                (LOC_RISER, SHAPE_STAIRS),
+                                (LOC_EDGE_W, we),
+                                (LOC_EDGE_N, ne),
+                            ] {
+                                if pieces.len() >= target {
+                                    return;
+                                }
+                                try_put(pieces, x, z, level, loc, shape);
+                            }
+                        } else if level < top {
+                            // Then the planes those edges now carry.
+                            let shape = if level + 1 == top {
+                                SHAPE_ROOF
+                            } else {
+                                SHAPE_FLOOR
+                            };
+                            try_put(pieces, x, z, level + 1, LOC_PLANE, shape);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Four bare stacks of edges rising off one foundation, with no plane
+    /// above ground anywhere. The diamond generator cannot produce this —
+    /// it takes every floor the rules allow — and without it the fixture
+    /// set never contains a piece whose **sole** support is the edge
+    /// directly below it, which is one whole clause of `supported()`. A
+    /// reverse map that forgets that clause passes every other fixture
+    /// here, because a fallen plane happens to re-name the same edges.
+    fn grow_wall_stacks(pieces: &mut Pieces) {
+        assert!(try_put(pieces, CX, CZ, 0, LOC_PLANE, SHAPE_FOUNDATION));
+        assert!(try_put(pieces, CX, CZ, 0, LOC_RISER, SHAPE_STAIRS));
+        for level in 0..MAX_BUILD_LEVELS as u8 {
+            // Both roles on both edge locs — all four edge masks live.
+            assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_W, SHAPE_WALL));
+            assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_N, SHAPE_DOORWAY));
+            assert!(try_put(
+                pieces,
+                CX + 1,
+                CZ,
+                level,
+                LOC_EDGE_W,
+                SHAPE_DOORWAY
+            ));
+            assert!(try_put(pieces, CX, CZ + 1, level, LOC_EDGE_N, SHAPE_WALL));
+        }
+    }
+
+    /// The same stacks with a landing partway up: above it a wall has two
+    /// legs (the edge below and the plane beside), below it only one, so
+    /// one structure holds both cases and the transition between them.
+    fn grow_stacks_and_a_landing(pieces: &mut Pieces) {
+        grow_wall_stacks(pieces);
+        assert!(try_put(pieces, CX, CZ, 4, LOC_PLANE, SHAPE_FLOOR));
+        assert!(try_put(pieces, CX, CZ, 4, LOC_RISER, SHAPE_STAIRS));
+        assert!(try_put(pieces, CX, CZ + 1, 5, LOC_PLANE, SHAPE_ROOF));
+    }
+
+    /// "Standing" applied the slow honest way: scan every piece, drop any
+    /// whose `supported()` is false, repeat until a pass changes nothing.
+    /// Support is monotone — removing a piece can only take support away —
+    /// so this fixed point is unique whatever order it removes in, which
+    /// is what makes it a shadow `collapse_from` can be compared against.
+    fn naive_settle(pieces: &mut Pieces, bc: &BuildContent) {
+        loop {
+            let doomed = (0..pieces.len()).find(|&i| !stands(pieces, bc, i));
+            match doomed {
+                Some(i) => {
+                    let row = pieces.entries()[i].row;
+                    pieces.remove_at(i, bc.pieces[row as usize].shape);
+                }
+                None => return,
+            }
+        }
+    }
+
+    fn addresses(pieces: &Pieces) -> Vec<(u16, u16, u8, u8)> {
+        let mut a: Vec<_> = pieces
+            .entries()
+            .iter()
+            .map(|r| (r.cx, r.cz, r.level, r.loc))
+            .collect();
+        a.sort_unstable();
+        a
+    }
+
+    /// The gate on `dependents` being the exact inverse of `supported()`.
+    /// Take out **every** piece of six real bases in turn and require the
+    /// cascade to land on the same base the naive fixed point does — so a
+    /// missing clause under-removes and either way this fails. Nothing
+    /// else here would catch a reverse map that is merely nearly right.
+    ///
+    /// What it pins and what it does not, measured by mutation rather than
+    /// asserted: dropping any one clause of `dependents`, aiming one at the
+    /// wrong cell or level, cutting the propagation off after the first
+    /// ring, or losing any mask in `occupied_at` all fail here. A broken
+    /// `stands()` does **not** — the shadow calls the same `stands()`, so
+    /// both sides degrade together — and that is the division of labour on
+    /// purpose: `stands()` is pinned by the three behavioural tests below,
+    /// all of which fail when it is broken. An over-broad `dependents` also
+    /// survives, and correctly so: a candidate that still stands is skipped,
+    /// so a superset costs work and never an outcome.
+    #[test]
+    fn collapse_matches_a_naive_fixed_point() {
+        // (name, builder, the piece count it owes — a fixture that quietly
+        // shrinks is a gate that quietly stops covering anything).
+        type Fixture = (&'static str, fn(&mut Pieces), usize);
+        let fixtures: &[Fixture] = &[
+            ("diamond-6", |p| grow_from_one_foundation(p, CX, CZ, 6), 6),
+            (
+                "diamond-17",
+                |p| grow_from_one_foundation(p, CX, CZ, 17),
+                17,
+            ),
+            (
+                "diamond-33",
+                |p| grow_from_one_foundation(p, CX, CZ, 33),
+                33,
+            ),
+            (
+                "diamond-50",
+                |p| grow_from_one_foundation(p, CX, CZ, 50),
+                50,
+            ),
+            ("wall-stacks", grow_wall_stacks, 34),
+            ("stacks-and-a-landing", grow_stacks_and_a_landing, 37),
+        ];
+        let bc = collapse_content();
+        let dc = DeployContent::EMPTY;
+        for &(name, build_fixture, expect) in fixtures {
+            let mut reference = Pieces::new();
+            build_fixture(&mut reference);
+            let n = reference.len();
+            assert_eq!(n, expect, "fixture {name} owes exactly {expect} pieces");
+
+            for &(vx, vz, vl, vloc) in addresses(&reference).iter() {
+                let mut fast = Pieces::new();
+                let mut slow = Pieces::new();
+                build_fixture(&mut fast);
+                build_fixture(&mut slow);
+                let mut nod = Deploys::new();
+                let mut ev = EventQueue::default();
+
+                let shape = {
+                    let row = fast.find(vx, vz, vl, vloc).unwrap().row;
+                    bc.pieces[row as usize].shape
+                };
+                let i = fast.find_index(vx, vz, vl, vloc).unwrap();
+                fast.remove_at(i, shape);
+                let fell =
+                    collapse_from(&dc, &bc, &mut fast, &mut nod, (vx, vz, vl, vloc), &mut ev);
+
+                let j = slow.find_index(vx, vz, vl, vloc).unwrap();
+                slow.remove_at(j, shape);
+                naive_settle(&mut slow, &bc);
+
+                let victim = (vx, vz, vl, vloc);
+                assert!(
+                    fell < MAX_COLLAPSE_PIECES,
+                    "fixture {name} reached the cap on {victim:?} — the \
+                     comparison below only means anything under it"
+                );
+                assert_eq!(
+                    addresses(&fast),
+                    addresses(&slow),
+                    "removing {victim:?} from fixture {name} left a different \
+                     world than the fixed point"
+                );
+                assert_eq!(
+                    fell,
+                    n - 1 - fast.len(),
+                    "the returned count disagrees with the store it left"
+                );
+            }
+        }
+    }
+
+    /// The gap this exists for: take the legs out and the base comes down.
+    #[test]
+    fn a_foundation_takes_its_whole_tower_with_it() {
+        let bc = collapse_content();
+        let dc = DeployContent::EMPTY;
+        let mut pieces = Pieces::new();
+        let mut nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        grow_from_one_foundation(&mut pieces, CX, CZ, 40);
+        let n = pieces.len();
+
+        let i = pieces.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
+        crate::deploy::drop_piece(&dc, &mut pieces, &mut nod, i, SHAPE_FOUNDATION, &mut ev);
+        let fell = collapse_from(
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut nod,
+            (CX, CZ, 0, LOC_PLANE),
+            &mut ev,
+        );
+
+        assert_eq!(
+            pieces.len(),
+            0,
+            "{} pieces left hanging in the air",
+            pieces.len()
+        );
+        assert_eq!(fell, n - 1);
+        // The derived collision view came down with it — a wall that is
+        // gone from the store and still in the column index is a wall the
+        // player walks into (collide.rs).
+        assert!(pieces.cols().is_empty());
+        // And every removal announced itself: one the client never hears
+        // is a piece drawn for the rest of the session.
+        assert_eq!(
+            ev.entries()
+                .iter()
+                .filter(|e| e.code == crate::world::EV_PIECE_REMOVED)
+                .count(),
+            n
+        );
+        assert_eq!(ev.dropped, 0, "the collapse overflowed the event ring");
+    }
+
+    /// The other half, and the one an over-eager cascade fails: a piece
+    /// with a second leg keeps standing, and stairs are load-bearing for
+    /// nothing.
+    #[test]
+    fn a_second_leg_holds_what_the_first_one_dropped() {
+        let bc = collapse_content();
+        let dc = DeployContent::EMPTY;
+        let mut pieces = Pieces::new();
+        let mut nod = Deploys::new();
+        let mut ev = EventQueue::default();
+
+        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_PLANE, SHAPE_FOUNDATION));
+        assert!(try_put(
+            &mut pieces,
+            CX + 1,
+            CZ,
+            0,
+            LOC_PLANE,
+            SHAPE_FOUNDATION
+        ));
+        // Adjoins only the foundation that is about to go.
+        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_EDGE_W, SHAPE_WALL));
+        // The shared boundary: adjoins both cells, so it keeps a leg.
+        assert!(try_put(&mut pieces, CX + 1, CZ, 0, LOC_EDGE_W, SHAPE_WALL));
+        assert!(try_put(&mut pieces, CX + 1, CZ, 0, LOC_RISER, SHAPE_STAIRS));
+        assert!(try_put(&mut pieces, CX + 1, CZ, 1, LOC_PLANE, SHAPE_FLOOR));
+
+        let i = pieces.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
+        crate::deploy::drop_piece(&dc, &mut pieces, &mut nod, i, SHAPE_FOUNDATION, &mut ev);
+        let fell = collapse_from(
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut nod,
+            (CX, CZ, 0, LOC_PLANE),
+            &mut ev,
+        );
+
+        assert_eq!(fell, 1, "only the wall standing on one leg should fall");
+        assert!(pieces.find(CX, CZ, 0, LOC_EDGE_W).is_none());
+        assert!(pieces.find(CX + 1, CZ, 0, LOC_EDGE_W).is_some());
+        assert!(pieces.find(CX + 1, CZ, 1, LOC_PLANE).is_some());
+        assert!(pieces.find(CX + 1, CZ, 0, LOC_RISER).is_some());
+    }
+
+    /// `MAX_COLLAPSE_PIECES` is a cap on one tick, not a hole: what it
+    /// defers, `support_sweep` finishes. Both halves asserted here,
+    /// because either alone would let the other rot.
+    #[test]
+    fn the_cap_defers_the_rest_and_the_sweep_finishes_it() {
+        let bc = collapse_content();
+        let dc = DeployContent::EMPTY;
+        let mut pieces = Pieces::new();
+        let mut nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        grow_from_one_foundation(&mut pieces, CX, CZ, MAX_COLLAPSE_PIECES * 2);
+        let n = pieces.len();
+        assert!(
+            n > MAX_COLLAPSE_PIECES + 1,
+            "the fixture must outgrow the cap"
+        );
+
+        let i = pieces.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
+        crate::deploy::drop_piece(&dc, &mut pieces, &mut nod, i, SHAPE_FOUNDATION, &mut ev);
+        let fell = collapse_from(
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut nod,
+            (CX, CZ, 0, LOC_PLANE),
+            &mut ev,
+        );
+
+        // Stopped at the cap, and stopped honestly — the rest is still
+        // there, not silently dropped and not silently forgotten.
+        assert_eq!(fell, MAX_COLLAPSE_PIECES);
+        assert_eq!(pieces.len(), n - 1 - MAX_COLLAPSE_PIECES);
+
+        let mut cursor = 0u32;
+        let mut ticks = 0usize;
+        while !pieces.is_empty() {
+            ticks += 1;
+            assert!(
+                ticks < 4096,
+                "support_sweep never finished: {} pieces still in the air",
+                pieces.len()
+            );
+            ev.clear();
+            support_sweep(&dc, &bc, &mut pieces, &mut nod, &mut cursor, &mut ev);
+            assert_eq!(ev.dropped, 0, "a sweep tick overflowed the event ring");
+        }
+    }
+
+    /// The wiring, not the function: `damage_piece` is what a raid swing
+    /// reaches (combat.rs picks the target), so this is the path a raider
+    /// actually walks — kill the wall at the bottom and the storeys it
+    /// carried come with it, while the foundation stands.
+    #[test]
+    fn a_raid_swing_that_kills_a_wall_brings_down_what_it_held() {
+        let bc = collapse_content();
+        let dc = DeployContent::EMPTY;
+        let mut pieces = Pieces::new();
+        let mut nod = Deploys::new();
+        let mut ev = EventQueue::default();
+
+        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_PLANE, SHAPE_FOUNDATION));
+        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_EDGE_W, SHAPE_WALL));
+        assert!(try_put(&mut pieces, CX, CZ, 1, LOC_PLANE, SHAPE_FLOOR));
+        assert!(try_put(&mut pieces, CX, CZ, 1, LOC_EDGE_W, SHAPE_WALL));
+        assert!(try_put(&mut pieces, CX, CZ, 2, LOC_PLANE, SHAPE_FLOOR));
+        assert_eq!(pieces.len(), 5);
+
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let died = crate::deploy::damage_piece(&dc, &bc, &mut pieces, &mut nod, i, 100, &mut ev);
+
+        assert!(died);
+        assert_eq!(addresses(&pieces), vec![(CX, CZ, 0, LOC_PLANE)]);
+        assert_eq!(
+            ev.entries()
+                .iter()
+                .filter(|e| e.code == crate::world::EV_PIECE_REMOVED)
+                .count(),
+            4,
+            "the swung-at wall and the three storeys it carried"
+        );
+        assert_eq!(
+            ev.entries()
+                .iter()
+                .filter(|e| e.code == crate::world::EV_STRUCT_HIT)
+                .count(),
+            1,
+            "the swing is one hit; the collapse is not four more"
+        );
     }
 }

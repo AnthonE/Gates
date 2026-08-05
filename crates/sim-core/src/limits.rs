@@ -319,3 +319,27 @@ pub const MAX_HAVEN_CANDIDATES: usize = 64;
 /// slice) re-derives anything a lost event failed to announce. Proposed
 /// default, DECISIONS.md §open (gather bounds row).
 pub const MAX_EVENTS_PER_TICK: usize = 256;
+
+/// Pieces one structural collapse may drop in a single tick (build.rs
+/// `collapse_from`: take a wall's legs out and what rested on it falls).
+/// Sized off `MAX_EVENTS_PER_TICK`, not off the piece store: every
+/// removal spends one event slot — two when a deployable stood on it —
+/// and `EV_PIECE_REMOVED` is the only thing that tells a client the piece
+/// is gone, so a cascade allowed to fill the ring would leave the rest of
+/// the collapse drawn on every screen forever. A quarter of the ring
+/// keeps the tick's other events inside their own budget.
+/// Overflow policy: **defer** — the cascade stops at the cap and whatever
+/// is left standing on nothing is dropped by `support_sweep` over the
+/// following ticks, so the cap costs latency and never correctness.
+/// Proposed default, DECISIONS.md §open (collapse v0).
+pub const MAX_COLLAPSE_PIECES: usize = 64;
+
+/// Pieces the standing-support sweep re-checks per tick (build.rs
+/// `support_sweep`), cursor order like the upkeep sweep's. The backstop
+/// that lets `MAX_COLLAPSE_PIECES` be a cap rather than a promise: it
+/// drops at most **one** unsupported piece a tick and runs that piece's
+/// own cascade, so a tick's worst case is one capped collapse however
+/// much of the island is hanging in the air. No overflow policy — this is
+/// a rate, not a queue; the cursor wraps and nothing is skipped.
+/// Proposed default, DECISIONS.md §open (collapse v0).
+pub const SUPPORT_SWEEP_PER_TICK: usize = 32;

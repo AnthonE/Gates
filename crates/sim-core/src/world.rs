@@ -98,7 +98,10 @@ pub const EV_DEPLOY_PLACED: u8 = 9;
 /// EV_DEPLOY_REFUSED: a = player id, b = `deploy::REFUSE_D_*` reason.
 pub const EV_DEPLOY_REFUSED: u8 = 10;
 /// EV_PIECE_REMOVED: a = build cell key, b = level << 16 | loc << 8 | row
-/// (decay took it; the wire broadcasts and restarts in-progress walks).
+/// (the wire broadcasts and restarts in-progress walks). One code for all
+/// three ways a piece leaves the world — decay's sweep, a raid swing, and
+/// the structural collapse either of them can start (build.rs
+/// `collapse_from`) — because a client redraws the same way for each.
 pub const EV_PIECE_REMOVED: u8 = 11;
 /// EV_DEPLOY_REMOVED: a = build cell key, b = level << 16 | loc << 8 | row.
 pub const EV_DEPLOY_REMOVED: u8 = 12;
@@ -584,6 +587,11 @@ pub struct World {
     /// Upkeep/decay sweep cursors (deploy.rs) — sim state, hashed.
     pub sweep_piece: u32,
     pub sweep_deploy: u32,
+    /// Standing-support sweep cursor (build.rs `support_sweep`) — sim
+    /// state, hashed. The backstop behind `MAX_COLLAPSE_PIECES`: a
+    /// cascade capped mid-fall leaves pieces standing on nothing, and this
+    /// cursor is what finds them on a later tick.
+    pub sweep_support: u32,
     /// Sparse harvested/damaged slot records (TERRAIN.md §2).
     pub slot_lives: SlotLives,
     /// This tick's outbound events; cleared at tick start.
@@ -621,6 +629,7 @@ impl World {
             backpacks: Box::new(Backpacks::new()),
             sweep_piece: 0,
             sweep_deploy: 0,
+            sweep_support: 0,
             slot_lives: SlotLives::new(),
             events: EventQueue::default(),
             last_hash: 0,
@@ -1458,6 +1467,17 @@ impl World {
             &mut self.sweep_deploy,
             &mut self.events,
         );
+        // The structural backstop, after the sweep that can create work for
+        // it: anything a capped cascade left hanging in the air comes down
+        // here, one piece and its own cascade per tick (build.rs).
+        build::support_sweep(
+            &self.deploy,
+            &self.build,
+            &mut self.pieces,
+            &mut self.deploys,
+            &mut self.sweep_support,
+            &mut self.events,
+        );
         // Boxes that came apart this tick — raided in the player loop
         // above, or decayed by the sweep just now — empty onto the floor
         // they stood on. Drained here rather than at the removal because
@@ -1673,6 +1693,7 @@ impl World {
         h.update(&self.backpacks.next_id().to_le_bytes());
         h.update(&self.sweep_piece.to_le_bytes());
         h.update(&self.sweep_deploy.to_le_bytes());
+        h.update(&self.sweep_support.to_le_bytes());
         h.digest()
     }
 }

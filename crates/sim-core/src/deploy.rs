@@ -1006,7 +1006,12 @@ fn decay_of(max_hp: u16) -> u16 {
 /// broadcasting both removals. **The one removal path**: decay reaches it
 /// through the sweep, a raid through `damage_piece`, and neither can grow
 /// a cascade the other lacks.
-fn drop_piece(
+///
+/// This is the single removal, not the structural one: a caller that took
+/// the piece out of the world follows it with `build::collapse_from` so
+/// what rested on it comes down too. `collapse_from` itself calls this and
+/// must not, which is why the two are separate functions.
+pub(crate) fn drop_piece(
     dc: &DeployContent,
     pieces: &mut Pieces,
     deploys: &mut Deploys,
@@ -1086,6 +1091,17 @@ pub fn damage_piece(
             deploys,
             i,
             bc.pieces[rec.row as usize].shape,
+            events,
+        );
+        // Take the legs out and the base comes down: everything that
+        // rested on this address is re-checked against the same support
+        // rule that let it be placed (build.rs).
+        crate::build::collapse_from(
+            dc,
+            bc,
+            pieces,
+            deploys,
+            (rec.cx, rec.cz, rec.level, rec.loc),
             events,
         );
         return true;
@@ -1208,8 +1224,18 @@ pub fn upkeep_sweep(
             uh = h_now; // bounded catch-up: the missed hours are forgiven
         }
         if removed {
-            // Same removal path a raid takes — cascade included.
+            // Same removal path a raid takes — cascade included, and the
+            // structural collapse with it: a floor whose wall decayed out
+            // from under it falls exactly as one a raider broke would.
             drop_piece(dc, pieces, deploys, i, def.shape, events);
+            crate::build::collapse_from(
+                dc,
+                bc,
+                pieces,
+                deploys,
+                (rec.cx, rec.cz, rec.level, rec.loc),
+                events,
+            );
             *piece_cursor = (i as u32).min(pieces.len().saturating_sub(1) as u32);
         } else {
             pieces.set_upkeep(i, hp, uh);
