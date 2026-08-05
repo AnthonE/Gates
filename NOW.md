@@ -109,7 +109,7 @@ the round trip is proven by goldens, role and unit gates, not by a live shard.
 
 ---
 
-## 0 · Half the verbs you own are undiscoverable — *(ui lane; compass done this pass)*
+## 0 · Half the verbs you own are undiscoverable — *(ui lane — both halves done)*
 
 From the judge's **ranked gap 3**, `pass-20260805-063306-01-judge.md`. NOW.md
 held no open ui-lane item, so the gap list supplied this one. Two halves:
@@ -118,10 +118,15 @@ held no open ui-lane item, so the gap list supplied this one. Two halves:
   `index.html`. `ui_smoke` 442 → 510 checks (§S/§T); nine mutants red.
   **+Z is North, +X is East** — `DECISIONS.md` §open has the row and the
   conflict it resolves against `build.rs`'s `LOC_EDGE_N`.
-- **The build prompt — still open, and it is the judge's ranked fix 2.**
-  `interact.js:64-72` resolves `VERB_DOOR`/`BAG`/`BOX`/`HEARTH` and no place
-  verb, so the placement preview exists only for someone who has read
-  `main.js`. Squarely ui-lane; not started.
+- **The build prompt — DONE.** Build mode drew a ghost over the aimed cell
+  while the row under the crosshair advertised `[LMB] CHOP TREE`. It now reads
+  `[RMB] PLACE WOOD WALL`, with the shortfall of the first ingredient you
+  cannot cover, and redraws on B and the wheel. Which of the three verbs gets
+  the one row is `interact.centrePrompt` — pure, swept over all eight
+  combinations (build > E > swing). `describePiece`/`describeDeploy` moved out
+  of `run()` so the stride-8 decode is gateable arithmetic, and the shape and
+  material labels came with them (walked against `build.rs`). `ui_smoke`
+  635 → 1468 checks (§V); §Q/§R re-anchored, not relaxed.
 
 Two things the compass could not carry, both needing another lane:
 
@@ -134,6 +139,27 @@ Two things the compass could not carry, both needing another lane:
   standing rule (`ALPHA.md` §1, "no map position") and it is about the death
   screen, not the HUD — but a pad marker is close enough to it that an
   operator word is cheaper than a pass spent guessing.
+
+---
+## 0c · Nothing in the world names a key *(ui lane)*
+
+What the build prompt could not fix, learned by building it: a contextual hint
+can only describe a mode you have already entered. **B, C, M, T, G, H, U, L and
+Tab are spelled out in exactly one place — `index.html`'s `#hint` paragraph on
+the pre-connect screen — which is gone the moment you join.** A player who
+misses it has no way back to it and no way to discover build mode, crafting or
+the map at all. Every verb this lane has made legible sits behind a key nobody
+is told about.
+
+Two candidate shapes, and the reference has both:
+`Rust Images/choppingtree.jpg` carries an onboarding checklist top-left that
+retires itself as each verb is used; `MENUS.md` surveys the keybinds screen
+that every loader in the reference ecosystem exposes. The checklist is the
+cheaper one and it teaches in the world rather than in a menu.
+
+Not started. Needs no other lane and no operator word — the strings are ours
+(`CONTENT.md` owns names, and these are key names). `ui_smoke` can drive it
+end to end: it is DOM and state, no renderer.
 
 ---
 ## 0 · The rest of `pass-20260805-074623-01`'s ranked fixes
@@ -209,6 +235,32 @@ retired — the shader-arithmetic, texture-photograph, shadow-distance and
 capture-drift items. All are in git before this commit. `web/` still
 builds and is still gated; nothing is deleted until the native client can
 replace it.
+
+---
+
+## 1b · One call the shard owes the world lane — *(world lane, cross-lane)*
+
+*(This sits BELOW the operator's §1 on purpose. The last two world-lane
+items were filed as `## 0` above it and the judge's fix 4 on
+`pass-20260805-074623-02` was right that position is a claim: a leftover
+does not outrank a spoken call. Both of those items are now done — see
+`DECISIONS.md` §open "probe coverage v0" and "the tier gradient is paid in
+items, not density".)*
+
+- **Systems lane, one boot-time call please.** `terrain::sites_complete(&Haven)
+  -> bool` and `sites_live(&Haven) -> u32` now exist and are pure.
+  `pick_minor` leaves `Waystation::NONE` when no candidate clears the
+  separation floor; `tests/waystation.rs` refuses that over 16 seeds and
+  `test_golden_covers_authored_sites` over 3, but a shard boots whatever seed
+  `shard.toml` names, so a seed outside those 19 ships an island a third
+  smaller with **no counter, event or log line**. The refusal — or a
+  knob-registered relaxation of `WAYSTATION_MIN_SEP_M` until the ring fills —
+  belongs in `crates/server` at boot. Judge fix 1, inherited twice now.
+- **What the tier still lacks is a silhouette, not a price.** The containers
+  differ now (`CacheSlot`, smaller and greyer than the pad's crate) and so do
+  their tables. The site itself is still two boxes on bare ground; §4b below
+  holds that item and its rule — a second copy of `HAVEN_SHELTER` would make
+  the two tiers look identical, so it has to be a *different* structure.
 
 ---
 

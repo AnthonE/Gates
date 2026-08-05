@@ -528,31 +528,46 @@ fn the_pad_carries_the_containers_it_placed() {
         for cx in 0..CELLS_PER_SIDE {
             for cz in 0..CELLS_PER_SIDE {
                 let s = terrain::scatter(seed, &table, &haven, cx, cz);
-                if s.occupant != Occupant::CrateSlot {
+                if s.occupant != Occupant::CrateSlot && s.occupant != Occupant::CacheSlot {
                     continue;
                 }
                 // PARTITIONED BY SITE, not filtered down to the pad's own.
-                // The lesser tier (`terrain::WAYSTATIONS`) stands the same
-                // `CrateSlot` archetype elsewhere on the ring, so the old
-                // "every crate islandwide is on the pad" is now false — but
-                // the weaker reading of it, "the pad's crates are on the
-                // pad", would stop counting the thing this test exists for.
-                // So every crate must belong to EXACTLY ONE site and the
-                // counts are asserted per tier below: a crate in neither zone
-                // fails here, and a crate in both is impossible by
-                // `WAYSTATION_MIN_SEP_M`. That is strictly more than the
-                // single count it replaces — it now pins both tiers and the
-                // emptiness of everywhere else.
+                // The lesser tier (`terrain::WAYSTATIONS`) stands containers
+                // elsewhere on the ring, so the old "every container
+                // islandwide is on the pad" is now false — but the weaker
+                // reading of it, "the pad's crates are on the pad", would stop
+                // counting the thing this test exists for. So every container
+                // must belong to EXACTLY ONE site and the counts are asserted
+                // per tier below: one in neither zone fails here, and one in
+                // both is impossible by `WAYSTATION_MIN_SEP_M`. That is
+                // strictly more than the single count it replaces — it now
+                // pins both tiers and the emptiness of everywhere else.
                 let on_pad = terrain::in_haven(&haven, s.x, s.z);
                 let on_minor = terrain::in_waystation(&haven, s.x, s.z);
                 assert!(
                     on_pad != on_minor,
-                    "seed {seed}: a crate at ({}, {}) belongs to {} site(s) — \
+                    "seed {seed}: a container at ({}, {}) belongs to {} site(s) — \
                      every placed container is the anchor of exactly one, and \
                      an unclaimed one means an anchor escaped its own zone",
                     s.x,
                     s.z,
                     on_pad as u8 + on_minor as u8
+                );
+                // The KIND has to agree with the zone, and this is the assert
+                // that makes the tier gradient a property of the world rather
+                // than of `content/loot.toml` alone: a container's kind is the
+                // only thing a loot table is selected by, so a `CrateSlot`
+                // standing on a waystation IS the waystation paying the pad's
+                // table — which is exactly what it did until 2026-08-05.
+                assert_eq!(
+                    on_pad,
+                    s.occupant == Occupant::CrateSlot,
+                    "seed {seed}: a {:?} at ({}, {}) stands on the {} — the tier and the \
+                     container kind disagree, so this site draws the other tier's loot table",
+                    s.occupant,
+                    s.x,
+                    s.z,
+                    if on_pad { "pad" } else { "lesser tier" }
                 );
                 if on_minor {
                     minor_found += 1;
@@ -591,7 +606,7 @@ fn the_pad_carries_the_containers_it_placed() {
         assert_eq!(
             minor_found,
             live * terrain::WAYSTATION_CRATES as usize,
-            "seed {seed}: {minor_found} crate(s) stand on {live} waystation(s) \
+            "seed {seed}: {minor_found} cache(s) stand on {live} waystation(s) \
              against {} apiece — same silent-drop failure as the pad's, one \
              tier down",
             terrain::WAYSTATION_CRATES
