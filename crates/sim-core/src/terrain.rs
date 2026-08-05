@@ -1208,6 +1208,48 @@ pub fn in_waystation(haven: &Haven, x: f32, z: f32) -> bool {
     false
 }
 
+/// True if this seed filled every authored site the island is supposed to
+/// carry: the pad, plus all `WAYSTATIONS` of the lesser tier.
+///
+/// `pick_minor` leaves a `Waystation` dead when no candidate on the ring
+/// clears `WAYSTATION_MIN_SEP_M`, which is the right call — a site placed
+/// too close to another is worse than a site missing. But it is silent:
+/// `tests/waystation.rs` refuses a short tier over 16 seeds and
+/// `test_golden_covers_authored_sites` over 3, while a shard boots whatever
+/// seed `shard.toml` names, so a seed outside those 19 can ship an island a
+/// third smaller with no counter, event or log line
+/// (`pass-20260805-074623-02-judge.md` fix 1).
+///
+/// Exported here and called at boot by the shard, which is the systems
+/// lane's file: sim-core can say what "complete" means, and only the server
+/// can decide that an incomplete island is a refusal to start.
+pub fn sites_complete(haven: &Haven) -> bool {
+    let mut w = 0usize;
+    while w < WAYSTATIONS {
+        if !haven.minor[w].live {
+            return false;
+        }
+        w += 1;
+    }
+    true
+}
+
+/// How many of this seed's authored sites are live, pad included — the
+/// number a boot-time refusal wants to print next to `WAYSTATIONS + 1`.
+/// The pad always exists (`haven` returns the best candidate on the ring
+/// unconditionally), so the floor is 1.
+pub fn sites_live(haven: &Haven) -> u32 {
+    let mut n = 1u32;
+    let mut w = 0usize;
+    while w < WAYSTATIONS {
+        if haven.minor[w].live {
+            n += 1;
+        }
+        w += 1;
+    }
+    n
+}
+
 /// True if (x, z) stands inside the pad — the exclusion zone. Squared
 /// compare, no sqrt (and `SPAWN.md` §9.4's point: the squared form is the
 /// acceptance test, not an optimization of one).
@@ -1305,6 +1347,16 @@ pub enum Occupant {
     /// the whole building is one archetype's mesh rather than a kit of
     /// wall-sized slots. `web/src/props.js` index 10.
     HavenShelter = 10,
+    /// The lesser tier's container — a waystation's, where the pad's is
+    /// `CrateSlot`. A separate variant rather than a reused one because the
+    /// two tiers have to differ in what they PAY, and a container's KIND is
+    /// the only thing a loot table is selected by (`bake.rs`: the name is
+    /// content, the index is code). While both rings placed `CrateSlot`, a
+    /// waystation crate drew `loot.crate` and the lesser tier paid exactly
+    /// what the destination paid, with nothing but geometry between them.
+    /// Content calls this one `cache` (`content/loot.toml`,
+    /// `loot::LOOT_CACHE`); `web/src/props.js` index 11.
+    CacheSlot = 11,
 }
 
 const OCCUPANT_KINDS: usize = 7;
@@ -1462,7 +1514,11 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
                 continue;
             }
             return Slot {
-                occupant: Occupant::CrateSlot,
+                // `CacheSlot`, not the pad's `CrateSlot`: the tier below has
+                // to pay less, and the container's kind is the only thing a
+                // loot table is selected by. Same authored terms as the pad's
+                // — unvetoable, first-anchor-wins, no scale wobble.
+                occupant: Occupant::CacheSlot,
                 x: ax,
                 y: height(seed, ax, az),
                 z: az,
@@ -1939,7 +1995,7 @@ const fn abs_const(v: f32) -> f32 {
 /// asserts below prove only that this file agrees with itself. The gate found
 /// the `CrateSlot` row inward: it read 0.68 against a measured half-diagonal
 /// of 0.680074, which is the bug this doc names, so it is 0.6801 now.
-pub const OCCUPANT_R_M: [f32; 11] = [
+pub const OCCUPANT_R_M: [f32; 12] = [
     0.0,                // None
     0.26,               // Tree — the TRUNK, not the canopy: `CylinderGeometry(0.13, 0.26)`
     1.0,                // StoneNode  — DodecahedronGeometry(1.0)
@@ -1951,6 +2007,7 @@ pub const OCCUPANT_R_M: [f32; 11] = [
     0.0,                // 8: the client's stump. Not a sim occupant; the hole is the point.
     0.6801,             // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
     SHELTER_CORNER_R_M, // HavenShelter — broad phase; SHELTER_BOXES is the volume
+    0.5701,             // CacheSlot — BoxGeometry(0.9, 0.55, 0.7) half-diagonal, 0.45/0.35 in xz
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -1967,7 +2024,7 @@ pub const OCCUPANT_R_M: [f32; 11] = [
 /// canopy, and a body is 1.7 m against a 5.7 m trunk, so the distinction
 /// costs nothing today and is the correct shape when something flies or a
 /// tree falls. (knob, DECISIONS.md §open: occupant volume v0.)
-pub const OCCUPANT_TOP_M: [f32; 11] = [
+pub const OCCUPANT_TOP_M: [f32; 12] = [
     0.0,            // None
     5.7,            // Tree — PINE_TRUNK_H
     1.5,            // StoneNode  — lift 0.5 + radius 1.0
@@ -1979,6 +2036,7 @@ pub const OCCUPANT_TOP_M: [f32; 11] = [
     0.0,            // 8: the stump
     0.8,            // CrateSlot — lift 0.4 + half-height 0.4
     SHELTER_PEAK_M, // HavenShelter — tower-cap at 9.0 + 0.2
+    0.55,           // CacheSlot — lift 0.275 + half-height 0.275
 ];
 
 /// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
@@ -2037,6 +2095,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::BarrelSlot => (0.45, 0.975),
         Occupant::CrateSlot => (0.6801, 0.8),
         Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
+        Occupant::CacheSlot => (0.5701, 0.55),
     }
 }
 
@@ -2045,7 +2104,7 @@ const _: () = {
     // than looped because a loop would need the variant list this file is
     // trying not to keep twice; here the compiler checks the pairing and the
     // match checks the completeness.
-    assert!(OCCUPANT_R_M.len() == 11 && OCCUPANT_TOP_M.len() == 11);
+    assert!(OCCUPANT_R_M.len() == 12 && OCCUPANT_TOP_M.len() == 12);
     // Index 8 is the client's stump and has no variant, so it is the one row
     // the match cannot speak for; it is a hole and stays zero.
     assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);
@@ -2059,6 +2118,7 @@ const _: () = {
     assert!(occupant_volume(Occupant::BarrelSlot).0 == OCCUPANT_R_M[7]);
     assert!(occupant_volume(Occupant::CrateSlot).0 == OCCUPANT_R_M[9]);
     assert!(occupant_volume(Occupant::HavenShelter).0 == OCCUPANT_R_M[10]);
+    assert!(occupant_volume(Occupant::CacheSlot).0 == OCCUPANT_R_M[11]);
     assert!(occupant_volume(Occupant::None).1 == OCCUPANT_TOP_M[0]);
     assert!(occupant_volume(Occupant::Tree).1 == OCCUPANT_TOP_M[1]);
     assert!(occupant_volume(Occupant::StoneNode).1 == OCCUPANT_TOP_M[2]);
@@ -2069,6 +2129,13 @@ const _: () = {
     assert!(occupant_volume(Occupant::BarrelSlot).1 == OCCUPANT_TOP_M[7]);
     assert!(occupant_volume(Occupant::CrateSlot).1 == OCCUPANT_TOP_M[9]);
     assert!(occupant_volume(Occupant::HavenShelter).1 == OCCUPANT_TOP_M[10]);
+    assert!(occupant_volume(Occupant::CacheSlot).1 == OCCUPANT_TOP_M[11]);
+    // The lesser tier's container is the lesser silhouette, and it is a
+    // structural claim rather than a taste one: the two tiers must be
+    // distinguishable at the range either is legible from, and a player who
+    // cannot tell them apart cannot make the detour decision the gradient
+    // exists to create.
+    assert!(OCCUPANT_R_M[11] < OCCUPANT_R_M[9] && OCCUPANT_TOP_M[11] < OCCUPANT_TOP_M[9]);
 
     // --- the shelter's boxes ------------------------------------------
     //

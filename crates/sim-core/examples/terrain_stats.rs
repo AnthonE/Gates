@@ -77,8 +77,9 @@ fn main() {
     // This was `[0u32; 10]` through the commit that added `HavenShelter = 10`
     // and panicked on the first haven cell of every seed — the exact hole
     // `terrain::occupant_volume`'s doc records, caught here because an example
-    // is not a gate. Widen it with the enum.
-    let mut counts = [0u32; 11];
+    // is not a gate. It is sized off the shipped table now rather than
+    // widened by hand, because `CacheSlot = 11` was about to do it again.
+    let mut counts = [0u32; terrain::OCCUPANT_R_M.len()];
     let mut trees = vec![0u8; (CELLS_PER_SIDE * CELLS_PER_SIDE) as usize];
     let mut land = vec![0u8; (CELLS_PER_SIDE * CELLS_PER_SIDE) as usize];
     for cz in 0..CELLS_PER_SIDE {

@@ -8,17 +8,26 @@
 # re-pricing the walk between barrels is a balance pass — and its value is
 # the §open row "barrel smash hits", proposed, not yet spoken.
 #
-# The two tables are the two ends of a walk, and the ORDERING between them is
-# structural rather than a balance call: `barrel` is what the coast road's
-# shoulder pays, `crate` is what the haven pad pays, and the pad has to be
-# worth arriving at. `ci/haven_prize.mjs` gates that ordering — richer rolls,
-# more expected items, and at least one item reachable only from the pad —
-# without pinning which items or how many. Rebalance freely inside it.
+# The three tables are the three stops of a walk, and the ORDERING between
+# them is structural rather than a balance call: `barrel` is what the coast
+# road's shoulder pays, `cache` is what a waystation pays, `crate` is what the
+# haven pad pays, and each has to be worth going further for than the one
+# below it. `ci/haven_prize.mjs` gates that ordering — richer rolls, more
+# expected items per container AND per site, and at least one item each tier
+# reaches that the tier below does not — without pinning which items or how
+# many. Rebalance freely inside it.
+#
+# `cache` exists because until 2026-08-05 a waystation placed the pad's own
+# `Occupant::CrateSlot` and therefore drew `loot.crate`: per container the
+# lesser tier paid exactly what the destination paid, and only geometry
+# separated them. A container's KIND is the only thing a table is selected by
+# (`bake.rs`: the name is content, the index is `loot::LOOT_*`), so the tier
+# needed its own kind before it could have its own price.
 #
 # `crate` had no spawn site at all until the pad placed `Occupant::CrateSlot`
 # (TERRAIN.md §1 stage 8): it was parsed, validated and content-hashed with
-# nothing in the world able to produce its container. It still is not
-# openable — no verb opens a container yet — so this is reachable content
+# nothing in the world able to produce its container. Neither it nor `cache`
+# is openable — no verb opens a container yet — so this is reachable content
 # ahead of reachable loot, and the verb is the systems lane's.
 
 [[loot_table]]
@@ -37,6 +46,31 @@ entries = [
     { item = "item.rope", weight = 12, count_min = 1, count_max = 2 },
     { item = "item.tarp", weight = 8, count_min = 1, count_max = 1 },
     { item = "item.revolver", weight = 1, count_min = 1, count_max = 1 },
+]
+
+# The middle tier. A waystation is a stop on the route rather than the end of
+# it, so what it pays is the route's own currency in better quantities, plus
+# the first three things the shoulder never pays at all: sulfur, a bandage,
+# and wooden arrows. The crate keeps the ladder's top rungs — gunpowder, the
+# medkit, pistol ammunition, metal arrows — so each tier still reaches
+# something the one below it cannot.
+[[loot_table]]
+id = "loot.cache"
+container = "cache"
+rolls_min = 2
+rolls_max = 2
+hits = 4
+
+entries = [
+    { item = "item.metal_frags", weight = 15, count_min = 15, count_max = 30 },
+    { item = "item.cloth", weight = 14, count_min = 10, count_max = 20 },
+    { item = "item.lowgrade", weight = 12, count_min = 15, count_max = 25 },
+    { item = "item.gears", weight = 12, count_min = 1, count_max = 2 },
+    { item = "item.rope", weight = 12, count_min = 1, count_max = 2 },
+    { item = "item.sulfur", weight = 10, count_min = 10, count_max = 20 },
+    { item = "item.tarp", weight = 10, count_min = 1, count_max = 2 },
+    { item = "item.bandage", weight = 10, count_min = 1, count_max = 2 },
+    { item = "item.arrow_wood", weight = 5, count_min = 5, count_max = 10 },
 ]
 
 [[loot_table]]
