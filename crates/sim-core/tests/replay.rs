@@ -85,7 +85,16 @@ const TICKS: u64 = 900;
 /// survival module's fields entering `state_hash` while the script left
 /// them all zero, and before that the death backpack's two zero-length
 /// store fields.
-const GOLDEN_FINAL_HASH: u64 = 0x66B6_0CC0_1555_D451;
+/// Regenerated for a MERGE, which is a case the notes above never cover and
+/// the one that most deserves suspicion. Two lanes each moved this hash on
+/// their own trunk — `main` to `0x66B6_0CC0_1555_D451` (the container wire and
+/// the box store), `lane/looks` to `0x2869_95C7_F9D2_BFA1` (scatter clumping,
+/// the road and the haven pad) — and the merged sim is neither. Taking either
+/// side would have been the dangerous resolution: green would then mean one
+/// lane's behaviour had been dropped, and this gate exists to notice exactly
+/// that. The number below is read off a run of the merged tree and confirmed
+/// stable across repeated runs, not carried over from a side.
+const GOLDEN_FINAL_HASH: u64 = 0x81DF_FCAA_4B37_D99F;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
