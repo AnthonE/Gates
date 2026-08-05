@@ -4,6 +4,37 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+## 0. E tells you what it does — done this pass *(ui lane)*, kept for what it leaves
+
+From `findings/pass-20260805-002720-04-judge.md` ranked gap 3: "the island
+never tells a player what it offers", E five verbs deep in a blind fallthrough
+chain, "does something you did not choose, silently".
+
+Landed: `web/src/interact.js`, the one resolver. Two ranks — **aimed** (in
+front, within `INTERACT_AIM_RADIUS_M` of the aim line; nearest of those wins,
+as a raycast would) always beats **nearby** (everything else in reach, nearest
+wins, which is the old chain's behaviour kept so no verb that worked stops
+working). The five scans in `main.js` are gone; E dispatches on the pick, L's
+lock takes the same pick filtered to `VERB_DOOR`, and `#prompt` under the
+crosshair draws `promptFor` of that same pick off the HUD timer. Archetypes and
+reach are the sim's (`deploy.rs`, `build.rs`), not restated literals.
+`ui_smoke` §Q: 381 checks total, 28 mutants run, all 28 red.
+
+Leaves open:
+- **The aim radius is a proposed default**, `DECISIONS.md` §open (interact aim
+  radius v0). 1.0 m from the deployable's own scale; the operator has not
+  spoken a precision.
+- **Nothing highlights the picked thing in the world.** The prompt names it;
+  the box itself does not light up. That is a looks-lane material change, not
+  ours — a NOW.md line, not a cross-lane request, until someone wants it.
+- **Gathering and building have no prompt**, only deployables do. A tree and a
+  rock answer a swing, not E, so they were out of the resolver's scope; the
+  reference prompts on them too (`Rust Images/choppingtree.jpg`).
+- **Unverified in a real browser end to end.** `ui_smoke` drives the DOM and
+  the resolver; `browser_smoke` is off this run, so nothing here claims a box
+  was opened by aiming at one on a live shard.
+
+
 0. **A box can be opened — done this pass (ui lane), kept for what it leaves.**
 
    *(2026-08-05. Report 03's ranked gap 2, "you can deploy a box and never
@@ -46,6 +77,33 @@ Done items are deleted, not checked — history lives in git and
 > either. Until then a box at cell (0,0) level 0 is openable but not a legal
 > move destination, because `moveArgs` must refuse handle 0 to avoid sending
 > "no container known" as a real address.
+0. **A base comes down when you take its legs out — landed this pass
+   (systems lane).**
+   *(Gap pass. From `findings/archive-prestamp/pass-20260805-011412-01-judge.md`,
+   ranked gap 3: "`supported()` runs at placement and nowhere else".)*
+
+   `build::collapse_from` re-checks support around each removed address and
+   drops what no longer stands, breadth-first over `dependents()` — the exact
+   inverse of `supported()`, sitting beside it, gated by removing **every**
+   piece of six fixtures in turn and requiring the same world a naive fixed
+   point reaches. Wired into both death paths (a raid swing and the decay
+   sweep). Capped at `MAX_COLLAPSE_PIECES = 64` a tick, derived from the
+   256-slot event ring, with `support_sweep` finishing the remainder on later
+   ticks so the cap costs latency and not correctness. Replay golden
+   regenerated — checked, not assumed: with the new hash field held out and
+   the sweep disabled the world still differs, so the cascade is really
+   changing what the script replays.
+
+   What it does **not** do, ranked:
+   - A collapsed piece pays nothing back. `drop_piece` drops no loot and
+     refunds no material, so a raid's whole reward is still what was in the
+     containers it broke. Whether rubble should pay is unspoken — a
+     `DECISIONS.md` §open row, not a number to invent. systems lane.
+   - A large collapse arrives as a burst of `EV_PIECE_REMOVED` in one tick.
+     The wire carries it and nobody has watched a client take one. ui lane.
+   - The rest of that judge gap is untouched: `combat.rs` is still melee-only
+     (its own item below), and what a raid is *for* is the container panel
+     (ui lane).
 
 0. **The outbound move marshalling is gated — done this pass (ui lane), kept
    for what it leaves open.**
@@ -496,19 +554,6 @@ behind it, not a one-line assert, and that deserves its own measurement.
    then frozen. `sim-core` has exactly one dependency and it stays that way — a
    rigid-body crate breaks walls 1, 2 and 5 at once, and cosmetic shards when a
    barrel breaks are client-only and never feed back.
-
-1. **A base collapses when you take its legs out — today it floats.**
-   *(Operator, 2026-08-04. systems lane.)*
-
-   `supported()` runs at PLACEMENT (`build.rs:452`) and nowhere else. Destroy a
-   foundation and everything above keeps hanging in the air. Rust collapses it,
-   and that is central to how raiding feels — the raid is the game.
-
-   Wanted: support re-evaluated when a piece dies, propagating to what rested on
-   it. It is a graph reachability problem over the piece store, not physics —
-   walk from grounded pieces, orphans fall. Bound the sweep in `limits.rs` and
-   state the overflow policy; an unbounded cascade on a 500-piece base is a
-   tick-time bomb, which is wall 4.
 
 1. **There is a revolver in the loot table and nothing to fire it.**
    *(Operator, 2026-08-04. systems lane, after the three items above.)*

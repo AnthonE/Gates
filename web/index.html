@@ -100,6 +100,27 @@
         pointer-events: none;
         display: none;
       }
+      /* The interaction prompt: the contextual key hint under the crosshair
+         (Rust Images/choppingtree.jpg). Centred on the aim, not docked to an
+         edge, because it names the thing being aimed at. */
+      #prompt {
+        position: fixed;
+        left: 50%;
+        top: calc(50% + 22px);
+        transform: translateX(-50%);
+        display: none;
+        padding: 3px 9px;
+        background: rgba(10, 15, 20, 0.55);
+        border: 1px solid #3a5064;
+        border-radius: 4px;
+        font: 12px monospace;
+        letter-spacing: 0.05em;
+        color: #e6edf3;
+        text-shadow: 0 0 3px #000;
+        white-space: nowrap;
+        z-index: 5;
+        pointer-events: none;
+      }
       #hotbar {
         position: fixed;
         left: 50%;
@@ -554,6 +575,7 @@
     <canvas id="gl"></canvas>
     <div id="hud"></div>
     <div id="cross">·</div>
+    <div id="prompt"></div>
     <div id="hotbar"></div>
     <div id="build"></div>
     <div id="craftq"></div>
