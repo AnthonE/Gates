@@ -58,7 +58,7 @@ replace it.
 
 ---
 
-## 2 · No visual gate survives the pivot, and this box cannot see
+## 2 · The native visual gate — the recipe exists, the gate does not
 
 Every visual gate is browser-shaped: `browser_smoke`'s 12 probes, 43
 `readPixels` sites, `vantages`, the capture harness. A native client
@@ -66,20 +66,34 @@ inherits none of them, and `MIGRATION.md` already stated the rule this
 inherits — **a render path that lands without its probes ships a client
 with no visual gates at all**, which is forbidden outright.
 
-Worse, and measured: this box has **no display and no compositor**
-(`DISPLAY` unset), so the loop can compile and gate the native client but
-can never see it. Same hole the browser tier had (no GPU, Chromium on
-SwiftShader) — the pivot **moves it, it does not close it**.
+**The box CAN see — proven 2026-08-05, and this is the recipe.** The
+earlier claim here (no display, therefore no native visual gate) was
+wrong. The client ran for 30 s and a frame was captured off it:
 
-Two routes, operator's call which:
+```
+Xvfb :99 -screen 0 1280x720x24 &
+DISPLAY=:99 WGPU_BACKEND=vulkan \
+  VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
+  ./target/debug/gates 127.0.0.1:<port>
+DISPLAY=:99 xwd -root -silent | xwdtopnm | pnmtopng > frame.png
+```
 
-- **Headless GPU** against `/dev/dri/renderD128`, which exists here. Bevy
-  renders to an offscreen target; the judge scores frames as it does now.
-- **The judge runs elsewhere**, on a machine with a display, on a cadence
-  rather than per pass.
+`AdapterInfo { name: "llvmpipe (LLVM 20.1.2)", backend: Vulkan }` — Mesa's
+lavapipe software rasterizer, no GPU needed. The session stayed healthy
+throughout: `in ok/bad/drop 729/0/0`, `snap sent 434`, `leaves 0`.
 
-Until one exists, a native-client pass must say plainly that the renderer
-tier is not owed and was not run.
+So a native visual gate is **buildable here now**, and it is the next
+gate to write. Two notes for whoever writes it: lavapipe is a CPU
+rasterizer, so budget on frame COUNT and pixel assertions, never on frame
+time (`CLAUDE.md`: a gate that waits on a clock is not a gate on this
+box); and one live renderer at a time, since two was the browser tier's
+whole problem.
+
+**What the first frame showed, unfixed:** the body draws and is lit, and
+there is no ground under it. The reference plane is at `y = 0` while the
+player spawns at terrain height, so it sits far below the camera and out
+of frame. Fixed by slice 2 of item 1 (mesh the real heightfield); until
+then the plane is decoration in the wrong place.
 
 ---
 
