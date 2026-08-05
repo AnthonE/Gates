@@ -634,3 +634,159 @@ export function centrePrompt(buildPick, interactPick, swingPick) {
     promptForBuild(buildPick) || promptFor(interactPick) || promptForSwing(swingPick)
   );
 }
+
+// =============================================================================
+// The other half of a piece's life story: what breaks it, and what mends it.
+// =============================================================================
+
+/**
+ * Where a piece's address sits on the ground, mirrored from
+ * `crates/sim-core/src/build.rs`'s `LOC_*`. The same physical edge is never
+ * addressable twice, so which of the four a piece carries decides where its
+ * anchor is — and the anchor is what BOTH reach checks measure to.
+ */
+export const LOC_PLANE = 0;
+export const LOC_RISER = 1;
+export const LOC_EDGE_W = 2;
+export const LOC_EDGE_N = 3;
+
+/**
+ * The planar anchor of a build address — `build.rs`'s `anchor`, said in JS.
+ *
+ * This is a positional payload in the exact sense `CLAUDE.md`'s trap list
+ * means it: swap the two `half` terms and every byte-golden stays green while
+ * the client measures reach to the wrong corner of the cell, so U and the
+ * repair key refuse at a distance the server would have accepted (and reach at
+ * one it will not). It is written out here, rather than left inline in
+ * `main.js`, so `ui_smoke` can walk it against the Rust in node.
+ *
+ * `out` is a two-element array, mutated in place — this runs inside a scan
+ * over every piece in reach and the hot-path law forbids the tuple.
+ */
+export function pieceAnchor(out, cx, cz, loc, cell) {
+  const x0 = cx * cell;
+  const z0 = cz * cell;
+  const half = cell * 0.5;
+  out[0] = loc === LOC_EDGE_W ? x0 : x0 + half;
+  out[1] = loc === LOC_EDGE_N ? z0 : z0 + half;
+  return out;
+}
+
+/** The pick `nearestPiece` fills. `found` is false when nothing is in reach. */
+export function newPiecePick() {
+  return { found: false, cx: 0, cz: 0, level: 0, loc: 0, row: 0, d2: 0 };
+}
+
+/**
+ * The nearest placed piece within reach of the player's feet — the target for
+ * the verbs that address a piece rather than a thing under the crosshair (U
+ * today, repair when the client can send one).
+ *
+ * Why it is here and not in `main.js`. It WAS in `main.js`, and it read
+ * `bestD = REACH * REACH` against a `REACH` that is declared nowhere in the
+ * repo — so `nearestPiece` threw a `ReferenceError` on its first line and U
+ * had been dead at runtime for as long as the binding existed. Nothing caught
+ * it: `ui_smoke` cannot execute `main.js` (it boots three.js and is stubbed at
+ * the route), `browser_smoke` never presses U, and a free variable is not a
+ * syntax error, so the bundle built clean. The fix is not the missing
+ * constant — it is that the arithmetic now lives where a node gate can call
+ * it, which is the same move `describePiece` made for the same reason.
+ *
+ * The reach is `INTERACT_REACH_M`, i.e. the sim's own `BUILD_REACH_M`, which
+ * is what `build.rs`'s `repair` and `upgrade` both gate on. Quantize both
+ * sides: the client picks inside the radius the server will accept.
+ *
+ * `at` = `{x, z}` (the feet, world metres), `world` = `{cell, recs}` where
+ * `recs` is any iterable of `{cx, cz, level, loc, row}`.
+ */
+const ANCHOR_SCRATCH = [0, 0];
+export function nearestPiece(out, at, world) {
+  out.found = false;
+  out.cx = 0;
+  out.cz = 0;
+  out.level = 0;
+  out.loc = 0;
+  out.row = 0;
+  out.d2 = 0;
+  let bestD = INTERACT_REACH_M * INTERACT_REACH_M;
+  for (const rec of world.recs) {
+    const a = pieceAnchor(ANCHOR_SCRATCH, rec.cx, rec.cz, rec.loc, world.cell);
+    const dx = a[0] - at.x;
+    const dz = a[1] - at.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestD) {
+      bestD = d2;
+      out.found = true;
+      out.cx = rec.cx;
+      out.cz = rec.cz;
+      out.level = rec.level;
+      out.loc = rec.loc;
+      out.row = rec.row;
+      out.d2 = d2;
+    }
+  }
+  return out;
+}
+
+/**
+ * What the sim says when it turns down a build, an upgrade or a repair,
+ * indexed by `build.rs`'s `REFUSE_B_*` code.
+ *
+ * The index IS the sim's number, which is the whole reason this table cannot
+ * live as a bare array in `main.js` where nothing can walk it: it fell one
+ * entry short of the sim the day `REFUSE_B_INTACT` (9) landed, so repairing a
+ * wall that is already whole — by far the likeliest repair refusal, and the
+ * one every player will hit first — answered `can't build: code 9`. `ui_smoke`
+ * §W now walks it against the constants `build.rs` declares, by name and by
+ * value, so the next reason the sim grows lands red on the commit that grows
+ * it rather than as a number on a player's screen.
+ */
+export const BUILD_REFUSE_TEXT = [
+  "no such piece",
+  "spot taken",
+  "needs support",
+  "bad ground",
+  "out of reach",
+  "missing materials",
+  "world is full",
+  "claimed by a hearth",
+  "nothing to upgrade into",
+  "not damaged",
+];
+
+/** The refusal sentence, or the bare code when the sim is ahead of us. */
+export function buildRefusal(code) {
+  return BUILD_REFUSE_TEXT[code] || `code ${code}`;
+}
+
+/**
+ * The two flag bits that carry a structure's hp news, mirrored from
+ * `crates/client-wasm/src/core.rs`.
+ */
+export const APPLIED_HIT_BIT = 1 << 23;
+export const APPLIED_STRUCT_HIT_BIT = 1 << 26;
+
+/**
+ * The breach readout — and, since repair v0, its opposite.
+ *
+ * `EventMsg::StructHit` and `EventMsg::PieceRepaired` write the SAME readout
+ * from opposite directions and both raise `APPLIED_STRUCT_HIT`; only a hit
+ * also raises `APPLIED_HIT`, because only a hit struck somebody. `core.rs:98`
+ * states it outright — *"A reader that wants only raid damage checks for
+ * both"* — and the one reader in this client checked one, so a wall being
+ * mended announced itself as a wall being broken: `breaching 750/750`, the
+ * most alarming sentence in the game, fired by your own repair. A law with a
+ * prose statement and no gate is the class `CLAUDE.md` names; this function is
+ * the gate's surface.
+ *
+ * `hp` is the packed `left << 16 | max` of `client_struct_hit_hp`. A `max` of
+ * 0 means the piece's def row has not arrived, so there is no bar to draw and
+ * the honest answer is silence.
+ */
+export function structNews(flags, hp) {
+  if (!(flags & APPLIED_STRUCT_HIT_BIT)) return "";
+  const max = hp & 0xffff;
+  if (max === 0) return "";
+  const left = hp >>> 16;
+  return flags & APPLIED_HIT_BIT ? `breaching ${left}/${max}` : `repaired ${left}/${max}`;
+}

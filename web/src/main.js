@@ -34,13 +34,17 @@ import {
   VERB_DOOR,
   VERB_HEARTH,
   VERB_NONE,
+  buildRefusal,
   centrePrompt,
   describeDeploy,
   describePiece,
+  nearestPiece,
   newPick,
+  newPiecePick,
   newSwingPick,
   resolveInteract,
   resolveSwing,
+  structNews,
 } from "./interact.js";
 import { MAP_N, WORLD_M, paintMap } from "./map.js";
 import { loadGroundTextures, setGroundAnisotropy } from "./textures.js";
@@ -152,18 +156,6 @@ const REFUSE_TEXT = [
   "missing ingredients",
 ];
 const STATION_TEXT = ["", "needs workbench", "needs furnace"];
-// sim-core build.rs REFUSE_B_* order.
-const BUILD_REFUSE_TEXT = [
-  "no such piece",
-  "spot taken",
-  "needs support",
-  "bad ground",
-  "out of reach",
-  "missing materials",
-  "world is full",
-  "claimed by a hearth",
-  "nothing to upgrade into",
-];
 // sim-core deploy.rs REFUSE_D_* order.
 const DEPLOY_REFUSE_TEXT = [
   "no such deployable",
@@ -683,25 +675,19 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // The nearest piece within reach of the feet, measured to the same
   // anchor the sim gates on: a cell center for planes and stairs, the
   // edge's midpoint for walls and doorways (sim-core build.rs `anchor`).
-  const nearestPiece = () => {
+  // The scan itself is `interact.nearestPiece` — pure, and gated in node.
+  // It lived here until 2026-08-05 reading an undeclared `REACH`, so it
+  // threw on its first line and every verb behind it was dead.
+  const piecePick = newPiecePick();
+  const pieceAt = { x: 0, z: 0 };
+  const pieceWorld = { cell: BUILD_CELL, recs: [] };
+  const aimPiece = () => {
     const R = views.render;
-    let best = null;
-    let bestD = REACH * REACH;
-    for (const rec of pieceRecs.values()) {
-      const x0 = rec.cx * BUILD_CELL;
-      const z0 = rec.cz * BUILD_CELL;
-      const h = BUILD_CELL / 2;
-      const ax = rec.loc === 2 ? x0 : x0 + h;
-      const az = rec.loc === 3 ? z0 : z0 + h;
-      const dx = ax - R[1];
-      const dz = az - R[3];
-      const d2 = dx * dx + dz * dz;
-      if (d2 < bestD) {
-        bestD = d2;
-        best = rec;
-      }
-    }
-    return best;
+    pieceAt.x = R[1];
+    pieceAt.z = R[3];
+    // `values()` is a one-shot iterator, so it is taken fresh per scan.
+    pieceWorld.recs = pieceRecs.values();
+    return nearestPiece(piecePick, pieceAt, pieceWorld);
   };
   // U climbs the nearest piece one rung: wood → stone → metal. The wire
   // carries the rung, not the step, so the client only has to know what
@@ -709,8 +695,8 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
   // may pay for it, stays the server's verdict, back as a toast. Nothing
   // is predicted: an upgrade never moves collision.
   const tryUpgrade = () => {
-    const best = nearestPiece();
-    if (!best) {
+    const best = aimPiece();
+    if (!best.found) {
       hud.toast("no building in reach");
       return;
     }
@@ -1137,12 +1123,12 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         hud.toast(cost > 0 ? `drank +${d >>> 16} −${cost} hp` : `drank +${d >>> 16}`);
       }
       if (flags & (1 << 26) /* STRUCT_HIT */) {
-        // The breach readout: what is left of the thing being broken.
-        // max 0 means its def row hasn't arrived — say nothing rather
-        // than draw a bar off a number we don't have.
-        const hp = ex.client_struct_hit_hp() >>> 0;
-        const max = hp & 0xffff;
-        if (max > 0) hud.toast(`breaching ${hp >>> 16}/${max}`);
+        // The breach readout, and its opposite. A repair raises this flag
+        // too and only a hit also raises APPLIED_HIT, so the two are told
+        // apart on the bit the wasm sets for exactly that — see
+        // `interact.structNews`, which is where the whole rule lives.
+        const news = structNews(flags, ex.client_struct_hit_hp() >>> 0);
+        if (news) hud.toast(news);
       }
       if (flags & (1 << 30) /* RESPAWN — the death screen opened or closed */) {
         // One flag, two events: `client_death_screen` says which. Packed
@@ -1238,7 +1224,7 @@ function run(ex, views, wt, seed, playerId, streamReader, streamWriter, streamLe
         for (;;) {
           const r = ex.client_build_refusal_pop() >>> 0;
           if (r === 0xffffffff) break;
-          hud.toast(`can't build: ${BUILD_REFUSE_TEXT[r] || `code ${r}`}`);
+          hud.toast(`can't build: ${buildRefusal(r)}`);
         }
       }
       if (flags & 32768 /* DEPLOY_RESET */) {
