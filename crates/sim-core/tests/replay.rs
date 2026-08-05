@@ -112,7 +112,31 @@ const TICKS: u64 = 900;
 /// moved. The memo behind the query (`World::slot_cache`) is deliberately not
 /// in `state_hash`; it is a pure function's cache, so it cannot move this
 /// number, and holding it out is what keeps that true.
-const GOLDEN_FINAL_HASH: u64 = 0xB09C_FF07_A63B_4581;
+/// Regenerated again for the jump verb (`movement.rs` `JUMP_SPEED`,
+/// `input.rs` `BTN_JUMP`): `bot_frame` now sets the jump bit once every
+/// `JUMP_PERIOD` frames, so the same input script walks an arc where it used
+/// to walk flat, and `state_hash` folds `qvy` and `grounded`.
+///
+/// The cause was checked rather than assumed, on the two axes that separate
+/// an intended move from a broken script:
+///
+/// - **Determinism is untouched and is asserted above** — both runs still
+///   agree tick for tick, on every stamped hash and on the final one. The
+///   jump is a pure function of the frame, so it could not have been
+///   otherwise, but "could not" is not evidence and the assertion is.
+/// - **Every behavioural floor in `run()` still passes.** The bots place,
+///   deploy, decay, door, eat, drink, craft and smash barrels exactly as
+///   before — same floors, same script. That is what says the bots gained a
+///   verb rather than lost their footing: a period that left them airborne
+///   most of the time would have starved the build and gather floors first,
+///   and those floors are the reason `JUMP_PERIOD` is 128 and not 8.
+///
+/// The RNG stream is deliberately *not* part of this move. The jump bit is
+/// keyed off `seq`, not off a fourth `rng` draw, precisely so that this
+/// number moved for one reason and not for two — a stream shift would have
+/// re-rolled every bot's entire life and made the two causes indistinguishable
+/// from inside this file.
+const GOLDEN_FINAL_HASH: u64 = 0xB6BA_05A0_0025_F72F;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
