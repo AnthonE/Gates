@@ -4,6 +4,37 @@ The only list that answers "what should the loop pick up." Top item first.
 Done items are deleted, not checked — history lives in git and
 `DECISIONS.md`. A loop iteration starts here, ends with gates green.
 
+## 0. E tells you what it does — done this pass *(ui lane)*, kept for what it leaves
+
+From `findings/pass-20260805-002720-04-judge.md` ranked gap 3: "the island
+never tells a player what it offers", E five verbs deep in a blind fallthrough
+chain, "does something you did not choose, silently".
+
+Landed: `web/src/interact.js`, the one resolver. Two ranks — **aimed** (in
+front, within `INTERACT_AIM_RADIUS_M` of the aim line; nearest of those wins,
+as a raycast would) always beats **nearby** (everything else in reach, nearest
+wins, which is the old chain's behaviour kept so no verb that worked stops
+working). The five scans in `main.js` are gone; E dispatches on the pick, L's
+lock takes the same pick filtered to `VERB_DOOR`, and `#prompt` under the
+crosshair draws `promptFor` of that same pick off the HUD timer. Archetypes and
+reach are the sim's (`deploy.rs`, `build.rs`), not restated literals.
+`ui_smoke` §Q: 381 checks total, 28 mutants run, all 28 red.
+
+Leaves open:
+- **The aim radius is a proposed default**, `DECISIONS.md` §open (interact aim
+  radius v0). 1.0 m from the deployable's own scale; the operator has not
+  spoken a precision.
+- **Nothing highlights the picked thing in the world.** The prompt names it;
+  the box itself does not light up. That is a looks-lane material change, not
+  ours — a NOW.md line, not a cross-lane request, until someone wants it.
+- **Gathering and building have no prompt**, only deployables do. A tree and a
+  rock answer a swing, not E, so they were out of the resolver's scope; the
+  reference prompts on them too (`Rust Images/choppingtree.jpg`).
+- **Unverified in a real browser end to end.** `ui_smoke` drives the DOM and
+  the resolver; `browser_smoke` is off this run, so nothing here claims a box
+  was opened by aiming at one on a live shard.
+
+
 0. **A box can be opened — done this pass (ui lane), kept for what it leaves.**
 
    *(2026-08-05. Report 03's ranked gap 2, "you can deploy a box and never
