@@ -9,7 +9,29 @@ publish.workspace = true
 # and the client core with the browser build and imports NO server code —
 # depending on `server` would ship the authoritative sim inside the client,
 # which is the one dependency direction that can never be allowed.
+# Bevy is OPTIONAL and off by default, deliberately. It pulls several
+# hundred crates, and `clippy --workspace --all-targets` runs in the code
+# tier on every health check in every lane — a default-on Bevy would put
+# minutes onto a gate that is ~20 s today. `--features render` builds it,
+# and the renderer tier is where that cost belongs (the same tier the
+# browser gates are vacating).
+[features]
+default = []
+render = ["dep:bevy"]
+
+[[bin]]
+name = "client"
+path = "src/main.rs"
+
+[[bin]]
+name = "gates"
+path = "src/bin/gates.rs"
+required-features = ["render"]
+
 [dependencies]
+# Default features for now: trimming Bevy's feature set (audio, gltf, ui,
+# and the rest this does not draw) is a follow-up, not slice 2's business.
+bevy = { version = "0.18", optional = true }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-wasm = { path = "../client-wasm" }
