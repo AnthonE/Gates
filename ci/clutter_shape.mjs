@@ -9,7 +9,7 @@
 // horizontal card that lights black, or if the ring's triangle fleet quietly
 // doubles. Those are this file's four jobs, and all four are arithmetic:
 //
-//   §1  the cross-language coupling — three constants read from BOTH sources
+//   §1  the cross-language coupling — the constants read from BOTH sources
 //   §2  the kind order — the JS row table against the Rust enum, by name
 //   §3  the geometry contract — rooted wind, upward normals, tuft proportions
 //   §4  the fleet budget — ASSERTED, not printed
@@ -34,7 +34,9 @@ import {
   CLUTTER_POOL_CAP,
   CLUTTER_RING,
   CLUTTER_ROWS,
+  CLUTTER_TILE_CAP,
   CLUTTER_TILE_M,
+  SKIRT_PER_TILE,
 } from "../web/src/clutter.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -81,6 +83,20 @@ check(
   `CLUTTER_FLOATS: clutter.js strides by ${CLUTTER_FLOATS}, bridge.rs writes ` +
     `${rustConst(bridgeRs, "CLUTTER_FLOATS", "bridge.rs")}`,
 );
+// The prop-base skirts ride the same buffer behind the grid, so the cap the
+// client sizes its tile cache and its pools for is the SUM. A skirt budget
+// that grew in Rust and not here is the client silently dropping the elements
+// that break the prop contact line — the exact defect the skirts exist for,
+// reintroduced by a constant.
+check(
+  SKIRT_PER_TILE === rustConst(terrainRs, "SKIRT_PER_TILE", "terrain.rs"),
+  `SKIRT_PER_TILE: clutter.js has ${SKIRT_PER_TILE}, terrain.rs has ` +
+    `${rustConst(terrainRs, "SKIRT_PER_TILE", "terrain.rs")}`,
+);
+check(
+  CLUTTER_TILE_CAP === CLUTTER_PER_TILE + SKIRT_PER_TILE,
+  `CLUTTER_TILE_CAP ${CLUTTER_TILE_CAP} is not ${CLUTTER_PER_TILE} grid + ${SKIRT_PER_TILE} skirt`,
+);
 
 // The grid has to divide exactly on this side too, or a tile's elements land
 // outside the tile the client thinks it loaded.
@@ -106,7 +122,7 @@ check(
     `under ART.md rule 4's ${RULE4_NEAR_M} m near field`,
 );
 check(
-  CLUTTER_POOL_CAP === CLUTTER_PER_TILE * (2 * CLUTTER_RING + 1) ** 2,
+  CLUTTER_POOL_CAP === CLUTTER_TILE_CAP * (2 * CLUTTER_RING + 1) ** 2,
   `the pool cap ${CLUTTER_POOL_CAP} is not the whole ring — a kind that filled ` +
     `the ring would be silently truncated`,
 );
@@ -300,8 +316,14 @@ check(
 console.log(
   `clutter: ${built.map((b) => `${b.row.name} ${b.facts.tris}t`).join(" · ")} · ring ` +
     `${2 * CLUTTER_RING + 1}² tiles of ${CLUTTER_TILE_M} m (${reach} m guaranteed, rule 4 wants ` +
-    `${RULE4_NEAR_M}) · cap ${CLUTTER_POOL_CAP}/kind · worst fleet ${(fleet / 1000).toFixed(
-      0,
-    )} k tris = ${((100 * fleet) / FRAME_TRI_BUDGET).toFixed(1)}% of the frame budget`,
+    `${RULE4_NEAR_M}) · tile ${CLUTTER_PER_TILE} grid + ${SKIRT_PER_TILE} skirt · cap ` +
+    `${CLUTTER_POOL_CAP}/kind · worst fleet ${(fleet / 1000).toFixed(0)} k tris = ` +
+    `${((100 * fleet) / FRAME_TRI_BUDGET).toFixed(1)}% of the frame budget`,
 );
+// The skirt cap is a BOUND, not a measurement: every scanned cell holding a
+// max-reach prop, all of it landing inside the tile. Swept over 1,875 real
+// tiles on three seeds the peak was 40 and the mean 4.8 — 6.4x headroom — and
+// the peak a full 5×5 ring actually held was 15,930 of the 22,025 the pools
+// are sized for. `crates/sim-core/tests/clutter.rs` re-measures the bound;
+// this line exists so the next pass reads the gap rather than the cap alone.
 console.log(`clutter shape: ${checks} checks passed`);

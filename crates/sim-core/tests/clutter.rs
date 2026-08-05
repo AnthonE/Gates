@@ -7,8 +7,9 @@
 //! it. Everything else here defends a premise that measurement rests on.
 
 use sim_core::terrain::{
-    self, Clutter, ClutterElem, CLUTTER_CELLS_PER_SIDE, CLUTTER_CELLS_PER_TILE, CLUTTER_CELL_M,
-    CLUTTER_NONE, CLUTTER_PER_TILE, CLUTTER_TILE_M, LAND_MIN_H,
+    self, Clutter, ClutterElem, Haven, Occupant, ScatterTable, CLUTTER_CELLS_PER_SIDE,
+    CLUTTER_CELLS_PER_TILE, CLUTTER_CELL_M, CLUTTER_NONE, CLUTTER_PER_TILE, CLUTTER_TILE_M,
+    LAND_MIN_H, SKIRT_BAND_M, SKIRT_MAX, SKIRT_MIN, SKIRT_PER_TILE, SKIRT_TILE_CELLS,
 };
 
 const SEEDS: [u64; 3] = [0x0047_4154_4553, 1, 0xDEAD_BEEF];
@@ -375,4 +376,283 @@ fn test_the_grid_divides_exactly() {
         area <= MAX_BARE_M2,
         "the grid's own bound is {area:.2} m², over rule 4's {MAX_BARE_M2} m²"
     );
+}
+
+// ── Prop-base skirts ───────────────────────────────────────────────────────
+//
+// The grid above is blind to props, which is what the visual judge named in
+// `findings/pass-20260804-173640-01-visual.md` twice: gap 1 asked for the
+// grid AND for clutter "crowded at every prop base", gap 3 named the symptom
+// of the missing half — "a razor-clean intersection at its base", against
+// `ART.md` rule 2, "nothing sits ON the ground, everything sits IN it".
+//
+// A skirt is not measurable as a bare disc, so this half of the suite gates
+// the four properties the drawn result actually rests on: that a prop gets a
+// ring, that the ring hugs its own published footprint, that the ring is
+// spread rather than clumped on one side, and that no tile can overrun the
+// buffer the client sized for it.
+
+/// A tile with props in it, for a seed — the fixture the skirt tests stand on.
+fn a_tile_with_props(seed: u64) -> (i32, i32, Haven, ScatterTable) {
+    let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(seed);
+    let (x, z) = a_land_origin(seed, 0);
+    let (t0x, t0z) = ((x / CLUTTER_TILE_M) as i32, (z / CLUTTER_TILE_M) as i32);
+    // Walk a few tiles until one actually holds a prop; a single tile is 16 m
+    // and the scatter grid is sparse enough that the first can be empty.
+    for d in 0..24 {
+        let (tx, tz) = (t0x + d, t0z);
+        let mut buf = [CLUTTER_NONE; SKIRT_PER_TILE];
+        if terrain::skirt_fill(seed, &table, &haven, tx, tz, &mut buf) > 0 {
+            return (tx, tz, haven, table);
+        }
+    }
+    panic!("seed {seed:#x}: no tile within 24 of the land origin holds a skirted prop");
+}
+
+/// A skirt exists at all, and it is made of the same four kinds the grid is.
+/// The failure this catches is the one that reads as "shipped": a generator
+/// that compiles, returns 0, and leaves every contact line exactly as razor
+/// clean as the report found it.
+#[test]
+fn test_every_prop_gets_a_skirt() {
+    for seed in SEEDS {
+        let (tx, tz, haven, table) = a_tile_with_props(seed);
+        let mut buf = [CLUTTER_NONE; SKIRT_PER_TILE];
+        let n = terrain::skirt_fill(seed, &table, &haven, tx, tz, &mut buf);
+        assert!(n > 0, "seed {seed:#x}: tile ({tx},{tz}) skirts nothing");
+        for e in buf.iter().take(n) {
+            assert!(
+                e.kind != Clutter::None,
+                "seed {seed:#x}: skirt_fill wrote an empty element inside its count"
+            );
+            assert!(
+                e.y >= LAND_MIN_H,
+                "seed {seed:#x}: a skirt element stands at y={} in the water",
+                e.y
+            );
+        }
+    }
+}
+
+/// Per-prop counts follow the published footprint, both rails included. This
+/// is the arithmetic behind "a boulder is not skirted as thinly as a barrel".
+#[test]
+fn test_skirt_count_tracks_the_published_footprint() {
+    let kinds = [
+        Occupant::Tree,
+        Occupant::StoneNode,
+        Occupant::MetalNode,
+        Occupant::SulfurNode,
+        Occupant::Bush,
+        Occupant::Rock,
+        Occupant::BarrelSlot,
+        Occupant::CrateSlot,
+        Occupant::HavenShelter,
+        Occupant::CacheSlot,
+        Occupant::WaystationCanopy,
+    ];
+    assert_eq!(
+        terrain::skirt_count(Occupant::None),
+        0,
+        "an empty cell must not be skirted"
+    );
+    for o in kinds {
+        let n = terrain::skirt_count(o);
+        assert!(
+            (SKIRT_MIN..=SKIRT_MAX).contains(&n),
+            "{o:?} draws {n} skirt elements, outside [{SKIRT_MIN}, {SKIRT_MAX}]"
+        );
+        // Reach is never tighter than one element's own footprint.
+        assert!(
+            terrain::skirt_base_r(o) > 0.0,
+            "{o:?} has a zero skirt reach — the floor did not apply"
+        );
+    }
+    // The ordering the reach floor exists to preserve: a wider prop is never
+    // ringed by fewer elements than a narrower one.
+    assert!(
+        terrain::skirt_count(Occupant::Rock) >= terrain::skirt_count(Occupant::BarrelSlot),
+        "a 1.5 m boulder is skirted more thinly than a 0.45 m barrel"
+    );
+}
+
+/// Every element sits in the annulus its prop's footprint defines: outside
+/// the collision radius (or it is buried in the mesh) and inside the band (or
+/// it is a lawn, not a skirt). Measured against the slot's own position, so
+/// this fails if the ring is ever re-centred by accident.
+#[test]
+fn test_skirt_elements_ring_their_own_prop() {
+    for seed in SEEDS {
+        let (tx, tz, haven, table) = a_tile_with_props(seed);
+        let c0x = tx * SKIRT_TILE_CELLS - 1;
+        let c0z = tz * SKIRT_TILE_CELLS - 1;
+        let mut checked = 0;
+        for dz in 0..4 {
+            for dx in 0..4 {
+                let (cx, cz) = (c0x + dx, c0z + dz);
+                let slot = terrain::scatter(seed, &table, &haven, cx, cz);
+                if slot.occupant == Occupant::None {
+                    continue;
+                }
+                let r_b = terrain::skirt_base_r(slot.occupant);
+                let n = terrain::skirt_count(slot.occupant);
+                // Rebuild this prop's whole ring, unclipped, straight off the
+                // tile buffer's own generator via a one-cell scan.
+                let mut buf = [CLUTTER_NONE; SKIRT_PER_TILE];
+                let got = terrain::skirt_fill(seed, &table, &haven, tx, tz, &mut buf);
+                for e in buf.iter().take(got) {
+                    let (ex, ez) = (e.x - slot.x, e.z - slot.z);
+                    let d = (ex * ex + ez * ez).sqrt();
+                    // Only elements belonging to THIS prop: the annulus is
+                    // narrow enough that a neighbour's cannot fall inside it
+                    // by accident at this distance test's tolerance.
+                    if d > r_b + SKIRT_BAND_M + 0.001 {
+                        continue;
+                    }
+                    assert!(
+                        d >= r_b - 0.001,
+                        "seed {seed:#x}: a {:?} skirt element is {d:.3} m out, inside its own \
+                         {r_b:.3} m footprint",
+                        slot.occupant
+                    );
+                    checked += 1;
+                }
+                assert!(n >= SKIRT_MIN);
+            }
+        }
+        assert!(
+            checked > 0,
+            "seed {seed:#x}: tile ({tx},{tz}) yielded no element to range-check"
+        );
+    }
+}
+
+/// The ring is SPREAD, not clumped. This is the property angular stratification
+/// buys, and the one a free-jitter ring silently loses: sixteen elements drawn
+/// uniformly over a circle leave a bald arc often enough to see it.
+///
+/// Measured as quadrant occupancy on the fullest prop in a tile — with `n`
+/// elements stratified over 4 quadrants, every quadrant holds at least
+/// `floor(n/4) - 1` of them by construction, and free jitter does not.
+#[test]
+fn test_a_skirt_is_spread_not_clumped() {
+    for seed in SEEDS {
+        let (tx, tz, haven, table) = a_tile_with_props(seed);
+        let c0x = tx * SKIRT_TILE_CELLS - 1;
+        let c0z = tz * SKIRT_TILE_CELLS - 1;
+        let mut tested = 0;
+        for dz in 0..4 {
+            for dx in 0..4 {
+                let slot = terrain::scatter(seed, &table, &haven, c0x + dx, c0z + dz);
+                let n = terrain::skirt_count(slot.occupant);
+                // Only props whose whole ring is on land and inside the tile
+                // can be judged on spread; a clipped ring is meant to be
+                // partial. Rebuild unclipped from the generator.
+                if n < 8 {
+                    continue;
+                }
+                let mut quad = [0usize; 4];
+                let mut on_land = 0;
+                for i in 0..n {
+                    let e = terrain::skirt_elem(seed, c0x + dx, c0z + dz, &slot, i, n);
+                    if e.kind == Clutter::None {
+                        continue;
+                    }
+                    on_land += 1;
+                    let (ex, ez) = (e.x - slot.x, e.z - slot.z);
+                    let q = ((ex >= 0.0) as usize) | (((ez >= 0.0) as usize) << 1);
+                    quad[q] += 1;
+                }
+                if on_land < n {
+                    continue; // partly in the water — spread is not its job
+                }
+                for (q, c) in quad.iter().enumerate() {
+                    assert!(
+                        *c + 1 >= n / 4,
+                        "seed {seed:#x}: a {:?}'s {n}-element skirt puts only {c} in quadrant \
+                         {q} — the stratification is not holding",
+                        slot.occupant
+                    );
+                }
+                tested += 1;
+            }
+        }
+        assert!(
+            tested > 0,
+            "seed {seed:#x}: no prop with a full ring to check spread on"
+        );
+    }
+}
+
+/// THE BUDGET WALL. `SKIRT_PER_TILE` is what the client sizes its tile cache
+/// and its pools for, so a tile that yields more is a silent drop at best.
+/// Swept over real tiles, not argued from the bound.
+#[test]
+fn test_no_tile_exceeds_the_skirt_budget() {
+    for seed in SEEDS {
+        let table = ScatterTable::alpha_default();
+        let haven = terrain::haven(seed);
+        let (x, z) = a_land_origin(seed, 0);
+        let (t0x, t0z) = ((x / CLUTTER_TILE_M) as i32, (z / CLUTTER_TILE_M) as i32);
+        let mut worst = 0usize;
+        for dz in -12..=12 {
+            for dx in -12..=12 {
+                let mut buf = [CLUTTER_NONE; SKIRT_PER_TILE];
+                let n = terrain::skirt_fill(seed, &table, &haven, t0x + dx, t0z + dz, &mut buf);
+                assert!(
+                    n <= SKIRT_PER_TILE,
+                    "seed {seed:#x}: tile ({},{}) yielded {n} skirt elements, over the \
+                     {SKIRT_PER_TILE} the client sized for",
+                    t0x + dx,
+                    t0z + dz
+                );
+                worst = worst.max(n);
+            }
+        }
+        assert!(worst > 0, "seed {seed:#x}: 625 tiles and not one skirt");
+    }
+}
+
+/// A short buffer thins the skirt and never overruns — the same contract
+/// `clutter_fill` carries, for the same reason: the bridge owns the buffer.
+#[test]
+fn test_a_short_skirt_buffer_truncates() {
+    for seed in SEEDS {
+        let (tx, tz, haven, table) = a_tile_with_props(seed);
+        for cap in [1usize, 5, 17] {
+            let mut buf = vec![CLUTTER_NONE; cap];
+            let n = terrain::skirt_fill(seed, &table, &haven, tx, tz, &mut buf);
+            assert!(
+                n <= cap,
+                "seed {seed:#x}: skirt_fill wrote {n} into a {cap}-element buffer"
+            );
+        }
+    }
+}
+
+/// Deterministic on the seed and dependent on it — the replay wall, applied
+/// to a population that is worldgen potential rather than sim state.
+#[test]
+fn test_skirts_are_deterministic_and_seed_dependent() {
+    let (tx, tz, haven, table) = a_tile_with_props(SEEDS[0]);
+    let mut a = [CLUTTER_NONE; SKIRT_PER_TILE];
+    let mut b = [CLUTTER_NONE; SKIRT_PER_TILE];
+    let na = terrain::skirt_fill(SEEDS[0], &table, &haven, tx, tz, &mut a);
+    let nb = terrain::skirt_fill(SEEDS[0], &table, &haven, tx, tz, &mut b);
+    assert_eq!(na, nb, "the same tile skirted two different counts");
+    for i in 0..na {
+        assert_eq!(
+            a[i].kind, b[i].kind,
+            "element {i} changed kind between calls"
+        );
+        assert_eq!(a[i].x, b[i].x, "element {i} moved in x between calls");
+        assert_eq!(a[i].z, b[i].z, "element {i} moved in z between calls");
+    }
+
+    let haven2 = terrain::haven(SEEDS[1]);
+    let mut c = [CLUTTER_NONE; SKIRT_PER_TILE];
+    let nc = terrain::skirt_fill(SEEDS[1], &table, &haven2, tx, tz, &mut c);
+    let same = na == nc && (0..na.min(nc)).all(|i| a[i].x == c[i].x && a[i].z == c[i].z);
+    assert!(!same, "two seeds skirted the same tile identically");
 }
