@@ -138,8 +138,11 @@ What it did not do:
    code tier. Wrinkle the judge already found: M23's `to` argument is the
    empty string, so a naive whitespace filter drops the record.
 
-The checklist has NOT been seen — no frames were captured this pass. Its
-behaviour is gated; its appearance is unverified.
+Seen, but only as DOM: a throwaway browser built the real `Hud` over the
+shipped `index.html` and screenshotted the overlay — it sits top-left, clear
+of the compass, ticks where it should. That is diagnosis, not evidence. No
+shard, no renderer, no capture; `browser_smoke` is off this run, so nothing
+above rests on it.
 
 ## 0e2 · The deploy-def stride is stale, and this lane cannot fix it alone
 *(systems lane — BLOCKED on a web/ half)*
