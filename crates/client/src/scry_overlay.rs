@@ -1,0 +1,650 @@
+//! scry overlay — the Rust reference client. One file, `std` only.
+//!
+//! What a native game (Gates) uses to reach a running scry launcher: who is
+//! playing, a signature, the catalog, the shard list. **It holds no key and
+//! has no code path that could.** See `sdk/PROTOCOL.md` and `docs/SDK.md`.
+//!
+//! `ignore`, not `no_run`: `submit`, `show` and `log` below are the GAME's own
+//! functions, so this sketch never compiled — and nothing noticed until Gates
+//! vendored the file into a cargo crate, where rustdoc finally tried. A doc
+//! example that cannot build is a small lie in the one file a game reads first.
+//!
+//! ```ignore
+//! let mut scry = scry_overlay::Overlay::connect("gates", "0.1.0");
+//! match scry {
+//!     Ok(mut ov) => {
+//!         let who = ov.address();                     // Option<String>
+//!         let msg = scry_overlay::play_message("duel", "vow_x", "ETH up 5", None);
+//!         match ov.sign(&msg, "settling round 41") {
+//!             Ok(sig)                          => submit(&sig.signature),
+//!             Err(scry_overlay::SignError::Handoff(url)) => show_link(&url),
+//!             Err(e)                           => show(&e.to_string()),
+//!         }
+//!     }
+//!     // No launcher is a NORMAL state. Play anyway. Never fall back to
+//!     // asking the player for a private key — there is no third option and
+//!     // this file deliberately does not offer one.
+//!     Err(why) => log(&format!("no scry launcher: {why}")),
+//! }
+//! ```
+//!
+//! Vendor it: no crates, no build script, no features. A project that already
+//! has serde can delete the `json` module and swap in `serde_json` — the
+//! client logic does not care which produced the map.
+
+#![allow(dead_code)]
+
+use std::env;
+use std::fmt;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::time::Duration;
+
+pub const PROTOCOL: i64 = 1;
+pub const SOCKET_ENV: &str = "SCRY_LAUNCHER_SOCKET";
+/// A consent prompt waits for a person, so the read timeout is generous.
+/// A short one here turns "the player was reading the message" into a bug.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+pub const FAMILIES: [&str; 13] = [
+    "braid", "card", "covenant", "doc", "familiar", "hive", "holder", "meter", "pact", "play",
+    "review", "store", "vow",
+];
+
+// ── a very small JSON, so this file needs no crates ─────────────────────────
+pub mod json {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum Value {
+        Null,
+        Bool(bool),
+        Num(f64),
+        Str(String),
+        Arr(Vec<Value>),
+        Obj(BTreeMap<String, Value>),
+    }
+
+    impl Value {
+        pub fn get(&self, key: &str) -> Option<&Value> {
+            match self {
+                Value::Obj(m) => m.get(key),
+                _ => None,
+            }
+        }
+        pub fn as_str(&self) -> Option<&str> {
+            match self {
+                Value::Str(s) => Some(s),
+                _ => None,
+            }
+        }
+        pub fn as_bool(&self) -> bool {
+            matches!(self, Value::Bool(true))
+        }
+        pub fn as_i64(&self) -> Option<i64> {
+            match self {
+                Value::Num(n) => Some(*n as i64),
+                _ => None,
+            }
+        }
+        /// `""` for anything missing or non-string. Callers here always want a
+        /// displayable string and never need to tell absent from empty.
+        pub fn str_or_empty(&self, key: &str) -> String {
+            self.get(key)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+        pub fn opt_str(&self, key: &str) -> Option<String> {
+            match self.get(key) {
+                Some(Value::Str(s)) if !s.is_empty() => Some(s.clone()),
+                _ => None,
+            }
+        }
+    }
+
+    pub fn escape(s: &str, out: &mut String) {
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => {
+                    let _ = write!(out, "\\u{:04x}", c as u32);
+                }
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+    }
+
+    /// Only what this client emits: an object of strings and integers.
+    pub fn object(fields: &[(&str, Field)]) -> String {
+        let mut out = String::from("{");
+        for (i, (k, v)) in fields.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            escape(k, &mut out);
+            out.push(':');
+            match v {
+                Field::S(s) => escape(s, &mut out),
+                Field::I(n) => {
+                    let _ = write!(out, "{n}");
+                }
+            }
+        }
+        out.push('}');
+        out
+    }
+
+    pub enum Field<'a> {
+        S(&'a str),
+        I(i64),
+    }
+
+    pub fn parse(src: &str) -> Result<Value, String> {
+        let b: Vec<char> = src.chars().collect();
+        let mut i = 0usize;
+        let v = parse_value(&b, &mut i)?;
+        skip_ws(&b, &mut i);
+        if i < b.len() {
+            return Err(format!("trailing input at byte {i}"));
+        }
+        Ok(v)
+    }
+
+    fn skip_ws(b: &[char], i: &mut usize) {
+        while *i < b.len() && b[*i].is_whitespace() {
+            *i += 1;
+        }
+    }
+
+    fn parse_value(b: &[char], i: &mut usize) -> Result<Value, String> {
+        skip_ws(b, i);
+        match b.get(*i) {
+            None => Err("unexpected end of input".into()),
+            Some('{') => parse_obj(b, i),
+            Some('[') => parse_arr(b, i),
+            Some('"') => Ok(Value::Str(parse_str(b, i)?)),
+            Some('t') => lit(b, i, "true", Value::Bool(true)),
+            Some('f') => lit(b, i, "false", Value::Bool(false)),
+            Some('n') => lit(b, i, "null", Value::Null),
+            Some(_) => parse_num(b, i),
+        }
+    }
+
+    fn lit(b: &[char], i: &mut usize, word: &str, v: Value) -> Result<Value, String> {
+        if b[*i..].iter().take(word.len()).collect::<String>() == word {
+            *i += word.len();
+            Ok(v)
+        } else {
+            Err(format!("expected {word}"))
+        }
+    }
+
+    fn parse_num(b: &[char], i: &mut usize) -> Result<Value, String> {
+        let start = *i;
+        while *i < b.len() && (b[*i].is_ascii_digit() || "+-.eE".contains(b[*i])) {
+            *i += 1;
+        }
+        b[start..*i]
+            .iter()
+            .collect::<String>()
+            .parse::<f64>()
+            .map(Value::Num)
+            .map_err(|e| e.to_string())
+    }
+
+    fn parse_str(b: &[char], i: &mut usize) -> Result<String, String> {
+        *i += 1; // opening quote
+        let mut out = String::new();
+        while *i < b.len() {
+            match b[*i] {
+                '"' => {
+                    *i += 1;
+                    return Ok(out);
+                }
+                '\\' => {
+                    *i += 1;
+                    let c = *b.get(*i).ok_or("dangling escape")?;
+                    match c {
+                        'n' => out.push('\n'),
+                        'r' => out.push('\r'),
+                        't' => out.push('\t'),
+                        'b' => out.push('\u{8}'),
+                        'f' => out.push('\u{c}'),
+                        'u' => {
+                            let hex: String = b[*i + 1..(*i + 5).min(b.len())].iter().collect();
+                            let n = u32::from_str_radix(&hex, 16).map_err(|e| e.to_string())?;
+                            // Surrogate pairs: a lone half is replaced rather
+                            // than dropped, so a mangled string never silently
+                            // shortens a message a player is about to sign.
+                            out.push(char::from_u32(n).unwrap_or('\u{fffd}'));
+                            *i += 4;
+                        }
+                        c => out.push(c),
+                    }
+                    *i += 1;
+                }
+                c => {
+                    out.push(c);
+                    *i += 1;
+                }
+            }
+        }
+        Err("unterminated string".into())
+    }
+
+    fn parse_arr(b: &[char], i: &mut usize) -> Result<Value, String> {
+        *i += 1;
+        let mut items = Vec::new();
+        loop {
+            skip_ws(b, i);
+            if b.get(*i) == Some(&']') {
+                *i += 1;
+                return Ok(Value::Arr(items));
+            }
+            items.push(parse_value(b, i)?);
+            skip_ws(b, i);
+            match b.get(*i) {
+                Some(',') => *i += 1,
+                Some(']') => {}
+                _ => return Err("expected , or ] in array".into()),
+            }
+        }
+    }
+
+    fn parse_obj(b: &[char], i: &mut usize) -> Result<Value, String> {
+        *i += 1;
+        let mut map = BTreeMap::new();
+        loop {
+            skip_ws(b, i);
+            if b.get(*i) == Some(&'}') {
+                *i += 1;
+                return Ok(Value::Obj(map));
+            }
+            skip_ws(b, i);
+            if b.get(*i) != Some(&'"') {
+                return Err("expected a key".into());
+            }
+            let k = parse_str(b, i)?;
+            skip_ws(b, i);
+            if b.get(*i) != Some(&':') {
+                return Err("expected :".into());
+            }
+            *i += 1;
+            map.insert(k, parse_value(b, i)?);
+            skip_ws(b, i);
+            match b.get(*i) {
+                Some(',') => *i += 1,
+                Some('}') => {}
+                _ => return Err("expected , or } in object".into()),
+            }
+        }
+    }
+}
+
+use json::{Field, Value};
+
+// ── messages, built offline ─────────────────────────────────────────────────
+
+/// The exact text a wallet signs for one game action.
+///
+/// Rebuilt here rather than fetched, on purpose: a client that asks a server
+/// what to sign has handed that server the ability to change what it is
+/// signing. The format is deterministic (`meter/playauth.py`).
+///
+/// `day` is UTC `YYYY-MM-DD`; pass `None` for today. It is a parameter because
+/// a round that straddles midnight should sign the day it started, and a
+/// client that cannot express that would silently sign the wrong one.
+pub fn play_message(action: &str, vow_id: &str, detail: &str, day: Option<&str>) -> String {
+    let today;
+    let day = match day {
+        Some(d) => d,
+        None => {
+            today = utc_day();
+            &today
+        }
+    };
+    format!("scry play\naction: {action}\nvow: {vow_id}\nday: {day}\ndetail: {detail}")
+}
+
+/// UTC `YYYY-MM-DD` from the clock, with no `chrono`. Civil-from-days is
+/// Howard Hinnant's algorithm; it is exact for every date this will ever see.
+pub fn utc_day() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let z = secs.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+// ── results ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct Signature {
+    pub signature: String,
+    pub address: Option<String>,
+    pub family: String,
+    pub backend: String,
+}
+
+/// Why a signature did not come back. **`Handoff` is not a failure** — it
+/// means the player's signer is their browser and the act finishes there. A
+/// game that retries on it will spin forever; show the link instead.
+#[derive(Debug, Clone)]
+pub enum SignError {
+    /// The player said no at the consent prompt. Do not retry.
+    RefusedByPlayer(String),
+    /// Finish in a browser at this URL. Not an error.
+    Handoff(String),
+    /// The signer refused: unknown family, budget spent, unarmed, unreachable.
+    Refused(String),
+    /// No launcher, or the connection died.
+    NoLauncher(String),
+}
+
+impl fmt::Display for SignError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SignError::RefusedByPlayer(s) => write!(f, "{s}"),
+            SignError::Handoff(u) => write!(f, "finish this in your browser: {u}"),
+            SignError::Refused(s) => write!(f, "{s}"),
+            SignError::NoLauncher(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl std::error::Error for SignError {}
+
+// ── the client ──────────────────────────────────────────────────────────────
+
+pub fn default_socket() -> PathBuf {
+    if let Ok(p) = env::var(SOCKET_ENV) {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    if let Ok(rt) = env::var("XDG_RUNTIME_DIR") {
+        if !rt.is_empty() {
+            return PathBuf::from(rt).join("scry").join("launcher.sock");
+        }
+    }
+    PathBuf::from(env::var("HOME").unwrap_or_default()).join(".cache/scry/launcher/launcher.sock")
+}
+
+pub struct Overlay {
+    stream: UnixStream,
+    reader: BufReader<UnixStream>,
+    pub hello: Value,
+}
+
+impl Overlay {
+    /// Connect and say hello. `Err` is a **normal** state — it means no
+    /// launcher is running, and a game must play fine without one.
+    pub fn connect(game: &str, version: &str) -> Result<Overlay, String> {
+        Overlay::connect_at(&default_socket(), game, version, DEFAULT_TIMEOUT)
+    }
+
+    pub fn connect_at(
+        path: &std::path::Path,
+        game: &str,
+        version: &str,
+        timeout: Duration,
+    ) -> Result<Overlay, String> {
+        let stream = UnixStream::connect(path)
+            .map_err(|e| format!("no launcher at {}: {e}", path.display()))?;
+        stream.set_read_timeout(Some(timeout)).ok();
+        stream.set_write_timeout(Some(timeout)).ok();
+        let reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
+        let mut ov = Overlay {
+            stream,
+            reader,
+            hello: Value::Null,
+        };
+        let reply = ov.call(&json::object(&[
+            ("op", Field::S("hello")),
+            ("game", Field::S(game)),
+            ("version", Field::S(version)),
+            ("protocol", Field::I(PROTOCOL)),
+        ]))?;
+        if !reply.as_bool_key("ok") {
+            return Err(reply.str_or_empty("reason"));
+        }
+        ov.hello = reply;
+        Ok(ov)
+    }
+
+    /// Which backend the player configured: `browser` · `arca` · `external` ·
+    /// `none`. Worth reading before asking — with `none` there is nothing to
+    /// ask, and with `browser` expect a handoff rather than a signature and
+    /// shape the UI for it.
+    pub fn signer(&self) -> String {
+        self.hello.str_or_empty("signer")
+    }
+
+    pub fn protocol(&self) -> i64 {
+        self.hello
+            .get("protocol")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+    }
+
+    /// The address the player asked their launcher to watch.
+    ///
+    /// A CLAIM, not authentication — anything can say a number. If it matters,
+    /// ask for a signature over something you chose and recover the signer.
+    pub fn address(&mut self) -> Option<String> {
+        let reply = self
+            .call(&json::object(&[("op", Field::S("identity"))]))
+            .ok()?;
+        if reply.as_bool_key("ok") {
+            reply.opt_str("address")
+        } else {
+            None
+        }
+    }
+
+    pub fn sign(&mut self, text: &str, why: &str) -> Result<Signature, SignError> {
+        let req = json::object(&[
+            ("op", Field::S("sign")),
+            ("text", Field::S(text)),
+            ("why", Field::S(why)),
+        ]);
+        let reply = self.call(&req).map_err(SignError::NoLauncher)?;
+        if reply.as_bool_key("ok") {
+            return Ok(Signature {
+                signature: reply.str_or_empty("signature"),
+                address: reply.opt_str("address"),
+                family: reply.str_or_empty("family"),
+                backend: reply.str_or_empty("backend"),
+            });
+        }
+        let reason = reply.str_or_empty("reason");
+        if let Some(url) = reply.opt_str("handoff") {
+            return Err(SignError::Handoff(url));
+        }
+        if reply.str_or_empty("refused_by") == "the player" {
+            return Err(SignError::RefusedByPlayer(reason));
+        }
+        Err(SignError::Refused(reason))
+    }
+
+    /// The URL of a title's shard list, which YOU fetch. The launcher does not
+    /// proxy it — a launcher between a game and its own server list is a cache
+    /// nobody asked for and a ranking nobody can see.
+    pub fn servers_url(&mut self, slug: &str) -> Option<String> {
+        let reply = self
+            .call(&json::object(&[
+                ("op", Field::S("servers")),
+                ("slug", Field::S(slug)),
+            ]))
+            .ok()?;
+        if reply.as_bool_key("ok") {
+            reply.opt_str("url")
+        } else {
+            None
+        }
+    }
+
+    pub fn title(&mut self, slug: &str) -> Option<Value> {
+        let reply = self
+            .call(&json::object(&[
+                ("op", Field::S("title")),
+                ("slug", Field::S(slug)),
+            ]))
+            .ok()?;
+        if reply.as_bool_key("ok") {
+            reply.get("title").cloned()
+        } else {
+            None
+        }
+    }
+
+    /// One snapshot a game can DRAW — the overlay's read.
+    ///
+    /// Operator, 2026-08-05: *"and what about an overlay?"* Steam injects a
+    /// library and hooks the graphics API because Steam does not own the
+    /// games. This platform does, so the overlay is **the game rendering its
+    /// own HUD** from this call — which is why this file has carried the name
+    /// `scry_overlay` since before the feature existed. No injection, nothing
+    /// to break on a driver update, nothing that reads as malware to an
+    /// anti-cheat.
+    ///
+    /// ⚠ **Display freely; never approve.** A game controls its own pixels, so
+    /// it can draw a convincing fake of any dialog. This reply carries no
+    /// consent token, no pending-request queue and no already-allowed flag,
+    /// and the launcher will not accept one back. Asking the player is the
+    /// launcher's job, in the launcher's own window, per game and per family.
+    /// A HUD that draws its own *"allow this signature?"* is drawing a forgery
+    /// — call [`Overlay::sign`] and let the launcher ask.
+    ///
+    /// Cheap enough to poll each frame: it is one round trip over a local
+    /// socket, and every field in it could already be asked for one at a time.
+    pub fn overlay(&mut self, slug: &str) -> Option<Value> {
+        let reply = self
+            .call(&json::object(&[
+                ("op", Field::S("overlay")),
+                ("slug", Field::S(slug)),
+            ]))
+            .ok()?;
+        if reply.as_bool_key("ok") {
+            reply.get("overlay").cloned()
+        } else {
+            None
+        }
+    }
+
+    pub fn open_url(&mut self, url: &str) -> bool {
+        self.call(&json::object(&[
+            ("op", Field::S("open")),
+            ("url", Field::S(url)),
+        ]))
+        .map(|r| r.as_bool_key("ok"))
+        .unwrap_or(false)
+    }
+
+    fn call(&mut self, line: &str) -> Result<Value, String> {
+        self.stream
+            .write_all(line.as_bytes())
+            .and_then(|_| self.stream.write_all(b"\n"))
+            .and_then(|_| self.stream.flush())
+            .map_err(|e| format!("lost the launcher: {e}"))?;
+        let mut buf = String::new();
+        let n = self
+            .reader
+            .read_line(&mut buf)
+            .map_err(|e| format!("lost the launcher: {e}"))?;
+        if n == 0 {
+            return Err("the launcher closed the connection".into());
+        }
+        json::parse(buf.trim()).map_err(|e| format!("the launcher replied with non-JSON: {e}"))
+    }
+}
+
+trait BoolKey {
+    fn as_bool_key(&self, key: &str) -> bool;
+}
+
+impl BoolKey for Value {
+    fn as_bool_key(&self, key: &str) -> bool {
+        self.get(key).map(|v| v.as_bool()).unwrap_or(false)
+    }
+}
+
+// ── tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_roundtrips_the_shapes_the_broker_sends() {
+        let v = json::parse(
+            r#"{"ok":true,"signature":"0xab","n":3,"nested":{"a":[1,"two",null]},"esc":"a\nb"}"#,
+        )
+        .unwrap();
+        assert!(v.as_bool_key("ok"));
+        assert_eq!(v.str_or_empty("signature"), "0xab");
+        assert_eq!(v.get("n").unwrap().as_i64(), Some(3));
+        assert_eq!(v.str_or_empty("esc"), "a\nb");
+        assert!(matches!(
+            v.get("nested").unwrap().get("a"),
+            Some(Value::Arr(_))
+        ));
+    }
+
+    #[test]
+    fn a_message_with_newlines_survives_the_encoder() {
+        // The whole protocol carries multi-line messages; an encoder that
+        // ate a newline would change what the player signs.
+        let msg = play_message("duel", "vow_x", "ETH up 5", Some("2026-08-04"));
+        let line = json::object(&[("op", Field::S("sign")), ("text", Field::S(&msg))]);
+        let back = json::parse(&line).unwrap();
+        assert_eq!(back.str_or_empty("text"), msg);
+        assert_eq!(msg.lines().count(), 5);
+    }
+
+    #[test]
+    fn play_message_matches_the_servers_format() {
+        assert_eq!(
+            play_message("answer", "vow_1", "abc", Some("2026-08-04")),
+            "scry play\naction: answer\nvow: vow_1\nday: 2026-08-04\ndetail: abc"
+        );
+    }
+
+    #[test]
+    fn utc_day_is_a_real_date() {
+        let d = utc_day();
+        assert_eq!(d.len(), 10);
+        assert_eq!(d.as_bytes()[4], b'-');
+        assert_eq!(d.as_bytes()[7], b'-');
+    }
+
+    #[test]
+    fn missing_launcher_is_an_error_not_a_panic() {
+        let e = Overlay::connect_at(
+            std::path::Path::new("/nonexistent/scry.sock"),
+            "t",
+            "1",
+            Duration::from_millis(50),
+        );
+        assert!(e.is_err());
+    }
+}

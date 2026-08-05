@@ -360,10 +360,22 @@ Two slices have landed and both are on `main`:
 those and writes transforms. Gameplay state in a Bevy component would
 retire the determinism walls with nothing in CI to notice.
 
+**Slice 3 landed 2026-08-05: it ships.** `ci/depot.py` packages the build as
+a scry depot and `crates/client/src/{args,scry}.rs` give it the launcher's
+interface — `--server`/`--identity` from a depot's launch block, and the
+vendored scry SDK for who is playing. Run end to end: real 64.7 MB depot,
+served over HTTP, `scry install gates` by slug, hashes verified, digest equal
+across packager/origin/client, and the installed binary joined a live shard
+(3 joins, 2380 inputs, 0 bad, 0 dropped). Two defects fixed by running it —
+`client_endpoint` died outright on an IPv6-less machine (now falls back to
+IPv4), and a dirty tree gave two different binaries the same build id (now
+content-keyed). Publishing and notarizing are operator acts and are NOT done.
+
 Next slices, roughly in order:
 
 1. **Input** — keyboard/mouse into `ClientCore::set_input`. Every verb
-   exists server-side; nothing native can press one yet.
+   exists server-side; nothing native can press one yet. **This is now the
+   top gap**: a player can install and start the game and cannot move in it.
 2. **Terrain** — mesh `sim_core::terrain`. It is a pure function of the
    seed and both sides already agree on it, so this is meshing, not
    design. `web/src/terrain.js` is the reference for *what* to draw.

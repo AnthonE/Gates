@@ -15,8 +15,9 @@
 //! from the main schedule only.
 
 use bevy::prelude::*;
+use client::args::{self, Parsed};
+use client::scry::{Player, Scry};
 use client::{client_endpoint, Session};
-use std::net::SocketAddr;
 
 /// The connected session plus the runtime its reader tasks live on. The
 /// runtime must outlive the session — dropping it would strand the event
@@ -35,15 +36,40 @@ struct Body(u32);
 #[derive(Component)]
 struct Own;
 
+/// Who the launcher (or the command line) says is playing. A Bevy resource so
+/// a HUD can draw it; **not** gameplay state, so it does not violate "Bevy
+/// draws, it does not decide" — nothing in the sim reads it and nothing can.
+#[derive(Resource)]
+struct Who(Player);
+
 fn main() {
-    let server: SocketAddr = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:4433".into())
-        .parse()
-        .unwrap_or_else(|e| {
-            eprintln!("gates: bad addr: {e}");
-            std::process::exit(1);
-        });
+    let parsed = args::parse(std::env::args().skip(1));
+    let a = match parsed {
+        Parsed::Run(a) => a,
+        Parsed::Help => {
+            println!("{}", args::USAGE);
+            return;
+        }
+        Parsed::Bad(why) => {
+            eprintln!("gates: {why}\n\n{}", args::USAGE);
+            std::process::exit(2);
+        }
+    };
+    let server = a.server;
+
+    // Ask the scry launcher who is playing, ONCE, before anything else. It is
+    // a blocking round trip over a local socket and it must never happen
+    // inside a frame; doing it here also means the answer exists before the
+    // window does. A launcher that is not running is the normal case.
+    let who = if a.no_launcher {
+        match a.identity.as_deref() {
+            Some(id) => Player::Declared(id.to_string()),
+            None => Player::Anonymous,
+        }
+    } else {
+        Scry::discover(a.identity.as_deref(), env!("CARGO_PKG_VERSION")).player
+    };
+    println!("gates: {}", who.line());
 
     // Connect before the window opens. A client that draws a world it is
     // not connected to is a client that lies for its first few frames.
@@ -67,6 +93,7 @@ fn main() {
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins);
+    app.insert_resource(Who(who));
     app.insert_non_send_resource(Net { _rt: rt, session });
     app.add_systems(Startup, setup);
     app.add_systems(Update, (pump, draw_bodies).chain());

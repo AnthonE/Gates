@@ -195,5 +195,32 @@ pub fn bot_endpoint() -> Result<Endpoint<Client>, String> {
         .with_bind_default()
         .with_no_cert_validation()
         .build();
-    Endpoint::client(config).map_err(|e| format!("client endpoint: {e}"))
+    match Endpoint::client(config) {
+        Ok(e) => Ok(e),
+        Err(dual_stack) => {
+            // `with_bind_default` binds `[::]:0` — a dual-stack v6 socket —
+            // which a machine with IPv6 disabled cannot create at all. This is
+            // the failure `CLAUDE.md` documents for `bot_smoke`: all four of
+            // its tests die here with `Address family not supported by
+            // protocol (os error 97)`, on a clean tree, and the entry says to
+            // believe the box rather than the diff.
+            //
+            // That reading was right and the conclusion was one step short. A
+            // wall that cannot run is not a wall — and unlike a missing wasm
+            // target, this one is OUR code binding a socket we did not need.
+            // The shard under test is IPv4, so falling back costs nothing and
+            // turns a permanently-red gate into one that runs. Same fix, same
+            // reason, as `client::client_endpoint`.
+            //
+            // Dual-stack stays FIRST: it is the better socket where it exists,
+            // and it is the one that reaches a v6-only shard.
+            let v4 = wtransport::ClientConfig::builder()
+                .with_bind_address(std::net::SocketAddr::from(([0, 0, 0, 0], 0)))
+                .with_no_cert_validation()
+                .build();
+            Endpoint::client(v4).map_err(|v4_err| {
+                format!("client endpoint: {dual_stack} (and IPv4-only: {v4_err})")
+            })
+        }
+    }
 }

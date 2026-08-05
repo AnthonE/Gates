@@ -230,13 +230,21 @@ n`) and never on elapsed milliseconds — the failure that started it reported
 `inWorld=true` and timed out anyway. Widening a timeout is not a fix; it is the
 same bug with a longer fuse.
 
-**Not every red gate is a defect, and `bot_smoke` is the one that lies.** On a
-container without IPv6 all four of its tests fail at the endpoint bind with
-`Address family not supported by protocol (os error 97)` — on a *clean tree*,
-identically, which is the giveaway. Confirm with `git stash -u` before
-believing any diff caused it, and do not spend a `GATES_FIX_RED=1` pass on it:
-the suite is correct and the box is short a protocol family. Same class, same
-check: `wasm32-unknown-unknown` is not always installed, and the wasm gates
+**Not every red gate is a defect — but check whether the missing capability is
+one WE asked for.** `bot_smoke` used to fail all four tests on a container
+without IPv6 with `Address family not supported by protocol (os error 97)`, on
+a clean tree, and this entry said to believe the box rather than the diff. The
+first half was right and the conclusion was one step short: the bind was
+**our** code asking for a dual-stack `[::]:0` socket to reach an IPv4 shard.
+`bot_endpoint` and `client_endpoint` now fall back to IPv4 when the v6 socket
+cannot be created (dual-stack still first — it is better where it exists and
+reaches a v6-only shard), and the gate runs. **Keep the diagnostic habit** —
+`git stash -u` before believing a diff caused a red gate — and add the second
+question: *is the capability genuinely absent, or are we requesting one we do
+not need?* A wall that cannot run is not a wall, and that cuts both ways.
+Still environmental on this box, and not the same thing: the `*_wire` server
+suites overflow a test thread's 2 MiB stack in a debug build — `RUST_MIN_STACK`
+(e.g. `16777216`) runs them green and no tree change is owed. Same class as: `wasm32-unknown-unknown` is not always installed, and the wasm gates
 fail with `can't find crate for core` until `rustup target add
 wasm32-unknown-unknown` — install it rather than skipping the gate, because a
 wall that cannot run is not a wall. Third of the same kind: a box whose
@@ -248,6 +256,21 @@ already carry — **`VANTAGE_CHROME`** (read by `vantages.mjs` *and*
 `npx playwright install` into a managed image. Neither of these repeals the rule above:
 they are missing capabilities, which are diagnosable and permanent, not timing,
 which is neither.
+
+## Vendored, and not to be edited here
+
+- `crates/client/src/scry_overlay.rs` is **scry's SDK, byte-for-byte**
+  (`sdk/rust/scry_overlay.rs` in `AnthonE/scry`). It is how this game reaches
+  a running scry launcher for identity and signatures with no key in the game
+  process and no crate added to the tree. `scry::VENDORED_SHA256` pins it and
+  a test fails on any local edit — **fix it upstream and re-vendor**, because
+  a patch applied here fixes Gates and leaves every other game on the broken
+  copy. `crates/client/src/scry.rs` is our wrapper and is ours to change.
+  Not third-party: same author, same licence, no notice owed.
+- The depot the launcher installs is written by `ci/depot.py`, gated by
+  `--self-test` in `ci/gates.sh`. It deliberately does **not** compute the
+  depot digest — `scry digest` does, and a second implementation of the number
+  that gets notarized is scry's invariant 3 with money attached.
 
 ## Third-party credit
 

@@ -14,6 +14,9 @@
 //! client side, so this speaks the identical transport the browser speaks,
 //! against the same shard, at the same `PROTO_VER`.
 
+pub mod args;
+pub mod scry;
+
 use client_wasm::core::{ClientCore, Ingest};
 use protocol::{
     decode_refuse, decode_welcome, encode_hello, peek_kind, Hello, Welcome, KIND_REFUSE,
@@ -58,7 +61,33 @@ pub fn client_endpoint() -> Result<Endpoint<Client>, String> {
         .with_bind_default()
         .with_no_cert_validation()
         .build();
-    Endpoint::client(config).map_err(|e| format!("client endpoint: {e}"))
+    match Endpoint::client(config) {
+        Ok(e) => Ok(e),
+        Err(dual_stack) => {
+            // `with_bind_default` binds `[::]:0` — a dual-stack v6 socket — and
+            // a machine with IPv6 disabled cannot create one at all: the whole
+            // client dies at startup with `Address family not supported by
+            // protocol (os error 97)`, before any address is even parsed.
+            //
+            // That is not only a CI box quirk (though it is one, and
+            // `CLAUDE.md` names it for `bot_smoke`): players disable IPv6, and
+            // some container and corporate images ship without it. Refusing to
+            // start on an IPv4-only machine when the shard we are dialling is
+            // IPv4 anyway is a bug with no upside, so fall back rather than
+            // fail. Measured 2026-08-05: this is exactly what the packaged
+            // desktop build hit when the launcher started it in this container.
+            //
+            // The fallback is second, never first — dual-stack is the better
+            // socket where it exists, and it reaches v6-only shards.
+            let v4 = ClientConfig::builder()
+                .with_bind_address(SocketAddr::from(([0, 0, 0, 0], 0)))
+                .with_no_cert_validation()
+                .build();
+            Endpoint::client(v4).map_err(|v4_err| {
+                format!("client endpoint: {dual_stack} (and IPv4-only: {v4_err})")
+            })
+        }
+    }
 }
 
 /// What the session hands a renderer each frame. Deliberately small: the
