@@ -62,10 +62,29 @@ Stages, in order — each cheap, each deterministic:
    its own outward radial — three `height` taps, one for most of the island,
    and it tracks the wobble exactly rather than approximating it with control
    points. Scatter clears the carriageway and draws barrels on the shoulder.
+   **The denser bay slots landed, as a redistribution rather than a raise.**
+   `terrain::in_bay` reuses stage 7's own trick — never locate the coastline,
+   only test against it: probe `height` at the sample's own shoreline radius
+   on the two bearings `BAY_SPAN_YAW` either side, and both land means the
+   coast curves around water here. Two taps, no march, no memo, paid only on
+   the shoulder. The shoulder then draws at `ROAD_BAY_BARREL_PERMILLE` in a
+   bay and `ROAD_OPEN_BARREL_PERMILLE` outside it, set so the island-wide
+   mean stays on `ROAD_BARREL_PERMILLE`: **239 barrels islandwide under the
+   old flat rate, 236 under the split**, so the route pays what it always
+   paid and only *where* moved. Conservation is the point, not thrift —
+   `tests/haven.rs`'s `HAVEN_PRIZE_RATIO_MIN` prices the pad against the
+   shoulder it replaces, so inflating the road to make bays interesting
+   would have spent the destination's lead to buy it. Measured over four
+   seeds: **25–39% of the ring sheltered, in 2–5 contiguous arcs**, bays
+   carrying **2.46–2.76×** the open coast's barrels. `tests/road.rs` gates
+   the coherence separately from the density, because a classifier that
+   answered in speckle would still pass a density ratio and would still be
+   unlearnable; per-cell parity substituted for `in_bay` gives 14–17 arcs
+   against the cap of 8.
    **Still open**: the flattening (it needs a mask inside `height` — that is
-   the representation decision the block defers, and nothing forced it yet),
-   the dirt material, and the denser bay-mouth slots. `DECISIONS.md` §open
-   "coast road v0" has the knobs and the measured numbers.
+   the representation decision the block defers, and nothing forced it yet)
+   and the dirt material. `DECISIONS.md` §open "coast road v0" and "bay slots
+   v0" have the knobs and the measured numbers.
 8. **The haven pad** — deterministic placement: score candidate sites on
    the road ring by flatness + coast distance, take the best, carve a
    flat pad with a smooth blend radius. (This is also the monument hook:

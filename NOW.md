@@ -41,6 +41,34 @@ keyword passes. The ORDER is walled; the prose is not.
 touch** — the satchel's raid verb + a structure-damage path into `build::hp`,
 the bow, shore barrels as a second destination class, `jump`, and the wipe.
 Unclaimed, and the two judges rank them above everything else in the repo.
+## 0a2 · The road stops being uniform *(world lane — done this pass)*
+
+TERRAIN.md §1 stage 7's last open placement line ("junk piles at bay mouths
+get slightly denser slots **(knob)**"). `terrain::in_bay` classifies the ring
+by testing `height` on two bearings either side of the sample's own shoreline
+radius — stage 7's own never-locate-only-test trick, two taps, no memo. The
+shoulder then draws at two rates instead of one.
+
+**It is a redistribution, not a raise**, and that was the real design
+constraint: `HAVEN_PRIZE_RATIO_MIN` prices the pad against the shoulder it
+replaces, so a richer road would have been bought out of the destination's
+lead. Measured flat 239 barrels / 2,033 shoulder cells, split 236 — 1.3%.
+Bays are 25–39% of the ring in 2–5 arcs, carrying 2.46–2.76×.
+`GOLDEN_TERRAIN_HASH` regenerated in the same commit. Knobs and all measured
+numbers: `DECISIONS.md` §open "bay slots v0".
+
+**Left behind, and it is a new measurement not a leftover:** at 128-bearing
+resolution seed `0xDEADBEEF` has one radial (bearing 53) with **no
+carriageway crossing at any radius in the bracket**. `road_ring_is_closed_on_
+every_bearing` sweeps 64 and does not sample it. Whether that is a walkable
+break in the loop or the ring doubling back inside an inlet — where one
+radial can miss a road that continues — is **undiagnosed**, and the answer
+decides whether it is a defect at all. The bay sweep was dropped to the
+proven 64 rather than assert something it had not diagnosed.
+
+**Unverified:** nothing here was seen. No frames, `browser_smoke` off at the
+operator's tier — the barrels are placement arithmetic, gated as arithmetic.
+
 ## 0a · world lane: skirt residual — the ring's hard edge
 
 *(Residual 1, the sand sweep, landed and is deleted. Residual 2 is below and

@@ -20,23 +20,26 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
 ///
-/// Regenerated here from `0x77E3_89F5_F2FC_E643` because the scatter pass
-/// stopped choosing a biome row and started blending four
-/// (`terrain::scatter_row`, TERRAIN.md §1 stage 9's last open line).
+/// Regenerated here from `0xB48C_A5C2_A979_096A` because the road shoulder's
+/// barrel rate stopped being one number and became two — dense on the coast's
+/// sheltered arcs, sparse on the open shore (`terrain::in_bay`, TERRAIN.md §1
+/// stage 7's "junk piles at bay mouths" line).
 ///
-/// Heights did not move and neither did the ring, the pad, the waystations
-/// or any authored slot — this delta is entirely in the biome draw, and only
-/// where the ground itself is in a transition. `tests/scatter.rs` measures
-/// that reach: **10.2–11.8% of land cells** sit in a band where no single
-/// splat channel owns the cell outright, and those are exactly the cells
-/// whose mix can differ. The other ~89% draw the row they always drew, which
-/// `test_scatter_mix_is_identity_in_the_interior` asserts directly.
+/// Nothing else moved, and the reach is narrow by construction: heights are
+/// untouched (`in_bay` only READS `height`), the ring is untouched, and every
+/// authored slot — pad, crates, waystations, canopies — returns before the
+/// road branch is reached. Only `RoadBand::Shoulder` cells can differ. This
+/// digest sees them at all because `hash_scatter_window` covers the pad and
+/// both waystations, and all three sit ON the ring by construction, so their
+/// windows straddle the shoulder. `tests/road.rs` measures the whole delta:
+/// 239 barrels islandwide under the old flat rate, 236 under the split, over
+/// the same 2,033 shoulder cells.
 ///
-/// The previous regeneration, kept because it explains the value above:
-/// worldgen moved twice at the waystations, once for the third authored slot
-/// (`WaystationCanopy`) and once — the larger delta — because the site SEARCH
-/// got stricter, so some seeds pick a different candidate off the road ring.
-const GOLDEN_TERRAIN_HASH: u64 = 0xB48C_A5C2_A979_096A;
+/// The previous regeneration, kept because it explains the value above: the
+/// scatter pass stopped choosing a biome row and started blending four
+/// (`terrain::scatter_row`), a delta confined to the ~11% of land cells no
+/// single splat channel owns outright.
+const GOLDEN_TERRAIN_HASH: u64 = 0xA217_658A_C65D_F3CB;
 
 #[test]
 fn test_terrain_golden() {
