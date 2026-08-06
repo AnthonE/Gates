@@ -71,6 +71,17 @@ pub struct Feed {
     n_gathered: usize,
     crafted: [(u16, u16); FEED_CAP],
     n_crafted: usize,
+    /// Every `APPLIED*` bit raised since the last drain.
+    ///
+    /// **Latched facts need this and rings do not.** `struct_hit`,
+    /// `charge_placed` and `stock` are single fields on `ClientCore` holding
+    /// the LAST one of their kind, so "is it fresh this frame" is not
+    /// answerable from the field — only from the bit `on_stream` raised when
+    /// it wrote. A reader without this either redraws the last hit forever or
+    /// never notices the first. The word was discarded at the socket
+    /// (`Session::pump`'s `let _`) until this landed, which is the whole
+    /// reason those three had no readers.
+    pub applied: u32,
     /// Facts refused for want of room since the last reset — see the header.
     pub dropped: u32,
 }
@@ -124,8 +135,11 @@ impl Feed {
 /// small, and a backlog drip-fed at frame rate would still be showing the
 /// first refusal after the tenth.
 pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
-    let core = &mut net.session.core;
     feed.clear();
+    // Taken and cleared in one move: the word describes the messages drained
+    // since the last frame, so leaving it set would report them again.
+    feed.applied = core::mem::take(&mut net.session.applied);
+    let core = &mut net.session.core;
 
     while let Some(d) = core.pop_hit() {
         feed.damage = feed.damage.saturating_add(d);

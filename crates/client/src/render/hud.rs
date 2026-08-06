@@ -446,6 +446,21 @@ pub fn feedback(
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
         });
     }
+    // The wall you are breaking. `struct_hit` is a LATCHED field, not a ring
+    // — it holds the last one — so this is gated on the freshness bit rather
+    // than on the field being non-zero, which would redraw the same hit every
+    // frame forever. `Feed::applied` exists for exactly this (see its doc).
+    //
+    // `max == 0` means the piece def for that row has not dripped in yet, and
+    // `ClientCore`'s own comment on the field says the caller must then draw
+    // NOTHING rather than a lie. A fraction over a max of zero is the lie.
+    if feed.applied & client_wasm::core::APPLIED_STRUCT_HIT != 0 {
+        let (_, _, _, _, left, max) = core.struct_hit;
+        if let Some(line) = struct_hit_line(left, max) {
+            toast.say(line);
+        }
+    }
+
     // The kill feed. Every death on the shard reaches this ring, and until
     // now the only reader was the mixer (`render::audio`) — so a death was
     // AUDIBLE and invisible, which is the half of `NOW.md` §0x item 6 that
@@ -560,6 +575,30 @@ fn swing_prompt_weak(occupant: u8, in_weak: bool) -> String {
     format!("{base}  ·  WEAK SPOT")
 }
 
+/// What a hit on a structure says, or `None` when there is nothing honest to
+/// say yet.
+///
+/// A raid is the one place in this game where a player spends real minutes
+/// against a number they cannot see: before this, a wall took swings and
+/// answered with nothing at all, so "is this working" was unanswerable except
+/// by the wall eventually falling. The fraction is the answer.
+///
+/// `max == 0` is the defs-not-arrived state and draws nothing — a percentage
+/// over an unknown maximum is worse than silence, and `ClientCore::struct_hit`
+/// says so where the field is declared.
+fn struct_hit_line(left: u16, max: u16) -> Option<String> {
+    if max == 0 {
+        return None;
+    }
+    let left = left.min(max);
+    let pct = (left as u32 * 100).div_ceil(max as u32);
+    Some(if left == 0 {
+        "STRUCTURE DOWN".to_string()
+    } else {
+        format!("{left}/{max}  ·  {pct}%")
+    })
+}
+
 /// One kill-feed line for a `(victim, killer)` pair.
 ///
 /// `killer == victim` is how the ring reports a death nobody dealt — the
@@ -616,6 +655,37 @@ mod tests {
     /// here because it is an ORDERING, and an ordering is the one thing a
     /// compile cannot check — the browser shipped this as sixteen swept
     /// combinations in a gate that no longer exists.
+    /// The structure readout. `max == 0` must stay silent — that is the
+    /// defs-not-arrived state, and a percentage over an unknown maximum is
+    /// the lie `ClientCore::struct_hit`'s own doc warns against.
+    #[test]
+    fn a_struct_hit_reads_out_or_stays_quiet() {
+        assert_eq!(struct_hit_line(0, 0), None, "no defs yet must say nothing");
+        assert_eq!(struct_hit_line(900, 0), None, "…even with hp in hand");
+        assert_eq!(
+            struct_hit_line(875, 1750),
+            Some("875/1750  ·  50%".to_string())
+        );
+        assert_eq!(struct_hit_line(0, 1750), Some("STRUCTURE DOWN".to_string()));
+        // A wall one point from falling must not round to 0% and read as
+        // down when it is still standing — the round is up for that reason.
+        assert_eq!(
+            struct_hit_line(1, 1750),
+            Some("1/1750  ·  1%".to_string()),
+            "a standing wall must never report 0%"
+        );
+        // And a full wall is 100%, not 101%.
+        assert_eq!(
+            struct_hit_line(1750, 1750),
+            Some("1750/1750  ·  100%".to_string())
+        );
+        // hp above max is a server bug; clamp rather than print >100%.
+        assert_eq!(
+            struct_hit_line(9999, 1750),
+            Some("1750/1750  ·  100%".to_string())
+        );
+    }
+
     /// The kill-feed line, as a pure function of the pair the ring carries.
     /// Extracted so the sentence has a gate: the system around it needs a
     /// live `Net`, and a sentence assembled inside a Bevy system is one no

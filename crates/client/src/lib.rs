@@ -135,6 +135,21 @@ pub struct Frame {
 /// drives it by calling `pump` and reading `core`.
 pub struct Session {
     pub core: ClientCore,
+    /// Every `APPLIED*` bit `on_stream` raised since the last drain, OR'd.
+    ///
+    /// **This word used to be discarded** (`let _ = self.core.on_stream(..)`),
+    /// and that single `_` is why five decoded facts had no readers: several
+    /// of `ClientCore`'s own-facts are LATCHED fields rather than rings —
+    /// `struct_hit`, `charge_placed`, `stock` — so the only thing that says
+    /// "this one is fresh this frame" is the bit `on_stream` returns. Without
+    /// it a reader either redraws the last hit forever or never learns of the
+    /// first. Rings do not need this (they empty themselves); latched fields
+    /// cannot live without it.
+    ///
+    /// Accumulated rather than replaced, because `pump` drains the lane in a
+    /// `while` loop and two messages in one frame is ordinary — taking only
+    /// the last one's word would drop the earlier fact silently.
+    pub applied: u32,
     pub welcome: Welcome,
     connection: std::sync::Arc<Connection>,
     /// The C→S half of the bidi stream, held for the life of the session by
@@ -253,6 +268,7 @@ impl Session {
         let core = ClientCore::new(welcome.seed, welcome.player_id, welcome.tick);
         Ok(Self {
             core,
+            applied: 0,
             welcome,
             connection,
             actions: act_tx,
@@ -299,7 +315,13 @@ impl Session {
             }
         }
         while let Ok(bytes) = self.events.try_recv() {
-            let _ = self.core.on_stream(&bytes);
+            // A malformed message contributes no flags. The `Err` is dropped
+            // here exactly as the retired `let _` dropped it — surfacing a
+            // decode error is its own slice and not this one's; what changes
+            // is that a SUCCESSFUL decode no longer goes unnoticed.
+            if let Ok(flags) = self.core.on_stream(&bytes) {
+                self.applied |= flags;
+            }
         }
 
         let tick = self.core.advance(dt_ms);
