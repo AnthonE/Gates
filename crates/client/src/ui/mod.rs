@@ -37,6 +37,7 @@ pub mod chat;
 pub mod craft;
 pub mod death;
 pub mod interact;
+pub mod map;
 pub mod place;
 pub mod refusals;
 pub mod slots;

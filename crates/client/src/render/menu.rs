@@ -62,6 +62,9 @@ pub enum Screen {
     /// what stops is `input::gather`, so a corpse does not walk or swing.
     /// `death`.
     Dead,
+    /// The island map. A screen you read: the pointer is released, the world
+    /// keeps pumping behind it, and `input::gather` stands down. `map`.
+    Map,
     /// Reachable from `Menu` and from `Paused`; `settings::Settings::back`
     /// carries which. `settings`.
     Settings,

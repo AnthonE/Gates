@@ -32,6 +32,9 @@ pub mod ghost;
 pub mod hud;
 pub mod input;
 pub mod loading;
+// The island map. Painted from the same `terrain::splat_from` the ground
+// blends by, so the map and the world are one worldgen seen two ways.
+pub mod map;
 pub mod menu;
 // The in-game panels — inventory, crafting, the build wheel. Distinct from
 // `ui`, which is the chrome the full-screen MENU screens share: `ui` is what a
@@ -363,6 +366,25 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(in_state(Screen::Dead)),
         )
         .add_systems(Update, death::watch.run_if(in_state(Screen::InWorld)));
+
+        // ---- the map -------------------------------------------------
+        // `open` is registered after the panels and after chat, so `M` typed
+        // into a search box or a chat composer is theirs — both consume the
+        // press before this sees it.
+        app.init_resource::<map::Island>()
+            .add_systems(OnEnter(Screen::Map), (map::enter, map::setup).chain())
+            .add_systems(OnExit(Screen::Map), (map::teardown, map::leave))
+            .add_systems(
+                Update,
+                (map::track, map::keys).chain().run_if(in_state(Screen::Map)),
+            )
+            .add_systems(
+                Update,
+                map::open
+                    .after(pause::open)
+                    .run_if(in_state(Screen::InWorld)),
+            )
+            .add_systems(OnEnter(Screen::Menu), map::forget);
 
         // ---- settings ------------------------------------------------
         // The two `apply_*` systems are deliberately NOT gated on the screen
