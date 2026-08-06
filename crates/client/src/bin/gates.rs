@@ -18,7 +18,7 @@
 
 use bevy::prelude::*;
 use client::args::{self, Parsed};
-use client::render::{GatesRenderPlugin, Net};
+use client::render::{GatesRenderPlugin, Net, Rt, Start, WorldId};
 use client::scry::{Player, Scry};
 use client::{client_endpoint, Session};
 
@@ -40,8 +40,15 @@ fn main() -> AppExit {
             std::process::exit(2);
         }
     };
-    let server = a.server;
+    let server = a.server.clone();
     let capture = a.capture.clone();
+    // **Who connects, and when.** A capture run and a `--server` launch both
+    // connect here, before the window — the probe harness is a gate and must
+    // not wait on a click, and a player who chose a shard in the scry
+    // launcher's Servers window has already chosen. Everything else opens
+    // the menu and connects from there, which is the only path on which a
+    // failed connect is survivable rather than an `exit(1)`.
+    let straight_in = capture.is_some() || a.server_given;
 
     // Ask the scry launcher who is playing, ONCE, before anything else. It is
     // a blocking round trip over a local socket and must never happen inside a
@@ -61,26 +68,34 @@ fn main() -> AppExit {
     };
     println!("gates: {}", who.line());
 
-    // Connect before the window opens. A client that draws a world it is not
-    // connected to is a client that lies for its first few frames.
+    // Connect before the window opens, on the two paths that already know
+    // where they are going. A client that draws a world it is not connected
+    // to is a client that lies for its first few frames — which is why this
+    // stayed a hard precondition for `--capture` rather than becoming a
+    // state the harness could photograph halfway through.
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-    let session = rt.block_on(async {
-        let endpoint = client_endpoint().unwrap_or_else(|e| {
-            eprintln!("gates: {e}");
-            std::process::exit(1);
-        });
-        Session::connect(&endpoint, server)
-            .await
-            .unwrap_or_else(|e| {
+    let session = straight_in.then(|| {
+        rt.block_on(async {
+            let endpoint = client_endpoint().unwrap_or_else(|e| {
                 eprintln!("gates: {e}");
                 std::process::exit(1);
-            })
+            });
+            Session::connect(&endpoint, &server)
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("gates: {e}");
+                    std::process::exit(1);
+                })
+        })
     });
-    let seed = session.welcome.seed;
-    println!(
-        "gates: in the world — player {} seed {} tick {}",
-        session.welcome.player_id, seed, session.welcome.tick
-    );
+    if let Some(s) = &session {
+        println!(
+            "gates: in the world — player {} seed {} tick {}",
+            s.welcome.player_id, s.welcome.seed, s.welcome.tick
+        );
+    } else {
+        println!("gates: server menu — no shard chosen yet");
+    }
 
     let mut app = App::new();
     // **The asset root is the executable's directory, not the working one.**
@@ -101,12 +116,20 @@ fn main() -> AppExit {
     }
     app.add_plugins(DefaultPlugins.set(assets));
     app.insert_resource(Who(who));
-    app.insert_non_send_resource(Net {
-        _rt: rt,
-        session,
-        sel: 0,
-    });
-    app.add_plugins(GatesRenderPlugin { seed, capture });
+    // The runtime outlives every session, which is why it is its own
+    // resource now: on the menu path there is no session yet to hold it.
+    app.insert_non_send_resource(Rt(rt));
+
+    if let Some(session) = session {
+        app.insert_resource(WorldId::new(session.welcome.seed));
+        app.insert_non_send_resource(Net { session, sel: 0 });
+    }
+    let start = Start {
+        direct: server,
+        servers_url: a.servers_url.clone(),
+        connected: straight_in,
+    };
+    app.add_plugins(GatesRenderPlugin { start, capture });
     // **Returned, not discarded.** `App::run` hands back an `AppExit`, which
     // implements `Termination` — dropping it means a capture run that failed
     // its own file check still exits 0, and a gate reading that exit code

@@ -113,10 +113,24 @@ replay — the deterministic replay is the dupe investigation tool.
 ## 5 · Explicitly cut from alpha (so nobody re-litigates silently)
 
 Vehicles · farming · electricity · NPC/animal AI · voice chat · teams UI
-· server browser (one shard) · anti-cheat beyond authoritative sim +
-anomaly log · localization · mobile controls (Android runs, but it's a
-desktop game) · monuments beyond the haven (TERRAIN's pad carver is the
-hook) · skin trading/editions (A3 sells; trading is its own later gate).
+· ~~server browser (one shard)~~ **un-cut 2026-08-06, see below** ·
+anti-cheat beyond authoritative sim + anomaly log · localization · mobile
+controls (Android runs, but it's a desktop game) · monuments beyond the
+haven (TERRAIN's pad carver is the hook) · skin trading/editions (A3
+sells; trading is its own later gate).
+
+**The server browser is back in** (operator, 2026-08-06 — `DECISIONS.md`).
+It was cut on the reasoning that alpha runs one shard, so a browser has
+nothing to browse; the operator asked for the intro screen and the list
+directly, which outranks the cut. Two things make it cheap enough that the
+original reasoning no longer holds either way: scry's launcher has carried
+a dark `ServersWindow` and the `scry-shardlist-v1` shape all along waiting
+on a title to publish one, and a one-shard list is still a list — it is
+what turns "type an address" into "pick the shard", and it is the only
+screen a player sees before the world. It does not un-cut anything else on
+this line, and in particular it arms no economy stage: the browser lists
+shards, and which of them are armed stays §2's question and an operator
+act.
 
 The anti-cheat cut is now load-bearing rather than merely deferred
 (`DECISIONS.md` 2026-08-04): **the armed set is the perimeter.** Alpha is

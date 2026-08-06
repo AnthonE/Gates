@@ -17,7 +17,12 @@ publish.workspace = true
 # browser gates are vacating).
 [features]
 default = []
-render = ["dep:bevy"]
+# `ureq` rides the render feature because the ONLY thing that fetches a shard
+# list is the menu, and the menu is drawn. The parser (`shardlist.rs`) is
+# unconditional on purpose: it reads bytes off the network, so wall 4's
+# bounds are the part that most needs a test, and a test behind
+# `--features render` runs in the renderer tier where nobody looks at it.
+render = ["dep:bevy", "dep:ureq"]
 
 [[bin]]
 name = "client"
@@ -44,6 +49,16 @@ required-features = ["render"]
 # the frame does not report the failure. Three successive material changes
 # measured byte-identical statistics before the log was read.
 bevy = { version = "0.18", optional = true, features = ["jpeg"] }
+# The shard list (`scry-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
+# `rustls` rather than a system TLS: the same reason wtransport carries its
+# own — one trust store the build controls, on a box that may have no
+# OpenSSL. Blocking on purpose; the menu fetches on a thread, never a frame.
+ureq = { version = "3", optional = true, default-features = false, features = [
+    "rustls",
+    "gzip",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-wasm = { path = "../client-wasm" }
