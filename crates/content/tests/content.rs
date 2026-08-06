@@ -45,6 +45,31 @@ fn refuses(file: &str, from: &str, to: &str, phrase: &str) {
     );
 }
 
+/// The same, one stage later: content the *validator* is happy with and the
+/// **bake** refuses. Its own helper because the two stages answer different
+/// questions — `validate` asks whether the data is coherent, `bake` asks
+/// whether the sim can represent it, and a limit that belongs to the sim's
+/// machinery (a table width, a sampler's step) has no business being a
+/// validation rule.
+fn refuses_bake(file: &str, from: &str, to: &str, phrase: &str) {
+    let mut srcs = sources();
+    let entry = srcs.iter_mut().find(|(n, _)| *n == file).expect(file);
+    assert!(
+        entry.1.contains(from),
+        "test fixture rot: `{from}` not in {file}"
+    );
+    entry.1 = entry.1.replace(from, to);
+    let c = build(&srcs)
+        .unwrap_or_else(|e| panic!("{file}: `{to}` should reach the bake, but validate said: {e}"));
+    let err = c
+        .bake_combat()
+        .expect_err(&format!("{file}: `{to}` was baked"));
+    assert!(
+        err.contains(phrase),
+        "{file}: expected bake error containing `{phrase}`, got: {err}"
+    );
+}
+
 #[test]
 fn test_content() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
@@ -1307,5 +1332,112 @@ fn a_container_that_cannot_be_opened_is_refused() {
         "rolls_max = 2\nhits = 3",
         "rolls_max = 2\nhits = 0",
         "would never open",
+    );
+}
+
+/// The bow's ballistics reach the sim as **per-tick integers**, and the
+/// numbers are the data's own converted once.
+///
+/// This is the gate on the conversion boundary that ranged v0 opened. Every
+/// number `ranged.rs` integrates with is produced here and nowhere else, so
+/// a wrong divisor is a projectile that flies at the right speed in the
+/// wrong units — which looks like a balance problem rather than a bug, and
+/// is the reason the arithmetic is asserted against `weapons.toml` rather
+/// than against a remembered constant.
+#[test]
+fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
+    use sim_core::limits::{ARROW_STEP_MM, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, TICK_HZ};
+
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped weapons must bake");
+
+    let mut bows = 0;
+    for w in &c.weapons {
+        let idx = c.item_index(&w.id).expect("weapon arms an item") as usize;
+        let baked = cc.ranged[idx];
+        if w.kind != content::schema::WeaponKind::Bow {
+            assert_eq!(
+                baked.damage, 0,
+                "`{}` is not a bow and must not be armed in the ranged table",
+                w.id
+            );
+            continue;
+        }
+        bows += 1;
+        let b = w
+            .ballistic
+            .as_ref()
+            .expect("validate refuses a bow without one");
+
+        assert_eq!(baked.damage as u32, w.damage, "`{}` damage", w.id);
+        assert_eq!(
+            baked.speed_mmpt as u32,
+            b.speed_mps * 1000 / TICK_HZ,
+            "`{}` muzzle speed in mm/tick",
+            w.id
+        );
+        assert_eq!(
+            baked.drop_mmpt2 as u32,
+            b.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ),
+            "`{}` drop in mm/tick^2",
+            w.id
+        );
+        assert_eq!(
+            baked.rate_ticks as u32,
+            TICK_HZ * 60 / w.rate_per_min,
+            "`{}` ticks between shots",
+            w.id
+        );
+        let ammo = w.ammo.as_ref().expect("validate refuses a bow without one");
+        assert_eq!(
+            baked.ammo,
+            c.item_index(ammo).expect("ammo is an item"),
+            "`{}` spends the ammo it names",
+            w.id
+        );
+
+        // The flight must actually cover the reach the data claims, and
+        // then stop: a life derived too short makes `range_m` a lie, and
+        // one derived too long makes `MAX_ARROWS` a leak.
+        assert!(
+            baked.life_ticks > 0 && baked.life_ticks <= MAX_ARROW_LIFE_TICKS,
+            "`{}` lives {} ticks",
+            w.id,
+            baked.life_ticks
+        );
+        let reach_mm = baked.life_ticks as u32 * baked.speed_mmpt as u32;
+        assert!(
+            reach_mm >= w.range_m * 1000 - baked.speed_mmpt as u32,
+            "`{}` expires {} mm short of its declared {} m",
+            w.id,
+            w.range_m * 1000 - reach_mm,
+            w.range_m
+        );
+
+        // And the sampler wall, checked on the shipped rows rather than
+        // only on the refusal path below — a weapon that sits exactly on
+        // the ceiling would be traced honestly by one sample per step and
+        // nothing would say so.
+        assert!(
+            baked.speed_mmpt as usize <= ARROW_STEP_MM as usize * MAX_ARROW_SUBSTEPS,
+            "`{}` outruns the collision sampler at {} mm/tick",
+            w.id,
+            baked.speed_mmpt
+        );
+    }
+    assert_eq!(bows, 2, "the alpha data ships a bow and a crossbow");
+}
+
+/// A muzzle speed the collision sampler cannot trace is refused at boot,
+/// not clamped at tick time. A clamped projectile is a weapon whose reach
+/// is a lie the data never admits to, and it would first be noticed as an
+/// arrow passing through a wall.
+#[test]
+fn a_bow_that_outruns_the_collision_sampler_is_refused() {
+    refuses_bake(
+        "weapons.toml",
+        "speed_mps = 40",
+        "speed_mps = 400",
+        "collision sampler",
     );
 }

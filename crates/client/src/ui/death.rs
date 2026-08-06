@@ -11,7 +11,7 @@
 //! with what, from how far.
 
 use protocol::event::ItemCatalog;
-use sim_core::world::{DEATH_BY_CLOCK, DEATH_BY_HAND, DEATH_BY_SALT};
+use sim_core::world::{DEATH_BY_ARROW, DEATH_BY_CLOCK, DEATH_BY_HAND, DEATH_BY_SALT};
 
 use super::craft::item_name;
 
@@ -45,6 +45,27 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog) -> String {
             };
             format!(
                 "#{} killed you{} from {:.1} m",
+                d.killer,
+                weapon,
+                d.range_cm as f32 / 100.0
+            )
+        }
+        // The bow gets its own verb rather than `DEATH_BY_HAND`'s, for the
+        // reason `world.rs` gives for the cause existing at all: the range
+        // is the whole story of a ranged kill, and "killed you from 41.3 m"
+        // reads as a melee reach bug rather than as an archer.
+        //
+        // No self-kill arm. `ranged.rs` refuses an arrow against its own
+        // shooter (`tests/shoot.rs: an_arrow_never_hits_its_owner`), so a
+        // branch for it here would be unreachable code asserting a rule
+        // that is already a wall one crate down.
+        DEATH_BY_ARROW => {
+            let weapon = match item_name(catalog, d.item) {
+                Some(n) => format!(" with {n}"),
+                None => String::new(),
+            };
+            format!(
+                "#{} shot you{} from {:.1} m",
                 d.killer,
                 weapon,
                 d.range_cm as f32 / 100.0
@@ -144,11 +165,29 @@ mod tests {
     #[test]
     fn an_unknown_cause_says_so() {
         let cat = ItemCatalog::EMPTY;
+        // One past `DEATH_BY_MAX`, not a literal: this test moves every time
+        // a cause is added, which is the point of it.
+        let unknown = sim_core::world::DEATH_BY_MAX + 1;
         let d = Death {
-            cause: 3,
+            cause: unknown,
             ..Death::default()
         };
-        assert_eq!(sentence(&d, &cat), "killed by cause 3");
+        assert_eq!(sentence(&d, &cat), format!("killed by cause {unknown}"));
+    }
+
+    /// The bow's own sentence — the range is the story, so it must survive
+    /// into the line the player reads.
+    #[test]
+    fn an_arrow_says_who_shot_and_how_far() {
+        let cat = catalog_with(1, "BOW");
+        let d = Death {
+            cause: DEATH_BY_ARROW,
+            killer: 7,
+            own_id: 3,
+            item: 1,
+            range_cm: 4130,
+        };
+        assert_eq!(sentence(&d, &cat), "#7 shot you with BOW from 41.3 m");
     }
 
     /// No sentence may contain a coordinate. Asserted structurally rather

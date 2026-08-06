@@ -14,11 +14,12 @@ use crate::gather::{self, cell_key, GatherContent, ItemStack, SlotLives, Swing, 
 use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
-    BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK,
-    MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
+    BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ARROWS, MAX_COMMANDS_PER_TICK,
+    MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
 };
 use crate::loot::{LootContent, LOOT_BARREL};
 use crate::movement::{self, quant_xz, quant_y, Body};
+use crate::ranged;
 use crate::rng::cell_hash;
 use crate::survival::{self, SurvivalContent};
 use crate::terrain::{self, ScatterTable};
@@ -273,6 +274,12 @@ pub const DEATH_BY_CLOCK: u8 = 1;
 /// player *pressed a key for* is a different sentence from one that
 /// happened to them.
 pub const DEATH_BY_SALT: u8 = 2;
+/// An arrow (ranged.rs). Its own cause and not `DEATH_BY_HAND`'s for the
+/// same reason `DEATH_BY_SALT` is not the clock's: the sentence the death
+/// screen builds is "who, with what, from how far", and 34 m is a
+/// different fact about a fight from 1.6 m. `death_item` is the bow, not
+/// the arrow — the weapon is what the killer held.
+pub const DEATH_BY_ARROW: u8 = 3;
 
 /// The highest cause above, named rather than counted — `EV_MAX`'s
 /// discipline applied to a *value domain* instead of a code ledger.
@@ -295,7 +302,7 @@ pub const DEATH_BY_SALT: u8 = 2;
 /// so a cause declared past this line fails loudly instead of silently.
 /// A widened *meaning* is still a wire change (`protocol/src/lib.rs`) —
 /// this makes the widening impossible to do by accident, not permitted.
-pub const DEATH_BY_MAX: u8 = DEATH_BY_SALT;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_ARROW;
 
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
@@ -703,6 +710,11 @@ pub struct World {
     /// `backpacks` is: `World` is built on the stack and this is 24 kB of
     /// fixed capacity. One allocation at construction, none in the tick.
     pub slot_cache: Box<crate::occupy::SlotCache>,
+    /// Every arrow in the air (ranged.rs). Boxed for `slot_cache`'s
+    /// reason — `World` is built on the stack and this is fixed capacity
+    /// that only grows with `MAX_ARROWS`. One allocation at construction,
+    /// none in the tick.
+    pub arrows: Box<ranged::Arrows>,
     /// This tick's outbound events; cleared at tick start.
     pub events: EventQueue,
     /// Hash stamped every `STATE_HASH_INTERVAL` ticks (0 until the first).
@@ -742,6 +754,7 @@ impl World {
             sweep_support: 0,
             slot_lives: SlotLives::new(),
             slot_cache: Box::new(crate::occupy::SlotCache::new()),
+            arrows: Box::new(ranged::Arrows::new()),
             events: EventQueue::default(),
             last_hash: 0,
             dev_spawn: None,
@@ -1570,17 +1583,28 @@ impl World {
                 &mut self.players[i].body,
                 &frame,
             );
-            let swung = gather::swing(
-                seed,
-                tick,
-                &self.gather,
-                &self.loot,
-                &self.scatter,
-                &self.haven,
-                &mut self.slot_lives,
-                &mut self.events,
-                &mut self.players[i],
-            );
+            // A drawn bow takes the arm before the gather scan sees it.
+            // `gather::swing` searches the 3×3 cell ring for a node and
+            // absorbs the swing into it, which is precisely what would eat
+            // an archer's shot for the crime of standing next to a tree —
+            // and standing next to a tree is where an archer stands. The
+            // bow answers first or it does not work at all.
+            let swung = if ranged::draw(tick, &self.combat, &mut self.arrows, &mut self.players[i])
+            {
+                gather::Swing::Absorbed
+            } else {
+                gather::swing(
+                    seed,
+                    tick,
+                    &self.gather,
+                    &self.loot,
+                    &self.scatter,
+                    &self.haven,
+                    &mut self.slot_lives,
+                    &mut self.events,
+                    &mut self.players[i],
+                )
+            };
             craft::step(
                 &self.craft,
                 &self.gather,
@@ -1667,6 +1691,33 @@ impl World {
             &mut removals,
             &mut self.events,
         );
+
+        // Arrows fly after the player loop, never inside it. Two reasons,
+        // both structural: every body has already taken its step, so a shot
+        // resolves against final positions instead of positions that are
+        // final for the low slots and stale for the high ones; and nothing
+        // about a hit may depend on the shooter's slot index, which it
+        // would if flight ran while the loop still held one player
+        // mutably. `removals` is not spent here — an arrow does not chip a
+        // wall in v0, it stops on one.
+        let mut kills = [ranged::Kill::default(); MAX_ARROWS];
+        let n_kills = ranged::step(
+            seed,
+            self.pieces.cols(),
+            &mut crate::occupy::Occupants {
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            },
+            &mut self.arrows,
+            &mut self.players,
+            &mut self.events,
+            &mut kills,
+        );
+        for k in kills.iter().take(n_kills) {
+            self.die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm);
+        }
         self.slot_lives.respawn_due(tick, &mut self.events);
         // Bags time out on the sim's clock, before the tick advances, so
         // a bag dropped at tick T with a lifetime of L is gone the tick
@@ -1829,6 +1880,36 @@ impl World {
             buf[7..9].copy_from_slice(&r.hp.to_le_bytes());
             buf[9..11].copy_from_slice(&r.uh.to_le_bytes());
             h.update(&buf);
+        }
+        // Arrows in the air, and deliberately on the **player** idiom
+        // rather than every store's above: skip-if-inactive, with no length
+        // prefix. That is not a shortcut, it is the difference between a
+        // structural addition that moves `GOLDEN_FINAL_HASH` and one that
+        // does not. Every `h.update(&(store.len()))` here folds eight zero
+        // bytes even when the store is empty — the box store did exactly
+        // that once and `tests/replay.rs`'s doc comment records the eight
+        // bytes it cost. An arrow store hashed this way contributes nothing
+        // until an arrow is actually fired, so the pinned replay hash stays
+        // evidence that this slice changed no path the script walks.
+        //
+        // Safe without a count for the reason `players` is: slot order is
+        // allocation order, allocation is deterministic, so two runs that
+        // agree about the shot agree about the index.
+        for a in self.arrows.entries() {
+            let mut buf = [0u8; 36];
+            buf[0..4].copy_from_slice(&a.qx.to_le_bytes());
+            buf[4..8].copy_from_slice(&a.qy.to_le_bytes());
+            buf[8..12].copy_from_slice(&a.qz.to_le_bytes());
+            buf[12..16].copy_from_slice(&a.vx.to_le_bytes());
+            buf[16..20].copy_from_slice(&a.vy.to_le_bytes());
+            buf[20..24].copy_from_slice(&a.vz.to_le_bytes());
+            buf[24..26].copy_from_slice(&a.drop.to_le_bytes());
+            buf[26..30].copy_from_slice(&a.owner.to_le_bytes());
+            buf[30..32].copy_from_slice(&a.item.to_le_bytes());
+            buf[32..34].copy_from_slice(&a.damage.to_le_bytes());
+            buf[34..36].copy_from_slice(&a.life.to_le_bytes());
+            h.update(&buf);
+            h.update(&a.flown.to_le_bytes());
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {

@@ -1231,6 +1231,808 @@ that failure mode looks like when it is allowed to run.
   highest detail of four vantages. `CLAUDE.md` now carries this as a trap;
   §2's native visual gate must not inherit the hole.
 
+## 0. The bow fires — done this pass *(systems lane)*
+
+From `findings/pass-20260805-053501-01-judge.md` ranked gap 1, "every fight is a
+walk-up club fight — there is no ranged weapon in the sim". `weapons.toml` had
+carried the bow, the crossbow, their ammo and their ballistics through
+validation and the content hash since the content crate was written, and
+`bake_combat` threw every row away at `kind != Melee`. Now `bake_bow` converts
+m/s to **mm/tick** once at boot and `ranged.rs` flies the arrow in integers.
+Design and the six knobs: `DECISIONS.md` §open, ranged v0. `frame.pitch` is read
+by the sim for the first time, through a generated `pitch_lut.rs`; the byte was
+already on the wire, so the wire did not move and `PROTO_VER` did not bump.
+Gated by `tests/shoot.rs` (14 tests, 4 seeds) and two `content.rs` bake gates;
+three mechanisms mutation-checked to go red on their own break.
+`GOLDEN_FINAL_HASH` is **unmoved**, which is the claim: the arrow store hashes
+on the player idiom (skip-if-inactive, no length prefix), so it is invisible to
+the replay until somebody fires.
+
+Left:
+
+- **Nobody can see the arrow.** No wire event, so no client can draw a tracer —
+  a shot arrives as `EV_HIT`/`EV_HEALTH`/`EV_DEATH` and nothing else. The wire
+  half (an `EV_SHOT` code, its subtype, a `PROTO_VER` bump and 66 regenerated
+  goldens) is **systems lane**; the tracer itself is the client lane's.
+- **An arrow stops on a wall instead of chipping it**, and `collide::blocked`
+  bakes `CAPSULE_RADIUS_M` into its own query, so an arrow is as fat as a body:
+  it threads a doorway and never an arrow slit. A radius parameter on `collide`
+  is the fix, and it also wants structure damage. Systems lane.
+- **The revolver still cannot fire.** Hitscan wants M2's rewound raycast, so
+  `bake_combat` drops firearm and throwable rows deliberately, not by omission.
+
+## 0. The island is solid now — done this pass *(systems lane)*
+
+From `findings/archive-prestamp/pass-20260805-020919-02-judge.md` ranked gap 1,
+"nothing on this island is solid". `occupy.rs` is the consumer half of the seam
+`terrain.rs` drew: `movement::step` now asks it on every candidate move, so
+trees, boulders, nodes, barrels, crates and the shelter's walls stop a body.
+Answers the world lane's standing request ("the occupant query exists, please
+call it") and the systems bullet of "nothing in the world is solid". Cache
+design and the reasoning: `DECISIONS.md` §open, occupant collision v0.
+Gated by `tests/walk.rs` (7 tests, 4 seeds); each of the four mechanisms was
+mutation-checked to go red on its own break. Wire did not move — no
+`PROTO_VER` bump, `test_protocol_golden` untouched. `GOLDEN_FINAL_HASH`
+regenerated in the same commit; every behavioural floor in `replay.rs::run`
+still passes, so the bots' script survives a solid world.
+
+Left:
+
+- **You still cannot stand ON anything.** The ground query is the other half of
+  the same seam and it is not built — `terrain.rs:1197` names the cost: the
+  shelter's plinth reads as a 0.2 m kerb you sink into rather than a step.
+  Crate and boulder tops are the same. It belongs beside `collide::piece_ground`
+  and wants a `slot_ground` next to `slot_blocks`; the fourteen-box table is
+  already there for it. Systems lane.
+- **The client draws no collision it can see.** Nothing here changed `web/`, so
+  a player learns a trunk is solid by bumping it. Not a defect, just untested by
+  eye — no vantage was captured this pass. *(ui/looks lane, if it wants it.)*
+- **`SlotLives::find` is a linear scan** over up to 16,384 entries, and the
+  query calls it once per blocking slot. Bounded and off the common path (it is
+  asked only after something already blocks), but a late-wipe world with
+  thousands of harvested cells pays it in the tick. Measure before fixing.
+
+## 0. E tells you what it does — done this pass *(ui lane)*, kept for what it leaves
+
+From `findings/pass-20260805-002720-04-judge.md` ranked gap 3: "the island
+never tells a player what it offers", E five verbs deep in a blind fallthrough
+chain, "does something you did not choose, silently".
+
+Landed: `web/src/interact.js`, the one resolver. Two ranks — **aimed** (in
+front, within `INTERACT_AIM_RADIUS_M` of the aim line; nearest of those wins,
+as a raycast would) always beats **nearby** (everything else in reach, nearest
+wins, which is the old chain's behaviour kept so no verb that worked stops
+working). The five scans in `main.js` are gone; E dispatches on the pick, L's
+lock takes the same pick filtered to `VERB_DOOR`, and `#prompt` under the
+crosshair draws `promptFor` of that same pick off the HUD timer. Archetypes and
+reach are the sim's (`deploy.rs`, `build.rs`), not restated literals.
+`ui_smoke` §Q: 381 checks total, 28 mutants run, all 28 red.
+
+Leaves open:
+- **The aim radius is a proposed default**, `DECISIONS.md` §open (interact aim
+  radius v0). 1.0 m from the deployable's own scale; the operator has not
+  spoken a precision.
+- **Nothing highlights the picked thing in the world.** The prompt names it;
+  the box itself does not light up. That is a looks-lane material change, not
+  ours — a NOW.md line, not a cross-lane request, until someone wants it.
+- ~~**Gathering and building have no prompt**, only deployables do.~~ Gathering
+  closed 2026-08-05 (`## 0. The crosshair answers for the swing too` below).
+  **Building still has none** — placement is a preview mesh with no text, and
+  it is the last verb with nothing under the crosshair.
+- **Unverified in a real browser end to end.** `ui_smoke` drives the DOM and
+  the resolver; `browser_smoke` is off this run, so nothing here claims a box
+  was opened by aiming at one on a live shard.
+
+0. **The collapse path's per-tick budget, and box handle 0 — done this pass
+   (systems lane).**
+
+   *(2026-08-05. Judge `pass-20260805-020919-01`'s ranked fixes 1 and 2, plus
+   the ui lane's cross-lane request 4 — NOW.md's top systems item.)*
+
+   `MAX_COLLAPSE_PIECES` bounds one cascade and a tick holds many:
+   `upkeep_sweep` never returned after a removal the way `support_sweep`
+   does, so its 64 visits could each seed a cascade, and raiders add up to
+   `MAX_PLAYERS` more. Measured with the budget removed: **103 removals in
+   one tick** against the 64 the 256-slot ring was sized for. Now one
+   tick-local `MAX_REMOVALS_PER_TICK` threaded through raid, decay, support
+   sweep and cascade; overflow **defers before the piece leaves the store**.
+   `DECISIONS.md` §open "collapse budget v0".
+
+   Request 4 answered without moving a bit of the packing: `box_index`
+   guards handle 0 and `place_deploy` refuses the one address that mints it
+   — the pair `Backpacks` already has. `BOX_KEY_LAYOUT` and `ui_smoke` §P
+   untouched. **ui lane: `moveArgs` may now trust that 0 is never a box.**
+
+   Left: `EV_PIECE_REMOVED`'s payload is pinned for the collapse producer
+   only (judge fix 2); the raid and decay producers are still counted, not
+   read. And judge fix 3 — **a box on a collapsing floor** — is still
+   ungated: every collapse test uses `DeployContent::EMPTY`, so
+   `EV_DEPLOY_REMOVED` and the `world.rs` spill drain have no collapse-side
+   coverage. Both are systems lane.
+
+0. **A box can be opened — done this pass (ui lane), kept for what it leaves.**
+
+   *(2026-08-05. Report 03's ranked gap 2, "you can deploy a box and never
+   open it — there is no storage, only looting.")*
+
+   Its stated blocker was already gone: `ARCH_BOX`'s slots and container
+   address (cross-lane request 3 below) landed in the systems lane's
+   `4d7a926` on 2026-08-04, and the ui comment saying they were awaited was
+   written a day AFTER them. `deployRecs` has held `cx`/`cz`/`level` as
+   integers all along. So the whole job was the one thing the request
+   sequenced last — a gate on the packing — plus `tryOpenBox` on E.
+
+   `invmove.boxKey` mirrors `deploy.rs:316`, layout stated as data
+   (`BOX_KEY_LAYOUT`) and read back out of `deploy.rs` by `ui_smoke` §P.
+   Why it needed a gate at all: `box_key` packs `cx<<16 | cz<<4`, and every
+   other packing this client touches is `cx<<16 | cz`. The habitual form is
+   wrong here by twelve bits — not a crash, a handle naming a real box in
+   another cell — and no wall in the repo can see it. 313 checks, 12 mutants
+   red, including the three that only a structural check catches: the
+   packing restated at the call site with the value CORRECT, a fourth term
+   added in `deploy.rs` with the value IDENTICAL, and the build grid
+   outgrowing the packing with both sides agreeing.
+
+   Three things it leaves:
+   - **A box at grid origin (0,0,0) can be opened and not moved into.**
+     `box_key(0,0,0) == 0` and `moveArgs` refuses a ground handle of 0,
+     correctly — `deploy.rs:424`'s `box_index` has no zero guard, so 0 is a
+     real address. Request 4 below. Biasing it client-side was refused: a
+     JS-only fudge inside an address Rust decodes is worse than the corner.
+   - **Cross-container drag into a box still waits on request 2** (the TO
+     kind in `client_move_readout`). E opens the panel; the drag between it
+     and the inventory is what that request unblocks.
+   - **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are
+     UNRUN (operator's `GATES_TIER=fast`) and this pass edits `main.js`.
+
+> **Cross-lane request → systems (ui lane, 2026-08-05). Request 4: give
+> `deploy.rs:424`'s `box_index` a zero guard, or bias `box_key` so no valid
+> address packs to 0.** `backpack.rs:333` already guards zero and
+> `box_index` does not, so the two disagree and neither side can rely on
+> either. Until then a box at cell (0,0) level 0 is openable but not a legal
+> move destination, because `moveArgs` must refuse handle 0 to avoid sending
+> "no container known" as a real address.
+0. **A base comes down when you take its legs out — landed this pass
+   (systems lane).**
+   *(Gap pass. From `findings/archive-prestamp/pass-20260805-011412-01-judge.md`,
+   ranked gap 3: "`supported()` runs at placement and nowhere else".)*
+
+   `build::collapse_from` re-checks support around each removed address and
+   drops what no longer stands, breadth-first over `dependents()` — the exact
+   inverse of `supported()`, sitting beside it, gated by removing **every**
+   piece of six fixtures in turn and requiring the same world a naive fixed
+   point reaches. Wired into both death paths (a raid swing and the decay
+   sweep). Capped at `MAX_COLLAPSE_PIECES = 64` a tick, derived from the
+   256-slot event ring, with `support_sweep` finishing the remainder on later
+   ticks so the cap costs latency and not correctness. Replay golden
+   regenerated — checked, not assumed: with the new hash field held out and
+   the sweep disabled the world still differs, so the cascade is really
+   changing what the script replays.
+
+   What it does **not** do, ranked:
+   - A collapsed piece pays nothing back. `drop_piece` drops no loot and
+     refunds no material, so a raid's whole reward is still what was in the
+     containers it broke. Whether rubble should pay is unspoken — a
+     `DECISIONS.md` §open row, not a number to invent. systems lane.
+   - A large collapse arrives as a burst of `EV_PIECE_REMOVED` in one tick.
+     The wire carries it and nobody has watched a client take one. ui lane.
+   - The rest of that judge gap is untouched: `combat.rs` is still melee-only
+     (its own item below), and what a raid is *for* is the container panel
+     (ui lane).
+
+0. **The outbound move marshalling is gated — done this pass (ui lane), kept
+   for what it leaves open.**
+
+   *(Gap pass, iteration 2. From ranked fix 4 of
+   `findings/pass-20260805-002720-01-judge.md`: "main.js's marshalling of
+   (fromKind, from, toKind, to) into the wasm call is covered only by
+   `browser_smoke`, which is off this run. Closing it needs the marshalling
+   extracted into something node-importable." Ranked fix 1 of the same report
+   — `rustConst`'s unanchored regex — is folded in.)*
+
+   `client_action_move` takes six `u32`s and every wall here is blind to
+   swapping two: encoder untouched, action queue not in `state_hash`, one
+   type throughout. Now `invmove.moveArgs()`, pure and node-imported, and the
+   order is stated once as NAMES (`MOVE_ARG_ORDER`) which `ui_smoke` §N reads
+   back out of `bridge.rs` — so it is checked against Rust, not against the
+   client's own opinion. `main.js` spreads the result, leaving nothing at the
+   call site to transpose. 11 mutants run, all 11 red, including an ABI
+   reorder and a rename made in `bridge.rs` alone.
+
+   Two things it leaves:
+   - **`bag`, `from_kind`, `to_kind` are all 0 on every call this client can
+     legally make**, so no value probe separates those three; the name-order
+     check is what covers them. They become separable on the pass that opens
+     a second container — the same pass that makes `bag` non-zero.
+   - **`browser_smoke` and `vantages` are UNRUN** (operator's `GATES_TIER=fast`),
+     and this pass edits `main.js`. Nothing here is claimed to boot.
+
+1. **Recovery, 2026-08-05 — done, kept only for what it leaves open.**
+
+   `ui_smoke`'s `CONT_MAX` check went red on a clean tree. Neither commit was
+   wrong alone: the ui lane's `1fe35b0` pinned the Rust alias by NAME
+   (`contMaxAlias === "CONT_BAG"`), the systems lane's `4d7a926` legitimately
+   grew a third kind and moved that alias to `CONT_BOX`. The merge was red.
+   Fixed as both (a) and (b) — see the commit. Mirror now names `CONT_BOX`;
+   the gate resolves the alias to a NUMBER, so it is strictly stronger.
+
+   Two things this leaves for the next pass:
+   - **No masked gate behind it.** The runner pins `GATES_TIER=fast` this run
+     (`restart.sh`), and `ui_smoke` is the last gate before that tier's exit —
+     so unlike the usual first-red case there is nothing downstream to expect.
+     `browser_smoke` and `vantages` stay UNRUN, by operator config, not by me.
+   - **`loop/cont-max-mirror` is now redundant.** A previous pass's swept
+     remainder; its diff is adopted here with a real commit message. Its
+     salvage worktree is the operator's to remove, not a lane's.
+
+1. **The container panel is built; two things in `crates/` bound what it can
+   say.** *(ui lane, 2026-08-05. The panel, the cross-container drag, the
+   open key and `ci/ui_smoke.mjs` group O landed — 279 checks, 8 mutants red.)*
+
+   - **`client_move_readout` still has no TO kind** (request 2 below, 8 spare
+     bits). So `hud.invMoveVerdict` matches a verdict on three carried fields
+     plus the one-move-in-flight rule, and a self-3-to-box-3 verdict is the
+     same word as a self-3-to-self-3 one. `hud.abandonContainerMove` is what
+     keeps that honest — the moment the open container changes, a move with an
+     end in it is given up rather than matched against whatever is open now.
+     Not a hole; a narrower match than it looks, and gated as such.
+   - ~~**Only BAGS can be opened.**~~ Closed 2026-08-05 — item 0 above.
+   - **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are
+     UNRUN (operator's `GATES_TIER=fast`) and this pass edits `main.js`,
+     `wasm.js` and `index.html`.
+
+## 0. The crosshair answers for the swing too — done this pass *(ui lane)*
+
+*2026-08-05. The top item's own remainder ("gathering and building have no
+prompt"), plus ranked fix 1 of `findings/pass-20260805-002720-05-judge.md`.*
+
+`interact.js` gains a SECOND resolver, `resolveSwing` — not four more verbs in
+the first one, because the two picks share no term: E reaches 5 m and ranks an
+aim radius, a swing reaches `gather::REACH_M` (2 m) through a 30° cone with a
+±3 m window and a point-blank bypass, over a 3×3 block of 8 m terrain cells.
+It transcribes `gather.rs:494-532` and invents nothing: the client sends a
+swing as a button bit and the sim picks the node alone, so any other rule names
+a node the arm does not hit. Nodes come from `terrain.cellEntry`, already
+public. E's pick still wins the line; the swing prompt fills the silence.
+`ui_smoke` §R: 433 checks (was 381), 20 mutants run, all 20 red.
+
+The judge's ranked fix 1 is closed in the same file: `promptFor` was only ever
+called with `{open:false, locked:false}`, so flattening the door's whole
+open/locked branch shipped green (its mutant M14). Now walked at all three
+states.
+
+Leaves open:
+- **Which prompt outranks which is unspoken** — `DECISIONS.md` §open ("swing
+  prompt precedence v0"). E-first is argued, not decided.
+- **The tie test found a hole in its own first version.** A tie between cells
+  (0,0) and (2,2) is kept by (0,0) under BOTH loop nestings, so transposing the
+  loops escaped green; cells (2,0)/(0,2) swap under the transpose and catch it.
+- **Nothing here is claimed to boot.** `browser_smoke` and `vantages` are UNRUN
+  (operator's `GATES_TIER=fast`) and this pass edits `main.js`.
+- **Building still has no prompt** — the last verb without one.
+
+## 0. The second container panel — gap 1's other half *(ui lane)*
+
+*From `findings/pass-20260804-205133-03-judge.md` gap 1, "there is nowhere to
+put anything, so a base is scenery" — picked as this lane's gap-pass item.*
+
+Landed this pass (the half that needed no `crates/` change): every address the
+panel forms is a **(kind, slot) pair**, not a slot number. Bag slot 3 and self
+slot 3 were the same integer, so the drag, the pending record, the verdict
+match and the rollback all aliased; `ui_smoke` §M drives each. Report 03's
+ranked fix 1 (only `len > 0` was asserted, so a transposed move encoded
+green) is closed at two of its three hops: §M pins the panel→host argument
+order, and `client_smoke` now decodes `client_action_move`'s bytes field by
+field. **The third hop closed on 2026-08-05** — the marshalling is
+`invmove.moveArgs()` and `ui_smoke` §N holds its order to `bridge.rs`; see
+item 0.
+
+Remaining otherwise, all `crates/` — the requests below. The panel still draws
+exactly ONE container and says so (`hud.invContainers`); listing a second
+there without cells and a contents source would promise a draw it cannot
+perform.
+
+> **Cross-lane request → systems, three items, all for gap 1** *(ui lane,
+> 2026-08-04)*. In dependency order:
+> 1. ~~**Container contents on the wire.**~~ **Answered at wire v19** —
+>    `EventMsg::ContSync` carries (kind, handle, slots) to the opener alone.
+>    Item 1 above has the four bridge exports it arrives through.
+> 2. **`client_move_readout` must carry the TO kind.** It packs
+>    `reason<<24 | to_slot<<16 | from_kind<<8 | from_slot` — 8 bits spare.
+>    `invmove.moveVerdict` therefore rejects every non-self FROM kind, which
+>    is correct and load-bearing today: without the to-kind a bag verdict
+>    cannot be told apart from a self one. That rejection is the last thing
+>    between the panel and cross-container drags.
+> 3. **`ARCH_BOX` needs slots and a container address** (`deploy.rs:80`), the
+>    piece the judge named. (2) unblocks the panel; (3) gives it something
+>    worth opening.
+> **Cross-lane request, systems lane: nothing in the world is solid.**
+> `collide.rs` knows only built pieces — `blocked`/`piece_ground` take a
+> `ColIndex` and never a `Slot`. So a player walks through every tree, boulder,
+> barrel and now through the haven shelter's walls. The world lane can place a
+> building but cannot make you stop at it. One entry point would do it: a
+> `terrain`-side occupant query the movement path can call, owned by systems
+> because `movement.rs` and `collide.rs` are theirs.
+
+## world: the pad has a building on it, and it is hollow in two senses
+
+From `findings/pass-20260805-002720-01-judge.md` ranked gap 3 — the authored
+clearing stopped reading as authored once scatter clumping made empty forest
+windows ordinary, and the gap's own fix was "the greybox, gated as arithmetic".
+Landed: `Occupant::HavenShelter = 10`, one slot carrying a fourteen-box
+structure (6.2 m room, 2.4 x 2.8 m doorway, tower to 9.2 m over a 6.6 m pine),
+placed `HAVEN_SHELTER_R_M` off the pad center by a bounded search against
+`road_band` — the pad's center is the carriageway, and `tests/road.rs` caught
+the first draft blocking the loop. Gated by `tests/haven.rs` (9 tests) and
+`ci/haven_shelter.mjs` (40 checks, doorway passability asserted in both
+directions). `DECISIONS.md` §open "haven shelter v0" has the rest.
+
+What remains, in the order it is worth doing:
+
+- **This lane's half is now COMPLETE, including the shelter; the wiring is
+  not.** The box list landed (`DECISIONS.md` §open "shelter volume v0"):
+  `terrain::SHELTER_BOXES`, `slot_blocks` routing the shelter to a narrow
+  phase, `tests/solid.rs` at 14 tests, `ci/haven_shelter.mjs` at 156 checks
+  holding all 14 × 6 fields equal to `props.js`. **Nothing calls any of it** —
+  see the request below. Nothing further is owed here from this side.
+- **Nobody has looked at it.** No frame has been captured since it landed; the
+  claim "a player can tell they arrived" rests on arithmetic alone. The lane
+  charter says to say so when the item flips from "is there a world here" to
+  "does it look right" — placing a building is the flip. **This lane wants
+  frames again.**
+- **Interior is empty.** The five containers stand outside the walls, on the
+  ring they were already on. Putting some inside is a `haven_crate` change and
+  would move a measured prize ratio; it needs its own pass.
+- The pad is still not carved (3.76 m of relief under a flat-based building —
+  the plinth buries 1.4 m of that, which is a cover, not a fix).
+
+## world: the trunk radius is pinned to a builder that no longer ships
+
+From `findings/pass-20260805-002720-03-judge.md` ranked fix 4, deliberately
+left by the pass that did the other three. `OCCUPANT_R_M[Tree]` = 0.26 is read
+off `props.js:348`'s `CylinderGeometry(0.13, 0.26, …)`, but the near-ring pine
+now ships from `ez-tree` (`props.js:556`) and the cone is only the LOD1 start.
+So the server's trunk and the drawn trunk agree by assumption, not by gate —
+the same class as the shelter's box list before this pass, one occupant over.
+`ci/pine_shape.mjs` already imports the shipped builder and already prints a
+1.52 m canopy radius, so the fix is one assertion pinning the GENERATED
+trunk's radius to `OCCUPANT_R_M[Tree]`. Not done here because it may not hold:
+if ez-tree's trunk is not 0.26 m the fix is a table change with a real number
+behind it, not a one-line assert, and that deserves its own measurement.
+> 3. ~~**`ARCH_BOX` needs slots and a container address**~~ — **answered in
+>    `4d7a926`, 2026-08-04**, before this request was read. `BOX_SLOTS` is on
+>    the wire and `box_key` is the address; the ui half landed 2026-08-05
+>    (item 0 above). (2) is the one still open.
+
+> **Cross-lane request, systems lane: the occupant query exists, please call
+> it.** *(world lane, 2026-08-05.)* `terrain::slot_blocks(&slot, x, z, feet_y,
+> capsule_r, capsule_h) -> bool` is pure, allocation-free, sqrt-free and takes
+> an ALREADY-RESOLVED slot — never a seed, because `scatter` costs a `height`
+> fan plus a `moisture`, a `clump` and a `road_band` per cell and must never be
+> re-derived inside a movement step. `terrain::OCCUPANT_PROBE_CELLS` (= 1) is
+> the neighbourhood to scan and it is proved complete, not assumed: every slot
+> lies inside its own cell, drawn ones by their ±3 m jitter and authored ones
+> because `scatter` only returns them for the cell they fall in. **Updated
+> 2026-08-05: the widest reach is now 5.845 m, not 2.050 m** — the shelter's
+> bounding circle is 4.9498 m and it eats most of the 8 m margin on its own.
+> Still complete, still 1, and the const block still proves it, but the
+> headroom is gone: the next occupant wider than a boulder breaks the 3×3 and
+> the build will say so at the definition.
+> `slot_blocks` **did not change signature** and no golden moved. The shelter
+> is the one occupant with a narrow phase behind the radius — that is internal,
+> the call site is identical for every occupant. **Unverified in play:** no
+> body has ever been stopped by one of these — `tests/solid.rs` gates the
+> shapes and the predicate, and that is all it can gate from this side.
+
+> **Cross-lane, not an item: `ui_smoke` is not flaky, and the fix is not the
+> world lane's to make.** `ci/gates.sh` went RED then GREEN on an unchanged
+> tree on 2026-08-04. Both runs ran the same 289 tests with 0 failures and the
+> same gate list; the RED one died before any check executed, on
+> `EADDRINUSE 127.0.0.1:8952` at `ci/ui_smoke.mjs:206`, because line 89 hard-codes
+> that port and two lanes run the gate concurrently. Not a clock, not a
+> timeout — the `bot_smoke`/IPv6 class, a contended resource. **The ui lane has
+> already fixed it** (`|| 0` plus readback) and it is unmerged; a second fix
+> from here would only conflict on the same line. Merge theirs. Until then
+> `UI_SMOKE_PORT=<free>` is the documented override.
+
+> **Cross-lane, not an item: the ui lane's flag-word blocker is cleared, and
+> the read changed.** *(systems lane, 2026-08-04. Read this before wiring the
+> drag.)* `APPLIED_MOVE` and `STREAM_ERR` were both `1 << 31`. Bit 31 stays the
+> error sentinel — `main.js:759` already reads it that way and the fix must not
+> need `web/` — so the move verdict moved to a **second applied word**:
+> `core::APPLIED2_MOVE`, read through the new export **`client_applied2()`**.
+> Word 0 cannot announce word 1 (bits 0..30 are flags, 31 is the sentinel), so
+> call `client_applied2()` after *every* `client_on_stream`; it is zero on any
+> message that set nothing, so an unconditional read cannot see a stale
+> verdict. The ui half is unchanged otherwise: `client_move_readout()` into
+> `invMoveVerdict`, on `APPLIED2_MOVE` instead of `APPLIED_MOVE`. Gated by
+> `applied_word_is_full_and_bit_31_is_the_error_sentinel` (core.rs — the word
+> is asserted *exactly* full, so the next flag cannot land on the sentinel) and
+> by `ci/client_smoke.mjs` through the real C ABI. **Unverified in a browser:**
+> `browser_smoke` is operator-disabled this run, so "the console.error is gone"
+> is a claim the native and ABI gates support and no browser has checked.
+00. **systems: the error must leave the flag word — it is NOT a one-line change.**
+   *(Gap pass, ui lane. Gap 1 of BOTH `findings/pass-20260804-205133-01-judge.md`
+   and `-02-judge.md`: "a player still cannot move a single item".)*
+
+   The client half landed this pass — main.js arms `onInvMove` and routes the
+   verdict, so a player can drag. It is armed over a workaround, and this is
+   what retires it.
+
+   Both reports call the cure "one constant in `crates/client-wasm`". **It is
+   not, and a pass that starts there will hit a wall in ten minutes.**
+   `core.rs:38-122` assigns every bit 0..31 of the `APPLIED_*` word — bit 31
+   (`APPLIED_MOVE`) is the last one, and `core.rs:115-121` says so in its own
+   comment. So `APPLIED_MOVE` has nowhere to move to. The thing that must
+   leave the word is **`STREAM_ERR`** (`bridge.rs:64`), because it is not a
+   flag at all — it is an error channel multiplexed into a full flag set by
+   `client_on_stream`, which returns both.
+
+   Cheapest shape: `client_on_datagram`'s, which already does this right —
+   return a code, not flags. Or an out-of-band `client_stream_err()`. Either
+   way `ci/client_smoke.mjs:543,807,816,822` assert the error meaning of bit 31
+   and `:572,587` assert the move meaning, so both sides move in that commit.
+
+   When it lands: delete `web/src/invmove.js` and its call site in `main.js`,
+   and test bit 31 as `APPLIED_MOVE` directly. `ci/ui_smoke.mjs` group L
+   already goes red on that commit and says exactly this in its failure text.
+
+> **Cross-lane, not an item: `browser_smoke` is red on a CLEAN tree, and it is
+> tab B, not the prop-contrast probe.** Measured 2026-08-04 from the ui lane,
+> both on `lane/ui` HEAD `ecf1985` with nothing applied and on a branch off it:
+> the same assertion both times — *"tab B: never reached the world —
+> unresponsive"*, `__gatesDebug` never published, `2 tab(s) live`, ~68–70 s of
+> liveness cap. Tab A reaches the world in under a second in both runs. This is
+> the two-live-renderers class CLAUDE.md already names (2026-08-01), on a box
+> with no GPU where Chromium is on SwiftShader — not a diff, and not a timeout
+> to widen. The operator has `browser_smoke` switched off this run. Anything
+> touching `web/` therefore cannot honestly claim the renderer tier; say so.
+
+0. **world: the haven pad, and the road the client cannot see.**
+   *(Gap pass. Both judge reports named "the island has nowhere to go" as their
+   own top-or-second gap — `findings/archive-prestamp/pass-20260804-173640-01-judge.md`
+   gap 3 and `-02-judge.md` gap 2. The coast road half landed this pass; this is
+   what it leaves.)*
+0. **world: the pad exists but nothing is on it, and the road is invisible.**
+   *(The pad's placement + exclusion zone landed — `DECISIONS.md` §open "haven
+   pad v0", `tests/haven.rs`. This is what it leaves.)*
+0. **world: the pad pays now, but it is still bare ground.**
+> **Cross-lane, not an item: `browser_smoke` is RED on a clean trunk, and it
+> is the lighting gap, not a regression.** The renderer tier is switched off
+> this run (`GATES_TIER=fast`), so the loop is not seeing it. Run in full on
+> 2026-08-05 it fails `TONAL_MAX_P10`: **p10 luma 112 against a ceiling of
+> 60** (reference bar 40.5), register `p10 112 · p50 143 · p90 187`.
+> **Confirmed pre-existing** — `lane/looks` unmodified fails with the
+> identical assertion and the identical number, so the trap list's `git
+> stash` check has already been paid. It is the visual judge's own ranked
+> "cut ambient fill, restore darkness through AO not exposure", and by
+> `CLAUDE.md` tonemap/sky/exposure/fog are **one owner, sequential** — not
+> this lane's, and not four parallel passes'.
+
+0. **world: the forest clusters now; the biome edge is still a step.**
+   *(`terrain::clump` landed — `DECISIONS.md` §open "scatter clumping v0",
+   `crates/sim-core/tests/scatter.rs`. Dispersion 0.98–1.05 → 2.90–3.34
+   against a closed-form null, density held. This replaces "The scatter is
+   white noise and a forest is not", deleted from further down the file:
+   that item specified this change and predicted every fixture it moved,
+   correctly. This is the part of it that is left.)*
+
+   - **`SPAWN.md` §9.4's other half is not done.** Density now ramps across
+     a biome boundary but *composition* still snaps: `biome()` is a hard
+     classifier (`h > 52.0`, `moist > 0.05`), so one cell draws from the
+     forest row and its neighbour from the meadow row. The fix is blending
+     the two rows over a band, and it is not a local edit — `biome()` is
+     also read by the client splat and by spawn selection, so softening it
+     is a decision about what `biome()` returns.
+   - **One field scales every occupant.** Trees, bushes and rocks clump on
+     the same noise. Right for a clearing, wrong for ore: a metal node has
+     no reason to care where the trees are. A second channel for the
+     mineral rows is the obvious next slice, and it is cheap — the machinery
+     is now in `terrain.rs` and the gate generalises.
+   - **The forest row peaks at 945 of 1,000 per-mille in a grove.**
+     `test_no_biome_row_saturates` holds it, but that is 5.5% of headroom:
+     the next pass that raises a weight row or the clump ceiling hits the
+     rail, and past it density falls silently. Budget it before spending it.
+   - **Nobody has looked at a grove.** The claim is arithmetic only; no
+     frame has been captured since the field landed.
+
+1. **world: the pad pays now, but it is still bare ground.**
+   *(Placement, exclusion zone and the container ring have landed —
+   `DECISIONS.md` §open "haven pad v0" + "haven crates v0", `tests/haven.rs`,
+   `ci/haven_prize.mjs`. This is what they leave.)*
+
+   - **The carve, and it is cross-lane.** v0 *finds* a flat site; it does not
+     make one. Measured worst relief is **3.76 m over a 32 m pad** — enough
+     that a greybox building on it would float or bury a corner. Carving means
+     writing `height`, and `terrain::height` has ~50 call sites across four
+     crates (`movement.rs`, `collide.rs`, `build.rs`, `deploy.rs` are systems
+     lane), and it cannot be half-threaded: a client mesh that sees the pad
+     and a collision path that does not is a player standing in the air.
+     **Request to the systems lane:** thread a `&Haven` (or a worldgen context
+     carrying it) through `height` so the world lane can carve. Until then no
+     POI on the pad can be flat — the crates already sit on up to 3.76 m of it.
+   - **A structure, not just containers.** The pad has five crates and no
+     walls. A greybox a player can walk into is the next thing that makes it a
+     place, and it is what actually needs the carve above.
+   - **The road reads as a gap, not a road.** `web/src/terrain.js` has no dirt
+     band, so the carriageway is just a strip where nothing grows. Parked with
+     the operator's "textures are not this lane's remit" call — reopen it if
+     the lane's remit flips back. Touching `web/` costs the ~19 min tier.
+   - Not done from stage 7: the flattening, and the denser bay-mouth slots (knob).
+   - **Nobody has looked at a crate.** The archetype at `props.js` index 9 is
+     unverified by anything but arithmetic; `browser_smoke` is off this run.
+
+1. **The sim can play a survival game; the player cannot reach it.**
+   *(Operator, 2026-08-04. This outranks every gate-building item below it.)*
+
+   `crates/` ships 15 verbs — Craft, Place, PlaceDeploy, Loot, Upgrade, Lock,
+   Feed, Drink, Consume, Use — against 48 items, 36 recipes, 18 building pieces,
+   9 deployables, 6 weapons, 5 gatherables. The client renders **the first six
+   inventory slots as text strings** (`main.js:1303-1308`) and has no inventory
+   grid, no container view, and no way to move an item. Nearly all of that
+   content is unreachable, which is the product gap — not test coverage.
+
+   **This is a Rust clone first.** Work that makes it more playable outranks work
+   that makes it more provable. Gates still ride along with the feature they
+   protect — that is not negotiable and no wall moves — but a gate is no longer a
+   valid item *by itself* unless a red wall demands it.
+
+   - **systems:** container move / stack / split, validation ordered BEFORE the
+     mutation and computed on the values the client predicted with. This is the
+     ui lane's standing request and it blocks them. Then gathering, decay and
+     upkeep behaviour — the loop that makes a day matter.
+   - **ui:** the inventory grid, the loot/container panel, and drag-move against
+     that refusal path. This is the single highest-leverage lane right now.
+   - **looks (now the world lane):** what exists out there and where —
+     scatter, occupants, monuments, greybox. Textures are parked; see below.
+
+1. **The world is a beach with trees on it. Build the world, not its textures.**
+   *(Operator, 2026-08-04. Retargets the `looks` lane; its charter is rewritten.)*
+
+   **The spec exists and is unbuilt — do not design a new one.** `TERRAIN.md`
+   §7 is the coast road: a ring ~40 m inland, flattened, dirt, **barrel spawn
+   slots along it**, doing what Rust's roads do — pulling players out of their
+   bases into a circulation loop where they meet — with zero monument art.
+   §8 is the haven pad, and it is the monument hook: every later POI is "carve
+   pad + exclusion zone + scatter table". `grep road crates/` returns nothing.
+   Both halves are research-backed by `reference/SPAWN.md` (§9.3 their scatter
+   clusters and ours does not, §9.4 the squared acceptance, §9.6 per-cell RNG).
+   There is nowhere to go and nothing to find, and no texture fixes that.
+
+   **Textures, materials and lighting polish are parked.** They are a solved
+   science and not what this build is short of. Frames are no longer captured
+   for that lane and no visual judge scores it — correct while the question is
+   "is there a world here", wrong the moment it becomes "does it look right".
+   Say so here if you think it has flipped.
+
+   **Build it sim-side first, and it costs twenty seconds instead of nineteen
+   minutes.** Scatter is already deterministic in `sim-core` (Occupants 1..7)
+   and `web/src/props.js` only draws what worldgen decided, so a monument that
+   lands in a worldgen slot is seeded, replayable, gated by `terrain_golden`,
+   and pays no renderer tier at all. Give it a greybox mesh second, batched.
+
+   Gate it as arithmetic — `ci/pine_shape.mjs` is the standard. Counts, spacing,
+   slope, clearance and tri budgets are numbers. A greybox monument a player can
+   walk into and a forest that clumps beat one more correct albedo.
+
+1. **Two branches of texture work are unmerged and are NOT lost — read this
+   before rebuilding either.** *(Operator, 2026-08-04. Not a queued item.)*
+
+   Nothing judged PASS is stranded: every lane trunk adds nothing `main` lacks.
+   These two failed or stopped, so the harness kept them rather than merging:
+
+   - `loop/bark-photo` (tag `salvage/bark-photo`) — judged **FAIL** 2026-08-04,
+     +438 lines in `materials.js`/`textures.js`. Report is in the looks lane's
+     `findings/`.
+   - `loop/m1-surface-grain` (tag `salvage/m1-surface-grain`) — +666 lines in
+     `materials.js`/`scene.js`, stopped unmerged, its own `BRANCH-NOTES.md`.
+
+   Both are **texture and material work, which is parked** (item above). Do not
+   merge either to clear the list — failed work in the trunk is the one thing
+   the judge exists to prevent. If textures are un-parked later, start from
+   these branches rather than from scratch; if they are never un-parked, delete
+   them in a commit that says so, as a stated decision rather than a skip.
+
+1. **The barrel's systems half is done — the loop now waits on world and ui.**
+   *(systems lane, 2026-08-04. Read this before picking the barrel item below.)*
+
+   `BarrelSlot` is smashable: `hits` swings (content, `loot.toml`) open it, the
+   table rolls by weight, and the roll stands up a **ground container** at the
+   barrel's own address — `backpack.rs`'s store, not a new one, so `CONT_BAG`,
+   the move verb, the loot verb, the sync walk and the wire all work unchanged.
+   **`PROTO_VER` did not move.** Gates: `tests/loot.rs` (8), two `event_roles`
+   payload checks (`EV_SLOT_HARVESTED` is off the uncovered ledger, 9→8),
+   `bake_loot` + refusals in `content.rs`, and `test_replay`'s golden
+   regenerated **behaviourally** with a `made >= 2` assert so it cannot go
+   green on an unarmed fixture again.
+
+   What is left, and neither is systems':
+   - **world:** barrels only spawn on the beach today (`terrain.rs` weight row).
+     `TERRAIN.md` §7's coast road is what puts them somewhere worth walking.
+   - **ui:** the loot panel. It is a `CONT_BAG` container like a death bag, so
+     one panel serves both — no new protocol to write against.
+
+   Two §open rows landed with it: "barrel smash hits" and the call to reuse the
+   ground-container store (which shares `MAX_BACKPACKS` 256 and its evict
+   policy with death bags — stated there, not discovered later).
+
+1. **Smash a barrel, pick up the loot. The whole loop, and most of it exists.**
+   *(Operator, 2026-08-04. First concrete target of the playability item above.)*
+
+   Already built: `content/loot.toml`'s `loot.barrel` (8 entries, revolver at
+   weight 1), `Occupant::BarrelSlot`, the spoken "node/barrel respawn 20–45 min",
+   and `balance.toml` pricing barrel drops in **road-minutes per unit** — the
+   economy already assumes a road you run. Missing is the connective tissue.
+
+   - **world:** `TERRAIN.md` §7's coast road, with barrel slots along it. §8's
+     haven pad is the monument hook; build the road first, it is the loop.
+   - **systems:** make `BarrelSlot` smashable. `gather.rs:32` says "Rock and
+     BarrelSlot are not nodes" — that is the line to change. It rolls
+     `loot.barrel` into a container, not straight into the inventory.
+   - **ui:** the loot panel, against the container the roll lands in.
+
+1. **Gravity is there and jump is not — and jump makes the lintel matter.**
+   *(Operator, 2026-08-04. systems lane; it is a wire change, so only that lane.)*
+
+   `movement.rs` already carries vertical velocity as integer quanta, so gravity
+   exists and nothing can leave the ground. Add jump: an input bit, an impulse in
+   quanta, walled float ops only, quantize-both-sides so prediction holds.
+
+   **`collide.rs` predicted this and left the hole open on purpose** — a doorway
+   "blocks only its posts (the 1.2 m opening passes; the lintel never matters at
+   capsule height **until a jump exists**)". It exists now, so the lintel becomes
+   real geometry and a jump into a doorway head must stop. Land both halves in
+   one pass or a player will jump through a doorframe.
+
+   Fall damage is the natural follow-on and is NOT part of this item.
+
+1. **Dropped loot should land somewhere you can find, not inside the floor.**
+   *(Operator, 2026-08-04. systems lane.)*
+
+   A dropped item wants a short settle — gravity to the ground, a slide off a
+   slope, friction to a stop — so it rolls a little and comes to rest where a
+   player can see it. That is a memory hook, not decoration: "it went behind the
+   rock" is how you find your own bag again.
+
+   **This is not a physics engine and must not become one.** Integer quanta,
+   walled float ops, a hard iteration cap in `limits.rs`, settle resolved and
+   then frozen. `sim-core` has exactly one dependency and it stays that way — a
+   rigid-body crate breaks walls 1, 2 and 5 at once, and cosmetic shards when a
+   barrel breaks are client-only and never feed back.
+
+1. **There is a revolver in the loot table and nothing to fire it.**
+   *(Operator, 2026-08-04. systems lane, after the three items above.)*
+
+   `combat.rs` is melee-only — grep finds no projectile, ballistic or ranged
+   path — while `loot.toml` drops `item.revolver` at weight 1 and
+   `content/weapons.toml` authors six weapons. The rarest barrel drop in the
+   game is currently a paperweight.
+
+   Ranged v0 is the smallest honest fix, mirroring how melee landed: the swing
+   that fells a tree also lands on a person, so the shot that hits a barrel also
+   hits one. Lag compensation and rewound raycasts are `NOW.md` M2 and are NOT
+   this item — say plainly in the commit what is unlagged.
+
+1. **The container verb has no UI and no gate — and the systems half is not
+   ours.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.)*
+
+1. **The container panel: the refusal path exists now, so the UI is
+   startable.** *(ui lane, 2026-08-04, after `ci/ui_smoke.mjs` landed.
+   Systems half landed 2026-08-04, wire v17.)*
+1. **The inventory drag is built and gated; one bit in `crates/` stops it
+   reaching the sim.** *(ui lane, 2026-08-04. Supersedes "the inventory screen
+   draws all 30 slots now; it still cannot move one" — the panel half landed.)*
+
+   In `hud.js` + `ci/ui_smoke.mjs` group K, inside the armed carve-out so it
+   pays `ui_smoke` and not the renderer tier: `beginInvDrag` / `dropInvDrag` /
+   `cancelInvDrag` / `invMoveVerdict`, driven by real pointer events, plus the
+   `REFUSE_M_*` → sentence table read off `inventory.rs`. The ordering law is
+   the whole point and every clause is a check — validate the address before
+   touching a cell; ask the host to encode BEFORE drawing, because a drawn move
+   with no frame behind it IS the divergence; one move in flight; a verdict
+   applied only when its address matches the prediction; and an authoritative
+   `setInventory` outranking the rollback snapshot. Eight mutants, all red.
+
+   **Systems lane, one-line request — this is the blocker.** `APPLIED_MOVE`
+   (`client-wasm/src/core.rs:122`) and `STREAM_ERR` (`client-wasm/src/bridge.rs:64`)
+   are both `1 << 31`. `main.js:759` reads that bit as a decode error, so the
+   first `Moved`/`MoveRefused` logs `console.error` — which fails the browser
+   gates — and returns early, dropping the inventory diff in the same message.
+   It needs a distinct sentinel; the flag word is full and `core.rs:122` says so.
+
+   **The UI half left, once that clears:** set `hud.onInvMove` in `main.js`
+   (the host owns the count — the panel is handed strings, and a panel parsing
+   "wood ×8" back into an 8 would be inventing its own payload), then read
+   `client_move_readout()` on `APPLIED_MOVE` into `invMoveVerdict`. That touches
+   `main.js`, so it pays the renderer tier. Stack split and the loot/container
+   panel are the slices after it.
+1. **The drag's release side is closed; the arming decision is made.**
+   *(ui lane, 2026-08-04, from the judge's ranked fixes 1–3,
+   `findings/pass-20260804-205133-01-judge.md`. Not a new item — what remains
+   of the drag is the systems blocker in the item above.)*
+
+   The cancel was bound to `#inv`, so a release on the world — the release a
+   player actually makes — was never seen: `invDrag` stayed on the source and
+   the next press's release ran the drop against it. Press cell 8, sim asked to
+   move cell 3. Now on `window` (`pointerup`, `pointercancel`, `blur`), scoped
+   to the `pointerId` that began the drag.
+
+   Two more of the same class found while in there, both fixed: a **second
+   pointer's release** finished the first pointer's drag (the one-drag guard
+   refuses the second *press* and never had anything to say about its
+   *release*), and it must not cancel the live drag either. And ranked fix 3 is
+   answered by **not offering the gesture**: `beginInvDrag` refuses while
+   `onInvMove` is still `Hud.NO_MOVE_HOST`, so nothing dims and nothing toasts
+   until a host claims the verb — arming is identity against that sentinel, so
+   `main.js` assigning it is the whole of the arming step.
+
+   Gated in `ui_smoke` group K (175 checks). Nine assertions added; eight
+   mutants of `hud.js` run, all eight red. The ninth mutant — `cancelInvDrag`
+   leaving `invDragPointer` set — **escaped** the first eight and is why the
+   `doors` case exists: the two fields are one piece of state.
+1. **The props' photograph: `wood` and `foliage` still have none.**
+   *(From the visual judge's ranked gap 1, `findings/pass-20260804-153032-01-visual.md`:
+   "the terrain got a sourced photograph this pass and the props did not — this
+   is a coverage gap, not a tuning one." Half of it landed as `DECISIONS.md`
+   §open "prop photograph v1"; this is the half that did not.)*
+
+   `rock` and `ore` now sample the granite layer of the array the ground
+   already had, triplanar, mean-preserving, luma only. Three things remain,
+   in order of what the judge measured:
+
+   - **`wood` gets bark.** `assets/textures/bark_{albedo,normal,rough}.jpg` are
+     on disk, in `MANIFEST.md`, and imported by nothing. They are not in the
+     ground's four-layer array, so this needs either a fifth layer (which moves
+     `GROUND_LAYERS` and the splat index that is asserted against it — not
+     free) or a second, prop-only array. The second is the smaller blast radius.
+   - **`foliage` gets needle cards**, which is geometry, not a map — the judge
+     is explicit that "no material work saves a smooth cone", and that is the
+     generated pine in the item below, not a texture.
+   - **The frequency split.** The field and the photograph are both live on
+     `rock`/`ore` albedo now, and per the pack's own rule two uncorrelated
+     deviations on one channel add variance rather than detail. The fix is to
+     hand everything above the tile frequency to the photograph and leave the
+     field the coarse per-instance patchiness a tiling map cannot supply —
+     which means splitting `PROP_DETAIL_SHARE` into an albedo share and a bump
+     share, since zeroing it today would take the bump with it.
+   Not startable here: drag/drop, stack split, the loot panel.
+   `client_action_loot()` is payload-free (`main.js:426`) so there is no
+   container view to draw, and a drag the sim cannot refuse is the divergence
+   CLAUDE.md's item-move trap describes.
+
+   **Systems lane, unchanged one-line request:** container move/stack/split in
+   `crates/`, validation ordered BEFORE the mutation and computed on the values
+   the client predicted with. Three Oxide fixes in 28 minutes on one 2019 day
+   were all splice-point moves that landed as *the server disconnecting the
+   client*. The panel is built and gated; wiring a drag to it is a small pass
+   once that refusal path exists.
+
+   Deliberately not drawn: worn/armour slots. `inventory.jpeg` has a
+   paperdoll, the client has no worn-slot data, and empty slots for a system
+   that does not exist are decoration. The renderer-tier carve-out that would
+   make this lane cheap is still **not armed** — `DECISIONS.md` §open.
+
+1. **The generated pine is built, gated, bundled — and not drawn.**
+   *(Found while recovering the red join gate, 2026-08-04. `DECISIONS.md` §open
+   row "the pine is generated" and the comments in `props.js`/`terrain.js` all
+   say the near ring draws it. It does not.)*
+
+   `ARCHETYPES[1]` (`web/src/props.js:400`) carries no `parts:` key, so
+   `terrain.js:193`'s `a.parts ? a.parts() : …` takes the else branch and the
+   near ring still draws the 102-triangle cone. `pineParts` is imported at
+   `terrain.js:45` and never called — the tell. `ci/pine_shape.mjs:315` calls
+   `pineParts()` directly, so it scores a generator nothing renders and stays
+   green either way; the bundle ships ez-tree's base64 textures regardless.
+
+   Do not just add the key. Wired as-is the ring costs 416 × 6,496 × 3 passes
+   ≈ **8.1 M triangles against DESIGN §9's 1.5 M** — 5×over, and
+   `browser_smoke`'s own budget assertion would catch it. The billboard LOD
+   (item below, `TERRAIN.md` §4) is the prerequisite, exactly as that commit's
+   own message said. Two honest ways to close this: land the LOD first, or
+   revert the wiring and the dependency and say so. Either way `pine_shape.mjs`
+   should assert the FLEET cost — it already prints the 416-tree arithmetic
+   eight lines above a ceiling justified by "~20 trees inside 40 m".
+
 1. **`main` is RED: the pine's prop contrast sits exactly on its floor.**
    *(Operator, 2026-08-04: land the wind + felling lane anyway and record it.
    `DECISIONS.md` §Spoken. This is the one item that outranks everything below

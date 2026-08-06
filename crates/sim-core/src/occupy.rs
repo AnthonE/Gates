@@ -218,6 +218,33 @@ impl Occupants<'_> {
     /// `terrain::OCCUPANT_PROBE_CELLS`, which proves it against the widest
     /// occupant plus a capsule against `CELL_SIZE` in a const block.
     pub fn blocks(&mut self, seed: u64, x: f32, z: f32, feet_y: f32) -> bool {
+        self.blocks_volume(seed, x, z, feet_y, CAPSULE_RADIUS_M, CAPSULE_HEIGHT_M)
+    }
+
+    /// The same question for a volume that is not a player. `blocks` is this
+    /// with the capsule's own two constants; `ranged::step` passes an
+    /// arrow's, which is nearly a point.
+    ///
+    /// The 3×3 scan stays complete for any radius **at or under the
+    /// capsule's** — `terrain::OCCUPANT_PROBE_CELLS` proves its bound
+    /// against `CAPSULE_RADIUS_M`, and a narrower query reaches no further
+    /// than a wider one. A caller passing something fatter than a player
+    /// would be outside what that const block proved, so the assert below
+    /// says so rather than leaving it to the reader.
+    pub fn blocks_volume(
+        &mut self,
+        seed: u64,
+        x: f32,
+        z: f32,
+        feet_y: f32,
+        r: f32,
+        h: f32,
+    ) -> bool {
+        debug_assert!(
+            r <= CAPSULE_RADIUS_M,
+            "the 3x3 probe is proved complete against the capsule radius; a \
+             wider query needs OCCUPANT_PROBE_CELLS re-proved with it"
+        );
         let pcx = floor_i32(x / CELL_SIZE);
         let pcz = floor_i32(z / CELL_SIZE);
         let mut dz = -terrain::OCCUPANT_PROBE_CELLS;
@@ -230,7 +257,7 @@ impl Occupants<'_> {
                 if slot.occupant == Occupant::None {
                     continue;
                 }
-                if !terrain::slot_blocks(&slot, x, z, feet_y, CAPSULE_RADIUS_M, CAPSULE_HEIGHT_M) {
+                if !terrain::slot_blocks(&slot, x, z, feet_y, r, h) {
                     continue;
                 }
                 // Last, and only for a slot that would otherwise stop us: this

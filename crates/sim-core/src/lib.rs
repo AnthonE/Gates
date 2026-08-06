@@ -21,11 +21,14 @@ pub mod limits;
 pub mod loot;
 pub mod movement;
 pub mod occupy;
+mod pitch_lut;
 pub mod probe;
+pub mod ranged;
 pub mod rng;
 pub mod survival;
 pub mod terrain;
 pub mod world;
 mod yaw_lut;
 
+pub use pitch_lut::pitch_dir;
 pub use yaw_lut::yaw_dir;

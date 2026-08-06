@@ -3272,6 +3272,14 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/charge.rs"),
         },
         Module {
+            file: "pitch_lut.rs",
+            src: include_str!("../../sim-core/src/pitch_lut.rs"),
+        },
+        Module {
+            file: "ranged.rs",
+            src: include_str!("../../sim-core/src/ranged.rs"),
+        },
+        Module {
             file: "collide.rs",
             src: include_str!("../../sim-core/src/collide.rs"),
         },
@@ -3368,9 +3376,9 @@ mod wire_domains {
             prefix: "pub const DEATH_BY_",
             ty: ": u8 = ",
             exempt: &["MAX"],
-            min_members: 3,
+            min_members: 4,
             bits: DEATH_CAUSE_BITS,
-            live_max: 2,
+            live_max: 3,
         },
         Domain {
             what: "move refusal",

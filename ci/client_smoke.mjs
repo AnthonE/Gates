@@ -277,7 +277,7 @@ for (let i = 0; i < slotCount; i++) {
 // client handed a `SUB_CHARGE_PLACED` decodes it as unknown, calls the whole
 // event message malformed, and loses every event that shared the datagram
 // with it. Walls would lose hp with nothing drawn to say why.
-check(ex.client_proto_ver() === 23, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 24, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -1182,15 +1182,30 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
     ex.client_on_stream(f.length);
     check(ex.client_death_screen() === 0, "a beach wake must leave the screen closed");
 
-    // A forged fourth cause has no meaning and must not decode — the two
-    // bits are the range check, the hotbar selector's posture.
-    f = evFrame(26, [[257, 32], [1, 32], [3, 2], [0, 16], [0, 16]]);
+    // Cause 3 is DEATH_BY_ARROW since ranged v0, and this assertion is the
+    // inverse of the one it replaces. It used to forge a fourth cause and
+    // require a refusal; there is no fourth cause to forge any more.
+    //
+    // **The field is now saturated, and that is the thing worth gating.**
+    // `DEATH_CAUSE_BITS` is 2 and all four patterns are live (HAND 0,
+    // CLOCK 1, SALT 2, ARROW 3), so a fifth cause cannot be added without
+    // widening the field — there is no spare pattern left for it to land
+    // in silently, which is the failure mode `world.rs DEATH_BY_MAX`'s doc
+    // records as a judged FAIL. The saturation is asserted from the other
+    // end by `protocol`'s `every_domain_fits_its_wire_field`; here we only
+    // prove the last pattern decodes and reaches the screen, because a
+    // cause the encoder accepts and the bridge drops is the same defect
+    // wearing the opposite sign.
+    f = evFrame(26, [[257, 32], [11, 32], [3, 2], [0, 16], [1500, 16]]);
     writeIn(f);
+    df = ex.client_on_stream(f.length);
+    check((df & 0x80000000) === 0, "the arrow cause must decode, not error");
+    check((df & RESPAWN) !== 0, "our own arrow death must raise the screen");
+    check((ex.client_death_by() >>> 0) === 11, "the screen lost who shot us");
     check(
-      (ex.client_on_stream(f.length) & 0x80000000) !== 0,
-      "a forged death cause must be refused",
+      (ex.client_death_weapon() >>> 0) === 1500,
+      `the screen lost the arrow's range: ${ex.client_death_weapon() >>> 0}`,
     );
-    check(ex.client_death_screen() === 0, "a refused death must not open the screen");
   }
 
   // hp > max is a server bug, not a bar to render: refused, error bit set.

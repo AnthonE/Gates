@@ -233,7 +233,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// It also spends the last action code: `ACT_MAX` is now full at 15, so
 /// v24's action, if it has one, is the width bump. Fixtures are keyed
 /// `v23_*`.
-pub const PROTO_VER: u16 = 23;
+pub const PROTO_VER: u16 = 24;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
