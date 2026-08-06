@@ -41,6 +41,8 @@ pub mod terrain_mesh;
 pub mod textures;
 pub mod tree;
 pub mod ui;
+// The in-world keys: what the crosshair is on, and what E/G/H do about it.
+pub mod verbs;
 
 pub use menu::{Menu, Rt, Screen};
 pub use settings::Settings;
@@ -230,6 +232,8 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<bodies::Bodies>()
             .init_resource::<menu::Picked>()
             .init_resource::<pause::Chosen>()
+            .init_resource::<verbs::Aimed>()
+            .init_resource::<hud::Toast>()
             .init_resource::<Settings>()
             .insert_non_send_resource(menu::Connecting::default());
 
@@ -375,6 +379,18 @@ impl Plugin for GatesRenderPlugin {
                 .before(input::place_eye)
                 .run_if(in_state(Screen::InWorld)),
         )
+        // The in-world verbs. `InWorld` for the same reason `gather` is: every
+        // one of them spends something, and a player reading a settings pane
+        // asked for none of it. `keys` runs AFTER `resolve` so the press acts
+        // on the pick the prompt is currently showing — resolving twice is how
+        // a prompt and its verb come to disagree.
+        .add_systems(
+            Update,
+            (verbs::resolve, verbs::keys)
+                .chain()
+                .after(input::place_eye)
+                .run_if(in_state(Screen::InWorld)),
+        )
         // Everything else runs wherever the world exists — loading, playing,
         // paused, or reading settings from the pause menu. `place_eye` pumps
         // the session, and a session that stops being read is a connection
@@ -392,6 +408,12 @@ impl Plugin for GatesRenderPlugin {
                     bodies::stream,
                     rig::follow_eye,
                     hud::update,
+                    // The feedback surface. Under `world_running` rather than
+                    // `InWorld`: a refusal that arrived while the Esc menu was
+                    // up is still owed to the player, and a ring nobody drains
+                    // is a ring that overflows and drops the newest.
+                    hud::feedback,
+                    hud::prompt,
                 )
                     .in_set(Stream),
             )

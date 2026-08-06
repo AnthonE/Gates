@@ -35,4 +35,5 @@
 pub mod build;
 pub mod craft;
 pub mod interact;
+pub mod refusals;
 pub mod slots;

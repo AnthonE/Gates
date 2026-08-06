@@ -298,11 +298,13 @@ pub fn forget(mut ui: ResMut<Ui>) {
 pub fn keys(
     mut ui: ResMut<Ui>,
     net: NonSend<super::Net>,
+    mut toast: ResMut<super::hud::Toast>,
     mut keyboard: ResMut<ButtonInput<KeyCode>>,
     mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
 ) {
     // The wheel is a hold, so it is decided every frame rather than latched.
     let holding_wheel = keyboard.pressed(KeyCode::KeyB);
+    let was_inventory = ui.panel == Panel::Inventory;
 
     if keyboard.just_pressed(KeyCode::Tab) {
         ui.panel = match ui.panel {
@@ -321,6 +323,19 @@ pub fn keys(
         // the same press and open the Esc menu behind the panel that just
         // closed.
         keyboard.clear_just_pressed(KeyCode::Escape);
+    }
+
+    // Closing the inventory closes whatever container was open beside it.
+    //
+    // **The server's idea of an open container outlives the panel drawing
+    // it.** A container left open is one the sim keeps syncing to a screen
+    // nobody is looking at, and — worse — the next `E` on a different box
+    // arrives while the old one is still the open one, which is exactly the
+    // container-state divergence `CLAUDE.md` names as the reference's own
+    // worst bug on this verb. The close is sent when the panel that owned it
+    // goes away, whichever key did it.
+    if was_inventory && ui.panel != Panel::Inventory {
+        super::verbs::close_container(&net, &mut toast);
     }
 
     // The wheel wins over nothing and loses to the inventory screen: a
