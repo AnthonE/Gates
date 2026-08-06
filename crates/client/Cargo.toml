@@ -79,10 +79,26 @@ required-features = ["render"]
 # menu, settings, the HUD, inventory, crafting, the build wheel, chat, the map
 # and the death screen — about 5,400 lines and 78 `Node` sites across
 # `render/*.rs` and `render/panels/`.
-# What is genuinely unused is `bevy_audio` (nothing makes a
-# sound, and the blocker there is asset licensing rather than the API),
-# `bevy_gltf` (every mesh in the tree is procedural), `bevy_scene` and
-# `bevy_animation`. `RENDER.md` §9 carries the reasoning.
+# **`bevy_audio` is no longer on that list and this comment used to say it
+# was.** Audio v0 landed: `render/audio.rs` uses `AudioSource`,
+# `SpatialListener`, `PlaybackSettings` and `Volume`, so it is load-bearing
+# and **alsa is a real requirement**. The old wording ("nothing makes a
+# sound") survived four lines above the paragraph below explaining why `wav`
+# is mandatory for `sound/synth.rs` — a contradiction inside one comment
+# block, and following it would have silenced every cue while compiling
+# clean. Corrected here rather than in `NOW.md` alone, because this file is
+# what someone edits when they do the trim.
+#
+# Genuinely unused, by grep: `bevy_gilrs` (no `Gamepad` reference anywhere,
+# and the only real system-dep win — `libudev`), `bevy_gltf` (every mesh in
+# the tree is procedural), `bevy_scene`, `bevy_animation`, and `vorbis` (we
+# generate WAV in memory). `RENDER.md` §9 carries the reasoning.
+#
+# **The trim was attempted on 2026-08-06 and backed out**, for two reasons
+# that are neither the code nor the feature list — a feature change
+# invalidates every Bevy artifact and the second copy took a 49G disk to
+# SIGBUS mid-link, and the failure mode is invisible on a box with no
+# display. `NOW.md` §0x item 4 has the whole account.
 # `jpeg` is NOT a Bevy default and every source in `assets/textures/` is a
 # .jpg. Without it `bevy_image` refuses the file with "invalid image
 # extension: jpg" — and the renderer carries on drawing a WHITE FALLBACK, so

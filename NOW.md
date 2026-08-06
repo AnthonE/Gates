@@ -183,9 +183,31 @@ Remaining, in order:
    cone with a vertical window and a point-blank exception over the scatter
    cells) has no native port, so the crosshair names what `E` would do and
    never what a swing would hit.
-4. **Bevy's default features pull wayland and alsa**, neither of which this
-   client uses; both are hard build deps on a fresh box. `crates/client/Cargo.toml`
-   already flags the trim as a follow-up — it is now also a portability item.
+4. **The Bevy feature trim — and this item was WRONG, which is the finding.**
+   It said wayland and alsa are unused. **`bevy_audio` is load-bearing since
+   audio v0**: `render/audio.rs` uses `AudioSource`, `SpatialListener`,
+   `PlaybackSettings` and `Volume`, so **alsa is required** and trimming it
+   silences every cue while compiling clean. `Cargo.toml`'s own comment
+   contradicts itself the same way — "nothing makes a sound" four lines above
+   the paragraph explaining why `wav` is mandatory. Both predate the audio
+   slice. x11/wayland stay too: it is a windowed game.
+
+   Actually unused, by grep and not by comment: **`bevy_gilrs`** (no `Gamepad`
+   reference anywhere — this is the only real system-dep win, `libudev`),
+   `bevy_gltf`/`bevy_scene`/`bevy_animation` (every mesh is procedural), and
+   **`vorbis`** (we generate WAV in memory; a Vorbis decoder for buffers we
+   made ourselves buys nothing).
+
+   **Attempted 2026-08-06 and backed out**, twice-blocked and neither reason
+   is the code. (a) A feature change invalidates every Bevy artifact, so
+   `target/debug/deps` held two full sets and 32G became 44G on a 49G disk —
+   `rust-lld` took SIGBUS mid-link, the same ENOSPC signature as the morning.
+   (b) The failure mode is **invisible on this box**: no display, so a green
+   compile is not evidence. The precedent is in that same comment block — a
+   missing `jpeg` decoder made Bevy draw a white fallback *and keep going*,
+   and three material changes measured byte-identical statistics before
+   anyone read the log. Do not land this on a compile alone; it wants disk
+   headroom and a `--capture` run that someone looks at.
 5. **`bodies::stream` allocates a `Vec` per frame** and scans it linearly to
    retire remotes. `structures::stream` does the same job with a generation
    stamp and no allocation; this is the same fix, four lines.
