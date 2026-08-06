@@ -25,6 +25,10 @@ pub mod hud;
 pub mod input;
 pub mod loading;
 pub mod menu;
+// The in-game panels — inventory, crafting, the build wheel. Distinct from
+// `ui`, which is the chrome the full-screen MENU screens share: `ui` is what a
+// player sees instead of the world, `panels` is what they see on top of it.
+pub mod panels;
 pub mod pause;
 pub mod props;
 pub mod rig;
@@ -387,6 +391,16 @@ impl Plugin for GatesRenderPlugin {
                 .chain()
                 .run_if(world_running),
         );
+
+        // ---- the menus -----------------------------------------------
+        // **Not on a capture run**, and that is a rule rather than a
+        // convenience: a probe harness that could open a panel is a visual
+        // gate whose frames depend on which key was last pressed. The cost
+        // is that nothing photographs these panels — the same missing menu
+        // vantage `NOW.md` §0v already names, now owed twice.
+        if self.capture.is_none() {
+            panels::register(app);
+        }
 
         if let Some(dir) = &self.capture {
             let _ = std::fs::create_dir_all(dir);

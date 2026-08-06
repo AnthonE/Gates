@@ -17,6 +17,10 @@
 pub mod args;
 pub mod scry;
 pub mod shardlist;
+// The in-game menus' arithmetic. NOT feature-gated: it is pure, it is what
+// the menus actually get wrong, and a test behind `--features render` runs
+// in the renderer tier where nobody looks at it (`ui/mod.rs`).
+pub mod ui;
 
 // The render path. Feature-gated because Bevy is several hundred crates and
 // the code tier must not pay for it (`crates/client/Cargo.toml`).
@@ -28,7 +32,7 @@ use protocol::{
     decode_refuse, decode_welcome, encode_hello, peek_kind, Hello, Welcome, KIND_REFUSE,
     KIND_WELCOME, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES, PROTO_VER,
 };
-use sim_core::limits::DATAGRAM_BUDGET_BYTES;
+use sim_core::limits::{ACTION_RING_CAP, DATAGRAM_BUDGET_BYTES};
 use wtransport::config::IpBindConfig;
 use wtransport::endpoint::endpoint_side::Client;
 use wtransport::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
@@ -91,6 +95,24 @@ pub fn client_endpoint() -> Result<Endpoint<Client>, String> {
     }
 }
 
+/// Why an action could not be queued. Both arms are states a panel draws
+/// rather than errors it swallows: a full lane means the sim is behind and
+/// the move has NOT been sent, and a closed one means the session is over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendError {
+    Full,
+    Closed,
+}
+
+impl std::fmt::Display for SendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SendError::Full => write!(f, "the server is behind - try again"),
+            SendError::Closed => write!(f, "disconnected"),
+        }
+    }
+}
+
 /// What the session hands a renderer each frame. Deliberately small: the
 /// renderer reads the core, it does not own it.
 pub struct Frame {
@@ -104,13 +126,23 @@ pub struct Session {
     pub core: ClientCore,
     pub welcome: Welcome,
     connection: std::sync::Arc<Connection>,
-    /// The C→S half of the bidi stream, held for the life of the session.
-    /// Dropping it finishes that direction, and the server reads the close
-    /// as the client going away — the join never resolves to a world slot
-    /// and `snap sent` stays 0 while inputs still flow, which is exactly
-    /// how this presented the first time it ran. It is also the action and
-    /// chat lane, so it has to live here regardless.
-    send: SendStream,
+    /// The C→S half of the bidi stream, held for the life of the session by
+    /// a writer task rather than by this struct.
+    ///
+    /// **Holding it is load-bearing.** Dropping it finishes that direction,
+    /// and the server reads the close as the client going away — the join
+    /// never resolves to a world slot and `snap sent` stays 0 while inputs
+    /// still flow, which is exactly how this presented the first time it
+    /// ran. So the task owns it and lives exactly as long as this sender
+    /// does; dropping the `Session` closes the channel, the task returns,
+    /// and the stream finishes then and not before.
+    ///
+    /// **Why a task at all.** Writing is `async` and the menus are not: a
+    /// panel sends an action from inside a frame, and a frame that awaits
+    /// the network is a dropped frame (`CLAUDE.md`: the client is a hot
+    /// path too). Handing the write to a task makes [`Session::send_action`]
+    /// synchronous and non-blocking, which is what a UI system can call.
+    actions: tokio::sync::mpsc::Sender<Vec<u8>>,
     events: tokio::sync::mpsc::Receiver<Vec<u8>>,
     datagrams: tokio::sync::mpsc::Receiver<Vec<u8>>,
     snapshots: u64,
@@ -188,12 +220,31 @@ impl Session {
             }
         });
 
+        // The action lane's writer. Bounded at `ACTION_RING_CAP` — the same
+        // depth the server's own action ring runs at, so the client cannot
+        // hold more in flight than the sim will accept in a burst — and
+        // wall 4's stated overflow policy is that a full queue is REPORTED
+        // to the caller, never dropped: nothing on the reliable lane is
+        // dropped, so a panel that cannot enqueue must say so rather than
+        // draw a move that was never sent.
+        let (act_tx, mut act_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(ACTION_RING_CAP);
+        tokio::spawn(async move {
+            while let Some(payload) = act_rx.recv().await {
+                if write_frame(&mut send, &payload).await.is_err() {
+                    return;
+                }
+            }
+            // The channel closed: the session is going away. `send` drops
+            // here, which finishes the C→S direction — the one moment that
+            // is the correct thing to do.
+        });
+
         let core = ClientCore::new(welcome.seed, welcome.player_id, welcome.tick);
         Ok(Self {
             core,
             welcome,
             connection,
-            send,
+            actions: act_tx,
             events,
             datagrams,
             snapshots: 0,
@@ -201,16 +252,25 @@ impl Session {
         })
     }
 
-    /// Send one already-encoded C→S message on the reliable lane — the
+    /// Queue one already-encoded C→S message for the reliable lane — the
     /// actions (`ACT_*`) and chat the sim is owed rather than allowed to
-    /// drop. Callers encode with `protocol`; this owns only the framing,
-    /// so the wire stays the encoder's business and not the transport's.
+    /// drop. Callers encode with `protocol`; this owns only the handoff, so
+    /// the wire stays the encoder's business and not the transport's.
     ///
-    /// Async because the reliable lane backpressures by design
-    /// (`ACTION_RING_CAP`, "nothing on the reliable lane is dropped") —
-    /// which is the opposite of `pump`'s datagram send, and deliberately.
-    pub async fn send_action(&mut self, payload: &[u8]) -> Result<(), String> {
-        write_frame(&mut self.send, payload).await
+    /// **Synchronous and never blocking**, because every caller is a UI
+    /// system inside a frame. The cost is that it can refuse: the queue is
+    /// bounded at `ACTION_RING_CAP` and a full one answers
+    /// [`SendError::Full`] rather than growing or dropping. That refusal is
+    /// a real state a panel must draw — the reliable lane backpressures by
+    /// design, which is the opposite of `pump`'s datagram send and
+    /// deliberately so.
+    pub fn send_action(&self, payload: &[u8]) -> Result<(), SendError> {
+        use tokio::sync::mpsc::error::TrySendError;
+        match self.actions.try_send(payload.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(SendError::Full),
+            Err(TrySendError::Closed(_)) => Err(SendError::Closed),
+        }
     }
 
     /// Advance one frame: drain both lanes, step the core, send input.
