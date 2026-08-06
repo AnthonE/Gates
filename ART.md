@@ -268,11 +268,29 @@ The rule that replaces it:
   the frame it judges is not a band. Gated at `browser_smoke` **15i**, whose
   wall is where the tree actually is and whose target is this number, printed
   side by side every run.
-- **Budget**: the working set is 6.0 MB at 1K. Keep total texture payload under
-  **12 MB** before compression work; KTX2/Basis is the optimisation once the
-  look is settled, not a prerequisite.
+- **Budget — browser-era, and it is spent.** The working set is 6.0 MB at 1K
+  against a **12 MB** ceiling, and that ceiling was a *download*: a first-visit
+  cost paid over the network before the browser drew anything. The shipping
+  client is a native binary that installs a depot once (`ci/depot.py`) and
+  reads from disk after, so the constraint that produced the number is gone —
+  `crates/client/src/render/textures.rs` already says so at the load site.
+  What remains real is **VRAM and disk**, which are much larger and which
+  nothing here has measured. So: 12 MB is no longer a wall, re-sourcing at
+  2K/4K is unblocked, and the replacement ceiling is **unset on purpose** —
+  it goes to `DECISIONS.md` §open when someone measures it, not into this
+  line. KTX2/Basis stays an optimisation, not a prerequisite.
+- **Anisotropy is browser-era too.** `BASE_ANISOTROPY_MAX = 4` is registered
+  in `DECISIONS.md` §open and its stated reason is explicitly a browser one —
+  at 16, *"a second browser tab did not reach the world at all on this box"*,
+  a software rasterizer running two tabs. Every real GPU answers 16 and the
+  native client is one process. The knob is **not** raised here (it is
+  spoken, and the browser client still ships it), but a native value is a
+  legitimate proposal rather than a re-litigation.
 - **Meshes are the same deal** when the time comes, but procedural vegetation
-  may well win on variety — see `.claude/skills/threejs-procedural-vegetation`.
+  may well win on variety — and now does: the native conifer is generated
+  (`crates/client/src/render/tree.rs`). The three.js skill pack
+  (`.claude/skills/threejs-procedural-vegetation`) still holds for the
+  browser build and for technique, not for the native path.
 
 ## 8 · What passes review
 

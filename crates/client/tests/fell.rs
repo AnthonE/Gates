@@ -20,6 +20,7 @@
 use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use client::render::props::{apply_fell, assets, Fellable, PropAssets, STUMP_LIFT_M};
+use client::render::tree::CONIFER_POOL;
 
 /// The variant this fixture's tree spawned as. **Deliberately not variant 0
 /// and deliberately not `KEY % variants`**: the first cut of `apply_fell`
@@ -29,7 +30,30 @@ use client::render::props::{apply_fell, assets, Fellable, PropAssets, STUMP_LIFT
 /// key too, so it agreed with the bug instead of catching it. Pinning a
 /// variant that the key would NOT produce is what makes this assertion mean
 /// something.
-const VARIANT: usize = 3;
+///
+/// **Computed, not written down.** It was the literal `3` against a pool of 4;
+/// generating the conifer took the pool to 3, which made it both an
+/// out-of-range index and — at the next value down — exactly `KEY % 3`, so the
+/// premise above quietly stopped holding. Both failures are silent in the
+/// direction that matters: the test would still pass while testing nothing.
+/// This picks the first variant that is neither 0 nor the one the key would
+/// produce, and fails to compile if the pool is too small to have one.
+const VARIANT: usize = distinct_variant();
+
+const fn distinct_variant() -> usize {
+    let key_derived = KEY as usize % CONIFER_POOL;
+    let mut v = 1;
+    while v < CONIFER_POOL {
+        if v != key_derived {
+            return v;
+        }
+        v += 1;
+    }
+    panic!(
+        "CONIFER_POOL is too small for this gate's premise: it needs a variant \
+         that is neither 0 nor KEY % CONIFER_POOL"
+    )
+}
 
 /// The world an entity is spawned into, plus the shared prop assets.
 fn fixture() -> (App, PropAssets) {
@@ -37,15 +61,22 @@ fn fixture() -> (App, PropAssets) {
     app.add_plugins((MinimalPlugins, AssetPlugin::default()));
     app.init_asset::<Mesh>();
     app.init_asset::<StandardMaterial>();
+    // The needle card is generated into this store; without it `assets` has
+    // nowhere to put the image and the fixture cannot be built.
+    app.init_asset::<Image>();
 
     // `assets` needs both stores mutably at once, which a `World` will not
     // hand out; taking them out and putting them back is the ordinary way.
     let world = app.world_mut();
     let mut meshes = world.remove_resource::<Assets<Mesh>>().unwrap();
     let mut materials = world.remove_resource::<Assets<StandardMaterial>>().unwrap();
-    let a = assets(&mut meshes, &mut materials);
+    // The needle card is generated into `Assets<Image>` rather than loaded off
+    // disk, so building the pool now needs the image store too.
+    let mut images = world.remove_resource::<Assets<Image>>().unwrap();
+    let a = assets(&mut meshes, &mut materials, &mut images);
     world.insert_resource(meshes);
     world.insert_resource(materials);
+    world.insert_resource(images);
     (app, a)
 }
 

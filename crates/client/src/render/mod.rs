@@ -29,6 +29,7 @@ pub mod rig;
 pub mod sky;
 pub mod terrain_mesh;
 pub mod textures;
+pub mod tree;
 
 pub use menu::{Menu, Rt, Screen};
 
@@ -101,6 +102,7 @@ pub struct Stream;
 /// on entering `Screen::InWorld` instead — by `menu::poll_connect` when the
 /// player picked a shard, or by `gates.rs` when a `--server`/`--capture` run
 /// already connected before the window opened.
+///
 /// A struct rather than a two-variant enum, because the menu's inputs are
 /// the same either way: **`connected` changes which screen opens first, not
 /// what the menu would be made of.** The enum shape carried `direct` twice

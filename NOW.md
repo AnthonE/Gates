@@ -48,6 +48,69 @@ Remaining, in order:
 4. **Esc quits from the menu; nothing leaves the world.** `Screen::Menu` is now
    somewhere to return to, which is the missing half of `MENUS.md`'s
    Escape/options row.
+## 0t · the native pine is generated — what it bought, and what it owes
+
+**Landed.** `crates/client/src/render/tree.rs`: the near-ring conifer is
+`bevy_procedural_tree` (MIT/Apache, ez-tree's algorithm in Rust — the same
+generator `web/src/props.js` already depends on), used as ONE pure function
+returning two meshes. No plugin, no ECS. `props.rs`'s whorl builder stays as
+the far-LOD silhouette. Gate: `crates/client/tests/tree.rs`, 6 assertions,
+headless.
+
+Three things it settled, all measured against a frame rather than argued:
+
+- **`BranchForce` pointing down is a trap.** The crate builds one global
+  `Quat::from_rotation_arc(Y, dir)` and slerps every section toward it, so
+  `dir = -Y` hits the antipodal singularity and bends the whole tree sideways.
+  Droop is the limb ANGLE's job. Owed upstream as a bug report.
+- **Card AREA, not card count, is what closes a canopy.** 11 cards of 0.18 m
+  measured inside every bound and rendered as a spindly stick, because the
+  needle mask cuts ~60% of every card away. Coverage 1.20 → 16.0 at 16 cards
+  of 0.55 m on shorter limbs, with radius unchanged. Only the capture said so.
+- **Radius is a distribution, not a number.** 1.75 m limbs measured 1.65 on one
+  seed and 1.717 — over `PINE_MAX_R` — on another. Swept over 11 seeds; the
+  shipped value holds at 1.464 with ~14% margin, the same margin `props.js`
+  took for the same stated reason.
+
+**Owed, in rank order.** (1) The billboard LOD — 328 trees × 5.9 k tris is
+1.9 M against DESIGN §9's 1.5 M, so the full ring is knowingly over budget and
+only the ~80 m band is affordable; `tests/tree.rs` prints the arithmetic.
+(2) `aWind` — `StandardMaterial` cannot read a custom attribute, so wind needs
+the custom material `RENDER.md` already lists. (3) The needle card is generated
+(`tree::needle_image`, like `sky.rs`'s cubemap); a photographed sprig is a
+later swap, not a prerequisite.
+
+## 0u · the frame budgets are browser numbers and nobody has re-derived them
+
+**Doc pass landed** (`DESIGN.md` §9, `RENDER.md` §6, `ART.md` §7,
+`TERRAIN.md` §4/§6, `NETCODE.md` §4, `CLAUDE.md` traps): every performance
+claim now says which platform it was chosen for. What it found is one real
+open question, and it is not a doc problem.
+
+`DESIGN.md` §9's four budgets were all set for a WebGL page. Three of them
+no longer describe what constrains us:
+
+- **initial load < 15 MB** and `ART.md` §7's **12 MB texture payload** are
+  the same number: a first-visit *download*. A depot install is not one, so
+  the constraint is gone and 2K/4K re-sourcing is unblocked. What is real
+  natively is VRAM and disk, and nothing has measured either.
+- **< 300 draw calls / < 1.5 M tris** are WebGL-shaped. Bevy's automatic
+  batching and a native wgpu backend are not bound where a WebGL context
+  was, and two shipped numbers are already rationed against the 1.5 M:
+  `CLUTTER_RICH_PER_TILE = 96` (a 20% share) and the conifer ring's
+  "over budget" verdict (1.9 M).
+- **60 fps on a mid laptop iGPU** survives — a hardware floor, not a
+  platform one.
+
+**Nothing was renumbered.** These are `(knob)` and therefore spoken, and a
+budget raised by the loop that then justifies the loop's own triangle count
+is exactly the wrong direction of travel. The measurement is small: capture
+on a real GPU at the ring's p90 tree count, read draw calls and frame time
+off `RenderDiagnosticsPlugin` (its wall-clock half is not assertable —
+`CLAUDE.md`), and propose into `DECISIONS.md` §open. Related: the anisotropy
+ceiling `BASE_ANISOTROPY_MAX = 4` was set because *"a second browser tab did
+not reach the world at all on this box"* — the reason is a software
+rasterizer running two tabs, and it does not transfer.
 
 ## 0c6 · systems lane request: bridge `terrain::haven(seed)`
 

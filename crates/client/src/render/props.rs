@@ -4,12 +4,15 @@
 //!
 //! **Silhouette before surface** (`ART.md` rule 6). A pine in the references
 //! is tall, thin and ragged-edged, and a smooth cone is wrong at any texture
-//! budget. The shape here is `web/src/props.js`'s, constant for constant,
-//! because that shape was measured against the reference frames and is held
-//! by a gate (`ci/pine_shape.mjs`) whose numbers are these numbers: five
-//! whorls on a 5.7 m trunk, nine segments to a whorl, every rim pulled in and
-//! drooped by its own hash so the outline is a fringe rather than a stack of
-//! discs.
+//! budget.
+//!
+//! **The pine is generated now — `tree::conifer`, not the whorl builder
+//! below.** That file carries the argument; the short version is the one
+//! `web/src/props.js` reached after three passes of stacking cones: a
+//! conifer's canopy is made of alpha cards and an opaque hull cannot get there
+//! from any amount of geometry. `pine_mesh` stays because the far LOD still
+//! wants a cheap opaque silhouette to bake a billboard from, and
+//! `ci/pine_shape.mjs` still scores the browser's copy of it.
 //!
 //! The one thing not carried across yet is the per-instance colour tint. The
 //! browser had it per instance because it drew through an `InstancedMesh`
@@ -26,6 +29,7 @@ use sim_core::gather::cell_key;
 use sim_core::terrain::{self, Occupant};
 
 use super::terrain_mesh::{CHUNK_M, NEAR_RADIUS};
+use super::tree;
 use super::{Eye, Net, WorldId};
 
 /// Trunk height, metres. NOT the tree's height: the top whorl tapers to a
@@ -82,19 +86,29 @@ const PINE_WHORL_BANDS: [u8; 5] = [1, 1, 2, 2, 2];
 /// into one draw call per tree: the rag hash is seeded per entry, so no two
 /// adjacent trees share an outline as well as a yaw and a scale.
 ///
+/// Unused while the near ring is generated; see `pine_mesh`.
+///
 /// **Deliberately NOT named `PINE_VARIANTS`**, which is a registered knob
 /// (`DECISIONS.md` §open) pinned to `web/src/props.js` at 1. `ci/
 /// knob_registry.mjs` went red on the collision the first time this compiled,
 /// and it was right to: the browser's number is how many distinct pine
 /// GEOMETRIES that renderer authors, this is how many baked meshes a shared-
 /// material pool holds, and one registry name cannot mean two things.
+#[allow(dead_code, reason = "pairs with pine_mesh, the far-LOD silhouette")]
 const PINE_MESH_POOL: usize = 4;
 
 /// Prop meshes and materials, built once and shared so a forest is instances
 /// rather than draw calls (`DESIGN.md` §9).
 #[derive(Resource)]
 pub struct PropAssets {
+    /// A conifer's BARK half — trunk and limbs. Named `pines` still because
+    /// it is the handle the fell swap and its gate already reach for.
     pines: Vec<Handle<Mesh>>,
+    /// …and its needle half, index for index with `pines`. Two meshes and not
+    /// one because bark is opaque and needles are alpha-masked, and one
+    /// `StandardMaterial` has one `alpha_mode`. The browser reached the same
+    /// split for the same reason and also pays two draw calls a variant.
+    needles: Vec<Handle<Mesh>>,
     blob: Handle<Mesh>,
     boulder: Handle<Mesh>,
     stump: Handle<Mesh>,
@@ -105,6 +119,12 @@ pub struct PropAssets {
     shelter: Handle<Mesh>,
     canopy: Handle<Mesh>,
     foliage: Handle<StandardMaterial>,
+    /// The needle card's material: alpha-MASKED, not blended. A canopy is
+    /// hundreds of overlapping cards, and blending them would need a per-card
+    /// depth sort that changes with the camera — masked cards write depth and
+    /// sort themselves. `AlphaMode::Mask` also keeps them in the opaque pass,
+    /// so they cast the shadows a forest floor is made of.
+    needle: Handle<StandardMaterial>,
     rock: Handle<StandardMaterial>,
     ore_stone: Handle<StandardMaterial>,
     ore_metal: Handle<StandardMaterial>,
@@ -260,8 +280,20 @@ impl Soup {
     }
 }
 
-/// One pine. `variant` seeds the rag so the pool's trees differ in outline,
-/// not only in yaw and scale.
+/// One pine, built from stacked cone whorls.
+///
+/// **Nothing draws this today, and it is kept deliberately.** The near ring is
+/// `tree::conifer` now, for the reason `props.js` states after three passes of
+/// exactly this builder: a conifer's canopy is alpha cards, and an opaque hull
+/// with a polygon edge cannot get there from any amount of geometry. But the
+/// far LOD is a different problem — a billboard bake needs a cheap opaque
+/// silhouette to render from, and 104 triangles that already measure inside
+/// `PINE_MAX_R` is the right starting point. `props.js` keeps its cone builder
+/// for the same role, and `ci/pine_shape.mjs` still scores that one.
+#[allow(
+    dead_code,
+    reason = "the far-LOD silhouette, per TERRAIN.md §4; see above"
+)]
 fn pine_mesh(variant: u32) -> Mesh {
     let mut s = Soup::default();
 
@@ -502,7 +534,18 @@ fn boxes_mesh(parts: &[([f32; 3], [f32; 3], u32)]) -> Mesh {
     s.mesh()
 }
 
-pub fn assets(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> PropAssets {
+/// Build the shared mesh and material pool.
+///
+/// `images` is here for exactly one thing: the needle card, which is generated
+/// rather than loaded (`tree::needle_image`). `assets/textures/` has bark and
+/// no leaf, and an un-masked leaf quad is a solid square — the opaque hull the
+/// browser already spent three passes rejecting. Generating it keeps the
+/// depot's asset list unchanged and cannot go missing from a build.
+pub fn assets(
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+) -> PropAssets {
     let surface = |rough: f32, refl: f32, materials: &mut Assets<StandardMaterial>| {
         materials.add(StandardMaterial {
             base_color: Color::WHITE,
@@ -511,10 +554,17 @@ pub fn assets(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial
             ..default()
         })
     };
+    // One generated conifer per pool entry, split into its two halves.
+    let conifers: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..tree::CONIFER_POOL)
+        .map(|v| {
+            let (bark, needles) = tree::conifer(v);
+            (meshes.add(bark), meshes.add(needles))
+        })
+        .collect();
+    let needle_map = images.add(tree::needle_image());
     PropAssets {
-        pines: (0..PINE_MESH_POOL)
-            .map(|v| meshes.add(pine_mesh(v as u32 + 1)))
-            .collect(),
+        pines: conifers.iter().map(|(b, _)| b.clone()).collect(),
+        needles: conifers.iter().map(|(_, n)| n.clone()).collect(),
         blob: meshes.add(blob_mesh(1.0, 0.28, 0x51ed_270b, 0x9c968a)),
         boulder: meshes.add(blob_mesh(1.5, 0.32, 0x1b87_3593, 0x8e887c)),
         stump: meshes.add(stump_mesh()),
@@ -547,6 +597,24 @@ pub fn assets(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial
             ([0.0, 1.0, -1.62], [1.6, 0.9, 0.1], 0x6a5940),
         ])),
         foliage: surface(0.86, 0.10, materials),
+        needle: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(needle_map),
+            perceptual_roughness: 0.90,
+            reflectance: 0.08,
+            // Cards are two-sided by construction — you see the underside of
+            // every branch you stand beneath, and `ART.md` §5 calls that face
+            // the one every judge catches.
+            cull_mode: None,
+            // 0.5 against a mask whose alpha ramps to the needle's edge. Not
+            // defaulted anywhere: `props.js` mutation-tested a `|| 0.3`
+            // fallback and found it silently restored an opaque hull.
+            alpha_mode: AlphaMode::Mask(0.5),
+            // Needles are thin and the sun is behind half of them. Without
+            // this the canopy's lit side is the only side that reads.
+            double_sided: true,
+            ..default()
+        }),
         rock: surface(0.88, 0.20, materials),
         ore_stone: surface(0.80, 0.24, materials),
         ore_metal: surface(0.55, 0.42, materials),
@@ -564,10 +632,11 @@ pub fn stream(
     mut store: Local<Option<PropAssets>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     world: Res<WorldId>,
     eye: Res<Eye>,
 ) {
-    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials));
+    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials, &mut images));
 
     let cx = (eye.pos.x / CHUNK_M).floor() as i32;
     let cz = (eye.pos.z / CHUNK_M).floor() as i32;
@@ -686,6 +755,29 @@ fn spawn_slot(
     } else {
         e.with_child((Mesh3d(mesh), MeshMaterial3d(material), transform));
     }
+    // The needle half rides as a SIBLING carrying the same transform, never as
+    // a child of the bark entity: the fell swap lifts the bark to the stump's
+    // height, and a child would inherit that lift and hang a canopy over it.
+    //
+    // It carries its own `Fellable` with `stumps: false`, which is not a
+    // trick — that is precisely the "node that leaves no stump" case
+    // `apply_fell` already handles by toggling visibility. So a felled tree
+    // hides its canopy and a respawned one restores it with no new branch in
+    // the swap, and the gate that covers rocks covers this too.
+    if slot.occupant == Occupant::Tree {
+        e.with_child((
+            Fellable {
+                key,
+                variant,
+                base_y: transform.translation.y,
+                stumps: false,
+                felled: false,
+            },
+            Mesh3d(a.needles[variant].clone()),
+            MeshMaterial3d(a.needle.clone()),
+            transform,
+        ));
+    }
 }
 
 /// Swap a felled tree for its stump, and back when the slot respawns.
@@ -705,6 +797,7 @@ pub fn harvest(
     mut store: Local<Option<PropAssets>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     q: Query<(
         &mut Fellable,
         &mut Mesh3d,
@@ -716,7 +809,7 @@ pub fn harvest(
     if q.is_empty() {
         return;
     }
-    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials));
+    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials, &mut images));
     // The session is read through a predicate so the swap below is testable
     // without a socket. `HarvestedSet` is the authority; this is the only
     // place it is consulted.
@@ -765,7 +858,12 @@ pub fn apply_fell(
             mat.0 = a.wood.clone();
             t.translation.y = f.base_y + STUMP_LIFT_M * t.scale.y;
         } else {
-            mesh.0 = a.pines[f.variant].clone();
+            // Through the SAME accessor `spawn_slot` and the gate use, not a
+            // raw index. A direct `a.pines[f.variant]` panics the client if a
+            // stored variant ever outlives a pool that shrank under it — and
+            // "two paths derive the variant differently" is the exact bug this
+            // function's own gate was written to catch.
+            mesh.0 = a.pine_mesh(f.variant).clone();
             mat.0 = a.foliage.clone();
             t.translation.y = f.base_y;
         }

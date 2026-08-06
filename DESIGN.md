@@ -413,26 +413,52 @@ a later quest can gate on a real played round with no human in the loop.
   rail, post the root, roll the seed, clean world. Blueprints per the
   cadence knob; skins are wallet-side and untouched.
 
-## 9 · Client (three.js)
+## 9 · Client
 
-- **Structure**: net worker owns the WebTransport session (datagram decode
-  off the main thread, transferable buffers over); main thread runs sim
-  prediction (wasm), interpolation, three.js scene. COOP/COEP headers set
-  from day one so SharedArrayBuffer is available when wanted. (M0 ships
-  the session on the main thread — decode is already zero-copy into wasm;
-  the worker move is a later slice, the headers are live now.)
-- **World**: terrain chunks generated client-side from the seed through the
-  same wasm worldgen `sim-core` uses (zero terrain bandwidth, identical by
-  the float discipline); server remains collision-authoritative.
-  Buildables/nodes/barrels render as `InstancedMesh` pools per archetype —
-  a base is hundreds of instances, not hundreds of draw calls. GLTF +
-  Draco assets, one atlas per era tier.
-- **Budgets**: 60 fps on a mid laptop iGPU; < 300 draw calls; < 1.5 M
-  tris in view; initial load < 15 MB **(knob: art will fight this —
-  the budget wins)**.
+**The shipping client is native Rust + Bevy** (operator, 2026-08-05;
+`RENDER.md` owns its path). The three.js build in `web/` still compiles and
+is still gated, and is being retired slice by slice rather than deleted — so
+this section carries both, and says which half a number belongs to. **Every
+budget below was chosen for the browser.** They are not yet re-derived for a
+desktop binary on a real GPU, and until they are, a native measurement that
+exceeds one is evidence about the budget, not automatically a defect.
+
+- **Structure (native)**: one process. `sim-core` is called directly — no
+  wasm bridge, no worker, no transferable buffers — and `ClientCore` owns
+  prediction and interpolation. Bevy draws and does not decide
+  (`RENDER.md` §1).
+- **Structure (browser, retiring)**: net worker owns the WebTransport
+  session (datagram decode off the main thread, transferable buffers over);
+  main thread runs sim prediction (wasm), interpolation, three.js scene.
+  COOP/COEP headers set from day one so SharedArrayBuffer is available when
+  wanted.
+- **World**: terrain chunks generated client-side from the seed by the same
+  worldgen `sim-core` uses — through wasm in the browser, by direct call
+  natively — so terrain costs zero bandwidth either way and is identical by
+  the float discipline; server remains collision-authoritative.
+  Buildables/nodes/barrels render as instance pools per archetype — a base
+  is hundreds of instances, not hundreds of draw calls.
+- **Budgets, browser-era (knob: all four)**: 60 fps on a mid laptop iGPU;
+  < 300 draw calls; < 1.5 M tris in view; initial load < 15 MB.
+  - The **frame target survives the move** — it is a hardware floor, not a
+    platform one.
+  - The **load budget does not.** It was a first-visit *download*, paid over
+    the network before anything drew. A desktop client installs a depot
+    once (`ci/depot.py`) and pays disk on later boots, so the constraint it
+    encoded no longer exists. `ART.md` §7's 12 MB texture payload is the
+    same number wearing a different hat and retires with it.
+  - The **draw-call and triangle ceilings are WebGL-shaped** and are the
+    two that most need re-deriving: a native wgpu client with Bevy's
+    automatic batching is not bound where a WebGL context was. Nothing has
+    measured the native ceiling yet, so **no replacement number is written
+    here** — proposing one goes to `DECISIONS.md` §open, not into this
+    table. The first real pressure on it is already recorded: a full
+    328-tree scatter ring at 5.9 k tris a conifer is 1.9 M
+    (`crates/client/tests/tree.rs`), which is over 1.5 M and may or may not
+    be over what the hardware minds.
 - **Feel order** (the skeleton's client acceptance): input latency ≤ 1
   frame to predicted response; corrections invisible at ≤ 150 ms RTT with
-  5% loss (the test harness's netem profile).
+  5% loss (the test harness's netem profile). Unchanged by the move.
 
 ## 10 · Security and fairness, v1 honest
 
