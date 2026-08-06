@@ -104,7 +104,10 @@ mod tests {
             range_cm: 250,
             own_id: 7,
         };
-        assert_eq!(sentence(&d, &cat), "#12 killed you with STONE HATCHET from 2.5 m");
+        assert_eq!(
+            sentence(&d, &cat),
+            "#12 killed you with STONE HATCHET from 2.5 m"
+        );
     }
 
     /// The catalog arrives in batches, so an unnamed weapon is a real state
@@ -171,7 +174,10 @@ mod tests {
 
     #[test]
     fn the_wake_reports_the_anchor_that_answered() {
-        assert_eq!(woke(true, false), Some("no bag ready - you woke on a beach"));
+        assert_eq!(
+            woke(true, false),
+            Some("no bag ready - you woke on a beach")
+        );
         assert_eq!(woke(true, true), Some("you woke on your bag"));
         assert_eq!(woke(false, false), None);
     }

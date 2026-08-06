@@ -174,11 +174,7 @@ pub fn setup(mut commands: Commands, net: NonSend<Net>) {
 
             root.spawn((
                 Note,
-                ui::label(
-                    "click a row, or press its number",
-                    13.0,
-                    ui::FAINT,
-                ),
+                ui::label("click a row, or press its number", 13.0, ui::FAINT),
                 Node {
                     margin: UiRect::top(Val::Px(16.0)),
                     ..default()

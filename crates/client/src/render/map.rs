@@ -216,10 +216,7 @@ pub fn setup(
 /// Keep the marker under the player while the screen is open — the world is
 /// still pumping behind it, so a player being chased can watch themselves
 /// move.
-pub fn track(
-    net: NonSend<Net>,
-    mut markers: Query<&mut Node, With<Marker>>,
-) {
+pub fn track(net: NonSend<Net>, mut markers: Query<&mut Node, With<Marker>>) {
     let Ok(mut node) = markers.single_mut() else {
         return;
     };

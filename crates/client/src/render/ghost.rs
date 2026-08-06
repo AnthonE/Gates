@@ -154,9 +154,7 @@ pub fn track(
     let (cxm, czm) = cell_center(target.cx, target.cz);
     let pos = match target.loc {
         LOC_EDGE_W => Vec3::new(target.cx as f32 * BUILD_CELL_M, base_y, czm),
-        sim_core::build::LOC_EDGE_N => {
-            Vec3::new(cxm, base_y, target.cz as f32 * BUILD_CELL_M)
-        }
+        sim_core::build::LOC_EDGE_N => Vec3::new(cxm, base_y, target.cz as f32 * BUILD_CELL_M),
         _ => Vec3::new(cxm, base_y, czm),
     } + offset;
     // North edges are the west shape turned a quarter — the same rotation
@@ -260,18 +258,18 @@ pub fn deploy_key(
     ui: Option<Res<Ui>>,
     chat: Option<Res<super::chat::Chat>>,
 ) {
-    let busy = ui.map(|u| u.panel != super::panels::Panel::None).unwrap_or(false)
+    let busy = ui
+        .map(|u| u.panel != super::panels::Panel::None)
+        .unwrap_or(false)
         || chat.map(|c| c.open()).unwrap_or(false);
     if busy || !mouse.just_pressed(MouseButton::Right) {
         return;
     }
     let core = &net.session.core;
     let held = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
-    let Some(row) = crate::ui::structure::row_for_item(
-        &core.deploy_defs,
-        core.deploy_defs_have,
-        held.item,
-    ) else {
+    let Some(row) =
+        crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held.item)
+    else {
         return; // not holding a deployable; nothing to say about it
     };
     let [x, _, z] = core.predict.render_position();

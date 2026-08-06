@@ -20,6 +20,41 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0x · The native client can play the game now — what it still owes *(client lane)*
+
+Landed 2026-08-06. Twelve of the wire's sixteen `ACT_*` verbs plus `KIND_CHAT`
+had no key in this client; four did. All of them do now, and the three sets
+that were decoded into `ClientCore` and drawn by nothing — pieces,
+deployables, backpacks — are drawn. Also: **the look and the strafe were both
+inverted** (operator-reported; `crates/client/src/look.rs` has the derivation
+and `tests/look.rs` checks the client's right-vector against Bevy's own
+`Transform` basis).
+
+New screens: `Dead` (dying used to end the session), `Map`. New keys: `E` use/
+loot/open, `G` eat, `H` drink, `L` lock, `U` upgrade, `R` repair, `X` plant a
+charge, `T`/`Enter` chat, `M` map, RMB place. New HUD: crosshair, centre
+prompt, toast, compass, hitmarker.
+
+Remaining, in order:
+
+1. **`ci/gates.sh` still never builds `--features render`** (§0v item 3, now
+   owed much more). This slice added ~3,500 lines behind that feature and the
+   code tier covers only the `crate::ui` half — 94 assertions, all pure. The
+   probe is `RENDER.md` R0 and it is two commands. **This is the top item.**
+2. **Nothing photographs any of it.** Panels, chat and the map are
+   deliberately not registered on a `--capture` run, so the visual gate cannot
+   open one — §0w item 3's hole, now four screens wide.
+3. **No swing prompt.** `interact.js`'s second resolver (`resolveSwing`, a 2 m
+   cone with a vertical window and a point-blank exception over the scatter
+   cells) has no native port, so the crosshair names what `E` would do and
+   never what a swing would hit.
+4. **Bevy's default features pull wayland and alsa**, neither of which this
+   client uses; both are hard build deps on a fresh box. `crates/client/Cargo.toml`
+   already flags the trim as a follow-up — it is now also a portability item.
+5. **`bodies::stream` allocates a `Vec` per frame** and scans it linearly to
+   retire remotes. `structures::stream` does the same job with a generation
+   stamp and no allocation; this is the same fix, four lines.
+
 ## 0w · The native menus landed — the four things they cannot do *(client lane)*
 
 Landed 2026-08-06: `Tab` opens inventory + crafting, `B` holds the radial build
@@ -31,10 +66,9 @@ the AMOUNT/ITEM TYPE/TOTAL/HAVE table, stepper, and the wheel's two rings.
 
 Remaining, in order:
 
-1. **No build ghost, so the wheel latches and never places.** Nothing draws
-   the cell being aimed at or colours it by whether the sim would accept it,
-   and `encode_action_place` needs a cell, a level and a location this client
-   cannot aim. `web/src/interact.js` is the reference for the aiming.
+1. ~~No build ghost~~ **— landed 2026-08-06** (§0x). `ui/place.rs` aims it,
+   `render/ghost.rs` draws it, and the local verdict answers the four
+   refusals a client can check in the server's own words.
 2. **The rail is not the reference's, and one wire field would fix it.**
    `EventMsg::Catalog` ships display names only, so a category rail by item
    class is not computable client-side. A class byte per item, a `PROTO_VER`

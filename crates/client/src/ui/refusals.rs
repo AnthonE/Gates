@@ -136,15 +136,30 @@ mod tests {
     #[test]
     fn every_reason_the_sim_declares_has_a_sentence() {
         for (file, prefix, len, name) in [
-            ("crates/sim-core/src/craft.rs", "REFUSE_", CRAFT.len(), "CRAFT"),
-            ("crates/sim-core/src/build.rs", "REFUSE_B_", BUILD.len(), "BUILD"),
+            (
+                "crates/sim-core/src/craft.rs",
+                "REFUSE_",
+                CRAFT.len(),
+                "CRAFT",
+            ),
+            (
+                "crates/sim-core/src/build.rs",
+                "REFUSE_B_",
+                BUILD.len(),
+                "BUILD",
+            ),
             (
                 "crates/sim-core/src/deploy.rs",
                 "REFUSE_D_",
                 DEPLOY.len(),
                 "DEPLOY",
             ),
-            ("crates/protocol/src/lib.rs", "REFUSE_", CONNECT.len(), "CONNECT"),
+            (
+                "crates/protocol/src/lib.rs",
+                "REFUSE_",
+                CONNECT.len(),
+                "CONNECT",
+            ),
         ] {
             let declared = sim_code_count(file, prefix);
             assert_eq!(
@@ -195,7 +210,10 @@ mod tests {
         assert_eq!(craft(REFUSE_QUEUE_FULL as u8), "queue full");
         assert_eq!(craft(REFUSE_INPUTS as u8), "missing ingredients");
 
-        assert_eq!(connect(protocol::REFUSE_VERSION), "protocol version mismatch");
+        assert_eq!(
+            connect(protocol::REFUSE_VERSION),
+            "protocol version mismatch"
+        );
         assert_eq!(connect(protocol::REFUSE_FULL), "shard is full");
     }
 

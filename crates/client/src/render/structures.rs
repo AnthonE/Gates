@@ -72,13 +72,23 @@ const TIER: [(Color, f32, f32); 3] = [
 /// box, fire, furnace, workbench, door): full size `w × h × d` in metres,
 /// colour, roughness, metallic. Cosmetics, same registry row.
 const DEPLOY: [([f32; 3], Color, f32, f32); 7] = [
-    ([1.2, 0.25, 0.7], Color::srgb(0.478, 0.612, 0.306), 0.92, 0.0), // bag
-    ([0.9, 0.9, 0.9], Color::srgb(0.549, 0.231, 0.180), 0.80, 0.0),  // hearth
-    ([1.0, 0.7, 1.0], Color::srgb(0.478, 0.361, 0.227), 0.85, 0.0),  // box
-    ([0.7, 0.4, 0.7], Color::srgb(0.816, 0.439, 0.188), 0.75, 0.0),  // fire
-    ([1.1, 1.5, 1.1], Color::srgb(0.310, 0.290, 0.271), 0.70, 0.0),  // furnace
-    ([1.6, 0.9, 0.9], Color::srgb(0.631, 0.475, 0.247), 0.85, 0.0),  // workbench
-    ([0.12, 2.1, 0.9], Color::srgb(0.420, 0.290, 0.169), 0.82, 0.0), // door
+    (
+        [1.2, 0.25, 0.7],
+        Color::srgb(0.478, 0.612, 0.306),
+        0.92,
+        0.0,
+    ), // bag
+    ([0.9, 0.9, 0.9], Color::srgb(0.549, 0.231, 0.180), 0.80, 0.0), // hearth
+    ([1.0, 0.7, 1.0], Color::srgb(0.478, 0.361, 0.227), 0.85, 0.0), // box
+    ([0.7, 0.4, 0.7], Color::srgb(0.816, 0.439, 0.188), 0.75, 0.0), // fire
+    ([1.1, 1.5, 1.1], Color::srgb(0.310, 0.290, 0.271), 0.70, 0.0), // furnace
+    ([1.6, 0.9, 0.9], Color::srgb(0.631, 0.475, 0.247), 0.85, 0.0), // workbench
+    (
+        [0.12, 2.1, 0.9],
+        Color::srgb(0.420, 0.290, 0.169),
+        0.82,
+        0.0,
+    ), // door
 ];
 
 /// A locked door wears banded iron: the one bit of door state a passer-by
@@ -496,5 +506,8 @@ pub fn is_container(arch: u8) -> bool {
 /// Which archetypes are craft stations — the proximity tokens `craft.rs`
 /// gates recipes on.
 pub fn is_station(arch: u8) -> bool {
-    matches!(arch, ARCH_WORKBENCH | ARCH_FURNACE | ARCH_FIRE | ARCH_HEARTH)
+    matches!(
+        arch,
+        ARCH_WORKBENCH | ARCH_FURNACE | ARCH_FIRE | ARCH_HEARTH
+    )
 }

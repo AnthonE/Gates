@@ -354,18 +354,15 @@ impl Plugin for GatesRenderPlugin {
         // `watch` runs in `InWorld` and nowhere else: a death that lands
         // while the Esc menu is up raises the screen on resume, which is the
         // right order — two full-screen states cannot both be entered.
-        app.add_systems(
-            OnEnter(Screen::Dead),
-            (death::enter, death::setup).chain(),
-        )
-        .add_systems(OnExit(Screen::Dead), death::teardown)
-        .add_systems(
-            Update,
-            (death::click, death::keys, death::act, death::awaken)
-                .chain()
-                .run_if(in_state(Screen::Dead)),
-        )
-        .add_systems(Update, death::watch.run_if(in_state(Screen::InWorld)));
+        app.add_systems(OnEnter(Screen::Dead), (death::enter, death::setup).chain())
+            .add_systems(OnExit(Screen::Dead), death::teardown)
+            .add_systems(
+                Update,
+                (death::click, death::keys, death::act, death::awaken)
+                    .chain()
+                    .run_if(in_state(Screen::Dead)),
+            )
+            .add_systems(Update, death::watch.run_if(in_state(Screen::InWorld)));
 
         // ---- the map -------------------------------------------------
         // `open` is registered after the panels and after chat, so `M` typed
@@ -376,7 +373,9 @@ impl Plugin for GatesRenderPlugin {
             .add_systems(OnExit(Screen::Map), (map::teardown, map::leave))
             .add_systems(
                 Update,
-                (map::track, map::keys).chain().run_if(in_state(Screen::Map)),
+                (map::track, map::keys)
+                    .chain()
+                    .run_if(in_state(Screen::Map)),
             )
             .add_systems(
                 Update,

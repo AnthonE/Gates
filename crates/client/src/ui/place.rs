@@ -225,7 +225,10 @@ mod tests {
         // Whatever cell it picked, the anchor must sit on a cell boundary in
         // x — which is what LOC_EDGE_W means.
         let (ax, _) = anchor(t.cx, t.cz, t.loc);
-        assert!((ax / BUILD_CELL_M).fract().abs() < 1e-4, "anchor {ax} is not on a boundary");
+        assert!(
+            (ax / BUILD_CELL_M).fract().abs() < 1e-4,
+            "anchor {ax} is not on a boundary"
+        );
     }
 
     #[test]
@@ -245,7 +248,10 @@ mod tests {
     #[test]
     fn stairs_take_the_riser_and_planes_take_the_plane() {
         assert_eq!(target(9.0, 9.0, 0.0, 1.0, SHAPE_STAIRS, 1).loc, LOC_RISER);
-        assert_eq!(target(9.0, 9.0, 0.0, 1.0, SHAPE_FOUNDATION, 1).loc, LOC_PLANE);
+        assert_eq!(
+            target(9.0, 9.0, 0.0, 1.0, SHAPE_FOUNDATION, 1).loc,
+            LOC_PLANE
+        );
     }
 
     /// A foundation is the piece that stands on the ground. Letting the level
@@ -344,7 +350,12 @@ mod tests {
     /// follows it read as two different problems.
     #[test]
     fn every_verdict_sentence_is_one_the_sim_also_says() {
-        for s in ["spot taken", "out of reach", "bad ground", "missing materials"] {
+        for s in [
+            "spot taken",
+            "out of reach",
+            "bad ground",
+            "missing materials",
+        ] {
             assert!(
                 super::super::refusals::BUILD.contains(&s),
                 "{s:?} is not in the build refusal table"

@@ -178,7 +178,15 @@ struct Best {
 impl Best {
     /// Score one candidate at world XZ; answer whether it takes the lead,
     /// filling the shared fields of `out` if it does.
-    fn wins(&mut self, out: &mut Pick, aim: &Aim, f: (f32, f32), verb: Verb, x: f32, z: f32) -> bool {
+    fn wins(
+        &mut self,
+        out: &mut Pick,
+        aim: &Aim,
+        f: (f32, f32),
+        verb: Verb,
+        x: f32,
+        z: f32,
+    ) -> bool {
         let (dx, dz) = (x - aim.x, z - aim.z);
         let d2 = dx * dx + dz * dz;
         if d2 > aim.reach * aim.reach {

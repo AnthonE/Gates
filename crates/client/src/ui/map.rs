@@ -254,7 +254,11 @@ mod tests {
             let (x, z) = (half + i as f32 * step, half + j as f32 * step);
             let (px, py) = world_to_map(x, z, size);
             assert_eq!(px.floor() as usize, i, "column for sample ({i},{j})");
-            assert_eq!(py.floor() as usize, size - 1 - j, "row for sample ({i},{j})");
+            assert_eq!(
+                py.floor() as usize,
+                size - 1 - j,
+                "row for sample ({i},{j})"
+            );
         }
     }
 

@@ -193,7 +193,8 @@ mod tests {
     #[test]
     fn anything_the_composer_accepts_will_encode() {
         let mut c = Composer::default();
-        for ch in "héllo wörld ¡buenos días! ✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓".chars() {
+        for ch in "héllo wörld ¡buenos días! ✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓".chars()
+        {
             c.push(ch);
         }
         assert!(c.text.len() <= CHAT_MAX_BYTES);

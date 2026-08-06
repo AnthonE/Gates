@@ -179,6 +179,33 @@ $NICE cargo clippy -p client-wasm --target wasm32-unknown-unknown -- -D warnings
 echo "== gate: native test suite (alloc_zero, replay, terrain_golden, protocol_golden, snapshot_budget, content, bot smoke, unit)"
 $NICE cargo test --workspace --release || fail "cargo test"
 
+# The native client, which the two gates above DO NOT SEE. `render` is off by
+# default (`crates/client/Cargo.toml`: a default-on Bevy would put minutes onto
+# a ~20 s clippy that runs in every lane on every health check), so
+# `--workspace` compiles none of it — `NOW.md` §0v item 3 named that hole when
+# the client was four screens, and it is now the whole game surface: every
+# in-world verb, both picks, the ghost, the structures renderer, chat, the map
+# and the death screen.
+#
+# Two commands, both cheap once Bevy is in the cache, and this is `RENDER.md`
+# R0's probe. It is NOT a visual gate and does not pretend to be: it compiles
+# the render path under `-D warnings` and runs the three renderer-tier suites
+# (`tree`, `fell`, `look`), none of which needs a GPU or a window. What
+# photographs these screens is still owed.
+#
+# Bevy's default features pull `wayland-client` and `alsa` through `winit` and
+# `bevy_audio`, and this client uses neither — a box without those dev packages
+# fails here at a build script rather than at a test. That is a capability we
+# are ASKING for and do not need (`CLAUDE.md`: the second question), and
+# trimming the feature set is the fix; until then the requirement is stated
+# here rather than discovered.
+echo "== gate: native client (--features render: clippy + the renderer-tier suites)"
+echo "   (needs libwayland-dev + libasound2-dev — Bevy default features, not ours)"
+$NICE cargo clippy -p client --features render --all-targets -- -D warnings \
+  || fail "clippy (native client)"
+$NICE cargo test -p client --features render --test tree --test fell --test look \
+  || fail "native client suites"
+
 echo "== gate: wasm build (sim-core + protocol + client-wasm -> wasm32-unknown-unknown)"
 rustup target list --installed | grep -q '^wasm32-unknown-unknown$' \
   || fail "wasm32-unknown-unknown target not installed"
