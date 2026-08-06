@@ -1,5 +1,10 @@
 //! The in-game menus, drawn.
 //!
+//! Distinct from `render::ui`, which is the chrome the full-screen MENU
+//! screens share: `ui` is what a player sees *instead of* the world, this is
+//! what they see *on top of* it. The palette below borrows `ui`'s type and
+//! rules so the two read as one product.
+//!
 //! Three screens, one rule: **everything with arithmetic in it lives in
 //! `crate::ui`** (pure, headless, gated by `crates/client/tests/ui.rs`) and
 //! everything here is nodes, colours and pointer plumbing. That split is
@@ -16,13 +21,13 @@
 //!
 //! ## Two things this deliberately does not do
 //!
-//! **It does not open under `--capture`.** The UI systems are registered
-//! only on a non-capture run. A probe harness that could open a panel is a
-//! visual gate whose frames depend on which key was last pressed, and the
-//! capture path enters the world on frame one specifically so that nothing
-//! is halfway through anything. The cost is that no gate photographs these
-//! panels yet — `NOW.md` carries that, and it is the same missing menu
-//! vantage §0v already names.
+//! **It does not open under `--capture`.** These systems are registered only
+//! on a non-capture run. A probe harness that could open a panel is a visual
+//! gate whose frames depend on which key was last pressed, and the capture
+//! path drives itself specifically so that nothing is ever halfway through
+//! anything. The cost is that no gate photographs these panels — which is
+//! the same hole `NOW.md` §0v item 3 names from the other side, since
+//! `ci/gates.sh` does not build `--features render` at all.
 //!
 //! **It does not predict.** A drag draws a ghost under the cursor and sends
 //! a move; the grids redraw from `ClientCore`'s authoritative view and never
@@ -163,13 +168,20 @@ pub struct PanelRoot;
 #[derive(Component)]
 pub struct GhostRoot;
 
-// ---- the shared palette --------------------------------------------------
-// `ART.md` is the visual bar and it is about the world, not the HUD; these
-// are the browser client's menu values carried over so the two clients read
-// as the same game. Proposed defaults, `DECISIONS.md` §open "menu skin v0".
+// ---- the palette ---------------------------------------------------------
+// **Type and rules come from `render::ui`, the menu chrome's palette**, so a
+// player who opens the Esc menu and then their inventory is reading the same
+// product. Only what a panel needs and a full-screen menu does not is
+// declared here — a panel is drawn OVER a lit world, so it owns the
+// translucency and the cell states, and nothing else. Proposed defaults,
+// `DECISIONS.md` §open "menu skin v0".
 
-/// Panel body: nearly opaque, so text over a lit world stays readable.
-pub const PANEL_BG: Color = Color::srgba(0.086, 0.086, 0.094, 0.97);
+pub use super::ui::{DIM as TEXT_DIM, RULE as LINE, TEXT};
+
+/// Panel body: nearly opaque, so text over a lit world stays readable. The
+/// chrome's `PANEL` is the same hue at full alpha — it never has a world
+/// behind it to let through.
+pub const PANEL_BG: Color = Color::srgba(0.082, 0.082, 0.090, 0.97);
 /// The screen-wide scrim behind a panel.
 pub const SCRIM: Color = Color::srgba(0.02, 0.02, 0.025, 0.72);
 /// An empty cell.
@@ -178,10 +190,8 @@ pub const CELL_BG: Color = Color::srgba(0.15, 0.15, 0.16, 0.9);
 pub const CELL_FULL: Color = Color::srgba(0.22, 0.21, 0.19, 0.95);
 /// The cell the pointer is over, and the drag's source.
 pub const CELL_HOVER: Color = Color::srgba(0.34, 0.32, 0.26, 0.95);
-pub const LINE: Color = Color::srgba(0.75, 0.72, 0.62, 0.22);
+/// The one hot line: a selected cell, the head of the queue, an armed button.
 pub const LINE_HOT: Color = Color::srgba(0.98, 0.86, 0.55, 0.95);
-pub const TEXT: Color = Color::srgb(0.92, 0.90, 0.85);
-pub const TEXT_DIM: Color = Color::srgba(0.70, 0.68, 0.62, 0.85);
 /// A price the player cannot pay, and the reference's own colour for it.
 pub const TEXT_SHORT: Color = Color::srgb(0.86, 0.36, 0.30);
 /// The station badge.
@@ -223,30 +233,72 @@ pub const SCROLL_PX_PER_LINE: f32 = 26.0;
 /// Register the menus. Called from `GatesRenderPlugin` on a non-capture run
 /// only — see the module note.
 pub fn register(app: &mut App) {
-    app.init_resource::<Ui>().add_systems(
-        Update,
-        (
-            keys,
-            inv::drag_pointer,
-            craft::clicks,
-            craft::scroll,
-            wheel::track,
-            sync_refusals,
-            rebuild,
-            inv::ghost_follow,
+    app.init_resource::<Ui>()
+        .add_systems(
+            Update,
+            (
+                keys,
+                inv::drag_pointer,
+                craft::clicks,
+                craft::scroll,
+                wheel::track,
+                sync_refusals,
+                rebuild,
+                inv::ghost_follow,
+            )
+                .chain()
+                // **Before `pause::open`, and that ordering is load-bearing.**
+                // Escape means "close what is on top of the world" before it
+                // means "open the Esc menu", and both systems read the same
+                // `just_pressed`. `keys` clears the press when it consumed it, so
+                // one Escape is one action — without the ordering, closing a
+                // panel and opening the pause screen would happen on the same
+                // key, in the same frame.
+                .before(super::pause::open)
+                .run_if(in_state(super::Screen::InWorld)),
         )
-            .chain()
-            .run_if(in_state(super::Screen::InWorld)),
-    );
+        // A panel is only ever drawn over a running world, so leaving `InWorld`
+        // takes its nodes with it. Nothing here is a `WorldEntity` — these are
+        // menu nodes, not world ones — so `world_teardown` would not have.
+        .add_systems(OnExit(super::Screen::InWorld), close)
+        // Leaving the shard resets the whole view state, and that is not
+        // tidiness: `selected` and `favs` are RECIPE INDICES, and the next shard
+        // bakes its own content. Carrying them across would silently point a
+        // favourite at a different recipe.
+        .add_systems(OnEnter(super::Screen::Menu), forget);
+}
+
+/// Shut the panels and drop their nodes.
+#[allow(clippy::type_complexity)]
+pub fn close(
+    mut commands: Commands,
+    mut ui: ResMut<Ui>,
+    roots: Query<Entity, Or<(With<PanelRoot>, With<GhostRoot>)>>,
+) {
+    ui.panel = Panel::None;
+    ui.drag = None;
+    ui.dirty = false;
+    for e in roots.iter() {
+        commands.entity(e).despawn();
+    }
+}
+
+/// Forget everything that was true of the shard we just left.
+pub fn forget(mut ui: ResMut<Ui>) {
+    *ui = Ui::default();
 }
 
 /// Open, close, and the keys that belong to a panel rather than to the
 /// world. Runs before `input::gather`'s own key reads by being earlier in
 /// the chain; `gather` then skips look and movement while a panel is up.
+///
+/// `keyboard` is `ResMut` for one reason: **a key this consumed must not
+/// reach the system after it.** Escape closes an open panel and is cleared;
+/// Escape with nothing open is left alone and `pause::open` takes it.
 pub fn keys(
     mut ui: ResMut<Ui>,
     net: NonSend<super::Net>,
-    keyboard: Res<ButtonInput<KeyCode>>,
+    mut keyboard: ResMut<ButtonInput<KeyCode>>,
     mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
 ) {
     // The wheel is a hold, so it is decided every frame rather than latched.
@@ -265,6 +317,10 @@ pub fn keys(
         ui.panel = Panel::None;
         ui.drag = None;
         ui.dirty = true;
+        // Consumed: `pause::open` runs after this and would otherwise read
+        // the same press and open the Esc menu behind the panel that just
+        // closed.
+        keyboard.clear_just_pressed(KeyCode::Escape);
     }
 
     // The wheel wins over nothing and loses to the inventory screen: a

@@ -65,6 +65,7 @@ pub fn stream(
             None => {
                 let e = commands
                     .spawn((
+                        super::WorldEntity,
                         Body(*id),
                         Mesh3d(mesh.clone()),
                         MeshMaterial3d(material.clone()),

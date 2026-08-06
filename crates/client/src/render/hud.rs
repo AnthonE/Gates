@@ -46,6 +46,7 @@ pub fn setup(
     // The hotbar: six cells, bottom centre.
     commands
         .spawn((
+            super::WorldEntity,
             Node {
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(18.0),
@@ -74,6 +75,7 @@ pub fn setup(
 
     // The vitals stack: right side, small, never centred.
     commands.spawn((
+        super::WorldEntity,
         Vitals,
         Node {
             position_type: PositionType::Absolute,
@@ -91,7 +93,12 @@ pub fn setup(
 
     // The build plan, bottom left. Only ever text: the piece it names is a
     // client-side latch, not sim state.
+    //
+    // `WorldEntity` like its two neighbours: leaving a shard is a state change
+    // now, and a HUD line that outlived the world would be drawn over the
+    // server list.
     commands.spawn((
+        super::WorldEntity,
         Plan,
         Node {
             position_type: PositionType::Absolute,
@@ -158,7 +165,7 @@ pub fn update(
     mut vitals: Query<&mut Text, (With<Vitals>, Without<Plan>)>,
     mut plan: Query<&mut Text, (With<Plan>, Without<Vitals>)>,
     // `Option`, because a capture run does not register the menus at all.
-    ui: Option<Res<super::ui::Ui>>,
+    ui: Option<Res<super::panels::Ui>>,
 ) {
     let core = &net.session.core;
 

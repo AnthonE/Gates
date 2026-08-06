@@ -110,6 +110,7 @@ pub fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>
     let medium = media.add(ScatteringMedium::default().with_density_multiplier(AIR_DENSITY));
 
     commands.spawn((
+        super::WorldEntity,
         EyeCam,
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
@@ -203,6 +204,7 @@ pub fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>
     ));
 
     commands.spawn((
+        super::WorldEntity,
         Sun,
         DirectionalLight {
             // White. The atmosphere reddens it on its way down now, which is

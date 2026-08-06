@@ -658,7 +658,11 @@ pub fn stream(
                 continue;
             }
             let parent = commands
-                .spawn((Transform::IDENTITY, Visibility::default()))
+                .spawn((
+                    super::WorldEntity,
+                    Transform::IDENTITY,
+                    Visibility::default(),
+                ))
                 .id();
             // A 64 m chunk is exactly 8 scatter cells a side (CELL_SIZE 8 m).
             let cells = (CHUNK_M / terrain::CELL_SIZE) as i32;

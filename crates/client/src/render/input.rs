@@ -50,44 +50,65 @@ pub fn pitch_u8(pitch: f32) -> u8 {
     v.clamp(0.0, 255.0) as u8
 }
 
+// Eight, and the eighth is the panels' `Ui`. Every one is a distinct source
+// this frame reads: the session, the free view, the cursor, the settings, two
+// input maps, the accumulated motion, and whether a panel has the pointer.
+#[allow(clippy::too_many_arguments)]
 pub fn gather(
     mut net: NonSendMut<Net>,
     mut look: ResMut<Look>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    settings: Res<super::settings::Settings>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     // `Option`, because a capture run does not register the menus at all —
     // and a probe harness that could open one is a gate whose frames depend
-    // on a keystroke (`render/ui/mod.rs`).
-    ui: Option<Res<super::ui::Ui>>,
+    // on a keystroke (`render/panels/mod.rs`).
+    ui: Option<Res<super::panels::Ui>>,
 ) {
-    // A panel owns the pointer while it is up: the cursor comes back, the
-    // view stops turning, and the movement axes go to zero. A player
-    // dragging an item across a container is not also walking into a wall —
-    // and the alternative, sending the keys anyway, means every letter typed
-    // into the search box is also a step.
-    let menu_open = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false);
+    // An in-game panel owns the pointer while it is up: the cursor comes
+    // back, the view stops turning, and the movement axes go to zero. A
+    // player dragging an item across a container is not also walking into a
+    // wall — and the alternative, sending the keys anyway, means every letter
+    // typed into the search box is also a step.
+    //
+    // **The panels are the only pointer owner left in this file.** The Esc
+    // menu is a whole `Screen` and `gather` does not run on it; a panel is
+    // drawn over a running world, so the world's own input has to stand down
+    // while one is open, and this is where that happens.
+    let panel_open = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false);
 
-    // Pointer lock on click, released on Escape — the browser client's
-    // contract, which players already know from every other game.
+    // Pointer lock on click — the browser client's contract, which players
+    // already know from every other game. **Releasing it on Escape is no
+    // longer here**: Escape opens the Esc menu (`pause::open`), and that
+    // screen owns letting the pointer go and taking it back, because a
+    // released pointer with no menu under it was a state the player could not
+    // tell from a hang. A panel is the same rule one level down — it releases
+    // the pointer because it has something under it to click.
     if let Ok(mut c) = cursor.single_mut() {
-        if mouse.just_pressed(MouseButton::Left) && !menu_open {
+        if mouse.just_pressed(MouseButton::Left) && !panel_open {
             c.grab_mode = CursorGrabMode::Locked;
             c.visible = false;
         }
-        if keys.just_pressed(KeyCode::Escape) || menu_open {
+        if panel_open {
             c.grab_mode = CursorGrabMode::None;
             c.visible = true;
         }
-        if !look.frozen && !menu_open && c.grab_mode == CursorGrabMode::Locked {
+        if !look.frozen && !panel_open && c.grab_mode == CursorGrabMode::Locked {
             let d = motion.delta;
-            look.yaw += d.x * MOUSE_RAD_PER_PX;
-            look.pitch = (look.pitch - d.y * MOUSE_RAD_PER_PX).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+            // Sensitivity scales the free-running radians BEFORE the
+            // quantization below, never the quantization itself — see
+            // `settings`'s header. Invert flips the pitch delta only; a yaw
+            // inversion is not a setting any reference offers.
+            let rad = MOUSE_RAD_PER_PX * settings.sensitivity;
+            let dy = if settings.invert_look { -d.y } else { d.y };
+            look.yaw += d.x * rad;
+            look.pitch = (look.pitch - dy * rad).clamp(-PITCH_LIMIT, PITCH_LIMIT);
         }
     }
 
-    if menu_open {
+    if panel_open {
         // The input frame still goes out — the sim needs one every tick and
         // a client that stopped sending would be a client standing still for
         // a different reason. It goes out EMPTY of movement and buttons,

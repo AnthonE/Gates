@@ -287,12 +287,14 @@ pub fn stream(
             }
             let e = if n == 0 {
                 commands.spawn((
+                    super::WorldEntity,
                     Tile(key.0, key.1),
                     Transform::IDENTITY,
                     Visibility::default(),
                 ))
             } else {
                 commands.spawn((
+                    super::WorldEntity,
                     Tile(key.0, key.1),
                     Mesh3d(meshes.add(s.mesh())),
                     MeshMaterial3d(material.clone()),
