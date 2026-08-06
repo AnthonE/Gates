@@ -47,6 +47,12 @@ pub const SENS_MIN: f32 = 0.25;
 pub const SENS_MAX: f32 = 3.0;
 pub const SENS_STEP: f32 = 0.05;
 
+/// Volume sliders run 0..1 in tenths — the reference's `audio.master`,
+/// `audio.game` and `audio.ambience` are 0..1 convars and its options screen
+/// is a row of sliders over the same range. A tenth is the smallest step a
+/// player can hear as a step; a hundredth would be twenty clicks of nothing.
+pub const VOL_STEP: f32 = 0.1;
+
 /// The categories, in the reference's order. Every one is drawn whether or not
 /// it has rows — the rail is a map of the game's surface, and a category that
 /// vanished when it was empty would make the screen change shape as features
@@ -64,6 +70,12 @@ pub struct Settings {
     pub invert_look: bool,
     pub vsync: bool,
     pub fullscreen: bool,
+    /// The three audio buses, 0..1. The reference's `audio.master`,
+    /// `audio.game` and `audio.ambience` — `crate::sound::Mix` is what reads
+    /// them, and `render/audio.rs` is the only thing that builds one.
+    pub vol_master: f32,
+    pub vol_game: f32,
+    pub vol_ambience: f32,
     /// Which rail row is selected.
     pub cat: usize,
     /// Where Esc returns to. Settings is reachable from the intro screen and
@@ -85,6 +97,12 @@ impl Default for Settings {
             invert_look: false,
             vsync: true,
             fullscreen: false,
+            // The reference opens master and game at 1. Ours opens the bed
+            // lower than either of them, but that belongs to the cue's own
+            // gain rather than to a bus a player would then have to put back.
+            vol_master: 1.0,
+            vol_game: 1.0,
+            vol_ambience: 1.0,
             cat: 0,
             back: Screen::Menu,
             dirty: false,
@@ -101,6 +119,9 @@ pub enum Knob {
     Fov,
     Sensitivity,
     InvertLook,
+    VolMaster,
+    VolGame,
+    VolAmbience,
 }
 
 impl Settings {
@@ -126,6 +147,12 @@ impl Settings {
                 let steps = ((self.sensitivity + delta as f32 * SENS_STEP) / SENS_STEP).round();
                 self.sensitivity = (steps * SENS_STEP).clamp(SENS_MIN, SENS_MAX);
             }
+            // Same round-to-step as sensitivity, for the same reason: a
+            // slider that reads "70%" while holding 0.6999998 eventually
+            // prints the wrong tenth for a click of +.
+            Knob::VolMaster => self.vol_master = step_vol(self.vol_master, delta),
+            Knob::VolGame => self.vol_game = step_vol(self.vol_game, delta),
+            Knob::VolAmbience => self.vol_ambience = step_vol(self.vol_ambience, delta),
         }
         self.dirty = true;
     }
@@ -138,8 +165,21 @@ impl Settings {
             Knob::InvertLook => on_off(self.invert_look),
             Knob::Fov => format!("{:.0}", self.fov_deg),
             Knob::Sensitivity => format!("{:.2}", self.sensitivity),
+            Knob::VolMaster => pct(self.vol_master),
+            Knob::VolGame => pct(self.vol_game),
+            Knob::VolAmbience => pct(self.vol_ambience),
         }
     }
+}
+
+/// One click of a volume slider, rounded onto the step and clamped to 0..1.
+fn step_vol(v: f32, delta: i32) -> f32 {
+    let steps = ((v + delta as f32 * VOL_STEP) / VOL_STEP).round();
+    (steps * VOL_STEP).clamp(0.0, 1.0)
+}
+
+fn pct(v: f32) -> String {
+    format!("{:.0}%", v * 100.0)
 }
 
 fn on_off(b: bool) -> String {
@@ -171,10 +211,18 @@ fn rows(cat: usize) -> Vec<Row> {
              the server's, and a client that could turn one off would be a client \
              deciding - which is the one thing it may never do.",
         )],
-        "AUDIO" => vec![Row::Note(
-            "This client renders no audio at all. When it does, its mixer's knobs \
-             belong here.",
-        )],
+        "AUDIO" => vec![
+            Row::Number("MASTER VOLUME", Knob::VolMaster, "of full"),
+            Row::Number("GAME VOLUME", Knob::VolGame, "steps, tools, hits"),
+            Row::Number("AMBIENCE VOLUME", Knob::VolAmbience, "the wind bed"),
+            // Two facts rather than two dead sliders, and both are the same
+            // rule this screen already obeys: a category with nothing behind
+            // it says so. There is no music and no voice chat, so there is no
+            // music slider and no voice slider.
+            Row::Fact("MUSIC", "None yet - see NOW.md"),
+            Row::Fact("VOICE CHAT", "Not implemented"),
+            Row::Fact("SOUND OCCLUSION", "Off - walls do not muffle sound yet"),
+        ],
         "SCREEN" => vec![
             Row::Toggle("VSYNC", Knob::Vsync),
             Row::Toggle("FULLSCREEN", Knob::Fullscreen),

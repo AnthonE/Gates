@@ -57,6 +57,7 @@ pays the same doors and earns the same coins as a human.
 | `RENDER.md` | the **native** client's render path: the Bevy-draws-not-decides boundary, the slice order, the native visual gate, the budgets | **replaces `MIGRATION.md`**; owns the path, never the bar — `ART.md` outranks it everywhere |
 | `MIGRATION.md` | the renderer move to `WebGPURenderer` + TSL | **SUPERSEDED 2026-08-05** — the client pivot to native Rust moots it; you do not port three.js *and* replace it. Kept for its probe/readback inventory, which the native visual gate still has to answer |
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
+| `reference/AUDIO.md` | how the reference game decides what a player hears: the Unity mixer groups/snapshots it built first, the `audio.framebudget 0.3` convar, localized ambience, the 2–5 kHz carve, its four shipped audio bugs, and **§9 what it means for us** | **owns nothing** — research, not law, and a *cleaner* source than `SPAWN.md`: devblogs and the public convar list, nothing decompiled. Our answer is `crates/client/src/sound/` |
 | `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is scry's `SUBSTRATE.md`; this owns only what an agent may do here |
 | `NOW.md` | what next | **the only list that answers that** |
 
@@ -130,6 +131,20 @@ do not rediscover)
   pipeline compile is a bigger stall than a WebGL link. `RENDER.md` §2
   carries it across; the native gate is the same shape — a count of
   pipelines created after the world is up, never a frame time.
+- **A clean merge is not a correct merge, and a destructive read is where
+  that bites.** `ClientCore`'s own-fact rings (`pop_hit`, `pop_toast`, the
+  refusals) hand each fact over exactly once. On 2026-08-06 two lanes each
+  added a reader — the HUD's toast/hitmarker surface and the audio mixer —
+  touching no common line, so **git merged them without a conflict and the
+  result was silently broken**: the earlier-scheduled system drained every
+  ring and the game made no sound for a hit, a gather, a craft or a refusal.
+  Nothing failed, because each half is correct alone. The shape that cannot
+  regress is **one drain at a fixed point in the frame into a resource readers
+  borrow immutably** (`render/feed.rs`) — a second reader is then a `Res<_>`
+  parameter, which cannot consume anything. The general rule: when two lanes
+  are open, a queue with a single-consumer contract needs an owner named in
+  code, not in a comment, and the gate for it is a grep for the call site
+  (`tests/sound.rs`), because the defect is a call site and not a value.
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for
@@ -263,6 +278,33 @@ racing two live renderers. Assert on observable state (`inWorld`, `snapshots >
 n`) and never on elapsed milliseconds — the failure that started it reported
 `inWorld=true` and timed out anyway. Widening a timeout is not a fix; it is the
 same bug with a longer fuse.
+
+**A container that has never run the native client is missing seven things,
+and every one of them looks like a defect until you read the message.**
+Found 2026-08-06 on a fresh clone, each one costing a rebuild. To BUILD
+`--features render`: `libwayland-dev` (bevy's defaults include `wayland` as
+well as `x11`), `libasound2-dev` (`bevy_audio` → cpal → `alsa-sys`),
+`libudev-dev` (`bevy_gilrs`) — each dies as a `pkg-config` panic 40 lines into
+a build script. To RUN a `--capture` probe: `libxkbcommon-x11-0` (winit
+panics in `EventLoop::new`), `mesa-vulkan-drivers` + `libvulkan1`, and
+`Xvfb`. Plus `rustup target add wasm32-unknown-unknown` for the wasm gates.
+All of them are the same class — a wall that cannot run is not a wall, so
+install them rather than trimming the feature.
+
+Four things that cost time and are not obvious:
+
+- `apt-get install` may 404 on a stale index; `apt-get update` first.
+- **`cargo … | tail` reports `tail`'s exit code, not cargo's.** A backgrounded
+  gate piped to `tail` reports success while the build is red — `${PIPESTATUS[0]}`.
+- The lavapipe ICD is `/usr/share/vulkan/icd.d/**`lvp_icd.json`**, not
+  `lvp_icd.x86_64.json`. Point `VK_DRIVER_FILES` at a path that does not exist
+  and the loader says only *"Unable to find a GPU"* — the filename is in
+  `VK_LOADER_DEBUG=error,warn` and nowhere else. Working invocation:
+  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json DISPLAY=:N
+  WGPU_BACKEND=vulkan target/release/gates --server … --capture <dir>`.
+- **With no sound card, `bevy_audio` logs "No audio device found" and every
+  voice is a silent no-op.** That is the correct behaviour and the capture
+  probe confirms it: the client must not require an audio device to render.
 
 **Not every red gate is a defect — but check whether the missing capability is
 one WE asked for.** `bot_smoke` used to fail all four tests on a container

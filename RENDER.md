@@ -728,20 +728,28 @@ missing it survivable.
   insufficient, then a custom instanced pipeline. Measure before writing the
   second one.
 - **Bevy's default feature set** pulls more than this client draws, but the
-  list of what is dead has to be re-read rather than assumed — the old version
-  of this bullet named `ui`, which is now the entire interaction surface
-  (~5,400 lines and 78 `Node` sites across `render/{ui,menu,settings,pause,
-  loading,hud,chat,map,death}.rs` and `render/panels/`: server select, loading
-  bar, Esc menu, settings, HUD, inventory, crafting, build wheel, chat, the
-  map and the death screen). Genuinely unused today: **`bevy_audio`**
-  (nothing makes a sound; the blocker is asset licensing, not the API —
-  `CLAUDE.md`'s third-party section already has one NC and one unlicensed
-  audio set in it, and neither survives a sold product), **`bevy_gltf`**
-  (every mesh in the tree is procedural), **`bevy_scene`** and
-  **`bevy_animation`** (bodies are capsules; this one is wanted eventually and
-  blocked on rigged meshes rather than on a decision). Trimming is a
-  build-time and payload win, not a picture win — it happens when it is in
-  the way.
+  list of what is dead has to be re-read rather than assumed — and it has now
+  been wrong twice. The old version of this bullet named `ui`, which is the
+  entire interaction surface (~5,400 lines and 78 `Node` sites across
+  `render/{ui,menu,settings,pause,loading,hud,chat,map,death}.rs` and
+  `render/panels/`: server select, loading bar, Esc menu, settings, HUD,
+  inventory, crafting, build wheel, chat, the map and the death screen). It
+  then named **`bevy_audio`** as genuinely unused, correctly identifying the
+  blocker as *asset licensing, not the API* — and that is exactly the blocker
+  the audio slice removed on 2026-08-06. `crates/client/src/sound/synth.rs`
+  GENERATES the bank from arithmetic at boot, so there is no sample to
+  license, and the client makes sound. `wav` had to be **added** to the
+  feature set: Bevy's defaults enable `bevy_audio` and `vorbis` only, so a
+  generated WAV would have panicked with `UnrecognizedFormat` at the moment
+  it played. Audio's boundary rule is this document's rule one surface over —
+  **Bevy plays, it does not decide** — with the model in
+  `crates/client/src/sound/` (pure, code tier, 29 assertions) and
+  `render/audio.rs` owning nothing but the bank, the listener and the voices.
+  Still genuinely unused: **`bevy_gltf`** (every mesh in the tree is
+  procedural), **`bevy_scene`** and **`bevy_animation`** (bodies are capsules;
+  this one is wanted eventually and blocked on rigged meshes rather than on a
+  decision). Trimming is a build-time and payload win, not a picture win — it
+  happens when it is in the way.
 - **`bevy_scene` is a decided no, not an unexamined gap.** Its three
   advertised wins each land on a wall here. *Entity-ID-preserving save
   games*: there is no client-side save game and there must not be — the

@@ -20,6 +20,72 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0x · The client makes sound — what it cannot yet hear *(client lane)*
+
+Landed 2026-08-06. `crates/client/src/sound/` is the model (pure, headless,
+**code tier** — 30 assertions in `tests/sound.rs`), `render/audio.rs` is the
+Bevy half. 19 cues, two buses, a bounded mixer, per-surface footsteps off
+`terrain::splat`, a crossfaded wind bed, and three working volume sliders.
+Research is `reference/AUDIO.md`; every number is `DECISIONS.md` §open
+"audio v0". **There are no audio assets** — `sound/synth.rs` generates the
+bank at boot, which is a licence posture (§ that file), not a preference.
+
+Remaining, in order:
+
+1. **Nothing scores it, because `ART.md` has no audio section at all.** The
+   bank has a *gate* (energy, no clipping, no click, loop seam continuous,
+   surfaces differ in brightness) and no *bar*. That asymmetry is the same one
+   `CLAUDE.md`'s beige-smear entry is about: a statistic cannot tell whether
+   the frame is a picture of anything, and none of these can tell whether the
+   bank sounds like a forest. **Nobody has heard it** — this box has no audio
+   device — so it is honest programmer art until someone plays it.
+   `cargo run -p client --bin soundbank -- <dir>` writes all 19 WAVs, which is
+   how you listen without launching a client and walking to a tree. Looking
+   already paid twice: a waveform plot found the wind bed was a flat hiss (its
+   gust LFOs were slower than its own loop) and then that the fix overshot into
+   the ambience dropping out. Both are gates now; neither was reachable from a
+   statistic that only asked "does it have energy".
+2. **Music is the highest-value unbuilt thing and the design is already
+   written down.** `reference/AUDIO.md` §8: a 4–8 minute gap timer, themes of
+   sectioned pieces, an intensity scalar bumped by events we already have as
+   integer codes, transitions only at section boundaries. Every input exists.
+   What does not exist is music — a generated bank makes tones, not themes.
+   That is a **content** blocker, not an engineering one.
+3. **CI now compiles the native client, and that is half of R-G0.** The
+   `native client (--features render)` gate landed on main this same day —
+   clippy `-D warnings` plus the render-tier suites — so the hole §0v item 3
+   named is closed for *compiling*. What still runs only by hand is the other
+   half: a `--capture` run against a live shard, which wrote all six vantages
+   with **zero panics** and is the only thing that proves the audio systems
+   execute at all. It caught this slice's one runtime defect —
+   `OnEnter(Loading)` runs *before* `Startup`, so the bank could not be a
+   `Startup` system — and it needs Xvfb, lavapipe and a shard, which is why
+   it is not in `ci/gates.sh` yet.
+4. **DONE, and it went wrong first — `render/feed.rs`.** This item used to
+   say a second reader of the core's destructive `pop_*` rings would silently
+   split the events, and that the fix was one drain into a resource both read.
+   It arrived on the merge: `hud::feedback` (HUD lane) and `audio::feed`
+   (this lane) each popped the same six rings, **git merged them with no
+   conflict**, and the HUD — scheduled first — ate every event before the
+   mixer saw one. No test could see it; each half is correct alone. There is
+   now one drain, and `tests/sound.rs` greps `src/render/` for a second
+   `pop_*` call site, because the defect is a call site and not a value.
+5. **Four of the nineteen cues have no producer**, which is `MENUS.md` §4's
+   dark-content defect inside a thing that just shipped: `Place`,
+   `ImpactWood`, `ImpactMetal` and `UiClick` are generated, in the table and
+   playable, and nothing asks for them. `Place` is the cheap one now that
+   `structures.rs` streams piece and deploy changes with cells — it is the
+   second positional cue and would exercise that path against something other
+   than a falling tree. The two impacts need to know WHAT was hit, which the
+   gather toast does not say. `UiClick` needs a hook in the per-screen click
+   handlers.
+6. **Remote players are silent.** Only the local body has an odometer, so
+   another player's footsteps — the sound that decides fights — do not exist.
+   `bodies.rs` has their interpolated transforms; a `Steps` per remote body
+   and a positional step cue is the slice.
+7. **No occlusion, and it needs a prerequisite rather than a pass.** A wall
+   between you and a sound needs a geometry query, and the correct one is the
+   sim's (`collide.rs`), not a raycast against render meshes.
 ## 0z · The world waits for the server now — what the Bevy audit left *(client lane)*
 
 Landed 2026-08-06. The client was building a world the server had not named —

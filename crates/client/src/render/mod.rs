@@ -18,12 +18,20 @@ use sim_core::terrain::{self, Haven, ScatterTable};
 
 use crate::Session;
 
+// The Bevy half of the client's audio. The MODEL is `crate::sound`, which is
+// pure and not feature-gated for the same reason `ui` is not: a mixer testable
+// only by a windowed run with a sound card is a mixer with no gate.
+pub mod audio;
 pub mod bodies;
 pub mod capture;
 // Chat. Not registered on a capture run, like the panels: a gate whose
 // frames depend on whether a composer is open is not a gate.
 pub mod chat;
 pub mod clutter;
+// This frame's own-facts, drained from the core ONCE. Every `pop_*` call in
+// the client lives in there — see its header for the merge that made that a
+// rule rather than a preference.
+pub mod feed;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
@@ -285,6 +293,9 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<ghost::Ghost>()
             .init_resource::<hud::Toast>()
             .init_resource::<Settings>()
+            .init_resource::<feed::Feed>()
+            .init_resource::<audio::Sound>()
+            .init_resource::<audio::LastHp>()
             .insert_non_send_resource(menu::Connecting::default());
 
         // `Menu` is inserted either way, because a system that reads it must
@@ -322,6 +333,15 @@ impl Plugin for GatesRenderPlugin {
         // are wanted whichever screen comes first, and warming them while a
         // player reads the menu is free time the old shape did not have.
         app.add_systems(Startup, textures::load);
+        // The sound bank is generated rather than loaded (`sound/synth.rs`)
+        // and is built HERE, not at `Startup`. **`OnEnter(Screen::Loading)`
+        // runs before `Startup`** on a connected start — Bevy schedules the
+        // first state transition with `insert_startup_before(PreStartup, …)` —
+        // so a `Startup` system cannot supply a resource that an `OnEnter`
+        // system reads, and `audio::setup` reads the bank. See
+        // `audio::build_bank`; the first capture run after the audio slice
+        // died on exactly this.
+        audio::build_bank(app);
 
         // ---- the menu ------------------------------------------------
         // `world_teardown` first: entering the menu from a live world is the
@@ -455,6 +475,11 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnEnter(Screen::Loading), hud::setup.after(rig::setup))
         // The cloud deck hangs on the camera, so it waits for the rig too.
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
+        // The listener IS the camera, so the ears wait for the rig as well.
+        .add_systems(OnEnter(Screen::Loading), audio::setup.after(rig::setup))
+        // Leaving a shard resets the step odometer and the bed's fade. The
+        // bed entity itself is a `WorldEntity` and goes with the rest.
+        .add_systems(OnEnter(Screen::Menu), audio::teardown.after(world_teardown))
         // Input is the one thing that is `InWorld` and nothing else: it is
         // the only system that writes what the sim reads, and a player
         // reading a settings pane must not be swinging an axe.
@@ -527,6 +552,35 @@ impl Plugin for GatesRenderPlugin {
                     .run_if(world_placed),
             )
                 .chain()
+                .run_if(world_running),
+        )
+        // **The one `pop_*` call site in the client, and it runs first.**
+        // `hud::feedback` (inside `Stream`) and `audio::feed` (after it) both
+        // want this frame's hits, toasts and refusals, and the core hands each
+        // fact over exactly ONCE — so when both popped, the HUD drained every
+        // ring and the game fell silent, with no conflict and no failing test
+        // to say so. `feed::drain` fills a resource both read immutably;
+        // `render/feed.rs` has the account. It is gated on `world_running`
+        // rather than `world_placed` because a ring nobody drains overflows,
+        // which is the reason `hud::feedback` gives for its own placement.
+        .add_systems(Update, feed::drain.before(Stream).run_if(world_running))
+        // Audio runs AFTER the streamers and `pump` runs last of all: every
+        // producer must have had its say before the mixer resolves the frame,
+        // or a cue requested by a system scheduled later is heard a frame
+        // late. `fell` in particular reads the change detection that
+        // `props::harvest` writes inside `Stream`.
+        .add_systems(
+            Update,
+            (
+                audio::feed,
+                audio::hurt,
+                audio::steps,
+                audio::fell,
+                audio::bed,
+                audio::pump,
+            )
+                .chain()
+                .after(Stream)
                 .run_if(world_running),
         );
 

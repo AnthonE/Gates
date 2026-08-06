@@ -417,47 +417,45 @@ pub fn update(
 /// they are small (`TOAST_RING`) and a backlog drip-fed at frame rate would
 /// still be showing the first refusal after the tenth.
 pub fn feedback(
-    mut net: NonSendMut<Net>,
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
     mut toast: ResMut<Toast>,
     time: Res<Time>,
     mut marks: Query<&mut BackgroundColor, With<HitMark>>,
     mut lines: Query<(&mut Text, &mut TextColor), With<ToastLine>>,
 ) {
-    let core = &mut net.session.core;
+    let core = &net.session.core;
+
+    // **Read, never popped.** `render::feed::drain` is the one caller of
+    // `pop_*` in the client; this used to pop the rings itself, and the audio
+    // systems popped the same ones — two correct halves that merged cleanly
+    // and left the game silent. `feed.rs`'s header has the whole story.
 
     // Hits first: the marker is the only feedback with a deadline on it.
-    let mut damage = 0u16;
-    let mut landed = false;
-    while let Some(d) = core.pop_hit() {
-        damage = damage.saturating_add(d);
-        landed = true;
-    }
-    if landed {
-        toast.hit(damage);
+    if feed.hits > 0 {
+        toast.hit(feed.damage);
     }
 
     // Refusals. Each store answers a different verb, and the reason codes are
     // integers by wall 3 — turning one into a sentence is the client's job
     // and `refusal_text` is where the whole mapping lives.
-    while let Some(code) = core.pop_craft_refusal() {
-        toast.say(crate::ui::refusals::craft(code));
-    }
-    while let Some(code) = core.pop_build_refusal() {
-        toast.say(crate::ui::refusals::build(code));
-    }
-    while let Some(code) = core.pop_deploy_refusal() {
-        toast.say(crate::ui::refusals::deploy(code));
+    for (which, code) in feed.refusals() {
+        toast.say(match which {
+            super::feed::Refused::Craft => crate::ui::refusals::craft(code),
+            super::feed::Refused::Build => crate::ui::refusals::build(code),
+            super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
+        });
     }
     // Gather and craft toasts are (item, count) pairs — something arrived.
     // `item_label` is the panels' own naming, reused rather than restated:
     // an index no name has dripped for prints as `#12`, which is honest,
     // where an empty cell is the dark-panel defect this repo has a rule
     // against.
-    while let Some((item, count)) = core.pop_toast() {
+    for &(item, count) in feed.gathered() {
         let label = crate::ui::craft::item_label(&core.catalog, item);
         toast.say(format!("+{count} × {label}"));
     }
-    while let Some((item, count)) = core.pop_craft_toast() {
+    for &(item, count) in feed.crafted() {
         let label = crate::ui::craft::item_label(&core.catalog, item);
         toast.say(format!("crafted {count} × {label}"));
     }
