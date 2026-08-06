@@ -25,7 +25,9 @@ pub mod hud;
 pub mod input;
 pub mod props;
 pub mod rig;
+pub mod sky;
 pub mod terrain_mesh;
+pub mod textures;
 
 /// The connected session plus the runtime its reader tasks live on.
 ///
@@ -100,10 +102,15 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<props::PropRing>()
             .init_resource::<clutter::ClutterRing>()
             .init_resource::<bodies::Bodies>()
-            .add_systems(Startup, (rig::setup, terrain_mesh::setup_water))
+            .add_systems(
+                Startup,
+                (rig::setup, terrain_mesh::setup_water, textures::load),
+            )
             // The HUD's viewmodel is parented to the camera, so it must be
             // built after the rig has spawned one.
             .add_systems(Startup, hud::setup.after(rig::setup))
+            // The cloud deck hangs on the camera, so it waits for the rig too.
+            .add_systems(Startup, sky::setup.after(rig::setup))
             .add_systems(
                 Update,
                 (

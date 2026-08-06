@@ -60,7 +60,23 @@ fn main() {
     );
 
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins);
+    // **The asset root is the executable's directory, not the working one.**
+    // Bevy resolved `textures/rock_albedo.jpg` to `target/debug/assets/...`
+    // and logged `Path not found` — while the renderer carried on drawing a
+    // white fallback, so three successive material changes measured
+    // BYTE-IDENTICAL statistics and looked like physics. That is the shape of
+    // this whole class: a missing texture is not an error the image shows you.
+    //
+    // Resolved here rather than by a symlink so the same binary works from a
+    // repo checkout and from a shipped layout with `assets/` beside the exe.
+    let mut assets = AssetPlugin::default();
+    if let Ok(cwd) = std::env::current_dir() {
+        let repo = cwd.join("assets");
+        if repo.is_dir() {
+            assets.file_path = repo.to_string_lossy().into_owned();
+        }
+    }
+    app.add_plugins(DefaultPlugins.set(assets));
     app.insert_non_send_resource(Net {
         _rt: rt,
         session,

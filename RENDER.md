@@ -22,50 +22,50 @@ picture it is supposed to buy.
 
 ## 0 · Where the picture is now — measured, both sides, one estimator
 
-**R0, R1, R2, R3 and R6 have landed** (§4 for what each is). The client
-connects to an unmodified shard, meshes `sim_core::terrain` around the
-player, populates the near ground out of `terrain::clutter_fill`, scatters
-`terrain::scatter`'s occupants, lights it with Bevy's Bruneton atmosphere
-under one owner, draws a HUD and a viewmodel, and captures a fixed vantage
-list headless under Xvfb + lavapipe.
+**R0–R6 have landed.** The client connects to an unmodified shard, meshes
+`sim_core::terrain`, populates the near ground out of `clutter_fill` **and
+`skirt_fill`**, scatters `terrain::scatter`'s occupants, samples the CC0
+photograph, lights it with Bevy's Bruneton atmosphere under one owner, hangs a
+procedural cloud deck in the sky, resolves with SSAO + SMAA + bloom, draws a
+HUD and a viewmodel, and captures a fixed vantage list headless under Xvfb +
+lavapipe.
 
 `ci/native_bar.py` reads our captures and `Rust Images/` **in the same run,
 through the same estimator** — a bar computed a different way than the frame
-it judges is not a bar. Medians over the six vantages against the six
-outdoor-daylight reference frames:
+it judges is not a bar. Medians over the six vantages:
 
-| statistic | first native frame | now | reference | note |
+| statistic | first native frame | before this pass | now | reference |
 |---|---|---|---|---|
-| whole-frame p10 | 41.9 | 64.9 | 41.0 | ours no longer reaches the darks — the fill's cost |
-| whole-frame p50 | 61.0 | **85.3** | 91.4 | was most of a stop under |
-| whole-frame p90 | 110.9 | 144.7 | 170.2 | **the sky has no clouds in it** |
-| sky band mean | 97.3 | **129.5** | 128.4 | on the bar |
-| near band mean | 54.8 | **79.5** | 80.5 | on the bar |
-| near-band saturation | 42.0% | **32.1%** | 33.2% | on the bar |
-| **near neighbour contrast** | 1.55 | **2.44** | 5.40 | the browser client's was **0.26** |
+| whole-frame p10 | 41.9 | 64.9 | 58.6 | 41.0 |
+| whole-frame p50 | 61.0 | 85.3 | **90.2** | 91.4 |
+| whole-frame p90 | 110.9 | 144.7 | **155.7** | 170.2 |
+| sky band mean | 97.3 | 129.5 | 136.3 | 128.4 |
+| near band mean | 54.8 | 79.5 | **79.8** | 80.5 |
+| near-band saturation | 42.0% | 32.1% | **32.9%** | 33.2% |
+| **near neighbour contrast** | 1.55 | 2.44 | **6.25** | 5.40 |
+| chroma per unit luma | — | — | **0.163** | 0.252 |
 
-The last row is the one `ART.md` §3 says matters and the one nothing had ever
-moved. Geometry moved it **9.4×** off the browser's 0.26 without a single
-shader being written, which is what §1 of the art bible says the mechanism is:
-the ground is not a surface, it is a population. It is still 2.2× short.
+The last two rows are the ones that matter and they have to be read together.
+`ART.md` §3's contrast row is the statistic six browser passes never moved off
+**0.26**; it is 6.25 now, past the reference. And §7 warns that contrast alone
+cannot tell detail from aliasing — the test that can is *direction*: the
+high-frequency residual resolved along the local mean colour (real relief)
+versus orthogonal to it (the hue changed between neighbouring pixels). Ours
+sits **below** the reference's own ratio, so the frame is carrying texture,
+not noise. Both were needed; either alone would have been a number without
+evidence.
 
-Two gaps are named by the table rather than by taste, and both have a
-mechanism rather than a knob:
+Two gaps remain, both named by the table:
 
-- **p90 144.7 against 170.2 — there are no clouds.** `ART.md` §4 states it
-  outright: a cloudless gradient cannot reach the reference's spread, which
-  gets its top stop from lit cumulus. Bevy's atmosphere has no cloud layer and
-  this is the largest remaining tonal gap.
-- **contrast 2.44 against 5.40 — the ground between the tufts is smooth.**
-  That is the near-field grain under 5 cm, which is a texture's job (R4) and
-  not more geometry.
-
-One number moved the wrong way and is worth stating plainly rather than
-hiding: **p10 rose from 41.9 to 64.9 against a reference of 41.0** — our darks
-are no longer dark enough. That is the direct cost of the fill raise below,
-and the honest reading is that a uniform ambient term buys rule 3's floor at
-the price of the bottom of the range. A hemisphere fill (sky half cool, earth
-half warm) is the shape that gets both, and Bevy's ambient is uniform.
+- **p90 155.7 against 170.2.** Closing, and the cloud deck is why (143.6 →
+  155.7). What is left is cloud *form*: this deck reads as high stratus where
+  `ART.md` §1 asks for cumulus with lit tops and grey bases.
+- **p10 58.6 against 41.0 — our darks are still not dark.** SSAO moved it
+  (64.9 → 58.6) exactly as `ART.md` §4 predicts, by removing ambient only
+  where geometry occludes. The rest is the shape of the fill itself: a uniform
+  ambient term buys rule 3's 0.30 floor at the price of the bottom of the
+  range, and a hemisphere (sky half cool, earth half warm) is what gets both.
+  Bevy's `AmbientLight` is uniform, so that is a second light or a shader.
 
 ## 1 · The rule the path hangs on: Bevy draws, it does not decide
 
@@ -315,7 +315,7 @@ tuft had one lit blade and one black one. Blades are also `NotShadowCaster`:
 two triangles a few centimetres wide against a cascade sized for 200 m is not
 a shadow, it is acne, and the first capture was full of it.
 
-### R4 · Materials — the photograph, on the surface
+### R4 · Materials — the photograph, on the surface — **LANDED (single-map)**
 
 The CC0 set in `assets/textures/` already exists, is manifested, and its
 *selection* was already measured (gain span, albedo sd, anisotropy). None of
@@ -354,6 +354,37 @@ disarms combat draws no bar rather than an empty one.
 Still owed: item icons in the cells (the hotbar knows only which cell is
 selected, not what is in it), status chips (`WET 36%`), and a viewmodel that
 is the held item rather than a stand-in.
+
+### R8 · Clouds — **LANDED**
+
+`ART.md` §4 states it outright: a cloudless gradient cannot reach the
+reference's spread. Two cheaper answers were checked against the arithmetic
+first and **both are impossible, not merely weak**:
+
+  · **The sun disk cannot move a p90.** `SunDisk::EARTH` is 9.31 mrad; at 75°
+    over 1280 px that is ~9 px across, about 65 px, 0.007% of the frame. A p90
+    needs ~92,000 pixels. Raising its intensity — which this pass did before
+    checking — is measuring the wrong thing.
+  · **Bloom cannot add light.** `Bloom::NATURAL` is `EnergyConserving`, whose
+    composite is `{src: Constant, dst: OneMinusConstant}` — a lerp between the
+    scene and its blur. It redistributes energy. Only `Additive` adds, and the
+    docs warn that a non-default prefilter without it is physically wrong.
+
+**A top stop must come from AREA.** The deck is a procedural cloud cubemap
+handed to `Skybox`, generated at boot from the world seed — no asset, no
+shader, no download. The reason it is a `Skybox` and not a dome is ownership:
+`Skybox` draws at the end of `MainOpaquePass`, which is *before*
+`AtmosphereNode::RenderSky`, so **the atmosphere composites the clouds itself**
+as `dst = inscattering + transmittance·dst`. `ART.md` rule 5 holds by
+construction. An `AlphaMode::Blend` dome draws in `MainTransparentPass`, after
+the sky is resolved, so it would need its own `DistanceFog` to sit right — a
+second owner of haze, which is the coupled-lighting failure already paid for
+once. `FullscreenMaterial` binds no depth and no view uniform, so it cannot
+tell sky from geometry. And `AtmosphereNode` is private in `bevy_pbr`, so no
+custom node can be ordered against it at all.
+
+Still owed: the deck reads as high stratus, not cumulus. Vertical structure
+and a real light march are the difference.
 
 ### R7 · What is deliberately not in this plan
 

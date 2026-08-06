@@ -21,11 +21,14 @@
 //! the sky's own colour, which is exactly what the fog seam was being tuned
 //! by hand to fake.
 
+use bevy::anti_alias::smaa::Smaa;
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::light::{light_consts::lux, CascadeShadowConfigBuilder};
-use bevy::pbr::{Atmosphere, AtmosphereSettings, ScatteringMedium};
+use bevy::light::{light_consts::lux, CascadeShadowConfigBuilder, SunDisk};
+use bevy::pbr::{Atmosphere, AtmosphereSettings, ScatteringMedium, ScreenSpaceAmbientOcclusion};
+use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+use bevy::render::view::Msaa;
 
 use super::{Eye, EYE_HEIGHT};
 
@@ -33,7 +36,7 @@ use super::{Eye, EYE_HEIGHT};
 /// sim's yaw convention, so this reads the same as every other bearing in the
 /// tree). Carried over from the browser rig, which is the one constant of its
 /// set that was never in dispute.
-pub const SUN_AZIMUTH: f32 = 2.35;
+pub const RIG_SUN_AZIMUTH: f32 = 2.35;
 
 /// Sun elevation above the horizon, radians. 0.61 rad = 35°, the middle of
 /// `ART.md` §1's measured band: shadows in `generichighview2.jpg` run 1.5–2×
@@ -151,6 +154,41 @@ pub fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>
             brightness: lux::AMBIENT_DAYLIGHT * 1.7,
             affects_lightmapped_meshes: false,
         },
+        // ── The three post terms, and they belong to this owner too ──────
+        //
+        // MSAA OFF is not a preference: `bevy_pbr`'s SSAO node checks it and
+        // warns that "SSAO is being used which requires Msaa::Off". Off costs
+        // nothing here because SMAA below is a post-process resolve, not a
+        // sample-count one.
+        Msaa::Off,
+        // **AO is how the fill's cost gets paid back.** Raising the ambient to
+        // reach `ART.md` rule 3's 0.30 floor lifted the whole frame including
+        // the darks — p10 went 41.9 → 64.9 against a reference of 41.0. That
+        // is the documented failure mode of a global fill, and §4 of the art
+        // bible states the fix in one line: raise the fill and put the
+        // darkness back where it belongs. AO removes ambient only where
+        // geometry occludes, which is under every boulder, inside every
+        // canopy, and in the crease where a prop meets the ground.
+        //
+        // Medium, not the `High` default: this renders on a CPU rasterizer in
+        // the gate and High is 18 samples per pixel.
+        ScreenSpaceAmbientOcclusion {
+            quality_level: bevy::pbr::ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+            ..default()
+        },
+        // SMAA rather than FXAA (blurrier) or TAA (needs motion vectors and a
+        // temporal history a fresh-process capture does not have). Nothing in
+        // this client had ANY anti-aliasing before: every pine edge, every
+        // grass blade and every granite facet was a hard stair.
+        Smaa::default(),
+        // Bloom, and its first job is the sun. `SunDisk`'s own doc says it:
+        // "In order to cause the sun to 'glow' and light up the surrounding
+        // sky, enable bloom in your post-processing pipeline." The disk has
+        // been rendering all along — a 9 mrad white dot with nothing around
+        // it. NATURAL is the energy-conserving preset with no threshold, so
+        // it scatters what is genuinely bright instead of hunting for pixels
+        // over a cutoff.
+        Bloom::NATURAL,
         Transform::from_xyz(0.0, EYE_HEIGHT, 0.0),
     ));
 
@@ -174,6 +212,18 @@ pub fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>
             overlap_proportion: 0.2,
         }
         .build(),
+        // The disk in the sky. It renders by default through the atmosphere
+        // (`SunDisk::EARTH` is what an absent component resolves to), and it
+        // is stated explicitly here for two reasons: it is a member of the
+        // coupled set and so belongs in this file where the owner can see it,
+        // and the intensity is a knob the reference frames have an opinion
+        // about. 1.6 rather than the physical 1.0 — the references are
+        // photographs with a real camera's flare and glare, and the disk is
+        // what bloom has to work on.
+        SunDisk {
+            intensity: 1.6,
+            ..SunDisk::EARTH
+        },
         Transform::from_rotation(sun_rotation()),
     ));
 }
@@ -181,7 +231,7 @@ pub fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>
 /// The sun's rotation: a light pointing along the direction sunlight travels.
 fn sun_rotation() -> Quat {
     let (se, ce) = (RIG_SUN_ELEVATION.sin(), RIG_SUN_ELEVATION.cos());
-    let (sa, ca) = (SUN_AZIMUTH.sin(), SUN_AZIMUTH.cos());
+    let (sa, ca) = (RIG_SUN_AZIMUTH.sin(), RIG_SUN_AZIMUTH.cos());
     // Where the sun sits, as a unit vector from the world origin.
     let to_sun = Vec3::new(sa * ce, se, ca * ce);
     Transform::default().looking_at(-to_sun, Vec3::Y).rotation

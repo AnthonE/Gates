@@ -21,7 +21,9 @@
 use bevy::light::NotShadowCaster;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use sim_core::terrain::{self, Clutter, ClutterElem, CLUTTER_PER_TILE, CLUTTER_TILE_M};
+use sim_core::terrain::{
+    self, Clutter, ClutterElem, CLUTTER_PER_TILE, CLUTTER_TILE_M, SKIRT_PER_TILE,
+};
 
 use super::props::{hash01, linear, Soup};
 use super::{Eye, WorldId};
@@ -206,8 +208,11 @@ pub fn stream(
     world: Res<WorldId>,
     eye: Res<Eye>,
 ) {
+    // The grid stratum AND the skirt stratum, in one buffer. `CLUTTER_TILE_CAP`
+    // is the browser's name for exactly this sum and the two fills are
+    // documented as sharing a population, so a single allocation holds both.
     if buf.is_empty() {
-        buf.resize(CLUTTER_PER_TILE, terrain::CLUTTER_NONE);
+        buf.resize(CLUTTER_PER_TILE + SKIRT_PER_TILE, terrain::CLUTTER_NONE);
     }
     let material = ring
         .material
@@ -250,7 +255,32 @@ pub fn stream(
             if ring.built.contains_key(&key) {
                 continue;
             }
-            let n = terrain::clutter_fill(world.seed, key.0, key.1, &mut buf);
+            // Two strata, one buffer, one mesh, one draw.
+            //
+            // **The grid alone cannot pay rule 2, by construction.** It is
+            // 0.64 m cells that do not know a boulder is standing in them, so
+            // it answers rule 4 (no bare patch) and leaves every prop meeting
+            // the ground on a razor-clean line — which is what the visual
+            // judge named twice in one report, once as the ask and once as the
+            // symptom. `skirt_fill` is the other half: a stratified ring of
+            // the SAME four kinds hugging each prop's footprint, clipped to
+            // the tile that emits it so a prop straddling an edge is skirted
+            // once. It reaches off `occupant_volume`, the same published
+            // footprint table everything else measures against, so a prop that
+            // changes size drags its skirt with it.
+            //
+            // It has been in `sim-core` and gated the whole time. The native
+            // client simply never called it.
+            let grid = terrain::clutter_fill(world.seed, key.0, key.1, &mut buf);
+            let skirt = terrain::skirt_fill(
+                world.seed,
+                &world.table,
+                &world.haven,
+                key.0,
+                key.1,
+                &mut buf[grid..],
+            );
+            let n = grid + skirt;
             let mut s = Soup::default();
             for e in buf.iter().take(n) {
                 element(&mut s, e);

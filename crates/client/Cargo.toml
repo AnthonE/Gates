@@ -31,7 +31,12 @@ required-features = ["render"]
 [dependencies]
 # Default features for now: trimming Bevy's feature set (audio, gltf, ui,
 # and the rest this does not draw) is a follow-up, not slice 2's business.
-bevy = { version = "0.18", optional = true }
+# `jpeg` is NOT a Bevy default and every source in `assets/textures/` is a
+# .jpg. Without it `bevy_image` refuses the file with "invalid image
+# extension: jpg" — and the renderer carries on drawing a WHITE FALLBACK, so
+# the frame does not report the failure. Three successive material changes
+# measured byte-identical statistics before the log was read.
+bevy = { version = "0.18", optional = true, features = ["jpeg"] }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-wasm = { path = "../client-wasm" }

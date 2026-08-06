@@ -57,6 +57,7 @@ ships an occlusion map. **bundled** marks the four the client actually loads.
 | `rock` | aCG [Rock023](https://ambientcg.com/view?id=Rock023) | ✓ | ✓ | replaced `cliff_side` 2026-08-04 — see below. |
 | `sand` | PH [coast_sand_01](https://polyhaven.com/a/coast_sand_01) | ✓ | ✓ | fine coastal sand, close to ART §3's 42°/10% sample |
 | `stone` | aCG [Bricks089](https://ambientcg.com/view?id=Bricks089) | ✓ | | replaced `castle_brick_01` 2026-08-04. Photoscanned medieval stacked field stone — the identity ART asks for, not brick. sd 0.0947 → **0.1253**, anisotropy 1.34 → **1.09** (less row-banding). |
+| `ground_detail` | **derived** from `grass` (PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01)) | | ✓ | Rec.601 luma of the source's LINEAR albedo, re-encoded to sRGB greyscale, 1024 q88, 342 KB. The ground's near-field grain: `ART.md` §7 asks a modifier that sets a colour to multiply the surface's own **mean-1 luminance field**, and a luminance field has gain span **1.000 by construction** where the four colour sources measure 2.454 / 2.073 / 3.586 / 1.054 (grass / sand / litter / rock) against a ×1 ceiling. Linear luma mean 0.2464, sd 0.0762. Derived, never edited: the source stays pristine and swappable, and regenerating is a luma convert. |
 | `wood` | PH [brown_planks_03](https://polyhaven.com/a/brown_planks_03) | | | weathered grey planks; building tier 1 |
 
 **The three marginal picks are gone, and `rock` is why the others went with it.**

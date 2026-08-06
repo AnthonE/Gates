@@ -51,7 +51,25 @@ def stats(path):
     mx = n.max(axis=2)
     mn = n.min(axis=2)
     sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-6), 0.0)
+    # ART.md §7: the measurement that separates DETAIL from NOISE is
+    # direction, not amplitude. Resolve the near ground's high-frequency
+    # residual along the local mean colour (a surface lighter here, darker
+    # there — real detail, and what the contrast column counts) versus
+    # orthogonal to it (the hue changed between neighbouring pixels). The
+    # references run 0.077–0.193 chroma per unit luma, median 0.120; above
+    # that band the frame is aliasing and no amount of blur is the fix.
+    n3 = a[a.shape[0] - near.shape[0] :].astype(np.float32)
+    dv = np.diff(n3, axis=1)                      # neighbour delta, per channel
+    mean_col = n3[:, :-1, :] + n3[:, 1:, :]
+    norm = np.linalg.norm(mean_col, axis=2, keepdims=True)
+    unit = mean_col / np.maximum(norm, 1e-6)      # local mean colour direction
+    along = np.sum(dv * unit, axis=2)             # lighter/darker: real detail
+    ortho = np.linalg.norm(dv - along[..., None] * unit, axis=2)  # hue changed
+    along_abs = float(np.mean(np.abs(along)))
+    chroma_per_luma = float(np.mean(ortho)) / max(along_abs, 1e-6)
+
     return {
+        "chroma": chroma_per_luma,
         "p10": float(np.percentile(luma, 10)),
         "p50": float(np.percentile(luma, 50)),
         "p90": float(np.percentile(luma, 90)),
@@ -66,7 +84,7 @@ def row(label, s):
     print(
         f"  {label:<22} p10 {s['p10']:6.1f}  p50 {s['p50']:6.1f}  p90 {s['p90']:6.1f}"
         f"  sky {s['sky']:6.1f}  near {s['near']:6.1f}  sat {s['sat']:5.1f}%"
-        f"  contrast {s['contrast']:5.2f}"
+        f"  contrast {s['contrast']:5.2f}  chroma/luma {s['chroma']:5.3f}"
     )
 
 

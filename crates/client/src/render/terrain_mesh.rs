@@ -26,6 +26,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::terrain::{self, SEA_LEVEL};
 
+use super::textures::GroundMaps;
 use super::{Eye, WorldId};
 
 /// Near-chunk edge, metres.
@@ -69,6 +70,12 @@ pub const GROUND_ALBEDO: [[f32; 3]; 4] = [
     [0.235, 0.222, 0.198],
 ];
 
+/// `1 / linear mean` of `rock_albedo.jpg`, per channel — the mean-placing
+/// correction of `ART.md` §7, measured off the shipped file rather than
+/// guessed. Its span (max/min) is 1.054, i.e. the correction stretches the
+/// source's colour deviation by 5%, which is what the ×1 rule permits.
+pub const ROCK_GAIN: [f32; 3] = [3.659, 3.713, 3.855];
+
 /// One built ground chunk, so teardown can find it.
 #[derive(Component)]
 pub struct Chunk(pub i32, pub i32);
@@ -105,13 +112,72 @@ impl Ring {
 }
 
 /// The ground's one material. Shared by every chunk so Bevy batches them into
-/// one draw per pipeline; the colour variation rides the vertices.
-fn ground_material(materials: &mut Assets<StandardMaterial>) -> Handle<StandardMaterial> {
+/// one draw per pipeline; the identity variation rides the vertices and the
+/// near-field grain rides the photograph.
+///
+/// **One map set, not four, and WHICH one was a measurement rather than a
+/// taste.** A `StandardMaterial` has one base-colour slot, so the four
+/// identities `terrain::splat` resolves cannot each carry their own
+/// photograph here. The first cut picked `grass` because `MANIFEST.md`
+/// records it owning ~99% of the near ring — and the capture measured
+/// near-band saturation falling 32.5% → 15.0% against a reference of 33.2%,
+/// because `base_color_texture` MULTIPLIES the authored colour by the
+/// photograph's own colour, which is `ART.md` §7's named failure: a modifier
+/// that must set a colour multiplies the surface's mean-1 LUMINANCE field, not
+/// its chroma.
+///
+/// The fix §7 prescribes is a per-channel gain that places the source's mean,
+/// bounded by the rule that **a sourced map's colour deviation may not be
+/// stretched by more than ×1 by that correction**. Measured over the four
+/// ground sources (linear means, gain = 1/mean, span = max gain / min gain):
+///
+/// | source | linear mean rgb | gain span | albedo sd |
+/// |---|---|---|---|
+/// | grass | 0.291 0.249 0.119 | **2.454** | 0.0743 |
+/// | sand | 0.228 0.174 0.110 | **2.073** | 0.0480 |
+/// | litter | 0.139 0.099 0.039 | **3.586** | 0.0527 |
+/// | rock | 0.273 0.269 0.259 | **1.054** | 0.0924 |
+///
+/// Only `rock` clears the rule, and it is also the source carrying the most
+/// detail. That is not a coincidence: `MANIFEST.md` records `rock` being
+/// chosen by scoring 74 CC0 candidates on exactly gain span and albedo sd.
+/// So the ground's grain is granite's, mean-corrected, and its colour is
+/// entirely the authored splat's — which is the construction §7 asks for.
+///
+/// Four maps blended by the splat weights needs a custom material, and in
+/// 0.18 `StandardMaterial` is `#[bindless(index_table(range(0..31)))]`, so
+/// that is a slice with a shader in it rather than a knob. `RENDER.md` §8.
+fn ground_material(
+    materials: &mut Assets<StandardMaterial>,
+    maps: &GroundMaps,
+) -> Handle<StandardMaterial> {
     materials.add(StandardMaterial {
-        // White, because the albedo IS the vertex colour. A base colour here
-        // would multiply every identity by one tint and flatten the splat.
-        base_color: Color::WHITE,
-        perceptual_roughness: 0.93,
+        // White, because the albedo IS the vertex colour times the map. A
+        // base colour here would multiply every identity by one tint and
+        // flatten the splat.
+        // The reciprocal of the source's own linear mean, so the delivered
+        // mean is the authored vertex colour and the map contributes only its
+        // relief. Values above 1 are correct and intended here — `LinearRgba`
+        // is unclamped, and a gain under 1 would be darkening rather than
+        // normalizing.
+        base_color: Color::linear_rgb(
+            super::textures::GROUND_DETAIL_GAIN,
+            super::textures::GROUND_DETAIL_GAIN,
+            super::textures::GROUND_DETAIL_GAIN,
+        ),
+        base_color_texture: Some(maps.detail.clone()),
+        normal_map_texture: Some(maps.grass.normal.clone()),
+        // **The roughness map is deliberately NOT wired.**
+        // `metallic_roughness_texture` is a glTF-packed ORM slot — G is
+        // roughness and **B is metallic** — and these sources are GREYSCALE
+        // roughness jpgs, so B would carry the roughness value into the
+        // metallic channel and make the ground a half-metal. Wiring it needs
+        // the maps packed into one ORM texture (an asset step), not a slot
+        // assignment. That is a reason from the format, not a measurement:
+        // when this was first blamed for a measured saturation crash the real
+        // cause was elsewhere and the log said so.
+        perceptual_roughness: 0.92,
+        metallic: 0.0,
         reflectance: 0.18,
         ..default()
     })
@@ -185,6 +251,12 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_indices(Indices::U32(indices));
+    // Tangents, because a normal map without them is not a normal map.
+    // Bevy's PBR shader needs `ATTRIBUTE_TANGENT` to build the tangent frame;
+    // without it the map is ignored and the surface silently stays flat —
+    // the failure that looks like "the texture did not load".
+    mesh.generate_tangents()
+        .expect("terrain mesh has UVs and normals");
     mesh
 }
 
@@ -221,11 +293,12 @@ pub fn stream(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     world: Res<WorldId>,
+    maps: Res<GroundMaps>,
     eye: Res<Eye>,
 ) {
     let ground = ring
         .ground
-        .get_or_insert_with(|| ground_material(&mut materials))
+        .get_or_insert_with(|| ground_material(&mut materials, &maps))
         .clone();
 
     // The far mesh, once. It is 66 k vertices and it is the whole island, so

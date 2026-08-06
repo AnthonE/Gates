@@ -360,28 +360,29 @@ Two slices have landed and both are on `main`:
 those and writes transforms. Gameplay state in a Bevy component would
 retire the determinism walls with nothing in CI to notice.
 
-**The visual plan is `RENDER.md`**, and **R0, R1, R2, R3 and R6 have landed**:
-input, the capture harness, the terrain mesh, the light rig under one owner,
-the scatter and clutter population, the HUD and viewmodel. The client draws
-the island it is connected to.
+**The visual plan is `RENDER.md`**, and **R0–R6 plus R8 have landed**: input,
+the capture harness, the terrain mesh, the light rig under one owner, the
+scatter and clutter population *and its prop skirts*, the CC0 photograph on
+the ground, SSAO + SMAA + bloom, a procedural cloud deck, the HUD and the
+viewmodel.
 
 Measured both sides through one estimator (`ci/native_bar.py`, medians over
-six vantages against the six outdoor-daylight reference frames): p50 **85.3**
-vs 91.4 · sky **129.5** vs 128.4 · near **79.5** vs 80.5 · saturation
-**32.1%** vs 33.2% — and near-ground neighbour contrast **0.26 → 2.44** against
-the reference's 5.40, which is the number `ART.md` §3 says matters and the one
-six browser passes never moved. Geometry moved it, exactly as §1 predicted.
+six vantages against the six outdoor-daylight reference frames): p50 **90.2**
+vs 91.4 · near **79.8** vs 80.5 · saturation **32.9%** vs 33.2% · p90 **155.7**
+vs 170.2 — and near-ground neighbour contrast **0.26 → 6.25** against the
+reference's 5.40, with chroma-per-luma 0.163 against 0.252 confirming that is
+texture and not aliasing. `ART.md` §3's row that six browser passes never
+moved is past the bar.
 
-What remains, ranked by the measurement rather than by taste — `RENDER.md` §8
-carries the list:
+What remains, ranked by the measurement — `RENDER.md` §8 carries the list:
 
 1. **The gate asserts.** The harness captures and the bar measures; neither
-   FAILS yet, and nothing in `ci/gates.sh` runs either. This is the pivot's
-   stated debt and it is item 2 below.
-2. **Clouds** — p90 144.7 vs 170.2, and `ART.md` §4 says a cloudless sky
-   cannot reach the reference's spread.
-3. **R4, the ground's photograph** — contrast 2.44 vs 5.40 is the near-field
-   grain under 5 cm, which is a texture, not more geometry.
+   FAILS yet, and nothing in `ci/gates.sh` runs either. Still the pivot's debt.
+2. **p10 58.6 vs 41.0** — a uniform ambient buys rule 3's floor at the price of
+   the darks. A hemisphere fill gets both.
+3. **Cloud form** — the deck reads as stratus where `ART.md` asks for cumulus.
+4. **The four-way splat material** — one map serves all four ground identities
+   today (`StandardMaterial` has one base-colour slot).
 
 Retired by this pivot rather than finished: `MIGRATION.md` (three.js →
 `WebGPURenderer` + TSL) is **moot** — you do not port three.js *and*
