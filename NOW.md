@@ -165,19 +165,20 @@ prompt, toast, compass, hitmarker.
 
 Remaining, in order:
 
-1. **`ci/gates.sh` still never builds `--features render`** (§0v item 3, now
-   owed much more). This slice added ~3,500 lines behind that feature and the
-   code tier covers only the `crate::ui` half — 94 assertions, all pure. The
-   probe is `RENDER.md` R0 and it is two commands. **This is the top item.**
-2. **Nothing in this repo looks at a frame.** This was "the native client has
-   no visual gate yet, and `web/`'s still run"; the browser cut
-   (`DECISIONS.md` 2026-08-06) removed the second half. `browser_smoke`'s 12
-   probes and `vantages`' 36 checks now guard a retired client, and the one
-   that ships has none. Panels, chat, the map and the death screen are also
-   deliberately unregistered on a `--capture` run, so even a native gate could
-   not open one — §0w item 3's hole, now six screens wide. **This and item 1
-   are the same item seen from two ends, and together they are the top of
-   this file.**
+1. ~~`ci/gates.sh` never builds `--features render`~~ **DONE** — the
+   `native client (--features render)` gate is in `ci/gates.sh` and green:
+   clippy `-D warnings` plus `--lib --test tree --test fell --test look`.
+2. ~~Nothing in this repo looks at a frame~~ **CLOSED BY DECISION, not by
+   work** (operator, 2026-08-06). The eleven browser gates are deleted and the
+   visual-gate rule is **retired**: `vantages` passed all 36 checks on a beige
+   smear, so the automated version did not work, and booting the game and
+   looking is cheaper and cannot be fooled by a wash. **Do not write a
+   replacement pixel gate.** What is still worth gating about a frame is
+   arithmetic — the mesh fits the volume the sim blocks — and its shape is
+   `crates/client/tests/tree.rs`. Uncovered by the deletion and worth a cheap
+   native test when one of these is next touched: the haven shelter, the
+   waystation canopy, the clutter ring, and the occupant table for everything
+   that is not a tree.
 3. **No swing prompt.** `interact.js`'s second resolver (`resolveSwing`, a 2 m
    cone with a vertical window and a point-blank exception over the scatter
    cells) has no native port, so the crosshair names what `E` would do and
@@ -197,6 +198,36 @@ Remaining, in order:
    which is the reference's own `OnDispenserBonus` and the closest thing this
    game has to a skill expression. Each is a small HUD slice on top of what
    this branch built, and none of them is blocked.
+
+## 0s · The six unlanded loop branches — triaged, and five are dead
+
+Checked 2026-08-06 against `origin/main`. **9 commits exist only on this box**
+(nothing here is on GitHub). Verdicts:
+
+- **`loop/ranged-v0` — TAKE.** 1,969 lines, **zero `web/` files**: `ranged.rs`
+  (402), `pitch_lut.rs` (285), `tests/shoot.rs` (695), `gen_pitch_lut.py`, plus
+  `combat.rs`/`limits.rs`/`occupy.rs`/`world.rs`/content bake. Main has **no
+  ranged code at all**, while `content/weapons.toml` already ships `item.bow`
+  and `loot.toml` ships wood and metal arrows — content with nothing to use it.
+  `DECISIONS.md` 2026-08-05 says it is "explicitly still wanted". Test-merged:
+  **10 conflict hunks over 4 files**, and all four big new files land clean.
+- **`loop/container-contents`, `loop/container-contents-wire` — DROP.**
+  Superseded. They bump the wire v18→v19; main is at **`PROTO_VER 23`** and
+  already ships `ACT_CONTAINER`, `SUB_CONT_SYNC`, the `core.rs` container view
+  and a `container_wire.rs` **larger** than either branch's.
+- **`loop/cont-max-mirror` — DROP.** Touches only `ci/ui_smoke.mjs` and
+  `web/src/invmove.js`. Both deleted.
+- **`loop/m1-surface-grain` — DROP.** `web/` only, and its own
+  `BRANCH-NOTES.md` says it is red on purpose and marks its rewrite
+  "do not re-land".
+- **`loop/bark-photo` — DROP the branch, KEEP the finding.** Its code is
+  `web/src/materials.js` + `textures.js`. The finding survives it:
+  **`assets/textures/bark_{albedo,normal,rough}.jpg` are on disk and unused**,
+  and `render/tree.rs` builds a bark mesh it shades procedurally. Sampling
+  three maps that already ship is a small native slice.
+
+If `ranged-v0` is not taken, these branches can be deleted — but they are
+**local-only**, so deleting is final.
 
 ## 0w · The native menus landed — the four things they cannot do *(client lane)*
 
