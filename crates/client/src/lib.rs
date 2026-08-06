@@ -15,6 +15,11 @@
 //! against the same shard, at the same `PROTO_VER`.
 
 pub mod args;
+// Which way is right. Pure and unconditional for the same reason `ui` is:
+// the mapping from a keypress to a wire axis is arithmetic, it was WRONG
+// (see the module header), and a mapping that lives inside a Bevy system is
+// one no test in the code tier can call.
+pub mod look;
 pub mod scry;
 pub mod shardlist;
 // The in-game menus' arithmetic. NOT feature-gated: it is pure, it is what

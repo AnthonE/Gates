@@ -10,23 +10,21 @@
 //! quantize or prediction drifts by rounding** (`CLAUDE.md` traps, the
 //! quantize-both-sides law): yaw is a `u16` where 0 faces +Z and increasing
 //! turns toward +X, pitch is a `u8` with 128 level, and the move axes are
-//! `i8`. The sim's movement only ever reads the top 8 bits of yaw
-//! (`yaw_lut.rs`), so a client that sent a finer bearing would be predicting
-//! on a heading the server cannot face.
+//! `i8`.
+//!
+//! **The signs are not this file's to choose.** Which way a mouse push and a
+//! strafe key point is [`crate::look`]'s, because both were inverted and the
+//! arithmetic that says so has to be callable without a window. This file
+//! reads keys and calls that module; it does not know which way is right.
 
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use sim_core::input::{BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
 
-use super::{Eye, Net, EYE_HEIGHT};
+use crate::look::{self, MOUSE_RAD_PER_PX, PITCH_LIMIT};
 
-/// Radians per pixel of mouse travel (`DECISIONS.md` §open, client cosmetics).
-pub const MOUSE_RAD_PER_PX: f32 = 0.0022;
-/// How close to straight up or down the view may get, radians from level.
-/// The browser's `PITCH_LIMIT`; a pitch that reaches the pole makes the yaw
-/// basis degenerate.
-pub const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 - 0.02;
+use super::{Eye, Net, EYE_HEIGHT};
 
 /// Free-running view angles, radians. Not sim state: the sim gets the
 /// quantized copy below and this is what the camera is drawn from.
@@ -38,17 +36,7 @@ pub struct Look {
     pub frozen: bool,
 }
 
-/// Wire yaw from a free-running radian yaw.
-pub fn yaw_u16(yaw: f32) -> u16 {
-    let t = (yaw / std::f32::consts::TAU).rem_euclid(1.0);
-    (t * 65536.0) as u32 as u16
-}
-
-/// Wire pitch: 128 level, 255 straight up.
-pub fn pitch_u8(pitch: f32) -> u8 {
-    let v = ((pitch / std::f32::consts::PI + 0.5) * 255.0).round();
-    v.clamp(0.0, 255.0) as u8
-}
+pub use crate::look::{pitch_u8, yaw_u16};
 
 // Eight, and the eighth is the panels' `Ui`. Every one is a distinct source
 // this frame reads: the session, the free view, the cursor, the settings, two
@@ -66,6 +54,9 @@ pub fn gather(
     // and a probe harness that could open one is a gate whose frames depend
     // on a keystroke (`render/panels/mod.rs`).
     ui: Option<Res<super::panels::Ui>>,
+    // Same shape as `ui`, and the same reason it is optional: a capture run
+    // registers neither.
+    chat: Option<Res<super::chat::Chat>>,
 ) {
     // An in-game panel owns the pointer while it is up: the cursor comes
     // back, the view stops turning, and the movement axes go to zero. A
@@ -77,7 +68,12 @@ pub fn gather(
     // menu is a whole `Screen` and `gather` does not run on it; a panel is
     // drawn over a running world, so the world's own input has to stand down
     // while one is open, and this is where that happens.
-    let panel_open = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false);
+    // **The chat composer counts.** Without it, typing "we should build here"
+    // walks you forward, swings twice, eats whatever is in slot 3 and opens
+    // the inventory. A text field is a text field whether it is inside a
+    // panel or floating over the world.
+    let panel_open = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false)
+        || chat.map(|c| c.open()).unwrap_or(false);
 
     // Pointer lock on click — the browser client's contract, which players
     // already know from every other game. **Releasing it on Escape is no
@@ -102,9 +98,9 @@ pub fn gather(
             // `settings`'s header. Invert flips the pitch delta only; a yaw
             // inversion is not a setting any reference offers.
             let rad = MOUSE_RAD_PER_PX * settings.sensitivity;
-            let dy = if settings.invert_look { -d.y } else { d.y };
-            look.yaw += d.x * rad;
-            look.pitch = (look.pitch - dy * rad).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+            look.yaw = crate::look::yaw_after(look.yaw, d.x, rad);
+            look.pitch =
+                crate::look::pitch_after(look.pitch, d.y, rad, settings.invert_look, PITCH_LIMIT);
         }
     }
 
@@ -120,20 +116,24 @@ pub fn gather(
         return;
     }
 
-    let mut mx = 0i32;
-    let mut mz = 0i32;
+    // Physical intent — forward and rightward, as the player means them.
+    // Turning that into the wire's axes is `look::move_axes`, which is where
+    // the sim's left-handed `move_x` is answered for.
+    let mut fwd = 0i32;
+    let mut right = 0i32;
     if keys.pressed(KeyCode::KeyW) {
-        mz += 1;
+        fwd += 1;
     }
     if keys.pressed(KeyCode::KeyS) {
-        mz -= 1;
+        fwd -= 1;
     }
     if keys.pressed(KeyCode::KeyD) {
-        mx += 1;
+        right += 1;
     }
     if keys.pressed(KeyCode::KeyA) {
-        mx -= 1;
+        right -= 1;
     }
+    let (move_x, move_z) = look::move_axes(fwd, right);
 
     let mut buttons = 0u8;
     if keys.pressed(KeyCode::ShiftLeft) {
@@ -170,8 +170,8 @@ pub fn gather(
         buttons,
         yaw_u16(look.yaw),
         pitch_u8(look.pitch),
-        (mx * 127) as i8,
-        (mz * 127) as i8,
+        move_x,
+        move_z,
         sel,
     );
 }
