@@ -68,6 +68,26 @@ pub fn pitch_u8(pitch: f32) -> u8 {
     v.clamp(0.0, 255.0) as u8
 }
 
+/// The compass bearing this client reports, degrees clockwise from north.
+///
+/// **One sample, one fact.** The compass strip and the map both print a
+/// heading, and taking them from two computations is how they come to
+/// disagree by a degree at a boundary — `web/src/main.js` asserts it calls
+/// `yawU16()` exactly once per frame for precisely this reason, and names the
+/// alternative a temporal seam. This is that assertion made structural: there
+/// is one function, both callers use it, and there is nothing to keep in step.
+///
+/// Quantized through the sim's own LUT first, so the number on screen is a
+/// bearing the server can actually face rather than the free-running float
+/// between two of them. North is `+Z` (`DECISIONS.md` §open, compass axes v0),
+/// which is also the direction `ui::map`'s hillshade and row numbering rest on.
+pub fn bearing_deg(yaw: f32) -> f32 {
+    let (fx, fz) = yaw_dir(yaw_u16(yaw));
+    // `atan2(east, north)` — clockwise from north, which is what a compass
+    // card reads. Trig is fine here: this is the client, not `sim-core`.
+    fx.atan2(fz).to_degrees().rem_euclid(360.0)
+}
+
 /// The body's right, in world XZ, for a wire yaw. `r × up = −f`.
 ///
 /// This is the function the whole module exists for: everything else here
@@ -233,6 +253,42 @@ mod tests {
             assert!(
                 d.0 * r0.0 + d.1 * r0.1 > 0.0,
                 "start {start}: the view turned the wrong way"
+            );
+        }
+    }
+
+    /// North is `+Z` and the card runs clockwise: `+X` is east.
+    #[test]
+    fn the_bearing_reads_clockwise_from_north() {
+        assert!(bearing_deg(0.0) < 1.0 || bearing_deg(0.0) > 359.0);
+        assert!((bearing_deg(std::f32::consts::FRAC_PI_2) - 90.0).abs() < 1.5);
+        assert!((bearing_deg(std::f32::consts::PI) - 180.0).abs() < 1.5);
+        assert!((bearing_deg(3.0 * std::f32::consts::FRAC_PI_2) - 270.0).abs() < 1.5);
+    }
+
+    /// It never returns 360, which would print as `360°` beside a card that
+    /// says `N`.
+    #[test]
+    fn the_bearing_wraps_rather_than_reaching_360() {
+        for i in 0..64 {
+            let yaw = -std::f32::consts::TAU + i as f32 * 0.2;
+            let d = bearing_deg(yaw);
+            assert!((0.0..360.0).contains(&d), "yaw {yaw} gave {d}");
+        }
+    }
+
+    /// The bearing is quantized, so it names a heading the SERVER can face —
+    /// the same discipline `yaw_u16` exists for. Two yaws inside one LUT step
+    /// must report the same number.
+    #[test]
+    fn the_bearing_is_quantized_like_the_wire() {
+        let step = std::f32::consts::TAU / 256.0;
+        for i in 0..16 {
+            let base = i as f32 * step;
+            assert_eq!(
+                bearing_deg(base + step * 0.1),
+                bearing_deg(base + step * 0.4),
+                "two yaws inside one LUT step disagreed",
             );
         }
     }

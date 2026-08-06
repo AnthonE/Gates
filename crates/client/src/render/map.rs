@@ -17,7 +17,6 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
-use crate::look::yaw_u16;
 use crate::ui::map::{self, GRID_COLS, GRID_LETTERS};
 
 use super::menu::Screen;
@@ -238,11 +237,8 @@ pub fn forget(mut island: ResMut<Island>) {
     *island = Island::default();
 }
 
-/// The heading, in the compass's own words.
+/// The heading, from the same function the compass strip reads — the map and
+/// the HUD cannot disagree about which way the player is looking.
 fn bearing_text(yaw: f32) -> String {
-    // Quantized like every other bearing this client reports, so the map and
-    // the compass strip cannot disagree by a degree at the boundary.
-    let (fx, fz) = sim_core::yaw_dir(yaw_u16(yaw));
-    let deg = fx.atan2(fz).to_degrees().rem_euclid(360.0);
-    format!("facing {deg:03.0}°")
+    format!("facing {:03.0}°", crate::look::bearing_deg(yaw))
 }

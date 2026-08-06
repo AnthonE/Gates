@@ -513,13 +513,12 @@ pub fn prompt(
 
 /// The eight-point bearing plus degrees, e.g. `NE  045°`.
 ///
-/// Yaw 0 faces +Z and increases toward +X (`yaw_lut.rs`), and +Z is NORTH by
-/// the map's convention (`web/src/map.js` paints 1–16 north to south down
-/// increasing z). So a compass degree is the yaw in degrees, and the letters
-/// walk the same way round.
+/// The number comes from [`crate::look::bearing_deg`] rather than from the
+/// free-running yaw, so this and the map's heading are one fact drawn twice
+/// and not two samples a frame apart.
 fn compass_strip(yaw: f32) -> String {
     const POINTS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-    let deg = yaw.to_degrees().rem_euclid(360.0);
+    let deg = crate::look::bearing_deg(yaw);
     let idx = (((deg / 45.0) + 0.5) as usize) % 8;
     format!("{}   {:03.0}°", POINTS[idx], deg)
 }
