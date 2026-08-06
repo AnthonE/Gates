@@ -985,3 +985,103 @@ fn the_swing_reads_the_sims_own_bounds() {
     assert_eq!(POINT_BLANK_M2, 0.04);
     assert_eq!(CELL_SIZE, 8.0);
 }
+
+// ---------------------------------------------------------------------------
+// The weak spot. These mirror `gather::swing`'s sector test; if the sim moves
+// `WEAK_COS`, the LUT, or the point-blank exemption, these go red rather than
+// the HUD quietly promising a bonus the server refuses.
+
+use client::ui::interact::{in_weak_sector, mark_is_for};
+use sim_core::gather::{cell_key, weak_mark8, NO_CELL, POINT_BLANK_M2 as PB, WEAK_COS};
+use sim_core::yaw_dir;
+
+/// Standing exactly on the announced bearing is inside; the opposite side is
+/// out. The offset is node->player, so mark 0 (north) means stand north.
+#[test]
+fn the_weak_sector_is_the_sims_own() {
+    for mark8 in [0u8, 32, 64, 96, 128, 160, 192, 224] {
+        let (wx, wz) = yaw_dir((mark8 as u16) << 8);
+        // Two metres out along the mark's own bearing.
+        assert!(
+            in_weak_sector(wx * 2.0, wz * 2.0, 0.0, 0.0, mark8),
+            "mark {mark8}: standing on the bearing must be inside"
+        );
+        // And directly opposite.
+        assert!(
+            !in_weak_sector(-wx * 2.0, -wz * 2.0, 0.0, 0.0, mark8),
+            "mark {mark8}: the far side must be outside"
+        );
+    }
+}
+
+/// The half-angle is `WEAK_COS`, not a number of our own. Just inside passes
+/// and just outside fails, both measured against the sim's constant.
+#[test]
+fn the_sector_half_angle_is_weak_cos() {
+    let mark8 = 0u8;
+    let (wx, wz) = yaw_dir(0);
+    let r = 3.0f32;
+    let half = WEAK_COS.acos();
+    for (delta, want) in [(half * 0.9, true), (half * 1.1, false)] {
+        // Rotate the stand point by `delta` about the node.
+        let (s, c) = (delta.sin(), delta.cos());
+        let (px, pz) = ((wx * c - wz * s) * r, (wx * s + wz * c) * r);
+        assert_eq!(
+            in_weak_sector(px, pz, 0.0, 0.0, mark8),
+            want,
+            "at {delta} rad from the bearing (half-angle {half}) expected {want}"
+        );
+    }
+}
+
+/// Point blank has no bearing to judge and the sim never bonuses it, so the
+/// cue must not light up there either — a prompt promising a bonus the server
+/// refuses is worse than no prompt.
+#[test]
+fn point_blank_never_promises_a_bonus() {
+    let inside = PB.sqrt() * 0.5;
+    for mark8 in [0u8, 64, 128, 192] {
+        assert!(
+            !in_weak_sector(inside, 0.0, 0.0, 0.0, mark8),
+            "mark {mark8}: point blank must never read as a weak spot"
+        );
+    }
+}
+
+/// The mark belongs to one node. A mark for another cell, or no chase at all,
+/// must not decorate the prompt for the thing actually aimed at.
+#[test]
+fn the_mark_belongs_to_one_node() {
+    let pick = SwingPick {
+        occupant: 1,
+        cx: 40,
+        cz: 90,
+        d2: 1.0,
+    };
+    assert!(
+        mark_is_for(cell_key(40, 90), &pick),
+        "its own cell must match"
+    );
+    assert!(
+        !mark_is_for(cell_key(41, 90), &pick),
+        "a neighbour must not"
+    );
+    assert!(!mark_is_for(NO_CELL, &pick), "no chase must not");
+    // And a whiff is never decorated, whatever the mark says.
+    let whiff = SwingPick::default();
+    assert!(!mark_is_for(cell_key(0, 0), &whiff));
+}
+
+/// The mark the server announces is a function of the chase, so it moves as
+/// hits land — a player who found it once cannot stand still and farm it.
+#[test]
+fn the_mark_moves_with_the_chase() {
+    let (seed, cx, cz, pid) = (11u64, 40u16, 90u16, 7u32);
+    let marks: Vec<u8> = (1..=8u16)
+        .map(|n| weak_mark8(seed, cx, cz, pid, n))
+        .collect();
+    assert!(
+        marks.iter().collect::<std::collections::HashSet<_>>().len() > 1,
+        "the weak mark never moved across 8 hits: {marks:?}"
+    );
+}

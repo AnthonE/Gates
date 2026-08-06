@@ -514,6 +514,7 @@ pub fn feedback(
 pub fn prompt(
     aimed: Res<Aimed>,
     swung: Res<super::verbs::Swung>,
+    in_weak: Res<super::verbs::InWeak>,
     look: Res<super::input::Look>,
     mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
     mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
@@ -527,7 +528,7 @@ pub fn prompt(
         // acts on it.
         let want = match aimed.0.prompt() {
             s if !s.is_empty() => s,
-            _ => swing_prompt(swung.0.occupant),
+            _ => swing_prompt_weak(swung.0.occupant, in_weak.0),
         };
         if text.0 != want {
             text.0 = want;
@@ -539,6 +540,24 @@ pub fn prompt(
             text.0 = want;
         }
     }
+}
+
+/// The swing prompt, plus the weak-spot cue when the player is standing in
+/// the sector the server announced for this node.
+///
+/// **The cue is the whole teaching surface for the mechanic.** The bonus has
+/// been in the sim since gather v0 and the mark has been on the wire and
+/// decoded for as long, with nothing drawing it — so a player could only
+/// discover it by noticing that some swings paid more, which is not
+/// discoverable at all. The suffix is deliberately on the same line as the
+/// verb rather than a second element: it is a property of the swing you are
+/// about to take, not a separate thing happening.
+fn swing_prompt_weak(occupant: u8, in_weak: bool) -> String {
+    let base = swing_prompt(occupant);
+    if base.is_empty() || !in_weak {
+        return base;
+    }
+    format!("{base}  ·  WEAK SPOT")
 }
 
 /// One kill-feed line for a `(victim, killer)` pair.

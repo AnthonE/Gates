@@ -48,6 +48,12 @@ pub struct Aimed(pub Pick);
 #[derive(Resource, Default)]
 pub struct Swung(pub SwingPick);
 
+/// Whether the player stands in the announced weak sector of the node the
+/// crosshair is on. Resolved beside the pick because it is the same frame's
+/// answer to the same question — where you are standing, and what that buys.
+#[derive(Resource, Default)]
+pub struct InWeak(pub bool);
+
 /// The nearest structure, either store. Its own resource beside [`Aimed`]
 /// because `L`, `U`, `R` and the raid verb address a structure and `E` does
 /// not — see `ui::structure`'s header for why they cannot share a metric.
@@ -70,6 +76,7 @@ pub fn resolve(
     mut aimed: ResMut<Aimed>,
     mut near: ResMut<Near>,
     mut swung: ResMut<Swung>,
+    mut in_weak: ResMut<InWeak>,
     world: Option<Res<crate::render::WorldId>>,
 ) {
     let core = &net.session.core;
@@ -96,6 +103,22 @@ pub fn resolve(
             },
         ),
         None => SwingPick::default(),
+    };
+    // The weak sector, but only for the node actually aimed at: the chase is
+    // per-node and the server restarts it when the player switches targets,
+    // so a mark for the tree behind you says nothing about this one.
+    in_weak.0 = match world.as_deref() {
+        Some(w) if interact::mark_is_for(core.mark_cell, &swung.0) => {
+            let s = sim_core::terrain::scatter(
+                w.seed,
+                &w.table,
+                &w.haven,
+                swung.0.cx as i32,
+                swung.0.cz as i32,
+            );
+            interact::in_weak_sector(x, z, s.x, s.z, core.mark8)
+        }
+        _ => false,
     };
     near.0 = structure::nearest(
         (x, z),

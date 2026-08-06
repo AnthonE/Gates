@@ -676,3 +676,54 @@ pub fn resolve_swing(at: SwingAim, island: Island<'_>) -> SwingPick {
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// The weak spot.
+//
+// `EV_WEAK_MARK` has been decoded into `ClientCore::{mark_cell, mark8,
+// mark_weak_hit}` for a long time and read by nothing, so the one mechanic in
+// this game that rewards *where you stand* was invisible: the server was
+// announcing a bearing every hit and the player had no way to learn it existed
+// (`NOW.md` §0x item 6 — the reference's own `OnDispenserBonus`).
+//
+// **This mirrors `gather::swing`'s sector test and does not restate it.**
+// `WEAK_COS` is imported, the bearing goes through the same 256-entry yaw LUT
+// the sim uses, and the point-blank exemption is the sim's own — a hit inside
+// `POINT_BLANK_M2` has no bearing to judge, so it never bonuses and the HUD
+// must not promise that it will. The client cannot *decide* a weak hit (the
+// server does, and says so in `mark_weak_hit`); what it can do is tell the
+// player whether they are standing where the next one would land, which is
+// the whole skill.
+
+use sim_core::gather::{cell_key, NO_CELL, WEAK_COS};
+use sim_core::yaw_dir;
+
+/// Whether the player at `(px, pz)` stands in the announced weak sector of
+/// the node at `(nx, nz)`.
+///
+/// `mark8` is the sector's heading over the sim's 256-entry LUT. The offset
+/// is node→player, matching `gather::swing`'s `ox`/`oz`, so a mark of 0
+/// (north) means *stand north of the node*.
+pub fn in_weak_sector(px: f32, pz: f32, nx: f32, nz: f32, mark8: u8) -> bool {
+    let ox = px - nx;
+    let oz = pz - nz;
+    let d2 = ox * ox + oz * oz;
+    // Point blank has no bearing to judge. The sim exempts it, so this must
+    // too — a prompt that lit up while standing inside the trunk would
+    // promise a bonus the server refuses.
+    if d2 <= POINT_BLANK_M2 {
+        return false;
+    }
+    let (wx, wz) = yaw_dir((mark8 as u16) << 8);
+    ox * wx + oz * wz > WEAK_COS * d2.sqrt()
+}
+
+/// Whether the announced mark belongs to the cell this swing would hit.
+///
+/// The chase is per-node and the server restarts it when the player switches
+/// targets, so a mark for the tree behind you says nothing about the one in
+/// front. `NO_CELL` is "no chase in progress" and is the state between the
+/// first swing at a fresh node and the hit that announces its mark.
+pub fn mark_is_for(mark_cell: u32, pick: &SwingPick) -> bool {
+    mark_cell != NO_CELL && pick.occupant != 0 && mark_cell == cell_key(pick.cx, pick.cz)
+}
