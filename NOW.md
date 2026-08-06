@@ -794,6 +794,31 @@ check, so bits 4–7 round-trip as meaningless buttons. That is §5b's forgery
 slack, not drift, and belongs with §5b's pass.
 
 
+## 5d · The agent player has a spec and no code *(systems lane)*
+
+`PLAYERS.md` landed 2026-08-05 — the verb set, the observation encoder, and
+four walls with their gates. Nothing under it is built. `sim-core/bots.rs`
+already drives deterministic synthetic input, so the missing piece is the
+intent layer above it, not a new client.
+
+Smallest useful slice, and it is not the API: **log the condition.** Every
+trust-bearing verb (door, TC authorize, container access, give) gains an
+event carrying whether the counterparty was online, landing inside
+`tests/event_roles.rs` with two causes per code in the same commit (§4's
+discipline). That field is the whole measurement `SUBSTRATE.md` §3 turns on,
+it is ordinary game state a human client already sees, and retrofitting it
+makes every shard-hour logged before it worthless. It is also independently
+useful: offline-raid telemetry is a thing the game wants anyway.
+
+Then the verb table, then an agent client that plays badly. Wall 1 (agent
+verbs ⊆ human verbs) wants its gate in the same commit as the table, not
+after — it is a subset assertion over two lists and cheap while both are
+small.
+
+Not this lane's call: what an agent pays to enter and what it earns
+(`ALPHA.md` + scry side).
+
+
 ## 8 · UN-RECONCILED: the remote trunk's NOW.md, as the union merge left it
 
 `ef18529` merged `origin/main` (PR #10 and two doc commits). `NOW.md` is
