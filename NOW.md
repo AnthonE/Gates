@@ -360,16 +360,29 @@ Two slices have landed and both are on `main`:
 those and writes transforms. Gameplay state in a Bevy component would
 retire the determinism walls with nothing in CI to notice.
 
-Next slices, roughly in order:
+**The visual plan is `RENDER.md`**, and **R0–R6 plus R8 have landed**: input,
+the capture harness, the terrain mesh, the light rig under one owner, the
+scatter and clutter population *and its prop skirts*, the CC0 photograph on
+the ground, SSAO + SMAA + bloom, a procedural cloud deck, the HUD and the
+viewmodel.
 
-1. **Input** — keyboard/mouse into `ClientCore::set_input`. Every verb
-   exists server-side; nothing native can press one yet.
-2. **Terrain** — mesh `sim_core::terrain`. It is a pure function of the
-   seed and both sides already agree on it, so this is meshing, not
-   design. `web/src/terrain.js` is the reference for *what* to draw.
-3. **A native visual gate** — item 2 below. The pivot's real debt.
-4. **HUD, inventory, container panel** against the wire that already
-   carries them (v19 `ACT_CONTAINER` / `SUB_CONT_SYNC`).
+Measured both sides through one estimator (`ci/native_bar.py`, medians over
+six vantages against the six outdoor-daylight reference frames): p50 **90.2**
+vs 91.4 · near **79.8** vs 80.5 · saturation **32.9%** vs 33.2% · p90 **155.7**
+vs 170.2 — and near-ground neighbour contrast **0.26 → 6.25** against the
+reference's 5.40, with chroma-per-luma 0.163 against 0.252 confirming that is
+texture and not aliasing. `ART.md` §3's row that six browser passes never
+moved is past the bar.
+
+What remains, ranked by the measurement — `RENDER.md` §8 carries the list:
+
+1. **The gate asserts.** The harness captures and the bar measures; neither
+   FAILS yet, and nothing in `ci/gates.sh` runs either. Still the pivot's debt.
+2. **p10 58.6 vs 41.0** — a uniform ambient buys rule 3's floor at the price of
+   the darks. A hemisphere fill gets both.
+3. **Cloud form** — the deck reads as stratus where `ART.md` asks for cumulus.
+4. **The four-way splat material** — one map serves all four ground identities
+   today (`StandardMaterial` has one base-colour slot).
 
 Retired by this pivot rather than finished: `MIGRATION.md` (three.js →
 `WebGPURenderer` + TSL) is **moot** — you do not port three.js *and*
@@ -433,11 +446,23 @@ lavapipe software rasterizer, no GPU needed. The session stayed healthy
 throughout: `in ok/bad/drop 729/0/0`, `snap sent 434`, `leaves 0`.
 
 So a native visual gate is **buildable here now**, and it is the next
-gate to write. Two notes for whoever writes it: lavapipe is a CPU
-rasterizer, so budget on frame COUNT and pixel assertions, never on frame
-time (`CLAUDE.md`: a gate that waits on a clock is not a gate on this
-box); and one live renderer at a time, since two was the browser tier's
-whole problem.
+gate to write. **Its design is `RENDER.md` §5** — the capture protocol, the
+vantage list, and the assertion order (structural claims before any
+statistic, because a beige smear passed all 36 of `vantages`' checks). Two
+notes still: lavapipe is a CPU rasterizer, so budget on frame COUNT, never
+on frame time; and one live renderer at a time. Prefer Bevy's off-screen
+readback to the `xwd` above — the recipe proves the box can see, but `xwd`
+is absent on some boxes and a gate should not need a window server.
+
+**The nearly-free half is done: the render feature compiles under a lint
+gate now.** `cargo clippy -p client --features render --all-targets -D
+warnings` is green, and it caught three findings on its first run. Before it,
+`render` was off by default and `[[bin]] gates` is `required-features =
+["render"]`, so cargo skipped the file — reproduced on a throwaway crate, the
+skipped bin held `this is not rust at all !!!` and `cargo clippy --all-targets
+-- -D warnings` exited 0. **It is not in `ci/gates.sh` yet**; the native
+renderer tier that runs it, `gates --capture` and `ci/native_bar.py` is what
+this item now is.
 
 **What the first frame showed, unfixed:** the body draws and is lit, and
 there is no ground under it. The reference plane is at `y = 0` while the

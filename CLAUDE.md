@@ -42,6 +42,7 @@ pays the same doors and earns the same coins as a human.
 | `ART.md` | the art bible: measured targets off `Rust Images/`, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
 | `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
+| `RENDER.md` | the **native** client's render path: the Bevy-draws-not-decides boundary, the slice order, the native visual gate, the budgets | **replaces `MIGRATION.md`**; owns the path, never the bar — `ART.md` outranks it everywhere |
 | `MIGRATION.md` | the renderer move to `WebGPURenderer` + TSL | **SUPERSEDED 2026-08-05** — the client pivot to native Rust moots it; you do not port three.js *and* replace it. Kept for its probe/readback inventory, which the native visual gate still has to answer |
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
 | `NOW.md` | what next | **the only list that answers that** |

@@ -191,9 +191,35 @@ pub async fn run_bot(
 /// QUIC connections. Dev-only certificate trust (`with_no_cert_validation`)
 /// — bots are a load tool for shards we run, never a browser substitute.
 pub fn bot_endpoint() -> Result<Endpoint<Client>, String> {
-    let config = wtransport::ClientConfig::builder()
-        .with_bind_default()
-        .with_no_cert_validation()
-        .build();
-    Endpoint::client(config).map_err(|e| format!("client endpoint: {e}"))
+    // **Bind IPv4 first, and fall back to the dual-stack default.**
+    // `with_bind_default()` is `INADDR_ANY` dual-stack, and on a container
+    // with no IPv6 it fails outright — `Address family not supported by
+    // protocol (os error 97)`. `CLAUDE.md`'s trap list records that exact
+    // failure taking all four `bot_smoke` tests down on a CLEAN tree and
+    // names it correctly: a missing capability, not a defect in the diff.
+    //
+    // What that entry could not say, because no fix was known, is that the
+    // capability is not actually needed. Every shard this fleet loads is
+    // reachable over v4 — `shard.toml` binds `127.0.0.1:4433` and so does
+    // every gate — so asking for v4 makes the wall RUN instead of skipping
+    // it, which is the same resolution `CLAUDE.md` prescribes for the
+    // `wasm32-unknown-unknown` case. The dual-stack path is kept for a v6
+    // shard, and both failures are reported if neither binds.
+    //
+    // `client::client_endpoint` carries the identical fix for the identical
+    // reason; the native client hit it first, because a client that cannot
+    // bind cannot draw.
+    let build = |ip: wtransport::config::IpBindConfig| {
+        Endpoint::client(
+            wtransport::ClientConfig::builder()
+                .with_bind_config(ip)
+                .with_no_cert_validation()
+                .build(),
+        )
+    };
+    match build(wtransport::config::IpBindConfig::InAddrAnyV4) {
+        Ok(e) => Ok(e),
+        Err(v4) => build(wtransport::config::IpBindConfig::InAddrAnyDual)
+            .map_err(|dual| format!("client endpoint: v4 {v4}; dual-stack {dual}")),
+    }
 }
