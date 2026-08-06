@@ -30,6 +30,7 @@ pub mod sky;
 pub mod terrain_mesh;
 pub mod textures;
 pub mod tree;
+pub mod ui;
 
 pub use menu::{Menu, Rt, Screen};
 
@@ -214,6 +215,16 @@ impl Plugin for GatesRenderPlugin {
                 .chain()
                 .run_if(in_state(Screen::InWorld)),
         );
+
+        // ---- the menus -----------------------------------------------
+        // **Not on a capture run**, and that is a rule rather than a
+        // convenience: a probe harness that could open a panel is a visual
+        // gate whose frames depend on which key was last pressed. The cost
+        // is that nothing photographs these panels — the same missing menu
+        // vantage `NOW.md` §0v already names, now owed twice.
+        if self.capture.is_none() {
+            ui::register(app);
+        }
 
         if let Some(dir) = &self.capture {
             let _ = std::fs::create_dir_all(dir);

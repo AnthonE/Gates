@@ -30,6 +30,13 @@ pub struct Cell(usize);
 #[derive(Component)]
 pub struct Vitals;
 
+/// What the build wheel last chose. Drawn beside the hotbar because a
+/// selection nothing shows is a selection the player cannot trust — the
+/// wheel latches a piece and does not place one yet (`render/ui/wheel.rs`),
+/// so this line is the whole of its visible effect.
+#[derive(Component)]
+pub struct Plan;
+
 pub fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -82,6 +89,25 @@ pub fn setup(
         TextColor(Color::srgba(0.93, 0.91, 0.86, 0.92)),
     ));
 
+    // The build plan, bottom left. Only ever text: the piece it names is a
+    // client-side latch, not sim state.
+    commands.spawn((
+        Plan,
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(20.0),
+            left: Val::Px(22.0),
+            ..default()
+        },
+        Text::new(""),
+        TextFont {
+            font_size: 14.0,
+            ..default()
+        },
+        TextColor(Color::srgba(0.86, 0.83, 0.76, 0.80)),
+        Pickable::IGNORE,
+    ));
+
     // The viewmodel: a held item, lower right, parented to the camera so it
     // rides the view. Not an animation and not a weapon yet — the point of
     // §8's bullet is that the frame contains evidence a person is playing.
@@ -125,12 +151,36 @@ pub fn setup(
 
 /// Redraw from the core. Cheap enough per frame: six background colours and
 /// one string.
+#[allow(clippy::type_complexity)]
 pub fn update(
     net: NonSend<Net>,
     mut cells: Query<(&Cell, &mut BorderColor, &mut BackgroundColor)>,
-    mut vitals: Query<&mut Text, With<Vitals>>,
+    mut vitals: Query<&mut Text, (With<Vitals>, Without<Plan>)>,
+    mut plan: Query<&mut Text, (With<Plan>, Without<Vitals>)>,
+    // `Option`, because a capture run does not register the menus at all.
+    ui: Option<Res<super::ui::Ui>>,
 ) {
     let core = &net.session.core;
+
+    if let (Ok(mut text), Some(ui)) = (plan.single_mut(), ui.as_ref()) {
+        use crate::ui::build::{material_label, row_for, shape_label, MATERIALS, SHAPES};
+        let shape = SHAPES[ui.shape.min(SHAPES.len() - 1)];
+        let material = MATERIALS[ui.material.min(MATERIALS.len() - 1)];
+        // Named only when the content actually has that piece — the wheel
+        // draws a dead segment for a pair the shard did not bake, and the
+        // HUD must not contradict it.
+        let out = match row_for(&core.piece_defs, shape, material) {
+            Some(_) => format!(
+                "BUILD  {} {}   (hold B)",
+                material_label(material),
+                shape_label(shape)
+            ),
+            None => "BUILD  -   (hold B)".to_string(),
+        };
+        if text.0 != out {
+            text.0 = out;
+        }
+    }
 
     for (cell, mut border, mut bg) in cells.iter_mut() {
         let selected = cell.0 == net.sel as usize;

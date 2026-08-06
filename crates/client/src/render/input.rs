@@ -57,23 +57,46 @@ pub fn gather(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
+    // `Option`, because a capture run does not register the menus at all —
+    // and a probe harness that could open one is a gate whose frames depend
+    // on a keystroke (`render/ui/mod.rs`).
+    ui: Option<Res<super::ui::Ui>>,
 ) {
+    // A panel owns the pointer while it is up: the cursor comes back, the
+    // view stops turning, and the movement axes go to zero. A player
+    // dragging an item across a container is not also walking into a wall —
+    // and the alternative, sending the keys anyway, means every letter typed
+    // into the search box is also a step.
+    let menu_open = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false);
+
     // Pointer lock on click, released on Escape — the browser client's
     // contract, which players already know from every other game.
     if let Ok(mut c) = cursor.single_mut() {
-        if mouse.just_pressed(MouseButton::Left) {
+        if mouse.just_pressed(MouseButton::Left) && !menu_open {
             c.grab_mode = CursorGrabMode::Locked;
             c.visible = false;
         }
-        if keys.just_pressed(KeyCode::Escape) {
+        if keys.just_pressed(KeyCode::Escape) || menu_open {
             c.grab_mode = CursorGrabMode::None;
             c.visible = true;
         }
-        if !look.frozen && c.grab_mode == CursorGrabMode::Locked {
+        if !look.frozen && !menu_open && c.grab_mode == CursorGrabMode::Locked {
             let d = motion.delta;
             look.yaw += d.x * MOUSE_RAD_PER_PX;
             look.pitch = (look.pitch - d.y * MOUSE_RAD_PER_PX).clamp(-PITCH_LIMIT, PITCH_LIMIT);
         }
+    }
+
+    if menu_open {
+        // The input frame still goes out — the sim needs one every tick and
+        // a client that stopped sending would be a client standing still for
+        // a different reason. It goes out EMPTY of movement and buttons,
+        // with the view angles unchanged, which is exactly "standing here".
+        let sel = net.sel;
+        net.session
+            .core
+            .set_input(0, yaw_u16(look.yaw), pitch_u8(look.pitch), 0, 0, sel);
+        return;
     }
 
     let mut mx = 0i32;

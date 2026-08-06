@@ -20,6 +20,36 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0w · The native menus landed — the four things they cannot do *(client lane)*
+
+Landed 2026-08-06: `Tab` opens inventory + crafting, `B` holds the radial build
+wheel, and drag/drop moves items. The arithmetic is `crates/client/src/ui/`
+(pure, headless) and `render/ui/` only draws it — 23 assertions in
+`crates/client/tests/ui.rs` run in the **code** tier. Verified against a live
+shard under Xvfb + lavapipe: rail counts, filter, search box, detail pane with
+the AMOUNT/ITEM TYPE/TOTAL/HAVE table, stepper, and the wheel's two rings.
+
+Remaining, in order:
+
+1. **No build ghost, so the wheel latches and never places.** Nothing draws
+   the cell being aimed at or colours it by whether the sim would accept it,
+   and `encode_action_place` needs a cell, a level and a location this client
+   cannot aim. `web/src/interact.js` is the reference for the aiming.
+2. **The rail is not the reference's, and one wire field would fix it.**
+   `EventMsg::Catalog` ships display names only, so a category rail by item
+   class is not computable client-side. A class byte per item, a `PROTO_VER`
+   bump and regenerated goldens in the same commit (wall 6) buys the frame's
+   real rail. Today's buckets are honest but they are not that.
+3. **No gate photographs any of it.** The menus are deliberately not
+   registered on a `--capture` run — a probe harness that could open a panel
+   is a gate whose frames depend on a keystroke — so this owes the same menu
+   vantage §0v item 3 already names, now for three screens.
+4. **The drag is gated as arithmetic, not as a gesture.** A fresh shard gives
+   a player nothing to drag, and blind swinging under Xvfb did not land a
+   gather node, so press → ghost → release → send is verified by inspection
+   only. A dev kit (or a shard fixture with a stocked inventory) is what
+   would close it.
+
 ## 0v · The server menu landed — what it still cannot show *(client lane)*
 
 Landed (operator, 2026-08-06 — `DECISIONS.md`): the native client opens on a
