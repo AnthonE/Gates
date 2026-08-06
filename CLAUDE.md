@@ -245,18 +245,32 @@ n`) and never on elapsed milliseconds — the failure that started it reported
 `inWorld=true` and timed out anyway. Widening a timeout is not a fix; it is the
 same bug with a longer fuse.
 
-**A container that has never built `--features render` is missing four things,
-and each one dies as a `pkg-config` panic 40 lines into a build script.**
-Found 2026-08-06 on a fresh clone, in this order, one per rebuild:
-`libwayland-dev` (bevy's defaults include `wayland` as well as `x11`),
-`libasound2-dev` (`bevy_audio` → cpal → `alsa-sys`), `libudev-dev`
-(`bevy_gilrs`), and `rustup target add wasm32-unknown-unknown`. All four are
-the same class as the wasm target below — a wall that cannot run is not a wall,
-so install them rather than trimming the feature. Two notes that cost time
-here: `apt-get install` may 404 on a stale index and needs `apt-get update`
-first; and **`cargo … | tail` reports `tail`'s exit code, not cargo's**, so a
-backgrounded gate piped to `tail` reports success while the build is red —
-use `${PIPESTATUS[0]}`.
+**A container that has never run the native client is missing seven things,
+and every one of them looks like a defect until you read the message.**
+Found 2026-08-06 on a fresh clone, each one costing a rebuild. To BUILD
+`--features render`: `libwayland-dev` (bevy's defaults include `wayland` as
+well as `x11`), `libasound2-dev` (`bevy_audio` → cpal → `alsa-sys`),
+`libudev-dev` (`bevy_gilrs`) — each dies as a `pkg-config` panic 40 lines into
+a build script. To RUN a `--capture` probe: `libxkbcommon-x11-0` (winit
+panics in `EventLoop::new`), `mesa-vulkan-drivers` + `libvulkan1`, and
+`Xvfb`. Plus `rustup target add wasm32-unknown-unknown` for the wasm gates.
+All of them are the same class — a wall that cannot run is not a wall, so
+install them rather than trimming the feature.
+
+Four things that cost time and are not obvious:
+
+- `apt-get install` may 404 on a stale index; `apt-get update` first.
+- **`cargo … | tail` reports `tail`'s exit code, not cargo's.** A backgrounded
+  gate piped to `tail` reports success while the build is red — `${PIPESTATUS[0]}`.
+- The lavapipe ICD is `/usr/share/vulkan/icd.d/**`lvp_icd.json`**, not
+  `lvp_icd.x86_64.json`. Point `VK_DRIVER_FILES` at a path that does not exist
+  and the loader says only *"Unable to find a GPU"* — the filename is in
+  `VK_LOADER_DEBUG=error,warn` and nowhere else. Working invocation:
+  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json DISPLAY=:N
+  WGPU_BACKEND=vulkan target/release/gates --server … --capture <dir>`.
+- **With no sound card, `bevy_audio` logs "No audio device found" and every
+  voice is a silent no-op.** That is the correct behaviour and the capture
+  probe confirms it: the client must not require an audio device to render.
 
 **Not every red gate is a defect — but check whether the missing capability is
 one WE asked for.** `bot_smoke` used to fail all four tests on a container

@@ -107,18 +107,37 @@ pub struct Voice;
 #[derive(Component)]
 pub struct Bed;
 
-/// Build the bank. Runs at `Startup`, beside `textures::load`, and for the
-/// same reason: it is wanted whichever screen comes first, and generating it
-/// while a player reads the server list is free time.
-pub fn load(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
+/// Build the bank, at plugin-build time rather than in a schedule.
+///
+/// **`Startup` is too late, and finding out cost a capture run.** Bevy
+/// schedules the first state transition with
+/// `insert_startup_before(PreStartup, StateTransition)` — so on a start that
+/// opens directly on `Screen::Loading` (which is every `--capture` and every
+/// `--server` launch) **`OnEnter(Loading)` runs BEFORE `Startup`**. The bank
+/// was a `Startup` system and [`setup`] takes `Res<Bank>`; the first probe run
+/// after the audio slice died on *"Parameter failed validation: Resource does
+/// not exist"* with the system name compiled out.
+///
+/// Building it here removes the ordering question rather than answering it:
+/// the resource exists before any schedule runs at all. The cost is the same
+/// ~1.5 MB of arithmetic, paid a few milliseconds earlier.
+///
+/// The hazard is general and this file is not the only place it can bite —
+/// anything hung on `OnEnter(Loading)` that reads a `Startup`-inserted
+/// resource has the same bug. `textures::load` is a `Startup` system today and
+/// gets away with it only because nothing reads `Textures` until `Update`.
+pub fn build_bank(app: &mut App) {
     let wavs = synth::bank();
-    let handles = wavs.map(|bytes| {
-        sources.add(AudioSource {
-            bytes: bytes.into(),
+    let handles = {
+        let mut sources = app.world_mut().resource_mut::<Assets<AudioSource>>();
+        wavs.map(|bytes| {
+            sources.add(AudioSource {
+                bytes: bytes.into(),
+            })
         })
-    });
-    commands.insert_resource(Bank { handles });
-    commands.insert_resource(DefaultSpatialScale(SpatialScale::new(SPATIAL_SCALE)));
+    };
+    app.insert_resource(Bank { handles });
+    app.insert_resource(DefaultSpatialScale(SpatialScale::new(SPATIAL_SCALE)));
     debug_assert!(clamp_holds(), "audio: SPATIAL_SCALE lets rodio attenuate");
 }
 

@@ -51,15 +51,22 @@ Remaining, in order:
    integer codes, transitions only at section boundaries. Every input exists.
    What does not exist is music — a generated bank makes tones, not themes.
    That is a **content** blocker, not an engineering one.
-3. **`pop_hit`/`pop_death`/`pop_toast` are destructive and audio is their only
+3. **Both halves of R-G0 were run by hand and are green**, which is the same
+   hole §0v item 3 names: `ci/gates.sh` still never builds `--features render`.
+   `clippy -p client --features render --all-targets -D warnings` is clean and
+   a `--capture` run against a live shard wrote all six vantages with **zero
+   panics** — which is the only thing that proves the audio systems run at all.
+   It also caught the one runtime defect in this slice: `OnEnter(Loading)` runs
+   *before* `Startup`, so the bank could not be a `Startup` system.
+4. **`pop_hit`/`pop_death`/`pop_toast` are destructive and audio is their only
    reader.** When the HUD grows a hitmarker the two will silently split the
    events between them. The fix is one drain writing a per-frame resource both
    read, and it is owed before the second reader, not after.
-4. **Remote players are silent.** Only the local body has an odometer, so
+5. **Remote players are silent.** Only the local body has an odometer, so
    another player's footsteps — the sound that decides fights — do not exist.
    `bodies.rs` has their interpolated transforms; a `Steps` per remote body
    and a positional step cue is the slice.
-5. **No occlusion, and it needs a prerequisite rather than a pass.** A wall
+6. **No occlusion, and it needs a prerequisite rather than a pass.** A wall
    between you and a sound needs a geometry query, and the correct one is the
    sim's (`collide.rs`), not a raycast against render meshes.
 

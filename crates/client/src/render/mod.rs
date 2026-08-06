@@ -267,10 +267,16 @@ impl Plugin for GatesRenderPlugin {
         // Textures load at Startup rather than on entering the world: they
         // are wanted whichever screen comes first, and warming them while a
         // player reads the menu is free time the old shape did not have.
-        // Same reasoning for the sound bank, which is generated rather than
-        // loaded (`sound/synth.rs`): ~1 MB of arithmetic, wanted whichever
-        // screen comes first, and free while a player reads the menu.
-        app.add_systems(Startup, (textures::load, audio::load));
+        app.add_systems(Startup, textures::load);
+        // The sound bank is generated rather than loaded (`sound/synth.rs`)
+        // and is built HERE, not at `Startup`. **`OnEnter(Screen::Loading)`
+        // runs before `Startup`** on a connected start — Bevy schedules the
+        // first state transition with `insert_startup_before(PreStartup, …)` —
+        // so a `Startup` system cannot supply a resource that an `OnEnter`
+        // system reads, and `audio::setup` reads the bank. See
+        // `audio::build_bank`; the first capture run after the audio slice
+        // died on exactly this.
+        audio::build_bank(app);
 
         // ---- the menu ------------------------------------------------
         // `world_teardown` first: entering the menu from a live world is the
