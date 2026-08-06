@@ -152,6 +152,14 @@ $NICE node ci/knob_registry.mjs || fail "knob registry"
 echo "== gate: haven prize (the destination outpays the route, in content)"
 $NICE node ci/haven_prize.mjs || fail "haven prize"
 
+# The depot document, not the build. A depot with a bad path, a launch.exec
+# that is not a staged file, or a placeholder the launcher does not fill
+# produces a game that installs perfectly and never starts — on a player's
+# machine, which is the only place it would be noticed. No compiler needed:
+# it stages fakes and asserts the rules in about a second.
+echo "== gate: depot packaging (the scry launcher's seam, docs/LAUNCHER.md §3)"
+$NICE python3 ci/depot.py --self-test || fail "depot packaging"
+
 echo "== gate: rustfmt"
 $NICE cargo fmt --all --check || fail "rustfmt"
 

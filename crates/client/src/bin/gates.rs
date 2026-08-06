@@ -11,32 +11,55 @@
 //!
 //! `--capture <dir>` runs the probe harness instead of a player: settle on
 //! observable state, warm the pipelines, shoot a fixed vantage list, exit.
+//!
+//! `--server` and `--identity` are how the **scry launcher** starts this
+//! binary — a depot's launch block names them (`ci/depot.py`). Parsing lives
+//! in `client::args` so the two binaries cannot disagree about a flag.
 
 use bevy::prelude::*;
+use client::args::{self, Parsed};
 use client::render::{GatesRenderPlugin, Net};
+use client::scry::{Player, Scry};
 use client::{client_endpoint, Session};
-use std::net::SocketAddr;
-use std::path::PathBuf;
+
+/// Who the launcher (or the command line) says is playing. A Bevy resource so
+/// a HUD can draw it; **not** gameplay state, so it does not violate "Bevy
+/// draws, it does not decide" — nothing in the sim reads it and nothing can.
+#[derive(Resource)]
+pub struct Who(pub Player);
 
 fn main() -> AppExit {
-    let mut addr = String::from("127.0.0.1:4433");
-    let mut capture: Option<PathBuf> = None;
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "--capture" => {
-                capture = Some(PathBuf::from(args.next().unwrap_or_else(|| {
-                    eprintln!("gates: --capture needs a directory");
-                    std::process::exit(1);
-                })));
-            }
-            other => addr = other.to_string(),
+    let a = match args::parse(std::env::args().skip(1)) {
+        Parsed::Run(a) => a,
+        Parsed::Help => {
+            println!("{}", args::USAGE);
+            return AppExit::Success;
         }
-    }
-    let server: SocketAddr = addr.parse().unwrap_or_else(|e| {
-        eprintln!("gates: bad addr: {e}");
-        std::process::exit(1);
-    });
+        Parsed::Bad(why) => {
+            eprintln!("gates: {why}\n\n{}", args::USAGE);
+            std::process::exit(2);
+        }
+    };
+    let server = a.server;
+    let capture = a.capture.clone();
+
+    // Ask the scry launcher who is playing, ONCE, before anything else. It is
+    // a blocking round trip over a local socket and must never happen inside a
+    // frame; doing it here also means the answer exists before the window
+    // does. A launcher that is not running is the normal case.
+    //
+    // Skipped entirely under `--capture`: the probe harness is a gate, and a
+    // gate that reaches for a socket outside the repo is a gate whose result
+    // depends on what else is running on the box.
+    let who = if a.no_launcher || capture.is_some() {
+        match a.identity.as_deref() {
+            Some(id) => Player::Declared(id.to_string()),
+            None => Player::Anonymous,
+        }
+    } else {
+        Scry::discover(a.identity.as_deref(), env!("CARGO_PKG_VERSION")).player
+    };
+    println!("gates: {}", who.line());
 
     // Connect before the window opens. A client that draws a world it is not
     // connected to is a client that lies for its first few frames.
@@ -77,6 +100,7 @@ fn main() -> AppExit {
         }
     }
     app.add_plugins(DefaultPlugins.set(assets));
+    app.insert_resource(Who(who));
     app.insert_non_send_resource(Net {
         _rt: rt,
         session,

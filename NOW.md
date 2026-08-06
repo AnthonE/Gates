@@ -360,6 +360,42 @@ Two slices have landed and both are on `main`:
 those and writes transforms. Gameplay state in a Bevy component would
 retire the determinism walls with nothing in CI to notice.
 
+**It ships 2026-08-05.** `ci/depot.py` packages the build as a scry depot and
+`crates/client/src/{args,scry}.rs` give it the launcher's interface —
+`--server`/`--identity` from a depot's launch block, and the vendored scry SDK
+for who is playing. Run end to end: real depot served over HTTP,
+`scry install gates` by slug, hashes verified, digest equal across
+packager/origin/client, and the installed binary joined a live shard (3 joins,
+2380 inputs, 0 bad, 0 dropped). Publishing and notarizing are operator acts and
+are NOT done.
+
+Two findings, both from running it rather than reading it:
+
+- **The depot ships `assets/`, not just the binary.** The render slice loads
+  `textures/*` at runtime and Bevy answers a missing texture with a white
+  fallback *and keeps drawing* — so a binary-only depot would install
+  perfectly, start perfectly, and render untextured. Same failure shape
+  `gates.rs` already documents for the asset root. The packager refuses to
+  build a depot with no assets, and `--self-test` covers it.
+- **A dirty tree gave two different binaries the same build id.** A build id
+  is a directory name on a player's disk; it is now keyed on the binary's own
+  hash when the tree is dirty.
+
+The IPv6 endpoint bind that killed the packaged build at startup was fixed
+independently on `main` (`3c50e35`) while this was in flight; that fix is the
+one in the tree, and this lane's duplicate was dropped at the merge.
+
+Next slices, roughly in order:
+
+1. **Input** — keyboard/mouse into `ClientCore::set_input`. Every verb
+   exists server-side; nothing native can press one yet. **This is now the
+   top gap**: a player can install and start the game and cannot move in it.
+2. **Terrain** — mesh `sim_core::terrain`. It is a pure function of the
+   seed and both sides already agree on it, so this is meshing, not
+   design. `web/src/terrain.js` is the reference for *what* to draw.
+3. **A native visual gate** — item 2 below. The pivot's real debt.
+4. **HUD, inventory, container panel** against the wire that already
+   carries them (v19 `ACT_CONTAINER` / `SUB_CONT_SYNC`).
 **The visual plan is `RENDER.md`**, and **R0–R6 plus R8 have landed**: input,
 the capture harness, the terrain mesh, the light rig under one owner, the
 scatter and clutter population *and its prop skirts*, the CC0 photograph on

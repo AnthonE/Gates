@@ -14,6 +14,9 @@
 //! client side, so this speaks the identical transport the browser speaks,
 //! against the same shard, at the same `PROTO_VER`.
 
+pub mod args;
+pub mod scry;
+
 // The render path. Feature-gated because Bevy is several hundred crates and
 // the code tier must not pay for it (`crates/client/Cargo.toml`).
 #[cfg(feature = "render")]
@@ -69,6 +72,10 @@ pub fn client_endpoint() -> Result<Endpoint<Client>, String> {
     // and every shard we run and every gate we write is reachable over v4.
     // So: ask for what works, keep the dual-stack path for a v6 shard, and
     // report both failures if neither binds.
+    //
+    // Confirmed against the packaged desktop build on 2026-08-05: the depot
+    // the scry launcher installed died here at startup, before any address
+    // was parsed, on a container with IPv6 off.
     let build = |ip: IpBindConfig| {
         Endpoint::client(
             ClientConfig::builder()

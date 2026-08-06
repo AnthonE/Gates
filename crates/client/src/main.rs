@@ -14,21 +14,36 @@
 //! path, and the native session gets its own gate when it has a renderer
 //! worth asserting on.
 
+use client::args::{self, Parsed};
+use client::scry::Scry;
 use client::{client_endpoint, Session};
-use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 #[tokio::main]
 async fn main() {
-    let mut args = std::env::args().skip(1);
-    let server: SocketAddr = args
-        .next()
-        .unwrap_or_else(|| "127.0.0.1:4433".into())
-        .parse()
-        .unwrap_or_else(|e| {
-            eprintln!("client: bad addr: {e}");
-            std::process::exit(1);
-        });
+    let parsed = args::parse(std::env::args().skip(1));
+    let a = match parsed {
+        Parsed::Run(a) => a,
+        Parsed::Help => {
+            println!("{}", args::USAGE);
+            return;
+        }
+        Parsed::Bad(why) => {
+            eprintln!("client: {why}\n\n{}", args::USAGE);
+            std::process::exit(2);
+        }
+    };
+    let server = a.server;
+
+    // Who is playing. No launcher is a normal state and this line says which
+    // it was, because an address off a launcher and an address off the command
+    // line are equally unverified but not equally informative.
+    if !a.no_launcher {
+        let scry = Scry::discover(a.identity.as_deref(), env!("CARGO_PKG_VERSION"));
+        println!("client: {}", scry.player.line());
+    } else if let Some(id) = a.identity.as_deref() {
+        println!("client: identity {id} (declared, unverified; launcher skipped)");
+    }
 
     let endpoint = match client_endpoint() {
         Ok(e) => e,
