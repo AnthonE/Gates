@@ -193,17 +193,24 @@ $NICE cargo test --workspace --release || fail "cargo test"
 # (`tree`, `fell`, `look`), none of which needs a GPU or a window. What
 # photographs these screens is still owed.
 #
-# Bevy's default features pull `wayland-client` and `alsa` through `winit` and
-# `bevy_audio`, and this client uses neither — a box without those dev packages
-# fails here at a build script rather than at a test. That is a capability we
-# are ASKING for and do not need (`CLAUDE.md`: the second question), and
-# trimming the feature set is the fix; until then the requirement is stated
-# here rather than discovered.
-echo "== gate: native client (--features render: clippy + the renderer-tier suites)"
-echo "   (needs libwayland-dev + libasound2-dev — Bevy default features, not ours)"
+# Bevy's default features pull `wayland-client`, `alsa` and `libudev` through
+# `winit`, `bevy_audio` and `bevy_gilrs`, and this client uses only the first —
+# a box without those dev packages fails here at a build script rather than at
+# a test. `alsa` in particular is a capability we are ASKING for and do not
+# need (`CLAUDE.md`: the second question), and trimming the feature set is the
+# fix; until then the requirement is stated here rather than discovered.
+#
+# `--lib` rides along with the three suites because the client's unit tests are
+# behind the same feature: `cargo test --workspace` above compiles the crate
+# WITHOUT `render`, so everything under `render::` is cfg'd out of it. Without
+# this flag `render::loading`'s tests — which assert that a world is not loaded
+# until the server has said where — are compiled by the clippy line above and
+# run by nothing.
+echo "== gate: native client (--features render: clippy + lib + the renderer-tier suites)"
+echo "   (needs libwayland-dev + libasound2-dev + libudev-dev — Bevy defaults, not ours)"
 $NICE cargo clippy -p client --features render --all-targets -- -D warnings \
   || fail "clippy (native client)"
-$NICE cargo test -p client --features render --test tree --test fell --test look \
+$NICE cargo test -p client --features render --lib --test tree --test fell --test look \
   || fail "native client suites"
 
 echo "== gate: wasm build (sim-core + protocol + client-wasm -> wasm32-unknown-unknown)"

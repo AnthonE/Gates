@@ -29,6 +29,23 @@ use super::input::Look;
 use super::props::PropRing;
 use super::terrain_mesh::Ring;
 
+/// Frames to wait for the server to place the player before giving up.
+///
+/// The rings cannot fill until the first snapshot carrying our own entity
+/// lands (`render::world_placed`), so the settle below now has a precondition
+/// it did not have when it only waited on ring counts. **An unbounded wait on
+/// a precondition is a gate that hangs**, and a hung gate reports nothing at
+/// all — strictly worse than a red one, which is the same reasoning as the
+/// file check at the end of this file.
+///
+/// A frame count rather than a timeout, for the reason every other budget
+/// here is one: this box shares cores and the renderer is a CPU rasterizer,
+/// so elapsed milliseconds measure the box and not the client. Placement is
+/// one round trip after a connect that has already completed, so anything
+/// past a few dozen frames is a broken shard rather than a slow one; the
+/// budget is loose enough that only "never" reaches it.
+pub const PLACE_FRAMES: u32 = 300;
+
 /// Frames to hold after the world is built before the first shot. Pipelines
 /// specialize lazily on first draw — the same class as the browser's lazy
 /// WebGL program links, which read 90 fps on a benchmark and cost 700 ms of
@@ -75,17 +92,39 @@ impl Capture {
 }
 
 /// Aim the view for the shot that is about to be taken, and take it.
+// Eight, and the eighth is `Eye` — the harness's own precondition. It settles
+// on three ring counts, and a ring count is only evidence about the world once
+// the server has said where that world is (`PLACE_FRAMES`); reading four
+// observables rather than three is what keeps the settle honest instead of
+// patient.
+#[allow(clippy::too_many_arguments)]
 pub fn drive(
     mut commands: Commands,
     mut cap: ResMut<Capture>,
     mut look: ResMut<Look>,
     mut exit: MessageWriter<AppExit>,
+    eye: Res<super::Eye>,
     ring: Res<Ring>,
     props: Res<PropRing>,
     clutter: Res<ClutterRing>,
 ) {
     cap.frame += 1;
     look.frozen = true;
+
+    // **Nothing is built until the server says where.** The welcome carries a
+    // seed and no position, so the streamers stand down until the first
+    // snapshot places us and the ring counts below are all zero meanwhile.
+    // Waiting here is correct; waiting forever is not.
+    if !eye.placed {
+        if cap.frame >= PLACE_FRAMES {
+            eprintln!(
+                "capture: the shard never placed us — no snapshot carrying our own \
+                 entity in {PLACE_FRAMES} frames. Nothing was built and nothing was shot."
+            );
+            exit.write(AppExit::error());
+        }
+        return;
+    }
 
     // Observable state: every ring the streamers own is full. Each fills one
     // entry a frame, so this is ~25 frames, and it is a COUNT of built things

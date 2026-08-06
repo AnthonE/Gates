@@ -31,12 +31,18 @@
 //! is pointed at, and it lives here because a pick is arithmetic too — the
 //! browser learned its `t > 0` guard by probing the resolver, which is only
 //! possible when the resolver can be called without a window.
+//!
+//! [`load`] is not a panel either, and it is here for the same reason as
+//! both: it decides *when a player enters the world*, and the version of
+//! that decision that lived inside a Bevy system could only be tested by a
+//! windowed run against a live shard.
 
 pub mod build;
 pub mod chat;
 pub mod craft;
 pub mod death;
 pub mod interact;
+pub mod load;
 pub mod map;
 pub mod place;
 pub mod refusals;

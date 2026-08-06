@@ -182,11 +182,41 @@ pub fn gather(
 /// it was pressed; every other body comes from the interpolator at the render
 /// tick, so it is smooth and late rather than jittery and early. `pump` never
 /// awaits — a frame that waits on a socket is a dropped frame.
-pub fn place_eye(mut net: NonSendMut<Net>, mut eye: ResMut<Eye>, look: Res<Look>, time: Res<Time>) {
+///
+/// **The predictor is not a position until the server has given it one.**
+/// `Predictor::started` is false from the welcome — which carries a seed and
+/// no spawn — until the first snapshot carrying our own entity, and until
+/// then `render_position()` returns `Body::default()`'s, the world origin.
+/// That is a real place on this island rather than a sentinel, so writing it
+/// would silently aim every ring builder at a neighbourhood the server never
+/// named. The flag is what `render::world_placed` gates the whole `Stream`
+/// set on; `pos` is simply left at whatever it was, which on a fresh connect
+/// is `Eye::default()` and on a reconnect is `world_teardown`'s reset.
+pub fn place_eye(
+    mut net: NonSendMut<Net>,
+    mut eye: ResMut<Eye>,
+    look: Res<Look>,
+    time: Res<Time>,
+    // The false→true edge, logged once. A wait with no observable is a wait
+    // nobody can tell from a hang, and this one gates the whole world.
+    mut announced: Local<bool>,
+) {
     let dt_ms = time.delta_secs_f64() * 1000.0;
     net.session.pump(dt_ms);
 
+    eye.placed = net.session.core.predict.started;
+    if !eye.placed {
+        // Cleared here so a reconnect announces its own placement:
+        // `world_teardown` resets `Eye`, but it cannot reach a `Local`.
+        *announced = false;
+        return;
+    }
+
     let [x, y, z] = net.session.core.predict.render_position();
+    if !*announced {
+        *announced = true;
+        info!("gates: the shard placed us at {x:.1}, {y:.1}, {z:.1} — building the world");
+    }
     eye.pos = Vec3::new(x, y + EYE_HEIGHT, z);
     eye.yaw = look.yaw;
     eye.pitch = look.pitch;

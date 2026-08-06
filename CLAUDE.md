@@ -283,11 +283,33 @@ fail with `can't find crate for core` until `rustup target add
 wasm32-unknown-unknown` — install it rather than skipping the gate, because a
 wall that cannot run is not a wall. Third of the same kind: a box whose
 Playwright build does not match the pinned version fails both renderer gates at
-`chromium failed to launch`, and the fix is the override both renderer gates
-already carry — **`VANTAGE_CHROME`** (read by `vantages.mjs` *and*
-`browser_smoke.mjs`) pointed at the installed binary, e.g.
-`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`; never
-`npx playwright install` into a managed image. Neither of these repeals the rule above:
+`chromium failed to launch`, and the fix is the override those gates
+already carry — **`VANTAGE_CHROME`** (read by `vantages.mjs`,
+`browser_smoke.mjs` *and* `ui_smoke.mjs`) pointed at the installed binary, e.g.
+`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`. **`ui_smoke` is the one
+that bites first**, because it is a CODE-tier gate: a box whose Playwright
+wants `chromium_headless_shell-1234` while `/opt/pw-browsers` holds `-1194`
+fails there long before the renderer tier, on a diff that touched no
+JavaScript at all. Never
+`npx playwright install` into a managed image. Fourth, and the one a fresh box
+hits first: **`cargo … --features render` needs three `-dev` packages** that a
+headless image has no reason to carry — `libwayland-dev`, `libasound2-dev`,
+`libudev-dev` — and each fails identically, as a `pkg-config exited with status
+code 1` panic from a `*-sys` build script (`wayland-sys`, `alsa-sys`,
+`libudev-sys`) with the crate named only in the backtrace. Install them; it is
+the box, not the tree. `ci/gates.sh`'s native-client gate names the first two
+in its own echo line; **`libudev-dev` is the third and was measured here**, so
+a box that installs only what that line lists still fails. Running the client
+adds a fourth, and it is a runtime `.so` rather than a build dep, so
+`pkg-config` never mentions it: `libxkbcommon-x11-0`, whose absence panics
+inside `winit` at `App::run` with every gate already green. **Then ask the
+second question for each**, because one of the four does not survive it:
+`alsa` is required solely because `bevy_audio` is on by default and this
+client has **zero** audio call sites. That is not a missing capability, it is
+one we request and do not use, and the trim is `NOW.md` §0x item 1. `wayland`
+(and `x11`) are real — a shipped desktop client faces both — and `libudev` is
+`bevy_gilrs`, which is gamepads and wanted.
+Neither of these repeals the rule above:
 they are missing capabilities, which are diagnosable and permanent, not timing,
 which is neither.
 
