@@ -150,6 +150,14 @@ pub struct Session {
     /// `while` loop and two messages in one frame is ordinary — taking only
     /// the last one's word would drop the earlier fact silently.
     pub applied: u32,
+    /// The same, for word 1 (`APPLIED2_*`).
+    ///
+    /// Word 0 is full — bit 30 is the last flag and bit 31 is the C ABI's
+    /// error sentinel sharing the return — so newer facts land here.
+    /// Accumulated for a second reason on top of `applied`'s: `applied2()` is
+    /// documented valid only until the next `on_stream`, so a frame that
+    /// drained two messages would keep only the second one's word.
+    pub applied2: u32,
     pub welcome: Welcome,
     connection: std::sync::Arc<Connection>,
     /// The C→S half of the bidi stream, held for the life of the session by
@@ -269,6 +277,7 @@ impl Session {
         Ok(Self {
             core,
             applied: 0,
+            applied2: 0,
             welcome,
             connection,
             actions: act_tx,
@@ -321,6 +330,9 @@ impl Session {
             // is that a SUCCESSFUL decode no longer goes unnoticed.
             if let Ok(flags) = self.core.on_stream(&bytes) {
                 self.applied |= flags;
+                // Read INSIDE the loop, not after it: `applied2()` describes
+                // the message just decoded and is overwritten by the next.
+                self.applied2 |= self.core.applied2();
             }
         }
 

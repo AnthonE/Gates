@@ -82,6 +82,8 @@ pub struct Feed {
     /// (`Session::pump`'s `let _`) until this landed, which is the whole
     /// reason those three had no readers.
     pub applied: u32,
+    /// The same for word 1 (`APPLIED2_*`) — see [`Feed::applied`].
+    pub applied2: u32,
     /// Facts refused for want of room since the last reset — see the header.
     pub dropped: u32,
 }
@@ -139,6 +141,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     // Taken and cleared in one move: the word describes the messages drained
     // since the last frame, so leaving it set would report them again.
     feed.applied = core::mem::take(&mut net.session.applied);
+    feed.applied2 = core::mem::take(&mut net.session.applied2);
     let core = &mut net.session.core;
 
     while let Some(d) = core.pop_hit() {

@@ -446,6 +446,28 @@ pub fn feedback(
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
         });
     }
+    // What the hearth is holding, after you feed it. `stock` is a latched
+    // ROW TABLE rather than one value, so the same freshness rule applies —
+    // and `stock_count` is how many of the rows are live, which is why the
+    // slice is taken rather than the array walked whole.
+    if feed.applied & client_wasm::core::APPLIED_STOCK != 0 {
+        let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
+        if let Some(line) = stock_line(rows, &core.catalog) {
+            toast.say(line);
+        }
+    }
+
+    // A charge going live, anywhere you can see. This is BROADCAST rather
+    // than own-fact, and `APPLIED2_CHARGE`'s own doc says why that is the
+    // point: "the charge you most need drawn is the one you did not plant."
+    // Word 1, not word 0 — word 0 is full.
+    if feed.applied2 & client_wasm::core::APPLIED2_CHARGE != 0 {
+        let (_, _, _, _, _, fuse) = core.charge_placed;
+        if let Some(line) = charge_line(fuse) {
+            toast.say(line);
+        }
+    }
+
     // The wall you are breaking. `struct_hit` is a LATCHED field, not a ring
     // — it holds the last one — so this is gated on the freshness bit rather
     // than on the field being non-zero, which would redraw the same hit every
@@ -575,6 +597,51 @@ fn swing_prompt_weak(occupant: u8, in_weak: bool) -> String {
     format!("{base}  ·  WEAK SPOT")
 }
 
+/// What a fed hearth is holding, or `None` when it is holding nothing.
+///
+/// The rows are `(item, units)` and the count is authoritative — an empty
+/// hearth acks with zero rows, and saying "0 ×" for a thing that is not there
+/// is the dark-panel defect this repo has a rule against.
+fn stock_line(rows: &[(u16, u32)], catalog: &protocol::event::ItemCatalog) -> Option<String> {
+    let mut parts = Vec::new();
+    for &(item, units) in rows {
+        if units == 0 {
+            continue;
+        }
+        parts.push(format!(
+            "{units} × {}",
+            crate::ui::craft::item_label(catalog, item)
+        ));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!("HEARTH: {}", parts.join(", ")))
+}
+
+/// What a planted charge says, or `None` for a fuse of zero.
+///
+/// Seconds, not ticks: the fuse crosses the wire in ticks because the sim
+/// counts in them, and `TICK_HZ` is the sim's own constant rather than a
+/// number invented here. A player has no use for 240 and every use for 8.
+///
+/// **This is the warning, not a countdown.** A live timer ticking down on the
+/// wall itself is a world-space element and is not built; what this buys is
+/// the thing a defender actually needs first — that a charge exists at all,
+/// and roughly how long they have. Said plainly here rather than implied,
+/// because a toast that looked like a timer and did not move would be worse
+/// than none.
+fn charge_line(fuse_ticks: u16) -> Option<String> {
+    if fuse_ticks == 0 {
+        return None;
+    }
+    let hz = sim_core::limits::TICK_HZ as u16;
+    // Round up: a fuse of one tick is "1s" and never "0s", for
+    // `struct_hit_line`'s reason — a live thing must not read as finished.
+    let secs = fuse_ticks.div_ceil(hz);
+    Some(format!("CHARGE PLANTED  ·  {secs}s"))
+}
+
 /// What a hit on a structure says, or `None` when there is nothing honest to
 /// say yet.
 ///
@@ -655,6 +722,61 @@ mod tests {
     /// here because it is an ORDERING, and an ordering is the one thing a
     /// compile cannot check — the browser shipped this as sixteen swept
     /// combinations in a gate that no longer exists.
+    /// The charge warning. Ticks are the wire's unit and seconds are the
+    /// player's; `TICK_HZ` does the conversion and is the sim's own.
+    #[test]
+    fn a_charge_warns_in_seconds() {
+        let hz = sim_core::limits::TICK_HZ as u16;
+        assert_eq!(charge_line(0), None, "no fuse is not a charge");
+        assert_eq!(
+            charge_line(hz * 8),
+            Some("CHARGE PLANTED  ·  8s".to_string())
+        );
+        // A fuse about to blow must not read as already blown.
+        assert_eq!(charge_line(1), Some("CHARGE PLANTED  ·  1s".to_string()));
+        // And a part-second rounds up rather than down.
+        assert_eq!(
+            charge_line(hz + 1),
+            Some("CHARGE PLANTED  ·  2s".to_string())
+        );
+    }
+
+    /// The hearth readout. An empty hearth says nothing rather than "0 ×".
+    #[test]
+    fn a_hearth_lists_what_it_holds() {
+        let cat = catalog_with_names(&[(3, "WOOD"), (4, "CLOTH")]);
+        assert_eq!(stock_line(&[], &cat), None, "no rows must say nothing");
+        assert_eq!(
+            stock_line(&[(3, 0)], &cat),
+            None,
+            "a zero row is not a holding"
+        );
+        assert_eq!(
+            stock_line(&[(3, 120)], &cat),
+            Some("HEARTH: 120 × WOOD".to_string())
+        );
+        assert_eq!(
+            stock_line(&[(3, 120), (4, 5)], &cat),
+            Some("HEARTH: 120 × WOOD, 5 × CLOTH".to_string())
+        );
+        // A zero row between two live ones is skipped, not printed empty.
+        assert_eq!(
+            stock_line(&[(3, 120), (4, 0)], &cat),
+            Some("HEARTH: 120 × WOOD".to_string())
+        );
+    }
+
+    fn catalog_with_names(rows: &[(usize, &str)]) -> protocol::event::ItemCatalog {
+        let mut c = protocol::event::ItemCatalog::EMPTY;
+        let mut top = 0;
+        for &(idx, name) in rows {
+            c.set(idx, name.as_bytes()).unwrap();
+            top = top.max(idx);
+        }
+        c.count = (top + 1) as u16;
+        c
+    }
+
     /// The structure readout. `max == 0` must stay silent — that is the
     /// defs-not-arrived state, and a percentage over an unknown maximum is
     /// the lie `ClientCore::struct_hit`'s own doc warns against.
