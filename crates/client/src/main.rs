@@ -33,7 +33,7 @@ async fn main() {
             std::process::exit(2);
         }
     };
-    let server = a.server;
+    let server = a.server.clone();
 
     // Who is playing. No launcher is a normal state and this line says which
     // it was, because an address off a launcher and an address off the command
@@ -54,7 +54,7 @@ async fn main() {
     };
 
     println!("client: connecting to {server}");
-    let mut session = match Session::connect(&endpoint, server).await {
+    let mut session = match Session::connect(&endpoint, &server).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("client: {e}");

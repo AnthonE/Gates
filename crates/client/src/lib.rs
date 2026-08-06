@@ -16,6 +16,7 @@
 
 pub mod args;
 pub mod scry;
+pub mod shardlist;
 
 // The render path. Feature-gated because Bevy is several hundred crates and
 // the code tier must not pay for it (`crates/client/Cargo.toml`).
@@ -28,7 +29,6 @@ use protocol::{
     KIND_WELCOME, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES, PROTO_VER,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
-use std::net::SocketAddr;
 use wtransport::config::IpBindConfig;
 use wtransport::endpoint::endpoint_side::Client;
 use wtransport::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
@@ -119,7 +119,14 @@ pub struct Session {
 
 impl Session {
     /// Connect, handshake, and start the event-lane reader.
-    pub async fn connect(endpoint: &Endpoint<Client>, server: SocketAddr) -> Result<Self, String> {
+    ///
+    /// `server` is `host:port` and is deliberately NOT resolved first.
+    /// `wtransport` resolves a domain itself and then uses the *unresolved*
+    /// name as the TLS server name — so handing it a `SocketAddr` throws
+    /// away the one piece of information a certificate is checked against.
+    /// The public shard is reached by the name its cert is issued for
+    /// (`shard-public.toml`), which is why the shard list carries names too.
+    pub async fn connect(endpoint: &Endpoint<Client>, server: &str) -> Result<Self, String> {
         let url = format!("https://{server}");
         let connection = endpoint
             .connect(&url)

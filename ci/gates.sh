@@ -160,6 +160,14 @@ $NICE node ci/haven_prize.mjs || fail "haven prize"
 echo "== gate: depot packaging (the scry launcher's seam, docs/LAUNCHER.md §3)"
 $NICE python3 ci/depot.py --self-test || fail "depot packaging"
 
+# The other half of that seam. A shard list is the one document where a wrong
+# value is an invitation to a server that turns the player away: an address
+# the client cannot parse, a cap above the sim's own MAX_PLAYERS, or a player
+# count nobody measured. It also reads the client parser's constants, so the
+# generator and the game cannot drift apart on what they will accept.
+echo "== gate: shard list (scry-shardlist-v1, docs/LAUNCHER.md §6)"
+$NICE python3 ci/shardlist.py --self-test || fail "shard list"
+
 echo "== gate: rustfmt"
 $NICE cargo fmt --all --check || fail "rustfmt"
 

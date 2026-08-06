@@ -290,7 +290,10 @@ impl Soup {
 /// silhouette to render from, and 104 triangles that already measure inside
 /// `PINE_MAX_R` is the right starting point. `props.js` keeps its cone builder
 /// for the same role, and `ci/pine_shape.mjs` still scores that one.
-#[allow(dead_code, reason = "the far-LOD silhouette, per TERRAIN.md §4; see above")]
+#[allow(
+    dead_code,
+    reason = "the far-LOD silhouette, per TERRAIN.md §4; see above"
+)]
 fn pine_mesh(variant: u32) -> Mesh {
     let mut s = Soup::default();
 

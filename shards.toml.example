@@ -1,0 +1,43 @@
+# The shards this game publishes — `./ci/shardlist.py` turns this into the
+# `scry-shardlist-v1` document the scry launcher's Servers window and the
+# game's own intro screen both read. Copy to shards.toml and edit.
+#
+# The shard list is the GAME's to serve (scry `docs/LAUNCHER.md` §6): the
+# launcher renders these rows and never invents, caches or ranks them.
+#
+# An empty file is a valid, honest document. Both readers render "no shards
+# up" for it, which is the correct state when none are running.
+
+[[shard]]
+# Stable key. The launcher builds its row key from this, so changing it
+# splits one shard into two in anyone's list.
+id = "eu-1"
+
+# What a player reads.
+name = "Gates EU 1"
+
+# host:port. A NAME, not an address — the public shard's certificate is
+# issued for `game.moreright.xyz` (see shard-public.toml) and WebTransport
+# needs that name for SNI. An IP here connects and then cannot say who it is
+# talking to. The port is the one shard-public.toml binds; it sits in
+# 49152-65535 because that range is what the cloud firewall actually passes.
+addr = "game.moreright.xyz:61234"
+
+# Optional, free text. The seed is what makes one island different from
+# another, so naming it is more useful than naming a map that does not exist.
+map = "island 20260731"
+
+# max_players is OPTIONAL and defaults to the sim's own MAX_PLAYERS, read out
+# of crates/sim-core/src/limits.rs. Set it only to publish something LOWER
+# than the sim allows; higher is refused, because the list would be inviting
+# a joiner the shard turns away at the door.
+# max_players = 60
+
+# players / ping_ms are deliberately NOT set here and cannot be set honestly
+# today: the shard serves no status endpoint, so there is no live count to
+# read. Both readers draw `?` for an absent count. Writing a 0 would make a
+# busy shard read as empty, which is worse than saying nothing.
+#
+# What would light them: a status endpoint on the shard (stats.rs already
+# holds `joins`/`leaves` as atomics and its header names "the status page" as
+# the thing that would read them) plus a step here that polls it.

@@ -20,6 +20,34 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0v · The server menu landed — what it still cannot show *(client lane)*
+
+Landed (operator, 2026-08-06 — `DECISIONS.md`): the native client opens on a
+server-select screen instead of connecting before the window exists.
+`Screen::{Menu,Connecting,InWorld}`, `WorldId` built on entering the world
+because the seed arrives with the welcome, and **a failed connect returns to the
+menu with the reason** instead of `exit(1)`. `--capture` and `--server` skip the
+screen, so the visual gate and the launcher's join path are untouched.
+`ci/shardlist.py` writes `scry-shardlist-v1` and is gated; scry's launcher now
+bounds and validates that document instead of rendering it raw.
+
+Remaining, in order:
+
+1. **Nothing is published, so every list is the Direct row.** The url is
+   `DECISIONS.md` §open and an operator act: serve `servers.json`, set
+   `servers.url` in scry's `data/launcher/gates.manifest.json`. Until then both
+   the menu and the launcher's Servers window are correctly dark.
+2. **No player counts, and this is the honest half.** `players`/`ping_ms` are
+   omitted, never zeroed — the shard serves no status endpoint. `stats.rs`
+   already holds `joins`/`leaves` as atomics and its header names the status
+   page as what would read them. That endpoint is the whole slice.
+3. **No gate renders the menu.** The screen is covered by unit tests
+   (`shardlist.rs`, `menu.rs`) and by scry's suite, but nothing photographs it —
+   `RENDER.md`'s capture harness enters `InWorld` on frame one by design. A
+   menu vantage is the cheapest visual gate in the repo and does not exist.
+4. **Esc quits from the menu; nothing leaves the world.** `Screen::Menu` is now
+   somewhere to return to, which is the missing half of `MENUS.md`'s
+   Escape/options row.
 ## 0t · the native pine is generated — what it bought, and what it owes
 
 **Landed.** `crates/client/src/render/tree.rs`: the near-ring conifer is

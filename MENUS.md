@@ -109,7 +109,8 @@ that persists across a wipe.
 | **Research / tech tree** | — | **MISSING** | |
 | **Recycler** | `DESIGN.md` §2 (haven) | **MISSING** | |
 | **Vending / skin vendor / bank** | `DESIGN.md` §2–3 (haven) | **MISSING** | A2/A3 |
-| **Escape / options** | — | **MISSING** | no settings, no disconnect, no keybind list |
+| **Server select / intro** | the reference's main menu (PLAY GAME → server list) | **HAVE** | the native client's first screen (`render/menu.rs`). Title, a status line that always says *why* the list is what it is, one row per shard from `scry-shardlist-v1`, plus a Direct row that is always present so a failed fetch never leaves nothing to click. Click or number key; Esc quits. **A failed connect returns here with the reason** instead of `exit(1)`, which is the whole point of the state machine. Skipped by `--capture` and by `--server` (the launcher already picked). Missing against the reference: no ping, no player counts (nothing measures them — `DECISIONS.md` §open), no favourites, no filter/search, no modded/official split |
+| **Escape / options** | — | **MISSING** | no settings, no disconnect, no keybind list. Disconnect is the one that now has a home: `Screen::Menu` already exists to return to |
 
 ## 4 · Dark content — declared, baked, reachable by nothing
 
