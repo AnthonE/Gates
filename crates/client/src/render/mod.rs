@@ -28,6 +28,7 @@ pub mod rig;
 pub mod sky;
 pub mod terrain_mesh;
 pub mod textures;
+pub mod tree;
 
 /// The connected session plus the runtime its reader tasks live on.
 ///

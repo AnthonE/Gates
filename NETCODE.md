@@ -191,7 +191,11 @@ Two feedback loops keep the buffer at target — both shipped mechanisms:
    [media.gdcvault.com/gdc2018/presentations/Cone_Jared_It_Is_Rocket.pdf]
 
 Result: just-in-time inputs across drifting clocks, changing RTT, and
-browser tab throttling, with no per-frame guessing anywhere.
+browser tab throttling, with no per-frame guessing anywhere. **The native
+client does not get throttled by a backgrounded tab**, but it loses none of
+this: an unfocused window, a vsync change and a compositor stall produce the
+same drifting-clock problem, and the scheme was never tab-specific — it is
+the reason it needs no per-frame guessing on either client.
 
 ## 5 · Class S — chunk epochs, and one spine for save + network
 

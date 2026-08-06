@@ -17,7 +17,7 @@ publish.workspace = true
 # browser gates are vacating).
 [features]
 default = []
-render = ["dep:bevy"]
+render = ["dep:bevy", "dep:bevy_procedural_tree", "dep:fastrand"]
 
 [[bin]]
 name = "client"
@@ -30,6 +30,14 @@ required-features = ["render"]
 
 # The fell gate needs the render module, so it carries the same requirement
 # the binary does — and therefore runs in the renderer tier, not the code one.
+# The conifer's bounds gate: pure geometry, headless, no GPU — but it imports
+# `render::tree`, so it carries the same feature requirement and runs in the
+# renderer tier.
+[[test]]
+name = "tree"
+path = "tests/tree.rs"
+required-features = ["render"]
+
 [[test]]
 name = "fell"
 path = "tests/fell.rs"
@@ -44,6 +52,28 @@ required-features = ["render"]
 # the frame does not report the failure. Three successive material changes
 # measured byte-identical statistics before the log was read.
 bevy = { version = "0.18", optional = true, features = ["jpeg"] }
+# The conifer generator: ez-tree's algorithm, ported to Rust and Bevy
+# (MIT OR Apache-2.0, github.com/Affinator/bevy_procedural_tree). The browser
+# client already ships `@dgreenheck/ez-tree` and `web/src/props.js` already
+# swept its parameters against `PINE_MAX_R`; this is the same generator on
+# this side of the port, so those numbers carry rather than being re-guessed.
+#
+# It is depended on for ONE pure function — `meshgen::generate_tree_meshes`,
+# which takes settings and an `Rng` and returns two `Mesh`es. No ECS, no
+# plugin, no system: the crate's own `TreeProceduralGenerationPlugin` is
+# deliberately NOT used, because a plugin that spawns entities and regenerates
+# them on change would put tree state in the ECS, and `RENDER.md` §1 says Bevy
+# draws and does not decide.
+#
+# `u32_indices` is not optional. The crate defaults to `Indices::U16` and
+# errors past 65,535 — a conifer dense enough to read as one is well past it.
+bevy_procedural_tree = { version = "0.3", default-features = false, features = ["u32_indices"], optional = true }
+# `generate_tree_meshes` takes `&mut fastrand::Rng` and the crate does NOT
+# re-export the type, so seeding it needs the dependency here. Same major as
+# the generator resolves, so one copy is linked. It seeds MESH SHAPE only —
+# never placement, which is `sim_core::terrain::scatter`'s pure hash — so no
+# sim-facing determinism rests on this crate's PRNG.
+fastrand = { version = "2", optional = true }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-wasm = { path = "../client-wasm" }

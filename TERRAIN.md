@@ -317,7 +317,13 @@ point: **terrain life is just chunk events over a generated backdrop.**
   exact world the server does, including the slot a node just vanished
   from (one in-flight event of skew, max).
 
-## 4 · Rendering (three.js, per chunk)
+## 4 · Rendering (per chunk)
+
+**Written for the three.js client; the shapes carry, the threading does not.**
+The native client reaches the same worldgen by direct call rather than through
+a worker and a wasm view — `RENDER.md` §3 records that trade, and it deleted a
+whole class of detached-buffer bug along with the worker. Where a bullet below
+says "worker", read "off the main schedule" for the native path.
 
 - **Chunk meshes**: 64 m chunks; LOD0 = 1 m grid (65×65 verts) for the
   ring around the camera, LOD1 = 2 m, LOD2 = 4 m beyond, each ring with a
@@ -386,12 +392,17 @@ point: **terrain life is just chunk events over a generated backdrop.**
   per-instance tint hashed from its own cell, so variation costs no draw
   calls (materials v0).
   Grass: cheap camera-ring patches, purely cosmetic, off on low tier
-  **(knob)**.
+  **(knob)**. The tier idea is browser-era — it existed because a WebGL page
+  had to run on whatever opened it — and a native client with a system
+  requirement may not need one at all; unresolved, not decided.
 - **Water**: a single animated plane at sea level with depth-fade alpha
   and shore foam from the beach mask. Nothing simulates.
-- **Budgets** (within DESIGN §9's 300 draw calls / 1.5 M tris): terrain
-  ≈ 40–60 draw calls and ~250 k tris at LOD; scatter instancing keeps the
-  rest. Chunk build ≤ 4 ms in the worker, amortized one chunk per frame.
+- **Budgets** (within DESIGN §9's 300 draw calls / 1.5 M tris — **both
+  browser-era and neither re-derived for the native client**, see there):
+  terrain ≈ 40–60 draw calls and ~250 k tris at LOD; scatter instancing
+  keeps the rest. Chunk build ≤ 4 ms **in the browser's worker**; natively
+  it is a main-schedule system amortized one chunk per frame, which is the
+  same amortization without the thread.
 
 ## 5 · What the island gives the game (the part that has no code)
 
@@ -481,7 +492,12 @@ element a cell may earn, at a rate the ground sets:
 - **It is frame-budget-bound, and that is the finding.**
   `CLUTTER_RICH_PER_TILE = 96` of 625 cells is not a design number: it is what
   `ci/clutter_shape.mjs` §4's 20%-of-1.5 M triangle share left after the
-  coverage stratum and the skirts. The first draft asked for 256 and a gate
+  coverage stratum and the skirts. **Note what that makes it downstream of**:
+  1.5 M is `DESIGN.md` §9's browser-era ceiling, so this number inherits a
+  WebGL constraint. If the native budget is ever re-derived, this is one of
+  the things that moves with it — and the direction is up, toward `ART.md`
+  rule 4's "empty ground is a defect", which is the bar it is currently
+  rationed against. The first draft asked for 256 and a gate
   refused it. `RICH_ACCEPT_MAX = 32` then keeps the budget a **backstop**
   — a rate the ground can afford, rather than a truncation of one it cannot,
   which would have banded every tile's first rows and left the rest bare.
@@ -527,8 +543,9 @@ No trig: `yaw_lut::yaw_dir`, per wall 1.
 Measured over 1,875 tiles × 3 seeds: **max 40 elements per tile against the 256
 bound**, peak 5×5 ring 15,930 of the 22,025 the pools size for, worst triangle
 fleet 264 k = 17.6% of `DESIGN.md` §9's frame budget, inside the 20% share this
-population declared. **None of it has been seen** — no frames this pass, and
-`browser_smoke`'s renderer tier is off by operator config.
+population declared — a percentage of a **browser-era** 1.5 M, so the share is
+firmer than the denominator. **None of it has been seen** — no frames this
+pass, and `browser_smoke`'s renderer tier is off by operator config.
 
 ## 7 · Gates
 
