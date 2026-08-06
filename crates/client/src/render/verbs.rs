@@ -29,6 +29,7 @@ use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF};
 
 use crate::look::yaw_u16;
 use crate::ui::interact::{self, Aim, Pick, Verb};
+use crate::ui::structure::{self, Store, Target};
 
 use super::hud::Toast;
 use super::input::Look;
@@ -40,6 +41,12 @@ use super::Net;
 #[derive(Resource, Default)]
 pub struct Aimed(pub Pick);
 
+/// The nearest structure, either store. Its own resource beside [`Aimed`]
+/// because `L`, `U`, `R` and the raid verb address a structure and `E` does
+/// not — see `ui::structure`'s header for why they cannot share a metric.
+#[derive(Resource, Default)]
+pub struct Near(pub Option<Target>);
+
 /// Resolve the pick from the predictor's own position and the sim's own
 /// bearing.
 ///
@@ -50,7 +57,12 @@ pub struct Aimed(pub Pick);
 /// server declines at the edge of the aim radius — the quantize-both-sides
 /// law (`CLAUDE.md`) applied to aiming, which is exactly what the browser's
 /// `aimDir` does for the same reason.
-pub fn resolve(net: NonSend<Net>, look: Res<Look>, mut aimed: ResMut<Aimed>) {
+pub fn resolve(
+    net: NonSend<Net>,
+    look: Res<Look>,
+    mut aimed: ResMut<Aimed>,
+    mut near: ResMut<Near>,
+) {
     let core = &net.session.core;
     let [x, _, z] = core.predict.render_position();
     let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
@@ -61,6 +73,15 @@ pub fn resolve(net: NonSend<Net>, look: Res<Look>, mut aimed: ResMut<Aimed>) {
         core.deploy_defs_have,
         core.bags.entries(),
     );
+    near.0 = structure::nearest(
+        (x, z),
+        core.pieces.entries(),
+        &core.piece_defs,
+        core.piece_defs_have,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        core.deploy_defs_have,
+    );
 }
 
 /// `E`, `G`, `H`.
@@ -69,24 +90,50 @@ pub fn resolve(net: NonSend<Net>, look: Res<Look>, mut aimed: ResMut<Aimed>) {
 /// pointer, for `input::gather`'s reason: every verb here spends something —
 /// a swing, a door, a mouthful — and a player typing into the craft search
 /// box asked for none of it.
+// Seven, and each is a distinct source: the keyboard, the session, the two
+// picks, the toast, the panels, and the chat composer.
+#[allow(clippy::too_many_arguments)]
 pub fn keys(
     keys: Res<ButtonInput<KeyCode>>,
     mut net: NonSendMut<Net>,
     aimed: Res<Aimed>,
+    near: Res<Near>,
     mut toast: ResMut<Toast>,
     ui: Option<ResMut<Ui>>,
+    chat: Option<Res<super::chat::Chat>>,
 ) {
     let mut ui = ui;
     if ui
         .as_ref()
         .map(|u| u.panel.grabs_pointer())
         .unwrap_or(false)
+        || chat.map(|c| c.open()).unwrap_or(false)
     {
         return;
     }
+    // `R` and `F` belong to the build ghost while the wheel is up, and to
+    // repair otherwise. The ordering IS the binding — `web/src/main.js` pins
+    // the same precedence in a gate for the same reason — so the wheel's
+    // claim is checked here rather than left to whoever reorders these next.
+    let wheel_up = ui
+        .as_ref()
+        .map(|u| u.panel == Panel::Wheel)
+        .unwrap_or(false);
 
     if keys.just_pressed(KeyCode::KeyE) {
         use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
+    }
+    if keys.just_pressed(KeyCode::KeyL) {
+        lock_aimed(&net, &aimed.0, &mut toast);
+    }
+    if keys.just_pressed(KeyCode::KeyU) {
+        upgrade_near(&net, &near.0, &mut toast);
+    }
+    if !wheel_up && keys.just_pressed(KeyCode::KeyR) {
+        repair_near(&net, &near.0, &mut toast);
+    }
+    if keys.just_pressed(KeyCode::KeyX) {
+        throw_near(&net, &near.0, &mut toast);
     }
     if keys.just_pressed(KeyCode::KeyG) {
         // Eat what is in the selected hotbar slot. `G` rather than a
@@ -159,6 +206,93 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
         // island because the hearth happened to be the last link tried.
         Verb::None => toast.say("nothing in reach"),
     }
+}
+
+/// `L` — lock or unlock the aimed door.
+///
+/// It reads the pick's own `locked` bit and sends the OPPOSITE, because
+/// `ACT_LOCK` sets the state absolutely rather than toggling: a client that
+/// sent "locked" twice would leave a player pressing a key that does nothing.
+/// The wire carries the lock bit but never the owner, so whether this door is
+/// yours is the server's answer and arrives as `REFUSE_D_OWNER`.
+fn lock_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
+    if pick.verb != Verb::Door {
+        toast.say("no door in reach");
+        return;
+    }
+    let (cx, cz, level, loc, want) = (pick.cx, pick.cz, pick.level, pick.loc, !pick.locked);
+    send(net, toast, "lock", |buf| {
+        protocol::encode_action_lock(cx, cz, level, loc, want, buf)
+    });
+}
+
+/// `U` — take the nearest piece one rung up the material ladder.
+///
+/// Deployables have no ladder, so a nearest that resolved to one is reported
+/// rather than sent: `ACT_UPGRADE` addresses the piece store only, and the
+/// grid lets a door and its doorway share an address, so "upgrade the thing
+/// in front of me" is genuinely ambiguous at exactly one kind of spot.
+fn upgrade_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
+    let Some(t) = near else {
+        toast.say("nothing to upgrade in reach");
+        return;
+    };
+    if t.store != Store::Piece {
+        toast.say("that is not a building piece");
+        return;
+    }
+    let core = &net.session.core;
+    let Some(material) = structure::next_material(&core.piece_defs, core.piece_defs_have, t.row)
+    else {
+        // `REFUSE_B_TIER`'s own sentence, said before the round trip.
+        toast.say("nothing to upgrade into");
+        return;
+    };
+    let (cx, cz, level, loc) = (t.cx, t.cz, t.level, t.loc);
+    send(net, toast, "upgrade", |buf| {
+        protocol::encode_action_upgrade(cx, cz, level, loc, material, buf)
+    });
+}
+
+/// `R` — mend the nearest structure, either store.
+fn repair_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
+    let Some(t) = near else {
+        toast.say("nothing to repair in reach");
+        return;
+    };
+    if !t.damaged() && t.hp_max > 0 {
+        // `REFUSE_B_INTACT`'s sentence, said before the round trip. Guarded
+        // on a known maximum: an undripped row reports 0 and the server is
+        // the one that knows.
+        toast.say("not damaged");
+        return;
+    }
+    let (deploy, cx, cz, level, loc) = (t.store.is_deploy(), t.cx, t.cz, t.level, t.loc);
+    send(net, toast, "repair", |buf| {
+        protocol::encode_action_repair(deploy, cx, cz, level, loc, buf)
+    });
+}
+
+/// `X` — plant the held throwable on the nearest structure.
+///
+/// The raid verb, and it was unwired on **both** clients (`NOW.md` §0r item
+/// 1: "No key plants one — the ui lane owns this. `client_action_throw` ...
+/// is exported; nothing in `web/src` calls it"). `X` because every adjacent
+/// letter is taken and the reference genre puts throwables off the main
+/// verb row.
+///
+/// Whether the held item is a throwable at all is the sim's verdict — the
+/// client carries no fuse table and inventing one would be a countdown that
+/// disagrees with the charge.
+fn throw_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
+    let Some(t) = near else {
+        toast.say("nothing to plant one on");
+        return;
+    };
+    let (deploy, cx, cz, level, loc) = (t.store.is_deploy(), t.cx, t.cz, t.level, t.loc);
+    send(net, toast, "throw", |buf| {
+        protocol::encode_action_throw(deploy, cx, cz, level, loc, buf)
+    });
 }
 
 /// A container panel is only useful with the inventory up — every drag it

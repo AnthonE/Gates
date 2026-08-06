@@ -245,6 +245,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<menu::Picked>()
             .init_resource::<pause::Chosen>()
             .init_resource::<verbs::Aimed>()
+            .init_resource::<verbs::Near>()
             .init_resource::<death::Answer>()
             .init_resource::<ghost::Ghost>()
             .init_resource::<hud::Toast>()
@@ -427,7 +428,12 @@ impl Plugin for GatesRenderPlugin {
         // drawn, so the drawing has to be this frame's.
         .add_systems(
             Update,
-            (ghost::level_keys, ghost::track, ghost::place_key)
+            (
+                ghost::level_keys,
+                ghost::track,
+                ghost::place_key,
+                ghost::deploy_key,
+            )
                 .chain()
                 .after(input::place_eye)
                 .run_if(in_state(Screen::InWorld)),

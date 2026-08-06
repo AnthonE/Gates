@@ -40,3 +40,4 @@ pub mod interact;
 pub mod place;
 pub mod refusals;
 pub mod slots;
+pub mod structure;

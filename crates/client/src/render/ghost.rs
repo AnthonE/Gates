@@ -239,6 +239,54 @@ pub fn place_key(
     }
 }
 
+/// Right-click **outside** build mode places the held deployable.
+///
+/// Without this a box, a bag and a furnace cannot be put down at all — which
+/// keeps the container panel and respawn-on-bag unreachable however well they
+/// are drawn. `DeployDef::item` is the item placement consumes, so the held
+/// hotbar slot IS the choice and no second wheel is owed; the reference does
+/// it exactly this way.
+///
+/// The aimed address is `place::target` with a plane shape, because every
+/// deployable that is not a door stands on the cell body. A door goes in a
+/// doorway edge, and the sim answers `REFUSE_D_DOOR` for one aimed anywhere
+/// else — the client does not try to guess which, because guessing wrong
+/// costs the player the item.
+pub fn deploy_key(
+    mouse: Res<ButtonInput<MouseButton>>,
+    net: NonSend<Net>,
+    look: Res<Look>,
+    mut toast: ResMut<Toast>,
+    ui: Option<Res<Ui>>,
+    chat: Option<Res<super::chat::Chat>>,
+) {
+    let busy = ui.map(|u| u.panel != super::panels::Panel::None).unwrap_or(false)
+        || chat.map(|c| c.open()).unwrap_or(false);
+    if busy || !mouse.just_pressed(MouseButton::Right) {
+        return;
+    }
+    let core = &net.session.core;
+    let held = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
+    let Some(row) = crate::ui::structure::row_for_item(
+        &core.deploy_defs,
+        core.deploy_defs_have,
+        held.item,
+    ) else {
+        return; // not holding a deployable; nothing to say about it
+    };
+    let [x, _, z] = core.predict.render_position();
+    let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
+    let t = crate::ui::place::target(x, z, fx, fz, sim_core::build::SHAPE_FOUNDATION, 0);
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    match protocol::encode_action_deploy(row as u16, t.cx, t.cz, t.level, t.loc, &mut buf) {
+        Ok(len) => match net.session.send_action(&buf[..len]) {
+            Ok(()) => {}
+            Err(e) => toast.say(e.to_string()),
+        },
+        Err(e) => toast.say(format!("that deployable would not encode ({e:?})")),
+    }
+}
+
 /// Drop the ghost when the world goes.
 pub fn forget(mut ghost: ResMut<Ghost>) {
     *ghost = Ghost::default();
