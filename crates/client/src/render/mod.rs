@@ -21,6 +21,9 @@ use crate::Session;
 pub mod bodies;
 pub mod capture;
 pub mod clutter;
+// The death screen. Dying used to end the session: `dead` was set and read
+// by nothing, and `ACT_RESPAWN` had no key.
+pub mod death;
 pub mod hud;
 pub mod input;
 pub mod loading;
@@ -233,6 +236,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<menu::Picked>()
             .init_resource::<pause::Chosen>()
             .init_resource::<verbs::Aimed>()
+            .init_resource::<death::Answer>()
             .init_resource::<hud::Toast>()
             .init_resource::<Settings>()
             .insert_non_send_resource(menu::Connecting::default());
@@ -331,6 +335,23 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(in_state(Screen::Paused)),
         )
         .add_systems(Update, pause::open.run_if(in_state(Screen::InWorld)));
+
+        // ---- the death screen ----------------------------------------
+        // `watch` runs in `InWorld` and nowhere else: a death that lands
+        // while the Esc menu is up raises the screen on resume, which is the
+        // right order — two full-screen states cannot both be entered.
+        app.add_systems(
+            OnEnter(Screen::Dead),
+            (death::enter, death::setup).chain(),
+        )
+        .add_systems(OnExit(Screen::Dead), death::teardown)
+        .add_systems(
+            Update,
+            (death::click, death::keys, death::act, death::awaken)
+                .chain()
+                .run_if(in_state(Screen::Dead)),
+        )
+        .add_systems(Update, death::watch.run_if(in_state(Screen::InWorld)));
 
         // ---- settings ------------------------------------------------
         // The two `apply_*` systems are deliberately NOT gated on the screen

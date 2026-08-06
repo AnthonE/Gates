@@ -57,6 +57,11 @@ pub enum Screen {
     InWorld,
     /// The Esc menu. The world is still connected and still pumping. `pause`.
     Paused,
+    /// This body died and has not answered the respawn yet. The world is
+    /// still connected, still pumping and still streaming behind the wash —
+    /// what stops is `input::gather`, so a corpse does not walk or swing.
+    /// `death`.
+    Dead,
     /// Reachable from `Menu` and from `Paused`; `settings::Settings::back`
     /// carries which. `settings`.
     Settings,
