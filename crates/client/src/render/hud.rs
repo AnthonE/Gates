@@ -39,6 +39,7 @@ pub fn setup(
     // The hotbar: six cells, bottom centre.
     commands
         .spawn((
+            super::WorldEntity,
             Node {
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(18.0),
@@ -67,6 +68,7 @@ pub fn setup(
 
     // The vitals stack: right side, small, never centred.
     commands.spawn((
+        super::WorldEntity,
         Vitals,
         Node {
             position_type: PositionType::Absolute,

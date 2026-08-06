@@ -54,25 +54,31 @@ pub fn gather(
     mut net: NonSendMut<Net>,
     mut look: ResMut<Look>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    settings: Res<super::settings::Settings>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
 ) {
-    // Pointer lock on click, released on Escape — the browser client's
-    // contract, which players already know from every other game.
+    // Pointer lock on click — the browser client's contract, which players
+    // already know from every other game. **Releasing it is no longer here**:
+    // Escape opens the Esc menu (`pause::open`), and that screen owns letting
+    // the pointer go and taking it back, because a released pointer with no
+    // menu under it was a state the player could not tell from a hang.
     if let Ok(mut c) = cursor.single_mut() {
         if mouse.just_pressed(MouseButton::Left) {
             c.grab_mode = CursorGrabMode::Locked;
             c.visible = false;
         }
-        if keys.just_pressed(KeyCode::Escape) {
-            c.grab_mode = CursorGrabMode::None;
-            c.visible = true;
-        }
         if !look.frozen && c.grab_mode == CursorGrabMode::Locked {
             let d = motion.delta;
-            look.yaw += d.x * MOUSE_RAD_PER_PX;
-            look.pitch = (look.pitch - d.y * MOUSE_RAD_PER_PX).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+            // Sensitivity scales the free-running radians BEFORE the
+            // quantization below, never the quantization itself — see
+            // `settings`'s header. Invert flips the pitch delta only; a yaw
+            // inversion is not a setting any reference offers.
+            let rad = MOUSE_RAD_PER_PX * settings.sensitivity;
+            let dy = if settings.invert_look { -d.y } else { d.y };
+            look.yaw += d.x * rad;
+            look.pitch = (look.pitch - dy * rad).clamp(-PITCH_LIMIT, PITCH_LIMIT);
         }
     }
 

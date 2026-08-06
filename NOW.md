@@ -20,14 +20,21 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0v · The server menu landed — what it still cannot show *(client lane)*
+## 0v · The menu flow landed — what it still cannot show *(client lane)*
+
+**Extended 2026-08-06 (client lane):** `Loading`, `Paused` and `Settings` are
+states now. The welcome no longer means "in the world" — the ~25 frames of ring
+building have a screen with a real bar on it, Esc opens the intro screen from
+inside the world, disconnect actually tears the world down (`WorldEntity` +
+`render::world_teardown`), and settings has the reference's rail-and-pane shape
+with five settings that do something.
 
 Landed (operator, 2026-08-06 — `DECISIONS.md`): the native client opens on a
-server-select screen instead of connecting before the window exists.
-`Screen::{Menu,Connecting,InWorld}`, `WorldId` built on entering the world
-because the seed arrives with the welcome, and **a failed connect returns to the
-menu with the reason** instead of `exit(1)`. `--capture` and `--server` skip the
-screen, so the visual gate and the launcher's join path are untouched.
+server-select screen instead of connecting before the window exists. A
+`Screen` state machine, `WorldId` built when the welcome names the seed, and
+**a failed connect returns to the menu with the reason** instead of `exit(1)`.
+`--capture` and `--server` skip the server list (they have already chosen), so
+the visual gate and the launcher's join path are untouched.
 `ci/shardlist.py` writes `scry-shardlist-v1` and is gated; scry's launcher now
 bounds and validates that document instead of rendering it raw.
 
@@ -41,13 +48,25 @@ Remaining, in order:
    omitted, never zeroed — the shard serves no status endpoint. `stats.rs`
    already holds `joins`/`leaves` as atomics and its header names the status
    page as what would read them. That endpoint is the whole slice.
-3. **No gate renders the menu.** The screen is covered by unit tests
-   (`shardlist.rs`, `menu.rs`) and by scry's suite, but nothing photographs it —
-   `RENDER.md`'s capture harness enters `InWorld` on frame one by design. A
-   menu vantage is the cheapest visual gate in the repo and does not exist.
-4. **Esc quits from the menu; nothing leaves the world.** `Screen::Menu` is now
-   somewhere to return to, which is the missing half of `MENUS.md`'s
-   Escape/options row.
+3. **`ci/gates.sh` never builds `--features render`, so nothing in CI compiles
+   the native client at all** — the code tier's `clippy --workspace` and
+   `cargo test --workspace` both run with the feature off (it is off by default
+   for the ~20 s clippy that would otherwise pull Bevy), and the renderer tier
+   is `web/`-only. `RENDER.md` R0 names the probe that would close it
+   (`clippy -p client --features render --all-targets -D warnings` plus a
+   `--capture` run); both were run by hand for this slice and both are green.
+   Until it is wired, the four menu screens are covered only by unit tests and
+   nothing photographs one — and a menu vantage is now cheaper than it was,
+   because the capture harness passes THROUGH `Loading`.
+4. **Settings are forgotten on exit.** `settings.rs` holds five working
+   settings and writes none of them: a config path, a format and a version for
+   when a knob is renamed is its own slice, and the footer says so rather than
+   pretending. `DECISIONS.md` §open "settings v0" is the row.
+5. **No `Screen::Disconnected`.** A shard that drops the session mid-play still
+   leaves the client sitting in a dead world — `pause::Disconnect` is a verb
+   the *player* takes, and the involuntary half has no state. `world_teardown`
+   is now the piece that makes it cheap to add.
+
 ## 0t · the native pine is generated — what it bought, and what it owes
 
 **Landed.** `crates/client/src/render/tree.rs`: the near-ring conifer is

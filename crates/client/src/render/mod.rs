@@ -23,15 +23,36 @@ pub mod capture;
 pub mod clutter;
 pub mod hud;
 pub mod input;
+pub mod loading;
 pub mod menu;
+pub mod pause;
 pub mod props;
 pub mod rig;
+pub mod settings;
 pub mod sky;
 pub mod terrain_mesh;
 pub mod textures;
 pub mod tree;
+pub mod ui;
 
 pub use menu::{Menu, Rt, Screen};
+pub use settings::Settings;
+
+/// Marks an entity the WORLD owns, as opposed to one a menu owns.
+///
+/// It exists because leaving a shard is now a state change rather than an
+/// `exit(1)`, and a world that is left has to actually go: every ground chunk,
+/// every scatter parent, every clutter tile, every remote body, the rig, the
+/// sun and the HUD — 81 root entities on the first disconnect this was measured
+/// on. Marking the roots is the cheapest complete answer: each module already
+/// despawns its own entities when they stream out, and this is the same
+/// despawn asked for all of them at once.
+///
+/// **Roots only.** Everything else hangs off one of them (the viewmodel and
+/// the skybox are the camera's, every prop is its chunk parent's), so a
+/// recursive despawn of the marked set is the whole world and nothing else.
+#[derive(Component)]
+pub struct WorldEntity;
 
 /// The connected session.
 ///
@@ -94,14 +115,77 @@ pub const EYE_HEIGHT: f32 = 1.6;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Stream;
 
+/// Is there a world to run this frame?
+///
+/// **Not a state test alone, and that is the whole point.** Every system it
+/// gates reads `Net` or `WorldId`, and a missing non-send resource is a panic
+/// rather than a skip — so the question has to be "does the world exist",
+/// which four of the six screens can answer yes to and two cannot. `Settings`
+/// is the case that forces it: opened from the Esc menu there is a live
+/// session behind it, opened from the server list there is nothing at all,
+/// and it is one state either way.
+pub fn world_running(state: Res<State<Screen>>, world: Option<Res<WorldId>>) -> bool {
+    world.is_some() && !matches!(state.get(), Screen::Menu | Screen::Connecting)
+}
+
+/// Drop the world: every entity it spawned, every ring that indexed them, and
+/// the two resources that made it a world rather than a menu.
+///
+/// Runs on entering `Screen::Menu`, which is both the disconnect path and the
+/// app's first frame — on the first frame it finds nothing and does nothing,
+/// which is why it needs no "have we ever had a world" flag.
+///
+/// **The rings are reset rather than drained.** Each holds a map from a cell
+/// to the entity that draws it; a ring that kept its keys after the entities
+/// were despawned would report a chunk resident that is not, and the next
+/// world's loading screen would sit at a bar it could never fill.
+// Eight parameters because the world is eight things: its entities, the four
+// indexes that point at them, and the two view resources that would otherwise
+// carry the last world's eye into the next one.
+#[allow(clippy::too_many_arguments)]
+pub fn world_teardown(
+    mut commands: Commands,
+    entities: Query<Entity, With<WorldEntity>>,
+    mut ring: ResMut<terrain_mesh::Ring>,
+    mut props: ResMut<props::PropRing>,
+    mut clutter: ResMut<clutter::ClutterRing>,
+    mut bodies: ResMut<bodies::Bodies>,
+    mut eye: ResMut<Eye>,
+    mut look: ResMut<input::Look>,
+) {
+    let mut n = 0usize;
+    for e in entities.iter() {
+        commands.entity(e).despawn();
+        n += 1;
+    }
+    if n == 0 {
+        // Nothing was up: the app just started. Say nothing and touch nothing.
+        return;
+    }
+    *ring = terrain_mesh::Ring::default();
+    *props = props::PropRing::default();
+    *clutter = clutter::ClutterRing::default();
+    *bodies = bodies::Bodies::default();
+    *eye = Eye::default();
+    *look = input::Look::default();
+    commands.remove_resource::<WorldId>();
+    // `Commands` cannot remove a non-send resource, the same asymmetry
+    // `menu::poll_connect` goes through the world for on the way in.
+    commands.queue(|world: &mut World| {
+        world.remove_non_send_resource::<Net>();
+    });
+    info!("gates: left the world - {n} root entities despawned");
+}
+
 /// How the app starts.
 ///
 /// **`WorldId` is no longer built here**, and that is the structural change
 /// the menu forced: it needs the seed, the seed comes from the welcome, and
 /// the welcome does not exist until something has connected. It is inserted
-/// on entering `Screen::InWorld` instead — by `menu::poll_connect` when the
-/// player picked a shard, or by `gates.rs` when a `--server`/`--capture` run
-/// already connected before the window opened.
+/// with the session instead — by `menu::poll_connect` when the player picked
+/// a shard, or by `gates.rs` when a `--server`/`--capture` run already
+/// connected before the window opened. Its presence is also the question
+/// `world_running` asks, which is why the two land together.
 ///
 /// A struct rather than a two-variant enum, because the menu's inputs are
 /// the same either way: **`connected` changes which screen opens first, not
@@ -114,9 +198,9 @@ pub struct Start {
     pub direct: String,
     /// The shard list to fetch, if any.
     pub servers_url: Option<String>,
-    /// `gates.rs` already connected, so open in the world. The probe harness
-    /// and a launcher join both arrive this way: the first must not wait on
-    /// a click, the second has already chosen.
+    /// `gates.rs` already connected, so skip the server list and open on the
+    /// loading screen. The probe harness and a launcher join both arrive this
+    /// way: the first must not wait on a click, the second has already chosen.
     pub connected: bool,
 }
 
@@ -135,13 +219,22 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<clutter::ClutterRing>()
             .init_resource::<bodies::Bodies>()
             .init_resource::<menu::Picked>()
+            .init_resource::<pause::Chosen>()
+            .init_resource::<Settings>()
             .insert_non_send_resource(menu::Connecting::default());
 
         // `Menu` is inserted either way, because a system that reads it must
-        // not care which door the app came through — and a disconnect
-        // returning to the menu is the obvious next slice (`NOW.md` §0v).
+        // not care which door the app came through — and the disconnect that
+        // returns to it is what `pause` now spends a verb on.
+        //
+        // **A connected start opens on `Loading`, not `InWorld`**, and that
+        // includes `--capture`: the world's rings take ~25 frames to fill
+        // whoever asked for them, and the state that owns that interval is
+        // the one that owns the rig. A capture run entering `InWorld` on
+        // frame one would enter a state whose `OnEnter` no longer builds
+        // anything, and photograph an empty world.
         app.insert_state(if self.start.connected {
-            Screen::InWorld
+            Screen::Loading
         } else {
             Screen::Menu
         })
@@ -149,6 +242,17 @@ impl Plugin for GatesRenderPlugin {
             &self.start.direct,
             self.start.servers_url.clone(),
         ));
+        // The direct address is also what the loading and pause screens name,
+        // and on a `--server` start nothing has been "picked" — so the field
+        // those screens read is seeded here rather than left empty.
+        if self.start.connected {
+            if let Some(mut c) = app
+                .world_mut()
+                .get_non_send_resource_mut::<menu::Connecting>()
+            {
+                c.addr = self.start.direct.clone();
+            }
+        }
 
         // Textures load at Startup rather than on entering the world: they
         // are wanted whichever screen comes first, and warming them while a
@@ -156,49 +260,118 @@ impl Plugin for GatesRenderPlugin {
         app.add_systems(Startup, textures::load);
 
         // ---- the menu ------------------------------------------------
-        app.add_systems(OnEnter(Screen::Menu), (menu::begin_fetch, menu::setup))
-            .add_systems(OnExit(Screen::Menu), menu::teardown)
+        // `world_teardown` first: entering the menu from a live world is the
+        // disconnect path, and the menu must not be built over a world that
+        // is still drawing behind it.
+        app.add_systems(
+            OnEnter(Screen::Menu),
+            (world_teardown, menu::begin_fetch, menu::setup).chain(),
+        )
+        .add_systems(OnExit(Screen::Menu), menu::teardown)
+        .add_systems(
+            Update,
+            (
+                menu::poll_fetch,
+                menu::rebuild_on_new_rows,
+                menu::refresh_status,
+                menu::click,
+                menu::keys,
+                menu::take_pick,
+            )
+                .chain()
+                .run_if(in_state(Screen::Menu)),
+        )
+        .add_systems(
+            OnEnter(Screen::Connecting),
+            (menu::begin_connect, menu::connecting_screen),
+        )
+        .add_systems(OnExit(Screen::Connecting), menu::teardown)
+        .add_systems(
+            Update,
+            menu::poll_connect.run_if(in_state(Screen::Connecting)),
+        );
+
+        // ---- the loading screen --------------------------------------
+        // `loading::update` runs AFTER the streamers (`Stream`), so the bar
+        // reports this frame's rings rather than last frame's — and so the
+        // frame that finishes the ring is the frame that ends the screen.
+        app.add_systems(OnEnter(Screen::Loading), loading::setup)
+            .add_systems(OnExit(Screen::Loading), loading::teardown)
             .add_systems(
                 Update,
-                (
-                    menu::poll_fetch,
-                    menu::rebuild_on_new_rows,
-                    menu::refresh_status,
-                    menu::click,
-                    menu::keys,
-                    menu::take_pick,
-                )
-                    .chain()
-                    .run_if(in_state(Screen::Menu)),
-            )
-            .add_systems(
-                OnEnter(Screen::Connecting),
-                (menu::begin_connect, menu::connecting_screen),
-            )
-            .add_systems(OnExit(Screen::Connecting), menu::teardown)
-            .add_systems(
-                Update,
-                menu::poll_connect.run_if(in_state(Screen::Connecting)),
+                loading::update
+                    .after(Stream)
+                    .run_if(in_state(Screen::Loading)),
             );
+
+        // ---- the Esc menu --------------------------------------------
+        app.add_systems(
+            OnEnter(Screen::Paused),
+            (pause::enter, pause::setup).chain(),
+        )
+        .add_systems(OnExit(Screen::Paused), pause::teardown)
+        .add_systems(
+            Update,
+            (pause::click, pause::keys, pause::act)
+                .chain()
+                .run_if(in_state(Screen::Paused)),
+        )
+        .add_systems(Update, pause::open.run_if(in_state(Screen::InWorld)));
+
+        // ---- settings ------------------------------------------------
+        // The two `apply_*` systems are deliberately NOT gated on the screen
+        // being open: a setting is a property of the client, not of the panel
+        // that changed it, and the camera it applies to may not exist until
+        // two states later.
+        app.add_systems(OnEnter(Screen::Settings), settings::setup)
+            .add_systems(OnExit(Screen::Settings), settings::teardown)
+            .add_systems(
+                Update,
+                (settings::click, settings::rebuild, settings::keys)
+                    .chain()
+                    .run_if(in_state(Screen::Settings)),
+            )
+            .add_systems(Update, (settings::apply_view, settings::apply_window));
+
+        // One hover handler for every screen that has buttons on it.
+        app.add_systems(Update, ui::hover);
 
         // ---- the world -----------------------------------------------
         // Every one of these reads `WorldId` or `Net`, neither of which
         // exists before the welcome. `OnEnter` is what makes that safe:
         // as `Startup` systems they would have run against a resource that
         // was not there yet and panicked on the first frame of the menu.
+        //
+        // **They hang off `Loading`, not `InWorld`**, because the loading
+        // screen is where the world is built — the rig has to be up for the
+        // streamers to have somewhere to put chunks, and the 3D pass has to
+        // be running for the pipelines to specialize before the player is
+        // looking at the result.
         app.add_systems(
-            OnEnter(Screen::InWorld),
+            OnEnter(Screen::Loading),
             (rig::setup, terrain_mesh::setup_water),
         )
         // The HUD's viewmodel is parented to the camera, so it must be
         // built after the rig has spawned one.
-        .add_systems(OnEnter(Screen::InWorld), hud::setup.after(rig::setup))
+        .add_systems(OnEnter(Screen::Loading), hud::setup.after(rig::setup))
         // The cloud deck hangs on the camera, so it waits for the rig too.
-        .add_systems(OnEnter(Screen::InWorld), sky::setup.after(rig::setup))
+        .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
+        // Input is the one thing that is `InWorld` and nothing else: it is
+        // the only system that writes what the sim reads, and a player
+        // reading a settings pane must not be swinging an axe.
+        .add_systems(
+            Update,
+            input::gather
+                .before(input::place_eye)
+                .run_if(in_state(Screen::InWorld)),
+        )
+        // Everything else runs wherever the world exists — loading, playing,
+        // paused, or reading settings from the pause menu. `place_eye` pumps
+        // the session, and a session that stops being read is a connection
+        // that stalls and then teleports on resume.
         .add_systems(
             Update,
             (
-                input::gather,
                 input::place_eye,
                 (
                     terrain_mesh::stream,
@@ -212,7 +385,7 @@ impl Plugin for GatesRenderPlugin {
                     .in_set(Stream),
             )
                 .chain()
-                .run_if(in_state(Screen::InWorld)),
+                .run_if(world_running),
         );
 
         if let Some(dir) = &self.capture {
@@ -220,13 +393,14 @@ impl Plugin for GatesRenderPlugin {
             app.insert_resource(capture::Capture::new(dir.clone()));
             // Ahead of `gather`, because it owns the view on a capture run
             // and `gather` must not fight it for the same frame. Gated on
-            // the world state like everything else it races with — a capture
-            // run enters `InWorld` on frame one, so this costs it nothing.
+            // `world_running` rather than on `InWorld`: a capture run now
+            // opens on `Loading` like every other connected start, and this
+            // has to keep aiming at the first vantage while the rings fill —
+            // those are the frames that warm the pipelines the shots are
+            // taken on.
             app.add_systems(
                 Update,
-                capture::drive
-                    .before(input::gather)
-                    .run_if(in_state(Screen::InWorld)),
+                capture::drive.before(input::gather).run_if(world_running),
             );
         }
     }
