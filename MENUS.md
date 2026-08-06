@@ -87,14 +87,19 @@ that persists across a wipe.
 
 **HAVE** means a player can open it today.
 
+> **One client.** This table used to annotate rows `(browser)` and `(native)`.
+> The browser client is cut (`DECISIONS.md` 2026-08-06), so an unqualified
+> **HAVE** now means the native client has it, and a `(browser)` annotation
+> left anywhere below is a row nobody has re-checked since the cut.
+
 | screen | reference evidence | Gates | note |
 |---|---|---|---|
-| Hotbar | `inventory.jpeg` (6 cells) | **HAVE** | `hud.js`, keys 1–6, `sel` on the input frame |
+| Hotbar | `inventory.jpeg` (6 cells) | **HAVE** | keys 1–6, `sel` on the input frame. Native: `render/hud.rs` |
 | Vitals (hp / hydration / calories) | `inventory.jpeg` bottom-right | **HAVE** | a 0-max meter is undrawn, not drawn empty |
 | Chat + log | — | **HAVE** | local 20 m default, `/g` global. **Both clients** since 2026-08-06 — the native composer is `T`/`Enter`, and `/g` is stripped before `sanitize` so choosing the channel costs none of the 48-byte cap |
 | Craft panel + queue | `crafting.png` | **HAVE** (native) · **PARTIAL** (browser) | The native client's `Tab` screen has the reference frame's shape: a category rail with live counts, a search box, a scrolling recipe grid with unaffordable rows dimmed rather than hidden, a detail pane with craft time and the station badge, the AMOUNT/ITEM TYPE/TOTAL/HAVE table, a favourite star, a quantity stepper with an "all you can pay for" step, and a queue strip with the head job's countdown and cancel on click. **The rail is not the reference's**: it buckets by station, deployable-ness and component-ness rather than by item class, because `EventMsg::Catalog` ships names and no class — see `crate::ui::craft`. The browser client is still the flat list |
 | Build strip / ghost | `building.jpeg` | **HAVE** (both) | Browser: wheel cycles row, R/F change level, RMB places. Native: the **radial** the operator's frame shows — hold `B`, outer ring shape, inner ring material, centre reads name, blurb, hp and price, a segment the content has no piece for drawn dead — **and since 2026-08-06 it places.** `ui/place.rs` aims the cell (edge pieces re-address to the canonical west/north boundary; a foundation ignores the level stepper), `render/ghost.rs` draws it, and the ghost is coloured by a local verdict that answers the four refusals a client can check *in the server's own words*. A red ghost still sends — the verdict is advisory, and vetoing on it would make its blind spots authoritative |
-| Compass strip | `gameplayfoundbase.jpeg`, `mapstylized.jpg` | **HAVE** | `hud.js`, 90° window on a 450° band, letters every 45 / numbers every 10. Bearing only — the reference also pins markers to it (death skull, map pin) and ours carries none, because no world position is exposed client-side and `ALPHA.md` §1 has a rule about position that an operator should read first |
+| Compass strip | `gameplayfoundbase.jpeg`, `mapstylized.jpg` | **HAVE** | eight-point card plus degrees, from `look::bearing_deg` so the map and the strip cannot disagree. Bearing only — the reference also pins markers to it (death skull, map pin) and ours carries none, because no world position is exposed client-side and `ALPHA.md` §1 has a rule about position that an operator should read first |
 | **Inventory grid** | `inventory.jpeg` — 6×4 main + wear doll + quick-craft | **PARTIAL** | 30 gated slots (6 belt + 24 grid), slot-indexed and drag/drop against the sim's move verb, **on both clients** — the native one landed 2026-08-06 with four gestures (drag, right-drag half, ctrl-drag one, right-click uses) and a ghost under the cursor. No wear doll and no quick-craft, which is what keeps it off HAVE |
 | **Container panel** | `storageandtoolchest.jpeg` | **HAVE** | bag 30 / box 12 against `limits.rs`, cross-container drag both ends, close abandons what it cannot resolve. Was marked MISSING here long after it shipped — the judge's ranked fix 2 on `pass-20260805-074623-01` |
 | **Loot panel (bags)** | — | **PARTIAL** | `backpack.rs` says a container UI "is its own slice" |

@@ -533,9 +533,14 @@ export at wipe, wipe machinery end-to-end on a test shard.
 **M4 — the counter + the door.** Skin catalog, till verification
 (three-valued), entitlements by wallet, wallet-bind flow, first public
 shard, and the board's delivery: repo + playable link + a recorded round
-whose replay hash checks. The playable link is the **web demo** — that is
-the job second class was given (`DECISIONS.md` 2026-08-05), and it is why
-the browser build survives the tiering rather than being cut.
+whose replay hash checks. The playable link **was** the web demo — the job
+second class was given (`DECISIONS.md` 2026-08-05). **That job no longer
+exists**: the browser client is cut (`DECISIONS.md` 2026-08-06), and with it
+the only artifact a board visitor could click and play. What replaces it is
+`DECISIONS.md` §open ("the board's playable link") and is unanswered — the
+candidates are the depot behind the scry launcher, a recorded round played
+back off the WAL, or a board delivery of repo + replay hash with no link at
+all. Until one is spoken this clause names a thing that is not built.
 
 ## 12 · CI gates (the walls)
 

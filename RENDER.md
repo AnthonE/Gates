@@ -446,9 +446,15 @@ render --all-targets -- -D warnings` is green and it caught three real
 findings on its first run — before it, cargo skipped `gates.rs` entirely and
 a bin containing `this is not rust at all !!!` would have passed.
 
-**The tier.** `ci/gates.sh` grows a native renderer tier beside the browser
-one, scheduled the same way `renderer_touched` schedules today's: a diff
-touching `crates/client/**` or `assets/**` runs it. Bevy is several hundred
+**The tier.** `ci/gates.sh` grows a native renderer tier. It was written as
+"beside the browser one"; the browser client is cut (`DECISIONS.md`
+2026-08-06), so it is not beside anything — **it is the renderer tier**, and
+the three browser gates it was going to sit next to are dead weight nobody
+owes a fix. Scheduled the way `renderer_touched` schedules today's: a diff
+touching `crates/client/**` or `assets/**` runs it. **The compile half
+landed 2026-08-06** — `ci/gates.sh` now runs `clippy -p client --features
+render -D warnings` plus the three renderer-tier suites. The half that
+photographs anything did not. Bevy is several hundred
 crates and minutes of build; that cost belongs in the tier that owns it, never
 in the ~106 s code tier. Use `bevy/dynamic_linking` for local iteration.
 
@@ -486,10 +492,16 @@ byte-identical with and without the renderer attached, same seed, same WAL. It
 is the only mechanical answer to "did Bevy start deciding," and it is worth
 more than the four pixel assertions above it.
 
-**What this does NOT do** is claim the browser gates' result. `web/` keeps its
-gates until the native client can do what it does; a run that skipped a tier
-prints its own final line and never "ALL GATES GREEN" — the existing script's
-discipline, extended, not loosened.
+**What this does NOT do** is claim the browser gates' result — and that
+sentence has changed meaning. It was written when `web/` kept its gates
+"until the native client can do what it does". The browser client is cut
+(`DECISIONS.md` 2026-08-06) and that day never came: the native client
+inherited the product without inheriting a single visual gate. So the honest
+statement is now the uncomfortable one — **there is no gate in this repo that
+looks at a frame.** `browser_smoke`'s 12 probes and `vantages`' 36 checks
+still run and still guard a retired client. A run that skips a tier still
+prints its own final line and never "ALL GATES GREEN"; what is gone is the
+tier that made that discipline mean something.
 
 ---
 
@@ -544,9 +556,12 @@ capture passes only if all of it holds:
   identical instances;
 - evidence a person is playing: viewmodel, HUD, or both.
 
-R1 through R6 exist to satisfy that list. When a capture passes it, the
-browser client can start being deleted (`NOW.md` §1), and not one slice
-earlier.
+R1 through R6 exist to satisfy that list. That sentence used to end "when a
+capture passes it, the browser client can start being deleted, and not one
+slice earlier" — **the order reversed**: the browser client was cut on
+2026-08-06 by operator word, before any native capture passed this list. The
+list is unchanged and still the bar; what is gone is the fallback that made
+missing it survivable.
 
 ---
 

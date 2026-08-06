@@ -20,6 +20,33 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0y · `web/` is cut — decide what that means to the tree *(operator input wanted)*
+
+**Spoken 2026-08-06** (`DECISIONS.md`): the browser client is cut. The row
+deliberately did **not** delete anything, because three separable questions
+hide inside "cut it" and a loop should not answer any of them alone:
+
+1. **The three gates.** `ui smoke` (7,200 lines), `browser smoke` (5,179) and
+   `vantages` guard a retired client and cost every full `ci/gates.sh` run.
+   `browser smoke` additionally fails on this box for a documented
+   environmental reason (two live WebGL renderers on a software rasterizer,
+   `CLAUDE.md`) — so it is now a permanently red gate protecting nothing,
+   which is the worst state a gate can be in. Delete, or gate behind an
+   env flag, or leave.
+2. **`web/` itself.** ~17 k lines. It is the reference implementation of
+   every verb the native client now carries, and several of its comments
+   record bugs that cost a pass to find. `CLAUDE.md` now says *read it, do
+   not maintain it* — which is a stable state, if the tree can carry it.
+3. **What `client-wasm` is for.** It stays either way: it is the native
+   client's core as an rlib. But `test_parity_wasm` and the wasm build exist
+   because a browser ran it, and parity is also wall 1's enforcement. Keeping
+   both is defensible (two codegen backends agreeing is a real determinism
+   check, and it is cheap); dropping the wasm target because nothing ships it
+   is also defensible. **Not a loop's call** — it touches a wall.
+
+Nothing here is urgent. It is written down so the next pass does not
+rediscover that a third of the gate script is dead weight.
+
 ## 0x · The native client can play the game now — what it still owes *(client lane)*
 
 Landed 2026-08-06. Twelve of the wire's sixteen `ACT_*` verbs plus `KIND_CHAT`
@@ -41,9 +68,15 @@ Remaining, in order:
    owed much more). This slice added ~3,500 lines behind that feature and the
    code tier covers only the `crate::ui` half — 94 assertions, all pure. The
    probe is `RENDER.md` R0 and it is two commands. **This is the top item.**
-2. **Nothing photographs any of it.** Panels, chat and the map are
-   deliberately not registered on a `--capture` run, so the visual gate cannot
-   open one — §0w item 3's hole, now four screens wide.
+2. **Nothing in this repo looks at a frame.** This was "the native client has
+   no visual gate yet, and `web/`'s still run"; the browser cut
+   (`DECISIONS.md` 2026-08-06) removed the second half. `browser_smoke`'s 12
+   probes and `vantages`' 36 checks now guard a retired client, and the one
+   that ships has none. Panels, chat, the map and the death screen are also
+   deliberately unregistered on a `--capture` run, so even a native gate could
+   not open one — §0w item 3's hole, now six screens wide. **This and item 1
+   are the same item seen from two ends, and together they are the top of
+   this file.**
 3. **No swing prompt.** `interact.js`'s second resolver (`resolveSwing`, a 2 m
    cone with a vertical window and a point-blank exception over the scatter
    cells) has no native port, so the crosshair names what `E` would do and
@@ -216,7 +249,21 @@ chunk. `map.js`'s `resolveMarks` takes world positions and is already gated, so
 this is a caller change on the ui side and not a rewrite. Ranked gap 1 of
 `pass-20260805-111501-04` is the reason; the container verb is the other half.
 
-## 0a · world lane: skirt residual — the ring's hard edge
+## 0a · ~~world lane: skirt residual — the ring's hard edge~~ **(MOOT)**
+
+**Retired 2026-08-06 by the browser cut** (`DECISIONS.md`). Every line below
+is about `web/src/clutter.js` — a per-frame player-relative shader term, the
+WebGL program-link budget, and the prewarm gate that counts links after
+`inWorld`. None of those exist natively: Bevy specializes pipelines, not GL
+programs, and the native clutter ring is `render/clutter.rs`. **The finding at
+the bottom survives and is worth keeping** — beach skirts are thin because
+`scatter` puts 0.22 prop centres a tile on the coast against 0.95 inland, not
+because the skirt thins itself, and that is the scatter table's business on
+either client. The rest is history. Kept unpruned this pass rather than
+deleted, because whoever builds the native ring's fade should read what the
+browser learned about it first.
+
+<details><summary>the original item</summary>
 
 *(Residual 1, the sand sweep, landed and is deleted. Residual 2 is below and
 its cost has not changed, but its blocker is now named properly.)*
@@ -241,6 +288,8 @@ in the wrong file: beach skirts are thin — 1.19 elements a tile against
 inland's 5.27 — because `scatter` puts 0.22 prop centres a tile on the coast
 against 0.95 inland, not because the skirt thins itself. The two ratios match
 to a tenth. That is the scatter table, not `terrain.rs`'s skirt path.
+
+</details>
 
 ## 0q · The judge-ranked gaps nobody has claimed
 
