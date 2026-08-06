@@ -485,14 +485,29 @@ discipline, extended, not loosened.
 
 ## 6 · Budgets, and where each number comes from
 
+**Three of these were chosen for a browser and are inherited, not re-derived.**
+`DESIGN.md` §9 now says which is which; the short version is that the frame
+target is a hardware floor and survives, while the triangle, draw-call and
+payload ceilings were WebGL and download shaped. A native measurement that
+exceeds one of those three is **evidence about the budget** and not
+automatically a defect — and the fix is a proposal in `DECISIONS.md` §open,
+never a number quietly edited into this table.
+
 | budget | value | source |
 |---|---|---|
-| triangles | < 1.5 M | `DESIGN.md` §9 |
-| draw calls | < 300 | `DESIGN.md` §9 |
-| frame | 60 fps on a mid laptop iGPU | `DESIGN.md` §9 — **measured on a GPU, never on the gate box** |
-| texture payload | < 12 MB before compression | `ART.md` §7 |
+| triangles | < 1.5 M | `DESIGN.md` §9 — **browser-era, not re-derived** |
+| draw calls | < 300 | `DESIGN.md` §9 — **browser-era, not re-derived** |
+| frame | 60 fps on a mid laptop iGPU | `DESIGN.md` §9 — survives the move; **measured on a GPU, never on the gate box** |
+| texture payload | < 12 MB before compression | `ART.md` §7 — **retired**: it was a first-visit download, and a depot install is not one |
 | clutter ring | 5×5 tiles of 16 m, 721 elements/tile peak | `sim-core::terrain`, and it is frame-budget-bound, not design-bound |
 | eye height | 1.6 m | `DECISIONS.md` §open, client cosmetics |
+
+The first thing to actually press on the triangle ceiling is the generated
+conifer: a full 328-tree scatter ring at 5.9 k tris a tree is 1.9 M.
+`crates/client/tests/tree.rs` asserts the affordable ~80 m band and *prints*
+the ring rather than asserting it, precisely because 1.5 M is the number this
+table is unsure of. The billboard LOD (`TERRAIN.md` §4) closes it either way;
+which of the two is the real fix is a measurement nobody has taken.
 
 Every constant this path invents beyond these is **PROPOSED** and goes to
 `DECISIONS.md` §open in the commit that ships it — as a `` `NAME = value` ``

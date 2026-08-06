@@ -86,14 +86,22 @@ do not rediscover)
 - **wtransport must be pinned ≥ commit `0f7609a`** (or a release
   containing it) — 0.7.1 has a two-byte remote panic.
 - A browser datagram write over `maxDatagramSize` **silently succeeds and
-  sends nothing** — clamp every send against the live value.
+  sends nothing** — clamp every send against the live value. Browser-only as
+  a *silent* failure; the native client speaks wtransport directly and the
+  MTU ceiling is still real, so the clamp stays on both paths.
 - `send_datagram()` (drop-oldest), never `send_datagram_wait()` — a
   congestion stall must cost freshness, not latency.
 - **Quantize both sides** or prediction drifts by rounding: the server
   sims on the values it transmits.
-- The client is also a hot path: no per-frame allocations, no closures in
-  the RAF loop, zero-copy typed-array parsing. GC pauses on the client
-  feel identical to server blips.
+- The client is also a hot path, and **half of this trap was JavaScript's,
+  half is not.** Retired with the browser: closures in the RAF loop,
+  typed-array parsing, and GC pauses — Rust has no collector, so the pause
+  class the browser client had to design around does not exist natively.
+  Still true on both: **no per-frame allocations** (a native frame can still
+  stall on an allocator under a chunk build), and the general shape — a
+  client-side hitch feels identical to a server blip to the player, so the
+  client is held to the same discipline as the sim thread even though it is
+  not the sim.
 - Stream-in AND stream-out are budgeted per frame on the client — the
   teardown spike is the half everyone forgets.
 - A suite that skips on a missing dep must say SKIP loudly and exit
@@ -104,7 +112,11 @@ do not rediscover)
   90+ fps while lazy WebGL program links cost 700 ms+ worst-frames in real
   play. Prewarm every program at boot; the gate is a COUNT (no program
   links after `inWorld`, asserted in `browser_smoke`), never a frame-time
-  threshold.
+  threshold. **The mechanism survives the port and is arguably worse
+  natively**: Bevy specializes a pipeline lazily on first use, and a native
+  pipeline compile is a bigger stall than a WebGL link. `RENDER.md` §2
+  carries it across; the native gate is the same shape — a count of
+  pipelines created after the world is up, never a frame time.
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for

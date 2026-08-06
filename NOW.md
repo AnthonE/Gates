@@ -52,6 +52,38 @@ the custom material `RENDER.md` already lists. (3) The needle card is generated
 (`tree::needle_image`, like `sky.rs`'s cubemap); a photographed sprig is a
 later swap, not a prerequisite.
 
+## 0u · the frame budgets are browser numbers and nobody has re-derived them
+
+**Doc pass landed** (`DESIGN.md` §9, `RENDER.md` §6, `ART.md` §7,
+`TERRAIN.md` §4/§6, `NETCODE.md` §4, `CLAUDE.md` traps): every performance
+claim now says which platform it was chosen for. What it found is one real
+open question, and it is not a doc problem.
+
+`DESIGN.md` §9's four budgets were all set for a WebGL page. Three of them
+no longer describe what constrains us:
+
+- **initial load < 15 MB** and `ART.md` §7's **12 MB texture payload** are
+  the same number: a first-visit *download*. A depot install is not one, so
+  the constraint is gone and 2K/4K re-sourcing is unblocked. What is real
+  natively is VRAM and disk, and nothing has measured either.
+- **< 300 draw calls / < 1.5 M tris** are WebGL-shaped. Bevy's automatic
+  batching and a native wgpu backend are not bound where a WebGL context
+  was, and two shipped numbers are already rationed against the 1.5 M:
+  `CLUTTER_RICH_PER_TILE = 96` (a 20% share) and the conifer ring's
+  "over budget" verdict (1.9 M).
+- **60 fps on a mid laptop iGPU** survives — a hardware floor, not a
+  platform one.
+
+**Nothing was renumbered.** These are `(knob)` and therefore spoken, and a
+budget raised by the loop that then justifies the loop's own triangle count
+is exactly the wrong direction of travel. The measurement is small: capture
+on a real GPU at the ring's p90 tree count, read draw calls and frame time
+off `RenderDiagnosticsPlugin` (its wall-clock half is not assertable —
+`CLAUDE.md`), and propose into `DECISIONS.md` §open. Related: the anisotropy
+ceiling `BASE_ANISOTROPY_MAX = 4` was set because *"a second browser tab did
+not reach the world at all on this box"* — the reason is a software
+rasterizer running two tabs, and it does not transfer.
+
 ## 0c6 · systems lane request: bridge `terrain::haven(seed)`
 
 One export. `terrain::haven(seed)` already returns the pad and the waystation
