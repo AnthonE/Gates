@@ -191,36 +191,35 @@ pub async fn run_bot(
 /// QUIC connections. Dev-only certificate trust (`with_no_cert_validation`)
 /// — bots are a load tool for shards we run, never a browser substitute.
 pub fn bot_endpoint() -> Result<Endpoint<Client>, String> {
-    let config = wtransport::ClientConfig::builder()
-        .with_bind_default()
-        .with_no_cert_validation()
-        .build();
-    match Endpoint::client(config) {
-        Ok(e) => Ok(e),
-        Err(dual_stack) => {
-            // `with_bind_default` binds `[::]:0` — a dual-stack v6 socket —
-            // which a machine with IPv6 disabled cannot create at all. This is
-            // the failure `CLAUDE.md` documents for `bot_smoke`: all four of
-            // its tests die here with `Address family not supported by
-            // protocol (os error 97)`, on a clean tree, and the entry says to
-            // believe the box rather than the diff.
-            //
-            // That reading was right and the conclusion was one step short. A
-            // wall that cannot run is not a wall — and unlike a missing wasm
-            // target, this one is OUR code binding a socket we did not need.
-            // The shard under test is IPv4, so falling back costs nothing and
-            // turns a permanently-red gate into one that runs. Same fix, same
-            // reason, as `client::client_endpoint`.
-            //
-            // Dual-stack stays FIRST: it is the better socket where it exists,
-            // and it is the one that reaches a v6-only shard.
-            let v4 = wtransport::ClientConfig::builder()
-                .with_bind_address(std::net::SocketAddr::from(([0, 0, 0, 0], 0)))
+    // **Bind IPv4 first, and fall back to the dual-stack default.**
+    // `with_bind_default()` is `INADDR_ANY` dual-stack, and on a container
+    // with no IPv6 it fails outright — `Address family not supported by
+    // protocol (os error 97)`. `CLAUDE.md`'s trap list records that exact
+    // failure taking all four `bot_smoke` tests down on a CLEAN tree and
+    // names it correctly: a missing capability, not a defect in the diff.
+    //
+    // What that entry could not say, because no fix was known, is that the
+    // capability is not actually needed. Every shard this fleet loads is
+    // reachable over v4 — `shard.toml` binds `127.0.0.1:4433` and so does
+    // every gate — so asking for v4 makes the wall RUN instead of skipping
+    // it, which is the same resolution `CLAUDE.md` prescribes for the
+    // `wasm32-unknown-unknown` case. The dual-stack path is kept for a v6
+    // shard, and both failures are reported if neither binds.
+    //
+    // `client::client_endpoint` carries the identical fix for the identical
+    // reason; the native client hit it first, because a client that cannot
+    // bind cannot draw.
+    let build = |ip: wtransport::config::IpBindConfig| {
+        Endpoint::client(
+            wtransport::ClientConfig::builder()
+                .with_bind_config(ip)
                 .with_no_cert_validation()
-                .build();
-            Endpoint::client(v4).map_err(|v4_err| {
-                format!("client endpoint: {dual_stack} (and IPv4-only: {v4_err})")
-            })
-        }
+                .build(),
+        )
+    };
+    match build(wtransport::config::IpBindConfig::InAddrAnyV4) {
+        Ok(e) => Ok(e),
+        Err(v4) => build(wtransport::config::IpBindConfig::InAddrAnyDual)
+            .map_err(|dual| format!("client endpoint: v4 {v4}; dual-stack {dual}")),
     }
 }

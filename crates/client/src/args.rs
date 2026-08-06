@@ -27,6 +27,7 @@
 //! exactly when a broken argv goes unnoticed for a month.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 pub const DEFAULT_SERVER: &str = "127.0.0.1:4433";
 
@@ -40,6 +41,8 @@ gates — the Gates desktop client
   --identity ADDR      the wallet address to play as. UNVERIFIED — the shard
                        does not check it yet and this client does not claim it
                        does. Empty is the same as absent
+  --capture DIR        run the probe harness instead of a player: settle, warm
+                       the pipelines, shoot the vantage list, exit (RENDER.md)
   --no-launcher        do not look for a scry launcher, even if one is running
   --help               this
 
@@ -52,6 +55,10 @@ pub struct Args {
     /// `None` when absent OR empty — see the module docs; the launcher's
     /// empty substitution is how "no wallet set" arrives.
     pub identity: Option<String>,
+    /// `--capture DIR`: run the probe harness instead of a player
+    /// (`RENDER.md`). Only the windowed binary honours it; the headless one
+    /// parses it so a shared parser cannot silently mean two things.
+    pub capture: Option<PathBuf>,
     pub no_launcher: bool,
 }
 
@@ -68,6 +75,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     let mut server_flag: Option<String> = None;
     let mut server_pos: Option<String> = None;
     let mut identity: Option<String> = None;
+    let mut capture: Option<PathBuf> = None;
     let mut no_launcher = false;
 
     let mut it = argv.into_iter();
@@ -82,6 +90,13 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
             "--identity" => match it.next() {
                 Some(v) => identity = Some(v),
                 None => return Parsed::Bad("--identity needs an address".into()),
+            },
+            "--capture" => match it.next() {
+                // Refused rather than defaulted. A capture run that shot into
+                // the wrong directory and exited 0 is the failure shape
+                // `RENDER.md` already paid for once.
+                Some(v) if !v.trim().is_empty() => capture = Some(PathBuf::from(v)),
+                _ => return Parsed::Bad("--capture needs a directory".into()),
             },
             other if other.starts_with('-') => {
                 // Refused rather than ignored. A typo'd flag that is silently
@@ -115,6 +130,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
         identity: identity
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
+        capture,
         no_launcher,
     })
 }
@@ -181,6 +197,24 @@ mod tests {
         assert_eq!(a(&["--help"]), Parsed::Help);
         assert_eq!(a(&["-h"]), Parsed::Help);
         assert_eq!(a(&["--server", "1.2.3.4:1", "--help"]), Parsed::Help);
+    }
+
+    #[test]
+    fn capture_survives_the_move_into_this_parser() {
+        // `--capture` was hand-parsed in gates.rs before the launcher's flags
+        // arrived. The merge folded it in here, and this pins that it still
+        // works alongside them rather than being eaten as a positional.
+        let x = run(&["--capture", "/tmp/shots", "--server", "1.2.3.4:1"]);
+        assert_eq!(
+            x.capture.as_deref(),
+            Some(std::path::Path::new("/tmp/shots"))
+        );
+        assert_eq!(x.server.to_string(), "1.2.3.4:1");
+        assert!(run(&[]).capture.is_none());
+        // An empty directory is refused, not defaulted: a capture that shot
+        // into the wrong place and exited 0 is a gate that passed for nothing.
+        assert!(matches!(a(&["--capture", ""]), Parsed::Bad(_)));
+        assert!(matches!(a(&["--capture"]), Parsed::Bad(_)));
     }
 
     #[test]

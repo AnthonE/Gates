@@ -19,3 +19,22 @@ publish = false
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Dependencies are optimized even in dev builds. This is Bevy's own standard
+# advice and it is about the renderer only: an unoptimized wgpu/naga/image
+# stack renders single-digit frames and takes minutes to specialize a
+# pipeline, which makes a capture run unusable on a box with no GPU.
+# Workspace members are NOT covered by `"*"`, so sim-core, protocol and the
+# server keep their fast debug rebuild — and every gate runs `--release`
+# anyway, so no wall moves.
+[profile.dev.package."*"]
+opt-level = 3
+
+# …and sim-core with them, because the renderer is one of its callers now.
+# Meshing one 64 m chunk is 4,225 `terrain::height` taps and a chunk ring is
+# 25 of them; the clutter fill is 721 draws per 16 m tile. Unoptimized that is
+# seconds per chunk. This changes no arithmetic — Rust emits no fast-math at
+# any opt level, which is the same property the release profile's comment
+# above depends on — and every gate runs `--release` regardless.
+[profile.dev.package.sim-core]
+opt-level = 3

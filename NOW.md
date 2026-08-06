@@ -360,16 +360,30 @@ Two slices have landed and both are on `main`:
 those and writes transforms. Gameplay state in a Bevy component would
 retire the determinism walls with nothing in CI to notice.
 
-**Slice 3 landed 2026-08-05: it ships.** `ci/depot.py` packages the build as
-a scry depot and `crates/client/src/{args,scry}.rs` give it the launcher's
-interface — `--server`/`--identity` from a depot's launch block, and the
-vendored scry SDK for who is playing. Run end to end: real 64.7 MB depot,
-served over HTTP, `scry install gates` by slug, hashes verified, digest equal
-across packager/origin/client, and the installed binary joined a live shard
-(3 joins, 2380 inputs, 0 bad, 0 dropped). Two defects fixed by running it —
-`client_endpoint` died outright on an IPv6-less machine (now falls back to
-IPv4), and a dirty tree gave two different binaries the same build id (now
-content-keyed). Publishing and notarizing are operator acts and are NOT done.
+**It ships 2026-08-05.** `ci/depot.py` packages the build as a scry depot and
+`crates/client/src/{args,scry}.rs` give it the launcher's interface —
+`--server`/`--identity` from a depot's launch block, and the vendored scry SDK
+for who is playing. Run end to end: real depot served over HTTP,
+`scry install gates` by slug, hashes verified, digest equal across
+packager/origin/client, and the installed binary joined a live shard (3 joins,
+2380 inputs, 0 bad, 0 dropped). Publishing and notarizing are operator acts and
+are NOT done.
+
+Two findings, both from running it rather than reading it:
+
+- **The depot ships `assets/`, not just the binary.** The render slice loads
+  `textures/*` at runtime and Bevy answers a missing texture with a white
+  fallback *and keeps drawing* — so a binary-only depot would install
+  perfectly, start perfectly, and render untextured. Same failure shape
+  `gates.rs` already documents for the asset root. The packager refuses to
+  build a depot with no assets, and `--self-test` covers it.
+- **A dirty tree gave two different binaries the same build id.** A build id
+  is a directory name on a player's disk; it is now keyed on the binary's own
+  hash when the tree is dirty.
+
+The IPv6 endpoint bind that killed the packaged build at startup was fixed
+independently on `main` (`3c50e35`) while this was in flight; that fix is the
+one in the tree, and this lane's duplicate was dropped at the merge.
 
 Next slices, roughly in order:
 
@@ -382,6 +396,29 @@ Next slices, roughly in order:
 3. **A native visual gate** — item 2 below. The pivot's real debt.
 4. **HUD, inventory, container panel** against the wire that already
    carries them (v19 `ACT_CONTAINER` / `SUB_CONT_SYNC`).
+**The visual plan is `RENDER.md`**, and **R0–R6 plus R8 have landed**: input,
+the capture harness, the terrain mesh, the light rig under one owner, the
+scatter and clutter population *and its prop skirts*, the CC0 photograph on
+the ground, SSAO + SMAA + bloom, a procedural cloud deck, the HUD and the
+viewmodel.
+
+Measured both sides through one estimator (`ci/native_bar.py`, medians over
+six vantages against the six outdoor-daylight reference frames): p50 **90.2**
+vs 91.4 · near **79.8** vs 80.5 · saturation **32.9%** vs 33.2% · p90 **155.7**
+vs 170.2 — and near-ground neighbour contrast **0.26 → 6.25** against the
+reference's 5.40, with chroma-per-luma 0.163 against 0.252 confirming that is
+texture and not aliasing. `ART.md` §3's row that six browser passes never
+moved is past the bar.
+
+What remains, ranked by the measurement — `RENDER.md` §8 carries the list:
+
+1. **The gate asserts.** The harness captures and the bar measures; neither
+   FAILS yet, and nothing in `ci/gates.sh` runs either. Still the pivot's debt.
+2. **p10 58.6 vs 41.0** — a uniform ambient buys rule 3's floor at the price of
+   the darks. A hemisphere fill gets both.
+3. **Cloud form** — the deck reads as stratus where `ART.md` asks for cumulus.
+4. **The four-way splat material** — one map serves all four ground identities
+   today (`StandardMaterial` has one base-colour slot).
 
 Retired by this pivot rather than finished: `MIGRATION.md` (three.js →
 `WebGPURenderer` + TSL) is **moot** — you do not port three.js *and*
@@ -445,11 +482,23 @@ lavapipe software rasterizer, no GPU needed. The session stayed healthy
 throughout: `in ok/bad/drop 729/0/0`, `snap sent 434`, `leaves 0`.
 
 So a native visual gate is **buildable here now**, and it is the next
-gate to write. Two notes for whoever writes it: lavapipe is a CPU
-rasterizer, so budget on frame COUNT and pixel assertions, never on frame
-time (`CLAUDE.md`: a gate that waits on a clock is not a gate on this
-box); and one live renderer at a time, since two was the browser tier's
-whole problem.
+gate to write. **Its design is `RENDER.md` §5** — the capture protocol, the
+vantage list, and the assertion order (structural claims before any
+statistic, because a beige smear passed all 36 of `vantages`' checks). Two
+notes still: lavapipe is a CPU rasterizer, so budget on frame COUNT, never
+on frame time; and one live renderer at a time. Prefer Bevy's off-screen
+readback to the `xwd` above — the recipe proves the box can see, but `xwd`
+is absent on some boxes and a gate should not need a window server.
+
+**The nearly-free half is done: the render feature compiles under a lint
+gate now.** `cargo clippy -p client --features render --all-targets -D
+warnings` is green, and it caught three findings on its first run. Before it,
+`render` was off by default and `[[bin]] gates` is `required-features =
+["render"]`, so cargo skipped the file — reproduced on a throwaway crate, the
+skipped bin held `this is not rust at all !!!` and `cargo clippy --all-targets
+-- -D warnings` exited 0. **It is not in `ci/gates.sh` yet**; the native
+renderer tier that runs it, `gates --capture` and `ci/native_bar.py` is what
+this item now is.
 
 **What the first frame showed, unfixed:** the body draws and is lit, and
 there is no ground under it. The reference plane is at `y = 0` while the

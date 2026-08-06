@@ -17,6 +17,11 @@
 pub mod args;
 pub mod scry;
 
+// The render path. Feature-gated because Bevy is several hundred crates and
+// the code tier must not pay for it (`crates/client/Cargo.toml`).
+#[cfg(feature = "render")]
+pub mod render;
+
 use client_wasm::core::{ClientCore, Ingest};
 use protocol::{
     decode_refuse, decode_welcome, encode_hello, peek_kind, Hello, Welcome, KIND_REFUSE,
@@ -24,6 +29,7 @@ use protocol::{
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use std::net::SocketAddr;
+use wtransport::config::IpBindConfig;
 use wtransport::endpoint::endpoint_side::Client;
 use wtransport::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
 
@@ -57,36 +63,31 @@ async fn read_frame<const N: usize>(recv: &mut RecvStream) -> Option<([u8; N], u
 /// client validates, and that is a `DECISIONS.md` row before anything is
 /// published, not a default to drift into.
 pub fn client_endpoint() -> Result<Endpoint<Client>, String> {
-    let config = ClientConfig::builder()
-        .with_bind_default()
-        .with_no_cert_validation()
-        .build();
-    match Endpoint::client(config) {
-        Ok(e) => Ok(e),
-        Err(dual_stack) => {
-            // `with_bind_default` binds `[::]:0` — a dual-stack v6 socket — and
-            // a machine with IPv6 disabled cannot create one at all: the whole
-            // client dies at startup with `Address family not supported by
-            // protocol (os error 97)`, before any address is even parsed.
-            //
-            // That is not only a CI box quirk (though it is one, and
-            // `CLAUDE.md` names it for `bot_smoke`): players disable IPv6, and
-            // some container and corporate images ship without it. Refusing to
-            // start on an IPv4-only machine when the shard we are dialling is
-            // IPv4 anyway is a bug with no upside, so fall back rather than
-            // fail. Measured 2026-08-05: this is exactly what the packaged
-            // desktop build hit when the launcher started it in this container.
-            //
-            // The fallback is second, never first — dual-stack is the better
-            // socket where it exists, and it reaches v6-only shards.
-            let v4 = ClientConfig::builder()
-                .with_bind_address(SocketAddr::from(([0, 0, 0, 0], 0)))
+    // **Bind IPv4 first, and fall back to the dual-stack default.**
+    // `with_bind_default()` is `INADDR_ANY` dual-stack, which fails outright
+    // on a container with no IPv6 — `Address family not supported by protocol
+    // (os error 97)`, the exact failure `CLAUDE.md` records for `bot_smoke`
+    // on such a box. That was diagnosed there as a missing capability rather
+    // than a defect, and it is; but a client that cannot bind cannot draw,
+    // and every shard we run and every gate we write is reachable over v4.
+    // So: ask for what works, keep the dual-stack path for a v6 shard, and
+    // report both failures if neither binds.
+    //
+    // Confirmed against the packaged desktop build on 2026-08-05: the depot
+    // the scry launcher installed died here at startup, before any address
+    // was parsed, on a container with IPv6 off.
+    let build = |ip: IpBindConfig| {
+        Endpoint::client(
+            ClientConfig::builder()
+                .with_bind_config(ip)
                 .with_no_cert_validation()
-                .build();
-            Endpoint::client(v4).map_err(|v4_err| {
-                format!("client endpoint: {dual_stack} (and IPv4-only: {v4_err})")
-            })
-        }
+                .build(),
+        )
+    };
+    match build(IpBindConfig::InAddrAnyV4) {
+        Ok(e) => Ok(e),
+        Err(v4) => build(IpBindConfig::InAddrAnyDual)
+            .map_err(|dual| format!("client endpoint: v4 {v4}; dual-stack {dual}")),
     }
 }
 

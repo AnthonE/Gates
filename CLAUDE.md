@@ -42,6 +42,7 @@ pays the same doors and earns the same coins as a human.
 | `ART.md` | the art bible: measured targets off `Rust Images/`, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
 | `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
+| `RENDER.md` | the **native** client's render path: the Bevy-draws-not-decides boundary, the slice order, the native visual gate, the budgets | **replaces `MIGRATION.md`**; owns the path, never the bar — `ART.md` outranks it everywhere |
 | `MIGRATION.md` | the renderer move to `WebGPURenderer` + TSL | **SUPERSEDED 2026-08-05** — the client pivot to native Rust moots it; you do not port three.js *and* replace it. Kept for its probe/readback inventory, which the native visual gate still has to answer |
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
 | `NOW.md` | what next | **the only list that answers that** |
@@ -236,9 +237,9 @@ without IPv6 with `Address family not supported by protocol (os error 97)`, on
 a clean tree, and this entry said to believe the box rather than the diff. The
 first half was right and the conclusion was one step short: the bind was
 **our** code asking for a dual-stack `[::]:0` socket to reach an IPv4 shard.
-`bot_endpoint` and `client_endpoint` now fall back to IPv4 when the v6 socket
-cannot be created (dual-stack still first — it is better where it exists and
-reaches a v6-only shard), and the gate runs. **Keep the diagnostic habit** —
+`bot_endpoint` and `client_endpoint` now bind `InAddrAnyV4` first and keep the
+dual-stack bind as the fallback for a v6 shard, reporting both failures if
+neither binds — and the gate runs. **Keep the diagnostic habit** —
 `git stash -u` before believing a diff caused a red gate — and add the second
 question: *is the capability genuinely absent, or are we requesting one we do
 not need?* A wall that cannot run is not a wall, and that cuts both ways.

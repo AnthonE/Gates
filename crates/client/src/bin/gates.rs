@@ -1,54 +1,39 @@
-//! `cargo run -p client --features render --bin gates -- [addr]` — the
-//! desktop client with a window on it. Slice 2 (DECISIONS.md 2026-08-05).
+//! `cargo run -p client --features render --bin gates -- [addr] [--capture <dir>]`
+//! — the desktop client with a window on it (`RENDER.md`).
 //!
-//! **Bevy draws; it does not decide.** `sim-core` is the authority and
-//! carries the walls — zero allocation in the tick, no `HashMap` iteration,
-//! replay determinism — and `ClientCore` owns prediction and interpolation.
-//! Everything below reads those and writes transforms. The day world state
-//! starts living in Bevy components is the day those walls stop meaning
-//! anything, and nothing in CI would catch it, so the boundary is a rule
-//! rather than a preference: **no gameplay state in the ECS.**
+//! **Bevy draws; it does not decide.** `sim-core` is the authority and carries
+//! the walls — zero allocation in the tick, no `HashMap` iteration, replay
+//! determinism — and `ClientCore` owns prediction and interpolation. Every
+//! system under `client::render` reads those and writes transforms. The day
+//! world state starts living in Bevy components is the day those walls stop
+//! meaning anything, and nothing in CI would catch it, so the boundary is a
+//! rule rather than a preference: **no gameplay state in the ECS.**
 //!
-//! The session is a NON-SEND resource on purpose. It owns tokio channel
-//! receivers, which are `Send` but not `Sync`, so it cannot be a plain
-//! `Resource` — and that is the correct shape anyway: one owner, touched
-//! from the main schedule only.
+//! `--capture <dir>` runs the probe harness instead of a player: settle on
+//! observable state, warm the pipelines, shoot a fixed vantage list, exit.
+//!
+//! `--server` and `--identity` are how the **scry launcher** starts this
+//! binary — a depot's launch block names them (`ci/depot.py`). Parsing lives
+//! in `client::args` so the two binaries cannot disagree about a flag.
 
 use bevy::prelude::*;
 use client::args::{self, Parsed};
+use client::render::{GatesRenderPlugin, Net};
 use client::scry::{Player, Scry};
 use client::{client_endpoint, Session};
-
-/// The connected session plus the runtime its reader tasks live on. The
-/// runtime must outlive the session — dropping it would strand the event
-/// and datagram readers.
-struct Net {
-    _rt: tokio::runtime::Runtime,
-    session: Session,
-}
-
-/// Marks the cube standing in for one networked body, so the update system
-/// can find it again by entity id.
-#[derive(Component)]
-struct Body(u32);
-
-/// Marks the local player's own body.
-#[derive(Component)]
-struct Own;
 
 /// Who the launcher (or the command line) says is playing. A Bevy resource so
 /// a HUD can draw it; **not** gameplay state, so it does not violate "Bevy
 /// draws, it does not decide" — nothing in the sim reads it and nothing can.
 #[derive(Resource)]
-struct Who(Player);
+pub struct Who(pub Player);
 
-fn main() {
-    let parsed = args::parse(std::env::args().skip(1));
-    let a = match parsed {
+fn main() -> AppExit {
+    let a = match args::parse(std::env::args().skip(1)) {
         Parsed::Run(a) => a,
         Parsed::Help => {
             println!("{}", args::USAGE);
-            return;
+            return AppExit::Success;
         }
         Parsed::Bad(why) => {
             eprintln!("gates: {why}\n\n{}", args::USAGE);
@@ -56,12 +41,17 @@ fn main() {
         }
     };
     let server = a.server;
+    let capture = a.capture.clone();
 
     // Ask the scry launcher who is playing, ONCE, before anything else. It is
-    // a blocking round trip over a local socket and it must never happen
-    // inside a frame; doing it here also means the answer exists before the
-    // window does. A launcher that is not running is the normal case.
-    let who = if a.no_launcher {
+    // a blocking round trip over a local socket and must never happen inside a
+    // frame; doing it here also means the answer exists before the window
+    // does. A launcher that is not running is the normal case.
+    //
+    // Skipped entirely under `--capture`: the probe harness is a gate, and a
+    // gate that reaches for a socket outside the repo is a gate whose result
+    // depends on what else is running on the box.
+    let who = if a.no_launcher || capture.is_some() {
         match a.identity.as_deref() {
             Some(id) => Player::Declared(id.to_string()),
             None => Player::Anonymous,
@@ -71,8 +61,8 @@ fn main() {
     };
     println!("gates: {}", who.line());
 
-    // Connect before the window opens. A client that draws a world it is
-    // not connected to is a client that lies for its first few frames.
+    // Connect before the window opens. A client that draws a world it is not
+    // connected to is a client that lies for its first few frames.
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let session = rt.block_on(async {
         let endpoint = client_endpoint().unwrap_or_else(|e| {
@@ -86,109 +76,42 @@ fn main() {
                 std::process::exit(1);
             })
     });
+    let seed = session.welcome.seed;
     println!(
-        "gates: in the world — player {} seed {}",
-        session.welcome.player_id, session.welcome.seed
+        "gates: in the world — player {} seed {} tick {}",
+        session.welcome.player_id, seed, session.welcome.tick
     );
 
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins);
+    // **The asset root is the executable's directory, not the working one.**
+    // Bevy resolved `textures/rock_albedo.jpg` to `target/debug/assets/...`
+    // and logged `Path not found` — while the renderer carried on drawing a
+    // white fallback, so three successive material changes measured
+    // BYTE-IDENTICAL statistics and looked like physics. That is the shape of
+    // this whole class: a missing texture is not an error the image shows you.
+    //
+    // Resolved here rather than by a symlink so the same binary works from a
+    // repo checkout and from a shipped layout with `assets/` beside the exe.
+    let mut assets = AssetPlugin::default();
+    if let Ok(cwd) = std::env::current_dir() {
+        let repo = cwd.join("assets");
+        if repo.is_dir() {
+            assets.file_path = repo.to_string_lossy().into_owned();
+        }
+    }
+    app.add_plugins(DefaultPlugins.set(assets));
     app.insert_resource(Who(who));
-    app.insert_non_send_resource(Net { _rt: rt, session });
-    app.add_systems(Startup, setup);
-    app.add_systems(Update, (pump, draw_bodies).chain());
-    app.run();
-}
-
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(0.0, 8.0, 16.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        DirectionalLight {
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(40.0, 80.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    // A flat reference plane, NOT the terrain. The real heightfield is a
-    // pure function of the seed in `sim_core::terrain` and both sides
-    // already agree on it; meshing it is its own slice.
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(512.0, 512.0))),
-        MeshMaterial3d(materials.add(Color::srgb(0.30, 0.29, 0.26))),
-        Transform::from_xyz(0.0, 0.0, 0.0),
-    ));
-    // The local body. Spawned once; only its transform moves.
-    commands.spawn((
-        Own,
-        Mesh3d(meshes.add(Cuboid::new(0.6, 1.8, 0.6))),
-        MeshMaterial3d(materials.add(Color::srgb(0.85, 0.78, 0.55))),
-        Transform::from_xyz(0.0, 0.9, 0.0),
-    ));
-}
-
-/// One network frame per rendered frame. `pump` never awaits — the client
-/// is a hot path too, and a frame that waits on a socket is a dropped
-/// frame (CLAUDE.md traps).
-fn pump(mut net: NonSendMut<Net>, time: Res<Time>) {
-    let dt_ms = time.delta_secs_f64() * 1000.0;
-    net.session.pump(dt_ms);
-}
-
-/// Read the core, write transforms. This is the whole render contract:
-/// the local body comes from the predictor (so it answers input on the
-/// frame it was pressed), every other body from the interpolator at the
-/// render tick (so it is smooth and late rather than jittery and early).
-fn draw_bodies(
-    mut net: NonSendMut<Net>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut own_q: Query<&mut Transform, (With<Own>, Without<Body>)>,
-    mut body_q: Query<(&Body, &mut Transform), Without<Own>>,
-    mut camera_q: Query<&mut Transform, (With<Camera3d>, Without<Own>, Without<Body>)>,
-) {
-    let core = &net.session.core;
-    let [x, y, z] = core.predict.render_position();
-
-    for mut t in own_q.iter_mut() {
-        t.translation = Vec3::new(x, y + 0.9, z);
-    }
-    // Third-person chase, deliberately dumb for now: a fixed offset is
-    // enough to prove the loop, and camera direction is its own slice.
-    for mut t in camera_q.iter_mut() {
-        t.translation = Vec3::new(x, y + 8.0, z + 16.0);
-        t.look_at(Vec3::new(x, y + 1.0, z), Vec3::Y);
-    }
-
-    let at = core.render_tick();
-    let mut rs = client_wasm::interp::RemoteState::default();
-    let ids: Vec<u32> = core.interp.ids().collect();
-    for id in ids {
-        if id == core.player_id || !core.interp.sample(id, at, &mut rs) {
-            continue;
-        }
-        let mut found = false;
-        for (b, mut t) in body_q.iter_mut() {
-            if b.0 == id {
-                t.translation = Vec3::new(rs.x, rs.y + 0.9, rs.z);
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            commands.spawn((
-                Body(id),
-                Mesh3d(meshes.add(Cuboid::new(0.6, 1.8, 0.6))),
-                MeshMaterial3d(materials.add(Color::srgb(0.55, 0.60, 0.70))),
-                Transform::from_xyz(rs.x, rs.y + 0.9, rs.z),
-            ));
-        }
-    }
+    app.insert_non_send_resource(Net {
+        _rt: rt,
+        session,
+        sel: 0,
+    });
+    app.add_plugins(GatesRenderPlugin { seed, capture });
+    // **Returned, not discarded.** `App::run` hands back an `AppExit`, which
+    // implements `Termination` — dropping it means a capture run that failed
+    // its own file check still exits 0, and a gate reading that exit code
+    // would call it a pass. Measured: with the return discarded, a capture
+    // that wrote five of six vantages printed "1 of 6 vantages did not reach
+    // disk" and exited 0 anyway.
+    app.run()
 }

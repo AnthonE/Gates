@@ -275,6 +275,28 @@ def stage_build(out: Path, *, do_build: bool, do_strip: bool) -> tuple[Path, dic
     dest = stage / "gates"
     shutil.copy2(binary, dest)
 
+    # **The assets ride along, and forgetting them would not look like an
+    # error.** `crates/client/src/render/textures.rs` loads
+    # `textures/<role>_{albedo,normal,rough}.jpg` at runtime, and Bevy answers
+    # a missing texture with a white fallback and a log line while the
+    # renderer carries on drawing — the exact failure `gates.rs` documents
+    # (three material changes measuring byte-identical because the path was
+    # wrong). A depot of the binary alone would install perfectly, start
+    # perfectly, and render an untextured world.
+    #
+    # They land at `assets/` inside the build directory, which is where the
+    # client looks: the launcher runs a build with cwd set to that directory,
+    # and `gates.rs` resolves its asset root against the cwd.
+    src_assets = ROOT / "assets"
+    if not src_assets.is_dir():
+        sys.exit(f"depot: {src_assets} is missing — the client would ship untextured")
+    staged_assets = stage / "assets"
+    shutil.copytree(src_assets, staged_assets)
+    n_assets = sum(1 for p in staged_assets.rglob("*") if p.is_file())
+    if n_assets == 0:
+        sys.exit(f"depot: {src_assets} holds no files — the client would ship untextured")
+    print(f"   staged {n_assets} asset file(s) from {src_assets}")
+
     if do_strip and shutil.which("strip"):
         before = dest.stat().st_size
         subprocess.run(["strip", str(dest)], check=False)
@@ -401,6 +423,28 @@ def self_test() -> int:
         # not something a name can fix.
         ok(build_id(other / "gates") == bid,
            "a clean tree's id is the commit and does not move with the bytes")
+
+    # The assets the shipped client loads at runtime must exist to be staged.
+    # Checked here rather than only at package time because the failure is
+    # invisible downstream: Bevy answers a missing texture with a white
+    # fallback and keeps drawing, so a depot without them installs perfectly,
+    # starts perfectly, and renders an untextured world.
+    src_assets = ROOT / "assets"
+    ok(src_assets.is_dir(), f"{src_assets} exists to be staged into the depot")
+    tex = sorted((src_assets / "textures").glob("*_albedo.jpg"))
+    ok(len(tex) > 0, f"and carries the textures the render path loads ({len(tex)} albedo)")
+
+    # A nested asset path survives the document writer unchanged — the shape
+    # `assets/textures/x.jpg` takes.
+    nested = tmp / "nested"
+    (nested / "assets" / "textures").mkdir(parents=True)
+    (nested / "gates").write_bytes(b"x")
+    (nested / "assets" / "textures" / "rock_albedo.jpg").write_bytes(b"jpeg")
+    ndoc = build_depot_doc(nested, "0.0.0", DEFAULT_ROOT)
+    ok([f["path"] for f in ndoc["files"]] == ["assets/textures/rock_albedo.jpg", "gates"],
+       "nested asset paths are listed relative and posix, sorted")
+    ok(all(not f["executable"] for f in ndoc["files"] if f["path"] != "gates"),
+       "an asset is never marked executable")
 
     # The depot must serialise to JSON with no surprises — it is fetched and
     # parsed by two independent implementations (python and rust).
