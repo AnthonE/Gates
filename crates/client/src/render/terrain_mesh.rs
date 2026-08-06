@@ -27,7 +27,7 @@ use bevy::prelude::*;
 use sim_core::terrain::{self, SEA_LEVEL};
 
 use super::textures::GroundMaps;
-use super::{Eye, WorldId};
+use super::{Eye, WorldEntity, WorldId};
 
 /// Near-chunk edge, metres.
 pub const CHUNK_M: f32 = 64.0;
@@ -108,6 +108,13 @@ impl Ring {
     /// The far mesh is up and every near chunk is resident.
     pub fn is_full(&self) -> bool {
         self.far_done && self.built.len() >= RING_CHUNKS
+    }
+    /// The far mesh alone. Read by the loading screen, which reports the near
+    /// ring as a fraction and this as the bit it is: the whole island at 8 m
+    /// is one build, not a stream, and a bar that folded it into the near
+    /// ring's count would read full while the horizon was still missing.
+    pub fn far_ready(&self) -> bool {
+        self.far_done
     }
 }
 
@@ -269,6 +276,7 @@ pub fn setup_water(
 ) {
     let size = terrain::ISLAND_SIZE * 1.5;
     commands.spawn((
+        WorldEntity,
         Static,
         Mesh3d(meshes.add(Plane3d::default().mesh().size(size, size))),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -308,6 +316,7 @@ pub fn stream(
         ring.far_done = true;
         let mesh = heightfield(world.seed, 0.0, 0.0, FAR_N, FAR_STEP, FAR_DROP);
         commands.spawn((
+            WorldEntity,
             Static,
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(ground.clone()),
@@ -349,6 +358,7 @@ pub fn stream(
             let mesh = heightfield(world.seed, ox, oz, NEAR_N, step, 0.0);
             let e = commands
                 .spawn((
+                    WorldEntity,
                     Chunk(key.0, key.1),
                     Mesh3d(meshes.add(mesh)),
                     MeshMaterial3d(ground.clone()),

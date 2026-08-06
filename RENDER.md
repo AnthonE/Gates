@@ -204,6 +204,16 @@ The two things every later slice needs and neither is art.
 - **Probe (R-G0)**: `cargo clippy -p client --features render --all-targets
   -D warnings` and a `--capture` run that writes a non-empty PNG. That is the
   gate that stops the render path from silently not compiling.
+- **Where the world is built, since 2026-08-06.** The rig, the water, the HUD
+  and the sky hang off `OnEnter(Screen::Loading)`, not `InWorld` — the loading
+  screen is the state that owns the ~25 frames of ring filling, and a capture
+  run passes through it like every other connected start. Two consequences for
+  anything that schedules against this: the streamers and `place_eye` run under
+  `render::world_running` (the world exists) rather than under one state, and
+  `input::gather` is the only system still gated on `InWorld` alone, because it
+  is the only one that writes what the sim reads. The overlay is opaque and the
+  3D pass runs behind it, which is where lazy pipeline specialization should be
+  paying its cost — see the prewarm trap below.
 
 *Picture bought*: none. It is the only slice allowed to say that, and it is
 first because everything after it is unmeasurable without it.

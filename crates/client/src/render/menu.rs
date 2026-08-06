@@ -5,20 +5,30 @@
 //! a design that is correct for a probe harness and impossible for a player,
 //! because the one thing a player must be able to do after a failed connect
 //! is try a different server. Connecting is therefore a **state** here, not
-//! a precondition, and the three states are the whole of it:
+//! a precondition, and the screens are the states:
 //!
 //! ```text
-//!   Menu  ──pick──▶  Connecting  ──welcome──▶  InWorld
-//!    ▲                    │
-//!    └────why it failed───┘
+//!   Menu ──pick──▶ Connecting ──welcome──▶ Loading ──built──▶ InWorld
+//!    ▲   ▲              │                     │                  │
+//!    │   └why it failed─┘                     │              Esc │
+//!    │                                        │                  ▼
+//!    └────────── Disconnect ──────────────────┴───────────── Paused
+//!                                                                │
+//!    Settings ◀───────────────────────────────────────────────────
 //! ```
+//!
+//! **`Connecting` ends at the welcome, not at a playable world.** The states
+//! after it are the other two modules in this trio: `loading` owns the
+//! interval where the rings fill (the welcome carries a seed, and a seed is
+//! not a world), and `pause` owns the Esc menu, which is this screen seen from
+//! inside the world. `settings` hangs off both.
 //!
 //! **Bevy still does not decide.** Nothing in this module touches gameplay
 //! state; it owns an address string and a list of rows, and the moment a
 //! `Session` exists it hands it to `Net` and gets out of the way. `WorldId`
 //! cannot be built until the welcome names the seed, which is exactly why it
-//! moved from plugin construction to `OnEnter(InWorld)` — the menu is what
-//! made the old shape impossible, not a preference.
+//! is inserted by `poll_connect` rather than at plugin construction — the menu
+//! is what made the old shape impossible, not a preference.
 //!
 //! **Two doors are deliberately NOT this screen.** A `--capture` run and a
 //! `--server` launch both skip it: the probe harness is a gate and must not
@@ -30,17 +40,26 @@
 
 use bevy::prelude::*;
 
+use super::ui;
 use crate::shardlist::{self, Shard, MAX_DOC_BYTES};
 
 /// Where the client is. `Menu` is the default because the *absence* of a
 /// chosen server is the state a bare `gates` starts in; the two callers that
-/// have already chosen jump straight to `InWorld` themselves.
+/// have already chosen (`--server`, `--capture`) jump straight to `Loading`,
+/// which is the first state that has a world to build.
 #[derive(States, Default, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Screen {
     #[default]
     Menu,
     Connecting,
+    /// The welcome has landed and the rings are filling. `loading`.
+    Loading,
     InWorld,
+    /// The Esc menu. The world is still connected and still pumping. `pause`.
+    Paused,
+    /// Reachable from `Menu` and from `Paused`; `settings::Settings::back`
+    /// carries which. `settings`.
+    Settings,
 }
 
 /// One row a player may join. The direct row is always present and always
@@ -167,6 +186,10 @@ pub struct MenuRoot;
 #[derive(Component)]
 pub struct RowButton(pub usize);
 
+/// The one row on this screen that is not a shard.
+#[derive(Component)]
+pub struct SettingsButton;
+
 /// The status line.
 #[derive(Component)]
 pub struct StatusLine;
@@ -261,37 +284,12 @@ fn build(commands: &mut Commands, menu: &Menu) {
     commands.spawn((Camera2d, MenuRoot));
 
     commands
-        .spawn((
-            MenuRoot,
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                flex_direction: FlexDirection::Column,
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                row_gap: Val::Px(10.0),
-                ..default()
-            },
-            BackgroundColor(Color::srgb(0.055, 0.055, 0.060)),
-        ))
+        .spawn((MenuRoot, ui::screen(ui::BG)))
         .with_children(|root| {
-            root.spawn((
-                Text::new("GATES"),
-                TextFont {
-                    font_size: 58.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.86, 0.83, 0.76)),
-            ));
+            root.spawn(ui::title("GATES"));
             root.spawn((
                 StatusLine,
-                Text::new(menu.status.clone()),
-                TextFont {
-                    font_size: 15.0,
-                    ..default()
-                },
-                TextColor(Color::srgba(0.72, 0.70, 0.64, 0.85)),
+                ui::label(menu.status.clone(), 15.0, ui::DIM),
                 Node {
                     max_width: Val::Px(620.0),
                     margin: UiRect::bottom(Val::Px(14.0)),
@@ -300,51 +298,46 @@ fn build(commands: &mut Commands, menu: &Menu) {
             ));
 
             for (i, row) in menu.rows.iter().enumerate() {
-                root.spawn((
-                    Button,
-                    RowButton(i),
-                    Node {
-                        width: Val::Px(560.0),
-                        padding: UiRect::axes(Val::Px(16.0), Val::Px(10.0)),
-                        border: UiRect::all(Val::Px(1.0)),
-                        flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(3.0),
-                        ..default()
-                    },
-                    BackgroundColor(IDLE),
-                    BorderColor::all(Color::srgba(0.75, 0.72, 0.62, 0.28)),
-                ))
-                .with_children(|b| {
-                    // The number is drawn because the key works — a bind the
-                    // player is never told about is a bind that does not
-                    // exist, which is the rule `LEARN_TASKS` already holds
-                    // the in-world verbs to.
-                    b.spawn((
-                        Text::new(format!("{}  {}", i + 1, row.name)),
-                        TextFont {
-                            font_size: 20.0,
-                            ..default()
-                        },
-                        TextColor(Color::srgb(0.92, 0.90, 0.85)),
-                    ));
-                    b.spawn((
-                        Text::new(format!("{}   {}", row.addr, row.detail)),
-                        TextFont {
-                            font_size: 13.0,
-                            ..default()
-                        },
-                        TextColor(Color::srgba(0.70, 0.68, 0.62, 0.8)),
-                    ));
-                });
+                root.spawn((ui::row(ROW_W), RowButton(i)))
+                    .with_children(|b| {
+                        // The number is drawn because the key works — a bind the
+                        // player is never told about is a bind that does not
+                        // exist, which is the rule `LEARN_TASKS` already holds
+                        // the in-world verbs to.
+                        b.spawn(ui::label(
+                            format!("{}  {}", i + 1, row.name),
+                            20.0,
+                            ui::TEXT,
+                        ));
+                        b.spawn(ui::label(
+                            format!("{}   {}", row.addr, row.detail),
+                            13.0,
+                            ui::DIM,
+                        ));
+                    });
             }
 
+            // Settings, which is the same screen the Esc menu opens. Drawn
+            // apart from the shard rows and keyed on a letter rather than a
+            // number, because the numbers belong to the list — a settings row
+            // that took the next digit would renumber itself every time a
+            // shard appeared.
+            root.spawn((ui::row(ROW_W), SettingsButton))
+                .with_children(|b| {
+                    b.spawn(ui::label("S  Settings", 20.0, ui::TEXT));
+                    b.spawn(ui::label(
+                        "view, controls, screen - and the keybind list",
+                        13.0,
+                        ui::DIM,
+                    ));
+                });
+
             root.spawn((
-                Text::new("click a shard, or press its number    -    Esc quits"),
-                TextFont {
-                    font_size: 13.0,
-                    ..default()
-                },
-                TextColor(Color::srgba(0.60, 0.58, 0.54, 0.75)),
+                ui::label(
+                    "click a shard, or press its number    -    S settings    -    Esc quits",
+                    13.0,
+                    ui::FAINT,
+                ),
                 Node {
                     margin: UiRect::top(Val::Px(16.0)),
                     ..default()
@@ -353,8 +346,8 @@ fn build(commands: &mut Commands, menu: &Menu) {
         });
 }
 
-const IDLE: Color = Color::srgba(0.10, 0.10, 0.11, 1.0);
-const HOVER: Color = Color::srgba(0.16, 0.15, 0.13, 1.0);
+/// Row width, pixels — the shard rows and the settings row are one column.
+const ROW_W: f32 = 560.0;
 
 /// Redraw the status line in place. The rows are rebuilt only on entry, so
 /// this is what makes an in-flight fetch visible.
@@ -386,22 +379,27 @@ pub fn rebuild_on_new_rows(
     build(&mut commands, &menu);
 }
 
-/// Mouse. One click picks a shard.
-#[allow(clippy::type_complexity)]
+/// Mouse. One click picks a shard, or opens settings. Hover is `ui::hover`'s
+/// job now, which is why this only reads `Pressed`: one hover handler across
+/// four screens cannot disagree with itself.
 pub fn click(
-    mut rows: Query<(&Interaction, &RowButton, &mut BackgroundColor), Changed<Interaction>>,
+    rows: Query<(&Interaction, &RowButton), Changed<Interaction>>,
+    settings: Query<&Interaction, (Changed<Interaction>, With<SettingsButton>)>,
     mut picked: ResMut<Picked>,
 ) {
-    for (interaction, row, mut bg) in rows.iter_mut() {
-        match interaction {
-            Interaction::Pressed => picked.0 = Some(row.0),
-            Interaction::Hovered => *bg = BackgroundColor(HOVER),
-            Interaction::None => *bg = BackgroundColor(IDLE),
+    for (interaction, row) in rows.iter() {
+        if *interaction == Interaction::Pressed {
+            picked.0 = Some(Pick::Row(row.0));
+        }
+    }
+    for interaction in settings.iter() {
+        if *interaction == Interaction::Pressed {
+            picked.0 = Some(Pick::Settings);
         }
     }
 }
 
-/// Keyboard. Number keys pick; Esc leaves.
+/// Keyboard. Number keys pick a shard, S opens settings, Esc leaves.
 pub fn keys(
     keyboard: Res<ButtonInput<KeyCode>>,
     menu: Res<Menu>,
@@ -412,6 +410,10 @@ pub fn keys(
 ) {
     if keyboard.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
+        return;
+    }
+    if keyboard.just_pressed(KeyCode::KeyS) {
+        picked.0 = Some(Pick::Settings);
         return;
     }
     const DIGITS: [KeyCode; 9] = [
@@ -427,25 +429,45 @@ pub fn keys(
     ];
     for (i, k) in DIGITS.iter().enumerate() {
         if keyboard.just_pressed(*k) && i < menu.rows.len() {
-            picked.0 = Some(i);
+            picked.0 = Some(Pick::Row(i));
         }
     }
 }
 
-/// Which row was chosen this frame, if any. A resource rather than an event
+/// What this screen can be asked for. Two things, and only one of them is a
+/// row — which is why the pick is an enum rather than the row index it used
+/// to be: a settings entry smuggled in as `rows.len()` would have been an
+/// index that means "not a row" and nothing in the type would say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    Row(usize),
+    Settings,
+}
+
+/// What was chosen this frame, if anything. A resource rather than an event
 /// so the two input paths cannot both fire a connect in one frame.
 #[derive(Resource, Default)]
-pub struct Picked(pub Option<usize>);
+pub struct Picked(pub Option<Pick>);
 
 /// Turn a pick into a state change.
 pub fn take_pick(
     mut picked: ResMut<Picked>,
     menu: Res<Menu>,
+    mut settings: ResMut<super::settings::Settings>,
     mut connecting: NonSendMut<Connecting>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let Some(i) = picked.0.take() else {
+    let Some(pick) = picked.0.take() else {
         return;
+    };
+    let i = match pick {
+        Pick::Settings => {
+            settings.back = Screen::Menu;
+            settings.dirty = false;
+            next.set(Screen::Settings);
+            return;
+        }
+        Pick::Row(i) => i,
     };
     let Some(row) = menu.rows.get(i) else {
         return;
@@ -483,36 +505,16 @@ pub fn connecting_screen(mut commands: Commands, connecting: NonSend<Connecting>
     commands.spawn((Camera2d, MenuRoot));
     commands.spawn((
         MenuRoot,
-        Node {
-            position_type: PositionType::Absolute,
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            flex_direction: FlexDirection::Column,
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            row_gap: Val::Px(14.0),
-            ..default()
-        },
-        BackgroundColor(Color::srgb(0.055, 0.055, 0.060)),
+        ui::screen(ui::BG),
         children![
-            (
-                Text::new(format!("connecting to {}...", connecting.addr)),
-                TextFont {
-                    font_size: 22.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.86, 0.83, 0.76)),
+            ui::label(
+                format!("connecting to {}...", connecting.addr),
+                22.0,
+                ui::TITLE
             ),
             // Says the way out, because there has to be one: a shard that is
             // not running never refuses a QUIC connect, it just goes quiet.
-            (
-                Text::new("Esc goes back"),
-                TextFont {
-                    font_size: 13.0,
-                    ..default()
-                },
-                TextColor(Color::srgba(0.60, 0.58, 0.54, 0.75)),
-            )
+            ui::label("Esc goes back", 13.0, ui::FAINT),
         ],
     ));
 }
@@ -578,7 +580,11 @@ pub fn poll_connect(
             commands.queue(move |world: &mut World| {
                 world.insert_non_send_resource(super::Net { session, sel: 0 });
             });
-            next.set(Screen::InWorld);
+            // `Loading`, not `InWorld`: the welcome names a seed and the seed
+            // is not a world. What comes next is three rings and a far mesh at
+            // one build of each per frame, and the player used to watch that
+            // happen from inside it.
+            next.set(Screen::Loading);
         }
         Err(why) => {
             menu.status = format!("{}: {why}", connecting.addr);
