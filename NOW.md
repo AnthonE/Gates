@@ -54,6 +54,15 @@ Remaining, in order:
 5. **`bodies::stream` allocates a `Vec` per frame** and scans it linearly to
    retire remotes. `structures::stream` does the same job with a generation
    stamp and no allocation; this is the same fix, four lines.
+6. **Five read-side signals are still decoded and dropped.** The verb list is
+   complete; this is not. `pop_death` is the kill FEED (every death, not your
+   own — the death SCREEN reads `core.dead` and the `own_death_*` fields and
+   is done); `struct_hit` is the damage number on a wall you are breaking;
+   `charge_placed` is the countdown on a charged one; `stock`/`stock_addr` is
+   what a hearth is holding; `mark_cell`/`mark8` is the gather weak spot,
+   which is the reference's own `OnDispenserBonus` and the closest thing this
+   game has to a skill expression. Each is a small HUD slice on top of what
+   this branch built, and none of them is blocked.
 
 ## 0w · The native menus landed — the four things they cannot do *(client lane)*
 
