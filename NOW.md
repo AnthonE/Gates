@@ -20,6 +20,38 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0t · the native pine is generated — what it bought, and what it owes
+
+**Landed.** `crates/client/src/render/tree.rs`: the near-ring conifer is
+`bevy_procedural_tree` (MIT/Apache, ez-tree's algorithm in Rust — the same
+generator `web/src/props.js` already depends on), used as ONE pure function
+returning two meshes. No plugin, no ECS. `props.rs`'s whorl builder stays as
+the far-LOD silhouette. Gate: `crates/client/tests/tree.rs`, 6 assertions,
+headless.
+
+Three things it settled, all measured against a frame rather than argued:
+
+- **`BranchForce` pointing down is a trap.** The crate builds one global
+  `Quat::from_rotation_arc(Y, dir)` and slerps every section toward it, so
+  `dir = -Y` hits the antipodal singularity and bends the whole tree sideways.
+  Droop is the limb ANGLE's job. Owed upstream as a bug report.
+- **Card AREA, not card count, is what closes a canopy.** 11 cards of 0.18 m
+  measured inside every bound and rendered as a spindly stick, because the
+  needle mask cuts ~60% of every card away. Coverage 1.20 → 16.0 at 16 cards
+  of 0.55 m on shorter limbs, with radius unchanged. Only the capture said so.
+- **Radius is a distribution, not a number.** 1.75 m limbs measured 1.65 on one
+  seed and 1.717 — over `PINE_MAX_R` — on another. Swept over 11 seeds; the
+  shipped value holds at 1.464 with ~14% margin, the same margin `props.js`
+  took for the same stated reason.
+
+**Owed, in rank order.** (1) The billboard LOD — 328 trees × 5.9 k tris is
+1.9 M against DESIGN §9's 1.5 M, so the full ring is knowingly over budget and
+only the ~80 m band is affordable; `tests/tree.rs` prints the arithmetic.
+(2) `aWind` — `StandardMaterial` cannot read a custom attribute, so wind needs
+the custom material `RENDER.md` already lists. (3) The needle card is generated
+(`tree::needle_image`, like `sky.rs`'s cubemap); a photographed sprig is a
+later swap, not a prerequisite.
+
 ## 0c6 · systems lane request: bridge `terrain::haven(seed)`
 
 One export. `terrain::haven(seed)` already returns the pad and the waystation

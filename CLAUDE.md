@@ -289,6 +289,14 @@ which is neither.
   coverage cross-check and deliberately never extracted from, so nothing
   committed here derives from GPL work. `reference/README.md` has the
   provenance and the regeneration command; nothing from either ships.
+- `bevy_procedural_tree` (github.com/Affinator/bevy_procedural_tree, MIT OR
+  Apache-2.0) — the native client's conifer generator, a **dependency** whose
+  code ships. It is `@dgreenheck/ez-tree`'s algorithm (MIT, © Daniel Greenheck)
+  ported to Rust and Bevy, so the browser client and the native one now run the
+  same generator and `props.js`'s swept parameters are evidence about both.
+  Only `meshgen::generate_tree_meshes` is called — settings and an `Rng` in,
+  two meshes out; the crate's plugin is deliberately unused, because a plugin
+  that regenerates entities on change would put tree state in the ECS.
 - `SeedThree` (github.com/SkyeShark/SeedThree, MIT) — source of the wind
   design the client ships: one per-vertex `aWind` cantilever weight rooted at
   the trunk base, phase taken from the instance's world position so a gust
