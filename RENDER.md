@@ -402,6 +402,23 @@ The pivot's real debt. It is built **incrementally with the slices** rather
 than as one item at the end — that is how the rule "no render path without its
 probes" is actually satisfied.
 
+**The harness verifies its own output now, and that was not free.**
+`save_to_disk` handles an IO error with `error!("Cannot save screenshot, IO
+error: {e}")` and then returns — there is no error path back to the caller —
+so the capture counted screenshot entities SPAWNED, not files landed. Two
+layers of silent success were found by mutating the run (pre-creating a
+directory where a PNG should go):
+
+  1. the finish check accepted a non-empty `metadata()`, and a directory
+     reports non-zero length, so it needed `is_file()` as well;
+  2. and even once it printed "1 of 6 vantages did not reach disk", the
+     process **exited 0**, because `App::run()` returns an `AppExit` that
+     implements `Termination` and `main` was discarding it.
+
+Both are fixed and both directions are measured: exit 1 with a frame missing,
+exit 0 with six verified on disk. A gate reading that exit code would have
+called the first one a pass.
+
 **Landed: the harness and the measurement. NOT landed: the assertions.**
 `gates --capture <dir>` settles on observable state (all three rings full —
 25 chunks, 25 scatter parents, 25 clutter tiles, reported at the frame it
@@ -510,11 +527,37 @@ earlier.
 
 ## 8 · What is next, in the order the measurements rank it
 
-1. **The gate asserts.** Structural claims first — sky occupies the top band,
-   ground the bottom, a horizon between them, N distinct objects framed, the
-   camera's feet on the terrain — then `ART.md` §8's checklist, then the
-   counts. Wire `--capture` + `native_bar` into a native renderer tier in
-   `ci/gates.sh`, scheduled off a `crates/client/**` or `assets/**` diff.
+1. **The gate asserts.** Structural claims first, then `ART.md` §8's
+   checklist, then the counts. Wire `--capture` + `native_bar` into a native
+   renderer tier in `ci/gates.sh`, scheduled off a `crates/client/**` or
+   `assets/**` diff. Three things are known about how to write it, from a
+   probe that calibrated candidates in numpy against the six reference frames
+   and seven synthetic washes:
+   - **No single statistic separates a picture from a wash.** Edge density is
+     defeated by σ6 noise, block-mean spread by a pure gradient, coarse
+     structure by a blur. The structural tier has to be a SET whose members
+     fail on complementary washes; at fine/mid/coarse detail the references
+     score 3.88–8.10 / 7.11–15.44 / 28.3–58.1 while every wash fails at least
+     two with 3–20× margin.
+   - **The horizon row is arithmetic, not a heuristic.** `PerspectiveProjection
+     ::fov` is VERTICAL, so at 75° over 720 rows the horizon sits at row 289
+     for the four −0.15 vantages, off the top for `near`, and row 531 for
+     `sky`. The expectation table is keyed on the vantage label.
+   - **Three counts cannot ride in a PNG** — pipelines created after the world
+     is up, draw batches, triangles — so the client has to print them. Note
+     `RenderDiagnosticsPlugin` works on this box but half its output is wall
+     clock and must never be asserted.
+
+2. **The sim state nothing draws.** A probe compared every public `ClientCore`
+   surface against what `render/` calls, and the native client draws **nothing
+   from the sim except remote body capsules**: no `pieces` (built bases), no
+   `deploys` (doors, boxes, campfires), no `bags` (death backpacks), and no
+   `harvested` — so **a felled tree never disappears and gathering has no
+   visible effect at all.** That is a gameplay-visible gap, not a cosmetic
+   one, and it outranks the remaining polish. The one worldgen gap left with
+   it: `terrain::road_band` is never drawn, so the coast ring exists only as a
+   side-effect inside `clutter_kind_at` — visible in the 40 m clutter ring and
+   invisible on the far mesh, which is the range it would actually read at.
 2. **Clouds.** The p90 gap is 25 luma and `ART.md` §4 says where it comes
    from. Bevy has no cloud layer; this is a real slice, not a knob.
 3. **R4, the near-field grain.** Contrast 2.44 → 5.40 needs the photograph on

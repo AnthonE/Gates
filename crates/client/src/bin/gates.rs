@@ -18,7 +18,7 @@ use client::{client_endpoint, Session};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-fn main() {
+fn main() -> AppExit {
     let mut addr = String::from("127.0.0.1:4433");
     let mut capture: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
@@ -83,5 +83,11 @@ fn main() {
         sel: 0,
     });
     app.add_plugins(GatesRenderPlugin { seed, capture });
-    app.run();
+    // **Returned, not discarded.** `App::run` hands back an `AppExit`, which
+    // implements `Termination` — dropping it means a capture run that failed
+    // its own file check still exits 0, and a gate reading that exit code
+    // would call it a pass. Measured: with the return discarded, a capture
+    // that wrote five of six vantages printed "1 of 6 vantages did not reach
+    // disk" and exited 0 anyway.
+    app.run()
 }

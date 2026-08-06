@@ -53,7 +53,17 @@ pub const RIG_SUN_AZIMUTH: f32 = 2.35;
 /// takes the plain name and the registry row moves with it.
 pub const RIG_SUN_ELEVATION: f32 = 0.61;
 
-/// Horizontal field of view, degrees (`DECISIONS.md` §open, client cosmetics).
+/// Field of view, degrees — **VERTICAL**, and the axis matters enough to say
+/// twice. `PerspectiveProjection::fov` is documented in `bevy_camera` as "the
+/// vertical field of view", and `THREE.PerspectiveCamera`'s first argument is
+/// vertical too, so 75 here is the same 75 the browser client shipped and the
+/// same one `DECISIONS.md` §open registers under client cosmetics. The two
+/// clients frame identically.
+///
+/// This comment previously called it horizontal. That was wrong about the
+/// name and right about the number, and "fix" it the obvious way — converting
+/// 75 horizontal to ~46.7 vertical at 16:9 — would have silently narrowed the
+/// frame and broken agreement with a registered knob.
 pub const FOV_DEG: f32 = 75.0;
 /// Far plane, metres. The island is 2048 m across and the far mesh draws all
 /// of it.

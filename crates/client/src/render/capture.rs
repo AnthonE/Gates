@@ -117,12 +117,43 @@ pub fn drive(
 
     if let Some(at) = cap.finished_at {
         if cap.frame >= at + TAIL_FRAMES {
-            println!(
-                "capture: {} frame(s) written to {}",
-                cap.taken,
-                cap.dir.display()
-            );
-            exit.write(AppExit::Success);
+            // **Verify the files, because the writer cannot fail loudly.**
+            // `save_to_disk` handles an IO error with `error!("Cannot save
+            // screenshot, IO error: {e}")` and then simply returns — there is
+            // no error path back to the caller. `cap.taken` counts screenshot
+            // entities SPAWNED, not files landed, so without this a capture
+            // run can exit 0 having written nothing at all, and a gate reading
+            // the directory would find it empty and have no idea whether that
+            // meant "broken renderer" or "broken disk". That is the worst bug
+            // class in this repo's trap list: a pass it did not earn.
+            let mut missing = Vec::new();
+            for (idx, (label, _, _)) in VANTAGES.iter().enumerate() {
+                let path = cap.dir.join(format!("{idx}-{label}.png"));
+                // `is_file()` as well as non-empty: a directory reports a
+                // non-zero length, so a size check alone would accept one.
+                match std::fs::metadata(&path) {
+                    Ok(m) if m.is_file() && m.len() > 0 => {}
+                    _ => missing.push(path),
+                }
+            }
+            if missing.is_empty() {
+                println!(
+                    "capture: {} frame(s) written to {}",
+                    cap.taken,
+                    cap.dir.display()
+                );
+                exit.write(AppExit::Success);
+            } else {
+                for p in &missing {
+                    eprintln!("capture: MISSING or empty: {}", p.display());
+                }
+                eprintln!(
+                    "capture: {} of {} vantages did not reach disk",
+                    missing.len(),
+                    VANTAGES.len()
+                );
+                exit.write(AppExit::error());
+            }
         }
         return;
     }
