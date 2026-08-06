@@ -601,3 +601,387 @@ fn the_counts_line_names_which_wait_it_is_in() {
 
     assert!(built(true).line().contains("GROUND 25/25"));
 }
+
+// ---------------------------------------------------------------------------
+// The swing resolver. These assertions are the ones `ci/ui_smoke.mjs` used to
+// make about `resolveSwing` before the browser client was deleted; they are
+// re-earned here in Rust, against the mesh and the scan this client actually
+// ships, rather than left as a hole (`NOW.md` §0y).
+
+use client::ui::interact::{resolve_swing, swing_label, Island, SwingAim, SwingPick};
+use sim_core::gather::{CONE_COS, DY_MAX_M, POINT_BLANK_M2, REACH_M as SWING_REACH_M};
+use sim_core::occupy::{Harvested, Pristine};
+use sim_core::terrain::{scatter, Occupant, ScatterTable, CELL_SIZE};
+
+/// A harvested set naming exactly one cell, so "the sim already took it" is
+/// testable without standing a server up.
+struct OneHarvested(u16, u16);
+impl Harvested for OneHarvested {
+    fn is_harvested(&self, cx: u16, cz: u16) -> bool {
+        cx == self.0 && cz == self.1
+    }
+}
+
+/// Walk the island for a seed/cell that actually holds each swingable kind,
+/// so the test aims at real worldgen instead of a fixture that agrees with it.
+fn find_slot(seed: u64, want: Occupant) -> Option<(i32, i32, f32, f32, f32)> {
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    for cz in -160..160 {
+        for cx in -160..160 {
+            let s = scatter(seed, &table, &haven, cx, cz);
+            if s.occupant == want {
+                return Some((cx, cz, s.x, s.y, s.z));
+            }
+        }
+    }
+    None
+}
+
+/// Standing on a node and looking at it names it; the label is the kind.
+#[test]
+fn a_swing_names_what_it_would_hit() {
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let mut named = 0;
+    let mut kinds = Vec::new();
+    for want in [
+        Occupant::Tree,
+        Occupant::StoneNode,
+        Occupant::MetalNode,
+        Occupant::SulfurNode,
+        Occupant::Bush,
+    ] {
+        let Some((cx, cz, sx, sy, sz)) = find_slot(seed, want) else {
+            continue;
+        };
+        // Stand one metre short of it, looking straight at it.
+        let px = sx - 1.0;
+        let pz = sz;
+        let pick = resolve_swing(
+            SwingAim {
+                x: px,
+                y: sy,
+                z: pz,
+                fx: 1.0,
+                fz: 0.0,
+            },
+            Island {
+                seed,
+                table: &table,
+                haven: &haven,
+                harvested: &Pristine,
+            },
+        );
+        assert_eq!(
+            pick.occupant, want as u8,
+            "{want:?} at cell ({cx},{cz}) was not picked from 1 m in front of it"
+        );
+        assert_eq!((pick.cx, pick.cz), (cx as u16, cz as u16));
+        assert!(
+            !swing_label(pick.occupant).is_empty(),
+            "{want:?} has no label"
+        );
+        named += 1;
+        kinds.push(want);
+    }
+    // A test that silently found nothing to aim at would pass every
+    // assertion above it. Name what was covered so a shrinking scatter
+    // table shows up as a smaller list rather than as continued green.
+    assert!(
+        named >= 3,
+        "worldgen offered only {named} swingable kinds to aim at: {kinds:?}"
+    );
+    println!("swing prompt covered {named} kinds: {kinds:?}");
+}
+
+/// A rock is scenery. The sim never harvests one, so the crosshair must not
+/// offer a swing at it — `gather::target_index` makes the same split.
+#[test]
+fn a_rock_is_not_a_target() {
+    assert_eq!(swing_label(Occupant::Rock as u8), "");
+    assert_eq!(swing_label(Occupant::None as u8), "");
+    // 8 is the stump — a consequence of a harvest, never a target.
+    assert_eq!(swing_label(8), "");
+}
+
+/// Looking away from a node in reach must whiff: the cone is the aim, and a
+/// prompt that ignored it would name a thing behind the player.
+#[test]
+fn the_cone_is_the_aim() {
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let px = sx - 1.0;
+
+    let toward = resolve_swing(
+        SwingAim {
+            x: px,
+            y: sy,
+            z: sz,
+            fx: 1.0,
+            fz: 0.0,
+        },
+        Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+        },
+    );
+    assert_eq!(toward.occupant, Occupant::Tree as u8);
+
+    let away = resolve_swing(
+        SwingAim {
+            x: px,
+            y: sy,
+            z: sz,
+            fx: -1.0,
+            fz: 0.0,
+        },
+        Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+        },
+    );
+    assert_eq!(
+        away.occupant, 0,
+        "a tree behind the player was offered as a swing"
+    );
+}
+
+/// Point blank beats the cone — you can hit what you are standing in.
+#[test]
+fn point_blank_ignores_the_cone() {
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    // Inside POINT_BLANK_M2, facing the wrong way entirely.
+    let off = (POINT_BLANK_M2.sqrt()) * 0.5;
+    let pick = resolve_swing(
+        SwingAim {
+            x: sx + off,
+            y: sy,
+            z: sz,
+            fx: -1.0,
+            fz: 0.0,
+        },
+        Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+        },
+    );
+    assert_eq!(
+        pick.occupant,
+        Occupant::Tree as u8,
+        "point blank must ignore the cone"
+    );
+}
+
+/// Past `REACH_M` is a whiff however well aimed — the reach is a wall, and a
+/// prompt that outran the sim's own scan would invite a swing that refuses.
+#[test]
+fn reach_bounds_the_prompt() {
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+
+    let inside = resolve_swing(
+        SwingAim {
+            x: sx - SWING_REACH_M * 0.9,
+            y: sy,
+            z: sz,
+            fx: 1.0,
+            fz: 0.0,
+        },
+        Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+        },
+    );
+    assert_eq!(
+        inside.occupant,
+        Occupant::Tree as u8,
+        "0.9 x reach must hit"
+    );
+
+    let outside = resolve_swing(
+        SwingAim {
+            x: sx - SWING_REACH_M * 1.1,
+            y: sy,
+            z: sz,
+            fx: 1.0,
+            fz: 0.0,
+        },
+        Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+        },
+    );
+    assert_eq!(outside.occupant, 0, "1.1 x reach must whiff");
+}
+
+/// A harvested cell is not a target. The browser needed `hidden || fellAt`
+/// because it animated the fall over 93 ticks; this client swaps the mesh on
+/// the event, so the harvested set is the whole truth — and if that ever stops
+/// being so, this test is where it shows.
+#[test]
+fn the_sim_having_taken_it_ends_the_prompt() {
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (cx, cz, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let px = sx - 1.0;
+
+    let standing = resolve_swing(
+        SwingAim {
+            x: px,
+            y: sy,
+            z: sz,
+            fx: 1.0,
+            fz: 0.0,
+        },
+        Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+        },
+    );
+    assert_eq!(standing.occupant, Occupant::Tree as u8);
+
+    let taken = OneHarvested(cx as u16, cz as u16);
+    let gone = resolve_swing(
+        SwingAim {
+            x: px,
+            y: sy,
+            z: sz,
+            fx: 1.0,
+            fz: 0.0,
+        },
+        Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &taken,
+        },
+    );
+    assert_eq!(
+        gone.occupant, 0,
+        "a harvested cell was still offered as a swing"
+    );
+}
+
+/// The vertical window. A node far above or below the eye is out of the
+/// swing even when its planar distance is nothing.
+#[test]
+fn the_vertical_window_bounds_it() {
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let px = sx - 1.0;
+
+    let level = resolve_swing(
+        SwingAim {
+            x: px,
+            y: sy,
+            z: sz,
+            fx: 1.0,
+            fz: 0.0,
+        },
+        Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+        },
+    );
+    assert_eq!(level.occupant, Occupant::Tree as u8);
+
+    let below = resolve_swing(
+        SwingAim {
+            x: px,
+            y: sy + DY_MAX_M * 1.5,
+            z: sz,
+            fx: 1.0,
+            fz: 0.0,
+        },
+        Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+        },
+    );
+    assert_eq!(
+        below.occupant, 0,
+        "a node {DY_MAX_M} m below the eye must whiff"
+    );
+}
+
+/// The pick is a pure function of its inputs: the prompt drawn on one frame
+/// and the verb run on the click cannot differ while the world stands still.
+#[test]
+fn the_swing_pick_is_stable() {
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let a = resolve_swing(
+        SwingAim {
+            x: sx - 1.0,
+            y: sy,
+            z: sz,
+            fx: 1.0,
+            fz: 0.0,
+        },
+        Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+        },
+    );
+    let b = resolve_swing(
+        SwingAim {
+            x: sx - 1.0,
+            y: sy,
+            z: sz,
+            fx: 1.0,
+            fz: 0.0,
+        },
+        Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+        },
+    );
+    assert_eq!(a, b);
+    assert_eq!(SwingPick::default().occupant, 0);
+}
+
+/// Every bound this resolver uses is `gather`'s own, not a copy. If the sim
+/// moves one, this fails rather than the crosshair quietly disagreeing with
+/// the swing it invites.
+#[test]
+fn the_swing_reads_the_sims_own_bounds() {
+    assert_eq!(SWING_REACH_M, 2.0);
+    assert_eq!(CONE_COS, 0.866_025_4);
+    assert_eq!(DY_MAX_M, 3.0);
+    assert_eq!(POINT_BLANK_M2, 0.04);
+    assert_eq!(CELL_SIZE, 8.0);
+}

@@ -288,6 +288,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<menu::Picked>()
             .init_resource::<pause::Chosen>()
             .init_resource::<verbs::Aimed>()
+            .init_resource::<verbs::Swung>()
             .init_resource::<verbs::Near>()
             .init_resource::<death::Answer>()
             .init_resource::<ghost::Ghost>()

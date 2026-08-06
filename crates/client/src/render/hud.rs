@@ -491,12 +491,22 @@ pub fn feedback(
 /// The centre prompt and the compass.
 pub fn prompt(
     aimed: Res<Aimed>,
+    swung: Res<super::verbs::Swung>,
     look: Res<super::input::Look>,
     mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
     mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
 ) {
     if let Ok(mut text) = prompts.single_mut() {
-        let want = aimed.0.prompt();
+        // `E` outranks the swing, and the swing is drawn only where `E` is
+        // silent. That ordering is the browser's and it is not arbitrary: a
+        // box standing against a tree is both openable and choppable, and a
+        // player who pressed `E` on a prompt that named a swing would spend
+        // the wrong verb. One prompt, and the key it names is the key that
+        // acts on it.
+        let want = match aimed.0.prompt() {
+            s if !s.is_empty() => s,
+            _ => swing_prompt(swung.0.occupant),
+        };
         if text.0 != want {
             text.0 = want;
         }
@@ -506,6 +516,20 @@ pub fn prompt(
         if text.0 != want {
             text.0 = want;
         }
+    }
+}
+
+/// What the crosshair says for a swing pick, or `""` for a whiff.
+///
+/// `[LMB]` rather than a verb name because the swing is a button, and the
+/// button is the thing the player has to connect the text to — the same
+/// reasoning `Pick::prompt` uses for naming `[E]`.
+fn swing_prompt(occupant: u8) -> String {
+    let label = crate::ui::interact::swing_label(occupant);
+    if label.is_empty() {
+        String::new()
+    } else {
+        format!("[LMB] {label}")
     }
 }
 
@@ -524,6 +548,41 @@ fn compass_strip(yaw: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `E` outranks the swing and the swing fills the silence. Asserted
+    /// here because it is an ORDERING, and an ordering is the one thing a
+    /// compile cannot check — the browser shipped this as sixteen swept
+    /// combinations in a gate that no longer exists.
+    #[test]
+    fn e_outranks_the_swing_and_the_swing_fills_the_silence() {
+        use crate::ui::interact::{Pick, Verb};
+        use sim_core::terrain::Occupant;
+
+        let silent = Pick::default();
+        assert_eq!(silent.prompt(), "", "a whiffed E must say nothing");
+
+        // Where E is silent, the swing speaks.
+        assert_eq!(swing_prompt(Occupant::Tree as u8), "[LMB] CHOP TREE");
+        assert_eq!(
+            swing_prompt(Occupant::BarrelSlot as u8),
+            "[LMB] SMASH BARREL"
+        );
+
+        // Where E has something, it wins — the caller takes E's string first
+        // and never reaches the swing. This asserts E is non-empty for every
+        // verb, which is the precondition that makes that `match` correct.
+        for v in [Verb::Door, Verb::Bag, Verb::Box, Verb::Hearth] {
+            let p = Pick {
+                verb: v,
+                ..Default::default()
+            };
+            assert!(!p.prompt().is_empty(), "{v:?} must claim the prompt");
+        }
+
+        // And a swing at nothing is silent rather than "[LMB] ".
+        assert_eq!(swing_prompt(0), "");
+        assert_eq!(swing_prompt(Occupant::Rock as u8), "");
+    }
 
     #[test]
     fn the_compass_walks_the_sims_bearing() {

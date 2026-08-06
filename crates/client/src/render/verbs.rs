@@ -28,7 +28,7 @@ use bevy::prelude::*;
 use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF};
 
 use crate::look::yaw_u16;
-use crate::ui::interact::{self, Aim, Pick, Verb};
+use crate::ui::interact::{self, Aim, Pick, SwingAim, SwingPick, Verb};
 use crate::ui::structure::{self, Store, Target};
 
 use super::hud::Toast;
@@ -40,6 +40,13 @@ use super::Net;
 /// prompt and by [`keys`] — one value, so the two cannot disagree.
 #[derive(Resource, Default)]
 pub struct Aimed(pub Pick);
+
+/// What a SWING would hit this frame — the scatter's answer, where [`Aimed`]
+/// is the deployables'. Its own resource for the same reason [`Near`] is:
+/// the left button and `E` address different worlds, and one value read by
+/// both the prompt and the swing keeps them from disagreeing about which.
+#[derive(Resource, Default)]
+pub struct Swung(pub SwingPick);
 
 /// The nearest structure, either store. Its own resource beside [`Aimed`]
 /// because `L`, `U`, `R` and the raid verb address a structure and `E` does
@@ -62,9 +69,11 @@ pub fn resolve(
     look: Res<Look>,
     mut aimed: ResMut<Aimed>,
     mut near: ResMut<Near>,
+    mut swung: ResMut<Swung>,
+    world: Option<Res<crate::render::WorldId>>,
 ) {
     let core = &net.session.core;
-    let [x, _, z] = core.predict.render_position();
+    let [x, y, z] = core.predict.render_position();
     let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
     aimed.0 = interact::resolve(
         Aim::new(x, z, fx, fz),
@@ -73,6 +82,21 @@ pub fn resolve(
         core.deploy_defs_have,
         core.bags.entries(),
     );
+    // The scatter pick needs the island, which does not exist until the
+    // welcome names a seed — so this is `Option` and stands down rather than
+    // guessing one. `render::world_placed`'s discipline, applied to a verb.
+    swung.0 = match world.as_deref() {
+        Some(w) => interact::resolve_swing(
+            SwingAim { x, y, z, fx, fz },
+            interact::Island {
+                seed: w.seed,
+                table: &w.table,
+                haven: &w.haven,
+                harvested: &core.harvested,
+            },
+        ),
+        None => SwingPick::default(),
+    };
     near.0 = structure::nearest(
         (x, z),
         core.pieces.entries(),

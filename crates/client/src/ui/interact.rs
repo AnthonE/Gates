@@ -501,3 +501,178 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The second resolver: what a SWING would hit.
+//
+// `E` above answers for deployables and bags. The left button answers for the
+// scatter — a tree, an ore node, a bush, a barrel — and until this landed the
+// crosshair named what `E` would do and never what a swing would hit, so the
+// most common verb in the game was the one with no prompt.
+//
+// **Ported from `sim_core::gather::swing`, not from the browser.** The deleted
+// `web/src/interact.js` had a `resolveSwing`, but it was itself a hand-mirror
+// of the sim's scan, and mirroring a mirror is how the two drift. Every bound
+// below is read from `gather` rather than restated: `REACH_M`, `CONE_COS`,
+// `DY_MAX_M`, `POINT_BLANK_M2`. Nothing here invents a number.
+//
+// **One difference from the browser, and it is a simplification the native
+// client earned.** `resolveSwing` skipped a cell that was `hidden || fellAt`,
+// because three.js animated the fall over `FELL_TICKS + FELL_SINK_TICKS` (93
+// ticks, 3.1 s) and a tree the sim had already taken still stood on screen —
+// so reading `hidden` alone offered "CHOP TREE" over a stump-to-be and the
+// swing whiffed. This client has no such window: `render::props::apply_fell`
+// is driven directly off `harvested(key)` and swaps the mesh on the event, so
+// the harvested set is the whole truth and there is no second state to test.
+
+use sim_core::fmath::{fabs, floor_i32};
+use sim_core::gather::{CONE_COS, DY_MAX_M, POINT_BLANK_M2, REACH_M as SWING_REACH_M};
+use sim_core::occupy::Harvested;
+use sim_core::terrain::{scatter, Haven, Occupant, ScatterTable, CELL_SIZE};
+
+/// What a swing would land on, or `Occupant::None` for a whiff.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SwingPick {
+    /// The terrain occupant ordinal — the same value `EV_SLOT_HARVESTED`
+    /// names in field `b`, so the prompt and the event speak one vocabulary.
+    pub occupant: u8,
+    pub cx: u16,
+    pub cz: u16,
+    /// Planar squared distance. Diagnostics for the gate; nothing draws it.
+    pub d2: f32,
+}
+
+/// Whether an occupant is something a swing takes.
+///
+/// `Rock` (6) is deliberately absent and so is the stump: a rock is scenery
+/// the sim never harvests, and a stump is the CONSEQUENCE of a harvest rather
+/// than a target. `gather::target_index` makes the same split one crate down —
+/// nodes 1..=5 plus the barrel at 7 — and this is that predicate, not a
+/// second opinion about it.
+fn swingable(o: Occupant) -> bool {
+    matches!(
+        o,
+        Occupant::Tree
+            | Occupant::StoneNode
+            | Occupant::MetalNode
+            | Occupant::SulfurNode
+            | Occupant::Bush
+            | Occupant::BarrelSlot
+    )
+}
+
+/// The noun the prompt names for a swing pick, or `""` for a whiff.
+///
+/// `[LMB]` rather than a verb name is the caller's job — these are the labels
+/// only, and they name a KIND of thing (`CONTENT.md` owns item names).
+pub fn swing_label(occupant: u8) -> &'static str {
+    match occupant {
+        o if o == Occupant::Tree as u8 => "CHOP TREE",
+        o if o == Occupant::StoneNode as u8 => "MINE STONE",
+        o if o == Occupant::MetalNode as u8 => "MINE METAL",
+        o if o == Occupant::SulfurNode as u8 => "MINE SULFUR",
+        o if o == Occupant::Bush as u8 => "PICK BUSH",
+        o if o == Occupant::BarrelSlot as u8 => "SMASH BARREL",
+        _ => "",
+    }
+}
+
+/// Where the swing is taken from: feet position, eye height and facing.
+///
+/// A struct rather than five scalars because the five are one fact — and
+/// because `resolve_swing` reached clippy's argument ceiling honestly, which
+/// is usually the lint telling you a parameter list has become a bag.
+#[derive(Clone, Copy, Debug)]
+pub struct SwingAim {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub fx: f32,
+    pub fz: f32,
+}
+
+/// The island the swing lands on, borrowed rather than copied.
+///
+/// `harvested` is a trait object for the reason `render::props::apply_fell`
+/// takes `&dyn Fn`: the caller's harvest state is `ClientCore`'s in the game
+/// and a fixture in the gate, and neither should force a generic through
+/// every signature between here and the HUD.
+pub struct Island<'a> {
+    pub seed: u64,
+    pub table: &'a ScatterTable,
+    pub haven: &'a Haven,
+    pub harvested: &'a dyn Harvested,
+}
+
+/// The nearest standing swingable slot in reach and inside the aim cone.
+///
+/// The 3×3 cell window around the player's own cell, walked **dz outer, dx
+/// inner** — the sim's own order, and the tiebreak depends on it. Two slots
+/// at exactly equal `d2` is not a contrived case (the scatter places on a
+/// grid), and `d2 < best` is strict so the FIRST cell in that order keeps it,
+/// which is what `gather::swing`'s `is_none_or(|b| d2 < b.d2)` does.
+///
+/// Allocates nothing and takes no `&mut`: the caller may run it every frame
+/// for the prompt and again on the click without the two disagreeing.
+pub fn resolve_swing(at: SwingAim, island: Island<'_>) -> SwingPick {
+    let SwingAim { x, y, z, fx, fz } = at;
+    let mut out = SwingPick::default();
+    let mut best = f32::INFINITY;
+
+    // A zero-length look is not a refusal to answer: the cone test degrades
+    // to point-blank-only, which is the same posture `resolve` takes above.
+    let flen = (fx * fx + fz * fz).sqrt();
+    let (f0, f1) = if flen > 0.0 {
+        (fx / flen, fz / flen)
+    } else {
+        (0.0, 0.0)
+    };
+
+    let pcx = floor_i32(x / CELL_SIZE);
+    let pcz = floor_i32(z / CELL_SIZE);
+
+    let mut dz_cell = -1i32;
+    while dz_cell <= 1 {
+        let mut dx_cell = -1i32;
+        while dx_cell <= 1 {
+            let cx = pcx + dx_cell;
+            let cz = pcz + dz_cell;
+            dx_cell += 1;
+            let s = scatter(island.seed, island.table, island.haven, cx, cz);
+            if !swingable(s.occupant) {
+                continue;
+            }
+            let dx = s.x - x;
+            let dy = s.y - y;
+            let dz = s.z - z;
+            let d2 = dx * dx + dz * dz;
+            if d2 > SWING_REACH_M * SWING_REACH_M {
+                continue;
+            }
+            if fabs(dy) > DY_MAX_M {
+                continue;
+            }
+            let aimed = d2 <= POINT_BLANK_M2 || {
+                let dot = dx * f0 + dz * f1;
+                dot > CONE_COS * d2.sqrt()
+            };
+            if !aimed || d2 >= best {
+                continue;
+            }
+            // Negative cells cannot be harvested — the set is keyed on u16,
+            // and the sim's own scan casts the same way.
+            if cx < 0 || cz < 0 || island.harvested.is_harvested(cx as u16, cz as u16) {
+                continue;
+            }
+            best = d2;
+            out = SwingPick {
+                occupant: s.occupant as u8,
+                cx: cx as u16,
+                cz: cz as u16,
+                d2,
+            };
+        }
+        dz_cell += 1;
+    }
+    out
+}
