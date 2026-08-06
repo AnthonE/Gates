@@ -678,3 +678,102 @@ fn the_surfaces_differ_in_timbre() {
         "rock ({rock:.4}) is not brighter than sand ({sand:.4}) - the surfaces are the same sound"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The one-drain rule, as a gate. Source-scanning, because the thing being
+// protected is a *call site*, not a value.
+// ---------------------------------------------------------------------------
+
+/// **`render::feed::drain` must be the only caller of `ClientCore::pop_*` in
+/// the client**, and this test exists because the alternative already
+/// happened.
+///
+/// `audio::feed` and `hud::feedback` were written on two branches, each
+/// popping the core's own-fact rings, each correct alone. The rings are
+/// DESTRUCTIVE — every fact is handed over exactly once — so the merge, which
+/// had no textual conflict and broke no test, produced a client whose HUD
+/// drained every ring before the mixer saw one and a game that made no sound
+/// for a hit, a gather, a craft or a refusal.
+///
+/// A grep is the right instrument here: the defect is not a wrong value, it is
+/// a second call site, and no amount of unit testing either half can see it.
+/// This runs in the code tier and scans `src/render/` as text, so it does not
+/// need the `render` feature to hold the rule that lives behind it.
+#[test]
+fn only_the_feed_drain_pops_the_core() {
+    use std::path::Path;
+
+    fn walk(dir: &Path, out: &mut Vec<(String, String)>) {
+        for e in std::fs::read_dir(dir).expect("src/render must exist") {
+            let p = e.expect("readable entry").path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                let text = std::fs::read_to_string(&p).expect("readable source");
+                out.push((p.display().to_string(), text));
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    walk(Path::new("src/render"), &mut files);
+    assert!(
+        files.len() > 10,
+        "only found {} render sources",
+        files.len()
+    );
+
+    // The destructive verbs. `pop_chat` is deliberately NOT here: chat is a
+    // single-reader surface by nature (one composer) and `render/chat.rs` owns
+    // it — if a second reader ever wants it, it joins the feed and joins this
+    // list in the same commit.
+    const DESTRUCTIVE: [&str; 7] = [
+        "pop_hit(",
+        "pop_death(",
+        "pop_toast(",
+        "pop_craft_toast(",
+        "pop_craft_refusal(",
+        "pop_build_refusal(",
+        "pop_deploy_refusal(",
+    ];
+
+    let mut offenders = Vec::new();
+    for (path, text) in &files {
+        if path.ends_with("feed.rs") {
+            continue;
+        }
+        for (n, line) in text.lines().enumerate() {
+            // Doc comments and ordinary comments may name these freely — the
+            // rule is about calls, and every one of them mentions the rule.
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            for verb in DESTRUCTIVE {
+                if code.contains(verb) {
+                    offenders.push(format!("{path}:{}: {}", n + 1, code.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the core's own-fact rings are destructive and `render::feed::drain` must be their \
+         only reader - these call sites would silently split the events with it:\n  {}",
+        offenders.join("\n  ")
+    );
+
+    // And the drain must actually still be there, or this test passes by
+    // asserting that nobody reads the events at all.
+    let drain = files
+        .iter()
+        .find(|(p, _)| p.ends_with("feed.rs"))
+        .map(|(_, t)| t)
+        .expect("render/feed.rs must exist");
+    for verb in DESTRUCTIVE {
+        assert!(
+            drain.contains(verb),
+            "render/feed.rs no longer calls {verb} - the drain has stopped draining"
+        );
+    }
+}

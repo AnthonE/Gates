@@ -89,10 +89,14 @@ replay — the deterministic replay is the dupe investigation tool.
   longer blocks anything public.
 - **Landing page**: one static page on the game domain — what it is, the
   never-table (what money can't buy, verbatim from DESIGN §3.3), wipe
-  clock, wipe/uptime numbers, and **two** buttons rather than one
-  (`DECISIONS.md` 2026-08-05): *buy* (the native client, the official
-  armed shards) and *try it in the browser* (the demo, unarmed shards,
-  browser requirements line — iOS < 26.4 honestly excluded). Price and
+  clock, wipe/uptime numbers, and — as of `DECISIONS.md` 2026-08-05 — **two**
+  buttons rather than one: *buy* (the native client, the official armed
+  shards) and *try it in the browser* (the demo, unarmed shards). **The
+  second button is dead.** The browser client is cut (`DECISIONS.md`
+  2026-08-06) and there is nothing behind that link; the page ships one
+  button until a replacement is spoken (§open, "the board's playable link").
+  Shipping a *try it* button over a retired client is worse than shipping
+  none — it is the dark-panel defect with a purchase attached. Price and
   what the purchase gates are §open, so the page cannot be finished until
   they are spoken. A card on scry's build page links here at A3, not
   before **(operator)**.

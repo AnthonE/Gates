@@ -369,7 +369,17 @@ fn edge_neighbors(cx: u16, cz: u16, loc: u8) -> ((u16, u16), Option<(u16, u16)>)
 /// The planar anchor point of an address — what reach is measured to.
 /// Placement measures build reach to it; a raid swing measures weapon
 /// reach to the same point, so what you can build you can break.
-pub(crate) fn anchor(cx: u16, cz: u16, loc: u8) -> (f32, f32) {
+///
+/// **`pub` so the client can measure to the same corner.** It was
+/// `pub(crate)`, which forced `web/src/interact.js` to keep a hand-written
+/// `pieceAnchor` — and that file's own comment names the hazard exactly:
+/// swap the two `half` terms and every byte-golden stays green while the
+/// client measures reach to the wrong corner of the cell, refusing at a
+/// distance the server would accept and reaching at one it will not. That is
+/// `CLAUDE.md`'s positional-payload trap. One caller instead of two copies
+/// closes it by construction rather than by a test that has to remember.
+/// Exporting a pure function of three integers costs the sim nothing.
+pub fn anchor(cx: u16, cz: u16, loc: u8) -> (f32, f32) {
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
     let half = BUILD_CELL_M * 0.5;

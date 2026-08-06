@@ -205,40 +205,39 @@ pub fn steps(
     sound.play(Request::own(cue).with_gain(step.gain));
 }
 
-/// Drain the client core's own-fact queues into cues.
+/// This frame's own-facts, as cues.
 ///
-/// **These are destructive pops and this is currently their only reader.**
-/// `ClientCore::pop_hit` and friends hand a fact over exactly once, so when
-/// the HUD grows a hitmarker (`NOW.md`) the two must not both pop — the second
-/// reader would silently get half the events. The fix at that point is one
-/// drain writing a per-frame resource both read, not a second `pop_` call
-/// site, and this comment is the warning that the shape is load-bearing.
-pub fn feed(mut net: NonSendMut<Net>, mut sound: ResMut<Sound>) {
-    let core = &mut net.session.core;
-    while core.pop_hit().is_some() {
+/// **Reads [`super::feed::Feed`]; pops nothing.** It used to pop the core's
+/// rings directly, and so did `hud::feedback` — two systems written on two
+/// branches, each correct alone, that git merged without a conflict into a
+/// client whose HUD ate every event before the mixer saw one. `feed.rs`'s
+/// header is the whole account; the rule that came out of it is that
+/// `feed::drain` is the only `pop_*` call site in the client.
+pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<Sound>) {
+    // One marker per frame however many landed — `Cue::Hit`'s own cooldown
+    // would refuse the rest anyway, and asking for four identical clicks so
+    // three can be thrown away is work the queue does not need to do.
+    if feed.hits > 0 {
         sound.play(Request::own(Cue::Hit));
     }
-    while let Some(who) = core.pop_death() {
+    for &(victim, _killer) in feed.deaths() {
         // Someone else dying is not your own fact and has no position on this
         // wire, so only your own death makes a sound. A death rattle for a
         // player across the island would be a lie about where they are.
-        if who == core.player_id {
+        if victim == net.session.core.player_id {
             sound.play(Request::own(Cue::Death));
         }
     }
-    while core.pop_toast().is_some() {
+    for _ in feed.gathered() {
         sound.play(Request::own(Cue::Gather));
     }
-    while core.pop_craft_toast().is_some() {
+    for _ in feed.crafted() {
         sound.play(Request::own(Cue::CraftDone));
     }
-    // Three refusal queues, one sound. A player does not need to hear the
-    // difference between a refused craft and a refused placement — the panel
+    // Three refusal kinds, one sound. A player does not need to hear the
+    // difference between a refused craft and a refused placement — the toast
     // already says which — they need to hear that the button did nothing.
-    let refused = core.pop_craft_refusal().is_some()
-        | core.pop_build_refusal().is_some()
-        | core.pop_deploy_refusal().is_some();
-    if refused {
+    if feed.refusals().next().is_some() {
         sound.play(Request::own(Cue::Refused));
     }
 }

@@ -24,10 +24,25 @@ use crate::Session;
 pub mod audio;
 pub mod bodies;
 pub mod capture;
+// Chat. Not registered on a capture run, like the panels: a gate whose
+// frames depend on whether a composer is open is not a gate.
+pub mod chat;
 pub mod clutter;
+// This frame's own-facts, drained from the core ONCE. Every `pop_*` call in
+// the client lives in there — see its header for the merge that made that a
+// rule rather than a preference.
+pub mod feed;
+// The death screen. Dying used to end the session: `dead` was set and read
+// by nothing, and `ACT_RESPAWN` had no key.
+pub mod death;
+// The build ghost: the cell being aimed at, and the click that commits it.
+pub mod ghost;
 pub mod hud;
 pub mod input;
 pub mod loading;
+// The island map. Painted from the same `terrain::splat_from` the ground
+// blends by, so the map and the world are one worldgen seen two ways.
+pub mod map;
 pub mod menu;
 // The in-game panels — inventory, crafting, the build wheel. Distinct from
 // `ui`, which is the chrome the full-screen MENU screens share: `ui` is what a
@@ -38,10 +53,15 @@ pub mod props;
 pub mod rig;
 pub mod settings;
 pub mod sky;
+// What players built. Distinct from `props`, which is the world the seed
+// makes: this is the world other players made, and it arrives on the wire.
+pub mod structures;
 pub mod terrain_mesh;
 pub mod textures;
 pub mod tree;
 pub mod ui;
+// The in-world keys: what the crosshair is on, and what E/G/H do about it.
+pub mod verbs;
 
 pub use menu::{Menu, Rt, Screen};
 pub use settings::Settings;
@@ -109,6 +129,20 @@ impl WorldId {
 /// on.
 #[derive(Resource, Default)]
 pub struct Eye {
+    /// **Has the server told us where the player is?**
+    ///
+    /// False from the welcome until the first snapshot carrying our own
+    /// entity, which is what `Predictor::adopt` takes the authoritative
+    /// spawn from — the welcome itself carries `player_id`, `seed` and
+    /// `tick`, and no position at all.
+    ///
+    /// It is a flag rather than an `Option<Vec3>` because the failure it
+    /// prevents is not a missing value: `Predictor::body` before its first
+    /// snapshot is `Body::default()`, whose position is the **world
+    /// origin**, and the world origin is a real place on this island. A ring
+    /// builder handed it does not fault — it builds a neighbourhood of
+    /// somewhere the server never named. See [`crate::ui::load`].
+    pub placed: bool,
     pub pos: Vec3,
     pub yaw: f32,
     pub pitch: f32,
@@ -136,6 +170,24 @@ pub fn world_running(state: Res<State<Screen>>, world: Option<Res<WorldId>>) -> 
     world.is_some() && !matches!(state.get(), Screen::Menu | Screen::Connecting)
 }
 
+/// Has the server told us **what** to load?
+///
+/// The narrower of the two questions in front of the `Stream` set, and the
+/// one `world_running` cannot answer: a `WorldId` exists the moment the
+/// welcome names a seed, but a seed is an island and not a place on it. Every
+/// streamer in that set reads `Eye::pos` to decide which cells it owes, so
+/// running one before the first snapshot builds a ring around the world
+/// origin — a real location, silently the wrong one, and evicted whole one
+/// packet later.
+///
+/// Reads `Eye` rather than the session because `Eye` is already the one place
+/// the ring builders agree about where the player is (they never query the
+/// camera transform, for the same reason). `input::place_eye` is chained
+/// ahead of the set, so this sees this frame's answer, not last frame's.
+pub fn world_placed(eye: Res<Eye>) -> bool {
+    eye.placed
+}
+
 /// Drop the world: every entity it spawned, every ring that indexed them, and
 /// the two resources that made it a world rather than a menu.
 ///
@@ -147,7 +199,7 @@ pub fn world_running(state: Res<State<Screen>>, world: Option<Res<WorldId>>) -> 
 /// to the entity that draws it; a ring that kept its keys after the entities
 /// were despawned would report a chunk resident that is not, and the next
 /// world's loading screen would sit at a bar it could never fill.
-// Eight parameters because the world is eight things: its entities, the four
+// Nine parameters because the world is nine things: its entities, the five
 // indexes that point at them, and the two view resources that would otherwise
 // carry the last world's eye into the next one.
 #[allow(clippy::too_many_arguments)]
@@ -157,6 +209,8 @@ pub fn world_teardown(
     mut ring: ResMut<terrain_mesh::Ring>,
     mut props: ResMut<props::PropRing>,
     mut clutter: ResMut<clutter::ClutterRing>,
+    mut structures: ResMut<structures::StructRing>,
+    mut ghost: ResMut<ghost::Ghost>,
     mut bodies: ResMut<bodies::Bodies>,
     mut eye: ResMut<Eye>,
     mut look: ResMut<input::Look>,
@@ -173,6 +227,10 @@ pub fn world_teardown(
     *ring = terrain_mesh::Ring::default();
     *props = props::PropRing::default();
     *clutter = clutter::ClutterRing::default();
+    *structures = structures::StructRing::default();
+    // The ghost holds an `Entity` from the world that just went; keeping it
+    // would have the next world's first aim insert components onto a dead id.
+    *ghost = ghost::Ghost::default();
     *bodies = bodies::Bodies::default();
     *eye = Eye::default();
     *look = input::Look::default();
@@ -225,10 +283,17 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<terrain_mesh::Ring>()
             .init_resource::<props::PropRing>()
             .init_resource::<clutter::ClutterRing>()
+            .init_resource::<structures::StructRing>()
             .init_resource::<bodies::Bodies>()
             .init_resource::<menu::Picked>()
             .init_resource::<pause::Chosen>()
+            .init_resource::<verbs::Aimed>()
+            .init_resource::<verbs::Near>()
+            .init_resource::<death::Answer>()
+            .init_resource::<ghost::Ghost>()
+            .init_resource::<hud::Toast>()
             .init_resource::<Settings>()
+            .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
             .init_resource::<audio::LastHp>()
             .insert_non_send_resource(menu::Connecting::default());
@@ -337,6 +402,41 @@ impl Plugin for GatesRenderPlugin {
         )
         .add_systems(Update, pause::open.run_if(in_state(Screen::InWorld)));
 
+        // ---- the death screen ----------------------------------------
+        // `watch` runs in `InWorld` and nowhere else: a death that lands
+        // while the Esc menu is up raises the screen on resume, which is the
+        // right order — two full-screen states cannot both be entered.
+        app.add_systems(OnEnter(Screen::Dead), (death::enter, death::setup).chain())
+            .add_systems(OnExit(Screen::Dead), death::teardown)
+            .add_systems(
+                Update,
+                (death::click, death::keys, death::act, death::awaken)
+                    .chain()
+                    .run_if(in_state(Screen::Dead)),
+            )
+            .add_systems(Update, death::watch.run_if(in_state(Screen::InWorld)));
+
+        // ---- the map -------------------------------------------------
+        // `open` is registered after the panels and after chat, so `M` typed
+        // into a search box or a chat composer is theirs — both consume the
+        // press before this sees it.
+        app.init_resource::<map::Island>()
+            .add_systems(OnEnter(Screen::Map), (map::enter, map::setup).chain())
+            .add_systems(OnExit(Screen::Map), (map::teardown, map::leave))
+            .add_systems(
+                Update,
+                (map::track, map::keys)
+                    .chain()
+                    .run_if(in_state(Screen::Map)),
+            )
+            .add_systems(
+                Update,
+                map::open
+                    .after(pause::open)
+                    .run_if(in_state(Screen::InWorld)),
+            )
+            .add_systems(OnEnter(Screen::Menu), map::forget);
+
         // ---- settings ------------------------------------------------
         // The two `apply_*` systems are deliberately NOT gated on the screen
         // being open: a setting is a property of the client, not of the panel
@@ -389,10 +489,45 @@ impl Plugin for GatesRenderPlugin {
                 .before(input::place_eye)
                 .run_if(in_state(Screen::InWorld)),
         )
+        // The in-world verbs. `InWorld` for the same reason `gather` is: every
+        // one of them spends something, and a player reading a settings pane
+        // asked for none of it. `keys` runs AFTER `resolve` so the press acts
+        // on the pick the prompt is currently showing — resolving twice is how
+        // a prompt and its verb come to disagree.
+        .add_systems(
+            Update,
+            (verbs::resolve, verbs::keys)
+                .chain()
+                .after(input::place_eye)
+                .run_if(in_state(Screen::InWorld)),
+        )
+        // The build ghost. `track` before `place_key` for the same reason
+        // `verbs::resolve` precedes `verbs::keys`: the click commits what is
+        // drawn, so the drawing has to be this frame's.
+        .add_systems(
+            Update,
+            (
+                ghost::level_keys,
+                ghost::track,
+                ghost::place_key,
+                ghost::deploy_key,
+            )
+                .chain()
+                .after(input::place_eye)
+                .run_if(in_state(Screen::InWorld)),
+        )
         // Everything else runs wherever the world exists — loading, playing,
         // paused, or reading settings from the pause menu. `place_eye` pumps
         // the session, and a session that stops being read is a connection
         // that stalls and then teleports on resume.
+        //
+        // **`place_eye` pumps unconditionally; everything downstream waits
+        // to be placed.** The two halves are gated differently on purpose:
+        // pumping is how the snapshot that does the placing arrives, so a
+        // condition that stopped it would be a deadlock, while every system
+        // in `Stream` reads `Eye::pos` and would otherwise stream the world
+        // origin (`world_placed`). The chain is what makes the condition
+        // read this frame's pump rather than the previous frame's.
         .add_systems(
             Update,
             (
@@ -402,15 +537,33 @@ impl Plugin for GatesRenderPlugin {
                     props::stream,
                     props::harvest,
                     clutter::stream,
+                    structures::stream,
                     bodies::stream,
                     rig::follow_eye,
                     hud::update,
+                    // The feedback surface. Under `world_running` rather than
+                    // `InWorld`: a refusal that arrived while the Esc menu was
+                    // up is still owed to the player, and a ring nobody drains
+                    // is a ring that overflows and drops the newest.
+                    hud::feedback,
+                    hud::prompt,
                 )
-                    .in_set(Stream),
+                    .in_set(Stream)
+                    .run_if(world_placed),
             )
                 .chain()
                 .run_if(world_running),
         )
+        // **The one `pop_*` call site in the client, and it runs first.**
+        // `hud::feedback` (inside `Stream`) and `audio::feed` (after it) both
+        // want this frame's hits, toasts and refusals, and the core hands each
+        // fact over exactly ONCE — so when both popped, the HUD drained every
+        // ring and the game fell silent, with no conflict and no failing test
+        // to say so. `feed::drain` fills a resource both read immutably;
+        // `render/feed.rs` has the account. It is gated on `world_running`
+        // rather than `world_placed` because a ring nobody drains overflows,
+        // which is the reason `hud::feedback` gives for its own placement.
+        .add_systems(Update, feed::drain.before(Stream).run_if(world_running))
         // Audio runs AFTER the streamers and `pump` runs last of all: every
         // producer must have had its say before the mixer resolves the frame,
         // or a cue requested by a system scheduled later is heard a frame
@@ -439,6 +592,7 @@ impl Plugin for GatesRenderPlugin {
         // vantage `NOW.md` §0v already names, now owed twice.
         if self.capture.is_none() {
             panels::register(app);
+            chat::register(app);
         }
 
         if let Some(dir) = &self.capture {

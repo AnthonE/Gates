@@ -23,7 +23,7 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 ## 0x · The client makes sound — what it cannot yet hear *(client lane)*
 
 Landed 2026-08-06. `crates/client/src/sound/` is the model (pure, headless,
-**code tier** — 27 assertions in `tests/sound.rs`), `render/audio.rs` is the
+**code tier** — 30 assertions in `tests/sound.rs`), `render/audio.rs` is the
 Bevy half. 19 cues, two buses, a bounded mixer, per-surface footsteps off
 `terrain::splat`, a crossfaded wind bed, and three working volume sliders.
 Research is `reference/AUDIO.md`; every number is `DECISIONS.md` §open
@@ -51,24 +51,152 @@ Remaining, in order:
    integer codes, transitions only at section boundaries. Every input exists.
    What does not exist is music — a generated bank makes tones, not themes.
    That is a **content** blocker, not an engineering one.
-3. **Both halves of R-G0 were run by hand and are green**, which is the same
-   hole §0v item 3 names: `ci/gates.sh` still never builds `--features render`.
-   `clippy -p client --features render --all-targets -D warnings` is clean and
-   a `--capture` run against a live shard wrote all six vantages with **zero
-   panics** — which is the only thing that proves the audio systems run at all.
-   It also caught the one runtime defect in this slice: `OnEnter(Loading)` runs
-   *before* `Startup`, so the bank could not be a `Startup` system.
-4. **`pop_hit`/`pop_death`/`pop_toast` are destructive and audio is their only
-   reader.** When the HUD grows a hitmarker the two will silently split the
-   events between them. The fix is one drain writing a per-frame resource both
-   read, and it is owed before the second reader, not after.
-5. **Remote players are silent.** Only the local body has an odometer, so
+3. **CI now compiles the native client, and that is half of R-G0.** The
+   `native client (--features render)` gate landed on main this same day —
+   clippy `-D warnings` plus the render-tier suites — so the hole §0v item 3
+   named is closed for *compiling*. What still runs only by hand is the other
+   half: a `--capture` run against a live shard, which wrote all six vantages
+   with **zero panics** and is the only thing that proves the audio systems
+   execute at all. It caught this slice's one runtime defect —
+   `OnEnter(Loading)` runs *before* `Startup`, so the bank could not be a
+   `Startup` system — and it needs Xvfb, lavapipe and a shard, which is why
+   it is not in `ci/gates.sh` yet.
+4. **DONE, and it went wrong first — `render/feed.rs`.** This item used to
+   say a second reader of the core's destructive `pop_*` rings would silently
+   split the events, and that the fix was one drain into a resource both read.
+   It arrived on the merge: `hud::feedback` (HUD lane) and `audio::feed`
+   (this lane) each popped the same six rings, **git merged them with no
+   conflict**, and the HUD — scheduled first — ate every event before the
+   mixer saw one. No test could see it; each half is correct alone. There is
+   now one drain, and `tests/sound.rs` greps `src/render/` for a second
+   `pop_*` call site, because the defect is a call site and not a value.
+5. **Four of the nineteen cues have no producer**, which is `MENUS.md` §4's
+   dark-content defect inside a thing that just shipped: `Place`,
+   `ImpactWood`, `ImpactMetal` and `UiClick` are generated, in the table and
+   playable, and nothing asks for them. `Place` is the cheap one now that
+   `structures.rs` streams piece and deploy changes with cells — it is the
+   second positional cue and would exercise that path against something other
+   than a falling tree. The two impacts need to know WHAT was hit, which the
+   gather toast does not say. `UiClick` needs a hook in the per-screen click
+   handlers.
+6. **Remote players are silent.** Only the local body has an odometer, so
    another player's footsteps — the sound that decides fights — do not exist.
    `bodies.rs` has their interpolated transforms; a `Steps` per remote body
    and a positional step cue is the slice.
-6. **No occlusion, and it needs a prerequisite rather than a pass.** A wall
+7. **No occlusion, and it needs a prerequisite rather than a pass.** A wall
    between you and a sound needs a geometry query, and the correct one is the
    sim's (`collide.rs`), not a raycast against render meshes.
+## 0z · The world waits for the server now — what the Bevy audit left *(client lane)*
+
+Landed 2026-08-06. The client was building a world the server had not named —
+the welcome carries a seed and **no position**, and an unplaced `Predictor`
+reports the world **origin**, which is a real place here rather than a
+sentinel, so the rings streamed it. Measured on seed 20260731: the shard
+places at `1001.6, 1935.3` — **2,179 m from the origin on a 2,048 m island**,
+the whole diagonal. Every connect wasted the first frames' chunks; the severe
+case (bar full at the origin, `InWorld` around an unplaced player) is a race
+the first snapshot normally wins. `RENDER.md` §1.1 is the rule,
+`DECISIONS.md` §open the mechanism, `tests/ui.rs` §E the **code**-tier gate.
+
+Also landed: `--features hot` (asset hot-reload — `bevy_asset`'s watcher, not
+`bevy_scene`), and the claim that `bevy_ui` is dead weight is corrected in
+both places that carried it — it is ~5,400 lines and every screen we have.
+
+Remaining, in order:
+
+1. **Trim Bevy's default features — no longer only a payload win.** The gate
+   at `ci/gates.sh` already names the reason: `alsa-sys` is pulled by
+   `bevy_audio`, which has **zero call sites**, and a box without the dev
+   package fails at a build script. `3d` pulls `audio` + `scene` as an
+   umbrella, so this means `default-features = false` and an enumeration —
+   cheap, but it needs a verified build, not a guess. Keep `bevy_ui`,
+   `bevy_picking`, `jpeg`. (`libudev-dev` and the runtime `libxkbcommon-x11-0`
+   are NOT this item: gamepads and X11 are both wanted. `CLAUDE.md`
+   §environment lists all four.)
+2. **R-G4 is still the missing half of §1.** Placement has a gate now; the
+   no-gameplay-state rule still has none. Its answer is the
+   renderer-attached/detached state-hash equality.
+3. **Nothing photographs the new wait.** `ci/gates.sh` compiles the render
+   path and now runs the client's lib tests under it (`--lib` added here), so
+   the placement arithmetic is gated twice. What no gate does is *look*: a
+   capture run exercises the wait on every run and `capture::PLACE_FRAMES`
+   bounds it, but the native visual gate is still §2's, unbuilt.
+## 0y · `web/` is cut — decide what that means to the tree *(operator input wanted)*
+
+**Spoken 2026-08-06** (`DECISIONS.md`): the browser client is cut. The row
+deliberately did **not** delete anything, because three separable questions
+hide inside "cut it" and a loop should not answer any of them alone:
+
+1. **The three gates.** `ui smoke` (7,200 lines), `browser smoke` (5,179) and
+   `vantages` guard a retired client and cost every full `ci/gates.sh` run.
+   `browser smoke` additionally fails on this box for a documented
+   environmental reason (two live WebGL renderers on a software rasterizer,
+   `CLAUDE.md`) — so it is now a permanently red gate protecting nothing,
+   which is the worst state a gate can be in. Delete, or gate behind an
+   env flag, or leave.
+2. **`web/` itself.** ~17 k lines. It is the reference implementation of
+   every verb the native client now carries, and several of its comments
+   record bugs that cost a pass to find. `CLAUDE.md` now says *read it, do
+   not maintain it* — which is a stable state, if the tree can carry it.
+3. **What `client-wasm` is for.** It stays either way: it is the native
+   client's core as an rlib. But `test_parity_wasm` and the wasm build exist
+   because a browser ran it, and parity is also wall 1's enforcement. Keeping
+   both is defensible (two codegen backends agreeing is a real determinism
+   check, and it is cheap); dropping the wasm target because nothing ships it
+   is also defensible. **Not a loop's call** — it touches a wall.
+
+Nothing here is urgent. It is written down so the next pass does not
+rediscover that a third of the gate script is dead weight.
+
+## 0x · The native client can play the game now — what it still owes *(client lane)*
+
+Landed 2026-08-06. Twelve of the wire's sixteen `ACT_*` verbs plus `KIND_CHAT`
+had no key in this client; four did. All of them do now, and the three sets
+that were decoded into `ClientCore` and drawn by nothing — pieces,
+deployables, backpacks — are drawn. Also: **the look and the strafe were both
+inverted** (operator-reported; `crates/client/src/look.rs` has the derivation
+and `tests/look.rs` checks the client's right-vector against Bevy's own
+`Transform` basis).
+
+New screens: `Dead` (dying used to end the session), `Map`. New keys: `E` use/
+loot/open, `G` eat, `H` drink, `L` lock, `U` upgrade, `R` repair, `X` plant a
+charge, `T`/`Enter` chat, `M` map, RMB place. New HUD: crosshair, centre
+prompt, toast, compass, hitmarker.
+
+Remaining, in order:
+
+1. **`ci/gates.sh` still never builds `--features render`** (§0v item 3, now
+   owed much more). This slice added ~3,500 lines behind that feature and the
+   code tier covers only the `crate::ui` half — 94 assertions, all pure. The
+   probe is `RENDER.md` R0 and it is two commands. **This is the top item.**
+2. **Nothing in this repo looks at a frame.** This was "the native client has
+   no visual gate yet, and `web/`'s still run"; the browser cut
+   (`DECISIONS.md` 2026-08-06) removed the second half. `browser_smoke`'s 12
+   probes and `vantages`' 36 checks now guard a retired client, and the one
+   that ships has none. Panels, chat, the map and the death screen are also
+   deliberately unregistered on a `--capture` run, so even a native gate could
+   not open one — §0w item 3's hole, now six screens wide. **This and item 1
+   are the same item seen from two ends, and together they are the top of
+   this file.**
+3. **No swing prompt.** `interact.js`'s second resolver (`resolveSwing`, a 2 m
+   cone with a vertical window and a point-blank exception over the scatter
+   cells) has no native port, so the crosshair names what `E` would do and
+   never what a swing would hit.
+4. **Bevy's default features pull wayland and alsa**, neither of which this
+   client uses; both are hard build deps on a fresh box. `crates/client/Cargo.toml`
+   already flags the trim as a follow-up — it is now also a portability item.
+5. **`bodies::stream` allocates a `Vec` per frame** and scans it linearly to
+   retire remotes. `structures::stream` does the same job with a generation
+   stamp and no allocation; this is the same fix, four lines.
+6. **Five read-side signals are still decoded and dropped.** The verb list is
+   complete; this is not. `pop_death` is the kill FEED (every death, not your
+   own — the death SCREEN reads `core.dead` and the `own_death_*` fields and
+   is done); `struct_hit` is the damage number on a wall you are breaking;
+   `charge_placed` is the countdown on a charged one; `stock`/`stock_addr` is
+   what a hearth is holding; `mark_cell`/`mark8` is the gather weak spot,
+   which is the reference's own `OnDispenserBonus` and the closest thing this
+   game has to a skill expression. Each is a small HUD slice on top of what
+   this branch built, and none of them is blocked.
 
 ## 0w · The native menus landed — the four things they cannot do *(client lane)*
 
@@ -81,10 +209,9 @@ the AMOUNT/ITEM TYPE/TOTAL/HAVE table, stepper, and the wheel's two rings.
 
 Remaining, in order:
 
-1. **No build ghost, so the wheel latches and never places.** Nothing draws
-   the cell being aimed at or colours it by whether the sim would accept it,
-   and `encode_action_place` needs a cell, a level and a location this client
-   cannot aim. `web/src/interact.js` is the reference for the aiming.
+1. ~~No build ghost~~ **— landed 2026-08-06** (§0x). `ui/place.rs` aims it,
+   `render/ghost.rs` draws it, and the local verdict answers the four
+   refusals a client can check in the server's own words.
 2. **The rail is not the reference's, and one wire field would fix it.**
    `EventMsg::Catalog` ships display names only, so a category rail by item
    class is not computable client-side. A class byte per item, a `PROTO_VER`
@@ -223,7 +350,21 @@ chunk. `map.js`'s `resolveMarks` takes world positions and is already gated, so
 this is a caller change on the ui side and not a rewrite. Ranked gap 1 of
 `pass-20260805-111501-04` is the reason; the container verb is the other half.
 
-## 0a · world lane: skirt residual — the ring's hard edge
+## 0a · ~~world lane: skirt residual — the ring's hard edge~~ **(MOOT)**
+
+**Retired 2026-08-06 by the browser cut** (`DECISIONS.md`). Every line below
+is about `web/src/clutter.js` — a per-frame player-relative shader term, the
+WebGL program-link budget, and the prewarm gate that counts links after
+`inWorld`. None of those exist natively: Bevy specializes pipelines, not GL
+programs, and the native clutter ring is `render/clutter.rs`. **The finding at
+the bottom survives and is worth keeping** — beach skirts are thin because
+`scatter` puts 0.22 prop centres a tile on the coast against 0.95 inland, not
+because the skirt thins itself, and that is the scatter table's business on
+either client. The rest is history. Kept unpruned this pass rather than
+deleted, because whoever builds the native ring's fade should read what the
+browser learned about it first.
+
+<details><summary>the original item</summary>
 
 *(Residual 1, the sand sweep, landed and is deleted. Residual 2 is below and
 its cost has not changed, but its blocker is now named properly.)*
@@ -248,6 +389,8 @@ in the wrong file: beach skirts are thin — 1.19 elements a tile against
 inland's 5.27 — because `scatter` puts 0.22 prop centres a tile on the coast
 against 0.95 inland, not because the skirt thins itself. The two ratios match
 to a tenth. That is the scatter table, not `terrain.rs`'s skirt path.
+
+</details>
 
 ## 0q · The judge-ranked gaps nobody has claimed
 

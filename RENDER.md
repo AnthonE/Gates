@@ -93,6 +93,59 @@ state hash with the renderer attached and detached, on the same seed and WAL.**
 If the ECS ever decides anything, that equality breaks. It is not built; it is
 the right gate, and it is listed in §5 as R-G4.
 
+### 1.1 · The corollary: nothing is loaded until the server says what
+
+"Bevy reads `ClientCore`" has a precondition that went unwritten until it bit,
+and it is worth stating separately because the failure has no symptom.
+
+**The welcome carries `player_id`, `seed` and `tick` — and no position.** A
+seed is an island; it is not a place on one. Where the player stands arrives
+one snapshot later, when the first packet carrying our own entity lets
+`Predictor::adopt` take the authoritative spawn.
+
+Between those two the client used to run the whole `Stream` set anyway, and
+every streamer in it reads `Eye::pos`. An unplaced `Predictor` reports
+`Body::default()`, whose position is the **world origin** — and the world
+origin is a real place on this island, not a sentinel. So nothing faulted,
+nothing logged, and the rings built a perfectly good neighbourhood of
+somewhere the server never named.
+
+**What that cost, stated at two different confidences.** Unconditionally: the
+first frames of every connect built chunks at the origin and threw them away
+when the eye jumped — small, since the rings fill one cell a frame and the
+first snapshot is normally a frame or three behind the welcome. The severe
+outcome is a **race**, not the common case: it needs the first own-entity
+snapshot to be later than the whole ring build (~25 frames), and then the bar
+reaches full at the origin and `InWorld` opens around a player the server has
+not placed. Packet loss on the first snapshot, a server hitch, or a distant
+shard is all it takes. A defect whose severity depends on an RTT is the worst
+shape for one to have, which is why the fix is a precondition rather than a
+tuned wait.
+
+The rule, and where each half lives:
+
+| | |
+|---|---|
+| `Eye::placed` mirrors `Predictor::started` | `render::input::place_eye` — and it writes **only** the flag when unplaced, never a position |
+| the `Stream` set stands down until placed | `render::world_placed`, a `run_if` on the set |
+| `place_eye` itself is **never** gated | pumping is how the placing snapshot arrives; a condition on it deadlocks |
+| the bar reads 0.0 and is never `done()` while unplaced | `ui::load::Progress` — a gate in front of the mean, not a term in it |
+| the screen says which of the two waits it is in | `WAITING FOR THE SERVER TO PLACE YOU`, rather than three zeroes for work no ring has been asked for |
+| the capture harness bounds the wait | `capture::PLACE_FRAMES` — exits nonzero with the reason, because a hung gate reports nothing at all |
+
+**Gated, and in the code tier**: `crates/client/tests/ui.rs` §E, three tests,
+no GPU and no `--features render`. That is the point of `ui::load` being a
+pure module — this decides *when a player enters the world*, and the version
+of it that lived inside a Bevy system could only be tested by a windowed run
+against a live shard.
+
+**And measured once against a live one anyway**, because a gate on the
+arithmetic cannot tell you the run-condition is wired to the right set. Seed
+20260731, Xvfb + lavapipe: the shard placed us at `1001.6, 1.2, 1935.3` —
+**2,179 m from the origin on a 2,048 m island**, which is the whole diagonal,
+so the old path's first chunks were off the opposite corner rather than
+merely nearby. World built at frame 27, six vantages written, exit 0.
+
 ---
 
 ## 2 · What we do NOT re-derive — paid-for lessons, mapped
@@ -446,9 +499,15 @@ render --all-targets -- -D warnings` is green and it caught three real
 findings on its first run — before it, cargo skipped `gates.rs` entirely and
 a bin containing `this is not rust at all !!!` would have passed.
 
-**The tier.** `ci/gates.sh` grows a native renderer tier beside the browser
-one, scheduled the same way `renderer_touched` schedules today's: a diff
-touching `crates/client/**` or `assets/**` runs it. Bevy is several hundred
+**The tier.** `ci/gates.sh` grows a native renderer tier. It was written as
+"beside the browser one"; the browser client is cut (`DECISIONS.md`
+2026-08-06), so it is not beside anything — **it is the renderer tier**, and
+the three browser gates it was going to sit next to are dead weight nobody
+owes a fix. Scheduled the way `renderer_touched` schedules today's: a diff
+touching `crates/client/**` or `assets/**` runs it. **The compile half
+landed 2026-08-06** — `ci/gates.sh` now runs `clippy -p client --features
+render -D warnings` plus the three renderer-tier suites. The half that
+photographs anything did not. Bevy is several hundred
 crates and minutes of build; that cost belongs in the tier that owns it, never
 in the ~106 s code tier. Use `bevy/dynamic_linking` for local iteration.
 
@@ -486,10 +545,16 @@ byte-identical with and without the renderer attached, same seed, same WAL. It
 is the only mechanical answer to "did Bevy start deciding," and it is worth
 more than the four pixel assertions above it.
 
-**What this does NOT do** is claim the browser gates' result. `web/` keeps its
-gates until the native client can do what it does; a run that skipped a tier
-prints its own final line and never "ALL GATES GREEN" — the existing script's
-discipline, extended, not loosened.
+**What this does NOT do** is claim the browser gates' result — and that
+sentence has changed meaning. It was written when `web/` kept its gates
+"until the native client can do what it does". The browser client is cut
+(`DECISIONS.md` 2026-08-06) and that day never came: the native client
+inherited the product without inheriting a single visual gate. So the honest
+statement is now the uncomfortable one — **there is no gate in this repo that
+looks at a frame.** `browser_smoke`'s 12 probes and `vantages`' 36 checks
+still run and still guard a retired client. A run that skips a tier still
+prints its own final line and never "ALL GATES GREEN"; what is gone is the
+tier that made that discipline mean something.
 
 ---
 
@@ -544,9 +609,12 @@ capture passes only if all of it holds:
   identical instances;
 - evidence a person is playing: viewmodel, HUD, or both.
 
-R1 through R6 exist to satisfy that list. When a capture passes it, the
-browser client can start being deleted (`NOW.md` §1), and not one slice
-earlier.
+R1 through R6 exist to satisfy that list. That sentence used to end "when a
+capture passes it, the browser client can start being deleted, and not one
+slice earlier" — **the order reversed**: the browser client was cut on
+2026-08-06 by operator word, before any native capture passed this list. The
+list is unchanged and still the bar; what is gone is the fallback that made
+missing it survivable.
 
 ---
 
@@ -659,13 +727,49 @@ earlier.
 - **Instancing route for clutter**: automatic batching until measured
   insufficient, then a custom instanced pipeline. Measure before writing the
   second one.
-- **Bevy's default feature set** pulls gltf and more that this client does not
-  draw. Trimming is a build-time and payload win, not a picture win — it
-  happens when it is in the way. **`bevy_audio` is no longer on that list**:
-  the client makes sound as of 2026-08-06, and `wav` had to be *added* to the
-  feature set (the defaults enable `bevy_audio` and `vorbis` only, so a
-  generated WAV would have panicked with `UnrecognizedFormat` at the moment it
-  played). Audio's own boundary rule is this document's rule one surface over
-  — **Bevy plays, it does not decide** — with the model in
-  `crates/client/src/sound/` (pure, code tier) and `render/audio.rs` owning
-  nothing but the bank, the listener and the voices.
+- **Bevy's default feature set** pulls more than this client draws, but the
+  list of what is dead has to be re-read rather than assumed — and it has now
+  been wrong twice. The old version of this bullet named `ui`, which is the
+  entire interaction surface (~5,400 lines and 78 `Node` sites across
+  `render/{ui,menu,settings,pause,loading,hud,chat,map,death}.rs` and
+  `render/panels/`: server select, loading bar, Esc menu, settings, HUD,
+  inventory, crafting, build wheel, chat, the map and the death screen). It
+  then named **`bevy_audio`** as genuinely unused, correctly identifying the
+  blocker as *asset licensing, not the API* — and that is exactly the blocker
+  the audio slice removed on 2026-08-06. `crates/client/src/sound/synth.rs`
+  GENERATES the bank from arithmetic at boot, so there is no sample to
+  license, and the client makes sound. `wav` had to be **added** to the
+  feature set: Bevy's defaults enable `bevy_audio` and `vorbis` only, so a
+  generated WAV would have panicked with `UnrecognizedFormat` at the moment
+  it played. Audio's boundary rule is this document's rule one surface over —
+  **Bevy plays, it does not decide** — with the model in
+  `crates/client/src/sound/` (pure, code tier, 29 assertions) and
+  `render/audio.rs` owning nothing but the bank, the listener and the voices.
+  Still genuinely unused: **`bevy_gltf`** (every mesh in the tree is
+  procedural), **`bevy_scene`** and **`bevy_animation`** (bodies are capsules;
+  this one is wanted eventually and blocked on rigged meshes rather than on a
+  decision). Trimming is a build-time and payload win, not a picture win — it
+  happens when it is in the way.
+- **`bevy_scene` is a decided no, not an unexamined gap.** Its three
+  advertised wins each land on a wall here. *Entity-ID-preserving save
+  games*: there is no client-side save game and there must not be — the
+  authoritative state is the server's, persisted in the WAL with the content
+  hash pinned (wall 7), and a scene that round-trips entities is a second
+  copy of world state living in the ECS, which is §1. *Linked instancing*:
+  the world's repetition is already `terrain::scatter`'s pure hash streamed
+  by rings keyed on cell, and moving the spawn description into an asset the
+  ring does not own is the same objection that keeps
+  `bevy_procedural_tree`'s own plugin unused. *Hot reloading*: worth having,
+  and it is **not** `bevy_scene` — it is `bevy_asset`'s file watcher, shipped
+  as `--features hot`, and it reloads the textures already in `assets/`
+  (and WGSL, when there is some) without one component becoming `Reflect`.
+  The client currently has zero `Reflect` derives, and scene serialization
+  would require them on everything that goes in — a maintenance surface
+  bought for a feature already ruled out.
+- **The unused Bevy capability that actually points at a ranked gap is
+  custom materials.** There is not one `AsBindGroup` or line of WGSL in the
+  tree, and both remaining gaps in §0 — the hemisphere fill (`AmbientLight`
+  is uniform, so rule 3's floor and the p10 fight each other) and per-instance
+  tint (`ART.md` rule 7) — are `ExtendedMaterial<StandardMaterial, _>` work.
+  It is not scheduled here because it is inside the coupled lighting set §2
+  reserves for one owner and one iteration.
