@@ -23,6 +23,20 @@ default = []
 # bounds are the part that most needs a test, and a test behind
 # `--features render` runs in the renderer tier where nobody looks at it.
 render = ["dep:bevy", "dep:bevy_procedural_tree", "dep:fastrand", "dep:ureq"]
+# Asset hot-reload for the dev loop: edit a file under `assets/` and Bevy
+# reloads it into the running client instead of asking for a rebuild and a
+# reconnect. The one thing `RENDER.md` §9 lists from Bevy's scene stack that
+# is worth having — and note it is NOT `bevy_scene`: the reload is
+# `bevy_asset`'s file watcher, and it works on the textures already shipped
+# (and on WGSL, when there is some) without a single component becoming
+# `Reflect` or a single entity's spawn description leaving Rust.
+#
+# **Its own feature, not part of `render`, and never on for a capture run.**
+# It spawns a filesystem watcher thread, and the capture harness is a visual
+# gate — a gate whose inputs can change under it mid-run is a gate whose
+# frames nobody can reproduce. `ci/gates.sh` builds `render`; a human running
+# `--features hot` is opting into a dev build.
+hot = ["render", "bevy/file_watcher"]
 
 [[bin]]
 name = "client"
@@ -49,8 +63,16 @@ path = "tests/fell.rs"
 required-features = ["render"]
 
 [dependencies]
-# Default features for now: trimming Bevy's feature set (audio, gltf, ui,
-# and the rest this does not draw) is a follow-up, not slice 2's business.
+# Default features for now. Trimming is still a follow-up — but the list of
+# what to trim has changed and the old one is now wrong in a load-bearing way:
+# **`bevy_ui` is not dead weight, it is the whole interaction surface.** Every
+# screen this client has is Bevy UI — server select, the loading bar, the Esc
+# menu, settings, the HUD, inventory, crafting, the build wheel — about 4,300
+# lines across `render/{ui,menu,settings,pause,loading,hud}.rs` and
+# `render/panels/`. What is genuinely unused is `bevy_audio` (nothing makes a
+# sound, and the blocker there is asset licensing rather than the API),
+# `bevy_gltf` (every mesh in the tree is procedural), `bevy_scene` and
+# `bevy_animation`. `RENDER.md` §9 carries the reasoning.
 # `jpeg` is NOT a Bevy default and every source in `assets/textures/` is a
 # .jpg. Without it `bevy_image` refuses the file with "invalid image
 # extension: jpg" — and the renderer carries on drawing a WHITE FALLBACK, so

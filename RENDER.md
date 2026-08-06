@@ -93,6 +93,59 @@ state hash with the renderer attached and detached, on the same seed and WAL.**
 If the ECS ever decides anything, that equality breaks. It is not built; it is
 the right gate, and it is listed in §5 as R-G4.
 
+### 1.1 · The corollary: nothing is loaded until the server says what
+
+"Bevy reads `ClientCore`" has a precondition that went unwritten until it bit,
+and it is worth stating separately because the failure has no symptom.
+
+**The welcome carries `player_id`, `seed` and `tick` — and no position.** A
+seed is an island; it is not a place on one. Where the player stands arrives
+one snapshot later, when the first packet carrying our own entity lets
+`Predictor::adopt` take the authoritative spawn.
+
+Between those two the client used to run the whole `Stream` set anyway, and
+every streamer in it reads `Eye::pos`. An unplaced `Predictor` reports
+`Body::default()`, whose position is the **world origin** — and the world
+origin is a real place on this island, not a sentinel. So nothing faulted,
+nothing logged, and the rings built a perfectly good neighbourhood of
+somewhere the server never named.
+
+**What that cost, stated at two different confidences.** Unconditionally: the
+first frames of every connect built chunks at the origin and threw them away
+when the eye jumped — small, since the rings fill one cell a frame and the
+first snapshot is normally a frame or three behind the welcome. The severe
+outcome is a **race**, not the common case: it needs the first own-entity
+snapshot to be later than the whole ring build (~25 frames), and then the bar
+reaches full at the origin and `InWorld` opens around a player the server has
+not placed. Packet loss on the first snapshot, a server hitch, or a distant
+shard is all it takes. A defect whose severity depends on an RTT is the worst
+shape for one to have, which is why the fix is a precondition rather than a
+tuned wait.
+
+The rule, and where each half lives:
+
+| | |
+|---|---|
+| `Eye::placed` mirrors `Predictor::started` | `render::input::place_eye` — and it writes **only** the flag when unplaced, never a position |
+| the `Stream` set stands down until placed | `render::world_placed`, a `run_if` on the set |
+| `place_eye` itself is **never** gated | pumping is how the placing snapshot arrives; a condition on it deadlocks |
+| the bar reads 0.0 and is never `done()` while unplaced | `ui::load::Progress` — a gate in front of the mean, not a term in it |
+| the screen says which of the two waits it is in | `WAITING FOR THE SERVER TO PLACE YOU`, rather than three zeroes for work no ring has been asked for |
+| the capture harness bounds the wait | `capture::PLACE_FRAMES` — exits nonzero with the reason, because a hung gate reports nothing at all |
+
+**Gated, and in the code tier**: `crates/client/tests/ui.rs` §E, three tests,
+no GPU and no `--features render`. That is the point of `ui::load` being a
+pure module — this decides *when a player enters the world*, and the version
+of it that lived inside a Bevy system could only be tested by a windowed run
+against a live shard.
+
+**And measured once against a live one anyway**, because a gate on the
+arithmetic cannot tell you the run-condition is wired to the right set. Seed
+20260731, Xvfb + lavapipe: the shard placed us at `1001.6, 1.2, 1935.3` —
+**2,179 m from the origin on a 2,048 m island**, which is the whole diagonal,
+so the old path's first chunks were off the opposite corner rather than
+merely nearby. World built at frame 27, six vantages written, exit 0.
+
 ---
 
 ## 2 · What we do NOT re-derive — paid-for lessons, mapped
@@ -659,6 +712,40 @@ earlier.
 - **Instancing route for clutter**: automatic batching until measured
   insufficient, then a custom instanced pipeline. Measure before writing the
   second one.
-- **Bevy's default feature set** pulls audio, gltf and more that this client
-  does not draw. Trimming is a build-time and payload win, not a picture win —
-  it happens when it is in the way.
+- **Bevy's default feature set** pulls more than this client draws, but the
+  list of what is dead has to be re-read rather than assumed — the old version
+  of this bullet named `ui`, which is now the entire interaction surface
+  (~4,300 lines across `render/{ui,menu,settings,pause,loading,hud}.rs` and
+  `render/panels/`: server select, loading bar, Esc menu, settings, HUD,
+  inventory, crafting, build wheel). Genuinely unused today: **`bevy_audio`**
+  (nothing makes a sound; the blocker is asset licensing, not the API —
+  `CLAUDE.md`'s third-party section already has one NC and one unlicensed
+  audio set in it, and neither survives a sold product), **`bevy_gltf`**
+  (every mesh in the tree is procedural), **`bevy_scene`** and
+  **`bevy_animation`** (bodies are capsules; this one is wanted eventually and
+  blocked on rigged meshes rather than on a decision). Trimming is a
+  build-time and payload win, not a picture win — it happens when it is in
+  the way.
+- **`bevy_scene` is a decided no, not an unexamined gap.** Its three
+  advertised wins each land on a wall here. *Entity-ID-preserving save
+  games*: there is no client-side save game and there must not be — the
+  authoritative state is the server's, persisted in the WAL with the content
+  hash pinned (wall 7), and a scene that round-trips entities is a second
+  copy of world state living in the ECS, which is §1. *Linked instancing*:
+  the world's repetition is already `terrain::scatter`'s pure hash streamed
+  by rings keyed on cell, and moving the spawn description into an asset the
+  ring does not own is the same objection that keeps
+  `bevy_procedural_tree`'s own plugin unused. *Hot reloading*: worth having,
+  and it is **not** `bevy_scene` — it is `bevy_asset`'s file watcher, shipped
+  as `--features hot`, and it reloads the textures already in `assets/`
+  (and WGSL, when there is some) without one component becoming `Reflect`.
+  The client currently has zero `Reflect` derives, and scene serialization
+  would require them on everything that goes in — a maintenance surface
+  bought for a feature already ruled out.
+- **The unused Bevy capability that actually points at a ranked gap is
+  custom materials.** There is not one `AsBindGroup` or line of WGSL in the
+  tree, and both remaining gaps in §0 — the hemisphere fill (`AmbientLight`
+  is uniform, so rule 3's floor and the p10 fight each other) and per-instance
+  tint (`ART.md` rule 7) — are `ExtendedMaterial<StandardMaterial, _>` work.
+  It is not scheduled here because it is inside the coupled lighting set §2
+  reserves for one owner and one iteration.

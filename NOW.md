@@ -20,6 +20,38 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0x · The world waits for the server now — what the Bevy audit left *(client lane)*
+
+Landed 2026-08-06. The client was building a world the server had not named —
+the welcome carries a seed and **no position**, and an unplaced `Predictor`
+reports the world **origin**, which is a real place here rather than a
+sentinel, so the rings streamed it. Measured on seed 20260731: the shard
+places at `1001.6, 1935.3` — **2,179 m from the origin on a 2,048 m island**,
+the whole diagonal. Every connect wasted the first frames' chunks; the severe
+case (bar full at the origin, `InWorld` around an unplaced player) is a race
+the first snapshot normally wins. `RENDER.md` §1.1 is the rule,
+`DECISIONS.md` §open the mechanism, `tests/ui.rs` §E the **code**-tier gate.
+
+Also landed: `--features hot` (asset hot-reload — `bevy_asset`'s watcher, not
+`bevy_scene`), and the claim that `bevy_ui` is dead weight is corrected in
+both places that carried it.
+
+Remaining, in order:
+
+1. **Trim Bevy's default features — no longer only a payload win.** Building
+   `--features render` needs `libwayland-dev`, `libasound2-dev` and
+   `libudev-dev`; the middle one is `alsa-sys` under `bevy_audio`, which has
+   **zero call sites** (`CLAUDE.md` §environment). `3d` pulls `audio` +
+   `scene` as an umbrella, so this means `default-features = false` and an
+   enumeration — cheap, but it needs a verified build, not a guess. Keep
+   `bevy_ui`, `bevy_picking`, `jpeg`.
+2. **R-G4 is still the missing half of §1.** Placement has a gate now; the
+   no-gameplay-state rule still has none. Its answer is the
+   renderer-attached/detached state-hash equality.
+3. **Nothing photographs the new wait.** A capture run exercises it every run
+   (`capture::PLACE_FRAMES` bounds it), but `ci/gates.sh` still never builds
+   `--features render` — §0w item 3's hole, now covering one more rule.
+
 ## 0w · The native menus landed — the four things they cannot do *(client lane)*
 
 Landed 2026-08-06: `Tab` opens inventory + crafting, `B` holds the radial build

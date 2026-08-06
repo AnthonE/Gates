@@ -105,6 +105,20 @@ impl WorldId {
 /// on.
 #[derive(Resource, Default)]
 pub struct Eye {
+    /// **Has the server told us where the player is?**
+    ///
+    /// False from the welcome until the first snapshot carrying our own
+    /// entity, which is what `Predictor::adopt` takes the authoritative
+    /// spawn from — the welcome itself carries `player_id`, `seed` and
+    /// `tick`, and no position at all.
+    ///
+    /// It is a flag rather than an `Option<Vec3>` because the failure it
+    /// prevents is not a missing value: `Predictor::body` before its first
+    /// snapshot is `Body::default()`, whose position is the **world
+    /// origin**, and the world origin is a real place on this island. A ring
+    /// builder handed it does not fault — it builds a neighbourhood of
+    /// somewhere the server never named. See [`crate::ui::load`].
+    pub placed: bool,
     pub pos: Vec3,
     pub yaw: f32,
     pub pitch: f32,
@@ -130,6 +144,24 @@ pub struct Stream;
 /// and it is one state either way.
 pub fn world_running(state: Res<State<Screen>>, world: Option<Res<WorldId>>) -> bool {
     world.is_some() && !matches!(state.get(), Screen::Menu | Screen::Connecting)
+}
+
+/// Has the server told us **what** to load?
+///
+/// The narrower of the two questions in front of the `Stream` set, and the
+/// one `world_running` cannot answer: a `WorldId` exists the moment the
+/// welcome names a seed, but a seed is an island and not a place on it. Every
+/// streamer in that set reads `Eye::pos` to decide which cells it owes, so
+/// running one before the first snapshot builds a ring around the world
+/// origin — a real location, silently the wrong one, and evicted whole one
+/// packet later.
+///
+/// Reads `Eye` rather than the session because `Eye` is already the one place
+/// the ring builders agree about where the player is (they never query the
+/// camera transform, for the same reason). `input::place_eye` is chained
+/// ahead of the set, so this sees this frame's answer, not last frame's.
+pub fn world_placed(eye: Res<Eye>) -> bool {
+    eye.placed
 }
 
 /// Drop the world: every entity it spawned, every ring that indexed them, and
@@ -373,6 +405,14 @@ impl Plugin for GatesRenderPlugin {
         // paused, or reading settings from the pause menu. `place_eye` pumps
         // the session, and a session that stops being read is a connection
         // that stalls and then teleports on resume.
+        //
+        // **`place_eye` pumps unconditionally; everything downstream waits
+        // to be placed.** The two halves are gated differently on purpose:
+        // pumping is how the snapshot that does the placing arrives, so a
+        // condition that stopped it would be a deadlock, while every system
+        // in `Stream` reads `Eye::pos` and would otherwise stream the world
+        // origin (`world_placed`). The chain is what makes the condition
+        // read this frame's pump rather than the previous frame's.
         .add_systems(
             Update,
             (
@@ -386,7 +426,8 @@ impl Plugin for GatesRenderPlugin {
                     rig::follow_eye,
                     hud::update,
                 )
-                    .in_set(Stream),
+                    .in_set(Stream)
+                    .run_if(world_placed),
             )
                 .chain()
                 .run_if(world_running),

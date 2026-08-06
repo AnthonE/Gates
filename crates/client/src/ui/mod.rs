@@ -13,6 +13,10 @@
 //!
 //! The three panels, and what each owes:
 //!
+//! - [`load`] — the loading screen's model. Not a panel, and here for the
+//!   same reason they are: it decides *when a player enters the world*, and
+//!   the version of that decision that lived inside a Bevy system could
+//!   only be tested by a windowed run against a live shard.
 //! - [`slots`] — the inventory grid and the container panel. Owns the
 //!   move verb's marshalling, which `CLAUDE.md` names as the most
 //!   bug-prone thing in the reference: three Oxide fixes in 28 minutes on
@@ -29,4 +33,5 @@
 
 pub mod build;
 pub mod craft;
+pub mod load;
 pub mod slots;

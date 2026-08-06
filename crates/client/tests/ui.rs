@@ -19,9 +19,15 @@
 //!   time, and the search — because each is a number a player will act on.
 //! - **§D the wheel's angles.** Off by half a segment is invisible in code
 //!   and obvious in the hand.
+//! - **§E the loading screen's two waits**, because the first of them —
+//!   "has the server said where?" — has no natural symptom. An unplaced
+//!   predictor reports the world origin rather than nothing, so the failure
+//!   is a client that builds the wrong neighbourhood confidently and a bar
+//!   that fills while it does.
 
 use client::ui::build::{self, Hover, Rings, MATERIALS, SHAPES};
 use client::ui::craft::{self, Cat, Facts};
+use client::ui::load::Progress;
 use client::ui::slots::{self, Grab};
 use sim_core::build::{BuildContent, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_FOUNDATION, SHAPE_WALL};
 use sim_core::craft::CraftContent;
@@ -515,4 +521,83 @@ fn every_ring_entry_has_a_label() {
     for m in MATERIALS {
         assert!(!build::material_label(m).is_empty());
     }
+}
+
+// ===========================================================================
+// §E · The loading screen: nothing is loaded until the server says what
+// ===========================================================================
+//
+// The welcome carries `player_id`, `seed` and `tick` — and no position. Where
+// the player stands arrives one snapshot later, when the first packet
+// carrying our own entity lets `Predictor::adopt` take the authoritative
+// spawn. The bug this section pins is that the interval between those two is
+// not visibly a wait: `Predictor::body` before its first snapshot is
+// `Body::default()`, whose position is the **world origin**, and the world
+// origin is a real place on this island. Every ring builder reads that
+// position; handed it, none of them faults. They build a good neighbourhood
+// of the wrong place, report themselves full, and the bar reaches 100%.
+//
+// So the assertions below are all about the same thing from different sides:
+// an unplaced `Progress` is not progress, whatever its counters say.
+
+/// A ring set that is entirely, unambiguously finished. The only thing left
+/// to vary is whether the server ever said where to build it.
+fn built(placed: bool) -> Progress {
+    Progress {
+        placed,
+        ground: (25, 25),
+        scatter: (25, 25),
+        clutter: (81, 81),
+        far: true,
+    }
+}
+
+#[test]
+fn a_world_built_around_an_unplaced_eye_is_not_a_loaded_world() {
+    // The exact shape of the bug: every counter full, the far mesh up, and
+    // the client still has no idea whether any of it is where the player is.
+    // `done()` is what puts a player into `Screen::InWorld`, so this single
+    // assertion is the difference between a loading screen and a spawn at
+    // the wrong end of the island.
+    assert!(!built(false).done());
+    assert!(built(true).done());
+}
+
+#[test]
+fn the_bar_does_not_move_before_the_server_places_you() {
+    // Not cosmetic. A bar that climbs while the rings fill around the origin
+    // is a bar reporting real work toward the wrong answer, and it would
+    // reach full — the player would watch it finish and then wait again.
+    assert_eq!(built(false).fraction(), 0.0);
+    assert_eq!(built(true).fraction(), 1.0);
+
+    // Partial fills too: the gate is in front of the mean, not one term of it.
+    let half = Progress {
+        placed: false,
+        ground: (25, 25),
+        scatter: (0, 25),
+        clutter: (0, 81),
+        far: false,
+    };
+    assert_eq!(half.fraction(), 0.0);
+
+    // The same counters, placed: now the mean is the mean.
+    let mut placed = half;
+    placed.placed = true;
+    assert!((placed.fraction() - 1.0 / 3.0).abs() < 1e-6);
+}
+
+#[test]
+fn the_counts_line_names_which_wait_it_is_in() {
+    // Three honest zeroes would be a lie of framing: no ring has been ASKED
+    // for anything yet, so "GROUND 0/25" describes work that is not late,
+    // it describes work that has not been ordered.
+    let waiting = Progress::waiting();
+    assert!(!waiting.placed);
+    assert_eq!(waiting.fraction(), 0.0);
+    assert!(!waiting.done());
+    assert!(waiting.line().contains("WAITING FOR THE SERVER"));
+    assert!(!waiting.line().contains("GROUND"));
+
+    assert!(built(true).line().contains("GROUND 25/25"));
 }
