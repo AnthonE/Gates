@@ -54,6 +54,9 @@ pub fn gather(
     // and a probe harness that could open one is a gate whose frames depend
     // on a keystroke (`render/panels/mod.rs`).
     ui: Option<Res<super::panels::Ui>>,
+    // Same shape as `ui`, and the same reason it is optional: a capture run
+    // registers neither.
+    chat: Option<Res<super::chat::Chat>>,
 ) {
     // An in-game panel owns the pointer while it is up: the cursor comes
     // back, the view stops turning, and the movement axes go to zero. A
@@ -65,7 +68,12 @@ pub fn gather(
     // menu is a whole `Screen` and `gather` does not run on it; a panel is
     // drawn over a running world, so the world's own input has to stand down
     // while one is open, and this is where that happens.
-    let panel_open = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false);
+    // **The chat composer counts.** Without it, typing "we should build here"
+    // walks you forward, swings twice, eats whatever is in slot 3 and opens
+    // the inventory. A text field is a text field whether it is inside a
+    // panel or floating over the world.
+    let panel_open = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false)
+        || chat.map(|c| c.open()).unwrap_or(false);
 
     // Pointer lock on click — the browser client's contract, which players
     // already know from every other game. **Releasing it on Escape is no

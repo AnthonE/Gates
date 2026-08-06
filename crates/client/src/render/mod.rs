@@ -20,6 +20,9 @@ use crate::Session;
 
 pub mod bodies;
 pub mod capture;
+// Chat. Not registered on a capture run, like the panels: a gate whose
+// frames depend on whether a composer is open is not a gate.
+pub mod chat;
 pub mod clutter;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
@@ -467,6 +470,7 @@ impl Plugin for GatesRenderPlugin {
         // vantage `NOW.md` §0v already names, now owed twice.
         if self.capture.is_none() {
             panels::register(app);
+            chat::register(app);
         }
 
         if let Some(dir) = &self.capture {

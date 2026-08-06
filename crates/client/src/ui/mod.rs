@@ -33,6 +33,7 @@
 //! possible when the resolver can be called without a window.
 
 pub mod build;
+pub mod chat;
 pub mod craft;
 pub mod death;
 pub mod interact;
