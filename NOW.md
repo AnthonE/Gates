@@ -20,7 +20,7 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0x · The world waits for the server now — what the Bevy audit left *(client lane)*
+## 0z · The world waits for the server now — what the Bevy audit left *(client lane)*
 
 Landed 2026-08-06. The client was building a world the server had not named —
 the welcome carries a seed and **no position**, and an unplaced `Predictor`
@@ -34,23 +34,103 @@ the first snapshot normally wins. `RENDER.md` §1.1 is the rule,
 
 Also landed: `--features hot` (asset hot-reload — `bevy_asset`'s watcher, not
 `bevy_scene`), and the claim that `bevy_ui` is dead weight is corrected in
-both places that carried it.
+both places that carried it — it is ~5,400 lines and every screen we have.
 
 Remaining, in order:
 
-1. **Trim Bevy's default features — no longer only a payload win.** Building
-   `--features render` needs `libwayland-dev`, `libasound2-dev` and
-   `libudev-dev`; the middle one is `alsa-sys` under `bevy_audio`, which has
-   **zero call sites** (`CLAUDE.md` §environment). `3d` pulls `audio` +
-   `scene` as an umbrella, so this means `default-features = false` and an
-   enumeration — cheap, but it needs a verified build, not a guess. Keep
-   `bevy_ui`, `bevy_picking`, `jpeg`.
+1. **Trim Bevy's default features — no longer only a payload win.** The gate
+   at `ci/gates.sh` already names the reason: `alsa-sys` is pulled by
+   `bevy_audio`, which has **zero call sites**, and a box without the dev
+   package fails at a build script. `3d` pulls `audio` + `scene` as an
+   umbrella, so this means `default-features = false` and an enumeration —
+   cheap, but it needs a verified build, not a guess. Keep `bevy_ui`,
+   `bevy_picking`, `jpeg`. (`libudev-dev` and the runtime `libxkbcommon-x11-0`
+   are NOT this item: gamepads and X11 are both wanted. `CLAUDE.md`
+   §environment lists all four.)
 2. **R-G4 is still the missing half of §1.** Placement has a gate now; the
    no-gameplay-state rule still has none. Its answer is the
    renderer-attached/detached state-hash equality.
-3. **Nothing photographs the new wait.** A capture run exercises it every run
-   (`capture::PLACE_FRAMES` bounds it), but `ci/gates.sh` still never builds
-   `--features render` — §0w item 3's hole, now covering one more rule.
+3. **Nothing photographs the new wait.** `ci/gates.sh` compiles the render
+   path and now runs the client's lib tests under it (`--lib` added here), so
+   the placement arithmetic is gated twice. What no gate does is *look*: a
+   capture run exercises the wait on every run and `capture::PLACE_FRAMES`
+   bounds it, but the native visual gate is still §2's, unbuilt.
+## 0y · `web/` is cut — decide what that means to the tree *(operator input wanted)*
+
+**Spoken 2026-08-06** (`DECISIONS.md`): the browser client is cut. The row
+deliberately did **not** delete anything, because three separable questions
+hide inside "cut it" and a loop should not answer any of them alone:
+
+1. **The three gates.** `ui smoke` (7,200 lines), `browser smoke` (5,179) and
+   `vantages` guard a retired client and cost every full `ci/gates.sh` run.
+   `browser smoke` additionally fails on this box for a documented
+   environmental reason (two live WebGL renderers on a software rasterizer,
+   `CLAUDE.md`) — so it is now a permanently red gate protecting nothing,
+   which is the worst state a gate can be in. Delete, or gate behind an
+   env flag, or leave.
+2. **`web/` itself.** ~17 k lines. It is the reference implementation of
+   every verb the native client now carries, and several of its comments
+   record bugs that cost a pass to find. `CLAUDE.md` now says *read it, do
+   not maintain it* — which is a stable state, if the tree can carry it.
+3. **What `client-wasm` is for.** It stays either way: it is the native
+   client's core as an rlib. But `test_parity_wasm` and the wasm build exist
+   because a browser ran it, and parity is also wall 1's enforcement. Keeping
+   both is defensible (two codegen backends agreeing is a real determinism
+   check, and it is cheap); dropping the wasm target because nothing ships it
+   is also defensible. **Not a loop's call** — it touches a wall.
+
+Nothing here is urgent. It is written down so the next pass does not
+rediscover that a third of the gate script is dead weight.
+
+## 0x · The native client can play the game now — what it still owes *(client lane)*
+
+Landed 2026-08-06. Twelve of the wire's sixteen `ACT_*` verbs plus `KIND_CHAT`
+had no key in this client; four did. All of them do now, and the three sets
+that were decoded into `ClientCore` and drawn by nothing — pieces,
+deployables, backpacks — are drawn. Also: **the look and the strafe were both
+inverted** (operator-reported; `crates/client/src/look.rs` has the derivation
+and `tests/look.rs` checks the client's right-vector against Bevy's own
+`Transform` basis).
+
+New screens: `Dead` (dying used to end the session), `Map`. New keys: `E` use/
+loot/open, `G` eat, `H` drink, `L` lock, `U` upgrade, `R` repair, `X` plant a
+charge, `T`/`Enter` chat, `M` map, RMB place. New HUD: crosshair, centre
+prompt, toast, compass, hitmarker.
+
+Remaining, in order:
+
+1. **`ci/gates.sh` still never builds `--features render`** (§0v item 3, now
+   owed much more). This slice added ~3,500 lines behind that feature and the
+   code tier covers only the `crate::ui` half — 94 assertions, all pure. The
+   probe is `RENDER.md` R0 and it is two commands. **This is the top item.**
+2. **Nothing in this repo looks at a frame.** This was "the native client has
+   no visual gate yet, and `web/`'s still run"; the browser cut
+   (`DECISIONS.md` 2026-08-06) removed the second half. `browser_smoke`'s 12
+   probes and `vantages`' 36 checks now guard a retired client, and the one
+   that ships has none. Panels, chat, the map and the death screen are also
+   deliberately unregistered on a `--capture` run, so even a native gate could
+   not open one — §0w item 3's hole, now six screens wide. **This and item 1
+   are the same item seen from two ends, and together they are the top of
+   this file.**
+3. **No swing prompt.** `interact.js`'s second resolver (`resolveSwing`, a 2 m
+   cone with a vertical window and a point-blank exception over the scatter
+   cells) has no native port, so the crosshair names what `E` would do and
+   never what a swing would hit.
+4. **Bevy's default features pull wayland and alsa**, neither of which this
+   client uses; both are hard build deps on a fresh box. `crates/client/Cargo.toml`
+   already flags the trim as a follow-up — it is now also a portability item.
+5. **`bodies::stream` allocates a `Vec` per frame** and scans it linearly to
+   retire remotes. `structures::stream` does the same job with a generation
+   stamp and no allocation; this is the same fix, four lines.
+6. **Five read-side signals are still decoded and dropped.** The verb list is
+   complete; this is not. `pop_death` is the kill FEED (every death, not your
+   own — the death SCREEN reads `core.dead` and the `own_death_*` fields and
+   is done); `struct_hit` is the damage number on a wall you are breaking;
+   `charge_placed` is the countdown on a charged one; `stock`/`stock_addr` is
+   what a hearth is holding; `mark_cell`/`mark8` is the gather weak spot,
+   which is the reference's own `OnDispenserBonus` and the closest thing this
+   game has to a skill expression. Each is a small HUD slice on top of what
+   this branch built, and none of them is blocked.
 
 ## 0w · The native menus landed — the four things they cannot do *(client lane)*
 
@@ -63,10 +143,9 @@ the AMOUNT/ITEM TYPE/TOTAL/HAVE table, stepper, and the wheel's two rings.
 
 Remaining, in order:
 
-1. **No build ghost, so the wheel latches and never places.** Nothing draws
-   the cell being aimed at or colours it by whether the sim would accept it,
-   and `encode_action_place` needs a cell, a level and a location this client
-   cannot aim. `web/src/interact.js` is the reference for the aiming.
+1. ~~No build ghost~~ **— landed 2026-08-06** (§0x). `ui/place.rs` aims it,
+   `render/ghost.rs` draws it, and the local verdict answers the four
+   refusals a client can check in the server's own words.
 2. **The rail is not the reference's, and one wire field would fix it.**
    `EventMsg::Catalog` ships display names only, so a category rail by item
    class is not computable client-side. A class byte per item, a `PROTO_VER`
@@ -205,7 +284,21 @@ chunk. `map.js`'s `resolveMarks` takes world positions and is already gated, so
 this is a caller change on the ui side and not a rewrite. Ranked gap 1 of
 `pass-20260805-111501-04` is the reason; the container verb is the other half.
 
-## 0a · world lane: skirt residual — the ring's hard edge
+## 0a · ~~world lane: skirt residual — the ring's hard edge~~ **(MOOT)**
+
+**Retired 2026-08-06 by the browser cut** (`DECISIONS.md`). Every line below
+is about `web/src/clutter.js` — a per-frame player-relative shader term, the
+WebGL program-link budget, and the prewarm gate that counts links after
+`inWorld`. None of those exist natively: Bevy specializes pipelines, not GL
+programs, and the native clutter ring is `render/clutter.rs`. **The finding at
+the bottom survives and is worth keeping** — beach skirts are thin because
+`scatter` puts 0.22 prop centres a tile on the coast against 0.95 inland, not
+because the skirt thins itself, and that is the scatter table's business on
+either client. The rest is history. Kept unpruned this pass rather than
+deleted, because whoever builds the native ring's fade should read what the
+browser learned about it first.
+
+<details><summary>the original item</summary>
 
 *(Residual 1, the sand sweep, landed and is deleted. Residual 2 is below and
 its cost has not changed, but its blocker is now named properly.)*
@@ -230,6 +323,8 @@ in the wrong file: beach skirts are thin — 1.19 elements a tile against
 inland's 5.27 — because `scatter` puts 0.22 prop centres a tile on the coast
 against 0.95 inland, not because the skirt thins itself. The two ratios match
 to a tenth. That is the scatter table, not `terrain.rs`'s skirt path.
+
+</details>
 
 ## 0q · The judge-ranked gaps nobody has claimed
 

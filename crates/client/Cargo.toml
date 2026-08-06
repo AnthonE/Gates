@@ -62,14 +62,24 @@ name = "fell"
 path = "tests/fell.rs"
 required-features = ["render"]
 
+# The handedness gate. Pure arithmetic and no GPU, but it checks the client's
+# right-vector against BEVY's `Transform` basis rather than against a restated
+# identity, so it links Bevy and carries the feature — `crate::look`'s own unit
+# tests are the code-tier half.
+[[test]]
+name = "look"
+path = "tests/look.rs"
+required-features = ["render"]
+
 [dependencies]
 # Default features for now. Trimming is still a follow-up — but the list of
 # what to trim has changed and the old one is now wrong in a load-bearing way:
 # **`bevy_ui` is not dead weight, it is the whole interaction surface.** Every
 # screen this client has is Bevy UI — server select, the loading bar, the Esc
-# menu, settings, the HUD, inventory, crafting, the build wheel — about 4,300
-# lines across `render/{ui,menu,settings,pause,loading,hud}.rs` and
-# `render/panels/`. What is genuinely unused is `bevy_audio` (nothing makes a
+# menu, settings, the HUD, inventory, crafting, the build wheel, chat, the map
+# and the death screen — about 5,400 lines and 78 `Node` sites across
+# `render/*.rs` and `render/panels/`.
+# What is genuinely unused is `bevy_audio` (nothing makes a
 # sound, and the blocker there is asset licensing rather than the API),
 # `bevy_gltf` (every mesh in the tree is procedural), `bevy_scene` and
 # `bevy_animation`. `RENDER.md` §9 carries the reasoning.

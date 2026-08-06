@@ -14,15 +14,27 @@ Great Work board, coins from its economy — importing none of its code.
 **The skeleton is the product**: determinism, netcode, and the hot-path
 laws outrank every feature.
 
-The three.js browser client in `web/` still builds and is still gated, and
-is being retired rather than deleted — the native client replaces it slice
-by slice (`NOW.md` §1). Two things bind the move. **Bevy draws, it does
-not decide**: `sim-core` keeps the walls and `ClientCore` keeps
-prediction, so gameplay state never enters the ECS, where it would retire
-the determinism walls with nothing in CI to notice. And **a render path
-that lands without its probes ships a client with no visual gates at
-all** — forbidden outright, and the pivot inherits that rule from
-`MIGRATION.md` even though it moots the rest of that doc.
+**The browser client is cut** (operator, 2026-08-06). `web/` is still in the
+tree and its three gates still run, but they are no longer walls: a red
+`ui smoke`, `browser smoke` or `vantages` blocks nothing, and nobody owes
+that code a fix. The native client is the only client. Do not spend a pass
+on `web/src` — if you find yourself editing it, you are working on a
+retired product.
+
+Two things still bind the native client. **Bevy draws, it does not decide**:
+`sim-core` keeps the walls and `ClientCore` keeps prediction, so gameplay
+state never enters the ECS, where it would retire the determinism walls with
+nothing in CI to notice. And **a render path that lands without its probes
+ships a client with no visual gates at all** — forbidden outright, and
+inherited from `MIGRATION.md` even though that doc is otherwise moot. That
+second rule is now **owed rather than satisfied**: cutting the browser
+removed the only gates that ever photographed anything, so the native client
+currently ships with no visual gate at all (`NOW.md` §0x item 2).
+
+`web/` is still worth *reading*. It is the reference implementation of every
+verb the native client now carries — `interact.js`'s two pick resolvers,
+`map.js`'s hillshade, `refusals.js`'s tables — and several of its comments
+record bugs that cost a pass to find. Read it; do not maintain it.
 
 **Agents are first-class on both sides.** They build it — `AGENTS.md` is
 the door for any harness — and they will play it: the deterministic core
@@ -198,9 +210,17 @@ cargo test --workspace              # every gate that runs headless
 cargo run -p server --bin shard     # the server (reads shard.toml)
 cargo run -p server --bin bots -- 100
 cargo run -p server --bin replay -- --wal <file>
-./web/dev.sh                        # vite + wasm-pack watch
+cargo run -p client --features render --bin gates    # the game
+cargo clippy -p client --features render --all-targets -- -D warnings
 ./ci/gates.sh                       # exactly what CI runs — run it before merge
 ```
+
+`--features render` is off by default and everything about the client is
+behind it (`crates/client/Cargo.toml` says why). It needs `libwayland-dev`
+and `libasound2-dev` on a fresh box — Bevy's default features ask for them
+through `winit` and `bevy_audio` and this client uses neither, which is a
+trim that is owed (`NOW.md` §0x item 4). `./web/dev.sh` still exists and
+starts a retired product.
 
 ## The loop that builds this repo
 
@@ -277,12 +297,18 @@ headless image has no reason to carry — `libwayland-dev`, `libasound2-dev`,
 `libudev-dev` — and each fails identically, as a `pkg-config exited with status
 code 1` panic from a `*-sys` build script (`wayland-sys`, `alsa-sys`,
 `libudev-sys`) with the crate named only in the backtrace. Install them; it is
-the box, not the tree. **But ask the second question for each**, because one of
-the three does not survive it: `alsa` is required solely because `bevy_audio`
-is on by default and this client has **zero** audio call sites. That is not a
-missing capability, it is one we request and do not use, and the trim is
-`NOW.md` §0x item 1. `wayland` (and `x11`) are real — a shipped desktop client
-faces both — and `libudev` is `bevy_gilrs`, which is gamepads and wanted.
+the box, not the tree. `ci/gates.sh`'s native-client gate names the first two
+in its own echo line; **`libudev-dev` is the third and was measured here**, so
+a box that installs only what that line lists still fails. Running the client
+adds a fourth, and it is a runtime `.so` rather than a build dep, so
+`pkg-config` never mentions it: `libxkbcommon-x11-0`, whose absence panics
+inside `winit` at `App::run` with every gate already green. **Then ask the
+second question for each**, because one of the four does not survive it:
+`alsa` is required solely because `bevy_audio` is on by default and this
+client has **zero** audio call sites. That is not a missing capability, it is
+one we request and do not use, and the trim is `NOW.md` §0x item 1. `wayland`
+(and `x11`) are real — a shipped desktop client faces both — and `libudev` is
+`bevy_gilrs`, which is gamepads and wanted.
 Neither of these repeals the rule above:
 they are missing capabilities, which are diagnosable and permanent, not timing,
 which is neither.
@@ -310,7 +336,14 @@ which is neither.
   normal bias (`DECISIONS.md` §open, lighting v0). Guidance only — no code
   from the pack ships in this repo. **That is a licence statement, not a
   usage limit: read them.** `threejs-skill-router` routes a graphics task to
-  the right ones, and renderer work starts there.
+  the right ones. **They are now guidance about *technique*, not about this
+  codebase**: the renderer they address is three.js and the browser client is
+  cut, so a skill's API is no longer ours. What survives the change is what
+  was always the valuable half — the shadow pack's texel snapping, the
+  exposure pack's log-average metering, the atmosphere pack's LUT structure —
+  and every one of those has to be re-expressed against Bevy, exactly as
+  `SeedThree`'s TSL wind had to be re-expressed as GLSL. Renderer work starts
+  at `RENDER.md`; reach for these for the physics, never for the calls.
 - `reference/rust-systems.txt` is ripped from `OxideMod/Oxide.Rust`'s
   `resources/Rust.opj` (MIT, © 2013–2020 Oxide Team and Contributors) —
   facts only: hook names, patched class names, method signatures,
