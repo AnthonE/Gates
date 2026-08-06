@@ -66,7 +66,7 @@ pub const SLUG: &str = "gates";
 /// scry repo. Regenerate ONLY when re-vendoring an upstream change:
 /// `sha256sum crates/client/src/scry_overlay.rs`.
 pub const VENDORED_SHA256: &str =
-    "87e3f80afc59e18b4c55826eebf79efd761e4f2bc819f69b6c179f3559f3f4d7";
+    "31494444e825377b18bc612b09bb7a7f08b6f5fea717c2c52c0bd88447216409";
 
 /// Who is playing, and how we came to believe it. The variants are kept
 /// distinct because they carry different weight and a single `Option<String>`

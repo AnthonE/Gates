@@ -37,9 +37,25 @@
 use std::env;
 use std::fmt;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
+
+// ── the transport, and the one thing that differs by platform ───────────────
+//
+// On unix the door is a UNIX stream socket. On Windows there is no `AF_UNIX`
+// in `std`, so it is a **named pipe** — which opens as an ordinary file, and
+// `File` already has the `try_clone` + `Read` + `Write` shape `UnixStream`
+// has. That is why this is a type alias and not an abstraction: the client
+// logic below is byte-identical on both platforms.
+
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+
+#[cfg(unix)]
+type Stream = UnixStream;
+
+#[cfg(windows)]
+type Stream = std::fs::File;
 
 pub const PROTOCOL: i64 = 1;
 pub const SOCKET_ENV: &str = "SCRY_LAUNCHER_SOCKET";
@@ -375,12 +391,26 @@ impl std::error::Error for SignError {}
 
 // ── the client ──────────────────────────────────────────────────────────────
 
+/// Where the door is when nobody named one.
+///
+/// ⚠ **This must agree with the launcher's own default exactly**
+/// (`scry-broker/src/transport.rs`). A mismatch is the worst shape of bug
+/// here: a game finds no launcher on a machine that is running one, reports
+/// the normal "playing anonymously", and nothing anywhere is red.
+/// `$SCRY_LAUNCHER_SOCKET` is set by the launcher on every native build it
+/// starts and wins over both defaults, which is why that is the path a game
+/// should actually end up using.
 pub fn default_socket() -> PathBuf {
     if let Ok(p) = env::var(SOCKET_ENV) {
         if !p.is_empty() {
             return PathBuf::from(p);
         }
     }
+    platform_default()
+}
+
+#[cfg(unix)]
+fn platform_default() -> PathBuf {
     if let Ok(rt) = env::var("XDG_RUNTIME_DIR") {
         if !rt.is_empty() {
             return PathBuf::from(rt).join("scry").join("launcher.sock");
@@ -389,9 +419,78 @@ pub fn default_socket() -> PathBuf {
     PathBuf::from(env::var("HOME").unwrap_or_default()).join(".cache/scry/launcher/launcher.sock")
 }
 
+/// One pipe per user, because the Windows pipe namespace is machine-wide. Two
+/// people signed into one box must not land on the same door — a game would
+/// otherwise ask the wrong session's launcher to sign.
+#[cfg(windows)]
+fn platform_default() -> PathBuf {
+    let user = env::var("USERNAME").unwrap_or_default();
+    let user: String = user
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let user = if user.is_empty() { "default".to_string() } else { user };
+    PathBuf::from(format!(r"\\.\pipe\scry-launcher-{user}"))
+}
+
+/// Open the door, or say there is none. **`Err` is a normal state** — it means
+/// no launcher is running, and a game plays fine without one.
+#[cfg(unix)]
+fn open_stream(path: &std::path::Path, timeout: Duration) -> Result<Stream, String> {
+    let stream = UnixStream::connect(path)
+        .map_err(|e| format!("no launcher at {}: {e}", path.display()))?;
+    // A consent prompt waits for a person, so these are generous. A short read
+    // timeout turns "the player was reading the message" into a bug.
+    stream.set_read_timeout(Some(timeout)).ok();
+    stream.set_write_timeout(Some(timeout)).ok();
+    Ok(stream)
+}
+
+/// The Windows half — a named pipe, which opens as a file.
+///
+/// ⚠ **The timeout bounds the CONNECT, not the reads, and that difference is
+/// real.** `WaitNamedPipeW` waits for a free instance for `timeout` and then
+/// gives up, so a launcher that is not running still fails fast. Once open,
+/// reads block: bounding them wants overlapped I/O, which is a great deal of
+/// machinery for a file whose whole property is that it vendors with no crates
+/// and no build script.
+///
+/// What that costs, said plainly rather than discovered: a launcher that
+/// accepts a connection and then never answers will hang the calling game
+/// instead of erroring after `timeout`. On unix the same launcher returns an
+/// error. That is a launcher bug in both cases; on Windows the game feels it as
+/// a freeze. A game that cares should call the SDK off its main thread — which
+/// is good practice anyway, because a consent prompt waits for a human.
+#[cfg(windows)]
+fn open_stream(path: &std::path::Path, timeout: Duration) -> Result<Stream, String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    extern "system" {
+        fn WaitNamedPipeW(name: *const u16, timeout_ms: u32) -> i32;
+    }
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+    // Not fatal on its own: the pipe may already have a free instance, in
+    // which case the open below simply succeeds. This only makes a busy
+    // launcher wait rather than fail instantly.
+    // SAFETY: `wide` is a NUL-terminated UTF-16 buffer that outlives the call.
+    unsafe { WaitNamedPipeW(wide.as_ptr(), ms) };
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("no launcher at {}: {e}", path.display()))
+}
+
 pub struct Overlay {
-    stream: UnixStream,
-    reader: BufReader<UnixStream>,
+    stream: Stream,
+    reader: BufReader<Stream>,
     pub hello: Value,
 }
 
@@ -408,10 +507,7 @@ impl Overlay {
         version: &str,
         timeout: Duration,
     ) -> Result<Overlay, String> {
-        let stream = UnixStream::connect(path)
-            .map_err(|e| format!("no launcher at {}: {e}", path.display()))?;
-        stream.set_read_timeout(Some(timeout)).ok();
-        stream.set_write_timeout(Some(timeout)).ok();
+        let stream = open_stream(path, timeout)?;
         let reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
         let mut ov = Overlay {
             stream,
