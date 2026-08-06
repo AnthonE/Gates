@@ -119,6 +119,7 @@ impl Plugin for GatesRenderPlugin {
                     (
                         terrain_mesh::stream,
                         props::stream,
+                        props::harvest,
                         clutter::stream,
                         bodies::stream,
                         rig::follow_eye,

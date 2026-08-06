@@ -548,7 +548,61 @@ earlier.
      `RenderDiagnosticsPlugin` works on this box but half its output is wall
      clock and must never be asserted.
 
-2. **The sim state nothing draws.** A probe compared every public `ClientCore`
+2. **Harvested state — LANDED and gated.** A felled tree is a stump, a mined
+   node or a smashed barrel disappears, and both reverse on respawn.
+   `crates/client/tests/fell.rs` is the gate: five assertions, headless, no
+   GPU and no socket, driven through a predicate so the transport is not in
+   the way. Eight mutants were run against it and the ones that matter go red.
+
+   Three things it settled that the next draw path inherits:
+   - **Poll the authority, never the change feed.** `on_stream` zeroes its
+     change slice at the top of every call and `Session::pump` drains every
+     queued message before a frame runs, so a frame that received two messages
+     sees only the last one's changes. `push_change` also drops silently past
+     64 entries. `HarvestedSet::contains` cannot miss an edge.
+   - **The join seed is drip-fed** — ≤256 entries scanned and ≤64 cells per
+     tick — so a node is spawned STANDING and corrected several ticks later.
+     The first convergence after join must be a hard swap, never an animation,
+     or a new player watches the forest collapse around them.
+   - **State the renderer keeps must be absolute, not accumulated.** The first
+     cut moved the stump with `y += lift` / `y -= lift`, which is right only
+     while every transition is observed; anything that re-seeds an entity
+     without resetting the flag drifts it 0.17 m per missed pair, invisibly,
+     because each single step looks correct.
+
+   Still owed: the fall animation. The browser's is 33 ticks of rotation then
+   a 60-tick sink, on `core.clock.client_tick` and NOT on `Time`, with the
+   bearing from `fellBearing`'s own hash so two clients agree which way a tree
+   went down, and the tilt PREMULTIPLIED onto the instance yaw.
+
+3. **What is still not drawn, with the spec to draw it.** Pieces, deployables
+   and bags are mirrored in `ClientCore` and have no draw path. The arithmetic,
+   from the sim rather than from the browser:
+
+   - **Pieces.** `PieceRec { cx, cz, level, loc, row }` — `hp`/`uh` are
+     sim-only and always 0 on the client. Kind and tier come from
+     `piece_defs.pieces[row]`, and **that read must be gated on
+     `piece_defs_have`**: an undripped row is `INERT`, whose shape is
+     `SHAPE_FOUNDATION`, so an ungated read draws a foundation slab in mid-air
+     where a wall belongs. Base height is resampled locally —
+     `terrain::height(seed, cx*3+1.5, cz*3+1.5) + PIECE_LIFT_M + level*3` —
+     at the CELL CENTRE for every `loc`, including edge pieces, so the two
+     cells an edge adjoins cannot disagree. A plane's slab hangs BELOW its
+     walk surface (centre at `base_y - 0.15`, top at `base_y`); getting that
+     sign wrong sinks the player into every floor. A doorway's opening is
+     1.2 m × 2.1 m because `collide::edge_hit` blocks exactly `t` in
+     `[0, 0.9]` and `[2.1, 3.0]` — draw it elsewhere and the frame lies about
+     where a player can walk. Reconcile the whole `entries()` slice keyed on
+     `(cx, cz, level, loc)`: order is not stable (removal swap-removes), and
+     an upgrade re-rows an address with no new message kind, so comparing set
+     membership alone keeps drawing a wood wall that became stone.
+   - **The door leaf is a deployable, not a piece.** `PieceSet` never carries
+     open/closed; the doorway piece draws the same either way.
+   - **Deployables and bags** carry their own sync and their own removal
+     events; a bag's position is quantized on the wire and a bag is how a
+     player recovers a death, so its dequantization is not cosmetic.
+
+4. **The sim state nothing draws.** A probe compared every public `ClientCore`
    surface against what `render/` calls, and the native client draws **nothing
    from the sim except remote body capsules**: no `pieces` (built bases), no
    `deploys` (doors, boxes, campfires), no `bags` (death backpacks), and no

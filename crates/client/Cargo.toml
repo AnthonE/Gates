@@ -28,6 +28,13 @@ name = "gates"
 path = "src/bin/gates.rs"
 required-features = ["render"]
 
+# The fell gate needs the render module, so it carries the same requirement
+# the binary does — and therefore runs in the renderer tier, not the code one.
+[[test]]
+name = "fell"
+path = "tests/fell.rs"
+required-features = ["render"]
+
 [dependencies]
 # Default features for now: trimming Bevy's feature set (audio, gltf, ui,
 # and the rest this does not draw) is a follow-up, not slice 2's business.

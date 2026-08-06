@@ -22,10 +22,11 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
+use sim_core::gather::cell_key;
 use sim_core::terrain::{self, Occupant};
 
 use super::terrain_mesh::{CHUNK_M, NEAR_RADIUS};
-use super::{Eye, WorldId};
+use super::{Eye, Net, WorldId};
 
 /// Trunk height, metres. NOT the tree's height: the top whorl tapers to a
 /// point and the trunk does not, so a trunk run to full height leaves a bare
@@ -96,6 +97,7 @@ pub struct PropAssets {
     pines: Vec<Handle<Mesh>>,
     blob: Handle<Mesh>,
     boulder: Handle<Mesh>,
+    stump: Handle<Mesh>,
     bush: Handle<Mesh>,
     barrel: Handle<Mesh>,
     crate_box: Handle<Mesh>,
@@ -109,6 +111,43 @@ pub struct PropAssets {
     ore_sulfur: Handle<StandardMaterial>,
     wood: Handle<StandardMaterial>,
     metal: Handle<StandardMaterial>,
+}
+
+/// A scatter slot the sim can retire under us — a gatherable node, keyed by
+/// the same `gather::cell_key` the server and `ClientCore` use.
+///
+/// **Re-tested every frame rather than driven off `slot_changes()`, and that
+/// is deliberate.** `ClientCore::on_stream` resets its change feed at the top
+/// of every call, and `Session::pump` drains every queued message in a loop
+/// before the renderer looks — so a frame that received two event messages
+/// would see only the second one's changes and silently keep drawing a tree
+/// the server felled. `HarvestedSet::contains` is authoritative at any moment,
+/// costs a scan of a set that is nearly always tiny, and cannot miss an edge.
+#[derive(Component)]
+pub struct Fellable {
+    pub key: u32,
+    /// The mesh variant this slot spawned with.
+    ///
+    /// **Stored rather than re-derived, because re-deriving it got it wrong.**
+    /// `spawn_slot` picks the pine from the slot's yaw and the first cut of
+    /// the un-fell branch picked it from the key — so a tree that respawned
+    /// came back as a DIFFERENT tree. The test written alongside it did not
+    /// catch that, because the test spawned by the same wrong rule the buggy
+    /// branch used.
+    pub variant: usize,
+    /// The y this slot was spawned at, so both swaps set an ABSOLUTE height.
+    ///
+    /// The first cut accumulated (`y += lift`, `y -= lift`), which is correct
+    /// only while every transition is observed. Anything that despawns,
+    /// re-seeds or teleports an entity without resetting `felled` drifts it
+    /// 0.17 m per missed pair; an absolute set cannot drift.
+    pub base_y: f32,
+    /// Whether this slot leaves a stump. Only a tree does — a rock that stops
+    /// being a rock has nothing to leave behind, so it simply goes.
+    pub stumps: bool,
+    /// What is currently drawn, so the swap happens on the transition rather
+    /// than every frame.
+    pub felled: bool,
 }
 
 /// What the scatter ring has spawned, one parent entity per chunk.
@@ -290,6 +329,40 @@ fn pine_mesh(variant: u32) -> Mesh {
     s.mesh()
 }
 
+/// What a felled pine leaves behind. The browser's `stumpGeometry`, constant
+/// for constant: a six-sided taper 0.26 m at the top and 0.32 m at the base,
+/// 0.34 m tall, wearing the trunk band. The cut face is lighter — fresh
+/// timber against weathered bark is the whole reason a stump reads as a stump
+/// and not as a rock.
+fn stump_mesh() -> Mesh {
+    let mut s = Soup::default();
+    let sides = 6usize;
+    let (r_base, r_top, h) = (0.32f32, 0.26f32, 0.34f32);
+    let col = |v: Vec3| band_color(BAND_TRUNK, v.y + 0.17);
+    for i in 0..sides {
+        let a0 = i as f32 / sides as f32 * std::f32::consts::TAU;
+        let a1 = (i + 1) as f32 / sides as f32 * std::f32::consts::TAU;
+        let b0 = Vec3::new(a0.cos() * r_base, -h * 0.5, a0.sin() * r_base);
+        let b1 = Vec3::new(a1.cos() * r_base, -h * 0.5, a1.sin() * r_base);
+        let t0 = Vec3::new(a0.cos() * r_top, h * 0.5, a0.sin() * r_top);
+        let t1 = Vec3::new(a1.cos() * r_top, h * 0.5, a1.sin() * r_top);
+        s.tri(b0, t0, b1, col, None, 0.0);
+        s.tri(b1, t0, t1, col, None, 0.0);
+    }
+    // The cut face.
+    let cut = linear(0xb59a6e);
+    let cap = move |_: Vec3| [cut[0], cut[1], cut[2], 1.0];
+    let centre = Vec3::new(0.0, h * 0.5, 0.0);
+    for i in 0..sides {
+        let a0 = i as f32 / sides as f32 * std::f32::consts::TAU;
+        let a1 = (i + 1) as f32 / sides as f32 * std::f32::consts::TAU;
+        let t0 = Vec3::new(a0.cos() * r_top, h * 0.5, a0.sin() * r_top);
+        let t1 = Vec3::new(a1.cos() * r_top, h * 0.5, a1.sin() * r_top);
+        s.tri(centre, t0, t1, cap, None, 0.0);
+    }
+    s.mesh()
+}
+
 /// A faceted blob on an icosahedron's vertices, jittered per seed. Stands in
 /// for every rock, node and bush — the shapes that were `DodecahedronGeometry`
 /// in the browser.
@@ -444,6 +517,7 @@ pub fn assets(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial
             .collect(),
         blob: meshes.add(blob_mesh(1.0, 0.28, 0x51ed_270b, 0x9c968a)),
         boulder: meshes.add(blob_mesh(1.5, 0.32, 0x1b87_3593, 0x8e887c)),
+        stump: meshes.add(stump_mesh()),
         bush: meshes.add(blob_mesh(0.7, 0.42, 0x2545_f491, 0x2c5f2e)),
         barrel: meshes.add(Cylinder::new(0.45, 0.95).mesh().resolution(10).build()),
         crate_box: meshes.add(boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)])),
@@ -528,7 +602,11 @@ pub fn stream(
                     if slot.occupant == Occupant::None {
                         continue;
                     }
-                    spawn_slot(&mut commands, parent, a, &slot);
+                    // `cell_key` is `sim_core::gather`'s own, not a second
+                    // copy: the client's mirror is keyed by it and a renderer
+                    // that packed its own would silently never match.
+                    let key = cell_key(cell_x as u16, cell_z as u16);
+                    spawn_slot(&mut commands, parent, a, &slot, key);
                 }
             }
             ring.built.insert(key, parent);
@@ -538,15 +616,22 @@ pub fn stream(
     }
 }
 
-fn spawn_slot(commands: &mut Commands, parent: Entity, a: &PropAssets, slot: &terrain::Slot) {
+fn spawn_slot(
+    commands: &mut Commands,
+    parent: Entity,
+    a: &PropAssets,
+    slot: &terrain::Slot,
+    key: u32,
+) {
     let yaw = slot.yaw as f32 / 256.0 * std::f32::consts::TAU;
     // Which mesh, which material, and how far the mesh's own origin sits
     // above the ground — the browser's `lift`, kept because these meshes are
     // centred and the slot's y is the surface.
+    let mut variant = 0usize;
     let (mesh, material, lift) = match slot.occupant {
         Occupant::Tree => {
-            let v = (slot.yaw as usize) % a.pines.len();
-            (a.pines[v].clone(), a.foliage.clone(), 0.0)
+            variant = (slot.yaw as usize) % a.pines.len();
+            (a.pines[variant].clone(), a.foliage.clone(), 0.0)
         }
         Occupant::StoneNode => (a.blob.clone(), a.ore_stone.clone(), 0.5),
         Occupant::MetalNode => (a.blob.clone(), a.ore_metal.clone(), 0.5),
@@ -564,13 +649,144 @@ fn spawn_slot(commands: &mut Commands, parent: Entity, a: &PropAssets, slot: &te
     // lift slightly is the cheapest half of that; the crowding half is the
     // clutter skirt, which `sim_core` already places.
     let sink = 0.06;
-    commands.entity(parent).with_child((
-        Mesh3d(mesh),
-        MeshMaterial3d(material),
-        Transform {
-            translation: Vec3::new(slot.x, slot.y + lift * slot.scale - sink, slot.z),
-            rotation: Quat::from_rotation_y(yaw),
-            scale: Vec3::splat(slot.scale),
-        },
-    ));
+    let transform = Transform {
+        translation: Vec3::new(slot.x, slot.y + lift * slot.scale - sink, slot.z),
+        rotation: Quat::from_rotation_y(yaw),
+        scale: Vec3::splat(slot.scale),
+    };
+    // **Every gatherable node carries the harvested bit, not just trees.**
+    // `gather::node_index` covers `Occupant` 1..=5 and a barrel shares the same
+    // `SlotLives` entry and the same `EV_SLOT_HARVESTED`, so a smashed barrel
+    // and a mined ore node are as gone as a felled pine. Tagging only trees
+    // left both standing on screen after the server had removed them.
+    let harvestable = matches!(
+        slot.occupant,
+        Occupant::Tree
+            | Occupant::StoneNode
+            | Occupant::MetalNode
+            | Occupant::SulfurNode
+            | Occupant::Bush
+            | Occupant::Rock
+            | Occupant::BarrelSlot
+    );
+    let mut e = commands.entity(parent);
+    if harvestable {
+        e.with_child((
+            Fellable {
+                key,
+                variant,
+                base_y: transform.translation.y,
+                stumps: slot.occupant == Occupant::Tree,
+                felled: false,
+            },
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            transform,
+        ));
+    } else {
+        e.with_child((Mesh3d(mesh), MeshMaterial3d(material), transform));
+    }
+}
+
+/// Swap a felled tree for its stump, and back when the slot respawns.
+///
+/// **This is the whole visible half of gathering.** The sim has owned chopping
+/// for a long time — ten swings with the right tool, a yield table, a
+/// harvested bit and a respawn timer, all authoritative and all on the wire —
+/// and the native client's entire contribution was to keep drawing the tree.
+/// The most physical verb in the game read as a rendering bug.
+///
+/// What this is NOT is the browser's fall animation (`FELL_TICKS` 33, then a
+/// 60-tick sink). That needs a per-instance timer and a fall bearing derived
+/// from the cell hash so two players see the same tree land the same way; it
+/// is a slice, and this is the state change it would animate.
+pub fn harvest(
+    net: NonSend<Net>,
+    mut store: Local<Option<PropAssets>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    q: Query<(
+        &mut Fellable,
+        &mut Mesh3d,
+        &mut MeshMaterial3d<StandardMaterial>,
+        &mut Transform,
+        &mut Visibility,
+    )>,
+) {
+    if q.is_empty() {
+        return;
+    }
+    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials));
+    // The session is read through a predicate so the swap below is testable
+    // without a socket. `HarvestedSet` is the authority; this is the only
+    // place it is consulted.
+    let core = &net.session.core;
+    apply_fell(a, q, &|key| core.harvested.contains(key));
+}
+
+/// Half a metre of stump lift: the mesh is centred on its own axis while the
+/// slot's `y` is the ground. `web/src/props.js` ships the same 0.17.
+pub const STUMP_LIFT_M: f32 = 0.17;
+
+/// The swap itself, with the wire behind a predicate.
+///
+/// Split out so it can be exercised headless — `crates/client/tests/fell.rs`
+/// drives it with a fixed key set and asserts the mesh, the material and the
+/// lift, in both directions. Without that split the only way to test a felled
+/// tree would be to chop one over a live socket, which is not a gate.
+pub fn apply_fell(
+    a: &PropAssets,
+    mut q: Query<(
+        &mut Fellable,
+        &mut Mesh3d,
+        &mut MeshMaterial3d<StandardMaterial>,
+        &mut Transform,
+        &mut Visibility,
+    )>,
+    harvested: &dyn Fn(u32) -> bool,
+) {
+    for (mut f, mut mesh, mut mat, mut t, mut vis) in q.iter_mut() {
+        let felled = harvested(f.key);
+        if felled == f.felled {
+            continue;
+        }
+        f.felled = felled;
+        if !f.stumps {
+            // A rock that stops being a rock has nothing to animate.
+            *vis = if felled {
+                Visibility::Hidden
+            } else {
+                Visibility::Inherited
+            };
+            continue;
+        }
+        if felled {
+            mesh.0 = a.stump.clone();
+            mat.0 = a.wood.clone();
+            t.translation.y = f.base_y + STUMP_LIFT_M * t.scale.y;
+        } else {
+            mesh.0 = a.pines[f.variant].clone();
+            mat.0 = a.foliage.clone();
+            t.translation.y = f.base_y;
+        }
+    }
+}
+
+impl PropAssets {
+    /// Read-only handles the fell gate compares against.
+    pub fn stump_mesh(&self) -> &Handle<Mesh> {
+        &self.stump
+    }
+    pub fn pine_mesh(&self, variant: usize) -> &Handle<Mesh> {
+        &self.pines[variant % self.pines.len()]
+    }
+    pub fn pine_variants(&self) -> usize {
+        self.pines.len()
+    }
+    pub fn wood_material(&self) -> &Handle<StandardMaterial> {
+        &self.wood
+    }
+    pub fn foliage_material(&self) -> &Handle<StandardMaterial> {
+        &self.foliage
+    }
 }
