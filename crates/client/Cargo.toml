@@ -56,7 +56,15 @@ required-features = ["render"]
 # extension: jpg" — and the renderer carries on drawing a WHITE FALLBACK, so
 # the frame does not report the failure. Three successive material changes
 # measured byte-identical statistics before the log was read.
-bevy = { version = "0.18", optional = true, features = ["jpeg"] }
+#
+# `wav` is NOT a Bevy default either, and the failure it prevents is the same
+# shape as the `jpeg` one: Bevy's defaults enable `bevy_audio` and `vorbis`
+# only, so rodio's decoder is built without a WAV path and every generated cue
+# in `sound/synth.rs` would panic with `UnrecognizedFormat` at the moment it
+# was played. Vorbis is the wrong answer here — we are the encoder, and pulling
+# a Vorbis encoder in to compress a buffer that was generated in memory and is
+# decoded back in memory buys nothing.
+bevy = { version = "0.18", optional = true, features = ["jpeg", "wav"] }
 # The shard list (`scry-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
 # `rustls` rather than a system TLS: the same reason wtransport carries its
 # own — one trust store the build controls, on a box that may have no

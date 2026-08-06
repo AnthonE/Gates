@@ -18,6 +18,10 @@ use sim_core::terrain::{self, Haven, ScatterTable};
 
 use crate::Session;
 
+// The Bevy half of the client's audio. The MODEL is `crate::sound`, which is
+// pure and not feature-gated for the same reason `ui` is not: a mixer testable
+// only by a windowed run with a sound card is a mixer with no gate.
+pub mod audio;
 pub mod bodies;
 pub mod capture;
 pub mod clutter;
@@ -225,6 +229,8 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<menu::Picked>()
             .init_resource::<pause::Chosen>()
             .init_resource::<Settings>()
+            .init_resource::<audio::Sound>()
+            .init_resource::<audio::LastHp>()
             .insert_non_send_resource(menu::Connecting::default());
 
         // `Menu` is inserted either way, because a system that reads it must
@@ -261,7 +267,10 @@ impl Plugin for GatesRenderPlugin {
         // Textures load at Startup rather than on entering the world: they
         // are wanted whichever screen comes first, and warming them while a
         // player reads the menu is free time the old shape did not have.
-        app.add_systems(Startup, textures::load);
+        // Same reasoning for the sound bank, which is generated rather than
+        // loaded (`sound/synth.rs`): ~1 MB of arithmetic, wanted whichever
+        // screen comes first, and free while a player reads the menu.
+        app.add_systems(Startup, (textures::load, audio::load));
 
         // ---- the menu ------------------------------------------------
         // `world_teardown` first: entering the menu from a live world is the
@@ -360,6 +369,11 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnEnter(Screen::Loading), hud::setup.after(rig::setup))
         // The cloud deck hangs on the camera, so it waits for the rig too.
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
+        // The listener IS the camera, so the ears wait for the rig as well.
+        .add_systems(OnEnter(Screen::Loading), audio::setup.after(rig::setup))
+        // Leaving a shard resets the step odometer and the bed's fade. The
+        // bed entity itself is a `WorldEntity` and goes with the rest.
+        .add_systems(OnEnter(Screen::Menu), audio::teardown.after(world_teardown))
         // Input is the one thing that is `InWorld` and nothing else: it is
         // the only system that writes what the sim reads, and a player
         // reading a settings pane must not be swinging an axe.
@@ -389,6 +403,25 @@ impl Plugin for GatesRenderPlugin {
                     .in_set(Stream),
             )
                 .chain()
+                .run_if(world_running),
+        )
+        // Audio runs AFTER the streamers and `pump` runs last of all: every
+        // producer must have had its say before the mixer resolves the frame,
+        // or a cue requested by a system scheduled later is heard a frame
+        // late. `fell` in particular reads the change detection that
+        // `props::harvest` writes inside `Stream`.
+        .add_systems(
+            Update,
+            (
+                audio::feed,
+                audio::hurt,
+                audio::steps,
+                audio::fell,
+                audio::bed,
+                audio::pump,
+            )
+                .chain()
+                .after(Stream)
                 .run_if(world_running),
         );
 

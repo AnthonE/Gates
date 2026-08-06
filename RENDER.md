@@ -659,6 +659,13 @@ earlier.
 - **Instancing route for clutter**: automatic batching until measured
   insufficient, then a custom instanced pipeline. Measure before writing the
   second one.
-- **Bevy's default feature set** pulls audio, gltf and more that this client
-  does not draw. Trimming is a build-time and payload win, not a picture win —
-  it happens when it is in the way.
+- **Bevy's default feature set** pulls gltf and more that this client does not
+  draw. Trimming is a build-time and payload win, not a picture win — it
+  happens when it is in the way. **`bevy_audio` is no longer on that list**:
+  the client makes sound as of 2026-08-06, and `wav` had to be *added* to the
+  feature set (the defaults enable `bevy_audio` and `vorbis` only, so a
+  generated WAV would have panicked with `UnrecognizedFormat` at the moment it
+  played). Audio's own boundary rule is this document's rule one surface over
+  — **Bevy plays, it does not decide** — with the model in
+  `crates/client/src/sound/` (pure, code tier) and `render/audio.rs` owning
+  nothing but the bank, the listener and the voices.

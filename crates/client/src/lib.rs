@@ -17,6 +17,12 @@
 pub mod args;
 pub mod scry;
 pub mod shardlist;
+// The audio model — which sound, how loud, how many at once, and the
+// generated bank itself. NOT feature-gated, for `ui`'s reason exactly: it is
+// pure, a mixer is where "Bevy plays, it does not decide" is easiest to break,
+// and a test behind `--features render` runs in the renderer tier where nobody
+// looks at it. `render/audio.rs` is the Bevy half.
+pub mod sound;
 // The in-game menus' arithmetic. NOT feature-gated: it is pure, it is what
 // the menus actually get wrong, and a test behind `--features render` runs
 // in the renderer tier where nobody looks at it (`ui/mod.rs`).

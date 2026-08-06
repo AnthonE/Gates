@@ -20,6 +20,49 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0x · The client makes sound — what it cannot yet hear *(client lane)*
+
+Landed 2026-08-06. `crates/client/src/sound/` is the model (pure, headless,
+**code tier** — 27 assertions in `tests/sound.rs`), `render/audio.rs` is the
+Bevy half. 19 cues, two buses, a bounded mixer, per-surface footsteps off
+`terrain::splat`, a crossfaded wind bed, and three working volume sliders.
+Research is `reference/AUDIO.md`; every number is `DECISIONS.md` §open
+"audio v0". **There are no audio assets** — `sound/synth.rs` generates the
+bank at boot, which is a licence posture (§ that file), not a preference.
+
+Remaining, in order:
+
+1. **Nothing scores it, because `ART.md` has no audio section at all.** The
+   bank has a *gate* (energy, no clipping, no click, loop seam continuous,
+   surfaces differ in brightness) and no *bar*. That asymmetry is the same one
+   `CLAUDE.md`'s beige-smear entry is about: a statistic cannot tell whether
+   the frame is a picture of anything, and none of these can tell whether the
+   bank sounds like a forest. **Nobody has heard it** — this box has no audio
+   device — so it is honest programmer art until someone plays it.
+   `cargo run -p client --bin soundbank -- <dir>` writes all 19 WAVs, which is
+   how you listen without launching a client and walking to a tree. Looking
+   already paid twice: a waveform plot found the wind bed was a flat hiss (its
+   gust LFOs were slower than its own loop) and then that the fix overshot into
+   the ambience dropping out. Both are gates now; neither was reachable from a
+   statistic that only asked "does it have energy".
+2. **Music is the highest-value unbuilt thing and the design is already
+   written down.** `reference/AUDIO.md` §8: a 4–8 minute gap timer, themes of
+   sectioned pieces, an intensity scalar bumped by events we already have as
+   integer codes, transitions only at section boundaries. Every input exists.
+   What does not exist is music — a generated bank makes tones, not themes.
+   That is a **content** blocker, not an engineering one.
+3. **`pop_hit`/`pop_death`/`pop_toast` are destructive and audio is their only
+   reader.** When the HUD grows a hitmarker the two will silently split the
+   events between them. The fix is one drain writing a per-frame resource both
+   read, and it is owed before the second reader, not after.
+4. **Remote players are silent.** Only the local body has an odometer, so
+   another player's footsteps — the sound that decides fights — do not exist.
+   `bodies.rs` has their interpolated transforms; a `Steps` per remote body
+   and a positional step cue is the slice.
+5. **No occlusion, and it needs a prerequisite rather than a pass.** A wall
+   between you and a sound needs a geometry query, and the correct one is the
+   sim's (`collide.rs`), not a raycast against render meshes.
+
 ## 0w · The native menus landed — the four things they cannot do *(client lane)*
 
 Landed 2026-08-06: `Tab` opens inventory + crafting, `B` holds the radial build

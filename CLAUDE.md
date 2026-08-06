@@ -45,6 +45,7 @@ pays the same doors and earns the same coins as a human.
 | `RENDER.md` | the **native** client's render path: the Bevy-draws-not-decides boundary, the slice order, the native visual gate, the budgets | **replaces `MIGRATION.md`**; owns the path, never the bar — `ART.md` outranks it everywhere |
 | `MIGRATION.md` | the renderer move to `WebGPURenderer` + TSL | **SUPERSEDED 2026-08-05** — the client pivot to native Rust moots it; you do not port three.js *and* replace it. Kept for its probe/readback inventory, which the native visual gate still has to answer |
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
+| `reference/AUDIO.md` | how the reference game decides what a player hears: the Unity mixer groups/snapshots it built first, the `audio.framebudget 0.3` convar, localized ambience, the 2–5 kHz carve, its four shipped audio bugs, and **§9 what it means for us** | **owns nothing** — research, not law, and a *cleaner* source than `SPAWN.md`: devblogs and the public convar list, nothing decompiled. Our answer is `crates/client/src/sound/` |
 | `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is scry's `SUBSTRATE.md`; this owns only what an agent may do here |
 | `NOW.md` | what next | **the only list that answers that** |
 
@@ -243,6 +244,19 @@ racing two live renderers. Assert on observable state (`inWorld`, `snapshots >
 n`) and never on elapsed milliseconds — the failure that started it reported
 `inWorld=true` and timed out anyway. Widening a timeout is not a fix; it is the
 same bug with a longer fuse.
+
+**A container that has never built `--features render` is missing four things,
+and each one dies as a `pkg-config` panic 40 lines into a build script.**
+Found 2026-08-06 on a fresh clone, in this order, one per rebuild:
+`libwayland-dev` (bevy's defaults include `wayland` as well as `x11`),
+`libasound2-dev` (`bevy_audio` → cpal → `alsa-sys`), `libudev-dev`
+(`bevy_gilrs`), and `rustup target add wasm32-unknown-unknown`. All four are
+the same class as the wasm target below — a wall that cannot run is not a wall,
+so install them rather than trimming the feature. Two notes that cost time
+here: `apt-get install` may 404 on a stale index and needs `apt-get update`
+first; and **`cargo … | tail` reports `tail`'s exit code, not cargo's**, so a
+backgrounded gate piped to `tail` reports success while the build is red —
+use `${PIPESTATUS[0]}`.
 
 **Not every red gate is a defect — but check whether the missing capability is
 one WE asked for.** `bot_smoke` used to fail all four tests on a container

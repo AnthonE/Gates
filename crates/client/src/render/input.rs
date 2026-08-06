@@ -50,9 +50,10 @@ pub fn pitch_u8(pitch: f32) -> u8 {
     v.clamp(0.0, 255.0) as u8
 }
 
-// Eight, and the eighth is the panels' `Ui`. Every one is a distinct source
-// this frame reads: the session, the free view, the cursor, the settings, two
-// input maps, the accumulated motion, and whether a panel has the pointer.
+// Nine, and the ninth is the sound queue. Every one is a distinct source this
+// frame reads: the session, the free view, the cursor, the settings, two input
+// maps, the accumulated motion, whether a panel has the pointer, and where a
+// swing goes.
 #[allow(clippy::too_many_arguments)]
 pub fn gather(
     mut net: NonSendMut<Net>,
@@ -62,6 +63,7 @@ pub fn gather(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
+    mut sound: ResMut<super::audio::Sound>,
     // `Option`, because a capture run does not register the menus at all —
     // and a probe harness that could open one is a gate whose frames depend
     // on a keystroke (`render/panels/mod.rs`).
@@ -144,6 +146,15 @@ pub fn gather(
     }
     if mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
+    }
+    // The swing, heard here rather than in `render/audio.rs` because this is
+    // the only place that knows a panel is not eating the click — the
+    // `panel_open` return above is what makes closing an inventory not also
+    // swing an axe. `just_pressed`, not `pressed`: the cue's own cooldown
+    // paces a held button, and a per-frame push would spend the whole cue
+    // queue on one held mouse button.
+    if mouse.just_pressed(MouseButton::Left) {
+        sound.play(crate::sound::mixer::Request::own(crate::sound::Cue::Swing));
     }
 
     // Hotbar 1–6. `set_input` clamps into range, so an out-of-range key
