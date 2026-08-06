@@ -446,6 +446,28 @@ pub fn feedback(
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
         });
     }
+    // The kill feed. Every death on the shard reaches this ring, and until
+    // now the only reader was the mixer (`render::audio`) — so a death was
+    // AUDIBLE and invisible, which is the half of `NOW.md` §0x item 6 that
+    // cost nothing to close because the fact was already drained and sitting
+    // in `Feed`.
+    //
+    // **Our own death is skipped, and it is in this ring.** `ClientCore`
+    // buffers `(victim, killer)` for every `EV_DEATH` unconditionally and
+    // only *then* asks whether the victim was us, so the death SCREEN
+    // (`core.dead` + the `own_death_*` fields, `ui::death`) and this line
+    // are fed by the same event. Without the skip a player would be told
+    // they died twice, once in a sentence written for someone watching.
+    //
+    // No cause here: the ring carries `(victim, killer)` and nothing else,
+    // so the feed says who, and the screen — which does have the cause, the
+    // weapon and the range — says how.
+    for &(victim, killer) in feed.deaths() {
+        if let Some(line) = kill_line_for(victim, killer, core.player_id) {
+            toast.say(line);
+        }
+    }
+
     // Gather and craft toasts are (item, count) pairs — something arrived.
     // `item_label` is the panels' own naming, reused rather than restated:
     // an index no name has dripped for prints as `#12`, which is honest,
@@ -519,6 +541,28 @@ pub fn prompt(
     }
 }
 
+/// One kill-feed line for a `(victim, killer)` pair.
+///
+/// `killer == victim` is how the ring reports a death nobody dealt — the
+/// clock, the sea, or a player's own hand — because the wire pair carries no
+/// cause. The feed says who; the death screen says how.
+fn kill_line(victim: u32, killer: u32) -> Option<String> {
+    Some(if killer == victim {
+        format!("#{victim} died")
+    } else {
+        format!("#{killer} killed #{victim}")
+    })
+}
+
+/// [`kill_line`], but silent for our own death: it is in the same ring, and
+/// `ui::death` already owns that sentence with the cause and the range.
+fn kill_line_for(victim: u32, killer: u32, own: u32) -> Option<String> {
+    if victim == own {
+        return None;
+    }
+    kill_line(victim, killer)
+}
+
 /// What the crosshair says for a swing pick, or `""` for a whiff.
 ///
 /// `[LMB]` rather than a verb name because the swing is a button, and the
@@ -553,6 +597,22 @@ mod tests {
     /// here because it is an ORDERING, and an ordering is the one thing a
     /// compile cannot check — the browser shipped this as sixteen swept
     /// combinations in a gate that no longer exists.
+    /// The kill-feed line, as a pure function of the pair the ring carries.
+    /// Extracted so the sentence has a gate: the system around it needs a
+    /// live `Net`, and a sentence assembled inside a Bevy system is one no
+    /// headless test can read back (`ui::death`'s header, same argument).
+    #[test]
+    fn the_kill_feed_names_who_and_skips_our_own() {
+        // A stranger killed by another stranger.
+        assert_eq!(kill_line(9, 4), Some("#4 killed #9".to_string()));
+        // Self-inflicted, or the world: the ring gives killer == victim.
+        assert_eq!(kill_line(9, 9), Some("#9 died".to_string()));
+        // Ours never reaches the feed — the death SCREEN owns it, and the
+        // same EV_DEATH feeds both.
+        assert_eq!(kill_line_for(9, 4, 9), None);
+        assert_eq!(kill_line_for(9, 9, 9), None);
+    }
+
     #[test]
     fn e_outranks_the_swing_and_the_swing_fills_the_silence() {
         use crate::ui::interact::{Pick, Verb};
