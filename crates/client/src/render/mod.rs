@@ -24,6 +24,8 @@ pub mod clutter;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
+// The build ghost: the cell being aimed at, and the click that commits it.
+pub mod ghost;
 pub mod hud;
 pub mod input;
 pub mod loading;
@@ -162,6 +164,7 @@ pub fn world_teardown(
     mut props: ResMut<props::PropRing>,
     mut clutter: ResMut<clutter::ClutterRing>,
     mut structures: ResMut<structures::StructRing>,
+    mut ghost: ResMut<ghost::Ghost>,
     mut bodies: ResMut<bodies::Bodies>,
     mut eye: ResMut<Eye>,
     mut look: ResMut<input::Look>,
@@ -179,6 +182,9 @@ pub fn world_teardown(
     *props = props::PropRing::default();
     *clutter = clutter::ClutterRing::default();
     *structures = structures::StructRing::default();
+    // The ghost holds an `Entity` from the world that just went; keeping it
+    // would have the next world's first aim insert components onto a dead id.
+    *ghost = ghost::Ghost::default();
     *bodies = bodies::Bodies::default();
     *eye = Eye::default();
     *look = input::Look::default();
@@ -237,6 +243,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<pause::Chosen>()
             .init_resource::<verbs::Aimed>()
             .init_resource::<death::Answer>()
+            .init_resource::<ghost::Ghost>()
             .init_resource::<hud::Toast>()
             .init_resource::<Settings>()
             .insert_non_send_resource(menu::Connecting::default());
@@ -408,6 +415,16 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             (verbs::resolve, verbs::keys)
+                .chain()
+                .after(input::place_eye)
+                .run_if(in_state(Screen::InWorld)),
+        )
+        // The build ghost. `track` before `place_key` for the same reason
+        // `verbs::resolve` precedes `verbs::keys`: the click commits what is
+        // drawn, so the drawing has to be this frame's.
+        .add_systems(
+            Update,
+            (ghost::level_keys, ghost::track, ghost::place_key)
                 .chain()
                 .after(input::place_eye)
                 .run_if(in_state(Screen::InWorld)),
