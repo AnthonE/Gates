@@ -121,32 +121,32 @@ Remaining, in order:
    the placement arithmetic is gated twice. What no gate does is *look*: a
    capture run exercises the wait on every run and `capture::PLACE_FRAMES`
    bounds it, but the native visual gate is still §2's, unbuilt.
-## 0y · `web/` is cut — decide what that means to the tree *(operator input wanted)*
+## 0y · ~~`web/` is cut — decide what that means to the tree~~ **(ANSWERED, done)**
 
-**Spoken 2026-08-06** (`DECISIONS.md`): the browser client is cut. The row
-deliberately did **not** delete anything, because three separable questions
-hide inside "cut it" and a loop should not answer any of them alone:
+**Operator, 2026-08-06**: *"we have it all backed up on github… we dont need it
+locally."* All three questions answered and executed in the same pass —
+`DECISIONS.md` has the row.
 
-1. **The three gates.** `ui smoke` (7,200 lines), `browser smoke` (5,179) and
-   `vantages` guard a retired client and cost every full `ci/gates.sh` run.
-   `browser smoke` additionally fails on this box for a documented
-   environmental reason (two live WebGL renderers on a software rasterizer,
-   `CLAUDE.md`) — so it is now a permanently red gate protecting nothing,
-   which is the worst state a gate can be in. Delete, or gate behind an
-   env flag, or leave.
-2. **`web/` itself.** ~17 k lines. It is the reference implementation of
-   every verb the native client now carries, and several of its comments
-   record bugs that cost a pass to find. `CLAUDE.md` now says *read it, do
-   not maintain it* — which is a stable state, if the tree can carry it.
-3. **What `client-wasm` is for.** It stays either way: it is the native
-   client's core as an rlib. But `test_parity_wasm` and the wasm build exist
-   because a browser ran it, and parity is also wall 1's enforcement. Keeping
-   both is defensible (two codegen backends agreeing is a real determinism
-   check, and it is cheap); dropping the wasm target because nothing ships it
-   is also defensible. **Not a loop's call** — it touches a wall.
+1. **The three gates: deleted**, along with five more that imported
+   `web/src/props.js` and three that read `materials.js`. Eleven total.
+2. **`web/` itself: deleted.** It is in git history on GitHub, which is what
+   makes it still readable as the reference implementation of every verb —
+   `git show <commit>:web/src/interact.js`.
+3. **`client-wasm`: kept**, and so is `test_parity_wasm`. Two codegen backends
+   agreeing is a real determinism check and it is cheap; a missing browser does
+   not repeal wall 1.
 
-Nothing here is urgent. It is written down so the next pass does not
-rediscover that a third of the gate script is dead weight.
+**What it left owed**, and this is the only live part: eight of the eleven held
+"the mesh the client draws == the volume the server blocks" against the browser
+renderer. `crates/client/tests/tree.rs` already re-earns that natively for
+trees. **Uncovered**: the haven shelter, the waystation canopy, the clutter
+ring, and the occupant table for everything that is not a tree. The
+replacement's shape is that test file — Rust, against the mesh we draw. Cheap,
+and worth doing the next time one of those meshes is touched.
+
+**Do not write a pixel gate.** The visual-gate rule is retired, not owed
+(`CLAUDE.md`); `vantages` passed 36 checks on a beige smear. Booting the game
+and looking is the visual gate now.
 
 ## 0x · The native client can play the game now — what it still owes *(client lane)*
 

@@ -545,7 +545,8 @@ bound**, peak 5×5 ring 15,930 of the 22,025 the pools size for, worst triangle
 fleet 264 k = 17.6% of `DESIGN.md` §9's frame budget, inside the 20% share this
 population declared — a percentage of a **browser-era** 1.5 M, so the share is
 firmer than the denominator. **None of it has been seen** — no frames this
-pass, and `browser_smoke`'s renderer tier is off by operator config.
+pass; the renderer tier and `browser_smoke` were deleted with the browser
+client (`DECISIONS.md` 2026-08-06), so nothing photographs this at all now.
 
 ## 7 · Gates
 

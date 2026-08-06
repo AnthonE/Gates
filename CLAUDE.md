@@ -14,27 +14,33 @@ Great Work board, coins from its economy — importing none of its code.
 **The skeleton is the product**: determinism, netcode, and the hot-path
 laws outrank every feature.
 
-**The browser client is cut** (operator, 2026-08-06). `web/` is still in the
-tree and its three gates still run, but they are no longer walls: a red
-`ui smoke`, `browser smoke` or `vantages` blocks nothing, and nobody owes
-that code a fix. The native client is the only client. Do not spend a pass
-on `web/src` — if you find yourself editing it, you are working on a
-retired product.
+**The browser client is deleted** (operator, 2026-08-06: cut, then *"we have
+it all backed up on github… we dont need it locally"*). `web/` and its eleven
+gates are out of the tree. The native client is the only client.
 
-Two things still bind the native client. **Bevy draws, it does not decide**:
-`sim-core` keeps the walls and `ClientCore` keeps prediction, so gameplay
-state never enters the ECS, where it would retire the determinism walls with
-nothing in CI to notice. And **a render path that lands without its probes
-ships a client with no visual gates at all** — forbidden outright, and
-inherited from `MIGRATION.md` even though that doc is otherwise moot. That
-second rule is now **owed rather than satisfied**: cutting the browser
-removed the only gates that ever photographed anything, so the native client
-currently ships with no visual gate at all (`NOW.md` §0x item 2).
+It is not lost — it is in git history, on GitHub, and readable when a question
+about a verb needs it: `git show <commit>:web/src/interact.js`. That matters
+more than it sounds, because it WAS the reference implementation of every verb
+the native client now carries (the two pick resolvers, `map.js`'s hillshade,
+`refusals.js`'s tables), and the ~36 doc comments in `crates/` that cite
+`web/src/props.js` for a constant still point at something real. Read it from
+history; never restore it to the tree.
 
-`web/` is still worth *reading*. It is the reference implementation of every
-verb the native client now carries — `interact.js`'s two pick resolvers,
-`map.js`'s hillshade, `refusals.js`'s tables — and several of its comments
-record bugs that cost a pass to find. Read it; do not maintain it.
+**Bevy draws, it does not decide.** `sim-core` keeps the walls and
+`ClientCore` keeps prediction, so gameplay state never enters the ECS, where
+it would retire the determinism walls with nothing in CI to notice. This is
+the one client rule that still binds.
+
+**There is no visual gate, and this is now a deliberate choice rather than a
+debt.** The rule inherited from `MIGRATION.md` — a render path may not land
+without its probes — is **retired** (operator, 2026-08-06). Two reasons, and
+the first is this repo's own measurement: `vantages.mjs` passed all 36 checks
+on a beige smear with no sky, no horizon and no object in it (trap list,
+below), so the automated visual gate did not work when we had one. The second
+is that the operator boots the game and looks, which is strictly better and
+costs nothing to maintain. **Do not build a replacement pixel gate.** What may
+be gated about a frame is arithmetic — the mesh fits the volume the sim
+blocks, in Rust, the shape of `crates/client/tests/tree.rs`.
 
 **Agents are first-class on both sides.** They build it — `AGENTS.md` is
 the door for any harness — and they will play it: the deterministic core
@@ -54,8 +60,7 @@ pays the same doors and earns the same coins as a human.
 | `ART.md` | the art bible: measured targets off `Rust Images/`, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
 | `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
-| `RENDER.md` | the **native** client's render path: the Bevy-draws-not-decides boundary, the slice order, the native visual gate, the budgets | **replaces `MIGRATION.md`**; owns the path, never the bar — `ART.md` outranks it everywhere |
-| `MIGRATION.md` | the renderer move to `WebGPURenderer` + TSL | **SUPERSEDED 2026-08-05** — the client pivot to native Rust moots it; you do not port three.js *and* replace it. Kept for its probe/readback inventory, which the native visual gate still has to answer |
+| `RENDER.md` | the **native** client's render path: the Bevy-draws-not-decides boundary, the slice order, the native visual gate, the budgets | owns the path, never the bar — `ART.md` outranks it everywhere |
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
 | `reference/AUDIO.md` | how the reference game decides what a player hears: the Unity mixer groups/snapshots it built first, the `audio.framebudget 0.3` convar, localized ambience, the 2–5 kHz carve, its four shipped audio bugs, and **§9 what it means for us** | **owns nothing** — research, not law, and a *cleaner* source than `SPAWN.md`: devblogs and the public convar list, nothing decompiled. Our answer is `crates/client/src/sound/` |
 | `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is scry's `SUBSTRATE.md`; this owns only what an agent may do here |
@@ -124,13 +129,14 @@ do not rediscover)
   the same commit updates `DECISIONS.md`.
 - **Median fps hides shader-compile stalls.** A static benchmark can read
   90+ fps while lazy WebGL program links cost 700 ms+ worst-frames in real
-  play. Prewarm every program at boot; the gate is a COUNT (no program
-  links after `inWorld`, asserted in `browser_smoke`), never a frame-time
-  threshold. **The mechanism survives the port and is arguably worse
-  natively**: Bevy specializes a pipeline lazily on first use, and a native
-  pipeline compile is a bigger stall than a WebGL link. `RENDER.md` §2
-  carries it across; the native gate is the same shape — a count of
-  pipelines created after the world is up, never a frame time.
+  play. Prewarm every program at boot; the measure is a COUNT of links after
+  the world is up, never a frame-time threshold. **The mechanism survives the
+  port and is arguably worse natively**: Bevy specializes a pipeline lazily on
+  first use, and a native pipeline compile is a bigger stall than a WebGL
+  link. The gate that asserted it (`browser_smoke`) went with the browser and
+  **has no native replacement** — so this is a live trap with nothing watching
+  it. If a hitch shows up on first look at a new material, this is the first
+  suspect. `RENDER.md` §2 carries the design across.
 - **A clean merge is not a correct merge, and a destructive read is where
   that bites.** `ClientCore`'s own-fact rings (`pop_hit`, `pop_toast`, the
   refusals) hand each fact over exactly once. On 2026-08-06 two lanes each
@@ -155,13 +161,16 @@ do not rediscover)
   all 36 checks on a beige smear with no sky, no horizon and no object in
   it — scoring the *highest* detail of four vantages (14.28 luma/px). Every
   assertion in that gate is contrast, chroma or luma neutrality, and a
-  featureless wash satisfies all three. Two consequences, both load-bearing:
-  a visual gate needs a structural assertion (sky above horizon, N distinct
-  objects framed) **before** any statistic is read; and a ranked visual gap
-  is not evidence about shading until someone has looked at the frame. The
-  same day's captures showed the real gap was **content density** — grass,
-  understory, branches, props — against which no amount of surface field
-  scores a point. Look at the picture before tuning the number.
+  featureless wash satisfies all three. The same day's captures showed the
+  real gap was **content density** — grass, understory, branches, props —
+  against which no amount of surface field scores a point.
+  **This is why there is no visual gate and why you must not write one**
+  (operator, 2026-08-06). The conclusion drawn at the time was "add a
+  structural assertion before the statistic"; the conclusion that actually
+  held is that the whole approach was spending passes to avoid opening the
+  game. A person looking at the frame is the visual gate, it is cheap, and it
+  cannot be satisfied by a beige smear. Look at the picture instead of tuning
+  the number — not before tuning the number.
 - **A byte-golden is blind to what a field means.** Positional payloads
   are where the reference ecosystem actually bled: 49 of Oxide.Rust's
   commits touch a hook's arguments and ~27 correct a payload that had
@@ -234,8 +243,7 @@ cargo clippy -p client --features render --all-targets -- -D warnings
 behind it (`crates/client/Cargo.toml` says why). It needs `libwayland-dev`
 and `libasound2-dev` on a fresh box — Bevy's default features ask for them
 through `winit` and `bevy_audio` and this client uses neither, which is a
-trim that is owed (`NOW.md` §0x item 4). `./web/dev.sh` still exists and
-starts a retired product.
+trim that is owed (`NOW.md` §0x item 4).
 
 ## The loop that builds this repo
 
@@ -323,17 +331,10 @@ suites overflow a test thread's 2 MiB stack in a debug build — `RUST_MIN_STACK
 (e.g. `16777216`) runs them green and no tree change is owed. Same class as: `wasm32-unknown-unknown` is not always installed, and the wasm gates
 fail with `can't find crate for core` until `rustup target add
 wasm32-unknown-unknown` — install it rather than skipping the gate, because a
-wall that cannot run is not a wall. Third of the same kind: a box whose
-Playwright build does not match the pinned version fails both renderer gates at
-`chromium failed to launch`, and the fix is the override those gates
-already carry — **`VANTAGE_CHROME`** (read by `vantages.mjs`,
-`browser_smoke.mjs` *and* `ui_smoke.mjs`) pointed at the installed binary, e.g.
-`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`. **`ui_smoke` is the one
-that bites first**, because it is a CODE-tier gate: a box whose Playwright
-wants `chromium_headless_shell-1234` while `/opt/pw-browsers` holds `-1194`
-fails there long before the renderer tier, on a diff that touched no
-JavaScript at all. Never
-`npx playwright install` into a managed image. Fourth, and the one a fresh box
+wall that cannot run is not a wall. (The third of this kind was Playwright's
+Chromium not matching the pinned build, fixed with a `VANTAGE_CHROME`
+override — **gone with the browser gates**; no gate in this repo starts a
+browser now, and none should.) Third, and the one a fresh box
 hits first: **`cargo … --features render` needs three `-dev` packages** that a
 headless image has no reason to carry — `libwayland-dev`, `libasound2-dev`,
 `libudev-dev` — and each fails identically, as a `pkg-config exited with status
@@ -396,8 +397,9 @@ which is neither.
 - `bevy_procedural_tree` (github.com/Affinator/bevy_procedural_tree, MIT OR
   Apache-2.0) — the native client's conifer generator, a **dependency** whose
   code ships. It is `@dgreenheck/ez-tree`'s algorithm (MIT, © Daniel Greenheck)
-  ported to Rust and Bevy, so the browser client and the native one now run the
-  same generator and `props.js`'s swept parameters are evidence about both.
+  ported to Rust and Bevy. The browser client ran the same generator before it
+  was deleted, so `props.js`'s swept parameters — in git history — are still
+  evidence about this one.
   Only `meshgen::generate_tree_meshes` is called — settings and an `Rng` in,
   two meshes out; the crate's plugin is deliberately unused, because a plugin
   that regenerates entities on change would put tree state in the ECS.
@@ -405,9 +407,10 @@ which is neither.
   design the client ships: one per-vertex `aWind` cantilever weight rooted at
   the trunk base, phase taken from the instance's world position so a gust
   crosses the forest instead of each tree twitching alone, and two sine
-  octaves rather than one. Its `wind.js` is TSL/WebGPU node-material source and
-  this client is `WebGLRenderer`, so the design was re-expressed as a GLSL
-  injection — guidance only, no code from it ships. Its `impostor.js` (two
+  octaves rather than one. Its `wind.js` is TSL/WebGPU node-material source; the
+  deleted browser client re-expressed the design as a GLSL injection, and the
+  native client has to re-express it again against Bevy — guidance only, no
+  code from it ships. Its `impostor.js` (two
   crossed alpha cards baked from front/side ortho cameras in a worker, with the
   backend readback row order probed once against a known image) is the
   reference for `TERRAIN.md` §4's unbuilt billboard LOD; its emit side returns
@@ -418,14 +421,17 @@ which is neither.
   coupled-lighting single-owner datum, all from its postmortem. Guidance
   only — no code from it ships in this repo.
 - `SkyeShark/Eanpa-Sky` and `SkyeShark/SeedThree` (both MIT, © 2026 SkyeShark)
-  — read while surveying the node stack; both are catalogued in
-  `MIGRATION.md` §8.3 with their status and their traps. Nothing from either
-  ships **yet** — and unlike the skill packs above, MIT means it may. Two
-  routes are open and both require carrying the notice at the donor site, not
-  a bullet here alone: SeedThree as vendored `.glb` output (§8.3), and
-  Eanpa-Sky's cloud noise, presets and density function copied into the
-  renderer (§8.3.1). Credit again, in the file, at that point. Neither repo's
-  audio may be touched: Eanpa-Sky names four xeno-canto recordings as
-  CC BY-NC-SA, and SeedThree ships bird recordings whose `README.txt` cites
-  xeno-canto but **states no licence per file** — unresolved is not the same
-  as permissive, and NC does not survive a sold product either way.
+  — read while surveying the node stack. (They were catalogued in
+  `MIGRATION.md` §8.3, deleted with the browser client; the licence facts that
+  doc carried are restated here in full, because a deleted file cannot hold an
+  obligation.) Nothing from either ships **yet** — and unlike the skill packs
+  above, MIT means it may. Two routes are open and both require carrying the
+  notice **at the donor site**, not a bullet here alone: SeedThree as vendored
+  `.glb` output, and Eanpa-Sky's cloud noise, presets and density function
+  copied into the renderer. Credit again, in the file, at that point.
+  **Neither repo's audio may be touched**: Eanpa-Sky names four xeno-canto
+  recordings as CC BY-NC-SA, and SeedThree ships bird recordings whose
+  `README.txt` cites xeno-canto but **states no licence per file** —
+  unresolved is not the same as permissive, and NC does not survive a sold
+  product either way. This matters more now, not less: `sound/synth.rs`
+  generates our bank at boot precisely to avoid this class of question.

@@ -45,94 +45,27 @@ for _tool in cargo node npm; do
       "rustup, and source \$HOME/.cargo/env) rather than skipping the gates that need it."
 done
 
-# Tiers (operator, 2026-08-04). Everything above the renderer gates is code:
-# deterministic, headless, and it finishes in a couple of minutes. The two
-# renderer gates are neither — they boot Chromium against swiftshader on a box
-# with no GPU path for them, render thousands of frames at roughly a frame a
-# second, and together they are the overwhelming majority of this script's wall
-# clock (measured 2026-08-04: 1,062 s green end to end, of which the renderer
-# tier is the bulk; a single browser_smoke run is 8-10 min).
+# There are no tiers any more (operator, 2026-08-06: the browser client is cut,
+# and then: "we dont need it locally").
 #
-# The reason to tier rather than trim: a pass that changed a server config and
-# three docs was paying 3.6 million probed pixels four times to prove it. The
-# rule is the one CLAUDE.md already applies to lighting — the owner of a change
-# pays its cost. A pass that touched the renderer runs the renderer gates; a
-# pass that did not, need not, and `auto` decides that by reading the diff
-# rather than by asking the builder to be honest about it.
+# The tiers existed because two gates — `browser_smoke` and `vantages` — booted
+# Chromium against swiftshader on a box with no GPU path for them and cost ~19
+# minutes of the script's ~1,062 s. Both photographed the three.js client. That
+# client is gone from the tree, so the expensive half of this file is gone with
+# it and every gate below is code: deterministic, headless, minutes not tens of
+# minutes. Nothing left to opt out of.
 #
-#   all   (default, and what CI runs) every gate in this file
-#   fast  code gates only — stops before browser smoke and vantages
-#   auto  code gates, plus the renderer tier IF the diff touches renderer paths
-#
-# What this deliberately does NOT do is let a short run claim a long one's
-# result: `fast` and a skipping `auto` print their own final line, never
-# "ALL GATES GREEN". A pass reporting gates green must say which tier it ran.
+# An argument is still ACCEPTED and ignored, because `lanes.sh` passes
+# `GATES_TIER=fast` and a hard error there would be a red gate reporting a
+# vocabulary problem rather than a defect. It is a no-op, said out loud rather
+# than silently: this script now has exactly one behaviour and one final line.
 TIER="${1:-${GATES_TIER:-all}}"
 case "$TIER" in
-  all | fast | auto) ;;
-  *) fail "unknown tier '$TIER' — one of: all (default), fast, auto" ;;
+  all | fast | auto)
+    [ "$TIER" = "all" ] || echo "note: tier '$TIER' is a no-op — the renderer tier was cut with the browser client; running every gate."
+    ;;
+  *) fail "unknown tier '$TIER' — the tiers are gone; pass nothing." ;;
 esac
-
-# Renderer paths, as a question about the diff. Both halves are read: what is
-# committed on this branch and what is still in the working tree, because a
-# builder runs this before committing as often as after.
-# The committed half needs a base to diff against, and `origin/main` is not it:
-# it does not resolve in a worktree cut for a parallel lane (operator, 2026-08-04,
-# three-lane build), and a base that fails to resolve makes this half return
-# NOTHING — so a committed renderer change would answer "no" and skip the
-# renderer tier silently. That is the exact silent-skip class the trap list
-# calls the worst bug in the file. Try the bases in order of trustworthiness and
-# take the first that resolves; local `main` is present in every worktree.
-renderer_base() {
-  local b
-  for b in "$(git merge-base HEAD main 2>/dev/null || true)" \
-           "$(git merge-base HEAD origin/main 2>/dev/null || true)"; do
-    [ -n "$b" ] && { echo "$b"; return 0; }
-  done
-  return 1
-}
-
-# Every path under `web/` is a renderer path EXCEPT the three HUD files below.
-# The carve-out was proposed by the ui lane on 2026-08-04, built before it was
-# asked for, and ARMED by the operator the same day (`DECISIONS.md` §Spoken).
-# A one-line `<div>` move now pays `ui_smoke` at ~0.8 s instead of
-# `browser_smoke` + `vantages` at ~19 min.
-#
-# It is armed on landed evidence, not on the saving: `ci/ui_smoke.mjs` asserts
-# every `index.html`/`hud.js` contract `browser_smoke` holds, as a strict
-# superset, with the coverage table in that file's header keyed to
-# `browser_smoke` line numbers — and eleven mutants of those two files were run
-# against it, all eleven red. The first attempt at this carve-out was judged
-# FAIL precisely because the coverage was NOT equivalent: `#vitals` at inline
-# `display:"block"` (`browser_smoke:1745`) was a value `ui_smoke` read and
-# discarded, so the mutation escaped both gates.
-#
-# THE STANDING RULE, and it is the whole reason this is safe: a path joins this
-# exemption list ONLY in a commit that also extends `ui_smoke` to cover what
-# that path can break. Subtracting a path from the question below subtracts a
-# gate from the merge — `auto` is the tier the loop merges on — so the list is
-# the operator's, never a lane branch's.
-renderer_touched() {
-  local base
-  base=$(renderer_base) || {
-    # No base at all: cannot answer the question, so do NOT answer it "no".
-    echo "  tier: no merge base against main — running the renderer tier rather than guessing." >&2
-    return 0
-  }
-  local ui_only='^(web/index\.html|web/src/hud\.js|web/src/input\.js)$'
-  {
-    git diff --name-only HEAD 2>/dev/null || true
-    git diff --name-only "$base"...HEAD 2>/dev/null || true
-  } | grep -vE "$ui_only" \
-    | grep -qE '^(web/|assets/textures/|ci/browser_smoke\.mjs|ci/vantages\.mjs)'
-}
-
-RUN_RENDERER=1
-if [ "$TIER" = "fast" ]; then
-  RUN_RENDERER=0
-elif [ "$TIER" = "auto" ]; then
-  if renderer_touched; then RUN_RENDERER=1; else RUN_RENDERER=0; fi
-fi
 
 # Cheapest gate in the file — pure text, no build — so it runs first: a knob
 # that disagrees with its registry entry should not cost a ten-minute compile
@@ -261,132 +194,34 @@ bag_wakes="$(awk '/^bags /{print $5}' "$native_out")"
 echo "== gate: client wasm bridge smoke (raw C ABI, the browser's calling path)"
 $NICE node ci/client_smoke.mjs || fail "client bridge smoke"
 
-# The terrain bump's gradient reconstruction, as arithmetic. The defect it
-# holds — a heightfield rendering its own triangulation — is a discontinuity in
-# a formula, so it is evaluated on both sides of one triangle edge rather than
-# photographed. No GPU, no shard, no threshold that moves with a driver.
-echo "== gate: bump basis (world-XZ gradient is continuous across a triangle edge)"
-$NICE node ci/bump_basis.mjs || fail "bump basis"
-
-# The prop photograph's triplanar blend, as arithmetic. A triplanar blend loses
-# 42% of a source's contrast at the three-way point unless the deviation is
-# variance-normalized, and contrast is the ENTIRE reason the photograph was
-# wired — so the correction is gated by a closed-form identity here rather than
-# by a screenshot ten minutes downstream. Reads the shipped knobs out of
-# `materials.js` rather than carrying its own copy.
-echo "== gate: prop photo (mean-preserving ratio, symmetric clamp, variance-preserving triplanar)"
-$NICE node ci/prop_photo.mjs || fail "prop photo"
-
-echo "== gate: web bundle (npm ci + vite build; the wasm artifact must ride along)"
-command -v npm >/dev/null || fail "npm missing — web gate cannot run"
-mkdir -p web/public
-cp target/wasm32-unknown-unknown/release/client_wasm.wasm web/public/client_wasm.wasm \
-  || fail "client wasm artifact missing"
-# --include=dev: this box exports NODE_ENV=production, which would silently
-# omit vite — the build tool itself (a pass it didn't earn, trap list).
-$NICE npm --prefix web ci --include=dev --no-audit --no-fund || fail "npm ci"
-$NICE npm --prefix web run build || fail "vite build"
-[ -f web/dist/client_wasm.wasm ] || fail "wasm artifact absent from web bundle"
-
-# The pine's silhouette, and the sim constant derived from its width. Runs
-# here and not earlier because it imports the shipped builder out of
-# `web/src/props.js`, which needs three from the install above — a geometry
-# gate that built its own tree to score would pass forever while the tree
-# changed underneath it. No GPU, no shard: a vertex buffer is arithmetic.
-echo "== gate: pine shape (silhouette counts + the SPAWN_CLEAR_M coupling)"
-$NICE node ci/pine_shape.mjs || fail "pine shape"
-
-# The ground population below the scatter grid, same standard and same place
-# in the order for the same reason: it imports `web/src/clutter.js`. ART.md
-# rule 4 itself is measured natively (`crates/sim-core/tests/clutter.rs`, the
-# largest bare disc inside 15 m); this holds the drawn half to the placed half
-# — three constants read from both languages, the kind table checked by name
-# against the Rust enum, and the ring's triangle fleet ASSERTED against a
-# declared share of DESIGN §9's budget rather than printed.
-echo "== gate: clutter shape (the near-ground population + its fleet budget)"
-$NICE node ci/clutter_shape.mjs || fail "clutter shape"
-
-# The haven pad's greybox, same standard and same reason it sits here: it
-# imports the shipped box list out of `web/src/props.js`. Three claims no
-# `cargo test` can reach, because they straddle the Rust/JS line — the mesh
-# fits the slot `HAVEN_SHELTER_HALF_M` reserved, the doorway is passable and
-# the walls enclose something (asserted in both directions), and the peak
-# clears a full-scale pine. Arithmetic over a box list: no GPU, no shard.
-echo "== gate: haven shelter (the greybox fits the slot sim-core placed)"
-$NICE node ci/haven_shelter.mjs || fail "haven shelter"
-
-# The lesser tier's greybox, the sibling above's opposite claim. The shelter
-# gate proves a room — walls that enclose, a doorway that is passable and stops
-# being passable when filled in. This proves a roof: solid on exactly one side,
-# open on the other three to the sim's own capsule, covered overhead, and NOT
-# the pad's building at 0.6 scale (under half its height, squatter in aspect,
-# timber against stone). Same place in the order for the same reason as its
-# three neighbours — it imports the shipped box list out of `web/src/props.js`.
-# Arithmetic over nine boxes: no GPU, no shard.
-echo "== gate: waystation canopy (the second greybox is not the first, smaller)"
-$NICE node ci/waystation_canopy.mjs || fail "waystation canopy"
-
-# The volume the server blocks against the mesh the client draws, for every
-# occupant rather than the one the shelter gate covers. `OCCUPANT_R_M` and
-# `OCCUPANT_TOP_M` say of themselves that they are read off `ARCHETYPES`, and
-# nothing checked that sentence: the Rust const-asserts hold the table equal
-# to `occupant_volume()`'s match, but both live in one file and move together
-# under one edit. Sits here for the same reason as its three neighbours — it
-# imports the shipped builders out of `web/src/props.js`. Vertex buffers are
-# arithmetic: no GPU, no shard.
-echo "== gate: occupant volume (the blocked cylinder is the drawn mesh)"
-$NICE node ci/occupant_volume.mjs || fail "occupant volume"
-
-# The interaction surface: a real browser, no renderer. Sits in the CODE tier
-# because it costs under a second — it renders no frames, creates no WebGL
-# context, loads no wasm and starts no shard, so none of what makes the two
-# gates below expensive applies. Here rather than earlier because playwright is
-# a `web/` devDependency and comes from the install above.
+# WHAT WAS CUT HERE, and what it costs (operator, 2026-08-06).
 #
-# It is the coverage the armed carve-out above rests on: `renderer_touched`
-# exempts exactly `index.html`, `hud.js` and `input.js`, and every other path
-# under `web/` still schedules the renderer tier. This gate earns that on
-# what it asserts: the composer that must swallow a keystroke so "w" is a
-# letter and not a step forward, the death screen that must answer once, the
-# chat line that goes in as another player's TEXT and never as markup, and the
-# vitals stack whose argument order and row order disagree by design — the
-# positional-payload shape CLAUDE.md's trap list names as where the reference
-# ecosystem actually bled. Every one of those was a comment with no gate.
+# Eleven gates were deleted with the browser client, in two groups.
 #
-# It also holds, deliberately, a superset of every `index.html`/`hud.js`
-# contract `ci/browser_smoke.mjs` asserts (group A and the inline-style checks
-# in F). That is not redundancy for its own sake: it is the evidence the
-# §open carve-out proposal needs, measured rather than promised.
-echo "== gate: ui smoke (HUD, hotbar, composer, chat, vitals, death — real events, no renderer)"
-$NICE node ci/ui_smoke.mjs || fail "ui smoke"
-
-# The only gate that BOOTS the client — a real shard, the wasm bridge, a WebGL
-# context, the world drawn. `ui_smoke` above is also a browser, but on a page
-# where the game never started, and it cannot replace this: two hard boot bugs
-# shipped green on 2026-07-31 because everything else tested the client's LOGIC
-# natively or in node — a detached-buffer throw in WasmViews that stopped the
-# client dead, and a terrain-worker race that killed the near ring while the
-# far mesh still rendered (so screenshots looked fine). Both are invisible to
-# every other gate here, `ui_smoke` included. Needs the release shard binary —
-# build it first so a missing binary is a loud failure and never a skip.
-if [ "$RUN_RENDERER" = "0" ]; then
-  echo "== renderer tier NOT run (tier: $TIER) — browser smoke, vantages"
-  echo "CODE GATES GREEN — renderer tier skipped, so this is NOT 'all gates green'."
-  echo "Run './ci/gates.sh' with no argument before merging anything that touches the renderer."
-  exit 0
-fi
-
-echo "== gate: browser smoke (real shard, real WebTransport, real browser)"
-$NICE cargo build -p server --bin shard --release || fail "shard build"
-$NICE node ci/browser_smoke.mjs || fail "browser smoke"
-
-# The one gate that looks anywhere other than the beach. `browser_smoke` above
-# fires every material assertion from one spawn whose own 40 m ring is 100%
-# under 10 degrees of tilt, on one seed — three defects shipped green through
-# that blind spot in as many passes. This runs the same probes at a 69 degree
-# face, above the snow line, and on a second seed, one tab at a time so a
-# loaded box cannot turn it into a clock.
-echo "== gate: vantages (the material off the beach: slope, snow line, second seed)"
-$NICE node ci/vantages.mjs || fail "vantages"
+# Three photographed or drove it and are simply gone with their subject:
+# `ui_smoke` (7,243 lines, 1,911 assertions on `index.html` + `hud.js`),
+# `browser_smoke` (a real shard through a real WebGL context) and `vantages`.
+# Nothing about the native client is less proven for their absence — none of
+# them ever looked at it.
+#
+# The other eight held a REAL invariant against the wrong renderer: `pine
+# shape`, `clutter shape`, `haven shelter`, `waystation canopy`, `occupant
+# volume`, `bump basis`, `prop photo` and the `web bundle` build. Their claim
+# was "the mesh the client draws == the volume the server blocks", checked by
+# importing `web/src/props.js`. That claim still matters and the native client
+# is not covered by it: those gates would have stayed green forever while
+# `crates/client/src/render/props.rs` drifted from `sim-core`, because they
+# were reading a file nobody ships. Green against a dead renderer is worse
+# than absent — it reads as coverage.
+#
+# Partly re-earned, natively, and this is why the loss is bounded rather than
+# total: `crates/client/tests/tree.rs` already asserts the same invariant for
+# trees (`every_variant_fits_the_volume_the_sim_blocks`,
+# `every_variant_is_rooted_at_the_ground`), and it runs in the native client
+# gate above. Not re-earned: the haven shelter, the waystation canopy, the
+# clutter ring, and the occupant table for everything that is not a tree.
+# That is an honest hole, named here rather than papered over — the shape of
+# the replacement is `tests/tree.rs`, in Rust, against the mesh we actually
+# draw.
 
 echo "ALL GATES GREEN"

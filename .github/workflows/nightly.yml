@@ -47,11 +47,6 @@ jobs:
       - name: build server (release)
         if: steps.ws.outputs.exists == 'true'
         run: cargo build --release -p server
-      - name: build web client
-        if: steps.ws.outputs.exists == 'true'
-        run: |
-          if [[ -x web/build.sh ]]; then web/build.sh
-          else echo "::notice::web/build.sh not present yet — server-only nightly"; fi
       - name: upload artifacts
         if: steps.ws.outputs.exists == 'true'
         uses: actions/upload-artifact@v4
@@ -60,5 +55,4 @@ jobs:
           retention-days: 14
           path: |
             target/release/shard
-            web/dist/**
           if-no-files-found: warn

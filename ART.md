@@ -265,9 +265,10 @@ The rule that replaces it:
   anisotropy is the fix: ours ran 0.237–0.798 on the five frames showing ground
   while the along-colour term was already inside the reference range. Measure it
   with one estimator, not two — a reference band computed a different way than
-  the frame it judges is not a band. Gated at `browser_smoke` **15i**, whose
-  wall is where the tree actually is and whose target is this number, printed
-  side by side every run.
+  the frame it judges is not a band. **The gate that asserted it
+  (`browser_smoke` 15i) was deleted with the browser client**; `ci/native_bar.py`
+  computes the same statistic on the native captures and prints it beside the
+  reference, but nothing fails on it. Read it; do not assume it is walled.
 - **Budget — browser-era, and it is spent.** The working set is 6.0 MB at 1K
   against a **12 MB** ceiling, and that ceiling was a *download*: a first-visit
   cost paid over the network before the browser drew anything. The shipping

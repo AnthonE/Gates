@@ -6,11 +6,13 @@ outranks every sentence here; when a target in this file and `ART.md`
 disagree, `ART.md` wins and the disagreement is the finding. `TERRAIN.md`
 still owns worldgen and `CONTENT.md` still owns every number about items.
 
-This file replaces `MIGRATION.md`, which the 2026-08-05 pivot mooted. What
-it inherits from it is one rule, stated there and restated in `CLAUDE.md`:
-**a render path that lands without its probes ships a client with no visual
-gates at all, and that is forbidden outright.** §5 is how that debt gets
-paid; §4 says which slice pays which part of it.
+This file replaces `MIGRATION.md`, which the 2026-08-05 pivot mooted and the
+2026-08-06 deletion removed from the tree. The one rule it used to inherit
+from it — *a render path may not land without its probes* — is **retired**
+(operator, 2026-08-06). `ci/vantages.mjs` passed all 36 checks on a beige
+smear, so the probe that rule protected did not work; the operator boots the
+game and looks instead. **Do not write a replacement pixel gate.** §5's
+remaining gates are the ones that are arithmetic rather than photographic.
 
 **The ordering principle is the operator's, spoken 2026-08-05**: visual work
 is judged by *a visibly better picture in reasonable time*, and a pass that
@@ -545,16 +547,20 @@ byte-identical with and without the renderer attached, same seed, same WAL. It
 is the only mechanical answer to "did Bevy start deciding," and it is worth
 more than the four pixel assertions above it.
 
-**What this does NOT do** is claim the browser gates' result — and that
-sentence has changed meaning. It was written when `web/` kept its gates
-"until the native client can do what it does". The browser client is cut
-(`DECISIONS.md` 2026-08-06) and that day never came: the native client
-inherited the product without inheriting a single visual gate. So the honest
-statement is now the uncomfortable one — **there is no gate in this repo that
-looks at a frame.** `browser_smoke`'s 12 probes and `vantages`' 36 checks
-still run and still guard a retired client. A run that skips a tier still
-prints its own final line and never "ALL GATES GREEN"; what is gone is the
-tier that made that discipline mean something.
+**There is no gate in this repo that looks at a frame, and that is settled
+rather than owed.** This section was written when `web/` kept its gates "until
+the native client can do what it does"; the browser client was cut and then
+deleted (`DECISIONS.md` 2026-08-06) and that day never came. The operator's
+call is that it should not: `ci/vantages.mjs` passed all 36 of its checks on a
+beige smear with no sky, no horizon and no object in it, so the automated
+version demonstrably did not work, and booting the game and looking is cheaper
+and cannot be fooled by a wash. **Do not write a replacement pixel gate.**
+
+What may still be gated about a frame is the part that is arithmetic — the
+mesh fits the volume the sim blocks, the pipeline count after the world is up —
+and the shape of that is `crates/client/tests/tree.rs`, in Rust, headless.
+There are no tiers any more either; `ci/gates.sh` has one behaviour and one
+final line.
 
 ---
 
