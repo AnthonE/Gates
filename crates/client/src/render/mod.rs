@@ -34,6 +34,9 @@ pub mod props;
 pub mod rig;
 pub mod settings;
 pub mod sky;
+// What players built. Distinct from `props`, which is the world the seed
+// makes: this is the world other players made, and it arrives on the wire.
+pub mod structures;
 pub mod terrain_mesh;
 pub mod textures;
 pub mod tree;
@@ -143,7 +146,7 @@ pub fn world_running(state: Res<State<Screen>>, world: Option<Res<WorldId>>) -> 
 /// to the entity that draws it; a ring that kept its keys after the entities
 /// were despawned would report a chunk resident that is not, and the next
 /// world's loading screen would sit at a bar it could never fill.
-// Eight parameters because the world is eight things: its entities, the four
+// Nine parameters because the world is nine things: its entities, the five
 // indexes that point at them, and the two view resources that would otherwise
 // carry the last world's eye into the next one.
 #[allow(clippy::too_many_arguments)]
@@ -153,6 +156,7 @@ pub fn world_teardown(
     mut ring: ResMut<terrain_mesh::Ring>,
     mut props: ResMut<props::PropRing>,
     mut clutter: ResMut<clutter::ClutterRing>,
+    mut structures: ResMut<structures::StructRing>,
     mut bodies: ResMut<bodies::Bodies>,
     mut eye: ResMut<Eye>,
     mut look: ResMut<input::Look>,
@@ -169,6 +173,7 @@ pub fn world_teardown(
     *ring = terrain_mesh::Ring::default();
     *props = props::PropRing::default();
     *clutter = clutter::ClutterRing::default();
+    *structures = structures::StructRing::default();
     *bodies = bodies::Bodies::default();
     *eye = Eye::default();
     *look = input::Look::default();
@@ -221,6 +226,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<terrain_mesh::Ring>()
             .init_resource::<props::PropRing>()
             .init_resource::<clutter::ClutterRing>()
+            .init_resource::<structures::StructRing>()
             .init_resource::<bodies::Bodies>()
             .init_resource::<menu::Picked>()
             .init_resource::<pause::Chosen>()
@@ -382,6 +388,7 @@ impl Plugin for GatesRenderPlugin {
                     props::stream,
                     props::harvest,
                     clutter::stream,
+                    structures::stream,
                     bodies::stream,
                     rig::follow_eye,
                     hud::update,

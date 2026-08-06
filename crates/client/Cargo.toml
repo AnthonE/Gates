@@ -48,6 +48,15 @@ name = "fell"
 path = "tests/fell.rs"
 required-features = ["render"]
 
+# The handedness gate. Pure arithmetic and no GPU, but it checks the client's
+# right-vector against BEVY's `Transform` basis rather than against a restated
+# identity, so it links Bevy and carries the feature — `crate::look`'s own unit
+# tests are the code-tier half.
+[[test]]
+name = "look"
+path = "tests/look.rs"
+required-features = ["render"]
+
 [dependencies]
 # Default features for now: trimming Bevy's feature set (audio, gltf, ui,
 # and the rest this does not draw) is a follow-up, not slice 2's business.

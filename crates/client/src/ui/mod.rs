@@ -27,6 +27,12 @@
 //! Nothing here reads a clock, opens a socket, or holds a handle to
 //! anything. A panel that wants one of those asks the render layer for it.
 
+//! [`interact`] is the fourth and is not a panel: it is what the crosshair
+//! is pointed at, and it lives here because a pick is arithmetic too — the
+//! browser learned its `t > 0` guard by probing the resolver, which is only
+//! possible when the resolver can be called without a window.
+
 pub mod build;
 pub mod craft;
+pub mod interact;
 pub mod slots;
