@@ -6,6 +6,7 @@
 
 use crate::client::ClientNetState;
 use crate::stats::ShardStats;
+use crate::store::PlayerKey;
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_charge_placed,
@@ -123,6 +124,116 @@ pub struct ShardCore {
     /// field of it is quantized (`movement::Body`), which is what makes this
     /// comparison exact rather than a tolerance.
     last_saved: Box<[PlayerSave]>,
+    /// Who is on each connection slot, for exactly as long as they are —
+    /// so [`Self::disconnect`] can file the sleeper it is about to create
+    /// under the identity that will come back for it.
+    ///
+    /// The accept loop has its own copy of this (`net.rs`'s `KeySlot`) and
+    /// that is not duplication worth removing: that one lives on an async
+    /// task and answers "whose record is this save message", this one lives
+    /// on the sim thread and answers "whose body did this leave just put to
+    /// sleep". Sharing one across the two threads would be a lock or a
+    /// race, and the fact is two bytes wide.
+    keys: Box<[Option<PlayerKey>]>,
+    /// key → the world id of the body they left behind.
+    ///
+    /// **This is the whole of the identity problem sleepers create.** A
+    /// player id is minted per connection, so the sim cannot recognise a
+    /// returning player and the store's opaque key never enters the sim
+    /// (`persist.rs` is explicit that it must not). Something outside the
+    /// world has to hold the one arrow between them, and it is this.
+    ///
+    /// Deliberately in memory only, never in the save file: an id means
+    /// nothing after a restart, so persisting one would be persisting a
+    /// dangling pointer. A restart therefore has no sleepers to find, which
+    /// is correct today for the harder reason — the world is not persisted
+    /// yet either (`NOW.md` §0y item 2).
+    sleepers: SleeperIndex,
+}
+
+/// Which of the three doors a join came through
+/// ([`ShardCore::connect_as`]). Returned rather than counted inside,
+/// because the counters are the *server's* — `ShardCore` is pure and holds
+/// no `ShardStats` — and because a caller that logged "restored" for a
+/// takeover would be reporting persistence working when what worked was
+/// the world. That exact over-report is what this type exists to prevent:
+/// the accept loop used to bump `saves_restored` on `save.is_some()`, which
+/// stopped being the same question the moment a sleeper could outrank a
+/// record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admitted {
+    /// Took over the sleeping body they left behind.
+    TookOver,
+    /// Restored from the store's record — the world did not have them.
+    Restored,
+    /// A fresh character: a first visit, a guest, or a wiped shard.
+    Fresh,
+}
+
+/// The key → sleeper-id table, fixed at `MAX_PLAYERS` because that is the
+/// hard ceiling on sleepers: a sleeper holds a world player slot, and there
+/// are `MAX_PLAYERS` of those.
+///
+/// Entries go stale — the world evicts a sleeper on its own authority when
+/// a join needs the slot, and it does not report which. So a hit here is a
+/// *hint*, checked against `World::is_sleeper` before it is acted on, and a
+/// full table is swept of its dead entries before it is called full. That
+/// ordering is the reason this cannot wedge: staleness is bounded by the
+/// same number as the thing it tracks.
+struct SleeperIndex {
+    entries: Box<[Option<(PlayerKey, u32)>]>,
+}
+
+impl SleeperIndex {
+    fn new() -> Self {
+        Self {
+            entries: vec![None; MAX_PLAYERS].into_boxed_slice(),
+        }
+    }
+
+    fn find(&self, key: &PlayerKey) -> Option<u32> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|(k, _)| k == key)
+            .map(|(_, id)| *id)
+    }
+
+    fn forget(&mut self, key: &PlayerKey) {
+        for e in self.entries.iter_mut() {
+            if e.map(|(k, _)| k == *key).unwrap_or(false) {
+                *e = None;
+            }
+        }
+    }
+
+    /// File `id` under `key`, replacing any earlier body for the same
+    /// player. `live` is asked only if the table is full, and only about
+    /// entries already in it — the sweep that keeps a table of stale
+    /// pointers from refusing a real sleeper.
+    fn put(&mut self, key: &PlayerKey, id: u32, live: impl Fn(u32) -> bool) {
+        self.forget(key);
+        if self.entries.iter().all(|e| e.is_some()) {
+            for e in self.entries.iter_mut() {
+                if let Some((_, sleeper)) = *e {
+                    if !live(sleeper) {
+                        *e = None;
+                    }
+                }
+            }
+        }
+        if let Some(free) = self.entries.iter_mut().find(|e| e.is_none()) {
+            *free = Some((*key, id));
+        }
+        // Still full ⇒ every entry names a body that is genuinely asleep,
+        // so there are `MAX_PLAYERS` sleepers and this player's own body is
+        // one of them. Dropping the arrow costs them the takeover and not
+        // the character: they come back through `JoinAs` off the store,
+        // which is the same outcome an eviction gives (`SAVES.md` §9.2).
+        // Unreachable while `forget` runs first — this player cannot be
+        // both absent from the table and occupying all of it — and left
+        // silent rather than asserted for that reason.
+    }
 }
 
 impl ShardCore {
@@ -143,6 +254,8 @@ impl ShardCore {
             ev_buf: [0; MAX_EVENT_MSG_BYTES],
             autosave_at: 0,
             last_saved: vec![PlayerSave::EMPTY; MAX_PLAYERS].into_boxed_slice(),
+            keys: vec![None; MAX_PLAYERS].into_boxed_slice(),
+            sleepers: SleeperIndex::new(),
         }
     }
 
@@ -160,30 +273,63 @@ impl ShardCore {
     /// False ⇒ retry next tick (queue full — refuse, never grow).
     #[must_use]
     pub fn connect(&mut self, slot: usize, id: u32) -> bool {
-        self.connect_as(slot, id, None)
+        self.connect_as(slot, id, None, None).is_some()
     }
 
-    /// Install a client, restoring `save` if the store had one for them.
+    /// Install a client: onto the body they left behind if it is still
+    /// standing, restoring `save` if it is not and the store had one, and
+    /// as a fresh character otherwise.
     ///
-    /// The record rides `Command::JoinAs` into the sim rather than being
-    /// written into the world here, and that is the determinism half of the
-    /// slice: the command stream stays the only thing that changes the world,
-    /// so a replay of it restores what the session restored (wall 5, and
-    /// `world.rs`'s `JoinAs` says it at more length).
+    /// **Three doors, and their order is the design.** The world outranks
+    /// the store, always. A sleeper is what actually happened to that
+    /// player since they left — including being killed in it — while the
+    /// record is what was true when they last stopped playing. Asking the
+    /// store first would hand a raided player their inventory back and
+    /// quietly delete the consequence somebody else worked for
+    /// (`reference/SAVES.md` §9.2: the record's job is how you return when
+    /// the world has **not** got you).
+    ///
+    /// Whichever door opens, the world is changed by a command and only by
+    /// a command — `Wake`, `JoinAs` or `Join` — so a replay of the stream
+    /// reproduces the session that wrote it (wall 5, and `world.rs`'s
+    /// `JoinAs` says it at more length). The takeover check is a pure read
+    /// on the sim thread, which is the same posture `disconnect` already
+    /// takes with `World::save_of`.
     #[must_use]
-    pub fn connect_as(&mut self, slot: usize, id: u32, save: Option<PlayerSave>) -> bool {
-        let cmd = match save {
-            Some(save) => Command::JoinAs { id, save },
-            None => Command::Join { id },
+    pub fn connect_as(
+        &mut self,
+        slot: usize,
+        id: u32,
+        key: Option<PlayerKey>,
+        save: Option<PlayerSave>,
+    ) -> Option<Admitted> {
+        // A hint from the index, verified against the world before it is
+        // trusted: the world evicts sleepers without telling anyone.
+        let sleeper = key
+            .and_then(|k| self.sleepers.find(&k))
+            .filter(|&s| self.world.is_sleeper(s));
+        let (cmd, how) = match (sleeper, save) {
+            (Some(sleeper), _) => (Command::Wake { id, sleeper }, Admitted::TookOver),
+            (None, Some(save)) => (Command::JoinAs { id, save }, Admitted::Restored),
+            (None, None) => (Command::Join { id }, Admitted::Fresh),
         };
         if !self.queue(cmd) {
-            return false;
+            return None;
         }
+        if let Some(k) = key.as_ref() {
+            // The arrow is spent. Leaving it would point at a body that is
+            // now awake and owned by this connection, and the next join by
+            // anyone would find `is_sleeper` false and fall through — right
+            // answer, wrong reason, and one that stops being right the
+            // moment ids are reused.
+            self.sleepers.forget(k);
+        }
+        self.keys[slot] = key;
         self.clients[slot].reset(id);
         // The sweep must not read this connection's arrival as "nothing has
         // changed" against the previous tenant of the slot.
         self.last_saved[slot] = PlayerSave::EMPTY;
-        true
+        Some(how)
     }
 
     /// Tear a client down, and **hand back what this shard should remember
@@ -210,6 +356,16 @@ impl ShardCore {
         // reserve (MAX_PLAYERS of headroom) makes that impossible for
         // real leave rates.
         let _ = self.queue(Command::Leave { id });
+        // The body is about to become a sleeper, so remember whose it is.
+        // Filed here rather than when the command lands because this is the
+        // only place both halves are in hand at once, and filing an arrow
+        // to a body that the queue then refused is harmless — the takeover
+        // check finds no sleeper and the join falls through to the record.
+        if let Some(k) = self.keys[slot] {
+            let world = &self.world;
+            self.sleepers.put(&k, id, |s| world.is_sleeper(s));
+        }
+        self.keys[slot] = None;
         self.clients[slot].connected = false;
         self.last_saved[slot] = PlayerSave::EMPTY;
         save.map(|s| (id, s))
@@ -1675,6 +1831,7 @@ impl ShardCore {
             qz: p.body.qz,
             qvy: p.body.qvy,
             grounded: p.body.grounded,
+            sleeping: p.sleeping,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
         }

@@ -204,10 +204,25 @@ fn loss_corrects_and_reconverges() {
     );
 }
 
-/// The interest set and interpolation survive churn: a third player joins,
-/// walks into view, disconnects; the clients drop him.
+/// The interest set and interpolation survive churn: a player walks into
+/// view and then disconnects — and **the body stays**, which is the whole
+/// of the sleepers slice seen from the far end of the wire.
+///
+/// This test used to assert the opposite, and it was right to until
+/// `Command::Leave` stopped clearing `active`. The old sentence — "the
+/// clients drop him" — was the netcode's faithful report of a design where
+/// logging off deleted your body, which `reference/SAVES.md` §1 is about
+/// the reference game replacing. What the client must now observe is a body
+/// that is still in the interest set, still interpolating, and *marked*: a
+/// raider has to be able to see there is nobody home, and a snapshot that
+/// dropped the entity would be the server telling them there is nobody
+/// there at all.
+///
+/// The removal path is not untested by this change — it is exercised by
+/// eviction and by AOI exit, which are the two ways an entity legitimately
+/// leaves a client's set now.
 #[test]
-fn churn_removes_remotes() {
+fn churn_keeps_the_body_and_marks_it_asleep() {
     let stats = ShardStats::default();
     let mut core = ShardCore::new(SEED);
     pin_together(&mut core);
@@ -234,7 +249,21 @@ fn churn_removes_remotes() {
         pump(&mut core, &stats, survivors, || false);
     }
     assert!(
-        !clients[0].1.interp.ids().any(|id| id == id_of(1)),
-        "disconnected remote removed from the interp set"
+        clients[0].1.interp.ids().any(|id| id == id_of(1)),
+        "the disconnected player's body left the world — sleepers are not \
+         reaching the wire"
+    );
+    let mut rs = client_wasm::interp::RemoteState::default();
+    assert!(
+        clients[0]
+            .1
+            .interp
+            .sample(id_of(1), clients[0].1.render_tick(), &mut rs),
+        "the body is in the set but has no samples to draw from"
+    );
+    assert!(
+        rs.sleeping,
+        "the body is still drawn as a live player — the wire's sleeping bit \
+         is not arriving, so a raider cannot tell nobody is home"
     );
 }

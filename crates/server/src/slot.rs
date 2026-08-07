@@ -169,6 +169,16 @@ pub struct Connect {
     /// restore has to enter the world as a command (`Command::JoinAs`) for a
     /// replay to reproduce it.
     pub save: Option<PlayerSave>,
+    /// Who this connection is, as the store's opaque key. `None` ⇒ a guest
+    /// the admission seam could not name, who therefore cannot be handed
+    /// back a record **or** the body they left behind.
+    ///
+    /// It rides along for one job: `ShardCore` has to file the sleeper a
+    /// leave creates under the identity that will come back for it, and it
+    /// cannot ask the accept loop's key table from the sim thread. Note
+    /// what it is not — the key never enters `sim-core`, and this struct is
+    /// the boundary where that stops being true (`persist.rs`).
+    pub key: Option<PlayerKey>,
     pub link: Link,
 }
 

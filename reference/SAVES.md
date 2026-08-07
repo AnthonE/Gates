@@ -203,13 +203,27 @@ so we cant go wrong, ill deviate after we get established"*). So this section
 is a plan, not a menu. `DECISIONS.md` carries the call; `NOW.md` §0y carries
 the sequence.
 
-### 9.1 The body must stay in the world (the divergence to close)
+### 9.1 The body must stay in the world (**closed 2026-08-07**)
 
-Today `Command::Leave` deactivates the player and `store.rs` writes a record.
-That is precisely the "old version of sleepers" §1 quotes them replacing. It
-costs us the genre's central consequence: **a disconnect currently makes you
-safe.** Closing it is a sim change plus one wire bit, and Devblog 7's own
-shipping order says lootable can come after standing.
+`Command::Leave` used to deactivate the player while `store.rs` wrote a
+record — precisely the "old version of sleepers" §1 quotes them replacing,
+and it cost us the genre's central consequence: a disconnect made you safe.
+
+It now sleeps the body instead. A sleeper stands, takes no input, keeps its
+metabolism, and dies through the ordinary `die` path, bag and all. Devblog
+7's own shipping order is followed: **standing now, lootable-alive later.**
+`Command::Wake { id, sleeper }` is the return trip, and it carries two ids
+because the sim cannot recognise anybody — the identity that survives a
+disconnect is the store's opaque key, which §7 and `persist.rs` both insist
+never enters the deterministic core, so `ShardCore` holds the key→id arrow
+outside it and names both ends in the command stream.
+
+Two things this raised that the reference game never had to answer, because
+its sleepers are entities in an entity system and ours occupy one of
+`MAX_PLAYERS` fixed slots. First, slot pressure needs a stated overflow
+policy (wall 4): **evict the longest-asleep**, counted, and an evicted
+player falls back to §9.2's record. Second, the record and the body can now
+disagree — see §9.2.
 
 ### 9.2 Our store does not become wrong — it changes job
 
@@ -218,6 +232,20 @@ shard's life; it is how they come back when the world does **not** have them:
 a fresh shard, a wiped world, a world save that refused. Keep it. It also
 already is the §5 split — keyed by an opaque identity, separate from the world
 — which is the file they keep across a wipe.
+
+**The order matters and it is the world first.** A join asks for the sleeper
+before it asks for the record, because the sleeper is what actually happened
+to that player — including being killed in it — while the record is what was
+true when they stopped playing. Reversed, a raided player is handed their
+inventory back and the consequence somebody else earned is quietly deleted.
+
+**Where the two still disagree, since 9.1 landed and 9.4's world save has
+not.** A sleeper's record is frozen at the moment they left: `disconnect`
+takes it before queueing the `Leave`, and the autosave sweep walks
+*connection* slots, which a sleeper no longer occupies. So a sleeper that is
+raided and then **evicted** returns from the stale record. Narrow — it needs
+a shard past `MAX_PLAYERS` distinct recent visitors — and real. The sweep
+wants to walk world slots instead, which is `NOW.md` §0y item 3.
 
 ### 9.3 Where we are already ahead, and it is measured
 

@@ -28,16 +28,31 @@ sleeper, saved because it is an entity. Operator adopted that model; backup
 rotation landed with the call. Plan, sources and reasoning: `reference/SAVES.md`
 §9. Knobs: `DECISIONS.md` §open "player persistence v0". In order:
 
-1. **Sleepers: the body stays.** `Leave` deactivates today — the design their
-   Devblog 7 says it *replaced* — so a disconnect makes you **safe** and offline
-   raiding cannot exist. v0: stands, no input, keeps its metabolism, killable
-   (the `die` path drops the bag); lootable-alive after, as for them. One wire
-   bit ⇒ `PROTO_VER` + goldens same commit. Open: does a sleeper block movement.
+1. ~~**Sleepers: the body stays.**~~ **DONE 2026-08-07.** `Leave` sleeps the
+   body instead of clearing `active`; it stands, takes no input, keeps its
+   metabolism, and is killable through the ordinary `die` (the bag drops).
+   `Command::Wake { id, sleeper }` is the return — two ids because the sim
+   cannot recognise anybody, so `ShardCore` holds the key→id arrow outside it.
+   Wire v26 (one bit beside `grounded`, both encoders). Eviction policy:
+   longest-asleep, `World::evictions`. Gates: `tests/sleepers.rs` (10),
+   `client_loop.rs` end-to-end. **Left open:** a sleeper does *not* block
+   movement — players never collided, so this changed nothing and the question
+   is still unanswered rather than decided. Lootable-alive is still item 1 of
+   whatever comes after; Devblog 7 shipped it after standing too.
 2. **The world is persisted** — the four stores plus `players`. Extend the
    bounded sweep, never their full-world snapshot (§4 is a 13-year freeze). The
    hard part has no reference answer (§8): how a *loaded* world keeps wall 5.
+   **Sleepers made this the top item and gave it a deadline**: a sleeper is
+   world state now, so a restart deletes every body on the shard, and the
+   raid that was landed on one is undone by the store record that outlives it.
 3. **The store then changes job** — how you return when the world has *not* got
-   you: fresh shard, wipe, refused save. Their §5 split.
+   you: fresh shard, wipe, refused save. Their §5 split. **One concrete hole to
+   close first:** a sleeper's store record is frozen at the moment they left —
+   `disconnect` reads it before the `Leave`, and the autosave sweep walks
+   *connection* slots, which a sleeper no longer has. So a sleeper that starves
+   or is raided and is then **evicted** comes back from the stale record with
+   everything the raid took. Narrow (needs a shard past `MAX_PLAYERS` distinct
+   visitors) and real. The sweep wants to walk world slots.
 4. **Blueprints** are the wipe-surviving payload it was shaped for; nothing to
    build until BPs exist.
 5. **Still no WAL** (theirs has none either, §8) — item 2 forces the question.

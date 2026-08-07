@@ -233,9 +233,28 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// exists to convert into a clean "wrong version".
 ///
 /// It also spends the last action code: `ACT_MAX` is now full at 15, so
-/// v24's action, if it has one, is the width bump. Fixtures are keyed
-/// `v23_*`.
-pub const PROTO_VER: u16 = 25;
+/// v24's action, if it has one, is the width bump.
+///
+/// v26 — **sleepers.** One bit on `EntityState`, written unconditionally in
+/// both the absolute and the delta encoder beside `grounded`: this body is
+/// in the world and nobody is driving it (`sim-core/world.rs`
+/// `Player::sleeping`, `reference/SAVES.md` §9.1).
+///
+/// The cheapest turn in this list by bits and one of the least optional by
+/// consequence. A v25 client against a v26 server reads every entity record
+/// one bit short from `grounded` onward — the velocity flag lands on the
+/// sleeping bit, the look angle on the velocity, and a body's *position*
+/// survives while its motion and facing become garbage. That is worse than
+/// a refused message: it decodes, so nothing reports an error, and the
+/// symptom is bodies twitching at wrong angles rather than a version
+/// mismatch anyone can read. Exactly the drift wall 6 exists to convert
+/// into a handshake refusal.
+///
+/// Fixtures are keyed `v26_*` — all 74 renamed, four regenerated: the three
+/// snapshot cases, which are the only fixtures whose bytes carry an entity
+/// record, and the hello, which is the one message that puts the version
+/// number itself on the wire.
+pub const PROTO_VER: u16 = 26;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -1402,6 +1421,18 @@ pub struct EntityState {
     /// Vertical velocity in 1 cm/s quanta; 0 rides the at-rest bit.
     pub qvy: i32,
     pub grounded: bool,
+    /// **Nobody is driving this body.** One bit, sent on every record —
+    /// absolute and delta alike, beside `grounded` — because it is the
+    /// difference between a player and a target and a client that guessed
+    /// wrong about it would draw the wrong thing at the one moment it
+    /// matters.
+    ///
+    /// Deliberately not delta-gated behind a `changed` flag like the look
+    /// angle. It flips exactly twice in a body's life (a disconnect, a
+    /// return), so a change flag would spend a bit to save a bit and add a
+    /// state the decoder could get out of step on; unconditional is one
+    /// bit, always right, and reads the same in both encoders.
+    pub sleeping: bool,
     pub yaw: u16,
     pub pitch: u8,
 }
@@ -1531,6 +1562,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w.write_bit(vel_changed)?;
         self.w.write_bit(look_changed)?;
         self.w.write_bit(e.grounded)?;
+        self.w.write_bit(e.sleeping)?;
         if pos_changed {
             self.w
                 .write((dx + DPOS_XZ_BIAS as i64) as u32, DPOS_XZ_BITS)?;
@@ -1555,6 +1587,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w.write((e.qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
         self.w.write(e.qz as u32, POS_XZ_BITS)?;
         self.w.write_bit(e.grounded)?;
+        self.w.write_bit(e.sleeping)?;
         self.write_vel(e.qvy)?;
         self.w.write(e.yaw as u32, 16)?;
         self.w.write(e.pitch as u32, 8)?;
@@ -1705,6 +1738,7 @@ fn decode_entity(
         let qy = r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS;
         let qz = r.read(POS_XZ_BITS)? as i32;
         let grounded = r.read_bit()?;
+        let sleeping = r.read_bit()?;
         let qvy = read_vel(r)?;
         return Ok(EntityState {
             id,
@@ -1713,6 +1747,7 @@ fn decode_entity(
             qz,
             qvy,
             grounded,
+            sleeping,
             yaw: r.read(16)? as u16,
             pitch: r.read(8)? as u8,
         });
@@ -1729,6 +1764,7 @@ fn decode_entity(
     let vel_changed = r.read_bit()?;
     let look_changed = r.read_bit()?;
     e.grounded = r.read_bit()?;
+    e.sleeping = r.read_bit()?;
     if pos_changed {
         // wrapping: baseline values are the decoder's own prior state, but
         // totality on arbitrary bytes must hold regardless.
@@ -1782,6 +1818,7 @@ mod tests {
             qz: 34_000,
             qvy: 0,
             grounded: true,
+            sleeping: false,
             yaw: 0x1234,
             pitch: 7,
         }

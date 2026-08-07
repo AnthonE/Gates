@@ -79,6 +79,22 @@ pub struct ShardStats {
     /// `joins` climbs is remembering nobody, and that is a defect the
     /// operator can see without reading a log.
     pub saves_restored: AtomicU64,
+    /// Joins that took over the body they left behind instead of reading a
+    /// record — the sleeper path (`world.rs` `Command::Wake`). Counted
+    /// beside `saves_restored` rather than folded into it because the two
+    /// answer different questions: this one says sleepers are working, and
+    /// a shard where it stays 0 while `sleepers_evicted` climbs is one
+    /// where bodies are being reaped before their owners get back.
+    pub takeovers: AtomicU64,
+    /// Sleeping bodies the world deleted to seat a join (`world.rs` `seat`).
+    /// Mirrored out of `World::evictions`, which is where the policy lives;
+    /// this is the operator-facing copy. Nonzero means the shard is past
+    /// `MAX_PLAYERS` distinct recent visitors and somebody came back to a
+    /// record instead of a body.
+    pub sleepers_evicted: AtomicU64,
+    /// Bodies asleep in the world right now — a gauge, not a counter, set
+    /// each publish rather than bumped.
+    pub sleepers: AtomicU64,
     /// Records handed to the store's index — a leave, or the autosave sweep
     /// finding a player whose state moved. Those are the only two producers:
     /// there is no shutdown flush (`NOW.md` §0y item 3 says why not).
@@ -114,5 +130,11 @@ impl ShardStats {
 
     pub fn get(field: &AtomicU64) -> u64 {
         field.load(Ordering::Relaxed)
+    }
+
+    /// Publish a gauge — a number that is *read off* the world each tick
+    /// rather than accumulated, so it must be assigned and never bumped.
+    pub fn set(field: &AtomicU64, v: u64) {
+        field.store(v, Ordering::Relaxed);
     }
 }

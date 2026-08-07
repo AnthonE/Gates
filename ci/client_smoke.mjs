@@ -277,7 +277,17 @@ for (let i = 0; i < slotCount; i++) {
 // client handed a `SUB_CHARGE_PLACED` decodes it as unknown, calls the whole
 // event message malformed, and loses every event that shared the datagram
 // with it. Walls would lose hp with nothing drawn to say why.
-check(ex.client_proto_ver() === 25, "proto ver drifted without this gate hearing");
+// 26: sleepers — one bit on `EntityState`, written unconditionally beside
+// `grounded` in both the absolute and the delta encoder (`sim-core/world.rs`
+// `Player::sleeping`). The mismatch this side would suffer is the worst
+// class on the list, and this file is the right place to say so because it
+// is the client's decoder: a v25 reader takes every entity record one bit
+// short from `grounded` onward, so the velocity flag lands on the sleeping
+// bit and the look angle lands on the velocity. Nothing errors — the record
+// still decodes — and bodies simply stand at wrong angles in the wrong
+// motion. A silent misread beats a refused message every time for how long
+// it takes to find.
+check(ex.client_proto_ver() === 26, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13

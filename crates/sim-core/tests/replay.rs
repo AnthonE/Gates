@@ -183,7 +183,21 @@ const TICKS: u64 = 900;
 /// have gone green while silently dropping one lane's behaviour from the
 /// replayed surface — the exact drift this constant exists to catch. The
 /// value below is read off a run of the merged tree.
-const GOLDEN_FINAL_HASH: u64 = 0xA84F_B34C_490B_630F;
+/// Regenerated once more by **sleepers**, and this is the shape of turn the
+/// first entry above describes rather than the second: `state_hash` gained
+/// state, and nothing this script does exercises it. The script never
+/// leaves, so every body in it is awake for every tick — `sleeping` folds a
+/// zero byte, `slept_at` eight, and `World::evictions` eight more, on every
+/// hash. The number moves because the *definition* of the state moved, not
+/// because any body behaved differently.
+///
+/// That distinction is checkable and was checked: `hashes_a == hashes_b`
+/// and `final_a == final_b` are asserted before this constant is, and both
+/// were green on the run this value was read off. A regenerated golden
+/// beside a red equality assert would be the bug the constant exists to
+/// catch; beside a green one it is the state definition widening, which is
+/// exactly what a slice that adds a field to `Player` is supposed to do.
+const GOLDEN_FINAL_HASH: u64 = 0x2B2C_9D78_9589_F228;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

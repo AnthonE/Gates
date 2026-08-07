@@ -5,7 +5,7 @@
 //! (drop-oldest) and never `_wait`.
 
 use crate::config::ShardConfig;
-use crate::core::{Lane, ShardCore};
+use crate::core::{Admitted, Lane, ShardCore};
 use crate::slot::{
     generation_of, state_of, Connect, EvMsg, Link, SaveMsg, SlotTable, SnapMsg, WriteMsg,
     SLOT_LEAVING, SLOT_LIVE,
@@ -575,6 +575,7 @@ async fn install(
             slot,
             id,
             save,
+            key,
             link,
         })
         .is_err()
@@ -586,13 +587,15 @@ async fn install(
         spawn_refusal(connection, send, REFUSE_FULL);
         return;
     }
-    // Counted only now the sim has it. A refused install seats nobody, and
-    // `saves_restored` is the one number that says persistence is working — a
-    // counter that reports restores which never reached a world is worse than
-    // no counter at all.
-    if save.is_some() {
-        ShardStats::bump(&stats.saves_restored);
-    }
+    // `saves_restored` is **not** counted here, and it used to be. A record
+    // existing is no longer the same fact as a record being used: since
+    // sleepers, the world outranks the store at the door, so a player whose
+    // body is still standing is admitted by `Command::Wake` and never reads
+    // the record this task just fetched. The sim thread counts it, because
+    // the sim thread is where the choice is made (`ShardCore::connect_as`
+    // → `Admitted`). The comment this replaced had the right principle — a
+    // counter that reports restores which never reached a world is worse
+    // than no counter — and this is that principle applied one seam later.
 
     let welcome = Welcome {
         player_id: id,
@@ -956,9 +959,18 @@ fn sim_thread(
     while !shutdown.load(Ordering::Relaxed) {
         // Install fresh connections.
         while let Ok(c) = ctrl_rx.pop() {
-            if core.connect_as(c.slot, c.id, c.save) {
+            if let Some(how) = core.connect_as(c.slot, c.id, c.key, c.save) {
                 links[c.slot] = Some(c.link);
                 ShardStats::bump(&stats.joins);
+                // Counted here and nowhere else, because here is the only
+                // place that knows which door opened. The accept task can
+                // see that a record *exists*; it cannot see that the world
+                // still had the body and the record went unread.
+                match how {
+                    Admitted::TookOver => ShardStats::bump(&stats.takeovers),
+                    Admitted::Restored => ShardStats::bump(&stats.saves_restored),
+                    Admitted::Fresh => {}
+                }
             } else {
                 // Command queue refused. Unreachable by arithmetic (ctrl
                 // cap + leave cap < queue reserve), but handled: park the
@@ -1065,6 +1077,15 @@ fn sim_thread(
         });
         ShardStats::bump(&stats.ticks);
         stats.current_tick.store(core.world.tick, Ordering::Relaxed);
+        // Two gauges, mirrored off the world rather than accumulated here:
+        // the eviction policy lives in `World::seat` and nothing on this
+        // thread is told when it fires, so the counter is read, not bumped.
+        // `sleepers()` is an O(MAX_PLAYERS) scan of a 100-element array on
+        // a thread that has just done a tick's work — measured against the
+        // alternative, which is a second copy of the count that can drift
+        // from the array it describes.
+        ShardStats::set(&stats.sleepers_evicted, core.world.evictions);
+        ShardStats::set(&stats.sleepers, core.world.sleepers() as u64);
 
         // Pace (the boundary).
         next += tick_dur;

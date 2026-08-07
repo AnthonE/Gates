@@ -9,7 +9,7 @@
 //! No sockets, like every other suite here. What is real is the file: these
 //! tests write one, close it, open it again and read a character back out.
 
-use server::core::ShardCore;
+use server::core::{Admitted, ShardCore};
 use server::stats::ShardStats;
 use server::store::{self, PlayerKey, SaveStore, MAX_SAVED_PLAYERS, SAVE_BACKUP_COUNT};
 use sim_core::combat::CombatContent;
@@ -129,8 +129,13 @@ fn a_shard_restart_remembers_a_player() {
     let restored = saves.store.find(&me).expect("the key must be remembered");
     let stats = ShardStats::default();
     let mut core = armed_core();
-    assert!(
-        core.connect_as(0, id_of(0), Some(restored)),
+    // The key rides along now: it is how a join finds the body it left
+    // behind. There is none here — this is a fresh process against an old
+    // file, which is exactly the case the record exists for
+    // (`reference/SAVES.md` §9.2) — so the door taken must be `Restored`.
+    assert_eq!(
+        core.connect_as(0, id_of(0), Some(me), Some(restored)),
+        Some(Admitted::Restored),
         "a restoring join"
     );
     core.tick(&stats, |_, _, _| true);
@@ -161,7 +166,11 @@ fn an_unknown_key_is_a_fresh_character() {
 
     let stats = ShardStats::default();
     let mut core = armed_core();
-    assert!(core.connect_as(0, id_of(0), None), "a keyless join");
+    assert_eq!(
+        core.connect_as(0, id_of(0), None, None),
+        Some(Admitted::Fresh),
+        "a keyless join"
+    );
     core.tick(&stats, |_, _, _| true);
     let p = core.world.players[world_slot(&core, id_of(0))];
     assert_eq!(p.hp, core.world.combat.player_hp, "a fresh body is whole");

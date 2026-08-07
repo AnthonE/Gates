@@ -37,6 +37,12 @@ pub struct RemoteState {
     /// False when the sample is a clamp (buffer dry or stale) — the
     /// honest-freeze flag.
     pub live: bool,
+    /// Nobody is driving this body (`world.rs` `Player::sleeping`). Taken
+    /// from the newer of the two samples rather than blended, because it is
+    /// a fact and not a quantity: there is no halfway between asleep and
+    /// awake to lerp to, and rounding one would make the flag flicker for a
+    /// frame at every transition.
+    pub sleeping: bool,
 }
 
 fn dequant(s: &Sample, out: &mut RemoteState) {
@@ -46,6 +52,7 @@ fn dequant(s: &Sample, out: &mut RemoteState) {
     out.z = s.e.qz as f32 * POS_XZ_Q;
     out.yaw = s.e.yaw as f32;
     out.pitch = s.e.pitch as f32;
+    out.sleeping = s.e.sleeping;
 }
 
 pub struct Interp {
@@ -172,6 +179,15 @@ impl Interp {
                 }
                 out.yaw = yaw;
                 out.pitch = a.pitch + (b.pitch - a.pitch) * t;
+                // The newer sample's, not a blend: `sleeping` is a fact
+                // about the body, and the two facts either side of `t` are
+                // "awake" and "asleep" with nothing between them. Taking
+                // `b` means the client is asleep for the interpolation
+                // window rather than awake for it, which is the safe
+                // direction — the alternative draws a body as a player for
+                // an extra ~100 ms after the server stopped treating it as
+                // one.
+                out.sleeping = s1.e.sleeping;
                 out.live = true;
                 return true;
             }
@@ -198,6 +214,7 @@ mod tests {
             qz: 40_000,
             qvy: 0,
             grounded: true,
+            sleeping: false,
             yaw,
             pitch: 100,
         }
