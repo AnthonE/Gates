@@ -19,7 +19,7 @@ use sim_core::deploy::{DeployContent, REFUSE_D_CLAIM, UPKEEP_PERIOD_TICKS};
 use sim_core::gather::{GatherContent, ItemStack};
 
 const SEED: u64 = 20_260_731;
-/// The browser-smoke spawn point, guarded walkable in sim-core
+/// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests` — walkable terrain also takes ground-class deploys.
 const SPAWN: (f32, f32) = (1024.0, 1024.0);
 const CX: u16 = 341;

@@ -22,7 +22,7 @@ use sim_core::input::BTN_PRIMARY;
 use sim_core::movement::{Body, POS_XZ_Q};
 
 const SEED: u64 = 20_260_802;
-/// The browser-smoke spawn point, guarded walkable in sim-core
+/// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests`.
 const SPAWN: (f32, f32) = (1024.0, 1024.0);
 /// The gather fixture's item 0 — also the combat fixture's 34-damage

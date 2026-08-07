@@ -14,15 +14,18 @@
 #   cert_pem  a REAL Let's Encrypt chain for game.moreright.xyz (which is an
 #             A record onto this box, DNS-only — a Cloudflare-proxied name
 #             cannot carry WebTransport, which is QUIC over UDP). With a
-#             trusted cert the browser needs no `serverCertificateHashes`,
-#             which is the dev flow and requires a short-lived cert.
+#             trusted chain a validating client needs no
+#             `serverCertificateHashes` pinning — that is the dev flow, and
+#             it requires a short-lived cert.
 #             certbot renews these; the shard reads them at boot, so a
 #             renewal needs a restart to take (the copies are refreshed by
 #             hand today — a renewal hook is worth writing before this
 #             matters).
 #   NO dev_spawn — a public shard must not land every joiner on one point
-#             (config.rs says so). This is also what browser_smoke's dev
-#             gate asserts about a public shard.
+#             (config.rs says so). The welcome's dev bit tracks this key,
+#             and bot_smoke's `test_welcome_dev_bit_tracks_dev_spawn` pins
+#             it: a public shard reporting dev=true would offer a dev
+#             surface to every player.
 #   PERSISTENCE IS ON (operator, 2026-08-07). The island, the bases and the
 #             bodies survive a restart, and players keep what they were
 #             carrying. require_auth is on with them because a save is filed

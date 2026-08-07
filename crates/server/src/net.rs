@@ -1077,8 +1077,8 @@ pub async fn read_frame(recv: &mut RecvStream) -> Option<([u8; MAX_STREAM_MSG_BY
 }
 
 /// The client-side read: one S→C event-lane frame, sized for
-/// `MAX_EVENT_MSG_BYTES` (bots and native harnesses; the browser's framer
-/// lives in `web/src/net.js` with the same cap).
+/// `MAX_EVENT_MSG_BYTES` (the bot client here; the native client's framer
+/// lives in `crates/client/src/lib.rs` with the same cap).
 pub async fn read_event_frame(recv: &mut RecvStream) -> Option<([u8; MAX_EVENT_MSG_BYTES], usize)> {
     let mut len_buf = [0u8; 2];
     recv.read_exact(&mut len_buf).await.ok()?;

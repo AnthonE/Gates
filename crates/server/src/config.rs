@@ -35,20 +35,20 @@ pub struct ShardConfig {
     /// test and the local dev flow use.
     pub cert_pem: Option<String>,
     pub key_pem: Option<String>,
-    /// Whether a session token is REQUIRED to join.
+    /// Whether a proven identity is REQUIRED to join.
     ///
     /// `false` (the shipping default) is a shard that takes guests: a player
-    /// with no launcher plays anyway, which is the same posture
+    /// with no wallet and no launcher plays anyway, which is the same posture
     /// `scry::Player::Anonymous` has always taken on the client. `true`
-    /// refuses a joiner whose token is absent or not good, with
-    /// `REFUSE_AUTH`.
+    /// refuses a joiner who offers no address, or whose SIWE signature does
+    /// not verify, with `REFUSE_AUTH` (`auth::verify`).
     ///
     /// **It is a knob and not a wall because a shard's admission policy is
     /// the operator's**, and the two real cases both exist: a public armed
     /// shard wants everyone identified, and a local dev shard must be
     /// joinable with nothing running but the binary. Every test in this repo
     /// depends on the second.
-    /// Proposed default `false`, DECISIONS.md §open ("scry session auth v0").
+    /// Default `false`, DECISIONS.md §open ("siwe identity v1").
     pub require_auth: bool,
     /// Where `content/*.toml` lives (CLAUDE.md wall 7). Default `content`
     /// resolves against the CWD, which the repo commands make the repo
@@ -411,19 +411,11 @@ mod auth_cfg_tests {
     #[test]
     fn a_fuzzy_require_auth_is_refused() {
         for bad in ["yes", "1", "on", "True", ""] {
-            let src = alloc_line(bad);
+            let src = format!("bind = \"127.0.0.1:1\"\nseed = 7\nrequire_auth = {bad}\n");
             assert!(
                 parse_shard_toml(&src).is_err(),
                 "require_auth = `{bad}` must be refused, not coerced"
             );
         }
-    }
-
-    /// `format!` is disallowed in this crate; build the line by hand.
-    fn alloc_line(v: &str) -> std::string::String {
-        let mut s = std::string::String::from("bind = \"127.0.0.1:1\"\nseed = 7\nrequire_auth = ");
-        s.push_str(v);
-        s.push('\n');
-        s
     }
 }

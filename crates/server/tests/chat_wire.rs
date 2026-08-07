@@ -18,7 +18,7 @@ use sim_core::gather::GatherContent;
 use sim_core::limits::CHAT_LOCAL_CM;
 
 const SEED: u64 = 20_260_731;
-/// The browser-smoke spawn point, guarded walkable in sim-core
+/// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests`. `dev_spawn` pins every join here, so the test starts
 /// with everyone in one place and moves them apart deliberately.
 const SPAWN: (f32, f32) = (1024.0, 1024.0);

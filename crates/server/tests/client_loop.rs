@@ -1,8 +1,8 @@
 //! The client-loop gate (M0 "connect, predict/reconcile, interpolate"):
-//! `ClientCore` — the exact struct the browser drives through the wasm
-//! bridge — against `ShardCore`, through real encoded datagrams both
-//! ways. No sockets, no clocks: fully deterministic, so the asserts are
-//! exact and quotable from this shared box.
+//! `ClientCore` — the exact struct the native client drives, out of the
+//! shared `client-wasm` crate — against `ShardCore`, through real encoded
+//! datagrams both ways. No sockets, no clocks: fully deterministic, so the
+//! asserts are exact and quotable from this shared box.
 //!
 //! The two claims under test (DESIGN.md §5.6, NETCODE.md §3):
 //! - clean delivery ⇒ prediction is **bit-exact** — zero mispredictions,
