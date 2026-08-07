@@ -7,8 +7,8 @@
 use crate::config::ShardConfig;
 use crate::core::{Admitted, Lane, ShardCore};
 use crate::slot::{
-    generation_of, state_of, Connect, EvMsg, Link, SaveMsg, SlotTable, SnapMsg, WriteMsg,
-    SLOT_LEAVING, SLOT_LIVE,
+    generation_of, state_of, Connect, EvMsg, Link, SaveMsg, SlotTable, SnapMsg, WorldDone,
+    WorldMsg, WriteMsg, SLOT_LEAVING, SLOT_LIVE,
 };
 use crate::stats::ShardStats;
 use crate::store::{PlayerKey, SaveFile, SaveStore, Saves};
@@ -20,8 +20,9 @@ use protocol::{
 use rtrb::RingBuffer;
 use sim_core::limits::{
     ACTION_RING_CAP, CHAT_RING_CAP, CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP,
-    INPUT_RING_CAP, MAX_PLAYERS, SAVE_RING_CAP, SNAPSHOT_RING_CAP, TICK_HZ,
+    INPUT_RING_CAP, MAX_PLAYERS, SAVE_RING_CAP, SNAPSHOT_RING_CAP, TICK_HZ, WORLD_RING_CAP,
 };
+use sim_core::worldsave::WORLD_SAVE_MAX_BYTES;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -41,6 +42,18 @@ const WRITER_POLL: Duration = Duration::from_millis(2);
 /// Sim thread abandons backlog beyond this many ticks (a debugger pause,
 /// a VM freeze) instead of sprinting to catch up.
 const MAX_TICK_BACKLOG: u32 = 8;
+
+/// How long the accept loop will keep draining the save ring after a
+/// shutdown is signalled, waiting for the sim thread's final flush: 200
+/// tries × 5 ms = 1 s.
+///
+/// A backstop and not the mechanism. The real exit is `save_rx` being
+/// *abandoned* — the sim thread dropping its producer, which is exact — and
+/// this only bounds the case where the sim thread is wedged rather than
+/// finishing. A shutdown that takes a second is a shutdown; one that hangs
+/// forever is a deploy that never completes.
+const SHUTDOWN_DRAIN_TRIES: u32 = 200;
+const SHUTDOWN_DRAIN_POLL: Duration = Duration::from_millis(5);
 
 /// Chat rate limit (ALPHA.md §1: "rate-limited server-side"), a token
 /// bucket per connection: `CHAT_BURST` lines may go back to back, then
@@ -149,6 +162,7 @@ pub async fn spawn_shard(
     loot: sim_core::loot::LootContent,
     catalog: ItemCatalog,
     saves: Saves,
+    world_boot: crate::worldfile::WorldBoot,
 ) -> Result<ShardHandle, String> {
     // The island validates at boot the way content does (CLAUDE.md wall 7),
     // and here rather than in `bin/shard.rs` so that every path that raises a
@@ -206,6 +220,19 @@ pub async fn spawn_shard(
     // SPSC ring, so nothing on the way to a disk can block a tick.
     let (save_tx, save_rx) = RingBuffer::<SaveMsg>::new(SAVE_RING_CAP);
     let (write_tx, write_rx) = RingBuffer::<WriteMsg>::new(SAVE_RING_CAP);
+    // The world path, one hop and two directions: full buffers down to the
+    // store thread, emptied ones back. Depth 2 because that is what a
+    // double buffer is — one being written while one is being filled — and
+    // a deeper queue would only let stale worlds pile up behind a slow disk
+    // when the correct answer to a slow disk is to skip a save.
+    let (world_tx, world_rx) = RingBuffer::<WorldMsg>::new(WORLD_RING_CAP);
+    let (world_done_tx, world_done_rx) = RingBuffer::<WorldDone>::new(WORLD_RING_CAP);
+    let crate::worldfile::WorldBoot {
+        file: world_file,
+        idents: world_idents,
+        blob: world_blob,
+        interval_ticks: world_interval,
+    } = world_boot;
 
     {
         let stats = stats.clone();
@@ -217,8 +244,28 @@ pub async fn spawn_shard(
             .name("sim".into())
             .spawn(move || {
                 sim_thread(
-                    seed, dev_spawn, gather, craft, build, deploy, combat, backpack, survival,
-                    loot, catalog, ctrl_rx, grave_tx, save_tx, slots, stats, shutdown,
+                    seed,
+                    dev_spawn,
+                    gather,
+                    craft,
+                    build,
+                    deploy,
+                    combat,
+                    backpack,
+                    survival,
+                    loot,
+                    catalog,
+                    world_blob,
+                    world_idents,
+                    world_interval,
+                    ctrl_rx,
+                    grave_tx,
+                    save_tx,
+                    world_tx,
+                    world_done_rx,
+                    slots,
+                    stats,
+                    shutdown,
                 )
             })
             .map_err(|e| format!("sim thread spawn: {e}"))?;
@@ -233,7 +280,7 @@ pub async fn spawn_shard(
         let file = saves.file;
         std::thread::Builder::new()
             .name("store".into())
-            .spawn(move || store_thread(file, write_rx, stats))
+            .spawn(move || store_thread(file, write_rx, world_file, world_rx, world_done_tx, stats))
             .map_err(|e| format!("store thread spawn: {e}"))?;
     }
 
@@ -347,6 +394,26 @@ async fn accept_loop(
                 }
                 drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
                 if shutdown.load(Ordering::Relaxed) {
+                    // The sim thread is flushing every connected player's
+                    // record right now, and this loop is the only thing that
+                    // can carry those to the store. Returning on the first
+                    // look at the flag — which is what this did — threw them
+                    // away and left the shutdown flush writing into a ring
+                    // nobody would ever read.
+                    //
+                    // Waited on the *producer being dropped*, not on a
+                    // duration: the sim thread drops `save_tx` when it is
+                    // finished, so this is an exact signal. The try count is
+                    // a backstop for a sim thread that is wedged rather than
+                    // finishing, because "no bound is wait" applies here too.
+                    for _ in 0..SHUTDOWN_DRAIN_TRIES {
+                        drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
+                        if save_rx.is_abandoned() {
+                            break;
+                        }
+                        tokio::time::sleep(SHUTDOWN_DRAIN_POLL).await;
+                    }
+                    drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
                     endpoint.close(wtransport::VarInt::from_u32(0), b"shutdown");
                     return;
                 }
@@ -427,6 +494,64 @@ fn drain_saves(
     }
 }
 
+/// Take one world save: fill a pooled buffer and hand it to the store
+/// thread, or skip and count.
+///
+/// **The whole of the sim thread's cost is in here**, and it is two linear
+/// passes over state that is already in cache: `encode_world` writes
+/// integers into a buffer that already exists, and `identities` fills a
+/// `Vec` whose capacity was reserved at boot. No allocation (wall 2), no
+/// lock or syscall (wall 3), and a ceiling that does not move with the size
+/// of the world (`WORLD_SAVE_MAX_BYTES`, wall 4).
+///
+/// That is the whole answer to `reference/SAVES.md` §4 — a stop-the-world
+/// freeze the reference game has not fixed in thirteen years, whose only
+/// mitigation is a convar with a bad end on both sides. The freeze is not
+/// caused by saving being expensive; it is caused by *serialising an object
+/// graph on the thread that runs the game*. Split those two and the knob
+/// stops having a second end.
+///
+/// A skip is the stated overflow policy and not a failure: the cadence
+/// comes around again with a fresher world, so nothing is lost that a later
+/// save does not carry.
+fn take_world_save(
+    core: &mut ShardCore,
+    pool: &mut Vec<Box<[u8]>>,
+    idents: &mut Vec<Vec<(PlayerKey, u32)>>,
+    world_tx: &mut rtrb::Producer<WorldMsg>,
+    stats: &ShardStats,
+) {
+    let (Some(mut buf), Some(mut ids)) = (pool.pop(), idents.pop()) else {
+        ShardStats::bump(&stats.world_saves_skipped);
+        return;
+    };
+    let Some(len) = core.encode_world(&mut buf) else {
+        // Unreachable: the buffer is `WORLD_SAVE_MAX_BYTES` and that is the
+        // ceiling by construction. Counted rather than unwrapped, and the
+        // buffer goes back to the pool either way.
+        ShardStats::bump(&stats.world_save_errors);
+        pool.push(buf);
+        idents.push(ids);
+        return;
+    };
+    ids.resize(MAX_PLAYERS, (PlayerKey::PLACEHOLDER, 0));
+    let n = core.identities(&mut ids);
+    ids.truncate(n);
+    let tick = core.world.tick;
+    if let Err(rtrb::PushError::Full(msg)) = world_tx.push(WorldMsg {
+        tick,
+        len,
+        buf,
+        idents: ids,
+    }) {
+        ShardStats::bump(&stats.world_saves_skipped);
+        pool.push(msg.buf);
+        let mut back = msg.idents;
+        back.clear();
+        idents.push(back);
+    }
+}
+
 /// The storage thread: the only thing in this process that touches the save
 /// file, and it makes no decisions — the index owner already chose the slot.
 ///
@@ -437,10 +562,34 @@ fn drain_saves(
 fn store_thread(
     mut file: SaveFile,
     mut write_rx: rtrb::Consumer<WriteMsg>,
+    mut world_file: crate::worldfile::WorldFile,
+    mut world_rx: rtrb::Consumer<WorldMsg>,
+    mut world_done_tx: rtrb::Producer<WorldDone>,
     stats: Arc<ShardStats>,
 ) {
     loop {
         let mut idle = true;
+        // The world first: it is the bigger write and the rarer one, and
+        // taking it before the player records means a shutdown flush lands
+        // the world before the thread notices its producers are gone.
+        while let Ok(msg) = world_rx.pop() {
+            idle = false;
+            match world_file.write(msg.tick, &msg.buf[..msg.len], &msg.idents) {
+                Ok(true) => ShardStats::bump(&stats.world_saves_written),
+                // No file: nothing written, nothing counted — the same rule
+                // `SaveFile::write` states, and for the same reason.
+                Ok(false) => {}
+                Err(_) => ShardStats::bump(&stats.world_save_errors),
+            }
+            // The buffer goes home whatever happened. A write that failed
+            // must not also cost the pool a buffer, or a shard with a full
+            // disk would stop being *able* to save once the disk was fixed.
+            let WorldMsg {
+                buf, mut idents, ..
+            } = msg;
+            idents.clear();
+            let _ = world_done_tx.push(WorldDone { buf, idents });
+        }
         while let Ok(msg) = write_rx.pop() {
             idle = false;
             match file.write(msg.index, &msg.key, msg.stamp, &msg.save) {
@@ -930,9 +1079,14 @@ fn sim_thread(
     survival: sim_core::survival::SurvivalContent,
     loot: sim_core::loot::LootContent,
     catalog: ItemCatalog,
+    world_blob: Vec<u8>,
+    world_idents: crate::worldfile::Identities,
+    world_interval: u64,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut grave_tx: rtrb::Producer<Link>,
     mut save_tx: rtrb::Producer<SaveMsg>,
+    mut world_tx: rtrb::Producer<WorldMsg>,
+    mut world_done_rx: rtrb::Consumer<WorldDone>,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     shutdown: Arc<AtomicBool>,
@@ -948,6 +1102,38 @@ fn sim_thread(
     core.world.survival = survival;
     core.world.loot = loot;
     core.catalog = catalog;
+    // **The load, and this is the only place it may happen**: after the
+    // content tables above are installed — the decoder range-checks every
+    // row against them — and before the first tick, because a loaded world
+    // is the origin of a run and not a mutation inside one (`worldsave.rs`
+    // has the wall-5 argument in full).
+    //
+    // A refusal here cannot happen: `bin/shard.rs` already loaded these same
+    // bytes into a trial world before it bound a port, and refused the boot
+    // if they did not take. It is still handled rather than unwrapped,
+    // because "cannot happen" and "panics the sim thread if it does" is a
+    // trade nothing in this file makes.
+    if !world_blob.is_empty() {
+        match core.world.load(&world_blob) {
+            Ok(()) => {
+                core.adopt_identities(&world_idents);
+                ShardStats::set(&stats.current_tick, core.world.tick);
+            }
+            Err(_) => ShardStats::bump(&stats.world_load_errors),
+        }
+    }
+    drop(world_blob);
+    // The world-save buffer pool. Allocated here, once, and never again:
+    // every later save fills one of these and hands the box to the store
+    // thread, which hands the box back. Wall 2 counts the tick, and the tick
+    // only writes into a buffer that already exists.
+    let mut world_pool: Vec<Box<[u8]>> = (0..WORLD_RING_CAP)
+        .map(|_| vec![0u8; WORLD_SAVE_MAX_BYTES].into_boxed_slice())
+        .collect();
+    let mut ident_pool: Vec<Vec<(PlayerKey, u32)>> = (0..WORLD_RING_CAP)
+        .map(|_| Vec::with_capacity(MAX_PLAYERS))
+        .collect();
+    let mut next_world_save = core.world.tick + world_interval.min(u64::MAX / 2);
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_PLAYERS);
     links.resize_with(MAX_PLAYERS, || None);
     let mut links = links.into_boxed_slice();
@@ -1047,6 +1233,24 @@ fn sim_thread(
         if let Some((id, save)) = core.autosave() {
             push_save(&mut save_tx, id, save, &stats);
         }
+        // Buffers coming home from the store thread.
+        while let Ok(done) = world_done_rx.pop() {
+            world_pool.push(done.buf);
+            ident_pool.push(done.idents);
+        }
+        // The world, on its cadence. Before the tick for the reason the
+        // autosave sweep is: the blob is then the state the *previous* tick
+        // published, which is a state clients have actually been shown.
+        if core.world.tick >= next_world_save {
+            next_world_save = core.world.tick.saturating_add(world_interval);
+            take_world_save(
+                &mut core,
+                &mut world_pool,
+                &mut ident_pool,
+                &mut world_tx,
+                &stats,
+            );
+        }
         // Tick + publish.
         core.tick(&stats, |lane, slot, bytes| {
             let Some(link) = links[slot].as_mut() else {
@@ -1101,6 +1305,46 @@ fn sim_thread(
             }
         }
     }
+
+    // ---- shutdown, and this is the whole of `NOW.md` §0y item 6 ----------
+    //
+    // A kill used to cost up to `MAX_PLAYERS` ticks of every player's
+    // progress — the autosave sweep's own coarseness, 3.3 s at 30 Hz — plus,
+    // since world persistence, up to a whole `world_save_interval_ticks` of
+    // everybody's *base*. Neither is necessary on a shutdown the shard can
+    // see coming, and an operator restarting a shard to deploy is the most
+    // common restart there is.
+    //
+    // **The world goes first, while everyone is still connected**, and the
+    // order is load-bearing rather than tidy: `identities` reads connected
+    // clients out of the key table and sleepers out of the sleeper index, so
+    // taking the world *after* the disconnects below would find the key
+    // table cleared and the `Leave` commands still queued behind a tick that
+    // is never going to run — a world full of bodies with nobody's name on
+    // them. The encoder puts an awake body to sleep on the way out anyway
+    // (`worldsave.rs`), so nothing is lost by saving them awake.
+    while let Ok(done) = world_done_rx.pop() {
+        world_pool.push(done.buf);
+        ident_pool.push(done.idents);
+    }
+    take_world_save(
+        &mut core,
+        &mut world_pool,
+        &mut ident_pool,
+        &mut world_tx,
+        &stats,
+    );
+    // Then every connected player's exact record, which is the same read a
+    // leave takes and is what makes a clean restart cost nobody anything.
+    for slot in 0..MAX_PLAYERS {
+        if let Some((id, save)) = core.disconnect(slot) {
+            push_save(&mut save_tx, id, save, &stats);
+        }
+    }
+    // Both producers drop here, which is the signal the other two threads
+    // are already written to wait for: the accept loop drains `save_rx`
+    // until it is abandoned, and the store thread exits when its own ring is
+    // dry and abandoned. Nothing is timed and nothing is guessed.
 }
 
 #[cfg(test)]

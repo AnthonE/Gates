@@ -332,6 +332,78 @@ impl ShardCore {
         Some(how)
     }
 
+    /// Encode the whole world into `out`, returning its length.
+    ///
+    /// A pure read on the sim thread, and that is the design: the reference
+    /// game's save is a stop-the-world walk *on its main thread* and thirteen
+    /// years have not fixed the freeze (`reference/SAVES.md` §4). Ours splits
+    /// the two halves — the walk is a linear pass writing integers into a
+    /// buffer that is already allocated, and the file I/O is somebody else's
+    /// thread entirely. Neither half blocks, neither allocates, and the cost
+    /// here is bounded by `WORLD_SAVE_MAX_BYTES` no matter what the world
+    /// grew to.
+    pub fn encode_world(&self, out: &mut [u8]) -> Option<usize> {
+        self.world.save_world(out).ok()
+    }
+
+    /// Who every body in the world belongs to, into a caller-owned buffer;
+    /// returns how many were written.
+    ///
+    /// **The half of a world save the sim may not hold.** A body carries the
+    /// id it had, and an id is minted per connection — so a saved sleeper is
+    /// unclaimable unless something writes down whose it is, and the thing
+    /// that knows is the opaque `PlayerKey` that `persist.rs` and
+    /// `worldsave.rs` both insist never enters `sim-core`.
+    ///
+    /// Two sources, because a save catches players in both states: the
+    /// sleeper index holds everyone who left, and `keys` holds everyone still
+    /// connected — who will be sleepers by the time this file is read, since
+    /// a restart ends every connection.
+    ///
+    /// A caller buffer rather than a `Vec` for wall 2: this runs on the sim
+    /// thread, and a save that allocated would allocate on whatever tick the
+    /// cadence happened to land on.
+    pub fn identities(&self, out: &mut [(PlayerKey, u32)]) -> usize {
+        let mut n = 0;
+        let mut put = |k: PlayerKey, id: u32, out: &mut [(PlayerKey, u32)]| {
+            if n < out.len() && !out[..n].iter().any(|(_, have)| *have == id) {
+                out[n] = (k, id);
+                n += 1;
+            }
+        };
+        for slot in 0..MAX_PLAYERS {
+            if self.clients[slot].connected {
+                if let Some(k) = self.keys[slot] {
+                    put(k, self.clients[slot].id, out);
+                }
+            }
+        }
+        for e in self.sleepers.entries.iter().flatten() {
+            if self.world.is_sleeper(e.1) {
+                put(e.0, e.1, out);
+            }
+        }
+        n
+    }
+
+    /// Seed the sleeper index from a loaded world file — **boot only**.
+    ///
+    /// Every body in a loaded world is asleep (`worldsave.rs`), so this is
+    /// what makes them claimable: a returning player's key resolves to the
+    /// body id the file recorded, `connect_as` verifies it against the world,
+    /// and the takeover is the same `Command::Wake` a mid-run reconnect uses.
+    /// Without it the bodies stand there unclaimable and every player is
+    /// handed a store record instead — which is the world persisting and the
+    /// persistence buying nothing.
+    pub fn adopt_identities(&mut self, idents: &[(PlayerKey, u32)]) {
+        for (key, id) in idents {
+            if self.world.is_sleeper(*id) {
+                let world = &self.world;
+                self.sleepers.put(key, *id, |s| world.is_sleeper(s));
+            }
+        }
+    }
+
     /// Tear a client down, and **hand back what this shard should remember
     /// about them**, with the id it belongs to. `None` ⇒ nothing to remember:
     /// an already-disconnected slot, or a player the world has no body for.

@@ -39,25 +39,43 @@ rotation landed with the call. Plan, sources and reasoning: `reference/SAVES.md`
    movement — players never collided, so this changed nothing and the question
    is still unanswered rather than decided. Lootable-alive is still item 1 of
    whatever comes after; Devblog 7 shipped it after standing too.
-2. **The world is persisted** — the four stores plus `players`. Extend the
-   bounded sweep, never their full-world snapshot (§4 is a 13-year freeze). The
-   hard part has no reference answer (§8): how a *loaded* world keeps wall 5.
-   **Sleepers made this the top item and gave it a deadline**: a sleeper is
-   world state now, so a restart deletes every body on the shard, and the
-   raid that was landed on one is undone by the store record that outlives it.
-3. **The store then changes job** — how you return when the world has *not* got
-   you: fresh shard, wipe, refused save. Their §5 split. **One concrete hole to
-   close first:** a sleeper's store record is frozen at the moment they left —
-   `disconnect` reads it before the `Leave`, and the autosave sweep walks
-   *connection* slots, which a sleeper no longer has. So a sleeper that starves
-   or is raided and is then **evicted** comes back from the stale record with
-   everything the raid took. Narrow (needs a shard past `MAX_PLAYERS` distinct
-   visitors) and real. The sweep wants to walk world slots.
-4. **Blueprints** are the wipe-surviving payload it was shaped for; nothing to
-   build until BPs exist.
-5. **Still no WAL** (theirs has none either, §8) — item 2 forces the question.
-6. **No graceful shutdown; the three-thread path has no gate.** A kill costs
-   ≤ 3.3 s; `KeySlot`'s id match and the eviction counter rest on reasoning.
+2. ~~**The world is persisted.**~~ **DONE 2026-08-07.** `sim-core/worldsave.rs`
+   is the codec (bodies, pieces, deployables + bag cooldowns, hearth stock, box
+   contents, ground bags, fuses, harvested slots, sweeps, tick);
+   `server/worldfile.rs` is the file — temp-then-rename, seed + content-hash
+   pinned, backup rotation, and the **identity table** that makes a saved
+   sleeper claimable (an id is per-connection, so bodies alone are unclaimable).
+   Wall 5 holds because the load is *construction*, before tick 0: same build +
+   same **origin** + same stream → same hashes, gated by
+   `two_shards_loading_one_file_stay_in_lockstep`. Knobs: `world_file`,
+   `world_save_interval_ticks` (1800). Gates: 12 + 2 in sim-core, 7 in
+   `server/tests/world_persist.rs`.
+3. **The store's job is now exactly §9.2's, and one hole is left in it.** A
+   sleeper's record is still frozen at the moment they left — `disconnect`
+   reads it before the `Leave`, and the sweep walks *connection* slots. With
+   the world file on this no longer costs a restart (the body itself
+   persists), so the window narrowed to one case: **eviction**. A sleeper
+   raided and then evicted for slot pressure comes back from the stale record.
+   The fix is two-phase eviction — the server picks the victim, takes its
+   save, and queues `Command::Evict { id }` *before* the join, instead of
+   `seat` evicting on its own authority. Deterministic (the id is in the
+   stream) and small; not built.
+4. **Blueprints** are the wipe-surviving payload the split was shaped for;
+   nothing to build until BPs exist.
+5. **Still no WAL, and item 2 answered the question it was going to force.**
+   A world load is an *origin*, not a command, so a WAL does not have to carry
+   world state — its header pins the origin hash beside the seed and the
+   content hash, and replay starts there. `worldsave.rs`'s module header has
+   the argument. That is a design, not a file format.
+6. ~~**No graceful shutdown.**~~ **DONE 2026-08-07.** A kill used to cost
+   ≤ 3.3 s of every player *plus* up to a whole save interval of everybody's
+   base. The sim thread now flushes the world and every connected player's
+   record on the way out, and the accept loop drains until the producer is
+   *abandoned* rather than returning on the first look at the flag — which is
+   exact, not timed. The ordering is load-bearing and gated
+   (`the_shutdown_flush_takes_the_world_before_it_drops_the_players`).
+   **Still ungated:** the three-thread path end to end, and `KeySlot`'s id
+   match.
 
 ## 0x · The client makes sound — what it cannot yet hear *(client lane)*
 

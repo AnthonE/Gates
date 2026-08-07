@@ -4,6 +4,19 @@
 
 use std::net::SocketAddr;
 
+/// How often the world is written, in ticks — 60 s at 30 Hz.
+///
+/// Chosen against what a crash costs rather than against what a save
+/// costs, which is the inversion `reference/SAVES.md` §4 makes available:
+/// their knob's other end is a shard-wide freeze, so they cannot go below
+/// ten minutes. Ours has no freeze to trade against — the encode is a
+/// bounded pass on the sim thread and the write is on the store thread — so
+/// the only cost of a shorter interval is disk, and the only cost of a
+/// longer one is a player's hour.
+///
+/// Proposed default, DECISIONS.md §open ("world persistence v0").
+pub const DEFAULT_WORLD_SAVE_INTERVAL_TICKS: u64 = 1_800;
+
 #[derive(Clone, Debug)]
 pub struct ShardConfig {
     /// UDP bind address. Port 0 binds ephemeral (the test path).
@@ -72,6 +85,33 @@ pub struct ShardConfig {
     /// things sets both.
     /// Proposed default `None`, DECISIONS.md §open ("player persistence v0").
     pub save_file: Option<String>,
+    /// Path to the **world** file: bases, boxes, bags, fuses, stumps, and
+    /// the bodies standing in it. Unset ⇒ the world is generated fresh from
+    /// the seed on every boot, which is what every shard did before world
+    /// persistence and what every test still runs.
+    ///
+    /// **A different key from `save_file`, deliberately** — that is
+    /// `reference/SAVES.md` §5's split and it is the one that matters at
+    /// wipe time: a wipe destroys the world and keeps the player store
+    /// (which is where blueprints will live), so they have to be two files
+    /// an operator can delete independently. Setting one without the other
+    /// is legal and both halves are useful alone: a world with no player
+    /// store forgets who you are but keeps your base standing as a sleeper
+    /// you can walk back into; a player store with no world hands you your
+    /// inventory on a fresh island.
+    ///
+    /// Proposed default `None`, DECISIONS.md §open ("world persistence v0").
+    pub world_file: Option<String>,
+    /// How often the world is written, in ticks. The reference game's
+    /// `server.saveinterval` is 600 s and its two ends are "how much a crash
+    /// costs" against "how often everyone freezes" (`reference/SAVES.md`
+    /// §4) — ours has no second end, because the walk is off the sim thread
+    /// and the write is off it again, so this trades crash cost against
+    /// nothing but disk writes.
+    ///
+    /// Proposed default 1800 ticks = 60 s at 30 Hz, DECISIONS.md §open
+    /// ("world persistence v0").
+    pub world_save_interval_ticks: u64,
 }
 
 impl ShardConfig {
@@ -86,6 +126,8 @@ impl ShardConfig {
             require_auth: false,
             content_dir: "content".into(),
             save_file: None,
+            world_file: None,
+            world_save_interval_ticks: DEFAULT_WORLD_SAVE_INTERVAL_TICKS,
         }
     }
 }
@@ -102,6 +144,8 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut cert_pem: Option<String> = None;
     let mut key_pem: Option<String> = None;
     let mut save_file: Option<String> = None;
+    let mut world_file: Option<String> = None;
+    let mut world_save_interval_ticks: u64 = DEFAULT_WORLD_SAVE_INTERVAL_TICKS;
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -196,6 +240,41 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 save_file = Some(value.to_string());
             }
+            // Empty is refused rather than read as "off", the same rule
+            // `save_file` states: a line the operator wrote is a line they
+            // meant, and off is the key being absent.
+            "world_file" => {
+                if value.is_empty() {
+                    return Err(format!(
+                        "shard.toml line {}: empty world_file — omit the key to \
+                         generate a fresh world every boot, which is the default",
+                        n + 1
+                    ));
+                }
+                world_file = Some(value.to_string());
+            }
+            "world_save_interval_ticks" => {
+                let v: u64 = value.parse().map_err(|_| {
+                    format!(
+                        "shard.toml line {}: world_save_interval_ticks must be a \
+                         whole number of ticks",
+                        n + 1
+                    )
+                })?;
+                // Zero would be a save every tick — a write of up to
+                // `WORLD_SAVE_MAX_BYTES` thirty times a second, which is not
+                // a configuration anybody wants and is much more likely a
+                // typo for "off" (which is omitting `world_file`).
+                if v == 0 {
+                    return Err(format!(
+                        "shard.toml line {}: world_save_interval_ticks = 0 would \
+                         write the world every tick; omit `world_file` to turn \
+                         world persistence off",
+                        n + 1
+                    ));
+                }
+                world_save_interval_ticks = v;
+            }
             other => return Err(format!("shard.toml line {}: unknown key `{other}`", n + 1)),
         }
     }
@@ -213,6 +292,8 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         require_auth: require_auth.unwrap_or(false),
         content_dir: content_dir.unwrap_or_else(|| "content".into()),
         save_file,
+        world_file,
+        world_save_interval_ticks,
     })
 }
 

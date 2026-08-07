@@ -192,6 +192,39 @@ pub struct SaveMsg {
     pub save: PlayerSave,
 }
 
+/// Sim→storage thread: a whole world, ready to write.
+///
+/// **Not `Copy`, and that is the entire design.** A world blob is up to
+/// ~420 kB, so a `Copy` message would memcpy it into the ring on the sim
+/// thread and again out of it on the store thread. Instead the buffer is
+/// *moved*: the sim owns a small pool of them, fills one, sends the box
+/// (a pointer), and the store thread sends the emptied box back through
+/// `WorldDone` when it has written it. Two rings, one direction each, no
+/// allocation after boot and no lock anywhere — the same shape as every
+/// other hop on this path, just with a payload too big to copy.
+///
+/// If the pool is empty when a save is due, the save is **skipped and
+/// counted**, never waited for. That is wall 4's overflow policy applied to
+/// a store of buffers: the next cadence tick takes a fresher world anyway,
+/// so waiting would trade a tick of latency for data that is about to be
+/// superseded.
+pub struct WorldMsg {
+    pub tick: u64,
+    /// Live bytes in `buf`; the box is always `WORLD_SAVE_MAX_BYTES` long.
+    pub len: usize,
+    pub buf: Box<[u8]>,
+    /// Whose body is whose, so a saved sleeper is claimable after a
+    /// restart. The sim may not hold a key, so the pairing is done by
+    /// `ShardCore` (which is server-side) and rides along here.
+    pub idents: Vec<(PlayerKey, u32)>,
+}
+
+/// Storage→sim: an emptied world buffer, returning to the pool.
+pub struct WorldDone {
+    pub buf: Box<[u8]>,
+    pub idents: Vec<(PlayerKey, u32)>,
+}
+
 /// Accept→storage thread: one record and where in the file it goes. The
 /// index is assigned by the store's index owner, so the thread that touches
 /// the disk decides nothing — it seeks, writes, flushes.

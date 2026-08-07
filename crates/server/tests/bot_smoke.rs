@@ -65,6 +65,7 @@ async fn test_bot_smoke_50() {
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
         Saves::off(),
+        server::worldfile::WorldBoot::off(),
     )
     .await
     .expect("shard boots");
@@ -188,6 +189,7 @@ async fn test_action_lane_over_socket() {
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
         Saves::off(),
+        server::worldfile::WorldBoot::off(),
     )
     .await
     .expect("boots");
@@ -278,6 +280,7 @@ async fn test_version_gate_refuses() {
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
         Saves::off(),
+        server::worldfile::WorldBoot::off(),
     )
     .await
     .expect("boots");
@@ -338,6 +341,7 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
             loot,
             catalog,
             Saves::off(),
+            server::worldfile::WorldBoot::off(),
         )
         .await
         .expect("boots");

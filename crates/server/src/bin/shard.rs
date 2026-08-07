@@ -202,8 +202,75 @@ async fn main() {
             }
         },
     };
+    // The world file, opened and validated the same way and for the same
+    // reasons — before a port is bound, against this seed and this content
+    // hash. It needs the baked tables as well as the hash, because
+    // validating a world means *loading* one: a piece names a content row
+    // and the decoder range-checks it, so a trial world is built here and
+    // thrown away, and the bytes are handed to the sim thread to load into
+    // the world it actually runs (`worldfile::WorldBoot` says why twice is
+    // right).
+    let world_boot = match cfg.world_file.as_deref() {
+        None => {
+            println!("world off: no world_file — the island is generated fresh every boot");
+            server::worldfile::WorldBoot::off()
+        }
+        Some(path) => {
+            let mut trial = sim_core::world::World::new(cfg.seed);
+            trial.gather = gather;
+            trial.craft = craft;
+            trial.build = build;
+            trial.deploy = deploy;
+            trial.combat = combat;
+            trial.backpack = backpack;
+            trial.survival = survival;
+            trial.loot = loot;
+            match server::worldfile::open(
+                Path::new(path),
+                &mut trial,
+                cfg.seed,
+                content.hash(),
+                cfg.world_save_interval_ticks,
+            ) {
+                Ok((boot, found)) => {
+                    if found.created {
+                        println!(
+                            "world ok: will create {path} — a fresh island, saved every {} ticks",
+                            cfg.world_save_interval_ticks
+                        );
+                    } else {
+                        println!(
+                            "world ok: resumed {path} at tick {} · {} bodies ({} claimable) ·                              {} backup(s) rotated ({path}.1 is the previous run)",
+                            found.tick,
+                            found.bodies,
+                            found.claimable,
+                            server::store::SAVE_BACKUP_COUNT
+                        );
+                        if found.bodies > found.claimable {
+                            // Said out loud: a body nobody can claim is
+                            // somebody's base standing there as free loot,
+                            // and the operator is the only one who can tell
+                            // whether that is one stale identity or the key
+                            // table having been lost.
+                            println!(
+                                "world WARNING: {} of {} bodies have no identity beside them —                                  those players cannot walk back into their own body and will                                  come back through the player store instead",
+                                found.bodies - found.claimable,
+                                found.bodies
+                            );
+                        }
+                    }
+                    boot
+                }
+                Err(e) => {
+                    eprintln!("shard: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
     let handle = match spawn_shard(
         cfg, gather, craft, build, deploy, combat, backpack, survival, loot, catalog, saves,
+        world_boot,
     )
     .await
     {

@@ -323,6 +323,59 @@ fn waking_onto_a_corpse_beaches_you_alive() {
     );
 }
 
+/// **Waking a body with the id you were just handed.** Not an exotic case:
+/// a player id is `generation << 8 | slot`, and a restart resets the slot
+/// table, so the first connection after one is minted exactly the id the
+/// body saved in that slot already carries.
+///
+/// The guard this checks used to be "refuse if this id is already in the
+/// world", which reads as double-seat protection and is — for every id
+/// except the one that matters. It turned every first reconnect after a
+/// restart into a silent no-op: the wake was queued, the server counted a
+/// takeover, and the body stayed asleep with the player sitting in an empty
+/// world. Caught by `server/tests/world_persist.rs`.
+#[test]
+fn waking_with_the_sleepers_own_id_still_wakes_it() {
+    let mut w = duel_world();
+    let slot = slot_of(&w, 2);
+    w.tick(&[Command::Leave { id: 2 }]);
+    assert!(w.players[slot].sleeping);
+
+    w.tick(&[Command::Wake { id: 2, sleeper: 2 }]);
+
+    assert!(
+        !w.players[slot].sleeping,
+        "a takeover whose new id equals the sleeper's did nothing — this is \
+         the ordinary first reconnect after a restart"
+    );
+    assert_eq!(w.players[slot].id, 2);
+    assert_eq!(
+        w.players.iter().filter(|p| p.active).count(),
+        2,
+        "the same-id takeover minted a second body"
+    );
+}
+
+/// A wake naming a live body somebody else is driving must be refused —
+/// the check the fix above had to keep while it stopped refusing the
+/// same-id case.
+#[test]
+fn waking_into_an_id_somebody_else_is_using_is_refused() {
+    let mut w = duel_world();
+    let sleeper_slot = slot_of(&w, 2);
+    w.tick(&[Command::Leave { id: 2 }]);
+
+    // id 1 is awake and driving; a wake that tried to seat it onto the
+    // sleeper would give one connection two bodies.
+    w.tick(&[Command::Wake { id: 1, sleeper: 2 }]);
+
+    assert!(
+        w.players[sleeper_slot].sleeping,
+        "a wake stole a body for an id that was already driving one"
+    );
+    assert_eq!(w.players[sleeper_slot].id, 2, "the sleeper changed hands");
+}
+
 /// Waking against a sleeper the world no longer has is a no-op, not a
 /// spawn. The server checks before it sends this, but a replayed WAL is
 /// not the server: a world that evicted differently must refuse rather

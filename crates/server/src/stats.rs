@@ -95,6 +95,27 @@ pub struct ShardStats {
     /// Bodies asleep in the world right now — a gauge, not a counter, set
     /// each publish rather than bumped.
     pub sleepers: AtomicU64,
+    /// Whole worlds written to disk (`worldfile.rs`). The number that says
+    /// world persistence is doing anything, and the one to look at first
+    /// when a restart loses a base.
+    pub world_saves_written: AtomicU64,
+    /// World saves the cadence asked for and could not take, because no
+    /// buffer had come back from the store thread yet — the stated overflow
+    /// policy of `WORLD_RING_CAP` (skip, never wait). A shard where this
+    /// climbs is one whose disk cannot keep up with its own save interval,
+    /// and the fix is a longer `world_save_interval_ticks` and not a deeper
+    /// queue: the next save takes a *fresher* world, so a skip costs
+    /// nothing a later save does not replace.
+    pub world_saves_skipped: AtomicU64,
+    /// World writes that failed at the filesystem. A shard that cannot
+    /// persist keeps running, exactly as it does for a player record —
+    /// dropping everyone because a disk filled is worse than forgetting.
+    pub world_save_errors: AtomicU64,
+    /// A world blob the sim thread refused, which `bin/shard.rs` had
+    /// already accepted into a trial world. Unreachable by construction and
+    /// counted anyway, because the alternative to counting it is a shard
+    /// silently running a fresh island under everybody's bases.
+    pub world_load_errors: AtomicU64,
     /// Records handed to the store's index — a leave, or the autosave sweep
     /// finding a player whose state moved. Those are the only two producers:
     /// there is no shutdown flush (`NOW.md` §0y item 3 says why not).

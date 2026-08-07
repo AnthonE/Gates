@@ -239,13 +239,17 @@ to that player — including being killed in it — while the record is what was
 true when they stopped playing. Reversed, a raided player is handed their
 inventory back and the consequence somebody else earned is quietly deleted.
 
-**Where the two still disagree, since 9.1 landed and 9.4's world save has
-not.** A sleeper's record is frozen at the moment they left: `disconnect`
-takes it before queueing the `Leave`, and the autosave sweep walks
-*connection* slots, which a sleeper no longer occupies. So a sleeper that is
-raided and then **evicted** returns from the stale record. Narrow — it needs
-a shard past `MAX_PLAYERS` distinct recent visitors — and real. The sweep
-wants to walk world slots instead, which is `NOW.md` §0y item 3.
+**Where the two still disagree, now that §9.4b has landed.** A sleeper's
+record is frozen at the moment they left: `disconnect` takes it before
+queueing the `Leave`, and the autosave sweep walks *connection* slots, which
+a sleeper no longer occupies. The world file closed most of this — the body
+itself now survives a restart, so the stale record is never consulted for one
+— and left exactly one case: **eviction**. A sleeper raided and then evicted
+for slot pressure returns from the stale record. Narrow (it needs a shard past
+`MAX_PLAYERS` distinct recent visitors) and real. The fix is two-phase
+eviction: the server picks the victim, takes its save, and queues an explicit
+`Evict` before the join, rather than `seat` evicting on its own authority.
+`NOW.md` §0y item 3.
 
 ### 9.3 Where we are already ahead, and it is measured
 
@@ -259,6 +263,30 @@ wants to walk world slots instead, which is `NOW.md` §0y item 3.
   which is why a restore rides `Command::JoinAs` instead of being read out of
   a file by the sim. A world load has to answer the same question, and §8 says
   the reference game is no help here — this part is ours to invent.
+
+### 9.4b The world is persisted (**closed 2026-08-07**)
+
+The four stores plus `players`, as a whole blob written temp-then-rename from
+a thread that is not the sim's. §4's stall is not copied and could not be: the
+reference game's freeze comes from serialising an object graph *on the thread
+that runs the game*, and splitting those two is the whole fix — the sim's cost
+is one bounded linear pass into a buffer that already exists, and the file I/O
+is somebody else's thread. That is why our cadence knob has only one bad end
+(a crash costs an interval) where theirs has two.
+
+Two things this needed that §8 says they never had to answer:
+
+- **Determinism from a loaded world.** They have no replay, so a loaded world
+  only has to be *legal*. Ours has to be repeatable from, and the answer is
+  that a load is **construction, not mutation** — it runs before tick 0, so
+  the loaded world is the origin of a run. Wall 5 becomes "same build + same
+  origin + same stream", and a WAL header will pin the origin hash.
+- **Identity across a restart.** Their sleeper is a networked entity carrying
+  its owner's SteamID. Ours carries a player id that is minted per connection
+  and means nothing after a restart, so the world file has a separate
+  identity section — written by the server, never by `sim-core` — pairing
+  each body with the opaque key from §7. Without it a restart returns a world
+  full of bases nobody can claim, which is worse than not persisting at all.
 
 ### 9.4 Where to copy them exactly
 

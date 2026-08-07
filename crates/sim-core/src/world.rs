@@ -1426,12 +1426,26 @@ impl World {
     /// logged in. Declining the choice is choosing the beach, and being
     /// killed in your sleep is declining it.
     fn take_over(&mut self, id: u32, sleeper: u32) {
-        if self.slot_of(id).is_some() {
-            return;
-        }
         let Some(slot) = self.sleeper_slot(sleeper) else {
             return;
         };
+        // Refuse only if `id` already names a **different** body. The
+        // obvious guard — "refuse if this id is in the world" — is wrong,
+        // and wrong in a case that is not exotic: **`id == sleeper` is the
+        // ordinary path after a restart.** A player id is
+        // `generation << 8 | slot`, and a restart resets the slot table, so
+        // the first connection into slot 0 is minted the same id the body
+        // saved in slot 0 already carries. That guard turned every
+        // first-reconnect-after-a-restart into a silent no-op: the takeover
+        // was counted, the wake command was queued, and the body stayed
+        // asleep while the player sat in an empty world.
+        //
+        // Found by `server/tests/world_persist.rs`, which is the only test
+        // that has both halves — a saved world and a fresh id space — and
+        // could not have been found by either alone.
+        if self.slot_of(id).is_some_and(|other| other != slot) {
+            return;
+        }
         let p = &mut self.players[slot];
         p.id = id;
         p.sleeping = false;

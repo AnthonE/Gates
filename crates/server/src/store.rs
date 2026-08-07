@@ -199,6 +199,18 @@ impl PlayerKey {
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.len as usize]
     }
+
+    /// A key that names nobody, for sizing a buffer the caller is about to
+    /// overwrite. **Not a valid key** — `new` refuses an empty one, and an
+    /// empty key is how a record on disk says "this slot holds nobody" — so
+    /// it can never be mistaken for a player. It exists because the world
+    /// save's identity buffer is preallocated on the sim thread (wall 2)
+    /// and `PlayerKey` has no `Default`, deliberately: a type that named
+    /// somebody by accident is exactly what this one is designed against.
+    pub const PLACEHOLDER: Self = Self {
+        bytes: [0; PLAYER_KEY_MAX_BYTES],
+        len: 0,
+    };
 }
 
 /// What a load found. Reported at boot rather than counted in `ShardStats`,

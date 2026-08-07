@@ -87,6 +87,20 @@ pub const GRAVEYARD_RING_CAP: usize = 256;
 /// default, DECISIONS.md §open ("player persistence v0").
 pub const SAVE_RING_CAP: usize = 256;
 
+/// World-save buffers in flight, each direction. **Two, because that is
+/// what a double buffer is**: one being written to disk while the next is
+/// being filled. Not a queue depth to tune — a deeper one would only let
+/// stale worlds pile up behind a slow disk, and the right answer to a slow
+/// disk is to skip a save rather than to write an old world late.
+///
+/// Overflow policy: **skip the save, counted** (`world_saves_skipped`). The
+/// cadence comes around again with a fresher world, so a skipped save costs
+/// nothing a later one does not replace — which is the opposite of the
+/// player path, where a dropped record is somebody's session.
+///
+/// Proposed default, DECISIONS.md §open ("world persistence v0").
+pub const WORLD_RING_CAP: usize = 2;
+
 /// Server-side per-client input frame buffer, keyed by seq (NETCODE.md
 /// §4: target depth 1–2 ticks). Overflow policy: **drop oldest** — a
 /// too-deep buffer skips ahead via the consume throttle. Proposed
