@@ -19,7 +19,17 @@
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
+use super::anim::{BodyAnim, Reshade, Rig};
 use super::Net;
+
+/// Wire yaw is `0..65536` over a full turn (`interp::RemoteState`), and this
+/// is the one place it becomes radians. The sim's convention is yaw 0 facing
+/// +Z increasing toward +X — the same one `rig::follow_eye` builds the local
+/// camera's direction from, and the two must agree or a remote faces one way
+/// while its aim cone points another.
+fn wire_yaw_to_radians(q: f32) -> f32 {
+    q * (std::f32::consts::TAU / 65536.0)
+}
 
 /// One networked body, keyed by the entity id the wire uses.
 #[derive(Component)]
@@ -41,21 +51,6 @@ struct Live {
 #[derive(Resource, Default)]
 pub struct Bodies {
     live: HashMap<u32, Live>,
-    mesh: Option<Handle<Mesh>>,
-    material: Option<Handle<StandardMaterial>>,
-    /// A sleeper's material. **Same mesh, same pose, different shade** —
-    /// and the pose is the deliberate half. A sleeper stands (`NOW.md` §0y
-    /// item 1), because the sim hits it with the standing capsule
-    /// `combat.rs` uses for everyone; laying the mesh down would draw a
-    /// body outside the volume the server blocks and shoots at, which is
-    /// the one thing `CLAUDE.md` still says is worth gating about a frame.
-    /// A colour cannot disagree with the sim about where anything is.
-    ///
-    /// It is programmer art and it is load-bearing anyway: "is that player
-    /// about to shoot me, or is nobody home" is the question the whole
-    /// slice creates, and a client that draws both identically makes the
-    /// answer unknowable.
-    sleeping_material: Option<Handle<StandardMaterial>>,
     /// Bumped once per frame; a body still in the interpolator is stamped
     /// with it, and `retain` drops whatever the stamp missed.
     gen: u64,
@@ -64,40 +59,19 @@ pub struct Bodies {
 pub fn stream(
     mut commands: Commands,
     mut store: ResMut<Bodies>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut q: Query<(&Body, &mut Transform)>,
+    mut q: Query<(&Body, &mut Transform, &mut BodyAnim)>,
+    time: Res<Time>,
+    rig: Res<Rig>,
     net: NonSend<Net>,
 ) {
-    let mesh = store
-        .mesh
-        .get_or_insert_with(|| meshes.add(Capsule3d::new(0.4, 1.0)))
-        .clone();
-    let material = store
-        .material
-        .get_or_insert_with(|| {
-            materials.add(StandardMaterial {
-                base_color: Color::srgb(0.42, 0.36, 0.28),
-                perceptual_roughness: 0.75,
-                ..default()
-            })
-        })
-        .clone();
-    let sleeping_material = store
-        .sleeping_material
-        .get_or_insert_with(|| {
-            materials.add(StandardMaterial {
-                // Colder and darker than the waking body, not brighter: a
-                // sleeper is the thing you sneak up on, and making it the
-                // most legible object on the beach would hand the raider
-                // more than the wire does.
-                base_color: Color::srgb(0.24, 0.26, 0.30),
-                perceptual_roughness: 0.9,
-                ..default()
-            })
-        })
-        .clone();
-
+    // Nothing is drawn until the rig has loaded. A body spawned before it
+    // would get no scene and no player, and the bind below only ever runs on
+    // `Added<AnimationPlayer>` — so it would stay an invisible entity forever
+    // rather than catching up.
+    if !rig.ready() {
+        return;
+    }
+    let scene = rig.scene.clone().expect("rig.ready() checked above");
     let core = &net.session.core;
     let at = core.render_tick();
     let mut rs = client_wasm::interp::RemoteState::default();
@@ -124,37 +98,49 @@ pub fn stream(
         if !core.interp.sample(id, at, &mut rs) {
             continue;
         }
-        // The capsule's origin is its middle; the wire's y is the feet.
-        let pos = Vec3::new(rs.x, rs.y + 0.9, rs.z);
-        let shade = |sleeping: bool| {
-            if sleeping {
-                sleeping_material.clone()
-            } else {
-                material.clone()
-            }
-        };
+        // **The rig's origin is its FEET, and the capsule's was its middle.**
+        // The old draw added 0.9 m to the wire's y to centre a pill; a glTF
+        // humanoid stands on its own origin, so adding it again floats every
+        // player a metre off the ground. The wire's y IS the feet — no offset.
+        let pos = Vec3::new(rs.x, rs.y, rs.z);
+        // The wire has carried yaw since the first snapshot and nothing ever
+        // read it: bodies faced +Z no matter where they were looking or
+        // walking. A capsule hid that; a figure with a face cannot.
+        let facing = Quat::from_rotation_y(wire_yaw_to_radians(rs.yaw));
         match known {
             Some((entity, was_sleeping)) => {
-                if let Ok((_, mut t)) = q.get_mut(entity) {
+                if let Ok((_, mut t, mut anim)) = q.get_mut(entity) {
                     t.translation = pos;
+                    t.rotation = facing;
+                    // The clip choice, off state the sim already sent.
+                    anim.observe(pos, time.delta_secs(), rs.sleeping);
                 }
                 if was_sleeping != rs.sleeping {
-                    commands
-                        .entity(entity)
-                        .insert(MeshMaterial3d(shade(rs.sleeping)));
+                    // The shade lives on the scene's descendants now, so the
+                    // swap is a marker the walk consumes rather than a
+                    // component on this entity — see `anim::Reshade`.
+                    commands.entity(entity).insert(Reshade(rs.sleeping));
                     if let Some(live) = store.live.get_mut(&id) {
                         live.sleeping = rs.sleeping;
                     }
                 }
             }
             None => {
+                let mut anim = BodyAnim::default();
+                anim.observe(pos, 0.0, rs.sleeping);
                 let entity = commands
                     .spawn((
                         super::WorldEntity,
                         Body(id),
-                        Mesh3d(mesh.clone()),
-                        MeshMaterial3d(shade(rs.sleeping)),
-                        Transform::from_translation(pos),
+                        anim,
+                        // Painted as soon as the scene's meshes exist; until
+                        // then the body wears the library's own preview
+                        // colours, which is one or two frames.
+                        Reshade(rs.sleeping),
+                        SceneRoot(scene.clone()),
+                        Transform::from_translation(pos)
+                            .with_rotation(facing)
+                            .with_scale(Vec3::splat(rig.scale)),
                     ))
                     .id();
                 store.live.insert(

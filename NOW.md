@@ -20,6 +20,36 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0v · Players are people — what the rig still cannot say *(client lane)*
+
+Landed 2026-08-07. Remote bodies were `Capsule3d` pills that slid and never
+faced anything, though the wire has carried `yaw` since the first snapshot and
+`bodies.rs` never read it. They are a skinned mannequin now (CC0, 46 clips,
+`assets/models/MANIFEST.md`) with gait chosen from derived speed, plus a held
+tool with bob/sway/swing (`render/viewmodel.rs`).
+
+Remaining, ranked:
+
+1. **Crouch, jump and swim are wired to nothing.** The clips are in the file
+   and the WIRE does not carry the facts — no grounded bit, no crouch bit — so
+   `BodyAnim` cannot see them. This is a protocol change (wall 6: version bump
+   + regenerated goldens in the same commit), not a client one.
+2. **No attack, gather or death animation on a remote.** `Feed` carries the
+   LOCAL player's hits only; a remote's swing is not a fact the client is told
+   about. `EV_*` has the events — this needs the draw path to read them per
+   body, which is the same gap `RENDER.md` §8 item 4 names for pieces.
+3. **Nobody holds anything.** The viewmodel is first-person only; a remote
+   mannequin has empty hands. The rig has hand joints, so this is an attachment
+   to a named joint rather than new art.
+4. **Root motion is ignored.** `Jog_Fwd_Loop` translates in place here because
+   position is the interpolator's; the `_RM` variants in the library are the
+   root-motion cuts and are deliberately unused. Feet will slide at speeds
+   between the clips' authored ones — the fix is scaling playback rate to
+   speed, which is a knob nobody has measured.
+5. **A plain worn-steel albedo is the missing texture.** The axe head carries
+   no map because the only metal in `assets/` is ribbed corrugated sheet
+   (`viewmodel.rs` and `assets/textures/MANIFEST.md` both record it).
+
 ## 0w · The props carry a photograph — what is left after it *(client lane)*
 
 Landed 2026-08-07. Every non-ground surface was a flat `base_color`: 34 CC0

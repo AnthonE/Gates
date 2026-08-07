@@ -415,6 +415,32 @@ Now that the frame has content, meter it. `ci/reference_bar.mjs` reads the six
 outdoor-daylight reference frames with the same code path that reads ours;
 port that discipline, not the numbers. Targets are `ART.md` §3's.
 
+### R9 · Bodies and the held item — **LANDED**
+
+Two halves of "evidence a person is playing", one first-person and one not.
+
+The viewmodel is `render/viewmodel.rs`: a textured tool with bob off distance
+travelled, sway as a frame-rate-independent lag on the look rate, and a swing
+triggered off `Feed` rather than off the input buttons — the swing worth
+drawing is the one that LANDED.
+
+Remote bodies are a CC0 skinned mannequin (`render/anim.rs`, 46 clips,
+`assets/models/MANIFEST.md`) instead of `Capsule3d`. Three things this settled:
+
+  · **The wire already had `yaw` and `pitch` and nothing read them.** Bodies
+    faced +Z whatever they were doing. A capsule hides that; a figure cannot.
+  · **The rig's origin is its FEET; the capsule's was its middle**, so the
+    inherited `+ 0.9` floated every player a metre off the ground.
+  · **Clips resolve by NAME through `Gltf::named_animations`, never by index.**
+    `GltfAssetLabel::Animation(i)` is positional, and a re-vendor that inserts
+    one clip would renumber every one after it — every body playing the wrong
+    animation with all gates green. That is the trap list's positional-payload
+    entry, and it is the one place in this path where it applies.
+
+Still owed, and all four are the same shape — the CLIENT is ready and the WIRE
+is not: no grounded bit, no crouch bit, and no per-remote action event, so
+crouch, jump, swim and attack clips sit in the file unreachable. `NOW.md` §0v.
+
 ### R6 · HUD and viewmodel — **LANDED**
 
 `ART.md` §6 and §8: a frame with no viewmodel and no HUD reads as a

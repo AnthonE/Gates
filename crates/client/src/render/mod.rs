@@ -61,6 +61,7 @@ pub mod textures;
 pub mod tree;
 pub mod ui;
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
+pub mod anim;
 pub mod verbs;
 pub mod viewmodel;
 
@@ -336,7 +337,7 @@ impl Plugin for GatesRenderPlugin {
         // Textures load at Startup rather than on entering the world: they
         // are wanted whichever screen comes first, and warming them while a
         // player reads the menu is free time the old shape did not have.
-        app.add_systems(Startup, textures::load);
+        app.add_systems(Startup, (textures::load, anim::load));
         // The sound bank is generated rather than loaded (`sound/synth.rs`)
         // and is built HERE, not at `Startup`. **`OnEnter(Screen::Loading)`
         // runs before `Startup`** on a connected start — Bevy schedules the
@@ -489,6 +490,20 @@ impl Plugin for GatesRenderPlugin {
                 viewmodel::animate
                     .after(feed::drain)
                     .after(viewmodel::spawn_item),
+            )
+                .run_if(world_running),
+        )
+        // The rig. `build` runs until the glTF is in and then costs one
+        // branch; `bind` catches every `AnimationPlayer` the scene spawner
+        // adds, and runs AFTER `Stream` because the body it walks up to is
+        // spawned by `bodies::stream` inside that set.
+        .add_systems(
+            Update,
+            (
+                anim::build,
+                anim::bind.after(Stream),
+                anim::reshade.after(Stream),
+                anim::drive.after(anim::bind),
             )
                 .run_if(world_running),
         )
