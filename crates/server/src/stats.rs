@@ -73,6 +73,38 @@ pub struct ShardStats {
     /// walk to restart, so unlike every other event this does not force
     /// an `ev_resync` — the line is simply lost, and counted.
     pub chat_undelivered: AtomicU64,
+    /// Joins that arrived as a *saved* character rather than a fresh one
+    /// (`store.rs`). The one number that says persistence is doing anything:
+    /// a shard with a save file whose `saves_restored` stays 0 while
+    /// `joins` climbs is remembering nobody, and that is a defect the
+    /// operator can see without reading a log.
+    pub saves_restored: AtomicU64,
+    /// Records handed to the store's index — a leave, or the autosave sweep
+    /// finding a player whose state moved. Those are the only two producers:
+    /// there is no shutdown flush (`NOW.md` §0y item 3 says why not).
+    pub saves_taken: AtomicU64,
+    /// Records that pushed another player out: the table was full, so the
+    /// least recently saved slot was taken (`store.rs`'s stated overflow
+    /// policy). A shard where this climbs is remembering more distinct
+    /// players than `MAX_SAVED_PLAYERS` holds, and somebody is losing a base
+    /// every time it ticks up.
+    pub saves_evicted: AtomicU64,
+    /// Records dropped because a ring between the sim, the index and the
+    /// file was full. Bounded-everything's stated cost: freshness, never
+    /// latency — the next sweep re-takes the same player.
+    pub save_ring_drops: AtomicU64,
+    /// Records written to disk and flushed.
+    pub saves_written: AtomicU64,
+    /// Write or flush failures. A shard that cannot persist keeps running —
+    /// dropping every player because a disk is full would be a worse
+    /// outcome than a shard that forgets — so this is the only place that
+    /// failure is visible.
+    pub save_write_errors: AtomicU64,
+    // No counter for records refused at load, deliberately: corruption is a
+    // boot-time fact about a file, not a running rate, so it is reported once
+    // in the line that says the shard came up (`store::SaveLoad`, printed by
+    // `bin/shard.rs`). A counter nothing ever writes reads as "this never
+    // happens" rather than "nobody is counting".
 }
 
 impl ShardStats {

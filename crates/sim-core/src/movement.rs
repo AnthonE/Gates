@@ -73,7 +73,13 @@ pub fn quant_vel(v: f32) -> i32 {
 }
 
 /// The capsule's mutable state, all quantized. Lives inside `Player`.
-#[derive(Clone, Copy, Debug, Default)]
+///
+/// `Eq` is derivable **because** every field is quantized — there is no
+/// float in here to make equality a tolerance question, which is the same
+/// property the wire and `state_hash` rest on. `persist.rs` compares two
+/// bodies for exact identity (the autosave sweep skips a player who has not
+/// moved), and that comparison is only meaningful for this reason.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Body {
     pub qx: i32,
     pub qy: i32,

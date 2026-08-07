@@ -24,3 +24,29 @@ seed = 20260731
 # resolved against the CWD. The shard refuses to boot on content that
 # fails schema, reference, or balance-band checks.
 # content_dir = "content"
+
+# The player save file (crates/server/src/store.rs). Unset — the default —
+# with require_auth also unset is a shard that remembers nobody: no identity
+# means no key to file a save under, so every join builds a fresh character.
+# That is what every test and the local dev flow run on.
+#
+# (Unset with require_auth = true is the middle case: the store's index is in
+# memory either way, so a player is remembered for the life of the process. A
+# reconnect keeps your inventory; a restart does not.)
+#
+# Set it and players keep their inventory, position, hp, meters and craft
+# queue across a disconnect and a restart. Three things to know before you do:
+#
+#   1. It needs require_auth = true as well. A save is filed under the
+#      identity the admission seam returns, and a guest has none — so with
+#      saves armed and admission open, every joiner is remembered by nobody.
+#      The shard prints a WARNING at boot if you do that.
+#   2. The file is created if absent and pinned to this shard's SEED and
+#      CONTENT HASH. Change either and the shard REFUSES TO BOOT rather than
+#      hand a hundred players an empty inventory: move the file aside (that
+#      is what a wipe is) or restore the old content set.
+#   3. The world is NOT in it. Structures, boxes, deployables and hearths
+#      still die with the process — this is your character, not your base.
+#
+# DECISIONS.md §open "player persistence v0".
+# save_file = "players.save"

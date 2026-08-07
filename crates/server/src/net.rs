@@ -7,9 +7,11 @@
 use crate::config::ShardConfig;
 use crate::core::{Lane, ShardCore};
 use crate::slot::{
-    generation_of, state_of, Connect, EvMsg, Link, SlotTable, SnapMsg, SLOT_LEAVING, SLOT_LIVE,
+    generation_of, state_of, Connect, EvMsg, Link, SaveMsg, SlotTable, SnapMsg, WriteMsg,
+    SLOT_LEAVING, SLOT_LIVE,
 };
 use crate::stats::ShardStats;
+use crate::store::{PlayerKey, SaveFile, SaveStore, Saves};
 use protocol::{
     decode_action, decode_chat, decode_hello, decode_input, encode_refuse, encode_welcome,
     peek_kind, ActionMsg, ChatMsg, ItemCatalog, Refuse, Welcome, KIND_CHAT, KIND_INPUT,
@@ -18,7 +20,7 @@ use protocol::{
 use rtrb::RingBuffer;
 use sim_core::limits::{
     ACTION_RING_CAP, CHAT_RING_CAP, CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP,
-    INPUT_RING_CAP, MAX_PLAYERS, SNAPSHOT_RING_CAP, TICK_HZ,
+    INPUT_RING_CAP, MAX_PLAYERS, SAVE_RING_CAP, SNAPSHOT_RING_CAP, TICK_HZ,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -126,6 +128,14 @@ pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
 /// `gather`, `craft`, `build`, `deploy`, `combat`, and `catalog` are the
 /// content bake (CLAUDE.md wall 7) — data the world runs on, handed over
 /// before the first tick like the seed.
+///
+/// `saves` is the player store, already opened and validated against this
+/// seed and content (`store::open`) — or `Saves::off()`, which is a shard
+/// that was told to remember nobody and is what every test here runs. It is
+/// a parameter rather than something opened in here because validating it
+/// needs the *content hash*, which this function is never handed: the
+/// binary bakes content and therefore the binary opens the file, and a
+/// refusal lands before a port is bound.
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_shard(
     cfg: ShardConfig,
@@ -138,6 +148,7 @@ pub async fn spawn_shard(
     survival: sim_core::survival::SurvivalContent,
     loot: sim_core::loot::LootContent,
     catalog: ItemCatalog,
+    saves: Saves,
 ) -> Result<ShardHandle, String> {
     // The island validates at boot the way content does (CLAUDE.md wall 7),
     // and here rather than in `bin/shard.rs` so that every path that raises a
@@ -189,6 +200,12 @@ pub async fn spawn_shard(
 
     let (ctrl_tx, ctrl_rx) = RingBuffer::<Connect>::new(CTRL_RING_CAP);
     let (grave_tx, grave_rx) = RingBuffer::<Link>::new(GRAVEYARD_RING_CAP);
+    // The save path, two hops and one direction: the sim takes records and
+    // knows no keys; the accept loop owns the key table and the index; the
+    // storage thread owns the file and decides nothing. Each hop is a bounded
+    // SPSC ring, so nothing on the way to a disk can block a tick.
+    let (save_tx, save_rx) = RingBuffer::<SaveMsg>::new(SAVE_RING_CAP);
+    let (write_tx, write_rx) = RingBuffer::<WriteMsg>::new(SAVE_RING_CAP);
 
     {
         let stats = stats.clone();
@@ -201,10 +218,23 @@ pub async fn spawn_shard(
             .spawn(move || {
                 sim_thread(
                     seed, dev_spawn, gather, craft, build, deploy, combat, backpack, survival,
-                    loot, catalog, ctrl_rx, grave_tx, slots, stats, shutdown,
+                    loot, catalog, ctrl_rx, grave_tx, save_tx, slots, stats, shutdown,
                 )
             })
             .map_err(|e| format!("sim thread spawn: {e}"))?;
+    }
+
+    {
+        // Blocking file I/O, on a thread of its own: DESIGN.md §8's "the
+        // storage thread serializes". Not a tokio task, because a `sync_data`
+        // inside the runtime would stall whatever else that worker owed —
+        // including an accept.
+        let stats = stats.clone();
+        let file = saves.file;
+        std::thread::Builder::new()
+            .name("store".into())
+            .spawn(move || store_thread(file, write_rx, stats))
+            .map_err(|e| format!("store thread spawn: {e}"))?;
     }
 
     tokio::spawn(accept_loop(
@@ -218,6 +248,9 @@ pub async fn spawn_shard(
         },
         ctrl_tx,
         grave_rx,
+        save_rx,
+        write_tx,
+        saves.store,
         slots,
         stats.clone(),
         shutdown.clone(),
@@ -252,13 +285,39 @@ struct Handshaken {
     connection: Connection,
     send: SendStream,
     recv: RecvStream,
+    /// Who the admission seam said this is, if it could say. `None` ⇒ a
+    /// guest: admitted (on a shard that takes guests) and remembered by
+    /// nobody, because there is no stable string to file them under.
+    key: Option<PlayerKey>,
 }
 
+/// The accept loop's own id→key table, one entry per connection slot.
+///
+/// **This is where identity meets the world's ids, and it is deliberately
+/// the only place.** The sim hands back saves labelled with a player id;
+/// this turns an id into the key the record is filed under. It stores the id
+/// alongside the key and matches it exactly, because a slot is reused: a
+/// save for the previous tenant paired against the current one's key would
+/// hand somebody else's inventory to whoever claimed the slot next. Ordering
+/// makes that unreachable (the sim pushes a leave's record before it frees
+/// the slot, and this loop drains the ring before it installs anyone), and
+/// the id check is what makes it unreachable *by construction* rather than
+/// by argument.
+#[derive(Clone, Copy, Default)]
+struct KeySlot {
+    key: Option<PlayerKey>,
+    id: u32,
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn accept_loop(
     endpoint: Endpoint<Server>,
     facts: ShardFacts,
     mut ctrl_tx: rtrb::Producer<Connect>,
     mut grave_rx: rtrb::Consumer<Link>,
+    mut save_rx: rtrb::Consumer<SaveMsg>,
+    mut write_tx: rtrb::Producer<WriteMsg>,
+    mut store: SaveStore,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     shutdown: Arc<AtomicBool>,
@@ -266,6 +325,7 @@ async fn accept_loop(
     // Net-side plumbing between handshake tasks and this loop; the sim
     // thread never touches it (L3 is about the sim thread, not tokio).
     let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<Handshaken>(MAX_PLAYERS);
+    let mut keys = [KeySlot::default(); MAX_PLAYERS];
     let mut sweep = tokio::time::interval(Duration::from_millis(100));
     loop {
         tokio::select! {
@@ -275,17 +335,133 @@ async fn accept_loop(
                 tokio::spawn(handshake_task(incoming, done_tx, stats, facts.require_auth));
             }
             Some(done) = done_rx.recv() => {
-                install(done, facts, &mut ctrl_tx, &slots, &stats).await;
+                // Before the claim, never after: a record for the slot's
+                // previous tenant has to be filed under the key it was
+                // written for, and installing first would overwrite that key.
+                drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
+                install(done, facts, &mut ctrl_tx, &mut keys, &store, &slots, &stats).await;
             }
             _ = sweep.tick() => {
                 while let Ok(link) = grave_rx.pop() {
                     drop(link); // net side deallocates, never the sim
                 }
+                drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
                 if shutdown.load(Ordering::Relaxed) {
                     endpoint.close(wtransport::VarInt::from_u32(0), b"shutdown");
                     return;
                 }
             }
+        }
+    }
+}
+
+/// Hand one record to the store's index. Called only from the sim thread, so
+/// it does exactly one thing that can fail and counts it: a full ring drops
+/// the newest record (limits.rs `SAVE_RING_CAP`), which costs freshness and
+/// never correctness — the sweep comes round again and a record is filed by
+/// key, in place.
+fn push_save(
+    save_tx: &mut rtrb::Producer<SaveMsg>,
+    id: u32,
+    save: sim_core::persist::PlayerSave,
+    stats: &Arc<ShardStats>,
+) {
+    if save_tx.push(SaveMsg { id, save }).is_err() {
+        ShardStats::bump(&stats.save_ring_drops);
+    }
+}
+
+/// Unix seconds. Read here and nowhere near the sim thread — a save's stamp
+/// orders eviction across restarts, which the world's tick counter cannot do
+/// because it begins again at 0.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// File every record the sim has handed over, and pass each on to the disk.
+///
+/// Bounded by the ring's own capacity, so this cannot run long however far
+/// behind it fell. A record for an id whose slot has already moved on is
+/// dropped: see [`KeySlot`] for why that is the safe direction, and why the
+/// ordering above keeps it from happening at all.
+fn drain_saves(
+    save_rx: &mut rtrb::Consumer<SaveMsg>,
+    write_tx: &mut rtrb::Producer<WriteMsg>,
+    store: &mut SaveStore,
+    keys: &[KeySlot; MAX_PLAYERS],
+    stats: &Arc<ShardStats>,
+) {
+    while let Ok(msg) = save_rx.pop() {
+        // `id = generation << 8 | slot` (see `install`), so the slot is the
+        // low byte and the generation check is the id equality below.
+        let slot = (msg.id & 0xFF) as usize;
+        if slot >= MAX_PLAYERS || keys[slot].id != msg.id {
+            continue;
+        }
+        let Some(key) = keys[slot].key else {
+            continue; // a guest: admitted, remembered by nobody
+        };
+        let stamp = now_secs();
+        let put = store.put(&key, stamp, msg.save);
+        ShardStats::bump(&stats.saves_taken);
+        if put.evicted {
+            ShardStats::bump(&stats.saves_evicted);
+        }
+        if write_tx
+            .push(WriteMsg {
+                index: put.index,
+                key,
+                stamp,
+                save: msg.save,
+            })
+            .is_err()
+        {
+            // The index has it; the disk does not. Freshness, not
+            // correctness — the sweep re-takes this player, and the record
+            // is idempotent (filed by key, written in place).
+            ShardStats::bump(&stats.save_ring_drops);
+        }
+    }
+}
+
+/// The storage thread: the only thing in this process that touches the save
+/// file, and it makes no decisions — the index owner already chose the slot.
+///
+/// Exits when its producer is gone AND the ring is dry, which is exact rather
+/// than timed: the accept loop dropping `write_tx` is the shutdown signal, and
+/// a sleep-then-guess would either lose the last records or hold the process
+/// open for a fixed pause.
+fn store_thread(
+    mut file: SaveFile,
+    mut write_rx: rtrb::Consumer<WriteMsg>,
+    stats: Arc<ShardStats>,
+) {
+    loop {
+        let mut idle = true;
+        while let Ok(msg) = write_rx.pop() {
+            idle = false;
+            match file.write(msg.index, &msg.key, msg.stamp, &msg.save) {
+                Ok(true) => ShardStats::bump(&stats.saves_written),
+                // No file: nothing was written and nothing is counted. The
+                // index still has the record, which is the documented
+                // in-memory case (`config.rs` on `save_file`) — counting it as
+                // written would report persistence a shard does not have.
+                Ok(false) => {}
+                // A shard that cannot persist keeps running: dropping every
+                // player because a disk filled would be a worse outcome than
+                // a shard that forgets. Counted, and that counter is the only
+                // place this is visible.
+                Err(_) => ShardStats::bump(&stats.save_write_errors),
+            }
+        }
+        if write_rx.is_abandoned() {
+            return;
+        }
+        if idle {
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 }
@@ -317,17 +493,20 @@ async fn handshake_task(
         spawn_refusal(connection, send, REFUSE_VERSION);
         return;
     }
-    // Admission. **The token is not validated here yet and this is the
-    // honest half of the slice**: `validate_session` is the seam where the
-    // shard asks scry whether the token is good, and it is a stub that
-    // accepts any non-empty token until that API is wired (`auth.rs` in
-    // `protocol` has the model). So today `require_auth = true` proves a
-    // client CARRIED a credential, not that the credential is real — which
-    // is why the default is `false` and why arming it on a public shard
+    // Admission, and now also identity — the same call answers both, and
+    // that is what made persistence possible without settling the identity
+    // question (`auth.rs`). **The token is still not validated here and this
+    // is the honest half of the slice**: `validate_session` is the seam where
+    // the shard asks scry whether the token is good, and it is a stub that
+    // resolves any non-empty token to itself until that API is wired
+    // (`auth.rs` in `protocol` has the model). So today `require_auth = true`
+    // proves a client CARRIED a credential, not that the credential is real —
+    // which is why the default is `false` and why arming it on a public shard
     // waits for the validator. Named rather than implied, because a shard
     // operator reading `require_auth` would otherwise assume more than it
     // does.
-    if require_auth && !crate::auth::validate_session(&hello.token) {
+    let key = crate::auth::validate_session(&hello.token);
+    if require_auth && key.is_none() {
         ShardStats::bump(&stats.refused_auth);
         spawn_refusal(connection, send, protocol::REFUSE_AUTH);
         return;
@@ -337,6 +516,7 @@ async fn handshake_task(
             connection,
             send,
             recv,
+            key,
         })
         .await;
 }
@@ -344,10 +524,13 @@ async fn handshake_task(
 /// Claim a slot, build the rings, hand the sim its ends, welcome the
 /// client, spawn its reader/writer tasks. Any refusal is posted, never a
 /// hang (DESIGN.md §5.9).
+#[allow(clippy::too_many_arguments)]
 async fn install(
     done: Handshaken,
     facts: ShardFacts,
     ctrl_tx: &mut rtrb::Producer<Connect>,
+    keys: &mut [KeySlot; MAX_PLAYERS],
+    store: &SaveStore,
     slots: &Arc<SlotTable>,
     stats: &Arc<ShardStats>,
 ) {
@@ -355,6 +538,7 @@ async fn install(
         connection,
         mut send,
         recv,
+        key,
     } = done;
     let Some((slot, generation)) = (0..MAX_PLAYERS).find_map(|s| slots.claim(s).map(|g| (s, g)))
     else {
@@ -365,6 +549,13 @@ async fn install(
     // Player id: slot in the low byte, claim generation above — unique
     // across slot reuse, stable for the connection's life.
     let id = (generation << 8) | slot as u32;
+    // Who this connection is, for the whole of its life. Recorded before the
+    // sim is told anything, so a record coming back from the very first tick
+    // already has a key to be filed under.
+    keys[slot] = KeySlot { key, id };
+    // Does this shard remember them? A miss is the ordinary case and it is
+    // not a failure: a guest, a first visit, or a shard with no save file.
+    let save = key.and_then(|k| store.find(&k));
 
     let (input_tx, input_rx) = RingBuffer::new(INPUT_RING_CAP);
     let (action_tx, action_rx) = RingBuffer::<ActionMsg>::new(ACTION_RING_CAP);
@@ -379,13 +570,28 @@ async fn install(
         snaps: snap_tx,
         events: ev_tx,
     };
-    if ctrl_tx.push(Connect { slot, id, link }).is_err() {
+    if ctrl_tx
+        .push(Connect {
+            slot,
+            id,
+            save,
+            link,
+        })
+        .is_err()
+    {
         // Control ring full: refuse rather than wait (L4 — no bound is
         // "wait"). The claim reverts; the client may retry.
         slots.unclaim(slot, generation);
         ShardStats::bump(&stats.refused_full);
         spawn_refusal(connection, send, REFUSE_FULL);
         return;
+    }
+    // Counted only now the sim has it. A refused install seats nobody, and
+    // `saves_restored` is the one number that says persistence is working — a
+    // counter that reports restores which never reached a world is worse than
+    // no counter at all.
+    if save.is_some() {
+        ShardStats::bump(&stats.saves_restored);
     }
 
     let welcome = Welcome {
@@ -723,6 +929,7 @@ fn sim_thread(
     catalog: ItemCatalog,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut grave_tx: rtrb::Producer<Link>,
+    mut save_tx: rtrb::Producer<SaveMsg>,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     shutdown: Arc<AtomicBool>,
@@ -749,7 +956,7 @@ fn sim_thread(
     while !shutdown.load(Ordering::Relaxed) {
         // Install fresh connections.
         while let Ok(c) = ctrl_rx.pop() {
-            if core.connect(c.slot, c.id) {
+            if core.connect_as(c.slot, c.id, c.save) {
                 links[c.slot] = Some(c.link);
                 ShardStats::bump(&stats.joins);
             } else {
@@ -780,7 +987,15 @@ fn sim_thread(
             let generation = link.generation;
             match grave_tx.push(link) {
                 Ok(()) => {
-                    core.disconnect(slot);
+                    // The exact save: taken off the live body, before the
+                    // `Leave` is queued and — the part that matters —
+                    // **before the slot is freed**. A freed slot is
+                    // claimable, so pushing after would race a new tenant's
+                    // key into the accept loop's table ahead of this record
+                    // (`KeySlot`). The order here is what closes that.
+                    if let Some((id, save)) = core.disconnect(slot) {
+                        push_save(&mut save_tx, id, save, &stats);
+                    }
                     slots.free(slot, generation);
                     ShardStats::bump(&stats.leaves);
                 }
@@ -810,6 +1025,15 @@ fn sim_thread(
                     core.push_chat(slot, chat);
                 }
             }
+        }
+        // One step of the autosave sweep, before the tick rather than after
+        // it for a reason worth stating: the record is then the state the
+        // *previous* tick published, which is the state a client has actually
+        // been shown. It costs one tick of staleness against a sweep that is
+        // already `MAX_PLAYERS` ticks coarse, and it keeps the save read out
+        // of the tick's own borrow of the world.
+        if let Some((id, save)) = core.autosave() {
+            push_save(&mut save_tx, id, save, &stats);
         }
         // Tick + publish.
         core.tick(&stats, |lane, slot, bytes| {

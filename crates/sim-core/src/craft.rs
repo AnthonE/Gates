@@ -235,6 +235,29 @@ pub fn enqueue(
     }
 }
 
+/// Start the head job's unit timer at `tick`, or clear it if the queue is
+/// empty. **The one expression of "when does the head finish"** — it was
+/// written out four times (cancel, two branches of `step`, and the restore),
+/// and a fifth copy is how a queue ends up armed against a stale clock.
+///
+/// It is also what makes a saved craft queue restorable at all: the timer
+/// is an absolute tick and a restarted shard's clock begins at 0, so a
+/// restore re-arms rather than reloads (`persist.rs`).
+///
+/// A head job whose recipe is past the live table is a content hotfix
+/// shrinking the set under a queue; `step` drops that job on its next
+/// visit, and arming it with the inert row's span here is harmless — the
+/// row exists (`MAX_RECIPES` is the array bound, and both the wire and
+/// `PlayerSave::read_le` refuse anything past it).
+#[inline]
+pub fn rearm(cc: &CraftContent, tick: u64, p: &mut Player) {
+    p.craft_done_at = if p.jobs[0].remaining > 0 {
+        tick + cc.recipes[p.jobs[0].recipe as usize].ticks as u64
+    } else {
+        0
+    };
+}
+
 /// Apply one cancel (`Command::CraftCancel`): refund the remaining units'
 /// inputs (the in-progress unit refunds whole) and close the gap. An
 /// index naming no live job is ignored — a cancel racing a completion is
@@ -262,11 +285,7 @@ pub fn cancel(cc: &CraftContent, gc: &GatherContent, tick: u64, p: &mut Player, 
     }
     shift_left(&mut p.jobs, index);
     if index == 0 {
-        p.craft_done_at = if p.jobs[0].remaining > 0 {
-            tick + cc.recipes[p.jobs[0].recipe as usize].ticks as u64
-        } else {
-            0
-        };
+        rearm(cc, tick, p);
     }
 }
 
@@ -288,11 +307,7 @@ pub fn step(
         // A table swap shrank the set under a live job (content hotfix):
         // drop the job rather than pay from a stale row.
         shift_left(&mut p.jobs, 0);
-        p.craft_done_at = if p.jobs[0].remaining > 0 {
-            tick + cc.recipes[p.jobs[0].recipe as usize].ticks as u64
-        } else {
-            0
-        };
+        rearm(cc, tick, p);
         return;
     }
     let def = &cc.recipes[recipe as usize];
@@ -312,11 +327,7 @@ pub fn step(
     if p.jobs[0].remaining == 0 {
         shift_left(&mut p.jobs, 0);
     }
-    p.craft_done_at = if p.jobs[0].remaining > 0 {
-        tick + cc.recipes[p.jobs[0].recipe as usize].ticks as u64
-    } else {
-        0
-    };
+    rearm(cc, tick, p);
 }
 
 #[cfg(test)]

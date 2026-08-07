@@ -20,3 +20,7 @@ wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8
     "quinn",
 ] }
 rtrb = "0.3"
+# Save-record integrity only (store.rs): a torn write has to be detectable at
+# load. Same crate and version `sim-core` and `content` already build, so this
+# adds a line to a manifest and nothing to the tree.
+xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }

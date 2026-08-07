@@ -83,7 +83,6 @@ Small, sharp, finished. One owner per crate per iteration; `protocol` and
 cargo test --workspace              # every headless gate (once M0 lands)
 cargo run -p server --bin shard     # the server (reads shard.toml)
 cargo run -p server --bin bots -- 100
-cargo run -p server --bin replay -- --wal <file>
 cargo run -p client --features render --bin gates   # the game
 ```
 

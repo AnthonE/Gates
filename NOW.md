@@ -20,6 +20,46 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0y · The shard remembers a player — the world half does not *(server lane)*
+
+Landed 2026-08-07. A player keeps their position, inventory, hp, meters and
+craft queue across a disconnect and a restart. `sim-core/src/persist.rs` is the
+record (pure, validated like a wire decode), `server/src/store.rs` is the
+fixed-slot file and the index, `Command::JoinAs` is how a restore enters the
+sim so a replay reproduces it. Filed under the opaque `PlayerKey` that
+`auth::validate_session` now returns instead of `bool` — **that signature is
+the whole unlock**: which identity scheme wins stopped being a blocker for
+persistence. Knobs and the durability contract: `DECISIONS.md` §open "player
+persistence v0". Off by default (`save_file` unset).
+
+Remaining, in order:
+
+1. **The world is not persisted, and "your base" is still not a true
+   sentence.** Structures, deployables, box contents, hearths, backpacks and
+   harvested slots all die with the process. Your walls outlive a disconnect
+   (they are world state, not connection state) and not a restart. This is the
+   larger half and it is a different shape: `Pieces`, `Deploys`, `Backpacks`
+   and `SlotLives` are fixed-capacity stores, so a snapshot is "serialize four
+   arrays" — but restoring them is not a `Command` the way one player is, and
+   wall 5 wants an answer for how a replay reproduces a loaded world. DESIGN §8
+   calls it snapshot + WAL tail; nothing of it exists.
+2. **There is no WAL and two docs said there was.** No `wal.rs`, no `replay`
+   binary; `test_replay` runs the sim twice in memory. The command line was
+   removed from `CLAUDE.md`/`AGENTS.md` and DESIGN §7/§8 now say plainly what
+   is unbuilt. The gap that matters is not the file — it is that nothing
+   records the command stream, so nothing can replay a *session*, and the
+   board delivery in DESIGN §11 wants exactly that.
+3. **A killed shard costs 3.3 s and there is no graceful shutdown.** The
+   autosave sweep visits one connection slot per tick; a clean leave is exact.
+   `ShardHandle::shutdown` does not flush, deliberately — a flush needs the
+   accept loop to drain after the sim exits, which is a shutdown protocol
+   nobody has spoken. Cheap to add when somebody wants it.
+4. **Nothing tests the three-thread path end to end.** The suites drive
+   `ShardCore` and the file directly; the sim→accept→storage hops, the
+   `KeySlot` id match and the eviction counter are covered by reasoning and
+   ordering, not by a gate. A socketless harness for `accept_loop` does not
+   exist, and `bot_smoke` (the one suite with real sockets) sends no token.
+
 ## 0x · The client makes sound — what it cannot yet hear *(client lane)*
 
 Landed 2026-08-06. `crates/client/src/sound/` is the model (pure, headless,

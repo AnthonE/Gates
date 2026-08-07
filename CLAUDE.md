@@ -235,7 +235,6 @@ do not rediscover)
 cargo test --workspace              # every gate that runs headless
 cargo run -p server --bin shard     # the server (reads shard.toml)
 cargo run -p server --bin bots -- 100
-cargo run -p server --bin replay -- --wal <file>
 cargo run -p client --features render --bin gates    # the game
 cargo clippy -p client --features render --all-targets -- -D warnings
 ./ci/gates.sh                       # exactly what CI runs — run it before merge
