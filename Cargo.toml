@@ -20,6 +20,23 @@ publish = false
 lto = "thin"
 codegen-units = 1
 
+# **Dependencies carry no debug info, and this is the disk fix.**
+#
+# Measured 2026-08-06: `target/debug/deps` was **30G**, of which **16.9G was
+# thirteen executables at ~1.4G each** — `gates`, `client`, `soundbank` and the
+# four render-tier test binaries, plus stale hash variants of each. Nothing
+# about those binaries is 1.4G of code; it is DWARF for ~565 statically linked
+# Bevy crates, copied whole into every one of them, because `debug` was never
+# set and the dev profile defaults to full debug info.
+#
+# We do not step into wgpu. A backtrace through Bevy loses line numbers and
+# keeps its symbols, which is the whole cost. Workspace members are NOT matched
+# by `"*"` and keep full debug info, so debugging OUR code is unchanged.
+#
+# This is not a micro-optimisation on this box: the disk is 49G, a feature or
+# profile change invalidates every artifact and cargo does not collect the old
+# set, and `rust-lld` answers a full disk with SIGBUS mid-link rather than
+# ENOSPC — which reads as an LLVM crash. That failure cost two builds today.
 # Dependencies are optimized even in dev builds. This is Bevy's own standard
 # advice and it is about the renderer only: an unoptimized wgpu/naga/image
 # stack renders single-digit frames and takes minutes to specialize a
@@ -29,6 +46,7 @@ codegen-units = 1
 # anyway, so no wall moves.
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
 
 # …and sim-core with them, because the renderer is one of its callers now.
 # Meshing one 64 m chunk is 4,225 `terrain::height` taps and a chunk ring is
