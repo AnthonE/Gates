@@ -124,7 +124,7 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>) {
 
             for (i, (verb, name, detail)) in VERBS.iter().enumerate() {
                 root.spawn((ui::row(460.0), *verb)).with_children(|b| {
-                    b.spawn(ui::label(format!("{}  {}", i + 1, name), 20.0, ui::TEXT));
+                    b.spawn(ui::strong(format!("{}  {}", i + 1, name), 20.0, ui::TEXT));
                     b.spawn(ui::label(*detail, 13.0, ui::DIM));
                 });
             }

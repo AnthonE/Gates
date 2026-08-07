@@ -24,6 +24,11 @@
 //!   predictor reports the world origin rather than nothing, so the failure
 //!   is a client that builds the wrong neighbourhood confidently and a bar
 //!   that fills while it does.
+//! - **§F one owner for the face.** The only gate here that is a grep, and
+//!   for the reason `tests/sound.rs` states about the feed drain: **the
+//!   defect is a call site, not a value.** A `TextFont` literal compiles,
+//!   passes clippy, and draws in Bevy's debug mono next to forty words that
+//!   are not — which is exactly how all forty of them got there.
 
 use client::ui::build::{self, Hover, Rings, MATERIALS, SHAPES};
 use client::ui::craft::{self, Cat, Facts};
@@ -1083,5 +1088,142 @@ fn the_mark_moves_with_the_chase() {
     assert!(
         marks.iter().collect::<std::collections::HashSet<_>>().len() > 1,
         "the weak mark never moved across 8 hits: {marks:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// §F · one owner for the face
+//
+// `render/ui.rs` owns the palette because three screens that are supposed to
+// read as one product had three copies of the same six colours. It owns the
+// FACE for a harder version of the same reason, and the harder version is
+// what actually happened: until 2026-08-07 nothing owned it, all forty-two
+// `TextFont` sites in the render path were `..default()`, and every screen
+// this client has drew in Bevy's embedded debug mono.
+//
+// A grep rather than a value, exactly as `tests/sound.rs`'s feed-drain gate
+// is: a `TextFont { font_size: 12.0, ..default() }` is legal Rust, survives
+// `clippy -D warnings`, and is invisible in review because it looks like
+// every other bundle field. The only place it shows up is on the screen, and
+// nothing in this repo photographs a panel.
+
+/// Every `.rs` under `src/render`, path and text.
+fn render_sources() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        for e in std::fs::read_dir(dir).expect("src/render must exist") {
+            let p = e.expect("readable entry").path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push((
+                    p.display().to_string(),
+                    std::fs::read_to_string(&p).expect("readable source"),
+                ));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(std::path::Path::new("src/render"), &mut files);
+    assert!(
+        files.len() > 10,
+        "only found {} render sources",
+        files.len()
+    );
+    files
+}
+
+/// No `TextFont` literal outside the file that owns the face.
+///
+/// The escape hatch is deliberately not a comment marker: a site that needs
+/// something `ui::font`/`ui::font_bold` cannot express should widen the
+/// vocabulary, because the next screen will want it too.
+#[test]
+fn only_ui_rs_builds_a_textfont() {
+    let mut offenders = Vec::new();
+    for (path, text) in render_sources() {
+        if path.ends_with("render/ui.rs") {
+            continue;
+        }
+        for (n, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            // Comments may name the type freely — the rule is about
+            // construction, and every comment about it says so.
+            if code.starts_with("//") || code.starts_with("*") {
+                continue;
+            }
+            if code.contains("TextFont {") {
+                offenders.push(format!("{path}:{}: {}", n + 1, code));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a TextFont built outside render/ui.rs draws in a different typeface \
+         from the rest of the screen — use ui::font (prose) or ui::font_bold \
+         (labels, the reference's own default weight):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Both faces, and the notice that lets us ship them.
+///
+/// Apache-2.0 is a *notice* licence: the fonts may be redistributed and the
+/// licence text has to travel with them. `include_bytes!` makes a missing
+/// `.ttf` a build error, which is why this only has to check the third file
+/// — the one nothing links against and everything depends on legally.
+#[test]
+fn the_faces_ship_with_their_licence() {
+    for name in [
+        "RobotoCondensed-Regular.ttf",
+        "RobotoCondensed-Bold.ttf",
+        "LICENSE-ROBOTO.txt",
+    ] {
+        let p = std::path::Path::new("fonts").join(name);
+        let n = std::fs::metadata(&p)
+            .unwrap_or_else(|e| panic!("{} is missing: {e}", p.display()))
+            .len();
+        assert!(
+            n > 1024,
+            "{} is {n} bytes, which is not a file",
+            p.display()
+        );
+    }
+    let licence = std::fs::read_to_string("fonts/LICENSE-ROBOTO.txt").expect("readable licence");
+    assert!(
+        licence.contains("Apache License") && licence.contains("Version 2.0"),
+        "fonts/LICENSE-ROBOTO.txt is not the Apache 2.0 text the fonts are under"
+    );
+}
+
+/// The vocabulary is two functions and both are used.
+///
+/// A weight nobody asks for is a weight that rots: if `ui::font` loses its
+/// last call site, prose has quietly become bold everywhere and the
+/// hierarchy the reference actually has is gone. Counted rather than
+/// asserted-nonzero so the number moving is visible in a diff.
+#[test]
+fn both_weights_are_in_use() {
+    let (mut prose, mut label) = (0usize, 0usize);
+    for (path, text) in render_sources() {
+        if path.ends_with("render/ui.rs") {
+            continue;
+        }
+        for line in text.lines() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            // Disjoint needles: `font_bold(` does not contain `font(`.
+            label += code.matches("font_bold(").count();
+            prose += code.matches("font(").count();
+        }
+    }
+    // 14 and 26 as this landed. The floors are loose on purpose — this
+    // catches a *collapse* (one weight losing its last call sites), not the
+    // ordinary drift of a screen gaining or losing a line, which would make
+    // it a gate that cries wolf at every UI commit.
+    assert!(
+        prose >= 5 && label >= 15,
+        "the weight hierarchy has collapsed: {prose} prose sites, {label} label sites"
     );
 }

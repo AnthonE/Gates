@@ -34,7 +34,8 @@ use bevy::window::PrimaryWindow;
 use client_wasm::core::ClientCore;
 
 use super::{
-    Panel, Ui, BADGE, CELL_BG, CELL_FULL, LINE, LINE_HOT, PANEL_BG, TEXT, TEXT_DIM, TEXT_SHORT,
+    font, font_bold, Panel, Ui, BADGE, CELL_BG, CELL_FULL, LINE, LINE_HOT, PANEL_BG, TEXT,
+    TEXT_DIM, TEXT_SHORT,
 };
 use crate::ui::build::{
     costs, material_label, row_for, segment_angle, shape_blurb, shape_label, Hover, Rings,
@@ -186,10 +187,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
                         "outer ring picks the shape   -   inner ring picks the material   \
                          -   let go of B to keep it",
                     ),
-                    TextFont {
-                        font_size: 12.0,
-                        ..default()
-                    },
+                    font(12.0),
                     TextColor(TEXT_DIM),
                 ));
             });
@@ -235,10 +233,7 @@ fn chip(
         .with_children(|c| {
             c.spawn((
                 Text::new(text.to_string()),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
+                font_bold(12.0),
                 // A segment the content has no piece for is drawn dead
                 // rather than live-and-wrong.
                 TextColor(if !live {
@@ -264,10 +259,7 @@ fn readout(
 ) {
     parent.spawn((
         Text::new(shape_label(shape).to_string()),
-        TextFont {
-            font_size: 20.0,
-            ..default()
-        },
+        font_bold(20.0),
         TextColor(TEXT),
         Pickable::IGNORE,
     ));
@@ -277,10 +269,7 @@ fn readout(
             ..default()
         },
         Text::new(shape_blurb(shape).to_string()),
-        TextFont {
-            font_size: 11.0,
-            ..default()
-        },
+        font(11.0),
         TextColor(TEXT_DIM),
         Pickable::IGNORE,
     ));
@@ -290,10 +279,7 @@ fn readout(
             Text::new(
                 format!("no {} {}", material_label(material), shape_label(shape)).to_lowercase(),
             ),
-            TextFont {
-                font_size: 11.0,
-                ..default()
-            },
+            font(11.0),
             TextColor(TEXT_SHORT),
             Pickable::IGNORE,
         ));
@@ -308,10 +294,7 @@ fn readout(
         .unwrap_or(0);
     parent.spawn((
         Text::new(format!("{}  -  {hp} hp", material_label(material))),
-        TextFont {
-            font_size: 12.0,
-            ..default()
-        },
+        font_bold(12.0),
         TextColor(BADGE),
         Pickable::IGNORE,
     ));
@@ -325,10 +308,7 @@ fn readout(
                 item_label(&core.catalog, line.item),
                 line.have
             )),
-            TextFont {
-                font_size: 11.0,
-                ..default()
-            },
+            font_bold(11.0),
             TextColor(if line.short() { TEXT_SHORT } else { TEXT_DIM }),
             Pickable::IGNORE,
         ));

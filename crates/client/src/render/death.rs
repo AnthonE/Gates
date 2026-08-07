@@ -158,7 +158,7 @@ pub fn setup(mut commands: Commands, net: NonSend<Net>) {
         .with_children(|root| {
             root.spawn(ui::title("YOU DIED"));
             root.spawn((
-                ui::label(line, 16.0, ui::TEXT),
+                ui::strong(line, 16.0, ui::TEXT),
                 Node {
                     margin: UiRect::bottom(Val::Px(18.0)),
                     ..default()
@@ -167,7 +167,7 @@ pub fn setup(mut commands: Commands, net: NonSend<Net>) {
 
             for (i, (wake, name, detail)) in WAKES.iter().enumerate() {
                 root.spawn((ui::row(460.0), *wake)).with_children(|b| {
-                    b.spawn(ui::label(format!("{}  {}", i + 1, name), 20.0, ui::TEXT));
+                    b.spawn(ui::strong(format!("{}  {}", i + 1, name), 20.0, ui::TEXT));
                     b.spawn(ui::label(*detail, 13.0, ui::DIM));
                 });
             }

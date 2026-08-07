@@ -344,6 +344,11 @@ impl Plugin for GatesRenderPlugin {
         // `audio::build_bank`; the first capture run after the audio slice
         // died on exactly this.
         audio::build_bank(app);
+        // The two UI faces, for the same reason and at the same moment: the
+        // loading screen draws text before `Startup` runs, and a font that is
+        // not there yet draws NOTHING — not a fallback glyph. `ui::build_fonts`
+        // has the whole argument for compiling them in.
+        ui::build_fonts(app);
 
         // ---- the menu ------------------------------------------------
         // `world_teardown` first: entering the menu from a live world is the

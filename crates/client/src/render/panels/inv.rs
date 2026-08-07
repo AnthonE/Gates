@@ -38,8 +38,8 @@ use sim_core::inventory::{CONT_SELF, REFUSE_M_MAX};
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS};
 
 use super::{
-    craft, GhostRoot, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL, CELL_GAP_PX, CELL_HOVER,
-    CELL_PX, LINE, LINE_HOT, PANEL_BG, SCRIM, TEXT, TEXT_DIM,
+    craft, font, font_bold, GhostRoot, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL,
+    CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, SCRIM, TEXT, TEXT_DIM,
 };
 use crate::ui::craft::item_label;
 use crate::ui::slots::{
@@ -107,10 +107,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
                     "drag to move   -   right-drag takes half   -   ctrl-drag takes one   \
                      -   right-click uses   -   Tab or Esc closes",
                 ),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
+                font(12.0),
                 TextColor(TEXT_DIM),
                 Node {
                     margin: UiRect::top(Val::Px(6.0)),
@@ -121,14 +118,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
 }
 
 fn header(root: &mut ChildSpawnerCommands, ui: &Ui) {
-    root.spawn((
-        Text::new("INVENTORY"),
-        TextFont {
-            font_size: 26.0,
-            ..default()
-        },
-        TextColor(TEXT),
-    ));
+    root.spawn((Text::new("INVENTORY"), font_bold(26.0), TextColor(TEXT)));
     // Always drawn, even empty: the line's job is to have somewhere to say
     // why something did not happen, and a line that appears and disappears
     // makes the panel jump when it does.
@@ -138,10 +128,7 @@ fn header(root: &mut ChildSpawnerCommands, ui: &Ui) {
         } else {
             ui.status.clone()
         }),
-        TextFont {
-            font_size: 13.0,
-            ..default()
-        },
+        font(13.0),
         TextColor(BADGE),
     ));
 }
@@ -258,10 +245,7 @@ fn cell(
             if filled {
                 c.spawn((
                     Text::new(item_label(&core.catalog, stack.item)),
-                    TextFont {
-                        font_size: 10.0,
-                        ..default()
-                    },
+                    font_bold(10.0),
                     TextColor(TEXT),
                     Pickable::IGNORE,
                 ));
@@ -271,10 +255,7 @@ fn cell(
                 if stack.count > 1 {
                     c.spawn((
                         Text::new(format!("{}", stack.count)),
-                        TextFont {
-                            font_size: 13.0,
-                            ..default()
-                        },
+                        font_bold(13.0),
                         TextColor(TEXT_DIM),
                         Node {
                             align_self: AlignSelf::FlexEnd,
@@ -290,10 +271,7 @@ fn cell(
 fn label(parent: &mut ChildSpawnerCommands, text: &str) {
     parent.spawn((
         Text::new(text.to_string()),
-        TextFont {
-            font_size: 12.0,
-            ..default()
-        },
+        font_bold(12.0),
         TextColor(TEXT_DIM),
     ));
 }
@@ -475,10 +453,7 @@ fn spawn_ghost(commands: &mut Commands, core: &ClientCore, stack: ItemStack, gra
                     item_label(&core.catalog, stack.item),
                     units
                 )),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
+                font_bold(12.0),
                 TextColor(TEXT),
                 Pickable::IGNORE,
             ));

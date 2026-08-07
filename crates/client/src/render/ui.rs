@@ -19,8 +19,95 @@
 //! and the frame the operator pasted): near-black panels a shade lighter than
 //! the background, an olive selection block for the chosen category, warm
 //! off-white type, and a hairline rule the same warm hue at low alpha.
+//!
+//! **This file also owns the FACE**, for the same reason it owns the palette,
+//! and until 2026-08-07 nothing did: all 42 `TextFont` sites in the render
+//! path were `..default()`, so every screen this client has was drawn in
+//! Bevy's embedded debug mono. That is not a style — it is the absence of
+//! one, and it is the single loudest thing separating our frames from the
+//! reference's.
 
+use bevy::asset::{uuid_handle, AssetId};
 use bevy::prelude::*;
+use bevy::text::Font;
+
+// ---- the face ------------------------------------------------------------
+
+/// The two faces, at compile-time-known handles.
+///
+/// **Roboto Condensed, and that is measured rather than chosen.** The
+/// reference game's own modding API names its default UI font in public
+/// source: `Assets/Content/UI/Fonts/RobotoCondensed-Bold.ttf`, with
+/// `RobotoCondensed-Regular` beside it and Bold as the fallback when a
+/// lookup misses (`Facepunch/Rust.Community`, `CommunityEntity.UI.cs`
+/// `LoadFont`). So the weight hierarchy below is theirs too: **bold is the
+/// default and regular is the exception**, which is why a Rust screen reads
+/// as chunky and ours read as a terminal.
+///
+/// Apache-2.0, © 2011 Google Inc. — `crates/client/fonts/`.
+pub const SANS: Handle<Font> = uuid_handle!("6f0d1c8e-2f4a-4c7b-9a31-0d2b7c5e4a11");
+pub const SANS_BOLD: Handle<Font> = uuid_handle!("6f0d1c8e-2f4a-4c7b-9a31-0d2b7c5e4a12");
+
+/// **Embedded, not loaded from `assets/`, and both halves of that are
+/// deliberate.**
+///
+/// A `Handle<Font>` that never resolves draws *nothing at all* — not a
+/// fallback glyph, not a box. That is strictly worse than the failure this
+/// repo has already been bitten by twice (a missing `jpeg` decoder made Bevy
+/// draw a white texture *and keep going*, and three material changes measured
+/// byte-identical before anyone read the log), because a client with no text
+/// cannot report its own defect. Compiling the bytes in removes the failure
+/// mode rather than gating it.
+///
+/// The second half is timing, and it is a trap this repo has paid for once:
+/// **`OnEnter(Screen::Loading)` runs before `Startup`**, so the loading
+/// screen — the first thing a connected start draws — would render its text
+/// blank for as long as an asset load took. `audio::build_bank` is the same
+/// shape for the same reason, and [`build_fonts`] is called beside it.
+const SANS_TTF: &[u8] = include_bytes!("../../fonts/RobotoCondensed-Regular.ttf");
+const SANS_BOLD_TTF: &[u8] = include_bytes!("../../fonts/RobotoCondensed-Bold.ttf");
+
+/// Put both faces in `Assets<Font>` at plugin-build time.
+///
+/// It also overwrites **Bevy's own default font handle** with the bold face.
+/// That is the belt to [`font`]'s braces: the gate in `tests/ui.rs` is what
+/// keeps `TextFont` literals out of the render path, but a site that slips
+/// past it should draw in the wrong *weight*, not in a different typeface
+/// from every other word on the screen.
+pub fn build_fonts(app: &mut App) {
+    let mut assets = app.world_mut().resource_mut::<Assets<Font>>();
+    for (id, bytes, what) in [
+        (SANS.id(), SANS_TTF, "RobotoCondensed-Regular"),
+        (SANS_BOLD.id(), SANS_BOLD_TTF, "RobotoCondensed-Bold"),
+        (AssetId::default(), SANS_BOLD_TTF, "the engine default"),
+    ] {
+        let font = Font::try_from_bytes(bytes.to_vec())
+            .unwrap_or_else(|e| panic!("{what} is not a readable font: {e}"));
+        assets
+            .insert(id, font)
+            .unwrap_or_else(|e| panic!("{what} could not be registered: {e}"));
+    }
+}
+
+/// A `TextFont` in the regular face. **Prose only** — a description, a hint,
+/// a status line, a chat message.
+pub fn font(size: f32) -> TextFont {
+    TextFont {
+        font: SANS,
+        font_size: size,
+        ..default()
+    }
+}
+
+/// A `TextFont` in the bold face — the reference's default, and ours. Every
+/// label, heading, number, button and item name.
+pub fn font_bold(size: f32) -> TextFont {
+    TextFont {
+        font: SANS_BOLD,
+        font_size: size,
+        ..default()
+    }
+}
 
 /// The screen behind everything.
 pub const BG: Color = Color::srgb(0.055, 0.055, 0.060);
@@ -102,24 +189,31 @@ pub fn screen(bg: Color) -> impl Bundle {
 pub fn title(text: &str) -> impl Bundle {
     (
         Text::new(text.to_string()),
-        TextFont {
-            font_size: 58.0,
-            ..default()
-        },
+        font_bold(58.0),
         TextColor(TITLE),
     )
 }
 
-/// A line of type. The three colours above are the whole vocabulary.
+/// A line of prose, in the regular face. The three colours above are the
+/// whole vocabulary.
+///
+/// **There are twelve distinct sizes across the six files that draw text**
+/// (58, 30, 26, 20, 17, 16, 15, 14, 13, 12, 11, 10) and that is not a
+/// hierarchy, it is what twelve independent decisions look like. Collapsing
+/// it to five steps is a real improvement and it is deliberately **not**
+/// taken here: the sizes were budgeted against 720p (`DECISIONS.md`, "menu
+/// skin v0" — the first cut clipped a column at both ends) and nothing in
+/// this repo can photograph a panel, so moving them would be tuning a number
+/// with the picture unavailable. `NOW.md` carries it behind the screenshot
+/// tool that would make it checkable.
 pub fn label(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
-    (
-        Text::new(text.into()),
-        TextFont {
-            font_size: size,
-            ..default()
-        },
-        TextColor(color),
-    )
+    (Text::new(text.into()), font(size), TextColor(color))
+}
+
+/// A line of type in the bold face — a label, a heading, a number, a verb.
+/// The reference's default weight, and therefore the common case.
+pub fn strong(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
+    (Text::new(text.into()), font_bold(size), TextColor(color))
 }
 
 /// A wide clickable row — the intro screen's shard rows and the Esc menu's

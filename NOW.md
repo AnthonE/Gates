@@ -20,6 +20,53 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0p · The UI has a face now — and one tool would unblock the rest *(client lane)*
+
+Landed 2026-08-07. Nothing owned the typeface: all 42 `TextFont` sites were
+`..default()`, so every screen drew in Bevy's embedded debug mono. The face is
+**Roboto Condensed**, measured off the reference's own public source rather
+than a screenshot (`Facepunch/Rust.Community` defaults its UI text to
+`RobotoCondensed-Bold.ttf`), embedded with `include_bytes!` because an
+unresolved `Handle<Font>` draws *nothing* and `OnEnter(Loading)` runs before
+`Startup`. Bold is the default weight and regular is prose — 31 sites against
+12. `DECISIONS.md` "ui type v0"; gate `tests/ui.rs` §F, a call-site grep.
+
+Verified by picture, not by compile: six vantages under Xvfb + lavapipe, zero
+panics, and — for the first time — **the panels too**, by driving a live
+client with `xdotool` (Tab, then hold B) and grabbing the root window. That is
+by hand and reproducible by nobody, which is item 1.
+
+Remaining, in order. **Item 1 blocks items 3 and 4:**
+
+1. **Nothing in this repo can photograph a panel.** `render/panels/` is not
+   registered on a `--capture` run, so inventory, crafting and the wheel —
+   ~1,400 lines and the screens a player spends the most time in — are seen
+   only by a human with a shard up. Wanted: a **viewer, not a gate** — a mode
+   that opens each panel against a stocked fixture and writes a PNG per
+   screen. The visual-gate rule is retired and stays retired (`CLAUDE.md`);
+   this asserts nothing. `panels/mod.rs`'s refusal ("a gate whose frames
+   depend on a keystroke") was right about a *gate* and does not bind a
+   viewer.
+2. **Two defects the first look found, both cheap.** An item name overflows
+   its 44 px cell — `Gunpowde`, `Workbenc`, and `Metal Fragments` bleeding
+   over its border — so the browser is unreadable exactly where content grew;
+   it wants clipping plus an abbreviation, not a bigger cell (the 720p budget
+   is why). And the wheel's hint line is drawn at `bottom: 40px`, straight
+   through the hotbar behind it.
+3. **The wheel is text where the reference is icons**, and so are the item
+   cells. Six shape glyphs are the cheap half and generatable the way
+   `tree::needle_image` and `sky.rs` already generate (`ART.md` §7 permits
+   real assets too). Item art is the expensive half and is content, not code.
+4. **Twelve sizes is not a scale.** Collapsing to five is a real improvement
+   and may not be done blind: the numbers were budgeted against 720p and the
+   first cut clipped a column at both ends.
+5. **Surveyed and refused: `bevy_hui`, `bevy_lunex`, `bevy_feathers`.**
+   `bevy_hui` is the closest to the XML-and-hooks shape the operator asked
+   about, and taking it would move ~5,400 lines of screen description out of
+   Rust and into a plugin that spawns entities from data — the same reason
+   `bevy_procedural_tree`'s own plugin is deliberately unused. The iteration
+   win it is wanted for is item 1's, and item 1 costs a fraction as much.
+
 ## 0y · Persistence takes the reference game's shape *(server lane)*
 
 > **ARMED on the public shard, 2026-08-07** (operator: *"ok yea turn it all

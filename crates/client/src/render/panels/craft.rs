@@ -23,8 +23,9 @@ use sim_core::craft::RecipeDef;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 
 use super::{
-    Panel, Ui, BADGE, BROWSER_COLS, BROWSER_GRID_H, CELL_BG, CELL_FULL, CELL_GAP_PX, CELL_PX, LINE,
-    LINE_HOT, PANEL_BG, PANEL_H, SCROLL_PX_PER_LINE, TEXT, TEXT_DIM, TEXT_SHORT,
+    font, font_bold, Panel, Ui, BADGE, BROWSER_COLS, BROWSER_GRID_H, CELL_BG, CELL_FULL,
+    CELL_GAP_PX, CELL_PX, LINE, LINE_HOT, PANEL_BG, PANEL_H, SCROLL_PX_PER_LINE, TEXT, TEXT_DIM,
+    TEXT_SHORT,
 };
 use crate::ui::craft::{
     affordable, eta_seconds, ingredients, item_label, rows, seconds, station_label, Row, RAIL,
@@ -122,10 +123,7 @@ fn rail(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
                 .with_children(|b| {
                     b.spawn((
                         Text::new(cat.label().to_string()),
-                        TextFont {
-                            font_size: 12.0,
-                            ..default()
-                        },
+                        font_bold(12.0),
                         TextColor(if on { TEXT } else { TEXT_DIM }),
                         Pickable::IGNORE,
                     ));
@@ -134,10 +132,7 @@ fn rail(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
                     // question.
                     b.spawn((
                         Text::new(format!("{}", buf.len())),
-                        TextFont {
-                            font_size: 12.0,
-                            ..default()
-                        },
+                        font_bold(12.0),
                         TextColor(TEXT_DIM),
                         Pickable::IGNORE,
                     ));
@@ -192,10 +187,7 @@ fn browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
                         } else {
                             "nothing here matches".to_string()
                         }),
-                        TextFont {
-                            font_size: 12.0,
-                            ..default()
-                        },
+                        font(12.0),
                         TextColor(TEXT_DIM),
                     ));
                 }
@@ -224,10 +216,7 @@ fn browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
                     } else {
                         ui.query.clone()
                     }),
-                    TextFont {
-                        font_size: 13.0,
-                        ..default()
-                    },
+                    font(13.0),
                     TextColor(if empty { TEXT_DIM } else { TEXT }),
                 ));
             });
@@ -255,10 +244,7 @@ fn recipe_cell(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, ro
         .with_children(|c| {
             c.spawn((
                 Text::new(item_label(&core.catalog, row.output)),
-                TextFont {
-                    font_size: 10.0,
-                    ..default()
-                },
+                font_bold(10.0),
                 // Dimmed rather than hidden — the reference greys what you
                 // cannot afford so you can see what to go and get.
                 TextColor(if can { TEXT } else { TEXT_DIM }),
@@ -287,10 +273,7 @@ pub fn build_detail(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCor
             let Some(recipe) = ui.selected else {
                 pane.spawn((
                     Text::new("pick something to craft"),
-                    TextFont {
-                        font_size: 14.0,
-                        ..default()
-                    },
+                    font(14.0),
                     TextColor(TEXT_DIM),
                 ));
                 return;
@@ -321,18 +304,12 @@ fn detail_body(
     .with_children(|row| {
         row.spawn((
             Text::new(item_label(&core.catalog, def.output).to_uppercase()),
-            TextFont {
-                font_size: 20.0,
-                ..default()
-            },
+            font_bold(20.0),
             TextColor(TEXT),
         ));
         row.spawn((
             Text::new(format!("{:.1}s", seconds(def, count))),
-            TextFont {
-                font_size: 14.0,
-                ..default()
-            },
+            font_bold(14.0),
             TextColor(TEXT_DIM),
         ));
     });
@@ -348,10 +325,7 @@ fn detail_body(
         .with_children(|b| {
             b.spawn((
                 Text::new(badge.to_string()),
-                TextFont {
-                    font_size: 11.0,
-                    ..default()
-                },
+                font_bold(11.0),
                 TextColor(BADGE),
             ));
         });
@@ -372,10 +346,7 @@ fn detail_body(
         let on = ui.favs.contains(&recipe);
         b.spawn((
             Text::new(if on { "* FAVOURITED" } else { "* favourite" }.to_string()),
-            TextFont {
-                font_size: 11.0,
-                ..default()
-            },
+            font_bold(11.0),
             TextColor(if on { BADGE } else { TEXT_DIM }),
             Pickable::IGNORE,
         ));
@@ -440,10 +411,7 @@ fn detail_body(
         .with_children(|b| {
             b.spawn((
                 Text::new(format!("{count}")),
-                TextFont {
-                    font_size: 14.0,
-                    ..default()
-                },
+                font_bold(14.0),
                 TextColor(TEXT),
             ));
         });
@@ -468,10 +436,7 @@ fn detail_body(
         .with_children(|b| {
             b.spawn((
                 Text::new("CRAFT".to_string()),
-                TextFont {
-                    font_size: 15.0,
-                    ..default()
-                },
+                font_bold(15.0),
                 TextColor(if can { TEXT } else { TEXT_DIM }),
                 Pickable::IGNORE,
             ));
@@ -482,10 +447,7 @@ fn detail_body(
     // stepper the player thinks is broken.
     pane.spawn((
         Text::new(format!("you can pay for {max}")),
-        TextFont {
-            font_size: 11.0,
-            ..default()
-        },
+        font(11.0),
         TextColor(TEXT_DIM),
     ));
 }
@@ -508,10 +470,7 @@ fn step_button(parent: &mut ChildSpawnerCommands, by: i32, glyph: &str) {
         .with_children(|b| {
             b.spawn((
                 Text::new(glyph.to_string()),
-                TextFont {
-                    font_size: 14.0,
-                    ..default()
-                },
+                font_bold(14.0),
                 TextColor(TEXT),
                 Pickable::IGNORE,
             ));
@@ -541,10 +500,7 @@ fn table_row(
                         ..default()
                     },
                     Text::new(text.to_string()),
-                    TextFont {
-                        font_size: size,
-                        ..default()
-                    },
+                    font_bold(size),
                     TextColor(colour),
                 ));
             }
@@ -571,20 +527,14 @@ pub fn build_queue(parent: &mut ChildSpawnerCommands, _ui: &Ui, core: &ClientCor
         .with_children(|strip| {
             strip.spawn((
                 Text::new("CRAFTING QUEUE".to_string()),
-                TextFont {
-                    font_size: 13.0,
-                    ..default()
-                },
+                font_bold(13.0),
                 TextColor(TEXT_DIM),
             ));
             let n = core.jobs_count as usize;
             if n == 0 {
                 strip.spawn((
                     Text::new("empty".to_string()),
-                    TextFont {
-                        font_size: 12.0,
-                        ..default()
-                    },
+                    font(12.0),
                     TextColor(TEXT_DIM),
                 ));
                 return;
@@ -616,10 +566,7 @@ pub fn build_queue(parent: &mut ChildSpawnerCommands, _ui: &Ui, core: &ClientCor
                                 item_label(&core.catalog, output),
                                 remaining
                             )),
-                            TextFont {
-                                font_size: 12.0,
-                                ..default()
-                            },
+                            font_bold(12.0),
                             TextColor(TEXT),
                             Pickable::IGNORE,
                         ));
@@ -635,10 +582,7 @@ pub fn build_queue(parent: &mut ChildSpawnerCommands, _ui: &Ui, core: &ClientCor
                             } else {
                                 "click to cancel".to_string()
                             }),
-                            TextFont {
-                                font_size: 10.0,
-                                ..default()
-                            },
+                            font(10.0),
                             TextColor(TEXT_DIM),
                             Pickable::IGNORE,
                         ));

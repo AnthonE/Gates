@@ -160,10 +160,7 @@ pub fn setup(
             ..default()
         },
         Text::new(""),
-        TextFont {
-            font_size: 17.0,
-            ..default()
-        },
+        super::ui::font_bold(17.0),
         TextColor(Color::srgba(0.93, 0.91, 0.86, 0.92)),
     ));
 
@@ -183,10 +180,7 @@ pub fn setup(
             ..default()
         },
         Text::new(""),
-        TextFont {
-            font_size: 14.0,
-            ..default()
-        },
+        super::ui::font_bold(14.0),
         TextColor(Color::srgba(0.86, 0.83, 0.76, 0.80)),
         Pickable::IGNORE,
     ));
@@ -248,10 +242,7 @@ pub fn setup(
             ..default()
         },
         Text::new(""),
-        TextFont {
-            font_size: 15.0,
-            ..default()
-        },
+        super::ui::font_bold(15.0),
         TextColor(Color::srgba(0.96, 0.94, 0.88, 0.92)),
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
@@ -267,10 +258,7 @@ pub fn setup(
             ..default()
         },
         Text::new(""),
-        TextFont {
-            font_size: 14.0,
-            ..default()
-        },
+        super::ui::font(14.0),
         TextColor(Color::srgba(0.98, 0.82, 0.55, 0.0)),
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
@@ -289,10 +277,7 @@ pub fn setup(
             ..default()
         },
         Text::new(""),
-        TextFont {
-            font_size: 15.0,
-            ..default()
-        },
+        super::ui::font_bold(15.0),
         TextColor(Color::srgba(0.90, 0.88, 0.82, 0.75)),
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,

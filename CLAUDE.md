@@ -421,6 +421,16 @@ which is neither.
   Only `meshgen::generate_tree_meshes` is called — settings and an `Rng` in,
   two meshes out; the crate's plugin is deliberately unused, because a plugin
   that regenerates entities on change would put tree state in the ECS.
+- **Roboto Condensed** (Apache-2.0, © 2011 Google Inc.) — the client's UI
+  face, **shipped**: `crates/client/fonts/RobotoCondensed-{Regular,Bold}.ttf`
+  are compiled into the binary by `include_bytes!` and
+  `fonts/LICENSE-ROBOTO.txt` is the notice that has to travel with them
+  (`tests/ui.rs` §F fails if it stops travelling). Not a taste call — the
+  reference game names `RobotoCondensed-Bold.ttf` as its own UI default in
+  public source (`Facepunch/Rust.Community`, `CommunityEntity.UI.cs`), which
+  is a *fact about the target*, in the sense `ART.md` means by measured.
+  Nothing was traced and no proper noun ships; a typeface anyone may
+  redistribute is not the IP rail's business.
 - `SeedThree` (github.com/SkyeShark/SeedThree, MIT) — source of the wind
   design the client ships: one per-vertex `aWind` cantilever weight rooted at
   the trunk base, phase taken from the instance's world position so a gust

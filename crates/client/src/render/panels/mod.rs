@@ -176,7 +176,12 @@ pub struct GhostRoot;
 // translucency and the cell states, and nothing else. Proposed defaults,
 // `DECISIONS.md` §open "menu skin v0".
 
-pub use super::ui::{DIM as TEXT_DIM, RULE as LINE, TEXT};
+// The FACE comes from there too, and for a stronger reason than the colours:
+// a panel drawn in a different typeface from the Esc menu behind it does not
+// read as the same product at all. `ui::font_bold` is the common case — the
+// reference game's own UI default is `RobotoCondensed-Bold.ttf` — and
+// `ui::font` is for prose.
+pub use super::ui::{font, font_bold, DIM as TEXT_DIM, RULE as LINE, TEXT};
 
 /// Panel body: nearly opaque, so text over a lit world stays readable. The
 /// chrome's `PANEL` is the same hue at full alpha — it never has a world
