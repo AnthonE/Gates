@@ -88,7 +88,7 @@ replay — the deterministic replay is the dupe investigation tool.
 - **The name** — `Gates`, spoken 2026-07-31 (`DECISIONS.md`). Settled; no
   longer blocks anything public.
 - **Landing page**: one static page on the game domain — what it is, the
-  never-table (what money can't buy, verbatim from DESIGN §3.3), wipe
+  what the house does not sell (`BUSINESS.md`), wipe
   clock, wipe/uptime numbers, and — as of `DECISIONS.md` 2026-08-05 — **two**
   buttons rather than one: *buy* (the native client, the official armed
   shards) and *try it in the browser* (the demo, unarmed shards). **The

@@ -143,31 +143,17 @@ Purchase flow, v1 — custody zero, verification three-valued:
 Proceeds go to a posted address **(knob: fiscus vs a burn split — an
 operator sentence; default: 100% to the posted fiscus address, burn 0%)**.
 
-### 3.3 · The never-table
+### 3.3 · What we sell
 
-What money — any coin, any amount, anyone's — can **never** buy from the
-house. This table is a wall, not a knob, and it is the whole reason a
-crypto-native audience can trust a survival game with real coins in it:
+**Moved to `BUSINESS.md`.** We sell IAP: the game itself at a uniform price,
+skins and appearance, and players sell each other everything. The one thing the
+house does not sell is an advantage over another player — stats, upkeep pauses,
+blueprints, loot odds, queue priority. A skin is not an advantage.
 
-| never for sale | because |
-|---|---|
-| damage, armor, speed, capacity, gather rate | pay-to-win kills the game |
-| upkeep, decay pauses, protection windows | paying rent to not be raided is pay-to-win with extra steps |
-| blueprints, tech, crafting speed | progression is play |
-| loot odds, spawn quality, map intel | information is position |
-| queue priority over another player **(knob: default never — flipping this is an operator sentence)** | the door is sold once, at one price; selling a shorter line to the same door is pay-to-win wearing a hat |
-
-The house sells appearance and the game itself. Players sell each other
-everything. The pools exchange the coins. That is the entire monetary
-constitution.
-
-**The door is not on this table** (`DECISIONS.md` 2026-08-05). A game that
-costs money sells *access*, uniformly, to everyone who plays — which is
-exactly why it grants no player an edge and clears every row above. What
-stays forbidden is a **better door than the next player's**; the queue row
-means priority among people who have already paid, and "we already sell
-access" is not an argument that reaches it. Price and currency are
-`DECISIONS.md` §open — no number is invented here.
+It lives in its own file because it is a product decision the operator owns,
+it has no gate, and carrying it inside the engineering docs cost context on
+every pass that never touched money. Price and currency stay `DECISIONS.md`
+§open.
 
 ## 4 · Architecture
 

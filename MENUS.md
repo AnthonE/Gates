@@ -162,7 +162,7 @@ unbuilt. Noted so "popular plugin" is never read as "missing feature."
 
 **Economics** is a currency backbone that does nothing alone and that
 everything else hooks into. OBOL already holds that role under the
-never-table (`DESIGN.md` §3.1), so the lesson is only that the hook-point
+what the house does not sell (`BUSINESS.md`), so the lesson is only that the hook-point
 matters.
 
 ## 6 · The keystone, and the order the dependencies impose

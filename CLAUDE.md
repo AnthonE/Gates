@@ -57,6 +57,7 @@ pays the same doors and earns the same coins as a human.
 | `TERRAIN.md` | worldgen, slots, collision, terrain rendering | |
 | `CONTENT.md` | every item/recipe/damage/loot number, as data schemas | numbers live here, never in code |
 | `ALPHA.md` | the alpha cut, staged economy arming (A1→A2→A3) | |
+| `BUSINESS.md` | what we sell: IAP, the entry price, and the one thing that stays out (an advantage over another player) | **product, not engineering** — read it when building the store, never otherwise. Nothing in `crates/` reads it |
 | `ART.md` | the art bible: measured targets off `Rust Images/`, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
 | `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
@@ -71,6 +72,13 @@ the gates in CI, the operator's spoken decisions, and measurements. A doc
 that disagrees with a passing gate is wrong — fix the doc.
 
 ## The walls (each with its enforcement — a law without a gate is a mood)
+
+Seven, and every one of them has a gate you can run. **Monetization is not
+here.** It used to be wall 8 and it had no enforcement, in a list whose own
+header says a law without a gate is a mood — so it was product policy wearing
+engineering clothes, and it cost context on every pass that never touched
+money. It lives in `BUSINESS.md` now: read that when you are working on the
+store, and not otherwise.
 
 1. **sim-core is pure.** No I/O, no clock, no threads, no `HashMap`/
    `HashSet` iteration, no libm/trig, floats restricted to
@@ -93,12 +101,6 @@ that disagrees with a passing gate is wrong — fix the doc.
    `content/*.toml` only, validated at boot, content hash pinned into the
    WAL header (a replay replays the content it was played under). →
    `test_content`.
-8. **The house never sells power.** It sells appearance and the game
-   itself; the never-table (`DESIGN.md` §3.3) is a wall, not a knob, and
-   a uniform entry price is not on it — a *better door than the next
-   player's* still is. Economy stages (A1/A2/A3) arm only by operator
-   act. Tickers are bare: SCRY, OBOL, MYRRH — never a `$` prefix.
-
 ## Traps already paid for (learned from research or scry production —
 do not rediscover)
 

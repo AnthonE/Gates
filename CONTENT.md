@@ -139,6 +139,6 @@ hash notes it, replays unaffected retroactively.
 
 No schema field will ever exist for: stat-modifying skins, loot-odds
 modifiers by identity or payment, XP/levels (progression is items and
-knowledge only), or per-player drop rates. The absence is the never-table
+knowledge only), or per-player drop rates. The absence is `BUSINESS.md`
 (`DESIGN.md` §3.3) enforced at the schema layer — a field that can't be
 written can't be sold.

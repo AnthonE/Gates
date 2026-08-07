@@ -72,7 +72,7 @@ Small, sharp, finished. One owner per crate per iteration; `protocol` and
    regenerated goldens in the same commit. Gate: `test_protocol_golden`.
 7. Content never touches code — items and balance live in `content/*.toml`,
    content hash pinned into the WAL header. Gate: `test_content`.
-8. Money is appearance-only from the house; the never-table is a wall.
+8. What we sell is `BUSINESS.md` — product, not an engineering wall.
    Tickers are bare: SCRY, OBOL, MYRRH — never a `$` prefix. Gate:
    `ci/gates.sh` docs check.
 
