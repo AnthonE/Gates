@@ -20,6 +20,37 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0w · The props carry a photograph — what is left after it *(client lane)*
+
+Landed 2026-08-07. Every non-ground surface was a flat `base_color`: 34 CC0
+textures shipped and **2 were sampled**, because no procedural mesh in the
+client had a UV. `props::Soup` box-projects per triangle (free on a soup — no
+shared vertices, so no seam and no shader), `blob_mesh` subdivides and displaces
+instead of being a 20-triangle icosahedron, and bark/wood/stone/metal/rock are
+bound. Licence rail widened the same day: `DECISIONS.md` 2026-08-07.
+
+Remaining, ranked by what the captures show:
+
+1. **The hemisphere fill, and it is now the top visual gap.** p10 71.0 against
+   a reference 41.0 — props v1 moved it 13 the wrong way by removing the
+   frame's accidental darks (`RENDER.md` §0). One owner, one iteration, inside
+   the coupled lighting set; do not touch it from a parallel lane.
+2. **Trees are small and sparse in the midground.** The wide vantages are an
+   empty green plain between the near clutter and the far ridge, where the
+   reference frames are dense. This is `terrain::scatter`'s density and the
+   conifer's scale, not a material.
+3. **Nothing sits IN the ground** (`ART.md` rule 2). The new boulder has a
+   clean elliptical intersection with the turf and no crowding or dirt skirt —
+   more visible now that the rock reads as a real object.
+4. **The far mesh speckles.** Grazing-angle aliasing on the 8 m LOD; the
+   candidate is anisotropy, registered at 4 for a browser reason that does not
+   survive the port (`ART.md` §7), so it is a proposal not an edit.
+5. **The viewmodel is two untextured boxes**, and it is in a third of the frame.
+6. **Roughness maps are still unread** — all nine of them. Blocked on an ORM
+   packing step, not on a slot: `metallic_roughness_texture` is glTF-packed and
+   its B channel is metallic, so a greyscale rough jpg would make every surface
+   a half-metal.
+
 ## 0y · Persistence takes the reference game's shape *(server lane)*
 
 > **ARMED on the public shard, 2026-08-07** (operator: *"ok yea turn it all

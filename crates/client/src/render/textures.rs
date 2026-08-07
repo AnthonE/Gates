@@ -26,6 +26,11 @@ use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamp
 use bevy::prelude::*;
 
 /// One material's three maps, as the ground and the props want them.
+///
+/// `Default` is three unresolved handles — how the headless gates build a
+/// `PropMaps` without an asset server or a file on disk. A material clones the
+/// handle either way, so the path under test is the same one.
+#[derive(Default)]
 pub struct MapSet {
     pub albedo: Handle<Image>,
     pub normal: Handle<Image>,
@@ -108,6 +113,43 @@ pub struct GroundMaps {
     pub detail: Handle<Image>,
 }
 
+/// The prop identities' maps — the five sets that were fetched, manifested and
+/// then never loaded by anything.
+///
+/// **These bind differently from the ground's, and the difference is the whole
+/// reason the ground could only take one map.** `terrain_mesh` has four
+/// identities blending into one `base_color_texture` slot, so its photograph
+/// has to be a luminance field and the colour has to stay the splat's. A prop
+/// has exactly one identity — granite is granite, bark is bark — so the
+/// photograph IS the colour, `base_color` stays white, and no mean-placing
+/// gain is applied at all.
+///
+/// That is not a shortcut around `ART.md` §7's deviation rule; it is the case
+/// the rule is vacuous in. The rule bounds how far a per-channel gain may
+/// stretch a source's colour deviation, and a gain of exactly 1 stretches it
+/// by exactly 1. Measured off the shipped files (linear means, Rec.709 luma,
+/// against `ALBEDO_LUMA_BAND = [0.05, 0.55]`):
+///
+/// | role | linear mean rgb | luma | albedo sd | in band |
+/// |---|---|---|---|---|
+/// | rock | 0.273 0.269 0.259 | 0.269 | 0.0933 | ✓ |
+/// | bark | 0.128 0.105 0.064 | 0.107 | 0.0676 | ✓ |
+/// | wood | 0.161 0.139 0.112 | 0.142 | 0.0661 | ✓ |
+/// | stone | 0.237 0.202 0.106 | 0.203 | 0.1139 | ✓ |
+/// | metal | 0.230 0.228 0.228 | 0.228 | 0.0689 | ✓ |
+///
+/// All five clear the band off the raw file, so every one of them ships its
+/// colour whole. The per-instance and per-part variation that used to BE the
+/// colour becomes a mean-1 field multiplying it (`props::tint1`).
+#[derive(Resource)]
+pub struct PropMaps {
+    pub rock: MapSet,
+    pub bark: MapSet,
+    pub wood: MapSet,
+    pub stone: MapSet,
+    pub metal: MapSet,
+}
+
 pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(GroundMaps {
         sand: MapSet::load(&assets, "sand"),
@@ -115,5 +157,15 @@ pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
         litter: MapSet::load(&assets, "litter"),
         rock: MapSet::load(&assets, "rock"),
         detail: assets.load_with_settings(GROUND_DETAIL, tiling(true)),
+    });
+    // Same paths as the ground's `rock`, and therefore the same handle: the
+    // asset server keys on path plus settings, so naming it twice costs one
+    // load and one residency, not two.
+    commands.insert_resource(PropMaps {
+        rock: MapSet::load(&assets, "rock"),
+        bark: MapSet::load(&assets, "bark"),
+        wood: MapSet::load(&assets, "wood"),
+        stone: MapSet::load(&assets, "stone"),
+        metal: MapSet::load(&assets, "metal"),
     });
 }
