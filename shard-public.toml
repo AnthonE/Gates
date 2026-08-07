@@ -23,13 +23,12 @@
 #   NO dev_spawn — a public shard must not land every joiner on one point
 #             (config.rs says so). This is also what browser_smoke's dev
 #             gate asserts about a public shard.
-#   NO save_file / world_file yet — persistence is OFF on this shard, so
-#             every restart wipes the island and every joiner is a fresh
-#             character. That is a deliberate blank and not an oversight:
-#             turning them on is a deploy, which is an operator act, and it
-#             wants require_auth = true with it or every joiner is a guest
-#             with no identity to save under. The two lines are below,
-#             commented, with the paths this box would use.
+#   PERSISTENCE IS ON (operator, 2026-08-07). The island, the bases and the
+#             bodies survive a restart, and players keep what they were
+#             carrying. require_auth is on with them because a save is filed
+#             under the identity the admission seam returns and a guest has
+#             none — without it this shard would write nothing and warn about
+#             it at every boot. See the AUTH WARNING note at the bottom.
 
 bind = "0.0.0.0:61234"
 seed = 20260731
@@ -49,6 +48,24 @@ key_pem = "/home/master/gates-certs/privkey.pem"
 # `systemctl stop` flushes both; a crash costs at most
 # world_save_interval_ticks of the world (60 s by default).
 #
-# require_auth = true
-# save_file = "/home/master/gates-data/players.save"
-# world_file = "/home/master/gates-data/island.world"
+require_auth = true
+save_file = "/home/master/gates-data/players.save"
+world_file = "/home/master/gates-data/island.world"
+
+# AUTH WARNING — read this before the first real player logs in.
+#
+# `require_auth = true` above does NOT mean this shard authenticates anybody.
+# `crates/server/src/auth.rs` is still a stub: it accepts any non-empty token
+# and files the save under the token's own bytes, so a joiner is whoever they
+# say they are. Its own header puts it plainly — "anyone who knows your name
+# is you".
+#
+# That was cheap when a shard forgot you on every disconnect. It is not cheap
+# now: an impersonated joiner walks into the real player's body, their base
+# and their inventory. The shard prints this at every boot so it cannot be
+# forgotten.
+#
+# It is survivable only while tokens are unguessable launcher-issued session
+# handles rather than names anyone could type. The fix is one function and one
+# HTTP call to scry, and it is the blocking item for this shard taking real
+# players.
