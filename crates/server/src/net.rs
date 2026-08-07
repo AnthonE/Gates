@@ -214,6 +214,7 @@ pub async fn spawn_shard(
             // A shard running a dev override is a dev shard, and says so
             // in every welcome — that bit is the client's only dev gate.
             dev: cfg.dev_spawn.is_some(),
+            require_auth: cfg.require_auth,
         },
         ctrl_tx,
         grave_rx,
@@ -241,6 +242,8 @@ pub async fn spawn_shard(
 struct ShardFacts {
     seed: u64,
     dev: bool,
+    /// `shard.toml require_auth`. See `config.rs` for why it is a knob.
+    require_auth: bool,
 }
 
 /// What a handshake task hands back once the client said a valid hello.
@@ -269,7 +272,7 @@ async fn accept_loop(
             incoming = endpoint.accept() => {
                 let stats = stats.clone();
                 let done_tx = done_tx.clone();
-                tokio::spawn(handshake_task(incoming, done_tx, stats));
+                tokio::spawn(handshake_task(incoming, done_tx, stats, facts.require_auth));
             }
             Some(done) = done_rx.recv() => {
                 install(done, facts, &mut ctrl_tx, &slots, &stats).await;
@@ -294,6 +297,7 @@ async fn handshake_task(
     incoming: IncomingSession,
     done_tx: tokio::sync::mpsc::Sender<Handshaken>,
     stats: Arc<ShardStats>,
+    require_auth: bool,
 ) {
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
@@ -311,6 +315,21 @@ async fn handshake_task(
     if hello.proto_ver != PROTO_VER {
         ShardStats::bump(&stats.refused_version);
         spawn_refusal(connection, send, REFUSE_VERSION);
+        return;
+    }
+    // Admission. **The token is not validated here yet and this is the
+    // honest half of the slice**: `validate_session` is the seam where the
+    // shard asks scry whether the token is good, and it is a stub that
+    // accepts any non-empty token until that API is wired (`auth.rs` in
+    // `protocol` has the model). So today `require_auth = true` proves a
+    // client CARRIED a credential, not that the credential is real — which
+    // is why the default is `false` and why arming it on a public shard
+    // waits for the validator. Named rather than implied, because a shard
+    // operator reading `require_auth` would otherwise assume more than it
+    // does.
+    if require_auth && !crate::auth::validate_session(&hello.token) {
+        ShardStats::bump(&stats.refused_auth);
+        spawn_refusal(connection, send, protocol::REFUSE_AUTH);
         return;
     }
     let _ = done_tx

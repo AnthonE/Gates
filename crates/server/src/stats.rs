@@ -17,6 +17,11 @@ pub struct ShardStats {
     pub joins: AtomicU64,
     pub leaves: AtomicU64,
     pub refused_version: AtomicU64,
+    /// Joins refused for want of a good session (`REFUSE_AUTH`). Counted
+    /// separately from `refused_version` because the two mean opposite
+    /// things about a shard: a version refusal is a client that needs
+    /// updating, an auth refusal is a shard doing its job.
+    pub refused_auth: AtomicU64,
     pub refused_full: AtomicU64,
     pub handshake_errors: AtomicU64,
     /// Input datagrams decoded and ringed.

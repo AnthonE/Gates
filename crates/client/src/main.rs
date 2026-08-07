@@ -53,8 +53,15 @@ async fn main() {
         }
     };
 
+    let token = match a.token() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("client: {e}");
+            std::process::exit(1);
+        }
+    };
     println!("client: connecting to {server}");
-    let mut session = match Session::connect(&endpoint, &server).await {
+    let mut session = match Session::connect(&endpoint, &server, token).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("client: {e}");

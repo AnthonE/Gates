@@ -203,6 +203,7 @@ pub extern "C" fn client_hello() -> u32 {
         encode_hello(
             &Hello {
                 proto_ver: PROTO_VER,
+                token: protocol::AuthToken::NONE,
             },
             &mut b.out_buf,
         )

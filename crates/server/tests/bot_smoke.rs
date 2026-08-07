@@ -195,6 +195,7 @@ async fn test_action_lane_over_socket() {
     let len = encode_hello(
         &Hello {
             proto_ver: PROTO_VER,
+            token: protocol::AuthToken::NONE,
         },
         &mut buf,
     )
@@ -278,7 +279,14 @@ async fn test_version_gate_refuses() {
     let opening = connection.open_bi().await.expect("open_bi");
     let (mut send, mut recv) = opening.await.expect("bi");
     let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
-    let len = encode_hello(&Hello { proto_ver: 999 }, &mut buf).expect("encode");
+    let len = encode_hello(
+        &Hello {
+            proto_ver: 999,
+            token: protocol::AuthToken::NONE,
+        },
+        &mut buf,
+    )
+    .expect("encode");
     write_frame(&mut send, &buf[..len]).await.expect("write");
     let (reply, reply_len) = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut recv))
         .await
@@ -324,6 +332,7 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
         let len = encode_hello(
             &Hello {
                 proto_ver: PROTO_VER,
+                token: protocol::AuthToken::NONE,
             },
             &mut buf,
         )

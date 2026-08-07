@@ -24,11 +24,13 @@
 //! arbitrary bytes (client-driven on the server side), and the golden
 //! suite flips bits to prove it.
 
+pub mod auth;
 pub mod bits;
 pub mod chat;
 pub mod event;
 pub mod goldens;
 
+pub use auth::{AuthToken, AUTH_TOKEN_MAX_BYTES};
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
@@ -233,7 +235,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// It also spends the last action code: `ACT_MAX` is now full at 15, so
 /// v24's action, if it has one, is the width bump. Fixtures are keyed
 /// `v23_*`.
-pub const PROTO_VER: u16 = 24;
+pub const PROTO_VER: u16 = 25;
 
 /// Datagram kind field width — room for the class-S lanes to grow into.
 pub const KIND_BITS: u32 = 3;
@@ -308,6 +310,12 @@ pub fn peek_kind(buf: &[u8]) -> Result<u32, WireError> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hello {
     pub proto_ver: u16,
+    /// The launcher's session token, or [`AuthToken::NONE`] for a guest.
+    ///
+    /// **Opaque and unvalidated here.** The shard relays it to scry and gets
+    /// back a stable player key; until it does, this is a claim exactly as an
+    /// address was. `server` owns that call — see `auth.rs`'s header.
+    pub token: AuthToken,
 }
 
 /// S→C: the join bundle v0 — player id, world seed, current server tick.
@@ -331,6 +339,13 @@ pub struct Welcome {
 /// never hangs (DESIGN.md §5.9).
 pub const REFUSE_VERSION: u8 = 0;
 pub const REFUSE_FULL: u8 = 1;
+/// The shard requires a session and the token was absent or not good.
+///
+/// One code for both, deliberately: telling a caller *which* of "you sent
+/// nothing" and "your token was rejected" applies is a probing oracle, and
+/// the player-facing sentence is the same either way — sign in through the
+/// launcher. `server` distinguishes them in its own counters.
+pub const REFUSE_AUTH: u8 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Refuse {
@@ -341,6 +356,7 @@ pub fn encode_hello(msg: &Hello, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
     w.write(KIND_HELLO, KIND_BITS)?;
     w.write(msg.proto_ver as u32, 16)?;
+    auth::write_token(&mut w, &msg.token)?;
     Ok(w.finish())
 }
 
@@ -350,8 +366,9 @@ pub fn decode_hello(buf: &[u8]) -> Result<Hello, WireError> {
         return Err(WireError::Malformed);
     }
     let proto_ver = r.read(16)? as u16;
+    let token = auth::read_token(&mut r)?;
     expect_zero_padding(&mut r)?;
-    Ok(Hello { proto_ver })
+    Ok(Hello { proto_ver, token })
 }
 
 pub fn encode_welcome(msg: &Welcome, buf: &mut [u8]) -> Result<usize, WireError> {

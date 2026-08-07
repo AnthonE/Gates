@@ -73,6 +73,13 @@ fn main() -> AppExit {
     // to is a client that lies for its first few frames — which is why this
     // stayed a hard precondition for `--capture` rather than becoming a
     // state the harness could photograph halfway through.
+    let token = match a.token() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("gates: {e}");
+            std::process::exit(1);
+        }
+    };
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let session = straight_in.then(|| {
         rt.block_on(async {
@@ -80,7 +87,7 @@ fn main() -> AppExit {
                 eprintln!("gates: {e}");
                 std::process::exit(1);
             });
-            Session::connect(&endpoint, &server)
+            Session::connect(&endpoint, &server, token)
                 .await
                 .unwrap_or_else(|e| {
                     eprintln!("gates: {e}");

@@ -11,6 +11,15 @@ seed = 20260731
 # two tabs inside AOI range. DECISIONS.md §open "dev spawn override".
 # dev_spawn = "1024,1024"
 
+# Require a scry session token to join. Default false = this shard takes
+# guests, which is what every test and the local dev flow need.
+#
+# WARNING, and read it before arming this: the validator is a STUB today
+# (crates/server/src/auth.rs). It accepts any non-empty token, so `true`
+# proves a joiner CARRIED a credential and not that the credential is real.
+# It is not authentication yet. DECISIONS.md §open "scry session auth v0".
+# require_auth = false
+
 # Where content/*.toml lives (CLAUDE.md wall 7). Default "content",
 # resolved against the CWD. The shard refuses to boot on content that
 # fails schema, reference, or balance-band checks.

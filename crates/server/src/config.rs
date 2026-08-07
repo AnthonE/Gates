@@ -22,6 +22,21 @@ pub struct ShardConfig {
     /// test and the local dev flow use.
     pub cert_pem: Option<String>,
     pub key_pem: Option<String>,
+    /// Whether a session token is REQUIRED to join.
+    ///
+    /// `false` (the shipping default) is a shard that takes guests: a player
+    /// with no launcher plays anyway, which is the same posture
+    /// `scry::Player::Anonymous` has always taken on the client. `true`
+    /// refuses a joiner whose token is absent or not good, with
+    /// `REFUSE_AUTH`.
+    ///
+    /// **It is a knob and not a wall because a shard's admission policy is
+    /// the operator's**, and the two real cases both exist: a public armed
+    /// shard wants everyone identified, and a local dev shard must be
+    /// joinable with nothing running but the binary. Every test in this repo
+    /// depends on the second.
+    /// Proposed default `false`, DECISIONS.md §open ("scry session auth v0").
+    pub require_auth: bool,
     /// Where `content/*.toml` lives (CLAUDE.md wall 7). Default `content`
     /// resolves against the CWD, which the repo commands make the repo
     /// root. The shard binary refuses to boot on invalid content.
@@ -37,6 +52,7 @@ impl ShardConfig {
             dev_spawn: None,
             cert_pem: None,
             key_pem: None,
+            require_auth: false,
             content_dir: "content".into(),
         }
     }
@@ -50,6 +66,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut seed: Option<u64> = None;
     let mut dev_spawn: Option<(f32, f32)> = None;
     let mut content_dir: Option<String> = None;
+    let mut require_auth: Option<bool> = None;
     let mut cert_pem: Option<String> = None;
     let mut key_pem: Option<String> = None;
     for (n, line) in text.lines().enumerate() {
@@ -112,6 +129,20 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     key_pem = Some(value.to_string());
                 }
             }
+            "require_auth" => match value {
+                "true" => require_auth = Some(true),
+                "false" => require_auth = Some(false),
+                // Refused rather than coerced: a shard that read `yes` as
+                // false would take guests while its operator believed it
+                // did not, and admission policy is the one setting where a
+                // silent default is a security posture nobody chose.
+                other => {
+                    return Err(format!(
+                        "shard.toml line {}: require_auth must be true or false, got `{other}`",
+                        n + 1
+                    ))
+                }
+            },
             "content_dir" => {
                 if value.is_empty() {
                     return Err(format!("shard.toml line {}: empty content_dir", n + 1));
@@ -132,6 +163,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         dev_spawn,
         cert_pem,
         key_pem,
+        require_auth: require_auth.unwrap_or(false),
         content_dir: content_dir.unwrap_or_else(|| "content".into()),
     })
 }
@@ -187,5 +219,52 @@ mod tests {
                 "accepted dev_spawn = {bad}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod auth_cfg_tests {
+    use super::*;
+
+    /// The default is guests-welcome, and that is load-bearing: every test
+    /// in this repo joins a shard with no launcher running.
+    #[test]
+    fn require_auth_defaults_off() {
+        assert!(!ShardConfig::ephemeral(1).require_auth);
+        let cfg = parse_shard_toml("bind = \"127.0.0.1:1\"\nseed = 7\n").expect("parses");
+        assert!(!cfg.require_auth);
+    }
+
+    #[test]
+    fn require_auth_reads_both_ways() {
+        let on = parse_shard_toml("bind = \"127.0.0.1:1\"\nseed = 7\nrequire_auth = true\n")
+            .expect("parses");
+        assert!(on.require_auth);
+        let off = parse_shard_toml("bind = \"127.0.0.1:1\"\nseed = 7\nrequire_auth = false\n")
+            .expect("parses");
+        assert!(!off.require_auth);
+    }
+
+    /// Anything else is refused, not coerced. A shard that read `yes` as
+    /// false would take guests while its operator believed it did not —
+    /// admission is the one setting where a silent default is a posture
+    /// nobody chose.
+    #[test]
+    fn a_fuzzy_require_auth_is_refused() {
+        for bad in ["yes", "1", "on", "True", ""] {
+            let src = alloc_line(bad);
+            assert!(
+                parse_shard_toml(&src).is_err(),
+                "require_auth = `{bad}` must be refused, not coerced"
+            );
+        }
+    }
+
+    /// `format!` is disallowed in this crate; build the line by hand.
+    fn alloc_line(v: &str) -> std::string::String {
+        let mut s = std::string::String::from("bind = \"127.0.0.1:1\"\nseed = 7\nrequire_auth = ");
+        s.push_str(v);
+        s.push('\n');
+        s
     }
 }

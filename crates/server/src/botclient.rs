@@ -64,6 +64,11 @@ pub async fn run_bot(
     let len = encode_hello(
         &Hello {
             proto_ver: PROTO_VER,
+            // A bot is a guest and must stay one. Giving the load harness a
+            // credential would make every soak run authenticate, which is
+            // both a lie about what is being measured and a standing reason
+            // for someone to put a real token in a test fixture.
+            token: protocol::AuthToken::NONE,
         },
         &mut msg_buf,
     )

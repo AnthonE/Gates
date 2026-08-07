@@ -277,7 +277,7 @@ for (let i = 0; i < slotCount; i++) {
 // client handed a `SUB_CHARGE_PLACED` decodes it as unknown, calls the whole
 // event message malformed, and loses every event that shared the datagram
 // with it. Walls would lose hp with nothing drawn to say why.
-check(ex.client_proto_ver() === 24, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 25, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13

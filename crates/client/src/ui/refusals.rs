@@ -28,7 +28,15 @@
 
 /// `protocol`'s `REFUSE_*: u8` — why a shard turned the connection down at
 /// hello, before there is a world to be in.
-pub const CONNECT: [&str; 2] = ["protocol version mismatch", "shard is full"];
+pub const CONNECT: [&str; 3] = [
+    "protocol version mismatch",
+    "shard is full",
+    // `REFUSE_AUTH`. The wire deliberately does not distinguish "you sent no
+    // token" from "your token was rejected" — that split is a probing oracle
+    // — and the player-facing sentence is the same either way, because the
+    // action is the same: sign in through the launcher and come back.
+    "this shard needs a launcher sign-in",
+];
 
 /// `sim_core::craft`'s `REFUSE_*: u32`.
 pub const CRAFT: [&str; 5] = [
@@ -215,6 +223,10 @@ mod tests {
             "protocol version mismatch"
         );
         assert_eq!(connect(protocol::REFUSE_FULL), "shard is full");
+        assert_eq!(
+            connect(protocol::REFUSE_AUTH),
+            "this shard needs a launcher sign-in"
+        );
     }
 
     /// No two codes in a table may share a sentence, or a player cannot tell

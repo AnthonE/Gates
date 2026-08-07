@@ -192,7 +192,14 @@ impl Session {
     /// away the one piece of information a certificate is checked against.
     /// The public shard is reached by the name its cert is issued for
     /// (`shard-public.toml`), which is why the shard list carries names too.
-    pub async fn connect(endpoint: &Endpoint<Client>, server: &str) -> Result<Self, String> {
+    /// `token` is the launcher's session credential (`--session`), or
+    /// [`AuthToken::NONE`] for a guest. It is relayed to the shard and
+    /// validated there; this side never inspects it.
+    pub async fn connect(
+        endpoint: &Endpoint<Client>,
+        server: &str,
+        token: protocol::AuthToken,
+    ) -> Result<Self, String> {
         let url = format!("https://{server}");
         let connection = endpoint
             .connect(&url)
@@ -209,6 +216,7 @@ impl Session {
         let len = encode_hello(
             &Hello {
                 proto_ver: PROTO_VER,
+                token,
             },
             &mut msg,
         )

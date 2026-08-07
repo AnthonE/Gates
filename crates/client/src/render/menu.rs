@@ -172,6 +172,10 @@ pub const CONNECT_TIMEOUT_S: f32 = 20.0;
 #[derive(Default)]
 pub struct Connecting {
     pub addr: String,
+    /// The launcher's session token (`--session`), carried here rather than
+    /// re-read at connect time because the connect runs on the runtime, off
+    /// the frame, and must not reach back into the app for it.
+    pub token: protocol::AuthToken,
     pub rx: Option<std::sync::mpsc::Receiver<Result<crate::Session, String>>>,
     /// Seconds spent on this attempt. Accumulated from Bevy's frame delta
     /// rather than an `Instant`, so the screen has one clock and it is the
@@ -495,11 +499,12 @@ pub fn teardown(mut commands: Commands, roots: Query<Entity, With<MenuRoot>>) {
 /// Start the connect, on the runtime, off the frame.
 pub fn begin_connect(rt: NonSend<Rt>, mut connecting: NonSendMut<Connecting>) {
     let addr = connecting.addr.clone();
+    let token = connecting.token;
     connecting.waited_s = 0.0;
     let (tx, rx) = std::sync::mpsc::channel();
     rt.0.spawn(async move {
         let result = match crate::client_endpoint() {
-            Ok(endpoint) => crate::Session::connect(&endpoint, &addr).await,
+            Ok(endpoint) => crate::Session::connect(&endpoint, &addr, token).await,
             Err(e) => Err(e),
         };
         let _ = tx.send(result);
