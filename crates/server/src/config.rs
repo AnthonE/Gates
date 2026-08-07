@@ -112,6 +112,17 @@ pub struct ShardConfig {
     /// Proposed default 1800 ticks = 60 s at 30 Hz, DECISIONS.md §open
     /// ("world persistence v0").
     pub world_save_interval_ticks: u64,
+    /// The shard's name for SIWE domain binding — what goes in the signed
+    /// message, and what a player sees in their wallet prompt.
+    ///
+    /// **It must be the host the client dialled**, because that is the whole
+    /// of the domain binding: the client builds the message from the address
+    /// it connected to and the server from this key, so a signature
+    /// collected by `evil.example` cannot be presented at `gates.example` —
+    /// the two messages differ and the recovered signer will not match.
+    /// Defaults to the bind host, which is right for a dev shard and wrong
+    /// for anything behind a name, so a public shard sets it.
+    pub domain: String,
 }
 
 impl ShardConfig {
@@ -128,6 +139,7 @@ impl ShardConfig {
             save_file: None,
             world_file: None,
             world_save_interval_ticks: DEFAULT_WORLD_SAVE_INTERVAL_TICKS,
+            domain: "127.0.0.1".into(),
         }
     }
 }
@@ -146,6 +158,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut save_file: Option<String> = None;
     let mut world_file: Option<String> = None;
     let mut world_save_interval_ticks: u64 = DEFAULT_WORLD_SAVE_INTERVAL_TICKS;
+    let mut domain: Option<String> = None;
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -275,6 +288,17 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 world_save_interval_ticks = v;
             }
+            "domain" => {
+                if value.is_empty() || value.len() > protocol::DOMAIN_MAX {
+                    return Err(format!(
+                        "shard.toml line {}: domain must be 1..={} bytes — it is \
+                         the host players dial, and it goes in what they sign",
+                        n + 1,
+                        protocol::DOMAIN_MAX
+                    ));
+                }
+                domain = Some(value.to_string());
+            }
             other => return Err(format!("shard.toml line {}: unknown key `{other}`", n + 1)),
         }
     }
@@ -294,6 +318,12 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         save_file,
         world_file,
         world_save_interval_ticks,
+        // Unset ⇒ the bind host, which is what a dev shard on loopback
+        // wants and what a shard behind a DNS name must override.
+        domain: domain.unwrap_or_else(|| {
+            let b = bind.expect("checked above");
+            b.ip().to_string()
+        }),
     })
 }
 

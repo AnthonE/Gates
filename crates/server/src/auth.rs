@@ -1,139 +1,343 @@
-//! Does this session token name a player, and **who**?
+//! **Who is this, proved.** Recover the signer of a SIWE signature and turn
+//! it into the key a save is filed under.
 //!
-//! **The seam, and today it is a stub that says so.** The shape is the Steam
-//! one: the launcher issues a session token, the game relays it in `Hello`,
-//! and the shard asks the ISSUER whether it is good — one call to scry,
-//! answered with a stable player key. Rust-the-game does exactly this against
-//! Steam's Web API, and the reason to copy it is that no part of it needs a
-//! wallet, a nonce round-trip or a chain lookup to answer "who is this".
+//! ## This used to be a stub and the stub was worse than it looked
 //!
-//! ## It returns a key, and that is what dissolved the argument
+//! It accepted any non-empty session token and returned the token's own
+//! bytes as the player key. Two consequences, and the second is the one that
+//! justified replacing the whole model rather than filling in the middle:
 //!
-//! This used to answer `bool`, which was enough to admit somebody and not
-//! enough to remember them. A shard that only knows "this joiner carried a
-//! credential" builds a fresh character on every connection, so any amount
-//! of authentication ceremony — signatures, expiry windows, on-chain ticket
-//! checks — bought nothing: you could prove who you were perfectly and still
-//! lose everything on a dropped connection.
+//! - Anyone who knew your token was you. That was written down honestly and
+//!   was survivable only while nobody was playing.
+//! - **A session token rotates.** The key rotated with it, so every login
+//!   would have minted a new character and persistence would have silently
+//!   done nothing for every real player — with every gate green, because no
+//!   gate can see that two runs of a stub disagree about who somebody is.
 //!
-//! `Option<PlayerKey>` is the whole fix. The key is the string a save is
-//! filed under (`store.rs`), and **which identity scheme produces it is this
-//! function's business alone**. Session token, EIP-191 signature, scry player
-//! id, dev flag: each is a different body here, and none of them moves the
-//! wire, the store, the sim, or a single test. That is why persistence did
-//! not have to wait for the identity question to be settled.
+//! ## What replaced it, and why it is smaller
 //!
-//! ## The key must never be a credential
+//! `protocol::auth` carries the wire half: a server nonce, a SIWE message
+//! built by one shared function, an address and a 65-byte signature. This
+//! module is the arithmetic: keccak the EIP-191 envelope, `ecrecover` the
+//! public key, hash it to an address, and compare.
 //!
-//! `store.rs` writes it to disk verbatim, and a save file is not a secret
-//! store. So whatever lands here must return a *name*, not a token — a
-//! stable public identifier the issuer resolves the credential to. The stub
-//! below returns the token's own bytes, and that is only safe because of what
-//! the stub is: with no validation, a token IS a bare name, and **anyone who
-//! knows your name is you**. That is already true of a shard running this
-//! stub. Persistence does not make it worse; it makes it visible, which is
-//! the argument for landing the honest stub rather than a plausible one.
+//! No network call. No issuer to be unreachable. No "what does a shard do
+//! when it cannot reach scry" policy question, which is the one the token
+//! model could not answer and the reason it kept not landing. The identity
+//! is a public key hash and the proof is arithmetic over bytes we already
+//! have.
 //!
-//! ## What this does NOT do, stated plainly
+//! ## The key is the address, lowercase, and that is forever
 //!
-//! It does not talk to scry. [`validate_session`] accepts any non-empty token
-//! and rejects an empty one, so with `require_auth = true` a shard proves a
-//! client CARRIED a credential and nothing more. That is not authentication
-//! and must not be armed on a public shard as though it were — the knob's
-//! default is `false` for that reason and `config.rs` repeats it.
-//!
-//! It is landed as a stub rather than left out because the wire, the refusal,
-//! the counter and the policy knob are the parts that need a `PROTO_VER` bump
-//! and goldens, and they are auth-agnostic: whatever validator lands behind
-//! this function, none of that moves again. The validator is one function and
-//! one HTTP call.
-//!
-//! ## What the real one needs
-//!
-//! An endpoint that takes a token and returns a stable key, plus the failure
-//! posture: a shard that cannot REACH the issuer must decide between refusing
-//! everyone and admitting everyone, and that is an operator call, not a
-//! default. Neither is written here because scry's session API is not
-//! published yet (`sdk/PROTOCOL.md`).
+//! Once players have bases, the key is load-bearing in a way nothing else
+//! here is: changing how it is derived orphans every save on the shard.
+//! So it is pinned two ways — `protocol::auth` has a golden on the address
+//! derivation against a published vector (private key 1), and this module
+//! has a golden on the full recover-and-compare path.
+
+use protocol::{siwe_message, Address, Auth, Signature, NONCE_BYTES, SIWE_MESSAGE_MAX};
 
 use crate::store::PlayerKey;
-use protocol::AuthToken;
+use k256::ecdsa::{RecoveryId, Signature as EcdsaSig, VerifyingKey};
+use tiny_keccak::{Hasher, Keccak};
 
-/// Who this token names, or `None` if it names nobody. See the header — this
-/// is a shape check standing where an issuer lookup goes.
-///
-/// `None` is a normal, playable state on a shard that takes guests: a joiner
-/// with no key is admitted and simply remembered by nobody, because there is
-/// no stable string to file them under. That is not a downgrade of anything —
-/// it is exactly what every shard did before the store existed.
-pub fn validate_session(token: &AuthToken) -> Option<PlayerKey> {
-    // The token's own bytes, capped at `PLAYER_KEY_MAX_BYTES` by
-    // `PlayerKey::new`. A token longer than the key cap therefore names
-    // nobody rather than being truncated into somebody else's key — the same
-    // refuse-never-truncate rule `AuthToken::new` follows, and here it is
-    // load-bearing: two players sharing a key would share a save.
-    PlayerKey::new(token.as_bytes())
+/// Why a signature was not accepted. Integer-shaped and never carrying the
+/// bytes it refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthError {
+    /// The address was the guest sentinel — nothing to prove, and nothing
+    /// is claimed. Only an error on a shard that requires identity.
+    Guest,
+    /// `v` was not 27, 28, 0 or 1 — not a `personal_sign` recovery id.
+    BadRecoveryId,
+    /// The signature is not a point on the curve / not a valid ECDSA pair.
+    Malformed,
+    /// It verified, but against a **different** address than the one
+    /// claimed. The interesting failure: somebody signed something, just not
+    /// as who they said they were.
+    WrongSigner,
 }
 
-/// Whether a token is admissible at all — what `require_auth` gates on.
+impl AuthError {
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Guest => "no address was offered",
+            Self::BadRecoveryId => "the signature's recovery id is not a personal_sign one",
+            Self::Malformed => "the signature is not a valid secp256k1 signature",
+            Self::WrongSigner => "the signature is valid but belongs to a different address",
+        }
+    }
+}
+
+fn keccak256(data: &[u8]) -> [u8; 32] {
+    let mut k = Keccak::v256();
+    let mut out = [0u8; 32];
+    k.update(data);
+    k.finalize(&mut out);
+    out
+}
+
+/// An address from a public key: the last 20 bytes of `keccak256` over the
+/// uncompressed point *without* its `0x04` tag.
 ///
-/// Separate from the key on purpose: admission and identity are different
-/// questions, and a real validator will one day admit a joiner it cannot
-/// name (a shard that trusts its own LAN) or name one it will not admit (a
-/// banned key). Today both answers come from the same call, and this says so
-/// in one line rather than by having two callers each reinvent it.
-pub fn admits(token: &AuthToken) -> bool {
-    validate_session(token).is_some()
+/// **The single most consequential line in this file.** Derive it any other
+/// way — keep the tag, take the first 20 bytes, hash the compressed form —
+/// and every player is filed under a key that is not theirs, consistently,
+/// forever, with every other test green. `protocol::auth`'s golden against
+/// the published vector for private key 1 is what pins it.
+fn address_of(vk: &VerifyingKey) -> Address {
+    let point = vk.to_encoded_point(false);
+    let bytes = point.as_bytes();
+    let h = keccak256(&bytes[1..]);
+    let mut a = [0u8; 20];
+    a.copy_from_slice(&h[12..]);
+    Address(a)
+}
+
+/// The EIP-191 `personal_sign` digest: the message under its length-prefixed
+/// envelope, keccaked.
+///
+/// The envelope is not decoration — it is what stops a signature obtained
+/// here from being a valid *transaction* signature. Every wallet applies it
+/// to `personal_sign`, so a verifier that skipped it would reject every real
+/// signature while accepting hand-made ones, which is the wrong way round.
+fn personal_sign_digest(message: &[u8]) -> [u8; 32] {
+    let mut envelope = [0u8; SIWE_MESSAGE_MAX + 32];
+    let prefix = b"\x19Ethereum Signed Message:\n";
+    let mut at = 0;
+    envelope[at..at + prefix.len()].copy_from_slice(prefix);
+    at += prefix.len();
+    // The length in decimal, written without allocating.
+    let mut digits = [0u8; 20];
+    let mut n = 0;
+    let mut v = message.len();
+    loop {
+        digits[n] = b'0' + (v % 10) as u8;
+        v /= 10;
+        n += 1;
+        if v == 0 {
+            break;
+        }
+    }
+    for i in (0..n).rev() {
+        envelope[at] = digits[i];
+        at += 1;
+    }
+    let end = at + message.len();
+    envelope[at..end].copy_from_slice(message);
+    keccak256(&envelope[..end])
+}
+
+/// Verify a client's [`Auth`] against the nonce this connection issued.
+///
+/// The message is **rebuilt here** from the same inputs the client had,
+/// through `protocol::siwe_message` — the one implementation both sides
+/// call. The client never sends the text, so it cannot get a signature over
+/// something else accepted by telling us what it signed.
+pub fn verify(
+    domain: &str,
+    nonce: &[u8; NONCE_BYTES],
+    issued_at: u64,
+    auth: &Auth,
+) -> Result<PlayerKey, AuthError> {
+    if auth.address.is_guest() {
+        return Err(AuthError::Guest);
+    }
+    let mut text = [0u8; SIWE_MESSAGE_MAX];
+    let len = siwe_message(domain, &auth.address, nonce, issued_at, &mut text);
+    let len = len.min(SIWE_MESSAGE_MAX);
+    let digest = personal_sign_digest(&text[..len]);
+
+    let Signature(raw) = auth.signature;
+    // `v` is 27/28 from every wallet and 0/1 from some libraries. Both are
+    // accepted because both are in the wild and the difference is a
+    // historical accident, not a security property.
+    let rec = match raw[64] {
+        27 | 0 => 0u8,
+        28 | 1 => 1u8,
+        _ => return Err(AuthError::BadRecoveryId),
+    };
+    let sig = EcdsaSig::from_slice(&raw[..64]).map_err(|_| AuthError::Malformed)?;
+    let rec_id = RecoveryId::from_byte(rec).ok_or(AuthError::BadRecoveryId)?;
+    let vk = VerifyingKey::recover_from_prehash(&digest, &sig, rec_id)
+        .map_err(|_| AuthError::Malformed)?;
+
+    let signer = address_of(&vk);
+    if signer != auth.address {
+        return Err(AuthError::WrongSigner);
+    }
+    // The key is the lowercase `0x…` text of the address. Text rather than
+    // the 20 raw bytes because `PlayerKey` is what an operator reads out of
+    // a save file when they have to support it, and 20 bytes of binary in a
+    // hexdump is a worse afternoon than 42 characters that are obviously an
+    // address.
+    let hex = signer.to_hex();
+    PlayerKey::new(&hex).ok_or(AuthError::Malformed)
+}
+
+/// The key for an address that has already been proved — the one place that
+/// decides the on-disk spelling, so nothing else has to agree with it.
+pub fn key_of(address: &Address) -> Option<PlayerKey> {
+    if address.is_guest() {
+        return None;
+    }
+    PlayerKey::new(&address.to_hex())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k256::ecdsa::SigningKey;
 
-    #[test]
-    fn a_guest_carries_nothing_and_a_holder_carries_something() {
-        assert!(!admits(&AuthToken::NONE));
-        assert_eq!(validate_session(&AuthToken::NONE), None);
-        assert!(admits(&AuthToken::new(b"a-session-handle").expect("fits")));
+    const DOMAIN: &str = "gates.test";
+
+    fn signer_for(byte: u8) -> SigningKey {
+        let mut sk = [0u8; 32];
+        sk[31] = byte;
+        SigningKey::from_bytes(&sk.into()).expect("a small scalar is a valid key")
     }
 
-    /// The stub must not be mistaken for validation: any non-empty token
-    /// passes, including obvious nonsense. This test exists to FAIL the day
-    /// someone wires the real validator without updating it, which is the
-    /// moment the stub stops being honest.
-    #[test]
-    fn the_stub_accepts_nonsense_and_that_is_the_point() {
-        assert!(admits(&AuthToken::new(b"x").expect("fits")));
+    /// Sign the challenge exactly as a wallet would, so these tests exercise
+    /// the real path rather than a convenient one.
+    fn sign_as(sk: &SigningKey, nonce: &[u8; NONCE_BYTES], issued_at: u64, v_style: u8) -> Auth {
+        let address = address_of(sk.verifying_key());
+        let mut text = [0u8; SIWE_MESSAGE_MAX];
+        let len = siwe_message(DOMAIN, &address, nonce, issued_at, &mut text);
+        let digest = personal_sign_digest(&text[..len]);
+        let (sig, rec) = sk.sign_prehash_recoverable(&digest).expect("signs");
+        let mut raw = [0u8; 65];
+        raw[..64].copy_from_slice(&sig.to_bytes());
+        raw[64] = if v_style == 27 {
+            27 + rec.to_byte()
+        } else {
+            rec.to_byte()
+        };
+        Auth {
+            address,
+            signature: Signature(raw),
+        }
     }
 
-    /// The property persistence rests on, and the only one it needs: the same
-    /// token resolves to the same key every time. Everything else about
-    /// identity here is a stub; this is a contract, and a validator that
-    /// returned a fresh key per connection would silently give every player a
-    /// new character on every join while every gate stayed green.
+    /// **The whole scheme, end to end**, and the assertion that matters is
+    /// the key: it is the address, lowercase, and it is what a save is filed
+    /// under forever.
     #[test]
-    fn one_token_is_always_one_key() {
-        let t = AuthToken::new(b"dev-anthone").expect("fits");
-        let a = validate_session(&t).expect("names somebody");
-        let b = validate_session(&AuthToken::new(b"dev-anthone").expect("fits"))
-            .expect("names somebody");
-        assert_eq!(a, b, "the same token must name the same player");
-        let other = validate_session(&AuthToken::new(b"dev-someone-else").expect("fits"))
-            .expect("names somebody");
-        assert_ne!(a, other, "two tokens must not share one save");
+    fn a_real_signature_recovers_its_own_address() {
+        let sk = signer_for(1);
+        let nonce = [7u8; NONCE_BYTES];
+        let auth = sign_as(&sk, &nonce, 1_770_000_000, 27);
+        let key = verify(DOMAIN, &nonce, 1_770_000_000, &auth).expect("a real signature verifies");
+        assert_eq!(
+            key.as_bytes(),
+            b"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+            "the player key is not the lowercase address — every save on the \
+             shard would be filed under the wrong name"
+        );
     }
 
-    /// **Every token the wire admits must name somebody.** The failure this
-    /// guards is silent and total: a key cap under the token cap would admit a
-    /// launcher's 40-byte session and then file it under nobody, so
-    /// persistence would do nothing for every real player while every gate
-    /// stayed green and the dev shard's short tokens worked fine. `store.rs`
-    /// has a static assert for the constants; this is the same claim through
-    /// the actual call, at the largest token that exists.
+    /// Both `v` conventions are in the wild. Rejecting either would refuse
+    /// half the wallets on earth for a historical accident.
     #[test]
-    fn a_token_at_the_wire_cap_still_names_somebody() {
-        let long = AuthToken::new(&[b'k'; protocol::AUTH_TOKEN_MAX_BYTES]).expect("fits the wire");
-        let key = validate_session(&long).expect("a token the wire admits must name somebody");
-        assert_eq!(key.as_bytes().len(), protocol::AUTH_TOKEN_MAX_BYTES);
+    fn both_recovery_id_conventions_are_accepted() {
+        let sk = signer_for(9);
+        let nonce = [3u8; NONCE_BYTES];
+        for style in [27u8, 0u8] {
+            let auth = sign_as(&sk, &nonce, 42, style);
+            assert!(
+                verify(DOMAIN, &nonce, 42, &auth).is_ok(),
+                "v-style {style} was refused"
+            );
+        }
+    }
+
+    /// **The attack this exists to stop**: a real signature, presented with
+    /// somebody else's address. It verifies as *someone*, just not as who it
+    /// claims — and that is the difference between authentication and a
+    /// spelling check.
+    #[test]
+    fn a_signature_from_the_wrong_key_is_refused() {
+        let me = signer_for(1);
+        let them = signer_for(2);
+        let nonce = [5u8; NONCE_BYTES];
+        let mut auth = sign_as(&them, &nonce, 100, 27);
+        // Keep their signature, claim my address.
+        auth.address = address_of(me.verifying_key());
+        assert_eq!(
+            verify(DOMAIN, &nonce, 100, &auth),
+            Err(AuthError::WrongSigner)
+        );
+    }
+
+    /// **Replay.** A signature is over a nonce this connection chose, so one
+    /// captured from another connection recovers a different signer than the
+    /// address claims and is refused. This is the property that makes the
+    /// per-connection nonce worth having.
+    #[test]
+    fn a_signature_for_another_nonce_is_refused() {
+        let sk = signer_for(4);
+        let auth = sign_as(&sk, &[1u8; NONCE_BYTES], 100, 27);
+        assert!(
+            verify(DOMAIN, &[2u8; NONCE_BYTES], 100, &auth).is_err(),
+            "a signature was accepted against a nonce it did not sign"
+        );
+    }
+
+    /// And over the timestamp, and over the domain — so a signature
+    /// collected by one shard cannot be presented at another.
+    #[test]
+    fn a_signature_for_another_shard_or_time_is_refused() {
+        let sk = signer_for(6);
+        let nonce = [8u8; NONCE_BYTES];
+        let auth = sign_as(&sk, &nonce, 1_000, 27);
+        assert!(verify(DOMAIN, &nonce, 1_001, &auth).is_err(), "time");
+        assert!(
+            verify("other.shard", &nonce, 1_000, &auth).is_err(),
+            "domain"
+        );
+    }
+
+    /// Garbage never panics, it refuses. This runs on the handshake path,
+    /// where the bytes are a stranger's.
+    #[test]
+    fn arbitrary_bytes_are_refused_and_never_panic() {
+        let mut rng = sim_core::rng::Pcg32::new(0x5157_4553, 3);
+        for _ in 0..500 {
+            let mut raw = [0u8; 65];
+            for b in raw.iter_mut() {
+                *b = rng.next_bounded(256) as u8;
+            }
+            let mut addr = [0u8; 20];
+            for b in addr.iter_mut() {
+                *b = rng.next_bounded(256) as u8;
+            }
+            let auth = Auth {
+                address: Address(addr),
+                signature: Signature(raw),
+            };
+            let _ = verify(DOMAIN, &[0; NONCE_BYTES], 0, &auth);
+        }
+    }
+
+    /// A guest is refused by name rather than by accident, so a shard that
+    /// requires identity can say which of the two happened.
+    #[test]
+    fn a_guest_is_refused_as_a_guest() {
+        assert_eq!(
+            verify(DOMAIN, &[0; NONCE_BYTES], 0, &Auth::default()),
+            Err(AuthError::Guest)
+        );
+        assert_eq!(key_of(&Address::GUEST), None);
+    }
+
+    /// The two paths that produce a key must produce the same one, or a
+    /// player verified at the door would be filed under a different name
+    /// than one restored from a file.
+    #[test]
+    fn the_verified_key_and_the_derived_key_agree() {
+        let sk = signer_for(11);
+        let nonce = [2u8; NONCE_BYTES];
+        let auth = sign_as(&sk, &nonce, 7, 27);
+        let verified = verify(DOMAIN, &nonce, 7, &auth).expect("verifies");
+        assert_eq!(Some(verified), key_of(&auth.address));
     }
 }

@@ -67,6 +67,12 @@ fn main() {
     write_fixture(goldens::FIXTURES[6], &buf[..len]);
     let len = encode_refuse(&goldens::refuse_full(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[7], &buf[..len]);
+    // The handshake's identity pair (v27), written last because they were
+    // added last and the manifest is index-ordered.
+    let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[74], &buf[..len]);
+    let len = protocol::encode_auth(&goldens::auth(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[75], &buf[..len]);
 
     let (item, added) = goldens::event_gather();
     let len = encode_event_gather(item, added, &mut buf).unwrap();

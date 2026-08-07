@@ -53,7 +53,7 @@ async fn main() {
         }
     };
 
-    let token = match a.token() {
+    let address = match a.address() {
         Ok(t) => t,
         Err(e) => {
             eprintln!("client: {e}");
@@ -61,13 +61,14 @@ async fn main() {
         }
     };
     println!("client: connecting to {server}");
-    let mut session = match Session::connect(&endpoint, &server, token).await {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("client: {e}");
-            std::process::exit(1);
-        }
-    };
+    let mut session =
+        match Session::connect(&endpoint, &server, address, client::scry::sign_siwe).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("client: {e}");
+                std::process::exit(1);
+            }
+        };
     println!(
         "client: in the world — player {} seed {} tick {}",
         session.welcome.player_id, session.welcome.seed, session.welcome.tick

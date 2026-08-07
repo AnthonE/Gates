@@ -23,16 +23,19 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 ## 0y · Persistence takes the reference game's shape *(server lane)*
 
 > **ARMED on the public shard, 2026-08-07** (operator: *"ok yea turn it all
-> on please"*). `shard-public.toml` carries `save_file`, `world_file` and
-> `require_auth = true`. **The one thing this makes urgent:**
-> `auth::validate_session` is still a stub — it accepts any non-empty token
-> and files the save under the token's own bytes, so a joiner is whoever they
-> say they are, and persistence is what turns that from "a fresh character"
-> into "somebody's base". Safe only while tokens are unguessable
-> launcher-issued handles. One function, one HTTP call, and it is now **the**
-> blocking item for this shard taking real players. The shard prints an
-> `AUTH WARNING` at every boot until it lands. `DECISIONS.md` 2026-08-07 has
-> the call and what it does not authorize (the deploy itself).
+> on please"*, then *"SIWE is what we are using now… rework this so its
+> normal"*). `shard-public.toml` carries `save_file`, `world_file`,
+> `require_auth = true` and `domain`.
+>
+> **Identity is real now**, which is what the earlier version of this note was
+> waiting for. `auth.rs` is no longer a stub: a joiner signs a nonce this
+> shard chose and the shard recovers the signer, so the player key is a
+> verified Ethereum address — **stable across sessions**, which the session
+> token was not. That second half is the one that mattered: a rotating key
+> would have handed every returning player a new character with every gate
+> green. Wire v27; the boot-time `AUTH WARNING` is deleted rather than
+> reworded. `DECISIONS.md` 2026-08-07 has both calls and what they do not
+> authorize (the deploy itself).
 
 Player half landed 2026-08-07; then we read how the reference game does it and
 **there is no player save file there** — the body stays in the world as a

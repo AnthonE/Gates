@@ -73,7 +73,7 @@ fn main() -> AppExit {
     // to is a client that lies for its first few frames — which is why this
     // stayed a hard precondition for `--capture` rather than becoming a
     // state the harness could photograph halfway through.
-    let token = match a.token() {
+    let address = match a.address() {
         Ok(t) => t,
         Err(e) => {
             eprintln!("gates: {e}");
@@ -87,7 +87,7 @@ fn main() -> AppExit {
                 eprintln!("gates: {e}");
                 std::process::exit(1);
             });
-            Session::connect(&endpoint, &server, token)
+            Session::connect(&endpoint, &server, address, client::scry::sign_siwe)
                 .await
                 .unwrap_or_else(|e| {
                     eprintln!("gates: {e}");

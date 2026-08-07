@@ -292,6 +292,7 @@ pub async fn spawn_shard(
             // in every welcome — that bit is the client's only dev gate.
             dev: cfg.dev_spawn.is_some(),
             require_auth: cfg.require_auth,
+            domain: cfg.domain.clone(),
         },
         ctrl_tx,
         grave_rx,
@@ -318,12 +319,15 @@ pub async fn spawn_shard(
 /// What every joiner is told about the shard itself: the seed its whole
 /// world derives from, and whether this is a dev shard — the bit the
 /// client gates its dev affordances on.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ShardFacts {
     seed: u64,
     dev: bool,
     /// `shard.toml require_auth`. See `config.rs` for why it is a knob.
     require_auth: bool,
+    /// The SIWE domain: what this shard calls itself in the message players
+    /// sign. Must be the host they dialled (`config.rs`).
+    domain: String,
 }
 
 /// What a handshake task hands back once the client said a valid hello.
@@ -379,14 +383,20 @@ async fn accept_loop(
             incoming = endpoint.accept() => {
                 let stats = stats.clone();
                 let done_tx = done_tx.clone();
-                tokio::spawn(handshake_task(incoming, done_tx, stats, facts.require_auth));
+                tokio::spawn(handshake_task(
+                    incoming,
+                    done_tx,
+                    stats,
+                    facts.require_auth,
+                    facts.domain.clone(),
+                ));
             }
             Some(done) = done_rx.recv() => {
                 // Before the claim, never after: a record for the slot's
                 // previous tenant has to be filed under the key it was
                 // written for, and installing first would overwrite that key.
                 drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
-                install(done, facts, &mut ctrl_tx, &mut keys, &store, &slots, &stats).await;
+                install(done, &facts, &mut ctrl_tx, &mut keys, &store, &slots, &stats).await;
             }
             _ = sweep.tick() => {
                 while let Ok(link) = grave_rx.pop() {
@@ -632,6 +642,7 @@ async fn handshake_task(
     done_tx: tokio::sync::mpsc::Sender<Handshaken>,
     stats: Arc<ShardStats>,
     require_auth: bool,
+    facts_domain: String,
 ) {
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
@@ -642,7 +653,7 @@ async fn handshake_task(
         Ok::<_, ()>((connection, send, recv, hello))
     })
     .await;
-    let Ok(Ok((connection, send, recv, hello))) = result else {
+    let Ok(Ok((connection, send, mut recv, hello))) = result else {
         ShardStats::bump(&stats.handshake_errors);
         return;
     };
@@ -651,19 +662,63 @@ async fn handshake_task(
         spawn_refusal(connection, send, REFUSE_VERSION);
         return;
     }
-    // Admission, and now also identity — the same call answers both, and
-    // that is what made persistence possible without settling the identity
-    // question (`auth.rs`). **The token is still not validated here and this
-    // is the honest half of the slice**: `validate_session` is the seam where
-    // the shard asks scry whether the token is good, and it is a stub that
-    // resolves any non-empty token to itself until that API is wired
-    // (`auth.rs` in `protocol` has the model). So today `require_auth = true`
-    // proves a client CARRIED a credential, not that the credential is real —
-    // which is why the default is `false` and why arming it on a public shard
-    // waits for the validator. Named rather than implied, because a shard
-    // operator reading `require_auth` would otherwise assume more than it
-    // does.
-    let key = crate::auth::validate_session(&hello.token);
+    // ---- SIWE, and the nonce never leaves this stack frame --------------
+    //
+    // The server picks a nonce, the client signs a message containing it,
+    // and the server recovers the signer. There is no nonce table to size,
+    // expire or sweep: the value lives in this task's local and nothing else
+    // in the process can see it, so a signature captured on one connection
+    // is worthless on every other — no other connection ever chose it.
+    //
+    // Sent to a stranger before anything about them exists, which is safe
+    // precisely because it is random and means nothing: the server has
+    // nothing to lose by challenging someone it will go on to refuse.
+    let mut nonce = [0u8; protocol::NONCE_BYTES];
+    if getrandom::getrandom(&mut nonce).is_err() {
+        // No OS entropy is not a thing to work around with a weaker nonce —
+        // a guessable one is a signature anybody can replay. Refuse the
+        // connection instead.
+        ShardStats::bump(&stats.handshake_errors);
+        spawn_refusal(connection, send, protocol::REFUSE_AUTH);
+        return;
+    }
+    let issued_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let challenge = protocol::Challenge { nonce, issued_at };
+
+    let mut send = send;
+    let exchange = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        write_challenge(&mut send, &challenge).await?;
+        let (buf, len) = read_frame(&mut recv).await.ok_or(())?;
+        protocol::decode_auth(&buf[..len]).map_err(|_| ())
+    })
+    .await;
+    let Ok(Ok(auth)) = exchange else {
+        ShardStats::bump(&stats.handshake_errors);
+        return;
+    };
+
+    // A guest offers no address and is admitted only where guests are.
+    // Everyone else is *proved*: the signature is recovered against the
+    // message this server built from the nonce it chose, so the key below is
+    // an address somebody holds the private key for and not a string they
+    // typed.
+    let key = if auth.address.is_guest() {
+        None
+    } else {
+        match crate::auth::verify(&facts_domain, &nonce, issued_at, &auth) {
+            Ok(key) => Some(key),
+            Err(_) => {
+                // Counted, never explained to the caller: which of the four
+                // ways a signature can be wrong is not a stranger's business.
+                ShardStats::bump(&stats.refused_auth);
+                spawn_refusal(connection, send, protocol::REFUSE_AUTH);
+                return;
+            }
+        }
+    };
     if require_auth && key.is_none() {
         ShardStats::bump(&stats.refused_auth);
         spawn_refusal(connection, send, protocol::REFUSE_AUTH);
@@ -685,7 +740,7 @@ async fn handshake_task(
 #[allow(clippy::too_many_arguments)]
 async fn install(
     done: Handshaken,
-    facts: ShardFacts,
+    facts: &ShardFacts,
     ctrl_tx: &mut rtrb::Producer<Connect>,
     keys: &mut [KeySlot; MAX_PLAYERS],
     store: &SaveStore,
@@ -1058,10 +1113,115 @@ fn spawn_refusal(connection: Connection, mut send: SendStream, code: u8) {
     });
 }
 
+async fn write_challenge(send: &mut SendStream, msg: &protocol::Challenge) -> Result<(), ()> {
+    let mut payload = [0u8; MAX_STREAM_MSG_BYTES];
+    let len = protocol::encode_challenge(msg, &mut payload).map_err(|_| ())?;
+    write_frame(send, &payload[..len]).await
+}
+
 async fn write_welcome(send: &mut SendStream, msg: &Welcome) -> Result<(), ()> {
     let mut payload = [0u8; MAX_STREAM_MSG_BYTES];
     let len = encode_welcome(msg, &mut payload).map_err(|_| ())?;
     write_frame(send, &payload[..len]).await
+}
+
+/// **The client half of the handshake, in one place.**
+///
+/// Hello → read the challenge → answer it → read the welcome. Four steps
+/// that have to agree exactly with `handshake_task`, and they are written
+/// once because the alternative is what this repo already had: the bot
+/// client, three fixtures in `bot_smoke` and the real client each spelling
+/// the same exchange out, so a wire turn is five edits and the one that gets
+/// missed fails as a hang rather than as a compile error.
+///
+/// `sign` is asked to sign the SIWE message this shard chose; returning
+/// `None` is how a **guest** connects — no address, no signature, admitted
+/// only where `require_auth` is off. Bots and every test in this repo are
+/// guests, deliberately: giving a load harness a credential would be a lie
+/// about what is being measured and a standing reason for somebody to put a
+/// real key in a fixture.
+pub async fn client_handshake(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    domain: &str,
+    address: protocol::Address,
+    sign: impl FnOnce(&[u8]) -> Option<protocol::Signature>,
+) -> Result<Welcome, String> {
+    let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+    let len = protocol::encode_hello(
+        &protocol::Hello {
+            proto_ver: PROTO_VER,
+        },
+        &mut buf,
+    )
+    .map_err(|e| format!("encode hello: {e:?}"))?;
+    write_frame(send, &buf[..len])
+        .await
+        .map_err(|_| "write hello".to_string())?;
+
+    let (frame, n) = read_frame(recv).await.ok_or("no challenge")?;
+    // A refusal can arrive here instead of a challenge — a version mismatch
+    // is caught before the server ever challenges — so both are handled and
+    // the refusal is reported by code rather than as "unexpected".
+    match peek_kind(&frame[..n]) {
+        Ok(protocol::KIND_REFUSE) => {
+            let r = protocol::decode_refuse(&frame[..n]).map_err(|e| format!("refuse: {e:?}"))?;
+            return Err(format!("refused: code {}", r.code));
+        }
+        Ok(protocol::KIND_CHALLENGE) => {}
+        other => return Err(format!("expected a challenge, got {other:?}")),
+    }
+    let challenge =
+        protocol::decode_challenge(&frame[..n]).map_err(|e| format!("challenge: {e:?}"))?;
+
+    // The message is built from the domain **this client dialled**, never
+    // from anything the server said — that is the whole of SIWE's domain
+    // binding, and handing the server the choice would let one shard collect
+    // a signature valid at another.
+    //
+    // **The address goes in before the signing, not after**, and the first
+    // version of this function got that backwards: it built the text with
+    // `Address::GUEST` and then asked for a signature. The server rebuilds
+    // the message from the address the client *claims*, so the two texts
+    // would have differed by 42 characters and every real login would have
+    // been refused as `WrongSigner` — with the crypto, the nonce and the
+    // domain binding all correct. The address is a parameter for that
+    // reason: there is no order in which it can be learned late.
+    let auth = if address.is_guest() {
+        protocol::Auth::default()
+    } else {
+        let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
+        let tlen = protocol::siwe_message(
+            domain,
+            &address,
+            &challenge.nonce,
+            challenge.issued_at,
+            &mut text,
+        );
+        match sign(&text[..tlen.min(protocol::SIWE_MESSAGE_MAX)]) {
+            Some(signature) => protocol::Auth { address, signature },
+            // The launcher refused, is not running, or handed the player a
+            // consent prompt they declined. That is a *guest*, not an error:
+            // a shard that takes guests should still take this one.
+            None => protocol::Auth::default(),
+        }
+    };
+    let len = protocol::encode_auth(&auth, &mut buf).map_err(|e| format!("encode auth: {e:?}"))?;
+    write_frame(send, &buf[..len])
+        .await
+        .map_err(|_| "write auth".to_string())?;
+
+    let (frame, n) = read_frame(recv).await.ok_or("no handshake reply")?;
+    match peek_kind(&frame[..n]) {
+        Ok(protocol::KIND_WELCOME) => {
+            protocol::decode_welcome(&frame[..n]).map_err(|e| format!("welcome: {e:?}"))
+        }
+        Ok(protocol::KIND_REFUSE) => {
+            let r = protocol::decode_refuse(&frame[..n]).map_err(|e| format!("refuse: {e:?}"))?;
+            Err(format!("refused: code {}", r.code))
+        }
+        other => Err(format!("unexpected handshake reply: {other:?}")),
+    }
 }
 
 pub async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), ()> {

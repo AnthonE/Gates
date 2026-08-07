@@ -27,81 +27,83 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 74] = [
-    "v26_input_acks_only.bin",
-    "v26_input_full.bin",
-    "v26_snapshot_keyframe.bin",
-    "v26_snapshot_delta.bin",
-    "v26_snapshot_cap.bin",
-    "v26_hello.bin",
-    "v26_welcome.bin",
-    "v26_refuse_full.bin",
-    "v26_event_gather.bin",
-    "v26_event_inv.bin",
-    "v26_event_slot_harvested.bin",
-    "v26_event_slot_respawned.bin",
-    "v26_event_slot_sync.bin",
-    "v26_event_catalog.bin",
-    "v26_event_weak_mark.bin",
-    "v26_event_craft_q.bin",
-    "v26_event_craft_done.bin",
-    "v26_event_craft_refused.bin",
-    "v26_event_recipes.bin",
-    "v26_action_craft.bin",
-    "v26_action_cancel.bin",
-    "v26_action_place.bin",
-    "v26_event_piece_placed.bin",
-    "v26_event_piece_sync.bin",
-    "v26_event_build_refused.bin",
-    "v26_event_piece_defs.bin",
-    "v26_action_deploy.bin",
-    "v26_action_feed.bin",
-    "v26_event_deploy_placed.bin",
-    "v26_event_deploy_sync.bin",
-    "v26_event_deploy_refused.bin",
-    "v26_event_deploy_defs.bin",
-    "v26_event_piece_removed.bin",
-    "v26_event_deploy_removed.bin",
-    "v26_event_stock.bin",
-    "v26_action_use.bin",
-    "v26_action_lock.bin",
-    "v26_event_door.bin",
-    "v26_action_upgrade.bin",
-    "v26_chat.bin",
-    "v26_event_chat.bin",
-    "v26_event_hit.bin",
-    "v26_event_health.bin",
-    "v26_event_death.bin",
-    "v26_action_loot.bin",
-    "v26_event_bag_dropped.bin",
-    "v26_event_bag_sync.bin",
-    "v26_event_bag_removed.bin",
-    "v26_event_struct_hit_piece.bin",
-    "v26_event_struct_hit_deploy.bin",
-    "v26_event_vitals.bin",
-    "v26_event_consumed.bin",
-    "v26_event_consume_refused.bin",
-    "v26_action_consume.bin",
-    "v26_event_drank.bin",
-    "v26_action_drink.bin",
-    "v26_event_respawn.bin",
-    "v26_action_respawn.bin",
-    "v26_action_move.bin",
-    "v26_event_moved.bin",
-    "v26_event_move_refused.bin",
-    "v26_action_move_box.bin",
-    "v26_action_container.bin",
-    "v26_action_container_close.bin",
-    "v26_event_cont_sync.bin",
-    "v26_event_cont_close.bin",
-    "v26_action_repair_piece.bin",
-    "v26_action_repair_deploy.bin",
-    "v26_event_piece_repaired_piece.bin",
-    "v26_event_piece_repaired_deploy.bin",
-    "v26_action_throw_piece.bin",
-    "v26_action_throw_deploy.bin",
-    "v26_event_charge_placed_piece.bin",
-    "v26_event_charge_placed_deploy.bin",
+pub const FIXTURES: [&str; 76] = [
+    "v27_input_acks_only.bin",
+    "v27_input_full.bin",
+    "v27_snapshot_keyframe.bin",
+    "v27_snapshot_delta.bin",
+    "v27_snapshot_cap.bin",
+    "v27_hello.bin",
+    "v27_welcome.bin",
+    "v27_refuse_full.bin",
+    "v27_event_gather.bin",
+    "v27_event_inv.bin",
+    "v27_event_slot_harvested.bin",
+    "v27_event_slot_respawned.bin",
+    "v27_event_slot_sync.bin",
+    "v27_event_catalog.bin",
+    "v27_event_weak_mark.bin",
+    "v27_event_craft_q.bin",
+    "v27_event_craft_done.bin",
+    "v27_event_craft_refused.bin",
+    "v27_event_recipes.bin",
+    "v27_action_craft.bin",
+    "v27_action_cancel.bin",
+    "v27_action_place.bin",
+    "v27_event_piece_placed.bin",
+    "v27_event_piece_sync.bin",
+    "v27_event_build_refused.bin",
+    "v27_event_piece_defs.bin",
+    "v27_action_deploy.bin",
+    "v27_action_feed.bin",
+    "v27_event_deploy_placed.bin",
+    "v27_event_deploy_sync.bin",
+    "v27_event_deploy_refused.bin",
+    "v27_event_deploy_defs.bin",
+    "v27_event_piece_removed.bin",
+    "v27_event_deploy_removed.bin",
+    "v27_event_stock.bin",
+    "v27_action_use.bin",
+    "v27_action_lock.bin",
+    "v27_event_door.bin",
+    "v27_action_upgrade.bin",
+    "v27_chat.bin",
+    "v27_event_chat.bin",
+    "v27_event_hit.bin",
+    "v27_event_health.bin",
+    "v27_event_death.bin",
+    "v27_action_loot.bin",
+    "v27_event_bag_dropped.bin",
+    "v27_event_bag_sync.bin",
+    "v27_event_bag_removed.bin",
+    "v27_event_struct_hit_piece.bin",
+    "v27_event_struct_hit_deploy.bin",
+    "v27_event_vitals.bin",
+    "v27_event_consumed.bin",
+    "v27_event_consume_refused.bin",
+    "v27_action_consume.bin",
+    "v27_event_drank.bin",
+    "v27_action_drink.bin",
+    "v27_event_respawn.bin",
+    "v27_action_respawn.bin",
+    "v27_action_move.bin",
+    "v27_event_moved.bin",
+    "v27_event_move_refused.bin",
+    "v27_action_move_box.bin",
+    "v27_action_container.bin",
+    "v27_action_container_close.bin",
+    "v27_event_cont_sync.bin",
+    "v27_event_cont_close.bin",
+    "v27_action_repair_piece.bin",
+    "v27_action_repair_deploy.bin",
+    "v27_event_piece_repaired_piece.bin",
+    "v27_event_piece_repaired_deploy.bin",
+    "v27_action_throw_piece.bin",
+    "v27_action_throw_deploy.bin",
+    "v27_event_charge_placed_piece.bin",
+    "v27_event_charge_placed_deploy.bin",
+    "v27_challenge.bin",
+    "v27_auth.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -394,14 +396,37 @@ pub fn snapshot_delta() -> SnapshotCase {
 pub fn hello() -> Hello {
     Hello {
         proto_ver: crate::PROTO_VER,
-        // **Non-empty on purpose.** A fixture carrying `AuthToken::NONE`
-        // encodes a zero length and no bytes, so every token-encoding defect
-        // — a wrong length width, a byte order, an off-by-one on the copy —
-        // would ship with this golden green. Same lesson the parity gate
-        // learned: a digest is evidence of agreement, never of coverage.
-        // 32 bytes, the shape of a real session handle, obviously fake.
-        token: crate::AuthToken::new(b"gates-fixture-token-0123456789ab")
-            .expect("32 <= AUTH_TOKEN_MAX_BYTES"),
+    }
+}
+
+/// The server's challenge. Every nonce byte is distinct so a transposition
+/// in either direction of the codec shows as a wrong value rather than a
+/// coincidence — the positional-payload rule, applied to the one message
+/// whose bytes a signature is computed over.
+pub fn challenge() -> crate::Challenge {
+    let mut nonce = [0u8; crate::NONCE_BYTES];
+    for (i, b) in nonce.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(7).wrapping_add(3);
+    }
+    crate::Challenge {
+        nonce,
+        issued_at: 1_770_000_123,
+    }
+}
+
+/// The client's answer. A real-shaped address and a signature whose bytes
+/// are all distinct — **not** `Signature::NONE`, because a fixture of zeros
+/// would ship green past any defect that dropped the field entirely, which
+/// is the same lesson the old token fixture was written for.
+pub fn auth() -> crate::Auth {
+    let mut sig = [0u8; crate::SIGNATURE_BYTES];
+    for (i, b) in sig.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(5).wrapping_add(11);
+    }
+    crate::Auth {
+        address: crate::Address::from_hex(b"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf")
+            .expect("a known-good address"),
+        signature: crate::Signature(sig),
     }
 }
 

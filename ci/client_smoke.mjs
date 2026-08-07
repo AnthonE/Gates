@@ -287,7 +287,14 @@ for (let i = 0; i < slotCount; i++) {
 // still decodes — and bodies simply stand at wrong angles in the wrong
 // motion. A silent misread beats a refused message every time for how long
 // it takes to find.
-check(ex.client_proto_ver() === 26, "proto ver drifted without this gate hearing");
+// 27: identity, proved. The session token is gone from `Hello`; a
+// `Challenge` and an `Auth` replace it, and `KIND_BITS` widened 3 -> 4 to
+// hold them — so EVERY message on the wire moved by a bit. That is the
+// largest turn on this list and the mismatch it produces is the *cleanest*:
+// a v26 client's hello decodes to a different kind entirely, so the version
+// gate refuses it before any field is read. Nothing silent, which is the
+// one mercy of a width change over a field change.
+check(ex.client_proto_ver() === 27, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -296,7 +303,11 @@ check(ex.client_proto_ver() === 26, "proto ver drifted without this gate hearing
 // way to tell a typo from a real drift. `test_protocol_golden` still owns
 // the byte shape; this owns the client's decoder reading it.
 const KIND_EVENT = 5;
-const KIND_BITS = 3;
+// Widened 3 -> 4 at wire v27 (`protocol/src/lib.rs` says why). This file
+// hand-assembles frames bit by bit, so this constant is load-bearing: it is
+// the only thing standing between the JS side and the Rust side agreeing
+// about where every field starts.
+const KIND_BITS = 4;
 const EV_SUB_BITS = 6;
 const bitsToBytes = (bits) => {
   const out = new Uint8Array(Math.ceil(bits.length / 8));
@@ -347,10 +358,12 @@ const devOn = parseHandshake(welcomeGolden);
 check(devOn.kind === 1, `welcome should parse as kind 1: ${devOn.kind}`);
 check(devOn.playerId === 0x107, `welcome player id odd: ${devOn.playerId}`);
 check(devOn.dev === 1, "a dev shard's welcome must reach JS as dev = 1");
-// The same bytes with the dev bit (index 131, LSB-first) cleared — exactly
-// what a shard with no dev override sends.
+// The same bytes with the dev bit cleared — exactly what a shard with no
+// dev override sends. The bit sits at KIND_BITS + 32 + 64 + 32 = 132 at
+// wire v27 (it was 131 while the kind field was three bits), LSB-first.
+const DEV_BIT = KIND_BITS + 32 + 64 + 32;
 const publicWelcome = Uint8Array.from(welcomeGolden);
-publicWelcome[16] &= ~0x08;
+publicWelcome[DEV_BIT >> 3] &= ~(1 << (DEV_BIT & 7));
 const devOff = parseHandshake(publicWelcome);
 check(devOff.kind === 1, `a public shard's welcome must still parse: ${devOff.kind}`);
 check(devOff.dev === 0, "a public shard's welcome must reach JS as dev = 0");
@@ -423,7 +436,7 @@ check((ex.client_recipes_state() >>> 0) === 0, "no recipes dripped yet");
 
 // --- build surface: place action out, piece events in ---------------------
 const placeLen = ex.client_action_place(0, 341, 341, 0, 0);
-check(placeLen === 5, `place action length odd: ${placeLen}`);
+check(placeLen === 6, `place action length odd: ${placeLen}`);
 check(ex.client_action_place(32, 0, 0, 0, 0) === 0, "row past the table must refuse");
 check(ex.client_action_place(0, 1024, 0, 0, 0) === 0, "cx past the grid must refuse");
 check(ex.client_action_place(0, 0, 0, 8, 0) === 0, "level past the cap must refuse");
@@ -455,7 +468,7 @@ const feedLen = ex.client_action_feed(341, 341, 0);
 check(feedLen === 4, `feed action length odd: ${feedLen}`);
 check(ex.client_action_feed(1024, 0, 0) === 0, "cx past the grid must refuse");
 const useLen = ex.client_action_use(341, 341, 0, 2);
-check(useLen === 4, `use action length odd: ${useLen}`);
+check(useLen === 5, `use action length odd: ${useLen}`);
 check(ex.client_action_use(341, 341, 8, 2) === 0, "level past the grid must refuse");
 check(ex.client_action_use(341, 341, 0, 4) === 0, "loc past the four must refuse");
 const lockLen = ex.client_action_lock(341, 341, 0, 2, 1);
@@ -1120,7 +1133,7 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
     const n = ex.client_action_loot();
     check(n === 1, `loot frame must be one byte, got ${n}`);
     const out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 1);
-    check(out[0] === (6 | (8 << 3)), `loot frame byte mismatch: ${out[0]}`);
+    check(out[0] === (6 | (8 << KIND_BITS)), `loot frame byte mismatch: ${out[0]}`);
   }
 
   // The death screen (wire v16). `client_new` above joined as player 257,
@@ -1168,15 +1181,21 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
     );
     check((ex.client_death_by() >>> 0) === 42, "…and its killer");
 
-    // The answer: kind ACTION(6) in three bits, sub 11 in four, and the
-    // choice bit — one byte, and the bit is the whole payload.
+    // The answer: kind ACTION(6) in KIND_BITS, sub 11 in four, and the
+    // choice bit. At v27 that is 4 + 4 + 1 = nine bits, so the frame is two
+    // bytes and the choice bit is alone in the second — it used to fit in
+    // one byte with the bit at the top, which is exactly the kind of thing
+    // a kind-width change moves.
+    const RESPAWN_HEAD = 6 | (11 << KIND_BITS);
     let n = ex.client_action_respawn(1);
-    check(n === 1, `respawn frame must be one byte, got ${n}`);
-    let out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 1);
-    check(out[0] === (6 | (11 << 3) | (1 << 7)), `bag respawn byte: ${out[0]}`);
+    check(n === 2, `respawn frame must be two bytes, got ${n}`);
+    let out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 2);
+    check(out[0] === RESPAWN_HEAD, `bag respawn byte: ${out[0]}`);
+    check(out[1] === 1, `bag respawn choice bit: ${out[1]}`);
     n = ex.client_action_respawn(0);
-    out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 1);
-    check(out[0] === (6 | (11 << 3)), `beach respawn byte: ${out[0]}`);
+    out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 2);
+    check(out[0] === RESPAWN_HEAD, `beach respawn byte: ${out[0]}`);
+    check(out[1] === 0, `beach respawn choice bit: ${out[1]}`);
 
     // …and the Respawn event closes it, carrying which anchor answered.
     // sub 35 · on_bag (1).

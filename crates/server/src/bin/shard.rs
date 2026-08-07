@@ -277,29 +277,12 @@ async fn main() {
             }
         }
     };
-    // **Said at every boot, and deliberately impossible to miss.**
-    //
-    // `auth::validate_session` is a stub: it returns the token's own bytes as
-    // the player key without asking scry anything. Its own header states the
-    // consequence — "anyone who knows your name is you" — and that this must
-    // not be armed on a public shard as though it were authentication.
-    //
-    // Persistence is what gives that a price. Before it, an impersonated
-    // joiner got a fresh character and nothing else; now they get the body,
-    // the base and the inventory the real player left. So the warning lives
-    // here, next to the shard coming up, rather than in a doc: the operator
-    // who armed this reads this line every time the process starts, and the
-    // day the real validator lands this block is what gets deleted.
-    if cfg.require_auth {
-        println!(
-            "AUTH WARNING: require_auth is on and the validator is a STUB — it \
-             accepts any non-empty token and files the save under the token's \
-             own bytes. A joiner is whoever they say they are, and with \
-             persistence armed that means somebody else's body, base and \
-             inventory. Safe only while tokens are unguessable launcher-issued \
-             handles. `crates/server/src/auth.rs` is the one function to fix."
-        );
-    }
+    // The `AUTH WARNING` that used to print here is **deleted, not moved**.
+    // It existed because `validate_session` was a stub that accepted any
+    // non-empty token and filed the save under the token's own bytes, so
+    // `require_auth = true` proved a joiner carried *something*. It now
+    // proves they hold the private key behind the address they claim
+    // (`auth.rs`), which is the thing the warning was waiting for.
     let handle = match spawn_shard(
         cfg, gather, craft, build, deploy, combat, backpack, survival, loot, catalog, saves,
         world_boot,

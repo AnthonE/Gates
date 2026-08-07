@@ -30,7 +30,10 @@ pub mod chat;
 pub mod event;
 pub mod goldens;
 
-pub use auth::{AuthToken, AUTH_TOKEN_MAX_BYTES};
+pub use auth::{
+    siwe_message, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES,
+    SIGNATURE_BYTES, SIWE_MESSAGE_MAX,
+};
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
@@ -254,10 +257,45 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// snapshot cases, which are the only fixtures whose bytes carry an entity
 /// record, and the hello, which is the one message that puts the version
 /// number itself on the wire.
-pub const PROTO_VER: u16 = 26;
+///
+/// v27 — **identity, proved.** The session token is gone from `Hello` and
+/// two stream messages replace it: `Challenge` (a 32-byte server nonce and a
+/// timestamp) and `Auth` (a 20-byte address and a 65-byte signature). The
+/// shard recovers the signer of a SIWE message it rebuilt itself, so the
+/// player key is now an Ethereum address — stable across sessions, which the
+/// token never was, and verified rather than asserted, which the token never
+/// was either. `crates/server/src/auth.rs` has the argument.
+///
+/// It cost the two structural changes this list has been avoiding.
+/// [`KIND_BITS`] widened 3 → 4, moving **every** message by one bit, because
+/// all eight codes were spent and a handshake step cannot subtype a message
+/// the peer does not yet trust. And [`MAX_STREAM_MSG_BYTES`] went 64 → 128,
+/// because an address plus a signature is 85 bytes.
+///
+/// A v26 client against a v27 server is refused at the version gate, which
+/// is the good case and the whole reason that gate reads the version before
+/// anything else: every byte after the kind field moved, so there is no
+/// interpretation of a v26 frame that a v27 server could take.
+///
+/// Fixtures are keyed `v27_*` — all 74 renamed and regenerated (the kind
+/// width touches every one), plus two new: `v27_challenge` and `v27_auth`.
+pub const PROTO_VER: u16 = 27;
 
-/// Datagram kind field width — room for the class-S lanes to grow into.
-pub const KIND_BITS: u32 = 3;
+/// Datagram kind field width.
+///
+/// **Widened 3 → 4 at v27**, which moved every message on the wire by one
+/// bit. Not a decision taken lightly and not one with an alternative: all
+/// eight 3-bit codes were spent (the `KIND_CHAT` comment below said the next
+/// lane would have to subtype an existing kind), and SIWE needs *two* new
+/// stream messages that cannot subtype anything — a challenge the server
+/// sends before it knows who the client is, and an auth the client sends
+/// before it is anybody. Subtyping either would mean smuggling a handshake
+/// step inside a message the peer has to already trust.
+///
+/// The cost is one bit per datagram, paid on the snapshot lane where it
+/// matters most; `test_snapshot_cap_within_budget` still passes, which is
+/// the check that says it fits.
+pub const KIND_BITS: u32 = 4;
 pub const KIND_INPUT: u32 = 0;
 pub const KIND_SNAPSHOT: u32 = 1;
 /// Stream-lane message kinds (the bidi handshake, DESIGN.md §5.9). Same
@@ -277,14 +315,25 @@ pub const KIND_ACTION: u32 = 6;
 /// length-prefixed frames. Chat is player-authored text, never a sim
 /// command, so it rides its own kind instead of the action lane's
 /// subtype space — which had no code left for it regardless. This is the
-/// last code the 3-bit kind field holds: an eighth lane costs a width
-/// bump, and that bump would widen every input datagram and every
-/// snapshot, so the next lane should subtype an existing kind.
+/// last code the 3-bit kind field held. The bump it warned about is what
+/// v27 paid for SIWE — see [`KIND_BITS`] for why the two handshake
+/// messages below could not subtype an existing kind instead.
 pub const KIND_CHAT: u32 = 7;
+/// S→C: the SIWE nonce, sent once per connection between the hello and the
+/// welcome (`auth.rs`).
+pub const KIND_CHALLENGE: u32 = 8;
+/// C→S: the address and the signature over the challenge (`auth.rs`).
+pub const KIND_AUTH: u32 = 9;
 
 /// Longest stream-lane message payload the handshake accepts. Overflow
 /// policy: refuse (`Malformed`) — a hello has no business being big.
-pub const MAX_STREAM_MSG_BYTES: usize = 64;
+///
+/// **64 → 128 at v27.** `Auth` carries a 20-byte address and a 65-byte
+/// signature, which is 85 bytes before framing and does not fit in 64. The
+/// new number is the next round one above what the largest handshake
+/// message needs, and it is still small enough that a client cannot make
+/// the server allocate anything interesting by lying about a length.
+pub const MAX_STREAM_MSG_BYTES: usize = 128;
 
 const FRAME_COUNT_BITS: u32 = 4;
 const COUNT_BITS: u32 = 7;
@@ -329,12 +378,6 @@ pub fn peek_kind(buf: &[u8]) -> Result<u32, WireError> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hello {
     pub proto_ver: u16,
-    /// The launcher's session token, or [`AuthToken::NONE`] for a guest.
-    ///
-    /// **Opaque and unvalidated here.** The shard relays it to scry and gets
-    /// back a stable player key; until it does, this is a claim exactly as an
-    /// address was. `server` owns that call — see `auth.rs`'s header.
-    pub token: AuthToken,
 }
 
 /// S→C: the join bundle v0 — player id, world seed, current server tick.
@@ -375,7 +418,6 @@ pub fn encode_hello(msg: &Hello, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
     w.write(KIND_HELLO, KIND_BITS)?;
     w.write(msg.proto_ver as u32, 16)?;
-    auth::write_token(&mut w, &msg.token)?;
     Ok(w.finish())
 }
 
@@ -385,9 +427,47 @@ pub fn decode_hello(buf: &[u8]) -> Result<Hello, WireError> {
         return Err(WireError::Malformed);
     }
     let proto_ver = r.read(16)? as u16;
-    let token = auth::read_token(&mut r)?;
     expect_zero_padding(&mut r)?;
-    Ok(Hello { proto_ver, token })
+    Ok(Hello { proto_ver })
+}
+
+/// S→C: sign this nonce. Sent after the version gate and before anything
+/// about this client exists — the server has nothing to lose by sending it
+/// to a stranger, which is what lets identity be proved in one extra round
+/// trip instead of an issuer lookup.
+pub fn encode_challenge(msg: &Challenge, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_CHALLENGE, KIND_BITS)?;
+    auth::write_challenge(&mut w, msg)?;
+    Ok(w.finish())
+}
+
+pub fn decode_challenge(buf: &[u8]) -> Result<Challenge, WireError> {
+    let mut r = BitReader::new(buf);
+    if r.read(KIND_BITS)? != KIND_CHALLENGE {
+        return Err(WireError::Malformed);
+    }
+    let msg = auth::read_challenge(&mut r)?;
+    expect_zero_padding(&mut r)?;
+    Ok(msg)
+}
+
+/// C→S: the address, and the signature that proves it.
+pub fn encode_auth(msg: &Auth, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_AUTH, KIND_BITS)?;
+    auth::write_auth(&mut w, msg)?;
+    Ok(w.finish())
+}
+
+pub fn decode_auth(buf: &[u8]) -> Result<Auth, WireError> {
+    let mut r = BitReader::new(buf);
+    if r.read(KIND_BITS)? != KIND_AUTH {
+        return Err(WireError::Malformed);
+    }
+    let msg = auth::read_auth(&mut r)?;
+    expect_zero_padding(&mut r)?;
+    Ok(msg)
 }
 
 pub fn encode_welcome(msg: &Welcome, buf: &mut [u8]) -> Result<usize, WireError> {
