@@ -1459,6 +1459,57 @@ impl World {
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
     }
 
+    /// Re-apply every door's shut bit to the collision index, after a world
+    /// load has replaced both stores.
+    ///
+    /// **Doors are the seam between the two stores, and the only piece of
+    /// derived state a load can get wrong quietly.** A door is a
+    /// *deployable* record carrying `open`; what it blocks is a *piece* —
+    /// the doorway it was placed in — whose closed-ness lives as a bit in
+    /// `Pieces::cols`. `Pieces::restore` rebuilds that index from the piece
+    /// records alone and cannot know about doors, so without this pass every
+    /// door on the shard comes back walkable while the wire still draws it
+    /// shut: a raid that costs nothing, visible to any player, invisible to
+    /// `state_hash` (the index is never hashed) and unreachable by any gate
+    /// that only compares two runs of the same binary.
+    ///
+    /// A door places closed, so the bit is `!open` and not `open` — the
+    /// same expression `deploy.rs`'s use-toggle writes, deliberately
+    /// duplicated rather than shared, because the toggle owns *when* and
+    /// this owns *from what*.
+    pub fn rebuild_doors(&mut self) {
+        for i in 0..self.deploys.len() {
+            let d = self.deploys.entries()[i];
+            if self.deploy.defs[d.row as usize].arch != crate::deploy::ARCH_DOOR {
+                continue;
+            }
+            self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
+        }
+    }
+
+    /// Load a world from a save blob — **the boot path, and only the boot
+    /// path** (`worldsave.rs` has the argument in full).
+    ///
+    /// Call after the content tables are installed and before the first
+    /// `tick`. The loaded world is the *origin* of a run, not a mutation
+    /// inside one, which is what keeps wall 5 intact without the state
+    /// having to ride a command the way `Command::JoinAs` does: there is no
+    /// stream yet for it to be inconsistent with.
+    ///
+    /// On refusal the world is untouched — every field is decoded and
+    /// checked before anything is written — so a shard whose save is
+    /// corrupt starts a fresh world rather than half of somebody's base.
+    pub fn load(&mut self, blob: &[u8]) -> Result<(), crate::worldsave::WorldSaveError> {
+        crate::worldsave::decode_into(self, blob)
+    }
+
+    /// This world as a save blob, into a caller-owned buffer at least
+    /// [`crate::worldsave::WORLD_SAVE_MAX_BYTES`] long. A pure read, for
+    /// the reason [`Self::save_of`] is one.
+    pub fn save_world(&self, out: &mut [u8]) -> Result<usize, crate::worldsave::WorldSaveError> {
+        crate::worldsave::encode(self, out)
+    }
+
     /// What this shard would remember about `id` if the connection ended
     /// now. `None` ⇒ nobody by that id is in the world.
     ///

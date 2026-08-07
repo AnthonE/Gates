@@ -338,6 +338,36 @@ impl Pieces {
     pub(crate) fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
         self.cols.set_door(cx, cz, level, loc, shut);
     }
+
+    /// Replace the store from a decoded world save, rebuilding the column
+    /// index from the records rather than reading one out of the file.
+    ///
+    /// **The index is derived state and this is why it is not persisted.**
+    /// `cols` is a bitset view of exactly these records, maintained in
+    /// lockstep by `insert`/`remove_at` and never hashed; a stored copy
+    /// could disagree with the pieces it claims to describe, and the
+    /// disagreement would present as a wall you can walk through — visible
+    /// to a player, invisible to `state_hash`, and unreachable by any gate
+    /// that compares two runs. Recomputing costs one pass over the pieces
+    /// on the boot path.
+    ///
+    /// Doors are **not** restored here, and cannot be: a door's shut bit
+    /// lives on a deployable record, not a piece. `World::rebuild_doors`
+    /// runs after the deployables land (`worldsave.rs`).
+    ///
+    /// Boot-only, like everything on the load path.
+    pub(crate) fn restore(&mut self, recs: &[PieceRec], bc: &BuildContent) {
+        self.cols.clear();
+        self.len = recs.len().min(MAX_PIECES);
+        self.entries[..self.len].copy_from_slice(&recs[..self.len]);
+        for rec in &self.entries[..self.len] {
+            // The row was range-checked by the decoder against
+            // `piece_count`; this index is the one `worldsave.rs`
+            // `BadContentRow` exists to make safe.
+            let shape = bc.pieces[rec.row as usize].shape;
+            self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+        }
+    }
 }
 
 impl Default for Pieces {

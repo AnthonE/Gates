@@ -118,6 +118,21 @@ impl Charges {
         &self.entries[..self.len]
     }
 
+    /// Replace the store from a decoded world save. Boot-only
+    /// (`worldsave.rs`).
+    ///
+    /// A fuse is restored with its **absolute** `fires_at`, not a
+    /// remainder, because the world resumes at the tick it was saved on.
+    /// That is the whole reason the tick counter is persisted: every
+    /// deadline in this world — a fuse, a bag's despawn, a tree's respawn,
+    /// a bag's cooldown — is an absolute tick, and rebasing them all
+    /// against zero would be four chances to get the arithmetic wrong for
+    /// no gain.
+    pub(crate) fn restore(&mut self, recs: &[ChargeRec]) {
+        self.len = recs.len().min(MAX_LIVE_CHARGES);
+        self.entries[..self.len].copy_from_slice(&recs[..self.len]);
+    }
+
     /// Push one charge, or refuse when the store is full (wall 4 — the
     /// caller turns `false` into `REFUSE_B_FULL`, and refuses *before*
     /// taking the item so nothing is charged for a plant that did not
