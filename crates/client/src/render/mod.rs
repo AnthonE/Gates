@@ -62,6 +62,7 @@ pub mod tree;
 pub mod ui;
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
 pub mod verbs;
+pub mod viewmodel;
 
 pub use menu::{Menu, Rt, Screen};
 pub use settings::Settings;
@@ -287,6 +288,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<bodies::Bodies>()
             .init_resource::<menu::Picked>()
             .init_resource::<pause::Chosen>()
+            .init_resource::<viewmodel::Motion>()
             .init_resource::<verbs::Aimed>()
             .init_resource::<verbs::Swung>()
             .init_resource::<verbs::InWeak>()
@@ -475,6 +477,21 @@ impl Plugin for GatesRenderPlugin {
         // The HUD's viewmodel is parented to the camera, so it must be
         // built after the rig has spawned one.
         .add_systems(OnEnter(Screen::Loading), hud::setup.after(rig::setup))
+        // Both in `Update` and NOT on the `Loading` transition — that
+        // transition runs before `Startup`, so `PropMaps` does not exist yet
+        // (see `viewmodel::spawn_item`). `animate` runs after `feed::drain`,
+        // because the swing is triggered by a fact the drain publishes and
+        // the other order reacts a frame late.
+        .add_systems(
+            Update,
+            (
+                viewmodel::spawn_item,
+                viewmodel::animate
+                    .after(feed::drain)
+                    .after(viewmodel::spawn_item),
+            )
+                .run_if(world_running),
+        )
         // The cloud deck hangs on the camera, so it waits for the rig too.
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
         // The listener IS the camera, so the ears wait for the rig as well.

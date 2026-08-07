@@ -19,7 +19,6 @@
 use bevy::prelude::*;
 use sim_core::limits::HOTBAR_SLOTS;
 
-use super::rig::EyeCam;
 use super::verbs::Aimed;
 use super::Net;
 
@@ -113,12 +112,7 @@ pub struct HitMark;
 #[derive(Component)]
 pub struct Compass;
 
-pub fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    cam: Query<Entity, With<EyeCam>>,
-) {
+pub fn setup(mut commands: Commands) {
     // The hotbar: six cells, bottom centre.
     commands
         .spawn((
@@ -298,45 +292,10 @@ pub fn setup(
         Pickable::IGNORE,
     ));
 
-    // The viewmodel: a held item, lower right, parented to the camera so it
-    // rides the view. Not an animation and not a weapon yet — the point of
-    // §8's bullet is that the frame contains evidence a person is playing.
-    if let Ok(cam) = cam.single() {
-        let handle = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.30, 0.22, 0.14),
-            perceptual_roughness: 0.85,
-            ..default()
-        });
-        let head = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.42, 0.43, 0.45),
-            perceptual_roughness: 0.42,
-            metallic: 0.65,
-            ..default()
-        });
-        commands.entity(cam).with_children(|c| {
-            // Held low and to the right, angled across the frame. The first
-            // cut put it near centre at arm's length and it read as a prop
-            // floating in the world rather than as something carried — the
-            // reference frames all show the item entering from the lower
-            // right corner and leaving frame at the bottom.
-            let hold = Transform::from_xyz(0.34, -0.30, -0.46).with_rotation(Quat::from_euler(
-                EulerRot::YXZ,
-                -0.42,
-                0.42,
-                0.10,
-            ));
-            c.spawn((
-                Mesh3d(meshes.add(Cuboid::new(0.038, 0.038, 0.52))),
-                MeshMaterial3d(handle),
-                hold,
-            ));
-            c.spawn((
-                Mesh3d(meshes.add(Cuboid::new(0.16, 0.045, 0.075))),
-                MeshMaterial3d(head),
-                hold * Transform::from_xyz(0.0, 0.02, -0.26),
-            ));
-        });
-    }
+    // The viewmodel used to be spawned here, as two untextured `Cuboid`s
+    // welded rigidly to the camera. It is `render::viewmodel` now — a textured
+    // tool plus bob, sway and swing — because it stopped being a static prop
+    // and became a thing with state, and `hud.rs` is the HUD.
 }
 
 /// Redraw from the core. Cheap enough per frame: six background colours and
