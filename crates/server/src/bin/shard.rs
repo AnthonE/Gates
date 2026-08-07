@@ -159,7 +159,17 @@ async fn main() {
                 if found.created {
                     println!("saves ok: created {path} — remembering nobody yet");
                 } else {
-                    println!("saves ok: {} players remembered from {path}", found.live);
+                    // The backup depth is named at boot because it is the thing
+                    // an operator needs to know BEFORE the save goes bad, not
+                    // after: recovery is copying `<file>.1` over `<file>`, and
+                    // `.2` exists because `.1` can share the corruption
+                    // (reference/SAVES.md §6).
+                    println!(
+                        "saves ok: {} players remembered from {path} · {} backup(s) rotated \
+                         ({path}.1 is the previous run)",
+                        found.live,
+                        server::store::SAVE_BACKUP_COUNT
+                    );
                 }
                 if found.corrupt > 0 {
                     // Its own line, and said out loud rather than folded into

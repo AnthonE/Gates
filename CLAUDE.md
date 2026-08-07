@@ -64,6 +64,7 @@ pays the same doors and earns the same coins as a human.
 | `RENDER.md` | the **native** client's render path: the Bevy-draws-not-decides boundary, the slice order, the native visual gate, the budgets | owns the path, never the bar — `ART.md` outranks it everywhere |
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
 | `reference/AUDIO.md` | how the reference game decides what a player hears: the Unity mixer groups/snapshots it built first, the `audio.framebudget 0.3` convar, localized ambience, the 2–5 kHz carve, its four shipped audio bugs, and **§9 what it means for us** | **owns nothing** — research, not law, and a *cleaner* source than `SPAWN.md`: devblogs and the public convar list, nothing decompiled. Our answer is `crates/client/src/sound/` |
+| `reference/SAVES.md` | how the reference game remembers a player: **there is no player save file** — the body stays in the world as a sleeper and is saved because it is an entity, the save and the wire on one base class, the stop-the-world stall it never fixed, the wipe split, and **§9 what it means for us** | **owns nothing** — research, not law, and `AUDIO.md`'s clean source posture. The operator adopted its model (`DECISIONS.md` 2026-08-07), so §9 is a plan: read it before touching persistence. Our answer is `crates/server/src/store.rs` + `sim-core/src/persist.rs` |
 | `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is scry's `SUBSTRATE.md`; this owns only what an agent may do here |
 | `NOW.md` | what next | **the only list that answers that** |
 
@@ -195,6 +196,22 @@ do not rediscover)
   drawn the move, so a container refusal must be computed on the same
   values the client predicted with (the quantize-both-sides law, applied
   to containers).
+- **A full-world save is a stop-the-world freeze, and the reference game has
+  not fixed it in thirteen years.** Every server-host guide says the same two
+  things: saving is heavy, and on a high-population shard it "causes a massive
+  lag spike that freezes everyone in place". The only mitigation offered
+  anywhere by anyone is `server.saveinterval` (default 600 s) — a knob whose
+  two ends are *how much a crash costs* and *how often everyone stalls*, with
+  no third option. What they did optimise is the other end, load: Devblog 96
+  put building stability into the save so a restart could skip recomputing it.
+  So the trap is not "saving is slow", it is that **a whole-world walk on the
+  sim thread has no good cadence**, and picking one is choosing which player to
+  disappoint. Ours is a bounded sweep instead — one player per tick,
+  skip-if-unchanged, on a thread that is not the sim (`store.rs`) — and the
+  world stores want the same treatment when they land, not a snapshot. Their
+  loader also trusts the file outright; ours cannot, because a save is the one
+  non-command path into `World`. `reference/SAVES.md` §4 and §9.3 have the
+  measurements and the sources.
 - **Tonemap, sky, exposure, and fog are one owner.** Split across parallel
   passes they break each other's assumptions faster than they improve
   (measured elsewhere: three parallel rounds worsened visual defects

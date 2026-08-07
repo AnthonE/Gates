@@ -99,6 +99,31 @@ const _: () = assert!(
     "the save table must hold at least everyone the shard can seat at once"
 );
 
+/// How many numbered backups sit beside the live file: `<path>.1` … `<path>.N`,
+/// higher number = older. Rotated at boot.
+///
+/// **2, matching the reference game's `server.saveBackupCount`, which
+/// documents 2 as both its default and its minimum** — and the reason for the
+/// minimum is the part worth copying rather than the number. Their recovery
+/// documentation warns that `.sav.1` may itself be corrupt, because corruption
+/// can predate the newest backup by several save cycles, so the operator walks
+/// back to `.sav.2`. A depth of one gives you nowhere to walk.
+///
+/// Costs `SAVE_BACKUP_COUNT` × the file (~1 MB each) on disk and one copy at
+/// boot. Nothing rotates during a run: our writes are in place and per-record
+/// checksummed, so the failure a rotation defends against is a *file*, and a
+/// file only turns over at a boot. `reference/SAVES.md` §6.
+/// Proposed default, DECISIONS.md §open ("player persistence v0").
+pub const SAVE_BACKUP_COUNT: usize = 2;
+
+const _: () = assert!(
+    SAVE_BACKUP_COUNT >= 2,
+    "reference/SAVES.md §6: two is the reference game's documented MINIMUM, not \
+     just its default — the newest backup can share the corruption when the \
+     corruption predates it by a few save cycles, so a depth of one leaves an \
+     operator nowhere to walk back to"
+);
+
 /// File magic. Read before anything else, so pointing `save_file` at the
 /// wrong file says "not a save file" rather than misreading its first bytes
 /// as a seed.
@@ -468,12 +493,48 @@ fn encode_header(seed: u64, content_hash: u64) -> [u8; SAVE_HEADER_BYTES] {
     h
 }
 
+/// Rotate the backups: `<path>.1` becomes `.2`, and the file we are about to
+/// open becomes `.1`. Higher number = older, which is the reference game's
+/// convention (`....sav.1`, `....sav.2`) and worth matching so an operator who
+/// knows theirs knows ours.
+///
+/// **Best-effort by design.** Every failure here is ignored, because the shard
+/// booting matters more than the backup existing: a read-only directory, a full
+/// disk or a missing predecessor must not stop players getting in. The
+/// consequence is that a backup is a *convenience*, never a guarantee — and the
+/// per-record checksum, which is not best-effort, is what actually bounds the
+/// damage from a torn write.
+fn rotate_backups(path: &Path) {
+    let at = |n: usize| {
+        let mut s = path.as_os_str().to_os_string();
+        s.push(format!(".{n}"));
+        std::path::PathBuf::from(s)
+    };
+    // Oldest first, so nothing is overwritten before it has been moved up.
+    for n in (1..SAVE_BACKUP_COUNT).rev() {
+        let _ = std::fs::rename(at(n), at(n + 1));
+    }
+    let _ = std::fs::copy(path, at(1));
+}
+
 /// Open (or create) the save file and load its records.
 ///
 /// Every refusal names what to do about it, because every one of them is an
 /// operator mistake with a one-command fix and the alternative is a hundred
 /// players silently starting over.
+///
+/// A boot rotates the backups first (`rotate_backups`), so `<path>.1` is the
+/// world as the previous run left it. **The reason to have more than one is not
+/// the obvious one:** the reference game's own recovery documentation warns that
+/// `.sav.1` may itself be corrupt, because corruption can predate the newest
+/// backup by several save cycles — which is why a depth of one is not worth
+/// having and 2 is their documented minimum (`reference/SAVES.md` §6).
 pub fn open(path: &Path, seed: u64, content_hash: u64) -> Result<(Saves, SaveLoad), String> {
+    // Before the handle is taken, and before any validation: a file this boot
+    // is about to refuse is exactly the file an operator most wants a copy of.
+    if path.exists() {
+        rotate_backups(path);
+    }
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)

@@ -11,7 +11,7 @@
 
 use server::core::ShardCore;
 use server::stats::ShardStats;
-use server::store::{self, PlayerKey, SaveStore, MAX_SAVED_PLAYERS};
+use server::store::{self, PlayerKey, SaveStore, MAX_SAVED_PLAYERS, SAVE_BACKUP_COUNT};
 use sim_core::combat::CombatContent;
 use sim_core::craft::CraftContent;
 use sim_core::gather::{GatherContent, ItemStack};
@@ -34,13 +34,26 @@ fn key(s: &str) -> PlayerKey {
 }
 
 /// A scratch path under the test binary's temp dir. Named per test so the
-/// suite can run in parallel, and removed on the way in rather than the way
+/// suite can run in parallel, and cleared on the way in rather than the way
 /// out — a failed test that leaves its file behind is evidence.
 fn scratch(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
     p.push(format!("gates-save-{name}-{}.save", std::process::id()));
-    let _ = std::fs::remove_file(&p);
+    sweep(&p);
     p
+}
+
+/// Remove a save file and every numbered backup a boot may have rotated beside
+/// it. Each is ~1 MB, and `store::open` makes one on every call — so a suite
+/// that only deleted the live file would leave megabytes per run on a box where
+/// disk has been the binding constraint.
+fn sweep(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    for n in 1..=SAVE_BACKUP_COUNT + 2 {
+        let mut b = path.as_os_str().to_os_string();
+        b.push(format!(".{n}"));
+        let _ = std::fs::remove_file(PathBuf::from(b));
+    }
 }
 
 fn armed_core() -> ShardCore {
@@ -135,7 +148,7 @@ fn a_shard_restart_remembers_a_player() {
         (x - SPAWN.0).abs() < 2.0 && (z - SPAWN.1).abs() < 2.0,
         "the fixture moved: ({x}, {z})"
     );
-    let _ = std::fs::remove_file(&path);
+    sweep(&path);
 }
 
 /// A player the store has never heard of gets a fresh character, and that is
@@ -277,7 +290,7 @@ fn a_mismatched_file_refuses_to_boot_and_says_why() {
     );
 
     for p in [path, junk, junk_long, truncated] {
-        let _ = std::fs::remove_file(p);
+        sweep(&p);
     }
 }
 
@@ -321,7 +334,7 @@ fn one_corrupt_record_costs_one_player_and_boots() {
         saves.store.find(&bad).is_none(),
         "a torn record was handed to the sim"
     );
-    let _ = std::fs::remove_file(&path);
+    sweep(&path);
 }
 
 /// Two players are two saves. Trivial to state and the single worst thing to
@@ -359,7 +372,7 @@ fn two_keys_never_share_a_save() {
         saves.store.find(&b).expect("b").inv[0],
         ItemStack { item: 2, count: 20 }
     );
-    let _ = std::fs::remove_file(&path);
+    sweep(&path);
 }
 
 /// The file is the size the table says, and it does not grow. That is the
@@ -401,7 +414,118 @@ fn the_file_is_a_fixed_size_and_writes_do_not_grow_it() {
         499,
         "the last write did not win"
     );
-    let _ = std::fs::remove_file(&path);
+    sweep(&path);
+}
+
+/// Boots rotate the numbered backups, higher number = older, and the depth is
+/// a bound — the reference game's `....sav.1` / `.sav.2` convention, matched so
+/// an operator who knows theirs knows ours (`reference/SAVES.md` §6).
+///
+/// Asserted on **raw bytes**, not by opening the backup: a copy has to be exact,
+/// and `store::open` rotates as a side effect of booting, so reading a backup
+/// through it would perturb the thing under test.
+///
+/// Walked over four boots rather than two, because the bug this guards is an
+/// off-by-one in the rename *order* that only appears once the oldest slot is
+/// occupied. Renaming upward from the newest would clobber `.2` with `.1` before
+/// `.2` had moved, and two boots cannot tell that apart from correct behaviour.
+#[test]
+fn boots_rotate_the_backups_oldest_first() {
+    let path = scratch("rotate");
+    let at = |n: usize| {
+        let mut s = path.as_os_str().to_os_string();
+        s.push(format!(".{n}"));
+        PathBuf::from(s)
+    };
+    let me = key("rotates");
+
+    // Each generation leaves a distinguishable live file; `history[g]` is what
+    // the file held at the end of generation g.
+    let mut history: Vec<Vec<u8>> = Vec::new();
+    for gen in 1..=4u16 {
+        let (saves, _) = store::open(&path, SEED, CONTENT).expect("opens");
+        let mut store = saves.store;
+        let mut file = saves.file;
+        let mut save = PlayerSave::EMPTY;
+        save.hp_max = 100;
+        save.hp = gen;
+        let stamp = 1_700_000_000 + gen as u64;
+        let put = store.put(&me, stamp, save);
+        file.write(put.index, &me, stamp, &save).expect("writes");
+        drop(file); // flushed already; this closes the handle
+        history.push(std::fs::read(&path).expect("read live"));
+
+        // `.1` is the live file as the PREVIOUS generation left it. Generation 1
+        // created the file, so there is nothing behind it to have copied.
+        if gen == 1 {
+            assert!(!at(1).exists(), "a first boot invented a backup");
+            continue;
+        }
+        let prev = &history[gen as usize - 2];
+        assert_eq!(
+            &std::fs::read(at(1)).expect("read .1"),
+            prev,
+            "at boot {gen}, .1 must be the previous run byte for byte"
+        );
+        // And `.2`, once there is a run old enough to be in it.
+        if gen >= 3 {
+            let older = &history[gen as usize - 3];
+            assert_eq!(
+                &std::fs::read(at(2)).expect("read .2"),
+                older,
+                "at boot {gen}, .2 must be the run before .1 — the rename order \
+                 clobbered it"
+            );
+        }
+    }
+
+    // The depth is a bound: nothing is written past it, however many boots run.
+    assert!(
+        !at(SAVE_BACKUP_COUNT + 1).exists(),
+        "rotation wrote past SAVE_BACKUP_COUNT"
+    );
+    for n in 0..=SAVE_BACKUP_COUNT + 2 {
+        let _ = std::fs::remove_file(at(n));
+    }
+    sweep(&path);
+}
+
+/// Rotation is best-effort and must never stop a boot. A read-only directory or
+/// a full disk has to cost the backup, not the players — so this asserts the
+/// shard still comes up when the copy cannot be made.
+#[test]
+fn a_boot_survives_a_backup_it_cannot_write() {
+    let dir = std::env::temp_dir().join(format!("gates-ro-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("players.save");
+    // One boot to create the file, then make the directory unwritable so the
+    // rotation's rename and copy both fail.
+    store::open(&path, SEED, CONTENT).expect("first boot creates");
+    let mut perms = std::fs::metadata(&dir).expect("stat").permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o500); // r-x: can read and traverse, cannot create
+    }
+    std::fs::set_permissions(&dir, perms).expect("chmod");
+
+    let booted = store::open(&path, SEED, CONTENT);
+
+    // Restore write permission before asserting, so a failure still cleans up.
+    let mut perms = std::fs::metadata(&dir).expect("stat").permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o700);
+    }
+    let _ = std::fs::set_permissions(&dir, perms);
+    let ok = booted.is_ok();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        ok,
+        "a backup that cannot be written must not refuse the boot"
+    );
 }
 
 /// A shard with no save file writes nothing and remembers nobody — today's
