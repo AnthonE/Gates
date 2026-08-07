@@ -67,13 +67,19 @@ rotation landed with the call. Plan, sources and reasoning: `reference/SAVES.md`
    world state — its header pins the origin hash beside the seed and the
    content hash, and replay starts there. `worldsave.rs`'s module header has
    the argument. That is a design, not a file format.
-6. ~~**No graceful shutdown.**~~ **DONE 2026-08-07.** A kill used to cost
-   ≤ 3.3 s of every player *plus* up to a whole save interval of everybody's
-   base. The sim thread now flushes the world and every connected player's
-   record on the way out, and the accept loop drains until the producer is
-   *abandoned* rather than returning on the first look at the flag — which is
-   exact, not timed. The ordering is load-bearing and gated
+6. ~~**No graceful shutdown.**~~ **DONE 2026-08-07**, and the second half was
+   the half that mattered: the flush landed first and **nothing set the flag**,
+   so `systemctl stop` still killed the process where it stood and the whole
+   path had never once run. `bin/shard.rs` now catches SIGINT/SIGTERM and waits
+   on `store_stopped` — raised by the storage thread when its rings are dry and
+   *abandoned*, so the wait ends when the last byte is written rather than after
+   a duration somebody guessed. Ordering is gated
    (`the_shutdown_flush_takes_the_world_before_it_drops_the_players`).
+   **Measured by hand 2026-08-07** (no gate — a signal test is a clock test,
+   and `CLAUDE.md` is explicit): cadence saves land (14 worlds, 0 skipped, 0
+   failed); SIGTERM prints, flushes, exits; a reboot resumes the tick; and
+   **SIGKILL leaves no `.tmp` and the next boot resumes off the last cadence
+   save** — which is the crash case, and the one temp-then-rename exists for.
    **Still ungated:** the three-thread path end to end, and `KeySlot`'s id
    match.
 

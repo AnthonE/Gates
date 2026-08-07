@@ -606,7 +606,16 @@ fn store_thread(
                 Err(_) => ShardStats::bump(&stats.save_write_errors),
             }
         }
-        if write_rx.is_abandoned() {
+        // Both rings, not just the player one. The ordering makes a
+        // single check safe in practice — the accept loop only drops
+        // `write_tx` after the sim has already dropped `world_tx` — but
+        // "safe because of what another thread does first" is a thing to
+        // write down or check, and checking is one `&&`.
+        if write_rx.is_abandoned() && world_rx.is_abandoned() {
+            // Everything this process will ever write has been written.
+            // `bin/shard.rs` waits on this before it exits, which is what
+            // turns a SIGTERM into a save instead of a lost hour.
+            ShardStats::raise(&stats.store_stopped);
             return;
         }
         if idle {

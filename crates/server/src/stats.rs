@@ -3,7 +3,7 @@
 //! tests, the smoke gate, and later the status page. Integer-only by
 //! design (L5: diagnostics are numbers, not strings).
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[derive(Default)]
 pub struct ShardStats {
@@ -111,6 +111,19 @@ pub struct ShardStats {
     /// persist keeps running, exactly as it does for a player record —
     /// dropping everyone because a disk filled is worse than forgetting.
     pub world_save_errors: AtomicU64,
+    /// **The storage thread has written everything and stopped.** The one
+    /// flag here, and it is not a statistic — it is how `bin/shard.rs`
+    /// knows a graceful shutdown has actually reached the disk before it
+    /// calls `exit`.
+    ///
+    /// Exact rather than timed, which matters because the alternative is a
+    /// sleep somebody picked: the sim thread flushes and drops its
+    /// producers, the accept loop drains until abandoned and drops its own,
+    /// the storage thread drains until *its* rings are abandoned and sets
+    /// this. Every hop waits on a producer being dropped, so the chain ends
+    /// exactly when the last byte is written and not a moment that happened
+    /// to look long enough.
+    pub store_stopped: AtomicBool,
     /// A world blob the sim thread refused, which `bin/shard.rs` had
     /// already accepted into a trial world. Unreachable by construction and
     /// counted anyway, because the alternative to counting it is a shard
@@ -157,5 +170,19 @@ impl ShardStats {
     /// rather than accumulated, so it must be assigned and never bumped.
     pub fn set(field: &AtomicU64, v: u64) {
         field.store(v, Ordering::Relaxed);
+    }
+
+    /// Raise a flag. `Release`/`Acquire` rather than `Relaxed`, unlike every
+    /// counter here: `store_stopped` is read to decide that *other* writes —
+    /// the file the storage thread just closed — have happened, and a
+    /// relaxed store would let the reader see the flag without seeing the
+    /// work. A counter nobody orders anything against does not need this;
+    /// a handshake does.
+    pub fn raise(field: &AtomicBool) {
+        field.store(true, Ordering::Release);
+    }
+
+    pub fn raised(field: &AtomicBool) -> bool {
+        field.load(Ordering::Acquire)
     }
 }
