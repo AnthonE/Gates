@@ -1,22 +1,34 @@
 # AGENTS.md — the mission file
 
 You are an agent (or a human — same rules) arriving to build **Gates**: an
-open-source browser survival game in the Rust tradition — Rust-language
-authoritative server, three.js client, WebTransport/QUIC. The skeleton is
-the product: determinism, netcode, and the hot-path laws outrank every
-feature. This file is the whole onboarding; any harness that can read a
+open-source survival game in the Rust tradition — Rust-language authoritative
+server, a **native Rust desktop client** (Bevy), WebTransport/QUIC. The
+skeleton is the product: determinism, netcode, and the hot-path laws outrank
+every feature. This file is the whole onboarding; any harness that can read a
 file and run a shell can contribute.
+
+**The browser client is deleted** (operator, 2026-08-06). This file said
+"browser survival game, three.js client" for months after that; `web/` is not
+in the tree and the native client is the only client. `CLAUDE.md` has the
+detail, including how to read the deleted one out of git history when a
+question about a verb needs it.
 
 ## The 90-second start
 
 1. Read `CLAUDE.md`. It is the law of this repo and it is short.
-2. Read `NOW.md`. Pick the **top item you can actually finish**. Right now
-   the workspace does not exist yet — **M0 is the current work**, and
-   `./ci/gates.sh` says so honestly (it fails until the workspace lands;
-   that is the gate working, not the gate broken).
+2. Read `NOW.md`. Pick the **top item you can actually finish**. The
+   workspace exists and `./ci/gates.sh` is green on `main` — if it is red on a
+   clean tree, that is a missing capability on your box before it is a defect
+   in the tree, and `CLAUDE.md` names the ones this repo has already paid for
+   (three `-dev` packages, the wasm target, `RUST_MIN_STACK` for the `*_wire`
+   suites). Diagnose with `git stash -u` before believing your diff caused it.
 3. Read the doc that **owns** your area before touching it — the table in
    `CLAUDE.md` §the docs says which doc wins. Numbers live in `CONTENT.md`
-   schemas and `DECISIONS.md`, never in code.
+   schemas and `DECISIONS.md`, never in code. The `reference/` docs own
+   nothing but are worth reading before you build the thing they survey —
+   `SAVES.md` before persistence, `SPAWN.md` before placement, `AUDIO.md`
+   before sound — because each one's §9 is where a spoken decision about that
+   area was reasoned out.
 4. Branch → build → **`./ci/gates.sh` green locally** → open a PR. Fill the
    template. One crate per PR. Never push to `main`.
 5. Want to be paid? See **the deal** below.
@@ -80,7 +92,7 @@ Small, sharp, finished. One owner per crate per iteration; `protocol` and
 
 ```
 ./ci/gates.sh                       # exactly what CI runs — run before every PR
-cargo test --workspace              # every headless gate (once M0 lands)
+cargo test --workspace              # every headless gate
 cargo run -p server --bin shard     # the server (reads shard.toml)
 cargo run -p server --bin bots -- 100
 cargo run -p client --features render --bin gates   # the game
@@ -91,11 +103,13 @@ cargo run -p client --features render --bin gates   # the game
 - **`gates` workflow** — runs `./ci/gates.sh` on every PR and push to
   `main` that touches code paths. Red means do not merge; there is no
   override lane.
-- **`nightly` workflow** — every night, builds the release server and the
-  wasm client from `main` and uploads them as artifacts. Before M0 it
-  reports "nothing to build yet" and exits cleanly — a builder with
-  nothing to build is a fact, not a failure; the *test* gate is the one
-  that is never allowed to skip-pass.
+- **`nightly` workflow** — every night, builds from `main` and uploads
+  artifacts. The rule it was written around still holds and is the one worth
+  keeping: a builder with nothing to build is a fact, not a failure, but the
+  *test* gate is never allowed to skip-pass. (It names a wasm client; that was
+  the browser one. What a nightly should ship now is the native client and the
+  depot `ci/depot.py` stages — unverified here, so check the workflow rather
+  than trusting this line.)
 
 ## For any harness
 
