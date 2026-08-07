@@ -73,6 +73,20 @@ pub const SNAPSHOT_RING_CAP: usize = 4;
 pub const CTRL_RING_CAP: usize = 8;
 pub const GRAVEYARD_RING_CAP: usize = 256;
 
+/// Each hop of the player-save path: sim → the store's index (accept loop),
+/// and the index → the file (storage thread). One cap for both because both
+/// carry the same traffic — at most one autosave record per tick plus a
+/// leave's, drained every sweep.
+///
+/// Sized against the burst, which is a mass disconnect: `MAX_PLAYERS` leaves
+/// can land in one tick, so the cap sits above that with room for the sweep's
+/// steady drip. Overflow policy: **drop newest**, counted
+/// (`save_ring_drops`). That costs *freshness*, never correctness — the
+/// autosave sweep re-takes the same player a few ticks later, and the record
+/// is idempotent (it is filed by key and overwrites in place). Proposed
+/// default, DECISIONS.md §open ("player persistence v0").
+pub const SAVE_RING_CAP: usize = 256;
+
 /// Server-side per-client input frame buffer, keyed by seq (NETCODE.md
 /// §4: target depth 1–2 ticks). Overflow policy: **drop oldest** — a
 /// too-deep buffer skips ahead via the consume throttle. Proposed

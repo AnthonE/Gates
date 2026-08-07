@@ -379,14 +379,38 @@ Rules that make it true, all enforced in `sim-core`:
 - Float ops restricted as §4 (also what makes wasm prediction bit-exact).
 
 `state_hash` (xxh3 over canonical entity state) computed every 32 ticks,
-logged, and stamped into the WAL. `cargo run -p server --bin replay --
---wal <file>` re-simulates and must reproduce every stamped hash — CI runs
-a recorded 5-minute fixture on every push (§12). This is also the bridge
-back to the scry board: a played round's `(seed, WAL, final hash)` is
+logged, and stamped into the WAL. A `replay` binary re-simulates a recorded
+WAL and must reproduce every stamped hash. This is also the bridge back to
+the scry board: a played round's `(seed, WAL, final hash)` is
 machine-checkable by recomputation — the one honest auto-verify shape — so
 a later quest can gate on a real played round with no human in the loop.
 
+**None of the WAL paragraph above is built** (2026-08-07), and it was being
+read as though it were: there is no `wal.rs`, no `replay` binary, and
+`test_replay` runs the sim twice **in memory** off the same command stream
+and compares hashes. That is real determinism and it is what wall 5 actually
+gates today — it is not a recorded fixture and it saves nobody. Two things
+followed from the confusion and are worth keeping in mind here: `CLAUDE.md`
+and `AGENTS.md` both listed the `replay` command for months (removed), and a
+whole design pass went into an admission ceremony for a game that handed you
+a new character on every connection. §8's first two bullets are design, not
+description. What IS built is the player half — one record per player, filed
+under an opaque key, in `crates/server/src/store.rs` — and it is a different
+artifact from the WAL with a different job: it answers "who was I", never
+"what happened".
+
 ## 8 · Persistence and wipes
+
+**Built today: the player, not the world.** `crates/server/src/store.rs` keeps
+one fixed record per player — position, inventory, hp, the survival clock, the
+craft queue — in a fixed-slot file, filed under the opaque `PlayerKey` the
+admission seam returns, and restores it into the sim as `Command::JoinAs` so a
+replay reproduces the restore. Exact at a clean leave, ≤ `MAX_PLAYERS` ticks
+stale otherwise (a one-slot-per-tick autosave sweep). Structures, deployables,
+container contents and hearths are **not** in it and still die with the
+process, so a base outlives a disconnect and not a restart. The rest of this
+section is the design for the world half and the ledger, and none of it is
+built:
 
 - **WAL**: every econ/build/inventory transaction and all inputs, appended
   by the storage thread (group-fsync ~50 ms cadence; transactions ack to

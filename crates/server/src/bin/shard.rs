@@ -6,6 +6,7 @@
 use server::config::parse_shard_toml;
 use server::net::spawn_shard;
 use server::stats::ShardStats;
+use std::path::Path;
 use std::time::Duration;
 
 #[tokio::main]
@@ -142,8 +143,67 @@ async fn main() {
             std::process::exit(1);
         }
     }
+    // The player store, opened and validated before a port is bound — the
+    // posture content and the island already take (CLAUDE.md wall 7). It needs
+    // the content hash, which is why it is opened HERE and handed over rather
+    // than inside `spawn_shard`: a save file describes inventories as item
+    // *indices*, so restoring it under moved content would hand players the
+    // wrong things, and that has to be a refusal rather than a surprise.
+    let saves = match cfg.save_file.as_deref() {
+        None => {
+            println!("saves off: no save_file — every join builds a fresh character");
+            server::store::Saves::off()
+        }
+        Some(path) => match server::store::open(Path::new(path), cfg.seed, content.hash()) {
+            Ok((saves, found)) => {
+                if found.created {
+                    println!("saves ok: created {path} — remembering nobody yet");
+                } else {
+                    // The backup depth is named at boot because it is the thing
+                    // an operator needs to know BEFORE the save goes bad, not
+                    // after: recovery is copying `<file>.1` over `<file>`, and
+                    // `.2` exists because `.1` can share the corruption
+                    // (reference/SAVES.md §6).
+                    println!(
+                        "saves ok: {} players remembered from {path} · {} backup(s) rotated \
+                         ({path}.1 is the previous run)",
+                        found.live,
+                        server::store::SAVE_BACKUP_COUNT
+                    );
+                }
+                if found.corrupt > 0 {
+                    // Its own line, and said out loud rather than folded into
+                    // the count: a corrupt record is somebody's base, and the
+                    // operator is the only one who can judge whether N of them
+                    // is one torn write or a disk going bad.
+                    println!(
+                        "saves WARNING: {} record(s) REFUSED as corrupt — that many players \
+                         start over. One is a torn write (the shard was killed mid-save); \
+                         many is the disk.",
+                        found.corrupt
+                    );
+                }
+                if !cfg.require_auth {
+                    // The trap this warns about is silent: saves armed,
+                    // admission open, so every joiner is a guest with no key
+                    // to be filed under and the store stays empty forever
+                    // while every gate is green.
+                    println!(
+                        "saves WARNING: require_auth is false, so joiners have no identity \
+                         to save under — a guest is admitted and remembered by nobody, and \
+                         this shard will write nothing to that file"
+                    );
+                }
+                saves
+            }
+            Err(e) => {
+                eprintln!("shard: {e}");
+                std::process::exit(1);
+            }
+        },
+    };
     let handle = match spawn_shard(
-        cfg, gather, craft, build, deploy, combat, backpack, survival, loot, catalog,
+        cfg, gather, craft, build, deploy, combat, backpack, survival, loot, catalog, saves,
     )
     .await
     {
@@ -162,7 +222,7 @@ async fn main() {
         report.tick().await;
         let s = &handle.stats;
         println!(
-            "tick {} · joins {} leaves {} · in ok/bad/drop {}/{}/{} · snap sent/skip/err {}/{}/{} · refused v/full {}/{} · dropped-ticks {}",
+            "tick {} · joins {} leaves {} · in ok/bad/drop {}/{}/{} · snap sent/skip/err {}/{}/{} · refused v/full {}/{} · dropped-ticks {} · saves restored/written/lost {}/{}/{}",
             ShardStats::get(&s.current_tick),
             ShardStats::get(&s.joins),
             ShardStats::get(&s.leaves),
@@ -175,6 +235,13 @@ async fn main() {
             ShardStats::get(&s.refused_version),
             ShardStats::get(&s.refused_full),
             ShardStats::get(&s.ticks_dropped),
+            ShardStats::get(&s.saves_restored),
+            ShardStats::get(&s.saves_written),
+            // The three failures that mean a player lost something, summed:
+            // a full ring, an evicted table slot, a disk that refused.
+            ShardStats::get(&s.save_ring_drops)
+                + ShardStats::get(&s.saves_evicted)
+                + ShardStats::get(&s.save_write_errors),
         );
     }
 }

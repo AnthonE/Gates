@@ -8,11 +8,17 @@
 //!   (created at accept — DESIGN.md §4's "preallocated at accept");
 //! - global: accept→sim control ring (installs a connection's ring
 //!   handles), sim→accept graveyard ring (returns them, so the sim thread
-//!   never deallocates — L2 outlives the tick).
+//!   never deallocates — L2 outlives the tick);
+//! - global, the save path (`store.rs`): sim→accept records ring, then
+//!   accept→storage-thread writes ring. One direction, two hops, and the
+//!   reason for the second one is that the sim thread may not touch a file
+//!   and the accept loop may not block on `sync_data`.
 
+use crate::store::PlayerKey;
 use protocol::{ActionMsg, ChatMsg, InputDatagram, MAX_EVENT_MSG_BYTES};
 use rtrb::{Consumer, Producer};
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
+use sim_core::persist::PlayerSave;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Slot lifecycle, 2 bits of the packed word. Claims bump the generation
@@ -154,5 +160,37 @@ pub struct Link {
 pub struct Connect {
     pub slot: usize,
     pub id: u32,
+    /// What the store remembered about this player, if it knew them. `None`
+    /// ⇒ a fresh character: no key (a guest), no record under their key, or
+    /// no save file configured at all.
+    ///
+    /// The record travels *with the connection* rather than being fetched by
+    /// the sim, because the sim thread may not read a file and because a
+    /// restore has to enter the world as a command (`Command::JoinAs`) for a
+    /// replay to reproduce it.
+    pub save: Option<PlayerSave>,
     pub link: Link,
+}
+
+/// Sim→accept: one player's state, for the store's index to file under their
+/// key. Carries the player **id**, not the key — the sim has never heard of a
+/// key, and that is the wall that keeps identity out of the deterministic
+/// core. The accept loop owns the id→key table and does the pairing.
+#[derive(Clone, Copy)]
+pub struct SaveMsg {
+    pub id: u32,
+    pub save: PlayerSave,
+}
+
+/// Accept→storage thread: one record and where in the file it goes. The
+/// index is assigned by the store's index owner, so the thread that touches
+/// the disk decides nothing — it seeks, writes, flushes.
+#[derive(Clone, Copy)]
+pub struct WriteMsg {
+    pub index: usize,
+    pub key: PlayerKey,
+    /// Unix seconds, stamped by the index owner. It orders eviction and it
+    /// has to survive a restart, which the world's tick counter does not.
+    pub stamp: u64,
+    pub save: PlayerSave,
 }

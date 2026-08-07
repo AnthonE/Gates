@@ -19,6 +19,7 @@ use crate::limits::{
 };
 use crate::loot::{LootContent, LOOT_BARREL};
 use crate::movement::{self, quant_xz, quant_y, Body};
+use crate::persist::PlayerSave;
 use crate::ranged;
 use crate::rng::cell_hash;
 use crate::survival::{self, SurvivalContent};
@@ -476,6 +477,25 @@ impl Default for Player {
 pub enum Command {
     Join {
         id: u32,
+    },
+    /// Join **as a saved character** — the restore, and it rides the command
+    /// stream rather than being read out of a file by the sim.
+    ///
+    /// That is the whole reason this variant exists instead of a `World`
+    /// method the server could call: the WAL is "exactly this stream plus
+    /// the tick numbers" (below), so a join that loaded state through a side
+    /// channel would replay as a *fresh* spawn and every hash after it would
+    /// differ. Carrying the record makes the stream self-contained — a
+    /// replay restores what the session restored, byte for byte, with no
+    /// file to still be there.
+    ///
+    /// It costs the enum its size: `PlayerSave` is 188 bytes, so `Command`
+    /// grows from 16 to ~192 and the two `MAX_COMMANDS_PER_TICK` buffers
+    /// with it (~45 kB each, measured — `ShardCore` was 443 kB). Paid
+    /// knowingly; the alternative was a determinism hole.
+    JoinAs {
+        id: u32,
+        save: PlayerSave,
     },
     Leave {
         id: u32,
@@ -1176,41 +1196,104 @@ impl World {
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
     }
 
-    fn apply(&mut self, cmd: &Command) {
-        match *cmd {
-            Command::Join { id } => {
-                if self.slot_of(id).is_some() {
+    /// **The one door into the world for a player**, and there are two
+    /// commands behind it: `Join` seats a fresh character, `JoinAs` seats a
+    /// saved one. One function rather than two arms, because a second
+    /// player-creation path is how the two drift — a field added to the
+    /// fresh spawn and forgotten on the restore is a bug no gate here can
+    /// see, since both produce a legal `Player`.
+    ///
+    /// A restore writes the saved fields and **defaults everything the save
+    /// does not carry** (`persist.rs` says which and why): the input frame,
+    /// the swing cooldown, the weak-spot chase and the craft timer are all
+    /// `Player::default()`'s, and the craft timer is then re-armed against
+    /// the *current* tick, because the queue survives a restart and its
+    /// absolute completion tick cannot.
+    fn seat(&mut self, id: u32, save: Option<PlayerSave>) {
+        if self.slot_of(id).is_some() {
+            return;
+        }
+        // No free slot: refuse silently here; the accept path already
+        // hard-caps at the shard limit (limits.rs).
+        let Some(slot) = self.players.iter().position(|p| !p.active) else {
+            return;
+        };
+        match save {
+            None => {
+                let (x, z) = self.spawn_pos(id);
+                let hp = self.combat.player_hp;
+                self.players[slot] = Player {
+                    id,
+                    active: true,
+                    body: Body::at(self.seed, x, z),
+                    hp,
+                    hp_max: hp,
+                    ..Player::default()
+                };
+                survival::grant(&self.survival, &mut self.players[slot]);
+            }
+            Some(s) => {
+                self.players[slot] = Player {
+                    id,
+                    active: true,
+                    body: s.body,
+                    inv: s.inv,
+                    jobs: s.jobs,
+                    hp: s.hp,
+                    hp_max: s.hp_max,
+                    deaths: s.deaths,
+                    food: s.food,
+                    water: s.water,
+                    food_acc: s.food_acc,
+                    water_acc: s.water_acc,
+                    hurt_acc: s.hurt_acc,
+                    heal_rem: s.heal_rem,
+                    heal_total: s.heal_total,
+                    heal_span: s.heal_span,
+                    heal_acc: s.heal_acc,
+                    ..Player::default()
+                };
+                craft::rearm(&self.craft, self.tick, &mut self.players[slot]);
+                if s.dead {
+                    // Logged off on the death screen. Declining the choice
+                    // is choosing the beach — `wake` re-derives the whole
+                    // body from the spawn ring at `deaths` and announces
+                    // everything this function would have, so it is the
+                    // exit and not a step (`PlayerSave::dead` says why the
+                    // corpse itself is not restorable).
+                    self.wake(slot, false);
                     return;
                 }
-                if let Some(slot) = self.players.iter().position(|p| !p.active) {
-                    let (x, z) = self.spawn_pos(id);
-                    let hp = self.combat.player_hp;
-                    self.players[slot] = Player {
-                        id,
-                        active: true,
-                        body: Body::at(self.seed, x, z),
-                        hp,
-                        hp_max: hp,
-                        ..Player::default()
-                    };
-                    survival::grant(&self.survival, &mut self.players[slot]);
-                    // Say it at the door. Health is only ever announced
-                    // when it changes, so without this a fresh player has
-                    // no vitals until the first thing that hurts them —
-                    // which is the one moment a bar is no use. The meters
-                    // are announced at the door for the same reason.
-                    if hp > 0 {
-                        self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
-                    }
-                    survival::announce_vitals(
-                        &self.survival,
-                        &self.players[slot],
-                        &mut self.events,
-                    );
-                }
-                // No free slot: refuse silently here; the accept path
-                // already hard-caps at the shard limit (limits.rs).
             }
+        }
+        // Say it at the door. Health is only ever announced when it
+        // changes, so without this a player has no vitals until the first
+        // thing that hurts them — which is the one moment a bar is no use.
+        // The meters are announced at the door for the same reason.
+        let (hp, hp_max) = (self.players[slot].hp, self.players[slot].hp_max);
+        if hp > 0 {
+            self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
+        }
+        survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
+    }
+
+    /// What this shard would remember about `id` if the connection ended
+    /// now. `None` ⇒ nobody by that id is in the world.
+    ///
+    /// **A pure read, and that is the whole design.** The server takes one
+    /// at a leave, at a shutdown and on its autosave sweep, and none of
+    /// those is a command — so none of them may change the world, or a
+    /// replay of the same WAL would diverge from the shard that wrote it
+    /// (wall 5). Everything that mutates stays on the `Command` path; this
+    /// only looks.
+    pub fn save_of(&self, id: u32) -> Option<PlayerSave> {
+        self.slot_of(id).map(|s| PlayerSave::of(&self.players[s]))
+    }
+
+    fn apply(&mut self, cmd: &Command) {
+        match *cmd {
+            Command::Join { id } => self.seat(id, None),
+            Command::JoinAs { id, save } => self.seat(id, Some(save)),
             Command::Leave { id } => {
                 if let Some(slot) = self.slot_of(id) {
                     self.players[slot].active = false;

@@ -3272,6 +3272,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/charge.rs"),
         },
         Module {
+            file: "persist.rs",
+            src: include_str!("../../sim-core/src/persist.rs"),
+        },
+        Module {
             file: "pitch_lut.rs",
             src: include_str!("../../sim-core/src/pitch_lut.rs"),
         },

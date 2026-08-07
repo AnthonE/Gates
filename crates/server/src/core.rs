@@ -32,6 +32,7 @@ use sim_core::limits::{
     HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
     SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK,
 };
+use sim_core::persist::PlayerSave;
 use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
     EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH,
@@ -79,8 +80,23 @@ pub struct ShardCore {
     pub clients: Box<[ClientNetState]>,
     /// Joins/leaves queued between ticks (accept/cleanup driven). Overflow
     /// policy: refuse — the caller retries next tick.
-    queued: [Command; MAX_COMMANDS_PER_TICK],
+    ///
+    /// Boxed, with `cmd_buf` below, for the reason `World` boxes `backpacks`:
+    /// `ShardCore` is built on the stack (`ShardCore::new`, every wire test)
+    /// and a `Command` is no longer 16 bytes. `Command::JoinAs` carries a
+    /// 188-byte `PlayerSave`, so the enum is ~192 and each of these buffers is
+    /// ~49 kB — 98 kB of stack the `*_wire` suites were within a documented
+    /// margin of not having (`CLAUDE.md`: they already need `RUST_MIN_STACK`
+    /// on the reference box). Two construction-time allocations, none in the
+    /// tick (wall 2), and the stack footprint ends up *smaller* than before
+    /// the restore existed.
+    queued: Box<[Command]>,
     queued_len: usize,
+    /// The tick's own command list: what `queued` plus this tick's inputs and
+    /// actions add up to, handed to `World::tick` as one slice. A field rather
+    /// than a local for the boxing above — and it borrow-splits cleanly against
+    /// `clients` and `world` because they are all distinct fields of `self`.
+    cmd_buf: Box<[Command]>,
     /// Scratch: baseline copy (borrow-splits the client during encode).
     baseline_buf: [EntityState; MAX_SNAPSHOT_ENTITIES],
     /// Scratch: what actually got encoded, for `record_sent`.
@@ -95,6 +111,18 @@ pub struct ShardCore {
     pub catalog: ItemCatalog,
     /// Scratch: event-lane encode target.
     ev_buf: [u8; MAX_EVENT_MSG_BYTES],
+    /// Autosave sweep cursor: which connection slot [`Self::autosave`] looks
+    /// at next. One slot per call, so the work is O(1) per tick and every
+    /// connected player is visited once every `MAX_PLAYERS` ticks (3.3 s at
+    /// 30 Hz) — bounded like everything else, and the reason a shard that is
+    /// killed mid-session costs seconds of a player's progress rather than
+    /// the whole session.
+    autosave_at: usize,
+    /// The last record handed out per connection slot, so the sweep can skip
+    /// a player whose state has not moved. `PlayerSave` is `Eq` because every
+    /// field of it is quantized (`movement::Body`), which is what makes this
+    /// comparison exact rather than a tolerance.
+    last_saved: Box<[PlayerSave]>,
 }
 
 impl ShardCore {
@@ -104,14 +132,17 @@ impl ShardCore {
         Self {
             world: World::new(seed),
             clients: clients.into_boxed_slice(),
-            queued: [Command::Leave { id: 0 }; MAX_COMMANDS_PER_TICK],
+            queued: vec![Command::Leave { id: 0 }; MAX_COMMANDS_PER_TICK].into_boxed_slice(),
             queued_len: 0,
+            cmd_buf: vec![Command::Leave { id: 0 }; MAX_COMMANDS_PER_TICK].into_boxed_slice(),
             baseline_buf: [EntityState::default(); MAX_SNAPSHOT_ENTITIES],
             sent_buf: [EntityState::default(); MAX_SNAPSHOT_ENTITIES],
             removed_buf: [0; MAX_SNAPSHOT_ENTITIES],
             dg_buf: [0; DATAGRAM_BUDGET_BYTES],
             catalog: ItemCatalog::EMPTY,
             ev_buf: [0; MAX_EVENT_MSG_BYTES],
+            autosave_at: 0,
+            last_saved: vec![PlayerSave::EMPTY; MAX_PLAYERS].into_boxed_slice(),
         }
     }
 
@@ -125,28 +156,91 @@ impl ShardCore {
         true
     }
 
-    /// Install a client on `slot` with player `id`. False ⇒ retry next
-    /// tick (queue full — refuse, never grow).
+    /// Install a client on `slot` with player `id`, as a **fresh** character.
+    /// False ⇒ retry next tick (queue full — refuse, never grow).
     #[must_use]
     pub fn connect(&mut self, slot: usize, id: u32) -> bool {
-        if !self.queue(Command::Join { id }) {
+        self.connect_as(slot, id, None)
+    }
+
+    /// Install a client, restoring `save` if the store had one for them.
+    ///
+    /// The record rides `Command::JoinAs` into the sim rather than being
+    /// written into the world here, and that is the determinism half of the
+    /// slice: the command stream stays the only thing that changes the world,
+    /// so a replay of it restores what the session restored (wall 5, and
+    /// `world.rs`'s `JoinAs` says it at more length).
+    #[must_use]
+    pub fn connect_as(&mut self, slot: usize, id: u32, save: Option<PlayerSave>) -> bool {
+        let cmd = match save {
+            Some(save) => Command::JoinAs { id, save },
+            None => Command::Join { id },
+        };
+        if !self.queue(cmd) {
             return false;
         }
         self.clients[slot].reset(id);
+        // The sweep must not read this connection's arrival as "nothing has
+        // changed" against the previous tenant of the slot.
+        self.last_saved[slot] = PlayerSave::EMPTY;
         true
     }
 
-    /// Tear a client down. The world keeps no sleeper yet (M0): leave
-    /// removes the entity; sleepers arrive with their milestone.
-    pub fn disconnect(&mut self, slot: usize) {
+    /// Tear a client down, and **hand back what this shard should remember
+    /// about them**, with the id it belongs to. `None` ⇒ nothing to remember:
+    /// an already-disconnected slot, or a player the world has no body for.
+    ///
+    /// The id rides along rather than being read back off the slot by the
+    /// caller, because by the time the caller acts the slot may have been
+    /// freed and re-claimed — and a record filed under the wrong player's key
+    /// hands somebody else's inventory away. One return value, no window.
+    ///
+    /// The read happens here, before the `Leave` is queued, because it is a
+    /// read: `World::save_of` cannot mutate, so the departing player's record
+    /// is taken off the live body and the command that removes it is
+    /// unchanged. Where the record then goes — a ring, an index, a file — is
+    /// `net.rs`'s business and none of it touches the sim thread's laws.
+    pub fn disconnect(&mut self, slot: usize) -> Option<(u32, PlayerSave)> {
         let id = self.clients[slot].id;
-        if self.clients[slot].connected {
-            // Queue overflow here would strand the world entity; the
-            // reserve (MAX_PLAYERS of headroom) makes that impossible for
-            // real leave rates.
-            let _ = self.queue(Command::Leave { id });
-            self.clients[slot].connected = false;
+        if !self.clients[slot].connected {
+            return None;
         }
+        let save = self.world.save_of(id);
+        // Queue overflow here would strand the world entity; the
+        // reserve (MAX_PLAYERS of headroom) makes that impossible for
+        // real leave rates.
+        let _ = self.queue(Command::Leave { id });
+        self.clients[slot].connected = false;
+        self.last_saved[slot] = PlayerSave::EMPTY;
+        save.map(|s| (id, s))
+    }
+
+    /// One step of the autosave sweep: the next connected player whose state
+    /// has moved since it was last taken, or `None`.
+    ///
+    /// Called once per tick by the sim loop. Bounded to one slot per call —
+    /// so the cost is a fixed comparison whatever the population — and
+    /// skipping an unchanged player is what keeps an idle full shard from
+    /// writing 30 identical records a second.
+    ///
+    /// A leave is the exact save and this is the approximate one: it can be
+    /// up to `MAX_PLAYERS` ticks stale, and a player killed by a shard crash
+    /// loses that much. The alternative — saving every player every tick —
+    /// would be unbounded work in the tick for a guarantee no genre in this
+    /// tradition offers.
+    pub fn autosave(&mut self) -> Option<(u32, PlayerSave)> {
+        let slot = self.autosave_at;
+        self.autosave_at = (slot + 1) % MAX_PLAYERS;
+        if !self.clients[slot].connected {
+            return None;
+        }
+        let id = self.clients[slot].id;
+        let save = self.world.save_of(id)?;
+        if save == self.last_saved[slot] {
+            return None;
+        }
+        self.last_saved[slot] = save;
+        Some((id, save))
     }
 
     /// One decoded input datagram from this client: acks first (they ride
@@ -198,9 +292,8 @@ impl ShardCore {
     /// client. All bytes go to `send(lane, slot, bytes)`; its bool is the
     /// ring's verdict and only the event lane acts on it.
     pub fn tick(&mut self, stats: &ShardStats, mut send: impl FnMut(Lane, usize, &[u8]) -> bool) {
-        let mut cmds = [Command::Leave { id: 0 }; MAX_COMMANDS_PER_TICK];
         let mut n = self.queued_len;
-        cmds[..n].copy_from_slice(&self.queued[..n]);
+        self.cmd_buf[..n].copy_from_slice(&self.queued[..n]);
         self.queued_len = 0;
         for slot in 0..MAX_PLAYERS {
             let c = &mut self.clients[slot];
@@ -209,7 +302,7 @@ impl ShardCore {
             }
             if let Some(frame) = c.consume_input() {
                 if n < MAX_COMMANDS_PER_TICK {
-                    cmds[n] = Command::Input { id: c.id, frame };
+                    self.cmd_buf[n] = Command::Input { id: c.id, frame };
                     n += 1;
                 }
             }
@@ -223,7 +316,7 @@ impl ShardCore {
                 continue;
             }
             if let Some(act) = c.pending_action.take() {
-                cmds[n] = match act {
+                self.cmd_buf[n] = match act {
                     // The one action that is not a command, and it says so
                     // where the table says everything else: it changes what
                     // this connection is *shown*, not what the world *is*.
@@ -367,7 +460,7 @@ impl ShardCore {
                 n += 1;
             }
         }
-        self.world.tick(&cmds[..n]);
+        self.world.tick(&self.cmd_buf[..n]);
 
         for slot in 0..MAX_PLAYERS {
             if self.clients[slot].connected {

@@ -20,6 +20,30 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0y · Persistence takes the reference game's shape *(server lane)*
+
+Player half landed 2026-08-07; then we read how the reference game does it and
+**there is no player save file there** — the body stays in the world as a
+sleeper, saved because it is an entity. Operator adopted that model; backup
+rotation landed with the call. Plan, sources and reasoning: `reference/SAVES.md`
+§9. Knobs: `DECISIONS.md` §open "player persistence v0". In order:
+
+1. **Sleepers: the body stays.** `Leave` deactivates today — the design their
+   Devblog 7 says it *replaced* — so a disconnect makes you **safe** and offline
+   raiding cannot exist. v0: stands, no input, keeps its metabolism, killable
+   (the `die` path drops the bag); lootable-alive after, as for them. One wire
+   bit ⇒ `PROTO_VER` + goldens same commit. Open: does a sleeper block movement.
+2. **The world is persisted** — the four stores plus `players`. Extend the
+   bounded sweep, never their full-world snapshot (§4 is a 13-year freeze). The
+   hard part has no reference answer (§8): how a *loaded* world keeps wall 5.
+3. **The store then changes job** — how you return when the world has *not* got
+   you: fresh shard, wipe, refused save. Their §5 split.
+4. **Blueprints** are the wipe-surviving payload it was shaped for; nothing to
+   build until BPs exist.
+5. **Still no WAL** (theirs has none either, §8) — item 2 forces the question.
+6. **No graceful shutdown; the three-thread path has no gate.** A kill costs
+   ≤ 3.3 s; `KeySlot`'s id match and the eviction counter rest on reasoning.
+
 ## 0x · The client makes sound — what it cannot yet hear *(client lane)*
 
 Landed 2026-08-06. `crates/client/src/sound/` is the model (pure, headless,

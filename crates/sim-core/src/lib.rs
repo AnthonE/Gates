@@ -21,6 +21,7 @@ pub mod limits;
 pub mod loot;
 pub mod movement;
 pub mod occupy;
+pub mod persist;
 mod pitch_lut;
 pub mod probe;
 pub mod ranged;

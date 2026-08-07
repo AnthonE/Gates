@@ -17,6 +17,7 @@ game, the client, or the build.
 | `FINDINGS.md` | what the two loaders' **commit history** teaches: which systems bled, and the one gate-shaped hole it exposes in ours |
 | `SPAWN.md` | how the reference game places and respawns world objects — four systems split by networked-or-not, and what that costs us. **Different source, different licence posture: see below.** |
 | `AUDIO.md` | how the reference game decides what a player hears — mixer groups and snapshots first, a 0.3 ms per-frame budget as a convar, localized ambience, the 2–5 kHz carve that makes room for footsteps and gunshots, and the four audio bugs it shipped. **Third source, and the cleanest of the three**: public devblogs and the convar list the game prints to any player who types `find audio`. Nothing decompiled, nothing extracted |
+| `SAVES.md` | how the reference game remembers a player — **there is no player save file**: the body stays in the world as a sleeper and is saved because it is an entity, the save and the wire on one base class, the stop-the-world stall it never fixed, the wipe split, and **§9 what it means for us**. Same clean posture as `AUDIO.md`; the operator adopted its model, so §9 is a plan |
 
 ## How to regenerate
 

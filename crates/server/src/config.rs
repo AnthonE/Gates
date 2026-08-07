@@ -41,6 +41,37 @@ pub struct ShardConfig {
     /// resolves against the CWD, which the repo commands make the repo
     /// root. The shard binary refuses to boot on invalid content.
     pub content_dir: String,
+    /// The player save file (`store.rs`), or `None` for **a shard that
+    /// remembers nothing past its own process**.
+    ///
+    /// Unset is the shipping default, and with `require_auth` also at its
+    /// default it is today's behaviour exactly: no identity, so no key, so
+    /// every join builds a fresh character. That is what keeps every test in
+    /// this repo hermetic — no test writes a file it did not ask for — and it
+    /// is why arming persistence is one deliberate line rather than something
+    /// a shard does to its working directory by surprise.
+    ///
+    /// **Precisely, because the middle case is real:** the store's index is
+    /// in memory and the file is only how it survives a restart. So a shard
+    /// with `require_auth = true` and no `save_file` remembers a player for
+    /// the life of its process — a reconnect after a network blip keeps your
+    /// inventory, a restart does not. That is a strictly better default than
+    /// "forget on every disconnect" and it costs nothing, but it is not
+    /// persistence, and an operator who wants a base to outlive a deploy sets
+    /// this key.
+    ///
+    /// Set, the file is created if absent and **validated against this
+    /// shard's seed and content hash at boot**: a mismatch refuses to boot
+    /// rather than handing a hundred players an empty inventory. See
+    /// `store::open` for the refusals and what each one asks the operator to
+    /// do about it.
+    ///
+    /// Persistence also needs an *identity* to file a save under, which is
+    /// `require_auth`'s business and not this knob's: a guest is admitted and
+    /// remembered by nobody. So a shard that wants players to keep their
+    /// things sets both.
+    /// Proposed default `None`, DECISIONS.md §open ("player persistence v0").
+    pub save_file: Option<String>,
 }
 
 impl ShardConfig {
@@ -54,6 +85,7 @@ impl ShardConfig {
             key_pem: None,
             require_auth: false,
             content_dir: "content".into(),
+            save_file: None,
         }
     }
 }
@@ -69,6 +101,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut require_auth: Option<bool> = None;
     let mut cert_pem: Option<String> = None;
     let mut key_pem: Option<String> = None;
+    let mut save_file: Option<String> = None;
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -149,6 +182,20 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 content_dir = Some(value.to_string());
             }
+            // Empty is refused rather than read as "off": a line the operator
+            // wrote is a line they meant, and `save_file = ""` would be a
+            // shard that silently remembers nobody while its config says it
+            // should. Off is the key being absent.
+            "save_file" => {
+                if value.is_empty() {
+                    return Err(format!(
+                        "shard.toml line {}: empty save_file — omit the key to run \
+                         without persistence, which is the default",
+                        n + 1
+                    ));
+                }
+                save_file = Some(value.to_string());
+            }
             other => return Err(format!("shard.toml line {}: unknown key `{other}`", n + 1)),
         }
     }
@@ -165,6 +212,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         key_pem,
         require_auth: require_auth.unwrap_or(false),
         content_dir: content_dir.unwrap_or_else(|| "content".into()),
+        save_file,
     })
 }
 

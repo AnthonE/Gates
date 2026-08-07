@@ -8,6 +8,7 @@ use server::botclient::{bot_endpoint, run_bot};
 use server::config::ShardConfig;
 use server::net::spawn_shard;
 use server::stats::ShardStats;
+use server::store::Saves;
 use std::time::Duration;
 
 const BOTS: usize = 50;
@@ -61,6 +62,9 @@ async fn test_bot_smoke_50() {
         survival,
         loot,
         catalog,
+        // Persistence off: these shards write no file, so the suite stays
+        // hermetic and every join is a fresh character (`store::Saves::off`).
+        Saves::off(),
     )
     .await
     .expect("shard boots");
@@ -181,6 +185,9 @@ async fn test_action_lane_over_socket() {
         survival,
         loot,
         catalog,
+        // Persistence off: these shards write no file, so the suite stays
+        // hermetic and every join is a fresh character (`store::Saves::off`).
+        Saves::off(),
     )
     .await
     .expect("boots");
@@ -268,6 +275,9 @@ async fn test_version_gate_refuses() {
         survival,
         loot,
         catalog,
+        // Persistence off: these shards write no file, so the suite stays
+        // hermetic and every join is a fresh character (`store::Saves::off`).
+        Saves::off(),
     )
     .await
     .expect("boots");
@@ -317,7 +327,17 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
         let mut cfg = ShardConfig::ephemeral(13);
         cfg.dev_spawn = dev_spawn;
         let handle = spawn_shard(
-            cfg, gather, craft, build, deploy, combat, backpack, survival, loot, catalog,
+            cfg,
+            gather,
+            craft,
+            build,
+            deploy,
+            combat,
+            backpack,
+            survival,
+            loot,
+            catalog,
+            Saves::off(),
         )
         .await
         .expect("boots");
