@@ -181,26 +181,43 @@ pub struct GhostRoot;
 // read as the same product at all. `ui::font_bold` is the common case — the
 // reference game's own UI default is `RobotoCondensed-Bold.ttf` — and
 // `ui::font` is for prose.
-pub use super::ui::{font, font_bold, DIM as TEXT_DIM, RULE as LINE, TEXT};
+pub use super::ui::{font, font_bold, ACCENT, DIM as TEXT_DIM, RULE as LINE, TEXT};
 
-/// Panel body: nearly opaque, so text over a lit world stays readable. The
-/// chrome's `PANEL` is the same hue at full alpha — it never has a world
-/// behind it to let through.
-pub const PANEL_BG: Color = Color::srgba(0.082, 0.082, 0.090, 0.97);
+/// Panel body — `#2b2723` off `crafting.png`'s recipe grid. Nearly opaque,
+/// so text over a lit world stays readable; the reference's is translucent
+/// over a *blurred* world, which we do not have and which is what lets it
+/// sit lower.
+pub const PANEL_BG: Color = Color::srgba(0.169, 0.153, 0.137, 0.97);
 /// The screen-wide scrim behind a panel.
-pub const SCRIM: Color = Color::srgba(0.02, 0.02, 0.025, 0.72);
-/// An empty cell.
-pub const CELL_BG: Color = Color::srgba(0.15, 0.15, 0.16, 0.9);
-/// A cell holding something.
-pub const CELL_FULL: Color = Color::srgba(0.22, 0.21, 0.19, 0.95);
+pub const SCRIM: Color = Color::srgba(0.055, 0.047, 0.039, 0.72);
+/// An empty cell. The reference's grid cells are the panel with a hairline,
+/// not a lighter block — the ITEM is what carries the value there, which is
+/// why our text-only cells need more separation than its do.
+pub const CELL_BG: Color = Color::srgba(0.220, 0.204, 0.184, 0.92);
+/// A cell holding something — `#47433c`, the detail pane's value.
+pub const CELL_FULL: Color = Color::srgba(0.278, 0.263, 0.235, 0.96);
 /// The cell the pointer is over, and the drag's source.
-pub const CELL_HOVER: Color = Color::srgba(0.34, 0.32, 0.26, 0.95);
+pub const CELL_HOVER: Color = Color::srgba(0.369, 0.353, 0.329, 0.98);
 /// The one hot line: a selected cell, the head of the queue, an armed button.
 pub const LINE_HOT: Color = Color::srgba(0.98, 0.86, 0.55, 0.95);
 /// A price the player cannot pay, and the reference's own colour for it.
 pub const TEXT_SHORT: Color = Color::srgb(0.86, 0.36, 0.30);
-/// The station badge.
-pub const BADGE: Color = Color::srgb(0.83, 0.74, 0.28);
+/// The station badge — `#9abc5c`, the green of `WORKBENCH LEVEL 1 REQUIRED`.
+/// It was a mustard yellow, which is not a colour on the reference panel.
+pub const BADGE: Color = Color::srgb(0.604, 0.737, 0.361);
+
+// ---- the three vitals, measured off `crafting.png`'s bottom-right stack --
+//
+// Health, water, food. The reference draws them as **filled bars with an
+// icon**, not as text, and these are the fills.
+/// Health — `#8cb640`.
+pub const VITAL_HP: Color = Color::srgb(0.549, 0.714, 0.251);
+/// Water — `#4e97d0`.
+pub const VITAL_WATER: Color = Color::srgb(0.306, 0.592, 0.816);
+/// Food — `#c36f36`.
+pub const VITAL_FOOD: Color = Color::srgb(0.765, 0.435, 0.212);
+/// The trough a vital bar sits in.
+pub const VITAL_TROUGH: Color = Color::srgba(0.106, 0.098, 0.086, 0.72);
 
 /// Grid cell edge, px. Proposed default, same `DECISIONS.md` row.
 ///

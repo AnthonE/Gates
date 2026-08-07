@@ -20,7 +20,26 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0p · The UI has a face now — and one tool would unblock the rest *(client lane)*
+## 0p · The UI has a face and a measured palette — icons are what is left *(client lane)*
+
+**Second pass, 2026-08-07** (operator: *"the one you made looks super sub par…
+im willing to do anything to help us recreate this UI"*). The palette was
+re-derived off `Rust Images/crafting.png` and was not a near miss — cool
+near-black selecting in olive, against a reference that is warm, twice as
+light, and selects in **blue**. The vitals became **bars** off the same frame.
+`DECISIONS.md` "ui palette v1" has the samples and the one caveat.
+
+**Also a gameplay finding, not a looks one, and it is the operator's own
+correction:** in the reference, the **Building Plan** opens the shape wheel
+and the **hammer** upgrades — two items, two menus. `content/items.toml`
+already ships both `item.building_plan` and `item.hammer`, and **the client
+ignores the distinction**: `B` opens one wheel that picks shape *and*
+material, and no held-item check gates place or upgrade in `sim-core` either.
+So our wheel is the two reference menus merged. Splitting it is a design call
+plus a sim-lane change, not a repaint — it is not in the list below because
+it is not this lane's to take.
+
+## 0p2 · What the UI still owes *(client lane)*
 
 Landed 2026-08-07. Nothing owned the typeface: all 42 `TextFont` sites were
 `..default()`, so every screen drew in Bevy's embedded debug mono. The face is
@@ -47,16 +66,22 @@ Remaining, in order. **Item 1 blocks items 3 and 4:**
    this asserts nothing. `panels/mod.rs`'s refusal ("a gate whose frames
    depend on a keystroke") was right about a *gate* and does not bind a
    viewer.
-2. **Two defects the first look found, both cheap.** An item name overflows
-   its 44 px cell — `Gunpowde`, `Workbenc`, and `Metal Fragments` bleeding
-   over its border — so the browser is unreadable exactly where content grew;
+2. **ICONS — now the single largest gap, and the only one blocked on art.**
+   Every cell in `crafting.png` is item artwork; every cell of ours is a
+   clipped word. The reference wheel is a cream ring of red line-art glyphs;
+   ours is a dark disc of text boxes. Two halves with very different costs:
+   the **six building shapes** are isometric solids and are generatable the
+   way `tree::needle_image` and `sky.rs` already generate one, so that half
+   needs no art at all; the **48 item icons** are real content and cannot be
+   traced from the reference (the IP rail). `ART.md` §7 permits real assets.
+   **This is the operator question**, and it gates how the panels ever stop
+   reading as a spreadsheet.
+3. **Two defects the first look found, both cheap.** An item name overflows
+   its 44 px cell — `Gunpowde`, `Workbenc`, `Metal Fragments` bleeding over
+   its border — so the browser is least readable exactly where content grew;
    it wants clipping plus an abbreviation, not a bigger cell (the 720p budget
    is why). And the wheel's hint line is drawn at `bottom: 40px`, straight
    through the hotbar behind it.
-3. **The wheel is text where the reference is icons**, and so are the item
-   cells. Six shape glyphs are the cheap half and generatable the way
-   `tree::needle_image` and `sky.rs` already generate (`ART.md` §7 permits
-   real assets too). Item art is the expensive half and is content, not code.
 4. **Twelve sizes is not a scale.** Collapsing to five is a real improvement
    and may not be done blind: the numbers were budgeted against 720p and the
    first cut clipped a column at both ends.

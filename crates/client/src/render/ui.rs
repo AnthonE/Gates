@@ -109,24 +109,51 @@ pub fn font_bold(size: f32) -> TextFont {
     }
 }
 
-/// The screen behind everything.
-pub const BG: Color = Color::srgb(0.055, 0.055, 0.060);
+// ---- the palette, re-derived 2026-08-07 ----------------------------------
+//
+// **Every value below is sampled off `Rust Images/crafting.png`**, the
+// reference's own inventory frame, by averaging a 7×7 patch at the named
+// place. The previous palette was neither measured nor close: it was a
+// **cool near-black** (`0.082,0.082,0.090` — blue the largest channel) with
+// an **olive** selection, against a reference that is **warm** (R > G > B in
+// every single sample) about **twice as light**, and selects in **blue**.
+// That is a different family, not a near miss, and no amount of type work
+// reads as the reference while the ground under it is the wrong colour.
+//
+// The olive it replaces was described as measured off "the reference's own
+// options screen" — a frame that is not in `Rust Images/` and cannot be
+// re-checked. If the options screen really does select in olive, that is a
+// per-screen exception to add back with the frame committed beside it; it is
+// not the inventory's colour, and the inventory is the screen a player lives
+// in. `DECISIONS.md` "menu skin v0" carries the change.
+//
+// **One honest caveat**: the reference panel is translucent over a blurred
+// world, so a sample carries some of whatever was behind it. These are the
+// composited values — which is what a player sees, and still far closer than
+// an invented number.
+
+/// The screen behind everything. Darker than any panel, so a full-screen
+/// menu still reads as a layer rather than as the desktop.
+pub const BG: Color = Color::srgb(0.106, 0.098, 0.086);
 /// A panel sitting on the background — the settings sidebar and pane.
-pub const PANEL: Color = Color::srgba(0.082, 0.082, 0.090, 1.0);
-/// A clickable row at rest, and under the pointer.
-pub const ROW_IDLE: Color = Color::srgba(0.10, 0.10, 0.11, 1.0);
-pub const ROW_HOVER: Color = Color::srgba(0.16, 0.15, 0.13, 1.0);
-/// The selected category. The reference's olive, which is the one saturated
-/// block on its whole options screen — everything else is grey.
-pub const ACCENT: Color = Color::srgb(0.33, 0.45, 0.17);
-pub const ACCENT_HOVER: Color = Color::srgb(0.38, 0.51, 0.20);
+/// `#423e39`, the reference's category rail.
+pub const PANEL: Color = Color::srgba(0.259, 0.243, 0.224, 1.0);
+/// A clickable row at rest, and under the pointer. `#2b2723` / lifted.
+pub const ROW_IDLE: Color = Color::srgba(0.169, 0.153, 0.137, 1.0);
+pub const ROW_HOVER: Color = Color::srgba(0.278, 0.263, 0.235, 1.0);
+/// The selected category — `#3982ba`, and the one saturated block on the
+/// reference's inventory screen. Everything else there is warm grey, which
+/// is exactly why the selection is a cool blue: it is the only hue on the
+/// panel and it never has to compete.
+pub const ACCENT: Color = Color::srgb(0.224, 0.510, 0.729);
+pub const ACCENT_HOVER: Color = Color::srgb(0.290, 0.580, 0.800);
 /// Hairline borders.
 pub const RULE: Color = Color::srgba(0.75, 0.72, 0.62, 0.28);
 /// Type, in three weights of attention.
-pub const TITLE: Color = Color::srgb(0.86, 0.83, 0.76);
+pub const TITLE: Color = Color::srgb(0.93, 0.92, 0.90);
 pub const TEXT: Color = Color::srgb(0.92, 0.90, 0.85);
-pub const DIM: Color = Color::srgba(0.70, 0.68, 0.62, 0.80);
-pub const FAINT: Color = Color::srgba(0.60, 0.58, 0.54, 0.75);
+pub const DIM: Color = Color::srgba(0.74, 0.72, 0.68, 0.85);
+pub const FAINT: Color = Color::srgba(0.62, 0.60, 0.56, 0.80);
 
 /// What a button's background is at rest and under the pointer.
 ///

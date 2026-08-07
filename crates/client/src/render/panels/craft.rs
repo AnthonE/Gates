@@ -23,7 +23,7 @@ use sim_core::craft::RecipeDef;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 
 use super::{
-    font, font_bold, Panel, Ui, BADGE, BROWSER_COLS, BROWSER_GRID_H, CELL_BG, CELL_FULL,
+    font, font_bold, Panel, Ui, ACCENT, BADGE, BROWSER_COLS, BROWSER_GRID_H, CELL_BG, CELL_FULL,
     CELL_GAP_PX, CELL_PX, LINE, LINE_HOT, PANEL_BG, PANEL_H, SCROLL_PX_PER_LINE, TEXT, TEXT_DIM,
     TEXT_SHORT,
 };
@@ -118,7 +118,13 @@ fn rail(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
                         flex_direction: FlexDirection::Row,
                         ..default()
                     },
-                    BackgroundColor(if on { CELL_FULL } else { Color::NONE }),
+                    // **Blue, and it is the only hue on the panel.** The
+                    // selected category was a lighter grey block, which on a
+                    // panel made entirely of lighter and darker grey blocks
+                    // says "hovered" rather than "chosen". `crafting.png`
+                    // selects in `#3982ba` — `ui::ACCENT` — against warm grey
+                    // everywhere else, so the eye finds it without reading.
+                    BackgroundColor(if on { ACCENT } else { Color::NONE }),
                 ))
                 .with_children(|b| {
                     b.spawn((
@@ -133,7 +139,9 @@ fn rail(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
                     b.spawn((
                         Text::new(format!("{}", buf.len())),
                         font_bold(12.0),
-                        TextColor(TEXT_DIM),
+                        // On the selected row the count sits on blue, where
+                        // a dim warm grey has no contrast left.
+                        TextColor(if on { TEXT } else { TEXT_DIM }),
                         Pickable::IGNORE,
                     ));
                 });
