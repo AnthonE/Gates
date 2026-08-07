@@ -308,10 +308,11 @@ a check**. We start where they ended (Building 3.0):
 
 - Disconnect ≠ despawn. The player entity stays — with a **standing grace
   window** first: for 10 s **(knob)** the body remains upright, fully
-  killable, no invulnerability of any kind; a session-token rebind inside
-  the window resumes seamlessly (this is also the network-change story,
-  §10 — browsers don't migrate QUIC connections, so a Wi-Fi handoff is a
-  disconnect, and it should cost a scare, not a death). At grace end:
+  killable, no invulnerability of any kind; a reconnect proving the same
+  address (SIWE) inside the window resumes seamlessly (this is also the
+  network-change story, §10 — a network change kills the connection, so a
+  Wi-Fi handoff is a disconnect, and it should cost a scare, not a death).
+  At grace end:
   pose → lying, collider → low capsule, class D → S with a `slept` event
   carrying the rest transform. Zero per-tick cost from that moment.
   Combat-logging buys nothing either way — the body is present and
@@ -434,8 +435,8 @@ where the sim says.
 | ack gap > baseline ring | baseline drops to the canonical zero-state; the same delta path streams the world back by priority (Q3's dummy-gamestate move) |
 | chunk event lane stalls | QUIC retransmits (reliable); if the stream resets, resubscribe at V → tail replay |
 | tab backgrounded (browser throttles timers) | dilation hard-resync on return; > 30 s → treated as disconnect: **you become a sleeper where you stand** |
-| network change (Wi-Fi↔cellular) | the connection dies (browsers don't migrate QUIC); client auto-reconnects with its session token — inside the 10 s standing grace it's seamless, past it you wake your sleeper |
-| client disconnect | standing grace 10 s, then sleeper (§6.3); session token valid for rebind |
+| network change (Wi-Fi↔cellular) | the connection dies; the client reconnects and proves the same address (SIWE) — inside the 10 s standing grace it's seamless, past it you wake your sleeper |
+| client disconnect | standing grace 10 s, then sleeper (§6.3); the same proved address wakes the body |
 | server crash | DESIGN L7: restart < 10 s from snapshot + WAL; clients auto-reconnect, rejoin as wakers; ≤ 1 tick of acked transactions lost, and none that were acked |
 | mid-raid restart | the raid's events are WAL'd before ack — the wall you blew is still blown |
 

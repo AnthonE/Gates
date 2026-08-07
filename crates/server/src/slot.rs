@@ -4,15 +4,20 @@
 //! rides one packed atomic per slot — no locks anywhere (L3).
 //!
 //! Ring topology (all bounded SPSC, DESIGN.md §4):
-//! - per connection: net→sim input ring, sim→net snapshot ring
-//!   (created at accept — DESIGN.md §4's "preallocated at accept");
+//! - per connection: net→sim input, action and chat rings; sim→net
+//!   snapshot and event rings (created at accept — DESIGN.md §4's
+//!   "preallocated at accept");
 //! - global: accept→sim control ring (installs a connection's ring
 //!   handles), sim→accept graveyard ring (returns them, so the sim thread
 //!   never deallocates — L2 outlives the tick);
 //! - global, the save path (`store.rs`): sim→accept records ring, then
 //!   accept→storage-thread writes ring. One direction, two hops, and the
 //!   reason for the second one is that the sim thread may not touch a file
-//!   and the accept loop may not block on `sync_data`.
+//!   and the accept loop may not block on `sync_data`;
+//! - global, the world path (`worldfile.rs`): sim→storage-thread full
+//!   buffers ([`WorldMsg`]), storage→sim emptied ones ([`WorldDone`]) — a
+//!   double buffer, so a whole world crosses as a moved `Box` and never as
+//!   a copy.
 
 use crate::store::PlayerKey;
 use protocol::{ActionMsg, ChatMsg, InputDatagram, MAX_EVENT_MSG_BYTES};

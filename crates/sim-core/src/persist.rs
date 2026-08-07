@@ -198,11 +198,10 @@ impl Default for PlayerSave {
 
 impl PlayerSave {
     /// A zeroed record. Not a playable character — `hp_max == 0` — and
-    /// present for the same reason `AuthToken::NONE` is: a fixed-capacity
-    /// store needs something to hold in a slot nobody occupies. Every field
-    /// is the zero of its type on purpose, `grounded` included: an unwritten
-    /// record on disk is all zeros, and it must decode to exactly this or a
-    /// fresh file would refuse itself.
+    /// present because a fixed-capacity store needs something to hold in a
+    /// slot nobody occupies. Every field is the zero of its type on purpose,
+    /// `grounded` included: an unwritten record on disk is all zeros, and it
+    /// must decode to exactly this or a fresh file would refuse itself.
     pub const EMPTY: Self = Self {
         body: Body {
             qx: 0,

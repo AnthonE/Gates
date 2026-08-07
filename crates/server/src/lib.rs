@@ -16,8 +16,9 @@
 //! record and knows no identities, the accept loop owns the key table and the
 //! index, and one thread owns the file and does nothing else. So the sentence
 //! above still holds exactly — the sim thread never touches a file — and it is
-//! the reason a `sync_data` cannot land inside a tick. The world half of
-//! persistence and the WAL are still later slices (DESIGN.md §8 says which).
+//! the reason a `sync_data` cannot land inside a tick. The world half
+//! (`worldfile`) rides the same storage thread through its own double-buffered
+//! ring pair; the WAL is still a later slice (DESIGN.md §8 says where).
 //!
 //! Hot-path law enforcement in this crate (DESIGN.md L1–L5): the sim-side
 //! modules (`core`, `client`) use fixed-capacity storage only and allocate
@@ -36,8 +37,8 @@ pub mod slot;
 pub mod stats;
 pub mod store;
 pub mod worldfile;
-/// The client-side snapshot view lives in `client-wasm` (the browser and
-/// the bots share one implementation); re-exported for the gates.
+/// The client-side snapshot view lives in `client-wasm` (the native client
+/// and the bots share one implementation); re-exported for the gates.
 pub use client_wasm::view;
 
 pub use protocol::PROTO_VER;

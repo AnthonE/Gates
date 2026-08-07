@@ -172,9 +172,10 @@ pub const CONNECT_TIMEOUT_S: f32 = 20.0;
 #[derive(Default)]
 pub struct Connecting {
     pub addr: String,
-    /// The launcher's session token (`--session`), carried here rather than
-    /// re-read at connect time because the connect runs on the runtime, off
-    /// the frame, and must not reach back into the app for it.
+    /// The address this connect claims (`Address::GUEST` for none), carried
+    /// here rather than re-read at connect time because the connect runs on
+    /// the runtime, off the frame, and must not reach back into the app for
+    /// it.
     pub address: protocol::Address,
     pub rx: Option<std::sync::mpsc::Receiver<Result<crate::Session, String>>>,
     /// Seconds spent on this attempt. Accumulated from Bevy's frame delta

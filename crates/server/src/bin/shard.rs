@@ -1,6 +1,6 @@
 //! The shard server: `cargo run -p server --bin shard` (reads shard.toml,
-//! CLAUDE.md commands). Prints the bound address and the dev-cert hash the
-//! browser's `serverCertificateHashes` flow needs, then a stats line every
+//! CLAUDE.md commands). Prints the bound address and the dev-cert hash
+//! (WebTransport `serverCertificateHashes` format), then a stats line every
 //! 10 s. Runs until killed.
 
 use server::config::parse_shard_toml;
@@ -262,7 +262,9 @@ async fn main() {
                             // whether that is one stale identity or the key
                             // table having been lost.
                             println!(
-                                "world WARNING: {} of {} bodies have no identity beside them —                                  those players cannot walk back into their own body and will                                  come back through the player store instead",
+                                "world WARNING: {} of {} bodies have no identity beside them — \
+                                 those players cannot walk back into their own body and will \
+                                 come back through the player store instead",
                                 found.bodies - found.claimable,
                                 found.bodies
                             );

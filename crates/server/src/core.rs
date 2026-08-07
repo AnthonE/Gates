@@ -143,11 +143,13 @@ pub struct ShardCore {
     /// (`persist.rs` is explicit that it must not). Something outside the
     /// world has to hold the one arrow between them, and it is this.
     ///
-    /// Deliberately in memory only, never in the save file: an id means
-    /// nothing after a restart, so persisting one would be persisting a
-    /// dangling pointer. A restart therefore has no sleepers to find, which
-    /// is correct today for the harder reason — the world is not persisted
-    /// yet either (`NOW.md` §0y item 2).
+    /// Never in the *player* save file: an id means nothing after a
+    /// restart, so persisting one there would be persisting a dangling
+    /// pointer. The world file is the one place the pairing does survive —
+    /// a save writes ids and keys in the same breath ([`Self::identities`],
+    /// `worldfile.rs`), and a boot that loads one rebuilds this index from
+    /// it ([`Self::adopt_identities`]) so the bodies it restored are
+    /// claimable.
     sleepers: SleeperIndex,
 }
 

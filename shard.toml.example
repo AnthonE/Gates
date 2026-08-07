@@ -7,18 +7,26 @@ bind = "127.0.0.1:4433"
 seed = 20260731
 
 # Dev only — never on a public shard. Fixed spawn "x,z" in meters: every
-# joiner lands on the same point, which is how ci/browser_smoke.mjs puts
-# two tabs inside AOI range. DECISIONS.md §open "dev spawn override".
+# joiner lands on the same point, which is how the wire suites (and two
+# local clients on one box) put players inside AOI range without a walk.
+# DECISIONS.md §open "dev spawn override".
 # dev_spawn = "1024,1024"
 
-# Require a scry session token to join. Default false = this shard takes
+# Require a proven identity to join. Default false = this shard takes
 # guests, which is what every test and the local dev flow need.
 #
-# WARNING, and read it before arming this: the validator is a STUB today
-# (crates/server/src/auth.rs). It accepts any non-empty token, so `true`
-# proves a joiner CARRIED a credential and not that the credential is real.
-# It is not authentication yet. DECISIONS.md §open "scry session auth v0".
+# Identity is SIWE (crates/server/src/auth.rs): a joiner signs a nonce this
+# shard chose with the key behind the address they claim, and the shard
+# recovers the signer — `true` refuses anyone who offers no address or whose
+# signature does not verify. DECISIONS.md §open "siwe identity v1".
 # require_auth = false
+
+# The SIWE domain: what goes in the message players sign, and it MUST be the
+# host they dial — a mismatch refuses every login rather than failing
+# quietly. Defaults to the bind host, which is right for a dev shard on
+# loopback and wrong for anything behind a DNS name, so a public shard sets
+# it (see shard-public.toml).
+# domain = "127.0.0.1"
 
 # Where content/*.toml lives (CLAUDE.md wall 7). Default "content",
 # resolved against the CWD. The shard refuses to boot on content that

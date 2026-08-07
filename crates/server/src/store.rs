@@ -9,12 +9,11 @@
 //! ## The key is opaque, and that is the point
 //!
 //! A save is filed under a [`PlayerKey`]: bytes the admission seam returned
-//! (`auth::validate_session`), which this module never interprets. Whether
-//! they came from a session token the launcher issued, a signature, a scry
-//! player id or a dev flag is that function's business — change it and
-//! nothing here moves. The debate about *which* identity scheme wins is
-//! therefore not a blocker for persistence; it is one function's return
-//! type.
+//! (`auth::verify`), which this module never interprets. Whether they come
+//! from a SIWE signature, a scry player id or a dev flag is that seam's
+//! business — change it and nothing here moves. The debate about *which*
+//! identity scheme wins was therefore never a blocker for persistence; it
+//! is one function's return type, and SIWE won (`DECISIONS.md` 2026-08-07).
 //!
 //! ## What this stores, and what scry stores
 //!
@@ -61,20 +60,17 @@ use xxhash_rust::xxh3::xxh3_64;
 
 /// Longest key the store files a save under.
 ///
-/// Covers every identity anyone has proposed for this game with room over: a
-/// 20-byte EVM address, a 32-byte scry player id, a UUID, or a dev shard's
-/// bare name. Like `AUTH_TOKEN_MAX_BYTES` it is deliberately too small to
-/// hold a self-describing credential, for the same reason — a key is a lookup
-/// handle, and a store that could hold a JWT would invite somebody to read
-/// claims out of one.
+/// Covers every identity anyone has proposed for this game with room over:
+/// a lowercase `0x…` Ethereum address (42 bytes — what `auth::verify`
+/// actually returns), a 32-byte scry player id, a UUID, or a dev shard's
+/// bare name. Deliberately too small to hold a self-describing credential —
+/// a key is a lookup handle, and a store that could hold a JWT would invite
+/// somebody to read claims out of one.
 ///
-/// The assert below is what fixes the *number*, and it is a **stub-lifetime
-/// coupling that should die with the stub**: while `auth::validate_session`
-/// resolves a token to itself, a key shorter than the wire's token would mean
-/// a legally-admitted player whom the store cannot name — persistence
-/// silently doing nothing for everybody, with every gate green. When the real
-/// An address is 42 bytes as lowercase `0x…` text, so this has six to
-/// spare. It stays at 48 rather than shrinking to 42 because the key is
+/// The assert below is what fixes the *number*: the key IS the address
+/// today, so a cap under 42 would leave every verified player unnameable —
+/// persistence silently doing nothing for everybody, with every gate green.
+/// It stays at 48 rather than shrinking to 42 because the key is
 /// deliberately opaque to everything but `auth.rs` — the day scry maps an
 /// address to a player id, that id lands here and nothing else moves.
 /// Proposed default, DECISIONS.md §open ("player persistence v0").
@@ -163,8 +159,9 @@ const REC_SUM: usize = REC_SAVE + PLAYER_SAVE_BYTES;
 /// there is no collision question to reason about; and a hash would make the
 /// store's contents unreadable to the operator who has to support it without
 /// buying any secrecy, because a key is not a secret. That last clause is a
-/// *requirement on the validator*, not an assumption — see
-/// `auth::validate_session`, which must never return a credential.
+/// *requirement on the admission seam*, not an assumption — see
+/// `auth::verify`, which returns a public address and must never return a
+/// credential.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PlayerKey {
     bytes: [u8; PLAYER_KEY_MAX_BYTES],
@@ -713,8 +710,8 @@ mod tests {
         assert!(PlayerKey::new(&[7u8; PLAYER_KEY_MAX_BYTES + 1]).is_none());
     }
 
-    /// A key names a person. `Debug` must not print it — the same rule
-    /// `AuthToken` has, for a value that lives longer.
+    /// A key names a person and lives in a file. `Debug` must not print it —
+    /// it crosses test output and error reporting too often to be trusted.
     #[test]
     fn debug_never_prints_the_key() {
         let shown = format!("{:?}", key("anthone@example.com"));

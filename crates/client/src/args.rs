@@ -45,11 +45,10 @@ gates — the Gates desktop client
   --servers URL        where to fetch the scry-shardlist-v1 document the menu
                        lists. Absent, the menu offers the default shard only
                        and says why the rest of it is empty
-  --session TOKEN      the launcher's session token. This is what actually
-                       authenticates; the shard resolves it with its issuer.
-  --identity ADDR      the wallet address to play as. UNVERIFIED — the shard
-                       does not check it yet and this client does not claim it
-                       does. Empty is the same as absent
+  --identity ADDR      the wallet address to play as. The handshake proves it
+                       by signing the shard's SIWE challenge with the key the
+                       launcher holds; no launcher (or a declined prompt)
+                       joins as a guest. Empty is the same as absent
   --capture DIR        run the probe harness instead of a player: settle, warm
                        the pipelines, shoot the vantage list, exit (RENDER.md)
   --no-launcher        do not look for a scry launcher, even if one is running
@@ -77,20 +76,6 @@ pub struct Args {
     /// `None` when absent OR empty — see the module docs; the launcher's
     /// empty substitution is how "no wallet set" arrives.
     pub identity: Option<String>,
-    /// `--session TOKEN`: the launcher's session token, relayed to the shard
-    /// in `Hello` and validated there.
-    ///
-    /// **This is the one that authenticates**, and `--identity` is not. An
-    /// address is a claim any patched client can make; a session token is a
-    /// bearer credential the shard resolves with its issuer, which is the
-    /// Steam model and the reason this exists. `None` is normal and playable
-    /// — the shard decides whether it takes guests.
-    ///
-    /// Same empty-string handling as `--identity`, and for the same reason:
-    /// a depot's launch block substitutes `{session}` and an unfilled one
-    /// arrives as `""`, which must read as absence rather than as a token
-    /// made of nothing.
-    pub session: Option<String>,
     /// `--capture DIR`: run the probe harness instead of a player
     /// (`RENDER.md`). Only the windowed binary honours it; the headless one
     /// parses it so a shared parser cannot silently mean two things.
@@ -112,7 +97,6 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     let mut server_pos: Option<String> = None;
     let mut servers_url: Option<String> = None;
     let mut identity: Option<String> = None;
-    let mut session: Option<String> = None;
     let mut capture: Option<PathBuf> = None;
     let mut no_launcher = false;
 
@@ -134,10 +118,6 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
             "--identity" => match it.next() {
                 Some(v) => identity = Some(v),
                 None => return Parsed::Bad("--identity needs an address".into()),
-            },
-            "--session" => match it.next() {
-                Some(v) => session = Some(v),
-                None => return Parsed::Bad("--session needs a token".into()),
             },
             "--capture" => match it.next() {
                 // Refused rather than defaulted. A capture run that shot into
@@ -195,9 +175,6 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
         server_given,
         servers_url,
         identity: identity
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty()),
-        session: session
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
         capture,

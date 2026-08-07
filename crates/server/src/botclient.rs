@@ -1,7 +1,8 @@
 //! The headless load client (DESIGN.md §11 M0 "bots bin"): a real
 //! wtransport connection driving `sim_core::bots` random-walk inputs at
 //! 30 Hz and reconstructing snapshots through `ClientView` — the same
-//! contract the web client will implement. Used by `bin/bots` and the
+//! snapshot contract the native client's `ClientCore` implements, out of
+//! the same shared crate (`client-wasm`). Used by `bin/bots` and the
 //! 50-bot smoke gate.
 
 use crate::net::{client_handshake, read_event_frame};
@@ -31,7 +32,7 @@ pub struct BotReport {
     pub own_updates: u64,
     pub max_entities_seen: usize,
     /// Event-lane messages decoded off the reliable stream (a bot drains
-    /// the lane like the browser must — an unread lane backpressures).
+    /// the lane like any real client must — an unread lane backpressures).
     pub events_received: u64,
     pub event_decode_errors: u64,
 }
@@ -73,8 +74,9 @@ pub async fn run_bot(
     };
 
     // Drain the event lane on its own task (a `select!` read would drop a
-    // half-read frame on cancellation and desync the stream). The browser
-    // client does the same: the lane pump is independent of the RAF loop.
+    // half-read frame on cancellation and desync the stream). The native
+    // client does the same (`Session::connect` spawns its lane reader):
+    // the pump is independent of the frame loop.
     let events_received = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let event_decode_errors = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     {
