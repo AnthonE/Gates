@@ -192,13 +192,17 @@ impl Session {
     /// away the one piece of information a certificate is checked against.
     /// The public shard is reached by the name its cert is issued for
     /// (`shard-public.toml`), which is why the shard list carries names too.
-    /// `token` is the launcher's session credential (`--session`), or
-    /// [`AuthToken::NONE`] for a guest. It is relayed to the shard and
-    /// validated there; this side never inspects it.
+    /// `address` is who the player claims to be ([`Address::GUEST`] for a
+    /// guest), and `sign` is asked to sign the shard's SIWE challenge with
+    /// the key behind it — in practice a call into the scry launcher, which
+    /// holds the key and shows the player a consent prompt. Returning `None`
+    /// connects as a guest, which is what a declined prompt or an absent
+    /// launcher should do rather than failing the connection.
     pub async fn connect(
         endpoint: &Endpoint<Client>,
         server: &str,
-        token: protocol::AuthToken,
+        address: protocol::Address,
+        sign: impl FnOnce(&str) -> Option<protocol::Signature>,
     ) -> Result<Self, String> {
         let url = format!("https://{server}");
         let connection = endpoint
@@ -216,11 +220,54 @@ impl Session {
         let len = encode_hello(
             &Hello {
                 proto_ver: PROTO_VER,
-                token,
             },
             &mut msg,
         )
         .map_err(|e| format!("encode hello: {e:?}"))?;
+        write_frame(&mut send, &msg[..len]).await?;
+
+        // The challenge: a nonce this shard chose for this connection.
+        let (reply, reply_len) = read_frame::<MAX_STREAM_MSG_BYTES>(&mut recv)
+            .await
+            .ok_or_else(|| "no challenge".to_string())?;
+        let reply = &reply[..reply_len];
+        match peek_kind(reply) {
+            Ok(protocol::KIND_CHALLENGE) => {}
+            Ok(KIND_REFUSE) => {
+                let r = decode_refuse(reply).map_err(|e| format!("refuse: {e:?}"))?;
+                return Err(format!("refused: code {}", r.code));
+            }
+            other => return Err(format!("expected a challenge, got {other:?}")),
+        }
+        let challenge =
+            protocol::decode_challenge(reply).map_err(|e| format!("challenge: {e:?}"))?;
+
+        // **The domain is the host we dialled, never anything the server
+        // said.** That is the whole of SIWE's domain binding: a signature
+        // collected by one shard is not valid at another because the two
+        // messages differ, and letting the server name itself would hand
+        // that away.
+        let domain = server.rsplit_once(':').map(|(h, _)| h).unwrap_or(server);
+        let auth = if address.is_guest() {
+            protocol::Auth::default()
+        } else {
+            let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
+            let n = protocol::siwe_message(
+                domain,
+                &address,
+                &challenge.nonce,
+                challenge.issued_at,
+                &mut text,
+            );
+            let text = core::str::from_utf8(&text[..n.min(protocol::SIWE_MESSAGE_MAX)])
+                .map_err(|_| "the challenge message is not utf-8".to_string())?;
+            match sign(text) {
+                Some(signature) => protocol::Auth { address, signature },
+                None => protocol::Auth::default(),
+            }
+        };
+        let len =
+            protocol::encode_auth(&auth, &mut msg).map_err(|e| format!("encode auth: {e:?}"))?;
         write_frame(&mut send, &msg[..len]).await?;
 
         let (reply, reply_len) = read_frame::<MAX_STREAM_MSG_BYTES>(&mut recv)

@@ -29,6 +29,7 @@ pub mod rng;
 pub mod survival;
 pub mod terrain;
 pub mod world;
+pub mod worldsave;
 mod yaw_lut;
 
 pub use pitch_lut::pitch_dir;

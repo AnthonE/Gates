@@ -73,15 +73,17 @@ use xxhash_rust::xxh3::xxh3_64;
 /// resolves a token to itself, a key shorter than the wire's token would mean
 /// a legally-admitted player whom the store cannot name — persistence
 /// silently doing nothing for everybody, with every gate green. When the real
-/// validator returns a scry player id this may shrink, and the assert goes
-/// with it.
+/// An address is 42 bytes as lowercase `0x…` text, so this has six to
+/// spare. It stays at 48 rather than shrinking to 42 because the key is
+/// deliberately opaque to everything but `auth.rs` — the day scry maps an
+/// address to a player id, that id lands here and nothing else moves.
 /// Proposed default, DECISIONS.md §open ("player persistence v0").
 pub const PLAYER_KEY_MAX_BYTES: usize = 48;
 
 const _: () = assert!(
-    PLAYER_KEY_MAX_BYTES >= protocol::AUTH_TOKEN_MAX_BYTES,
-    "the stub validator's key IS the session token: a key cap under the wire's \
-     token cap would leave admitted players unnameable and unsaveable"
+    PLAYER_KEY_MAX_BYTES >= 42,
+    "a key holds a lowercase 0x-prefixed Ethereum address, which is exactly 42 \
+     bytes: a smaller cap would leave every verified player unnameable"
 );
 
 /// How many distinct players one shard remembers.
@@ -199,6 +201,18 @@ impl PlayerKey {
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.len as usize]
     }
+
+    /// A key that names nobody, for sizing a buffer the caller is about to
+    /// overwrite. **Not a valid key** — `new` refuses an empty one, and an
+    /// empty key is how a record on disk says "this slot holds nobody" — so
+    /// it can never be mistaken for a player. It exists because the world
+    /// save's identity buffer is preallocated on the sim thread (wall 2)
+    /// and `PlayerKey` has no `Default`, deliberately: a type that named
+    /// somebody by accident is exactly what this one is designed against.
+    pub const PLACEHOLDER: Self = Self {
+        bytes: [0; PLAYER_KEY_MAX_BYTES],
+        len: 0,
+    };
 }
 
 /// What a load found. Reported at boot rather than counted in `ShardStats`,

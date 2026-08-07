@@ -10,7 +10,16 @@ content = { path = "../content" }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-wasm = { path = "../client-wasm" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "signal"] }
+# SIWE verification: recover the signer of a `personal_sign` signature and
+# derive its Ethereum address. Two small, ubiquitous crates and no way to do
+# this without them — hand-rolling secp256k1 is not a thing anyone should do.
+# `k256` with default features off keeps it to the curve and ECDSA recovery.
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
+tiny-keccak = { version = "2", features = ["keccak"] }
+# The per-connection nonce. OS entropy, because a guessable nonce is a
+# signature anybody can replay.
+getrandom = "0.2"
 # Git-pinned ≥ 0f7609a (CLAUDE.md traps, NETCODE.md §2.2): crates.io still
 # tops out at 0.7.1, which has the two-byte remote panic (#317). This rev is
 # main as of 2026-07-25, containing the fix plus one header-order fix.
@@ -24,3 +33,7 @@ rtrb = "0.3"
 # load. Same crate and version `sim-core` and `content` already build, so this
 # adds a line to a manifest and nothing to the tree.
 xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
+
+[dev-dependencies]
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
+tiny-keccak = { version = "2", features = ["keccak"] }

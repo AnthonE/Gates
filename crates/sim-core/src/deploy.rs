@@ -448,6 +448,39 @@ impl Deploys {
         &self.boxes.entries[..self.boxes.len]
     }
 
+    /// Replace every store from a decoded world save. Boot-only
+    /// (`worldsave.rs`).
+    ///
+    /// Four arrays because the store is four arrays, and the file writes
+    /// `bag_ready` inline on the deploy record it belongs to — so the one
+    /// invariant worth stating is the one the caller has to hold up:
+    /// `ready` is index-aligned to `recs`, exactly as the field it lands in
+    /// is index-aligned to `entries`. A shorter `ready` leaves the tail at
+    /// zero, which reads as "ready from the first tick" and not as a
+    /// sentinel, so the failure would be silently generous bags rather than
+    /// a panic. The decoder writes them as one record and cannot produce
+    /// that; the `debug_assert` is here so a second caller cannot either.
+    pub(crate) fn restore(
+        &mut self,
+        recs: &[DeployRec],
+        ready: &[u64],
+        hearths: &[HearthRec],
+        boxes: &[BoxRec],
+    ) {
+        debug_assert_eq!(recs.len(), ready.len(), "bag_ready must be index-aligned");
+        self.len = recs.len().min(MAX_DEPLOYS);
+        self.entries[..self.len].copy_from_slice(&recs[..self.len]);
+        self.bag_ready[..self.len].copy_from_slice(&ready[..self.len]);
+        self.hearth_count = hearths.len().min(MAX_HEARTHS);
+        self.hearths[..self.hearth_count].copy_from_slice(&hearths[..self.hearth_count]);
+        self.boxes.len = boxes.len().min(MAX_BOXES);
+        self.boxes.entries[..self.boxes.len].copy_from_slice(&boxes[..self.boxes.len]);
+        // The spill list is within-tick scratch (`BoxStore`), never state:
+        // a save taken between ticks cannot hold one, and a load must not
+        // leave a stale one for `World::step` to stand a bag up from.
+        self.boxes.spill_len = 0;
+    }
+
     /// Resolve a packed box address to an index into `boxes()`, or `None`
     /// when no box stands there. The index is transient — swap-remove
     /// invalidates it — which is exactly why the handle on the wire is the

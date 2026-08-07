@@ -7,7 +7,14 @@ use server::config::parse_shard_toml;
 use server::net::spawn_shard;
 use server::stats::ShardStats;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
+use tokio::signal::unix::{signal, SignalKind};
+
+/// How long a graceful shutdown will wait for the storage thread before it
+/// gives up and says what it lost. A backstop, not the mechanism — the real
+/// exit is `store_stopped` being raised, which is exact.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() {
@@ -202,8 +209,83 @@ async fn main() {
             }
         },
     };
+    // The world file, opened and validated the same way and for the same
+    // reasons — before a port is bound, against this seed and this content
+    // hash. It needs the baked tables as well as the hash, because
+    // validating a world means *loading* one: a piece names a content row
+    // and the decoder range-checks it, so a trial world is built here and
+    // thrown away, and the bytes are handed to the sim thread to load into
+    // the world it actually runs (`worldfile::WorldBoot` says why twice is
+    // right).
+    let world_boot = match cfg.world_file.as_deref() {
+        None => {
+            println!("world off: no world_file — the island is generated fresh every boot");
+            server::worldfile::WorldBoot::off()
+        }
+        Some(path) => {
+            let mut trial = sim_core::world::World::new(cfg.seed);
+            trial.gather = gather;
+            trial.craft = craft;
+            trial.build = build;
+            trial.deploy = deploy;
+            trial.combat = combat;
+            trial.backpack = backpack;
+            trial.survival = survival;
+            trial.loot = loot;
+            match server::worldfile::open(
+                Path::new(path),
+                &mut trial,
+                cfg.seed,
+                content.hash(),
+                cfg.world_save_interval_ticks,
+            ) {
+                Ok((boot, found)) => {
+                    if found.created {
+                        println!(
+                            "world ok: will create {path} — a fresh island, saved every {} ticks",
+                            cfg.world_save_interval_ticks
+                        );
+                    } else {
+                        println!(
+                            "world ok: resumed {path} at tick {} · {} bodies \
+                             ({} claimable) · {} backup(s) rotated ({path}.1 \
+                             is the previous run)",
+                            found.tick,
+                            found.bodies,
+                            found.claimable,
+                            server::store::SAVE_BACKUP_COUNT
+                        );
+                        if found.bodies > found.claimable {
+                            // Said out loud: a body nobody can claim is
+                            // somebody's base standing there as free loot,
+                            // and the operator is the only one who can tell
+                            // whether that is one stale identity or the key
+                            // table having been lost.
+                            println!(
+                                "world WARNING: {} of {} bodies have no identity beside them —                                  those players cannot walk back into their own body and will                                  come back through the player store instead",
+                                found.bodies - found.claimable,
+                                found.bodies
+                            );
+                        }
+                    }
+                    boot
+                }
+                Err(e) => {
+                    eprintln!("shard: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
+    // The `AUTH WARNING` that used to print here is **deleted, not moved**.
+    // It existed because `validate_session` was a stub that accepted any
+    // non-empty token and filed the save under the token's own bytes, so
+    // `require_auth = true` proved a joiner carried *something*. It now
+    // proves they hold the private key behind the address they claim
+    // (`auth.rs`), which is the thing the warning was waiting for.
     let handle = match spawn_shard(
         cfg, gather, craft, build, deploy, combat, backpack, survival, loot, catalog, saves,
+        world_boot,
     )
     .await
     {
@@ -216,13 +298,43 @@ async fn main() {
     println!("shard up on {} (seed {seed})", handle.local_addr);
     println!("dev cert sha256 {}", handle.cert_hash);
 
+    // **The thing that turns a `systemctl stop` into a save.**
+    //
+    // Everything about the graceful shutdown existed before this and none
+    // of it had ever run in production, because nothing set the flag: the
+    // default SIGTERM handler kills the process where it stands, so a
+    // deploy cost every player up to an autosave sweep and everybody's base
+    // up to a whole save interval. The flush was real and unreachable.
+    //
+    // Both signals, because both are how a shard actually goes down: SIGINT
+    // is an operator with a terminal, SIGTERM is systemd, docker stop, and
+    // every process supervisor there is.
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|e| format!("SIGTERM handler: {e}"))
+        .unwrap_or_else(|e| {
+            eprintln!("shard: {e}");
+            std::process::exit(1);
+        });
+
     let mut report = tokio::time::interval(Duration::from_secs(10));
     report.tick().await; // immediate first tick consumed
     loop {
-        report.tick().await;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                shutdown(&handle, "SIGINT").await;
+                return;
+            }
+            _ = sigterm.recv() => {
+                shutdown(&handle, "SIGTERM").await;
+                return;
+            }
+            _ = report.tick() => {}
+        }
         let s = &handle.stats;
         println!(
-            "tick {} · joins {} leaves {} · in ok/bad/drop {}/{}/{} · snap sent/skip/err {}/{}/{} · refused v/full {}/{} · dropped-ticks {} · saves restored/written/lost {}/{}/{}",
+            "tick {} · joins {} leaves {} · in ok/bad/drop {}/{}/{} · snap sent/skip/err {}/{}/{} · \
+             refused v/full {}/{} · dropped-ticks {} · saves restored/written/lost {}/{}/{} · \
+             sleepers {} (took over {}, evicted {}) · worlds written/skipped/failed {}/{}/{}",
             ShardStats::get(&s.current_tick),
             ShardStats::get(&s.joins),
             ShardStats::get(&s.leaves),
@@ -242,6 +354,57 @@ async fn main() {
             ShardStats::get(&s.save_ring_drops)
                 + ShardStats::get(&s.saves_evicted)
                 + ShardStats::get(&s.save_write_errors),
+            ShardStats::get(&s.sleepers),
+            ShardStats::get(&s.takeovers),
+            ShardStats::get(&s.sleepers_evicted),
+            ShardStats::get(&s.world_saves_written),
+            ShardStats::get(&s.world_saves_skipped),
+            ShardStats::get(&s.world_save_errors),
         );
     }
+}
+
+/// Stop the shard and **wait for the disk**, then report what was saved.
+///
+/// The waiting is the point. Setting the flag and calling `exit` would
+/// return the same instant the signal arrived and kill the process out from
+/// under the flush — which is exactly the bug this whole path exists to
+/// fix, moved one function later.
+///
+/// It waits on `store_stopped`, which the storage thread raises when its
+/// rings are dry *and abandoned*: the sim flushes and drops its producers,
+/// the accept loop drains until abandoned and drops its own, the storage
+/// thread drains until abandoned and raises the flag. Every hop waits on a
+/// producer being dropped, so this ends exactly when the last byte is
+/// written — not after a duration somebody guessed.
+///
+/// `SHUTDOWN_WAIT` is a backstop for a wedged thread and not the mechanism.
+/// A shutdown that hangs forever is a deploy that never completes, which is
+/// worse than a shutdown that loses the last minute and says so.
+async fn shutdown(handle: &server::net::ShardHandle, signal_name: &str) {
+    println!("shard: {signal_name} — flushing the world and every player record");
+    handle.shutdown.store(true, Ordering::Relaxed);
+
+    let deadline = Instant::now() + SHUTDOWN_WAIT;
+    while !ShardStats::raised(&handle.stats.store_stopped) {
+        if Instant::now() >= deadline {
+            eprintln!(
+                "shard: WARNING — the storage thread did not finish inside {}s. \
+                 Up to one save interval of the world and one sweep of each \
+                 player may be lost.",
+                SHUTDOWN_WAIT.as_secs()
+            );
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let s = &handle.stats;
+    println!(
+        "shard: down · worlds written {} (failed {}) · player records written {} (failed {})",
+        ShardStats::get(&s.world_saves_written),
+        ShardStats::get(&s.world_save_errors),
+        ShardStats::get(&s.saves_written),
+        ShardStats::get(&s.save_write_errors),
+    );
 }

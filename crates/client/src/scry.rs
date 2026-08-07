@@ -303,3 +303,78 @@ mod tests {
         h.iter().map(|w| format!("{w:08x}")).collect()
     }
 }
+
+/// Sign a shard's SIWE challenge through the launcher, for
+/// [`crate::Session::connect`].
+///
+/// `None` is **not an error** and is the common case: no launcher running,
+/// the player declined the consent prompt, or a handoff was needed. All
+/// three mean "connect as a guest", which a shard that takes guests will
+/// do. A shard that requires identity refuses, and that refusal is the
+/// player learning their launcher is not running — which is the right place
+/// to learn it.
+///
+/// The signature comes back as `0x…` hex and has to be exactly 65 bytes:
+/// r ‖ s ‖ v. A short or long one is refused rather than padded, because a
+/// padded signature recovers a *different* address, and the failure would
+/// present as "the shard says I am somebody else".
+pub fn sign_siwe(text: &str) -> Option<protocol::Signature> {
+    let mut scry = Scry::discover(None, env!("CARGO_PKG_VERSION"));
+    let sig = scry.sign(text, "sign in to this Gates shard").ok()?;
+    parse_signature(&sig.signature)
+}
+
+/// `0x…` hex → 65 bytes. Refuses anything else.
+pub(crate) fn parse_signature(hex: &str) -> Option<protocol::Signature> {
+    let body = hex.strip_prefix("0x").or_else(|| hex.strip_prefix("0X"))?;
+    if body.len() != protocol::SIGNATURE_BYTES * 2 {
+        return None;
+    }
+    let nib = |c: u8| -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    };
+    let b = body.as_bytes();
+    let mut out = [0u8; protocol::SIGNATURE_BYTES];
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = (nib(b[i * 2])? << 4) | nib(b[i * 2 + 1])?;
+    }
+    Some(protocol::Signature(out))
+}
+
+#[cfg(test)]
+mod siwe_tests {
+    use super::*;
+
+    #[test]
+    fn a_well_formed_signature_parses() {
+        let hex = format!("0x{}", "ab".repeat(protocol::SIGNATURE_BYTES));
+        let sig = parse_signature(&hex).expect("65 bytes of hex parses");
+        assert_eq!(sig.0, [0xabu8; protocol::SIGNATURE_BYTES]);
+    }
+
+    /// Every malformed shape is refused rather than padded. A padded
+    /// signature recovers a different address, so the player would be told
+    /// they are somebody else instead of being told the launcher misbehaved.
+    #[test]
+    fn a_malformed_signature_is_refused_never_padded() {
+        assert!(parse_signature("").is_none(), "empty");
+        assert!(parse_signature("0x").is_none(), "prefix only");
+        assert!(
+            parse_signature(&"ab".repeat(protocol::SIGNATURE_BYTES)).is_none(),
+            "no 0x prefix"
+        );
+        assert!(
+            parse_signature(&format!("0x{}", "ab".repeat(protocol::SIGNATURE_BYTES - 1))).is_none(),
+            "one byte short"
+        );
+        assert!(
+            parse_signature(&format!("0x{}", "zz".repeat(protocol::SIGNATURE_BYTES))).is_none(),
+            "not hex"
+        );
+    }
+}

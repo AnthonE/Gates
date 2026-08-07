@@ -8,28 +8,29 @@ use protocol::goldens::{
     action_cancel, action_consume, action_container, action_container_close, action_craft,
     action_deploy, action_feed, action_lock, action_move, action_move_box, action_place,
     action_repair_deploy, action_repair_piece, action_respawn, action_throw_deploy,
-    action_throw_piece, action_upgrade, action_use, chat, event_bag_dropped, event_bag_removed,
-    event_bag_sync, event_build_refused, event_catalog, event_charge_placed_deploy,
-    event_charge_placed_piece, event_chat, event_consume_refused, event_consumed, event_cont_close,
-    event_cont_sync, event_craft_done, event_craft_q, event_craft_refused, event_death,
-    event_deploy_defs, event_deploy_placed, event_deploy_refused, event_deploy_sync, event_door,
-    event_drank, event_gather, event_health, event_hit, event_inv, event_move_refused, event_moved,
-    event_piece_defs, event_piece_placed, event_piece_repaired_deploy, event_piece_repaired_piece,
-    event_piece_sync, event_recipes, event_removed, event_respawn, event_slot_change,
-    event_slot_sync, event_stock, event_struct_hit_deploy, event_struct_hit_piece, event_vitals,
-    event_weak_mark, hello, input_acks_only, input_full, refuse_full, snapshot_cap, snapshot_delta,
-    snapshot_keyframe, welcome, SnapshotCase, FIXTURES,
+    action_throw_piece, action_upgrade, action_use, auth, challenge, chat, event_bag_dropped,
+    event_bag_removed, event_bag_sync, event_build_refused, event_catalog,
+    event_charge_placed_deploy, event_charge_placed_piece, event_chat, event_consume_refused,
+    event_consumed, event_cont_close, event_cont_sync, event_craft_done, event_craft_q,
+    event_craft_refused, event_death, event_deploy_defs, event_deploy_placed, event_deploy_refused,
+    event_deploy_sync, event_door, event_drank, event_gather, event_health, event_hit, event_inv,
+    event_move_refused, event_moved, event_piece_defs, event_piece_placed,
+    event_piece_repaired_deploy, event_piece_repaired_piece, event_piece_sync, event_recipes,
+    event_removed, event_respawn, event_slot_change, event_slot_sync, event_stock,
+    event_struct_hit_deploy, event_struct_hit_piece, event_vitals, event_weak_mark, hello,
+    input_acks_only, input_full, refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe,
+    welcome, SnapshotCase, FIXTURES,
 };
 use protocol::{
-    decode_action, decode_chat, decode_event, decode_hello, decode_input, decode_refuse,
-    decode_snapshot, decode_welcome, encode_action_cancel, encode_action_consume,
-    encode_action_container, encode_action_craft, encode_action_deploy, encode_action_drink,
-    encode_action_feed, encode_action_lock, encode_action_loot, encode_action_move,
-    encode_action_place, encode_action_repair, encode_action_respawn, encode_action_throw,
-    encode_action_upgrade, encode_action_use, encode_chat, encode_event_bag_dropped,
-    encode_event_bag_removed, encode_event_bag_sync, encode_event_build_refused,
-    encode_event_catalog, encode_event_charge_placed, encode_event_chat,
-    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    decode_action, decode_auth, decode_challenge, decode_chat, decode_event, decode_hello,
+    decode_input, decode_refuse, decode_snapshot, decode_welcome, encode_action_cancel,
+    encode_action_consume, encode_action_container, encode_action_craft, encode_action_deploy,
+    encode_action_drink, encode_action_feed, encode_action_lock, encode_action_loot,
+    encode_action_move, encode_action_place, encode_action_repair, encode_action_respawn,
+    encode_action_throw, encode_action_upgrade, encode_action_use, encode_auth, encode_challenge,
+    encode_chat, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
+    encode_event_build_refused, encode_event_catalog, encode_event_charge_placed,
+    encode_event_chat, encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
     encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
@@ -40,89 +41,91 @@ use protocol::{
     encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
     encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, peek_kind,
     ActionMsg, ChatMsg, EventMsg, InputDatagram, InvSlot, WireError, BAG_SYNC_BATCH, CATALOG_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, KIND_ACTION, KIND_CHAT, KIND_EVENT, KIND_HELLO, KIND_INPUT,
-    KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME, MAX_EVENT_MSG_BYTES, PIECE_DEFS_BATCH,
-    PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, KIND_ACTION, KIND_AUTH, KIND_BITS, KIND_CHALLENGE,
+    KIND_CHAT, KIND_EVENT, KIND_HELLO, KIND_INPUT, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME,
+    MAX_EVENT_MSG_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 74] = [
-    include_bytes!("golden/v25_input_acks_only.bin"),
-    include_bytes!("golden/v25_input_full.bin"),
-    include_bytes!("golden/v25_snapshot_keyframe.bin"),
-    include_bytes!("golden/v25_snapshot_delta.bin"),
-    include_bytes!("golden/v25_snapshot_cap.bin"),
-    include_bytes!("golden/v25_hello.bin"),
-    include_bytes!("golden/v25_welcome.bin"),
-    include_bytes!("golden/v25_refuse_full.bin"),
-    include_bytes!("golden/v25_event_gather.bin"),
-    include_bytes!("golden/v25_event_inv.bin"),
-    include_bytes!("golden/v25_event_slot_harvested.bin"),
-    include_bytes!("golden/v25_event_slot_respawned.bin"),
-    include_bytes!("golden/v25_event_slot_sync.bin"),
-    include_bytes!("golden/v25_event_catalog.bin"),
-    include_bytes!("golden/v25_event_weak_mark.bin"),
-    include_bytes!("golden/v25_event_craft_q.bin"),
-    include_bytes!("golden/v25_event_craft_done.bin"),
-    include_bytes!("golden/v25_event_craft_refused.bin"),
-    include_bytes!("golden/v25_event_recipes.bin"),
-    include_bytes!("golden/v25_action_craft.bin"),
-    include_bytes!("golden/v25_action_cancel.bin"),
-    include_bytes!("golden/v25_action_place.bin"),
-    include_bytes!("golden/v25_event_piece_placed.bin"),
-    include_bytes!("golden/v25_event_piece_sync.bin"),
-    include_bytes!("golden/v25_event_build_refused.bin"),
-    include_bytes!("golden/v25_event_piece_defs.bin"),
-    include_bytes!("golden/v25_action_deploy.bin"),
-    include_bytes!("golden/v25_action_feed.bin"),
-    include_bytes!("golden/v25_event_deploy_placed.bin"),
-    include_bytes!("golden/v25_event_deploy_sync.bin"),
-    include_bytes!("golden/v25_event_deploy_refused.bin"),
-    include_bytes!("golden/v25_event_deploy_defs.bin"),
-    include_bytes!("golden/v25_event_piece_removed.bin"),
-    include_bytes!("golden/v25_event_deploy_removed.bin"),
-    include_bytes!("golden/v25_event_stock.bin"),
-    include_bytes!("golden/v25_action_use.bin"),
-    include_bytes!("golden/v25_action_lock.bin"),
-    include_bytes!("golden/v25_event_door.bin"),
-    include_bytes!("golden/v25_action_upgrade.bin"),
-    include_bytes!("golden/v25_chat.bin"),
-    include_bytes!("golden/v25_event_chat.bin"),
-    include_bytes!("golden/v25_event_hit.bin"),
-    include_bytes!("golden/v25_event_health.bin"),
-    include_bytes!("golden/v25_event_death.bin"),
-    include_bytes!("golden/v25_action_loot.bin"),
-    include_bytes!("golden/v25_event_bag_dropped.bin"),
-    include_bytes!("golden/v25_event_bag_sync.bin"),
-    include_bytes!("golden/v25_event_bag_removed.bin"),
-    include_bytes!("golden/v25_event_struct_hit_piece.bin"),
-    include_bytes!("golden/v25_event_struct_hit_deploy.bin"),
-    include_bytes!("golden/v25_event_vitals.bin"),
-    include_bytes!("golden/v25_event_consumed.bin"),
-    include_bytes!("golden/v25_event_consume_refused.bin"),
-    include_bytes!("golden/v25_action_consume.bin"),
-    include_bytes!("golden/v25_event_drank.bin"),
-    include_bytes!("golden/v25_action_drink.bin"),
-    include_bytes!("golden/v25_event_respawn.bin"),
-    include_bytes!("golden/v25_action_respawn.bin"),
-    include_bytes!("golden/v25_action_move.bin"),
-    include_bytes!("golden/v25_event_moved.bin"),
-    include_bytes!("golden/v25_event_move_refused.bin"),
-    include_bytes!("golden/v25_action_move_box.bin"),
-    include_bytes!("golden/v25_action_container.bin"),
-    include_bytes!("golden/v25_action_container_close.bin"),
-    include_bytes!("golden/v25_event_cont_sync.bin"),
-    include_bytes!("golden/v25_event_cont_close.bin"),
-    include_bytes!("golden/v25_action_repair_piece.bin"),
-    include_bytes!("golden/v25_action_repair_deploy.bin"),
-    include_bytes!("golden/v25_event_piece_repaired_piece.bin"),
-    include_bytes!("golden/v25_event_piece_repaired_deploy.bin"),
-    include_bytes!("golden/v25_action_throw_piece.bin"),
-    include_bytes!("golden/v25_action_throw_deploy.bin"),
-    include_bytes!("golden/v25_event_charge_placed_piece.bin"),
-    include_bytes!("golden/v25_event_charge_placed_deploy.bin"),
+const GOLDEN: [&[u8]; 76] = [
+    include_bytes!("golden/v27_input_acks_only.bin"),
+    include_bytes!("golden/v27_input_full.bin"),
+    include_bytes!("golden/v27_snapshot_keyframe.bin"),
+    include_bytes!("golden/v27_snapshot_delta.bin"),
+    include_bytes!("golden/v27_snapshot_cap.bin"),
+    include_bytes!("golden/v27_hello.bin"),
+    include_bytes!("golden/v27_welcome.bin"),
+    include_bytes!("golden/v27_refuse_full.bin"),
+    include_bytes!("golden/v27_event_gather.bin"),
+    include_bytes!("golden/v27_event_inv.bin"),
+    include_bytes!("golden/v27_event_slot_harvested.bin"),
+    include_bytes!("golden/v27_event_slot_respawned.bin"),
+    include_bytes!("golden/v27_event_slot_sync.bin"),
+    include_bytes!("golden/v27_event_catalog.bin"),
+    include_bytes!("golden/v27_event_weak_mark.bin"),
+    include_bytes!("golden/v27_event_craft_q.bin"),
+    include_bytes!("golden/v27_event_craft_done.bin"),
+    include_bytes!("golden/v27_event_craft_refused.bin"),
+    include_bytes!("golden/v27_event_recipes.bin"),
+    include_bytes!("golden/v27_action_craft.bin"),
+    include_bytes!("golden/v27_action_cancel.bin"),
+    include_bytes!("golden/v27_action_place.bin"),
+    include_bytes!("golden/v27_event_piece_placed.bin"),
+    include_bytes!("golden/v27_event_piece_sync.bin"),
+    include_bytes!("golden/v27_event_build_refused.bin"),
+    include_bytes!("golden/v27_event_piece_defs.bin"),
+    include_bytes!("golden/v27_action_deploy.bin"),
+    include_bytes!("golden/v27_action_feed.bin"),
+    include_bytes!("golden/v27_event_deploy_placed.bin"),
+    include_bytes!("golden/v27_event_deploy_sync.bin"),
+    include_bytes!("golden/v27_event_deploy_refused.bin"),
+    include_bytes!("golden/v27_event_deploy_defs.bin"),
+    include_bytes!("golden/v27_event_piece_removed.bin"),
+    include_bytes!("golden/v27_event_deploy_removed.bin"),
+    include_bytes!("golden/v27_event_stock.bin"),
+    include_bytes!("golden/v27_action_use.bin"),
+    include_bytes!("golden/v27_action_lock.bin"),
+    include_bytes!("golden/v27_event_door.bin"),
+    include_bytes!("golden/v27_action_upgrade.bin"),
+    include_bytes!("golden/v27_chat.bin"),
+    include_bytes!("golden/v27_event_chat.bin"),
+    include_bytes!("golden/v27_event_hit.bin"),
+    include_bytes!("golden/v27_event_health.bin"),
+    include_bytes!("golden/v27_event_death.bin"),
+    include_bytes!("golden/v27_action_loot.bin"),
+    include_bytes!("golden/v27_event_bag_dropped.bin"),
+    include_bytes!("golden/v27_event_bag_sync.bin"),
+    include_bytes!("golden/v27_event_bag_removed.bin"),
+    include_bytes!("golden/v27_event_struct_hit_piece.bin"),
+    include_bytes!("golden/v27_event_struct_hit_deploy.bin"),
+    include_bytes!("golden/v27_event_vitals.bin"),
+    include_bytes!("golden/v27_event_consumed.bin"),
+    include_bytes!("golden/v27_event_consume_refused.bin"),
+    include_bytes!("golden/v27_action_consume.bin"),
+    include_bytes!("golden/v27_event_drank.bin"),
+    include_bytes!("golden/v27_action_drink.bin"),
+    include_bytes!("golden/v27_event_respawn.bin"),
+    include_bytes!("golden/v27_action_respawn.bin"),
+    include_bytes!("golden/v27_action_move.bin"),
+    include_bytes!("golden/v27_event_moved.bin"),
+    include_bytes!("golden/v27_event_move_refused.bin"),
+    include_bytes!("golden/v27_action_move_box.bin"),
+    include_bytes!("golden/v27_action_container.bin"),
+    include_bytes!("golden/v27_action_container_close.bin"),
+    include_bytes!("golden/v27_event_cont_sync.bin"),
+    include_bytes!("golden/v27_event_cont_close.bin"),
+    include_bytes!("golden/v27_action_repair_piece.bin"),
+    include_bytes!("golden/v27_action_repair_deploy.bin"),
+    include_bytes!("golden/v27_event_piece_repaired_piece.bin"),
+    include_bytes!("golden/v27_event_piece_repaired_deploy.bin"),
+    include_bytes!("golden/v27_action_throw_piece.bin"),
+    include_bytes!("golden/v27_action_throw_deploy.bin"),
+    include_bytes!("golden/v27_event_charge_placed_piece.bin"),
+    include_bytes!("golden/v27_event_charge_placed_deploy.bin"),
+    include_bytes!("golden/v27_challenge.bin"),
+    include_bytes!("golden/v27_auth.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -214,12 +217,37 @@ fn test_protocol_golden() {
     golden_action(GOLDEN[71], FIXTURES[71]);
     golden_event(GOLDEN[72], FIXTURES[72]);
     golden_event(GOLDEN[73], FIXTURES[73]);
+    // The handshake's two new messages (v27). Byte-stable and decode-exact
+    // like every other, and they matter more than most: a signature is
+    // computed over a nonce that arrived in one of them.
+    golden_challenge(GOLDEN[74], FIXTURES[74]);
+    golden_auth(GOLDEN[75], FIXTURES[75]);
     // Every fixture in the manifest was dispatched above: the loop bounds
     // are hand-written, so a fixture added to `FIXTURES` and forgotten
     // here would be a golden nobody checks. This is the count that makes
     // that impossible to miss quietly.
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 74, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 76, "a new fixture must be dispatched above");
+}
+
+/// S→C challenge: byte-stable, kind-peekable, decode-exact.
+fn golden_challenge(fixture: &[u8], name: &str) {
+    let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
+    let want = challenge();
+    assert_eq!(peek_kind(fixture).unwrap(), KIND_CHALLENGE, "{name}");
+    let len = encode_challenge(&want, &mut buf).expect("encodes");
+    assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
+    assert_eq!(decode_challenge(fixture).unwrap(), want, "{name}: decode");
+}
+
+/// C→S auth: byte-stable, kind-peekable, decode-exact.
+fn golden_auth(fixture: &[u8], name: &str) {
+    let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
+    let want = auth();
+    assert_eq!(peek_kind(fixture).unwrap(), KIND_AUTH, "{name}");
+    let len = encode_auth(&want, &mut buf).expect("encodes");
+    assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
+    assert_eq!(decode_auth(fixture).unwrap(), want, "{name}: decode");
 }
 
 /// The C→S chat frame: its own kind, byte-stable, decode-exact.
@@ -241,7 +269,7 @@ fn golden_action(fixture: &[u8], name: &str) {
     let mut buf = [0u8; 64];
     assert_eq!(peek_kind(fixture).unwrap(), KIND_ACTION, "{name}");
     let len = match name {
-        "v25_action_craft.bin" => {
+        "v27_action_craft.bin" => {
             let (recipe, count) = action_craft();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -250,7 +278,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_craft(recipe, count, &mut buf).unwrap()
         }
-        "v25_action_cancel.bin" => {
+        "v27_action_cancel.bin" => {
             let index = action_cancel();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -259,7 +287,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_cancel(index, &mut buf).unwrap()
         }
-        "v25_action_place.bin" => {
+        "v27_action_place.bin" => {
             let (row, cx, cz, level, loc) = action_place();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -274,7 +302,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_place(row, cx, cz, level, loc, &mut buf).unwrap()
         }
-        "v25_action_deploy.bin" => {
+        "v27_action_deploy.bin" => {
             let (row, cx, cz, level, loc) = action_deploy();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -289,7 +317,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_deploy(row, cx, cz, level, loc, &mut buf).unwrap()
         }
-        "v25_action_feed.bin" => {
+        "v27_action_feed.bin" => {
             let (cx, cz, level) = action_feed();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -298,7 +326,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_feed(cx, cz, level, &mut buf).unwrap()
         }
-        "v25_action_use.bin" => {
+        "v27_action_use.bin" => {
             let (cx, cz, level, loc) = action_use();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -307,7 +335,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_use(cx, cz, level, loc, &mut buf).unwrap()
         }
-        "v25_action_lock.bin" => {
+        "v27_action_lock.bin" => {
             let (cx, cz, level, loc, locked) = action_lock();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -322,7 +350,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_lock(cx, cz, level, loc, locked, &mut buf).unwrap()
         }
-        "v25_action_upgrade.bin" => {
+        "v27_action_upgrade.bin" => {
             let (cx, cz, level, loc, material) = action_upgrade();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -337,7 +365,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_upgrade(cx, cz, level, loc, material, &mut buf).unwrap()
         }
-        "v25_action_loot.bin" => {
+        "v27_action_loot.bin" => {
             assert_eq!(
                 decode_action(fixture).unwrap(),
                 ActionMsg::Loot,
@@ -345,7 +373,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_loot(&mut buf).unwrap()
         }
-        "v25_action_consume.bin" => {
+        "v27_action_consume.bin" => {
             let slot = action_consume();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -354,7 +382,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_consume(slot, &mut buf).unwrap()
         }
-        "v25_action_drink.bin" => {
+        "v27_action_drink.bin" => {
             assert_eq!(
                 decode_action(fixture).unwrap(),
                 ActionMsg::Drink,
@@ -362,7 +390,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_drink(&mut buf).unwrap()
         }
-        "v25_action_respawn.bin" => {
+        "v27_action_respawn.bin" => {
             let on_bag = action_respawn();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -371,7 +399,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_respawn(on_bag, &mut buf).unwrap()
         }
-        "v25_action_move.bin" => {
+        "v27_action_move.bin" => {
             let (cont, from_kind, from_slot, to_kind, to_slot, count) = action_move();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -390,7 +418,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             )
             .unwrap()
         }
-        "v25_action_move_box.bin" => {
+        "v27_action_move_box.bin" => {
             let (cont, from_kind, from_slot, to_kind, to_slot, count) = action_move_box();
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -409,8 +437,8 @@ fn golden_action(fixture: &[u8], name: &str) {
             )
             .unwrap()
         }
-        "v25_action_repair_piece.bin" | "v25_action_repair_deploy.bin" => {
-            let (deploy, cx, cz, level, loc) = if name == "v25_action_repair_piece.bin" {
+        "v27_action_repair_piece.bin" | "v27_action_repair_deploy.bin" => {
+            let (deploy, cx, cz, level, loc) = if name == "v27_action_repair_piece.bin" {
                 action_repair_piece()
             } else {
                 action_repair_deploy()
@@ -428,8 +456,8 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_repair(deploy, cx, cz, level, loc, &mut buf).unwrap()
         }
-        "v25_action_throw_piece.bin" | "v25_action_throw_deploy.bin" => {
-            let (deploy, cx, cz, level, loc) = if name == "v25_action_throw_piece.bin" {
+        "v27_action_throw_piece.bin" | "v27_action_throw_deploy.bin" => {
+            let (deploy, cx, cz, level, loc) = if name == "v27_action_throw_piece.bin" {
                 action_throw_piece()
             } else {
                 action_throw_deploy()
@@ -447,8 +475,8 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_throw(deploy, cx, cz, level, loc, &mut buf).unwrap()
         }
-        "v25_action_container.bin" | "v25_action_container_close.bin" => {
-            let (kind, cont) = if name == "v25_action_container.bin" {
+        "v27_action_container.bin" | "v27_action_container_close.bin" => {
+            let (kind, cont) = if name == "v27_action_container.bin" {
                 action_container()
             } else {
                 action_container_close()
@@ -469,19 +497,19 @@ fn golden_action(fixture: &[u8], name: &str) {
 fn golden_stream(fixture: &[u8], name: &str) {
     let mut buf = [0u8; 64];
     match name {
-        "v25_hello.bin" => {
+        "v27_hello.bin" => {
             let len = encode_hello(&hello(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_HELLO);
             assert_eq!(decode_hello(fixture).unwrap(), hello());
         }
-        "v25_welcome.bin" => {
+        "v27_welcome.bin" => {
             let len = encode_welcome(&welcome(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_WELCOME);
             assert_eq!(decode_welcome(fixture).unwrap(), welcome());
         }
-        "v25_refuse_full.bin" => {
+        "v27_refuse_full.bin" => {
             let len = encode_refuse(&refuse_full(), &mut buf).unwrap();
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_REFUSE);
@@ -496,7 +524,7 @@ fn golden_event(fixture: &[u8], name: &str) {
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     assert_eq!(peek_kind(fixture).unwrap(), KIND_EVENT, "{name}");
     let len = match name {
-        "v25_event_gather.bin" => {
+        "v27_event_gather.bin" => {
             let (item, added) = event_gather();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -505,7 +533,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_gather(item, added, &mut buf).unwrap()
         }
-        "v25_event_inv.bin" => {
+        "v27_event_inv.bin" => {
             let (slots, count) = event_inv();
             match decode_event(fixture).unwrap() {
                 EventMsg::Inv {
@@ -519,8 +547,8 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_inv(&slots[..count], &mut buf).unwrap()
         }
-        "v25_event_slot_harvested.bin" | "v25_event_slot_respawned.bin" => {
-            let harvested = name == "v25_event_slot_harvested.bin";
+        "v27_event_slot_harvested.bin" | "v27_event_slot_respawned.bin" => {
+            let harvested = name == "v27_event_slot_harvested.bin";
             let (cx, cz) = event_slot_change();
             let want = if harvested {
                 EventMsg::SlotHarvested { cx, cz }
@@ -530,7 +558,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             assert_eq!(decode_event(fixture).unwrap(), want, "{name}");
             encode_event_slot_change(harvested, cx, cz, &mut buf).unwrap()
         }
-        "v25_event_slot_sync.bin" => {
+        "v27_event_slot_sync.bin" => {
             let (reset, cells) = event_slot_sync();
             match decode_event(fixture).unwrap() {
                 EventMsg::SlotSync {
@@ -546,7 +574,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_slot_sync(reset, &cells, &mut buf).unwrap()
         }
-        "v25_event_catalog.bin" => {
+        "v27_event_catalog.bin" => {
             let cat = event_catalog();
             match decode_event(fixture).unwrap() {
                 EventMsg::Catalog {
@@ -575,7 +603,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             assert_eq!(took, CATALOG_BATCH, "{name}: batch shrank");
             len
         }
-        "v25_event_weak_mark.bin" => {
+        "v27_event_weak_mark.bin" => {
             let (cx, cz, mark8, weak_hit) = event_weak_mark();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -589,7 +617,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_weak_mark(cx, cz, mark8, weak_hit, &mut buf).unwrap()
         }
-        "v25_event_craft_q.bin" => {
+        "v27_event_craft_q.bin" => {
             let (jobs, eta) = event_craft_q();
             match decode_event(fixture).unwrap() {
                 EventMsg::CraftQ {
@@ -611,7 +639,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_craft_q(&jobs, eta, &mut buf).unwrap()
         }
-        "v25_event_craft_done.bin" => {
+        "v27_event_craft_done.bin" => {
             let (item, added) = event_craft_done();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -620,7 +648,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_craft_done(item, added, &mut buf).unwrap()
         }
-        "v25_event_craft_refused.bin" => {
+        "v27_event_craft_refused.bin" => {
             let reason = event_craft_refused();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -629,7 +657,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_craft_refused(reason, &mut buf).unwrap()
         }
-        "v25_event_recipes.bin" => {
+        "v27_event_recipes.bin" => {
             let cc = event_recipes();
             match decode_event(fixture).unwrap() {
                 EventMsg::Recipes {
@@ -653,7 +681,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             assert_eq!(took, RECIPE_BATCH, "{name}: batch shrank");
             len
         }
-        "v25_event_piece_placed.bin" => {
+        "v27_event_piece_placed.bin" => {
             let rec = event_piece_placed();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -662,7 +690,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_piece_placed(&rec, &mut buf).unwrap()
         }
-        "v25_event_piece_sync.bin" => {
+        "v27_event_piece_sync.bin" => {
             let (reset, recs) = event_piece_sync();
             match decode_event(fixture).unwrap() {
                 EventMsg::PieceSync {
@@ -678,7 +706,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_piece_sync(reset, &recs, &mut buf).unwrap()
         }
-        "v25_event_build_refused.bin" => {
+        "v27_event_build_refused.bin" => {
             let reason = event_build_refused();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -687,7 +715,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_build_refused(reason, &mut buf).unwrap()
         }
-        "v25_event_piece_defs.bin" => {
+        "v27_event_piece_defs.bin" => {
             let bc = event_piece_defs();
             match decode_event(fixture).unwrap() {
                 EventMsg::PieceDefs {
@@ -711,7 +739,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             assert_eq!(took, PIECE_DEFS_BATCH, "{name}: batch shrank");
             len
         }
-        "v25_event_deploy_placed.bin" => {
+        "v27_event_deploy_placed.bin" => {
             let rec = event_deploy_placed();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -720,7 +748,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_deploy_placed(&rec, &mut buf).unwrap()
         }
-        "v25_event_deploy_sync.bin" => {
+        "v27_event_deploy_sync.bin" => {
             let (reset, recs) = event_deploy_sync();
             match decode_event(fixture).unwrap() {
                 EventMsg::DeploySync {
@@ -736,7 +764,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_deploy_sync(reset, &recs, &mut buf).unwrap()
         }
-        "v25_event_deploy_refused.bin" => {
+        "v27_event_deploy_refused.bin" => {
             let reason = event_deploy_refused();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -745,7 +773,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_deploy_refused(reason, &mut buf).unwrap()
         }
-        "v25_event_deploy_defs.bin" => {
+        "v27_event_deploy_defs.bin" => {
             let dc = event_deploy_defs();
             match decode_event(fixture).unwrap() {
                 EventMsg::DeployDefs {
@@ -769,8 +797,8 @@ fn golden_event(fixture: &[u8], name: &str) {
             assert_eq!(took, dc.def_count as usize, "{name}: batch shrank");
             len
         }
-        "v25_event_piece_removed.bin" | "v25_event_deploy_removed.bin" => {
-            let piece = name == "v25_event_piece_removed.bin";
+        "v27_event_piece_removed.bin" | "v27_event_deploy_removed.bin" => {
+            let piece = name == "v27_event_piece_removed.bin";
             let (cx, cz, level, loc) = event_removed();
             let want = if piece {
                 EventMsg::PieceRemoved { cx, cz, level, loc }
@@ -780,7 +808,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             assert_eq!(decode_event(fixture).unwrap(), want, "{name}");
             encode_event_removed(piece, cx, cz, level, loc, &mut buf).unwrap()
         }
-        "v25_event_stock.bin" => {
+        "v27_event_stock.bin" => {
             let (cx, cz, level, rows) = event_stock();
             match decode_event(fixture).unwrap() {
                 EventMsg::Stock {
@@ -798,7 +826,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_stock(cx, cz, level, &rows, &mut buf).unwrap()
         }
-        "v25_event_door.bin" => {
+        "v27_event_door.bin" => {
             let (cx, cz, level, loc, open, locked) = event_door();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -814,7 +842,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_door(cx, cz, level, loc, open, locked, &mut buf).unwrap()
         }
-        "v25_event_chat.bin" => {
+        "v27_event_chat.bin" => {
             let (from, global, text) = event_chat();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -823,7 +851,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_chat(from, global, &text, &mut buf).unwrap()
         }
-        "v25_event_hit.bin" => {
+        "v27_event_hit.bin" => {
             let (victim, damage) = event_hit();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -832,7 +860,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_hit(victim, damage, &mut buf).unwrap()
         }
-        "v25_event_health.bin" => {
+        "v27_event_health.bin" => {
             let (hp, max) = event_health();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -841,7 +869,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_health(hp, max, &mut buf).unwrap()
         }
-        "v25_event_death.bin" => {
+        "v27_event_death.bin" => {
             let (victim, killer, cause, item, range_cm) = event_death();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -856,7 +884,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_death(victim, killer, cause, item, range_cm, &mut buf).unwrap()
         }
-        "v25_event_respawn.bin" => {
+        "v27_event_respawn.bin" => {
             let on_bag = event_respawn();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -865,7 +893,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_respawn(on_bag, &mut buf).unwrap()
         }
-        "v25_event_moved.bin" => {
+        "v27_event_moved.bin" => {
             let (from_kind, from_slot, to_kind, to_slot, count, item) = event_moved();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -884,7 +912,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             )
             .unwrap()
         }
-        "v25_event_move_refused.bin" => {
+        "v27_event_move_refused.bin" => {
             let (reason, from_kind, from_slot, to_kind, to_slot) = event_move_refused();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -900,7 +928,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_move_refused(reason, from_kind, from_slot, to_kind, to_slot, &mut buf)
                 .unwrap()
         }
-        "v25_event_bag_dropped.bin" => {
+        "v27_event_bag_dropped.bin" => {
             let b = event_bag_dropped();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -914,7 +942,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_bag_dropped(&b, &mut buf).unwrap()
         }
-        "v25_event_bag_sync.bin" => {
+        "v27_event_bag_sync.bin" => {
             let (reset, recs) = event_bag_sync();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -927,7 +955,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_bag_sync(reset, &recs, &mut buf).unwrap()
         }
-        "v25_event_bag_removed.bin" => {
+        "v27_event_bag_removed.bin" => {
             let (id, why) = event_bag_removed();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -936,7 +964,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_bag_removed(id, why, &mut buf).unwrap()
         }
-        n @ ("v25_event_struct_hit_piece.bin" | "v25_event_struct_hit_deploy.bin") => {
+        n @ ("v27_event_struct_hit_piece.bin" | "v27_event_struct_hit_deploy.bin") => {
             let (deploy, cx, cz, level, loc, row, damage, left) = if n.ends_with("piece.bin") {
                 event_struct_hit_piece()
             } else {
@@ -958,7 +986,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_struct_hit(deploy, cx, cz, level, loc, row, damage, left, &mut buf)
                 .unwrap()
         }
-        "v25_event_vitals.bin" => {
+        "v27_event_vitals.bin" => {
             let (food, water, max_food, max_water) = event_vitals();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -972,7 +1000,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_vitals(food, water, max_food, max_water, &mut buf).unwrap()
         }
-        "v25_event_consumed.bin" => {
+        "v27_event_consumed.bin" => {
             let (item, slot) = event_consumed();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -981,7 +1009,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_consumed(item, slot, &mut buf).unwrap()
         }
-        "v25_event_consume_refused.bin" => {
+        "v27_event_consume_refused.bin" => {
             let reason = event_consume_refused();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -990,7 +1018,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_consume_refused(reason, &mut buf).unwrap()
         }
-        "v25_event_drank.bin" => {
+        "v27_event_drank.bin" => {
             let (water, hp_cost) = event_drank();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -999,7 +1027,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_drank(water, hp_cost, &mut buf).unwrap()
         }
-        "v25_event_cont_sync.bin" => {
+        "v27_event_cont_sync.bin" => {
             let (kind, cont, reset, rows) = event_cont_sync();
             let mut slots = [InvSlot::default(); CONT_SYNC_BATCH];
             slots[..rows.len()].copy_from_slice(&rows);
@@ -1016,9 +1044,9 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_cont_sync(kind, cont, reset, &rows, &mut buf).unwrap()
         }
-        "v25_event_piece_repaired_piece.bin" | "v25_event_piece_repaired_deploy.bin" => {
+        "v27_event_piece_repaired_piece.bin" | "v27_event_piece_repaired_deploy.bin" => {
             let (deploy, cx, cz, level, loc, row, healed, hp) =
-                if name == "v25_event_piece_repaired_piece.bin" {
+                if name == "v27_event_piece_repaired_piece.bin" {
                     event_piece_repaired_piece()
                 } else {
                     event_piece_repaired_deploy()
@@ -1040,9 +1068,9 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_piece_repaired(deploy, cx, cz, level, loc, row, healed, hp, &mut buf)
                 .unwrap()
         }
-        "v25_event_charge_placed_piece.bin" | "v25_event_charge_placed_deploy.bin" => {
+        "v27_event_charge_placed_piece.bin" | "v27_event_charge_placed_deploy.bin" => {
             let (deploy, cx, cz, level, loc, row, fuse) =
-                if name == "v25_event_charge_placed_piece.bin" {
+                if name == "v27_event_charge_placed_piece.bin" {
                     event_charge_placed_piece()
                 } else {
                     event_charge_placed_deploy()
@@ -1062,7 +1090,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_charge_placed(deploy, cx, cz, level, loc, row, fuse, &mut buf).unwrap()
         }
-        "v25_event_cont_close.bin" => {
+        "v27_event_cont_close.bin" => {
             let (kind, cont, reset) = event_cont_close();
             assert_eq!(
                 decode_event(fixture).unwrap(),
@@ -1111,7 +1139,9 @@ fn test_input_sel_domain_is_enforced() {
     // sel rides bits 151..154 (3+16+32+32+4 header, 16 first_seq, 48 frame
     // bits before it; the writer is LSB-first within each byte): force all
     // three high — sel 7 — and decode must refuse.
-    let sel_bit = 3 + 16 + 32 + 32 + 4 + 16 + 48;
+    // Offsets derived from `KIND_BITS`, never typed: v27 widened it 3 → 4
+    // and a literal here silently moved every field this test pokes.
+    let sel_bit = KIND_BITS as usize + 16 + 32 + 32 + 4 + 16 + 48;
     for b in 0..3 {
         let bit = sel_bit + b;
         buf[bit / 8] |= 1 << (bit % 8);
@@ -1134,7 +1164,7 @@ fn test_upgrade_material_domain_is_enforced() {
     );
 
     // Forge material = 3 on the wire: the field is the frame's last two
-    // payload bits (3 kind + 4 subtype + 10 + 10 + 3 + 2 address bits
+    // payload bits (KIND_BITS kind + 4 subtype + 10 + 10 + 3 + 2 address bits
     // before it, LSB-first within each byte). The subtype width moved
     // 3 → 4 in wire v12 (the loot action was the ninth).
     let len = encode_action_upgrade(cx, cz, level, loc, 1, &mut buf).unwrap();
@@ -1142,7 +1172,7 @@ fn test_upgrade_material_domain_is_enforced() {
         decode_action(&buf[..len]).unwrap(),
         ActionMsg::Upgrade { material: 1, .. }
     ));
-    let mat_bit = 3 + 4 + 10 + 10 + 3 + 2;
+    let mat_bit = KIND_BITS as usize + 4 + 10 + 10 + 3 + 2;
     for b in 0..2 {
         let bit = mat_bit + b;
         buf[bit / 8] |= 1 << (bit % 8);
@@ -1179,7 +1209,7 @@ fn test_chat_text_domain_is_enforced() {
     // Decoder side: hand-built frames the encoder cannot produce.
     let forge = |global: bool, raw: &[u8], claim_len: u32, out: &mut [u8]| -> usize {
         let mut w = protocol::bits::BitWriter::new(out);
-        w.write(KIND_CHAT, 3).unwrap();
+        w.write(KIND_CHAT, KIND_BITS).unwrap();
         w.write_bit(global).unwrap();
         w.write(claim_len, 6).unwrap();
         for &b in raw {
@@ -1209,7 +1239,7 @@ fn test_chat_text_domain_is_enforced() {
     let n = encode_event_chat(from, global, &text, &mut wide).unwrap();
     let mut broken = wide;
     let mut w = protocol::bits::BitWriter::new(&mut broken[..n]);
-    w.write(protocol::KIND_EVENT, 3).unwrap();
+    w.write(protocol::KIND_EVENT, KIND_BITS).unwrap();
     w.write(23, 5).unwrap();
     w.write(from, 32).unwrap();
     w.write_bit(global).unwrap();

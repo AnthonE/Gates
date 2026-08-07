@@ -421,15 +421,30 @@ fn taking_a_save_changes_nothing() {
 
 /// Nobody by that id, no record — and a corpse still has one, because the
 /// death screen keeps its slot.
+///
+/// **A sleeper has one too, and that is the answer changing rather than the
+/// rule.** The rule was always "a record for a body the world has"; a leave
+/// used to end the body, and since sleepers it does not. Nothing reads this
+/// yet for a sleeper — `ShardCore::disconnect` takes its record *before*
+/// queueing the `Leave`, while the body is still awake, and the autosave
+/// sweep walks connection slots, which a sleeper does not occupy. So the
+/// store's copy of a sleeper is frozen at the moment they left, and a
+/// sleeper that starves or is raided before being evicted would come back
+/// from the stale one. That is the gap `NOW.md` §0y items 2–3 close, and
+/// this assertion is the half of the machinery that is already in place for
+/// it.
 #[test]
-fn save_of_answers_only_for_a_body_in_the_world() {
+fn save_of_answers_for_any_body_the_world_still_has() {
     let mut w = armed();
     assert_eq!(w.save_of(ID), None, "an empty world remembers nobody");
     w.tick(&[Command::Join { id: ID }]);
     assert!(w.save_of(ID).is_some());
     assert_eq!(w.save_of(ID + 1), None, "a stranger's id must miss");
     w.tick(&[Command::Leave { id: ID }]);
-    assert_eq!(w.save_of(ID), None, "a departed body must not be readable");
+    assert!(
+        w.save_of(ID).is_some(),
+        "a sleeping body is still a body the world has"
+    );
 }
 
 /// A `JoinAs` for an id already in the world is ignored, exactly as a `Join`

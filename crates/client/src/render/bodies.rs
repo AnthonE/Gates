@@ -29,6 +29,13 @@ pub struct Body(pub u32);
 struct Live {
     entity: Entity,
     seen: u64,
+    /// Which of the two materials this body is currently wearing. Kept so
+    /// the swap below is written on a *transition* and not every frame:
+    /// assigning `MeshMaterial3d` unconditionally would mark the component
+    /// changed 60 times a second for every remote, which is a per-frame
+    /// cost on the client's hot path for a value that changes twice in a
+    /// body's life.
+    sleeping: bool,
 }
 
 #[derive(Resource, Default)]
@@ -36,6 +43,19 @@ pub struct Bodies {
     live: HashMap<u32, Live>,
     mesh: Option<Handle<Mesh>>,
     material: Option<Handle<StandardMaterial>>,
+    /// A sleeper's material. **Same mesh, same pose, different shade** —
+    /// and the pose is the deliberate half. A sleeper stands (`NOW.md` §0y
+    /// item 1), because the sim hits it with the standing capsule
+    /// `combat.rs` uses for everyone; laying the mesh down would draw a
+    /// body outside the volume the server blocks and shoots at, which is
+    /// the one thing `CLAUDE.md` still says is worth gating about a frame.
+    /// A colour cannot disagree with the sim about where anything is.
+    ///
+    /// It is programmer art and it is load-bearing anyway: "is that player
+    /// about to shoot me, or is nobody home" is the question the whole
+    /// slice creates, and a client that draws both identically makes the
+    /// answer unknowable.
+    sleeping_material: Option<Handle<StandardMaterial>>,
     /// Bumped once per frame; a body still in the interpolator is stamped
     /// with it, and `retain` drops whatever the stamp missed.
     gen: u64,
@@ -63,6 +83,20 @@ pub fn stream(
             })
         })
         .clone();
+    let sleeping_material = store
+        .sleeping_material
+        .get_or_insert_with(|| {
+            materials.add(StandardMaterial {
+                // Colder and darker than the waking body, not brighter: a
+                // sleeper is the thing you sneak up on, and making it the
+                // most legible object on the beach would hand the raider
+                // more than the wire does.
+                base_color: Color::srgb(0.24, 0.26, 0.30),
+                perceptual_roughness: 0.9,
+                ..default()
+            })
+        })
+        .clone();
 
     let core = &net.session.core;
     let at = core.render_tick();
@@ -85,17 +119,32 @@ pub fn stream(
         // while looking like a pure optimisation.
         let known = store.live.get_mut(&id).map(|live| {
             live.seen = gen;
-            live.entity
+            (live.entity, live.sleeping)
         });
         if !core.interp.sample(id, at, &mut rs) {
             continue;
         }
         // The capsule's origin is its middle; the wire's y is the feet.
         let pos = Vec3::new(rs.x, rs.y + 0.9, rs.z);
+        let shade = |sleeping: bool| {
+            if sleeping {
+                sleeping_material.clone()
+            } else {
+                material.clone()
+            }
+        };
         match known {
-            Some(entity) => {
+            Some((entity, was_sleeping)) => {
                 if let Ok((_, mut t)) = q.get_mut(entity) {
                     t.translation = pos;
+                }
+                if was_sleeping != rs.sleeping {
+                    commands
+                        .entity(entity)
+                        .insert(MeshMaterial3d(shade(rs.sleeping)));
+                    if let Some(live) = store.live.get_mut(&id) {
+                        live.sleeping = rs.sleeping;
+                    }
                 }
             }
             None => {
@@ -104,11 +153,18 @@ pub fn stream(
                         super::WorldEntity,
                         Body(id),
                         Mesh3d(mesh.clone()),
-                        MeshMaterial3d(material.clone()),
+                        MeshMaterial3d(shade(rs.sleeping)),
                         Transform::from_translation(pos),
                     ))
                     .id();
-                store.live.insert(id, Live { entity, seen: gen });
+                store.live.insert(
+                    id,
+                    Live {
+                        entity,
+                        seen: gen,
+                        sleeping: rs.sleeping,
+                    },
+                );
             }
         }
     }

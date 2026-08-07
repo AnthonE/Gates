@@ -3352,6 +3352,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/world.rs"),
         },
         Module {
+            file: "worldsave.rs",
+            src: include_str!("../../sim-core/src/worldsave.rs"),
+        },
+        Module {
             file: "yaw_lut.rs",
             src: include_str!("../../sim-core/src/yaw_lut.rs"),
         },

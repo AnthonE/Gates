@@ -206,21 +206,24 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
 }
 
 impl Args {
-    /// The session token as a wire value.
+    /// The address this client will claim, as a wire value.
     ///
-    /// An over-long token is an **error, never a truncation**: half a
-    /// credential fails validation in a way that looks like a bad token
-    /// instead of a bad launch, and the player would be told the shard
-    /// rejected them when nothing had reached the shard intact. Absent is
-    /// `AuthToken::NONE`, which is a normal, playable state.
-    pub fn token(&self) -> Result<protocol::AuthToken, String> {
-        match self.session.as_deref() {
-            None => Ok(protocol::AuthToken::NONE),
-            Some(t) => protocol::AuthToken::new(t.as_bytes()).ok_or_else(|| {
+    /// **A claim until it is signed for.** `--identity` says who the player
+    /// means to be; the handshake proves it by signing the shard's nonce
+    /// with the key behind that address (`Session::connect`). An absent or
+    /// unparseable one is [`Address::GUEST`], which is a normal, playable
+    /// state on a shard that takes guests.
+    ///
+    /// Malformed is an **error, never a silent guest**: a typo'd address
+    /// would otherwise present as "the shard forgot my base", which is the
+    /// worst possible way to learn about a typo.
+    pub fn address(&self) -> Result<protocol::Address, String> {
+        match self.identity.as_deref() {
+            None => Ok(protocol::Address::GUEST),
+            Some(a) => protocol::Address::from_hex(a.as_bytes()).ok_or_else(|| {
                 format!(
-                    "--session token is {} bytes, over the {} the wire carries",
-                    t.len(),
-                    protocol::AUTH_TOKEN_MAX_BYTES
+                    "--identity `{a}` is not an Ethereum address — it must be \
+                     0x followed by 40 hex digits"
                 )
             }),
         }

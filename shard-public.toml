@@ -23,7 +23,42 @@
 #   NO dev_spawn — a public shard must not land every joiner on one point
 #             (config.rs says so). This is also what browser_smoke's dev
 #             gate asserts about a public shard.
+#   PERSISTENCE IS ON (operator, 2026-08-07). The island, the bases and the
+#             bodies survive a restart, and players keep what they were
+#             carrying. require_auth is on with them because a save is filed
+#             under the identity the handshake proves, and a guest has none.
+#   domain    must match the host players dial — it is in what they sign.
+
 bind = "0.0.0.0:61234"
 seed = 20260731
 cert_pem = "/home/master/gates-certs/fullchain.pem"
 key_pem = "/home/master/gates-certs/privkey.pem"
+
+# Persistence, when it is armed. Both keys, and require_auth with them.
+#
+#   world_file  bases, boxes, bags, fuses, stumps — and the BODIES standing
+#               in the world. Without it a restart deletes every sleeper on
+#               the shard and a player raided while offline comes back from
+#               their store record with everything the raid took.
+#   save_file   the player-keyed store: how you come back when the world has
+#               NOT got you (a wipe, an eviction, a fresh shard).
+#
+# Separate keys because a wipe deletes one and keeps the other. A clean
+# `systemctl stop` flushes both; a crash costs at most
+# world_save_interval_ticks of the world (60 s by default).
+#
+require_auth = true
+save_file = "/home/master/gates-data/players.save"
+world_file = "/home/master/gates-data/island.world"
+
+# Identity is SIWE (2026-08-07). A joiner signs a nonce this shard chose
+# with the key behind the address they claim, and the shard recovers the
+# signer — so `require_auth = true` now means what it says. The player key is
+# the lowercase 0x address, which is stable across sessions; the session
+# token it replaced was not, and would have handed every returning player a
+# new character.
+#
+# `domain` is what goes in the signed message and it MUST be the host players
+# dial — that is the whole of the domain binding, and a mismatch refuses
+# every login rather than failing quietly.
+domain = "game.moreright.xyz"

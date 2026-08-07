@@ -4,13 +4,9 @@
 //! contract the web client will implement. Used by `bin/bots` and the
 //! 50-bot smoke gate.
 
-use crate::net::{read_event_frame, read_frame, write_frame};
+use crate::net::{client_handshake, read_event_frame};
 use crate::view::{Applied, ClientView};
-use protocol::{
-    decode_event, decode_refuse, decode_welcome, encode_hello, encode_input, peek_kind, Hello,
-    InputDatagram, Welcome, KIND_REFUSE, KIND_SNAPSHOT, KIND_WELCOME, MAX_STREAM_MSG_BYTES,
-    PROTO_VER,
-};
+use protocol::{decode_event, encode_input, peek_kind, InputDatagram, Welcome, KIND_SNAPSHOT};
 use sim_core::bots::bot_frame;
 use sim_core::input::InputFrame;
 use sim_core::limits::{DATAGRAM_BUDGET_BYTES, MAX_INPUT_FRAMES, TICK_HZ};
@@ -60,35 +56,15 @@ pub async fn run_bot(
         .map_err(|e| format!("open_bi: {e}"))?;
     let (mut send, mut recv) = opening.await.map_err(|e| format!("open_bi await: {e}"))?;
 
-    let mut msg_buf = [0u8; MAX_STREAM_MSG_BYTES];
-    let len = encode_hello(
-        &Hello {
-            proto_ver: PROTO_VER,
-            // A bot is a guest and must stay one. Giving the load harness a
-            // credential would make every soak run authenticate, which is
-            // both a lie about what is being measured and a standing reason
-            // for someone to put a real token in a test fixture.
-            token: protocol::AuthToken::NONE,
-        },
-        &mut msg_buf,
+    // A bot is a guest and stays one (`net::client_handshake` says why).
+    let welcome = client_handshake(
+        &mut send,
+        &mut recv,
+        "bot",
+        protocol::Address::GUEST,
+        |_| None,
     )
-    .map_err(|e| format!("encode hello: {e:?}"))?;
-    write_frame(&mut send, &msg_buf[..len])
-        .await
-        .map_err(|_| "write hello".to_string())?;
-
-    let (reply, reply_len) = read_frame(&mut recv)
-        .await
-        .ok_or("no handshake reply".to_string())?;
-    let reply = &reply[..reply_len];
-    let welcome = match peek_kind(reply) {
-        Ok(KIND_WELCOME) => decode_welcome(reply).map_err(|e| format!("welcome: {e:?}"))?,
-        Ok(KIND_REFUSE) => {
-            let r = decode_refuse(reply).map_err(|e| format!("refuse: {e:?}"))?;
-            return Err(format!("refused: code {}", r.code));
-        }
-        other => return Err(format!("unexpected handshake reply: {other:?}")),
-    };
+    .await?;
 
     let mut report = BotReport {
         player_id: welcome.player_id,

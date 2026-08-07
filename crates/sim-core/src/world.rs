@@ -435,6 +435,33 @@ pub struct Player {
     pub death_cause: u8,
     pub death_item: u16,
     pub death_range_cm: u16,
+    /// **Nobody is driving this body, and it is still here.** A `Leave`
+    /// used to clear `active`, which deleted the body outright and made a
+    /// disconnect the safest thing a player could do — the design the
+    /// reference game's own Devblog 7 says it *replaced*
+    /// (`reference/SAVES.md` §1, §9.1). A sleeper stays in the world: it
+    /// stands, it takes no input, its metabolism runs, and it can be
+    /// killed. Offline raiding is not a feature built on top of this; it
+    /// is what this bit *is*.
+    ///
+    /// Still `active` on purpose. Every predicate that asks "is there a
+    /// body here" — `combat::strike`'s target scan, `ranged`'s, the
+    /// snapshot's interest filter, `state_hash` — must answer yes, and the
+    /// one thing that must NOT is the input path. So the bit is read where
+    /// agency is decided (`tick`) and nowhere else, which is why adding it
+    /// changed no target scan.
+    pub sleeping: bool,
+    /// The tick this body fell asleep, and the only reason it is stored:
+    /// slots are `MAX_PLAYERS` and sleepers hold them, so a shard with
+    /// every slot asleep must still admit a player (wall 4 — every store
+    /// has a cap and a stated overflow policy). The policy is **evict the
+    /// longest-asleep**, and this is the key it is ordered by. Ties break
+    /// on slot index, which is why the scan is a `for` over slot order and
+    /// not a `min_by_key`.
+    ///
+    /// Sim state, so it is hashed: two shards that disagreed about it
+    /// would evict different bodies and diverge from that tick on.
+    pub slept_at: u64,
 }
 
 impl Default for Player {
@@ -467,6 +494,8 @@ impl Default for Player {
             death_cause: 0,
             death_item: NO_ITEM,
             death_range_cm: 0,
+            sleeping: false,
+            slept_at: 0,
         }
     }
 }
@@ -497,8 +526,32 @@ pub enum Command {
         id: u32,
         save: PlayerSave,
     },
+    /// The connection ended. **This does not remove the body** — it puts
+    /// it to sleep (`Player::sleeping`), which is the whole of
+    /// `reference/SAVES.md` §9.1 in one arm.
     Leave {
         id: u32,
+    },
+    /// Take over a sleeping body: seat connection `id` onto the sleeper
+    /// currently carrying id `sleeper`.
+    ///
+    /// Two ids because the sim has no idea who anybody is. A player id is
+    /// `generation << 8 | slot`, minted per connection and meaningless
+    /// across two of them (`persist.rs` says so from the other side), so
+    /// the identity that survives a disconnect is the server's opaque
+    /// `PlayerKey` and it deliberately never enters this crate. The server
+    /// resolves key → sleeper id outside the sim and names both here, which
+    /// is what keeps the command stream self-contained: a replay wakes the
+    /// same body without a key table still existing.
+    ///
+    /// **A miss is legal and ordinary**, not an error to report: the
+    /// sleeper may have been evicted for slot pressure since the server
+    /// last saw it. `ShardCore` checks first and falls back to `JoinAs`,
+    /// and this arm re-checks anyway, because a WAL replayed against a
+    /// world that evicted differently must not seat a body from nothing.
+    Wake {
+        id: u32,
+        sleeper: u32,
     },
     Input {
         id: u32,
@@ -721,6 +774,19 @@ pub struct World {
     /// cascade capped mid-fall leaves pieces standing on nothing, and this
     /// cursor is what finds them on a later tick.
     pub sweep_support: u32,
+    /// How many sleeping bodies this world has evicted to seat a join
+    /// (`seat`). Wall 4 asks every cap for a stated overflow policy, and a
+    /// policy nobody can measure is the mood the walls list warns about —
+    /// this is the number that says whether "evict the longest-asleep" ever
+    /// fires in practice or is dead code guarding an unreachable case.
+    ///
+    /// Hashed, though it drives nothing. An eviction is the one sim event
+    /// whose evidence is an *absence*: the body is simply not in the player
+    /// scan any more, and two shards that evicted different bodies at
+    /// different ticks would still hash the survivors identically for as
+    /// long as the two victims were standing still. The counter is what
+    /// makes that divergence loud on the tick it happens.
+    pub evictions: u64,
     /// Sparse harvested/damaged slot records (TERRAIN.md §2).
     pub slot_lives: SlotLives,
     /// Memo of `terrain::scatter` behind the occupant collision query
@@ -772,6 +838,7 @@ impl World {
             sweep_piece: 0,
             sweep_deploy: 0,
             sweep_support: 0,
+            evictions: 0,
             slot_lives: SlotLives::new(),
             slot_cache: Box::new(crate::occupy::SlotCache::new()),
             arrows: Box::new(ranged::Arrows::new()),
@@ -1117,6 +1184,15 @@ impl World {
             death_cause: cause,
             death_item: item,
             death_range_cm: range_cm,
+            // **Carried, and this is the line the whole slice rests on.**
+            // `..Player::default()` would clear it, and a killed sleeper
+            // that stopped being a sleeper is one the server can no longer
+            // find at the owner's next join — so it would fall through to
+            // `JoinAs` and hand them back the record they left with, alive,
+            // with everything they were carrying. Offline raiding would
+            // cost the raider a fight and pay them nothing.
+            sleeping: body.sleeping,
+            slept_at: body.slept_at,
             ..Player::default()
         };
     }
@@ -1213,10 +1289,45 @@ impl World {
         if self.slot_of(id).is_some() {
             return;
         }
-        // No free slot: refuse silently here; the accept path already
-        // hard-caps at the shard limit (limits.rs).
-        let Some(slot) = self.players.iter().position(|p| !p.active) else {
-            return;
+        // A genuinely empty slot first; failing that, the longest-asleep
+        // body is evicted to make one.
+        //
+        // **Sleepers are why this is not just `position(|p| !p.active)`
+        // any more.** A body that stays after its connection ends holds a
+        // slot, and slots are `MAX_PLAYERS` — so without an eviction rule
+        // a shard that a hundred people had ever visited would refuse the
+        // hundred-and-first forever, which is wall 4's "no cap without a
+        // stated overflow policy" failing in the direction that looks like
+        // the server being down.
+        //
+        // Evicting is not losing the player: the store still holds their
+        // record (`reference/SAVES.md` §9.2 — the record's job is exactly
+        // "how you come back when the world has not got you"), so an
+        // evicted sleeper returns through `JoinAs` as they did before
+        // sleepers existed. What is lost is the interval since that record
+        // was last swept, which is the same bound the autosave already
+        // carries.
+        let slot = match self.players.iter().position(|p| !p.active) {
+            Some(s) => s,
+            None => {
+                let mut pick = usize::MAX;
+                for i in 0..MAX_PLAYERS {
+                    if self.players[i].sleeping
+                        && (pick == usize::MAX
+                            || self.players[i].slept_at < self.players[pick].slept_at)
+                    {
+                        pick = i;
+                    }
+                }
+                if pick == usize::MAX {
+                    // Every slot holds an awake player. Refuse silently;
+                    // the accept path already hard-caps at the shard limit.
+                    return;
+                }
+                self.players[pick].active = false;
+                self.evictions += 1;
+                pick
+            }
         };
         match save {
             None => {
@@ -1277,6 +1388,142 @@ impl World {
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
     }
 
+    /// The slot holding the sleeping body `id`, or `None` — the sleeper
+    /// was evicted, killed into a slot somebody else took, or never
+    /// existed. A pure read, and the server's whole test before it commits
+    /// to `Command::Wake` rather than `JoinAs`.
+    pub fn sleeper_slot(&self, id: u32) -> Option<usize> {
+        self.slot_of(id).filter(|&s| self.players[s].sleeping)
+    }
+
+    /// Whether a sleeping body by this id is still in the world.
+    pub fn is_sleeper(&self, id: u32) -> bool {
+        self.sleeper_slot(id).is_some()
+    }
+
+    /// How many bodies are asleep right now — the population the eviction
+    /// policy is drawn from, and a stat the server publishes.
+    pub fn sleepers(&self) -> usize {
+        self.players
+            .iter()
+            .filter(|p| p.active && p.sleeping)
+            .count()
+    }
+
+    /// Seat a returning connection onto the body it left behind.
+    ///
+    /// **The body wins over the record, and that is the point of the
+    /// slice.** A player whose sleeper was killed while they were away
+    /// comes back to a dead body, not to the state their leave-save
+    /// recorded — restoring the record here is precisely the hole that
+    /// would make offline raiding pay nothing.
+    ///
+    /// A dead sleeper wakes on a beach rather than on the death screen,
+    /// which is the rule `PlayerSave::dead` already reasoned out for the
+    /// other door and this one inherits: the screen is drawn from
+    /// `EV_DEATH`, `EV_DEATH` is the shard-wide kill feed, and re-emitting
+    /// it at a join would announce a fresh killing of somebody who had just
+    /// logged in. Declining the choice is choosing the beach, and being
+    /// killed in your sleep is declining it.
+    fn take_over(&mut self, id: u32, sleeper: u32) {
+        let Some(slot) = self.sleeper_slot(sleeper) else {
+            return;
+        };
+        // Refuse only if `id` already names a **different** body. The
+        // obvious guard — "refuse if this id is in the world" — is wrong,
+        // and wrong in a case that is not exotic: **`id == sleeper` is the
+        // ordinary path after a restart.** A player id is
+        // `generation << 8 | slot`, and a restart resets the slot table, so
+        // the first connection into slot 0 is minted the same id the body
+        // saved in slot 0 already carries. That guard turned every
+        // first-reconnect-after-a-restart into a silent no-op: the takeover
+        // was counted, the wake command was queued, and the body stayed
+        // asleep while the player sat in an empty world.
+        //
+        // Found by `server/tests/world_persist.rs`, which is the only test
+        // that has both halves — a saved world and a fresh id space — and
+        // could not have been found by either alone.
+        if self.slot_of(id).is_some_and(|other| other != slot) {
+            return;
+        }
+        let p = &mut self.players[slot];
+        p.id = id;
+        p.sleeping = false;
+        p.slept_at = 0;
+        // The frame is the new connection's to fill. Unlike a respawn —
+        // which keeps it, because the same client is still holding the same
+        // mouse — a takeover is a different session whose input seq starts
+        // at 0, and a stale `seq` would tell prediction the sim had already
+        // executed inputs this client has not sent (`persist.rs` says the
+        // same thing about restoring one from a file).
+        p.frame = InputFrame::default();
+        if self.players[slot].dead {
+            self.wake(slot, false);
+            return;
+        }
+        // The craft queue survived the sleep; its completion tick did not
+        // survive being an absolute number in a world that kept ticking
+        // without the player. Re-armed against now, exactly as `JoinAs`
+        // does — one rule, two doors.
+        craft::rearm(&self.craft, self.tick, &mut self.players[slot]);
+        let (hp, hp_max) = (self.players[slot].hp, self.players[slot].hp_max);
+        if hp > 0 {
+            self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
+        }
+        survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
+    }
+
+    /// Re-apply every door's shut bit to the collision index, after a world
+    /// load has replaced both stores.
+    ///
+    /// **Doors are the seam between the two stores, and the only piece of
+    /// derived state a load can get wrong quietly.** A door is a
+    /// *deployable* record carrying `open`; what it blocks is a *piece* —
+    /// the doorway it was placed in — whose closed-ness lives as a bit in
+    /// `Pieces::cols`. `Pieces::restore` rebuilds that index from the piece
+    /// records alone and cannot know about doors, so without this pass every
+    /// door on the shard comes back walkable while the wire still draws it
+    /// shut: a raid that costs nothing, visible to any player, invisible to
+    /// `state_hash` (the index is never hashed) and unreachable by any gate
+    /// that only compares two runs of the same binary.
+    ///
+    /// A door places closed, so the bit is `!open` and not `open` — the
+    /// same expression `deploy.rs`'s use-toggle writes, deliberately
+    /// duplicated rather than shared, because the toggle owns *when* and
+    /// this owns *from what*.
+    pub fn rebuild_doors(&mut self) {
+        for i in 0..self.deploys.len() {
+            let d = self.deploys.entries()[i];
+            if self.deploy.defs[d.row as usize].arch != crate::deploy::ARCH_DOOR {
+                continue;
+            }
+            self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
+        }
+    }
+
+    /// Load a world from a save blob — **the boot path, and only the boot
+    /// path** (`worldsave.rs` has the argument in full).
+    ///
+    /// Call after the content tables are installed and before the first
+    /// `tick`. The loaded world is the *origin* of a run, not a mutation
+    /// inside one, which is what keeps wall 5 intact without the state
+    /// having to ride a command the way `Command::JoinAs` does: there is no
+    /// stream yet for it to be inconsistent with.
+    ///
+    /// On refusal the world is untouched — every field is decoded and
+    /// checked before anything is written — so a shard whose save is
+    /// corrupt starts a fresh world rather than half of somebody's base.
+    pub fn load(&mut self, blob: &[u8]) -> Result<(), crate::worldsave::WorldSaveError> {
+        crate::worldsave::decode_into(self, blob)
+    }
+
+    /// This world as a save blob, into a caller-owned buffer at least
+    /// [`crate::worldsave::WORLD_SAVE_MAX_BYTES`] long. A pure read, for
+    /// the reason [`Self::save_of`] is one.
+    pub fn save_world(&self, out: &mut [u8]) -> Result<usize, crate::worldsave::WorldSaveError> {
+        crate::worldsave::encode(self, out)
+    }
+
     /// What this shard would remember about `id` if the connection ended
     /// now. `None` ⇒ nobody by that id is in the world.
     ///
@@ -1295,10 +1542,30 @@ impl World {
             Command::Join { id } => self.seat(id, None),
             Command::JoinAs { id, save } => self.seat(id, Some(save)),
             Command::Leave { id } => {
-                if let Some(slot) = self.slot_of(id) {
-                    self.players[slot].active = false;
+                // A second `Leave` for a body already asleep is a no-op: it
+                // must not restamp `slept_at`, or a duplicate would move a
+                // sleeper to the back of the eviction queue.
+                if let Some(slot) = self.slot_of(id).filter(|&s| !self.players[s].sleeping) {
+                    let now = self.tick;
+                    let p = &mut self.players[slot];
+                    p.sleeping = true;
+                    p.slept_at = now;
+                    // The last input this body was carrying is dropped down
+                    // to its facing. The step below zeroes a sleeper's frame
+                    // anyway, so this changes no motion — what it changes is
+                    // what the *state* says: a body nobody is driving must
+                    // not be recorded as still holding W, or every hash of
+                    // it reads as a player mid-sprint.
+                    p.frame = InputFrame {
+                        seq: p.frame.seq,
+                        yaw: p.frame.yaw,
+                        pitch: p.frame.pitch,
+                        sel: p.frame.sel,
+                        ..InputFrame::default()
+                    };
                 }
             }
+            Command::Wake { id, sleeper } => self.take_over(id, sleeper),
             Command::Input { id, frame } => {
                 if let Some(slot) = self.slot_of(id) {
                     let mut frame = frame;
@@ -1642,6 +1909,47 @@ impl World {
                 );
                 continue;
             }
+            // A sleeper: alive, in the world, and driving nothing.
+            //
+            // The clock runs — that is what "keeps its metabolism" costs,
+            // and it is the reason logging off is no longer free: a body
+            // left standing long enough starves, dies where it stands and
+            // drops its bag through the same `die` every other death takes.
+            // What it does not do is act, so the arm, the craft queue and
+            // the bow are all skipped and the frame handed to `movement` is
+            // zeroed rather than the step skipped — the same shape the
+            // death screen above uses, and for the same reason: a body that
+            // stopped falling when its owner disconnected would hang in the
+            // air over a base that decayed out from under it.
+            if self.players[i].sleeping {
+                if survival::step(&self.survival, &mut self.players[i], &mut self.events)
+                    == survival::Step::Died
+                {
+                    let id = self.players[i].id;
+                    self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
+                    continue;
+                }
+                let frame = InputFrame {
+                    seq: self.players[i].frame.seq,
+                    yaw: self.players[i].frame.yaw,
+                    pitch: self.players[i].frame.pitch,
+                    sel: self.players[i].frame.sel,
+                    ..InputFrame::default()
+                };
+                movement::step(
+                    seed,
+                    self.pieces.cols(),
+                    &mut crate::occupy::Occupants {
+                        table: &self.scatter,
+                        haven: &self.haven,
+                        harvested: &self.slot_lives,
+                        cache: &mut self.slot_cache,
+                    },
+                    &mut self.players[i].body,
+                    &frame,
+                );
+                continue;
+            }
             // The clock runs before the arm. A body that starves this tick
             // does not also get to swing on it — and running the clock
             // first is what makes the death below the tick's last word
@@ -1922,12 +2230,21 @@ impl World {
             // facts too, because the wire encodes them off this record and
             // a replay that reproduced the position while inventing the
             // weapon would put a different sentence on a player's screen.
-            let mut db = [0u8; 10];
+            //
+            // `sleeping` and `slept_at` ride the same buffer for the same
+            // reason. The first decides whether this body has agency at
+            // all, so two shards disagreeing about it disagree about every
+            // tick after; the second decides which body an eviction takes,
+            // so a shard that drifted on it would delete a different
+            // player.
+            let mut db = [0u8; 19];
             db[0..4].copy_from_slice(&p.death_by.to_le_bytes());
             db[4] = p.dead as u8;
             db[5] = p.death_cause;
             db[6..8].copy_from_slice(&p.death_item.to_le_bytes());
             db[8..10].copy_from_slice(&p.death_range_cm.to_le_bytes());
+            db[10] = p.sleeping as u8;
+            db[11..19].copy_from_slice(&p.slept_at.to_le_bytes());
             h.update(&db);
             for s in p.inv.iter() {
                 let mut sb = [0u8; 4];
@@ -2097,6 +2414,7 @@ impl World {
         h.update(&self.sweep_piece.to_le_bytes());
         h.update(&self.sweep_deploy.to_le_bytes());
         h.update(&self.sweep_support.to_le_bytes());
+        h.update(&self.evictions.to_le_bytes());
         h.digest()
     }
 }

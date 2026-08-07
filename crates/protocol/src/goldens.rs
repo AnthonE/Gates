@@ -27,81 +27,83 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 74] = [
-    "v25_input_acks_only.bin",
-    "v25_input_full.bin",
-    "v25_snapshot_keyframe.bin",
-    "v25_snapshot_delta.bin",
-    "v25_snapshot_cap.bin",
-    "v25_hello.bin",
-    "v25_welcome.bin",
-    "v25_refuse_full.bin",
-    "v25_event_gather.bin",
-    "v25_event_inv.bin",
-    "v25_event_slot_harvested.bin",
-    "v25_event_slot_respawned.bin",
-    "v25_event_slot_sync.bin",
-    "v25_event_catalog.bin",
-    "v25_event_weak_mark.bin",
-    "v25_event_craft_q.bin",
-    "v25_event_craft_done.bin",
-    "v25_event_craft_refused.bin",
-    "v25_event_recipes.bin",
-    "v25_action_craft.bin",
-    "v25_action_cancel.bin",
-    "v25_action_place.bin",
-    "v25_event_piece_placed.bin",
-    "v25_event_piece_sync.bin",
-    "v25_event_build_refused.bin",
-    "v25_event_piece_defs.bin",
-    "v25_action_deploy.bin",
-    "v25_action_feed.bin",
-    "v25_event_deploy_placed.bin",
-    "v25_event_deploy_sync.bin",
-    "v25_event_deploy_refused.bin",
-    "v25_event_deploy_defs.bin",
-    "v25_event_piece_removed.bin",
-    "v25_event_deploy_removed.bin",
-    "v25_event_stock.bin",
-    "v25_action_use.bin",
-    "v25_action_lock.bin",
-    "v25_event_door.bin",
-    "v25_action_upgrade.bin",
-    "v25_chat.bin",
-    "v25_event_chat.bin",
-    "v25_event_hit.bin",
-    "v25_event_health.bin",
-    "v25_event_death.bin",
-    "v25_action_loot.bin",
-    "v25_event_bag_dropped.bin",
-    "v25_event_bag_sync.bin",
-    "v25_event_bag_removed.bin",
-    "v25_event_struct_hit_piece.bin",
-    "v25_event_struct_hit_deploy.bin",
-    "v25_event_vitals.bin",
-    "v25_event_consumed.bin",
-    "v25_event_consume_refused.bin",
-    "v25_action_consume.bin",
-    "v25_event_drank.bin",
-    "v25_action_drink.bin",
-    "v25_event_respawn.bin",
-    "v25_action_respawn.bin",
-    "v25_action_move.bin",
-    "v25_event_moved.bin",
-    "v25_event_move_refused.bin",
-    "v25_action_move_box.bin",
-    "v25_action_container.bin",
-    "v25_action_container_close.bin",
-    "v25_event_cont_sync.bin",
-    "v25_event_cont_close.bin",
-    "v25_action_repair_piece.bin",
-    "v25_action_repair_deploy.bin",
-    "v25_event_piece_repaired_piece.bin",
-    "v25_event_piece_repaired_deploy.bin",
-    "v25_action_throw_piece.bin",
-    "v25_action_throw_deploy.bin",
-    "v25_event_charge_placed_piece.bin",
-    "v25_event_charge_placed_deploy.bin",
+pub const FIXTURES: [&str; 76] = [
+    "v27_input_acks_only.bin",
+    "v27_input_full.bin",
+    "v27_snapshot_keyframe.bin",
+    "v27_snapshot_delta.bin",
+    "v27_snapshot_cap.bin",
+    "v27_hello.bin",
+    "v27_welcome.bin",
+    "v27_refuse_full.bin",
+    "v27_event_gather.bin",
+    "v27_event_inv.bin",
+    "v27_event_slot_harvested.bin",
+    "v27_event_slot_respawned.bin",
+    "v27_event_slot_sync.bin",
+    "v27_event_catalog.bin",
+    "v27_event_weak_mark.bin",
+    "v27_event_craft_q.bin",
+    "v27_event_craft_done.bin",
+    "v27_event_craft_refused.bin",
+    "v27_event_recipes.bin",
+    "v27_action_craft.bin",
+    "v27_action_cancel.bin",
+    "v27_action_place.bin",
+    "v27_event_piece_placed.bin",
+    "v27_event_piece_sync.bin",
+    "v27_event_build_refused.bin",
+    "v27_event_piece_defs.bin",
+    "v27_action_deploy.bin",
+    "v27_action_feed.bin",
+    "v27_event_deploy_placed.bin",
+    "v27_event_deploy_sync.bin",
+    "v27_event_deploy_refused.bin",
+    "v27_event_deploy_defs.bin",
+    "v27_event_piece_removed.bin",
+    "v27_event_deploy_removed.bin",
+    "v27_event_stock.bin",
+    "v27_action_use.bin",
+    "v27_action_lock.bin",
+    "v27_event_door.bin",
+    "v27_action_upgrade.bin",
+    "v27_chat.bin",
+    "v27_event_chat.bin",
+    "v27_event_hit.bin",
+    "v27_event_health.bin",
+    "v27_event_death.bin",
+    "v27_action_loot.bin",
+    "v27_event_bag_dropped.bin",
+    "v27_event_bag_sync.bin",
+    "v27_event_bag_removed.bin",
+    "v27_event_struct_hit_piece.bin",
+    "v27_event_struct_hit_deploy.bin",
+    "v27_event_vitals.bin",
+    "v27_event_consumed.bin",
+    "v27_event_consume_refused.bin",
+    "v27_action_consume.bin",
+    "v27_event_drank.bin",
+    "v27_action_drink.bin",
+    "v27_event_respawn.bin",
+    "v27_action_respawn.bin",
+    "v27_action_move.bin",
+    "v27_event_moved.bin",
+    "v27_event_move_refused.bin",
+    "v27_action_move_box.bin",
+    "v27_action_container.bin",
+    "v27_action_container_close.bin",
+    "v27_event_cont_sync.bin",
+    "v27_event_cont_close.bin",
+    "v27_action_repair_piece.bin",
+    "v27_action_repair_deploy.bin",
+    "v27_event_piece_repaired_piece.bin",
+    "v27_event_piece_repaired_deploy.bin",
+    "v27_action_throw_piece.bin",
+    "v27_action_throw_deploy.bin",
+    "v27_event_charge_placed_piece.bin",
+    "v27_event_charge_placed_deploy.bin",
+    "v27_challenge.bin",
+    "v27_auth.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -244,6 +246,13 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         qz: 10_000 + rng.next_bounded(50_000) as i32,
         qvy: rng.next_bounded(10_000) as i32 - 5_000,
         grounded: rng.next_bounded(2) == 0,
+        // Awake, and drawn from no `rng` call on purpose. A random sleeper
+        // would pin whichever value the generator happened to produce,
+        // which is a fixture that documents nothing; the cases below set
+        // the bit deliberately and say what each one covers. It also keeps
+        // the draw sequence where it was, so this field alone does not
+        // reshuffle every other field of every later entity.
+        sleeping: false,
         yaw: rng.next_bounded(0x1_0000) as u16,
         pitch: rng.next_bounded(0x100) as u8,
     }
@@ -306,6 +315,13 @@ pub fn snapshot_keyframe() -> SnapshotCase {
     }
     // One at-rest body so the elision bit is pinned too.
     entities[1].qvy = 0;
+    // One sleeper, so the absolute encoder's sleeping bit is pinned at
+    // **true** by some fixture. Without this every entity in every golden
+    // carries a zero there and the bit is indistinguishable from padding —
+    // which is the positional-payload trap in `CLAUDE.md` wearing its other
+    // face: a byte-golden pins bytes, not meanings, and a field that is
+    // only ever zero has no byte to pin.
+    entities[2].sleeping = true;
     SnapshotCase {
         header: SnapshotHeader {
             tick: 96,
@@ -331,7 +347,8 @@ pub fn snapshot_delta() -> SnapshotCase {
         *slot = rng_entity(&mut rng, 1 + i as u32);
     }
     let mut entities = [EntityState::default(); MAX_SNAPSHOT_ENTITIES];
-    // id 1: unchanged — the 37-bit record.
+    // id 1: unchanged — the minimal record, 38 bits since v26 added the
+    // sleeping bit beside `grounded` (it was 37).
     entities[0] = baseline[0];
     // id 2: one snapshot interval of sprint + a look turn.
     entities[1] = baseline[1];
@@ -340,11 +357,20 @@ pub fn snapshot_delta() -> SnapshotCase {
     entities[1].qz += 7;
     entities[1].yaw = entities[1].yaw.wrapping_add(0x0400);
     entities[1].pitch = entities[1].pitch.wrapping_add(3);
-    // id 3: starts falling, nothing else.
+    // id 3: starts falling, and its owner disconnected on the same
+    // snapshot — the delta encoder's sleeping bit at **true**, and the
+    // transition (baseline awake → record asleep) rather than a body that
+    // was already asleep in both. That is the case a change-gated bit would
+    // have got wrong, and it is a real one: a player who logs off in the
+    // air keeps falling.
     entities[2] = baseline[2];
     entities[2].qvy = -450;
     entities[2].grounded = false;
-    // id 4: teleported beyond the delta window — absolute fallback.
+    entities[2].sleeping = true;
+    // id 4: teleported beyond the delta window — absolute fallback, and
+    // asleep in both baseline and record, so the absolute path is pinned
+    // carrying a true it did not have to change to.
+    baseline[3].sleeping = true;
     entities[3] = baseline[3];
     entities[3].qx += 600;
     entities[3].qz -= 600;
@@ -370,14 +396,37 @@ pub fn snapshot_delta() -> SnapshotCase {
 pub fn hello() -> Hello {
     Hello {
         proto_ver: crate::PROTO_VER,
-        // **Non-empty on purpose.** A fixture carrying `AuthToken::NONE`
-        // encodes a zero length and no bytes, so every token-encoding defect
-        // — a wrong length width, a byte order, an off-by-one on the copy —
-        // would ship with this golden green. Same lesson the parity gate
-        // learned: a digest is evidence of agreement, never of coverage.
-        // 32 bytes, the shape of a real session handle, obviously fake.
-        token: crate::AuthToken::new(b"gates-fixture-token-0123456789ab")
-            .expect("32 <= AUTH_TOKEN_MAX_BYTES"),
+    }
+}
+
+/// The server's challenge. Every nonce byte is distinct so a transposition
+/// in either direction of the codec shows as a wrong value rather than a
+/// coincidence — the positional-payload rule, applied to the one message
+/// whose bytes a signature is computed over.
+pub fn challenge() -> crate::Challenge {
+    let mut nonce = [0u8; crate::NONCE_BYTES];
+    for (i, b) in nonce.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(7).wrapping_add(3);
+    }
+    crate::Challenge {
+        nonce,
+        issued_at: 1_770_000_123,
+    }
+}
+
+/// The client's answer. A real-shaped address and a signature whose bytes
+/// are all distinct — **not** `Signature::NONE`, because a fixture of zeros
+/// would ship green past any defect that dropped the field entirely, which
+/// is the same lesson the old token fixture was written for.
+pub fn auth() -> crate::Auth {
+    let mut sig = [0u8; crate::SIGNATURE_BYTES];
+    for (i, b) in sig.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(5).wrapping_add(11);
+    }
+    crate::Auth {
+        address: crate::Address::from_hex(b"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf")
+            .expect("a known-good address"),
+        signature: crate::Signature(sig),
     }
 }
 

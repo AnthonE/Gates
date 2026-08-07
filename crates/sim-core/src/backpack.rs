@@ -190,6 +190,22 @@ impl Backpacks {
         self.next_id
     }
 
+    /// Replace the store from a decoded world save. Boot-only
+    /// (`worldsave.rs`).
+    ///
+    /// `next_id` is restored rather than recomputed from the records, and
+    /// the difference matters: recomputing it as `max(id) + 1` would reuse
+    /// the ids of bags that have already despawned, so a player who looted
+    /// bag 7 before the restart could be handed a different bag 7 after it.
+    /// The counter is monotonic state (it is hashed for exactly this
+    /// reason), and the decoder refuses any record whose id is at or past
+    /// it.
+    pub(crate) fn restore(&mut self, recs: &[BackpackRec], next_id: u32) {
+        self.len = recs.len().min(MAX_BACKPACKS);
+        self.entries[..self.len].copy_from_slice(&recs[..self.len]);
+        self.next_id = next_id;
+    }
+
     pub fn find(&self, id: u32) -> Option<&BackpackRec> {
         self.entries[..self.len].iter().find(|b| b.id == id)
     }

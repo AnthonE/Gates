@@ -65,6 +65,7 @@ async fn test_bot_smoke_50() {
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
         Saves::off(),
+        server::worldfile::WorldBoot::off(),
     )
     .await
     .expect("shard boots");
@@ -159,11 +160,8 @@ async fn test_bot_smoke_50() {
 /// is the read_frame → decode → sim → event round trip itself.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_action_lane_over_socket() {
-    use protocol::{
-        decode_event, decode_welcome, encode_action_craft, encode_hello, EventMsg, Hello,
-        MAX_STREAM_MSG_BYTES, PROTO_VER,
-    };
-    use server::net::{read_event_frame, read_frame, write_frame};
+    use protocol::{decode_event, encode_action_craft, EventMsg, MAX_STREAM_MSG_BYTES};
+    use server::net::{client_handshake, read_event_frame, write_frame};
 
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let content = content::Content::load_dir(&dir).expect("shipped content loads");
@@ -188,6 +186,7 @@ async fn test_action_lane_over_socket() {
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
         Saves::off(),
+        server::worldfile::WorldBoot::off(),
     )
     .await
     .expect("boots");
@@ -199,20 +198,21 @@ async fn test_action_lane_over_socket() {
     let opening = connection.open_bi().await.expect("open_bi");
     let (mut send, mut recv) = opening.await.expect("bi");
     let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
-    let len = encode_hello(
-        &Hello {
-            proto_ver: PROTO_VER,
-            token: protocol::AuthToken::NONE,
-        },
-        &mut buf,
+    // A guest handshake through the one shared implementation
+    // (`net::client_handshake`) rather than a fourth hand-rolled copy.
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        client_handshake(
+            &mut send,
+            &mut recv,
+            "test",
+            protocol::Address::GUEST,
+            |_| None,
+        ),
     )
-    .expect("encode");
-    write_frame(&mut send, &buf[..len]).await.expect("hello");
-    let (reply, reply_len) = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut recv))
-        .await
-        .expect("welcome inside 5 s")
-        .expect("a welcome frame");
-    decode_welcome(&reply[..reply_len]).expect("welcome decodes");
+    .await
+    .expect("welcome inside 5 s")
+    .expect("welcomed");
 
     let len = encode_action_craft(recipe, 1, &mut buf).expect("action encodes");
     write_frame(&mut send, &buf[..len]).await.expect("action");
@@ -278,6 +278,7 @@ async fn test_version_gate_refuses() {
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
         Saves::off(),
+        server::worldfile::WorldBoot::off(),
     )
     .await
     .expect("boots");
@@ -289,14 +290,7 @@ async fn test_version_gate_refuses() {
     let opening = connection.open_bi().await.expect("open_bi");
     let (mut send, mut recv) = opening.await.expect("bi");
     let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
-    let len = encode_hello(
-        &Hello {
-            proto_ver: 999,
-            token: protocol::AuthToken::NONE,
-        },
-        &mut buf,
-    )
-    .expect("encode");
+    let len = encode_hello(&Hello { proto_ver: 999 }, &mut buf).expect("encode");
     write_frame(&mut send, &buf[..len]).await.expect("write");
     let (reply, reply_len) = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut recv))
         .await
@@ -317,8 +311,7 @@ async fn test_version_gate_refuses() {
 /// reporting true would put a dev surface on every player's page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_welcome_dev_bit_tracks_dev_spawn() {
-    use protocol::{decode_welcome, encode_hello, Hello, MAX_STREAM_MSG_BYTES, PROTO_VER};
-    use server::net::{read_frame, write_frame};
+    use server::net::client_handshake;
 
     // Same shard, same everything, one config key apart.
     for (dev_spawn, want) in [(None, false), (Some((1024.0, 1024.0)), true)] {
@@ -338,6 +331,7 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
             loot,
             catalog,
             Saves::off(),
+            server::worldfile::WorldBoot::off(),
         )
         .await
         .expect("boots");
@@ -348,22 +342,19 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
             .expect("connects");
         let opening = connection.open_bi().await.expect("open_bi");
         let (mut send, mut recv) = opening.await.expect("bi");
-        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
-        let len = encode_hello(
-            &Hello {
-                proto_ver: PROTO_VER,
-                token: protocol::AuthToken::NONE,
-            },
-            &mut buf,
+        let welcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            client_handshake(
+                &mut send,
+                &mut recv,
+                "test",
+                protocol::Address::GUEST,
+                |_| None,
+            ),
         )
-        .expect("encode");
-        write_frame(&mut send, &buf[..len]).await.expect("hello");
-        let (reply, reply_len) =
-            tokio::time::timeout(Duration::from_secs(5), read_frame(&mut recv))
-                .await
-                .expect("welcome inside 5 s")
-                .expect("a welcome frame");
-        let welcome = decode_welcome(&reply[..reply_len]).expect("welcome decodes");
+        .await
+        .expect("welcome inside 5 s")
+        .expect("welcomed");
         assert_eq!(
             welcome.dev, want,
             "dev_spawn {dev_spawn:?} must welcome with dev = {want}"

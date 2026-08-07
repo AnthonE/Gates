@@ -368,6 +368,13 @@ impl SlotLives {
         &self.entries[..self.len]
     }
 
+    /// Replace the store from a decoded world save. Boot-only
+    /// (`worldsave.rs`).
+    pub(crate) fn restore(&mut self, recs: &[SlotLife]) {
+        self.len = recs.len().min(MAX_SLOT_LIVES);
+        self.entries[..self.len].copy_from_slice(&recs[..self.len]);
+    }
+
     pub fn find(&self, cx: u16, cz: u16) -> Option<&SlotLife> {
         self.entries[..self.len]
             .iter()

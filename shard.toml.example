@@ -46,7 +46,47 @@ seed = 20260731
 #      hand a hundred players an empty inventory: move the file aside (that
 #      is what a wipe is) or restore the old content set.
 #   3. The world is NOT in it. Structures, boxes, deployables and hearths
-#      still die with the process — this is your character, not your base.
+#      live in `world_file` below — this is your character, not your base.
 #
 # DECISIONS.md §open "player persistence v0".
 # save_file = "players.save"
+
+# The WORLD file: bases, boxes and what is in them, deployables, hearth
+# stock, bags on the ground, burning fuses, which trees are stumps — and the
+# BODIES standing in it.
+#
+# Unset (the default) generates a fresh island from the seed on every boot,
+# which is what every test runs and what this repo did before world
+# persistence existed.
+#
+# A SEPARATE KEY FROM save_file ON PURPOSE, and this is the one that matters
+# at wipe time: a wipe destroys the world and keeps the player store, so they
+# have to be two files you can delete independently. Either alone is useful —
+# a world with no player store keeps your base standing and forgets who you
+# are; a player store with no world hands you your inventory on a fresh
+# island.
+#
+# Two things to know:
+#
+#   1. Pinned to this shard's SEED and CONTENT HASH, same as save_file and
+#      for a sharper reason: every base in it stands at a coordinate, and on
+#      a different seed that coordinate is somewhere else (often sea). The
+#      shard REFUSES TO BOOT rather than start a new island under everyone.
+#   2. SINCE SLEEPERS, THIS IS WHERE BODIES LIVE. Without it a restart
+#      deletes every body on the shard, and a player who was raided while
+#      offline comes back from their store record with everything the raid
+#      took. If you run save_file in production, run this too.
+#
+# DECISIONS.md §open "world persistence v0".
+# world_file = "island.world"
+
+# How often the world is written, in ticks (30 ticks = 1 second). Default
+# 1800 = every 60 seconds; a clean shutdown always writes one regardless, so
+# this only bounds what a CRASH costs.
+#
+# The reference game's equivalent knob trades crash cost against a shard-wide
+# freeze, which is why theirs defaults to ten minutes. Ours has no freeze to
+# trade against — the walk is off the sim thread and the write is off it
+# again — so the only cost of a shorter interval is disk.
+#
+# world_save_interval_ticks = 1800

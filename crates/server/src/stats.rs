@@ -3,7 +3,7 @@
 //! tests, the smoke gate, and later the status page. Integer-only by
 //! design (L5: diagnostics are numbers, not strings).
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[derive(Default)]
 pub struct ShardStats {
@@ -79,6 +79,56 @@ pub struct ShardStats {
     /// `joins` climbs is remembering nobody, and that is a defect the
     /// operator can see without reading a log.
     pub saves_restored: AtomicU64,
+    /// Joins that took over the body they left behind instead of reading a
+    /// record — the sleeper path (`world.rs` `Command::Wake`). Counted
+    /// beside `saves_restored` rather than folded into it because the two
+    /// answer different questions: this one says sleepers are working, and
+    /// a shard where it stays 0 while `sleepers_evicted` climbs is one
+    /// where bodies are being reaped before their owners get back.
+    pub takeovers: AtomicU64,
+    /// Sleeping bodies the world deleted to seat a join (`world.rs` `seat`).
+    /// Mirrored out of `World::evictions`, which is where the policy lives;
+    /// this is the operator-facing copy. Nonzero means the shard is past
+    /// `MAX_PLAYERS` distinct recent visitors and somebody came back to a
+    /// record instead of a body.
+    pub sleepers_evicted: AtomicU64,
+    /// Bodies asleep in the world right now — a gauge, not a counter, set
+    /// each publish rather than bumped.
+    pub sleepers: AtomicU64,
+    /// Whole worlds written to disk (`worldfile.rs`). The number that says
+    /// world persistence is doing anything, and the one to look at first
+    /// when a restart loses a base.
+    pub world_saves_written: AtomicU64,
+    /// World saves the cadence asked for and could not take, because no
+    /// buffer had come back from the store thread yet — the stated overflow
+    /// policy of `WORLD_RING_CAP` (skip, never wait). A shard where this
+    /// climbs is one whose disk cannot keep up with its own save interval,
+    /// and the fix is a longer `world_save_interval_ticks` and not a deeper
+    /// queue: the next save takes a *fresher* world, so a skip costs
+    /// nothing a later save does not replace.
+    pub world_saves_skipped: AtomicU64,
+    /// World writes that failed at the filesystem. A shard that cannot
+    /// persist keeps running, exactly as it does for a player record —
+    /// dropping everyone because a disk filled is worse than forgetting.
+    pub world_save_errors: AtomicU64,
+    /// **The storage thread has written everything and stopped.** The one
+    /// flag here, and it is not a statistic — it is how `bin/shard.rs`
+    /// knows a graceful shutdown has actually reached the disk before it
+    /// calls `exit`.
+    ///
+    /// Exact rather than timed, which matters because the alternative is a
+    /// sleep somebody picked: the sim thread flushes and drops its
+    /// producers, the accept loop drains until abandoned and drops its own,
+    /// the storage thread drains until *its* rings are abandoned and sets
+    /// this. Every hop waits on a producer being dropped, so the chain ends
+    /// exactly when the last byte is written and not a moment that happened
+    /// to look long enough.
+    pub store_stopped: AtomicBool,
+    /// A world blob the sim thread refused, which `bin/shard.rs` had
+    /// already accepted into a trial world. Unreachable by construction and
+    /// counted anyway, because the alternative to counting it is a shard
+    /// silently running a fresh island under everybody's bases.
+    pub world_load_errors: AtomicU64,
     /// Records handed to the store's index — a leave, or the autosave sweep
     /// finding a player whose state moved. Those are the only two producers:
     /// there is no shutdown flush (`NOW.md` §0y item 3 says why not).
@@ -114,5 +164,25 @@ impl ShardStats {
 
     pub fn get(field: &AtomicU64) -> u64 {
         field.load(Ordering::Relaxed)
+    }
+
+    /// Publish a gauge — a number that is *read off* the world each tick
+    /// rather than accumulated, so it must be assigned and never bumped.
+    pub fn set(field: &AtomicU64, v: u64) {
+        field.store(v, Ordering::Relaxed);
+    }
+
+    /// Raise a flag. `Release`/`Acquire` rather than `Relaxed`, unlike every
+    /// counter here: `store_stopped` is read to decide that *other* writes —
+    /// the file the storage thread just closed — have happened, and a
+    /// relaxed store would let the reader see the flag without seeing the
+    /// work. A counter nobody orders anything against does not need this;
+    /// a handshake does.
+    pub fn raise(field: &AtomicBool) {
+        field.store(true, Ordering::Release);
+    }
+
+    pub fn raised(field: &AtomicBool) -> bool {
+        field.load(Ordering::Acquire)
     }
 }
