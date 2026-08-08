@@ -138,9 +138,17 @@ pub const REFUSE_M_REACH: u32 = 6;
 /// the ladder cannot size can be moved, for the same reason
 /// `loot_nearest` already skips it.
 pub const REFUSE_M_UNSTACKABLE: u32 = 7;
-/// The largest reason above. Three bits hold `1..=7`, which is what the
-/// wire spends, and a reason added past this needs the width to move.
-pub const REFUSE_M_MAX: u32 = REFUSE_M_UNSTACKABLE;
+/// The destination is an **oven** and the item is neither its fuel, nor
+/// an input it cooks, nor something it made (`oven.rs`). The reference's
+/// 2025 rule — *"you'll no longer be able to store non cooking/smelting-
+/// related items inside your cooking deployables"* — and here it is also
+/// what stops a 100-wood campfire from being a cheaper twelve-slot box
+/// than the 100-wood box whose entire job is to be one.
+pub const REFUSE_M_OVEN: u32 = 8;
+/// The largest reason above. Four bits hold `1..=15`, which is what the
+/// wire spends (widened from three with `PROTO_VER` 28, oven v0), and a
+/// reason added past 15 needs the width to move again.
+pub const REFUSE_M_MAX: u32 = REFUSE_M_OVEN;
 
 /// What a validated move will do. Constructed only by `plan_move`, so a
 /// value of this type *is* the proof that every check passed — the

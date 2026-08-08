@@ -253,6 +253,31 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m);
     }
 
+    // The oven table, whole. Every field here reaches the sim
+    // (`bake_cooking`), so every field is here — the `[backpack]` defect
+    // above is the reason this paragraph exists rather than the four
+    // lines it needs: a value the sim reads and the digest cannot see
+    // lets two contents that burn wood at different rates canonicalise
+    // identically, and the WAL header then claims a match that is not
+    // one. The cook rows sort by input id, which is unique across the
+    // table (`validate::structural` refuses two rows for one input at one
+    // station, and a row's station is part of what makes it distinct —
+    // so the sort key is the pair, spelled as one string).
+    h.s("cooking");
+    h.s(&c.fuel.item);
+    h.u(c.fuel.seconds);
+    h.s(&c.fuel.byproduct);
+    h.u(c.fuel.byproduct_pct);
+    h.u(c.cooks.len() as u32);
+    let mut cooks: Vec<&Cook> = c.cooks.iter().collect();
+    cooks.sort_by_key(|k| format!("{}\u{0}{}", k.station as u32, k.input));
+    for k in cooks {
+        h.s(&k.input);
+        h.s(&k.output);
+        h.u(k.seconds);
+        h.u(k.station as u32);
+    }
+
     let sv = &c.balance.survival;
     h.s("survival");
     h.u(sv.max_food);

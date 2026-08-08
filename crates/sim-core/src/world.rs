@@ -246,6 +246,19 @@ pub const EV_PIECE_REPAIRED: u8 = 28;
 /// news a swing makes and is already drawn.
 pub const EV_CHARGE_PLACED: u8 = 29;
 
+/// An oven's fire went in or out (`oven.rs`). `a` = `cell_key(cx, cz)`,
+/// `b` = `level << 16 | lit`, `c` = the hand that pressed, or **0 when
+/// the oven ran dry and snuffed itself** — a fact with no actor behind
+/// it, the posture `EV_SLOT_RESPAWNED` already takes.
+///
+/// Absolute, never a delta, for the reason `EV_DOOR` is: a client that
+/// toggled optimistically is confirmed or corrected by the same event,
+/// and two presses racing must not leave the two sides disagreeing about
+/// which way the fire ended up. Broadcast, like the door: a lit fire is
+/// visible from outside the base it is in, so hiding it from the
+/// neighbourhood would make the sim disagree with the picture.
+pub const EV_OVEN: u8 = 30;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -253,7 +266,7 @@ pub const EV_CHARGE_PLACED: u8 = 29;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_CHARGE_PLACED;
+pub const EV_MAX: u8 = EV_OVEN;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -736,6 +749,10 @@ pub struct World {
     /// Baked deployable rules + upkeep globals (deploy.rs). Construction
     /// input too.
     pub deploy: DeployContent,
+    /// Baked fuel + cook rows (oven.rs). Construction input too; the
+    /// inert default leaves every fire cold, which is the game that
+    /// existed before the module.
+    pub cook: crate::oven::CookContent,
     /// Baked melee rows + max hp (combat.rs). Construction input too; the
     /// inert default leaves the world unable to hurt anyone.
     pub combat: CombatContent,
@@ -830,6 +847,7 @@ impl World {
             craft: CraftContent::EMPTY,
             build: BuildContent::EMPTY,
             deploy: DeployContent::EMPTY,
+            cook: crate::oven::CookContent::EMPTY,
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
             survival: SurvivalContent::EMPTY,
@@ -1110,6 +1128,24 @@ impl World {
 
         // 3. Read both sides as copies.
         let src = self.cont_slot(slot, from_kind, from_slot, ci);
+        // An oven takes fuel, what it cooks, and what it made — nothing
+        // else (`oven.rs`, `inventory::REFUSE_M_OVEN`). Asked here, of
+        // the *source item*, after the address resolves and before
+        // anything is planned: a rule about what may enter a container is
+        // a property of this world's content, which `plan_move` has no
+        // access to and deliberately never will (it decides arithmetic,
+        // and only arithmetic). Rearranging inside the oven is untouched
+        // — the item is already in there.
+        if to_kind == inventory::CONT_BOX && from_kind != inventory::CONT_BOX {
+            let arch = self.deploys.oven_states().get(ci).map(|o| o.arch);
+            if let Some(arch) = arch.filter(|_| self.deploys.oven_index(cont).is_some()) {
+                if !self.cook.accepts(arch, src.item) {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_OVEN, addr);
+                    return;
+                }
+            }
+        }
         let dst = self.cont_slot(slot, to_kind, to_slot, ci);
 
         // 4. Plan. This is the whole of the validation, and it holds no
@@ -1683,17 +1719,35 @@ impl World {
                 loc,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    deploy::use_door(
-                        &self.deploy,
-                        &mut self.pieces,
+                    // One key, two verbs, picked by what stands at the
+                    // address — the reference's own E menu, where a door
+                    // offers open/close and a fire offers ignite/
+                    // extinguish. The two can never collide: a door lives
+                    // on a doorway's edge address and an oven on the
+                    // plane, so this is a lookup and not a guess about
+                    // what the player aimed at.
+                    let lit = crate::oven::toggle(
+                        &self.cook,
                         &mut self.deploys,
-                        &mut self.players[slot],
+                        &self.players[slot],
                         cx,
                         cz,
                         level,
-                        loc,
                         &mut self.events,
                     );
+                    if !lit {
+                        deploy::use_door(
+                            &self.deploy,
+                            &mut self.pieces,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::Lock {
@@ -2134,6 +2188,18 @@ impl World {
             &mut removals,
             &mut self.events,
         );
+        // Every oven whose turn this tick is: fuel down, byproduct banked,
+        // what is on the fire a step closer to done (oven.rs). Before the
+        // sweeps that can remove the thing it is stepping — an oven that
+        // decays this tick has already spent its period, which is the
+        // ordering a raid and a decay have to agree on.
+        crate::oven::sweep(
+            &self.cook,
+            &self.gather,
+            &mut self.deploys,
+            tick,
+            &mut self.events,
+        );
         // The structural backstop, after the sweep that can create work for
         // it: anything a capped cascade left hanging in the air comes down
         // here, one piece and its own cascade per tick (build.rs).
@@ -2396,6 +2462,23 @@ impl World {
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
                 h.update(&sb);
+            }
+        }
+        // Oven state, in its own pass beside the contents for the reason
+        // the bag cooldowns get one: it lives in a parallel array so the
+        // container-sync message does not carry it, and the digest
+        // follows the storage. It is state and not decoration — two
+        // shards that disagree about which fires are lit disagree about
+        // how much charcoal exists an hour from now.
+        for ov in self.deploys.oven_states() {
+            let mut buf = [0u8; 6];
+            buf[0] = ov.arch;
+            buf[1] = ov.lit as u8;
+            buf[2..4].copy_from_slice(&ov.burn.to_le_bytes());
+            buf[4..6].copy_from_slice(&ov.bank.to_le_bytes());
+            h.update(&buf);
+            for c in ov.cook.iter() {
+                h.update(&c.to_le_bytes());
             }
         }
         h.update(&(self.backpacks.len() as u64).to_le_bytes());

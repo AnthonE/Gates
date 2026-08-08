@@ -248,6 +248,46 @@ pub struct Deployable {
     pub hp: u32,
 }
 
+/// What an oven burns (`content/cooking.toml`, `sim-core/oven.rs`).
+/// One row for the whole game: the reference carries an
+/// `ItemModBurnable` per item, and a second burnable here is a schema
+/// change we will make when a second one exists rather than a `Vec` that
+/// has held one element since the day it was written.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fuel {
+    pub item: String,
+    /// How long one unit burns.
+    pub seconds: u32,
+    /// What a burned unit leaves in the oven.
+    pub byproduct: String,
+    /// Hundredths of a byproduct unit banked per unit burned, paid whole
+    /// at 100. An integer rather than a roll so the fire's yield is in
+    /// `state_hash` without an RNG draw in the tick.
+    pub byproduct_pct: u32,
+}
+
+/// Which oven runs a cook row. The archetype names of
+/// `content/deployables.toml`, narrowed to the two that burn — a row that
+/// named `box` would be a transformation with no station.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CookStation {
+    Fire,
+    Furnace,
+}
+
+/// One transformation an oven performs: one unit in, one unit out, over
+/// `seconds`, at `station`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cook {
+    pub input: String,
+    pub output: String,
+    pub seconds: u32,
+    pub station: CookStation,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LootEntry {

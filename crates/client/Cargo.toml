@@ -155,7 +155,7 @@ bevy_procedural_tree = { version = "0.3", default-features = false, features = [
 fastrand = { version = "2", optional = true }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
-client-wasm = { path = "../client-wasm" }
+client-core = { path = "../client-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util"] }
 # Same pin as the server, and for the same reason (CLAUDE.md traps,
 # NETCODE.md §2.2): crates.io tops out at 0.7.1, which has the two-byte

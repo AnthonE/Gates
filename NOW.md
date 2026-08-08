@@ -20,6 +20,42 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0v · The fire cooks nothing, because nothing on this island is raw *(systems lane)*
+
+Landed 2026-08-08: the oven (`sim-core/oven.rs`, `DECISIONS.md` §open "oven
+v0"). A campfire lights on `C`, opens on `E`, burns its wood at the
+reference's own rate, banks charcoal at the reference's own 75%, cooks what
+`content/cooking.toml` names, and snuffs itself when it runs dry. The
+furnace is the same class — a fire and a furnace differ only by which cook
+rows name them, which is how the reference builds it (`BaseOven`).
+
+**What is missing is the food, and it is not the oven's fault.** The table
+ships with zero `[[cook]]` rows: the alpha food set is berries, mushrooms
+and corn, only berries are payable by anything in the world, and none of
+the three is a thing you cook. The meat was cut with the animals that would
+drop it (`DECISIONS.md` §open, "food set"). So the shipped fire's job is
+fuel → charcoal — real, and a T0 source for the powder chain — and cooking
+is a table with no rows.
+
+Two ways to close it, and the choice is the operator's because it is the
+food-set knob:
+
+- **A raw food the world pays.** An animal (a spawn class, a strike, a
+  drop), or the forest-floor pickup mushrooms have wanted since the
+  survival clock landed — that one is a scatter occupant, so it moves
+  `test_terrain_golden`. Then one `[[cook]]` row and one consumable row,
+  no code.
+- **The burnt state.** Reference-true and free once food exists: a burnt
+  row is a cook row whose input is the cooked item, so it is content, not
+  a mechanic — but it cannot be demonstrated before there is a cooked
+  item to overcook.
+
+Also still open, and deliberately: the furnace's ore rows are still
+station-gated crafts in `recipes.toml`. Moving them into the oven is the
+reference's model and re-prices the whole powder chain against
+`CONTENT.md` §4's bands — a balance pass with an operator's number on it,
+not a refactor.
+
 ## 0u · The ghost tells the truth — what it still cannot promise *(client lane)*
 
 Landed 2026-08-07. The build ghost drew a doorway as a SOLID SLAB, so the
@@ -435,7 +471,7 @@ locally."* All three questions answered and executed in the same pass —
 2. **`web/` itself: deleted.** It is in git history on GitHub, which is what
    makes it still readable as the reference implementation of every verb —
    `git show <commit>:web/src/interact.js`.
-3. **`client-wasm`: kept**, and so is `test_parity_wasm`. Two codegen backends
+3. **`client-core`: kept**, and so is `test_parity_wasm`. Two codegen backends
    agreeing is a real determinism check and it is cheap; a missing browser does
    not repeal wall 1.
 
@@ -700,7 +736,7 @@ rasterizer running two tabs, and it does not transfer.
 ## 0c6 · systems lane request: bridge `terrain::haven(seed)`
 
 One export. `terrain::haven(seed)` already returns the pad and the waystation
-array in one struct (`terrain.rs:799`); nothing in `client-wasm/src/bridge.rs`
+array in one struct (`terrain.rs:799`); nothing in `client-core/src/bridge.rs`
 exposes it, so a client learns a destination exists only by standing in its
 chunk. `map.js`'s `resolveMarks` takes world positions and is already gated, so
 this is a caller change on the ui side and not a rewrite. Ranked gap 1 of
@@ -1006,7 +1042,7 @@ on the native↔wasm parity surface — landed on `loop/site-parity`; see
 `DECISIONS.md` §open "probe coverage v0". Measured before the fix: of the
 golden's 256 cells, **zero** were inside `in_haven`/`in_waystation` on all
 three probe seeds, so `haven()`'s value reached the digest through nothing
-while `client-wasm` reads it off wasm and the server off native. Its other
+while `client-core` reads it off wasm and the server off native. Its other
 two fixes were left, deliberately, and are below. That report's ranked
 **gaps** 1–3 — projectiles, day/night + AI, the recycler — are all systems
 lane; the newest visual report's gaps are all texture/material work, which
@@ -1984,7 +2020,7 @@ behind it, not a one-line assert, and that deserves its own measurement.
    verdict, so a player can drag. It is armed over a workaround, and this is
    what retires it.
 
-   Both reports call the cure "one constant in `crates/client-wasm`". **It is
+   Both reports call the cure "one constant in `crates/client-core`". **It is
    not, and a pass that starts there will hit a wall in ten minutes.**
    `core.rs:38-122` assigns every bit 0..31 of the `APPLIED_*` word — bit 31
    (`APPLIED_MOVE`) is the last one, and `core.rs:115-121` says so in its own
@@ -2259,7 +2295,7 @@ behind it, not a one-line assert, and that deserves its own measurement.
    `setInventory` outranking the rollback snapshot. Eight mutants, all red.
 
    **Systems lane, one-line request — this is the blocker.** `APPLIED_MOVE`
-   (`client-wasm/src/core.rs:122`) and `STREAM_ERR` (`client-wasm/src/bridge.rs:64`)
+   (`client-core/src/core.rs:122`) and `STREAM_ERR` (`client-core/src/bridge.rs:64`)
    are both `1 << 31`. `main.js:759` reads that bit as a decode error, so the
    first `Moved`/`MoveRefused` logs `console.error` — which fails the browser
    gates — and returns early, dropping the inventory diff in the same message.

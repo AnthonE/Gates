@@ -45,7 +45,7 @@ pub use event::{
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
     encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
-    encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_removed, encode_event_respawn, encode_event_slot_change, encode_event_slot_sync,
     encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
@@ -212,7 +212,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 ///
 /// The version turns because the *meaning* did, and here the mismatch is
 /// worse than v18's declined drag. `movement::step` is shared verbatim by the
-/// server and `client-wasm`'s predictor — that sharing IS the
+/// server and `client-core`'s predictor — that sharing IS the
 /// quantize-both-sides law (`NETCODE.md` §3) — so a v22 client against a v21
 /// server would predict an arc the server never simulates and be hard-snapped
 /// back to the ground on every press. Not a refused action but a permanent,
@@ -279,7 +279,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 ///
 /// Fixtures are keyed `v27_*` — all 74 renamed and regenerated (the kind
 /// width touches every one), plus two new: `v27_challenge` and `v27_auth`.
-pub const PROTO_VER: u16 = 27;
+pub const PROTO_VER: u16 = 28;
 
 /// Datagram kind field width.
 ///

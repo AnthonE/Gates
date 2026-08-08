@@ -15,7 +15,7 @@ use protocol::{
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
     encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
-    encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_removed, encode_event_respawn, encode_event_slot_change, encode_event_slot_sync,
     encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
@@ -38,7 +38,7 @@ use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
     EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH,
     EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER,
-    EV_HEALTH, EV_HIT, EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_HEALTH, EV_HIT, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
     EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT,
     EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
@@ -1115,7 +1115,7 @@ impl ShardCore {
                     // client that missed it would sit behind an overlay
                     // over a world it can see — which is why the client
                     // also drops the screen on any own-position snapshot it
-                    // cannot reconcile with a corpse (`client-wasm`).
+                    // cannot reconcile with a corpse (`client-core`).
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // that player left this tick
                     };
@@ -1220,6 +1220,36 @@ impl ShardCore {
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
                     match encode_event_door(cx, cz, level, loc, open, locked, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_OVEN => {
+                    // A lit fire is a world fact and is visible from
+                    // outside the base it is in, so it broadcasts exactly
+                    // as a door's state does — with the same consequence
+                    // when a client misses one, except that no sync
+                    // record carries the bit yet: the deploy walk mirrors
+                    // `DeployRec`, and the burn state deliberately does
+                    // not ride on it (`oven.rs`). A client that missed
+                    // this hears the next toggle, or the snuff when the
+                    // fuel runs out, which is at most one fuel unit away.
+                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let level = (ev.b >> 16) as u8;
+                    let lit = ev.b & 1 != 0;
+                    match encode_event_oven(cx, cz, level, lit, ev.c, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {

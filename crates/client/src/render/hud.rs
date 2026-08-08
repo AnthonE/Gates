@@ -92,7 +92,7 @@ impl Vital {
     /// The vital's value and its maximum. A maximum of 0 means no `Vitals`
     /// message has ever arrived, which is not the same as a zeroed vital —
     /// see the module header.
-    fn read(self, core: &client_wasm::core::ClientCore) -> (u16, u16) {
+    fn read(self, core: &client_core::core::ClientCore) -> (u16, u16) {
         match self {
             Vital::Hp => (core.hp, core.hp_max),
             Vital::Water => (core.water, core.max_water),
@@ -580,7 +580,7 @@ pub fn feedback(
     // ROW TABLE rather than one value, so the same freshness rule applies —
     // and `stock_count` is how many of the rows are live, which is why the
     // slice is taken rather than the array walked whole.
-    if feed.applied & client_wasm::core::APPLIED_STOCK != 0 {
+    if feed.applied & client_core::core::APPLIED_STOCK != 0 {
         let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
         if let Some(line) = stock_line(rows, &core.catalog) {
             toast.say(line);
@@ -591,7 +591,7 @@ pub fn feedback(
     // than own-fact, and `APPLIED2_CHARGE`'s own doc says why that is the
     // point: "the charge you most need drawn is the one you did not plant."
     // Word 1, not word 0 — word 0 is full.
-    if feed.applied2 & client_wasm::core::APPLIED2_CHARGE != 0 {
+    if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 {
         let (_, _, _, _, _, fuse) = core.charge_placed;
         if let Some(line) = charge_line(fuse) {
             toast.say(line);
@@ -606,7 +606,7 @@ pub fn feedback(
     // `max == 0` means the piece def for that row has not dripped in yet, and
     // `ClientCore`'s own comment on the field says the caller must then draw
     // NOTHING rather than a lie. A fraction over a max of zero is the lie.
-    if feed.applied & client_wasm::core::APPLIED_STRUCT_HIT != 0 {
+    if feed.applied & client_core::core::APPLIED_STRUCT_HIT != 0 {
         let (_, _, _, _, left, max) = core.struct_hit;
         if let Some(line) = struct_hit_line(left, max) {
             toast.say(line);

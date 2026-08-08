@@ -31,7 +31,7 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use client_wasm::core::ClientCore;
+use client_core::core::ClientCore;
 
 use super::{font, font_bold, ring, Panel, Ui, BADGE, TEXT_DIM, TEXT_SHORT};
 use crate::render::icons::Icons;

@@ -10,7 +10,7 @@
 //! characters, a forged length, a non-canonical line) are the protocol
 //! crate's gate; what this file owns is the *routing*.
 
-use client_wasm::core::{ClientCore, APPLIED_CHAT};
+use client_core::core::{ClientCore, APPLIED_CHAT};
 use protocol::{ChatMsg, ChatText, EventMsg, ItemCatalog};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;

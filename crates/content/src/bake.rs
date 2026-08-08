@@ -8,7 +8,8 @@
 //! in this module runs on the sim thread.
 
 use crate::schema::{
-    DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, Weapon, WeaponKind,
+    CookStation, DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, Weapon,
+    WeaponKind,
 };
 use crate::Content;
 use sim_core::backpack::BackpackContent;
@@ -27,13 +28,14 @@ use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
 use sim_core::inventory::SpawnKit;
 use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
-    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_DEPLOY_COSTS,
-    MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS, MAX_LOOT_TABLES,
-    MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
+    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS,
+    MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
+    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
 };
+use sim_core::oven::{CookContent, CookRow};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
@@ -780,6 +782,62 @@ impl Content {
     /// ladder that does not rise strictly with rarity; what this adds is
     /// the arithmetic refusal — a product that overflows the sim's u32
     /// tick field is a content bug, not a saturated bag.
+    /// The oven table: the one fuel row and every cook row, with seconds
+    /// resolved to ticks the way a recipe's are.
+    ///
+    /// `validate::structural` has already refused rows naming items that
+    /// do not exist and a fuel that burns for no time; what this adds is
+    /// the arithmetic and capacity refusals, which are the sim's and not
+    /// the content's — a table past `MAX_COOK_ROWS` is a refused boot
+    /// rather than a silently truncated tail, because a row the sim never
+    /// sees is a transformation the player is told about and cannot
+    /// perform.
+    pub fn bake_cooking(&self) -> Result<CookContent, String> {
+        let mut cc = CookContent::EMPTY;
+        let f = &self.fuel;
+        cc.fuel_item = self
+            .item_index(&f.item)
+            .ok_or_else(|| format!("bake: fuel `{}` names no item", f.item))?;
+        cc.byproduct = self
+            .item_index(&f.byproduct)
+            .ok_or_else(|| format!("bake: fuel byproduct `{}` names no item", f.byproduct))?;
+        cc.fuel_ticks = f
+            .seconds
+            .checked_mul(TICK_HZ)
+            .ok_or_else(|| format!("bake: fuel burn {} s overflows the tick span", f.seconds))?;
+        cc.byproduct_pct = u16::try_from(f.byproduct_pct)
+            .map_err(|_| format!("bake: fuel byproduct_pct {} overflows u16", f.byproduct_pct))?;
+        if self.cooks.len() > MAX_COOK_ROWS {
+            return Err(format!(
+                "bake: {} cook rows exceed the sim's {MAX_COOK_ROWS}-row table",
+                self.cooks.len()
+            ));
+        }
+        for (i, c) in self.cooks.iter().enumerate() {
+            let input = self
+                .item_index(&c.input)
+                .ok_or_else(|| format!("bake: cook input `{}` names no item", c.input))?;
+            let output = self
+                .item_index(&c.output)
+                .ok_or_else(|| format!("bake: cook output `{}` names no item", c.output))?;
+            let ticks = c
+                .seconds
+                .checked_mul(TICK_HZ)
+                .ok_or_else(|| format!("bake: cook `{}` {} s overflows", c.input, c.seconds))?;
+            cc.rows[i] = CookRow {
+                input,
+                output,
+                ticks,
+                arch: match c.station {
+                    CookStation::Fire => ARCH_FIRE,
+                    CookStation::Furnace => ARCH_FURNACE,
+                },
+            };
+        }
+        cc.row_count = self.cooks.len() as u16;
+        Ok(cc)
+    }
+
     pub fn bake_backpack(&self) -> Result<BackpackContent, String> {
         if self.items.len() > MAX_ITEM_DEFS {
             return Err(format!(

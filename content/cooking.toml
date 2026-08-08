@@ -1,0 +1,38 @@
+# Gates · content/cooking.toml — what an oven does (CONTENT.md §1, oven).
+# The campfire and the furnace are one thing in the sim (`sim-core/oven.rs`)
+# for the reason they are one class in the reference — every cooking hook
+# there hangs off `BaseOven` — so what separates them is which rows name
+# which `station`. Every number here is a knob with this file as its
+# documented default (DECISIONS.md §open, "oven v0").
+
+# What burns, and what it leaves behind. One fuel for the whole game: the
+# reference has an `ItemModBurnable` per item and we have wood, because a
+# second burnable is a content row and not a code change when one exists.
+#
+# `seconds` is how long ONE unit burns. The reference's campfire eats about
+# 20 wood a minute, which is this number exactly.
+#
+# `byproduct_pct` is hundredths of a unit banked per unit burned, paid whole
+# when the bank passes 100. The reference rolls ~75% per wood; we bank 75
+# and pay deterministically, so a hundred wood yields the reference's
+# expectation with nothing random inside `state_hash` (wall 5).
+[fuel]
+item = "item.wood"
+seconds = 3
+byproduct = "item.charcoal"
+byproduct_pct = 75
+
+# --- cook rows ----------------------------------------------------------
+#
+# `[[cook]] input → output` at `station` (`fire` | `furnace`) over
+# `seconds`. **There are none yet, and that is a fact about the island
+# rather than about the oven.** Cooking wants raw food; the alpha food set
+# is berries, mushrooms and corn (CONTENT.md §2), only berries are payable
+# by anything in the world, and none of the three is a thing you cook. The
+# meat that would be cooked here was cut with the animals that would drop it
+# (DECISIONS.md §open, "food set").
+#
+# Adding one is a one-row content edit and no code — which is the point of
+# the table shipping before its first row. What it needs first is a raw food
+# the world actually pays: an animal, a forest-floor pickup, or a farm.
+# `NOW.md` carries the item.

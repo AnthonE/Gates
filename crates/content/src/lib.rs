@@ -20,7 +20,7 @@ pub use balance::Anchors;
 
 /// Every file the content set is made of — exactly these, no extras.
 /// A missing file is a loud failure, never a defaulted section.
-pub const FILES: [&str; 11] = [
+pub const FILES: [&str; 12] = [
     "items.toml",
     "gatherables.toml",
     "recipes.toml",
@@ -29,6 +29,7 @@ pub const FILES: [&str; 11] = [
     "armor.toml",
     "consumables.toml",
     "deployables.toml",
+    "cooking.toml",
     "loot.toml",
     "skins.toml",
     "balance.toml",
@@ -84,6 +85,17 @@ struct DeployablesFile {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CookingFile {
+    fuel: Fuel,
+    /// Absent is legal and means an oven that burns but transforms
+    /// nothing — the shipped state today, and the honest one while the
+    /// island grows no raw food (`content/cooking.toml` says why).
+    #[serde(default)]
+    cook: Vec<Cook>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LootFile {
     loot_table: Vec<LootTable>,
 }
@@ -107,6 +119,8 @@ pub struct Content {
     pub armors: Vec<Armor>,
     pub consumables: Vec<Consumable>,
     pub deployables: Vec<Deployable>,
+    pub fuel: Fuel,
+    pub cooks: Vec<Cook>,
     pub loot_tables: Vec<LootTable>,
     pub skins: Vec<Skin>,
     pub balance: Balance,
@@ -172,6 +186,7 @@ impl Content {
         let armor: ArmorFile = parse("armor.toml", get("armor.toml")?)?;
         let consumables: ConsumablesFile = parse("consumables.toml", get("consumables.toml")?)?;
         let deployables: DeployablesFile = parse("deployables.toml", get("deployables.toml")?)?;
+        let cooking: CookingFile = parse("cooking.toml", get("cooking.toml")?)?;
         let loot: LootFile = parse("loot.toml", get("loot.toml")?)?;
         let skins: SkinsFile = parse("skins.toml", get("skins.toml")?)?;
         let balance: Balance = parse("balance.toml", get("balance.toml")?)?;
@@ -185,6 +200,8 @@ impl Content {
             armors: armor.armor,
             consumables: consumables.consumable,
             deployables: deployables.deployable,
+            fuel: cooking.fuel,
+            cooks: cooking.cook,
             loot_tables: loot.loot_table,
             skins: skins.skin,
             balance,

@@ -44,6 +44,14 @@
 - **consumable**: health/food/water deltas over seconds
 - **deployable**: entity archetype (bag, hearth, cupboard, box, furnace,
   workbench), placement rules, hp
+- **fuel / cook** (`cooking.toml`): what an oven burns — item, seconds per
+  unit, byproduct + `byproduct_pct` (hundredths of a unit per unit burned,
+  banked and paid whole, never rolled) — and one row per transformation:
+  input → output, seconds, `station` (`fire|furnace`). A campfire and a
+  furnace are one thing in the sim (`oven.rs`); the station column is the
+  only thing that separates them. **No cook row ships yet**: cooking wants
+  a raw food and the island pays none (§2's food line), so the table is
+  the machinery arriving before its first row.
 - **loot_table**: container archetype → weighted entries + count range
 - **skin**: id, covers (item id), price (SCRY or MYRRH — one coin per
   row, bare tickers), season — the catalog is content too (dark until A3)

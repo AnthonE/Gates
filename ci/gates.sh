@@ -106,8 +106,6 @@ $NICE cargo fmt --all --check || fail "rustfmt"
 
 echo "== gate: clippy walls (-D warnings; sim walls via crates/sim-core/clippy.toml)"
 $NICE cargo clippy --workspace --all-targets -- -D warnings || fail "clippy"
-$NICE cargo clippy -p client-wasm --target wasm32-unknown-unknown -- -D warnings \
-  || fail "clippy (wasm bridge)"
 
 echo "== gate: native test suite (alloc_zero, replay, terrain_golden, protocol_golden, snapshot_budget, content, bot smoke, unit)"
 $NICE cargo test --workspace --release || fail "cargo test"
@@ -146,10 +144,17 @@ $NICE cargo clippy -p client --features render --all-targets -- -D warnings \
 $NICE cargo test -p client --features render --lib --test tree --test fell --test look --test ghost \
   || fail "native client suites"
 
-echo "== gate: wasm build (sim-core + protocol + client-wasm -> wasm32-unknown-unknown)"
+# **The only wasm in this repo, and it is not a client** (operator,
+# 2026-08-08: "we use desktop build no more web"). `sim-core` and the
+# `protocol` it needs are built for a second, deliberately hostile target so
+# the gate below can diff their state hashes against native byte for byte —
+# CLAUDE.md wall 1's enforcement, which is worth exactly as much with no
+# browser in existence as it was with one. `client-core` used to be built
+# here too, for its C-ABI bridge; both are gone.
+echo "== gate: wasm build (sim-core + protocol -> wasm32-unknown-unknown, the determinism target)"
 rustup target list --installed | grep -q '^wasm32-unknown-unknown$' \
   || fail "wasm32-unknown-unknown target not installed"
-$NICE cargo build -p sim-core -p protocol -p client-wasm --release --target wasm32-unknown-unknown \
+$NICE cargo build -p sim-core -p protocol --release --target wasm32-unknown-unknown \
   || fail "wasm build"
 
 echo "== gate: test_parity_wasm (native vs wasm, byte-equal digests)"
@@ -190,9 +195,6 @@ done
 bag_wakes="$(awk '/^bags /{print $5}' "$native_out")"
 [ -n "$bag_wakes" ] && [ "$bag_wakes" -gt 0 ] \
   || fail "test_parity_wasm: the bags probe woke nobody on a bag (count '$bag_wakes') — the respawn scan is not actually on the parity surface"
-
-echo "== gate: client wasm bridge smoke (raw C ABI, the browser's calling path)"
-$NICE node ci/client_smoke.mjs || fail "client bridge smoke"
 
 # WHAT WAS CUT HERE, and what it costs (operator, 2026-08-06).
 #

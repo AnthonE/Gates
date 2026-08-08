@@ -252,8 +252,8 @@ pub fn move_args(
 /// this side's.
 pub fn refusal_text(reason: u8) -> &'static str {
     use sim_core::inventory::{
-        REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_ROOM, REFUSE_M_REACH,
-        REFUSE_M_SLOT, REFUSE_M_UNSTACKABLE,
+        REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_ROOM, REFUSE_M_OVEN,
+        REFUSE_M_REACH, REFUSE_M_SLOT, REFUSE_M_UNSTACKABLE,
     };
     match reason as u32 {
         REFUSE_M_SLOT => "that slot is not addressable",
@@ -263,6 +263,7 @@ pub fn refusal_text(reason: u8) -> &'static str {
         REFUSE_M_NO_CONTAINER => "that container is gone",
         REFUSE_M_REACH => "too far away",
         REFUSE_M_UNSTACKABLE => "that item cannot be moved",
+        REFUSE_M_OVEN => "a fire takes fuel and what it cooks",
         _ => "refused",
     }
 }

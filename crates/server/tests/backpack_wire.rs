@@ -11,7 +11,7 @@
 //! claim here is made twice — once against the client mirror, once
 //! against `seen`, the decoded bytes the server actually put on the lane.
 
-use client_wasm::core::{ClientCore, APPLIED_BAGS};
+use client_core::core::{ClientCore, APPLIED_BAGS};
 use protocol::{ActionMsg, EventMsg, ItemCatalog};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
