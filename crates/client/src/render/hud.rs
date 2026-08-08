@@ -473,9 +473,9 @@ pub fn update(
     let core = &net.session.core;
 
     if let (Ok(mut text), Some(ui)) = (plan.single_mut(), ui.as_ref()) {
-        use crate::ui::build::{material_label, row_for, shape_label, MATERIALS, SHAPES};
+        use crate::ui::build::{material_label, row_for, shape_label, PLACE_MATERIAL, SHAPES};
         let shape = SHAPES[ui.shape.min(SHAPES.len() - 1)];
-        let material = MATERIALS[ui.material.min(MATERIALS.len() - 1)];
+        let material = PLACE_MATERIAL;
         // Named only when the content actually has that piece — the wheel
         // draws a dead segment for a pair the shard did not bake, and the
         // HUD must not contradict it.

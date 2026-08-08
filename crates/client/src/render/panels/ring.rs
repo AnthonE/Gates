@@ -7,9 +7,9 @@
 //! nothing rectangular approximates that. Rasterising the annulus once is the
 //! whole fix, and it costs a texture.
 //!
-//! **Baked at plugin-build time, never per frame.** Ten images total — one
-//! base ring pair, one highlight per shape segment, one per material segment
-//! — generated beside `ui::build_fonts` and `audio::build_bank`. The wheel
+//! **Baked at plugin-build time, never per frame.** Seven images — the base
+//! ring and one highlight per shape segment — generated beside
+//! `ui::build_fonts` and `audio::build_bank`. The wheel
 //! rebuilds whenever the pointer crosses a segment boundary, which while
 //! sweeping is several times a second; generating a megabyte there would be
 //! an allocation on a hot path for a thing that has ten possible states. So
@@ -29,7 +29,7 @@ use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
-use crate::ui::build::{Rings, MATERIALS, SHAPES};
+use crate::ui::build::{Rings, SHAPES};
 
 /// The cream of the ring band, `#f5e7dd`.
 pub const CREAM: [u8; 3] = [245, 231, 221];
@@ -55,9 +55,8 @@ const SS: u32 = 3;
 
 pub const BASE: Handle<Image> = uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e0");
 
-/// One highlight per shape segment, then one per material segment. Indexed
-/// the same way `SHAPES` and `MATERIALS` are, because the caller has an index
-/// and nothing else.
+/// One highlight per shape segment, indexed the same way `SHAPES` is,
+/// because the caller has an index and nothing else.
 pub const SHAPE_HI: [Handle<Image>; 6] = [
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e1"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e2"),
@@ -65,12 +64,6 @@ pub const SHAPE_HI: [Handle<Image>; 6] = [
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e4"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e5"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e6"),
-];
-
-pub const MAT_HI: [Handle<Image>; 3] = [
-    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5f1"),
-    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5f2"),
-    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5f3"),
 ];
 
 /// Which band a pixel is in, in texture units where `rim` maps to `TEX/2`.
@@ -105,24 +98,19 @@ fn covers(b: Band, r: f32, theta: f32, seg: Option<usize>) -> bool {
     }
 }
 
-/// Rasterise the wheel. `pick` selects which band and segment is drawn; `None`
-/// draws both bands whole, which is the base.
-fn bake(rings: Rings, pick: Option<(bool, usize)>, rgb: [u8; 3]) -> Image {
+/// Rasterise the wheel. `pick` selects which segment is drawn; `None` draws
+/// the whole ring, which is the base.
+fn bake(rings: Rings, pick: Option<usize>, rgb: [u8; 3]) -> Image {
     let n = TEX as usize;
     let mut data = vec![0u8; n * n * 4];
     let half = TEX as f32 * 0.5;
     // Texture units per wheel pixel: the texture spans the rim's diameter.
     let scale = rings.rim / half;
 
-    let shape_band = Band {
-        inner: rings.split,
+    let band = Band {
+        inner: rings.dead,
         outer: rings.rim,
         segments: SHAPES.len(),
-    };
-    let mat_band = Band {
-        inner: rings.dead,
-        outer: rings.split,
-        segments: MATERIALS.len(),
     };
 
     for py in 0..n {
@@ -136,15 +124,7 @@ fn bake(rings: Rings, pick: Option<(bool, usize)>, rgb: [u8; 3]) -> Image {
                     let y = (half - (py as f32 + (sy as f32 + 0.5) / SS as f32)) * scale;
                     let r = (x * x + y * y).sqrt();
                     let theta = x.atan2(y).rem_euclid(std::f32::consts::TAU);
-                    let inside = match pick {
-                        None => {
-                            covers(shape_band, r, theta, None) || covers(mat_band, r, theta, None)
-                        }
-                        Some((is_shape, seg)) => {
-                            let b = if is_shape { shape_band } else { mat_band };
-                            covers(b, r, theta, Some(seg))
-                        }
-                    };
+                    let inside = covers(band, r, theta, pick);
                     if inside {
                         hits += 1;
                     }
@@ -176,7 +156,7 @@ fn bake(rings: Rings, pick: Option<(bool, usize)>, rgb: [u8; 3]) -> Image {
     )
 }
 
-/// Bake all ten, at plugin-build time.
+/// Bake all seven, at plugin-build time.
 pub fn build_rings(app: &mut App) {
     let rings = Rings::default();
     let mut images = app.world_mut().resource_mut::<Assets<Image>>();
@@ -186,13 +166,8 @@ pub fn build_rings(app: &mut App) {
         .expect("the wheel's base ring");
     for (i, h) in SHAPE_HI.iter().enumerate() {
         images
-            .insert(h.id(), bake(rings, Some((true, i)), CHOSEN))
+            .insert(h.id(), bake(rings, Some(i), CHOSEN))
             .expect("a shape highlight");
-    }
-    for (i, h) in MAT_HI.iter().enumerate() {
-        images
-            .insert(h.id(), bake(rings, Some((false, i)), CHOSEN))
-            .expect("a material highlight");
     }
 }
 

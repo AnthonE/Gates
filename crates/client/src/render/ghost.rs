@@ -28,7 +28,7 @@ use sim_core::collide::WALL_THICKNESS_M;
 use sim_core::limits::MAX_BUILD_LEVELS;
 
 use crate::look::yaw_u16;
-use crate::ui::build::{row_for, MATERIALS, SHAPES};
+use crate::ui::build::{row_for, PLACE_MATERIAL, SHAPES};
 use crate::ui::place::{self, Site, Target, Verdict};
 
 use super::hud::Toast;
@@ -121,7 +121,7 @@ pub fn track(
 
     let core = &net.session.core;
     let shape = SHAPES[ui.shape.min(SHAPES.len() - 1)];
-    let material = MATERIALS[ui.material.min(MATERIALS.len() - 1)];
+    let material = PLACE_MATERIAL;
     let Some(row) = row_for(&core.piece_defs, shape, material) else {
         // The content has no piece for this pair — the wheel already draws
         // that segment dead, and a ghost would contradict it.

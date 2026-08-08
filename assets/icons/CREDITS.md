@@ -40,9 +40,6 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `hunting_bow.png` | `delapouite/bow-arrow` |
 | `large_box.png` | `delapouite/cargo-crate` |
 | `low_grade_fuel.png` | `delapouite/jerrycan` |
-| `mat_metal.png` | `lorc/metal-bar` |
-| `mat_stone.png` | `lorc/stone-block` |
-| `mat_wood.png` | `delapouite/log` |
 | `medkit.png` | `delapouite/first-aid-kit` |
 | `metal_arrow.png` | `delapouite/split-arrows` |
 | `metal_door.png` | `delapouite/closed-doors` |

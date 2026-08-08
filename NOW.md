@@ -29,17 +29,36 @@ near-black selecting in olive, against a reference that is warm, twice as
 light, and selects in **blue**. The vitals became **bars** off the same frame.
 `DECISIONS.md` "ui palette v1" has the samples and the one caveat.
 
-**Also a gameplay finding, not a looks one, and it is the operator's own
-correction:** in the reference, the **Building Plan** opens the shape wheel
-and the **hammer** upgrades — two items, two menus. `content/items.toml`
-already ships both `item.building_plan` and `item.hammer`, and **the client
-ignores the distinction**: `B` opens one wheel that picks shape *and*
-material, and no held-item check gates place or upgrade in `sim-core` either.
-So our wheel is the two reference menus merged. Splitting it is a design call
-plus a sim-lane change, not a repaint — it is not in the list below because
-it is not this lane's to take.
+**Half-answered 2026-08-07** (operator: *"just remove the inner ring"*). The
+wheel merged two reference menus into one; the material ring is now cut and a
+blueprint places the bottom rung, which is what the reference's does. Nothing
+was lost — `sim_core::build::upgrade` and `ACT_UPGRADE` predate this and `U`
+already sends it. `DECISIONS.md` "the build wheel is one ring".
 
 ## 0p2 · What the UI still owes *(client lane)*
+
+**1 · The hammer wants its own wheel.** The build wheel is one ring now, which
+is half of the reference's split: its **building plan** opens the shape ring
+and its **hammer** opens a second radial — demolish, rotate, upgrade, repair,
+pick up — over the piece you are looking at. Ours has those verbs already, on
+bare keys (`U` upgrade, `R` repair, `X` pick up), and `render/panels/ring.rs`
+already bakes an annulus from a segment count, so the drawing is close to
+free. What it needs is a held-item check: neither the client nor
+`sim-core/src/build.rs` gates any of this on what is in your hand, so today
+`B` opens the shape wheel whatever you are holding.
+
+**2 · A starter kit, for testing** (operator: *"we might have to give players
+starter items for a bit for testing LOL"*). Real need — a fresh character
+spawns empty, so the wheel reads `350 Wood (0)` and the build flow cannot be
+exercised at all. **Not improvised**, because the two obvious routes both
+cross a wall: a new grant command is a wire change (wall 6, version bump +
+goldens), and a `shard.toml` flag that changes what `Join` seats would make a
+WAL replay diverge from the run that wrote it (wall 5) unless the flag is in
+the header. The route that is safe by construction is **content**: a spawn
+kit in `content/*.toml`, because the content hash is already pinned into the
+WAL header, so a replay replays the kit it was played under. That is a
+schema + validation + `world.rs` slice, not a patch.
+
 
 Landed 2026-08-07. Nothing owned the typeface: all 42 `TextFont` sites were
 `..default()`, so every screen drew in Bevy's embedded debug mono. The face is

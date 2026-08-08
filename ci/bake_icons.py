@@ -36,7 +36,11 @@ SRC = pathlib.Path(
 OUT = ROOT / "assets/icons"
 PX = 128
 
-# The six building shapes and the three materials the wheel draws.
+# The six building shapes the wheel draws. **No material icons**: the wheel
+# is one ring since 2026-08-07 — the blueprint places the bottom rung and the
+# hammer climbs the ladder — so `mat_wood`/`mat_stone`/`mat_metal` had no
+# draw site and shipping them was dead weight in the depot. They come back
+# with the hammer wheel, not before.
 SHAPES = {
     "shape_foundation": "delapouite/flat-platform",
     "shape_wall": "delapouite/brick-wall",
@@ -44,9 +48,6 @@ SHAPES = {
     "shape_floor": "delapouite/floor-hatch",
     "shape_stairs": "delapouite/3d-stairs",
     "shape_roof": "delapouite/great-pyramid",
-    "mat_wood": "delapouite/log",
-    "mat_stone": "lorc/stone-block",
-    "mat_metal": "lorc/metal-bar",
 }
 
 # Every item in `content/items.toml`, by its id minus the `item.` prefix.

@@ -36,8 +36,8 @@ use client_wasm::core::ClientCore;
 use super::{font, font_bold, ring, Panel, Ui, BADGE, TEXT_DIM, TEXT_SHORT};
 use crate::render::icons::Icons;
 use crate::ui::build::{
-    costs, material_label, row_for, segment_angle, shape_blurb, shape_label, Hover, Rings,
-    MATERIALS, SHAPES,
+    costs, material_label, row_for, segment_angle, shape_blurb, shape_label, Rings, PLACE_MATERIAL,
+    SHAPES,
 };
 use crate::ui::craft::item_label;
 
@@ -67,10 +67,8 @@ pub fn track(mut ui: ResMut<Ui>, window: Query<&Window, With<PrimaryWindow>>) {
         return;
     }
     ui.hover = hover;
-    match hover {
-        Some(Hover::Shape(i)) => ui.shape = i,
-        Some(Hover::Material(i)) => ui.material = i,
-        None => {}
+    if let Some(i) = hover {
+        ui.shape = i;
     }
     ui.dirty = true;
 }
@@ -87,7 +85,7 @@ pub fn track(mut ui: ResMut<Ui>, window: Query<&Window, With<PrimaryWindow>>) {
 pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &Icons) {
     let rings = Rings::default();
     let shape = SHAPES[ui.shape.min(SHAPES.len() - 1)];
-    let material = MATERIALS[ui.material.min(MATERIALS.len() - 1)];
+    let material = PLACE_MATERIAL;
     let row = row_for(&core.piece_defs, shape, material);
 
     commands
@@ -132,11 +130,6 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                     rings,
                     ring::SHAPE_HI[ui.shape.min(SHAPES.len() - 1)].clone(),
                 );
-                plate(
-                    box_,
-                    rings,
-                    ring::MAT_HI[ui.material.min(MATERIALS.len() - 1)].clone(),
-                );
 
                 // The readout sits in the dead centre, over the world — on a
                 // soft disc rather than bare.
@@ -163,7 +156,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                         border_radius: BorderRadius::MAX,
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.05, 0.045, 0.04, 0.45)),
+                    BackgroundColor(Color::srgba(0.04, 0.036, 0.032, 0.72)),
                     Pickable::IGNORE,
                 ))
                 .with_children(|c| readout(c, ui, core, shape, material, row, icons));
@@ -174,7 +167,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                     glyph(
                         box_,
                         rings,
-                        (rings.split + rings.rim) * 0.5,
+                        (rings.dead + rings.rim) * 0.5,
                         segment_angle(i, SHAPES.len()),
                         38.0,
                         icons.shape(shape_icon(*s)),
@@ -183,27 +176,17 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                         live,
                     );
                 }
-                for (i, m) in MATERIALS.iter().enumerate() {
-                    let on = i == ui.material;
-                    let live = row_for(&core.piece_defs, shape, *m).is_some();
-                    glyph(
-                        box_,
-                        rings,
-                        (rings.dead + rings.split) * 0.5,
-                        segment_angle(i, MATERIALS.len()),
-                        30.0,
-                        icons.shape(material_icon(*m)),
-                        material_label(*m),
-                        on,
-                        live,
-                    );
-                }
             });
 
+            // **Clear of the hotbar.** At 40 px this ran straight through the
+            // cells behind it — the hotbar sits at `bottom: 18` and is 46 px
+            // tall plus its 2 px border, so anything under 68 collides. 76
+            // leaves a hair of gap. Found by looking at a frame, which is the
+            // only thing that finds this class of defect.
             root.spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    bottom: Val::Px(40.0),
+                    bottom: Val::Px(76.0),
                     width: Val::Percent(100.0),
                     justify_content: JustifyContent::Center,
                     ..default()
@@ -213,8 +196,8 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             .with_children(|b| {
                 b.spawn((
                     Text::new(
-                        "outer ring picks the shape   -   inner ring picks the material   \
-                         -   let go of B to keep it",
+                        "the ring picks the shape   -   let go of B to keep it   \
+                         -   U upgrades what you are looking at",
                     ),
                     font(12.0),
                     TextColor(TEXT_DIM),
@@ -251,14 +234,6 @@ fn shape_icon(shape: u8) -> &'static str {
         sim_core::build::SHAPE_FLOOR => "shape_floor",
         sim_core::build::SHAPE_STAIRS => "shape_stairs",
         _ => "shape_roof",
-    }
-}
-
-fn material_icon(material: u8) -> &'static str {
-    match material {
-        sim_core::build::MAT_WOOD => "mat_wood",
-        sim_core::build::MAT_STONE => "mat_stone",
-        _ => "mat_metal",
     }
 }
 

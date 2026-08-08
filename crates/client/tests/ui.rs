@@ -30,7 +30,7 @@
 //!   passes clippy, and draws in Bevy's debug mono next to forty words that
 //!   are not — which is exactly how all forty of them got there.
 
-use client::ui::build::{self, Hover, Rings, MATERIALS, SHAPES};
+use client::ui::build::{self, Rings, MATERIALS, SHAPES};
 use client::ui::craft::{self, Cat, Facts};
 use client::ui::load::Progress;
 use client::ui::slots::{self, Grab};
@@ -457,24 +457,48 @@ fn the_labels_sit_in_the_segments_they_name() {
 }
 
 #[test]
-fn the_rings_and_the_dead_centre() {
+fn the_ring_and_the_dead_centre() {
     let r = Rings::default();
-    assert!(r.dead < r.split && r.split < r.rim);
+    assert!(r.dead < r.rim);
     // Dead centre: a release here keeps what was chosen and picks nothing.
     assert_eq!(build::pick(0.0, 0.0, r), None);
     assert_eq!(build::pick(0.0, r.dead - 1.0, r), None);
     // Past the rim the pointer has left the wheel.
     assert_eq!(build::pick(0.0, r.rim + 1.0, r), None);
-    // Inner ring is the material, outer is the shape — the other way round
-    // would put the six-way ring where the thumb has least room.
-    assert_eq!(
-        build::pick(0.0, (r.dead + r.split) * 0.5, r),
-        Some(Hover::Material(0))
+    // **One ring, and it is the shapes.** The material ring was cut on
+    // 2026-08-07: the reference's blueprint places one rung and its hammer
+    // climbs the ladder, so picking a material at placement time was a verb
+    // the reference does not have. Anywhere in the band is a shape.
+    let mid = (r.dead + r.rim) * 0.5;
+    assert_eq!(build::pick(0.0, mid, r), Some(0));
+    assert_eq!(build::pick(0.0, r.dead + 1.0, r), Some(0));
+    assert_eq!(build::pick(0.0, r.rim - 1.0, r), Some(0));
+}
+
+/// The band matches the reference's proportion.
+///
+/// Not decoration: the ring texture is baked from these same radii
+/// (`render/panels/ring.rs`), so a change here silently moves what is drawn
+/// as well as what is picked, and the two staying equal is the wheel's
+/// oldest rule.
+#[test]
+fn the_band_is_the_references_proportion() {
+    let r = Rings::default();
+    let ratio = r.dead / r.rim;
+    assert!(
+        (ratio - 0.66).abs() < 0.02,
+        "inner/outer is {ratio:.3}, measured off building.jpeg as 0.66"
     );
-    assert_eq!(
-        build::pick(0.0, (r.split + r.rim) * 0.5, r),
-        Some(Hover::Shape(0))
-    );
+}
+
+/// A blueprint places one material and it is the bottom rung.
+#[test]
+fn the_blueprint_places_the_first_rung() {
+    assert_eq!(build::PLACE_MATERIAL, MATERIALS[0]);
+    assert_eq!(build::PLACE_MATERIAL, MAT_WOOD);
+    // The ladder above it is reachable, or pinning the placement would have
+    // made stone and metal unbuildable rather than upgrade-only.
+    assert!(MATERIALS.len() > 1, "there is a ladder to climb");
 }
 
 #[test]

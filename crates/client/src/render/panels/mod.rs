@@ -37,7 +37,6 @@
 
 use bevy::prelude::*;
 
-use crate::ui::build::Hover;
 use crate::ui::craft::{Cat, Facts};
 use crate::ui::slots::Drag;
 
@@ -98,13 +97,16 @@ pub struct Ui {
     pub status: String,
     /// Derived category facts, rebuilt when the content tables drip in.
     pub facts: Facts,
-    /// The wheel's latched choice: indices into `ui::build::SHAPES` and
-    /// `MATERIALS`. Latched rather than momentary, so releasing the wheel
-    /// over nothing keeps what was chosen last.
+    /// The wheel's latched choice: an index into `ui::build::SHAPES`.
+    /// Latched rather than momentary, so releasing the wheel over nothing
+    /// keeps what was chosen last.
+    ///
+    /// **There is no `material` beside it since 2026-08-07.** The blueprint
+    /// places one rung and the hammer climbs the ladder, which is the
+    /// reference's split — `ui::build::PLACE_MATERIAL` has the argument.
     pub shape: usize,
-    pub material: usize,
-    /// What the wheel's pointer is over this frame.
-    pub hover: Option<Hover>,
+    /// Which shape segment the wheel's pointer is over this frame.
+    pub hover: Option<usize>,
     /// Rebuild the panel's node tree on the next frame.
     pub dirty: bool,
     /// Change detection against the core. A menu that rebuilt every frame
@@ -141,7 +143,6 @@ impl Default for Ui {
             status: String::new(),
             facts: Facts::default(),
             shape: 0,
-            material: 0,
             hover: None,
             dirty: false,
             seen: Seen::default(),
@@ -372,7 +373,7 @@ pub fn keys(
         };
         if want != ui.panel {
             // Releasing the wheel commits whatever it was over — the latch
-            // lives in `ui.shape`/`ui.material`, which `wheel::track` has
+            // lives in `ui.shape`, which `wheel::track` has
             // already written, so there is nothing to resolve here.
             ui.panel = want;
             ui.hover = None;
