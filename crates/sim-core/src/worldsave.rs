@@ -119,11 +119,15 @@ const SECTION_COUNTS: usize = 8 * 2 + 4;
 /// the weak-spot pair, the four death-screen facts, and `craft_done_at`.
 const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + 6 + 9 + 8;
 const PLAYER_BYTES: usize = PLAYER_SAVE_BYTES + PLAYER_TAIL_BYTES;
-const PIECE_BYTES: usize = 11;
+/// A piece record plus its placement tick, which lives in a parallel
+/// array in the store (`build.rs` says why it is not on the record) and
+/// is written inline here for `DEPLOY_BYTES`' reason — a file has no
+/// parallel arrays worth having.
+const PIECE_BYTES: usize = 11 + 8;
 /// A deploy record plus its `bag_ready` cooldown, which lives in a parallel
 /// array in the store (`deploy.rs` says why it is not on the record) and is
 /// written inline here because a file has no parallel arrays worth having.
-const DEPLOY_BYTES: usize = 17 + 8;
+const DEPLOY_BYTES: usize = 17 + 8 + 8;
 /// A hearth: address, owner, the stock rows, and the crew — its count
 /// and the whole backing array, for `LOCK_BYTES`' reason (every byte of a
 /// roster is hashed, tail included, so a save that dropped the tail would
@@ -346,7 +350,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(p.death_range_cm);
         o.u64(p.craft_done_at);
     }
-    for p in w.pieces.entries() {
+    for (p, placed) in w.pieces.entries().iter().zip(w.pieces.placed()) {
         o.u16(p.cx);
         o.u16(p.cz);
         o.u8(p.level);
@@ -354,6 +358,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u8(p.row);
         o.u16(p.hp);
         o.u16(p.uh);
+        o.u64(*placed);
     }
     for (d, ready) in w.deploys.entries().iter().zip(w.deploys.bag_ready()) {
         o.u16(d.cx);
@@ -367,6 +372,9 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.b(d.open);
         o.b(d.locked);
         o.u64(*ready);
+    }
+    for placed in w.deploys.placed() {
+        o.u64(*placed);
     }
     for h in w.deploys.hearths() {
         o.u16(h.cx);
@@ -681,7 +689,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
 
     // --- pieces ---------------------------------------------------------
     let mut pieces = [PieceRec::default(); MAX_PIECES];
-    for p in pieces.iter_mut().take(n_pieces) {
+    let mut placed = crate::boxed_array::<u64, MAX_PIECES>(0);
+    for (i, p) in pieces.iter_mut().take(n_pieces).enumerate() {
         let cx = r.u16()?;
         let cz = r.u16()?;
         let level = r.u8()?;
@@ -689,6 +698,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let row = r.u8()?;
         let hp = r.u16()?;
         let uh = r.u16()?;
+        placed[i] = r.u64()?;
         if !build_addr_ok(cx, cz, level) {
             return Err(WorldSaveError::AddressOutOfRange);
         }
@@ -749,6 +759,14 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             locked,
         };
         bag_ready[i] = ready;
+    }
+    // The deploy placement clocks, in their own run rather than inline on
+    // the record: the record's own encoding is pinned by
+    // `tests/worldsave.rs`'s round trip and by `DEPLOY_BYTES`, and
+    // appending a second run is the change that does not move the first.
+    let mut deploy_placed = crate::boxed_array::<u64, MAX_DEPLOYS>(0);
+    for slot in deploy_placed.iter_mut().take(n_deploys) {
+        *slot = r.u64()?;
     }
 
     let mut hearths = [HearthRec::default(); MAX_HEARTHS];
@@ -969,10 +987,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     w.sweep_support = sweep_support;
     w.evictions = evictions;
     w.players = players;
-    w.pieces.restore(&pieces[..n_pieces], &w.build);
+    w.pieces
+        .restore(&pieces[..n_pieces], &placed[..n_pieces], &w.build);
     w.deploys.restore(
         &deploys[..n_deploys],
         &bag_ready[..n_deploys],
+        &deploy_placed[..n_deploys],
         &hearths[..n_hearths],
         &boxes[..n_boxes],
         &locks[..n_locks],
@@ -1012,8 +1032,8 @@ mod tests {
         // re-derive is a constant nobody checks twice.
         let by_hand = 54                    // head
             + 100 * 240                     // players
-            + 8_192 * 11                    // pieces
-            + 1_024 * 25                    // deploys + bag_ready
+            + 8_192 * 19                    // pieces + placement tick
+            + 1_024 * 33                    // deploys + bag_ready + placed
             + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
             + 256 * 57                      // boxes
             + 512 * 98                      // code locks
@@ -1028,9 +1048,14 @@ mod tests {
         // A hearth is 66: 9 address + owner, 16 stock, then the crew's
         // count and its whole ten-slot backing array.
         assert_eq!(HEARTH_BYTES, 66);
+        // Both stores grew eight bytes a record at demolish v1: the
+        // placement tick is a parallel array in the store and inline
+        // here, for `DEPLOY_BYTES`' stated reason.
+        assert_eq!(PIECE_BYTES, 19);
+        assert_eq!(DEPLOY_BYTES, 33);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 490_038,
+            WORLD_SAVE_MAX_BYTES, 563_766,
             "the world save ceiling moved"
         );
     }

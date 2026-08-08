@@ -210,7 +210,20 @@ const TICKS: u64 = 900;
 /// this value was read off, which is the check that separates the two
 /// shapes: a regenerated golden beside a red equality assert is the drift
 /// this constant exists to catch, beside a green one it is the verb.
-const GOLDEN_FINAL_HASH: u64 = 0xC3C5_0D2B_A345_5CD7;
+/// Regenerated once more by the **building-rights** slice, and it is
+/// both shapes at once — which is why they are separated here rather
+/// than asserted together. **The definition widened**: `state_hash` gained
+/// the crew list on every hearth and a placement tick on every piece and
+/// deployable, and the script's pieces all carry non-zero ticks, so the
+/// number would have moved with no verb changed. **And the verbs
+/// landed**: the script now runs the crew ops through `Command::Access`
+/// and both halves of `Command::Demolish`, one of which is refused by the
+/// grace window on purpose.
+///
+/// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
+/// this value was read off, which is the check that keeps a regenerated
+/// golden evidence rather than a shrug.
+const GOLDEN_FINAL_HASH: u64 = 0x36FB_0BD0_E922_4703;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
@@ -721,6 +734,24 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 // rather than as `REFUSE_B_INTACT` — and a repair mutates
                 // a structure store *and* `Player::inv`, which is what
                 // puts the verb inside this gate instead of beside it.
+                // Demolish v1, both stores and both sides of the window:
+                // 167 lands (the doorway at 152 is still inside its ten
+                // minutes at this tick) and 168 is refused, because the
+                // foundation this arc stands on went up hundreds of ticks
+                // earlier. A verb whose refusal never replays is a verb
+                // half-covered.
+                167 | 168 => cmds.push(Command::Demolish {
+                    id,
+                    deploy: false,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: if t == 167 {
+                        sim_core::build::LOC_EDGE_N
+                    } else {
+                        sim_core::build::LOC_PLANE
+                    },
+                }),
                 163 | 164 => cmds.push(Command::Repair {
                     id,
                     deploy: t == 164,

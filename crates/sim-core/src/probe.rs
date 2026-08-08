@@ -465,6 +465,26 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                         code: ((t * 7) % 10_000) as u16,
                     },
                 ]);
+            } else if t % 64 == 44 {
+                // The demolish verb, both stores (demolish v1). Bot 2's
+                // wanderings mean the address usually holds nothing, so
+                // the empty-address refusal is inside the surface as
+                // readily as the landing; and the window arithmetic runs
+                // either way, which is what puts a **tick comparison** —
+                // the one new kind of state this slice added — under the
+                // parity and replay gates.
+                world.tick(&[
+                    Command::Input { id: 1, frame: f1 },
+                    Command::Input { id: 2, frame: f2 },
+                    Command::Demolish {
+                        id: 2,
+                        deploy: (t / 64) % 2 == 0,
+                        cx: own2.0,
+                        cz: own2.1,
+                        level: 0,
+                        loc: ((t / 64) % 4) as u8,
+                    },
+                ]);
             } else if t % 64 == 20 {
                 world.tick(&[
                     Command::Input { id: 1, frame: f1 },

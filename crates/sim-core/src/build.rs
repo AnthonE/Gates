@@ -98,6 +98,13 @@ pub const REFUSE_B_INTACT: u32 = 9;
 /// and closed for both stores. A deployable reaches it when content
 /// carries no recipe for its item.
 pub const REFUSE_B_UNPRICED: u32 = 10;
+/// The grace window is spent (`limits.rs` `DEMOLISH_WINDOW_TICKS`). A
+/// piece older than its window comes down by explosives and nothing else
+/// — demolish is a mistake-fix, not a verb
+/// (`reference/BUILDING.md` §6).
+pub const REFUSE_B_WINDOW: u32 = 11;
+/// The address holds nothing to take down.
+pub const REFUSE_B_EMPTY: u32 = 12;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
 /// Proposed default, DECISIONS.md §open ("build grid v0").
@@ -244,7 +251,27 @@ pub struct PieceRec {
 /// reads and flips bits in place) and keeping its 160 KB off the stack
 /// is what lets tests and the wasm probe build Worlds on default stacks.
 pub struct Pieces {
-    entries: [PieceRec; MAX_PIECES],
+    /// When each entry was placed, index-aligned to `entries` — the
+    /// demolish window's clock (demolish v1, `limits.rs`
+    /// `DEMOLISH_WINDOW_TICKS`).
+    ///
+    /// A parallel array rather than a field on `PieceRec`, and that is
+    /// `Deploys::bag_ready`'s decision for `bag_ready`'s reason: the
+    /// record is what the piece-sync packet mirrors, so eight bytes of
+    /// sim-only timer on it would ride `PIECE_SYNC_BATCH`-deep in
+    /// `EventMsg::PieceSync` and grow the client's event enum by bytes it
+    /// can never read. A client draws a wall; it does not adjudicate one.
+    /// Kept aligned by `insert` and by every removal, whose swap-remove
+    /// moves both halves together.
+    placed: Box<[u64; MAX_PIECES]>,
+    /// Boxed for `placed`'s reason and then some: 8 192 records is ~98 KB,
+    /// which `Pieces::new` was materialising in a frame. On 2026-08-08
+    /// that frame plus dlmalloc's own tipped `World::new` past wasm32's
+    /// 1 MiB shadow stack and `test_parity_wasm` died as an
+    /// out-of-bounds read **inside the allocator** — the same trap as the
+    /// lock store and the hearth crew, wearing a third disguise
+    /// (`crate::boxed_array`).
+    entries: Box<[PieceRec; MAX_PIECES]>,
     len: usize,
     cols: Box<crate::collide::ColIndex>,
 }
@@ -252,10 +279,28 @@ pub struct Pieces {
 impl Pieces {
     pub fn new() -> Self {
         Self {
-            entries: [PieceRec::default(); MAX_PIECES],
+            placed: crate::boxed_array(0),
+            entries: crate::boxed_array(PieceRec::default()),
             len: 0,
             cols: Box::new(crate::collide::ColIndex::new()),
         }
+    }
+
+    /// The tick entry `i` was placed on — the demolish window's clock.
+    /// Reads past the live half are 0, which is "placed at tick 0" and
+    /// therefore long out of its window: the safe direction for a
+    /// stale index, since it refuses rather than refunds.
+    pub fn placed_at(&self, i: usize) -> u64 {
+        if i >= self.len {
+            return 0;
+        }
+        self.placed[i]
+    }
+
+    /// The live half of `placed`, index-aligned to `entries()` — read by
+    /// `state_hash` (it is sim state) and by `worldsave`.
+    pub fn placed(&self) -> &[u64] {
+        &self.placed[..self.len]
     }
 
     /// The collision view movement steps against (collide.rs).
@@ -326,16 +371,17 @@ impl Pieces {
             uh: 0,
         };
         assert!(
-            self.insert(rec, bc.pieces[row as usize].shape),
+            self.insert(rec, bc.pieces[row as usize].shape, 0),
             "the fixture overflowed the piece store"
         );
     }
 
-    fn insert(&mut self, rec: PieceRec, shape: u8) -> bool {
+    fn insert(&mut self, rec: PieceRec, shape: u8, tick: u64) -> bool {
         if self.len == MAX_PIECES {
             return false;
         }
         self.entries[self.len] = rec;
+        self.placed[self.len] = tick;
         self.len += 1;
         self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
         true
@@ -347,6 +393,9 @@ impl Pieces {
         self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
         self.len -= 1;
         self.entries[i] = self.entries[self.len];
+        // Both halves move together, which is the whole contract of a
+        // parallel array (`placed`'s own doc).
+        self.placed[i] = self.placed[self.len];
     }
 
     /// Write entry `i`'s hp alone — the raid verb's write (deploy.rs
@@ -385,10 +434,12 @@ impl Pieces {
     /// runs after the deployables land (`worldsave.rs`).
     ///
     /// Boot-only, like everything on the load path.
-    pub(crate) fn restore(&mut self, recs: &[PieceRec], bc: &BuildContent) {
+    pub(crate) fn restore(&mut self, recs: &[PieceRec], placed: &[u64], bc: &BuildContent) {
+        debug_assert_eq!(recs.len(), placed.len(), "placed must be index-aligned");
         self.cols.clear();
         self.len = recs.len().min(MAX_PIECES);
         self.entries[..self.len].copy_from_slice(&recs[..self.len]);
+        self.placed[..self.len].copy_from_slice(&placed[..self.len]);
         for rec in &self.entries[..self.len] {
             // The row was range-checked by the decoder against
             // `piece_count`; this index is the one `worldsave.rs`
@@ -784,7 +835,7 @@ pub fn place(
         hp: def.hp,
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
     };
-    if !pieces.insert(rec, def.shape) {
+    if !pieces.insert(rec, def.shape, tick) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_FULL, 0);
         return;
     }
@@ -924,6 +975,95 @@ const _: () = assert!(
     MAX_PIECE_COSTS <= MAX_REPAIR_COSTS,
     "repair copies a piece's cost rows into a deployable-width buffer"
 );
+
+/// Take a piece back down and refund it whole — **demolish v1**
+/// (`reference/BUILDING.md` §6/§7 verb 9).
+///
+/// Three rules, and each is the reference's:
+///
+/// 1. **Only inside the grace window** (`limits.rs`
+///    `DEMOLISH_WINDOW_TICKS`). The question this answers is *I put the
+///    foundation in the wrong place*, asked by every player in their first
+///    hour; a window answers it without making a crewmate able to
+///    dismantle a base they were let into. Past it, a wall comes down by
+///    explosives and nothing else.
+/// 2. **Only where you may build.** The same `claim::foreign_claim` every
+///    other build verb asks — one predicate, so the four cannot drift
+///    about whose base is whose.
+/// 3. **A full refund**, in the piece's own cost rows. It is an undo, not
+///    a salvage: a fraction would make misplacing a foundation a tax, and
+///    the reference does not charge one either.
+///
+/// The removal is `drop_piece` + `collapse_from` — the **same** path decay
+/// and a raid take, cascade included. A verb with its own removal is a
+/// second chance for a floating floor to survive something that should
+/// have brought it down.
+#[allow(clippy::too_many_arguments)]
+pub fn demolish(
+    dc: &DeployContent,
+    bc: &BuildContent,
+    gc: &crate::gather::GatherContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    p: &mut Player,
+    tick: u64,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    budget: &mut usize,
+    events: &mut EventQueue,
+) {
+    let Some(i) = pieces.find_index(cx, cz, level, loc) else {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
+        return;
+    };
+    let (ax, az) = anchor(cx, cz, loc);
+    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
+        return;
+    }
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
+        return;
+    }
+    // `saturating_sub` rather than a comparison: a hand-edited save could
+    // carry a placement tick from the future, and the safe reading of one
+    // is "the window is spent", not "forever".
+    if tick.saturating_sub(pieces.placed_at(i)) > crate::limits::DEMOLISH_WINDOW_TICKS {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_WINDOW, 0);
+        return;
+    }
+    if *budget == 0 {
+        // The tick's removal allowance is spent. Refused rather than
+        // deferred, unlike the decay sweep's: a sweep comes around again
+        // on its own and a keypress does not, so telling the player
+        // beats silently doing it later.
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_FULL, 0);
+        return;
+    }
+    let rec = pieces.entries()[i];
+    let def = bc.pieces[rec.row as usize];
+    // Refund before removal: `drop_piece` invalidates the index, and a
+    // refund computed after it would be pricing a swapped-in neighbour.
+    for &(item, count) in def.costs.iter().take(def.n_costs as usize) {
+        crate::gather::inv_add(&mut p.inv, item, count, gc.stack_max_of(item));
+    }
+    crate::deploy::drop_piece(dc, pieces, deploys, i, def.shape, events);
+    *budget -= 1;
+    collapse_from(
+        dc,
+        bc,
+        pieces,
+        deploys,
+        (cx, cz, level, loc),
+        budget,
+        events,
+    );
+}
 
 /// Buy a damaged structure back to its baked hp, priced in its own
 /// materials. `deploy` picks the store the address names.
@@ -1389,10 +1529,11 @@ mod tests {
                     hp: 1,
                     uh: 0,
                 },
-                SHAPE_FOUNDATION
+                SHAPE_FOUNDATION,
+                0
             ));
         }
-        assert!(!pieces.insert(PieceRec::default(), SHAPE_FOUNDATION));
+        assert!(!pieces.insert(PieceRec::default(), SHAPE_FOUNDATION, 0));
         assert_eq!(pieces.len(), MAX_PIECES);
 
         let bc = BuildContent::probe_fixture();
@@ -1729,6 +1870,237 @@ mod tests {
     /// refused wrongly is an annoyance, a repair allowed wrongly lets a
     /// raider heal the wall they are standing outside of, which is not a
     /// bug anyone would think to look for.
+    /// Demolish v1: inside the window it is a full undo, outside it the
+    /// wall stays up.
+    #[test]
+    fn demolish_refunds_whole_inside_the_window_and_refuses_outside_it() {
+        let bc = BuildContent::probe_fixture();
+        let dc = DeployContent::probe_fixture();
+        let gc = crate::gather::GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell_center(&[(0, 99), (1, 99)]);
+        let mut budget = MAX_REMOVALS_PER_TICK;
+
+        let before = crate::craft::inv_count(&p.inv, 0);
+        place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(pieces.len(), 1, "the foundation stands");
+        let paid = before - crate::craft::inv_count(&p.inv, 0);
+        assert!(paid > 0, "the fixture must actually charge for it");
+
+        // Inside the window: the piece comes down and the whole price
+        // comes back. An undo, not a salvage.
+        demolish(
+            &dc,
+            &bc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            10,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut budget,
+            &mut ev,
+        );
+        assert_eq!(pieces.len(), 0, "the foundation came down");
+        assert_eq!(
+            crate::craft::inv_count(&p.inv, 0),
+            before,
+            "a demolish inside the window refunds WHOLE — a fraction would \
+             make misplacing a foundation a tax"
+        );
+
+        // Place another and let the window lapse.
+        place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        let held = crate::craft::inv_count(&p.inv, 0);
+        let late = crate::limits::DEMOLISH_WINDOW_TICKS + 1;
+        demolish(
+            &dc,
+            &bc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            late,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut budget,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_BUILD_REFUSED, REFUSE_B_WINDOW),
+            "past the window a wall comes down by explosives and nothing else"
+        );
+        assert_eq!(pieces.len(), 1, "and it is still standing");
+        assert_eq!(crate::craft::inv_count(&p.inv, 0), held, "and cost nothing");
+
+        // The window is measured from THIS piece's placement, not from the
+        // first one's — the parallel array's whole job.
+        demolish(
+            &dc,
+            &bc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut budget,
+            &mut ev,
+        );
+        assert_eq!(pieces.len(), 0, "the second piece has its own clock");
+    }
+
+    /// The two shape refusals, and the claim — demolish asks the same
+    /// predicate every other build verb does.
+    #[test]
+    fn demolish_bounces_on_an_empty_address_reach_and_a_foreign_claim() {
+        let bc = BuildContent::probe_fixture();
+        let dc = DeployContent::probe_fixture();
+        let gc = crate::gather::GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell_center(&[(0, 99), (1, 99), (2, 2)]);
+        let mut budget = MAX_REMOVALS_PER_TICK;
+
+        demolish(
+            &dc,
+            &bc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut budget,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_SPOT, "nothing at that address");
+        let _ = &mut ev;
+
+        place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        let mut far = Player {
+            id: 8,
+            active: true,
+            body: Body::at(
+                SEED,
+                (CX as f32 + 7.5) * BUILD_CELL_M,
+                (CZ as f32 + 0.5) * BUILD_CELL_M,
+            ),
+            ..Player::default()
+        };
+        demolish(
+            &dc,
+            &bc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut far,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut budget,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_REACH, "demolish has the build reach");
+
+        // Somebody else's claim refuses it, which is what stops a
+        // passer-by undoing a fresh base inside its own window.
+        crate::deploy::place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        let mut stranger = player_at_cell_center(&[]);
+        stranger.id = 9;
+        demolish(
+            &dc,
+            &bc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut stranger,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut budget,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_BUILD_REFUSED, REFUSE_B_CLAIM),
+            "a passer-by cannot undo a base they were never let into"
+        );
+        assert_eq!(pieces.len(), 1);
+    }
+
     #[test]
     fn repair_refuses_under_a_foreign_claim() {
         let bc = BuildContent::probe_fixture();
@@ -2205,6 +2577,7 @@ mod tests {
                 uh: 0,
             },
             shape,
+            0,
         )
     }
 
@@ -2824,7 +3197,7 @@ mod tests {
                 CZ,
                 0,
                 LOC_PLANE,
-                SHAPE_FOUNDATION
+                SHAPE_FOUNDATION,
             ));
         }
         assert_eq!(pieces.len(), walls);

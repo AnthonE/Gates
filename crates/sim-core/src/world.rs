@@ -632,6 +632,24 @@ pub enum Command {
         level: u8,
         loc: u8,
     },
+    /// Take the thing at the address back down and get it back —
+    /// **demolish v1**. `deploy` picks the store, `Repair`'s bit for
+    /// `Repair`'s reason: a door and its doorway share one address.
+    ///
+    /// The two halves are deliberately different verbs wearing one
+    /// command. A **piece** comes down only inside its grace window and
+    /// refunds whole (`build::demolish`); a **deployable** comes up any
+    /// time you may build there and returns its item (`deploy::pick_up`).
+    /// The reference draws the line in the same place and for the same
+    /// reason: a box is furniture, a wall is a base.
+    Demolish {
+        id: u32,
+        deploy: bool,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
     /// Run one access op at the address — **who may do this here**.
     /// `deploy::ACCESS_OP_*` names the nine: 0..=5 against the code lock
     /// on a door (`deploy::lock_op`), 6..=8 against the hearth's crew
@@ -1596,7 +1614,7 @@ impl World {
         self.slot_of(id).map(|s| PlayerSave::of(&self.players[s]))
     }
 
-    fn apply(&mut self, cmd: &Command) {
+    fn apply(&mut self, cmd: &Command, removals: &mut usize) {
         match *cmd {
             Command::Join { id } => self.seat(id, None),
             Command::JoinAs { id, save } => self.seat(id, Some(save)),
@@ -1744,6 +1762,47 @@ impl World {
                         loc,
                         &mut self.events,
                     );
+                }
+            }
+            Command::Demolish {
+                id,
+                deploy,
+                cx,
+                cz,
+                level,
+                loc,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    if deploy {
+                        deploy::pick_up(
+                            &self.deploy,
+                            &self.gather,
+                            &mut self.pieces,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            &mut self.events,
+                        );
+                    } else {
+                        build::demolish(
+                            &self.deploy,
+                            &self.build,
+                            &self.gather,
+                            &mut self.pieces,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            self.tick,
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            removals,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::Access {
@@ -1937,8 +1996,14 @@ impl World {
     /// respawns, stamp the hash on cadence.
     pub fn tick(&mut self, commands: &[Command]) {
         self.events.clear();
+        // The tick's structural removal budget is minted **before** the
+        // commands rather than after them, because since demolish v1 a
+        // command can take a piece out of the store and seed a cascade —
+        // so the verbs and the sweep spend one allowance between them.
+        // Two budgets would be two caps and therefore no cap.
+        let mut removals = MAX_REMOVALS_PER_TICK;
         for cmd in commands.iter().take(MAX_COMMANDS_PER_TICK) {
-            self.apply(cmd);
+            self.apply(cmd, &mut removals);
         }
         let seed = self.seed;
         let tick = self.tick;
@@ -1951,8 +2016,8 @@ impl World {
         //
         // Deliberately not a `World` field. It is spent and forgotten
         // inside one tick exactly as `events` is, and a store that lives
-        // across ticks is a store `state_hash` has to answer for.
-        let mut removals = MAX_REMOVALS_PER_TICK;
+        // across ticks is a store `state_hash` has to answer for. Minted
+        // at the top of `tick` since demolish v1 — see there.
         // Slot order, and inside a slot: move, swing, craft. The swing is
         // one arm — `gather::swing` gets first claim on it (a tree in
         // reach is always the nearer target) and hands it on only when
@@ -2350,6 +2415,15 @@ impl World {
             h.update(&buf);
         }
         h.update(&(self.pieces.len() as u64).to_le_bytes());
+        // The placement clocks, in their own pass rather than widening
+        // the buffer below — they live in a parallel array precisely so
+        // the wire's mirror of `PieceRec` does not carry them
+        // (`build.rs`), and the digest follows the storage. State like
+        // any other timer: two shards that disagree about when a wall
+        // went up disagree about whether it can still be taken down.
+        for t in self.pieces.placed() {
+            h.update(&t.to_le_bytes());
+        }
         for r in self.pieces.entries() {
             let mut buf = [0u8; 12];
             buf[0..2].copy_from_slice(&r.cx.to_le_bytes());
@@ -2477,6 +2551,10 @@ impl World {
         // not see it would call them the same world.
         for r in self.deploys.bag_ready() {
             h.update(&r.to_le_bytes());
+        }
+        // ...and the deploy placement clocks, for the same reason.
+        for t in self.deploys.placed() {
+            h.update(&t.to_le_bytes());
         }
         h.update(&(self.deploys.hearths().len() as u64).to_le_bytes());
         for hr in self.deploys.hearths() {

@@ -317,7 +317,22 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 ///
 /// Fixtures are keyed `v29_*` — all 78 renamed, `v29_action_access.bin`
 /// regenerated (it is a byte longer), plus the hello.
-pub const PROTO_VER: u16 = 29;
+///
+/// v30 — **demolish** (demolish v1, `reference/BUILDING.md` §6). The
+/// seventeenth C→S action, and the one that finally paid the price
+/// `ACT_THROW`'s comment quoted at v23: **`ACTION_SUB_BITS` widened
+/// 4 → 5**, so every action message moved by one bit and every C→S golden
+/// regenerated. The two verbs before it dodged the bump by folding into
+/// `ACT_ACCESS`'s op field; this one could not, because it addresses two
+/// stores with a leading bit rather than asking an access question.
+///
+/// Also: `REFUSE_B_*` grew two reasons (window spent, nothing there),
+/// which is a widened meaning and therefore a wire change even though no
+/// field moved for it.
+///
+/// Fixtures are keyed `v30_*` — all 79 renamed and every C→S action
+/// regenerated, plus the hello, plus one new: `v30_action_demolish`.
+pub const PROTO_VER: u16 = 30;
 
 /// Datagram kind field width.
 ///
@@ -564,7 +579,7 @@ pub fn decode_refuse(buf: &[u8]) -> Result<Refuse, WireError> {
 /// the goldens are regenerated in the same commit (CLAUDE.md wall 6),
 /// and the C→S action lane is the only lane affected (no datagram
 /// layout, no S→C event, moved).
-const ACTION_SUB_BITS: u32 = 4;
+const ACTION_SUB_BITS: u32 = 5;
 const ACT_CRAFT: u32 = 0;
 const ACT_CANCEL: u32 = 1;
 const ACT_PLACE: u32 = 2;
@@ -607,16 +622,29 @@ const ACT_REPAIR: u32 = 14;
 /// price before proposing one, which is what `the_action_lane_has_the_room_it_claims`
 /// now asserts as **zero**.
 const ACT_THROW: u32 = 15;
+/// Take the thing at the address back down and get it back (wire v30,
+/// demolish v1). **The seventeenth action, and the one the comment above
+/// priced**: `ACTION_SUB_BITS` widened 4 → 5 to carry it, which moved
+/// every action message by one bit and regenerated every C→S golden.
+///
+/// It was worth the turn rather than being folded into an existing verb's
+/// op field the way the crew ops were folded into `ACT_ACCESS`, and the
+/// reason is that demolish is not an access question: it addresses **two
+/// stores** with a leading bit like `Repair` and `Throw`, and hanging it
+/// off the access verb would have made one action mean "who may" and
+/// "take it down" at once. The lane now has fifteen codes spare, which is
+/// where the price bought something: the next verb is free.
+const ACT_DEMOLISH: u32 = 16;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
-/// It is worth more here than there, because this lane's field is four
-/// bits and **full** while the event lane's is six bits and twenty-three
-/// from full. The seventeenth action truncates into a live code, and both
-/// ends would then agree on bytes that mean two different things — the
-/// worst shape of wire drift there is. The assert below is what turns that
-/// from a comment someone must remember into a build failure.
-const ACT_MAX: u32 = ACT_THROW;
+/// It was worth more here than there while this lane's field was four
+/// bits and **full**; at v30 it is five bits with fifteen codes spare, so
+/// the pressure is off — but the assert stays, because the failure it
+/// prevents is the worst shape of wire drift there is: an action past the
+/// field width truncates into a *live* code, and both ends then agree on
+/// bytes that mean two different things.
+const ACT_MAX: u32 = ACT_DEMOLISH;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -729,6 +757,22 @@ pub enum ActionMsg {
     /// `Repair` takes toward the heal amount, applied to a verb where
     /// getting it wrong would let a forged frame pick its own blast.
     Throw {
+        deploy: bool,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
+    /// Take the thing at the address back down and get it back (demolish
+    /// v1). `Repair`'s shape exactly, leading store bit included and for
+    /// its reason: a door and its doorway share one address, so a verb
+    /// that guessed would take the wrong one.
+    ///
+    /// Nothing about *what comes back* crosses — the refund is the
+    /// content row's own cost, read server-side — which is `Repair`'s
+    /// posture toward the heal amount applied to a verb where getting it
+    /// wrong would let a forged frame pay itself.
+    Demolish {
         deploy: bool,
         cx: u16,
         cz: u16,
@@ -1196,6 +1240,33 @@ pub fn encode_action_access(
     Ok(w.finish())
 }
 
+/// Take the thing at the address back down (demolish v1).
+pub fn encode_action_demolish(
+    deploy: bool,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || loc > sim_core::build::LOC_EDGE_N
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_DEMOLISH, ACTION_SUB_BITS)?;
+    w.write_bit(deploy)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    Ok(w.finish())
+}
+
 pub fn encode_action_upgrade(
     cx: u16,
     cz: u16,
@@ -1358,6 +1429,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 material,
             }
         }
+        ACT_DEMOLISH => ActionMsg::Demolish {
+            deploy: r.read_bit()?,
+            cx: r.read(BUILD_CELL_BITS)? as u16,
+            cz: r.read(BUILD_CELL_BITS)? as u16,
+            level: r.read(BUILD_LEVEL_BITS)? as u8,
+            loc: r.read(BUILD_LOC_BITS)? as u8,
+        },
         ACT_LOOT => ActionMsg::Loot,
         ACT_CONSUME => {
             let slot = r.read(ACTION_SLOT_BITS)? as u8;
@@ -2193,17 +2271,23 @@ mod tests {
     /// `ACT_MAX`'s compile-time assert proves nothing *truncates*; this
     /// says how close the lane is to needing a width bump, so the pass
     /// that spends the last code has to change a line that says so rather
-    /// than discover it. That pass was the throw verb (v23), and the
-    /// answer is now **zero**: the next C→S action widens
-    /// `ACTION_SUB_BITS` to 5, moves every action message by one bit, and
-    /// regenerates every golden — the v12 turn again. This test is what
-    /// makes the proposer of that verb read the price first.
+    /// than discover it.
+    ///
+    /// It worked exactly as intended twice. The throw verb (v23) spent the
+    /// last four-bit code and moved this count to **zero**; the two passes
+    /// after it then read the price and *dodged* it — the lock's six ops
+    /// and the hearth's three both went into `ACT_ACCESS`'s op field
+    /// instead of taking action codes. The demolish verb (v30) is the one
+    /// that could not dodge, because it addresses two stores rather than
+    /// asking an access question, so it paid the bump: five bits, every
+    /// action message a bit longer, every C→S golden regenerated. The
+    /// count is **fifteen** now, and the next verb is free.
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        assert_eq!(ACT_MAX, ACT_THROW);
+        assert_eq!(ACT_MAX, ACT_DEMOLISH);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            0,
+            15,
             "the spare action codes moved — say so where the count is written"
         );
     }

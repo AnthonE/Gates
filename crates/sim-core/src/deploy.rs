@@ -194,6 +194,11 @@ pub const REFUSE_D_LOCKOUT: u32 = 16;
 /// never evict — a door that forgot its owner is the one failure this cap
 /// may not have.
 pub const REFUSE_D_AUTH_FULL: u32 = 17;
+/// A pickup named a container that still has something in it. Refused
+/// rather than spilled: a box that vanished with its contents into an
+/// inventory that could not hold them would be the worst kind of loss —
+/// silent, and caused by the player's own verb.
+pub const REFUSE_D_NOT_EMPTY: u32 = 18;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does
@@ -525,6 +530,11 @@ pub struct Deploys {
     /// a bag; it does not adjudicate one. Kept aligned by `insert` and by
     /// `remove_at`, whose swap-remove moves both halves together.
     bag_ready: Box<[u64; MAX_DEPLOYS]>,
+    /// When each entry was placed, index-aligned to `entries` — the
+    /// pickup window's clock. A parallel array for `bag_ready`'s reason,
+    /// stated one field up: `DeployRec` is what the deploy-sync packet
+    /// mirrors.
+    placed: Box<[u64; MAX_DEPLOYS]>,
     hearths: Box<[HearthRec; MAX_HEARTHS]>,
     hearth_count: usize,
     /// The box contents, on the heap. Same wire decision as `bag_ready`
@@ -548,6 +558,7 @@ impl Deploys {
             entries: crate::boxed_array(DeployRec::default()),
             len: 0,
             bag_ready: crate::boxed_array(0),
+            placed: crate::boxed_array(0),
             hearths: crate::boxed_array(HearthRec::default()),
             hearth_count: 0,
             boxes: Box::new(BoxStore::new()),
@@ -572,6 +583,23 @@ impl Deploys {
     /// actually spent.
     pub fn bag_ready(&self) -> &[u64] {
         &self.bag_ready[..self.len]
+    }
+
+    /// The live half of `placed`, index-aligned to `entries()`. Sim state
+    /// like `bag_ready`, and read by `state_hash` and `worldsave` for the
+    /// same reason.
+    pub fn placed(&self) -> &[u64] {
+        &self.placed[..self.len]
+    }
+
+    /// The tick entry `i` was placed on. A stale index reads 0 —
+    /// "placed at tick 0", long out of its window, which is the safe
+    /// direction because it refuses rather than refunds.
+    pub fn placed_at(&self, i: usize) -> u64 {
+        if i >= self.len {
+            return 0;
+        }
+        self.placed[i]
     }
 
     pub fn hearths(&self) -> &[HearthRec] {
@@ -648,6 +676,7 @@ impl Deploys {
         &mut self,
         recs: &[DeployRec],
         ready: &[u64],
+        placed: &[u64],
         hearths: &[HearthRec],
         boxes: &[BoxRec],
         locks: &[LockRec],
@@ -656,6 +685,7 @@ impl Deploys {
         self.len = recs.len().min(MAX_DEPLOYS);
         self.entries[..self.len].copy_from_slice(&recs[..self.len]);
         self.bag_ready[..self.len].copy_from_slice(&ready[..self.len]);
+        self.placed[..self.len].copy_from_slice(&placed[..self.len]);
         self.hearth_count = hearths.len().min(MAX_HEARTHS);
         self.hearths[..self.hearth_count].copy_from_slice(&hearths[..self.hearth_count]);
         self.boxes.len = boxes.len().min(MAX_BOXES);
@@ -779,13 +809,14 @@ impl Deploys {
         self.entries[i].hp = hp;
     }
 
-    fn insert(&mut self, rec: DeployRec) -> bool {
+    fn insert(&mut self, rec: DeployRec, tick: u64) -> bool {
         if self.len == MAX_DEPLOYS {
             return false;
         }
         self.entries[self.len] = rec;
         // A bag is born ready: place one and the next death is answered.
         self.bag_ready[self.len] = 0;
+        self.placed[self.len] = tick;
         self.len += 1;
         true
     }
@@ -796,9 +827,10 @@ impl Deploys {
         let rec = self.entries[i];
         self.len -= 1;
         self.entries[i] = self.entries[self.len];
-        // Both halves move together or the cooldown array stops describing
+        // Every half moves together or a parallel array stops describing
         // the record it is indexed against.
         self.bag_ready[i] = self.bag_ready[self.len];
+        self.placed[i] = self.placed[self.len];
         if dc.defs[rec.row as usize].arch == ARCH_HEARTH {
             if let Some(h) = self.hearths[..self.hearth_count]
                 .iter()
@@ -1159,7 +1191,7 @@ pub fn place_deploy(
         has_lock: false,
         locked: false,
     };
-    if !deploys.insert(rec) {
+    if !deploys.insert(rec, tick) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
         return;
     }
@@ -1427,6 +1459,87 @@ pub fn lock_op(
         Outcome::ListFull => events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_AUTH_FULL, 0),
         Outcome::BadOp => events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0),
     }
+}
+
+/// Take a deployable back up and return its item — **pickup v1**
+/// (`reference/BUILDING.md` §7 verb 11, and `DOORS.md` §7 verb 9, which
+/// are the same verb seen from two documents).
+///
+/// **Deliberately not window-gated, where the piece verb is.** The
+/// reference lets an authorized player pick a deployable up inside
+/// privilege at any time and only time-boxes *building blocks*, and the
+/// asymmetry is right: a box is furniture and a wall is a base. The
+/// consequence worth stating is the one `DOORS.md` §5 already states —
+/// on unclaimed ground **anyone in reach may take it**, which is what
+/// makes a hearth worth placing.
+///
+/// A door with a lock on it is the one extra check: the lock is the thing
+/// saying whose door it is, so a hand it does not know cannot lift the
+/// door out of the frame. Without that, every code lock in the game would
+/// be defeated by picking up what it is bolted to.
+#[allow(clippy::too_many_arguments)]
+pub fn pick_up(
+    dc: &DeployContent,
+    gc: &GatherContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    p: &mut Player,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    events: &mut EventQueue,
+) {
+    let Some(i) = deploys.find_index(cx, cz, level, loc) else {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
+        return;
+    };
+    let (ax, az) = cell_center(cx, cz);
+    let (px, pz) = player_xz(p);
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
+        return;
+    }
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_CLAIM, 0);
+        return;
+    }
+    if !deploys.locks.passes(cx, cz, level, loc, p.id) {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+        return;
+    }
+    let rec = deploys.entries[i];
+    let def = dc.defs[rec.row as usize];
+    // A container comes up empty or not at all.
+    if def.arch == ARCH_BOX
+        && deploys
+            .box_index(box_key(cx, cz, level))
+            .is_some_and(|b| !deploys.boxes.entries[b].is_empty())
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_NOT_EMPTY, 0);
+        return;
+    }
+    // ...and a hearth with stock in it would take the stock with it.
+    if def.arch == ARCH_HEARTH
+        && deploys.hearths[..deploys.hearth_count]
+            .iter()
+            .any(|h| h.cx == cx && h.cz == cz && h.level == level && h.stock.iter().any(|&s| s > 0))
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_NOT_EMPTY, 0);
+        return;
+    }
+    // A door's lock comes up with it, as a second item: it is a separate
+    // thing bolted on (`DOORS.md` §1 fact 1), so it is separately
+    // returned rather than destroyed with the frame.
+    if deploys.locks.find(cx, cz, level, loc).is_some() {
+        if let Some(r) = lock_row(dc) {
+            let item = dc.defs[r].item;
+            lock::give_back(&mut p.inv, item, gc.stack_max_of(item));
+        }
+    }
+    crate::gather::inv_add(&mut p.inv, def.item, 1, gc.stack_max_of(def.item));
+    drop_deploy(dc, pieces, deploys, i, events);
 }
 
 /// Apply one crew op to the hearth at the address (hearth crew v1,
@@ -3409,6 +3522,191 @@ mod tests {
         let d = deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
         assert!(!d.has_lock && !d.locked, "and both mirror bits cleared");
         assert!(deploys.lock_passes(CX, CZ, 0, LOC_EDGE_W, stranger.id));
+    }
+
+    /// Pickup v1: a deployable comes back up any time you may build
+    /// there, and comes up **empty or not at all**.
+    #[test]
+    fn a_deployable_comes_back_up_and_a_full_one_does_not() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (2, 2), (3, 2)]);
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+
+        // A workbench (row 1, item 3) on the foundation. No hearth stands,
+        // so the ground is unclaimed and anyone in reach may lift it —
+        // which is `DOORS.md` §5's rule and the reason a hearth is worth
+        // placing at all.
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 1);
+        let held = crate::craft::inv_count(&p.inv, 3);
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = 9;
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 0, "unclaimed furniture is anyone's");
+        assert_eq!(
+            crate::craft::inv_count(&stranger.inv, 3),
+            1,
+            "and the item goes to the hand that lifted it"
+        );
+        assert_eq!(
+            crate::craft::inv_count(&p.inv, 3),
+            held,
+            "not to the placer"
+        );
+
+        // A hearth with stock in it refuses: lifting it would take the
+        // stock with it.
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.hearths().len(), 1);
+        deploys.hearths_mut()[0].stock[0] = 5;
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_NOT_EMPTY)
+        );
+        assert_eq!(deploys.hearths().len(), 1, "and it is still standing");
+        deploys.hearths_mut()[0].stock[0] = 0;
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.hearths().len(), 0, "emptied, it lifts");
+    }
+
+    /// A locked door cannot be lifted out of its frame by a hand the lock
+    /// does not know — without this, every code lock in the game is
+    /// defeated by picking up what it is bolted to.
+    #[test]
+    fn a_lock_guards_the_door_against_being_picked_up() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            4,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
+
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = 9;
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER),
+            "the lock is what says whose door it is, and lifting is a way \
+             through it"
+        );
+        assert_eq!(deploys.len(), 1, "the door is still hanging");
+
+        // The hand the lock knows lifts it, and the lock comes up as a
+        // second item rather than being destroyed with the frame.
+        let doors = crate::craft::inv_count(&p.inv, 4);
+        let locks = crate::craft::inv_count(&p.inv, 6);
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 0);
+        assert_eq!(deploys.locks().len(), 0, "and the lock came off with it");
+        assert_eq!(crate::craft::inv_count(&p.inv, 4), doors + 1, "the door");
+        assert_eq!(crate::craft::inv_count(&p.inv, 6), locks + 1, "the lock");
     }
 
     /// A hearth with a crew is a base two people can build in — the whole

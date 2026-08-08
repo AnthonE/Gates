@@ -49,7 +49,7 @@ pub const CRAFT: [&str; 5] = [
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair
 /// on a structure piece.
-pub const BUILD: [&str; 11] = [
+pub const BUILD: [&str; 13] = [
     "no such piece",
     "spot taken",
     "needs support",
@@ -61,6 +61,8 @@ pub const BUILD: [&str; 11] = [
     "nothing to upgrade into",
     "not damaged",
     "cannot be repaired",
+    "too late to take that down",
+    "nothing there",
 ];
 
 /// `sim_core::deploy`'s `REFUSE_D_*: u32` — placing a deployable.
@@ -69,7 +71,7 @@ pub const BUILD: [&str; 11] = [
 /// words, but not all of them: `REFUSE_D_COST` is an item you are not
 /// carrying where `REFUSE_B_COST` is materials you cannot afford. The two
 /// tables are separate for that reason and no check ties them together.
-pub const DEPLOY: [&str; 18] = [
+pub const DEPLOY: [&str; 19] = [
     "no such deployable",
     "spot taken",
     "needs support",
@@ -92,6 +94,7 @@ pub const DEPLOY: [&str; 18] = [
     "wrong code",
     "keypad locked out",
     "that lock remembers too many already",
+    "empty it first",
 ];
 
 /// The sentence, or the bare code when the sim is ahead of the client.
@@ -230,6 +233,10 @@ mod tests {
             deploy(REFUSE_D_AUTH_FULL as u8),
             "that lock remembers too many already"
         );
+        assert_eq!(deploy(REFUSE_D_NOT_EMPTY as u8), "empty it first");
+
+        assert_eq!(build(REFUSE_B_WINDOW as u8), "too late to take that down");
+        assert_eq!(build(REFUSE_B_EMPTY as u8), "nothing there");
 
         use sim_core::craft::*;
         assert_eq!(craft(REFUSE_RECIPE as u8), "no such recipe");

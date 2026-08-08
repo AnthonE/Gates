@@ -294,7 +294,7 @@ for (let i = 0; i < slotCount; i++) {
 // a v26 client's hello decodes to a different kind entirely, so the version
 // gate refuses it before any field is read. Nothing silent, which is the
 // one mercy of a width change over a field change.
-check(ex.client_proto_ver() === 29, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 30, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -1157,11 +1157,14 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
   );
   check((ex.client_hit_pop() >>> 0) === 7, "and still feed the hitmarker");
 
-  // The loot action: payload-free by design — kind ACTION(6) in three
-  // bits and sub 8 in four is exactly one byte, and nothing else.
+  // The loot action: payload-free by design — kind ACTION(6) in four
+  // bits and sub 8 in **five** is nine bits, so two bytes since wire v30
+  // widened `ACTION_SUB_BITS` for the demolish verb. It was one byte at
+  // v29 and the change is exactly the kind a subtype-width bump moves,
+  // which is why the length is pinned here at all.
   {
     const n = ex.client_action_loot();
-    check(n === 1, `loot frame must be one byte, got ${n}`);
+    check(n === 2, `loot frame must be two bytes, got ${n}`);
     const out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 1);
     check(out[0] === (6 | (8 << KIND_BITS)), `loot frame byte mismatch: ${out[0]}`);
   }
@@ -1211,17 +1214,19 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
     );
     check((ex.client_death_by() >>> 0) === 42, "…and its killer");
 
-    // The answer: kind ACTION(6) in KIND_BITS, sub 11 in four, and the
-    // choice bit. At v27 that is 4 + 4 + 1 = nine bits, so the frame is two
-    // bytes and the choice bit is alone in the second — it used to fit in
-    // one byte with the bit at the top, which is exactly the kind of thing
-    // a kind-width change moves.
-    const RESPAWN_HEAD = 6 | (11 << KIND_BITS);
+    // The answer: kind ACTION(6) in KIND_BITS, sub 11 in **five** bits
+    // since v30, and the choice bit. That is 4 + 5 + 1 = ten bits, so the
+    // frame is two bytes: byte 0 holds the kind and the subtype's low
+    // four, byte 1 holds the subtype's fifth bit (0 here) and then the
+    // choice bit — which is why the choice reads as **2** and not 1.
+    // It was bit 0 of that byte at v29, and a subtype-width bump moving
+    // it one place along is exactly what this check exists to notice.
+    const RESPAWN_HEAD = (6 | (11 << KIND_BITS)) & 0xff;
     let n = ex.client_action_respawn(1);
     check(n === 2, `respawn frame must be two bytes, got ${n}`);
     let out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 2);
     check(out[0] === RESPAWN_HEAD, `bag respawn byte: ${out[0]}`);
-    check(out[1] === 1, `bag respawn choice bit: ${out[1]}`);
+    check(out[1] === 2, `bag respawn choice bit: ${out[1]}`);
     n = ex.client_action_respawn(0);
     out = new Uint8Array(ex.memory.buffer, ex.client_out_ptr(), 2);
     check(out[0] === RESPAWN_HEAD, `beach respawn byte: ${out[0]}`);

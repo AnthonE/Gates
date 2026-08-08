@@ -7,9 +7,9 @@
 #![allow(clippy::disallowed_macros)]
 
 use protocol::{
-    encode_action_access, encode_action_cancel, encode_action_craft, encode_action_deploy,
-    encode_action_feed, encode_action_loot, encode_action_place, encode_action_repair,
-    encode_action_upgrade, encode_action_use, encode_chat, encode_event_auth,
+    encode_action_access, encode_action_cancel, encode_action_craft, encode_action_demolish,
+    encode_action_deploy, encode_action_feed, encode_action_loot, encode_action_place,
+    encode_action_repair, encode_action_upgrade, encode_action_use, encode_chat, encode_event_auth,
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_chat,
     encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
@@ -199,6 +199,10 @@ fn main() {
     let (cx, cz, level, loc, op, code) = goldens::action_access_crew();
     let len = encode_action_access(cx, cz, level, loc, op, code, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[78], &buf[..len]);
+
+    let (deploy, cx, cz, level, loc) = goldens::action_demolish();
+    let len = encode_action_demolish(deploy, cx, cz, level, loc, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[79], &buf[..len]);
 
     let (cx, cz, level, loc, material) = goldens::action_upgrade();
     let len = encode_action_upgrade(cx, cz, level, loc, material, &mut buf).unwrap();

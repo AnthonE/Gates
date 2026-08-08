@@ -610,6 +610,20 @@ impl ShardCore {
                         level,
                         loc,
                     },
+                    ActionMsg::Demolish {
+                        deploy,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    } => Command::Demolish {
+                        id: c.id,
+                        deploy,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    },
                     ActionMsg::Access {
                         cx,
                         cz,

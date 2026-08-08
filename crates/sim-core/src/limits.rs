@@ -345,6 +345,19 @@ pub const LOCK_AUTH_CAP: usize = 8;
 /// policy, same refusal. Proposed default, DECISIONS.md §open (lock v1).
 pub const LOCK_GUEST_CAP: usize = 8;
 
+/// The **grace window** on a fresh placement, in ticks — 10 min at the
+/// 30 Hz tick, the reference's own figure for a foundation
+/// (`reference/BUILDING.md` §6; their sources disagree about whether
+/// other pieces get 30, and §6 says so rather than picking). Inside it a
+/// piece can be demolished for a full refund by anyone who may build
+/// there; outside it a piece comes down by explosives only.
+///
+/// It is a *mistake-fix*, not a verb: the question every player asks in
+/// their first hour is "I put the foundation in the wrong place", and ten
+/// minutes answers it without making a crewmate able to dismantle a base
+/// they were let into. Proposed default, DECISIONS.md §open (demolish v1).
+pub const DEMOLISH_WINDOW_TICKS: u64 = 18_000;
+
 /// Cells of connected structure one privilege walk may visit
 /// (`claim.rs`, privilege v1). The reference asks its question of a
 /// physics volume and needs a persistent building identity to afford it;

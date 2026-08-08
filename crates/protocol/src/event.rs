@@ -3590,9 +3590,9 @@ mod wire_domains {
             prefix: "pub const REFUSE_B_",
             ty: ": u32 = ",
             exempt: &[],
-            min_members: 11,
+            min_members: 13,
             bits: REFUSE_B_BITS,
-            live_max: 10,
+            live_max: 12,
         },
         Domain {
             what: "container kind",

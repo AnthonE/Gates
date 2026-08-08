@@ -217,6 +217,13 @@ pub fn keys(
     if keys.just_pressed(KeyCode::KeyX) {
         throw_near(&net, &near.0, &mut toast);
     }
+    // `Backspace` — take the nearest structure back down. A destructive
+    // verb gets a key nothing else is near, and one a hand resting on WASD
+    // cannot reach by accident: the sim gates it on a ten-minute window
+    // and a claim, but a misfire inside both is still a foundation gone.
+    if keys.just_pressed(KeyCode::Backspace) {
+        demolish_near(&net, &near.0, &mut toast);
+    }
     if keys.just_pressed(KeyCode::KeyG) {
         // Eat what is in the selected hotbar slot. `G` rather than a
         // right-click because the swing arm is already spoken for, and a
@@ -424,6 +431,28 @@ fn keypad_keys(keys: &ButtonInput<KeyCode>, net: &Net, pad: &mut Pad, toast: &mu
     // next key is another op — is a pad that eats `W` while a raider is
     // walking through the door you just unlocked.
     pad.0.close();
+}
+
+/// `Backspace` — take the nearest structure back down (demolish v1).
+///
+/// Reads the same [`Near`] target `R` repairs and `U` upgrades, and
+/// carries the same store bit, because the three verbs address the same
+/// pair of stores and a fourth resolver would be a fourth chance to pick
+/// the doorway when the player meant the door.
+///
+/// Whether the grace window is still open is **not** asked here. It is
+/// arithmetic over a tick the client does not hold, and a prompt that
+/// guessed would tell a player their base is disposable ten minutes after
+/// it stopped being.
+fn demolish_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
+    let Some(t) = near else {
+        toast.say("nothing to take down in reach");
+        return;
+    };
+    let (deploy, cx, cz, level, loc) = (t.store == Store::Deploy, t.cx, t.cz, t.level, t.loc);
+    send(net, toast, "demolish", |buf| {
+        protocol::encode_action_demolish(deploy, cx, cz, level, loc, buf)
+    });
 }
 
 /// `U` — take the nearest piece one rung up the material ladder.
