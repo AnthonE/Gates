@@ -91,7 +91,7 @@ pub fn resolve(
     );
     // The one field the resolver cannot fill: it is handed the deploy
     // records, and whether a fire is burning is deliberately not on one
-    // (`client-wasm/core.rs`). Stamped here, where the core is in hand.
+    // (`client-core/core.rs`). Stamped here, where the core is in hand.
     aimed.0.lit = aimed.0.verb == interact::Verb::Fire
         && core.ovens().is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level);
     // The scatter pick needs the island, which does not exist until the

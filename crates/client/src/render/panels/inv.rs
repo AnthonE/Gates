@@ -32,7 +32,7 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use client_wasm::core::ClientCore;
+use client_core::core::ClientCore;
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{CONT_SELF, REFUSE_M_MAX};
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS};

@@ -86,7 +86,7 @@ fn window_occupants(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> (i32, 
 /// both waystations, all five pad crates, the shelter and all four waystation
 /// crates could each have taken different coordinates on wasm than on native
 /// with `test_terrain_golden` and `test_parity_wasm` both green, while
-/// `client-wasm` reads the wasm answer and the server reads the native one.
+/// `client-core` reads the wasm answer and the server reads the native one.
 ///
 /// So coverage is its own assertion. Re-centre a site window on empty sea and
 /// the golden regenerates perfectly clean over nothing at all; this fails

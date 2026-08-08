@@ -1954,7 +1954,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_procedural_tree",
- "client-wasm",
+ "client-core",
  "fastrand",
  "protocol",
  "serde",
@@ -1966,7 +1966,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "client-wasm"
+name = "client-core"
 version = "0.1.0"
 dependencies = [
  "protocol",
@@ -5222,7 +5222,7 @@ dependencies = [
 name = "server"
 version = "0.1.0"
 dependencies = [
- "client-wasm",
+ "client-core",
  "content",
  "getrandom 0.2.17",
  "k256",

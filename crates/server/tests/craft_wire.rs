@@ -5,7 +5,7 @@
 //! recipe refuses with its reason, and none of it leaks to a bystander.
 //! Deterministic, no sockets; asserts are structural and exact.
 
-use client_wasm::core::{
+use client_core::core::{
     ClientCore, APPLIED_CRAFT_DONE, APPLIED_CRAFT_Q, APPLIED_CRAFT_REFUSED, APPLIED_RECIPES,
 };
 use protocol::{ActionMsg, ItemCatalog};

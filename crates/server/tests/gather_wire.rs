@@ -6,7 +6,7 @@
 //! through the same resync path. Deterministic, no sockets; asserts are
 //! structural and exact.
 
-use client_wasm::core::{ClientCore, APPLIED_MARK, APPLIED_RESET};
+use client_core::core::{ClientCore, APPLIED_MARK, APPLIED_RESET};
 use protocol::ItemCatalog;
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;

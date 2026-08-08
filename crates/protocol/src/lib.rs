@@ -212,7 +212,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 ///
 /// The version turns because the *meaning* did, and here the mismatch is
 /// worse than v18's declined drag. `movement::step` is shared verbatim by the
-/// server and `client-wasm`'s predictor — that sharing IS the
+/// server and `client-core`'s predictor — that sharing IS the
 /// quantize-both-sides law (`NETCODE.md` §3) — so a v22 client against a v21
 /// server would predict an arc the server never simulates and be hard-snapped
 /// back to the ground on every press. Not a refused action but a permanent,

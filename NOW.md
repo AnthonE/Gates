@@ -454,7 +454,7 @@ locally."* All three questions answered and executed in the same pass —
 2. **`web/` itself: deleted.** It is in git history on GitHub, which is what
    makes it still readable as the reference implementation of every verb —
    `git show <commit>:web/src/interact.js`.
-3. **`client-wasm`: kept**, and so is `test_parity_wasm`. Two codegen backends
+3. **`client-core`: kept**, and so is `test_parity_wasm`. Two codegen backends
    agreeing is a real determinism check and it is cheap; a missing browser does
    not repeal wall 1.
 
@@ -719,7 +719,7 @@ rasterizer running two tabs, and it does not transfer.
 ## 0c6 · systems lane request: bridge `terrain::haven(seed)`
 
 One export. `terrain::haven(seed)` already returns the pad and the waystation
-array in one struct (`terrain.rs:799`); nothing in `client-wasm/src/bridge.rs`
+array in one struct (`terrain.rs:799`); nothing in `client-core/src/bridge.rs`
 exposes it, so a client learns a destination exists only by standing in its
 chunk. `map.js`'s `resolveMarks` takes world positions and is already gated, so
 this is a caller change on the ui side and not a rewrite. Ranked gap 1 of
@@ -1025,7 +1025,7 @@ on the native↔wasm parity surface — landed on `loop/site-parity`; see
 `DECISIONS.md` §open "probe coverage v0". Measured before the fix: of the
 golden's 256 cells, **zero** were inside `in_haven`/`in_waystation` on all
 three probe seeds, so `haven()`'s value reached the digest through nothing
-while `client-wasm` reads it off wasm and the server off native. Its other
+while `client-core` reads it off wasm and the server off native. Its other
 two fixes were left, deliberately, and are below. That report's ranked
 **gaps** 1–3 — projectiles, day/night + AI, the recycler — are all systems
 lane; the newest visual report's gaps are all texture/material work, which
@@ -2003,7 +2003,7 @@ behind it, not a one-line assert, and that deserves its own measurement.
    verdict, so a player can drag. It is armed over a workaround, and this is
    what retires it.
 
-   Both reports call the cure "one constant in `crates/client-wasm`". **It is
+   Both reports call the cure "one constant in `crates/client-core`". **It is
    not, and a pass that starts there will hit a wall in ten minutes.**
    `core.rs:38-122` assigns every bit 0..31 of the `APPLIED_*` word — bit 31
    (`APPLIED_MOVE`) is the last one, and `core.rs:115-121` says so in its own
@@ -2278,7 +2278,7 @@ behind it, not a one-line assert, and that deserves its own measurement.
    `setInventory` outranking the rollback snapshot. Eight mutants, all red.
 
    **Systems lane, one-line request — this is the blocker.** `APPLIED_MOVE`
-   (`client-wasm/src/core.rs:122`) and `STREAM_ERR` (`client-wasm/src/bridge.rs:64`)
+   (`client-core/src/core.rs:122`) and `STREAM_ERR` (`client-core/src/bridge.rs:64`)
    are both `1 << 31`. `main.js:759` reads that bit as a decode error, so the
    first `Moved`/`MoveRefused` logs `console.error` — which fails the browser
    gates — and returns early, dropping the inventory diff in the same message.

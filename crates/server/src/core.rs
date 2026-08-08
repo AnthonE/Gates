@@ -1115,7 +1115,7 @@ impl ShardCore {
                     // client that missed it would sit behind an overlay
                     // over a world it can see — which is why the client
                     // also drops the screen on any own-position snapshot it
-                    // cannot reconcile with a corpse (`client-wasm`).
+                    // cannot reconcile with a corpse (`client-core`).
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // that player left this tick
                     };
