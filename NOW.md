@@ -47,22 +47,18 @@ and the raw half the only item in it you cannot eat. Four content rows, no
 code, gated across all three files by
 `content.rs::the_kill_the_fire_and_the_meal_are_one_loop`.
 
-**Two more things were found by making the sim actually do it**
-(`server/tests/hunt.rs`, which sprints at a pig and swings until it dies).
-(1) The spawn kit contains **no weapon** — plan, hammer, hatchet, pickaxe,
-torch, bandage, and `weapons.toml` arms six things of which a hatchet is
-not one, so `held_melee` is `None` for every pocket a fresh character owns.
-The first hand that can hunt is a crafted wooden spear. (2) `mobs.toml`
-priced the pig's 80 hp at "three hits with the stone hatchet", which was
-therefore false; it is four with the wooden spear, three with the metal one
-or the bow. The hunt takes **8.9 s** from a 12 m start, and the test
-reddens with the exact message it should when `flee_pct` goes back to 100.
+**Making the sim actually do it (`server/tests/hunt.rs`) found a hole, not
+a tuning problem.** The kit had **no weapon in it**: `weapons.toml` armed
+six things and no tool was one, so `held_melee` was `None` for every pocket
+a fresh character owns and a hatchet could not hurt a pig, a player or a
+door. Five content rows fixed it (`DECISIONS.md` 2026-08-08) and the hunt
+now runs **10.1 s** from a 12 m start with the kit's own stone hatchet. The
+test also reddens with the right message when `flee_pct` goes back to 100,
+so yesterday's capture-found defect is gated rather than remembered.
 
-**The two meat icons are ours, not game-icons.net.** That archive is behind
-this session's egress policy, so they are authored SVGs in `ci/icons/`
-rasterised by the same baker. `assets/icons/CREDITS.md` keeps the licensed
-and unlicensed halves in separate tables. Replacing them with archive art
-later is a mapping move in `ci/bake_icons.py` and nothing else.
+Left open by that: whether `ttk_melee` should widen so a rock is
+meaningfully worse than a crafted spear rather than one hit worse. A band
+is a knob — `DECISIONS.md` §open, "tools as weapons".
 
 Owed, in rank order — `reference/ANIMALS.md` §9.5 has the reasoning:
 

@@ -10,6 +10,36 @@
 
 ## 0 · The rules that make data safe
 
+**Are these the reference game's numbers?** Asked directly by the operator
+on 2026-08-08, and the answer is worth pinning because the honest version is
+"mostly no, and where yes it is named".
+
+- **No table here is copied.** Every number is ours, and §4's bands are why:
+  a value does not enter this repo because a wiki says so, it enters because
+  it lands inside a computed band (TTK, farm-hours, raid ratios, breach
+  swings) that `test_content` asserts. That is a different generating
+  process from copying, and it is the one that would reject a copied number
+  that did not fit our sim.
+- **Where a reference number IS taken, it is taken for a *mechanism* and it
+  is cited at the row.** Two live examples: the oven burns wood at the
+  reference's ~20-a-minute and banks charcoal at its ~75% (`cooking.toml`),
+  because those are published, load-bearing for the feel of a campfire, and
+  cheap to be right about. Both say so in the file.
+- **What we take from the reference is shape, not value.** `reference/*.md`
+  are research docs about *how a system works* — a fixed AI think rate,
+  dormancy at distance, `BaseOven` being one class — and every one of them
+  ends in a "what this means for us" section that is our design, not theirs.
+  `ANIMALS.md` §9 rejects their respawn model outright.
+- **The rails are unchanged and are about art, not arithmetic**: no traced
+  assets, no proper nouns (`ART.md` §7). A balance number is not an asset;
+  the reason we mostly do not use theirs is that our sim is not their sim
+  (our pig has 80 hp against their boar's ~250 because our weapon table and
+  our TTK band are ours), not that we could not.
+
+Concretely, nothing about the pig came from the reference: hp, both speeds,
+the leash, the fright radius and the respawn are all ours and all sit in
+`DECISIONS.md` §open as proposed defaults awaiting a playtest.
+
 - **The content hash is part of determinism**: xxh3 over the canonical
   serialized content set, pinned into every WAL header. A replay loads
   the content it was played under; a balance patch is visible in the

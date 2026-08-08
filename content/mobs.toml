@@ -20,21 +20,25 @@
 id = "mob.pig"
 name = "Pig"
 
-# **80 hp is four hits with the wooden spear, three with the metal spear or
-# the bow** — and the first draft of this line said "three hits with the
-# stone hatchet", which was simply false. `weapons.toml` arms six things and
-# a hatchet is not one of them: hatchets and pickaxes are *gather tools*,
-# they have no melee row, and `held_melee` returns `None` for them. So a pig
-# cannot be killed with the spawn kit at all, and the sentence pricing it
-# against "the tool a naked spawn has" was pricing it against a tool that
-# does no damage to anything. `crates/server/tests/hunt.rs` is what found
-# that, by trying.
+# **80 hp is four hits with the stone hatchet a fresh spawn carries**, four
+# with the wooden spear, three with the metal hatchet, the metal spear or
+# the bow.
 #
-# What 80 actually means: the wooden spear is the first weapon in the game
-# (T0, `recipes.toml`), so the walk is gather → craft a spear → hunt, and
-# the metal spear and the bow each take a hit off the count, which is the
-# upgrade being worth something. Deliberately cheaper than the reference
-# boar, which is a mid-game animal with a bite.
+# This line has been wrong twice and both errors are worth keeping. It first
+# said "three hits with the stone hatchet", which was false because a
+# hatchet had **no melee row at all** — `weapons.toml` armed six things and
+# no tool was one of them, so `held_melee` returned `None` for every pocket
+# the spawn kit fills and a pig could not be hurt by anything a fresh
+# character owned. Then it said "four with the wooden spear", true but
+# pricing the animal against a *crafted* weapon, which quietly moved the
+# first kill behind a workbench walk. Tools are armed now (2026-08-08,
+# `weapons.toml`), so the original sentence is finally true.
+#
+# Both were found by `crates/server/tests/hunt.rs`, which sprints at a pig
+# with whatever the kit holds and swings until it dies — 10.1 s from a 12 m
+# start. Deliberately cheaper than the reference boar, which is a mid-game
+# animal with a bite; the number is ours (CONTENT.md §0 on whose numbers
+# these are).
 hp = 80
 
 # 50% of WALK_SPEED = 1.49 m/s, an amble a player outwalks without trying.
