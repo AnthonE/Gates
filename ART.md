@@ -168,9 +168,23 @@ Authored albedo stays inside `ALBEDO_LUMA_BAND = [0.05, 0.55]` linear
   underside must still read (rule 3) — it is the face every judge has caught.
 - **Turf**: geometry, not texture (rule 1 / §1). Blades catch a rim of sun at
   their tips; the ground plane beneath is nearly invisible in the near field.
-- **Wet sand**: a darker, more saturated band at the waterline. It exists in
-  the shipped shader (`WET_RANGE`) and has never been photographed by a
-  vantage — either widen it or aim a capture at it.
+- **Wet sand**: a darker, more saturated band at the waterline. **Shipped on
+  the native ground 2026-08-08** (`terrain_mesh::wetted`, `WET_BAND_M` 1.3 m,
+  45% darker and 35% more saturated, floored so no identity leaves the band
+  below) and photographed for the first time by a capture spawned on a beach.
+  The browser's `WET_RANGE` was never in a vantage; this one was aimed at.
+- **The sea**: cold, dark, desaturated blue-**green** — Atlantic or Baltic,
+  never Caribbean. Unusually for this file the source is the reference
+  developer's own words rather than a measurement off `Rust Images/`: they
+  retuned their ocean to "a more Atlantic/Baltic sea colour" so it would look
+  less out of place across biomes (`reference/WATER.md` §2). Green is the
+  channel that survives depth in coastal water, and a sea whose deep body is
+  blue with no green in it is the wrong ocean.
+  Three things the bar asks of it that a colour cannot supply: **the specular
+  needs structure** (a flat sheet has one highlight and reads as plastic), the
+  **waterline must be a band and not a line** (foam on the water side, wet
+  ground on the land side), and **shallow water must show what is under it** —
+  a sea with a constant alpha is a plate.
 
 ## 6 · Composition and HUD
 

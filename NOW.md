@@ -20,6 +20,46 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0y · The sea is a volume — what it still cannot do *(client lane)*
+
+Landed 2026-08-08. Water was one translucent plane at one alpha, and the last
+visual report's note that it "has no wave normals" was the smallest half of it.
+Now: `render/water.rs` (one eye-centred mesh, four-wave swell with analytic
+normals retired at each wave's own Nyquist, per-channel optics off
+`exp(-depth·σ)`, shore foam slope-weighted, a tiling ripple normal map with its
+own mips), `terrain_mesh::wetted` (the land side of the waterline), and
+`sound/water.rs` + `sound::Snapshots` (a surf bed, a submerged snapshot, a
+splash). Research is `reference/WATER.md`; knobs are `DECISIONS.md` §open,
+"water v0" and "water audio v0". Gated by `crates/client/tests/water.rs` (22)
+and eight new assertions in `tests/sound.rs`.
+
+**Two defects were found by looking, not by a gate**, which is the point:
+straight alpha blending scaled the sky's Fresnel reflection away in shallow
+water (the shallows rendered as wet sand), and a shallow→deep body-colour lerp
+made the sea a grey sheet because it treated extinction as if it darkened the
+water's *own* light. Both are physics errors with physics fixes; both are
+written up where they were made.
+
+Remaining, in order:
+
+1. **There is one sea state and no weather.** The wave set is a constant, so
+   it is always this calm. A storm is `WAVES` scaled by a scalar the sim would
+   have to publish, which makes it wire, not renderer.
+2. **Nothing reflects.** `reference/WATER.md` §5 says reflections are the
+   expensive half and §6 says the payoff is the *sky* — which the atmosphere's
+   specular already gives. A screen-space pass is a real want and not a cheap
+   one; read those two sections before starting.
+3. **Underwater is audio-only.** A colour grade under the surface is a second
+   owner of the frame's haze, which `CLAUDE.md`'s coupled-lighting law
+   forbids; it wants the lighting owner, not this lane. The mix ducks and the
+   bed goes dark, and that is all.
+4. **The submerged duck is not a filter.** rodio gives gain, rate and panning;
+   a real low-pass needs a DSP node. Stated in `SNAPSHOTS`, not implied.
+5. **`Splash` is the only producer of the waterline.** Swimming has no stroke,
+   no wake and no interactive deformation — the reference merges an
+   interactive sim into its own displacement (§3) and we have no producer for
+   one.
+
 ## 0u · The ghost tells the truth — what it still cannot promise *(client lane)*
 
 Landed 2026-08-07. The build ghost drew a doorway as a SOLID SLAB, so the

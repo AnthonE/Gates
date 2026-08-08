@@ -70,6 +70,82 @@ pub const GROUND_ALBEDO: [[f32; 3]; 4] = [
     [0.235, 0.222, 0.198],
 ];
 
+/// How far above sea level the ground still reads as wet, metres.
+///
+/// The land half of the reference's **shoreline wetness**
+/// (`reference/WATER.md` §4), which they shipped twice: first as experimental
+/// terrain-water blending to make the transition "more seamless", then as a
+/// flag any object using their standard shaders could set. Ours is neither a
+/// flag nor a shader — it is a modifier on the vertex colour the ground is
+/// already drawn with, which is the size this can honestly be here.
+///
+/// It is also `ART.md` §5's one outstanding named material: *"a darker, more
+/// saturated band at the waterline"*, which the browser client had as
+/// `WET_RANGE` and the native ground never got.
+pub const WET_BAND_M: f32 = 1.3;
+
+/// What a soaked surface keeps of its dry value.
+///
+/// Wet sand is not sand with a filter on it: water fills the voids between
+/// grains, light that would have scattered straight back out is refracted into
+/// the pile and absorbed, and the surface loses roughly half its reflectance
+/// while its remaining colour gets *more* saturated for the same reason. Both
+/// halves are here; the third half — a wet surface is also smoother, so its
+/// specular tightens — is `perceptual_roughness`, which is per-material and
+/// cannot vary per vertex without the shader `RENDER.md` §8 owns.
+pub const WET_VALUE: f32 = 0.55;
+/// How much the remaining colour's chroma is stretched about its own luma.
+pub const WET_SATURATION: f32 = 0.35;
+
+/// The dark end of `ART.md` §5's `ALBEDO_LUMA_BAND`, restated here because
+/// [`wetted`] is the one modifier in the client that can drive a surface
+/// through it.
+///
+/// **It binds, and the gate found the case.** Forest litter is the darkest
+/// identity at 0.072 luma; [`WET_VALUE`] would take it to 0.039, under a floor
+/// that exists because no real material is a black hole. Clamping here rather
+/// than weakening [`WET_VALUE`] keeps the soak honest on sand — the identity
+/// that is actually at a waterline, which lands at 0.147 and never reaches
+/// this — while refusing to author a black surface anywhere.
+pub const ALBEDO_LUMA_FLOOR: f32 = 0.05;
+
+/// How wet the ground is at this height: 1 at or below sea level, 0 above the
+/// band, smooth between.
+///
+/// Below the waterline it is exactly 1 rather than extrapolating: the seabed
+/// is not "more than wet", and a curve that kept going would drive the sand
+/// black at the sentinel depths the water grid uses.
+pub fn wet_factor(y: f32) -> f32 {
+    if y <= SEA_LEVEL {
+        return 1.0;
+    }
+    let t = ((y - SEA_LEVEL) / WET_BAND_M).clamp(0.0, 1.0);
+    let t = 1.0 - t;
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Apply [`wet_factor`] to a LINEAR albedo: darker, and more saturated about
+/// its own luma.
+pub fn wetted(c: [f32; 3], wet: f32) -> [f32; 3] {
+    if wet <= 0.0 {
+        return c;
+    }
+    let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    // The soak, floored: a surface already at or under the band's dark end
+    // does not get darker, and one above it may not be taken through.
+    let value = if luma > ALBEDO_LUMA_FLOOR {
+        (1.0 - wet * (1.0 - WET_VALUE)).max(ALBEDO_LUMA_FLOOR / luma)
+    } else {
+        1.0
+    };
+    let chroma = 1.0 + wet * WET_SATURATION;
+    let mut out = [0.0f32; 3];
+    for k in 0..3 {
+        out[k] = ((luma + (c[k] - luma) * chroma) * value).max(0.0);
+    }
+    out
+}
+
 /// `1 / linear mean` of `rock_albedo.jpg`, per channel — the mean-placing
 /// correction of `ART.md` §7, measured off the shipped file rather than
 /// guessed. Its span (max/min) is 1.054, i.e. the correction stretches the
@@ -80,7 +156,9 @@ pub const ROCK_GAIN: [f32; 3] = [3.659, 3.713, 3.855];
 #[derive(Component)]
 pub struct Chunk(pub i32, pub i32);
 
-/// The static far mesh and the water plane, which never stream.
+/// The static far mesh, which never streams. The sea used to carry this too
+/// and no longer does: it is one eye-centred mesh now and re-centres like a
+/// ring would (`render/water.rs`).
 #[derive(Component)]
 pub struct Static;
 
@@ -233,7 +311,12 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
             // under 5 cm is a texture's job and belongs to the materials
             // slice; this is the half geometry can carry.
             let v = 0.88 + 0.24 * super::props::hash01(x.to_bits(), z.to_bits());
-            colors.push([c[0] * v, c[1] * v, c[2] * v, 1.0]);
+            // The waterline, last: wetness is a modifier on whatever identity
+            // the splat resolved, not a fifth identity. It runs after the
+            // macro break-up so a wet vertex keeps its own grain instead of
+            // having it multiplied back in at full dry strength.
+            let c = wetted([c[0] * v, c[1] * v, c[2] * v], wet_factor(y));
+            colors.push([c[0], c[1], c[2], 1.0]);
             uvs.push([x * 0.25, z * 0.25]);
         }
     }
@@ -265,33 +348,6 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
     mesh.generate_tangents()
         .expect("terrain mesh has UVs and normals");
     mesh
-}
-
-/// The sea. One translucent plane at `SEA_LEVEL`; nothing simulates
-/// (`TERRAIN.md` §4).
-pub fn setup_water(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let size = terrain::ISLAND_SIZE * 1.5;
-    commands.spawn((
-        WorldEntity,
-        Static,
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(size, size))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.055, 0.14, 0.18, 0.86),
-            perceptual_roughness: 0.06,
-            reflectance: 0.55,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        })),
-        Transform::from_xyz(
-            terrain::ISLAND_SIZE * 0.5,
-            SEA_LEVEL,
-            terrain::ISLAND_SIZE * 0.5,
-        ),
-    ));
 }
 
 /// Stream the near ring, and build the far mesh once.

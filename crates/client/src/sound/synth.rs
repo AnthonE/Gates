@@ -251,6 +251,10 @@ fn render(cue: Cue) -> Vec<f32> {
         Cue::Death => sweep(&mut r, 1.10, 190.0, 55.0, 0.35),
 
         // ---- the world --------------------------------------------------
+        // Breaking the surface: `StepWater`'s gesture at four times the
+        // length, with a low displacement body under it. A splash is a step
+        // into water that did not stop at the ankle.
+        Cue::Splash => splash(&mut r),
         Cue::Place => impact(
             &mut r,
             0.24,
@@ -272,8 +276,10 @@ fn render(cue: Cue) -> Vec<f32> {
         Cue::TreeFall => tree_fall(&mut r),
         Cue::UiClick => chime(&[(1_450.0, 0.0, 0.018)]),
 
-        // ---- the bed ----------------------------------------------------
+        // ---- the beds ---------------------------------------------------
         Cue::BedWind => bed(&mut r),
+        Cue::BedSurf => surf(&mut r),
+        Cue::BedUnder => under(&mut r),
     }
 }
 
@@ -595,6 +601,160 @@ fn bed(r: &mut Rng) -> Vec<f32> {
         out.push(body * gust + air * gust2 * 0.55);
     }
     loop_seam(out, samples(BED_FADE_SECS))
+}
+
+/// A periodic surge envelope, locked to the loop like [`bed`]'s gusts are.
+///
+/// `harmonic` is how many surges fit in one loop, so it is an integer by
+/// construction and the envelope is exactly continuous across the join.
+/// `sharp` raises `(½ + ½ sin)` to a power: 1 is a sine, 3 is a short peak
+/// with a long trough, which is what a wave arriving and draining away is.
+fn surge(time: f32, harmonic: f32, phase: f32, sharp: i32) -> f32 {
+    let f0 = 1.0 / BED_LOOP_SECS;
+    let s = 0.5 + 0.5 * (std::f32::consts::TAU * harmonic * f0 * time + phase).sin();
+    let mut v = s;
+    for _ in 1..sharp {
+        v *= s;
+    }
+    v
+}
+
+/// The surf bed: waves arriving, breaking, and draining back.
+///
+/// **Three layers and a lag, and the lag is the whole thing.** A break is a
+/// low boom; the wash that follows it is broadband hiss; and the hiss arrives
+/// *after* the boom and outlasts it. Put them in phase and the result is a
+/// tremolo on white noise, which reads as a machine and not as a sea. The
+/// offset is ~0.9 rad, about a seventh of a surge.
+///
+/// The surge rate is **two per loop**, i.e. one every 5.25 s, which is inside
+/// a decibel of the 5.8 s period the renderer's longest wave actually runs at
+/// (`render/water.rs`'s `omega` on a 52 m swell). Not a coincidence and not
+/// enforced by anything — the two would have to be wired together to be
+/// enforced, and a bed that had to know the wave set would be a coupling for
+/// a fact nobody can hear the phase of.
+fn surf(r: &mut Rng) -> Vec<f32> {
+    let n = samples(BED_SECS);
+    let sr = SAMPLE_RATE as f32;
+    let mut boom = Lp::new(190.0);
+    let mut wash_lp = Lp::new(4_200.0);
+    let mut wash_hp = Lp::new(650.0);
+    let mut deep = Lp::new(90.0);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let time = i as f32 / sr;
+        // The break: sharp, twice a loop.
+        let hit = 0.22 + 0.78 * surge(time, 2.0, 0.0, 3);
+        // The wash: broader, lagging, and it never goes away entirely.
+        let wash = 0.42 + 0.58 * surge(time, 2.0, -0.9, 2);
+        // A second, slower swell so two consecutive breaks are not identical.
+        let swell = 0.72 + 0.28 * surge(time, 1.0, 1.4, 1);
+        let x = r.noise();
+        let low = boom.run(x) * 1.7;
+        let air = {
+            let l = wash_lp.run(x);
+            l - wash_hp.run(l)
+        };
+        let body = deep.run(x) * 0.9;
+        out.push((low * hit + air * wash * 0.62 + body * swell * 0.5) * swell);
+    }
+    loop_seam(out, samples(BED_FADE_SECS))
+}
+
+/// The submerged bed.
+///
+/// Dark by construction rather than by a filter on something brighter: the
+/// only content above 400 Hz is the bubbles, and there is not much of that.
+/// `tests/sound.rs` asserts it is measurably darker than the wind bed, using
+/// the same zero-crossing proxy the footstep surfaces are separated by — which
+/// is the honest version of "it sounds underwater", given that the real answer
+/// is a low-pass we have no node for (`sound::SNAPSHOTS`).
+fn under(r: &mut Rng) -> Vec<f32> {
+    let n = samples(BED_SECS);
+    let sr = SAMPLE_RATE as f32;
+    let mut rumble = Lp::new(120.0);
+    let mut mid = Lp::new(380.0);
+    let mut out = vec![0.0f32; n];
+    for (i, v) in out.iter_mut().enumerate() {
+        let time = i as f32 / sr;
+        let slow = 0.62 + 0.38 * surge(time, 1.0, 0.0, 1);
+        let x = r.noise();
+        *v = rumble.run(x) * 2.4 * slow + mid.run(x) * 0.35;
+    }
+    // Bubbles: short rising sines, sparse. They are what stops the rumble
+    // being a fan. One every ~1.4 s on average, and the loop crossfade takes
+    // care of any that straddle the join.
+    let count = (BED_SECS / 1.4) as usize;
+    for b in 0..count {
+        let at = samples(BED_SECS * (b as f32 + 0.35 * r.unit()) / count as f32);
+        let hz = 240.0 + 520.0 * r.unit();
+        let dur = 0.045 + 0.05 * r.unit();
+        let len = samples(dur);
+        let mut phase = 0.0f32;
+        for k in 0..len {
+            let i = at + k;
+            if i >= n {
+                break;
+            }
+            let t = k as f32 / len as f32;
+            // Rising, because a bubble shrinks as it rises and its pitch goes
+            // up with it.
+            phase += std::f32::consts::TAU * (hz * (1.0 + 0.8 * t)) / sr;
+            out[i] += phase.sin() * (1.0 - t) * 0.16;
+        }
+    }
+    loop_seam(out, samples(BED_FADE_SECS))
+}
+
+/// Breaking the surface.
+///
+/// Three parts in the order they happen: the low *displacement* of a body
+/// entering water, the broadband burst of the cavity collapsing, and the
+/// droplets falling back. The droplet tail is what separates a splash from a
+/// large footstep — without it this is just `StepWater` turned up.
+fn splash(r: &mut Rng) -> Vec<f32> {
+    let dur = 0.80f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    let mut lp = Lp::new(3_800.0);
+    let mut hp = Lp::new(420.0);
+    for (i, v) in out.iter_mut().enumerate() {
+        let time = i as f32 / sr;
+        // The burst: a 12 ms swell into a 0.16 s decay. Water does not click.
+        let env = attack(time, 0.012) * (-time / 0.16).exp();
+        let x = r.noise();
+        let band = {
+            let l = lp.run(x);
+            l - hp.run(l)
+        };
+        // The displacement: a low body that falls in pitch as the cavity
+        // closes. Integrated phase, not `sin(2π f(t) t)` — see `sweep`.
+        let body = (std::f32::consts::TAU * (135.0 - 60.0 * (time / dur).min(1.0)) * time).sin()
+            * (-time / 0.10).exp()
+            * 0.55;
+        *v = band * env + body;
+    }
+    // Droplets: sparse high ticks over the second half.
+    let from = samples(0.16);
+    let mut drop_hp = Lp::new(2_600.0);
+    for i in from..n {
+        let time = (i - from) as f32 / sr;
+        if r.unit() < 0.0016 {
+            let len = samples(0.02).min(n - i);
+            for k in 0..len {
+                let t = k as f32 / sr;
+                let x = r.noise();
+                out[i + k] += (x - drop_hp.run(x)) * (-t / 0.004).exp() * 0.5;
+            }
+        }
+        // And a thin wash under them, dying with the rest.
+        out[i] += r.noise() * 0.03 * (-time / 0.22).exp();
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

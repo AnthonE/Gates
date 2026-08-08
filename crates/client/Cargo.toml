@@ -70,6 +70,16 @@ name = "fell"
 path = "tests/fell.rs"
 required-features = ["render"]
 
+# The sea's arithmetic: the wave set's steepness, the Nyquist rule that retires
+# a wave the mesh cannot sample, the depth grading, the foam band, the ripple
+# map's tiling and its mip chain, and the wet band on the land side. No GPU and
+# no window — but it links Bevy for `Image` and `Vec3`, so it carries the
+# feature and runs in the renderer tier.
+[[test]]
+name = "water"
+path = "tests/water.rs"
+required-features = ["render"]
+
 # The handedness gate. Pure arithmetic and no GPU, but it checks the client's
 # right-vector against BEVY's `Transform` basis rather than against a restated
 # identity, so it links Bevy and carries the feature — `crate::look`'s own unit
