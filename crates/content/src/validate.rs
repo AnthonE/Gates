@@ -4,6 +4,7 @@
 
 use crate::schema::*;
 use crate::Content;
+use sim_core::limits::INV_SLOTS;
 use std::collections::BTreeSet;
 
 fn check_id(id: &str, prefix: &str, what: &str) -> Result<(), String> {
@@ -454,6 +455,46 @@ pub fn structural(c: &Content) -> Result<(), String> {
             );
         }
     }
+
+    // The spawn kit. Every refusal here is the same class: a kit that seats
+    // a player holding something the rest of the tables disagree about.
+    // An EMPTY kit is not checked and not an error — a naked beach spawn is
+    // the game, and it is what content without a `[[spawn_kit]]` gives.
+    {
+        let kit = &c.balance.spawn_kit;
+        if kit.len() > INV_SLOTS {
+            return Err(format!(
+                "spawn_kit: {} stacks will not fit {INV_SLOTS} inventory slots",
+                kit.len()
+            ));
+        }
+        let mut seen_items = BTreeSet::new();
+        for e in kit {
+            let def = c
+                .item(&e.item)
+                .ok_or_else(|| format!("spawn_kit: no such item `{}`", e.item))?;
+            if e.count == 0 {
+                return Err(format!(
+                    "spawn_kit `{}`: grants 0, which is a slot that draws empty",
+                    e.item
+                ));
+            }
+            if e.count > def.stack {
+                return Err(format!(
+                    "spawn_kit `{}`: grants {} past its own stack size {}",
+                    e.item, e.count, def.stack
+                ));
+            }
+            // One entry per item. Two stacks of the same thing is not
+            // wrong so much as a typo that silently halves what the author
+            // thought they were granting — `grant_kit` writes slots in
+            // order and never merges.
+            if !seen_items.insert(&e.item) {
+                return Err(format!("spawn_kit: `{}` granted twice", e.item));
+            }
+        }
+    }
+
     for d in &c.deployables {
         item_exists(&d.id, "deployable")?;
         if c.item(&d.id).map(|i| i.slot) != Some(EquipSlot::Hand) {

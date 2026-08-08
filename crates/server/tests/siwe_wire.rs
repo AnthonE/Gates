@@ -109,6 +109,10 @@ async fn shard(require_auth: bool) -> server::net::ShardHandle {
         combat,
         backpack,
         survival,
+        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
+        // for a human looking at the game, and a suite that asserted on a
+        // fresh inventory would be asserting on content instead of on code.
+        sim_core::inventory::SpawnKit::EMPTY,
         loot,
         catalog,
         Saves::off(),

@@ -47,7 +47,7 @@
 //! mode being defended against *is the disconnect*.
 
 use crate::gather::ItemStack;
-use crate::limits::{BOX_SLOTS, INV_SLOTS};
+use crate::limits::{BOX_SLOTS, INV_SLOTS, MAX_SPAWN_KIT};
 
 /// The sender's own inventory: `Player::inv`, all `INV_SLOTS` of it. The
 /// hotbar is slots `0..HOTBAR_SLOTS` of the same array (`world.rs`), so
@@ -257,4 +257,74 @@ pub fn addr(from_kind: u8, from_slot: u8, to_kind: u8, to_slot: u8) -> u32 {
         | ((from_slot as u32) << 16)
         | ((to_kind as u32) << 8)
         | (to_slot as u32)
+}
+
+// ---- the spawn kit -------------------------------------------------------
+
+/// What a fresh character is holding when they open their eyes.
+///
+/// **Content, not code** (wall 7): the kit is `content/balance.toml`'s
+/// `[[spawn_kit]]`, baked to item indices here, and an empty table is the
+/// default — a shard that authors no kit spawns naked, which is the game.
+///
+/// **Why this shape rather than a server flag.** Two other routes were
+/// considered and both cross a wall. A new "grant" command is a wire change
+/// (wall 6: version bump plus regenerated goldens) for something no player
+/// ever sends. A `shard.toml` switch that changed what `Join` seats would
+/// make a WAL replay diverge from the run that wrote it (wall 5), because
+/// the flag is not in the WAL header and the join command carries no kit.
+/// Content is safe by construction: the content hash is **already** pinned
+/// into that header, so a replay replays the kit it was played under.
+#[derive(Clone, Copy)]
+pub struct SpawnKit {
+    /// Dense from 0. Item indices are the bake's sorted-rank mapping, the
+    /// same one every other content table uses.
+    pub stacks: [ItemStack; MAX_SPAWN_KIT],
+    pub count: u8,
+}
+
+impl SpawnKit {
+    /// The inert default: nothing granted, which is a naked spawn.
+    pub const EMPTY: Self = Self {
+        stacks: [ItemStack { item: 0, count: 0 }; MAX_SPAWN_KIT],
+        count: 0,
+    };
+
+    /// Install one stack. Refuses an out-of-table index or a zero count —
+    /// the bake turns either into a refused boot rather than a slot that
+    /// draws as empty.
+    pub fn set(&mut self, idx: usize, stack: ItemStack) -> bool {
+        if idx >= MAX_SPAWN_KIT || stack.count == 0 {
+            return false;
+        }
+        self.stacks[idx] = stack;
+        if idx as u8 >= self.count {
+            self.count = idx as u8 + 1;
+        }
+        true
+    }
+}
+
+impl Default for SpawnKit {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+/// Seat the kit in a fresh character's inventory.
+///
+/// **Written into slots in order, not merged.** The first entries land in
+/// the hotbar, which is what makes a kit useful the moment you spawn — a
+/// merge would scatter the hammer somewhere in the grid. Anything past
+/// `INV_SLOTS` is dropped rather than wrapped; `validate` already refuses a
+/// kit that long, so reaching that branch means the bake was bypassed.
+///
+/// Called only on the fresh-spawn arm of `World::seat`, beside
+/// `survival::grant` and for the same reason: a restored character keeps
+/// what they had, and re-granting on every login would be an item printer.
+pub fn grant_kit(kit: &SpawnKit, p: &mut crate::world::Player) {
+    let n = (kit.count as usize).min(MAX_SPAWN_KIT).min(INV_SLOTS);
+    for i in 0..n {
+        p.inv[i] = kit.stacks[i];
+    }
 }

@@ -22,7 +22,10 @@ use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
     ARCH_WORKBENCH, PLACE_ANY, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_GROUND,
 };
+use sim_core::gather::ItemStack;
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
+use sim_core::inventory::SpawnKit;
+use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_DEPLOY_COSTS,
     MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS, MAX_LOOT_TABLES,
@@ -665,6 +668,52 @@ impl Content {
     /// rate, an inverted water/food ordering and a heal with no span; what
     /// this adds is the arithmetic refusal — a span whose tick count
     /// overflows u32, and a consumable that arms no item.
+    /// The spawn kit: `[[spawn_kit]]` resolved to item indices.
+    ///
+    /// **Every refusal here is a boot refusal**, which is the point — a kit
+    /// that names an item the content does not have, or a count past that
+    /// item's own stack size, would otherwise seat a player holding
+    /// something the rest of the tables disagree about. An empty table is
+    /// not an error: it is a naked spawn, which is the game.
+    pub fn bake_spawn_kit(&self) -> Result<SpawnKit, String> {
+        let entries = &self.balance.spawn_kit;
+        if entries.len() > MAX_SPAWN_KIT {
+            return Err(format!(
+                "bake: spawn_kit has {} stacks, past the sim's {MAX_SPAWN_KIT}-slot inventory",
+                entries.len()
+            ));
+        }
+        let mut kit = SpawnKit::EMPTY;
+        for (i, e) in entries.iter().enumerate() {
+            let idx = self
+                .item_index(&e.item)
+                .ok_or_else(|| format!("bake: spawn_kit names no such item `{}`", e.item))?;
+            let def = self
+                .items
+                .iter()
+                .find(|it| it.id == e.item)
+                .ok_or_else(|| format!("bake: spawn_kit item `{}` vanished", e.item))?;
+            if e.count == 0 {
+                return Err(format!(
+                    "bake: spawn_kit `{}` grants 0, which is a slot that draws empty",
+                    e.item
+                ));
+            }
+            if e.count > def.stack {
+                return Err(format!(
+                    "bake: spawn_kit `{}` grants {} past its own stack size {}",
+                    e.item, e.count, def.stack
+                ));
+            }
+            let count = u16::try_from(e.count)
+                .map_err(|_| format!("bake: spawn_kit `{}` count overflows u16", e.item))?;
+            if !kit.set(i, ItemStack { item: idx, count }) {
+                return Err(format!("bake: spawn_kit slot {i} refused"));
+            }
+        }
+        Ok(kit)
+    }
+
     pub fn bake_survival(&self) -> Result<SurvivalContent, String> {
         if self.items.len() > MAX_ITEM_DEFS {
             return Err(format!(

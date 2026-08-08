@@ -1441,3 +1441,96 @@ fn a_bow_that_outruns_the_collision_sampler_is_refused() {
         "collision sampler",
     );
 }
+
+// ---------------------------------------------------------------------------
+// The spawn kit
+//
+// It is testing scaffolding that ships in content, which makes it exactly the
+// kind of thing that rots quietly: it is not on any player's critical path,
+// so a kit that silently granted nothing, or granted an item the tables do
+// not have, would be found by somebody wondering why their hands were empty.
+
+/// The alpha kit is real, reaches the sim, and lands where it says it does.
+#[test]
+fn the_spawn_kit_bakes_and_seats() {
+    let c = build(&sources()).expect("content builds");
+    let kit = c.bake_spawn_kit().expect("the kit bakes");
+    assert!(kit.count > 0, "the alpha kit grants nothing");
+
+    // The order is load-bearing: `grant_kit` writes slots in order, so the
+    // first HOTBAR_SLOTS entries are the belt. A kit whose plan and hammer
+    // were not on the belt would need a trip to the inventory before the
+    // player could build at all, which defeats the reason it exists.
+    let plan = c
+        .item_index("item.building_plan")
+        .expect("the plan is an item");
+    let hammer = c.item_index("item.hammer").expect("the hammer is an item");
+    let belt: Vec<u16> = kit.stacks[..(kit.count as usize).min(sim_core::limits::HOTBAR_SLOTS)]
+        .iter()
+        .map(|s| s.item)
+        .collect();
+    assert!(belt.contains(&plan), "the building plan is not on the belt");
+    assert!(belt.contains(&hammer), "the hammer is not on the belt");
+
+    // And it pays for something. A kit with tools and no materials cannot
+    // place a piece, which is the verb it exists to unblock.
+    let wood = c.item_index("item.wood").expect("wood is an item");
+    let carried: u32 = kit.stacks[..kit.count as usize]
+        .iter()
+        .filter(|s| s.item == wood)
+        .map(|s| s.count as u32)
+        .sum();
+    assert!(carried > 0, "the kit carries no wood to build with");
+}
+
+/// Absent is legal, and it means naked.
+///
+/// The default matters more than the alpha kit does: a public shard wants a
+/// beach spawn, and `#[serde(default)]` is what lets that be expressed by
+/// deleting a table rather than by editing code.
+#[test]
+fn no_spawn_kit_is_a_naked_spawn() {
+    let mut srcs = sources();
+    let entry = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    let cut = entry
+        .1
+        .find("[[spawn_kit]]")
+        .expect("the alpha kit is there");
+    entry.1.truncate(cut);
+    let c = build(&srcs).expect("content without a spawn kit still validates");
+    let kit = c.bake_spawn_kit().expect("an absent kit bakes");
+    assert_eq!(kit.count, 0, "an absent kit granted something");
+}
+
+#[test]
+fn spawn_kit_refusals() {
+    // An item the tables do not have.
+    refuses(
+        "balance.toml",
+        "[[spawn_kit]]\nitem = \"item.hammer\"",
+        "[[spawn_kit]]\nitem = \"item.jetpack\"",
+        "no such item",
+    );
+    // A count of zero — a slot that would draw empty.
+    refuses(
+        "balance.toml",
+        "item = \"item.hammer\"\ncount = 1",
+        "item = \"item.hammer\"\ncount = 0",
+        "grants 0",
+    );
+    // Past the item's own stack size.
+    refuses(
+        "balance.toml",
+        "item = \"item.hammer\"\ncount = 1",
+        "item = \"item.hammer\"\ncount = 99",
+        "past its own stack size",
+    );
+    // The same item twice — `grant_kit` writes slots and never merges, so
+    // this is a typo that halves what the author meant.
+    refuses(
+        "balance.toml",
+        "[[spawn_kit]]\nitem = \"item.hammer\"\ncount = 1",
+        "[[spawn_kit]]\nitem = \"item.hammer\"\ncount = 1\n\n[[spawn_kit]]\nitem = \"item.hammer\"\ncount = 1",
+        "granted twice",
+    );
+}
