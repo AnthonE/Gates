@@ -172,9 +172,10 @@ pub const CONNECT_TIMEOUT_S: f32 = 20.0;
 #[derive(Default)]
 pub struct Connecting {
     pub addr: String,
-    /// The launcher's session token (`--session`), carried here rather than
-    /// re-read at connect time because the connect runs on the runtime, off
-    /// the frame, and must not reach back into the app for it.
+    /// The address this connect claims (`Address::GUEST` for none), carried
+    /// here rather than re-read at connect time because the connect runs on
+    /// the runtime, off the frame, and must not reach back into the app for
+    /// it.
     pub address: protocol::Address,
     pub rx: Option<std::sync::mpsc::Receiver<Result<crate::Session, String>>>,
     /// Seconds spent on this attempt. Accumulated from Bevy's frame delta
@@ -316,7 +317,7 @@ fn build(commands: &mut Commands, menu: &Menu) {
                         // player is never told about is a bind that does not
                         // exist, which is the rule `LEARN_TASKS` already holds
                         // the in-world verbs to.
-                        b.spawn(ui::label(
+                        b.spawn(ui::strong(
                             format!("{}  {}", i + 1, row.name),
                             20.0,
                             ui::TEXT,
@@ -336,7 +337,7 @@ fn build(commands: &mut Commands, menu: &Menu) {
             // shard appeared.
             root.spawn((ui::row(ROW_W), SettingsButton))
                 .with_children(|b| {
-                    b.spawn(ui::label("S  Settings", 20.0, ui::TEXT));
+                    b.spawn(ui::strong("S  Settings", 20.0, ui::TEXT));
                     b.spawn(ui::label(
                         "view, controls, screen - and the keybind list",
                         13.0,
@@ -522,7 +523,7 @@ pub fn connecting_screen(mut commands: Commands, connecting: NonSend<Connecting>
         MenuRoot,
         ui::screen(ui::BG),
         children![
-            ui::label(
+            ui::strong(
                 format!("connecting to {}...", connecting.addr),
                 22.0,
                 ui::TITLE

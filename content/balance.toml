@@ -148,3 +148,58 @@ count = 1
 [[starter_base.items]]
 item = "item.box_small"
 count = 1
+
+# What a fresh character spawns holding (`sim_core::inventory::SpawnKit`;
+# DECISIONS.md §open "spawn kit v0"). **Testing scaffolding, and an
+# operator call to empty** — a public shard almost certainly wants a naked
+# beach spawn, which is what an absent `[[spawn_kit]]` gives: the table is
+# `#[serde(default)]` and no kit is not an error.
+#
+# It exists because the build and hammer verbs could not be exercised at
+# all. A fresh spawn had nothing, so the build wheel read `350 Wood (0)`,
+# nothing could be placed, and nothing could be upgraded or repaired —
+# which meant the whole building interaction was unreachable by anyone
+# testing it, human or agent.
+#
+# The order is the order it lands in: the first six entries are the
+# hotbar, so the plan and the hammer are on 1 and 2 the moment you open
+# your eyes. Materials are enough for a small base plus an upgrade or two,
+# priced off `[globals] farm_per_min` at roughly twenty minutes of farm.
+[[spawn_kit]]
+item = "item.building_plan"
+count = 1
+
+[[spawn_kit]]
+item = "item.hammer"
+count = 1
+
+[[spawn_kit]]
+item = "item.hatchet_stone"
+count = 1
+
+[[spawn_kit]]
+item = "item.pickaxe_stone"
+count = 1
+
+[[spawn_kit]]
+item = "item.torch"
+count = 1
+
+[[spawn_kit]]
+item = "item.bandage"
+count = 5
+
+# Under the 1000 ceiling on purpose: a grant that sits exactly at an item's
+# stack size is one balance edit away from being refused, and `test_content`
+# lowers every stack to prove the hash moves.
+[[spawn_kit]]
+item = "item.wood"
+count = 900
+
+[[spawn_kit]]
+item = "item.stone"
+count = 500
+
+[[spawn_kit]]
+item = "item.metal_frags"
+count = 100

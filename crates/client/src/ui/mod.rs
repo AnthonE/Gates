@@ -41,6 +41,8 @@ pub mod build;
 pub mod chat;
 pub mod craft;
 pub mod death;
+pub mod hold;
+pub mod icons;
 pub mod interact;
 pub mod load;
 pub mod map;

@@ -50,7 +50,7 @@ use sim_core::movement::Body;
 use sim_core::world::Command;
 
 const SEED: u64 = 20_260_804;
-/// The browser-smoke spawn point, guarded walkable in sim-core
+/// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests` — the same one `backpack_wire` stands its bodies on.
 const SPAWN: (f32, f32) = (1024.0, 1024.0);
 /// Fixture items. Three different ones, and none of them a slot index or a

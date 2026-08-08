@@ -1,6 +1,6 @@
 //! The shard server: `cargo run -p server --bin shard` (reads shard.toml,
-//! CLAUDE.md commands). Prints the bound address and the dev-cert hash the
-//! browser's `serverCertificateHashes` flow needs, then a stats line every
+//! CLAUDE.md commands). Prints the bound address and the dev-cert hash
+//! (WebTransport `serverCertificateHashes` format), then a stats line every
 //! 10 s. Runs until killed.
 
 use server::config::parse_shard_toml;
@@ -92,6 +92,13 @@ async fn main() {
     };
     let survival = match content.bake_survival() {
         Ok(s) => s,
+        Err(e) => {
+            eprintln!("shard: content bake refused: {e}");
+            std::process::exit(1);
+        }
+    };
+    let spawn_kit = match content.bake_spawn_kit() {
+        Ok(k) => k,
         Err(e) => {
             eprintln!("shard: content bake refused: {e}");
             std::process::exit(1);
@@ -262,7 +269,9 @@ async fn main() {
                             // whether that is one stale identity or the key
                             // table having been lost.
                             println!(
-                                "world WARNING: {} of {} bodies have no identity beside them —                                  those players cannot walk back into their own body and will                                  come back through the player store instead",
+                                "world WARNING: {} of {} bodies have no identity beside them — \
+                                 those players cannot walk back into their own body and will \
+                                 come back through the player store instead",
                                 found.bodies - found.claimable,
                                 found.bodies
                             );
@@ -284,8 +293,8 @@ async fn main() {
     // proves they hold the private key behind the address they claim
     // (`auth.rs`), which is the thing the warning was waiting for.
     let handle = match spawn_shard(
-        cfg, gather, craft, build, deploy, combat, backpack, survival, loot, catalog, saves,
-        world_boot,
+        cfg, gather, craft, build, deploy, combat, backpack, survival, spawn_kit, loot, catalog,
+        saves, world_boot,
     )
     .await
     {

@@ -19,27 +19,141 @@
 //! and the frame the operator pasted): near-black panels a shade lighter than
 //! the background, an olive selection block for the chosen category, warm
 //! off-white type, and a hairline rule the same warm hue at low alpha.
+//!
+//! **This file also owns the FACE**, for the same reason it owns the palette,
+//! and until 2026-08-07 nothing did: all 42 `TextFont` sites in the render
+//! path were `..default()`, so every screen this client has was drawn in
+//! Bevy's embedded debug mono. That is not a style — it is the absence of
+//! one, and it is the single loudest thing separating our frames from the
+//! reference's.
 
+use bevy::asset::{uuid_handle, AssetId};
 use bevy::prelude::*;
+use bevy::text::Font;
 
-/// The screen behind everything.
-pub const BG: Color = Color::srgb(0.055, 0.055, 0.060);
+// ---- the face ------------------------------------------------------------
+
+/// The two faces, at compile-time-known handles.
+///
+/// **Roboto Condensed, and that is measured rather than chosen.** The
+/// reference game's own modding API names its default UI font in public
+/// source: `Assets/Content/UI/Fonts/RobotoCondensed-Bold.ttf`, with
+/// `RobotoCondensed-Regular` beside it and Bold as the fallback when a
+/// lookup misses (`Facepunch/Rust.Community`, `CommunityEntity.UI.cs`
+/// `LoadFont`). So the weight hierarchy below is theirs too: **bold is the
+/// default and regular is the exception**, which is why a Rust screen reads
+/// as chunky and ours read as a terminal.
+///
+/// Apache-2.0, © 2011 Google Inc. — `crates/client/fonts/`.
+pub const SANS: Handle<Font> = uuid_handle!("6f0d1c8e-2f4a-4c7b-9a31-0d2b7c5e4a11");
+pub const SANS_BOLD: Handle<Font> = uuid_handle!("6f0d1c8e-2f4a-4c7b-9a31-0d2b7c5e4a12");
+
+/// **Embedded, not loaded from `assets/`, and both halves of that are
+/// deliberate.**
+///
+/// A `Handle<Font>` that never resolves draws *nothing at all* — not a
+/// fallback glyph, not a box. That is strictly worse than the failure this
+/// repo has already been bitten by twice (a missing `jpeg` decoder made Bevy
+/// draw a white texture *and keep going*, and three material changes measured
+/// byte-identical before anyone read the log), because a client with no text
+/// cannot report its own defect. Compiling the bytes in removes the failure
+/// mode rather than gating it.
+///
+/// The second half is timing, and it is a trap this repo has paid for once:
+/// **`OnEnter(Screen::Loading)` runs before `Startup`**, so the loading
+/// screen — the first thing a connected start draws — would render its text
+/// blank for as long as an asset load took. `audio::build_bank` is the same
+/// shape for the same reason, and [`build_fonts`] is called beside it.
+const SANS_TTF: &[u8] = include_bytes!("../../fonts/RobotoCondensed-Regular.ttf");
+const SANS_BOLD_TTF: &[u8] = include_bytes!("../../fonts/RobotoCondensed-Bold.ttf");
+
+/// Put both faces in `Assets<Font>` at plugin-build time.
+///
+/// It also overwrites **Bevy's own default font handle** with the bold face.
+/// That is the belt to [`font`]'s braces: the gate in `tests/ui.rs` is what
+/// keeps `TextFont` literals out of the render path, but a site that slips
+/// past it should draw in the wrong *weight*, not in a different typeface
+/// from every other word on the screen.
+pub fn build_fonts(app: &mut App) {
+    let mut assets = app.world_mut().resource_mut::<Assets<Font>>();
+    for (id, bytes, what) in [
+        (SANS.id(), SANS_TTF, "RobotoCondensed-Regular"),
+        (SANS_BOLD.id(), SANS_BOLD_TTF, "RobotoCondensed-Bold"),
+        (AssetId::default(), SANS_BOLD_TTF, "the engine default"),
+    ] {
+        let font = Font::try_from_bytes(bytes.to_vec())
+            .unwrap_or_else(|e| panic!("{what} is not a readable font: {e}"));
+        assets
+            .insert(id, font)
+            .unwrap_or_else(|e| panic!("{what} could not be registered: {e}"));
+    }
+}
+
+/// A `TextFont` in the regular face. **Prose only** — a description, a hint,
+/// a status line, a chat message.
+pub fn font(size: f32) -> TextFont {
+    TextFont {
+        font: SANS,
+        font_size: size,
+        ..default()
+    }
+}
+
+/// A `TextFont` in the bold face — the reference's default, and ours. Every
+/// label, heading, number, button and item name.
+pub fn font_bold(size: f32) -> TextFont {
+    TextFont {
+        font: SANS_BOLD,
+        font_size: size,
+        ..default()
+    }
+}
+
+// ---- the palette, re-derived 2026-08-07 ----------------------------------
+//
+// **Every value below is sampled off `Rust Images/crafting.png`**, the
+// reference's own inventory frame, by averaging a 7×7 patch at the named
+// place. The previous palette was neither measured nor close: it was a
+// **cool near-black** (`0.082,0.082,0.090` — blue the largest channel) with
+// an **olive** selection, against a reference that is **warm** (R > G > B in
+// every single sample) about **twice as light**, and selects in **blue**.
+// That is a different family, not a near miss, and no amount of type work
+// reads as the reference while the ground under it is the wrong colour.
+//
+// The olive it replaces was described as measured off "the reference's own
+// options screen" — a frame that is not in `Rust Images/` and cannot be
+// re-checked. If the options screen really does select in olive, that is a
+// per-screen exception to add back with the frame committed beside it; it is
+// not the inventory's colour, and the inventory is the screen a player lives
+// in. `DECISIONS.md` "menu skin v0" carries the change.
+//
+// **One honest caveat**: the reference panel is translucent over a blurred
+// world, so a sample carries some of whatever was behind it. These are the
+// composited values — which is what a player sees, and still far closer than
+// an invented number.
+
+/// The screen behind everything. Darker than any panel, so a full-screen
+/// menu still reads as a layer rather than as the desktop.
+pub const BG: Color = Color::srgb(0.106, 0.098, 0.086);
 /// A panel sitting on the background — the settings sidebar and pane.
-pub const PANEL: Color = Color::srgba(0.082, 0.082, 0.090, 1.0);
-/// A clickable row at rest, and under the pointer.
-pub const ROW_IDLE: Color = Color::srgba(0.10, 0.10, 0.11, 1.0);
-pub const ROW_HOVER: Color = Color::srgba(0.16, 0.15, 0.13, 1.0);
-/// The selected category. The reference's olive, which is the one saturated
-/// block on its whole options screen — everything else is grey.
-pub const ACCENT: Color = Color::srgb(0.33, 0.45, 0.17);
-pub const ACCENT_HOVER: Color = Color::srgb(0.38, 0.51, 0.20);
+/// `#423e39`, the reference's category rail.
+pub const PANEL: Color = Color::srgba(0.259, 0.243, 0.224, 1.0);
+/// A clickable row at rest, and under the pointer. `#2b2723` / lifted.
+pub const ROW_IDLE: Color = Color::srgba(0.169, 0.153, 0.137, 1.0);
+pub const ROW_HOVER: Color = Color::srgba(0.278, 0.263, 0.235, 1.0);
+/// The selected category — `#3982ba`, and the one saturated block on the
+/// reference's inventory screen. Everything else there is warm grey, which
+/// is exactly why the selection is a cool blue: it is the only hue on the
+/// panel and it never has to compete.
+pub const ACCENT: Color = Color::srgb(0.224, 0.510, 0.729);
+pub const ACCENT_HOVER: Color = Color::srgb(0.290, 0.580, 0.800);
 /// Hairline borders.
 pub const RULE: Color = Color::srgba(0.75, 0.72, 0.62, 0.28);
 /// Type, in three weights of attention.
-pub const TITLE: Color = Color::srgb(0.86, 0.83, 0.76);
+pub const TITLE: Color = Color::srgb(0.93, 0.92, 0.90);
 pub const TEXT: Color = Color::srgb(0.92, 0.90, 0.85);
-pub const DIM: Color = Color::srgba(0.70, 0.68, 0.62, 0.80);
-pub const FAINT: Color = Color::srgba(0.60, 0.58, 0.54, 0.75);
+pub const DIM: Color = Color::srgba(0.74, 0.72, 0.68, 0.85);
+pub const FAINT: Color = Color::srgba(0.62, 0.60, 0.56, 0.80);
 
 /// What a button's background is at rest and under the pointer.
 ///
@@ -102,24 +216,31 @@ pub fn screen(bg: Color) -> impl Bundle {
 pub fn title(text: &str) -> impl Bundle {
     (
         Text::new(text.to_string()),
-        TextFont {
-            font_size: 58.0,
-            ..default()
-        },
+        font_bold(58.0),
         TextColor(TITLE),
     )
 }
 
-/// A line of type. The three colours above are the whole vocabulary.
+/// A line of prose, in the regular face. The three colours above are the
+/// whole vocabulary.
+///
+/// **There are twelve distinct sizes across the six files that draw text**
+/// (58, 30, 26, 20, 17, 16, 15, 14, 13, 12, 11, 10) and that is not a
+/// hierarchy, it is what twelve independent decisions look like. Collapsing
+/// it to five steps is a real improvement and it is deliberately **not**
+/// taken here: the sizes were budgeted against 720p (`DECISIONS.md`, "menu
+/// skin v0" — the first cut clipped a column at both ends) and nothing in
+/// this repo can photograph a panel, so moving them would be tuning a number
+/// with the picture unavailable. `NOW.md` carries it behind the screenshot
+/// tool that would make it checkable.
 pub fn label(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
-    (
-        Text::new(text.into()),
-        TextFont {
-            font_size: size,
-            ..default()
-        },
-        TextColor(color),
-    )
+    (Text::new(text.into()), font(size), TextColor(color))
+}
+
+/// A line of type in the bold face — a label, a heading, a number, a verb.
+/// The reference's default weight, and therefore the common case.
+pub fn strong(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
+    (Text::new(text.into()), font_bold(size), TextColor(color))
 }
 
 /// A wide clickable row — the intro screen's shard rows and the Esc menu's

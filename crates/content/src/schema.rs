@@ -407,4 +407,14 @@ pub struct Balance {
     pub starter_base: StarterBase,
     pub backpack: Backpack,
     pub survival: Survival,
+    /// What a fresh character spawns holding (`[[spawn_kit]]`).
+    ///
+    /// **Defaulted, because a naked spawn is the game.** Content that
+    /// authors no kit still boots and grants nothing — which is what a
+    /// public shard wants and what every test fixture already assumes. The
+    /// alpha's kit exists so the build and hammer verbs can be exercised at
+    /// all; `DECISIONS.md` §open "spawn kit v0" is where it gets armed or
+    /// emptied for a real shard, and that is an operator call.
+    #[serde(default)]
+    pub spawn_kit: Vec<Stack>,
 }

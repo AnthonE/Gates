@@ -115,14 +115,14 @@ pub fn setup(
         .spawn((MapRoot, ui::screen(Color::srgba(0.02, 0.02, 0.025, 0.94))))
         .with_children(|root| {
             root.spawn((
-                ui::label("MAP", 30.0, ui::TITLE),
+                ui::strong("MAP", 30.0, ui::TITLE),
                 Node {
                     margin: UiRect::bottom(Val::Px(6.0)),
                     ..default()
                 },
             ));
             root.spawn((
-                ui::label(
+                ui::strong(
                     if square.is_empty() {
                         format!("off the island    -    {bearing}")
                     } else {

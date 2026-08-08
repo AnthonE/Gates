@@ -24,6 +24,7 @@ use crate::Session;
 pub mod audio;
 pub mod bodies;
 pub mod capture;
+pub mod icons;
 // Chat. Not registered on a capture run, like the panels: a gate whose
 // frames depend on whether a composer is open is not a gate.
 pub mod chat;
@@ -337,7 +338,7 @@ impl Plugin for GatesRenderPlugin {
         // Textures load at Startup rather than on entering the world: they
         // are wanted whichever screen comes first, and warming them while a
         // player reads the menu is free time the old shape did not have.
-        app.add_systems(Startup, (textures::load, anim::load));
+        app.add_systems(Startup, (textures::load, icons::load, anim::load));
         // The sound bank is generated rather than loaded (`sound/synth.rs`)
         // and is built HERE, not at `Startup`. **`OnEnter(Screen::Loading)`
         // runs before `Startup`** on a connected start — Bevy schedules the
@@ -347,6 +348,16 @@ impl Plugin for GatesRenderPlugin {
         // `audio::build_bank`; the first capture run after the audio slice
         // died on exactly this.
         audio::build_bank(app);
+        // The build wheel's rings, rasterised once. Ten images, and the
+        // reason they are not made on demand is that the wheel rebuilds every
+        // time the pointer crosses a wedge — several times a second while
+        // sweeping — for a thing with ten possible states.
+        panels::ring::build_rings(app);
+        // The two UI faces, for the same reason and at the same moment: the
+        // loading screen draws text before `Startup` runs, and a font that is
+        // not there yet draws NOTHING — not a fallback glyph. `ui::build_fonts`
+        // has the whole argument for compiling them in.
+        ui::build_fonts(app);
 
         // ---- the menu ------------------------------------------------
         // `world_teardown` first: entering the menu from a live world is the

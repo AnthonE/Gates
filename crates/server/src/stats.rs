@@ -17,10 +17,12 @@ pub struct ShardStats {
     pub joins: AtomicU64,
     pub leaves: AtomicU64,
     pub refused_version: AtomicU64,
-    /// Joins refused for want of a good session (`REFUSE_AUTH`). Counted
-    /// separately from `refused_version` because the two mean opposite
-    /// things about a shard: a version refusal is a client that needs
-    /// updating, an auth refusal is a shard doing its job.
+    /// Joins refused for want of a proven identity (`REFUSE_AUTH`): a
+    /// signature that failed to verify, or a guest where `require_auth`
+    /// demands an address. Counted separately from `refused_version`
+    /// because the two mean opposite things about a shard: a version
+    /// refusal is a client that needs updating, an auth refusal is a shard
+    /// doing its job.
     pub refused_auth: AtomicU64,
     pub refused_full: AtomicU64,
     pub handshake_errors: AtomicU64,
@@ -129,9 +131,10 @@ pub struct ShardStats {
     /// counted anyway, because the alternative to counting it is a shard
     /// silently running a fresh island under everybody's bases.
     pub world_load_errors: AtomicU64,
-    /// Records handed to the store's index — a leave, or the autosave sweep
-    /// finding a player whose state moved. Those are the only two producers:
-    /// there is no shutdown flush (`NOW.md` §0y item 3 says why not).
+    /// Records handed to the store's index — a leave, the autosave sweep
+    /// finding a player whose state moved, or the shutdown flush taking
+    /// every connected player on the way down (`net.rs`, the sim thread's
+    /// tail). Those are the only three producers.
     pub saves_taken: AtomicU64,
     /// Records that pushed another player out: the table was full, so the
     /// least recently saved slot was taken (`store.rs`'s stated overflow

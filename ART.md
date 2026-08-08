@@ -183,6 +183,31 @@ flythrough, which the blind reader has named on every capture so far.
 Depth in a wide frame: foreground detail (a prop or the viewmodel), midground
 subject (treeline, rocks, a base), background atmosphere (hazed ridges).
 
+**The interface has a face, and it is bold condensed.** This file had nothing
+about type until 2026-08-07 and the client had no typeface at all — every
+screen drew in Bevy's embedded debug mono, which is the interface equivalent
+of §2's flat-value rule and reads as a prototype for the same reason. The
+target is **Roboto Condensed**, and unusually for this file the source is not
+a measurement off `Rust Images/` but a fact in the reference's own public
+source: `Facepunch/Rust.Community`'s `CommunityEntity.UI.cs` defaults its UI
+text to `RobotoCondensed-Bold.ttf`. Two rules follow, and the second is the
+one that carries the look:
+
+1. **Bold is the default weight, regular is the exception.** Labels,
+   headings, numbers, buttons, item names and prompts are bold; only prose —
+   a description, a hint, a status line, chat — is regular. A reference
+   screen reads as chunky because nearly every word on it is bold condensed.
+2. **A screen is one face.** Mixing typefaces across two screens a player
+   moves between in one keystroke is the type version of §2's "no surface may
+   be one flat value" — it is the fastest way to read as three prototypes
+   rather than one product. Enforced as a call-site grep, not as a taste
+   note: `crates/client/tests/ui.rs` §F.
+
+Not settled, and stated here so a later pass does not read silence as
+approval: the **size scale**. Twelve distinct sizes ship across six files,
+which is not a hierarchy, and nothing in this repo can photograph a panel to
+check a change to it (`DECISIONS.md`, "ui type v0").
+
 ## 7 · Assets: real detail is allowed, and preferred
 
 **There is no procedural-only rule in Gates and there never was.** The

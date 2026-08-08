@@ -15,7 +15,7 @@ use sim_core::craft::{CraftContent, REFUSE_STATION};
 use sim_core::gather::GatherContent;
 
 const SEED: u64 = 20_260_731;
-/// The browser-smoke spawn point, guarded walkable in sim-core
+/// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests` — craft needs standing room, not a tree.
 const SPAWN: (f32, f32) = (1024.0, 1024.0);
 

@@ -48,6 +48,32 @@
 - **skin**: id, covers (item id), price (SCRY or MYRRH — one coin per
   row, bare tickers), season — the catalog is content too (dark until A3)
 
+## 1.5 · The spawn kit
+
+`content/balance.toml` `[[spawn_kit]]` — what a fresh character is holding
+when they open their eyes. Entries are `{ item, count }`, granted **in
+order** into inventory slots, so the first `HOTBAR_SLOTS` are the belt.
+
+```toml
+[[spawn_kit]]
+item = "item.building_plan"
+count = 1
+```
+
+Three rules, each with a refusal in `validate`:
+
+- **Absent is legal and means naked.** The table is `#[serde(default)]`; a
+  public shard expresses a beach spawn by deleting it, not by editing code.
+- **One entry per item**, because `grant_kit` writes slots and never merges
+  — two stacks of the same thing is a typo that halves the grant.
+- **Count within the item's own `stack`**, and in practice comfortably
+  under it: a grant at the ceiling is one balance edit from refusal.
+
+It exists as **testing scaffolding** and an operator arms or empties it
+(`DECISIONS.md` §open "spawn kit v0"). It is content rather than a server
+flag because the content hash is already in the WAL header, so a replay
+replays the kit it was played under — a `shard.toml` switch would diverge.
+
 ## 2 · The alpha item set (~45 items — this IS the shape of the game)
 
 **Raw**: wood · stone · metal_ore · sulfur_ore · cloth · fat · charcoal ·

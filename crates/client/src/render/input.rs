@@ -144,7 +144,16 @@ pub fn gather(
     if keys.pressed(KeyCode::Space) {
         buttons |= BTN_JUMP;
     }
-    if mouse.pressed(MouseButton::Left) {
+    // **The swing is held-item modal.** Left click means "place" with a
+    // building plan and "repair" with a hammer, and neither item has an
+    // attack to lose — the reference lists the hammer's damage total as 0
+    // and the plan has no damage stats at all. Without this the same press
+    // would place a foundation AND send a swing, which the sim answers with
+    // a gather attempt on whatever is in front of you.
+    let core = &net.session.core;
+    let hand = crate::ui::hold::held_in_hand(&core.catalog, &core.inv, net.sel);
+    let swings = !hand.opens_a_wheel();
+    if swings && mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
     }
     // The swing, heard here rather than in `render/audio.rs` because this is
@@ -153,7 +162,7 @@ pub fn gather(
     // swing an axe. `just_pressed`, not `pressed`: the cue's own cooldown
     // paces a held button, and a per-frame push would spend the whole cue
     // queue on one held mouse button.
-    if mouse.just_pressed(MouseButton::Left) {
+    if swings && mouse.just_pressed(MouseButton::Left) {
         sound.play(crate::sound::mixer::Request::own(crate::sound::Cue::Swing));
     }
 

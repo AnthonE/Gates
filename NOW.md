@@ -117,6 +117,116 @@ Remaining, ranked by what the captures show:
    packing step, not on a slot: `metallic_roughness_texture` is glTF-packed and
    its B channel is metallic, so a greyscale rough jpg would make every surface
    a half-metal.
+## 0p · The UI has a face and a measured palette — icons are what is left *(client lane)*
+
+**Second pass, 2026-08-07** (operator: *"the one you made looks super sub par…
+im willing to do anything to help us recreate this UI"*). The palette was
+re-derived off `Rust Images/crafting.png` and was not a near miss — cool
+near-black selecting in olive, against a reference that is warm, twice as
+light, and selects in **blue**. The vitals became **bars** off the same frame.
+`DECISIONS.md` "ui palette v1" has the samples and the one caveat.
+
+**Half-answered 2026-08-07** (operator: *"just remove the inner ring"*). The
+wheel merged two reference menus into one; the material ring is now cut and a
+blueprint places the bottom rung, which is what the reference's does. Nothing
+was lost — `sim_core::build::upgrade` and `ACT_UPGRADE` predate this and `U`
+already sends it. `DECISIONS.md` "the build wheel is one ring".
+
+## 0p2 · What the UI still owes *(client lane)*
+
+**1 · The hammer wants its own wheel.** The mouse is held-item modal now
+(`DECISIONS.md` 2026-08-07) and the plan's half is done: hold right for the
+shape ring, left click places, the ghost is up for as long as the plan is
+out. The hammer's half is not. It has left-click repair and keyboard
+`U`/`R`/`X`, but **holding right with a hammer opens nothing** — deliberately,
+because opening the shape wheel would place with the wrong verb.
+What it wants is the reference's second radial: demolish, rotate, upgrade,
+repair, pick up, **firing on pick rather than latching**. `ring.rs` already
+bakes an annulus from a segment count, so the drawing is close to free; the
+work is a second `Panel`, a second segment set, and an action-on-release path
+that the shape wheel deliberately does not have. Two verbs it would want that
+the sim has no command for: **rotate** and **demolish**.
+
+**2 · ~~A starter kit~~** — landed 2026-08-07, `DECISIONS.md` "spawn kit v0".
+Kept below only for the reasoning, which generalises: content is the
+replay-safe place to put anything that changes what a join produces.
+
+**Was: a starter kit, for testing** (operator: *"we might have to give players
+starter items for a bit for testing LOL"*). Real need — a fresh character
+spawns empty, so the wheel reads `350 Wood (0)` and the build flow cannot be
+exercised at all. **Not improvised**, because the two obvious routes both
+cross a wall: a new grant command is a wire change (wall 6, version bump +
+goldens), and a `shard.toml` flag that changes what `Join` seats would make a
+WAL replay diverge from the run that wrote it (wall 5) unless the flag is in
+the header. The route that is safe by construction is **content**: a spawn
+kit in `content/*.toml`, because the content hash is already pinned into the
+WAL header, so a replay replays the kit it was played under. That is a
+schema + validation + `world.rs` slice, not a patch.
+
+
+Landed 2026-08-07. Nothing owned the typeface: all 42 `TextFont` sites were
+`..default()`, so every screen drew in Bevy's embedded debug mono. The face is
+**Roboto Condensed**, measured off the reference's own public source rather
+than a screenshot (`Facepunch/Rust.Community` defaults its UI text to
+`RobotoCondensed-Bold.ttf`), embedded with `include_bytes!` because an
+unresolved `Handle<Font>` draws *nothing* and `OnEnter(Loading)` runs before
+`Startup`. Bold is the default weight and regular is prose — 31 sites against
+12. `DECISIONS.md` "ui type v0"; gate `tests/ui.rs` §F, a call-site grep.
+
+Verified by picture, not by compile: six vantages under Xvfb + lavapipe, zero
+panics, and — for the first time — **the panels too**, by driving a live
+client with `xdotool` (Tab, then hold B) and grabbing the root window. That is
+by hand and reproducible by nobody, which is item 1.
+
+Remaining, in order. **Item 1 blocks items 3 and 4:**
+
+1. **Nothing in this repo can photograph a panel.** `render/panels/` is not
+   registered on a `--capture` run, so inventory, crafting and the wheel —
+   ~1,400 lines and the screens a player spends the most time in — are seen
+   only by a human with a shard up. Wanted: a **viewer, not a gate** — a mode
+   that opens each panel against a stocked fixture and writes a PNG per
+   screen. The visual-gate rule is retired and stays retired (`CLAUDE.md`);
+   this asserts nothing. `panels/mod.rs`'s refusal ("a gate whose frames
+   depend on a keystroke") was right about a *gate* and does not bind a
+   viewer.
+2. **DONE 2026-08-07 — icons, and the wheel rebuilt around them.** The wheel
+   was *"worse than even avg programmer art"* (operator) and the diagnosis was
+   structural, not colour: `building.jpeg` is a **cream annulus cut into
+   wedges** with a line-art glyph in each and the world showing through the
+   middle, and ours was a flat dark disc with rounded label boxes floating on
+   it. The annulus is now a baked texture (`render/panels/ring.rs`, ten images
+   at plugin-build time, geometry from the same `Rings` that `pick` resolves
+   with) and every cell and wedge carries an icon from **game-icons.net**
+   (CC BY 3.0, `ci/bake_icons.py`, 57 PNGs). Gate `tests/ui.rs` §G.
+   *Left behind:* two items share a glyph where the set had no second
+   candidate, and the wheel is still **two** rings where the reference has one
+   — see the hammer/blueprint note above, which is the same finding.
+
+   ~~**ICONS — the single largest gap, and the only one blocked on art.**~~
+   Every cell in `crafting.png` is item artwork; every cell of ours is a
+   clipped word. The reference wheel is a cream ring of red line-art glyphs;
+   ours is a dark disc of text boxes. Two halves with very different costs:
+   the **six building shapes** are isometric solids and are generatable the
+   way `tree::needle_image` and `sky.rs` already generate one, so that half
+   needs no art at all; the **48 item icons** are real content and cannot be
+   traced from the reference (the IP rail). `ART.md` §7 permits real assets.
+   **This is the operator question**, and it gates how the panels ever stop
+   reading as a spreadsheet.
+3. **Two defects the first look found, both cheap.** An item name overflows
+   its 44 px cell — `Gunpowde`, `Workbenc`, `Metal Fragments` bleeding over
+   its border — so the browser is least readable exactly where content grew;
+   it wants clipping plus an abbreviation, not a bigger cell (the 720p budget
+   is why). And the wheel's hint line is drawn at `bottom: 40px`, straight
+   through the hotbar behind it.
+4. **Twelve sizes is not a scale.** Collapsing to five is a real improvement
+   and may not be done blind: the numbers were budgeted against 720p and the
+   first cut clipped a column at both ends.
+5. **Surveyed and refused: `bevy_hui`, `bevy_lunex`, `bevy_feathers`.**
+   `bevy_hui` is the closest to the XML-and-hooks shape the operator asked
+   about, and taking it would move ~5,400 lines of screen description out of
+   Rust and into a plugin that spawns entities from data — the same reason
+   `bevy_procedural_tree`'s own plugin is deliberately unused. The iteration
+   win it is wanted for is item 1's, and item 1 costs a fraction as much.
 
 ## 0y · Persistence takes the reference game's shape *(server lane)*
 

@@ -60,6 +60,10 @@ async fn test_bot_smoke_50() {
         combat,
         backpack,
         survival,
+        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
+        // for a human looking at the game, and a suite that asserted on a
+        // fresh inventory would be asserting on content instead of on code.
+        sim_core::inventory::SpawnKit::EMPTY,
         loot,
         catalog,
         // Persistence off: these shards write no file, so the suite stays
@@ -181,6 +185,10 @@ async fn test_action_lane_over_socket() {
         combat,
         backpack,
         survival,
+        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
+        // for a human looking at the game, and a suite that asserted on a
+        // fresh inventory would be asserting on content instead of on code.
+        sim_core::inventory::SpawnKit::EMPTY,
         loot,
         catalog,
         // Persistence off: these shards write no file, so the suite stays
@@ -273,6 +281,10 @@ async fn test_version_gate_refuses() {
         combat,
         backpack,
         survival,
+        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
+        // for a human looking at the game, and a suite that asserted on a
+        // fresh inventory would be asserting on content instead of on code.
+        sim_core::inventory::SpawnKit::EMPTY,
         loot,
         catalog,
         // Persistence off: these shards write no file, so the suite stays
@@ -305,10 +317,10 @@ async fn test_version_gate_refuses() {
 }
 
 /// The dev gate at its source: a shard's welcome carries `dev` true iff it
-/// is running a dev override (`shard.toml dev_spawn`). The browser client
-/// installs its dev affordances — `__gatesDebug.setView`, the capture
-/// harness's camera hook — on this bit and nothing else, so a public shard
-/// reporting true would put a dev surface on every player's page.
+/// is running a dev override (`shard.toml dev_spawn`). That bit is a
+/// client's only dev gate — dev affordances hang off it and nothing else —
+/// so a public shard reporting true would offer a dev surface to every
+/// player who connects.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_welcome_dev_bit_tracks_dev_spawn() {
     use server::net::client_handshake;
@@ -328,6 +340,10 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
             combat,
             backpack,
             survival,
+            // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
+            // for a human looking at the game, and a suite that asserted on a
+            // fresh inventory would be asserting on content instead of on code.
+            sim_core::inventory::SpawnKit::EMPTY,
             loot,
             catalog,
             Saves::off(),

@@ -32,6 +32,12 @@ pub const TOAST_SECS: f32 = 3.0;
 /// confirmation, not a readout.
 pub const HITMARK_SECS: f32 = 0.25;
 
+/// A vitals bar, px. The reference's are ~112 × 19 in a 1200-wide frame;
+/// these are the same proportion at 1280, and the height is what makes the
+/// icon square square. Cosmetic (`DECISIONS.md` §open, client cosmetics).
+pub const VITAL_BAR_W: f32 = 118.0;
+pub const VITAL_BAR_H: f32 = 19.0;
+
 /// The one line that says what just happened in the world: a refusal, a
 /// full action lane, a verb that found nothing.
 ///
@@ -73,9 +79,62 @@ const CROSSHAIR_HIT: Color = Color::srgba(0.98, 0.42, 0.30, 0.95);
 #[derive(Component)]
 pub struct Cell(usize);
 
-/// The vitals readout.
+/// Which vital a row draws. The reference's order top-to-bottom, which is
+/// also its colour order: green, blue, orange.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Vital {
+    Hp,
+    Water,
+    Food,
+}
+
+impl Vital {
+    /// The vital's value and its maximum. A maximum of 0 means no `Vitals`
+    /// message has ever arrived, which is not the same as a zeroed vital —
+    /// see the module header.
+    fn read(self, core: &client_wasm::core::ClientCore) -> (u16, u16) {
+        match self {
+            Vital::Hp => (core.hp, core.hp_max),
+            Vital::Water => (core.water, core.max_water),
+            Vital::Food => (core.food, core.max_food),
+        }
+    }
+
+    /// The glyph standing in for the reference's icon.
+    ///
+    /// **A placeholder, and named as one.** The reference puts a drawn icon
+    /// in that square; a glyph is what a client with no icons can say
+    /// truthfully until `NOW.md` §0p item 3 lands them.
+    fn glyph(self) -> &'static str {
+        match self {
+            Vital::Hp => "+",
+            Vital::Water => "~",
+            Vital::Food => "*",
+        }
+    }
+
+    fn fill(self) -> Color {
+        match self {
+            Vital::Hp => super::panels::VITAL_HP,
+            Vital::Water => super::panels::VITAL_WATER,
+            Vital::Food => super::panels::VITAL_FOOD,
+        }
+    }
+}
+
+/// The row for one vital — hidden wholesale when its maximum is 0, which is
+/// the "draw nothing rather than an empty bar" rule this module has always
+/// held, moved from a string to a `Display`.
 #[derive(Component)]
-pub struct Vitals;
+pub struct VitalRow(pub Vital);
+
+/// The coloured part of a bar. Its width is the vital, as a percentage.
+#[derive(Component)]
+pub struct VitalFill(pub Vital);
+
+/// The number drawn inside the bar.
+#[derive(Component)]
+pub struct VitalNum(pub Vital);
 
 /// What the build wheel last chose. Drawn beside the hotbar because a
 /// selection nothing shows is a selection the player cannot trust — the
@@ -143,23 +202,94 @@ pub fn setup(mut commands: Commands) {
             }
         });
 
-    // The vitals stack: right side, small, never centred.
-    commands.spawn((
-        super::WorldEntity,
-        Vitals,
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(20.0),
-            right: Val::Px(22.0),
-            ..default()
-        },
-        Text::new(""),
-        TextFont {
-            font_size: 17.0,
-            ..default()
-        },
-        TextColor(Color::srgba(0.93, 0.91, 0.86, 0.92)),
-    ));
+    // The vitals stack: right side, small, never centred — and **bars, not
+    // text**. `Rust Images/crafting.png` draws three filled bars with an icon
+    // square each, bottom right; ours read `HP 100/100` in a column, which is
+    // a debug readout wearing a HUD's position. A bar is also the only one of
+    // the two that answers the question a player actually asks mid-fight,
+    // which is "how much is left" and not "what integer is it".
+    commands
+        .spawn((
+            super::WorldEntity,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(18.0),
+                right: Val::Px(20.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                ..default()
+            },
+            Pickable::IGNORE,
+        ))
+        .with_children(|stack| {
+            for v in [Vital::Hp, Vital::Water, Vital::Food] {
+                stack
+                    .spawn((
+                        VitalRow(v),
+                        Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(3.0),
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                    ))
+                    .with_children(|row| {
+                        // The icon square, left of the bar. A glyph today; a
+                        // drawn icon when there are icons.
+                        row.spawn((
+                            Node {
+                                width: Val::Px(VITAL_BAR_H),
+                                height: Val::Px(VITAL_BAR_H),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            BackgroundColor(super::panels::VITAL_TROUGH),
+                            children![(
+                                Text::new(v.glyph().to_string()),
+                                super::ui::font_bold(13.0),
+                                TextColor(v.fill()),
+                            )],
+                        ));
+                        // The bar: a trough, the fill over it, and the number
+                        // over both. Only the fill's width animates.
+                        row.spawn((
+                            Node {
+                                width: Val::Px(VITAL_BAR_W),
+                                height: Val::Px(VITAL_BAR_H),
+                                ..default()
+                            },
+                            BackgroundColor(super::panels::VITAL_TROUGH),
+                            children![
+                                (
+                                    VitalFill(v),
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Px(0.0),
+                                        top: Val::Px(0.0),
+                                        width: Val::Percent(0.0),
+                                        height: Val::Percent(100.0),
+                                        ..default()
+                                    },
+                                    BackgroundColor(v.fill()),
+                                ),
+                                (
+                                    VitalNum(v),
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Px(6.0),
+                                        top: Val::Px(1.0),
+                                        ..default()
+                                    },
+                                    Text::new(""),
+                                    super::ui::font_bold(13.0),
+                                    TextColor(Color::srgb(0.98, 0.97, 0.95)),
+                                ),
+                            ],
+                        ));
+                    });
+            }
+        });
 
     // The build plan, bottom left. Only ever text: the piece it names is a
     // client-side latch, not sim state.
@@ -177,10 +307,7 @@ pub fn setup(mut commands: Commands) {
             ..default()
         },
         Text::new(""),
-        TextFont {
-            font_size: 14.0,
-            ..default()
-        },
+        super::ui::font_bold(14.0),
         TextColor(Color::srgba(0.86, 0.83, 0.76, 0.80)),
         Pickable::IGNORE,
     ));
@@ -242,10 +369,7 @@ pub fn setup(mut commands: Commands) {
             ..default()
         },
         Text::new(""),
-        TextFont {
-            font_size: 15.0,
-            ..default()
-        },
+        super::ui::font_bold(15.0),
         TextColor(Color::srgba(0.96, 0.94, 0.88, 0.92)),
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
@@ -261,10 +385,7 @@ pub fn setup(mut commands: Commands) {
             ..default()
         },
         Text::new(""),
-        TextFont {
-            font_size: 14.0,
-            ..default()
-        },
+        super::ui::font(14.0),
         TextColor(Color::srgba(0.98, 0.82, 0.55, 0.0)),
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
@@ -283,10 +404,7 @@ pub fn setup(mut commands: Commands) {
             ..default()
         },
         Text::new(""),
-        TextFont {
-            font_size: 15.0,
-            ..default()
-        },
+        super::ui::font_bold(15.0),
         TextColor(Color::srgba(0.90, 0.88, 0.82, 0.75)),
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
@@ -301,11 +419,18 @@ pub fn setup(mut commands: Commands) {
 /// Redraw from the core. Cheap enough per frame: six background colours and
 /// one string.
 #[allow(clippy::type_complexity)]
+// Eight, and the eighth arrived with the aiming refusal: the vitals stack grew
+// three queries of its own on `main` in the same window. Each is a distinct
+// source this frame reads, which is the same justification `ghost::track`
+// carries for its own count.
+#[allow(clippy::too_many_arguments)]
 pub fn update(
     net: NonSend<Net>,
     mut cells: Query<(&Cell, &mut BorderColor, &mut BackgroundColor)>,
-    mut vitals: Query<&mut Text, (With<Vitals>, Without<Plan>)>,
-    mut plan: Query<&mut Text, (With<Plan>, Without<Vitals>)>,
+    mut plan: Query<&mut Text, (With<Plan>, Without<VitalNum>)>,
+    mut rows: Query<(&VitalRow, &mut Node), (Without<VitalFill>, Without<Cell>)>,
+    mut fills: Query<(&VitalFill, &mut Node), Without<Cell>>,
+    mut nums: Query<(&VitalNum, &mut Text), Without<Plan>>,
     // `Option`, because a capture run does not register the menus at all.
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
@@ -313,9 +438,9 @@ pub fn update(
     let core = &net.session.core;
 
     if let (Ok(mut text), Some(ui)) = (plan.single_mut(), ui.as_ref()) {
-        use crate::ui::build::{material_label, row_for, shape_label, MATERIALS, SHAPES};
+        use crate::ui::build::{material_label, row_for, shape_label, PLACE_MATERIAL, SHAPES};
         let shape = SHAPES[ui.shape.min(SHAPES.len() - 1)];
-        let material = MATERIALS[ui.material.min(MATERIALS.len() - 1)];
+        let material = PLACE_MATERIAL;
         // Named only when the content actually has that piece — the wheel
         // draws a dead segment for a pair the shard did not bake, and the
         // HUD must not contradict it.
@@ -336,7 +461,7 @@ pub fn update(
                 let level = ghost.as_ref().map(|g| g.level).unwrap_or(0);
                 if why.is_empty() {
                     format!(
-                        "BUILD  {} {}  L{}   (hold B)",
+                        "BUILD  {} {}  L{}   (hold right)",
                         material_label(material),
                         shape_label(shape),
                         level
@@ -351,7 +476,7 @@ pub fn update(
                     )
                 }
             }
-            None => "BUILD  -   (hold B)".to_string(),
+            None => "BUILD  -   (hold right)".to_string(),
         };
         if text.0 != out {
             text.0 = out;
@@ -372,23 +497,42 @@ pub fn update(
         });
     }
 
-    let Ok(mut text) = vitals.single_mut() else {
-        return;
-    };
-    let mut out = String::new();
-    // Zero max means the message has never arrived, which is not the same as
-    // a zeroed vital — see the header.
-    if core.hp_max > 0 {
-        out.push_str(&format!("HP  {}/{}\n", core.hp, core.hp_max));
+    // The vitals: a row is hidden outright when its maximum is 0, the fill is
+    // the fraction, and the number is the value. Same rule the string version
+    // held — draw nothing rather than an empty bar for a player who cannot be
+    // hurt — expressed as a `Display` instead of an absent line.
+    for (row, mut node) in rows.iter_mut() {
+        let (_, max) = row.0.read(core);
+        let want = if max > 0 {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != want {
+            node.display = want;
+        }
     }
-    if core.max_food > 0 {
-        out.push_str(&format!("FOOD {}\n", core.food));
+    for (fill, mut node) in fills.iter_mut() {
+        let (value, max) = fill.0.read(core);
+        // Clamped, because the server is authoritative and a vital over its
+        // stated maximum is a bar that would run off its trough rather than a
+        // reason to disbelieve the number beside it.
+        let pct = if max > 0 {
+            (value as f32 / max as f32).clamp(0.0, 1.0) * 100.0
+        } else {
+            0.0
+        };
+        let want = Val::Percent(pct);
+        if node.width != want {
+            node.width = want;
+        }
     }
-    if core.max_water > 0 {
-        out.push_str(&format!("WATER {}", core.water));
-    }
-    if text.0 != out {
-        text.0 = out;
+    for (num, mut text) in nums.iter_mut() {
+        let (value, _) = num.0.read(core);
+        let out = value.to_string();
+        if text.0 != out {
+            text.0 = out;
+        }
     }
 }
 

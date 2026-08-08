@@ -24,8 +24,13 @@
 //!   predictor reports the world origin rather than nothing, so the failure
 //!   is a client that builds the wrong neighbourhood confidently and a bar
 //!   that fills while it does.
+//! - **§F one owner for the face.** The only gate here that is a grep, and
+//!   for the reason `tests/sound.rs` states about the feed drain: **the
+//!   defect is a call site, not a value.** A `TextFont` literal compiles,
+//!   passes clippy, and draws in Bevy's debug mono next to forty words that
+//!   are not — which is exactly how all forty of them got there.
 
-use client::ui::build::{self, Hover, Rings, MATERIALS, SHAPES};
+use client::ui::build::{self, Rings, MATERIALS, SHAPES};
 use client::ui::craft::{self, Cat, Facts};
 use client::ui::load::Progress;
 use client::ui::slots::{self, Grab};
@@ -452,24 +457,48 @@ fn the_labels_sit_in_the_segments_they_name() {
 }
 
 #[test]
-fn the_rings_and_the_dead_centre() {
+fn the_ring_and_the_dead_centre() {
     let r = Rings::default();
-    assert!(r.dead < r.split && r.split < r.rim);
+    assert!(r.dead < r.rim);
     // Dead centre: a release here keeps what was chosen and picks nothing.
     assert_eq!(build::pick(0.0, 0.0, r), None);
     assert_eq!(build::pick(0.0, r.dead - 1.0, r), None);
     // Past the rim the pointer has left the wheel.
     assert_eq!(build::pick(0.0, r.rim + 1.0, r), None);
-    // Inner ring is the material, outer is the shape — the other way round
-    // would put the six-way ring where the thumb has least room.
-    assert_eq!(
-        build::pick(0.0, (r.dead + r.split) * 0.5, r),
-        Some(Hover::Material(0))
+    // **One ring, and it is the shapes.** The material ring was cut on
+    // 2026-08-07: the reference's blueprint places one rung and its hammer
+    // climbs the ladder, so picking a material at placement time was a verb
+    // the reference does not have. Anywhere in the band is a shape.
+    let mid = (r.dead + r.rim) * 0.5;
+    assert_eq!(build::pick(0.0, mid, r), Some(0));
+    assert_eq!(build::pick(0.0, r.dead + 1.0, r), Some(0));
+    assert_eq!(build::pick(0.0, r.rim - 1.0, r), Some(0));
+}
+
+/// The band matches the reference's proportion.
+///
+/// Not decoration: the ring texture is baked from these same radii
+/// (`render/panels/ring.rs`), so a change here silently moves what is drawn
+/// as well as what is picked, and the two staying equal is the wheel's
+/// oldest rule.
+#[test]
+fn the_band_is_the_references_proportion() {
+    let r = Rings::default();
+    let ratio = r.dead / r.rim;
+    assert!(
+        (ratio - 0.66).abs() < 0.02,
+        "inner/outer is {ratio:.3}, measured off building.jpeg as 0.66"
     );
-    assert_eq!(
-        build::pick(0.0, (r.split + r.rim) * 0.5, r),
-        Some(Hover::Shape(0))
-    );
+}
+
+/// A blueprint places one material and it is the bottom rung.
+#[test]
+fn the_blueprint_places_the_first_rung() {
+    assert_eq!(build::PLACE_MATERIAL, MATERIALS[0]);
+    assert_eq!(build::PLACE_MATERIAL, MAT_WOOD);
+    // The ladder above it is reachable, or pinning the placement would have
+    // made stone and metal unbuildable rather than upgrade-only.
+    assert!(MATERIALS.len() > 1, "there is a ladder to climb");
 }
 
 #[test]
@@ -1084,4 +1113,280 @@ fn the_mark_moves_with_the_chase() {
         marks.iter().collect::<std::collections::HashSet<_>>().len() > 1,
         "the weak mark never moved across 8 hits: {marks:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// §F · one owner for the face
+//
+// `render/ui.rs` owns the palette because three screens that are supposed to
+// read as one product had three copies of the same six colours. It owns the
+// FACE for a harder version of the same reason, and the harder version is
+// what actually happened: until 2026-08-07 nothing owned it, all forty-two
+// `TextFont` sites in the render path were `..default()`, and every screen
+// this client has drew in Bevy's embedded debug mono.
+//
+// A grep rather than a value, exactly as `tests/sound.rs`'s feed-drain gate
+// is: a `TextFont { font_size: 12.0, ..default() }` is legal Rust, survives
+// `clippy -D warnings`, and is invisible in review because it looks like
+// every other bundle field. The only place it shows up is on the screen, and
+// nothing in this repo photographs a panel.
+
+/// Every `.rs` under `src/render`, path and text.
+fn render_sources() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        for e in std::fs::read_dir(dir).expect("src/render must exist") {
+            let p = e.expect("readable entry").path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push((
+                    p.display().to_string(),
+                    std::fs::read_to_string(&p).expect("readable source"),
+                ));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(std::path::Path::new("src/render"), &mut files);
+    assert!(
+        files.len() > 10,
+        "only found {} render sources",
+        files.len()
+    );
+    files
+}
+
+/// No `TextFont` literal outside the file that owns the face.
+///
+/// The escape hatch is deliberately not a comment marker: a site that needs
+/// something `ui::font`/`ui::font_bold` cannot express should widen the
+/// vocabulary, because the next screen will want it too.
+#[test]
+fn only_ui_rs_builds_a_textfont() {
+    let mut offenders = Vec::new();
+    for (path, text) in render_sources() {
+        if path.ends_with("render/ui.rs") {
+            continue;
+        }
+        for (n, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            // Comments may name the type freely — the rule is about
+            // construction, and every comment about it says so.
+            if code.starts_with("//") || code.starts_with("*") {
+                continue;
+            }
+            if code.contains("TextFont {") {
+                offenders.push(format!("{path}:{}: {}", n + 1, code));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a TextFont built outside render/ui.rs draws in a different typeface \
+         from the rest of the screen — use ui::font (prose) or ui::font_bold \
+         (labels, the reference's own default weight):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Both faces, and the notice that lets us ship them.
+///
+/// Apache-2.0 is a *notice* licence: the fonts may be redistributed and the
+/// licence text has to travel with them. `include_bytes!` makes a missing
+/// `.ttf` a build error, which is why this only has to check the third file
+/// — the one nothing links against and everything depends on legally.
+#[test]
+fn the_faces_ship_with_their_licence() {
+    for name in [
+        "RobotoCondensed-Regular.ttf",
+        "RobotoCondensed-Bold.ttf",
+        "LICENSE-ROBOTO.txt",
+    ] {
+        let p = std::path::Path::new("fonts").join(name);
+        let n = std::fs::metadata(&p)
+            .unwrap_or_else(|e| panic!("{} is missing: {e}", p.display()))
+            .len();
+        assert!(
+            n > 1024,
+            "{} is {n} bytes, which is not a file",
+            p.display()
+        );
+    }
+    let licence = std::fs::read_to_string("fonts/LICENSE-ROBOTO.txt").expect("readable licence");
+    assert!(
+        licence.contains("Apache License") && licence.contains("Version 2.0"),
+        "fonts/LICENSE-ROBOTO.txt is not the Apache 2.0 text the fonts are under"
+    );
+}
+
+/// The vocabulary is two functions and both are used.
+///
+/// A weight nobody asks for is a weight that rots: if `ui::font` loses its
+/// last call site, prose has quietly become bold everywhere and the
+/// hierarchy the reference actually has is gone. Counted rather than
+/// asserted-nonzero so the number moving is visible in a diff.
+#[test]
+fn both_weights_are_in_use() {
+    let (mut prose, mut label) = (0usize, 0usize);
+    for (path, text) in render_sources() {
+        if path.ends_with("render/ui.rs") {
+            continue;
+        }
+        for line in text.lines() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            // Disjoint needles: `font_bold(` does not contain `font(`.
+            label += code.matches("font_bold(").count();
+            prose += code.matches("font(").count();
+        }
+    }
+    // 14 and 26 as this landed. The floors are loose on purpose — this
+    // catches a *collapse* (one weight losing its last call sites), not the
+    // ordinary drift of a screen gaining or losing a line, which would make
+    // it a gate that cries wolf at every UI commit.
+    assert!(
+        prose >= 5 && label >= 15,
+        "the weight hierarchy has collapsed: {prose} prose sites, {label} label sites"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// §G · the icons ship, and the two lists agree
+//
+// The icons are CC BY 3.0 from game-icons.net. That licence is a *notice*
+// licence: the files may be redistributed and the credit has to travel with
+// them. The credit lives in `assets/icons/CREDITS.md`, which nothing links
+// against and nothing would notice the loss of — the same shape as the font
+// licence in §F, and the same reason for a gate.
+//
+// The second half is the drift that would actually bite: `icons::STEMS` is a
+// const list the render path reads, and `assets/icons/` is what ships. A stem
+// with no file draws an empty cell; a file with no stem is dead weight in the
+// depot. Neither is visible without opening the game.
+
+/// Where the client's assets live, from the crate root this test runs in.
+fn icon_dir() -> std::path::PathBuf {
+    std::path::Path::new("../../assets/icons").to_path_buf()
+}
+
+#[test]
+fn the_icons_ship_with_their_credit() {
+    let credits = icon_dir().join("CREDITS.md");
+    let text = std::fs::read_to_string(&credits)
+        .unwrap_or_else(|e| panic!("{} is missing: {e}", credits.display()));
+    // The three things CC BY 3.0 actually asks for: the work, the licence,
+    // and the authors.
+    assert!(
+        text.contains("game-icons.net"),
+        "the credit does not name the source"
+    );
+    assert!(
+        text.contains("Attribution 3.0") || text.contains("CC BY 3.0"),
+        "the credit does not name the licence"
+    );
+    for author in ["lorc", "delapouite"] {
+        assert!(
+            text.contains(author),
+            "the credit does not name {author}, whose icons ship"
+        );
+    }
+}
+
+#[test]
+fn every_stem_has_a_file_and_every_file_has_a_stem() {
+    let dir = icon_dir();
+    let on_disk: std::collections::BTreeSet<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{} is missing: {e}", dir.display()))
+        .filter_map(|e| {
+            let p = e.ok()?.path();
+            (p.extension()? == "png").then(|| p.file_stem()?.to_str().map(str::to_string))?
+        })
+        .collect();
+    let declared: std::collections::BTreeSet<String> = client::ui::icons::STEMS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let missing: Vec<_> = declared.difference(&on_disk).collect();
+    let orphan: Vec<_> = on_disk.difference(&declared).collect();
+    assert!(
+        missing.is_empty(),
+        "declared in icons::STEMS but not in assets/icons — these draw an \
+         empty cell: {missing:?}"
+    );
+    assert!(
+        orphan.is_empty(),
+        "in assets/icons but not declared — dead weight in the depot: {orphan:?}"
+    );
+    assert_eq!(
+        declared.len(),
+        client::ui::icons::STEMS.len(),
+        "icons::STEMS has a duplicate"
+    );
+}
+
+/// Every item the shard can send has a picture.
+///
+/// Reads `content/items.toml` directly rather than trusting a list: the whole
+/// failure this prevents is content growing an item that the client then
+/// draws as a clipped word in a 44 px cell.
+#[test]
+fn every_item_in_the_content_has_an_icon() {
+    let toml = std::fs::read_to_string("../../content/items.toml").expect("content/items.toml");
+    let declared: std::collections::BTreeSet<&str> =
+        client::ui::icons::STEMS.iter().copied().collect();
+
+    let mut missing = Vec::new();
+    for line in toml.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("name = \"") else {
+            continue;
+        };
+        let Some(name) = rest.strip_suffix('"') else {
+            continue;
+        };
+        let stem = client::ui::icons::stem(name);
+        if !declared.contains(stem.as_str()) {
+            missing.push(format!("{name} -> {stem}"));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "content items with no icon (bake them into assets/icons and add the \
+         stem to icons::STEMS):\n{}",
+        missing.join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// §H · the two items the mouse is modal on must exist
+//
+// `crate::ui::hold` decides what left and right click mean by normalising the
+// held item's DISPLAY NAME, because that is the only thing on the wire —
+// `protocol::ItemCatalog` carries names and nothing else. That works, and it
+// has one failure mode worth a gate: rename the item in `content/items.toml`
+// and nothing breaks loudly. `held` simply returns `Other` forever, the ghost
+// stops appearing, right-click stops opening the wheel, and left click goes
+// back to swinging. Every one of those is a silent revert to the old
+// behaviour, which is the worst shape a regression can have.
+
+#[test]
+fn the_content_still_names_the_plan_and_the_hammer() {
+    let toml = std::fs::read_to_string("../../content/items.toml").expect("content/items.toml");
+    let stems: std::collections::BTreeSet<String> = toml
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("name = \"")?.strip_suffix('"'))
+        .map(client::ui::icons::stem)
+        .collect();
+
+    for want in [client::ui::hold::PLAN_STEM, client::ui::hold::HAMMER_STEM] {
+        assert!(
+            stems.contains(want),
+            "no item in the content normalises to `{want}` — `ui::hold` would \
+             decide nothing is ever held, and the mouse would silently revert \
+             to a swing. Rename the constant with the item, in one commit."
+        );
+    }
 }
