@@ -159,6 +159,7 @@ pub async fn spawn_shard(
     combat: sim_core::combat::CombatContent,
     backpack: sim_core::backpack::BackpackContent,
     survival: sim_core::survival::SurvivalContent,
+    cook: sim_core::oven::CookContent,
     spawn_kit: sim_core::inventory::SpawnKit,
     loot: sim_core::loot::LootContent,
     catalog: ItemCatalog,
@@ -254,6 +255,7 @@ pub async fn spawn_shard(
                     combat,
                     backpack,
                     survival,
+                    cook,
                     spawn_kit,
                     loot,
                     catalog,
@@ -1248,6 +1250,7 @@ fn sim_thread(
     combat: sim_core::combat::CombatContent,
     backpack: sim_core::backpack::BackpackContent,
     survival: sim_core::survival::SurvivalContent,
+    cook: sim_core::oven::CookContent,
     spawn_kit: sim_core::inventory::SpawnKit,
     loot: sim_core::loot::LootContent,
     catalog: ItemCatalog,
@@ -1272,6 +1275,7 @@ fn sim_thread(
     core.world.combat = combat;
     core.world.backpack = backpack;
     core.world.survival = survival;
+    core.world.cook = cook;
     core.world.spawn_kit = spawn_kit;
     core.world.loot = loot;
     core.catalog = catalog;

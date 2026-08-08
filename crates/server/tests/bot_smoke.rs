@@ -23,6 +23,7 @@ fn baked_content() -> (
     sim_core::combat::CombatContent,
     sim_core::backpack::BackpackContent,
     sim_core::survival::SurvivalContent,
+    sim_core::oven::CookContent,
     sim_core::loot::LootContent,
     protocol::ItemCatalog,
 ) {
@@ -41,16 +42,18 @@ fn baked_content() -> (
     let survival = content
         .bake_survival()
         .expect("shipped survival clock bakes");
+    let cook = content.bake_cooking().expect("shipped oven table bakes");
     let loot = content.bake_loot().expect("shipped loot tables bake");
     let catalog = server::net::bake_catalog(&content).expect("shipped catalog bakes");
     (
-        gather, craft, build, deploy, combat, backpack, survival, loot, catalog,
+        gather, craft, build, deploy, combat, backpack, survival, cook, loot, catalog,
     )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bot_smoke_50() {
-    let (gather, craft, build, deploy, combat, backpack, survival, loot, catalog) = baked_content();
+    let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, catalog) =
+        baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(0xC0FFEE),
         gather,
@@ -60,6 +63,7 @@ async fn test_bot_smoke_50() {
         combat,
         backpack,
         survival,
+        cook,
         // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
         // for a human looking at the game, and a suite that asserted on a
         // fresh inventory would be asserting on content instead of on code.
@@ -175,7 +179,8 @@ async fn test_action_lane_over_socket() {
         .recipe_index("recipe.hatchet_stone")
         .expect("shipped recipe");
 
-    let (gather, craft, build, deploy, combat, backpack, survival, loot, catalog) = baked_content();
+    let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, catalog) =
+        baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(11),
         gather,
@@ -185,6 +190,7 @@ async fn test_action_lane_over_socket() {
         combat,
         backpack,
         survival,
+        cook,
         // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
         // for a human looking at the game, and a suite that asserted on a
         // fresh inventory would be asserting on content instead of on code.
@@ -271,7 +277,8 @@ async fn test_version_gate_refuses() {
     use protocol::{encode_hello, Hello, MAX_STREAM_MSG_BYTES};
     use server::net::{read_frame, write_frame};
 
-    let (gather, craft, build, deploy, combat, backpack, survival, loot, catalog) = baked_content();
+    let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, catalog) =
+        baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(7),
         gather,
@@ -281,6 +288,7 @@ async fn test_version_gate_refuses() {
         combat,
         backpack,
         survival,
+        cook,
         // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
         // for a human looking at the game, and a suite that asserted on a
         // fresh inventory would be asserting on content instead of on code.
@@ -327,7 +335,7 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
 
     // Same shard, same everything, one config key apart.
     for (dev_spawn, want) in [(None, false), (Some((1024.0, 1024.0)), true)] {
-        let (gather, craft, build, deploy, combat, backpack, survival, loot, catalog) =
+        let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, catalog) =
             baked_content();
         let mut cfg = ShardConfig::ephemeral(13);
         cfg.dev_spawn = dev_spawn;
@@ -340,6 +348,7 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
             combat,
             backpack,
             survival,
+            cook,
             // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
             // for a human looking at the game, and a suite that asserted on a
             // fresh inventory would be asserting on content instead of on code.

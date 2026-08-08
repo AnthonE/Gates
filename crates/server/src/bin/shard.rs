@@ -97,6 +97,13 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    let cook = match content.bake_cooking() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("shard: content bake refused: {e}");
+            std::process::exit(1);
+        }
+    };
     let spawn_kit = match content.bake_spawn_kit() {
         Ok(k) => k,
         Err(e) => {
@@ -238,6 +245,7 @@ async fn main() {
             trial.combat = combat;
             trial.backpack = backpack;
             trial.survival = survival;
+            trial.cook = cook;
             trial.loot = loot;
             match server::worldfile::open(
                 Path::new(path),
@@ -293,8 +301,8 @@ async fn main() {
     // proves they hold the private key behind the address they claim
     // (`auth.rs`), which is the thing the warning was waiting for.
     let handle = match spawn_shard(
-        cfg, gather, craft, build, deploy, combat, backpack, survival, spawn_kit, loot, catalog,
-        saves, world_boot,
+        cfg, gather, craft, build, deploy, combat, backpack, survival, cook, spawn_kit, loot,
+        catalog, saves, world_boot,
     )
     .await
     {

@@ -294,7 +294,14 @@ for (let i = 0; i < slotCount; i++) {
 // a v26 client's hello decodes to a different kind entirely, so the version
 // gate refuses it before any field is read. Nothing silent, which is the
 // one mercy of a width change over a field change.
-check(ex.client_proto_ver() === 27, "proto ver drifted without this gate hearing");
+// 28: the oven (`sim-core/oven.rs`). One new subtype (`SUB_OVEN`, 41 —
+// inside v13's 6-bit field, so nothing moved for it), and one thing that
+// DID move: the move-refusal reason widened 3 -> 4 bits to hold the
+// eighth reason, `REFUSE_M_OVEN`. That is a field width on a message this
+// file hand-frames, which is why the frame below changed with it — a v27
+// reader takes the whole address one bit short and rolls back the wrong
+// slot, silently, which is the class this list exists to name.
+check(ex.client_proto_ver() === 28, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -746,10 +753,10 @@ check(ex.client_chat_pop() === 0, "no line has arrived yet");
     "move payload mismatch: count 7 of item 5",
   );
 
-  // MoveRefused: sub 37 · reason 4 (REFUSE_M_NO_ROOM, 3-bit field) · the
+  // MoveRefused: sub 37 · reason 4 (REFUSE_M_NO_ROOM, 4-bit field at v28) · the
   // address it was asked for. The reason must be distinguishable from the
   // landed move above, which is why it rides the high byte.
-  f = evFrame(37, [[4, 3], [0, 2], [11, 5], [1, 2], [26, 5]]);
+  f = evFrame(37, [[4, 4], [0, 2], [11, 5], [1, 2], [26, 5]]);
   writeIn(f);
   mflags = ex.client_on_stream(f.length) >>> 0;
   check((mflags & STREAM_ERR) === 0, "a refusal must not read as a stream error");

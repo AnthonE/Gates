@@ -20,6 +20,42 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0v · The fire cooks nothing, because nothing on this island is raw *(systems lane)*
+
+Landed 2026-08-08: the oven (`sim-core/oven.rs`, `DECISIONS.md` §open "oven
+v0"). A campfire lights on `C`, opens on `E`, burns its wood at the
+reference's own rate, banks charcoal at the reference's own 75%, cooks what
+`content/cooking.toml` names, and snuffs itself when it runs dry. The
+furnace is the same class — a fire and a furnace differ only by which cook
+rows name them, which is how the reference builds it (`BaseOven`).
+
+**What is missing is the food, and it is not the oven's fault.** The table
+ships with zero `[[cook]]` rows: the alpha food set is berries, mushrooms
+and corn, only berries are payable by anything in the world, and none of
+the three is a thing you cook. The meat was cut with the animals that would
+drop it (`DECISIONS.md` §open, "food set"). So the shipped fire's job is
+fuel → charcoal — real, and a T0 source for the powder chain — and cooking
+is a table with no rows.
+
+Two ways to close it, and the choice is the operator's because it is the
+food-set knob:
+
+- **A raw food the world pays.** An animal (a spawn class, a strike, a
+  drop), or the forest-floor pickup mushrooms have wanted since the
+  survival clock landed — that one is a scatter occupant, so it moves
+  `test_terrain_golden`. Then one `[[cook]]` row and one consumable row,
+  no code.
+- **The burnt state.** Reference-true and free once food exists: a burnt
+  row is a cook row whose input is the cooked item, so it is content, not
+  a mechanic — but it cannot be demonstrated before there is a cooked
+  item to overcook.
+
+Also still open, and deliberately: the furnace's ore rows are still
+station-gated crafts in `recipes.toml`. Moving them into the oven is the
+reference's model and re-prices the whole powder chain against
+`CONTENT.md` §4's bands — a balance pass with an operator's number on it,
+not a refactor.
+
 ## 0u · The ghost tells the truth — what it still cannot promise *(client lane)*
 
 Landed 2026-08-07. The build ghost drew a doorway as a SOLID SLAB, so the
