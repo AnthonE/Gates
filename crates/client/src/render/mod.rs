@@ -64,6 +64,9 @@ pub mod terrain_mesh;
 pub mod textures;
 pub mod tree;
 pub mod ui;
+// The sea: a graded volume with a swell on it. `reference/WATER.md` is the
+// research, `TERRAIN.md` §4 is what it replaces.
+pub mod water;
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
 pub mod anim;
 pub mod verbs;
@@ -312,6 +315,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
             .init_resource::<audio::LastHp>()
+            .init_resource::<water::Sea>()
             .insert_non_send_resource(menu::Connecting::default());
 
         // `Menu` is inserted either way, because a system that reads it must
@@ -497,7 +501,10 @@ impl Plugin for GatesRenderPlugin {
         // looking at the result.
         app.add_systems(
             OnEnter(Screen::Loading),
-            (rig::setup, terrain_mesh::setup_water),
+            // The sea replaced `terrain_mesh::setup_water` here: it builds one
+            // eye-centred mesh and a ripple map rather than a plane, and it
+            // needs nothing the rig owns.
+            (rig::setup, water::setup),
         )
         // The HUD's viewmodel is parented to the camera, so it must be
         // built after the rig has spawned one.
@@ -538,6 +545,13 @@ impl Plugin for GatesRenderPlugin {
         // Leaving a shard resets the step odometer and the bed's fade. The
         // bed entity itself is a `WorldEntity` and goes with the rest.
         .add_systems(OnEnter(Screen::Menu), audio::teardown.after(world_teardown))
+        // The sea's caches are one island's depths; the next island's would
+        // be read off them until the eye happened to cross a snap cell.
+        .add_systems(OnEnter(Screen::Menu), water::teardown.after(world_teardown))
+        // The swell runs wherever the world runs — it is a surface, not a
+        // streamer, and a sea that froze while the Esc menu was up would
+        // resume with a visible jump in every wave.
+        .add_systems(Update, water::animate.run_if(world_running))
         // Input is the one thing that is `InWorld` and nothing else: it is
         // the only system that writes what the sim reads, and a player
         // reading a settings pane must not be swinging an axe.
@@ -596,6 +610,10 @@ impl Plugin for GatesRenderPlugin {
                 input::place_eye,
                 (
                     terrain_mesh::stream,
+                    // The sea re-centres like a ring does, and for the same
+                    // reason: it reads `Eye::pos`, so it belongs where the
+                    // other things that read it are.
+                    water::stream,
                     props::stream,
                     props::harvest,
                     clutter::stream,
@@ -635,6 +653,10 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             (
+                // `water` first of the audio systems: it resolves the frame's
+                // snapshot, and both `bed` and `pump` scale everything they
+                // do by it.
+                audio::water,
                 audio::feed,
                 audio::hurt,
                 audio::steps,

@@ -151,7 +151,13 @@ impl Mixer {
     /// client-driven path — every one of these callers is ultimately a packet
     /// or a keystroke.
     pub fn push(&mut self, req: Request) {
-        if self.queued >= CUE_QUEUE_CAP {
+        // **A bed is never started here.** A loop asked for as a one-shot is a
+        // voice that plays its whole 10 s body once at whatever the frame's
+        // gain happened to be, on top of the looping entity that is already
+        // playing it — two copies of the same ambience, drifting out of phase,
+        // for the life of the sample. Refused and counted with the other
+        // caller bugs (`super::CUE_QUEUE_CAP`), because that is what it is.
+        if req.cue.is_bed() || self.queued >= CUE_QUEUE_CAP {
             self.dropped = self.dropped.saturating_add(1);
             return;
         }
