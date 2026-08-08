@@ -100,7 +100,7 @@ fn test_content() {
     // The raid lane by hand: the door is breachable, every wall is not,
     // and the ladder rises. Same shape-pinning as the ratio above.
     assert!(a.door_breach_swings >= 30 && a.door_breach_swings <= 80);
-    assert!(a.wall_breach_swings[0] >= 150);
+    assert!(a.wall_breach_swings[0] >= 60);
     assert!(
         a.wall_breach_swings[0] < a.wall_breach_swings[1]
             && a.wall_breach_swings[1] < a.wall_breach_swings[2]
@@ -399,26 +399,30 @@ fn missing_file_refused() {
 
 #[test]
 fn band_breaks_refused() {
-    // TTK: a 5-damage spear is 20 hits to kill — far out of melee 3–5.
+    // TTK: a 5-damage melee row is 20 hits to kill — far out of melee 3–5.
+    // Keyed off the stone hatchet's 25, the first `melee` row in the file.
     refuses(
         "weapons.toml",
         "kind = \"melee\"\ndamage = 25",
         "kind = \"melee\"\ndamage = 5",
         "band break: ttk",
     );
-    // Raid ratio: a 100-structure satchel needs 18 to open stone — past
-    // 3×. The ratio divides by the `structure` column, not `damage`.
+    // Raid ratio: the satchel's own column, and the fixture is the value
+    // this file shipped BEFORE the reference alignment (2026-08-08). At
+    // 500 a satchel opens a 500-hp stone wall in one throw, so raiding
+    // costs a third of what building does — 0.35× against a [1.0, 3.0]
+    // band. The ratio divides by `structure`, not `damage`.
     refuses(
         "weapons.toml",
+        "structure = 125",
         "structure = 500",
-        "structure = 100",
         "band break: stone raid ratio",
     );
     // A weapon better against a wall than a person is refused outright,
-    // no band consulted: the spear that kills in 25 cannot chip 99.
+    // no band consulted: what kills in 25 cannot chip 99.
     refuses(
         "weapons.toml",
-        "damage = 25\nstructure = 3",
+        "damage = 25\nstructure = 2",
         "damage = 25\nstructure = 99",
         "exceeds its own body damage",
     );
@@ -470,7 +474,7 @@ fn band_breaks_refused() {
 fn upgrade_ladder_must_be_whole() {
     refuses(
         "building.toml",
-        "[[piece]]\nid = \"build.roof_wood\"\nshape = \"roof\"\nmaterial = \"wood\"\nhp = 750\ncost = [{ item = \"item.wood\", count = 350 }]\n",
+        "[[piece]]\nid = \"build.roof_wood\"\nshape = \"roof\"\nmaterial = \"wood\"\nhp = 250\ncost = [{ item = \"item.wood\", count = 350 }]\n",
         "",
         "upgrade ladder must be whole",
     );
@@ -609,13 +613,13 @@ fn bake_building_carries_the_shipped_numbers() {
     let bc = c.bake_building().expect("shipped building set must bake");
     assert_eq!(bc.piece_count as usize, c.pieces.len());
 
-    // building.toml build.wall_stone: shape wall, stone, hp 1750,
+    // building.toml build.wall_stone: shape wall, stone, hp 500,
     // 350 stone — read back from the baked row.
     let idx = c.piece_index("build.wall_stone").unwrap() as usize;
     let def = &bc.pieces[idx];
     assert_eq!(def.shape, sim_core::build::SHAPE_WALL);
     assert_eq!(def.material, sim_core::build::MAT_STONE);
-    assert_eq!(def.hp, 1750);
+    assert_eq!(def.hp, 500);
     assert_eq!(def.n_costs, 1);
     let stone = c.item_index("item.stone").unwrap();
     assert_eq!(def.costs[0], (stone, 350));
@@ -639,7 +643,7 @@ fn bake_building_refuses_out_of_cap_rows() {
         .iter_mut()
         .find(|(n, _)| *n == "building.toml")
         .unwrap();
-    entry.1 = entry.1.replacen("hp = 3000\n", "hp = 70000\n", 1);
+    entry.1 = entry.1.replacen("hp = 1000\n", "hp = 70000\n", 1);
     let c = build(&srcs).expect("oversize hp is a bake error, not a schema error");
     let err = c.bake_building().expect_err("70000-hp piece baked");
     assert!(err.contains("overflows u16"), "{err}");
@@ -1543,7 +1547,7 @@ fn the_shipped_pig_bakes() {
     let mc = c.bake_mobs().expect("the pig must bake");
     let pig = mc.def(sim_core::mob::MOB_PIG);
 
-    assert_eq!(pig.hp, 80);
+    assert_eq!(pig.hp, 150);
     // 50% and 70% of the −127..=127 axis, floored.
     assert_eq!(pig.gait, 63);
     assert_eq!(pig.flee_gait, 88);
@@ -1655,7 +1659,7 @@ fn the_kill_the_fire_and_the_meal_are_one_loop() {
 /// bug that would read as a bug in the sim if it booted.
 #[test]
 fn mob_refusals() {
-    refuses("mobs.toml", "hp = 80", "hp = 0", "zero hp");
+    refuses("mobs.toml", "hp = 150", "hp = 0", "zero hp");
     refuses(
         "mobs.toml",
         "walk_pct = 50",

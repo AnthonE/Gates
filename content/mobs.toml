@@ -20,26 +20,22 @@
 id = "mob.pig"
 name = "Pig"
 
-# **80 hp is four hits with the stone hatchet a fresh spawn carries**, four
-# with the wooden spear, three with the metal hatchet, the metal spear or
-# the bow.
+# **150 hp — the reference game's boar, and ours now too** (operator,
+# 2026-08-08: balance close to the reference so a player coming from it is
+# not lost). Six hits with the stone hatchet a fresh spawn carries, five
+# with the metal one or the bow. Measured end to end by
+# `crates/server/tests/hunt.rs`: 12.7 s from a 12 m start, chasing.
 #
-# This line has been wrong twice and both errors are worth keeping. It first
-# said "three hits with the stone hatchet", which was false because a
-# hatchet had **no melee row at all** — `weapons.toml` armed six things and
-# no tool was one of them, so `held_melee` returned `None` for every pocket
+# This line has been wrong twice and both errors are kept, because both were
+# found by making something actually do it rather than by reading. It first
+# said "three hits with the stone hatchet", which was false — a hatchet had
+# **no melee row at all**, so `held_melee` returned `None` for every pocket
 # the spawn kit fills and a pig could not be hurt by anything a fresh
 # character owned. Then it said "four with the wooden spear", true but
 # pricing the animal against a *crafted* weapon, which quietly moved the
-# first kill behind a workbench walk. Tools are armed now (2026-08-08,
-# `weapons.toml`), so the original sentence is finally true.
-#
-# Both were found by `crates/server/tests/hunt.rs`, which sprints at a pig
-# with whatever the kit holds and swings until it dies — 10.1 s from a 12 m
-# start. Deliberately cheaper than the reference boar, which is a mid-game
-# animal with a bite; the number is ours (CONTENT.md §0 on whose numbers
-# these are).
-hp = 80
+# first kill behind a workbench walk. Tools are armed now, and the number
+# comes from the reference rather than from us (`reference/BALANCE.md`).
+hp = 150
 
 # 50% of WALK_SPEED = 1.49 m/s, an amble a player outwalks without trying.
 walk_pct = 50

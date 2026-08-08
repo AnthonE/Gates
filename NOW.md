@@ -20,6 +20,32 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0b · Balance sits on the reference's numbers now — what is still off *(content lane)*
+
+Landed 2026-08-08 (operator: *"balance the game similar to rust so people
+dont get too lost"*). `reference/BALANCE.md` is the research and §6 is the
+standing instruction. Building blocks are 250/500/1000, a stone wall takes
+four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
+Two bands moved and the raid ratio re-priced itself to 1.04/1.73/3.46.
+
+What a returning player still finds wrong, in rank order:
+
+1. **The boar does not fight back.** Theirs charges and flees under half
+   health. Biggest "that's not how it goes" moment left, and it is a
+   mechanic not a number — mob→player damage needs a death cause on the
+   wire (§0m, `ANIMALS.md` §9.5).
+2. **No per-material damage resistance.** Theirs scales damage by what it
+   hits, which is why their stone wall takes 4 satchels and their sheet
+   metal takes 23; ours takes 8 because we have one `structure` column. The
+   ordering is right and the early game is right; the ladder above stone is
+   compressed. A schema column plus a sim multiply.
+3. **One animal.** Chicken, stag, wolf, bear all have roles there.
+4. Survival meters, gather yields, smelt rates, craft times, upkeep, decay
+   and the armour ladder are ours **on purpose** — `BALANCE.md` §4 says why
+   for each, so none of them is an oversight to re-open.
+
+---
+
 ## 0m · The pig is in — what the roster still owes *(systems lane)*
 
 Landed 2026-08-08 (operator: *"let's get a pig in"*). 64 fixed roster slots,

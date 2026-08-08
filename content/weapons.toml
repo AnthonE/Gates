@@ -48,7 +48,7 @@ range_m = 1
 [[weapon]]
 id = "item.hatchet_stone"
 kind = "melee"
-damage = 22
+damage = 25
 structure = 2
 headshot_mult = 2
 rate_per_min = 48
@@ -57,7 +57,7 @@ range_m = 1
 [[weapon]]
 id = "item.pickaxe_stone"
 kind = "melee"
-damage = 20
+damage = 25
 structure = 1
 headshot_mult = 2
 rate_per_min = 48
@@ -66,7 +66,7 @@ range_m = 1
 [[weapon]]
 id = "item.hatchet_metal"
 kind = "melee"
-damage = 28
+damage = 30
 structure = 3
 headshot_mult = 2
 rate_per_min = 48
@@ -75,7 +75,7 @@ range_m = 1
 [[weapon]]
 id = "item.pickaxe_metal"
 kind = "melee"
-damage = 25
+damage = 30
 structure = 2
 headshot_mult = 2
 rate_per_min = 48
@@ -86,7 +86,7 @@ range_m = 1
 [[weapon]]
 id = "item.spear_wood"
 kind = "melee"
-damage = 25
+damage = 20
 structure = 3
 headshot_mult = 2
 rate_per_min = 48
@@ -142,8 +142,8 @@ ammo = "item.pistol_ammo"
 [[weapon]]
 id = "item.satchel_charge"
 kind = "throwable"
-damage = 500
-structure = 500
+damage = 475
+structure = 125
 headshot_mult = 1
 rate_per_min = 10
 range_m = 10

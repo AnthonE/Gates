@@ -10,50 +10,28 @@
 
 ## 0 · The rules that make data safe
 
-**Are these the reference game's numbers?** Asked directly by the operator
-on 2026-08-08, and the answer is worth pinning because the honest version is
-"mostly no, and where yes it is named".
+**Are these the reference game's numbers?** Some of them are, deliberately,
+since 2026-08-08 — and `reference/BALANCE.md` is the file that answers this
+properly. The short version:
 
-- **No table here is copied.** Every number is ours, and §4's bands are why:
-  a value does not enter this repo because a wiki says so, it enters because
-  it lands inside a computed band (TTK, farm-hours, raid ratios, breach
-  swings) that `test_content` asserts. That is a different generating
-  process from copying, and it is the one that would reject a copied number
-  that did not fit our sim.
-- **Where a reference number IS taken, it is taken for a *mechanism* and it
-  is cited at the row.** Two live examples: the oven burns wood at the
-  reference's ~20-a-minute and banks charcoal at its ~75% (`cooking.toml`),
-  because those are published, load-bearing for the feel of a campfire, and
-  cheap to be right about. Both say so in the file.
-- **What we take from the reference is shape, not value.** `reference/*.md`
-  are research docs about *how a system works* — a fixed AI think rate,
-  dormancy at distance, `BaseOven` being one class — and every one of them
-  ends in a "what this means for us" section that is our design, not theirs.
-  `ANIMALS.md` §9 rejects their respawn model outright.
-- **The rails are unchanged and are about art, not arithmetic**: no traced
-  assets, no proper nouns (`ART.md` §7). A balance number is not an asset;
-  the reason we mostly do not use theirs is that our sim is not their sim
-  (our pig has 80 hp against their boar's ~250 because our weapon table and
-  our TTK band are ours), not that we could not.
-
-Concretely, nothing about the pig came from the reference: hp, both speeds,
-the leash, the fright radius and the respawn are all ours and all sit in
-`DECISIONS.md` §open as proposed defaults awaiting a playtest.
-
-- **The content hash is part of determinism**: xxh3 over the canonical
-  serialized content set, pinned into every WAL header. A replay loads
-  the content it was played under; a balance patch is visible in the
-  record. Changing content mid-wipe is allowed (hotfix) but stamps a WAL
-  event.
-- **Ids are permanent strings** (`item.stone_hatchet`); renames are new
-  ids with a migration row. The WAL refers to ids forever.
-- **`test_content` gates every commit**: schema validity, no orphan
-  recipe inputs/outputs, every loot entry exists, every item has a
-  despawn tier, and — the teeth — **computed balance bands** (§4): TTK,
-  farm-hours, and raid-cost ratios are derived from the data and asserted
-  inside declared ranges. A balance edit that breaks the band fails CI
-  and forces the band (a `DECISIONS.md` knob) to be re-spoken, not
-  silently drifted.
+- **Where a number has an equivalent in the reference and we have no reason
+  of our own to differ, we take theirs and cite it at the row.** The
+  operator's reason is product, not laziness: a player arriving from that
+  game carries a table in their head, and every number of ours that
+  contradicts it costs them a death to learn nothing about *our* game.
+  Building blocks (250/500/1000), melee and tool damage, satchels-per-stone-
+  wall, the boar's health.
+- **Where we differ, the row says why.** The survival meters, gather yields,
+  smelt rates, craft times, upkeep, decay and the armour ladder are all ours
+  — mostly because they drive `§4`'s computed anchors, so moving one is a
+  re-derivation of the economy rather than a lookup.
+- **The bands still decide.** A reference value that does not fit our sim is
+  refused by `test_content` exactly as an invented one would be, which is
+  what stops "match the reference" from becoming "copy the spreadsheet". Two
+  bands moved to admit the new numbers and both are spoken in
+  `DECISIONS.md`.
+- **The rails are unchanged and were never about arithmetic**: no traced
+  art, no proper nouns, nothing decompiled (`ART.md` §7).
 
 ## 1 · Schemas (the shape, abridged — the .toml files are authoritative)
 
