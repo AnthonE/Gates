@@ -3,7 +3,7 @@
 //! Structurally this is `bodies.rs` with a different mesh, and the split is
 //! the point rather than duplication: both read the **same** interpolator,
 //! because on the wire an animal is the same class-D record a player is
-//! (`protocol` v28). What separates them is one bit of the entity id
+//! (`protocol` v29). What separates them is one bit of the entity id
 //! (`limits::MOB_ID_TAG`), so each streamer takes the half it draws and
 //! neither has to know the other exists.
 //!

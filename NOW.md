@@ -99,14 +99,30 @@ near-white on an untextured material; `boxes_mesh_with` splits the two and
 `tests/mob_mesh.rs` gates the mean. (3) `bodies.rs` drew a humanoid rig at
 every pig's position as well, because its only filter was "not me".
 
-**Read §0v directly below this one.** It landed the same day, from another
-lane, and the two items are each other's missing half: the oven cooks
-nothing because "nothing on this island is raw", and the pig is the first
-thing on the island that could be. Closing it is content only — a
-raw/cooked item pair, a `drops` row here, a cook row in `cooking.toml` —
-and it is left undone because the food set is a spoken knob (`DECISIONS.md`
-§open, "the food set"), not because it is hard. Whichever lane takes it
-should take both items at once.
+**§0v below is closed by this item and vice versa** (operator, 2026-08-08:
+*"go ahead and finish"*). The oven shipped cooking nothing because nothing
+on the island was raw; the pig is the first thing that is. `item.raw_meat`
+→ campfire → `item.cooked_meat`, the cooked half the best food in the set
+and the raw half the only item in it you cannot eat. Four content rows, no
+code, gated across all three files by
+`content.rs::the_kill_the_fire_and_the_meal_are_one_loop`.
+
+**Two more things were found by making the sim actually do it**
+(`server/tests/hunt.rs`, which sprints at a pig and swings until it dies).
+(1) The spawn kit contains **no weapon** — plan, hammer, hatchet, pickaxe,
+torch, bandage, and `weapons.toml` arms six things of which a hatchet is
+not one, so `held_melee` is `None` for every pocket a fresh character owns.
+The first hand that can hunt is a crafted wooden spear. (2) `mobs.toml`
+priced the pig's 80 hp at "three hits with the stone hatchet", which was
+therefore false; it is four with the wooden spear, three with the metal one
+or the bow. The hunt takes **8.9 s** from a 12 m start, and the test
+reddens with the exact message it should when `flee_pct` goes back to 100.
+
+**The two meat icons are ours, not game-icons.net.** That archive is behind
+this session's egress policy, so they are authored SVGs in `ci/icons/`
+rasterised by the same baker. `assets/icons/CREDITS.md` keeps the licensed
+and unlicensed halves in separate tables. Replacing them with archive art
+later is a mapping move in `ci/bake_icons.py` and nothing else.
 
 Owed, in rank order — `reference/ANIMALS.md` §9.5 has the reasoning:
 
@@ -129,7 +145,7 @@ Owed, in rank order — `reference/ANIMALS.md` §9.5 has the reasoning:
    budget) rather than felt, and it is the one number a player answers.
 
 ---
-## 0v · The fire cooks nothing, because nothing on this island is raw *(systems lane)*
+## 0v · The fire cooks now — one item closed it *(systems lane)*
 
 Landed 2026-08-08: the oven (`sim-core/oven.rs`, `DECISIONS.md` §open "oven
 v0"). A campfire lights on `C`, opens on `E`, burns its wood at the
@@ -138,26 +154,19 @@ reference's own rate, banks charcoal at the reference's own 75%, cooks what
 furnace is the same class — a fire and a furnace differ only by which cook
 rows name them, which is how the reference builds it (`BaseOven`).
 
-**What is missing is the food, and it is not the oven's fault.** The table
-ships with zero `[[cook]]` rows: the alpha food set is berries, mushrooms
-and corn, only berries are payable by anything in the world, and none of
-the three is a thing you cook. The meat was cut with the animals that would
-drop it (`DECISIONS.md` §open, "food set"). So the shipped fire's job is
-fuel → charcoal — real, and a T0 source for the powder chain — and cooking
-is a table with no rows.
+**The missing food arrived the same day, from the other lane** (§0m
+above). This item shipped with zero `[[cook]]` rows because the alpha food
+set was berries, mushrooms and corn and none of the three is a thing you
+cook; the pig drops `item.raw_meat`, and closing it took the shape this
+item had predicted — one `[[cook]]` row, one consumable row, no code. The fire's other job, fuel → charcoal, is
+unchanged and is still the T0 source for the powder chain.
 
-Two ways to close it, and the choice is the operator's because it is the
-food-set knob:
+Still open here, and it is now the cheap one:
 
-- **A raw food the world pays.** An animal (a spawn class, a strike, a
-  drop), or the forest-floor pickup mushrooms have wanted since the
-  survival clock landed — that one is a scatter occupant, so it moves
-  `test_terrain_golden`. Then one `[[cook]]` row and one consumable row,
-  no code.
-- **The burnt state.** Reference-true and free once food exists: a burnt
-  row is a cook row whose input is the cooked item, so it is content, not
-  a mechanic — but it cannot be demonstrated before there is a cooked
-  item to overcook.
+- **The burnt state.** Reference-true and free now that food exists: a
+  burnt row is a cook row whose input is the cooked item, so it is content
+  and not a mechanic. It could not be demonstrated before there was a
+  cooked item to overcook, and now there is.
 
 Also still open, and deliberately: the furnace's ore rows are still
 station-gated crafts in `recipes.toml`. Moving them into the oven is the

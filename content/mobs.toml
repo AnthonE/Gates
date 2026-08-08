@@ -20,10 +20,21 @@
 id = "mob.pig"
 name = "Pig"
 
-# 80 hp is three hits with the stone hatchet in `weapons.toml` and two with
-# the metal one — deliberately *cheaper* than the reference boar, which is
-# a mid-game animal with a bite. Ours is the first thing a naked spawn can
-# kill, so it is priced against the tool a naked spawn has.
+# **80 hp is four hits with the wooden spear, three with the metal spear or
+# the bow** — and the first draft of this line said "three hits with the
+# stone hatchet", which was simply false. `weapons.toml` arms six things and
+# a hatchet is not one of them: hatchets and pickaxes are *gather tools*,
+# they have no melee row, and `held_melee` returns `None` for them. So a pig
+# cannot be killed with the spawn kit at all, and the sentence pricing it
+# against "the tool a naked spawn has" was pricing it against a tool that
+# does no damage to anything. `crates/server/tests/hunt.rs` is what found
+# that, by trying.
+#
+# What 80 actually means: the wooden spear is the first weapon in the game
+# (T0, `recipes.toml`), so the walk is gather → craft a spear → hunt, and
+# the metal spear and the bow each take a hit off the count, which is the
+# upgrade being worth something. Deliberately cheaper than the reference
+# boar, which is a mid-game animal with a bite.
 hp = 80
 
 # 50% of WALK_SPEED = 1.49 m/s, an amble a player outwalks without trying.
@@ -61,13 +72,21 @@ spook_m = 12
 # (reference/SPAWN.md §3.5).
 respawn_seconds = 300
 
-# What the kill pays, straight into the killer's inventory. Fat and cloth
-# only: `item.fat` has existed since the first content set with nothing in
-# the world that drops it, and cloth is the sleeping bag. **Meat is
-# deliberately absent** — CONTENT.md §2 cut it because cooking is a verb we
-# do not have, and one animal does not un-cut a verb (DECISIONS.md §open,
-# "the food set").
+# What the kill pays, straight into the killer's inventory.
+#
+# **Raw meat leads, and it is the reason the campfire has a job.** Meat was
+# cut from the alpha food set because nothing dropped it and nothing could
+# cook it; `sim-core/oven.rs` landed the same day this did with an empty
+# cook table for the mirror-image reason, so the two halves closed each
+# other (DECISIONS.md 2026-08-08). Raw meat is the one item in the set you
+# cannot eat — `cooking.toml` turns it into `item.cooked_meat` on a fire,
+# and that walk is the whole loop: kill it, carry it, light a fire, eat.
+#
+# Fat and cloth ride behind it. `item.fat` had existed since the first
+# content set with nothing in the world dropping it, and cloth is the
+# sleeping bag.
 drops = [
+  { item = "item.raw_meat", count = 3 },
   { item = "item.fat", count = 15 },
   { item = "item.cloth", count = 10 },
 ]

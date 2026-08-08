@@ -1,0 +1,30 @@
+<!--
+  Raw Meat — ours, not game-icons.net.
+
+  The archive game-icons.net publishes is behind this session's egress
+  policy (the same block DECISIONS.md 2026-08-07 records for every 3D asset
+  host), so the two meat icons the food loop needed could not be rasterised
+  from it. Authored here instead: white-on-transparent in the archive's own
+  512-unit box, built from primitives rather than a traced path so it stays
+  legible at the 44 px the hotbar draws it at.
+
+  Shape: a haunch, with the bone leaving it toward the upper right and
+  ending in two knuckles. `cooked_meat.svg` is the same silhouette plus
+  steam, so the pair reads as one item in two states rather than two items.
+
+  No attribution is owed for this file, and `assets/icons/CREDITS.md` says
+  so explicitly — a CC BY notice that swept our own art under it would be
+  claiming a licence over something the licence does not cover.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <g fill="#fff">
+    <!-- The bone: shaft first, so the meat draws over its lower end and the
+         two read as one object rather than a stick behind a blob. -->
+    <path d="M262 262 L392 132" stroke="#fff" stroke-width="52" stroke-linecap="round" fill="none"/>
+    <circle cx="404" cy="96" r="42"/>
+    <circle cx="440" cy="132" r="42"/>
+    <!-- The haunch: a fat teardrop, wide at the bottom-left where the meat
+         sits and narrowing into the bone. -->
+    <ellipse cx="212" cy="312" rx="152" ry="128" transform="rotate(-38 212 312)"/>
+  </g>
+</svg>

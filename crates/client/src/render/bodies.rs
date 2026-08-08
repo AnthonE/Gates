@@ -85,7 +85,7 @@ pub fn stream(
             continue;
         }
         // **Animals are on this lane too, and they are not people.** An
-        // animal is the same class-D record a player is (`protocol` v28);
+        // animal is the same class-D record a player is (`protocol` v29);
         // the only thing separating them is the high bit of the id, and
         // this loop's `!= player_id` was the whole filter until there was
         // something else on the wire. Without it every pig also grew a
