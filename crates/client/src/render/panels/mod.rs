@@ -324,10 +324,20 @@ pub fn keys(
     net: NonSend<super::Net>,
     mut toast: ResMut<super::hud::Toast>,
     mut keyboard: ResMut<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
 ) {
-    // The wheel is a hold, so it is decided every frame rather than latched.
-    let holding_wheel = keyboard.pressed(KeyCode::KeyB);
+    // **The wheel is held RIGHT, and only by an item that owns one.**
+    //
+    // It was `B`, held, whatever was in your hand. Both halves were wrong
+    // against the reference, whose wiki says it for each item in as many
+    // words — *"right click when equipped for more options"* — and whose
+    // building interface is entirely held-item modal. `crate::ui::hold` has
+    // the argument and the reason binding away from the swing is free
+    // (neither item has an attack: the hammer's damage total is 0).
+    let core = &net.session.core;
+    let hand = crate::ui::hold::held_in_hand(&core.catalog, &core.inv, net.sel);
+    let holding_wheel = hand.opens_a_wheel() && mouse.pressed(MouseButton::Right);
     let was_inventory = ui.panel == Panel::Inventory;
 
     if keyboard.just_pressed(KeyCode::Tab) {
@@ -367,7 +377,14 @@ pub fn keys(
     // wheel on top of it.
     if ui.panel != Panel::Inventory {
         let want = if holding_wheel {
-            Panel::Wheel
+            // One wheel per item. The hammer's is the reference's second
+            // radial and is `NOW.md` §0p2; until it lands, holding right
+            // with a hammer opens nothing rather than opening the shapes,
+            // which would place with the wrong verb.
+            match hand {
+                crate::ui::hold::Held::Plan => Panel::Wheel,
+                _ => Panel::None,
+            }
         } else {
             Panel::None
         };

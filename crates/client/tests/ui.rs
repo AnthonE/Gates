@@ -1359,3 +1359,34 @@ fn every_item_in_the_content_has_an_icon() {
         missing.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// §H · the two items the mouse is modal on must exist
+//
+// `crate::ui::hold` decides what left and right click mean by normalising the
+// held item's DISPLAY NAME, because that is the only thing on the wire —
+// `protocol::ItemCatalog` carries names and nothing else. That works, and it
+// has one failure mode worth a gate: rename the item in `content/items.toml`
+// and nothing breaks loudly. `held` simply returns `Other` forever, the ghost
+// stops appearing, right-click stops opening the wheel, and left click goes
+// back to swinging. Every one of those is a silent revert to the old
+// behaviour, which is the worst shape a regression can have.
+
+#[test]
+fn the_content_still_names_the_plan_and_the_hammer() {
+    let toml = std::fs::read_to_string("../../content/items.toml").expect("content/items.toml");
+    let stems: std::collections::BTreeSet<String> = toml
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("name = \"")?.strip_suffix('"'))
+        .map(client::ui::icons::stem)
+        .collect();
+
+    for want in [client::ui::hold::PLAN_STEM, client::ui::hold::HAMMER_STEM] {
+        assert!(
+            stems.contains(want),
+            "no item in the content normalises to `{want}` — `ui::hold` would \
+             decide nothing is ever held, and the mouse would silently revert \
+             to a swing. Rename the constant with the item, in one commit."
+        );
+    }
+}

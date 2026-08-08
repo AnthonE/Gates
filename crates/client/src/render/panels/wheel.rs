@@ -196,8 +196,8 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             .with_children(|b| {
                 b.spawn((
                     Text::new(
-                        "the ring picks the shape   -   let go of B to keep it   \
-                         -   U upgrades what you are looking at",
+                        "the ring picks the shape   -   let go to keep it   \
+                         -   left click places it",
                     ),
                     font(12.0),
                     TextColor(TEXT_DIM),

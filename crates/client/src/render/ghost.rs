@@ -39,7 +39,11 @@ use super::{Net, WorldId};
 
 /// The ghost's translucency, and its two verdicts. Cosmetics
 /// (`DECISIONS.md` §open, client cosmetics).
-const GHOST_OK: Color = Color::srgba(0.42, 0.78, 0.36, 0.38);
+// **Blue, not green, and that is measured off the reference's own
+// behaviour rather than chosen**: its building guides describe the ghost as
+// lighting up "bright blue" when it is ready to place and red or orange when
+// it is not. Ours was green, which is the generic engine answer.
+const GHOST_OK: Color = Color::srgba(0.34, 0.62, 0.96, 0.40);
 const GHOST_NO: Color = Color::srgba(0.86, 0.28, 0.22, 0.34);
 
 /// The one ghost entity, and what it is currently showing.
@@ -67,6 +71,8 @@ pub struct Ghost {
 /// and pins the ordering in a gate, because R means two things and the one
 /// that wins is decided by whether build mode is on).
 pub fn level_keys(keys: Res<ButtonInput<KeyCode>>, ui: Option<Res<Ui>>, mut ghost: ResMut<Ghost>) {
+    // Level nudges belong to the wheel, which is the plan's. Held-item
+    // modality means they are dead keys the rest of the time.
     let wheel_up = ui
         .map(|u| u.panel == super::panels::Panel::Wheel)
         .unwrap_or(false);
@@ -114,12 +120,22 @@ pub fn track(
         hide(&mut commands, ghost);
         return;
     };
-    if ui.panel != super::panels::Panel::Wheel {
+    // **Shown while the PLAN is held, wheel open or not.** It used to be
+    // shown only while the wheel was open, which paired with a right-click
+    // place to make building a sequence of menus: hold the wheel, click
+    // through it, release, repeat. The reference keeps the ghost up for as
+    // long as the plan is out and places with repeated left clicks, and the
+    // ghost is what makes that flow legible.
+    //
+    // The inventory still hides it: that screen owns the pointer, and a
+    // preview of a placement you cannot make is noise.
+    let core = &net.session.core;
+    let hand = crate::ui::hold::held_in_hand(&core.catalog, &core.inv, net.sel);
+    if !hand.shows_ghost() || ui.panel == super::panels::Panel::Inventory {
         hide(&mut commands, ghost);
         return;
     }
 
-    let core = &net.session.core;
     let shape = SHAPES[ui.shape.min(SHAPES.len() - 1)];
     let material = PLACE_MATERIAL;
     let Some(row) = row_for(&core.piece_defs, shape, material) else {
@@ -195,11 +211,23 @@ pub fn track(
     }
 }
 
-/// Right-click places what the ghost is showing.
+/// **Left**-click places what the ghost is showing, while the plan is held.
 ///
-/// Left is the swing and always has been; right is the place, which is the
-/// browser's binding and the genre's. It acts on the ghost's own latched
-/// target rather than re-aiming, so what was drawn is what is sent.
+/// Two things about this were backwards until 2026-08-07, and both were
+/// checked against the reference before moving:
+///
+/// - it was **right**-click, which is the reference's *menu* button, not its
+///   place button. Its building guides are unambiguous: hold right for the
+///   radial, left click to place.
+/// - it only fired **while the wheel was open**, so placing meant holding
+///   the wheel open and clicking through it. The reference closes the wheel,
+///   keeps the ghost, and places with repeated left clicks — which is what
+///   makes building a base a flow rather than a sequence of menus.
+///
+/// Left click is free to mean this because the building plan has no attack.
+///
+/// It acts on the ghost's own latched target rather than re-aiming, so what
+/// was drawn is what is sent.
 pub fn place_key(
     mouse: Res<ButtonInput<MouseButton>>,
     ghost: Res<Ghost>,
@@ -207,10 +235,15 @@ pub fn place_key(
     mut toast: ResMut<Toast>,
     ui: Option<Res<Ui>>,
 ) {
-    let wheel_up = ui
-        .map(|u| u.panel == super::panels::Panel::Wheel)
+    // Not while any panel owns the pointer: a left click on the wheel is a
+    // wedge being chosen, and a left click in the inventory is a drag.
+    let busy = ui
+        .map(|u| u.panel != super::panels::Panel::None)
         .unwrap_or(false);
-    if !wheel_up || !mouse.just_pressed(MouseButton::Right) {
+    let holding_plan =
+        crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel)
+            .places();
+    if busy || !holding_plan || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
     let Some(row) = ghost.row else {

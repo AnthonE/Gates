@@ -37,17 +37,24 @@ already sends it. `DECISIONS.md` "the build wheel is one ring".
 
 ## 0p2 · What the UI still owes *(client lane)*
 
-**1 · The hammer wants its own wheel.** The build wheel is one ring now, which
-is half of the reference's split: its **building plan** opens the shape ring
-and its **hammer** opens a second radial — demolish, rotate, upgrade, repair,
-pick up — over the piece you are looking at. Ours has those verbs already, on
-bare keys (`U` upgrade, `R` repair, `X` pick up), and `render/panels/ring.rs`
-already bakes an annulus from a segment count, so the drawing is close to
-free. What it needs is a held-item check: neither the client nor
-`sim-core/src/build.rs` gates any of this on what is in your hand, so today
-`B` opens the shape wheel whatever you are holding.
+**1 · The hammer wants its own wheel.** The mouse is held-item modal now
+(`DECISIONS.md` 2026-08-07) and the plan's half is done: hold right for the
+shape ring, left click places, the ghost is up for as long as the plan is
+out. The hammer's half is not. It has left-click repair and keyboard
+`U`/`R`/`X`, but **holding right with a hammer opens nothing** — deliberately,
+because opening the shape wheel would place with the wrong verb.
+What it wants is the reference's second radial: demolish, rotate, upgrade,
+repair, pick up, **firing on pick rather than latching**. `ring.rs` already
+bakes an annulus from a segment count, so the drawing is close to free; the
+work is a second `Panel`, a second segment set, and an action-on-release path
+that the shape wheel deliberately does not have. Two verbs it would want that
+the sim has no command for: **rotate** and **demolish**.
 
-**2 · A starter kit, for testing** (operator: *"we might have to give players
+**2 · ~~A starter kit~~** — landed 2026-08-07, `DECISIONS.md` "spawn kit v0".
+Kept below only for the reasoning, which generalises: content is the
+replay-safe place to put anything that changes what a join produces.
+
+**Was: a starter kit, for testing** (operator: *"we might have to give players
 starter items for a bit for testing LOL"*). Real need — a fresh character
 spawns empty, so the wheel reads `350 Wood (0)` and the build flow cannot be
 exercised at all. **Not improvised**, because the two obvious routes both

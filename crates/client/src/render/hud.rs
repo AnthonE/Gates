@@ -481,11 +481,11 @@ pub fn update(
         // HUD must not contradict it.
         let out = match row_for(&core.piece_defs, shape, material) {
             Some(_) => format!(
-                "BUILD  {} {}   (hold B)",
+                "BUILD  {} {}   (hold right)",
                 material_label(material),
                 shape_label(shape)
             ),
-            None => "BUILD  -   (hold B)".to_string(),
+            None => "BUILD  -   (hold right)".to_string(),
         };
         if text.0 != out {
             text.0 = out;
