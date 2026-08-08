@@ -109,35 +109,72 @@ ITEMS = {
 # Fuel" — so this is derived from `content/items.toml` rather than typed out,
 # and a rename that broke it would break it loudly here instead of silently
 # in a cell.
+# The two icons that are OURS, and the reason they exist.
+#
+# `raw_meat` and `cooked_meat` are not in the archive's table because they
+# could not be rasterised from it: game-icons.net is behind this session's
+# egress policy, the same block `DECISIONS.md` 2026-08-07 records for every
+# 3D asset host, and the food loop needed two pictures the day it landed.
+# They are authored SVGs in `ci/icons/`, committed so they regenerate, drawn
+# in the archive's own 512-unit box at the archive's own weight.
+#
+# They are kept in a SEPARATE map rather than dropped into `ITEMS` because
+# the CC BY notice below is generated from that map: sweeping our own art
+# into a credit table would claim a licence over files the licence does not
+# cover, which is the opposite of what a notice licence asks for.
+OURS = {
+    "raw_meat": "raw_meat",
+    "cooked_meat": "cooked_meat",
+}
+OURS_SRC = ROOT / "ci/icons"
+
 ITEMS_TOML = (ROOT / "content/items.toml").read_text()
 PAIRS = re.findall(r'id = "item\.([a-z0-9_]+)"\s*\n(?:.*\n)*?name = "([^"]+)"', ITEMS_TOML)
 BY_ID = {i: n for i, n in PAIRS}
-if len(BY_ID) != len(ITEMS):
-    sys.exit(f"content has {len(BY_ID)} items, the map has {len(ITEMS)}")
+if len(BY_ID) != len(ITEMS) + len(OURS):
+    sys.exit(
+        f"content has {len(BY_ID)} items, the maps have "
+        f"{len(ITEMS)} + {len(OURS)} ours"
+    )
 
 
 def norm(s):
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
-unknown = sorted(set(ITEMS) - set(BY_ID))
+unknown = sorted((set(ITEMS) | set(OURS)) - set(BY_ID))
 if unknown:
     sys.exit(f"map names items the content does not have: {unknown}")
 
 ALL = dict(SHAPES)
 for item_id, icon in ITEMS.items():
     ALL[norm(BY_ID[item_id])] = icon
+MINE = {norm(BY_ID[item_id]): f for item_id, f in OURS.items()}
 
-missing = [(k, v) for k, v in ALL.items() if not (SRC / f"{v}.svg").is_file()]
+# Bake a subset by stem when asked. The archive is a hand-fetched zip that
+# this box cannot reach, so re-baking our own two must not require it —
+# `python3 ci/bake_icons.py raw_meat cooked_meat` does exactly that.
+only = set(sys.argv[1:])
+todo = {k: v for k, v in ALL.items() if not only or k in only}
+todo_mine = {k: v for k, v in MINE.items() if not only or k in only}
+
+missing = [(k, v) for k, v in todo.items() if not (SRC / f"{v}.svg").is_file()]
 if missing:
     for k, v in missing:
         print(f"MISSING  {k} -> {v}", file=sys.stderr)
     sys.exit(f"{len(missing)} icon(s) not in the archive")
 
 OUT.mkdir(parents=True, exist_ok=True)
-for name, path in sorted(ALL.items()):
+for name, path in sorted(todo.items()):
     cairosvg.svg2png(
         url=str(SRC / f"{path}.svg"),
+        write_to=str(OUT / f"{name}.png"),
+        output_width=PX,
+        output_height=PX,
+    )
+for name, path in sorted(todo_mine.items()):
+    cairosvg.svg2png(
+        url=str(OURS_SRC / f"{path}.svg"),
         write_to=str(OUT / f"{name}.png"),
         output_width=PX,
         output_height=PX,
@@ -160,7 +197,20 @@ credits.write_text(
     "## What maps to what\n\n"
     "| file | source icon |\n|---|---|\n"
     + "".join(f"| `{k}.png` | `{v}` |\n" for k, v in sorted(ALL.items()))
+    + "\n## Not from game-icons.net\n\n"
+    "These are **ours**, authored in `ci/icons/` and rasterised by the same\n"
+    "script. No attribution is owed for them and the CC BY notice above does\n"
+    "not cover them — they are listed here so the line between what the\n"
+    "licence covers and what it does not is written down rather than\n"
+    "inferred from a table.\n\n"
+    "They exist because game-icons.net is unreachable from the environment\n"
+    "the food loop landed in (`DECISIONS.md` 2026-08-07 records the same\n"
+    "block for every 3D asset host), and two pictures were needed that day.\n"
+    "Replacing them with archive icons later is a mapping move in\n"
+    "`ci/bake_icons.py` and nothing else.\n\n"
+    "| file | source |\n|---|---|\n"
+    + "".join(f"| `{k}.png` | `ci/icons/{v}.svg` (ours) |\n" for k, v in sorted(MINE.items()))
 )
 
-print(f"baked {len(ALL)} icons at {PX}px into {OUT}")
+print(f"baked {len(todo)} archive + {len(todo_mine)} own icons at {PX}px into {OUT}")
 print(f"authors: {', '.join(authors)}")

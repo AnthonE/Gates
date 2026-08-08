@@ -36,3 +36,18 @@ health = 0
 food = 25
 water = 10
 seconds = 3
+
+# The best food on the island, and the only one that costs a walk: a kill, a
+# carry, a fire and a wait (`cooking.toml`). It is the one consumable that
+# heals as well as feeds — 10 hp over 5 s is under the bandage's 20 and is
+# meant to be, because a bandage is a crafted answer to damage and this is a
+# meal that happens to help. **`item.raw_meat` is absent on purpose**: the
+# uncookable half of the pair is what gives the campfire a job, and there is
+# no sickness verb to punish eating it with, so the honest punishment is
+# that the verb simply does not accept it.
+[[consumable]]
+id = "item.cooked_meat"
+health = 10
+food = 40
+water = 0
+seconds = 5

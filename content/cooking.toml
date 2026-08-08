@@ -25,14 +25,24 @@ byproduct_pct = 75
 # --- cook rows ----------------------------------------------------------
 #
 # `[[cook]] input → output` at `station` (`fire` | `furnace`) over
-# `seconds`. **There are none yet, and that is a fact about the island
-# rather than about the oven.** Cooking wants raw food; the alpha food set
-# is berries, mushrooms and corn (CONTENT.md §2), only berries are payable
-# by anything in the world, and none of the three is a thing you cook. The
-# meat that would be cooked here was cut with the animals that would drop it
-# (DECISIONS.md §open, "food set").
+# `seconds`.
 #
-# Adding one is a one-row content edit and no code — which is the point of
-# the table shipping before its first row. What it needs first is a raw food
-# the world actually pays: an animal, a forest-floor pickup, or a farm.
-# `NOW.md` carries the item.
+# **This table shipped empty for one day.** The comment here read "there are
+# none yet, and that is a fact about the island rather than about the oven"
+# — cooking wanted a raw food and nothing in the world paid one. The animal
+# roster (`content/mobs.toml`, the same day) pays one, and closing it was
+# exactly what that comment predicted: **one row, no code.** That is the
+# table shipping before its first row working as intended, and it is worth
+# leaving on the record rather than tidying away.
+#
+# 20 seconds on a fire, which is a real wait beside the fuel's 3 s a unit —
+# long enough that you sit down, short enough that it is not a chore, and
+# the first thing on this island that makes standing still worth anything.
+# A furnace deliberately does not cook meat: separating the two stations is
+# the only job the `station` column has, and smelting is what a furnace is
+# for.
+[[cook]]
+input = "item.raw_meat"
+output = "item.cooked_meat"
+station = "fire"
+seconds = 20

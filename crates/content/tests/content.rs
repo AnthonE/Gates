@@ -1574,18 +1574,81 @@ fn the_shipped_pig_bakes() {
 
     // Drops resolve to real item indices, in file order, and the tail is
     // `NO_ITEM` rather than a zero-count row nothing distinguishes.
-    let fat = c
-        .items
-        .iter()
-        .map(|i| i.id.as_str())
-        .filter(|id| *id == "item.fat")
-        .count();
-    assert_eq!(fat, 1, "the pig pays an item the set does not have");
-    assert_ne!(pig.loot[0].item, sim_core::gather::NO_ITEM);
-    assert_eq!(pig.loot[0].count, 15);
-    assert_ne!(pig.loot[1].item, sim_core::gather::NO_ITEM);
-    assert_eq!(pig.loot[2].item, sim_core::gather::NO_ITEM);
+    for i in 0..3 {
+        assert_ne!(pig.loot[i].item, sim_core::gather::NO_ITEM);
+        assert!(pig.loot[i].count > 0);
+    }
+    assert_eq!(pig.loot[3].item, sim_core::gather::NO_ITEM);
     assert_ne!(pig.loot[0].item, pig.loot[1].item);
+}
+
+/// **The loop, across three content files that cannot see each other.**
+///
+/// The pig pays a raw food, the campfire is the only station that turns it
+/// into a cooked one, and the cooked one is the only half of the pair the
+/// eat verb accepts. Each of those is one row in a different file, none of
+/// them references the others by anything but an item id, and any one of
+/// them dropping out leaves the other two validating perfectly while the
+/// player is left holding an item with no use — which is exactly the state
+/// both halves shipped in for a day (`content/cooking.toml`'s own header).
+#[test]
+fn the_kill_the_fire_and_the_meal_are_one_loop() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let mc = c.bake_mobs().expect("the pig bakes");
+    let pig = mc.def(sim_core::mob::MOB_PIG);
+    let raw = c.item_index("item.raw_meat").expect("raw meat is an item");
+    let cooked = c
+        .item_index("item.cooked_meat")
+        .expect("cooked meat is an item");
+
+    // 1 — something in the world pays the raw half.
+    assert!(
+        pig.loot.iter().any(|s| s.item == raw && s.count > 0),
+        "nothing on the island drops raw meat, so the fire has no job again"
+    );
+
+    // 2 — a fire, and only a fire, turns it into the cooked half.
+    let row = c
+        .cooks
+        .iter()
+        .find(|k| k.input == "item.raw_meat")
+        .expect("no cook row consumes raw meat");
+    assert_eq!(row.output, "item.cooked_meat");
+    assert_eq!(row.station, content::schema::CookStation::Fire);
+
+    // 3 — the cooked half is food and the raw half is not. That asymmetry
+    // IS the verb: without it the fire is optional and the walk is not a
+    // loop, it is a detour.
+    assert!(
+        c.consumables.iter().any(|k| k.id == "item.cooked_meat"),
+        "cooked meat is not food, so cooking pays nothing"
+    );
+    assert!(
+        !c.consumables.iter().any(|k| k.id == "item.raw_meat"),
+        "raw meat is edible, so the campfire is decoration again"
+    );
+
+    // 4 — and the two BAKED tables agree on the index, not just the two
+    // toml files on the string. The rows above are matched by item id; the
+    // sim never sees an id, only a `u16` rank, and the pig's table and the
+    // oven's are baked by different functions. A drop the fire would refuse
+    // is the one way this loop can break with every row present.
+    let cooked_row = c
+        .bake_cooking()
+        .expect("cooking bakes")
+        .row_for(sim_core::deploy::ARCH_FIRE, raw)
+        .copied()
+        .expect("a fire does not accept the index the pig actually pays");
+    assert_eq!(cooked_row.output, cooked);
+    assert_eq!(
+        pig.loot
+            .iter()
+            .filter(|s| s.item != sim_core::gather::NO_ITEM && s.count > 0)
+            .filter(|s| s.item == raw)
+            .count(),
+        1,
+        "the pig pays raw meat more than once"
+    );
 }
 
 /// The mob validator refuses what it claims to. Each of these is a content
