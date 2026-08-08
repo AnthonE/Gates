@@ -169,10 +169,15 @@ Authored albedo stays inside `ALBEDO_LUMA_BAND = [0.05, 0.55]` linear
 - **Turf**: geometry, not texture (rule 1 / §1). Blades catch a rim of sun at
   their tips; the ground plane beneath is nearly invisible in the near field.
 - **Wet sand**: a darker, more saturated band at the waterline. **Shipped on
-  the native ground 2026-08-08** (`terrain_mesh::wetted`, `WET_BAND_M` 1.3 m,
-  45% darker and 35% more saturated, floored so no identity leaves the band
-  below) and photographed for the first time by a capture spawned on a beach.
-  The browser's `WET_RANGE` was never in a vantage; this one was aimed at.
+  the native ground 2026-08-08** (`terrain_mesh::wetted`, 45% darker and 35%
+  more saturated, floored so no identity leaves the band below) and
+  photographed for the first time by a capture spawned on a beach. The
+  browser's `WET_RANGE` was never in a vantage; this one was aimed at.
+  **Its width is bounded twice and that is the part worth restating here**: a
+  band keyed on height alone is sixty metres of stain on a 4% beach and sixty
+  centimetres on a steep bank, so it is capped by a horizontal run as well.
+  The thing being drawn is how far the water reaches, which is a property of
+  the sea and not of the slope.
 - **The sea**: cold, dark, desaturated blue-**green** — Atlantic or Baltic,
   never Caribbean. Unusually for this file the source is the reference
   developer's own words rather than a measurement off `Rust Images/`: they
@@ -182,9 +187,18 @@ Authored albedo stays inside `ALBEDO_LUMA_BAND = [0.05, 0.55]` linear
   blue with no green in it is the wrong ocean.
   Three things the bar asks of it that a colour cannot supply: **the specular
   needs structure** (a flat sheet has one highlight and reads as plastic), the
-  **waterline must be a band and not a line** (foam on the water side, wet
-  ground on the land side), and **shallow water must show what is under it** —
-  a sea with a constant alpha is a plate.
+  **waterline must be a band and not a line**, and **shallow water must show
+  what is under it** — a sea with a constant alpha is a plate.
+- **The waterline**, since it is the thing every reference beach frame is
+  really about. Read one and there is no edge in it anywhere: dry sand gives
+  way to a wide damp gradient, then to wet reflective sand, then to water so
+  thin it is only a sheen, and the white is a **soft streaky wash standing
+  offshore** where the waves are breaking — not a rim drawn around the water.
+  Four rules follow, and the third is the one everyone gets backwards:
+  the damp band is metres of *ground*; thin water is nearly invisible; **foam
+  is weakest at the waterline itself**, because foam that peaks there outlines
+  the seam instead of hiding it; and the wash's edges are lobes and fingers,
+  never a clean contour.
 
 ## 6 · Composition and HUD
 

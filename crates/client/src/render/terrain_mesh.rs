@@ -70,6 +70,26 @@ pub const GROUND_ALBEDO: [[f32; 3]; 4] = [
     [0.235, 0.222, 0.198],
 ];
 
+/// How far the damp band reaches **along the ground**, metres.
+///
+/// **Two bounds, and each one is the answer to the case the other gets wrong.**
+/// The band ends at whichever is reached first, and the gate walks four bank
+/// steepnesses to check that neither ever collapses:
+///
+/// - **Height alone** (what this shipped as first) makes the band a function of
+///   the slope rather than of the water. On a beach at a 4% grade a 2.5 m band
+///   is *sixty metres* of damp sand; on a 60% bank it is four. One of those is
+///   a stain across the whole frame and the other is fine, and nothing about
+///   the tide changed between them.
+/// - **Run alone** fails at the other end: seven metres of horizontal run up a
+///   cliff face is fourteen metres of wet rock.
+///
+/// Together the damp band is a few metres of ground on anything a player would
+/// call a shore, which is what makes the meeting of land and water a gradient
+/// instead of an edge. The gradient is the analytic one the mesh already has
+/// for its normals, so the second bound costs nothing.
+pub const WET_REACH_M: f32 = 7.0;
+
 /// How far above sea level the ground still reads as wet, metres.
 ///
 /// The land half of the reference's **shoreline wetness**
@@ -82,7 +102,7 @@ pub const GROUND_ALBEDO: [[f32; 3]; 4] = [
 /// It is also `ART.md` §5's one outstanding named material: *"a darker, more
 /// saturated band at the waterline"*, which the browser client had as
 /// `WET_RANGE` and the native ground never got.
-pub const WET_BAND_M: f32 = 1.3;
+pub const WET_BAND_M: f32 = 2.5;
 
 /// What a soaked surface keeps of its dry value.
 ///
@@ -109,17 +129,29 @@ pub const WET_SATURATION: f32 = 0.35;
 /// this — while refusing to author a black surface anywhere.
 pub const ALBEDO_LUMA_FLOOR: f32 = 0.05;
 
-/// How wet the ground is at this height: 1 at or below sea level, 0 above the
-/// band, smooth between.
+/// How wet the ground is here: 1 at or below sea level, 0 outside the band,
+/// smooth between.
 ///
-/// Below the waterline it is exactly 1 rather than extrapolating: the seabed
-/// is not "more than wet", and a curve that kept going would drive the sand
-/// black at the sentinel depths the water grid uses.
-pub fn wet_factor(y: f32) -> f32 {
+/// `slope` is the local rise/run — the analytic gradient the mesh is already
+/// computing for its normals, so this costs nothing new. The band ends at
+/// whichever bound is reached first: [`WET_REACH_M`] metres of horizontal run,
+/// or [`WET_BAND_M`] metres of height.
+///
+/// Below the waterline it is exactly 1 rather than extrapolating: the seabed is
+/// not "more than wet", and a curve that kept going would drive the sand black
+/// at the sentinel depths the water grid uses.
+pub fn wet_factor(y: f32, slope: f32) -> f32 {
     if y <= SEA_LEVEL {
         return 1.0;
     }
-    let t = ((y - SEA_LEVEL) / WET_BAND_M).clamp(0.0, 1.0);
+    let rise = y - SEA_LEVEL;
+    let by_height = rise / WET_BAND_M;
+    // `rise / slope` is the horizontal run back to sea level along a plane of
+    // this gradient. A floor on the slope keeps a dead-flat pan from dividing
+    // by zero and wetting the horizon; past it, `by_height` is the bound that
+    // binds anyway.
+    let by_run = rise / (slope.max(1e-3) * WET_REACH_M);
+    let t = by_height.max(by_run).clamp(0.0, 1.0);
     let t = 1.0 - t;
     t * t * (3.0 - 2.0 * t)
 }
@@ -315,7 +347,11 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
             // the splat resolved, not a fifth identity. It runs after the
             // macro break-up so a wet vertex keeps its own grain instead of
             // having it multiplied back in at full dry strength.
-            let c = wetted([c[0] * v, c[1] * v, c[2] * v], wet_factor(y));
+            // The gradient the normal was just built from, as a rise/run — the
+            // waterline band is a horizontal distance and this is what converts
+            // it. Free: `hx` and `hz` are already in hand.
+            let grad = ((hx * hx + hz * hz).sqrt()) / (2.0 * d);
+            let c = wetted([c[0] * v, c[1] * v, c[2] * v], wet_factor(y, grad));
             colors.push([c[0], c[1], c[2], 1.0]);
             uvs.push([x * 0.25, z * 0.25]);
         }

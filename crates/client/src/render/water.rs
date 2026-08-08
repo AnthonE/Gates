@@ -33,9 +33,29 @@
 //!    settings screen, and the payoff they name is putting the *sky* into the
 //!    reflection — which a `StandardMaterial` under Bevy's atmosphere already
 //!    gets from its specular term.
-//! 5. **Foam** is depth-banded and slope-weighted, because the reference's
+//! 5. **Foam** is a band *standing off* the waterline, slope-weighted (their
 //!    published sentence about their own ocean foam is that it is "mostly
-//!    visible on terrain slopes with higher inclination" (§4).
+//!    visible on terrain slopes with higher inclination", §4), with its
+//!    contour displaced by noise and its level surged by the swell. Every one
+//!    of those three is there to stop the shore reading as a drawn line — see
+//!    [`FOAM_PEAK_M`], [`FOAM_JITTER_M`] and [`foam_surge`]. The land half of
+//!    the same job is `terrain_mesh::wet_factor`.
+//!
+//! ## What still makes a hard edge, and what would fix it
+//!
+//! The alpha ramp here is a *vertex* quantity: it grades on the water column
+//! read off `terrain::height` at 2 m spacing and interpolated across the
+//! triangle. Against the terrain that is a good approximation of a per-pixel
+//! depth fade, because the terrain is the thing it sampled. Against anything
+//! else it knows nothing — a boulder, a foundation or a player standing in the
+//! shallows gets a hard ring where the sea meets it, because no vertex of this
+//! mesh has ever heard of them.
+//!
+//! The fix is the standard one and it is a shader: sample the depth prepass in
+//! the fragment, take the difference between the scene depth and the water's
+//! own, and fade alpha and add foam as it goes to zero. That needs an
+//! `ExtendedMaterial` and the first WGSL in the tree (`RENDER.md` §8), which is
+//! its own slice; it is written down in `NOW.md` rather than half-built here.
 //!
 //! ## The frame cost, and where it is paid
 //!
@@ -368,13 +388,40 @@ pub fn depth_tint(depth_m: f32) -> [f32; 4] {
     ]
 }
 
-/// How deep the surf band reaches, metres.
-pub const FOAM_DEPTH_M: f32 = 1.7;
+/// How deep the surf band reaches, metres — its OUTER edge.
+pub const FOAM_DEPTH_M: f32 = 2.6;
+/// Where the wash is thickest, metres of water.
+///
+/// **Offshore of the waterline, and that is the whole point of this constant.**
+/// The first cut peaked foam at zero depth and fell away from there, which put
+/// the brightest thing on the sea exactly along the polygon edge where the
+/// water meets the sand — the line was not merely visible, it was *outlined*.
+/// Look at where surf actually is in a photograph: the water at the very edge
+/// is thin, clear and quiet, and the white is a band standing off it, where
+/// waves are breaking. Foam that fades to nothing at the waterline is what
+/// makes the waterline stop being a line.
+pub const FOAM_PEAK_M: f32 = 0.60;
 /// Shore slope (rise/run) at which foam is at full strength.
 pub const FOAM_SLOPE_FULL: f32 = 0.30;
 /// What a flat shore still gets, 0..1 — foam is *mostly* a slope effect, not
 /// only one.
 pub const FOAM_SLOPE_FLOOR: f32 = 0.35;
+/// How far the noise moves the band's own contour, metres of depth.
+///
+/// **This is the other half of un-drawing the line.** A band keyed on depth
+/// alone has edges that are exact iso-depth contours of the seabed, and an
+/// iso-contour of a smooth heightfield is a smooth curve — the eye reads it as
+/// drafting. Displacing the depth the band is evaluated at, by a noise field in
+/// world space, turns both edges into lobes and fingers that run up the beach,
+/// which is what surf does.
+pub const FOAM_JITTER_M: f32 = 0.55;
+/// Wavelength of the coarse octave of that noise, metres. Roughly the size of
+/// one lobe of wash.
+pub const FOAM_NOISE_M: f32 = 9.0;
+/// The quietest the wash gets between surges, as a fraction of its own peak.
+/// Not zero: a shoreline that goes completely dry between waves reads as the
+/// foam being switched off, not as the water drawing back.
+pub const FOAM_SURGE_FLOOR: f32 = 0.45;
 /// The most foam a whitecap on the open swell contributes.
 pub const CREST_FOAM_MAX: f32 = 0.30;
 /// Foam colour, LINEAR. Aerated water is bright but it is not paper.
@@ -382,21 +429,75 @@ pub const FOAM_BODY: [f32; 3] = [0.55, 0.60, 0.60];
 /// Alpha of a fully foamed vertex.
 pub const FOAM_ALPHA: f32 = 0.96;
 
-/// Foam at the shore: a depth band, weighted by how steeply the ground under
-/// it is rising.
+/// Two octaves of value noise in world metres, in `[0, 1]`. The field the wash
+/// band's contour is displaced by.
+///
+/// Built on `props::hash01`, which is the client's one spatial hash — a second
+/// noise implementation is a second thing to get seams wrong in.
+pub fn foam_noise(x: f32, z: f32) -> f32 {
+    fn lattice(x: f32, z: f32) -> f32 {
+        let (xi, zi) = (x.floor(), z.floor());
+        let (fx, fz) = (x - xi, z - zi);
+        let (sx, sz) = (fx * fx * (3.0 - 2.0 * fx), fz * fz * (3.0 - 2.0 * fz));
+        let (i, j) = (xi as i32 as u32, zi as i32 as u32);
+        let h = |a: u32, b: u32| super::props::hash01(a, b);
+        let top = h(i, j) + (h(i.wrapping_add(1), j) - h(i, j)) * sx;
+        let bot = h(i, j.wrapping_add(1))
+            + (h(i.wrapping_add(1), j.wrapping_add(1)) - h(i, j.wrapping_add(1))) * sx;
+        top + (bot - top) * sz
+    }
+    let coarse = lattice(x / FOAM_NOISE_M, z / FOAM_NOISE_M);
+    let fine = lattice(
+        x / (FOAM_NOISE_M * 0.34) + 31.0,
+        z / (FOAM_NOISE_M * 0.34) - 17.0,
+    );
+    (coarse * 0.68 + fine * 0.32).clamp(0.0, 1.0)
+}
+
+/// Foam at the shore: a band standing off the waterline, weighted by how
+/// steeply the ground under it is rising, with its contour displaced by
+/// [`foam_noise`].
 ///
 /// The slope term is the reference's own published observation about their
 /// ocean foam — "mostly visible on terrain slopes with higher inclination"
 /// (`reference/WATER.md` §4) — and it is a statement about the *land*, which
 /// is why this takes a terrain slope and not a water one.
-pub fn shore_foam(depth_m: f32, slope: f32) -> f32 {
-    if depth_m >= FOAM_DEPTH_M {
+///
+/// `noise` is in `[0, 1]` and is passed in rather than sampled here so the
+/// profile stays a pure function of three scalars and the gate can walk it.
+pub fn shore_foam(depth_m: f32, slope: f32, noise: f32) -> f32 {
+    // Displace the depth the band is read at. Both edges move together, so a
+    // lobe that reaches further up the beach is also thicker.
+    let d = depth_m + FOAM_JITTER_M * (noise.clamp(0.0, 1.0) - 0.5) * 2.0;
+    if d <= 0.0 || d >= FOAM_DEPTH_M {
         return 0.0;
     }
-    let band = 1.0 - (depth_m.max(0.0) / FOAM_DEPTH_M);
-    let band = band * band;
+    // Rise from the waterline to the peak, fall from the peak to the outer
+    // edge. Smoothstep on both sides: a linear ramp has a visible kink at the
+    // top, which on a wide band is another line.
+    let t = if d < FOAM_PEAK_M {
+        d / FOAM_PEAK_M
+    } else {
+        1.0 - (d - FOAM_PEAK_M) / (FOAM_DEPTH_M - FOAM_PEAK_M)
+    };
+    let band = t * t * (3.0 - 2.0 * t);
     let steep = (slope / FOAM_SLOPE_FULL).clamp(0.0, 1.0);
-    band * (FOAM_SLOPE_FLOOR + (1.0 - FOAM_SLOPE_FLOOR) * steep)
+    // The same noise thins the band where it is already thin, so the wash has
+    // texture rather than being one flat sheet of white.
+    band * (FOAM_SLOPE_FLOOR + (1.0 - FOAM_SLOPE_FLOOR) * steep) * (0.55 + 0.45 * noise)
+}
+
+/// The wash running up and drawing back, from the longest wave's own phase.
+///
+/// **A moving edge cannot be a hard edge**, which is the cheapest thing in this
+/// file and close to the most effective: an observer reads a boundary that
+/// breathes as a process and a boundary that does not as geometry. Floored at
+/// [`FOAM_SURGE_FLOOR`].
+pub fn foam_surge(x: f32, z: f32, phase0: f32) -> f32 {
+    let w = WAVES[0];
+    let k = std::f32::consts::TAU / w.len_m;
+    let s = 0.5 + 0.5 * (k * (w.dir[0] * x + w.dir[1] * z) + phase0).sin();
+    FOAM_SURGE_FLOOR + (1.0 - FOAM_SURGE_FLOOR) * s
 }
 
 /// Whitecaps: foam on the top of the swell itself.
@@ -633,8 +734,13 @@ pub struct Sea {
     spacing: Vec<f32>,
     /// Depth of water under each vertex, metres. Negative over dry land.
     depth: Vec<f32>,
-    /// Static colour and alpha per vertex, before this frame's crest foam.
+    /// Static colour and alpha per vertex, before any foam.
     base: Vec<[f32; 4]>,
+    /// The shore wash at each vertex, before this frame's surge. Kept apart
+    /// from [`Sea::base`] because it is the half that breathes: the colour is a
+    /// function of where the vertex is, the wash is a function of where the
+    /// vertex is AND when it is being asked.
+    shore: Vec<f32>,
     /// How much swell each vertex may carry: the shoaling fade, cached.
     shoal: Vec<f32>,
     /// Peak displacement available at each vertex — what `crest_foam` measures
@@ -763,6 +869,7 @@ pub fn setup(
     sea.spacing = spacing;
     sea.depth = vec![0.0; count];
     sea.base = vec![[0.0; 4]; count];
+    sea.shore = vec![0.0; count];
     sea.shoal = vec![0.0; count];
     sea.reach = vec![0.0; count];
     sea.mesh = Some(mesh.clone());
@@ -825,6 +932,7 @@ pub fn stream(
         spacing,
         depth,
         base,
+        shore,
         shoal: shoal_cache,
         reach,
         ..
@@ -858,14 +966,17 @@ pub fn stream(
             }
             reach[i] = r * sh * SHAPE_PEAK;
 
-            let mut rgba = depth_tint(d);
-            if d > 0.0 && d < FOAM_DEPTH_M {
-                // The slope tap is four more `height` calls, so it is paid
-                // only inside the band that can use it — which is a thin ring
-                // around the island, not the ocean.
-                rgba = with_foam(rgba, shore_foam(d, terrain::slope(seed, x, z)));
-            }
-            base[i] = rgba;
+            base[i] = depth_tint(d);
+            // The slope tap is four more `height` calls, so it is paid only
+            // inside the band that can use it — a thin ring around the island,
+            // not the ocean. The window is widened by the jitter, because a
+            // vertex outside the plain band can still be inside the displaced
+            // one.
+            shore[i] = if d > -FOAM_JITTER_M && d < FOAM_DEPTH_M + FOAM_JITTER_M {
+                shore_foam(d, terrain::slope(seed, x, z), foam_noise(x, z))
+            } else {
+                0.0
+            };
         }
     }
 
@@ -962,7 +1073,16 @@ pub fn animate(
                 let z = cz + sea.coords[iz];
                 let sp = sea.spacing[ix].max(sea.spacing[iz]);
                 let (h, _, _) = wave_field(x, z, &phase, sp, sea.shoal[i]);
-                col[i] = with_foam(sea.base[i], crest_foam(h, sea.reach[i]));
+                // The wash breathes; the whitecaps ride the swell. Summed
+                // rather than maxed: a crest breaking inside the surf band is
+                // the whitest thing on the sea, and clamping happens in
+                // `with_foam`.
+                let wash = if sea.shore[i] > 0.0 {
+                    sea.shore[i] * foam_surge(x, z, phase[0])
+                } else {
+                    0.0
+                };
+                col[i] = with_foam(sea.base[i], wash + crest_foam(h, sea.reach[i]));
             }
         }
     }

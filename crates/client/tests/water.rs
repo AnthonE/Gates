@@ -22,7 +22,7 @@
 
 #![allow(clippy::assertions_on_constants)]
 
-use client::render::terrain_mesh::{self, WET_BAND_M, WET_VALUE};
+use client::render::terrain_mesh::{self, WET_BAND_M, WET_REACH_M, WET_VALUE};
 use client::render::water::*;
 use sim_core::terrain::{ISLAND_SIZE, SEA_LEVEL};
 
@@ -380,26 +380,144 @@ fn transmittance_is_bounded_and_monotone() {
 /// takes a terrain slope at all.
 #[test]
 fn foam_is_a_shore_effect_keyed_to_the_land() {
-    assert_eq!(shore_foam(FOAM_DEPTH_M, 1.0), 0.0);
-    assert_eq!(shore_foam(20.0, 1.0), 0.0);
-    let flat = shore_foam(0.2, 0.0);
-    let steep = shore_foam(0.2, FOAM_SLOPE_FULL);
+    let mid = 0.5f32; // the noise's neutral value: no contour displacement
+    assert_eq!(shore_foam(FOAM_DEPTH_M, 1.0, mid), 0.0);
+    assert_eq!(shore_foam(20.0, 1.0, mid), 0.0);
+    let flat = shore_foam(FOAM_PEAK_M, 0.0, mid);
+    let steep = shore_foam(FOAM_PEAK_M, FOAM_SLOPE_FULL, mid);
     assert!(flat > 0.0, "a flat shore gets no foam at all");
     assert!(steep > flat, "a steep shore is not foamier than a flat one");
     assert!(steep <= 1.0, "foam is over-unity at {steep}");
-    // Deeper is less foamy, all the way out of the band.
-    let mut prev = f32::MAX;
-    for i in 0..=20 {
-        let d = FOAM_DEPTH_M * i as f32 / 20.0;
-        let f = shore_foam(d, 0.5);
-        assert!(f <= prev + 1e-6, "foam rose with depth at {d} m");
-        prev = f;
-    }
     // Whitecaps are a fraction of a crest, not a paint bucket.
     assert_eq!(crest_foam(0.0, 1.0), 0.0);
     assert_eq!(crest_foam(1.0, 0.0), 0.0);
     assert!(crest_foam(1.0, 1.0) <= CREST_FOAM_MAX + 1e-6);
     assert!(crest_foam(0.5, 1.0) < crest_foam(0.95, 1.0));
+}
+
+/// **The wash stands OFF the waterline, and this is the assertion that says
+/// the shore is not a drawn line.** The first cut peaked foam at zero depth,
+/// which put the brightest thing on the sea exactly along the polygon edge
+/// where water meets sand — outlining the seam instead of hiding it.
+#[test]
+fn the_wash_does_not_outline_the_waterline() {
+    let mid = 0.5f32;
+    assert_eq!(
+        shore_foam(0.0, 0.4, mid),
+        0.0,
+        "there is foam at zero depth - the waterline is being outlined"
+    );
+    // Rises from the edge to the peak...
+    let mut prev = -1.0f32;
+    for i in 0..=10 {
+        let d = FOAM_PEAK_M * i as f32 / 10.0;
+        let f = shore_foam(d, 0.4, mid);
+        assert!(f >= prev - 1e-6, "the wash fell on the way out at {d} m");
+        prev = f;
+    }
+    // ...and falls from the peak to the outer edge.
+    let peak = shore_foam(FOAM_PEAK_M, 0.4, mid);
+    let mut prev = peak + 1.0;
+    for i in 0..=10 {
+        let d = FOAM_PEAK_M + (FOAM_DEPTH_M - FOAM_PEAK_M) * i as f32 / 10.0;
+        let f = shore_foam(d, 0.4, mid);
+        assert!(f <= prev + 1e-6, "the wash rose again at {d} m");
+        prev = f;
+    }
+    assert!(peak > 0.0);
+    // The band is wide enough to be a band. A wash two vertices across on a
+    // 2 m grid is a stripe, which is the thing this is replacing.
+    assert!(
+        FOAM_DEPTH_M > STEP_M,
+        "the wash is narrower than the mesh that draws it"
+    );
+}
+
+/// The band's contour is displaced by noise, so its edges are lobes rather
+/// than iso-depth curves of a smooth heightfield — which the eye reads as
+/// drafting.
+#[test]
+fn the_wash_has_no_clean_contour() {
+    // The noise actually moves the band: a depth outside the plain band is
+    // inside the displaced one, and vice versa.
+    let just_out = FOAM_DEPTH_M - 0.05;
+    assert_eq!(
+        shore_foam(just_out, 0.4, 1.0),
+        0.0,
+        "the jitter cannot pull in"
+    );
+    assert!(
+        shore_foam(just_out, 0.4, 0.0) > 0.0,
+        "the jitter cannot push out"
+    );
+    // And it reaches over the waterline the other way, so the wash runs onto
+    // ground the plain band would have left dry.
+    assert!(
+        shore_foam(0.1, 0.4, 1.0) > 0.0,
+        "the jitter never carries the wash inshore"
+    );
+
+    // The field itself: bounded, varying, and continuous.
+    let mut lo = f32::MAX;
+    let mut hi = 0.0f32;
+    let mut prev = foam_noise(0.0, 0.0);
+    for i in 0..400 {
+        let x = i as f32 * 0.25;
+        let n = foam_noise(x, 12.5);
+        assert!(
+            (0.0..=1.0).contains(&n),
+            "foam noise left [0,1] at {x}: {n}"
+        );
+        assert!(
+            (n - prev).abs() < 0.35,
+            "foam noise stepped by {} at {x} - that is a seam, not a field",
+            (n - prev).abs()
+        );
+        lo = lo.min(n);
+        hi = hi.max(n);
+        prev = n;
+    }
+    assert!(
+        hi - lo > 0.35,
+        "foam noise only spans {} - it is flat",
+        hi - lo
+    );
+    // Deterministic: the wash may not crawl when the grid re-centres.
+    assert_eq!(foam_noise(37.5, -9.25), foam_noise(37.5, -9.25));
+}
+
+/// The wash runs up and draws back. **A moving edge cannot be a hard edge** —
+/// an observer reads a boundary that breathes as a process and one that does
+/// not as geometry.
+#[test]
+fn the_wash_surges() {
+    let (mut lo, mut hi) = (f32::MAX, 0.0f32);
+    for i in 0..64 {
+        let phase = std::f32::consts::TAU * i as f32 / 64.0;
+        let s = foam_surge(11.0, -4.0, phase);
+        assert!(
+            (FOAM_SURGE_FLOOR - 1e-6..=1.0 + 1e-6).contains(&s),
+            "the surge left [FOAM_SURGE_FLOOR, 1] at phase {phase}: {s}"
+        );
+        lo = lo.min(s);
+        hi = hi.max(s);
+    }
+    assert!(
+        (lo - FOAM_SURGE_FLOOR).abs() < 1e-3,
+        "the surge never draws back"
+    );
+    assert!((hi - 1.0).abs() < 1e-3, "the surge never runs up");
+    // It travels: two points a half wavelength apart are out of phase.
+    let w = WAVES[0];
+    let half = w.len_m * 0.5;
+    // A quarter, not a half: at half a wavelength both samples land on the
+    // same zero crossing of the sine and read identical, which says nothing.
+    let a = foam_surge(0.0, 0.0, 0.0);
+    let b = foam_surge(w.dir[0] * half * 0.5, w.dir[1] * half * 0.5, 0.0);
+    assert!(
+        (a - b).abs() > 0.2,
+        "the wash does not travel along the shore: {a} vs {b}"
+    );
 }
 
 /// Mixing foam in must not take the colour anywhere a colour cannot go, and it
@@ -574,14 +692,19 @@ fn the_sea_is_lit_like_water() {
 /// stays dry.
 #[test]
 fn the_shore_is_wet_and_stays_a_surface() {
-    assert_eq!(terrain_mesh::wet_factor(SEA_LEVEL), 1.0);
-    assert_eq!(terrain_mesh::wet_factor(SEA_LEVEL - 4.0), 1.0);
-    assert_eq!(terrain_mesh::wet_factor(SEA_LEVEL + WET_BAND_M), 0.0);
-    assert_eq!(terrain_mesh::wet_factor(SEA_LEVEL + 40.0), 0.0);
+    // A gentle beach: the height bound is what ends the band.
+    let gentle = 0.05f32;
+    assert_eq!(terrain_mesh::wet_factor(SEA_LEVEL, gentle), 1.0);
+    assert_eq!(terrain_mesh::wet_factor(SEA_LEVEL - 4.0, gentle), 1.0);
+    assert_eq!(
+        terrain_mesh::wet_factor(SEA_LEVEL + WET_BAND_M, gentle),
+        0.0
+    );
+    assert_eq!(terrain_mesh::wet_factor(SEA_LEVEL + 40.0, gentle), 0.0);
     let mut prev = 1.1f32;
     for i in 0..=40 {
         let y = SEA_LEVEL + WET_BAND_M * i as f32 / 40.0;
-        let w = terrain_mesh::wet_factor(y);
+        let w = terrain_mesh::wet_factor(y, gentle);
         assert!(w <= prev + 1e-6, "wetness rose with height at {y}");
         prev = w;
     }
@@ -619,4 +742,62 @@ fn the_shore_is_wet_and_stays_a_surface() {
     // The soak is the documented one, within the saturation stretch.
     let grey = [0.3f32, 0.3, 0.3];
     assert!((luma(terrain_mesh::wetted(grey, 1.0)) / luma(grey) - WET_VALUE).abs() < 1e-3);
+}
+
+/// **The damp band is bounded by a distance AND a height, and this is the
+/// assertion the shore's softness rests on.** Neither bound alone survives
+/// four bank steepnesses: height alone makes a 4% beach damp for sixty metres,
+/// and run alone makes a cliff damp for fourteen metres of vertical rock. What
+/// has to hold is that the band is *a few metres of ground* on anything a
+/// player would call a shore.
+#[test]
+fn the_damp_band_is_a_few_metres_of_ground_on_any_bank() {
+    // How far back from the waterline the ground is still damp, in metres of
+    // horizontal run, on banks of four different steepnesses.
+    let run_of = |slope: f32| {
+        let mut last = 0.0f32;
+        for i in 1..=4000 {
+            let run = i as f32 * 0.02;
+            if terrain_mesh::wet_factor(SEA_LEVEL + run * slope, slope) > 0.02 {
+                last = run;
+            } else {
+                break;
+            }
+        }
+        last
+    };
+    let gentle = run_of(0.04);
+    let mild = run_of(0.15);
+    let steep = run_of(0.6);
+    let cliff = run_of(2.0);
+    // Nothing collapses to a line, and nothing runs away across the frame.
+    for (name, run) in [
+        ("gentle", gentle),
+        ("mild", mild),
+        ("steep", steep),
+        ("cliff", cliff),
+    ] {
+        assert!(
+            run > 1.0,
+            "a {name} bank is damp for only {run:.2} m of ground - that is a line, not a band"
+        );
+        assert!(
+            run <= WET_REACH_M + 0.1,
+            "a {name} bank is damp for {run:.2} m of ground - that is a stain, not a shore"
+        );
+    }
+    // Anything walkable gets a band you can see from standing height.
+    for (name, run) in [("gentle", gentle), ("mild", mild), ("steep", steep)] {
+        assert!(run > 3.0, "a {name} bank is damp for only {run:.2} m");
+    }
+    // The run bound is what stops the gentle case: on a 4% grade the height
+    // bound alone would reach WET_BAND_M / 0.04 metres inland.
+    assert!(
+        gentle < WET_BAND_M / 0.04 * 0.5,
+        "the run bound is not binding on a gentle beach"
+    );
+    // And the height bound is what stops the flat case, where there is no run
+    // bound to have — a gradient of zero would otherwise wet the horizon.
+    assert_eq!(terrain_mesh::wet_factor(SEA_LEVEL + WET_BAND_M, 0.0), 0.0);
+    assert_eq!(terrain_mesh::wet_factor(SEA_LEVEL + WET_BAND_M, 1e-9), 0.0);
 }

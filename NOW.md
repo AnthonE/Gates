@@ -40,22 +40,43 @@ made the sea a grey sheet because it treated extinction as if it darkened the
 water's *own* light. Both are physics errors with physics fixes; both are
 written up where they were made.
 
+**The shoreline was a second pass, from the operator holding a reference frame
+beside ours and asking why ours is a cut.** Reading that frame: there is no
+edge in it anywhere — a wide damp gradient, then wet sand, then water thin
+enough to be only a sheen, and the white is a soft streaky wash standing
+*offshore*. Three of ours were wrong. Foam peaked at zero depth, which outlines
+the seam it should hide (it now peaks 0.6 m out and is zero at the edge); its
+band edges were exact iso-depth contours of a smooth heightfield, which reads
+as drafting (a noise field displaces them into lobes); and the damp band was
+keyed on height alone, so it was sixty metres wide on a gentle beach and sixty
+centimetres on a steep one (it is bounded by a horizontal run as well). Plus a
+surge, because a moving edge cannot be a hard edge.
+
 Remaining, in order:
 
-1. **There is one sea state and no weather.** The wave set is a constant, so
+1. **The last hard edge needs the depth prepass, and that is the next slice.**
+   The alpha ramp is a *vertex* quantity off `terrain::height`, so it fades
+   correctly against the terrain and not at all against anything else — a
+   boulder, a foundation or a player in the shallows gets a ring, because no
+   vertex of the sea has heard of them. The fix is standard: sample the depth
+   prepass in the fragment, fade alpha and add foam as the scene depth
+   approaches the water's own. It needs an `ExtendedMaterial` and the **first
+   WGSL in the tree** (`RENDER.md` §8), and SSAO already puts a depth prepass
+   on the camera, so the input exists.
+2. **There is one sea state and no weather.** The wave set is a constant, so
    it is always this calm. A storm is `WAVES` scaled by a scalar the sim would
    have to publish, which makes it wire, not renderer.
-2. **Nothing reflects.** `reference/WATER.md` §5 says reflections are the
+3. **Nothing reflects.** `reference/WATER.md` §5 says reflections are the
    expensive half and §6 says the payoff is the *sky* — which the atmosphere's
    specular already gives. A screen-space pass is a real want and not a cheap
    one; read those two sections before starting.
-3. **Underwater is audio-only.** A colour grade under the surface is a second
+4. **Underwater is audio-only.** A colour grade under the surface is a second
    owner of the frame's haze, which `CLAUDE.md`'s coupled-lighting law
    forbids; it wants the lighting owner, not this lane. The mix ducks and the
    bed goes dark, and that is all.
-4. **The submerged duck is not a filter.** rodio gives gain, rate and panning;
+5. **The submerged duck is not a filter.** rodio gives gain, rate and panning;
    a real low-pass needs a DSP node. Stated in `SNAPSHOTS`, not implied.
-5. **`Splash` is the only producer of the waterline.** Swimming has no stroke,
+6. **`Splash` is the only producer of the waterline.** Swimming has no stroke,
    no wake and no interactive deformation — the reference merges an
    interactive sim into its own displacement (§3) and we have no producer for
    one.

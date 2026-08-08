@@ -517,9 +517,18 @@ optics, motion, foam — which puts waves third rather than first.
   the ground material's octave-retirement law applied to geometry. Below the
   shortest, a tiling ripple normal map with its own mip chain, scrolled by
   `uv_transform`.
-- **Foam** is depth-banded, slope-weighted (the reference's own observation
-  that its ocean foam sits on steeper shore), and surged by the wave phase.
-  The land half of the same seam is `terrain_mesh::wetted`.
+- **The waterline is a band, not a line**, and it is worked from four sides:
+  the wash *stands off* the water's edge (peaking at 0.6 m of depth, zero at
+  the edge itself — foam that peaks at the seam outlines it), its contour is
+  displaced by world-space noise so its edges are lobes rather than iso-depth
+  curves, it surges with the swell so the edge moves, and on the land side
+  `terrain_mesh::wet_factor` damps a few metres of *ground* inland, bounded by
+  a run as well as a height.
+- **What is still a hard edge**: the alpha ramp is a vertex quantity read off
+  `terrain::height`, so it fades correctly against the terrain and not at all
+  against a boulder, a foundation or a player standing in the shallows. The
+  fix is a depth-prepass fade in the fragment — an `ExtendedMaterial` and the
+  first WGSL in the tree. `NOW.md` §0y.
 - **Budget**: 7,921 vertices, one mesh, one draw. Per snap (an 8 m cell
   crossing) ~7.9 k `terrain::height` taps; per frame four sines a vertex and
   three attribute writes, no allocation.
