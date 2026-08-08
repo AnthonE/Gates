@@ -383,11 +383,27 @@ fn edge_hit(px: f32, s0: f32, a0: f32, a1: f32, along: f32, posts: bool) -> bool
     }
     let t = along - s0;
     if posts {
-        (0.0..=DOOR_POST_W_M).contains(&t)
-            || (BUILD_CELL_M - DOOR_POST_W_M..=BUILD_CELL_M).contains(&t)
+        doorway_solid_at(t)
     } else {
         (0.0..=BUILD_CELL_M).contains(&t)
     }
+}
+
+/// Is a doorway SOLID at `t` metres along its edge? The two posts block; the
+/// gap between them is the opening.
+///
+/// **Extracted so the renderer can be gated against it rather than against a
+/// copy of it.** `render/ghost.rs` and `render/structures.rs` both draw this
+/// doorway, and `crates/client/tests/ghost.rs` asserts the drawn posts land
+/// exactly where this returns true. `RENDER.md` §8 states the stake: the
+/// opening is what `edge_hit` refuses to block, and "draw it elsewhere and the
+/// frame lies about where a player can walk". A test that restated this band
+/// instead of calling it would go green while the two drifted, which is the
+/// byte-golden hole `CLAUDE.md`'s trap list names.
+///
+/// Pure, allocation-free, comparison-only — wall 1 is untouched.
+pub fn doorway_solid_at(t: f32) -> bool {
+    (0.0..=DOOR_POST_W_M).contains(&t) || (BUILD_CELL_M - DOOR_POST_W_M..=BUILD_CELL_M).contains(&t)
 }
 
 /// All blocking edges of one cell against the move. The four edges are

@@ -308,6 +308,7 @@ pub fn update(
     mut plan: Query<&mut Text, (With<Plan>, Without<Vitals>)>,
     // `Option`, because a capture run does not register the menus at all.
     ui: Option<Res<super::panels::Ui>>,
+    ghost: Option<Res<super::ghost::Ghost>>,
 ) {
     let core = &net.session.core;
 
@@ -318,12 +319,38 @@ pub fn update(
         // Named only when the content actually has that piece — the wheel
         // draws a dead segment for a pair the shard did not bake, and the
         // HUD must not contradict it.
+        // **The refusal is shown while AIMING, not after the press.** The
+        // ghost has always known why it is red — `place::verdict` returns the
+        // same sentence the server's refusal would carry — and until now that
+        // string was only spoken by `ghost::place_key`, i.e. after the player
+        // had already spent the click. A red box with no reason teaches
+        // nothing; "TOO FAR" or "NO ROOM" beside it teaches the rule. Level is
+        // here for the same reason: `R`/`F` step it and nothing showed it, so
+        // a player building on level 2 by accident had no way to notice.
         let out = match row_for(&core.piece_defs, shape, material) {
-            Some(_) => format!(
-                "BUILD  {} {}   (hold B)",
-                material_label(material),
-                shape_label(shape)
-            ),
+            Some(_) => {
+                let why = match ghost.as_ref().map(|g| g.verdict) {
+                    Some(crate::ui::place::Verdict::No(w)) if !w.is_empty() => w,
+                    _ => "",
+                };
+                let level = ghost.as_ref().map(|g| g.level).unwrap_or(0);
+                if why.is_empty() {
+                    format!(
+                        "BUILD  {} {}  L{}   (hold B)",
+                        material_label(material),
+                        shape_label(shape),
+                        level
+                    )
+                } else {
+                    format!(
+                        "BUILD  {} {}  L{}  — {}",
+                        material_label(material),
+                        shape_label(shape),
+                        level,
+                        why.to_uppercase()
+                    )
+                }
+            }
             None => "BUILD  -   (hold B)".to_string(),
         };
         if text.0 != out {

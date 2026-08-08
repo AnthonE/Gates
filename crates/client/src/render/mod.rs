@@ -543,6 +543,7 @@ impl Plugin for GatesRenderPlugin {
             (
                 ghost::level_keys,
                 ghost::track,
+                ghost::deploy_track,
                 ghost::place_key,
                 ghost::deploy_key,
             )

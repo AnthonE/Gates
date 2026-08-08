@@ -20,6 +20,43 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0u · The ghost tells the truth — what it still cannot promise *(client lane)*
+
+Landed 2026-08-07. The build ghost drew a doorway as a SOLID SLAB, so the
+preview of a doorway hid the one thing a doorway is (`RENDER.md` §8: the
+opening is what `collide::edge_hit` refuses, and drawing it elsewhere makes the
+frame lie about where a player can walk). It is three parts now — two posts and
+a lintel — off numbers shared with `structures.rs` rather than copied.
+
+Also landed: a **deploy ghost** (right-click outside build mode used to place a
+box blind, and `deploy_key`'s own header says guessing wrong costs the item);
+the refusal reason and working level shown while AIMING rather than after the
+click; and `NotShadowCaster`, which the module header had claimed since it was
+written while the code cast a shadow the whole time.
+
+Gated: `crates/client/tests/ghost.rs`, five assertions against
+`sim_core::collide::doorway_solid_at` — the sim's own predicate, extracted so
+the renderer is checked against the rule rather than against a copy of it.
+Three mutants run, all red.
+
+Remaining:
+
+1. **Which parts exist and where they go is still written twice** — once in
+   `ghost::shape_parts`, once in `structures::spawn_piece`. The dimensions are
+   shared and the doorway is gated against the sim, but a shape added to one
+   and not the other passes. One shared parts table both emit from is the fix.
+2. **The deploy ghost says WHERE, not WHETHER.** `place::verdict` answers for
+   build pieces only; the `REFUSE_D_*` set (needs a floor, needs a doorway,
+   hearth claim) is uncheckable client-side, so the preview is deliberately
+   neutral-coloured. Colouring it needs those checks mirrored, which is the
+   quantize-both-sides law applied to placement.
+3. **A door aimed at a doorway is not previewed as a door.** `deploy_key` sends
+   a plane-shape target and lets the sim answer `REFUSE_D_DOOR`; the ghost
+   inherits that and draws the door's box on the cell body rather than in the
+   edge it would fill.
+4. **Stairs are still a flat slab** in both the ghost and the piece — a ramp
+   drawn as a plate. Shared, so at least they agree.
+
 ## 0v · Players are people — what the rig still cannot say *(client lane)*
 
 Landed 2026-08-07. Remote bodies were `Capsule3d` pills that slid and never

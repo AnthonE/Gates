@@ -20,11 +20,12 @@
 //! other way round: a red ghost on something the sim would have accepted,
 //! which is why every check in `verdict` is one the sim runs the same way.
 
+use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use sim_core::build::{
     BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_W, SHAPE_DOORWAY, SHAPE_STAIRS, SHAPE_WALL,
 };
-use sim_core::collide::WALL_THICKNESS_M;
+use sim_core::collide::{DOOR_POST_W_M, WALL_THICKNESS_M};
 use sim_core::limits::MAX_BUILD_LEVELS;
 
 use crate::look::yaw_u16;
@@ -34,18 +35,35 @@ use crate::ui::place::{self, Site, Target, Verdict};
 use super::hud::Toast;
 use super::input::Look;
 use super::panels::Ui;
-use super::structures::{cell_center, level_base_y, SEAM_M, SLAB_T};
+use super::structures::{
+    cell_center, door_opening_w, door_post_gap, level_base_y, LINTEL_DROP_M, LINTEL_H_M, SEAM_M,
+    SLAB_T, STAIRS_RUN_M,
+};
 use super::{Net, WorldId};
 
 /// The ghost's translucency, and its two verdicts. Cosmetics
 /// (`DECISIONS.md` §open, client cosmetics).
 const GHOST_OK: Color = Color::srgba(0.42, 0.78, 0.36, 0.38);
 const GHOST_NO: Color = Color::srgba(0.86, 0.28, 0.22, 0.34);
+/// The deploy preview's colour. **Neutral on purpose** — not the build
+/// ghost's green, which promises a verdict nobody computed for this verb.
+const GHOST_DEPLOY: Color = Color::srgba(0.72, 0.78, 0.86, 0.30);
 
 /// The one ghost entity, and what it is currently showing.
 #[derive(Resource, Default)]
 pub struct Ghost {
     entity: Option<Entity>,
+    /// Which shape the current children were built for, so they are rebuilt on
+    /// a shape CHANGE and not every frame. A doorway is three children; a wall
+    /// is one. Respawning them per frame would churn entities on the client's
+    /// hot path for a value that changes when the player turns a wheel.
+    built_shape: Option<u8>,
+    parts: Vec<(Vec3, Vec3)>,
+    /// The deploy preview — a separate entity from the build ghost because the
+    /// two are never up at once but are driven by different systems, and one
+    /// entity shared between them would need a mode flag that could disagree.
+    deploy_entity: Option<Entity>,
+    deploy_mat: Option<Handle<StandardMaterial>>,
     ok_mat: Option<Handle<StandardMaterial>>,
     no_mat: Option<Handle<StandardMaterial>>,
     mesh: Option<Handle<Mesh>>,
@@ -96,6 +114,7 @@ pub fn track(
     net: NonSend<Net>,
     look: Res<Look>,
     ui: Option<Res<Ui>>,
+    children: Query<&Children>,
 ) {
     let ghost = &mut *ghost;
     if ghost.mesh.is_none() {
@@ -149,14 +168,14 @@ pub fn track(
     ghost.row = Some(row);
     ghost.shape = shape;
 
-    let (scale, offset) = shape_box(shape, target.loc);
+    shape_parts(shape, &mut ghost.parts);
     let base_y = level_base_y(world.seed, target.cx, target.cz, target.level);
     let (cxm, czm) = cell_center(target.cx, target.cz);
     let pos = match target.loc {
         LOC_EDGE_W => Vec3::new(target.cx as f32 * BUILD_CELL_M, base_y, czm),
         sim_core::build::LOC_EDGE_N => Vec3::new(cxm, base_y, target.cz as f32 * BUILD_CELL_M),
         _ => Vec3::new(cxm, base_y, czm),
-    } + offset;
+    };
     // North edges are the west shape turned a quarter — the same rotation
     // `structures::spawn_piece` gives the real thing, so the ghost and the
     // piece it becomes are the same object in the same pose.
@@ -165,9 +184,7 @@ pub fn track(
     } else {
         0.0
     };
-    let transform = Transform::from_translation(pos)
-        .with_rotation(Quat::from_rotation_y(yaw))
-        .with_scale(scale);
+    let transform = Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw));
     let mat = if verdict.ok() {
         ghost.ok_mat.clone()
     } else {
@@ -175,22 +192,52 @@ pub fn track(
     }
     .expect("built above");
 
-    match ghost.entity {
+    let root = match ghost.entity {
         Some(e) => {
-            commands
-                .entity(e)
-                .insert((transform, MeshMaterial3d(mat), Visibility::Visible));
+            commands.entity(e).insert((transform, Visibility::Visible));
+            e
         }
         None => {
             let e = commands
-                .spawn((
-                    super::WorldEntity,
-                    Mesh3d(ghost.mesh.clone().expect("built above")),
-                    MeshMaterial3d(mat),
-                    transform,
-                ))
+                .spawn((super::WorldEntity, transform, Visibility::Visible))
                 .id();
             ghost.entity = Some(e);
+            e
+        }
+    };
+
+    // Rebuild the children only when the shape changes. `despawn_related` drops
+    // the previous set; a shape that keeps its part count would still be
+    // rebuilt, which is fine because the trigger is a wheel turn.
+    if ghost.built_shape != Some(shape) {
+        ghost.built_shape = Some(shape);
+        commands.entity(root).despawn_related::<Children>();
+        let mesh = ghost.mesh.clone().expect("built above");
+        let parts = ghost.parts.clone();
+        commands.entity(root).with_children(|c| {
+            for (scale, offset) in parts {
+                c.spawn((
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(mat.clone()),
+                    // **The header has always claimed "no shadow" and the code
+                    // never said so.** A translucent mesh still casts one in
+                    // Bevy unless this component is present, so the ghost was
+                    // laying a hard shadow on the ground it hovers over —
+                    // exactly the "darkens the ground" the comment promised it
+                    // would not do. A comment is not an implementation.
+                    NotShadowCaster,
+                    Transform::from_translation(offset).with_scale(scale),
+                ));
+            }
+        });
+    } else {
+        // Same shape, so only the verdict colour can have moved.
+        let kids: Vec<Entity> = children
+            .get(root)
+            .map(|c| c.iter().collect())
+            .unwrap_or_default();
+        for k in kids {
+            commands.entity(k).insert(MeshMaterial3d(mat.clone()));
         }
     }
 }
@@ -234,6 +281,109 @@ pub fn place_key(
             Err(e) => toast.say(e.to_string()),
         },
         Err(e) => toast.say(format!("that placement would not encode ({e:?})")),
+    }
+}
+
+/// Park a translucent preview over where the held deployable would land.
+///
+/// **The deploy path had no ghost at all, and `deploy_key`'s own header says
+/// why that matters**: "the client does not try to guess which, because
+/// guessing wrong costs the player the item." A build placement the sim
+/// refuses costs a click; a deployable placed at the wrong address costs the
+/// box. The build ghost has existed since `NOW.md` §0w item 1 and this half
+/// was never built, so the riskier of the two verbs was the blind one.
+///
+/// **It is deliberately colourless about legality.** `place::verdict` answers
+/// for BUILD pieces — spot taken, reach, ground, cost against `piece_defs` —
+/// and a deployable is refused by a different set the client cannot check
+/// (`REFUSE_D_*`: needs a floor, needs a doorway, too close to a hearth
+/// claim). Drawing this green would promise a check nobody ran, which is the
+/// one direction the module header forbids: "what must never happen is a red
+/// ghost on something the sim would have accepted" — and its mirror, a green
+/// one on something it would refuse. So this ghost says WHERE, not WHETHER.
+// Nine, and each is a distinct source this frame reads — the same shape and
+// the same justification `track` above carries.
+#[allow(clippy::too_many_arguments)]
+pub fn deploy_track(
+    mut commands: Commands,
+    mut ghost: ResMut<Ghost>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    world: Res<WorldId>,
+    net: NonSend<Net>,
+    look: Res<Look>,
+    ui: Option<Res<Ui>>,
+    chat: Option<Res<super::chat::Chat>>,
+) {
+    let ghost = &mut *ghost;
+    if ghost.deploy_mat.is_none() {
+        ghost.deploy_mat = Some(materials.add(translucent(GHOST_DEPLOY)));
+        if ghost.mesh.is_none() {
+            ghost.mesh = Some(meshes.add(Cuboid::new(1.0, 1.0, 1.0)));
+        }
+    }
+    let busy = ui
+        .map(|u| u.panel != super::panels::Panel::None)
+        .unwrap_or(false)
+        || chat.map(|c| c.open()).unwrap_or(false);
+    if busy {
+        hide_deploy(&mut commands, ghost);
+        return;
+    }
+    let core = &net.session.core;
+    let held = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
+    let Some(row) =
+        crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held.item)
+    else {
+        // Not holding a deployable — the same silence `deploy_key` keeps.
+        hide_deploy(&mut commands, ghost);
+        return;
+    };
+    // `row_for_item` returns a u8 row; the def table is a slice. Bounded
+    // rather than trusted: `deploy_defs` is drip-fed on join (`RENDER.md` §8),
+    // so a row can name a def that has not arrived yet.
+    let Some(def) = core.deploy_defs.defs.get(row as usize) else {
+        hide_deploy(&mut commands, ghost);
+        return;
+    };
+    let arch = def.arch as usize;
+    let size = super::structures::deploy_size(arch);
+
+    let [x, _, z] = core.predict.render_position();
+    let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
+    let t = place::target(x, z, fx, fz, sim_core::build::SHAPE_FOUNDATION, 0);
+    let base_y = level_base_y(world.seed, t.cx, t.cz, t.level);
+    let (cxm, czm) = cell_center(t.cx, t.cz);
+    // Standing ON the cell body, so the box's centre is half its height up —
+    // the same convention `structures` draws a placed deployable with.
+    let pos = Vec3::new(cxm, base_y + size.y * 0.5, czm);
+    let transform = Transform::from_translation(pos).with_scale(size);
+    let mat = ghost.deploy_mat.clone().expect("built above");
+
+    match ghost.deploy_entity {
+        Some(e) => {
+            commands
+                .entity(e)
+                .insert((transform, MeshMaterial3d(mat), Visibility::Visible));
+        }
+        None => {
+            let e = commands
+                .spawn((
+                    super::WorldEntity,
+                    Mesh3d(ghost.mesh.clone().expect("built above")),
+                    MeshMaterial3d(mat),
+                    NotShadowCaster,
+                    transform,
+                ))
+                .id();
+            ghost.deploy_entity = Some(e);
+        }
+    }
+}
+
+fn hide_deploy(commands: &mut Commands, ghost: &mut Ghost) {
+    if let Some(e) = ghost.deploy_entity {
+        commands.entity(e).insert(Visibility::Hidden);
     }
 }
 
@@ -312,24 +462,60 @@ fn translucent(base_color: Color) -> StandardMaterial {
     }
 }
 
-/// The unit cube's scale and its offset from the address's base point, per
-/// shape. Mirrors `structures::spawn_piece`'s geometry so the ghost is the
-/// size of the thing it becomes.
-fn shape_box(shape: u8, _loc: u8) -> (Vec3, Vec3) {
+/// The unit cube's scale and offset for each PART of a shape, relative to the
+/// address's base point. Mirrors `structures::spawn_piece`.
+///
+/// **A doorway is three parts and it used to be drawn as one.** The ghost
+/// scaled a single cube to the full wall box for `SHAPE_DOORWAY`, so the
+/// preview of a doorway was a solid slab — the player could not see where the
+/// opening would land, which is the one thing a doorway is for. `RENDER.md`
+/// §8: the opening is 1.2 m x 2.1 m because `collide::edge_hit` blocks exactly
+/// `t` in `[0, 0.9]` and `[2.1, 3.0]`, and "draw it elsewhere and the frame
+/// lies about where a player can walk". The ghost lied one step earlier than
+/// the piece could, while the player was still choosing.
+///
+/// **The numbers are shared with `structures`, the LAYOUT is not, and that is
+/// the remaining hole.** `door_post_gap`, `door_opening_w`, `LINTEL_H_M` and
+/// `LINTEL_DROP_M` are that module's constants now rather than copies, so the
+/// two cannot disagree about a dimension. Which parts exist and where they go
+/// is still written twice, and nothing holds those equal — `tests/ghost.rs`
+/// asserts the doorway's opening against `collide::edge_hit` itself, which is
+/// the property that actually matters, but a shape added to one and not the
+/// other would still pass. The real fix is one shared parts table both emit
+/// from; `NOW.md` carries it.
+fn shape_parts(shape: u8, out: &mut Vec<(Vec3, Vec3)>) {
+    out.clear();
     let span = BUILD_CELL_M - SEAM_M;
     match shape {
-        SHAPE_WALL | SHAPE_DOORWAY => (
+        SHAPE_WALL => out.push((
             Vec3::new(WALL_THICKNESS_M, LEVEL_H_M, span),
             Vec3::new(0.0, LEVEL_H_M * 0.5, 0.0),
-        ),
-        SHAPE_STAIRS => (
-            Vec3::new(span, SLAB_T, 4.15),
+        )),
+        SHAPE_DOORWAY => {
+            let gap = door_post_gap();
+            let mid = LEVEL_H_M * 0.5;
+            // Two posts, hugging each end of the edge...
+            for z in [-gap, gap] {
+                out.push((
+                    Vec3::new(WALL_THICKNESS_M, LEVEL_H_M, DOOR_POST_W_M),
+                    Vec3::new(0.0, mid, z),
+                ));
+            }
+            // ...and the lintel over what they leave. Its underside is the
+            // top of the opening the sim refuses to let a player through.
+            out.push((
+                Vec3::new(WALL_THICKNESS_M, LINTEL_H_M, door_opening_w()),
+                Vec3::new(0.0, mid + mid - LINTEL_DROP_M - LEVEL_H_M * 0.5, 0.0),
+            ));
+        }
+        SHAPE_STAIRS => out.push((
+            Vec3::new(span, SLAB_T, STAIRS_RUN_M),
             Vec3::new(0.0, LEVEL_H_M * 0.5, 0.0),
-        ),
+        )),
         // Foundation / floor / roof: the slab under the level plane.
-        _ => (
+        _ => out.push((
             Vec3::new(span, SLAB_T, span),
             Vec3::new(0.0, -SLAB_T * 0.5, 0.0),
-        ),
+        )),
     }
 }
