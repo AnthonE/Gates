@@ -61,6 +61,10 @@ pub fn structural(c: &Content) -> Result<(), String> {
         check_id(&l.id, "loot.", "loot table")?;
         unique(&l.id)?;
     }
+    for m in &c.mobs {
+        check_id(&m.id, "mob.", "mob")?;
+        unique(&m.id)?;
+    }
     for s in &c.skins {
         check_id(&s.id, "skin.", "skin")?;
         unique(&s.id)?;
@@ -550,6 +554,58 @@ pub fn structural(c: &Content) -> Result<(), String> {
             }
             if e.count_min == 0 || e.count_min > e.count_max {
                 return Err(format!("loot `{}`: bad count range on `{}`", l.id, e.item));
+            }
+        }
+    }
+
+    // Mobs: every band here is a *reachability* check rather than a taste
+    // one — an animal that cannot be killed, cannot be caught, or cannot be
+    // left behind is content that reads as a bug in the sim.
+    for m in &c.mobs {
+        if m.hp == 0 {
+            return Err(format!(
+                "mob `{}`: zero hp is how the roster says a species is disarmed — \
+                 a row that means it should be deleted, not written",
+                m.id
+            ));
+        }
+        if m.name.trim().is_empty() {
+            return Err(format!("mob `{}`: empty name", m.id));
+        }
+        if m.walk_pct == 0 || m.walk_pct > 100 || m.flee_pct == 0 || m.flee_pct > 100 {
+            return Err(format!(
+                "mob `{}`: speeds are 1–100 percent of the player's own",
+                m.id
+            ));
+        }
+        // The leash has to be wider than the fright radius, or the animal
+        // spends its whole life being turned around at the leash while a
+        // player stands inside the radius that started it.
+        if m.roam_m <= m.spook_m {
+            return Err(format!(
+                "mob `{}`: a {}m leash inside a {}m spook radius is a treadmill",
+                m.id, m.roam_m, m.spook_m
+            ));
+        }
+        if m.spook_m == 0 || m.flee_seconds == 0 {
+            return Err(format!(
+                "mob `{}`: an animal that never flees is scenery",
+                m.id
+            ));
+        }
+        if m.respawn_seconds == 0 {
+            return Err(format!(
+                "mob `{}`: a zero respawn hatches the slot on the tick it died",
+                m.id
+            ));
+        }
+        if m.drops.is_empty() {
+            return Err(format!("mob `{}`: killing it pays nothing", m.id));
+        }
+        for d in &m.drops {
+            item_exists(&d.item, &format!("mob `{}` drop", m.id))?;
+            if d.count == 0 {
+                return Err(format!("mob `{}`: zero count on `{}`", m.id, d.item));
             }
         }
     }

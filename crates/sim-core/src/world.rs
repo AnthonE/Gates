@@ -18,6 +18,7 @@ use crate::limits::{
     MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
 };
 use crate::loot::{LootContent, LOOT_BARREL};
+use crate::mob;
 use crate::movement::{self, quant_xz, quant_y, Body};
 use crate::persist::PlayerSave;
 use crate::ranged;
@@ -770,6 +771,31 @@ pub struct World {
     /// default leaves barrels standing, because a barrel that broke into
     /// nothing would be worse than one that does not break.
     pub loot: LootContent,
+    /// Baked animal species (mob.rs). Construction input too; the inert
+    /// default gives every species zero hit points and no slot ever
+    /// hatches, so a content set with no `mobs.toml` rows is a shard
+    /// without wildlife rather than a shard with invisible wildlife.
+    pub mob: mob::MobContent,
+    /// The animal roster — sim state, hashed. Homes are drawn from the
+    /// seed at construction beside `haven` and never move; everything else
+    /// in it is a tick's business.
+    ///
+    /// Boxed, the same one-allocation-at-construction posture `backpacks`,
+    /// `slot_cache` and `arrows` take: `World` is ~440 kB and is built on
+    /// the stack (`ShardCore::new`, every wire test, `probe.rs`).
+    ///
+    /// **This roster overflowed the wasm shadow stack when it landed inline,
+    /// and two branches found that wall on the same day from opposite
+    /// ends.** `test_parity_wasm` died as `memory access out of bounds`
+    /// inside `Deploys::new` — a constructor neither branch had touched —
+    /// because rustc's 1 MiB default had the gate at ~99%. The oven found it
+    /// with 8 kB of container state; this found it with 3.5 kB of animals.
+    /// The durable fix is theirs and it is `.cargo/config.toml`, which now
+    /// states a 4 MiB shadow stack instead of inheriting one. Boxing stays
+    /// because it is the right posture for a fixed-capacity store on a
+    /// stack-built `World`, not because it is what holds that gate up.
+    /// Nothing here allocates in the tick.
+    pub mobs: Box<mob::Mobs>,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
@@ -837,12 +863,17 @@ pub struct World {
 
 impl World {
     pub fn new(seed: u64) -> Self {
+        let haven = terrain::haven(seed);
         Self {
             seed,
             tick: 0,
             players: [Player::default(); MAX_PLAYERS],
             scatter: ScatterTable::alpha_default(),
-            haven: terrain::haven(seed),
+            mob: mob::MobContent::EMPTY,
+            // After `haven`, because a home is rejected against the two
+            // authored sites (mob.rs `home_of`).
+            mobs: Box::new(mob::Mobs::new(seed, &haven)),
+            haven,
             gather: GatherContent::EMPTY,
             craft: CraftContent::EMPTY,
             build: BuildContent::EMPTY,
@@ -2111,17 +2142,33 @@ impl World {
                     }
                     combat::Strike::Hit => {}
                     combat::Strike::Missed => {
-                        combat::raid(
+                        // node → player → **animal** → structure. An
+                        // animal outranks the wall behind it and never
+                        // outranks a player: standing between a raider and
+                        // a door must not become a way to eat the swing.
+                        let took = mob::strike(
                             &self.combat,
-                            &self.build,
-                            &self.deploy,
-                            seed,
-                            &self.players[i],
-                            &mut self.pieces,
-                            &mut self.deploys,
-                            &mut removals,
+                            &self.gather,
+                            &self.mob,
+                            tick,
+                            i,
+                            &mut self.players,
+                            &mut self.mobs,
                             &mut self.events,
                         );
+                        if !took {
+                            combat::raid(
+                                &self.combat,
+                                &self.build,
+                                &self.deploy,
+                                seed,
+                                &self.players[i],
+                                &mut self.pieces,
+                                &mut self.deploys,
+                                &mut removals,
+                                &mut self.events,
+                            );
+                        }
                     }
                 }
             }
@@ -2144,6 +2191,28 @@ impl World {
             tick,
             &mut removals,
             &mut self.events,
+        );
+
+        // The roster steps after the player loop and before the arrows, and
+        // both sides of that are deliberate. After the players, because an
+        // animal reads player positions to decide whether it is awake and
+        // which way to run, and reading them mid-loop would make the answer
+        // depend on the reader's slot index. Before the arrows, because a
+        // shot must resolve against where the animal ended this tick — the
+        // same rule the player loop's ordering states in the comment above.
+        mob::step(
+            seed,
+            tick,
+            &self.mob,
+            self.pieces.cols(),
+            &mut crate::occupy::Occupants {
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            },
+            &mut self.mobs,
+            &self.players,
         );
 
         // Arrows fly after the player loop, never inside it. Two reasons,
@@ -2385,6 +2454,39 @@ impl World {
             buf[34..36].copy_from_slice(&a.life.to_le_bytes());
             h.update(&buf);
             h.update(&a.flown.to_le_bytes());
+        }
+        // The animal roster, on the arrow idiom above and for its reason:
+        // **skip-if-not-alive, no length prefix**, so a world whose content
+        // arms no species folds not one byte here and `GOLDEN_FINAL_HASH`
+        // stays evidence about the script it pins rather than about this
+        // slice landing.
+        //
+        // A slot's home is NOT hashed and that is the same call `haven`
+        // makes one field over: it is a pure function of the seed,
+        // recomputed identically by every build, so it is worldgen and not
+        // state. What is hashed is everything a tick can move — including
+        // `respawn_at` and `flee_until`, which are deadlines rather than
+        // counters for the reason `charges` states, and `awake`, because
+        // two shards that disagree about which animals are dormant will
+        // disagree about every position downstream of it.
+        for m in self.mobs.m.iter() {
+            if !m.alive {
+                continue;
+            }
+            let mut buf = [0u8; 40];
+            buf[0..4].copy_from_slice(&m.body.qx.to_le_bytes());
+            buf[4..8].copy_from_slice(&m.body.qy.to_le_bytes());
+            buf[8..12].copy_from_slice(&m.body.qz.to_le_bytes());
+            buf[12..16].copy_from_slice(&m.body.qvy.to_le_bytes());
+            buf[16] = m.body.grounded as u8;
+            buf[17] = m.kind;
+            buf[18] = m.gait as u8;
+            buf[19] = m.awake as u8;
+            buf[20..22].copy_from_slice(&m.yaw.to_le_bytes());
+            buf[22..24].copy_from_slice(&m.hp.to_le_bytes());
+            buf[24..32].copy_from_slice(&m.flee_until.to_le_bytes());
+            buf[32..40].copy_from_slice(&m.respawn_at.to_le_bytes());
+            h.update(&buf);
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {

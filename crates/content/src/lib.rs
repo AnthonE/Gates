@@ -20,7 +20,7 @@ pub use balance::Anchors;
 
 /// Every file the content set is made of — exactly these, no extras.
 /// A missing file is a loud failure, never a defaulted section.
-pub const FILES: [&str; 12] = [
+pub const FILES: [&str; 13] = [
     "items.toml",
     "gatherables.toml",
     "recipes.toml",
@@ -31,6 +31,7 @@ pub const FILES: [&str; 12] = [
     "deployables.toml",
     "cooking.toml",
     "loot.toml",
+    "mobs.toml",
     "skins.toml",
     "balance.toml",
 ];
@@ -102,6 +103,13 @@ struct LootFile {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct MobsFile {
+    #[serde(default)]
+    mob: Vec<Mob>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SkinsFile {
     skin: Vec<Skin>,
 }
@@ -122,6 +130,10 @@ pub struct Content {
     pub fuel: Fuel,
     pub cooks: Vec<Cook>,
     pub loot_tables: Vec<LootTable>,
+    /// The animal roster's species table. Empty is legal and means a
+    /// shard with no wildlife — the file still has to exist, because a
+    /// missing file is a loud failure here and never a defaulted section.
+    pub mobs: Vec<Mob>,
     pub skins: Vec<Skin>,
     pub balance: Balance,
     anchors: Anchors,
@@ -188,6 +200,7 @@ impl Content {
         let deployables: DeployablesFile = parse("deployables.toml", get("deployables.toml")?)?;
         let cooking: CookingFile = parse("cooking.toml", get("cooking.toml")?)?;
         let loot: LootFile = parse("loot.toml", get("loot.toml")?)?;
+        let mobs: MobsFile = parse("mobs.toml", get("mobs.toml")?)?;
         let skins: SkinsFile = parse("skins.toml", get("skins.toml")?)?;
         let balance: Balance = parse("balance.toml", get("balance.toml")?)?;
 
@@ -203,6 +216,7 @@ impl Content {
             fuel: cooking.fuel,
             cooks: cooking.cook,
             loot_tables: loot.loot_table,
+            mobs: mobs.mob,
             skins: skins.skin,
             balance,
             anchors: Anchors::default(),

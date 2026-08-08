@@ -297,6 +297,14 @@ fn test_alloc_zero() {
     // *counted* while a bag exists for it to find. Bot 6's is placed below,
     // through the real verb.
     world.deploy = DeployContent::probe_fixture();
+    // The animal fixture, and it is the largest per-tick addition in this
+    // file: 100 bots spread over the island wake most of a 64-slot roster,
+    // so the counted window holds the hatch, the staggered think (the
+    // 256-entry heading search included), the wake scan and 64 more
+    // capsules through `movement::step` — every tick, not on an event.
+    // A melee swing that lands on one also runs `mob::strike` and its
+    // inventory write.
+    world.mob = sim_core::mob::MobContent::probe_fixture();
     let mut rng = Pcg32::new(0xA110C, 3);
     let mut yaws = [0u16; MAX_PLAYERS];
 

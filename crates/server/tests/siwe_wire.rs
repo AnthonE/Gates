@@ -38,6 +38,7 @@ fn baked_content() -> (
     sim_core::survival::SurvivalContent,
     sim_core::oven::CookContent,
     sim_core::loot::LootContent,
+    sim_core::mob::MobContent,
     protocol::ItemCatalog,
 ) {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
@@ -52,6 +53,7 @@ fn baked_content() -> (
         c.bake_survival().expect("survival"),
         c.bake_cooking().expect("cooking"),
         c.bake_loot().expect("loot"),
+        c.bake_mobs().expect("mobs"),
         server::net::bake_catalog(&c).expect("catalog"),
     )
 }
@@ -98,7 +100,7 @@ fn key(byte: u8) -> SigningKey {
 }
 
 async fn shard(require_auth: bool) -> server::net::ShardHandle {
-    let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, catalog) =
+    let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog) =
         baked_content();
     let mut cfg = ShardConfig::ephemeral(20_260_807);
     cfg.require_auth = require_auth;
@@ -118,6 +120,7 @@ async fn shard(require_auth: bool) -> server::net::ShardHandle {
         // fresh inventory would be asserting on content instead of on code.
         sim_core::inventory::SpawnKit::EMPTY,
         loot,
+        mobs,
         catalog,
         Saves::off(),
         server::worldfile::WorldBoot::off(),
