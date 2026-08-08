@@ -310,6 +310,10 @@ pub struct Globals {
     /// build cost (100 = the damage's worth exactly). Percent so the file
     /// stays integer-only, like `raid_ratio_stone_pct`.
     pub repair_cost_pct: u32,
+    /// Unpaid decay per upkeep period, % of max hp, keyed by material.
+    /// A map rather than three fields so a fourth grade is a data change
+    /// (`Material`'s own set is what validate checks it against).
+    pub decay_pct_per_period: BTreeMap<Material, u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

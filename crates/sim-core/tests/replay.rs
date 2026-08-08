@@ -220,10 +220,17 @@ const TICKS: u64 = 900;
 /// and both halves of `Command::Demolish`, one of which is refused by the
 /// grace window on purpose.
 ///
+/// Regenerated once more, in the same commit, by **upkeep/decay v1** —
+/// and this one is purely the first shape, a verb changing. No state was
+/// added: upkeep now charges **per material** rather than demanding one
+/// hearth cover a whole piece, and an unpaid piece rots at its own
+/// material's rate rather than a flat 5 %. The script leaps thirty
+/// upkeep periods at its midpoint, so both changes bite hard on it.
+///
 /// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
 /// this value was read off, which is the check that keeps a regenerated
 /// golden evidence rather than a shrug.
-const GOLDEN_FINAL_HASH: u64 = 0x36FB_0BD0_E922_4703;
+const GOLDEN_FINAL_HASH: u64 = 0x2ECB_07DC_7E17_D1D4;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

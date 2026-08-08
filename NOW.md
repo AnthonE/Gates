@@ -20,6 +20,29 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0aa · Building rights — what the four slices left standing *(systems lane)*
+
+Landed 2026-08-08. `reference/BUILDING.md` is the research; the four rows
+in `DECISIONS.md` §open (hearth crew v1, privilege v1, demolish v1,
+upkeep/decay v1) are what was built. What remains:
+
+1. **Upkeep coverage is still a circle.** `privilege v1` moved the *build*
+   verbs onto the base's own volume, and `covering_hearth` — the upkeep
+   sweep's test — still asks `HEARTH_RADIUS_M`. Different questions, and
+   the sweep runs per tick where the walk runs per keypress, so the split
+   is deliberate rather than half-finished. It is still a split, and a
+   long base is protected by a shape that is not the one that claims it.
+2. **The privilege walk has no cache.** One BFS per placement, capped at
+   `PRIV_BFS_CELLS`. Fine for a keypress; it would not be fine if
+   something per-tick started asking.
+3. **Locks on boxes** (`DOORS.md` §9.8) — still the cheapest unbuilt
+   thing in either document, and cheaper now: `pick_up` already consults
+   `Locks::passes` at an arbitrary address, so the predicate is wired.
+4. **No `AutoTurret`, so the roster has two customers and not three.**
+   `roster.rs` exists because the reference has four; ours has two.
+
+---
+
 ## 0z · Doors and locks — what lock v1 left standing *(systems lane)*
 
 Landed 2026-08-08. `reference/DOORS.md` is the research (owns nothing);
@@ -31,11 +54,9 @@ whole slice. What remains, in order:
    owner bit. The lock is now a side-store keyed by an address and a box has
    an address, so the predicate is the same function called from one more
    place. No new concepts (`DOORS.md` §9.8).
-2. **A pickup verb for an unsecured deployable.** The reference's rule is
-   that any player may *remove* a door carrying no lock, which is what makes
-   a lock a claim rather than a convenience. We have no pickup verb for any
-   deployable at all, so this is the verb first and the door rule second
-   (`DOORS.md` §7 verb 9).
+2. ~~**A pickup verb for an unsecured deployable.**~~ Landed with
+   demolish v1 (§0aa), including the rule that a locked door cannot be
+   lifted out of its frame.
 3. **The keypad is a HUD line, not a panel.** Deliberate (`ui/keypad.rs`
    says why) but it means the digits are typed and there is nothing to
    click. A small pointer-free overlay would be strictly better and is not

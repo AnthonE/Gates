@@ -418,6 +418,15 @@ impl Content {
             dc.mats[n] = item;
         }
         dc.mat_count = mats.len() as u8;
+        for (m, pct) in &self.balance.globals.decay_pct_per_period {
+            let idx = match m {
+                Material::Wood => sim_core::build::MAT_WOOD,
+                Material::Stone => sim_core::build::MAT_STONE,
+                Material::Metal => sim_core::build::MAT_METAL,
+            } as usize;
+            dc.decay_pct[idx] = u16::try_from(*pct)
+                .map_err(|_| format!("bake: decay_pct_per_period {pct} overflows u16"))?;
+        }
         dc.upkeep_pct_per_day =
             u16::try_from(self.balance.globals.upkeep_pct_per_day).map_err(|_| {
                 format!(

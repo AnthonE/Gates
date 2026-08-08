@@ -564,6 +564,36 @@ pub fn structural(c: &Content) -> Result<(), String> {
         ));
     }
 
+    // The decay ladder: one rate per material, each a live percent, and
+    // **monotone against toughness** — a tougher grade must not rot
+    // faster than a weaker one, or upgrading would cost materials to
+    // shorten a base's life. That is the reference's shape (§5's ladder
+    // runs 3 h wood → 5 h stone → 8 h metal) and it is the one property
+    // of these three numbers a reader cannot check by eye.
+    {
+        let d = &c.balance.globals.decay_pct_per_period;
+        for m in [Material::Wood, Material::Stone, Material::Metal] {
+            match d.get(&m) {
+                None => return Err(format!("balance: no decay rate for {m:?}")),
+                Some(0) => {
+                    return Err(format!(
+                        "balance: {m:?} decays 0% per period, which is a piece                          that never rots — turn upkeep off with                          upkeep_pct_per_day instead of by rounding"
+                    ))
+                }
+                Some(p) if *p > 100 => {
+                    return Err(format!("balance: {m:?} decays {p}% per period, over 100"))
+                }
+                Some(_) => {}
+            }
+        }
+        let (w, st, me) = (d[&Material::Wood], d[&Material::Stone], d[&Material::Metal]);
+        if !(w >= st && st >= me) {
+            return Err(format!(
+                "balance: the decay ladder is not monotone (wood {w}, stone                  {st}, metal {me}) — a tougher grade rotting faster makes an                  upgrade cost materials to shorten a base's life"
+            ));
+        }
+    }
+
     // Loot: every entry exists, weights and count ranges sane.
     let mut containers = BTreeSet::new();
     for l in &c.loot_tables {

@@ -1335,6 +1335,58 @@ fn a_container_that_cannot_be_opened_is_refused() {
     );
 }
 
+/// The decay ladder must not invert.
+///
+/// The three numbers look like taste and one relationship in them is
+/// not: if metal rots faster than wood, an upgrade spends materials to
+/// *shorten* a base's life, and nothing downstream would ever say so —
+/// the sweep would just quietly eat the expensive walls first.
+#[test]
+fn an_inverted_decay_ladder_is_refused() {
+    refuses(
+        "balance.toml",
+        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { wood = 13, stone = 20, metal = 34 }",
+        "not monotone",
+    );
+    refuses(
+        "balance.toml",
+        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { wood = 34, stone = 20, metal = 0 }",
+        "never rots",
+    );
+}
+
+/// The ladder the sim plays is the ladder the file wrote, keyed by the
+/// sim's own material codes — the conversion boundary, gated like the
+/// bow's (`bows_bake_to_per_tick_integers_the_sim_can_integrate`).
+#[test]
+fn the_decay_ladder_reaches_the_sim_keyed_by_material() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let dc = c.bake_deployables().expect("shipped deployables must bake");
+    let d = &c.balance.globals.decay_pct_per_period;
+    for (m, code) in [
+        (
+            content::schema::Material::Wood,
+            sim_core::build::MAT_WOOD as usize,
+        ),
+        (
+            content::schema::Material::Stone,
+            sim_core::build::MAT_STONE as usize,
+        ),
+        (
+            content::schema::Material::Metal,
+            sim_core::build::MAT_METAL as usize,
+        ),
+    ] {
+        assert_eq!(
+            dc.decay_pct[code] as u32, d[&m],
+            "{m:?} reached the sim at the wrong index — the ladder is keyed \
+             by material and a crossed pair would rot the wrong walls"
+        );
+    }
+}
+
 /// The code lock's row and its placement class are one thing said twice,
 /// and the sim indexes on both (lock v1, `reference/DOORS.md` §9.1).
 ///

@@ -218,8 +218,15 @@ pub const UPKEEP_PERIOD_TICKS: u64 = 108_000;
 /// (content/balance.toml) over hourly charges. Calendar arithmetic, not
 /// a knob.
 pub const PERIODS_PER_DAY: u32 = 24;
-/// Unpaid decay per period, % of max hp (min 1 hp). Proposed default,
-/// DECISIONS.md §open ("upkeep/decay v0").
+/// Materials the decay ladder is keyed by — `build::MAT_*`, whose set is
+/// closed and three long.
+pub const DECAY_MATERIALS: usize = 3;
+
+/// Fallback decay per period, % of max hp, for content that prices no
+/// ladder and for the one store that has no material: **deployables**.
+/// A box is not wood or stone in the piece sense, so it keeps the flat
+/// rate the whole world used before upkeep/decay v1.
+/// Proposed default, DECISIONS.md §open ("upkeep/decay v0").
 pub const DECAY_PCT_PER_PERIOD: u32 = 5;
 /// Units per upkeep material one feed press moves. Proposed default,
 /// DECISIONS.md §open ("deployables v0").
@@ -289,6 +296,11 @@ pub struct DeployContent {
     pub mat_count: u8,
     /// `content/balance.toml` globals.upkeep_pct_per_day.
     pub upkeep_pct_per_day: u16,
+    /// Unpaid decay per period as a % of max hp, indexed by
+    /// `build::MAT_*` (upkeep/decay v1). A zero entry means the content
+    /// priced no ladder and `DECAY_PCT_PER_PERIOD` answers instead, which
+    /// is what keeps an older `balance.toml` playing the game it played.
+    pub decay_pct: [u16; DECAY_MATERIALS],
 }
 
 impl DeployContent {
@@ -300,6 +312,7 @@ impl DeployContent {
         mats: [0; HEARTH_STOCK_ROWS],
         mat_count: 0,
         upkeep_pct_per_day: 0,
+        decay_pct: [0; DECAY_MATERIALS],
     };
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
@@ -364,6 +377,10 @@ impl DeployContent {
         d.mats = [0, 1, 0, 0];
         d.mat_count = 2;
         d.upkeep_pct_per_day = 10;
+        // A ladder in the probe fixture, so the parity/replay/alloc gates
+        // walk the *keyed* path rather than the fallback — a wall that
+        // only ever sees the default is not watching the feature.
+        d.decay_pct = [34, 20, 13];
         d
     }
 }
@@ -1649,9 +1666,25 @@ fn charge_of(cost: u16, pct: u16) -> u32 {
     num.div_ceil(100 * PERIODS_PER_DAY)
 }
 
-/// Per-period decay for a def's max hp: `max(1, maxhp × pct / 100)`.
-fn decay_of(max_hp: u16) -> u16 {
-    ((max_hp as u32 * DECAY_PCT_PER_PERIOD) / 100).max(1) as u16
+/// Per-period decay for a max hp at a rate: `max(1, maxhp × pct / 100)`.
+///
+/// The floor is what stops a 1 % rate on a 50 hp piece rounding to zero
+/// and making it immortal — a decay that never subtracts is a decay
+/// that is off, and off is a thing content should have to *say*
+/// (`upkeep_pct_per_day = 0`) rather than stumble into.
+fn decay_at(max_hp: u16, pct: u32) -> u16 {
+    ((max_hp as u32 * pct) / 100).max(1) as u16
+}
+
+/// The rate a **piece** of this material rots at, from the baked ladder.
+/// Content that priced no ladder falls back to the flat rate, so a shard
+/// on an older `balance.toml` plays exactly the game it played before —
+/// a new table may add a rule, never silently change one (wall 7).
+fn piece_decay_pct(dc: &DeployContent, material: u8) -> u32 {
+    match dc.decay_pct.get(material as usize) {
+        Some(&p) if p > 0 => p as u32,
+        _ => DECAY_PCT_PER_PERIOD,
+    }
 }
 
 /// Remove the piece at store index `i` and the deployable standing at the
@@ -1855,39 +1888,59 @@ pub fn upkeep_sweep(
         while uh < h_now && steps < SWEEP_CATCHUP_MAX {
             steps += 1;
             uh += 1;
-            // First hearth in list order that can pay the whole charge.
-            let payer = deploys.hearths[..deploys.hearth_count]
-                .iter()
-                .position(|hr| {
-                    let (hx, hz) = cell_center(hr.cx, hr.cz);
-                    let (dx, dz) = (hx - x, hz - z);
-                    if dx * dx + dz * dz > HEARTH_RADIUS_M * HEARTH_RADIUS_M {
-                        return false;
-                    }
-                    (0..dc.mat_count as usize).all(|m| {
-                        let due: u32 = def
-                            .costs
-                            .iter()
-                            .take(def.n_costs as usize)
-                            .filter(|&&(item, _)| item == dc.mats[m])
-                            .map(|&(_, cost)| charge_of(cost, dc.upkeep_pct_per_day))
-                            .sum();
-                        hr.stock[m] >= due
-                    })
-                });
-            if let Some(hi) = payer {
-                for m in 0..dc.mat_count as usize {
-                    let due: u32 = def
-                        .costs
-                        .iter()
-                        .take(def.n_costs as usize)
-                        .filter(|&&(item, _)| item == dc.mats[m])
-                        .map(|&(_, cost)| charge_of(cost, dc.upkeep_pct_per_day))
-                        .sum();
-                    deploys.hearths[hi].stock[m] -= due;
+            // **Per material, not all-or-nothing** (upkeep/decay v1,
+            // `reference/BUILDING.md` §4). Each cost row is charged to the
+            // first hearth in list order that is in radius and can cover
+            // *that row*; the piece is protected only if **every** row
+            // found a payer.
+            //
+            // The old rule wanted one hearth to cover the whole charge, so
+            // a hearth holding stone but no wood protected nothing at all
+            // — half a stock did half of nothing. The reference's is the
+            // better sentence and it is not more code: *if your stone runs
+            // out, only the stone parts of your base lose health.*
+            //
+            // Rows are charged as they are found rather than after a
+            // whole-piece check, so a piece that pays three rows and
+            // misses the fourth has still spent the three. That is the
+            // honest reading of a partial payment: the materials went into
+            // the base, and the base still rots for want of the one that
+            // did not.
+            // **A hearth has to be there at all**, before any row is
+            // priced. Without this the per-row loop calls a piece paid
+            // when it simply costs nothing, and an unpriced piece in open
+            // ground would never rot — which is the old rule's one
+            // property worth keeping: no hearth, no protection.
+            let mut all_paid = deploys.hearths[..deploys.hearth_count].iter().any(|hr| {
+                let (hx, hz) = cell_center(hr.cx, hr.cz);
+                let (dx, dz) = (hx - x, hz - z);
+                dx * dx + dz * dz <= HEARTH_RADIUS_M * HEARTH_RADIUS_M
+            });
+            for m in 0..(if all_paid { dc.mat_count as usize } else { 0 }) {
+                let due: u32 = def
+                    .costs
+                    .iter()
+                    .take(def.n_costs as usize)
+                    .filter(|&&(item, _)| item == dc.mats[m])
+                    .map(|&(_, cost)| charge_of(cost, dc.upkeep_pct_per_day))
+                    .sum();
+                if due == 0 {
+                    continue;
                 }
-            } else {
-                let d = decay_of(def.hp);
+                let payer = deploys.hearths[..deploys.hearth_count]
+                    .iter()
+                    .position(|hr| {
+                        let (hx, hz) = cell_center(hr.cx, hr.cz);
+                        let (dx, dz) = (hx - x, hz - z);
+                        dx * dx + dz * dz <= HEARTH_RADIUS_M * HEARTH_RADIUS_M && hr.stock[m] >= due
+                    });
+                match payer {
+                    Some(hi) => deploys.hearths[hi].stock[m] -= due,
+                    None => all_paid = false,
+                }
+            }
+            if !all_paid {
+                let d = decay_at(def.hp, piece_decay_pct(dc, def.material));
                 if hp <= d {
                     hp = 0;
                     removed = true;
@@ -1959,7 +2012,9 @@ pub fn upkeep_sweep(
             // Covered by any stocked hearth ⇒ free; uncovered ⇒ decay.
             // (An empty hearth covers nothing, itself included.)
             if deploys.covering_hearth(x, z, true).is_none() {
-                let d = decay_of(def.hp);
+                // The flat rate: a deployable has no build material, so
+                // the ladder has nothing to key on (`piece_decay_pct`).
+                let d = decay_at(def.hp, DECAY_PCT_PER_PERIOD);
                 if hp <= d {
                     hp = 0;
                     removed = true;
@@ -3707,6 +3762,143 @@ mod tests {
         assert_eq!(deploys.locks().len(), 0, "and the lock came off with it");
         assert_eq!(crate::craft::inv_count(&p.inv, 4), doors + 1, "the door");
         assert_eq!(crate::craft::inv_count(&p.inv, 6), locks + 1, "the lock");
+    }
+
+    /// Upkeep/decay v1: a half-stocked hearth does half the job, and an
+    /// unpaid piece rots at its own material's rate.
+    #[test]
+    fn upkeep_is_charged_per_material_and_decay_follows_the_grade() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 250), (1, 250), (2, 2)]);
+
+        // Two pieces at the same cell: the foundation (row 0, item 0 =
+        // "wood") and a floor one storey up (row 2, item 1 = "stone" in
+        // the build fixture). One hearth covering both.
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        crate::build::place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        crate::build::place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            0,
+            2,
+            CX,
+            CZ,
+            1,
+            LOC_PLANE,
+            &mut ev,
+        );
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.hearths().len(), 1);
+
+        // Stock material row 0 only. Under the OLD rule this hearth paid
+        // for nothing, because no piece's whole charge was covered.
+        deploys.hearths_mut()[0].stock[0] = 100_000;
+        deploys.hearths_mut()[0].stock[1] = 0;
+
+        let hp_before: Vec<u16> = pieces.entries().iter().map(|r| r.hp).collect();
+        let rows: Vec<u8> = pieces.entries().iter().map(|r| r.row).collect();
+        let mut cursor_p = 0u32;
+        let mut cursor_d = 0u32;
+        let mut budget = 64usize;
+        upkeep_sweep(
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            UPKEEP_PERIOD_TICKS,
+            &mut cursor_p,
+            &mut cursor_d,
+            &mut budget,
+            &mut ev,
+        );
+        let hp_after: Vec<u16> = pieces.entries().iter().map(|r| r.hp).collect();
+
+        // At least one piece was paid for and at least one was not: that
+        // pair is the whole feature, and asserting "some rotted, some did
+        // not" is what a single flat rate could never produce from one
+        // half-stocked hearth.
+        let intact = hp_before
+            .iter()
+            .zip(&hp_after)
+            .filter(|(a, b)| a == b)
+            .count();
+        let rotted = hp_before.len() - intact;
+        assert!(
+            intact > 0 && rotted > 0,
+            "a hearth stocked with one material must protect the parts made \
+             of it and no others — got {intact} intact, {rotted} rotted"
+        );
+        assert!(
+            deploys.hearths()[0].stock[0] < 100_000,
+            "and it must actually have spent the material it had"
+        );
+
+        // The ladder: the fixture prices wood 34 / stone 20 / metal 13, so
+        // a wooden piece loses more of its max hp per period than a stone
+        // one. Read off the content rather than typed, so a re-price moves
+        // the assertion with it.
+        let wood = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_WOOD));
+        let stone = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_STONE));
+        let metal = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_METAL));
+        assert!(
+            wood > stone && stone > metal,
+            "the tougher the grade the slower it rots ({wood}/{stone}/{metal})"
+        );
+        let _ = rows;
+    }
+
+    /// Content that prices no ladder plays the game it played before.
+    #[test]
+    fn an_unpriced_ladder_falls_back_to_the_flat_rate() {
+        let mut dc = DeployContent::probe_fixture();
+        dc.decay_pct = [0; DECAY_MATERIALS];
+        for m in [
+            crate::build::MAT_WOOD,
+            crate::build::MAT_STONE,
+            crate::build::MAT_METAL,
+        ] {
+            assert_eq!(
+                piece_decay_pct(&dc, m),
+                DECAY_PCT_PER_PERIOD,
+                "a new table may add a rule, never silently change one"
+            );
+        }
+        // ...and a rate that would round to nothing still subtracts.
+        assert_eq!(decay_at(50, 1), 1, "a decay that never subtracts is off");
     }
 
     /// A hearth with a crew is a base two people can build in — the whole

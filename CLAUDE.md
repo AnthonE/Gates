@@ -227,6 +227,11 @@ do not rediscover)
   the heap (`vec![..; N].into_boxed_slice().try_into()`), which allocates
   where the old code allocated anyway. The stores that predate this still
   use the stack form; they fit today, and the next one to be added will not.
+  **Seen three times in one day** — the lock store found it, the hearth crew
+  hit it again, and the third surfaced *inside dlmalloc* rather than in the
+  constructor, because the frame that tipped it over was the allocator's own.
+  `crate::boxed_array` is the fix and the arrays in `Pieces` and `Deploys`
+  all use it now; the piece store alone was 98 KB in a frame.
 - **Tonemap, sky, exposure, and fog are one owner.** Split across parallel
   passes they break each other's assumptions faster than they improve
   (measured elsewhere: three parallel rounds worsened visual defects
