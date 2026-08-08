@@ -36,6 +36,11 @@
 //! both: it decides *when a player enters the world*, and the version of
 //! that decision that lived inside a Bevy system could only be tested by a
 //! windowed run against a live shard.
+//!
+//! [`keypad`] is the code lock's four digits (lock v1). Deliberately not a
+//! panel — a screen that takes your mouse to type four digits is a screen
+//! you die in — so it is a HUD line, and the buffer rules and the key→op
+//! map are here where a test can hold them.
 
 pub mod build;
 pub mod chat;
@@ -44,6 +49,7 @@ pub mod death;
 pub mod hold;
 pub mod icons;
 pub mod interact;
+pub mod keypad;
 pub mod load;
 pub mod map;
 pub mod place;

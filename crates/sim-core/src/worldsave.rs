@@ -76,10 +76,11 @@ use crate::gather::{ItemStack, SlotLife};
 use crate::input::InputFrame;
 use crate::limits::HOTBAR_SLOTS;
 use crate::limits::{
-    BOX_SLOTS, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD,
-    MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_HEARTHS, MAX_LIVE_CHARGES, MAX_PIECES, MAX_PLAYERS,
-    MAX_SLOT_LIVES,
+    BOX_SLOTS, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP, MAX_BACKPACKS,
+    MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_HEARTHS, MAX_LIVE_CHARGES,
+    MAX_LOCKS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
 };
+use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
 use crate::movement;
 use crate::persist::{PlayerSave, SaveError, PLAYER_SAVE_BYTES};
 use crate::terrain::ISLAND_SIZE;
@@ -91,15 +92,15 @@ use crate::world::{Player, World};
 /// refused at boot rather than reinterpreted (`server/src/store.rs` checks
 /// it), so a field added here without turning this number is a world
 /// silently decoded as a different world.
-pub const WORLD_SAVE_FORMAT: u16 = 1;
+pub const WORLD_SAVE_FORMAT: u16 = 2;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
-/// the next bag id, and the eight section counts.
+/// the next bag id, and the nine section counts.
 const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + SECTION_COUNTS;
-/// Seven `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
+/// Eight `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
-const SECTION_COUNTS: usize = 7 * 2 + 4;
+const SECTION_COUNTS: usize = 8 * 2 + 4;
 
 /// One body: everything `PlayerSave` already validates, plus every
 /// remaining field `World::state_hash` reads off a player.
@@ -125,6 +126,14 @@ const PIECE_BYTES: usize = 11;
 const DEPLOY_BYTES: usize = 17 + 8;
 const HEARTH_BYTES: usize = 9 + HEARTH_STOCK_ROWS * 4;
 const BOX_BYTES: usize = 9 + BOX_SLOTS * 4;
+/// One code lock (lock v1). Address, owner, both codes, the locked bit,
+/// both remembered lists with their counts, and the three brute-force
+/// counters — the whole `LockRec`, because every field of it is hashed
+/// and a save that dropped one would load to a different `state_hash`
+/// than it was taken from (the `PLAYER_TAIL_BYTES` argument, one store
+/// over).
+const LOCK_BYTES: usize =
+    6 + 4 + 2 + 2 + 1 + 1 + 1 + LOCK_AUTH_CAP * 4 + LOCK_GUEST_CAP * 4 + 1 + 8 + 8;
 const BACKPACK_BYTES: usize = 28 + INV_SLOTS * 4;
 const CHARGE_BYTES: usize = 21;
 const SLOT_LIFE_BYTES: usize = 14;
@@ -142,6 +151,7 @@ pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_DEPLOYS * DEPLOY_BYTES
     + MAX_HEARTHS * HEARTH_BYTES
     + MAX_BOXES * BOX_BYTES
+    + MAX_LOCKS * LOCK_BYTES
     + MAX_BACKPACKS * BACKPACK_BYTES
     + MAX_LIVE_CHARGES * CHARGE_BYTES
     + MAX_SLOT_LIVES * SLOT_LIFE_BYTES;
@@ -188,6 +198,10 @@ pub enum WorldSaveError {
     BadCharge,
     /// A body's selected hotbar slot is past the hotbar.
     BadHotbarSlot,
+    /// A code lock carries a code outside 0000..=9999 (and not
+    /// `lock::CODE_NONE`). Refused rather than clamped: a clamped code is
+    /// a door whose owner's own four digits no longer open it.
+    BadCode,
 }
 
 impl WorldSaveError {
@@ -206,6 +220,7 @@ impl WorldSaveError {
             Self::BadBackpackId => "a backpack id is zero, duplicated, or past the next id",
             Self::BadCharge => "a charge names an impossible structure",
             Self::BadHotbarSlot => "a body selects a hotbar slot that does not exist",
+            Self::BadCode => "a code lock carries a code that is not four digits",
         }
     }
 }
@@ -287,6 +302,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     o.u16(w.deploys.len() as u16);
     o.u16(w.deploys.hearths().len() as u16);
     o.u16(w.deploys.boxes().len() as u16);
+    o.u16(w.deploys.locks().len() as u16);
     o.u16(w.backpacks.len() as u16);
     o.u16(w.charges.len() as u16);
     o.u32(w.slot_lives.len() as u32);
@@ -365,6 +381,27 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         for s in b.items.iter() {
             o.stack(s);
         }
+    }
+    for l in w.deploys.locks() {
+        o.u16(l.cx);
+        o.u16(l.cz);
+        o.u8(l.level);
+        o.u8(l.loc);
+        o.u32(l.owner);
+        o.u16(l.code);
+        o.u16(l.guest_code);
+        o.b(l.locked);
+        o.u8(l.n_auth);
+        o.u8(l.n_guests);
+        for id in l.auth.iter() {
+            o.u32(*id);
+        }
+        for id in l.guests.iter() {
+            o.u32(*id);
+        }
+        o.u8(l.misses);
+        o.u64(l.last_miss);
+        o.u64(l.shut_until);
     }
     for b in w.backpacks.entries() {
         o.u32(b.id);
@@ -532,6 +569,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     let n_deploys = r.count(MAX_DEPLOYS)?;
     let n_hearths = r.count(MAX_HEARTHS)?;
     let n_boxes = r.count(MAX_BOXES)?;
+    let n_locks = r.count(MAX_LOCKS)?;
     let n_bags = r.count(MAX_BACKPACKS)?;
     let n_charges = r.count(MAX_LIVE_CHARGES)?;
     let n_slots = r.count32(MAX_SLOT_LIVES)?;
@@ -694,6 +732,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             hp,
             uh,
             open,
+            // The two mirror bits are read but not trusted: `has_lock` is
+            // re-derived from the lock section by `World::rebuild_doors`
+            // at the commit below, exactly as the collision index is
+            // rebuilt from the pieces. A file could otherwise say
+            // "locked" about a door whose lock is not in the file.
+            has_lock: false,
             locked,
         };
         bag_ready[i] = ready;
@@ -740,6 +784,68 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             level,
             owner,
             items,
+        };
+    }
+
+    // --- code locks -------------------------------------------------------
+    let mut locks = [LockRec::default(); MAX_LOCKS];
+    for l in locks.iter_mut().take(n_locks) {
+        let cx = r.u16()?;
+        let cz = r.u16()?;
+        let level = r.u8()?;
+        let loc = r.u8()?;
+        let owner = r.u32()?;
+        let code = r.u16()?;
+        let guest_code = r.u16()?;
+        let locked = r.b()?;
+        let n_auth = r.u8()?;
+        let n_guests = r.u8()?;
+        let mut auth = [0u32; LOCK_AUTH_CAP];
+        for id in auth.iter_mut() {
+            *id = r.u32()?;
+        }
+        let mut guests = [0u32; LOCK_GUEST_CAP];
+        for id in guests.iter_mut() {
+            *id = r.u32()?;
+        }
+        let misses = r.u8()?;
+        let last_miss = r.u64()?;
+        let shut_until = r.u64()?;
+        if !build_addr_ok(cx, cz, level) {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+        // A count past its own array is refused whole, never clamped: a
+        // clamped `n_auth` is a lock that quietly forgot somebody, and the
+        // whole point of `LOCK_AUTH_CAP`'s overflow policy is that this
+        // model never forgets anyone silently.
+        if n_auth as usize > LOCK_AUTH_CAP || n_guests as usize > LOCK_GUEST_CAP {
+            return Err(WorldSaveError::CountOverCap);
+        }
+        // A code out of the four-digit range is refused for the reason a
+        // content row index is: `lock::apply` compares against it and a
+        // hand-edited value would make a door nobody can ever open.
+        // `CODE_NONE` is the one legal value above the range.
+        if (code > CODE_MAX && code != CODE_NONE)
+            || (guest_code > CODE_MAX && guest_code != CODE_NONE)
+        {
+            return Err(WorldSaveError::BadCode);
+        }
+        *l = LockRec {
+            cx,
+            cz,
+            level,
+            loc,
+            owner,
+            code,
+            guest_code,
+            locked,
+            auth,
+            n_auth,
+            guests,
+            n_guests,
+            misses,
+            last_miss,
+            shut_until,
         };
     }
 
@@ -850,6 +956,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         &bag_ready[..n_deploys],
         &hearths[..n_hearths],
         &boxes[..n_boxes],
+        &locks[..n_locks],
     );
     w.backpacks.restore(&bags[..n_bags], next_bag);
     w.charges.restore(&charges[..n_charges]);
@@ -884,19 +991,24 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 52                    // head
+        let by_hand = 54                    // head
             + 100 * 240                     // players
             + 8_192 * 11                    // pieces
             + 1_024 * 25                    // deploys + bag_ready
             + 256 * 25                      // hearths
             + 256 * 57                      // boxes
+            + 512 * 98                      // code locks
             + 256 * 148                     // bags
             + 64 * 21                       // charges
             + 16_384 * 14; // harvested slots
-        assert_eq!(HEAD_BYTES, 52);
+        assert_eq!(HEAD_BYTES, 54);
+        // A lock is 98: 6 address + 4 owner + 2 + 2 codes + 1 locked + 2
+        // counts + 8 auth ids + 8 guest ids at four bytes each + 1 miss
+        // counter + 8 + 8 for the two tick deadlines.
+        assert_eq!(LOCK_BYTES, 98);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 429_364,
+            WORLD_SAVE_MAX_BYTES, 479_542,
             "the world save ceiling moved"
         );
     }

@@ -27,83 +27,88 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 76] = [
-    "v27_input_acks_only.bin",
-    "v27_input_full.bin",
-    "v27_snapshot_keyframe.bin",
-    "v27_snapshot_delta.bin",
-    "v27_snapshot_cap.bin",
-    "v27_hello.bin",
-    "v27_welcome.bin",
-    "v27_refuse_full.bin",
-    "v27_event_gather.bin",
-    "v27_event_inv.bin",
-    "v27_event_slot_harvested.bin",
-    "v27_event_slot_respawned.bin",
-    "v27_event_slot_sync.bin",
-    "v27_event_catalog.bin",
-    "v27_event_weak_mark.bin",
-    "v27_event_craft_q.bin",
-    "v27_event_craft_done.bin",
-    "v27_event_craft_refused.bin",
-    "v27_event_recipes.bin",
-    "v27_action_craft.bin",
-    "v27_action_cancel.bin",
-    "v27_action_place.bin",
-    "v27_event_piece_placed.bin",
-    "v27_event_piece_sync.bin",
-    "v27_event_build_refused.bin",
-    "v27_event_piece_defs.bin",
-    "v27_action_deploy.bin",
-    "v27_action_feed.bin",
-    "v27_event_deploy_placed.bin",
-    "v27_event_deploy_sync.bin",
-    "v27_event_deploy_refused.bin",
-    "v27_event_deploy_defs.bin",
-    "v27_event_piece_removed.bin",
-    "v27_event_deploy_removed.bin",
-    "v27_event_stock.bin",
-    "v27_action_use.bin",
-    "v27_action_lock.bin",
-    "v27_event_door.bin",
-    "v27_action_upgrade.bin",
-    "v27_chat.bin",
-    "v27_event_chat.bin",
-    "v27_event_hit.bin",
-    "v27_event_health.bin",
-    "v27_event_death.bin",
-    "v27_action_loot.bin",
-    "v27_event_bag_dropped.bin",
-    "v27_event_bag_sync.bin",
-    "v27_event_bag_removed.bin",
-    "v27_event_struct_hit_piece.bin",
-    "v27_event_struct_hit_deploy.bin",
-    "v27_event_vitals.bin",
-    "v27_event_consumed.bin",
-    "v27_event_consume_refused.bin",
-    "v27_action_consume.bin",
-    "v27_event_drank.bin",
-    "v27_action_drink.bin",
-    "v27_event_respawn.bin",
-    "v27_action_respawn.bin",
-    "v27_action_move.bin",
-    "v27_event_moved.bin",
-    "v27_event_move_refused.bin",
-    "v27_action_move_box.bin",
-    "v27_action_container.bin",
-    "v27_action_container_close.bin",
-    "v27_event_cont_sync.bin",
-    "v27_event_cont_close.bin",
-    "v27_action_repair_piece.bin",
-    "v27_action_repair_deploy.bin",
-    "v27_event_piece_repaired_piece.bin",
-    "v27_event_piece_repaired_deploy.bin",
-    "v27_action_throw_piece.bin",
-    "v27_action_throw_deploy.bin",
-    "v27_event_charge_placed_piece.bin",
-    "v27_event_charge_placed_deploy.bin",
-    "v27_challenge.bin",
-    "v27_auth.bin",
+pub const FIXTURES: [&str; 78] = [
+    "v28_input_acks_only.bin",
+    "v28_input_full.bin",
+    "v28_snapshot_keyframe.bin",
+    "v28_snapshot_delta.bin",
+    "v28_snapshot_cap.bin",
+    "v28_hello.bin",
+    "v28_welcome.bin",
+    "v28_refuse_full.bin",
+    "v28_event_gather.bin",
+    "v28_event_inv.bin",
+    "v28_event_slot_harvested.bin",
+    "v28_event_slot_respawned.bin",
+    "v28_event_slot_sync.bin",
+    "v28_event_catalog.bin",
+    "v28_event_weak_mark.bin",
+    "v28_event_craft_q.bin",
+    "v28_event_craft_done.bin",
+    "v28_event_craft_refused.bin",
+    "v28_event_recipes.bin",
+    "v28_action_craft.bin",
+    "v28_action_cancel.bin",
+    "v28_action_place.bin",
+    "v28_event_piece_placed.bin",
+    "v28_event_piece_sync.bin",
+    "v28_event_build_refused.bin",
+    "v28_event_piece_defs.bin",
+    "v28_action_deploy.bin",
+    "v28_action_feed.bin",
+    "v28_event_deploy_placed.bin",
+    "v28_event_deploy_sync.bin",
+    "v28_event_deploy_refused.bin",
+    "v28_event_deploy_defs.bin",
+    "v28_event_piece_removed.bin",
+    "v28_event_deploy_removed.bin",
+    "v28_event_stock.bin",
+    "v28_action_use.bin",
+    "v28_action_lock.bin",
+    "v28_event_door.bin",
+    "v28_action_upgrade.bin",
+    "v28_chat.bin",
+    "v28_event_chat.bin",
+    "v28_event_hit.bin",
+    "v28_event_health.bin",
+    "v28_event_death.bin",
+    "v28_action_loot.bin",
+    "v28_event_bag_dropped.bin",
+    "v28_event_bag_sync.bin",
+    "v28_event_bag_removed.bin",
+    "v28_event_struct_hit_piece.bin",
+    "v28_event_struct_hit_deploy.bin",
+    "v28_event_vitals.bin",
+    "v28_event_consumed.bin",
+    "v28_event_consume_refused.bin",
+    "v28_action_consume.bin",
+    "v28_event_drank.bin",
+    "v28_action_drink.bin",
+    "v28_event_respawn.bin",
+    "v28_action_respawn.bin",
+    "v28_action_move.bin",
+    "v28_event_moved.bin",
+    "v28_event_move_refused.bin",
+    "v28_action_move_box.bin",
+    "v28_action_container.bin",
+    "v28_action_container_close.bin",
+    "v28_event_cont_sync.bin",
+    "v28_event_cont_close.bin",
+    "v28_action_repair_piece.bin",
+    "v28_action_repair_deploy.bin",
+    "v28_event_piece_repaired_piece.bin",
+    "v28_event_piece_repaired_deploy.bin",
+    "v28_action_throw_piece.bin",
+    "v28_action_throw_deploy.bin",
+    "v28_event_charge_placed_piece.bin",
+    "v28_event_charge_placed_deploy.bin",
+    "v28_challenge.bin",
+    "v28_auth.bin",
+    // Appended rather than slotted beside `v28_event_door`: the
+    // fixture list is positional (`gen_goldens` indexes it), so a new
+    // name in the middle silently renumbers every writer after it.
+    "v28_event_knock.bin",
+    "v28_event_auth.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -674,9 +679,9 @@ pub fn action_feed() -> (u16, u16, u8) {
 }
 
 /// The deployable record behind the placed broadcast (owner/hp/uh are
-/// sim-side and never cross — the fixture keeps their defaults). Open and
-/// locked are both set so the wire's two newest bits are pinned at 1
-/// somewhere, and set differently below so their order is pinned too.
+/// sim-side and never cross — the fixture keeps their defaults). All
+/// three door bits are set so the wire's newest ones are pinned at 1
+/// somewhere, and set independently below so their order is pinned too.
 pub fn event_deploy_placed() -> DeployRec {
     DeployRec {
         cx: 341,
@@ -686,6 +691,7 @@ pub fn event_deploy_placed() -> DeployRec {
         row: 9,
         open: true,
         locked: true,
+        has_lock: true,
         ..DeployRec::default()
     }
 }
@@ -701,6 +707,7 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
         row: rng.next_bounded(16) as u8,
         open: rng.next_bounded(2) == 0,
         locked: rng.next_bounded(2) == 0,
+        has_lock: rng.next_bounded(2) == 0,
         ..DeployRec::default()
     });
     (true, recs)
@@ -711,13 +718,23 @@ pub fn action_use() -> (u16, u16, u8, u8) {
     (341, 682, 0, sim_core::build::LOC_EDGE_W)
 }
 
-/// A lock request: the same address, being locked. The bit is **1** on
-/// purpose — at 0 the frame is byte-identical to one whose encoder never
-/// wrote the field at all (`bool::default()` is false, and the padding
-/// absorbs the width), so the only new C→S field on wire v8 would cross
-/// the golden gate ungated.
-pub fn action_lock() -> (u16, u16, u8, u8, bool) {
-    (341, 682, 0, sim_core::build::LOC_EDGE_W, true)
+/// A lock request: the same address, setting a code. Both payload fields
+/// are **nonzero** on purpose, and it is the same reason wire v8's single
+/// bit was 1 — at 0 the frame is byte-identical to one whose encoder never
+/// wrote the field at all (the padding absorbs the width), so a new C→S
+/// field would cross the golden gate ungated. The op is `SET_CODE` rather
+/// than the numerically larger `TAKE` because the code only *means*
+/// something on an op that carries one, and a golden whose two fields are
+/// mutually incoherent teaches a reader the wrong shape.
+pub fn action_lock() -> (u16, u16, u8, u8, u8, u16) {
+    (
+        341,
+        682,
+        0,
+        sim_core::build::LOC_EDGE_W,
+        sim_core::lock::LOCK_OP_SET_CODE,
+        4207,
+    )
 }
 
 /// An upgrade request: the same address again, climbing to metal. The
@@ -735,10 +752,33 @@ pub fn action_upgrade() -> (u16, u16, u8, u8, u8) {
     )
 }
 
-/// A door announcement: the same address, now open and still locked (the
-/// state its owner sees after swinging their own door).
-pub fn event_door() -> (u16, u16, u8, u8, bool, bool) {
-    (341, 682, 0, sim_core::build::LOC_EDGE_W, true, true)
+/// A door announcement: the same address, now open, still locked and
+/// still carrying its keypad — the state its owner sees after swinging
+/// their own door. All three bits are **1** for `action_lock`'s reason.
+pub fn event_door() -> (u16, u16, u8, u8, bool, bool, bool) {
+    (341, 682, 0, sim_core::build::LOC_EDGE_W, true, true, true)
+}
+
+/// A knock: the same door, and player 9 outside it. The knocker is
+/// nonzero for `action_lock`'s reason, and is deliberately *not* the
+/// player id any other fixture uses, so a crossed `a`/`c` at the emit
+/// site shows up as a changed golden rather than as a coincidence
+/// (`reference/FINDINGS.md` §1).
+pub fn event_knock() -> (u16, u16, u8, u8, u32) {
+    (341, 682, 0, sim_core::build::LOC_EDGE_W, 9)
+}
+
+/// A grant: the same door, at full rights. `GRANT_FULL` is 2, so the
+/// two-bit field is nonzero in both of its bits — the strongest form of
+/// `action_lock`'s rule for a field this narrow.
+pub fn event_auth() -> (u16, u16, u8, u8, u8) {
+    (
+        341,
+        682,
+        0,
+        sim_core::build::LOC_EDGE_W,
+        sim_core::lock::GRANT_FULL,
+    )
 }
 
 /// A chat line the sanitizer keeps whole: multi-byte UTF-8 (an em dash

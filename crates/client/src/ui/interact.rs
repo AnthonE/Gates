@@ -103,9 +103,12 @@ pub struct Pick {
     pub cz: u16,
     pub level: u8,
     pub loc: u8,
-    /// Door state, straight off the wire.
+    /// Door state, straight off the wire — all three bits (lock v1).
+    /// `has_lock` is what lets the prompt tell "bare" from "unlocked",
+    /// which are the same to `E` and completely different to `L`.
     pub open: bool,
     pub locked: bool,
+    pub has_lock: bool,
     /// Squared distance from the player, and from the aim line. Diagnostics
     /// for the gate; nothing draws them.
     pub d2: f32,
@@ -134,7 +137,16 @@ impl Pick {
             Verb::Door => format!(
                 "[E] {} DOOR{}",
                 if self.open { "CLOSE" } else { "OPEN" },
-                if self.locked { "  ·  LOCKED" } else { "" }
+                // Three states, three sentences (lock v1): a bare door
+                // says nothing extra, a bolted-but-open one advertises
+                // its keypad, and a shut one says so. Naming `[L]` on
+                // the middle case is the only place a player learns the
+                // key exists.
+                match (self.has_lock, self.locked) {
+                    (false, _) => "",
+                    (true, false) => "  ·  [L] KEYPAD",
+                    (true, true) => "  ·  LOCKED  ·  [L] KEYPAD",
+                }
             ),
             Verb::Hearth => "[E] FEED HEARTH".to_string(),
             v => format!("[E] OPEN {}", v.label()),
@@ -289,6 +301,7 @@ pub fn resolve(
         out.loc = rec.loc;
         out.open = rec.open;
         out.locked = rec.locked;
+        out.has_lock = rec.has_lock;
     }
 
     for bag in bags {
@@ -306,6 +319,7 @@ pub fn resolve(
         out.loc = 0;
         out.open = false;
         out.locked = false;
+        out.has_lock = false;
     }
 
     out
@@ -340,6 +354,7 @@ mod tests {
             uh: 0,
             open: false,
             locked: false,
+            has_lock: false,
         }
     }
 
@@ -463,11 +478,25 @@ mod tests {
             verb: Verb::Door,
             ..Pick::default()
         };
+        // Bare: nothing but the verb. A door nobody has secured has no
+        // keypad to name and is not locked (lock v1).
         assert_eq!(p.prompt(), "[E] OPEN DOOR");
         p.open = true;
         assert_eq!(p.prompt(), "[E] CLOSE DOOR");
+        // Bolted but not armed: the keypad exists, the door is not shut.
+        // This is the state the two-bit prompt could not say, and the
+        // reason `has_lock` is on the wire at all.
+        p.has_lock = true;
+        assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
+        assert!(
+            !p.prompt().contains("LOCKED"),
+            "an unarmed lock is not a locked door: {}",
+            p.prompt()
+        );
+        // Armed: both.
         p.locked = true;
-        assert!(p.prompt().contains("LOCKED"));
+        assert!(p.prompt().contains("LOCKED"), "{}", p.prompt());
+        assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
     }
 
     #[test]

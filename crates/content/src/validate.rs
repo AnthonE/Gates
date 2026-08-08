@@ -525,6 +525,43 @@ pub fn structural(c: &Content) -> Result<(), String> {
             }
             (_, None) => {}
         }
+        // The lock and its placement class are one thing said twice, and
+        // the sim indexes on both: `place_deploy` picks the lock branch
+        // off the archetype and picks "the address must hold a door" off
+        // the placement. A row that said one without the other would be
+        // a lock that mints a deploy record on a doorway, or a door-class
+        // deployable the lock store never hears about.
+        match (d.archetype, d.placement) {
+            (DeployArchetype::Lock, Placement::Door) => {}
+            (DeployArchetype::Lock, p) => {
+                return Err(format!(
+                    "deployable `{}`: a lock is placement `door`, not {p:?}",
+                    d.id
+                ));
+            }
+            (a, Placement::Door) => {
+                return Err(format!(
+                    "deployable `{}`: placement `door` is the lock's alone, not {a:?}'s",
+                    d.id
+                ));
+            }
+            _ => {}
+        }
+    }
+    // Exactly one lock row, or none. The sim resolves the item to give
+    // back when a lock is unbolted by scanning for the archetype
+    // (`deploy::lock_row`), so a second row would make that scan pick the
+    // first one and hand back the wrong item — silently, and only on the
+    // take verb.
+    let locks = c
+        .deployables
+        .iter()
+        .filter(|d| d.archetype == DeployArchetype::Lock)
+        .count();
+    if locks > 1 {
+        return Err(format!(
+            "deployables: {locks} lock rows, and the sim can only name one"
+        ));
     }
 
     // Loot: every entry exists, weights and count ranges sane.

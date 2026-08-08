@@ -294,7 +294,7 @@ for (let i = 0; i < slotCount; i++) {
 // a v26 client's hello decodes to a different kind entirely, so the version
 // gate refuses it before any field is read. Nothing silent, which is the
 // one mercy of a width change over a field change.
-check(ex.client_proto_ver() === 27, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 28, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -471,10 +471,14 @@ const useLen = ex.client_action_use(341, 341, 0, 2);
 check(useLen === 5, `use action length odd: ${useLen}`);
 check(ex.client_action_use(341, 341, 8, 2) === 0, "level past the grid must refuse");
 check(ex.client_action_use(341, 341, 0, 4) === 0, "loc past the four must refuse");
-const lockLen = ex.client_action_lock(341, 341, 0, 2, 1);
-// 5 B since wire v12: the action subtype field widened 3 → 4 bits for
-// the loot action, and the lock frame was exactly on a byte boundary.
-check(lockLen === 5, `lock action length odd: ${lockLen}`);
+// Lock v1: op (3 b) + code (14 b) where wire v8 had one bit, so the
+// frame is 4 + 4 + 10 + 10 + 3 + 2 + 3 + 14 = 50 bits = 7 B.
+const lockLen = ex.client_action_lock(341, 341, 0, 2, 0, 4207);
+check(lockLen === 7, `lock action length odd: ${lockLen}`);
+// The two payload fields are the only forgeable ones on this lane and
+// the encoder refuses both rather than clamping.
+check(ex.client_action_lock(341, 341, 0, 2, 6, 0) === 0, "an op past LOCK_OP_MAX must refuse");
+check(ex.client_action_lock(341, 341, 0, 2, 0, 10000) === 0, "a five-digit code must refuse");
 check(ex.client_action_lock(1024, 341, 0, 2, 1) === 0, "cx past the grid must refuse");
 check(ex.client_action_lock(341, 341, 0, 4, 0) === 0, "loc past the four must refuse");
 const upgradeLen = ex.client_action_upgrade(341, 341, 0, 2, 2);
@@ -504,9 +508,9 @@ check(ex.client_action_repair(0, 341, 341, 8, 2) === 0, "level past the grid mus
 check(ex.client_action_repair(0, 341, 341, 0, 4) === 0, "loc past the four must refuse");
 
 // subtype DEPLOY_PLACED(15) · cx=341 (10) · cz=682 (10) · level=1 (3) ·
-// loc=0 (2) · row=3 (4) · open=0 (1) · locked=0 (1).
+// loc=0 (2) · row=3 (4) · open=0 (1) · locked=0 (1) · has_lock=0 (1).
 const deployFlags = onEvent(
-  evFrame(15, [[341, 10], [682, 10], [1, 3], [0, 2], [3, 4], [0, 1], [0, 1]]),
+  evFrame(15, [[341, 10], [682, 10], [1, 3], [0, 2], [3, 4], [0, 1], [0, 1], [0, 1]]),
 );
 check(deployFlags === 16384, `deploy-placed should apply with its flag: ${deployFlags}`);
 check(ex.client_deploy_changes_len() === 1, "one deploy change expected");
@@ -516,16 +520,17 @@ check(dchange[1] === ((1 << 16) | 3), `deploy change info odd: ${dchange[1]}`);
 
 // The door announcement for that same address: subtype DOOR(22) ·
 // cx=341 (10) · cz=682 (10) · level=1 (3) · loc=0 (2) · open=1 (1) ·
-// locked=1 (1). The mirror flips and re-emits the record with both state
-// bits set — 24 (open) and 25 (locked) of the packed change word.
+// locked=1 (1) · has_lock=1 (1). The mirror flips and re-emits the record
+// with all three state bits set — 24 (open), 25 (locked) and 26
+// (has_lock) of the packed change word.
 const doorFlags = onEvent(
-  evFrame(22, [[341, 10], [682, 10], [1, 3], [0, 2], [1, 1], [1, 1]]),
+  evFrame(22, [[341, 10], [682, 10], [1, 3], [0, 2], [1, 1], [1, 1], [1, 1]]),
 );
 check(doorFlags === 16384, `door should apply with the deploy flag: ${doorFlags}`);
 check(ex.client_deploy_changes_len() === 1, "one deploy change expected for the door");
 const dopen = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
 check(
-  dopen[1] === ((1 << 25) | (1 << 24) | (1 << 16) | 3),
+  dopen[1] === ((1 << 26) | (1 << 25) | (1 << 24) | (1 << 16) | 3),
   `door change info odd: ${dopen[1]}`,
 );
 
@@ -563,22 +568,33 @@ check(ex.client_stock_count() === 0, "no stock ack yet");
 // and a refusal must roll it back all the way out to the renderer, since
 // the sim's state never moved and no announcement is ever coming.
 // subtype DEPLOY_DEFS(18) · total=1 (5) · first=0 (5) · count=1 (4) ·
-// row 0 = (arch DOOR 6 (3), placement DOORWAY 3 (2), hp 60 (16),
-// item 4 (16)).
+// row 0 = (arch DOOR 6 (3), placement DOORWAY 2 (3 — widened at v28 for
+// PLACE_DOOR), hp 60 (16), item 4 (16), n_costs 0 (3)).
+//
+// `n_costs` is written out rather than left to the padding, and v28 is
+// why: with placement at two bits the row ended on bit 64 exactly and the
+// three cost bits fell inside the last byte by luck. One bit wider and
+// they fall past it, so the decoder reads past the frame and the whole
+// message refuses — a gate failing on arithmetic nobody wrote down.
 check(
-  onEvent(evFrame(18, [[1, 5], [0, 5], [1, 4], [6, 3], [3, 2], [60, 16], [4, 16]])) ===
-    131072,
+  onEvent(
+    evFrame(18, [[1, 5], [0, 5], [1, 4], [6, 3], [2, 3], [60, 16], [4, 16], [0, 3]]),
+  ) === 131072,
   "deploy defs should apply with their flag",
 );
 // subtype DEPLOY_PLACED(15) · cx=100 · cz=200 · level=0 · loc=2 · row=0 ·
-// open=0 · locked=1 (a door places locked, lock v0).
+// open=0 · locked=1 · has_lock=1. A door places BARE now (lock v1), so
+// this frame is a door somebody has already bolted a lock onto and armed
+// — which is the state the roll-back below has to preserve.
 check(
-  onEvent(evFrame(15, [[100, 10], [200, 10], [0, 3], [2, 2], [0, 4], [0, 1], [1, 1]])) ===
-    16384,
+  onEvent(
+    evFrame(15, [[100, 10], [200, 10], [0, 3], [2, 2], [0, 4], [0, 1], [1, 1], [1, 1]]),
+  ) === 16384,
   "door placement should apply",
 );
 const dplaced = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
-check((dplaced[1] >>> 25) === 1, `placed door must read locked: ${dplaced[1]}`);
+check(((dplaced[1] >>> 25) & 1) === 1, `placed door must read locked: ${dplaced[1]}`);
+check(((dplaced[1] >>> 26) & 1) === 1, `placed door must read has_lock: ${dplaced[1]}`);
 // The press still predicts: whether the door answers to this hand is the
 // server's verdict, and a refusal rolls the leaf back below.
 check(ex.client_predict_door(100, 200, 0, 2) === 1, "the press must swing your own door");
@@ -592,7 +608,14 @@ check(ex.client_deploy_refusal_pop() === 11, "refusal reason should be 11");
 check(ex.client_deploy_changes_len() === 1, "the rolled-back record must ride the changes");
 const drolled = new Uint32Array(ex.memory.buffer, ex.client_deploy_changes_ptr(), 2);
 check(((drolled[1] >>> 24) & 1) === 0, `rolled-back door must read closed: ${drolled[1]}`);
-check((drolled[1] >>> 25) === 1, `a rolled-back leaf must keep its lock: ${drolled[1]}`);
+check(
+  ((drolled[1] >>> 25) & 1) === 1,
+  `a rolled-back leaf must keep its lock: ${drolled[1]}`,
+);
+check(
+  ((drolled[1] >>> 26) & 1) === 1,
+  `and must keep its keypad: ${drolled[1]}`,
+);
 
 // --- chat surface: encode out of the in buffer, relay in ------------------
 // The one player-authored payload, so both directions get checked here:

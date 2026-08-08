@@ -317,6 +317,34 @@ pub const MAX_BOXES: usize = 256;
 /// Proposed default, DECISIONS.md §open (box v0).
 pub const BOX_SLOTS: usize = 12;
 
+/// Code locks bolted onto doors at once (`lock.rs`). Its own dense list
+/// beside the hearths and the boxes, for the reason both of those have
+/// one: `DeployRec` is the struct the wire mirrors, so a code, two
+/// remembered lists and two timers may not ride on it. Overflow policy:
+/// **refuse** the placement with `REFUSE_D_FULL`, the posture `MAX_BOXES`
+/// takes, and correct here for its reason — a lock that was never bolted
+/// on loses nothing, and the door stays exactly as usable as it was.
+/// Sized under `MAX_DEPLOYS` on purpose: every lock needs a door under
+/// it, and a shard with 512 locked doors is a shard with 512 bases.
+/// Proposed default, DECISIONS.md §open (lock v1).
+pub const MAX_LOCKS: usize = 512;
+
+/// Players one lock remembers with **full** rights — the ones who entered
+/// its main code, plus whoever bolted it on. The reference's list is
+/// unbounded (`reference/DOORS.md` §2.2); ours cannot be (wall 4).
+/// Overflow policy: **refuse the code entry** with `REFUSE_D_AUTH_FULL`.
+/// Never evict: dropping the oldest entry would make a door that forgets
+/// the person who owns it, which is the one failure this cap must not
+/// have. Proposed default, DECISIONS.md §open (lock v1).
+pub const LOCK_AUTH_CAP: usize = 8;
+
+/// Players one lock remembers as **guests** — entered the guest code, may
+/// work the door and nothing else (`reference/DOORS.md` §2.2, Devblog
+/// 149). Its own list rather than a rights bit inside `LOCK_AUTH_CAP`, so
+/// a crowd of guests can never crowd out the owners. Same overflow
+/// policy, same refusal. Proposed default, DECISIONS.md §open (lock v1).
+pub const LOCK_GUEST_CAP: usize = 8;
+
 /// Broken-box spills awaiting a ground bag, drained at the end of the
 /// tick that broke them (`world.rs`). A box is emptied where it stood by
 /// the same `stand_up` a corpse and a barrel use, but the removal path

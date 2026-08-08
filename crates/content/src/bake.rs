@@ -20,7 +20,8 @@ use sim_core::combat::{CombatContent, MeleeDef, RangedDef, ThrowDef};
 use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
-    ARCH_WORKBENCH, PLACE_ANY, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_GROUND,
+    ARCH_LOCK, ARCH_WORKBENCH, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION,
+    PLACE_GROUND,
 };
 use sim_core::gather::ItemStack;
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
@@ -376,12 +377,14 @@ impl Content {
                     DeployArchetype::Furnace => ARCH_FURNACE,
                     DeployArchetype::Workbench => ARCH_WORKBENCH,
                     DeployArchetype::Door => ARCH_DOOR,
+                    DeployArchetype::Lock => ARCH_LOCK,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
                     Placement::Foundation => PLACE_FOUNDATION,
                     Placement::Doorway => PLACE_DOORWAY,
                     Placement::Any => PLACE_ANY,
+                    Placement::Door => PLACE_DOOR,
                 },
                 hp,
                 item: self

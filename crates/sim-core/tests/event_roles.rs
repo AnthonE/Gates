@@ -90,12 +90,12 @@ use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
 use sim_core::world::{
-    Command, SimEvent, World, DEATH_BY_MAX, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
-    EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH,
-    EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER,
-    EV_HEALTH, EV_HIT, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT,
-    EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    Command, SimEvent, World, DEATH_BY_MAX, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
+    EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
+    EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
+    EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_MAX, EV_MOVED, EV_MOVE_REFUSED,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -165,6 +165,8 @@ const PIECE_FLOOR: u16 = 2;
 const PIECE_DOORWAY: u16 = 3;
 const DEPLOY_HEARTH: u16 = 0;
 const DEPLOY_DOOR: u16 = 2;
+/// Row 4 is the code lock (lock v1), item 6, placement class `door`.
+const DEPLOY_LOCK: u16 = 4;
 
 /// The fixture's hp, and what the fixture spear takes off in one swing.
 /// `CombatContent::probe_fixture` item 0 deals 34 to a structure;
@@ -1144,7 +1146,7 @@ fn builder_world(w: &mut World) -> (u16, u16) {
     // ones (the floor this arrangement's second storey stands on) in item
     // 1, the hearth in item 2, the door in item 4. Generous on purpose — a
     // refusal for want of wood would be this fixture's bug, not the sim's.
-    for (slot, item) in [(0usize, 0u16), (1, 1), (2, 2), (3, 4)] {
+    for (slot, item) in [(0usize, 0u16), (1, 1), (2, 2), (3, 4), (4, 6)] {
         w.players[0].inv[slot] = ItemStack { item, count: 200 };
     }
     (cx, cz)
@@ -1180,6 +1182,28 @@ fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
         before + 1,
         "piece row {row} did not place at ({cx}, {cz}) level {level} loc \
          {loc} — the fixture, not the mechanic"
+    );
+}
+
+/// Bolt the code lock onto the door at the address. Its own helper
+/// because a lock mints **no** deploy record — it is a record about one
+/// (`lock.rs`) — so `place_deploy`'s "the store grew by one" assertion is
+/// the wrong check for it, and the right one is that the lock store grew.
+fn bolt_lock(w: &mut World, cx: u16, cz: u16, level: u8, loc: u8) {
+    let before = w.deploys.locks().len();
+    w.tick(&[Command::PlaceDeploy {
+        id: BUILDER,
+        row: DEPLOY_LOCK,
+        cx,
+        cz,
+        level,
+        loc,
+    }]);
+    assert_eq!(
+        w.deploys.locks().len(),
+        before + 1,
+        "the code lock did not bolt onto the door at ({cx}, {cz}) level \
+         {level} loc {loc} — the fixture, not the mechanic"
     );
 }
 
@@ -1321,8 +1345,103 @@ fn deploy_placed_names_the_cell_then_the_address_then_the_owner() {
     );
 }
 
-/// `EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | locked << 1
-/// | open, c = the player whose action changed it`.
+/// `EV_KNOCK: a = build cell key, b = level << 16 | loc << 8, c = the
+/// player who knocked` and `EV_AUTH: a = build cell key, b = level << 16 |
+/// loc << 8 | grant, c = the player now remembered`.
+///
+/// Driven together because one cause produces both in sequence — a hand
+/// the lock does not know presses (knock), then enters the code (auth) —
+/// and because the pair is exactly the swap a byte-golden cannot see:
+/// both carry a cell key in `a`, an address in `b` and a player in `c`,
+/// so a crossed `a`/`c` at either emit site would encode green
+/// (`reference/FINDINGS.md` §1 is this bug class).
+#[test]
+fn knock_and_auth_name_the_door_then_the_player() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
+    bolt_lock(&mut w, cx, cz, UPPER, DOOR_EDGE);
+    w.tick(&[Command::Lock {
+        id: BUILDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+        op: sim_core::lock::LOCK_OP_SET_CODE,
+        code: 1234,
+    }]);
+
+    // A second body at the same door, which the lock has never heard of.
+    const STRANGER: u32 = BUILDER + 1;
+    w.tick(&[Command::Join { id: STRANGER }]);
+    let slot = (0..8)
+        .find(|&i| w.players[i].active && w.players[i].id == STRANGER)
+        .expect("the stranger joined");
+    w.players[slot].body = w.players[0].body;
+
+    w.tick(&[Command::Use {
+        id: STRANGER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+    }]);
+    let k = only(&w, EV_KNOCK);
+    distinct_halves(k.a, "EV_KNOCK.a (the cell key)");
+    assert_eq!(
+        k.a,
+        cell_key(cx, cz),
+        "EV_KNOCK.a is the CELL KEY of the door, not the knocker"
+    );
+    let (level, loc, rest) = unpack(k.b);
+    assert_eq!(level, UPPER as u32, "EV_KNOCK.b's high field is LEVEL");
+    assert_eq!(loc, DOOR_EDGE as u32, "EV_KNOCK.b's middle field is LOC");
+    assert_eq!(
+        rest, 0,
+        "EV_KNOCK carries no state — a knock says somebody is at the door \
+         and deliberately not who is allowed through it"
+    );
+    assert_eq!(k.c, STRANGER, "EV_KNOCK.c is the KNOCKER, not the owner");
+    assert_ne!(k.a, k.c, "and the cell key is not the knocker's id");
+
+    w.tick(&[Command::Lock {
+        id: STRANGER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+        op: sim_core::lock::LOCK_OP_ENTER,
+        code: 1234,
+    }]);
+    let a = only(&w, EV_AUTH);
+    assert_eq!(
+        a.a,
+        cell_key(cx, cz),
+        "EV_AUTH.a is the CELL KEY of the lock, not the player it remembers"
+    );
+    let (level, loc, grant) = unpack(a.b);
+    assert_eq!(level, UPPER as u32, "EV_AUTH.b's high field is LEVEL");
+    assert_eq!(loc, DOOR_EDGE as u32, "EV_AUTH.b's middle field is LOC");
+    assert_eq!(
+        grant,
+        sim_core::lock::GRANT_FULL as u32,
+        "EV_AUTH.b's low field is the GRANT, and the main code grants full"
+    );
+    assert_eq!(
+        a.c, STRANGER,
+        "EV_AUTH.c is the player now remembered — the SENDER, since this \
+         is an own-fact and nobody learns anybody else's rights"
+    );
+    assert_ne!(
+        a.b, a.c,
+        "the address and the player are not the same field"
+    );
+}
+
+/// `EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | has_lock << 2
+/// | locked << 1 | open, c = the player whose action changed it`.
 ///
 /// The door's whole state, absolute. `locked` and `open` are two adjacent
 /// bits in the same byte and are exactly the pair a swap would hide — so
@@ -1336,21 +1455,54 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
 
-    // A door places locked *and* closed, and placement announces nothing —
-    // only the verbs do. Both bits therefore read 1 and 0 together on an
-    // owner's first toggle (a locked door still opens for its owner), and
-    // a check taken there could not tell the two bits apart. So drive them
-    // one at a time and read both ticks: the unlock, then the open.
+    // A door places bare and closed (lock v1), so the three bits all read
+    // 0 and a check taken here could not tell any of them apart. Drive
+    // them one verb at a time: bolt the lock on and arm it (has_lock and
+    // locked, leaf still shut), then toggle (open, the other two held).
+    w.tick(&[Command::PlaceDeploy {
+        id: BUILDER,
+        row: DEPLOY_LOCK,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+    }]);
+    let bolted = only(&w, EV_DOOR);
+    let (_, _, bolted_state) = unpack(bolted.b);
+    assert_eq!(
+        bolted_state, 4,
+        "bolting a lock on sets has_lock ALONE — the leaf did not move and \
+         an unarmed lock is not a locked door; it read {bolted_state}"
+    );
     w.tick(&[Command::Lock {
         id: BUILDER,
         cx,
         cz,
         level: UPPER,
         loc: DOOR_EDGE,
-        locked: false,
+        op: sim_core::lock::LOCK_OP_SET_CODE,
+        code: 1234,
     }]);
-    let unlocked = only(&w, EV_DOOR);
-    let (_, _, unlocked_state) = unpack(unlocked.b);
+    let armed = only(&w, EV_DOOR);
+    let (_, _, armed_state) = unpack(armed.b);
+    assert_eq!(
+        armed_state,
+        4 | 2,
+        "arming it sets locked over has_lock, leaf still shut; it read \
+         {armed_state}"
+    );
+    // Unlock again before the toggle, so the reading below has all three
+    // bits at different values (1, 0, 1) and no pair of them can be
+    // swapped without this test seeing it.
+    w.tick(&[Command::Lock {
+        id: BUILDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+        op: sim_core::lock::LOCK_OP_UNLOCK,
+        code: 0,
+    }]);
 
     w.tick(&[Command::Use {
         id: BUILDER,
@@ -1361,12 +1513,16 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
     }]);
     let d = only(&w, EV_DOOR);
     let (level, loc, state) = unpack(d.b);
-    let (locked, open) = ((state >> 1) & 1, state & 1);
+    let (has_lock, locked, open) = ((state >> 2) & 1, (state >> 1) & 1, state & 1);
 
     assert_ne!(
         locked, open,
         "the fixture has locked and open holding the same bit, so this \
          check cannot see them swapped. Move the fixture, not the assertion."
+    );
+    assert_eq!(
+        has_lock, 1,
+        "EV_DOOR.b bit 2 is HAS_LOCK, and the lock is still bolted on"
     );
     assert_eq!(
         d.a,
@@ -1378,24 +1534,21 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
     assert_eq!(open, 1, "EV_DOOR.b bit 0 is OPEN, and the toggle opened it");
     assert_eq!(
         locked, 0,
-        "EV_DOOR.b bit 1 is LOCKED, and the unlock before this cleared it"
+        "EV_DOOR.b bit 1 is LOCKED, and the unlock before this cleared it \
+         — while bit 2 stayed set, because the lock is still bolted on"
     );
     assert_eq!(
         d.c, BUILDER,
         "EV_DOOR.c is the player whose action changed it, not the cell"
     );
 
-    // The two bits moved independently, one verb each: the unlock left the
-    // door shut, and the toggle opened it without re-locking. Crossing the
-    // two bits at the emit site cannot produce this pair.
+    // The three bits moved independently, one verb each: bolt, arm,
+    // toggle. Crossing any two of them at the emit site cannot produce
+    // this sequence of three readings.
     assert_eq!(
-        unlocked_state, 0,
-        "the unlock should leave the door clear of both bits — shut and \
-         unlocked — and it read {unlocked_state}"
-    );
-    assert_eq!(
-        state, 1,
-        "and the toggle should set the open bit alone, leaving {state} = 1"
+        state,
+        4 | 1,
+        "and the toggle should add the open bit alone, leaving {state} = 5"
     );
 }
 
@@ -2280,7 +2433,7 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 24] = [
+    const COVERED: [(&str, u8); 26] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
@@ -2305,6 +2458,8 @@ fn coverage_is_stated_not_implied() {
         ("EV_MOVE_REFUSED", EV_MOVE_REFUSED),
         ("EV_PIECE_REPAIRED", EV_PIECE_REPAIRED),
         ("EV_CHARGE_PLACED", EV_CHARGE_PLACED),
+        ("EV_KNOCK", EV_KNOCK),
+        ("EV_AUTH", EV_AUTH),
     ];
     /// What is knowingly still byte-golden only. Named, not just counted,
     /// so the gate can check that none of these quietly grew a check.

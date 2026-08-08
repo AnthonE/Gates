@@ -230,6 +230,7 @@ mod tests {
             uh: 0,
             open: false,
             locked: false,
+            has_lock: false,
         }
     }
 

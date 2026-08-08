@@ -69,7 +69,7 @@ pub const BUILD: [&str; 11] = [
 /// words, but not all of them: `REFUSE_D_COST` is an item you are not
 /// carrying where `REFUSE_B_COST` is materials you cannot afford. The two
 /// tables are separate for that reason and no check ties them together.
-pub const DEPLOY: [&str; 13] = [
+pub const DEPLOY: [&str; 18] = [
     "no such deployable",
     "spot taken",
     "needs support",
@@ -82,7 +82,16 @@ pub const DEPLOY: [&str; 13] = [
     "bag limit reached",
     "no hearth there",
     "no door there",
-    "not your door",
+    // Lock v1's one sentence for both halves of "this lock does not know
+    // you" — a stranger's press and a guest reaching for a full-rights
+    // op. Kept as one because telling them apart would tell a raider
+    // something about the lock refusing them.
+    "the lock says no",
+    "no lock on that door",
+    "that door already has a lock",
+    "wrong code",
+    "keypad locked out",
+    "that lock remembers too many already",
 ];
 
 /// The sentence, or the bare code when the sim is ahead of the client.
@@ -209,7 +218,18 @@ mod tests {
         assert_eq!(deploy(REFUSE_D_BAG_CAP as u8), "bag limit reached");
         assert_eq!(deploy(REFUSE_D_HEARTH as u8), "no hearth there");
         assert_eq!(deploy(REFUSE_D_DOOR as u8), "no door there");
-        assert_eq!(deploy(REFUSE_D_OWNER as u8), "not your door");
+        assert_eq!(deploy(REFUSE_D_OWNER as u8), "the lock says no");
+        assert_eq!(deploy(REFUSE_D_NO_LOCK as u8), "no lock on that door");
+        assert_eq!(
+            deploy(REFUSE_D_HAS_LOCK as u8),
+            "that door already has a lock"
+        );
+        assert_eq!(deploy(REFUSE_D_CODE as u8), "wrong code");
+        assert_eq!(deploy(REFUSE_D_LOCKOUT as u8), "keypad locked out");
+        assert_eq!(
+            deploy(REFUSE_D_AUTH_FULL as u8),
+            "that lock remembers too many already"
+        );
 
         use sim_core::craft::*;
         assert_eq!(craft(REFUSE_RECIPE as u8), "no such recipe");

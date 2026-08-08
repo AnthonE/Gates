@@ -197,7 +197,20 @@ const TICKS: u64 = 900;
 /// beside a red equality assert would be the bug the constant exists to
 /// catch; beside a green one it is the state definition widening, which is
 /// exactly what a slice that adds a field to `Player` is supposed to do.
-const GOLDEN_FINAL_HASH: u64 = 0x2B2C_9D78_9589_F228;
+/// Regenerated once more by **lock v1**, and this is the *first* shape —
+/// the verb landing, not the definition widening. The lock store is
+/// hashed on the arrow idiom (no length prefix), so an empty one folds
+/// nothing and this number would not have moved on its own; it moved
+/// because the script now bolts a code lock onto the door at tick 155,
+/// misses its code at 156 (a **shock**, so a door verb writes a body's
+/// hp) and arms it at 158. Three real state changes on the replayed
+/// surface, one of them to a player record.
+///
+/// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
+/// this value was read off, which is the check that separates the two
+/// shapes: a regenerated golden beside a red equality assert is the drift
+/// this constant exists to catch, beside a green one it is the verb.
+const GOLDEN_FINAL_HASH: u64 = 0xC3C5_0D2B_A345_5CD7;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
@@ -533,9 +546,19 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         if t == 149 {
             for w in 0..8usize {
                 if world.players[w].active {
-                    for (k, &(item, count)) in [(0u16, 200u16), (1, 200), (2, 50), (3, 50), (4, 50)]
-                        .iter()
-                        .enumerate()
+                    for (k, &(item, count)) in [
+                        (0u16, 200u16),
+                        (1, 200),
+                        (2, 50),
+                        (3, 50),
+                        (4, 50),
+                        // Item 6 is the probe fixture's code lock (lock
+                        // v1) — the hand the lock arc below bolts one
+                        // with.
+                        (6, 50),
+                    ]
+                    .iter()
+                    .enumerate()
                     {
                         world.players[w].inv[20 + k] = sim_core::gather::ItemStack { item, count };
                     }
@@ -662,15 +685,32 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     loc: sim_core::build::LOC_EDGE_N,
                     material: sim_core::build::MAT_METAL,
                 }),
-                155 | 156 | 158 => cmds.push(Command::Lock {
-                    // 156 is a hand that does not own this door — the
-                    // refusal path, on the replayed surface too.
+                // Lock v1's whole arc on the replayed surface: bolt the
+                // code lock on, arm it with a code, miss the code once
+                // (the shock — a *player hp* write from a door verb, and
+                // therefore state a replay must reproduce exactly), then
+                // unlock it again. 156 is a hand the lock does not
+                // remember, so the refusal path is replayed too.
+                155 => cmds.push(Command::PlaceDeploy {
+                    id,
+                    row: 4,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: sim_core::build::LOC_EDGE_W,
+                }),
+                156 | 158 => cmds.push(Command::Lock {
                     id: if t == 156 { world.players[1].id } else { id },
                     cx,
                     cz,
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_W,
-                    locked: t == 158,
+                    op: if t == 156 {
+                        sim_core::lock::LOCK_OP_ENTER
+                    } else {
+                        sim_core::lock::LOCK_OP_SET_CODE
+                    },
+                    code: if t == 156 { 4321 } else { 1234 },
                 }),
                 // Then the repair verb, on the one address that names two
                 // things: the doorway placed at 152 and the door hung in

@@ -431,6 +431,28 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                         loc: ((t / 16) % 4) as u8,
                     },
                 ]);
+            } else if t % 16 == 15 {
+                // The lock verb, cycled through all six ops (lock v1).
+                // Bot 2's wanderings place row 4 — the code lock — often
+                // enough that the store is sometimes occupied and
+                // sometimes not, so both the no-lock refusal and every
+                // landed op are inside the parity/replay/alloc surface.
+                // The codes alternate so the ENTER op hits its miss path
+                // (the shock, which writes a player's hp from a door
+                // verb) as well as its match.
+                world.tick(&[
+                    Command::Input { id: 1, frame: f1 },
+                    Command::Input { id: 2, frame: f2 },
+                    Command::Lock {
+                        id: 2,
+                        cx: own2.0,
+                        cz: own2.1,
+                        level: ((t / 64) % 2) as u8,
+                        loc: ((t / 16) % 4) as u8,
+                        op: ((t / 16) % (crate::lock::LOCK_OP_MAX as u32 + 1)) as u8,
+                        code: ((t * 7) % 10_000) as u16,
+                    },
+                ]);
             } else if t % 64 == 20 {
                 world.tick(&[
                     Command::Input { id: 1, frame: f1 },

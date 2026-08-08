@@ -492,8 +492,10 @@ impl DeploySet {
     /// Apply a door announcement to the mirrored record; returns the
     /// record as it now stands, or None when this client has never heard
     /// of that address (the deploy walk will bring it, carrying state).
-    /// `locked` is None where only the leaf moved (an optimistic toggle
-    /// and its rollback never touch the lock).
+    /// `lock` is None where only the leaf moved (an optimistic toggle and
+    /// its rollback never touch the lock); `Some((locked, has_lock))` is
+    /// the pair the announcement carried, applied together because they
+    /// are one fact about one lock (lock v1).
     fn set_open(
         &mut self,
         cx: u16,
@@ -501,14 +503,15 @@ impl DeploySet {
         level: u8,
         loc: u8,
         open: bool,
-        locked: Option<bool>,
+        lock: Option<(bool, bool)>,
     ) -> Option<DeployRec> {
         let r = self.recs[..self.len]
             .iter_mut()
             .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)?;
         r.open = open;
-        if let Some(locked) = locked {
+        if let Some((locked, has_lock)) = lock {
             r.locked = locked;
+            r.has_lock = has_lock;
         }
         Some(*r)
     }
@@ -722,6 +725,19 @@ pub struct ClientCore {
     /// Rows received so far (batches arrive in order).
     pub deploy_defs_have: u16,
     deploy_refusals: [u8; REFUSAL_RING],
+    /// Knocks heard this frame (lock v1): address + who. Broadcast, so
+    /// this ring is the *only* one here that can carry somebody else's
+    /// action — the mixer wants it positional and the HUD wants to say
+    /// somebody is at your door.
+    knocks: [(u16, u16, u8, u8, u32); REFUSAL_RING],
+    knock_head: usize,
+    knock_len: usize,
+    /// Grants this client earned (lock v1): address + `lock::GRANT_*`. An
+    /// own-fact, and the only thing that tells a client its code landed —
+    /// the door itself does not move on a correct code.
+    auths: [(u16, u16, u8, u8, u8); REFUSAL_RING],
+    auth_head: usize,
+    auth_len: usize,
     deploy_refusal_head: usize,
     deploy_refusal_len: usize,
     /// The address of a door this client toggled optimistically on its
@@ -849,6 +865,12 @@ impl ClientCore {
             deploy_defs: DeployContent::EMPTY,
             deploy_defs_have: 0,
             deploy_refusals: [0; REFUSAL_RING],
+            knocks: [(0, 0, 0, 0, 0); REFUSAL_RING],
+            knock_head: 0,
+            knock_len: 0,
+            auths: [(0, 0, 0, 0, 0); REFUSAL_RING],
+            auth_head: 0,
+            auth_len: 0,
             deploy_refusal_head: 0,
             deploy_refusal_len: 0,
             pending_door: None,
@@ -1291,15 +1313,17 @@ impl ClientCore {
                 loc,
                 open,
                 locked,
+                has_lock,
             } => {
-                // Absolute state, both bits: this confirms an optimistic
-                // toggle or corrects it, and either way the wait is over.
+                // Absolute state, all three bits: this confirms an
+                // optimistic toggle or corrects it, and either way the
+                // wait is over.
                 if self.pending_door == Some((cx, cz, level, loc)) {
                     self.pending_door = None;
                 }
-                if let Some(rec) = self
-                    .deploys
-                    .set_open(cx, cz, level, loc, open, Some(locked))
+                if let Some(rec) =
+                    self.deploys
+                        .set_open(cx, cz, level, loc, open, Some((locked, has_lock)))
                 {
                     self.seal_for(rec);
                     self.push_deploy_change(rec);
@@ -1411,6 +1435,39 @@ impl ClientCore {
                 self.dead = false;
                 self.woke_on_bag = on_bag;
                 flags |= APPLIED_RESPAWN;
+            }
+            EventMsg::Knock {
+                cx,
+                cz,
+                level,
+                loc,
+                by,
+            } => {
+                // Drop-oldest, like every other ring here: a knock that
+                // stalls the newest one is worse than one that is lost,
+                // and a knock is a sound rather than a state change.
+                if self.knock_len == REFUSAL_RING {
+                    self.knock_head = (self.knock_head + 1) % REFUSAL_RING;
+                    self.knock_len -= 1;
+                }
+                self.knocks[(self.knock_head + self.knock_len) % REFUSAL_RING] =
+                    (cx, cz, level, loc, by);
+                self.knock_len += 1;
+            }
+            EventMsg::Auth {
+                cx,
+                cz,
+                level,
+                loc,
+                grant,
+            } => {
+                if self.auth_len == REFUSAL_RING {
+                    self.auth_head = (self.auth_head + 1) % REFUSAL_RING;
+                    self.auth_len -= 1;
+                }
+                self.auths[(self.auth_head + self.auth_len) % REFUSAL_RING] =
+                    (cx, cz, level, loc, grant);
+                self.auth_len += 1;
             }
             EventMsg::Chat { from, global, text } => {
                 // Drop-oldest: a chat log that stalls on the oldest line
@@ -1591,6 +1648,29 @@ impl ClientCore {
         self.deploy_refusal_head = (self.deploy_refusal_head + 1) % REFUSAL_RING;
         self.deploy_refusal_len -= 1;
         Some(r)
+    }
+
+    /// Oldest buffered knock: the door's address and who knocked on it.
+    pub fn pop_knock(&mut self) -> Option<(u16, u16, u8, u8, u32)> {
+        if self.knock_len == 0 {
+            return None;
+        }
+        let k = self.knocks[self.knock_head];
+        self.knock_head = (self.knock_head + 1) % REFUSAL_RING;
+        self.knock_len -= 1;
+        Some(k)
+    }
+
+    /// Oldest buffered grant: the lock's address and what it now allows
+    /// this client (`sim_core::lock::GRANT_*`).
+    pub fn pop_auth(&mut self) -> Option<(u16, u16, u8, u8, u8)> {
+        if self.auth_len == 0 {
+            return None;
+        }
+        let a = self.auths[self.auth_head];
+        self.auth_head = (self.auth_head + 1) % REFUSAL_RING;
+        self.auth_len -= 1;
+        Some(a)
     }
 
     /// Oldest buffered build refusal reason (`sim_core::build::REFUSE_B_*`).
@@ -2163,7 +2243,7 @@ mod tests {
 
         // Opened, then closed again — the announcement is absolute, and
         // it carries the lock bit beside the leaf (lock v0, wire v8).
-        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, true, &mut buf).unwrap();
+        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, true, true, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_DEPLOYS);
         assert!(!shut(&c), "an open door passes");
         assert!(c.deploy_changes()[0].open, "the renderer hears the state");
@@ -2171,7 +2251,8 @@ mod tests {
             c.deploy_changes()[0].locked,
             "the renderer hears the lock too"
         );
-        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, false, false, &mut buf).unwrap();
+        let len =
+            encode_event_door(cx, cz, level, LOC_EDGE_W, false, false, true, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(shut(&c), "a reclosed door seals again");
         assert!(
@@ -2196,7 +2277,7 @@ mod tests {
             "a second toggle must wait for the first to resolve"
         );
         // The announcement confirms it and frees the next prediction.
-        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, true, &mut buf).unwrap();
+        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, true, true, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(!shut(&c));
         assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_W), Some(false));
@@ -2234,7 +2315,8 @@ mod tests {
             c.deploys.entries()[0].locked,
             "predicting the leaf must not touch the lock"
         );
-        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, false, true, &mut buf).unwrap();
+        let len =
+            encode_event_door(cx, cz, level, LOC_EDGE_W, false, true, true, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(shut(&c));
 

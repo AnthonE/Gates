@@ -38,13 +38,14 @@ pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
-    decode_event, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_build_refused, encode_event_catalog, encode_event_charge_placed,
-    encode_event_chat, encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
-    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
-    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
-    encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
+    decode_event, encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed,
+    encode_event_bag_sync, encode_event_build_refused, encode_event_catalog,
+    encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
+    encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
+    encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
+    encode_event_hit, encode_event_inv, encode_event_knock, encode_event_move_refused,
     encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_removed, encode_event_respawn, encode_event_slot_change, encode_event_slot_sync,
@@ -279,7 +280,29 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 ///
 /// Fixtures are keyed `v27_*` — all 74 renamed and regenerated (the kind
 /// width touches every one), plus two new: `v27_challenge` and `v27_auth`.
-pub const PROTO_VER: u16 = 27;
+///
+/// v28 — **the code lock** (lock v1, `reference/DOORS.md`). Four layout
+/// changes, and none of them widened a shared field:
+///
+/// - `ACT_LOCK` traded its one `locked` bit for a 3-bit op and a 14-bit
+///   code. Six lock verbs on one action code, deliberately, because
+///   `ACT_MAX` was full at 15 in `ACTION_SUB_BITS` = 4 and a sixth action
+///   would have moved every C→S message by a bit to buy what three bits
+///   of payload buy here.
+/// - `SUB_DOOR` and the placed-deployable record each grew a `has_lock`
+///   bit (the record is 32 bits now). "Bare", "bolted" and "shut" are
+///   three prompts, and two bits could only say two of them.
+/// - Two new S→C subtypes: `SUB_KNOCK` (41, broadcast) and `SUB_AUTH`
+///   (42, own-fact). Both inside what v13's widening to `SUB_BITS` = 6
+///   already bought, so no field moved for them.
+/// - `PLACEMENT_BITS` widened 2 → 3 for `PLACE_DOOR`, the fifth
+///   placement class. It rides only the deploy-defs batch.
+///
+/// Fixtures are keyed `v28_*` — all 76 renamed, the lock action and the
+/// three door/deploy-carrying cases regenerated, plus the hello (which
+/// puts the version on the wire), plus two new: `v28_knock` and
+/// `v28_auth`.
+pub const PROTO_VER: u16 = 28;
 
 /// Datagram kind field width.
 ///
@@ -697,16 +720,31 @@ pub enum ActionMsg {
         level: u8,
         loc: u8,
     },
-    /// Set the lock bit of the door at the address (lock v0). This one
-    /// *does* carry state, and for the same reason `Use` doesn't: a lock
-    /// press is a deliberate setting, so two racing presses must agree on
-    /// the result rather than swap it. Owner-only is the sim's verdict.
+    /// Run one op against the code lock at the address (lock v1). This
+    /// one *does* carry state, and for the same reason `Use` doesn't: a
+    /// lock press is a deliberate setting, so two racing presses must
+    /// agree on the result rather than swap it. Who the lock remembers is
+    /// the sim's verdict.
+    ///
+    /// **One action with an op field, not six actions**, and that is a
+    /// wire economy decision rather than a taste one: `ACT_MAX` was full
+    /// at 15 in `ACTION_SUB_BITS` = 4, so a sixth lock verb would have
+    /// cost a width bump on *every* C→S message. Three bits of op inside
+    /// this payload cost three bits on this message alone.
+    ///
+    /// `code` is range-checked here (0..=9999, or `lock::CODE_NONE` for
+    /// "clear the guest code") because it is the one lock field with a
+    /// forgeable value that the sim compares for equality — a code past
+    /// the digit space could never be entered by a keypad and so could
+    /// never be unset by one either. The op is range-checked for the
+    /// ordinary reason: three bits hold eight values and six are spent.
     Lock {
         cx: u16,
         cz: u16,
         level: u8,
         loc: u8,
-        locked: bool,
+        op: u8,
+        code: u16,
     },
     /// Upgrade the piece at the address into `material` — the rung, not a
     /// step, for the same reason `Lock` carries state: two presses racing
@@ -1081,18 +1119,48 @@ pub fn encode_action_throw(
     Ok(w.finish())
 }
 
+use event::{LOCK_CODE_BITS, LOCK_OP_BITS};
+
+/// How *no code* travels. `lock::CODE_NONE` is `u16::MAX` and does not fit
+/// [`LOCK_CODE_BITS`], so it rides as the all-ones pattern of that width;
+/// the two spellings meet here and in [`wire_code`] alone, and nowhere in
+/// the sim.
+const LOCK_CODE_WIRE_NONE: u32 = (1 << LOCK_CODE_BITS) - 1;
+
+/// Sim code → wire code. `None` for a value the keypad could never
+/// produce, which the encoder turns into `WireError::Range`.
+fn wire_code(code: u16) -> Option<u32> {
+    if code == sim_core::lock::CODE_NONE {
+        return Some(LOCK_CODE_WIRE_NONE);
+    }
+    (code <= sim_core::lock::CODE_MAX).then_some(code as u32)
+}
+
+/// Wire code → sim code. `None` for the forgeable band above 9999.
+fn sim_code(raw: u32) -> Option<u16> {
+    if raw == LOCK_CODE_WIRE_NONE {
+        return Some(sim_core::lock::CODE_NONE);
+    }
+    (raw <= sim_core::lock::CODE_MAX as u32).then_some(raw as u16)
+}
+
 pub fn encode_action_lock(
     cx: u16,
     cz: u16,
     level: u8,
     loc: u8,
-    locked: bool,
+    op: u8,
+    code: u16,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
+    let Some(raw) = wire_code(code) else {
+        return Err(WireError::Range);
+    };
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
         || loc > sim_core::build::LOC_EDGE_N
+        || op > sim_core::lock::LOCK_OP_MAX
     {
         return Err(WireError::Range);
     }
@@ -1103,7 +1171,8 @@ pub fn encode_action_lock(
     w.write(cz as u32, BUILD_CELL_BITS)?;
     w.write(level as u32, BUILD_LEVEL_BITS)?;
     w.write(loc as u32, BUILD_LOC_BITS)?;
-    w.write_bit(locked)?;
+    w.write(op as u32, LOCK_OP_BITS)?;
+    w.write(raw, LOCK_CODE_BITS)?;
     Ok(w.finish())
 }
 
@@ -1228,15 +1297,29 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             level: r.read(BUILD_LEVEL_BITS)? as u8,
             loc: r.read(BUILD_LOC_BITS)? as u8,
         },
-        // Same: address + one bit, every width exact. Whether the sender
-        // owns the door is the sim's verdict, not the wire's.
-        ACT_LOCK => ActionMsg::Lock {
-            cx: r.read(BUILD_CELL_BITS)? as u16,
-            cz: r.read(BUILD_CELL_BITS)? as u16,
-            level: r.read(BUILD_LEVEL_BITS)? as u8,
-            loc: r.read(BUILD_LOC_BITS)? as u8,
-            locked: r.read_bit()?,
-        },
+        // Address + op + code. The two payload fields are the only ones
+        // on the C→S lane whose bit width holds values the sim has no
+        // meaning for, so both are refused here rather than clamped —
+        // whether the sender is *allowed* the op stays the sim's verdict.
+        ACT_LOCK => {
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            let op = r.read(LOCK_OP_BITS)? as u8;
+            let raw = r.read(LOCK_CODE_BITS)?;
+            let (Some(code), true) = (sim_code(raw), op <= sim_core::lock::LOCK_OP_MAX) else {
+                return Err(WireError::Malformed);
+            };
+            ActionMsg::Lock {
+                cx,
+                cz,
+                level,
+                loc,
+                op,
+                code,
+            }
+        }
         ACT_UPGRADE => {
             let cx = r.read(BUILD_CELL_BITS)? as u16;
             let cz = r.read(BUILD_CELL_BITS)? as u16;

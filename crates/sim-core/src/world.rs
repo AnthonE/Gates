@@ -110,10 +110,13 @@ pub const EV_DEPLOY_REMOVED: u8 = 12;
 /// EV_STOCK: a = feeder player id, b = hearth cell key, c = level — the
 /// feed ack; the wire reads the hearth's stock from the world at encode.
 pub const EV_STOCK: u8 = 13;
-/// EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | locked << 1
-/// | open, c = the player whose action changed it. The door's whole state,
-/// absolute, whether the toggle or the lock moved (lock v0). Broadcast —
-/// door state is a world fact like a placement.
+/// EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | has_lock << 2
+/// | locked << 1 | open, c = the player whose action changed it. The
+/// door's whole state, absolute, whether the toggle, the lock or the
+/// keypad moved it (lock v1). Broadcast — door state is a world fact like
+/// a placement. The three bits are the door as the world sees it and
+/// nothing more: no code, no owner and no remembered list is on this
+/// lane, because none of it is a client's to know.
 pub const EV_DOOR: u8 = 14;
 /// EV_HIT: a = attacker player id, b = victim player id, c = damage dealt.
 /// The attacker's fact — the hitmarker, not the truth; EV_HEALTH is what
@@ -246,6 +249,28 @@ pub const EV_PIECE_REPAIRED: u8 = 28;
 /// news a swing makes and is already drawn.
 pub const EV_CHARGE_PLACED: u8 = 29;
 
+/// EV_KNOCK: a = build cell key, b = level << 16 | loc << 8, c = the
+/// player who knocked. Broadcast, and that **is** the feature: a knock is
+/// the only channel a locked-out player has to the person inside
+/// (`reference/DOORS.md` §4, shipped by the reference in Nov 2014). It
+/// rides the refusal path — every press the lock turns away knocks — so
+/// there is no verb to forge and nothing to rate-limit beyond the reach
+/// check the press already paid.
+///
+/// No state, nothing persisted, no field for *why*: a knock says somebody
+/// is at the door and deliberately not who is allowed through it.
+pub const EV_KNOCK: u8 = 30;
+/// EV_AUTH: a = build cell key, b = level << 16 | loc << 8 | grant, c =
+/// the player now remembered (`lock::GRANT_*`). **Own-fact** — the sender
+/// learns their own rights and nobody learns anyone else's, which is the
+/// same posture `EV_HEALTH` takes and the reason a lock's remembered list
+/// never crosses the wire as a list.
+///
+/// Only a *correct* code produces one; a wrong one is
+/// `EV_DEPLOY_REFUSED` with `REFUSE_D_CODE`, so the two outcomes are two
+/// codes and a client cannot mistake silence for a grant.
+pub const EV_AUTH: u8 = 31;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -253,7 +278,7 @@ pub const EV_CHARGE_PLACED: u8 = 29;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_CHARGE_PLACED;
+pub const EV_MAX: u8 = EV_AUTH;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -607,15 +632,21 @@ pub enum Command {
         level: u8,
         loc: u8,
     },
-    /// Set the lock bit of the door at the address (owner-only; absolute,
-    /// never a toggle — deploy.rs validates and refuses by event).
+    /// Run one op against the code lock at the address (lock v1). One
+    /// command with an op field rather than six, because the wire's
+    /// action space was full at fifteen in four bits — `lock::LOCK_OP_*`
+    /// names them and `deploy::lock_op` validates and refuses by event,
+    /// never by panic. `code` is 0..=9999 or `lock::CODE_NONE`; an op or
+    /// a code out of range is a refusal here too, so a replayed frame the
+    /// wire never checked cannot walk in.
     Lock {
         id: u32,
         cx: u16,
         cz: u16,
         level: u8,
         loc: u8,
-        locked: bool,
+        op: u8,
+        code: u16,
     },
     /// Upgrade the piece at the address into `material` — same shape, same
     /// address, a rung up the ladder (build.rs validates and refuses by
@@ -1500,6 +1531,15 @@ impl World {
     /// same expression `deploy.rs`'s use-toggle writes, deliberately
     /// duplicated rather than shared, because the toggle owns *when* and
     /// this owns *from what*.
+    /// The lock's two mirror bits are re-derived in the same pass and for
+    /// the same reason (lock v1). `DeployRec::has_lock` and
+    /// `DeployRec::locked` are a *view* of `lock.rs`'s store, and a saved
+    /// view is a saved cache: the file could carry a locked door whose
+    /// lock is not in the file's lock section, and the shard would draw a
+    /// locked door that the access check waves everyone through. Deriving
+    /// them here means the store is the only thing the save has to get
+    /// right, which is the same argument that keeps `Pieces::cols` out of
+    /// the file entirely.
     pub fn rebuild_doors(&mut self) {
         for i in 0..self.deploys.len() {
             let d = self.deploys.entries()[i];
@@ -1507,6 +1547,14 @@ impl World {
                 continue;
             }
             self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
+            let lock = self
+                .deploys
+                .locks()
+                .iter()
+                .find(|l| l.cx == d.cx && l.cz == d.cz && l.level == d.level && l.loc == d.loc)
+                .copied();
+            self.deploys
+                .set_lock_mirror(i, lock.is_some(), lock.is_some_and(|l| l.locked));
         }
     }
 
@@ -1702,18 +1750,22 @@ impl World {
                 cz,
                 level,
                 loc,
-                locked,
+                op,
+                code,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    deploy::set_lock(
+                    deploy::lock_op(
                         &self.deploy,
+                        &self.gather,
                         &mut self.deploys,
-                        &self.players[slot],
+                        &mut self.players[slot],
                         cx,
                         cz,
                         level,
                         loc,
-                        locked,
+                        op,
+                        code,
+                        self.tick,
                         &mut self.events,
                     );
                 }
@@ -2334,6 +2386,46 @@ impl World {
             buf[15] = d.open as u8;
             buf[16] = d.locked as u8;
             h.update(&buf);
+        }
+        // The code locks (lock v1). Every byte is state a shard can
+        // disagree about and a raid can turn on: two shards that disagree
+        // about a remembered list disagree about who is inside the base
+        // ten seconds from now, and the miss counters decide whether the
+        // next press is a shock or a shut keypad.
+        //
+        // Hashed on the **arrow** idiom — no length prefix — and that is
+        // deliberate for the reason the arrow store states next door: a
+        // `h.update(&len)` folds eight zero bytes even for an empty store
+        // and would move `GOLDEN_FINAL_HASH` for a slice the replay
+        // script never exercises. A dense store's iteration order is
+        // insert order rewritten by swap-remove, and both are commands'
+        // consequences, so it is as deterministic as `entries` above.
+        for l in self.deploys.locks() {
+            let mut buf = [0u8; 14];
+            buf[0..2].copy_from_slice(&l.cx.to_le_bytes());
+            buf[2..4].copy_from_slice(&l.cz.to_le_bytes());
+            buf[4] = l.level;
+            buf[5] = l.loc;
+            buf[6..10].copy_from_slice(&l.owner.to_le_bytes());
+            buf[10..12].copy_from_slice(&l.code.to_le_bytes());
+            buf[12..14].copy_from_slice(&l.guest_code.to_le_bytes());
+            h.update(&buf);
+            let mut sb = [0u8; 20];
+            sb[0] = l.locked as u8;
+            sb[1] = l.n_auth;
+            sb[2] = l.n_guests;
+            sb[3] = l.misses;
+            sb[4..12].copy_from_slice(&l.last_miss.to_le_bytes());
+            sb[12..20].copy_from_slice(&l.shut_until.to_le_bytes());
+            h.update(&sb);
+            // The lists themselves, whole rather than to `n_auth`: a slot
+            // past the count is zeroed by `reset_lists` and by
+            // `remove_at`, so folding all of it is folding state, and a
+            // store that ever left residue there would be caught rather
+            // than hidden.
+            for id in l.auth.iter().chain(l.guests.iter()) {
+                h.update(&id.to_le_bytes());
+            }
         }
         // Burning fuses. State as plainly as anything here: two shards
         // that disagree about a live charge disagree about whether a base

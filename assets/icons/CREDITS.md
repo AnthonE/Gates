@@ -17,6 +17,16 @@ Available on https://game-icons.net
 
 Licence: https://creativecommons.org/licenses/by/3.0/
 
+## The one file here that is not theirs
+
+`code_lock.png` was **drawn in this repo**, procedurally, and is not
+game-icons.net work: the container this was added on cannot reach
+game-icons.net, and an item with no picture fails the client's own gate.
+It is not covered by the credit above and no author above drew it. The
+mapping below still names `delapouite/padlock`, because that is what
+`ci/bake_icons.py` will fetch the moment it is run somewhere with network
+— at which point this section goes away and the row becomes true.
+
 ## What maps to what
 
 | file | source icon |
@@ -29,6 +39,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `burlap_tunic.png` | `lorc/leather-vest` |
 | `charcoal.png` | `delapouite/coal-pile` |
 | `cloth.png` | `delapouite/rolled-cloth` |
+| `code_lock.png` | `delapouite/padlock` (**not yet baked** — see above) |
 | `corn.png` | `delapouite/corn` |
 | `crossbow.png` | `carl-olsen/crossbow` |
 | `fire_pit.png` | `lorc/campfire` |

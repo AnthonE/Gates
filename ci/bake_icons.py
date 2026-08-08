@@ -84,6 +84,7 @@ ITEMS = {
     "spear_metal": "lorc/barbed-spear",
     "furnace": "delapouite/furnace",
     "box_large": "delapouite/cargo-crate",
+    "lock_code": "delapouite/padlock",
     "door_wood": "delapouite/door",
     "building_plan": "delapouite/notebook",
     "hammer": "lorc/claw-hammer",
@@ -101,6 +102,15 @@ ITEMS = {
     "mushrooms": "delapouite/mushrooms",
     "corn": "delapouite/corn",
 }
+
+# One file in `assets/icons` is NOT baked from the archive and this is the
+# note that says so: `code_lock.png` was drawn here, procedurally, because
+# the box this repo builds on cannot reach game-icons.net (the egress proxy
+# refuses it) and a `content/items.toml` row with no picture fails
+# `tests/ui.rs` §G. It is ours, it is nobody's CC BY work, and CREDITS.md
+# says the same thing in the same words. Running this script on a box that
+# CAN reach the archive replaces it with `delapouite/padlock` and rewrites
+# the credit — which is the fix, and it is one command.
 
 # The wire carries an item's DISPLAY NAME, not its content id
 # (`protocol::ItemCatalog` is names only), so the file a cell looks for is

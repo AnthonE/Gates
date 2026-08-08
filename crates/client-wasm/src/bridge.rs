@@ -112,9 +112,9 @@ struct Bridge {
     /// Piece-def table view: `PIECE_DEF_ROW_WORDS` u16s per piece row.
     piece_defs: Box<[u16; MAX_PIECE_DEFS * PIECE_DEF_ROW_WORDS]>,
     /// Deployable records the last stream message added, packed like the
-    /// piece pairs plus the door's state bits:
-    /// [cx << 16 | cz, locked << 25 | open << 24 | level << 16 | loc << 8
-    /// | row].
+    /// piece pairs plus the door's three state bits:
+    /// [cx << 16 | cz, has_lock << 26 | locked << 25 | open << 24 |
+    /// level << 16 | loc << 8 | row].
     deploy_changes: [u32; DEPLOY_SYNC_BATCH * 2],
     deploy_changes_len: u32,
     /// The whole standing-bag set, refreshed on `APPLIED_BAGS`: ids in
@@ -400,7 +400,8 @@ pub extern "C" fn client_on_stream(len: u32) -> u32 {
             let ch = core.deploy_changes();
             for (i, rec) in ch.iter().enumerate() {
                 deploy_changes[i * 2] = ((rec.cx as u32) << 16) | rec.cz as u32;
-                deploy_changes[i * 2 + 1] = ((rec.locked as u32) << 25)
+                deploy_changes[i * 2 + 1] = ((rec.has_lock as u32) << 26)
+                    | ((rec.locked as u32) << 25)
                     | ((rec.open as u32) << 24)
                     | ((rec.level as u32) << 16)
                     | ((rec.loc as u32) << 8)
@@ -713,19 +714,29 @@ pub extern "C" fn client_action_use(cx: u32, cz: u32, level: u32, loc: u32) -> u
     })
 }
 
-/// Encode a lock request (set the lock bit of the door at the address)
-/// into the out buffer; returns its length, or 0 when the arguments are
-/// outside the wire's domain. No prediction rides with it: whether the
-/// door is yours is the sim's verdict, and the announcement is absolute.
+/// Encode a lock op against the code lock at the address (lock v1) into
+/// the out buffer; returns its length, or 0 when the arguments are
+/// outside the wire's domain — which now includes an op past
+/// `lock::LOCK_OP_MAX` and a code past four digits. No prediction rides
+/// with it: what the lock allows is the sim's verdict, and both the door
+/// announcement and the grant are absolute.
 #[no_mangle]
-pub extern "C" fn client_action_lock(cx: u32, cz: u32, level: u32, loc: u32, locked: u32) -> u32 {
+pub extern "C" fn client_action_lock(
+    cx: u32,
+    cz: u32,
+    level: u32,
+    loc: u32,
+    op: u32,
+    code: u32,
+) -> u32 {
     with(|b| {
         encode_action_lock(
             cx as u16,
             cz as u16,
             level as u8,
             loc as u8,
-            locked != 0,
+            op as u8,
+            code as u16,
             &mut b.out_buf,
         )
         .map(|n| n as u32)

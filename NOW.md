@@ -20,6 +20,39 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0z · Doors and locks — what lock v1 left standing *(systems lane)*
+
+Landed 2026-08-08. `reference/DOORS.md` is the research (owns nothing);
+`sim-core/lock.rs` is the answer, and `DECISIONS.md` §open "lock v1" has the
+whole slice. What remains, in order:
+
+1. **Locks on boxes.** `inventory.rs`'s `CONT_BOX` already reasons "open to
+   anyone, exactly like an unlocked door" and declines to copy the door's
+   owner bit. The lock is now a side-store keyed by an address and a box has
+   an address, so the predicate is the same function called from one more
+   place. No new concepts (`DOORS.md` §9.8).
+2. **A pickup verb for an unsecured deployable.** The reference's rule is
+   that any player may *remove* a door carrying no lock, which is what makes
+   a lock a claim rather than a convenience. We have no pickup verb for any
+   deployable at all, so this is the verb first and the door rule second
+   (`DOORS.md` §7 verb 9).
+3. **The keypad is a HUD line, not a panel.** Deliberate (`ui/keypad.rs`
+   says why) but it means the digits are typed and there is nothing to
+   click. A small pointer-free overlay would be strictly better and is not
+   free.
+4. **`ci/client_smoke.mjs` hand-builds bit frames**, and v28 cost four of
+   them a fix — one only because a field crossing a byte boundary made the
+   decoder read past the frame. That is the byte-golden's blind spot wearing
+   a different hat; a frame builder that took field widths from the encoder
+   would not have it.
+
+**Not owed, and stated so it is not re-litigated**: the key lock (its keys
+need per-item instance data `ItemStack` has no room for, and it is the
+system the reference abandoned in Devblog 193) and door tiers past wood and
+metal (a content row, not a mechanic).
+
+---
+
 ## 0u · The ghost tells the truth — what it still cannot promise *(client lane)*
 
 Landed 2026-08-07. The build ghost drew a doorway as a SOLID SLAB, so the

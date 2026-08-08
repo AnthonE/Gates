@@ -223,6 +223,9 @@ pub enum Placement {
     Foundation,
     Doorway,
     Any,
+    /// On a door — the only class whose target must be **occupied**, and
+    /// occupied by one specific archetype (lock v1).
+    Door,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -235,6 +238,10 @@ pub enum DeployArchetype {
     Furnace,
     Workbench,
     Door,
+    /// A code lock. The one archetype that becomes no deploy record: it
+    /// bolts onto a door's address and lives in the sim's lock store
+    /// (`sim-core/lock.rs`, `reference/DOORS.md` §9.1).
+    Lock,
 }
 
 #[derive(Debug, Clone, Deserialize)]
