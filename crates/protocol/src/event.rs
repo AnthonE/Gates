@@ -3442,6 +3442,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/ranged.rs"),
         },
         Module {
+            file: "claim.rs",
+            src: include_str!("../../sim-core/src/claim.rs"),
+        },
+        Module {
             file: "collide.rs",
             src: include_str!("../../sim-core/src/collide.rs"),
         },

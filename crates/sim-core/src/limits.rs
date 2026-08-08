@@ -345,6 +345,20 @@ pub const LOCK_AUTH_CAP: usize = 8;
 /// policy, same refusal. Proposed default, DECISIONS.md §open (lock v1).
 pub const LOCK_GUEST_CAP: usize = 8;
 
+/// Cells of connected structure one privilege walk may visit
+/// (`claim.rs`, privilege v1). The reference asks its question of a
+/// physics volume and needs a persistent building identity to afford it;
+/// ours is a breadth-first walk over the build grid, and this is what
+/// bounds it (wall 4).
+///
+/// Overflow policy: **the walk stops, and privilege does not extend past
+/// it.** That is the honest failure for a bounded search — it can
+/// under-claim and never over-claim, so the worst case is somebody
+/// building against the far wall of a base bigger than 256 cells (768 m
+/// of footprint), and it can never lock a player out of open ground.
+/// Proposed default, DECISIONS.md §open (privilege v1).
+pub const PRIV_BFS_CELLS: usize = 256;
+
 /// Players one hearth remembers as its **crew** — who may build, upgrade,
 /// repair and deploy inside its claim (`reference/BUILDING.md` §2). Ten in
 /// the reference's own vanilla cap, and the same number here for the same

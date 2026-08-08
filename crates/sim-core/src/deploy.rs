@@ -578,6 +578,21 @@ impl Deploys {
         &self.hearths[..self.hearth_count]
     }
 
+    /// Stand a hearth at an address with no placement rules applied.
+    /// **Fixtures only**, for `Pieces::insert_for_test`'s reason.
+    #[cfg(test)]
+    pub(crate) fn push_hearth_for_test(&mut self, cx: u16, cz: u16, level: u8, owner: u32) {
+        self.hearths[self.hearth_count] = HearthRec {
+            cx,
+            cz,
+            level,
+            owner,
+            stock: [0; HEARTH_STOCK_ROWS],
+            crew: CrewList::of(owner),
+        };
+        self.hearth_count += 1;
+    }
+
     /// The hearth records, writable. **Tests and fixtures only** — every
     /// live path reaches a crew through `crew_op`, which is where the
     /// rights checks are; a second writer would be a second place for
@@ -1030,7 +1045,7 @@ pub fn place_deploy(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
         return;
     }
-    if deploys.foreign_claim(ax, az, p.id) {
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_CLAIM, 0);
         return;
     }
@@ -1097,7 +1112,13 @@ pub fn place_deploy(
     if def.arch == ARCH_HEARTH {
         // No hearth inside any hearth's radius (own included), and the
         // dense hearth list is a hard cap.
-        if deploys.covering_hearth(ax, az, false).is_some() {
+        // No hearth inside any claim, own included — and *claim* is now
+        // the base's volume rather than the old circle, so two hearths in
+        // one building refuse each other however far apart they stand
+        // along it. That is the reference's "one cupboard per building"
+        // (`BUILDING.md` §2) falling out of the shape rather than needing
+        // a building identity to enforce.
+        if crate::claim::any_claim(pieces, deploys, ax, az) {
             events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OVERLAP, 0);
             return;
         }

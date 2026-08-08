@@ -302,6 +302,35 @@ impl Pieces {
     /// Append a record. False ⇒ store full (the caller refuses the
     /// placement; nothing is evicted). `shape` keeps the column index in
     /// lockstep — the caller has the baked row in hand.
+    /// Put a piece straight into the store, bypassing every rule the
+    /// `place` verb keeps. **Fixtures only** — `claim.rs`'s tests build a
+    /// base to ask the privilege question of, and driving `place` to do it
+    /// would make the fixture depend on the answer the test is checking.
+    #[cfg(test)]
+    pub(crate) fn insert_for_test(
+        &mut self,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        row: u8,
+        bc: &BuildContent,
+    ) {
+        let rec = PieceRec {
+            cx,
+            cz,
+            level,
+            loc,
+            row,
+            hp: bc.pieces[row as usize].hp,
+            uh: 0,
+        };
+        assert!(
+            self.insert(rec, bc.pieces[row as usize].shape),
+            "the fixture overflowed the piece store"
+        );
+    }
+
     fn insert(&mut self, rec: PieceRec, shape: u8) -> bool {
         if self.len == MAX_PIECES {
             return false;
@@ -728,7 +757,7 @@ pub fn place(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
         return;
     }
-    if deploys.foreign_claim(ax, az, p.id) {
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
         return;
     }
@@ -832,7 +861,7 @@ pub fn upgrade(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
         return;
     }
-    if deploys.foreign_claim(ax, az, p.id) {
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
         return;
     }
@@ -985,7 +1014,7 @@ pub fn repair(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
         return;
     }
-    if deploys.foreign_claim(ax, az, p.id) {
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
         return;
     }

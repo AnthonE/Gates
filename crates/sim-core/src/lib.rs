@@ -9,6 +9,7 @@ pub mod backpack;
 pub mod bots;
 pub mod build;
 pub mod charge;
+pub mod claim;
 pub mod collide;
 pub mod combat;
 pub mod craft;
