@@ -34,7 +34,7 @@
 //! 4. **It sends the wrong slots.** The diff after the open, which is
 //!    where a shadow that was not zeroed shows up.
 
-use client_wasm::core::{ClientCore, APPLIED2_CONT};
+use client_core::core::{ClientCore, APPLIED2_CONT};
 use protocol::{EventMsg, ItemCatalog};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;

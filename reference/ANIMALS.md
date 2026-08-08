@@ -261,9 +261,12 @@ correct in general: **sample cheaply and approximately, reject exactly.**
    is paid into the killer's inventory as `EV_GATHER`. A butchering verb
    (hit the corpse with a tool for meat) is the reference's actual
    interaction and it is a verb, not a species.
-3. **No meat**, because there is no cooking (`CONTENT.md` §2 cut it). The
-   pig pays fat and cloth, both of which already existed with nothing in the
-   world dropping them.
+3. **No meat.** Cut because there was no cooking — and `sim-core/oven.rs`
+   landed the same day this did, with an **empty** cook table for the
+   mirror-image reason ("cooking wants a raw food and the island pays
+   none"). So the blocker is gone and what remains is two content rows and
+   a `drops` line. Left for a spoken call on the food set rather than taken
+   here (`NOW.md` §0m and §0v).
 4. **No blind spot.** Their "sneak up from behind" is a bearing test in
    `think` and about four lines; it wants the crouch verb to mean something
    first.

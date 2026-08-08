@@ -45,7 +45,7 @@ pub use event::{
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
     encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
-    encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_removed, encode_event_respawn, encode_event_slot_change, encode_event_slot_sync,
     encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
@@ -212,7 +212,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 ///
 /// The version turns because the *meaning* did, and here the mismatch is
 /// worse than v18's declined drag. `movement::step` is shared verbatim by the
-/// server and `client-wasm`'s predictor — that sharing IS the
+/// server and `client-core`'s predictor — that sharing IS the
 /// quantize-both-sides law (`NETCODE.md` §3) — so a v22 client against a v21
 /// server would predict an arc the server never simulates and be hard-snapped
 /// back to the ground on every press. Not a refused action but a permanent,
@@ -279,7 +279,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 ///
 /// Fixtures are keyed `v27_*` — all 74 renamed and regenerated (the kind
 /// width touches every one), plus two new: `v27_challenge` and `v27_auth`.
-/// v28 put animals on the snapshot lane (`sim-core/src/mob.rs`), and it is
+/// v28 — **the oven** (`sim-core/src/oven.rs`): the `SUB_OVEN` event
+/// subtype, the 42nd of v13's 64, and `REFUSE_M_BITS` 3 → 4 for the eighth
+/// move refusal, `REFUSE_M_OVEN`. Fixtures keyed `v28_*`.
+///
+/// v29 put animals on the snapshot lane (`sim-core/src/mob.rs`), and it is
 /// the cheapest kind of version turn and the most easily got wrong. **Not
 /// one bit of layout moved**: an animal is a class-D body exactly as a
 /// player is, so it rides the record that already exists, and what says
@@ -290,7 +294,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// The version turns anyway, on **v18's precedent stated one screen up**:
 /// *a widened meaning is a wire change even when the layout is
 /// byte-identical.* The consequence here is worse than v18's declined drag
-/// and about as bad as v22's mispredicted jump — a v27 client against a v28
+/// and about as bad as v22's mispredicted jump — a v28 client against a v29
 /// server parses every animal as a player and draws a human being standing
 /// in a field, walking at half speed and facing wherever the pig is going.
 /// It would look like a bug in the renderer forever. The handshake refusing
@@ -301,12 +305,12 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// cost: it spends bits on every record of every snapshot, including the
 /// overwhelming majority that are players, to carry a value that never
 /// changes for the life of an entity and that the id already distinguishes.
-/// Fixtures are keyed `v28_*`: all 76 renamed, and exactly **one** differs
-/// in bytes from its v27 self — `v28_hello`, which carries the version
-/// number. That single changed file is what a bump with no layout change
-/// looks like, and it is worth looking at: a diff here with more than one
-/// file in it would mean the layout moved after all.
-pub const PROTO_VER: u16 = 28;
+/// Fixtures are keyed `v29_*`: all renamed, and exactly **one** differs in
+/// bytes from its v28 self — `v29_hello`, which carries the version number.
+/// That single changed file is what a bump with no layout change looks
+/// like, and it is worth looking at: a diff here with more than one file in
+/// it would mean the layout moved after all.
+pub const PROTO_VER: u16 = 29;
 
 /// Datagram kind field width.
 ///

@@ -178,13 +178,14 @@ gates/
                    # golden tests. Shared native/wasm. Zero game logic.
     server/        # tokio + wtransport termination, session/auth, AOI +
                    # snapshot encoding, WAL persistence, admin, bots.
-    client-wasm/   # the client netcode core (snapshot view, prediction/
+    client-core/   # the client netcode core (snapshot view, prediction/
                    # reconciliation, interpolation, client clock) — pure,
-                   # native-tested, shared with the server's bot client —
-                   # plus a thin raw C-ABI wasm bridge to JS (no bindgen;
-                   # the same pattern the parity probe ships).
-  web/             # three.js app (vite): renderer, input, interpolation,
-                   # UI overlay (plain DOM), wallet connect.
+                   # NATIVE, and shared with the server's bot client. It
+                   # was `client-wasm` and carried a raw C-ABI bridge for
+                   # the browser; both went with the web client (operator,
+                   # 2026-08-08). The desktop client links it as an rlib
+                   # and compiles no wasm.
+    client/        # the Bevy desktop client: the only client.
                    # SECOND CLASS as of DECISIONS.md 2026-08-05: the demo
                    # and the playable link, not the product. Allowed to
                    # sit below ART.md's bar; points at unarmed shards.
@@ -533,8 +534,8 @@ other on a seeded island through a real server, and the laws already bite.
 - [ ] `protocol`: bit codec, input + snapshot v0 schemas, golden tests
 - [ ] `server`: wtransport accept, session hello, rings, 30 Hz sim thread,
       AOI v0 (radius only), baseline+delta snapshots, keyframe recovery
-- [ ] `client-wasm` + `web`: connect, predict/reconcile own capsule,
-      interpolate the other guy, three.js terrain from shared worldgen
+- [ ] `client-core` + `client`: connect, predict/reconcile own capsule,
+      interpolate the other guy, Bevy terrain from shared worldgen
 - [ ] gates live: zero-alloc test, replay test, golden tests, wasm/native
       parity test, 50-bot smoke
 - [ ] `bots` bin: N capsules random-walking for load

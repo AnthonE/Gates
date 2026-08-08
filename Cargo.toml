@@ -4,7 +4,7 @@ members = [
     "crates/sim-core",
     "crates/protocol",
     "crates/server",
-    "crates/client-wasm",
+    "crates/client-core",
     "crates/client",
     "crates/content",
 ]

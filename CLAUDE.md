@@ -314,7 +314,15 @@ well as `x11`), `libasound2-dev` (`bevy_audio` → cpal → `alsa-sys`),
 `libudev-dev` (`bevy_gilrs`) — each dies as a `pkg-config` panic 40 lines into
 a build script. To RUN a `--capture` probe: `libxkbcommon-x11-0` (winit
 panics in `EventLoop::new`), `mesa-vulkan-drivers` + `libvulkan1`, and
-`Xvfb`. Plus `rustup target add wasm32-unknown-unknown` for the wasm gates.
+`Xvfb`. Plus `rustup target add wasm32-unknown-unknown` for the parity gate
+— **which is not a web build**: `sim-core` compiles to a second target so
+`test_parity_wasm` can diff its state hashes against native byte for byte,
+which is wall 1's enforcement and is worth the same with no browser in
+existence. The crate that WAS a web build is gone (operator, 2026-08-08:
+*"we use desktop build no more web"*) — `client-wasm` is `client-core`, its
+1,635-line C-ABI bridge and the 1,266-line `ci/client_smoke.mjs` that drove
+it are deleted, and what that gate actually asserted is
+`crates/client-core/tests/wire.rs`.
 All of them are the same class — a wall that cannot run is not a wall, so
 install them rather than trimming the feature.
 

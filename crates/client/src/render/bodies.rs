@@ -75,7 +75,7 @@ pub fn stream(
     let scene = rig.scene.clone().expect("rig.ready() checked above");
     let core = &net.session.core;
     let at = core.render_tick();
-    let mut rs = client_wasm::interp::RemoteState::default();
+    let mut rs = client_core::interp::RemoteState::default();
 
     store.gen = store.gen.wrapping_add(1);
     let gen = store.gen;

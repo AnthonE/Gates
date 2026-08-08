@@ -38,6 +38,8 @@ pub mod feed;
 pub mod death;
 // The build ghost: the cell being aimed at, and the click that commits it.
 pub mod ghost;
+// The blue wash over the piece a hammer is aimed at.
+pub mod highlight;
 pub mod hud;
 pub mod input;
 pub mod loading;
@@ -215,6 +217,7 @@ pub fn world_teardown(
     mut clutter: ResMut<clutter::ClutterRing>,
     mut structures: ResMut<structures::StructRing>,
     mut ghost: ResMut<ghost::Ghost>,
+    mut highlight: ResMut<highlight::Highlight>,
     mut bodies: ResMut<bodies::Bodies>,
     mut herd: ResMut<mobs::Herd>,
     mut eye: ResMut<Eye>,
@@ -236,6 +239,8 @@ pub fn world_teardown(
     // The ghost holds an `Entity` from the world that just went; keeping it
     // would have the next world's first aim insert components onto a dead id.
     *ghost = ghost::Ghost::default();
+    // Same reason, same shape: the hammer's wash holds an `Entity` too.
+    highlight::forget_in(&mut highlight);
     *bodies = bodies::Bodies::default();
     *herd = mobs::Herd::default();
     *eye = Eye::default();
@@ -301,6 +306,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<verbs::Near>()
             .init_resource::<death::Answer>()
             .init_resource::<ghost::Ghost>()
+            .init_resource::<highlight::Highlight>()
             .init_resource::<hud::Toast>()
             .init_resource::<Settings>()
             .init_resource::<feed::Feed>()
@@ -564,6 +570,9 @@ impl Plugin for GatesRenderPlugin {
                 ghost::deploy_track,
                 ghost::place_key,
                 ghost::deploy_key,
+                // After `verbs::resolve` has answered what is aimed at, and
+                // before the click that acts on it.
+                highlight::track,
             )
                 .chain()
                 .after(input::place_eye)

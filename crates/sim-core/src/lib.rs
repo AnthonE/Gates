@@ -22,6 +22,7 @@ pub mod loot;
 pub mod mob;
 pub mod movement;
 pub mod occupy;
+pub mod oven;
 pub mod persist;
 mod pitch_lut;
 pub mod probe;

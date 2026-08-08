@@ -130,7 +130,7 @@ pub fn stream(
     };
     let core = &net.session.core;
     let at = core.render_tick();
-    let mut rs = client_wasm::interp::RemoteState::default();
+    let mut rs = client_core::interp::RemoteState::default();
 
     herd.gen = herd.gen.wrapping_add(1);
     let gen = herd.gen;

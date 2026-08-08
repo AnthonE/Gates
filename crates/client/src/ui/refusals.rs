@@ -69,7 +69,7 @@ pub const BUILD: [&str; 11] = [
 /// words, but not all of them: `REFUSE_D_COST` is an item you are not
 /// carrying where `REFUSE_B_COST` is materials you cannot afford. The two
 /// tables are separate for that reason and no check ties them together.
-pub const DEPLOY: [&str; 13] = [
+pub const DEPLOY: [&str; 14] = [
     "no such deployable",
     "spot taken",
     "needs support",
@@ -83,6 +83,7 @@ pub const DEPLOY: [&str; 13] = [
     "no hearth there",
     "no door there",
     "not your door",
+    "nothing in it to burn",
 ];
 
 /// The sentence, or the bare code when the sim is ahead of the client.

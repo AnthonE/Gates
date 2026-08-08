@@ -87,6 +87,19 @@ pub const ARCH_FURNACE: u8 = 4;
 pub const ARCH_WORKBENCH: u8 = 5;
 pub const ARCH_DOOR: u8 = 6;
 
+/// Does a deployable of this archetype hold items — that is, does
+/// placing it stand up a container record in the box store?
+///
+/// Three archetypes say yes and they share one store deliberately: a
+/// storage box is a container, and an oven (`oven.rs`) is a container
+/// that burns. One store means one address space, one `CONT_BOX` handle,
+/// one reach rule and one spill path when a raid takes the thing apart —
+/// so a campfire's contents fall on the floor by the same route a box's
+/// do, with no second contract on the wire and none in the sim.
+pub fn holds_items(arch: u8) -> bool {
+    arch == ARCH_BOX || arch == ARCH_FIRE || arch == ARCH_FURNACE
+}
+
 /// Placement-class codes (schema order).
 pub const PLACE_GROUND: u8 = 0;
 pub const PLACE_FOUNDATION: u8 = 1;
@@ -111,6 +124,10 @@ pub const REFUSE_D_DOOR: u32 = 11;
 /// The door isn't yours: a use on someone else's **locked** door, or a
 /// lock request on a door you didn't place (lock v0).
 pub const REFUSE_D_OWNER: u32 = 12;
+/// A use press on an oven with nothing in it that burns (oven v0,
+/// `oven.rs`). Lighting is a match, not a delivery: the fuel has to be
+/// inside already.
+pub const REFUSE_D_FUEL: u32 = 13;
 
 /// Hearth privilege radius in meters, planar from the hearth's cell
 /// center. Proposed default, DECISIONS.md §open ("deployables v0").
@@ -219,7 +236,7 @@ impl DeployContent {
     /// target inside the gates rather than only in a unit test.
     pub fn probe_fixture() -> Self {
         let mut d = Self::EMPTY;
-        d.def_count = 4;
+        d.def_count = 5;
         d.defs[0] = DeployDef {
             arch: ARCH_HEARTH,
             placement: PLACE_FOUNDATION,
@@ -251,6 +268,19 @@ impl DeployContent {
             item: 5,
             n_costs: 0,
             costs: [(0, 0); MAX_DEPLOY_COSTS],
+        };
+        // The oven (oven v0): a body deployable on the ground, so the
+        // gates can place one, feed it the fixture's fuel (item 0) and
+        // watch it burn. `CookContent::probe_fixture` is the other half —
+        // item 0 burns to item 5, item 1 cooks into item 6 — and the two
+        // fixtures are only meaningful together.
+        d.defs[4] = DeployDef {
+            arch: ARCH_FIRE,
+            placement: PLACE_GROUND,
+            hp: 40,
+            item: 6,
+            n_costs: 1,
+            costs: [(0, 25), (0, 0), (0, 0), (0, 0)],
         };
         // The build probe fixture costs items 0 and 1.
         d.mats = [0, 1, 0, 0];
@@ -358,6 +388,17 @@ pub fn box_key(cx: u16, cz: u16, level: u8) -> u32 {
 pub struct BoxStore {
     entries: [BoxRec; MAX_BOXES],
     len: usize,
+    /// Oven state, index-aligned to `entries` (`oven.rs`). Every
+    /// container carries a row and a storage box's says `ARCH_BOX`, which
+    /// is how `is_oven` answers without a second lookup.
+    ///
+    /// A parallel array for `bag_ready`'s reason, one layer down: the box
+    /// record is what the container-sync message is built from, so a burn
+    /// timer and twelve cook counters may not ride on it — the client
+    /// draws a fire, it does not adjudicate one. Kept aligned by the two
+    /// places that can move a box: the insert in `place_deploy` and the
+    /// swap-remove in `remove_at`.
+    ovens: [crate::oven::OvenState; MAX_BOXES],
     /// Contents of boxes removed this tick, awaiting a ground bag.
     /// `drop_deploy` is reached from decay and from a raid and holds
     /// neither the bag store nor the clock, so it parks the record here
@@ -371,6 +412,7 @@ impl BoxStore {
         Self {
             entries: [BoxRec::default(); MAX_BOXES],
             len: 0,
+            ovens: [crate::oven::OvenState::default(); MAX_BOXES],
             spill: [BoxRec::default(); MAX_BOX_SPILL_PER_TICK],
             spill_len: 0,
         }
@@ -466,6 +508,7 @@ impl Deploys {
         ready: &[u64],
         hearths: &[HearthRec],
         boxes: &[BoxRec],
+        ovens: &[crate::oven::OvenState],
     ) {
         debug_assert_eq!(recs.len(), ready.len(), "bag_ready must be index-aligned");
         self.len = recs.len().min(MAX_DEPLOYS);
@@ -473,12 +516,41 @@ impl Deploys {
         self.bag_ready[..self.len].copy_from_slice(&ready[..self.len]);
         self.hearth_count = hearths.len().min(MAX_HEARTHS);
         self.hearths[..self.hearth_count].copy_from_slice(&hearths[..self.hearth_count]);
+        debug_assert_eq!(boxes.len(), ovens.len(), "oven state must be index-aligned");
         self.boxes.len = boxes.len().min(MAX_BOXES);
         self.boxes.entries[..self.boxes.len].copy_from_slice(&boxes[..self.boxes.len]);
+        self.boxes.ovens[..self.boxes.len].copy_from_slice(&ovens[..self.boxes.len]);
         // The spill list is within-tick scratch (`BoxStore`), never state:
         // a save taken between ticks cannot hold one, and a load must not
         // leave a stale one for `World::step` to stand a bag up from.
         self.boxes.spill_len = 0;
+    }
+
+    /// The live oven states, index-aligned to `boxes()`. Read by
+    /// `state_hash` (a burn timer is sim state), by `worldsave.rs`, and
+    /// by the gates.
+    pub fn oven_states(&self) -> &[crate::oven::OvenState] {
+        &self.boxes.ovens[..self.boxes.len]
+    }
+
+    /// The two halves an oven step writes, as live slices. One call
+    /// rather than two accessors because a step reads a box's slots and
+    /// writes its state in the same breath, and handing them out
+    /// separately would be handing out two `&mut` to one store.
+    pub(crate) fn oven_parts_mut(&mut self) -> (&mut [BoxRec], &mut [crate::oven::OvenState]) {
+        let n = self.boxes.len;
+        (&mut self.boxes.entries[..n], &mut self.boxes.ovens[..n])
+    }
+
+    /// Resolve a packed address to a container index whose state says
+    /// **oven**. `box_index`'s filter, and the whole of what `world.rs`
+    /// needs to route a use press between the door verb and the oven
+    /// verb: the two never share an address (a door lives on a doorway's
+    /// edge, an oven on the plane), so the routing is a lookup and not a
+    /// guess about what the player aimed at.
+    pub fn oven_index(&self, key: u32) -> Option<usize> {
+        self.box_index(key)
+            .filter(|&i| self.boxes.ovens[i].is_oven())
     }
 
     /// Resolve a packed box address to an index into `boxes()`, or `None`
@@ -621,13 +693,18 @@ impl Deploys {
                 self.hearths[h] = self.hearths[self.hearth_count];
             }
         }
-        if dc.defs[rec.row as usize].arch == ARCH_BOX {
+        if holds_items(dc.defs[rec.row as usize].arch) {
             if let Some(b) = self.box_index(box_key(rec.cx, rec.cz, rec.level)) {
                 let bx = self.boxes.entries[b];
                 self.boxes.len -= 1;
                 let last = self.boxes.len;
                 self.boxes.entries[b] = self.boxes.entries[last];
                 self.boxes.entries[last] = BoxRec::default();
+                // Both halves move together, or the oven states stop
+                // describing the containers they are indexed against —
+                // `bag_ready`'s invariant one store down.
+                self.boxes.ovens[b] = self.boxes.ovens[last];
+                self.boxes.ovens[last] = crate::oven::OvenState::default();
                 // What was inside outlives the box. Parked rather than
                 // dropped where it stands, because this path is reached
                 // from decay and from a raid and holds neither the bag
@@ -894,7 +971,7 @@ pub fn place_deploy(
     // Checked before the insert for the same reason the hearth cap is: the
     // record below cannot be written into a full store, so the append that
     // follows the insert needs no second guard.
-    if def.arch == ARCH_BOX && deploys.boxes.len == MAX_BOXES {
+    if holds_items(def.arch) && deploys.boxes.len == MAX_BOXES {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
         return;
     }
@@ -934,7 +1011,11 @@ pub fn place_deploy(
         };
         deploys.hearth_count += 1;
     }
-    if def.arch == ARCH_BOX {
+    // A box, a fire and a furnace are one store: an oven's contents are a
+    // box's contents, which is what lets `CONT_BOX` address a campfire
+    // and the open/move/sync verbs work on one without a wire field
+    // invented for a second kind of container (`oven.rs`).
+    if holds_items(def.arch) {
         let n = deploys.boxes.len;
         deploys.boxes.entries[n] = BoxRec {
             cx,
@@ -942,6 +1023,10 @@ pub fn place_deploy(
             level,
             owner: p.id,
             items: [ItemStack::default(); BOX_SLOTS],
+        };
+        deploys.boxes.ovens[n] = crate::oven::OvenState {
+            arch: def.arch,
+            ..Default::default()
         };
         deploys.boxes.len += 1;
     }

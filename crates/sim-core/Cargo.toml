@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [lib]
-# rlib for the server and client-wasm bridge; cdylib so the parity gate can
+# rlib for the server and client-core bridge; cdylib so the parity gate can
 # build this crate directly to wasm32-unknown-unknown and drive the probe
 # exports from node with no bindgen in between.
 crate-type = ["rlib", "cdylib"]

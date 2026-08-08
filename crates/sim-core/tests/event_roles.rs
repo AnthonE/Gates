@@ -81,21 +81,22 @@ use sim_core::build::{
 };
 use sim_core::combat::CombatContent;
 use sim_core::craft::{CraftContent, REFUSE_INPUTS, REFUSE_RECIPE};
-use sim_core::deploy::{DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
+use sim_core::deploy::{box_key, DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
 use sim_core::gather::{cell_key, GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
 use sim_core::loot::LootContent;
 use sim_core::movement::{Body, POS_XZ_Q};
+use sim_core::oven::CookContent;
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
 use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
     EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH,
     EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER,
-    EV_HEALTH, EV_HIT, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT,
-    EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_HEALTH, EV_HIT, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED,
+    EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
+    EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -165,6 +166,11 @@ const PIECE_FLOOR: u16 = 2;
 const PIECE_DOORWAY: u16 = 3;
 const DEPLOY_HEARTH: u16 = 0;
 const DEPLOY_DOOR: u16 = 2;
+/// Row 4 is the fire (oven v0). Ground placement, so it stands on the
+/// `GROUND` level the storey is built from — and that is what makes the
+/// level field of `EV_OVEN.b` worth asserting: it is checked against a
+/// level the door's own event does *not* use.
+const DEPLOY_FIRE: u16 = 4;
 
 /// The fixture's hp, and what the fixture spear takes off in one swing.
 /// `CombatContent::probe_fixture` item 0 deals 34 to a structure;
@@ -1234,6 +1240,81 @@ fn raid_until(w: &mut World, cx: u16, cz: u16, code: u8) {
     panic!("event code {code} never landed in {MAX_STEPS} sim ticks of raiding");
 }
 
+/// `EV_OVEN` — the fire at the address went in or out, and who did it.
+///
+/// Three fields and all three are forgeable by transposition: the cell key
+/// and the actor are both `u32` and both plausible in `a`, and the level
+/// and the lit bit share `b`. So the fixture separates every one of them —
+/// the fire stands on `GROUND` while the builder is id 4, and the two
+/// presses are read one after the other so the lit bit is seen set AND
+/// clear at the same address.
+#[test]
+fn oven_names_the_cell_then_its_state_then_who_lit_it() {
+    let mut w = World::new(SEED);
+    w.cook = CookContent::probe_fixture();
+    let (cx, cz) = builder_world(&mut w);
+    // The fixture's fire costs item 0 to place and item 6 to hold; the
+    // builder's kit above carries neither, so stock both here rather than
+    // widening a fixture four other tests read.
+    w.players[0].inv[4] = ItemStack { item: 6, count: 4 };
+    place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
+
+    // Fuel goes in through the container the oven IS: one unit of item 0,
+    // which `CookContent::probe_fixture` burns. Without it the press is a
+    // refusal, not an announcement — which is itself asserted below.
+    let key = box_key(cx, cz, GROUND);
+    let i = w.deploys.box_index(key).expect("the fire is a container");
+    w.deploys
+        .set_box_slot(i, 0, ItemStack { item: 0, count: 2 });
+
+    w.tick(&[Command::Use {
+        id: BUILDER,
+        cx,
+        cz,
+        level: GROUND,
+        loc: LOC_PLANE,
+    }]);
+    let lit = only(&w, EV_OVEN);
+    w.tick(&[Command::Use {
+        id: BUILDER,
+        cx,
+        cz,
+        level: GROUND,
+        loc: LOC_PLANE,
+    }]);
+    let out = only(&w, EV_OVEN);
+
+    assert_eq!(
+        lit.a,
+        cell_key(cx, cz),
+        "EV_OVEN.a is the CELL KEY, not the player who struck the match"
+    );
+    assert_eq!(
+        lit.b >> 16,
+        GROUND as u32,
+        "EV_OVEN.b's high field is LEVEL"
+    );
+    assert_eq!(
+        lit.b & 1,
+        1,
+        "EV_OVEN.b bit 0 is LIT, and this press lit it"
+    );
+    assert_eq!(
+        lit.c, BUILDER,
+        "EV_OVEN.c is the hand that pressed, not the cell"
+    );
+    assert_ne!(
+        lit.a, lit.c,
+        "the fixture has the cell key and the actor holding the same value,          so this check cannot see them swapped. Move the fixture, not the          assertion."
+    );
+    // The same address, the other way: one bit moved and nothing else did,
+    // which a swapped or constant field could not reproduce.
+    assert_eq!(out.a, lit.a, "the second press is the same fire");
+    assert_eq!(out.b & 1, 0, "and it put it out");
+    assert_eq!(out.b >> 16, GROUND as u32, "at the same level");
+    assert_eq!(out.c, BUILDER, "by the same hand");
+}
+
 /// The three sub-fields of an addressed event's packed `b`.
 fn unpack(b: u32) -> (u32, u32, u32) {
     (b >> 16, (b >> 8) & 0xff, b & 0xff)
@@ -2280,7 +2361,7 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 24] = [
+    const COVERED: [(&str, u8); 25] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
@@ -2305,6 +2386,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_MOVE_REFUSED", EV_MOVE_REFUSED),
         ("EV_PIECE_REPAIRED", EV_PIECE_REPAIRED),
         ("EV_CHARGE_PLACED", EV_CHARGE_PLACED),
+        ("EV_OVEN", EV_OVEN),
     ];
     /// What is knowingly still byte-golden only. Named, not just counted,
     /// so the gate can check that none of these quietly grew a check.

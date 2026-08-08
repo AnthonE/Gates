@@ -330,6 +330,13 @@ pub const BOX_SLOTS: usize = 12;
 /// not the sweep's. Proposed default, DECISIONS.md §open (box v0).
 pub const MAX_BOX_SPILL_PER_TICK: usize = 16;
 
+/// Cook rows the sim preallocates for (`content/cooking.toml`,
+/// `oven.rs`). Structural cap like `MAX_RECIPES`: the bake refuses a set
+/// past this rather than silently dropping the tail, because a row the
+/// sim never sees is a transformation a player is told about by the
+/// catalog and cannot perform.
+pub const MAX_COOK_ROWS: usize = 32;
+
 /// Loot tables the sim preallocates for — one per container archetype
 /// (`content/loot.toml` ships 2: barrel and crate). The content bake
 /// refuses a set past this. Structural cap like `MAX_DEPLOY_DEFS`, not a

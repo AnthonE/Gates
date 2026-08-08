@@ -48,7 +48,7 @@
 //! `CLAUDE.md`'s quantize-both-sides law is why this is one bundle passed into
 //! `movement::step` rather than a server-side check: a wall the client does not
 //! predict is a rubber-band every time a player leans on a tree. The client
-//! mirrors the harvested set already (`client-wasm`'s `HarvestedSet`), which is
+//! mirrors the harvested set already (`client-core`'s `HarvestedSet`), which is
 //! what `Harvested` exists to abstract over — the server's sparse life store
 //! and the client's key set answer the same question from different layouts.
 

@@ -654,6 +654,81 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // The oven table (`content/cooking.toml`). Every rule here is a
+    // refusal of a *silently inert* oven rather than a taste call: a fire
+    // is the one deployable whose whole behaviour is content, so content
+    // that disarms it leaves a placeable object with no verb behind it
+    // and nothing else in the tree to notice.
+    let f = &c.fuel;
+    if !c.items.iter().any(|i| i.id == f.item) {
+        return Err(format!("fuel: `{}` is not an item", f.item));
+    }
+    if !c.items.iter().any(|i| i.id == f.byproduct) {
+        return Err(format!("fuel: byproduct `{}` is not an item", f.byproduct));
+    }
+    if f.seconds == 0 {
+        return Err("fuel: a unit that burns for 0 s never runs out".to_string());
+    }
+    if f.byproduct_pct > 100 {
+        return Err(format!(
+            "fuel: byproduct_pct {} is hundredths of ONE unit per unit burned, so 100 is the \
+             ceiling — a fire that pays more than it eats is a wood duplicator",
+            f.byproduct_pct
+        ));
+    }
+    if f.item == f.byproduct {
+        return Err("fuel: a byproduct that IS the fuel burns forever".to_string());
+    }
+    // The oven has to be reachable, exactly as the survival clock has to
+    // be answerable: a fuel nothing pays would arm the verb against a
+    // world that cannot use it. Gather is the payout path the check
+    // trusts (see the clock's own note above), and the fuel shipped
+    // today — wood — is what every tree pays.
+    if !c
+        .gatherables
+        .iter()
+        .any(|g| g.output == f.item || g.secondary.as_ref().is_some_and(|s| s.output == f.item))
+    {
+        return Err(format!(
+            "fuel: `{}` is not paid by any gatherable — an oven nothing can feed",
+            f.item
+        ));
+    }
+    let mut cook_seen = BTreeSet::new();
+    for k in &c.cooks {
+        if !c.items.iter().any(|i| i.id == k.input) {
+            return Err(format!("cook: input `{}` is not an item", k.input));
+        }
+        if !c.items.iter().any(|i| i.id == k.output) {
+            return Err(format!("cook: output `{}` is not an item", k.output));
+        }
+        if k.seconds == 0 {
+            return Err(format!("cook: `{}` converts in 0 s", k.input));
+        }
+        if k.input == k.output {
+            return Err(format!("cook: `{}` cooks into itself", k.input));
+        }
+        // The fuel is not a cook input, at any station: an oven consumes
+        // it as fuel first, so a row for it could never fire, and the
+        // move verb would be admitting an item for a transformation that
+        // does not happen.
+        if k.input == f.item {
+            return Err(format!(
+                "cook: `{}` is the fuel — it burns, it does not cook",
+                k.input
+            ));
+        }
+        // One row per (station, input). Two would make which one runs an
+        // accident of file order, which is the positional-payload trap
+        // wearing a content hat.
+        if !cook_seen.insert((k.station as u32, k.input.clone())) {
+            return Err(format!(
+                "cook: two rows for `{}` at the same station",
+                k.input
+            ));
+        }
+    }
+
     // The backpack despawn ladder: a base that exists, and multipliers
     // that rise strictly with rarity. Without the strict rise a rarer
     // item could make a bag despawn *sooner* than a common one — the

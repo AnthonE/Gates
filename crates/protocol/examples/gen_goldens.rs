@@ -24,7 +24,8 @@ use protocol::{
 use protocol::{
     encode_action_consume, encode_action_container, encode_action_drink, encode_action_move,
     encode_action_respawn, encode_action_throw, encode_event_charge_placed, encode_event_cont_sync,
-    encode_event_drank, encode_event_move_refused, encode_event_moved, encode_event_respawn,
+    encode_event_drank, encode_event_move_refused, encode_event_moved, encode_event_oven,
+    encode_event_respawn,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -341,5 +342,13 @@ fn main() {
         let len =
             encode_event_charge_placed(deploy, cx, cz, level, loc, row, fuse, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[72 + n], &buf[..len]);
+    }
+
+    for (n, (cx, cz, level, lit, by)) in [goldens::event_oven_lit(), goldens::event_oven_out()]
+        .into_iter()
+        .enumerate()
+    {
+        let len = encode_event_oven(cx, cz, level, lit, by, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[76 + n], &buf[..len]);
     }
 }
