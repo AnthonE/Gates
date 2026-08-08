@@ -1005,7 +1005,7 @@ mod tests {
             CZ,
             0,
             LOC_EDGE_W,
-            crate::lock::LOCK_OP_SET_CODE,
+            crate::deploy::ACCESS_OP_SET_CODE,
             1234,
             0,
             &mut ev,

@@ -24,8 +24,9 @@
 //! predicted would be refused would be a client deciding access, which is
 //! the one thing `RENDER.md` §1 forbids most plainly.
 
-use sim_core::lock::{
-    LOCK_OP_ENTER, LOCK_OP_LOCK, LOCK_OP_SET_CODE, LOCK_OP_SET_GUEST, LOCK_OP_TAKE, LOCK_OP_UNLOCK,
+use sim_core::deploy::{
+    ACCESS_OP_ENTER, ACCESS_OP_LOCK, ACCESS_OP_SET_CODE, ACCESS_OP_SET_GUEST, ACCESS_OP_TAKE,
+    ACCESS_OP_UNLOCK,
 };
 
 /// Digits in a code. The wire's own space (0000..=9999).
@@ -140,12 +141,12 @@ pub enum Needs {
 /// they do not have to learn.
 pub fn op_for(key: KeypadKey) -> Option<(u8, Needs)> {
     Some(match key {
-        KeypadKey::Try => (LOCK_OP_ENTER, Needs::Code),
-        KeypadKey::Set => (LOCK_OP_SET_CODE, Needs::Code),
-        KeypadKey::Guest => (LOCK_OP_SET_GUEST, Needs::Code),
-        KeypadKey::Lock => (LOCK_OP_LOCK, Needs::Nothing),
-        KeypadKey::Unlock => (LOCK_OP_UNLOCK, Needs::Nothing),
-        KeypadKey::Take => (LOCK_OP_TAKE, Needs::Nothing),
+        KeypadKey::Try => (ACCESS_OP_ENTER, Needs::Code),
+        KeypadKey::Set => (ACCESS_OP_SET_CODE, Needs::Code),
+        KeypadKey::Guest => (ACCESS_OP_SET_GUEST, Needs::Code),
+        KeypadKey::Lock => (ACCESS_OP_LOCK, Needs::Nothing),
+        KeypadKey::Unlock => (ACCESS_OP_UNLOCK, Needs::Nothing),
+        KeypadKey::Take => (ACCESS_OP_TAKE, Needs::Nothing),
     })
 }
 
@@ -254,17 +255,31 @@ mod tests {
         assert_eq!(op_for(Take).unwrap().1, Needs::Nothing);
     }
 
-    /// The keypad's op set is the sim's op set. A verb added to `lock.rs`
-    /// with no key here is a mechanic no player can reach.
+    /// The keypad reaches every **lock** op the sim has. A door verb added
+    /// to `lock.rs` with no key here is a mechanic no player can reach.
+    ///
+    /// Scoped to the lock half deliberately: since hearth crew v1 the op
+    /// space also carries the three crew ops, and those are the *hearth's*
+    /// surface (`E` at a hearth, `render/verbs.rs`) rather than the
+    /// keypad's — a keypad offering "join crew" at a door would be
+    /// offering a verb that store cannot answer. `op_is_crew` is the same
+    /// split the sim dispatches on, so this cannot drift from it.
     #[test]
-    fn the_keypad_reaches_every_op_the_sim_has() {
+    fn the_keypad_reaches_every_lock_op_the_sim_has() {
         use KeypadKey::*;
         let reachable: Vec<u8> = [Try, Set, Guest, Lock, Unlock, Take]
             .iter()
             .filter_map(|k| op_for(*k))
             .map(|o| o.0)
             .collect();
-        for op in 0..=sim_core::lock::LOCK_OP_MAX {
+        for op in 0..=sim_core::deploy::ACCESS_OP_MAX {
+            if sim_core::deploy::op_is_crew(op) {
+                assert!(
+                    !reachable.contains(&op),
+                    "crew op {op} is on the keypad, and a door cannot answer it"
+                );
+                continue;
+            }
             assert!(
                 reachable.contains(&op),
                 "lock op {op} has no key — the sim can do it and no player can ask"

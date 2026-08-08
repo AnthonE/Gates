@@ -148,7 +148,10 @@ impl Pick {
                     (true, true) => "  ·  LOCKED  ·  [L] KEYPAD",
                 }
             ),
-            Verb::Hearth => "[E] FEED HEARTH".to_string(),
+            // The crew keys ride the hearth's prompt because there is
+            // nowhere else a player would look for them, and `L` is
+            // already the access key at a door (hearth crew v1).
+            Verb::Hearth => "[E] FEED HEARTH  ·  [L] JOIN CREW  ·  [K] LEAVE".to_string(),
             v => format!("[E] OPEN {}", v.label()),
         }
     }

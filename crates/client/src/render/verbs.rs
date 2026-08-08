@@ -187,7 +187,13 @@ pub fn keys(
         return;
     }
     if keys.just_pressed(KeyCode::KeyL) {
-        lock_aimed(&aimed.0, &mut pad, &mut toast);
+        access_aimed(&net, &aimed.0, &mut pad, &mut toast, false);
+    }
+    // `K` is the crew's leave, and it is only a hearth key: at a door the
+    // same letter is the keypad's LOCK, which is why `access_aimed` takes
+    // the bit rather than this reading the pick twice.
+    if keys.just_pressed(KeyCode::KeyK) {
+        access_aimed(&net, &aimed.0, &mut pad, &mut toast, true);
     }
     if keys.just_pressed(KeyCode::KeyU) {
         upgrade_near(&net, &near.0, &mut toast);
@@ -284,25 +290,56 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
     }
 }
 
-/// `L` — bring up the aimed door's keypad (lock v1).
+/// `L` and `K` — the access verb, on whatever the crosshair is on.
 ///
-/// It does not send anything. Six ops share one action code now, and which
-/// one a press means depends on four digits that are not typed yet, so `L`
-/// opens the pad and [`keypad_keys`] is what speaks.
+/// **One key, two stores, because the sim's verb is one verb.** At a door
+/// it opens the keypad (which then speaks — six ops share one action code
+/// and which one a press means depends on four digits nobody has typed
+/// yet). At a hearth it sends a crew op immediately: there is nothing to
+/// type, and a pad that asked for four digits at a cupboard would be
+/// asking the wrong question.
+///
+/// `leave` is the `K` half. Passing it in rather than reading the pick
+/// twice is what keeps `K` meaning LOCK at a door and LEAVE at a hearth
+/// without two resolvers that could disagree about which is aimed at.
 ///
 /// A door with no lock bolted on says so rather than opening an empty pad:
 /// the wire carries `has_lock` precisely so this prompt can be honest
 /// without the client learning anything about who the lock remembers.
-fn lock_aimed(pick: &Pick, pad: &mut Pad, toast: &mut Toast) {
-    if pick.verb != Verb::Door {
-        toast.say("no door in reach");
-        return;
+fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, leave: bool) {
+    match pick.verb {
+        Verb::Door if !leave => {
+            if !pick.has_lock {
+                toast.say("no lock on that door — deploy one");
+                return;
+            }
+            pad.0.open(pick.cx, pick.cz, pick.level, pick.loc);
+        }
+        Verb::Hearth => {
+            let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
+            let op = if leave {
+                sim_core::deploy::ACCESS_OP_CREW_LEAVE
+            } else {
+                sim_core::deploy::ACCESS_OP_CREW_JOIN
+            };
+            send(net, toast, "crew", |buf| {
+                protocol::encode_action_access(
+                    cx,
+                    cz,
+                    level,
+                    sim_core::build::LOC_PLANE,
+                    op,
+                    sim_core::lock::CODE_NONE,
+                    buf,
+                )
+            });
+        }
+        // `K` at a door is the keypad's own LOCK and is handled there;
+        // outside the pad it means nothing, and saying so beats a silent
+        // press.
+        _ if leave => {}
+        _ => toast.say("nothing to authorize in reach"),
     }
-    if !pick.has_lock {
-        toast.say("no lock on that door — deploy one");
-        return;
-    }
-    pad.0.open(pick.cx, pick.cz, pick.level, pick.loc);
 }
 
 /// The keypad's own keys: digits, backspace, escape, and the six ops.
@@ -381,7 +418,7 @@ fn keypad_keys(keys: &ButtonInput<KeyCode>, net: &Net, pad: &mut Pad, toast: &mu
         return;
     };
     send(net, toast, "lock", |buf| {
-        protocol::encode_action_lock(cx, cz, level, loc, op, code, buf)
+        protocol::encode_action_access(cx, cz, level, loc, op, code, buf)
     });
     // One press, one op, pad gone. The alternative — leaving it up so the
     // next key is another op — is a pad that eats `W` while a raider is

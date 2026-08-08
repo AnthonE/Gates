@@ -75,8 +75,19 @@
 //! not a per-tick sweep.
 
 use crate::craft::inv_count;
+use crate::deploy::{
+    ACCESS_OP_ENTER, ACCESS_OP_LOCK, ACCESS_OP_MAX, ACCESS_OP_SET_CODE, ACCESS_OP_SET_GUEST,
+    ACCESS_OP_TAKE, ACCESS_OP_UNLOCK,
+};
 use crate::gather::{inv_add, ItemStack};
 use crate::limits::{INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP, MAX_LOCKS};
+use crate::roster::{Added, Roster};
+
+/// The full-rights list's type, named once so `worldsave` and the hash can
+/// spell it without restating the cap.
+pub type AuthList = Roster<LOCK_AUTH_CAP>;
+/// The guest list's type.
+pub type GuestList = Roster<LOCK_GUEST_CAP>;
 
 /// No code set. `u16::MAX` rather than a second bool, and out of the four
 /// digit range by three orders of magnitude, so a decoder that lets a
@@ -92,20 +103,6 @@ pub const GRANT_NONE: u8 = 0;
 pub const GRANT_GUEST: u8 = 1;
 /// Bolted it on, or entered the main code: everything.
 pub const GRANT_FULL: u8 = 2;
-
-/// The lock verb's operations (`Command::Lock`'s `op`, wire `ACT_LOCK`).
-/// One action with an op field rather than six action codes, because the
-/// action space was full at 15 in four bits and a width bump costs every
-/// C→S golden; the op is three bits inside the payload instead.
-pub const LOCK_OP_SET_CODE: u8 = 0;
-pub const LOCK_OP_SET_GUEST: u8 = 1;
-pub const LOCK_OP_ENTER: u8 = 2;
-pub const LOCK_OP_LOCK: u8 = 3;
-pub const LOCK_OP_UNLOCK: u8 = 4;
-pub const LOCK_OP_TAKE: u8 = 5;
-/// The highest op above, named rather than counted — the wire refuses
-/// past it and the sim refuses past it, in that order.
-pub const LOCK_OP_MAX: u8 = LOCK_OP_TAKE;
 
 /// Hp a wrong code costs, per consecutive miss: the first is one of these,
 /// the second two, the third three. The reference's own schedule
@@ -150,10 +147,13 @@ pub struct LockRec {
     /// **unlocked** — bolting one on claims nothing until a code is set,
     /// which is the reference's sequence (place, then it asks for a code).
     pub locked: bool,
-    pub auth: [u32; LOCK_AUTH_CAP],
-    pub n_auth: u8,
-    pub guests: [u32; LOCK_GUEST_CAP],
-    pub n_guests: u8,
+    /// Who the lock remembers at full rights. A [`Roster`], which is the
+    /// same component the hearth's crew uses — the reference built one
+    /// access list and hung it on three classes, and this is ours doing
+    /// the same (`reference/BUILDING.md` §1 fact 1).
+    pub auth: AuthList,
+    /// Who it remembers as guests: the door verb and nothing else.
+    pub guests: GuestList,
     /// Consecutive wrong entries. Feeds both the shock (scaled, forgiven
     /// after [`SHOCK_RESET_TICKS`]) and the lockout (counted to
     /// [`LOCKOUT_TRIES`], forgiven only by a correct code).
@@ -175,10 +175,8 @@ impl Default for LockRec {
             code: CODE_NONE,
             guest_code: CODE_NONE,
             locked: false,
-            auth: [0; LOCK_AUTH_CAP],
-            n_auth: 0,
-            guests: [0; LOCK_GUEST_CAP],
-            n_guests: 0,
+            auth: AuthList::new(),
+            guests: GuestList::new(),
             misses: 0,
             last_miss: 0,
             shut_until: 0,
@@ -191,27 +189,25 @@ impl LockRec {
     /// unlocked, and the owner already remembered so the arming press is
     /// not the press that locks them out.
     pub fn fresh(cx: u16, cz: u16, level: u8, loc: u8, owner: u32) -> Self {
-        let mut r = Self {
+        Self {
             cx,
             cz,
             level,
             loc,
             owner,
+            auth: AuthList::of(owner),
             ..Self::default()
-        };
-        r.auth[0] = owner;
-        r.n_auth = 1;
-        r
+        }
     }
 
     /// What `id` may do here. The one predicate — `deploy::use_door` asks
     /// it for the toggle and every op below asks it for its own rights, so
     /// open, close and the keypad can never disagree about who you are.
     pub fn grant(&self, id: u32) -> u8 {
-        if self.auth[..self.n_auth as usize].contains(&id) {
+        if self.auth.contains(id) {
             return GRANT_FULL;
         }
-        if self.guests[..self.n_guests as usize].contains(&id) {
+        if self.guests.contains(id) {
             return GRANT_GUEST;
         }
         GRANT_NONE
@@ -224,42 +220,26 @@ impl LockRec {
     }
 
     /// Remember `id` at `grant`. Returns false when the list is full,
-    /// which is the caller's cue to refuse (never to evict —
-    /// `limits.rs`).
+    /// which is the caller's cue to refuse (never to evict — the
+    /// `Roster`'s own rule, and `limits.rs` names the caps).
     fn remember(&mut self, id: u32, grant: u8) -> bool {
         if grant == GRANT_FULL {
-            if self.auth[..self.n_auth as usize].contains(&id) {
-                return true;
-            }
-            if self.n_auth as usize == LOCK_AUTH_CAP {
-                return false;
-            }
-            self.auth[self.n_auth as usize] = id;
-            self.n_auth += 1;
-            return true;
+            return self.auth.add(id) != Added::Full;
         }
         if self.grant(id) != GRANT_NONE {
             // Already remembered — a full member entering the guest code
             // keeps their rights rather than demoting themselves.
             return true;
         }
-        if self.n_guests as usize == LOCK_GUEST_CAP {
-            return false;
-        }
-        self.guests[self.n_guests as usize] = id;
-        self.n_guests += 1;
-        true
+        self.guests.add(id) != Added::Full
     }
 
     /// Forget everyone and remember `keep` alone, at full rights. Setting
     /// the main code is the only thing that calls this, and it is the only
     /// eviction the model has.
     fn reset_lists(&mut self, keep: u32) {
-        self.auth = [0; LOCK_AUTH_CAP];
-        self.guests = [0; LOCK_GUEST_CAP];
-        self.auth[0] = keep;
-        self.n_auth = 1;
-        self.n_guests = 0;
+        self.auth.reset_to(keep);
+        self.guests.clear();
     }
 }
 
@@ -267,18 +247,9 @@ impl LockRec {
 /// reason: `DeployRec` is what the deploy-sync packet mirrors, so none of
 /// this may ride on it.
 ///
-/// **The array is boxed and filled through a `Vec`, and that is a measured
-/// fix rather than a style.** `Box::new(Self { entries: [..; MAX_LOCKS] })`
-/// materialises the whole 52 KB on the stack before moving it to the heap,
-/// and `World::new` — which builds this, the deploy store, the piece store
-/// and 100 player records — was already most of the way through
-/// **wasm32's 1 MiB shadow stack**. Adding this store that way turned
-/// `test_parity_wasm` into `RuntimeError: memory access out of bounds`
-/// inside `Deploys::new`, on a native build that was perfectly green:
-/// wall 1's gate failing for a reason that has nothing to do with
-/// determinism. `vec![]` allocates on the heap and fills there, so nothing
-/// large ever sits in a frame. Allocation is fine here for the ordinary
-/// reason — wall 2 bans it **in the tick**, and this is construction.
+/// The array is boxed and filled on the heap ([`crate::boxed_array`]),
+/// which is a measured fix rather than a style — that function's doc has
+/// the measurement and the failure it prevents.
 #[derive(Clone)]
 pub struct Locks {
     pub(crate) entries: Box<[LockRec; MAX_LOCKS]>,
@@ -412,23 +383,23 @@ pub enum Outcome {
 /// rather than taking it, which is what keeps the one hp write in the
 /// one place that already owns `EV_HEALTH`.
 pub fn apply(locks: &mut Locks, i: usize, id: u32, op: u8, code: u16, tick: u64) -> Outcome {
-    if op > LOCK_OP_MAX {
+    if op > ACCESS_OP_MAX {
         return Outcome::BadOp;
     }
-    let needs_code = op == LOCK_OP_SET_CODE || op == LOCK_OP_ENTER;
-    let code_ok = code <= CODE_MAX || (op == LOCK_OP_SET_GUEST && code == CODE_NONE);
-    if (needs_code || op == LOCK_OP_SET_GUEST) && !code_ok {
+    let needs_code = op == ACCESS_OP_SET_CODE || op == ACCESS_OP_ENTER;
+    let code_ok = code <= CODE_MAX || (op == ACCESS_OP_SET_GUEST && code == CODE_NONE);
+    if (needs_code || op == ACCESS_OP_SET_GUEST) && !code_ok {
         return Outcome::BadOp;
     }
     let grant = locks.entries[i].grant(id);
     match op {
-        LOCK_OP_ENTER => enter(locks, i, id, code, tick),
+        ACCESS_OP_ENTER => enter(locks, i, id, code, tick),
         // Everything else is a full-rights op. One test, once, rather
         // than five copies of it — a guest is refused by the same branch
         // whether they reached for the code, the guest code, the lock bit
         // or the lock itself (`DOORS.md` §2.2's own list).
         _ if grant != GRANT_FULL => Outcome::Denied,
-        LOCK_OP_SET_CODE => {
+        ACCESS_OP_SET_CODE => {
             let l = &mut locks.entries[i];
             l.code = code;
             l.guest_code = CODE_NONE;
@@ -438,14 +409,13 @@ pub fn apply(locks: &mut Locks, i: usize, id: u32, op: u8, code: u16, tick: u64)
             l.reset_lists(id);
             Outcome::Done { relock: true }
         }
-        LOCK_OP_SET_GUEST => {
+        ACCESS_OP_SET_GUEST => {
             let l = &mut locks.entries[i];
             l.guest_code = code;
-            l.guests = [0; LOCK_GUEST_CAP];
-            l.n_guests = 0;
+            l.guests.clear();
             Outcome::Done { relock: l.locked }
         }
-        LOCK_OP_LOCK => {
+        ACCESS_OP_LOCK => {
             let l = &mut locks.entries[i];
             if l.code == CODE_NONE {
                 // Nothing to lock *with*. Refusing rather than locking is
@@ -456,11 +426,11 @@ pub fn apply(locks: &mut Locks, i: usize, id: u32, op: u8, code: u16, tick: u64)
             l.locked = true;
             Outcome::Done { relock: true }
         }
-        LOCK_OP_UNLOCK => {
+        ACCESS_OP_UNLOCK => {
             locks.entries[i].locked = false;
             Outcome::Done { relock: false }
         }
-        LOCK_OP_TAKE => {
+        ACCESS_OP_TAKE => {
             locks.remove_at(i);
             Outcome::Removed
         }
@@ -551,7 +521,7 @@ mod tests {
         let mut locks = Locks::new();
         assert!(locks.insert(LockRec::fresh(4, 5, 0, 1, OWNER)));
         assert_eq!(
-            apply(&mut locks, 0, OWNER, LOCK_OP_SET_CODE, 1234, 0),
+            apply(&mut locks, 0, OWNER, ACCESS_OP_SET_CODE, 1234, 0),
             Outcome::Done { relock: true }
         );
         locks
@@ -578,7 +548,7 @@ mod tests {
         assert!(locks.is_locked(4, 5, 0, 1));
         assert!(!locks.passes(4, 5, 0, 1, FRIEND));
         assert_eq!(
-            apply(&mut locks, 0, FRIEND, LOCK_OP_ENTER, 1234, 10),
+            apply(&mut locks, 0, FRIEND, ACCESS_OP_ENTER, 1234, 10),
             Outcome::Authorized { grant: GRANT_FULL }
         );
         assert!(
@@ -590,18 +560,18 @@ mod tests {
     #[test]
     fn a_guest_works_the_door_and_nothing_else() {
         let mut locks = armed();
-        apply(&mut locks, 0, OWNER, LOCK_OP_SET_GUEST, 4321, 10);
+        apply(&mut locks, 0, OWNER, ACCESS_OP_SET_GUEST, 4321, 10);
         assert_eq!(
-            apply(&mut locks, 0, FRIEND, LOCK_OP_ENTER, 4321, 11),
+            apply(&mut locks, 0, FRIEND, ACCESS_OP_ENTER, 4321, 11),
             Outcome::Authorized { grant: GRANT_GUEST }
         );
         assert!(locks.passes(4, 5, 0, 1, FRIEND), "a guest opens the door");
         for op in [
-            LOCK_OP_SET_CODE,
-            LOCK_OP_SET_GUEST,
-            LOCK_OP_LOCK,
-            LOCK_OP_UNLOCK,
-            LOCK_OP_TAKE,
+            ACCESS_OP_SET_CODE,
+            ACCESS_OP_SET_GUEST,
+            ACCESS_OP_LOCK,
+            ACCESS_OP_UNLOCK,
+            ACCESS_OP_TAKE,
         ] {
             assert_eq!(
                 apply(&mut locks, 0, FRIEND, op, 1111, 12),
@@ -615,17 +585,22 @@ mod tests {
     #[test]
     fn setting_the_code_is_the_eviction() {
         let mut locks = armed();
-        apply(&mut locks, 0, FRIEND, LOCK_OP_ENTER, 1234, 10);
-        apply(&mut locks, 0, OWNER, LOCK_OP_SET_GUEST, 4321, 10);
-        apply(&mut locks, 0, RAIDER, LOCK_OP_ENTER, 4321, 10);
-        assert_eq!(locks.entries[0].n_auth, 2);
-        assert_eq!(locks.entries[0].n_guests, 1);
+        apply(&mut locks, 0, FRIEND, ACCESS_OP_ENTER, 1234, 10);
+        apply(&mut locks, 0, OWNER, ACCESS_OP_SET_GUEST, 4321, 10);
+        apply(&mut locks, 0, RAIDER, ACCESS_OP_ENTER, 4321, 10);
+        assert_eq!(locks.entries[0].auth.len(), 2);
+        assert_eq!(locks.entries[0].guests.len(), 1);
 
-        apply(&mut locks, 0, FRIEND, LOCK_OP_SET_CODE, 5678, 20);
+        apply(&mut locks, 0, FRIEND, ACCESS_OP_SET_CODE, 5678, 20);
         let l = &locks.entries[0];
-        assert_eq!((l.n_auth, l.n_guests), (1, 0), "both lists forgotten");
         assert_eq!(
-            l.auth[0], FRIEND,
+            (l.auth.len(), l.guests.len()),
+            (1, 0),
+            "both lists forgotten"
+        );
+        assert_eq!(
+            l.auth.members(),
+            &[FRIEND],
             "and the setter is remembered, not locked out"
         );
         assert_eq!(l.guest_code, CODE_NONE, "the guest code goes with its list");
@@ -638,7 +613,7 @@ mod tests {
         // Three misses inside the window: 5, 10, 15.
         for (n, expect) in [(0u64, 5u16), (1, 10), (2, 15)] {
             assert_eq!(
-                apply(&mut locks, 0, RAIDER, LOCK_OP_ENTER, 9, n),
+                apply(&mut locks, 0, RAIDER, ACCESS_OP_ENTER, 9, n),
                 Outcome::Wrong {
                     shock: expect,
                     shut: false
@@ -648,7 +623,7 @@ mod tests {
         // Quiet longer than the window: the ladder starts over.
         let t = 2 + SHOCK_RESET_TICKS + 1;
         assert_eq!(
-            apply(&mut locks, 0, RAIDER, LOCK_OP_ENTER, 9, t),
+            apply(&mut locks, 0, RAIDER, ACCESS_OP_ENTER, 9, t),
             Outcome::Wrong {
                 shock: 5,
                 shut: false
@@ -659,14 +634,14 @@ mod tests {
         // four more shut it.
         let mut last = Outcome::BadOp;
         for k in 1..=4 {
-            last = apply(&mut locks, 0, RAIDER, LOCK_OP_ENTER, 9, t + k);
+            last = apply(&mut locks, 0, RAIDER, ACCESS_OP_ENTER, 9, t + k);
         }
         assert!(
             matches!(last, Outcome::Wrong { shut: true, .. }),
             "eight misses shut the keypad, quiet windows or not"
         );
         assert_eq!(
-            apply(&mut locks, 0, RAIDER, LOCK_OP_ENTER, 1234, t + 5),
+            apply(&mut locks, 0, RAIDER, ACCESS_OP_ENTER, 1234, t + 5),
             Outcome::LockedOut,
             "and a *correct* code is refused while it is shut"
         );
@@ -684,11 +659,11 @@ mod tests {
     fn the_shutter_lifts_and_the_ladder_is_fresh() {
         let mut locks = armed();
         for k in 0..LOCKOUT_TRIES as u64 {
-            apply(&mut locks, 0, RAIDER, LOCK_OP_ENTER, 9, k);
+            apply(&mut locks, 0, RAIDER, ACCESS_OP_ENTER, 9, k);
         }
         let after = locks.entries[0].shut_until;
         assert_eq!(
-            apply(&mut locks, 0, RAIDER, LOCK_OP_ENTER, 1234, after),
+            apply(&mut locks, 0, RAIDER, ACCESS_OP_ENTER, 1234, after),
             Outcome::Authorized { grant: GRANT_FULL },
             "the shutter lifts on its own tick"
         );
@@ -704,16 +679,17 @@ mod tests {
         // The owner already holds slot 0, so CAP-1 more fill it.
         for k in 0..LOCK_AUTH_CAP as u32 - 1 {
             assert_eq!(
-                apply(&mut locks, 0, 100 + k, LOCK_OP_ENTER, 1234, 1),
+                apply(&mut locks, 0, 100 + k, ACCESS_OP_ENTER, 1234, 1),
                 Outcome::Authorized { grant: GRANT_FULL }
             );
         }
         assert_eq!(
-            apply(&mut locks, 0, 999, LOCK_OP_ENTER, 1234, 1),
+            apply(&mut locks, 0, 999, ACCESS_OP_ENTER, 1234, 1),
             Outcome::ListFull
         );
         assert_eq!(
-            locks.entries[0].auth[0], OWNER,
+            locks.entries[0].auth.members()[0],
+            OWNER,
             "the owner is still first — a full list never forgets, it refuses"
         );
         assert!(!locks.passes(4, 5, 0, 1, 999));
@@ -722,14 +698,14 @@ mod tests {
     #[test]
     fn unlock_opens_the_door_to_everyone_and_lock_needs_a_code() {
         let mut locks = armed();
-        apply(&mut locks, 0, OWNER, LOCK_OP_UNLOCK, 0, 1);
+        apply(&mut locks, 0, OWNER, ACCESS_OP_UNLOCK, 0, 1);
         assert!(
             locks.passes(4, 5, 0, 1, RAIDER),
             "an unlocked lock is a shop front"
         );
         assert!(!locks.is_locked(4, 5, 0, 1));
         assert_eq!(
-            apply(&mut locks, 0, OWNER, LOCK_OP_LOCK, 0, 2),
+            apply(&mut locks, 0, OWNER, ACCESS_OP_LOCK, 0, 2),
             Outcome::Done { relock: true }
         );
 
@@ -737,7 +713,7 @@ mod tests {
         let mut bare = Locks::new();
         bare.insert(LockRec::fresh(1, 1, 0, 1, OWNER));
         assert_eq!(
-            apply(&mut bare, 0, OWNER, LOCK_OP_LOCK, 0, 0),
+            apply(&mut bare, 0, OWNER, ACCESS_OP_LOCK, 0, 0),
             Outcome::Denied
         );
     }
@@ -746,7 +722,7 @@ mod tests {
     fn take_removes_it_and_the_door_is_anyones_again() {
         let mut locks = armed();
         assert_eq!(
-            apply(&mut locks, 0, OWNER, LOCK_OP_TAKE, 0, 1),
+            apply(&mut locks, 0, OWNER, ACCESS_OP_TAKE, 0, 1),
             Outcome::Removed
         );
         assert_eq!(locks.len(), 0);
@@ -757,11 +733,11 @@ mod tests {
     fn a_forged_op_or_code_is_refused_not_clamped() {
         let mut locks = armed();
         assert_eq!(
-            apply(&mut locks, 0, OWNER, LOCK_OP_MAX + 1, 0, 1),
+            apply(&mut locks, 0, OWNER, ACCESS_OP_MAX + 1, 0, 1),
             Outcome::BadOp
         );
         assert_eq!(
-            apply(&mut locks, 0, OWNER, LOCK_OP_SET_CODE, CODE_MAX + 1, 1),
+            apply(&mut locks, 0, OWNER, ACCESS_OP_SET_CODE, CODE_MAX + 1, 1),
             Outcome::BadOp
         );
         assert_eq!(

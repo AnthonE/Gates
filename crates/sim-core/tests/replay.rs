@@ -699,16 +699,16 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_W,
                 }),
-                156 | 158 => cmds.push(Command::Lock {
+                156 | 158 => cmds.push(Command::Access {
                     id: if t == 156 { world.players[1].id } else { id },
                     cx,
                     cz,
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_W,
                     op: if t == 156 {
-                        sim_core::lock::LOCK_OP_ENTER
+                        sim_core::deploy::ACCESS_OP_ENTER
                     } else {
-                        sim_core::lock::LOCK_OP_SET_CODE
+                        sim_core::deploy::ACCESS_OP_SET_CODE
                     },
                     code: if t == 156 { 4321 } else { 1234 },
                 }),

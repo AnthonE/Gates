@@ -632,14 +632,16 @@ pub enum Command {
         level: u8,
         loc: u8,
     },
-    /// Run one op against the code lock at the address (lock v1). One
-    /// command with an op field rather than six, because the wire's
-    /// action space was full at fifteen in four bits — `lock::LOCK_OP_*`
-    /// names them and `deploy::lock_op` validates and refuses by event,
-    /// never by panic. `code` is 0..=9999 or `lock::CODE_NONE`; an op or
-    /// a code out of range is a refusal here too, so a replayed frame the
-    /// wire never checked cannot walk in.
-    Lock {
+    /// Run one access op at the address — **who may do this here**.
+    /// `deploy::ACCESS_OP_*` names the nine: 0..=5 against the code lock
+    /// on a door (`deploy::lock_op`), 6..=8 against the hearth's crew
+    /// (`deploy::crew_op`). One command with an op field rather than nine,
+    /// because the wire's action space was full at fifteen in four bits.
+    ///
+    /// Both halves validate and refuse by event, never by panic, and both
+    /// re-check the op and the code the wire already checked — a replayed
+    /// frame reaches the sim without passing a decoder.
+    Access {
         id: u32,
         cx: u16,
         cz: u16,
@@ -1744,7 +1746,7 @@ impl World {
                     );
                 }
             }
-            Command::Lock {
+            Command::Access {
                 id,
                 cx,
                 cz,
@@ -1754,20 +1756,37 @@ impl World {
                 code,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    deploy::lock_op(
-                        &self.deploy,
-                        &self.gather,
-                        &mut self.deploys,
-                        &mut self.players[slot],
-                        cx,
-                        cz,
-                        level,
-                        loc,
-                        op,
-                        code,
-                        self.tick,
-                        &mut self.events,
-                    );
+                    // The one branch: a crew op addresses the hearth on
+                    // the cell body, every other op addresses the lock on
+                    // a door's edge. `deploy::op_is_crew` is the split,
+                    // written once so the wire's range check and this
+                    // cannot disagree about which store an op means.
+                    if deploy::op_is_crew(op) {
+                        deploy::crew_op(
+                            &mut self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            op,
+                            &mut self.events,
+                        );
+                    } else {
+                        deploy::lock_op(
+                            &self.deploy,
+                            &self.gather,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            op,
+                            code,
+                            self.tick,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::Upgrade {
@@ -2412,8 +2431,8 @@ impl World {
             h.update(&buf);
             let mut sb = [0u8; 20];
             sb[0] = l.locked as u8;
-            sb[1] = l.n_auth;
-            sb[2] = l.n_guests;
+            sb[1] = l.auth.len() as u8;
+            sb[2] = l.guests.len() as u8;
             sb[3] = l.misses;
             sb[4..12].copy_from_slice(&l.last_miss.to_le_bytes());
             sb[12..20].copy_from_slice(&l.shut_until.to_le_bytes());
@@ -2423,7 +2442,7 @@ impl World {
             // `remove_at`, so folding all of it is folding state, and a
             // store that ever left residue there would be caught rather
             // than hidden.
-            for id in l.auth.iter().chain(l.guests.iter()) {
+            for id in l.auth.raw().iter().chain(l.guests.raw().iter()) {
                 h.update(&id.to_le_bytes());
             }
         }
@@ -2469,6 +2488,16 @@ impl World {
             h.update(&buf);
             for s in hr.stock.iter() {
                 h.update(&s.to_le_bytes());
+            }
+            // The crew (hearth crew v1). State as plainly as the stock is:
+            // two shards that disagree about who may build inside a claim
+            // disagree about whether the next foundation lands. The whole
+            // backing array, tail included, for `Roster`'s stated reason —
+            // residue there would be invisible state, and `remove` zeroes
+            // what it vacates precisely so this fold is exact.
+            h.update(&(hr.crew.len() as u32).to_le_bytes());
+            for id in hr.crew.raw().iter() {
+                h.update(&id.to_le_bytes());
             }
         }
         // Box contents, in the dense list's own order — which is

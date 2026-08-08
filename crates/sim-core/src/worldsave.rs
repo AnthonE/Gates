@@ -76,9 +76,9 @@ use crate::gather::{ItemStack, SlotLife};
 use crate::input::InputFrame;
 use crate::limits::HOTBAR_SLOTS;
 use crate::limits::{
-    BOX_SLOTS, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP, MAX_BACKPACKS,
-    MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_HEARTHS, MAX_LIVE_CHARGES,
-    MAX_LOCKS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
+    BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP,
+    MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_HEARTHS,
+    MAX_LIVE_CHARGES, MAX_LOCKS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
 };
 use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
 use crate::movement;
@@ -124,7 +124,11 @@ const PIECE_BYTES: usize = 11;
 /// array in the store (`deploy.rs` says why it is not on the record) and is
 /// written inline here because a file has no parallel arrays worth having.
 const DEPLOY_BYTES: usize = 17 + 8;
-const HEARTH_BYTES: usize = 9 + HEARTH_STOCK_ROWS * 4;
+/// A hearth: address, owner, the stock rows, and the crew — its count
+/// and the whole backing array, for `LOCK_BYTES`' reason (every byte of a
+/// roster is hashed, tail included, so a save that dropped the tail would
+/// reload to a different hash).
+const HEARTH_BYTES: usize = 9 + HEARTH_STOCK_ROWS * 4 + 1 + HEARTH_CREW_CAP * 4;
 const BOX_BYTES: usize = 9 + BOX_SLOTS * 4;
 /// One code lock (lock v1). Address, owner, both codes, the locked bit,
 /// both remembered lists with their counts, and the three brute-force
@@ -372,6 +376,10 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         for s in h.stock.iter() {
             o.u32(*s);
         }
+        o.u8(h.crew.len() as u8);
+        for id in h.crew.raw().iter() {
+            o.u32(*id);
+        }
     }
     for b in w.deploys.boxes() {
         o.u16(b.cx);
@@ -391,12 +399,12 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(l.code);
         o.u16(l.guest_code);
         o.b(l.locked);
-        o.u8(l.n_auth);
-        o.u8(l.n_guests);
-        for id in l.auth.iter() {
+        o.u8(l.auth.len() as u8);
+        o.u8(l.guests.len() as u8);
+        for id in l.auth.raw().iter() {
             o.u32(*id);
         }
-        for id in l.guests.iter() {
+        for id in l.guests.raw().iter() {
             o.u32(*id);
         }
         o.u8(l.misses);
@@ -753,15 +761,24 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         for s in stock.iter_mut() {
             *s = r.u32()?;
         }
+        let n_crew = r.u8()?;
+        let mut crew_ids = [0u32; HEARTH_CREW_CAP];
+        for id in crew_ids.iter_mut() {
+            *id = r.u32()?;
+        }
         if !build_addr_ok(cx, cz, level) {
             return Err(WorldSaveError::AddressOutOfRange);
         }
+        let Some(crew) = crate::deploy::CrewList::restore(&crew_ids, n_crew) else {
+            return Err(WorldSaveError::CountOverCap);
+        };
         *h = HearthRec {
             cx,
             cz,
             level,
             owner,
             stock,
+            crew,
         };
     }
 
@@ -815,12 +832,16 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             return Err(WorldSaveError::AddressOutOfRange);
         }
         // A count past its own array is refused whole, never clamped: a
-        // clamped `n_auth` is a lock that quietly forgot somebody, and the
-        // whole point of `LOCK_AUTH_CAP`'s overflow policy is that this
-        // model never forgets anyone silently.
-        if n_auth as usize > LOCK_AUTH_CAP || n_guests as usize > LOCK_GUEST_CAP {
+        // clamped count is a list that quietly forgot somebody, and the
+        // whole point of the roster's overflow policy is that it never
+        // forgets anyone silently. `Roster::restore` is where that rule
+        // lives, so this asks it rather than restating the comparison.
+        let (Some(auth), Some(guests)) = (
+            crate::lock::AuthList::restore(&auth, n_auth),
+            crate::lock::GuestList::restore(&guests, n_guests),
+        ) else {
             return Err(WorldSaveError::CountOverCap);
-        }
+        };
         // A code out of the four-digit range is refused for the reason a
         // content row index is: `lock::apply` compares against it and a
         // hand-edited value would make a door nobody can ever open.
@@ -840,9 +861,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             guest_code,
             locked,
             auth,
-            n_auth,
             guests,
-            n_guests,
             misses,
             last_miss,
             shut_until,
@@ -995,7 +1014,7 @@ mod tests {
             + 100 * 240                     // players
             + 8_192 * 11                    // pieces
             + 1_024 * 25                    // deploys + bag_ready
-            + 256 * 25                      // hearths
+            + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
             + 256 * 57                      // boxes
             + 512 * 98                      // code locks
             + 256 * 148                     // bags
@@ -1006,9 +1025,12 @@ mod tests {
         // counts + 8 auth ids + 8 guest ids at four bytes each + 1 miss
         // counter + 8 + 8 for the two tick deadlines.
         assert_eq!(LOCK_BYTES, 98);
+        // A hearth is 66: 9 address + owner, 16 stock, then the crew's
+        // count and its whole ten-slot backing array.
+        assert_eq!(HEARTH_BYTES, 66);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 479_542,
+            WORLD_SAVE_MAX_BYTES, 490_038,
             "the world save ceiling moved"
         );
     }

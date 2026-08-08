@@ -7,8 +7,8 @@
 #![allow(clippy::disallowed_macros)]
 
 use protocol::{
-    encode_action_cancel, encode_action_craft, encode_action_deploy, encode_action_feed,
-    encode_action_lock, encode_action_loot, encode_action_place, encode_action_repair,
+    encode_action_access, encode_action_cancel, encode_action_craft, encode_action_deploy,
+    encode_action_feed, encode_action_loot, encode_action_place, encode_action_repair,
     encode_action_upgrade, encode_action_use, encode_chat, encode_event_auth,
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_chat,
@@ -178,8 +178,8 @@ fn main() {
     let len = encode_action_use(cx, cz, level, loc, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[35], &buf[..len]);
 
-    let (cx, cz, level, loc, op, code) = goldens::action_lock();
-    let len = encode_action_lock(cx, cz, level, loc, op, code, &mut buf).unwrap();
+    let (cx, cz, level, loc, op, code) = goldens::action_access();
+    let len = encode_action_access(cx, cz, level, loc, op, code, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[36], &buf[..len]);
 
     let (cx, cz, level, loc, open, locked, has_lock) = goldens::event_door();
@@ -195,6 +195,10 @@ fn main() {
     let (cx, cz, level, loc, grant) = goldens::event_auth();
     let len = encode_event_auth(cx, cz, level, loc, grant, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[77], &buf[..len]);
+
+    let (cx, cz, level, loc, op, code) = goldens::action_access_crew();
+    let len = encode_action_access(cx, cz, level, loc, op, code, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[78], &buf[..len]);
 
     let (cx, cz, level, loc, material) = goldens::action_upgrade();
     let len = encode_action_upgrade(cx, cz, level, loc, material, &mut buf).unwrap();

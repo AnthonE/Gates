@@ -1412,16 +1412,18 @@ pub fn encode_event_knock(
 /// Width of a grant (`sim_core::lock::GRANT_*`): three values in two bits,
 /// so the fourth is forgeable and the decoder refuses it.
 const LOCK_GRANT_BITS: u32 = 2;
-/// Width of the lock op (`sim_core::lock::LOCK_OP_*`). Three bits hold
-/// eight and six are spent, so the decoder range-checks rather than
-/// trusting the field.
+/// Width of the access op (`sim_core::deploy::ACCESS_OP_*`). **Widened
+/// 3 → 4 in wire v29**: the hearth's three crew ops joined the lock's six
+/// in one space, and three bits hold eight. Seven of the sixteen values
+/// are now forgeable, so the decoder range-checks rather than trusting
+/// the field.
 ///
 /// **Declared here rather than beside its encoder in `lib.rs`**, which is
 /// where the C→S action lane lives, and that is on purpose: the
 /// wire-domain gate below reads *this file* for the widths it bounds, so a
 /// width declared one module away would be a domain with no gate — which
 /// is the exact 2026-08-05 shape that gate exists for.
-pub(crate) const LOCK_OP_BITS: u32 = 3;
+pub(crate) const ACCESS_OP_BITS: u32 = 4;
 /// Width of a four-digit code (0..=9999). A **magnitude**, not a domain —
 /// the value is a number a player types, not a member of an enumeration —
 /// so it is classified in `MAGNITUDES` below. Fourteen bits leave
@@ -3480,6 +3482,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/lock.rs"),
         },
         Module {
+            file: "roster.rs",
+            src: include_str!("../../sim-core/src/roster.rs"),
+        },
+        Module {
             file: "loot.rs",
             src: include_str!("../../sim-core/src/loot.rs"),
         },
@@ -3669,16 +3675,16 @@ mod wire_domains {
             live_max: 2,
         },
         Domain {
-            what: "lock op",
-            sim_site: "lock.rs LOCK_OP_*",
-            wire_site: "LOCK_OP_BITS",
-            home: "lock.rs",
-            prefix: "pub const LOCK_OP_",
+            what: "access op",
+            sim_site: "deploy.rs ACCESS_OP_*",
+            wire_site: "ACCESS_OP_BITS",
+            home: "deploy.rs",
+            prefix: "pub const ACCESS_OP_",
             ty: ": u8 = ",
             exempt: &["MAX"],
-            min_members: 6,
-            bits: LOCK_OP_BITS,
-            live_max: 5,
+            min_members: 9,
+            bits: ACCESS_OP_BITS,
+            live_max: 8,
         },
         Domain {
             what: "bag-removal reason",

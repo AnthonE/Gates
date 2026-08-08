@@ -502,12 +502,12 @@ fn doors_toggle_across_the_wire() {
     act(
         &mut core,
         0,
-        ActionMsg::Lock {
+        ActionMsg::Access {
             cx: CX,
             cz: CZ,
             level: 0,
             loc: LOC_EDGE_W,
-            op: sim_core::lock::LOCK_OP_SET_CODE,
+            op: sim_core::deploy::ACCESS_OP_SET_CODE,
             code: 1234,
         },
     );
@@ -571,12 +571,12 @@ fn doors_toggle_across_the_wire() {
     act(
         &mut core,
         1,
-        ActionMsg::Lock {
+        ActionMsg::Access {
             cx: CX,
             cz: CZ,
             level: 0,
             loc: LOC_EDGE_W,
-            op: sim_core::lock::LOCK_OP_ENTER,
+            op: sim_core::deploy::ACCESS_OP_ENTER,
             code: 1234,
         },
     );
@@ -694,12 +694,12 @@ fn doors_toggle_across_the_wire() {
     act(
         &mut core,
         0,
-        ActionMsg::Lock {
+        ActionMsg::Access {
             cx: CX,
             cz: CZ,
             level: 0,
             loc: LOC_EDGE_W,
-            op: sim_core::lock::LOCK_OP_UNLOCK,
+            op: sim_core::deploy::ACCESS_OP_UNLOCK,
             code: 0,
         },
     );

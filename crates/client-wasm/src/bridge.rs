@@ -12,9 +12,9 @@
 
 use crate::core::ClientCore;
 use protocol::{
-    decode_refuse, decode_welcome, encode_action_cancel, encode_action_consume,
-    encode_action_container, encode_action_craft, encode_action_deploy, encode_action_drink,
-    encode_action_feed, encode_action_lock, encode_action_loot, encode_action_move,
+    decode_refuse, decode_welcome, encode_action_access, encode_action_cancel,
+    encode_action_consume, encode_action_container, encode_action_craft, encode_action_deploy,
+    encode_action_drink, encode_action_feed, encode_action_loot, encode_action_move,
     encode_action_place, encode_action_repair, encode_action_respawn, encode_action_throw,
     encode_action_upgrade, encode_action_use, encode_chat, encode_hello, peek_kind, Hello,
     CHAT_MAX_BYTES, DEPLOY_SYNC_BATCH, KIND_REFUSE, KIND_WELCOME, MAX_ITEM_NAME_BYTES,
@@ -717,11 +717,11 @@ pub extern "C" fn client_action_use(cx: u32, cz: u32, level: u32, loc: u32) -> u
 /// Encode a lock op against the code lock at the address (lock v1) into
 /// the out buffer; returns its length, or 0 when the arguments are
 /// outside the wire's domain — which now includes an op past
-/// `lock::LOCK_OP_MAX` and a code past four digits. No prediction rides
+/// `deploy::ACCESS_OP_MAX` and a code past four digits. No prediction rides
 /// with it: what the lock allows is the sim's verdict, and both the door
 /// announcement and the grant are absolute.
 #[no_mangle]
-pub extern "C" fn client_action_lock(
+pub extern "C" fn client_action_access(
     cx: u32,
     cz: u32,
     level: u32,
@@ -730,7 +730,7 @@ pub extern "C" fn client_action_lock(
     code: u32,
 ) -> u32 {
     with(|b| {
-        encode_action_lock(
+        encode_action_access(
             cx as u16,
             cz as u16,
             level as u8,

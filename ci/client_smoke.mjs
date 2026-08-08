@@ -294,7 +294,7 @@ for (let i = 0; i < slotCount; i++) {
 // a v26 client's hello decodes to a different kind entirely, so the version
 // gate refuses it before any field is read. Nothing silent, which is the
 // one mercy of a width change over a field change.
-check(ex.client_proto_ver() === 28, "proto ver drifted without this gate hearing");
+check(ex.client_proto_ver() === 29, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13
@@ -471,16 +471,23 @@ const useLen = ex.client_action_use(341, 341, 0, 2);
 check(useLen === 5, `use action length odd: ${useLen}`);
 check(ex.client_action_use(341, 341, 8, 2) === 0, "level past the grid must refuse");
 check(ex.client_action_use(341, 341, 0, 4) === 0, "loc past the four must refuse");
-// Lock v1: op (3 b) + code (14 b) where wire v8 had one bit, so the
-// frame is 4 + 4 + 10 + 10 + 3 + 2 + 3 + 14 = 50 bits = 7 B.
-const lockLen = ex.client_action_lock(341, 341, 0, 2, 0, 4207);
-check(lockLen === 7, `lock action length odd: ${lockLen}`);
+// The access action (wire v29): op (4 b) + code (14 b), so the frame is
+// 4 + 4 + 10 + 10 + 3 + 2 + 4 + 14 = 51 bits = 7 B. The op widened 3 → 4
+// when the hearth's three crew ops joined the lock's six in one space.
+const lockLen = ex.client_action_access(341, 341, 0, 2, 0, 4207);
+check(lockLen === 7, `access action length odd: ${lockLen}`);
+// The crew half of the same action, at a cell body rather than an edge.
+// BOTH halves are driven here because the op is what picks which STORE
+// the address means, and that is precisely the field a byte-golden
+// cannot see (`reference/FINDINGS.md` §1).
+const crewLen = ex.client_action_access(341, 341, 0, 0, 6, 0xffff);
+check(crewLen === 7, `crew action length odd: ${crewLen}`);
 // The two payload fields are the only forgeable ones on this lane and
 // the encoder refuses both rather than clamping.
-check(ex.client_action_lock(341, 341, 0, 2, 6, 0) === 0, "an op past LOCK_OP_MAX must refuse");
-check(ex.client_action_lock(341, 341, 0, 2, 0, 10000) === 0, "a five-digit code must refuse");
-check(ex.client_action_lock(1024, 341, 0, 2, 1) === 0, "cx past the grid must refuse");
-check(ex.client_action_lock(341, 341, 0, 4, 0) === 0, "loc past the four must refuse");
+check(ex.client_action_access(341, 341, 0, 2, 9, 0) === 0, "an op past ACCESS_OP_MAX must refuse");
+check(ex.client_action_access(341, 341, 0, 2, 0, 10000) === 0, "a five-digit code must refuse");
+check(ex.client_action_access(1024, 341, 0, 2, 1, 0) === 0, "cx past the grid must refuse");
+check(ex.client_action_access(341, 341, 0, 4, 0, 0) === 0, "loc past the four must refuse");
 const upgradeLen = ex.client_action_upgrade(341, 341, 0, 2, 2);
 check(upgradeLen === 5, `upgrade action length odd: ${upgradeLen}`);
 check(ex.client_action_upgrade(341, 341, 0, 2, 3) === 0, "a fourth material must refuse");

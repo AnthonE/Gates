@@ -345,6 +345,16 @@ pub const LOCK_AUTH_CAP: usize = 8;
 /// policy, same refusal. Proposed default, DECISIONS.md §open (lock v1).
 pub const LOCK_GUEST_CAP: usize = 8;
 
+/// Players one hearth remembers as its **crew** — who may build, upgrade,
+/// repair and deploy inside its claim (`reference/BUILDING.md` §2). Ten in
+/// the reference's own vanilla cap, and the same number here for the same
+/// reason it is a number at all: a base is a group, and an unbounded group
+/// is an unbounded array in a `HearthRec` the wire mirrors nothing of.
+/// Overflow policy: **refuse, never evict** — the `Roster`'s rule, and the
+/// one this cap must not break is that a hearth never forgets whoever
+/// placed it. Proposed default, DECISIONS.md §open (hearth crew v1).
+pub const HEARTH_CREW_CAP: usize = 10;
+
 /// Broken-box spills awaiting a ground bag, drained at the end of the
 /// tick that broke them (`world.rs`). A box is emptied where it stood by
 /// the same `stand_up` a corpse and a barrel use, but the removal path

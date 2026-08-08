@@ -432,7 +432,9 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                     },
                 ]);
             } else if t % 16 == 15 {
-                // The lock verb, cycled through all six ops (lock v1).
+                // The access verb, cycled through all NINE ops — the six
+                // lock ops at a door's edge and the three crew ops at the
+                // cell body (hearth crew v1).
                 // Bot 2's wanderings place row 4 — the code lock — often
                 // enough that the store is sometimes occupied and
                 // sometimes not, so both the no-lock refusal and every
@@ -440,16 +442,26 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 // The codes alternate so the ENTER op hits its miss path
                 // (the shock, which writes a player's hp from a door
                 // verb) as well as its match.
+                let op_now = ((t / 16) % (crate::deploy::ACCESS_OP_MAX as u32 + 1)) as u8;
                 world.tick(&[
                     Command::Input { id: 1, frame: f1 },
                     Command::Input { id: 2, frame: f2 },
-                    Command::Lock {
+                    Command::Access {
                         id: 2,
                         cx: own2.0,
                         cz: own2.1,
                         level: ((t / 64) % 2) as u8,
-                        loc: ((t / 16) % 4) as u8,
-                        op: ((t / 16) % (crate::lock::LOCK_OP_MAX as u32 + 1)) as u8,
+                        // A crew op addresses the cell body; a lock op an
+                        // edge. Sending each at the address its verb
+                        // means is what puts BOTH halves of the dispatch
+                        // inside the parity/replay/alloc surface rather
+                        // than one half and a refusal.
+                        loc: if crate::deploy::op_is_crew(op_now) {
+                            crate::build::LOC_PLANE
+                        } else {
+                            ((t / 16) % 4) as u8
+                        },
+                        op: op_now,
                         code: ((t * 7) % 10_000) as u16,
                     },
                 ]);

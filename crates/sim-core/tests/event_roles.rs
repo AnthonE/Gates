@@ -1363,13 +1363,13 @@ fn knock_and_auth_name_the_door_then_the_player() {
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
     bolt_lock(&mut w, cx, cz, UPPER, DOOR_EDGE);
-    w.tick(&[Command::Lock {
+    w.tick(&[Command::Access {
         id: BUILDER,
         cx,
         cz,
         level: UPPER,
         loc: DOOR_EDGE,
-        op: sim_core::lock::LOCK_OP_SET_CODE,
+        op: sim_core::deploy::ACCESS_OP_SET_CODE,
         code: 1234,
     }]);
 
@@ -1406,13 +1406,13 @@ fn knock_and_auth_name_the_door_then_the_player() {
     assert_eq!(k.c, STRANGER, "EV_KNOCK.c is the KNOCKER, not the owner");
     assert_ne!(k.a, k.c, "and the cell key is not the knocker's id");
 
-    w.tick(&[Command::Lock {
+    w.tick(&[Command::Access {
         id: STRANGER,
         cx,
         cz,
         level: UPPER,
         loc: DOOR_EDGE,
-        op: sim_core::lock::LOCK_OP_ENTER,
+        op: sim_core::deploy::ACCESS_OP_ENTER,
         code: 1234,
     }]);
     let a = only(&w, EV_AUTH);
@@ -1474,13 +1474,13 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
         "bolting a lock on sets has_lock ALONE — the leaf did not move and \
          an unarmed lock is not a locked door; it read {bolted_state}"
     );
-    w.tick(&[Command::Lock {
+    w.tick(&[Command::Access {
         id: BUILDER,
         cx,
         cz,
         level: UPPER,
         loc: DOOR_EDGE,
-        op: sim_core::lock::LOCK_OP_SET_CODE,
+        op: sim_core::deploy::ACCESS_OP_SET_CODE,
         code: 1234,
     }]);
     let armed = only(&w, EV_DOOR);
@@ -1494,13 +1494,13 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
     // Unlock again before the toggle, so the reading below has all three
     // bits at different values (1, 0, 1) and no pair of them can be
     // swapped without this test seeing it.
-    w.tick(&[Command::Lock {
+    w.tick(&[Command::Access {
         id: BUILDER,
         cx,
         cz,
         level: UPPER,
         loc: DOOR_EDGE,
-        op: sim_core::lock::LOCK_OP_UNLOCK,
+        op: sim_core::deploy::ACCESS_OP_UNLOCK,
         code: 0,
     }]);
 

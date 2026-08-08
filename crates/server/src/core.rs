@@ -610,14 +610,14 @@ impl ShardCore {
                         level,
                         loc,
                     },
-                    ActionMsg::Lock {
+                    ActionMsg::Access {
                         cx,
                         cz,
                         level,
                         loc,
                         op,
                         code,
-                    } => Command::Lock {
+                    } => Command::Access {
                         id: c.id,
                         cx,
                         cz,
