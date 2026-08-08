@@ -28,6 +28,16 @@ standing instruction. Building blocks are 250/500/1000, a stone wall takes
 four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
 Two bands moved and the raid ratio re-priced itself to 1.04/1.73/3.46.
 
+**The audit (2026-08-08, second pass).** Asked to explain why we had rolled
+our own numbers, three of six reasons turned out to be cost dressed as
+principle (`BALANCE.md` §4). The meters are paid off — 500/250 with the
+reference's meat-feeds/forage-hydrates split. Gather yields are the one
+left, and the blocker is real: `[globals] farm_per_min` is declared
+separately from `yield_per_hit` and **nothing checks the two agree**, so
+moving yields means re-deriving `farm_per_min`, `node_yield`, `node_hits`
+and four anchors in one commit. That is the next content slice, and the
+missing agreement check is worth landing with it.
+
 What a returning player still finds wrong, in rank order:
 
 1. **The boar does not fight back.** Theirs charges and flees under half
@@ -40,9 +50,10 @@ What a returning player still finds wrong, in rank order:
    ordering is right and the early game is right; the ladder above stone is
    compressed. A schema column plus a sim multiply.
 3. **One animal.** Chicken, stag, wolf, bear all have roles there.
-4. Survival meters, gather yields, smelt rates, craft times, upkeep, decay
-   and the armour ladder are ours **on purpose** — `BALANCE.md` §4 says why
-   for each, so none of them is an oversight to re-open.
+4. **Gather yields, smelt and craft times are still ours, and that is a
+   deferral rather than a decision** — see the audit above. Upkeep, decay
+   and the armour ladder ARE on purpose (different mechanisms, not
+   different numbers), and `BALANCE.md` §4.1 is the list that stays.
 
 ---
 

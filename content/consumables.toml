@@ -16,25 +16,28 @@ food = 0
 water = 0
 seconds = 8
 
+# Hydrating and calorie-poor, which is the reference's own split: meat
+# feeds and barely wets, forage wets and barely feeds, and a player who
+# eats only one of them dies of the other.
 [[consumable]]
 id = "item.berries"
 health = 0
+food = 10
+water = 20
+seconds = 2
+
+[[consumable]]
+id = "item.mushrooms"
+health = 3
 food = 15
 water = 5
 seconds = 2
 
 [[consumable]]
-id = "item.mushrooms"
-health = 0
-food = 20
-water = 0
-seconds = 2
-
-[[consumable]]
 id = "item.corn"
 health = 0
-food = 25
-water = 10
+food = 40
+water = 20
 seconds = 3
 
 # The best food on the island, and the only one that costs a walk: a kill, a
@@ -48,6 +51,6 @@ seconds = 3
 [[consumable]]
 id = "item.cooked_meat"
 health = 10
-food = 40
-water = 0
+food = 50
+water = 3
 seconds = 5

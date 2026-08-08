@@ -7,7 +7,8 @@ the answer to "where did that number come from".
 Dated 2026-08-08, written on the operator's call: *"id like to balance the
 game similar to rust so people dont get too lost when playing this the first
 time."* That supersedes the posture `CONTENT.md` §0 carried for one day
-("no table here is copied"), and §9 is the part that binds.
+("no table here is copied"). §6 is the part that binds; §4 is the honest
+audit of what has *not* moved, rewritten after the operator asked why.
 
 ## 0 · Provenance, and the limit on it
 
@@ -64,6 +65,12 @@ Worth listing first, because it says the sim was in the right register:
 | metal hatchet / pickaxe | 30 | 28 / 25 | **30** |
 | metal spear (their stone spear) | 30 | 30 | 30 |
 | boar | ~150 | 80 | **150** |
+| hunger meter | 500 | 100 | **500** |
+| hydration meter | 250 | 100 | **250** |
+| cooked meat | ~50 cal, barely hydrates | 40 of 100 | **50 cal / 3 water** |
+| berries | hydrate, few calories | 15 cal / 5 water | **10 cal / 20 water** |
+| mushrooms | ~15 cal, heals 3 | 20 cal, no heal | **15 cal / 5 water / 3 hp** |
+| boar meat drop | ~5 | 3 | **5** |
 
 Every one of those passed the existing bands with two moved, both stated in
 `DECISIONS.md`: `wall_breach_swings_min` 150 → 60 (a 250-hp wood wall cannot
@@ -71,41 +78,74 @@ take 150 swings from a weapon that can open a 200-hp door in 50), and the
 satchel's `structure` 500 → 125, which is what "four satchels for a stone
 wall" means in a model with one damage column.
 
-The anchors that came out the other side: raid ratio **1.04 / 1.73 / 3.46**
+The anchors that came out the other side: raid ratio **0.69 / 1.38 / 2.77**
 (wood/stone/metal, band [1.0, 3.0] on stone), door breach **50** swings,
 wall breach **63 / 125 / 250**, TTK 4–5 across every melee row.
 
-## 4 · What deliberately did NOT move, and why
+## 4 · What has NOT moved — separated into real reasons and excuses
 
-This is the more useful half of the file.
+Rewritten 2026-08-08 after the operator asked the right question: *"explain
+the random reasons we decided to roll our own numbers instead of borrowing a
+10 year old game."* The word **random** was doing work, and it was earned —
+the first version of this section listed six reasons as if they were six
+design decisions, and on audit **three of them were cost dressed as
+principle.** Those three are now separated out and two of them are done.
 
-- **The survival meters stay 100 / 100.** Theirs are 500 calories and 250
-  hydration. A bar's *maximum* is a display scale — nobody gets lost because
-  the number is 100 — and matching it would have forced rescaling every
-  consumable, which broke a design band (`best_food_min`, the rule that a
-  forageable food must be worth crossing the island for) for zero
-  player-facing familiarity. What a player actually feels is the drain rate
-  and the ratio, and those are ours and banded.
-- **Per-material damage resistance does not exist here, and it is the
-  biggest structural gap.** Theirs is why a stone wall takes 4 satchels soft
-  side and a sheet-metal wall takes 23 — damage is scaled by what it hits.
-  We have one `structure` column per weapon and `hp ÷ structure`, so our
-  metal wall takes 8 where theirs takes 23. The *ordering* is right and the
-  early-game numbers are right; the late-game raid ladder is compressed.
-  Closing it is a schema column plus a sim multiply, and it is filed rather
-  than faked.
-- **Gather yields and smelt rates stay ours.** They drive the farm-minute
-  anchors (`node_yield`, `wood_wall_minutes`, `upkeep_solo_daily_max_min`),
-  so moving them is a re-derivation of the whole economy rather than a
-  lookup. Ours are already in the same register.
-- **Craft times, upkeep, and decay stay ours.** Same reason, and their upkeep
-  system (a tool cupboard consuming resources per building-privilege radius)
-  is a different mechanism from ours, not a different number.
-- **The armour ladder stays ours.** Their protection model is per-damage-type
-  and ours is a flat percentage; matching the numbers without the model would
-  read as matching and behave differently, which is worse than differing.
-- **The animal roster is ours** (`ANIMALS.md` §9): the boar's *health* is
-  theirs, its behaviour, respawn and population are not.
+### 4.1 · Real reasons — a different model, not a different number
+
+These would produce *false familiarity*: matching the number without the
+mechanism behind it looks like a match and behaves like something else,
+which is worse than plainly differing.
+
+- **No per-material damage resistance.** Theirs scales incoming damage by
+  what it hits, which is why a stone wall takes 4 satchels soft side and a
+  sheet-metal wall takes 23. We have one `structure` column and
+  `hp ÷ structure`, so our metal wall takes 8. Ordering right, early game
+  right, ladder above stone compressed. **This is the biggest one and it is
+  a build, not a decision**: a schema column plus a sim multiply.
+- **The armour ladder.** Their protection is per damage type; ours is a flat
+  percentage. Copying their percentages onto our model would mislead.
+- **Upkeep and decay.** Their tool cupboard consumes resources scaled by
+  building privilege radius. Ours is a different mechanism, not a different
+  rate.
+- **The animal roster** (`ANIMALS.md` §9). The boar's *health* is theirs;
+  its respawn, population and dormancy are ours **on purpose** — their
+  population re-rolls a death and the herd migrates over a wipe, and a
+  stable world is a thing we chose.
+
+### 4.2 · Excuses, now retired
+
+- ~~**The survival meters.**~~ The reason given was "a bar's maximum is a
+  display scale". That is true and it was not the reason: the real reason
+  was that moving 100 → 500 forced rescaling every consumable and broke one
+  of *our* bands (`best_food_min`, the rule that a forageable food must buy
+  20 minutes). I kept our number to avoid confronting our band — and the
+  band was the thing that was wrong, because the reference's food economy is
+  **meat-centric** and forage is *supposed* to be marginal there. **Done
+  2026-08-08**: meters are 500/250, consumables carry the reference's split
+  (meat feeds and barely hydrates, forage hydrates and barely feeds), and the
+  band now scans what an animal drops as well as what a node pays, which is
+  what makes the pig the answer instead of a bush.
+- ~~**Craft times.**~~ Listed as ours; no reason was ever given beyond
+  inertia. Knowable and shallow. **Still to do** — see §4.3.
+
+### 4.3 · Deferred with a stated cost, which is not the same as a reason
+
+- **Gather yields and node totals.** Theirs: a tree is ~460 wood over ~16
+  hits with a stone hatchet, a stone node 1000, sulfur 300. Ours are ~200
+  over 10 hits and in the same *shape* but a different *scale*. This is not
+  a lookup because `[globals] farm_per_min` is a **separately declared**
+  number that the anchors price everything with — and nothing currently
+  checks that it agrees with `yield_per_hit`, which is its own latent
+  defect. Moving the yields without re-deriving `farm_per_min`,
+  `node_yield`, `node_hits` and re-checking four anchors would leave the
+  economy asserting one thing and playing another.
+- **Smelt and craft times.** Same dependency, smaller blast radius.
+
+**Nothing is live** — no season, no wipe, no player holding a number in
+their head from a shard of ours. So the cost of moving these is a
+re-derivation and a red band, not a broken save. That is the operator's
+point and it is correct: take more of the math now, tune later.
 
 ## 5 · What is still wrong for a returning player, ranked
 
@@ -131,3 +171,18 @@ sim is refused here exactly as an invented one would be.
 
 The rails are unchanged and they were never about arithmetic: no traced
 art, no proper nouns, nothing decompiled (`ART.md` §7, `reference/README.md`).
+
+## 7 · And the rule this file learned about itself
+
+**"It would break a band of ours" is not a reason to keep a number — it is
+a reason to look at the band.** Our bands encode *our* design rules, and a
+rule written when the content was different can be the stale thing in the
+comparison. The `best_food_min` band said a forageable food must be worth
+crossing the island for; the reference disagrees, meat is the answer there,
+and the band was quietly vetoing the operator's stated goal until someone
+asked why.
+
+So when a reference number is refused by a band, the question is which of
+the two is out of date — and the answer goes in `DECISIONS.md` either way,
+because a band that moves silently is exactly what `CONTENT.md` §4 exists to
+prevent.

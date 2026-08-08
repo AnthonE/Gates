@@ -86,7 +86,7 @@ respawn_seconds = 300
 # content set with nothing in the world dropping it, and cloth is the
 # sleeping bag.
 drops = [
-  { item = "item.raw_meat", count = 3 },
+  { item = "item.raw_meat", count = 5 },
   { item = "item.fat", count = 15 },
   { item = "item.cloth", count = 10 },
 ]

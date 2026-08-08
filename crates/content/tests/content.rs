@@ -998,12 +998,44 @@ fn bake_survival_plays_the_clock_the_data_declares() {
 
     // **The answer, priced in the clock's own units.** A validator refuses
     // content with no food source at all; this is the arithmetic that says
-    // the source is worth walking to. One bush pickup must buy back a
+    // the source is worth walking to. One harvest must buy back a
     // meaningful share of a span, or the loop is a treadmill that happens
     // to pass a boolean.
+    //
+    // **A harvest is no longer only a bush.** This scanned nodes alone
+    // until 2026-08-08, when the reference alignment moved the meters to
+    // 500/250 and forage to the reference's own calorie-poor values — at
+    // which point a bush bought 6 minutes and this assertion failed,
+    // correctly, on a rule that had gone stale rather than on a bad number.
+    // The reference's food economy is **meat-centric**: forage hydrates,
+    // meat feeds, and a player who eats only berries starves. So the source
+    // set is nodes AND what an animal drops, and the bar is unchanged —
+    // *something* in the world has to be worth walking to, and now the
+    // thing that is, is the pig.
     let gc = c.bake_gather().expect("shipped gather table must bake");
+    let mc = c.bake_mobs().expect("shipped animals must bake");
     let mut best_food_min = 0u32;
     let mut best_water_min = 0u32;
+    // What a kill pays, run through the fire: raw meat is not edible, so
+    // the food a mob is worth is its cooked output's row.
+    let cooks = c.bake_cooking().expect("shipped cooking must bake");
+    for def in mc.defs.iter() {
+        for drop in def.loot.iter() {
+            if drop.item == sim_core::gather::NO_ITEM || drop.count == 0 {
+                continue;
+            }
+            let eaten = cooks
+                .row_for(sim_core::deploy::ARCH_FIRE, drop.item)
+                .map(|r| r.output)
+                .unwrap_or(drop.item);
+            let row = sc.consumable[eaten as usize];
+            best_food_min = best_food_min
+                .max((row.food as u32 * drop.count as u32 * s.food_minutes_to_empty) / s.max_food);
+            best_water_min = best_water_min.max(
+                (row.water as u32 * drop.count as u32 * s.water_minutes_to_empty) / s.max_water,
+            );
+        }
+    }
     for node in gc.nodes.iter() {
         for (item, per_hit) in [
             (node.output, node.hand_yield),
@@ -1024,7 +1056,7 @@ fn bake_survival_plays_the_clock_the_data_declares() {
     }
     assert!(
         best_food_min >= 20,
-        "the best food a node pays buys {best_food_min} min of a \
+        "the best food in the world buys {best_food_min} min of a \
          {}-min hunger span — a source nobody would cross the island for",
         s.food_minutes_to_empty
     );
@@ -1078,7 +1110,7 @@ fn bake_gather_carries_the_side_payout() {
 fn a_clock_that_would_not_tick_is_refused() {
     refuses(
         "balance.toml",
-        "max_water = 100",
+        "max_water = 250",
         "max_water = 0",
         "must be ≥ 1",
     );
@@ -1149,8 +1181,8 @@ fn a_clock_with_no_answer_is_refused() {
     for (name, text) in srcs.iter_mut() {
         if *name == "consumables.toml" {
             *text = text.replace(
-                "id = \"item.berries\"\nhealth = 0\nfood = 15\nwater = 5",
-                "id = \"item.berries\"\nhealth = 0\nfood = 15\nwater = 0",
+                "id = \"item.berries\"\nhealth = 0\nfood = 10\nwater = 20",
+                "id = \"item.berries\"\nhealth = 0\nfood = 10\nwater = 0",
             );
         }
     }

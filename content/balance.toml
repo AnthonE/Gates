@@ -105,8 +105,8 @@ mult_very_rare = 12
 # Ten bushes of drinking, or two bushes of bandaging: the sea is 5× the
 # farm time cheaper and bleeds, which is the trade the genre makes.
 [survival]
-max_food = 100
-max_water = 100
+max_food = 500
+max_water = 250
 food_minutes_to_empty = 60
 water_minutes_to_empty = 40
 starve_hp_per_min = 3
