@@ -36,16 +36,20 @@ lavapipe.
 through the same estimator** — a bar computed a different way than the frame
 it judges is not a bar. Medians over the six vantages:
 
-| statistic | first native frame | before this pass | now | reference |
+| statistic | first native frame | before props v1 | now | reference |
 |---|---|---|---|---|
-| whole-frame p10 | 41.9 | 64.9 | 58.6 | 41.0 |
-| whole-frame p50 | 61.0 | 85.3 | **90.2** | 91.4 |
-| whole-frame p90 | 110.9 | 144.7 | **155.7** | 170.2 |
-| sky band mean | 97.3 | 129.5 | 136.3 | 128.4 |
-| near band mean | 54.8 | 79.5 | **79.8** | 80.5 |
-| near-band saturation | 42.0% | 32.1% | **32.9%** | 33.2% |
-| **near neighbour contrast** | 1.55 | 2.44 | **6.25** | 5.40 |
-| chroma per unit luma | — | — | **0.163** | 0.252 |
+| whole-frame p10 | 41.9 | 58.2 | **71.0** | 41.0 |
+| whole-frame p50 | 61.0 | 90.1 | **93.1** | 91.4 |
+| whole-frame p90 | 110.9 | 155.7 | 155.7 | 170.2 |
+| sky band mean | 97.3 | 136.3 | 136.4 | 128.4 |
+| near band mean | 54.8 | 79.8 | **83.5** | 80.5 |
+| near-band saturation | 42.0% | 32.9% | **32.5%** | 33.2% |
+| **near neighbour contrast** | 1.55 | 6.25 | **6.36** | 5.40 |
+| chroma per unit luma | — | 0.163 | **0.171** | 0.252 |
+
+The last two columns are one before/after pair taken on one box through one
+estimator, which the earlier columns are not — those came off a different
+machine and are kept for shape, not for arithmetic.
 
 The last two rows are the ones that matter and they have to be read together.
 `ART.md` §3's contrast row is the statistic six browser passes never moved off
@@ -62,12 +66,17 @@ Two gaps remain, both named by the table:
 - **p90 155.7 against 170.2.** Closing, and the cloud deck is why (143.6 →
   155.7). What is left is cloud *form*: this deck reads as high stratus where
   `ART.md` §1 asks for cumulus with lit tops and grey bases.
-- **p10 58.6 against 41.0 — our darks are still not dark.** SSAO moved it
-  (64.9 → 58.6) exactly as `ART.md` §4 predicts, by removing ambient only
-  where geometry occludes. The rest is the shape of the fill itself: a uniform
-  ambient term buys rule 3's 0.30 floor at the price of the bottom of the
-  range, and a hemisphere (sky half cool, earth half warm) is what gets both.
-  Bevy's `AmbientLight` is uniform, so that is a second light or a shader.
+- **p10 71.0 against 41.0 — our darks are not dark, and props v1 made it
+  worse, by 13.** Reported rather than buried, because the cause is understood
+  and it is not the prop work being wrong. The old props were flat `base_color`
+  surfaces sitting well under their own materials' reflectance — a boulder with
+  a near-black facet was holding the tenth percentile down for the wrong
+  reason. They now carry photographs whose means are measured in band, so the
+  frame lost its accidental darks and what is left is the fill's true shape: a
+  uniform ambient term buys rule 3's 0.30 floor at the price of the bottom of
+  the range. A hemisphere (sky half cool, earth half warm) is what gets both.
+  Bevy's `AmbientLight` is uniform, so that is a second light or a shader —
+  and this is now the top-ranked visual gap rather than the second.
 
 ## 1 · The rule the path hangs on: Bevy draws, it does not decide
 
@@ -405,6 +414,32 @@ that work is lost; it moves to WGSL.
 Now that the frame has content, meter it. `ci/reference_bar.mjs` reads the six
 outdoor-daylight reference frames with the same code path that reads ours;
 port that discipline, not the numbers. Targets are `ART.md` §3's.
+
+### R9 · Bodies and the held item — **LANDED**
+
+Two halves of "evidence a person is playing", one first-person and one not.
+
+The viewmodel is `render/viewmodel.rs`: a textured tool with bob off distance
+travelled, sway as a frame-rate-independent lag on the look rate, and a swing
+triggered off `Feed` rather than off the input buttons — the swing worth
+drawing is the one that LANDED.
+
+Remote bodies are a CC0 skinned mannequin (`render/anim.rs`, 46 clips,
+`assets/models/MANIFEST.md`) instead of `Capsule3d`. Three things this settled:
+
+  · **The wire already had `yaw` and `pitch` and nothing read them.** Bodies
+    faced +Z whatever they were doing. A capsule hides that; a figure cannot.
+  · **The rig's origin is its FEET; the capsule's was its middle**, so the
+    inherited `+ 0.9` floated every player a metre off the ground.
+  · **Clips resolve by NAME through `Gltf::named_animations`, never by index.**
+    `GltfAssetLabel::Animation(i)` is positional, and a re-vendor that inserts
+    one clip would renumber every one after it — every body playing the wrong
+    animation with all gates green. That is the trap list's positional-payload
+    entry, and it is the one place in this path where it applies.
+
+Still owed, and all four are the same shape — the CLIENT is ready and the WIRE
+is not: no grounded bit, no crouch bit, and no per-remote action event, so
+crouch, jump, swim and attack clips sit in the file unreachable. `NOW.md` §0v.
 
 ### R6 · HUD and viewmodel — **LANDED**
 

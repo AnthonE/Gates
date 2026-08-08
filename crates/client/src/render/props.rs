@@ -125,12 +125,19 @@ pub struct PropAssets {
     /// sort themselves. `AlphaMode::Mask` also keeps them in the opaque pass,
     /// so they cast the shadows a forest floor is made of.
     needle: Handle<StandardMaterial>,
+    /// The conifer trunk's bark. Separate from `foliage`, which the bark half
+    /// used to wear for want of anything better — an untextured white surface
+    /// whose only colour was the mesh's own trunk band.
+    bark: Handle<StandardMaterial>,
     rock: Handle<StandardMaterial>,
     ore_stone: Handle<StandardMaterial>,
     ore_metal: Handle<StandardMaterial>,
     ore_sulfur: Handle<StandardMaterial>,
     wood: Handle<StandardMaterial>,
     metal: Handle<StandardMaterial>,
+    /// Coursed field stone, for the two AUTHORED structures. Distinct from
+    /// `rock`, which is a natural granite face — see `assets()`.
+    stone: Handle<StandardMaterial>,
 }
 
 /// A scatter slot the sim can retire under us — a gatherable node, keyed by
@@ -228,16 +235,81 @@ fn band_color(band: (u32, u32, f32, f32), y: f32) -> [f32; 4] {
     ]
 }
 
+/// A linear colour normalized to **mean-1 luminance** — the form `ART.md` §7
+/// requires of anything that modulates a photograph.
+///
+/// The prop meshes used to carry their colour in their vertices because there
+/// was no photograph to carry it instead. Now there is, and a vertex colour
+/// multiplies it: leaving `0x8e887c` in place would tint every granite face by
+/// a second grey and land the delivered albedo at the product of two means.
+/// Dividing the authored colour by its own luma keeps exactly the part that
+/// was doing useful work — the RELATIVE difference between a shelter's wall
+/// and its roof, or one facet and its neighbour — and hands the absolute
+/// level back to the map, which measured in band (`textures::PropMaps`).
+pub(super) fn tint1(hex: u32) -> [f32; 3] {
+    let c = linear(hex);
+    let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    if luma <= 1e-6 {
+        return [1.0, 1.0, 1.0];
+    }
+    [c[0] / luma, c[1] / luma, c[2] / luma]
+}
+
 /// Raw triangle soup, so every builder here can flat-write and let the
 /// normals be decided per triangle rather than per shared vertex.
-#[derive(Default)]
+///
+/// **It emits UVs now, and the projection is the point.** Not one procedural
+/// mesh in this client had `ATTRIBUTE_UV_0` — only the terrain did — so no
+/// prop could sample a photograph however many were shipped in `assets/`.
+/// The usual answer is a triplanar shader, and this tree has no WGSL in it;
+/// but a triplanar blend exists to hide the seam where a *shared* vertex
+/// belongs to faces on different projection planes, and a soup has no shared
+/// vertices. Every triangle here is three fresh vertices with a facet normal
+/// already, so the plane can be chosen per triangle on the CPU, for free, with
+/// no blend and no seam inside any face. Adjacent faces that pick different
+/// planes disagree at their shared EDGE — which is what a triplanar's
+/// `pow(w, 8)` is buying down — and on a noisy granite map at a facet
+/// boundary that discontinuity is invisible, because a facet boundary is
+/// already a shading discontinuity.
+///
+/// The cost is that the projection is object-space, so two instances of one
+/// mesh wear the texture identically. `ART.md` rule 7 wants that broken; the
+/// per-instance mean-1 tint is what breaks it, not the UV.
 pub(super) struct Soup {
     pos: Vec<[f32; 3]>,
     nrm: Vec<[f32; 3]>,
     col: Vec<[f32; 4]>,
+    uv: Vec<[f32; 2]>,
+    /// Texture tiles per metre of object space. A rock map over ~2 m reads at
+    /// the scale `ART.md` rule 1 asks for: near-field grain under 5 cm.
+    uv_scale: f32,
+}
+
+impl Default for Soup {
+    fn default() -> Self {
+        Self {
+            pos: Vec::new(),
+            nrm: Vec::new(),
+            col: Vec::new(),
+            uv: Vec::new(),
+            // One tile per metre unless a builder says otherwise. Never 0.0,
+            // which a derived `Default` would have given and which collapses
+            // every UV onto one texel — the "texture did not load" failure
+            // with a different cause.
+            uv_scale: 1.0,
+        }
+    }
 }
 
 impl Soup {
+    /// A soup whose box projection tiles `scale` times per metre.
+    pub(super) fn tiling(scale: f32) -> Self {
+        Self {
+            uv_scale: scale,
+            ..Self::default()
+        }
+    }
+
     /// One triangle with a facet normal, blended toward `volume_center` by
     /// `blend` — 0 is a flat plate, 1 is a soft volume. A needle mass does not
     /// have facets; it scatters light as a volume, and this is what stops
@@ -252,6 +324,11 @@ impl Soup {
         blend: f32,
     ) {
         let facet = (b - a).cross(c - a).normalize_or_zero();
+        // The projection plane: drop the facet normal's dominant axis. Chosen
+        // from the FACET and not from each vertex's blended normal, so all
+        // three vertices of a triangle land on one plane — a per-vertex choice
+        // would tear the triangle across two projections.
+        let ax = facet.abs();
         for v in [a, b, c] {
             let n = match volume_center {
                 Some(ctr) => {
@@ -260,9 +337,17 @@ impl Soup {
                 }
                 None => facet,
             };
+            let uv = if ax.x >= ax.y && ax.x >= ax.z {
+                [v.z, v.y]
+            } else if ax.y >= ax.z {
+                [v.x, v.z]
+            } else {
+                [v.x, v.y]
+            };
             self.pos.push([v.x, v.y, v.z]);
             self.nrm.push([n.x, n.y, n.z]);
             self.col.push(color(v));
+            self.uv.push([uv[0] * self.uv_scale, uv[1] * self.uv_scale]);
         }
     }
 
@@ -275,7 +360,20 @@ impl Soup {
         m.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.pos);
         m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.nrm);
         m.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.col);
+        m.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uv);
         m.insert_indices(Indices::U32((0..n).collect()));
+        // Tangents, for the same reason `terrain_mesh` generates them: Bevy's
+        // PBR shader builds its tangent frame from `ATTRIBUTE_TANGENT`, and
+        // without it a `normal_map_texture` is silently ignored and the
+        // surface stays flat. That is the failure that looks like "the
+        // texture did not load" and reports nothing at all.
+        //
+        // A soup can contain a degenerate triangle (two coincident corners on
+        // a box massing of zero extent), which mikktspace refuses. That is a
+        // malformed mesh rather than a missing capability, so it panics at
+        // boot rather than shipping a prop whose relief silently vanished.
+        m.generate_tangents()
+            .expect("prop soup has positions, normals and UVs");
         m
     }
 }
@@ -367,10 +465,22 @@ fn pine_mesh(variant: u32) -> Mesh {
 /// timber against weathered bark is the whole reason a stump reads as a stump
 /// and not as a rock.
 fn stump_mesh() -> Mesh {
-    let mut s = Soup::default();
+    // A stump is 0.34 m tall and 0.64 m across, so the bark map has to repeat
+    // several times over it to read as bark rather than as one blurred patch.
+    let mut s = Soup::tiling(1.6);
     let sides = 6usize;
     let (r_base, r_top, h) = (0.32f32, 0.26f32, 0.34f32);
-    let col = |v: Vec3| band_color(BAND_TRUNK, v.y + 0.17);
+    // Mean-1 over the photograph, per `tint1` — the band still ramps weathered
+    // to fresh up the stump, it just no longer sets the absolute colour.
+    let col = |v: Vec3| {
+        let c = band_color(BAND_TRUNK, v.y + 0.17);
+        let l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        if l <= 1e-6 {
+            [1.0, 1.0, 1.0, 1.0]
+        } else {
+            [c[0] / l, c[1] / l, c[2] / l, 1.0]
+        }
+    };
     for i in 0..sides {
         let a0 = i as f32 / sides as f32 * std::f32::consts::TAU;
         let a1 = (i + 1) as f32 / sides as f32 * std::f32::consts::TAU;
@@ -381,8 +491,10 @@ fn stump_mesh() -> Mesh {
         s.tri(b0, t0, b1, col, None, 0.0);
         s.tri(b1, t0, t1, col, None, 0.0);
     }
-    // The cut face.
-    let cut = linear(0xb59a6e);
+    // The cut face — fresh timber against weathered bark, and still the reason
+    // a stump reads as a stump. Mean-1 like the rest, so "lighter than the
+    // bark" survives while the map sets the level.
+    let cut = tint1(0xb59a6e);
     let cap = move |_: Vec3| [cut[0], cut[1], cut[2], 1.0];
     let centre = Vec3::new(0.0, h * 0.5, 0.0);
     for i in 0..sides {
@@ -395,10 +507,102 @@ fn stump_mesh() -> Mesh {
     s.mesh()
 }
 
-/// A faceted blob on an icosahedron's vertices, jittered per seed. Stands in
-/// for every rock, node and bush — the shapes that were `DodecahedronGeometry`
-/// in the browser.
-fn blob_mesh(radius: f32, jitter: f32, seed: u32, hex: u32) -> Mesh {
+/// Smooth 3D value noise, trilinear over an integer lattice.
+///
+/// **It has to be a pure function of the direction vector or the mesh cracks.**
+/// The blob displaces shared subdivision vertices along their own direction;
+/// two triangles meeting at an edge compute that displacement independently,
+/// so they agree only if the displacement depends on nothing but the position
+/// they both hold. A per-triangle or per-index hash — which is what the
+/// unsubdivided blob used, legitimately, because it had no shared vertices —
+/// would open a gap along every edge here.
+///
+/// Smoothstep on the lattice fraction rather than a raw lerp: a linear
+/// interpolation is C0, and a rock lit by a 35° sun shows every C0 crease as a
+/// shading band running along the lattice.
+fn vnoise3(p: Vec3, seed: u32) -> f32 {
+    let i = p.floor();
+    let f = p - i;
+    // 3f² − 2f³, the Hermite smoothstep.
+    let w = f * f * (Vec3::splat(3.0) - 2.0 * f);
+    let (xi, yi, zi) = (i.x as i32, i.y as i32, i.z as i32);
+    let corner = |dx: i32, dy: i32, dz: i32| {
+        // Three coordinates into one hash input. The lattice is small (a unit
+        // sphere times a handful of octaves), so a wrapping mix is plenty.
+        let k = (xi + dx).wrapping_mul(73_856_093)
+            ^ (yi + dy).wrapping_mul(19_349_663)
+            ^ (zi + dz).wrapping_mul(83_492_791);
+        hash01(seed, k as u32)
+    };
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let x00 = lerp(corner(0, 0, 0), corner(1, 0, 0), w.x);
+    let x10 = lerp(corner(0, 1, 0), corner(1, 1, 0), w.x);
+    let x01 = lerp(corner(0, 0, 1), corner(1, 0, 1), w.x);
+    let x11 = lerp(corner(0, 1, 1), corner(1, 1, 1), w.x);
+    lerp(lerp(x00, x10, w.y), lerp(x01, x11, w.y), w.z)
+}
+
+/// Three octaves of `vnoise3`, 0..1 — the radius modulation that turns a
+/// sphere into a rock. Frequencies are deliberately non-harmonic so the
+/// octaves do not line up into a visible lattice.
+///
+/// **The first cut of this was too high-frequency and the capture said so.**
+/// It ran 1.7 / 3.9 / 8.3, which is three octaves of *surface* detail, and
+/// three octaves of surface detail average out to a sphere: the boulder came
+/// back an egg. The silhouette is owned by the LOWEST frequency — a rock has
+/// two or three big lobes, not fifty small ones — so the base octave drops
+/// under 1 cycle per hemisphere and takes most of the amplitude. The high
+/// octave is nearly gone because the normal map is better at that scale than
+/// geometry is, which is the whole reason to spend the triangles on shape.
+fn lumps(dir: Vec3, seed: u32) -> f32 {
+    let a = vnoise3(dir * 0.95, seed);
+    let b = vnoise3(dir * 2.30, seed ^ 0x9e37_79b9);
+    let c = vnoise3(dir * 5.70, seed ^ 0x85eb_ca6b);
+    (a * 0.66 + b * 0.25 + c * 0.09).clamp(0.0, 1.0)
+}
+
+/// A per-mesh axis squash, all three factors ≤ 1.
+///
+/// A displaced sphere is still equidimensional, and almost no real rock is —
+/// a boulder is wider than it is tall because that is how it came to rest.
+/// **Every factor stays at or under 1 on purpose**: the old blob's widest
+/// possible vertex was exactly `radius`, `sim_core::terrain` places these
+/// against clearances derived from nominal sizes, and a renderer that grows a
+/// prop past the extent the sim reasoned about is the renderer deciding
+/// something. Shrinking is always safe; growing would need a spoken number.
+fn squash(seed: u32) -> Vec3 {
+    Vec3::new(
+        0.88 + 0.12 * hash01(seed ^ 0x6d2b_79f5, 1),
+        0.62 + 0.22 * hash01(seed ^ 0x6d2b_79f5, 2),
+        0.88 + 0.12 * hash01(seed ^ 0x6d2b_79f5, 3),
+    )
+}
+
+/// A rock, built by subdividing an icosahedron and displacing it.
+///
+/// **What this replaced, and why it was the worst thing in the frame.** The
+/// first version was the bare icosahedron — twelve vertices, twenty flat
+/// triangles, no subdivision — with a per-facet value jitter of ±0.36 to keep
+/// `ART.md` rule 1 off its back. A capture from the `near` vantage shows the
+/// result plainly: the boulder is the closest object to the camera and it
+/// reads as a two-tone d20, eight enormous flat facets, no relief, no texture.
+/// Rule 6 says silhouette before surface and this was failing both.
+///
+/// Three things changed and they are not independent:
+///
+///   · **Subdivision.** `sub` levels of midpoint split, deduped on the edge so
+///     the shared vertices stay shared. 20 · 4^sub triangles.
+///   · **Displacement**, by `lumps`, which is continuous over the sphere (see
+///     `vnoise3`) so subdivision buys relief instead of a smoother ball.
+///   · **The facet jitter comes down hard**, ±0.36 → ±0.06. It existed to fake
+///     surface variation onto twenty flat faces; the photograph supplies that
+///     now, and leaving the old amplitude on would read as the patchwork it
+///     always was, only with a texture behind it.
+///
+/// `textured` picks which of two jobs the vertex colour is doing. For a rock
+/// it is a mean-1 field over a photograph (`tint1`); for the bush — which
+/// shares this builder and must stay green — it is still the colour itself.
+fn blob_mesh(radius: f32, jitter: f32, seed: u32, hex: u32, sub: usize, textured: bool) -> Mesh {
     // Icosahedron vertices.
     let t = (1.0 + 5.0f32.sqrt()) * 0.5;
     let raw = [
@@ -437,23 +641,65 @@ fn blob_mesh(radius: f32, jitter: f32, seed: u32, hex: u32) -> Mesh {
         [8, 6, 7],
         [9, 8, 1],
     ];
-    let verts: Vec<Vec3> = raw
+    // Subdivide on the UNIT sphere, deduping every midpoint on its edge so
+    // the two triangles sharing it get one vertex and therefore one
+    // displacement. Displacing after the split (rather than splitting a
+    // displaced hull) is what makes the noise the shape rather than a
+    // smoothing of the icosahedron's corners.
+    let mut dirs: Vec<Vec3> = raw
         .iter()
-        .enumerate()
-        .map(|(i, v)| {
-            let d = Vec3::from_array(*v).normalize();
-            d * radius * (1.0 - jitter * hash01(seed, i as u32))
-        })
+        .map(|v| Vec3::from_array(*v).normalize())
+        .collect();
+    let mut faces: Vec<[usize; 3]> = FACES.to_vec();
+    for _ in 0..sub {
+        let mut mid: HashMap<(usize, usize), usize> = HashMap::default();
+        let mut next = Vec::with_capacity(faces.len() * 4);
+        for f in &faces {
+            let mut m = [0usize; 3];
+            for e in 0..3 {
+                let (a, b) = (f[e], f[(e + 1) % 3]);
+                let key = if a < b { (a, b) } else { (b, a) };
+                m[e] = *mid.entry(key).or_insert_with(|| {
+                    dirs.push(((dirs[a] + dirs[b]) * 0.5).normalize());
+                    dirs.len() - 1
+                });
+            }
+            next.push([f[0], m[0], m[2]]);
+            next.push([m[0], f[1], m[1]]);
+            next.push([m[2], m[1], f[2]]);
+            next.push([m[0], m[1], m[2]]);
+        }
+        faces = next;
+    }
+
+    let axis = squash(seed);
+    let verts: Vec<Vec3> = dirs
+        .iter()
+        .map(|d| *d * radius * (1.0 - jitter * lumps(*d, seed)) * axis)
         .collect();
 
-    let mut s = Soup::default();
-    let base = linear(hex);
-    for (fi, f) in FACES.iter().enumerate() {
-        // Per-facet value break-up: a rock whose twenty faces share one value
-        // is rule 1's flat surface with extra steps.
-        let v = 0.82 + 0.36 * hash01(seed ^ 0x2c1b_3c6d, fi as u32);
+    // Tiles per metre. A granite map repeating every ~1.5 m puts its grain
+    // under 5 cm at this radius, which is rule 1's near-field scale.
+    let mut s = Soup::tiling(0.68);
+    let base = if textured { tint1(hex) } else { linear(hex) };
+    for (fi, f) in faces.iter().enumerate() {
+        // Still a per-facet break-up, and still for rule 1 — but a sixth of
+        // the amplitude, because the photograph is doing this job now and two
+        // sources of the same variation is the patchwork the old rock was.
+        let v = 0.97 + 0.06 * hash01(seed ^ 0x2c1b_3c6d, fi as u32);
         let col = move |_: Vec3| [base[0] * v, base[1] * v, base[2] * v, 1.0];
-        s.tri(verts[f[0]], verts[f[1]], verts[f[2]], col, None, 0.0);
+        // Normals blended toward the volume rather than left flat. At twenty
+        // faces a facet normal WAS the rock's character; at 1,280 it is just
+        // stair-stepping, and the relief that reads is the displacement's and
+        // the normal map's.
+        s.tri(
+            verts[f[0]],
+            verts[f[1]],
+            verts[f[2]],
+            col,
+            Some(Vec3::ZERO),
+            0.55,
+        );
     }
     s.mesh()
 }
@@ -461,11 +707,17 @@ fn blob_mesh(radius: f32, jitter: f32, seed: u32, hex: u32) -> Mesh {
 /// A box massing, for the two authored structures. Each entry is
 /// `(centre, half-extent, hex)`.
 fn boxes_mesh(parts: &[([f32; 3], [f32; 3], u32)]) -> Mesh {
-    let mut s = Soup::default();
+    // Half a tile per metre — planks and field stone read at a coarser scale
+    // than granite grain, and a box massing has flat metre-scale faces where
+    // a tight repeat would be visible tiling (`ART.md` rule 7).
+    let mut s = Soup::tiling(0.5);
     for (c, h, hex) in parts {
         let c = Vec3::from_array(*c);
         let h = Vec3::from_array(*h);
-        let base = linear(*hex);
+        // Mean-1, not the colour: every box massing wears a photograph now, so
+        // the authored hex keeps only the RELATIVE difference between a wall
+        // and its roof and hands the level to the map (`tint1`).
+        let base = tint1(*hex);
         let corner = |sx: f32, sy: f32, sz: f32| c + Vec3::new(h.x * sx, h.y * sy, h.z * sz);
         // Six faces, each two triangles, each face at its own value so the
         // massing reads as a solid rather than a silhouette.
@@ -545,10 +797,33 @@ pub fn assets(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
+    maps: &super::textures::PropMaps,
 ) -> PropAssets {
     let surface = |rough: f32, refl: f32, materials: &mut Assets<StandardMaterial>| {
         materials.add(StandardMaterial {
             base_color: Color::WHITE,
+            perceptual_roughness: rough,
+            reflectance: refl,
+            ..default()
+        })
+    };
+    // The same, wearing a photograph. `base_color` stays WHITE and no gain is
+    // applied: all five sources measured inside `ALBEDO_LUMA_BAND` off the raw
+    // file, so the map ships its colour whole and the mesh's vertex colour is
+    // a mean-1 field over it (`textures::PropMaps` has the table).
+    let photo = |m: &super::textures::MapSet,
+                 rough: f32,
+                 refl: f32,
+                 materials: &mut Assets<StandardMaterial>| {
+        materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(m.albedo.clone()),
+            normal_map_texture: Some(m.normal.clone()),
+            // The roughness maps stay unwired for the reason `terrain_mesh`
+            // states: `metallic_roughness_texture` is a glTF-packed ORM slot
+            // whose B channel is METALLIC, and these sources are greyscale
+            // roughness jpgs, so binding one here would make every prop a
+            // half-metal. It needs an ORM packing step, not a slot assignment.
             perceptual_roughness: rough,
             reflectance: refl,
             ..default()
@@ -565,10 +840,26 @@ pub fn assets(
     PropAssets {
         pines: conifers.iter().map(|(b, _)| b.clone()).collect(),
         needles: conifers.iter().map(|(_, n)| n.clone()).collect(),
-        blob: meshes.add(blob_mesh(1.0, 0.28, 0x51ed_270b, 0x9c968a)),
-        boulder: meshes.add(blob_mesh(1.5, 0.32, 0x1b87_3593, 0x8e887c)),
+        // Subdivision levels are picked per role against how close a player
+        // gets and how many stand in a ring, not uniformly. 20·4^sub
+        // triangles: the boulder is 1,280, the nodes 320, the bush 320.
+        // `RENDER.md` §6's 1.5 M ceiling is browser-era and the conifer is
+        // what actually presses it — a full scatter ring of rocks at 1,280 is
+        // tens of thousands, which is not the budget's problem.
+        // Jitter is up from 0.28/0.32 with the frequency drop above: at the
+        // old amplitude a low-frequency lobe is a bulge, not a shape.
+        blob: meshes.add(blob_mesh(1.0, 0.46, 0x51ed_270b, 0x9c968a, 2, true)),
+        boulder: meshes.add(blob_mesh(1.5, 0.52, 0x1b87_3593, 0x8e887c, 3, true)),
         stump: meshes.add(stump_mesh()),
-        bush: meshes.add(blob_mesh(0.7, 0.42, 0x2545_f491, 0x2c5f2e)),
+        // The bush keeps its colour in its vertices: it is the one blob that
+        // wears the untextured `foliage` material, and there is no leaf map in
+        // `assets/` to give it (`tree::needle_image` is generated, and it is a
+        // needle sprig rather than broadleaf).
+        // One subdivision, not two, and the higher jitter that goes with it: a
+        // bush wants a ragged outline (`ART.md` rule 6) and 320 smooth
+        // triangles gave it a green dome. 80 is enough to stop reading as a
+        // die and few enough that the lobes stay visible.
+        bush: meshes.add(blob_mesh(0.7, 0.58, 0x2545_f491, 0x2c5f2e, 1, false)),
         barrel: meshes.add(Cylinder::new(0.45, 0.95).mesh().resolution(10).build()),
         crate_box: meshes.add(boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)])),
         cache_box: meshes.add(boxes_mesh(&[([0., 0., 0.], [0.45, 0.275, 0.35], 0x6a5940)])),
@@ -615,12 +906,41 @@ pub fn assets(
             double_sided: true,
             ..default()
         }),
-        rock: surface(0.88, 0.20, materials),
-        ore_stone: surface(0.80, 0.24, materials),
-        ore_metal: surface(0.55, 0.42, materials),
-        ore_sulfur: surface(0.78, 0.22, materials),
-        wood: surface(0.85, 0.14, materials),
-        metal: surface(0.50, 0.45, materials),
+        // ── The photographs. Every one of these was a flat `base_color` and
+        // a roughness scalar until now, which is `ART.md` rule 1 broken on
+        // every non-ground surface in the frame.
+        //
+        // The three ore nodes share the GRANITE map and differ by roughness
+        // and reflectance rather than by hue: they are one rock with a
+        // different mineral in it, and a node's identity is the glint its
+        // reflectance gives it. A per-ore albedo is a real want and a sourcing
+        // question rather than a code one — there is no sulfur map here.
+        //
+        // **`stone` is deliberately not one of them, and the capture is why.**
+        // `Bricks089` is photoscanned stacked FIELD STONE — mortar joints and
+        // courses — and the first cut put it on the stone node because the
+        // names matched. A 2 m sphere wrapped in coursed masonry reads as a
+        // buried castle wall, not as an outcrop: it was the most conspicuous
+        // thing in the frame and it was conspicuous because the map is good.
+        // Masonry belongs on something a player BUILT (`structures.rs`), and
+        // a natural rock face is granite whatever the ore in it.
+        rock: photo(&maps.rock, 0.88, 0.20, materials),
+        ore_stone: photo(&maps.rock, 0.80, 0.24, materials),
+        ore_metal: photo(&maps.metal, 0.55, 0.42, materials),
+        ore_sulfur: photo(&maps.rock, 0.78, 0.22, materials),
+        wood: photo(&maps.wood, 0.85, 0.14, materials),
+        metal: photo(&maps.metal, 0.50, 0.45, materials),
+        // The haven pad and the waystation ARE built, so they get the
+        // masonry — this is the identity that map was sourced for
+        // (`MANIFEST.md`: "the identity ART asks for, not brick").
+        stone: photo(&maps.stone, 0.82, 0.26, materials),
+        // The conifer's trunk. `ART.md` §5 asks for fissures running UP the
+        // trunk, and this is the one prop that needed no UV work at all to get
+        // them: `bevy_procedural_tree` emits `ATTRIBUTE_UV_0` cylindrically —
+        // u around the ring, v along the branch — so a bark map lands with its
+        // grain already pointing the right way. Before this the bark half of
+        // every tree wore `foliage`, an untextured white surface.
+        bark: photo(&maps.bark, 0.92, 0.08, materials),
     }
 }
 
@@ -633,10 +953,11 @@ pub fn stream(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    maps: Res<super::textures::PropMaps>,
     world: Res<WorldId>,
     eye: Res<Eye>,
 ) {
-    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials, &mut images));
+    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials, &mut images, &maps));
 
     let cx = (eye.pos.x / CHUNK_M).floor() as i32;
     let cz = (eye.pos.z / CHUNK_M).floor() as i32;
@@ -704,7 +1025,7 @@ fn spawn_slot(
     let (mesh, material, lift) = match slot.occupant {
         Occupant::Tree => {
             variant = (slot.yaw as usize) % a.pines.len();
-            (a.pines[variant].clone(), a.foliage.clone(), 0.0)
+            (a.pines[variant].clone(), a.bark.clone(), 0.0)
         }
         Occupant::StoneNode => (a.blob.clone(), a.ore_stone.clone(), 0.5),
         Occupant::MetalNode => (a.blob.clone(), a.ore_metal.clone(), 0.5),
@@ -714,7 +1035,7 @@ fn spawn_slot(
         Occupant::BarrelSlot => (a.barrel.clone(), a.metal.clone(), 0.5),
         Occupant::CrateSlot => (a.crate_box.clone(), a.wood.clone(), 0.4),
         Occupant::CacheSlot => (a.cache_box.clone(), a.wood.clone(), 0.275),
-        Occupant::HavenShelter => (a.shelter.clone(), a.rock.clone(), 0.0),
+        Occupant::HavenShelter => (a.shelter.clone(), a.stone.clone(), 0.0),
         Occupant::WaystationCanopy => (a.canopy.clone(), a.wood.clone(), 0.0),
         Occupant::None => return,
     };
@@ -802,6 +1123,7 @@ pub fn harvest(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    maps: Res<super::textures::PropMaps>,
     q: Query<(
         &mut Fellable,
         &mut Mesh3d,
@@ -813,7 +1135,7 @@ pub fn harvest(
     if q.is_empty() {
         return;
     }
-    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials, &mut images));
+    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials, &mut images, &maps));
     // The session is read through a predicate so the swap below is testable
     // without a socket. `HarvestedSet` is the authority; this is the only
     // place it is consulted.
@@ -868,7 +1190,7 @@ pub fn apply_fell(
             // "two paths derive the variant differently" is the exact bug this
             // function's own gate was written to catch.
             mesh.0 = a.pine_mesh(f.variant).clone();
-            mat.0 = a.foliage.clone();
+            mat.0 = a.bark.clone();
             t.translation.y = f.base_y;
         }
     }
@@ -887,6 +1209,13 @@ impl PropAssets {
     }
     pub fn wood_material(&self) -> &Handle<StandardMaterial> {
         &self.wood
+    }
+    /// The standing tree's trunk material. `foliage_material` used to be this
+    /// and no longer is: the bark half wears a photograph now, so the fell
+    /// gate's "a restored tree is a tree again" assertion compares against
+    /// this handle.
+    pub fn bark_material(&self) -> &Handle<StandardMaterial> {
+        &self.bark
     }
     pub fn foliage_material(&self) -> &Handle<StandardMaterial> {
         &self.foliage

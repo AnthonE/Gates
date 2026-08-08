@@ -254,7 +254,14 @@ fn fit_to_bounds(bark: &mut Mesh, needles: &mut Mesh) {
 }
 
 /// Paint a height ramp between two sRGB colours onto a mesh's vertices.
-fn band(m: &mut Mesh, lo: u32, hi: u32, y0: f32, y1: f32) {
+/// Ramp a mesh's vertex colours `lo`→`hi` over `y0..y1`.
+///
+/// `mean1` normalizes each result to unit luminance, which is what a surface
+/// that now wears a PHOTOGRAPH needs: the bark map carries the colour and this
+/// band keeps only the light-to-dark ramp up the trunk, per `ART.md` §7. The
+/// needles pass `false` — their map is a generated white alpha mask, so their
+/// vertex colour is still the only colour they have.
+fn band(m: &mut Mesh, lo: u32, hi: u32, y0: f32, y1: f32, mean1: bool) {
     let Some(p) = positions(m) else { return };
     let (l, g) = (linear(lo), linear(hi));
     let span = (y1 - y0).max(f32::EPSILON);
@@ -262,12 +269,20 @@ fn band(m: &mut Mesh, lo: u32, hi: u32, y0: f32, y1: f32) {
         .iter()
         .map(|v| {
             let t = ((v[1] - y0) / span).clamp(0.0, 1.0);
-            [
+            let c = [
                 l[0] + (g[0] - l[0]) * t,
                 l[1] + (g[1] - l[1]) * t,
                 l[2] + (g[2] - l[2]) * t,
-                1.0,
-            ]
+            ];
+            if !mean1 {
+                return [c[0], c[1], c[2], 1.0];
+            }
+            let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+            if luma <= 1e-6 {
+                [1.0, 1.0, 1.0, 1.0]
+            } else {
+                [c[0] / luma, c[1] / luma, c[2] / luma, 1.0]
+            }
         })
         .collect();
     m.insert_attribute(Mesh::ATTRIBUTE_COLOR, cols);
@@ -322,8 +337,15 @@ pub fn conifer(variant: usize) -> (Mesh, Mesh) {
     };
 
     fit_to_bounds(&mut bark, &mut needles);
-    band(&mut bark, BARK_LO, BARK_HI, 0.0, PINE_H * 0.6);
-    band(&mut needles, NEEDLE_LO, NEEDLE_HI, PINE_H * 0.15, PINE_H);
+    band(&mut bark, BARK_LO, BARK_HI, 0.0, PINE_H * 0.6, true);
+    band(
+        &mut needles,
+        NEEDLE_LO,
+        NEEDLE_HI,
+        PINE_H * 0.15,
+        PINE_H,
+        false,
+    );
     blend_canopy_normals(&mut needles);
     (bark, needles)
 }

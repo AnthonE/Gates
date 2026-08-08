@@ -57,6 +57,14 @@ name = "tree"
 path = "tests/tree.rs"
 required-features = ["render"]
 
+# The build ghost's doorway against the sim's own `doorway_solid_at`. Pure
+# arithmetic and no GPU, but it imports `render::structures` for the shared
+# geometry constants, so it carries the feature and runs in the renderer tier.
+[[test]]
+name = "ghost"
+path = "tests/ghost.rs"
+required-features = ["render"]
+
 [[test]]
 name = "fell"
 path = "tests/fell.rs"

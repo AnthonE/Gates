@@ -44,21 +44,34 @@ source for the three scales and for how the terms combine; `ART.md` §4 carries
 the application rules. The files are here ahead of the shader work that consumes
 them, so **`*_ao.jpg` is currently fetched but unread** — see `NOW.md` item 3.
 
+**Licence rail, since 2026-08-07: CC0 preferred, CC-BY accepted with a `NOTICE`
+entry, NC and SA refused** (`DECISIONS.md`) — the last because the game is sold,
+not for any open-source reason. Everything currently here is CC0 and needs no
+notice.
+
 `PH` = Poly Haven, `aCG` = ambientCG. Both CC0. `ao` marks a role that also
-ships an occlusion map. **bundled** marks the four the client actually loads.
+ships an occlusion map. **bundled** marks a role the client actually loads —
+**eight of nine now, where it was four.** `bark`, `wood`, `stone` and `metal`
+were fetched, manifested and then read by nothing for four days: a
+`StandardMaterial` has one base-colour slot and **no procedural mesh in the
+client carried a UV**, so no prop could sample a map however many shipped. The
+UV half is solved on the CPU (`props::Soup` box-projects per triangle, which a
+triangle soup makes free), and those four are bound now. `gravel` is the one
+role still unbundled — it is a slope/scree identity for the GROUND, which is
+still single-map and still waiting on the splat material.
 
 | role | source | ao | bundled | note |
 |---|---|---|---|---|
-| `bark` | PH [bark_brown_02](https://polyhaven.com/a/bark_brown_02) | | | vertical fissures + moss — the reference asks for exactly this |
+| `bark` | PH [bark_brown_02](https://polyhaven.com/a/bark_brown_02) | | ✓ | vertical fissures + moss — the reference asks for exactly this |
 | `grass` | PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01) | ✓ | ✓ | turf with dirt wear — matches ART §3 lit-grass band once tinted. Its AO is the strongest of the set (mean 0.477, sd 0.162) and it owns ~99% of the near ring. |
 | `gravel` | PH [bicolour_gravel](https://polyhaven.com/a/bicolour_gravel) | ✓ | | fine scree; slope/scree identity and path scuff |
 | `litter` | PH [brown_mud_leaves_01](https://polyhaven.com/a/brown_mud_leaves_01) | ✓ | ✓ | forest floor, red-leaning; forest identity |
-| `metal` | aCG [CorrugatedSteel009](https://ambientcg.com/view?id=CorrugatedSteel009) | ✓ | | replaced `green_metal_rust` 2026-08-04. Photoscanned ribbed steel: albedo sd 0.0090 → **0.0709**, i.e. the old one was a flat swatch. Grey industrial rather than rusty — ambientCG's rusty corrugated sheets are all `PBRProcedural` and their albedos are flat paint with screw dots, the very defect being replaced, so the rust has to come from the wear layer. |
+| `metal` | aCG [CorrugatedSteel009](https://ambientcg.com/view?id=CorrugatedSteel009) | ✓ | ✓ | replaced `green_metal_rust` 2026-08-04. Photoscanned ribbed steel: albedo sd 0.0090 → **0.0709**, i.e. the old one was a flat swatch. Grey industrial rather than rusty — ambientCG's rusty corrugated sheets are all `PBRProcedural` and their albedos are flat paint with screw dots, the very defect being replaced, so the rust has to come from the wear layer. |
 | `rock` | aCG [Rock023](https://ambientcg.com/view?id=Rock023) | ✓ | ✓ | replaced `cliff_side` 2026-08-04 — see below. |
 | `sand` | PH [coast_sand_01](https://polyhaven.com/a/coast_sand_01) | ✓ | ✓ | fine coastal sand, close to ART §3's 42°/10% sample |
-| `stone` | aCG [Bricks089](https://ambientcg.com/view?id=Bricks089) | ✓ | | replaced `castle_brick_01` 2026-08-04. Photoscanned medieval stacked field stone — the identity ART asks for, not brick. sd 0.0947 → **0.1253**, anisotropy 1.34 → **1.09** (less row-banding). |
+| `stone` | aCG [Bricks089](https://ambientcg.com/view?id=Bricks089) | ✓ | ✓ | replaced `castle_brick_01` 2026-08-04. Photoscanned medieval stacked field stone — the identity ART asks for, not brick. sd 0.0947 → **0.1253**, anisotropy 1.34 → **1.09** (less row-banding). |
 | `ground_detail` | **derived** from `grass` (PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01)) | | ✓ | Rec.601 luma of the source's LINEAR albedo, re-encoded to sRGB greyscale, 1024 q88, 342 KB. The ground's near-field grain: `ART.md` §7 asks a modifier that sets a colour to multiply the surface's own **mean-1 luminance field**, and a luminance field has gain span **1.000 by construction** where the four colour sources measure 2.454 / 2.073 / 3.586 / 1.054 (grass / sand / litter / rock) against a ×1 ceiling. Linear luma mean 0.2464, sd 0.0762. Derived, never edited: the source stays pristine and swappable, and regenerating is a luma convert. |
-| `wood` | PH [brown_planks_03](https://polyhaven.com/a/brown_planks_03) | | | weathered grey planks; building tier 1 |
+| `wood` | PH [brown_planks_03](https://polyhaven.com/a/brown_planks_03) | | ✓ | weathered grey planks; building tier 1 |
 
 **The three marginal picks are gone, and `rock` is why the others went with it.**
 `cliff_side` was layered sandstone standing in for granite. Its gain span was
@@ -87,6 +100,33 @@ you buy it back. Rock022 scored an identical span of 1.03 and was rejected on
 it: 1.58, the same stratification defect as the incumbent.
 
 When a better source is found, drop it in with the same name.
+
+**Measured for the prop bind, 2026-08-07** — linear means, Rec.709 luma,
+against `ALBEDO_LUMA_BAND = [0.05, 0.55]`. A prop has one identity, so the map
+IS its colour and no mean-placing gain is applied; the gain is 1, so §7's
+"deviation may not be stretched more than ×1" is satisfied by construction
+rather than by a correction. All five clear the band off the raw file:
+
+| role | linear mean rgb | luma | albedo sd | gain span |
+|---|---|---|---|---|
+| `rock` | 0.273 0.269 0.259 | 0.269 | 0.0933 | 1.054 |
+| `bark` | 0.128 0.105 0.064 | 0.107 | 0.0676 | 2.000 |
+| `wood` | 0.161 0.139 0.112 | 0.142 | 0.0661 | 1.442 |
+| `stone` | 0.237 0.202 0.106 | 0.203 | 0.1139 | 2.223 |
+| `metal` | 0.230 0.228 0.228 | 0.228 | 0.0689 | 1.009 |
+
+The span column is recorded but **not binding for these four**, because nothing
+divides by their means — it is what the correction WOULD have cost had one been
+needed, and it is why the ground (which does need one) can only take `rock`.
+
+**One pick was wrong on identity rather than on measurement, which is a
+failure mode §7 does not cover.** `stone` scored well and was bound to the
+stone ORE NODE because the names matched; `Bricks089` is coursed field stone
+with mortar joints, so a 2 m boulder wore masonry and read as a buried castle
+wall. It is the right map for something a player BUILT and the wrong one for an
+outcrop. Ore nodes take `rock` — a node is granite whatever the mineral in it.
+**Sourcing note:** there is no sulfur or ore-specific albedo here, so the three
+node types differ by roughness and reflectance only.
 
 **Not here yet:** meshes. Trees are still four primitives
 (`terrain.js`, `pineGeometry`); the vegetation upgrade is its own NOW item and

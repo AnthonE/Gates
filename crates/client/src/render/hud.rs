@@ -19,7 +19,6 @@
 use bevy::prelude::*;
 use sim_core::limits::HOTBAR_SLOTS;
 
-use super::rig::EyeCam;
 use super::verbs::Aimed;
 use super::Net;
 
@@ -172,12 +171,7 @@ pub struct HitMark;
 #[derive(Component)]
 pub struct Compass;
 
-pub fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    cam: Query<Entity, With<EyeCam>>,
-) {
+pub fn setup(mut commands: Commands) {
     // The hotbar: six cells, bottom centre.
     commands
         .spawn((
@@ -416,50 +410,20 @@ pub fn setup(
         Pickable::IGNORE,
     ));
 
-    // The viewmodel: a held item, lower right, parented to the camera so it
-    // rides the view. Not an animation and not a weapon yet — the point of
-    // §8's bullet is that the frame contains evidence a person is playing.
-    if let Ok(cam) = cam.single() {
-        let handle = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.30, 0.22, 0.14),
-            perceptual_roughness: 0.85,
-            ..default()
-        });
-        let head = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.42, 0.43, 0.45),
-            perceptual_roughness: 0.42,
-            metallic: 0.65,
-            ..default()
-        });
-        commands.entity(cam).with_children(|c| {
-            // Held low and to the right, angled across the frame. The first
-            // cut put it near centre at arm's length and it read as a prop
-            // floating in the world rather than as something carried — the
-            // reference frames all show the item entering from the lower
-            // right corner and leaving frame at the bottom.
-            let hold = Transform::from_xyz(0.34, -0.30, -0.46).with_rotation(Quat::from_euler(
-                EulerRot::YXZ,
-                -0.42,
-                0.42,
-                0.10,
-            ));
-            c.spawn((
-                Mesh3d(meshes.add(Cuboid::new(0.038, 0.038, 0.52))),
-                MeshMaterial3d(handle),
-                hold,
-            ));
-            c.spawn((
-                Mesh3d(meshes.add(Cuboid::new(0.16, 0.045, 0.075))),
-                MeshMaterial3d(head),
-                hold * Transform::from_xyz(0.0, 0.02, -0.26),
-            ));
-        });
-    }
+    // The viewmodel used to be spawned here, as two untextured `Cuboid`s
+    // welded rigidly to the camera. It is `render::viewmodel` now — a textured
+    // tool plus bob, sway and swing — because it stopped being a static prop
+    // and became a thing with state, and `hud.rs` is the HUD.
 }
 
 /// Redraw from the core. Cheap enough per frame: six background colours and
 /// one string.
 #[allow(clippy::type_complexity)]
+// Eight, and the eighth arrived with the aiming refusal: the vitals stack grew
+// three queries of its own on `main` in the same window. Each is a distinct
+// source this frame reads, which is the same justification `ghost::track`
+// carries for its own count.
+#[allow(clippy::too_many_arguments)]
 pub fn update(
     net: NonSend<Net>,
     mut cells: Query<(&Cell, &mut BorderColor, &mut BackgroundColor)>,
@@ -469,6 +433,7 @@ pub fn update(
     mut nums: Query<(&VitalNum, &mut Text), Without<Plan>>,
     // `Option`, because a capture run does not register the menus at all.
     ui: Option<Res<super::panels::Ui>>,
+    ghost: Option<Res<super::ghost::Ghost>>,
 ) {
     let core = &net.session.core;
 
@@ -479,12 +444,38 @@ pub fn update(
         // Named only when the content actually has that piece — the wheel
         // draws a dead segment for a pair the shard did not bake, and the
         // HUD must not contradict it.
+        // **The refusal is shown while AIMING, not after the press.** The
+        // ghost has always known why it is red — `place::verdict` returns the
+        // same sentence the server's refusal would carry — and until now that
+        // string was only spoken by `ghost::place_key`, i.e. after the player
+        // had already spent the click. A red box with no reason teaches
+        // nothing; "TOO FAR" or "NO ROOM" beside it teaches the rule. Level is
+        // here for the same reason: `R`/`F` step it and nothing showed it, so
+        // a player building on level 2 by accident had no way to notice.
         let out = match row_for(&core.piece_defs, shape, material) {
-            Some(_) => format!(
-                "BUILD  {} {}   (hold right)",
-                material_label(material),
-                shape_label(shape)
-            ),
+            Some(_) => {
+                let why = match ghost.as_ref().map(|g| g.verdict) {
+                    Some(crate::ui::place::Verdict::No(w)) if !w.is_empty() => w,
+                    _ => "",
+                };
+                let level = ghost.as_ref().map(|g| g.level).unwrap_or(0);
+                if why.is_empty() {
+                    format!(
+                        "BUILD  {} {}  L{}   (hold right)",
+                        material_label(material),
+                        shape_label(shape),
+                        level
+                    )
+                } else {
+                    format!(
+                        "BUILD  {} {}  L{}  — {}",
+                        material_label(material),
+                        shape_label(shape),
+                        level,
+                        why.to_uppercase()
+                    )
+                }
+            }
             None => "BUILD  -   (hold right)".to_string(),
         };
         if text.0 != out {

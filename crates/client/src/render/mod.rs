@@ -62,7 +62,9 @@ pub mod textures;
 pub mod tree;
 pub mod ui;
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
+pub mod anim;
 pub mod verbs;
+pub mod viewmodel;
 
 pub use menu::{Menu, Rt, Screen};
 pub use settings::Settings;
@@ -288,6 +290,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<bodies::Bodies>()
             .init_resource::<menu::Picked>()
             .init_resource::<pause::Chosen>()
+            .init_resource::<viewmodel::Motion>()
             .init_resource::<verbs::Aimed>()
             .init_resource::<verbs::Swung>()
             .init_resource::<verbs::InWeak>()
@@ -335,7 +338,7 @@ impl Plugin for GatesRenderPlugin {
         // Textures load at Startup rather than on entering the world: they
         // are wanted whichever screen comes first, and warming them while a
         // player reads the menu is free time the old shape did not have.
-        app.add_systems(Startup, (textures::load, icons::load));
+        app.add_systems(Startup, (textures::load, icons::load, anim::load));
         // The sound bank is generated rather than loaded (`sound/synth.rs`)
         // and is built HERE, not at `Startup`. **`OnEnter(Screen::Loading)`
         // runs before `Startup`** on a connected start — Bevy schedules the
@@ -486,6 +489,35 @@ impl Plugin for GatesRenderPlugin {
         // The HUD's viewmodel is parented to the camera, so it must be
         // built after the rig has spawned one.
         .add_systems(OnEnter(Screen::Loading), hud::setup.after(rig::setup))
+        // Both in `Update` and NOT on the `Loading` transition — that
+        // transition runs before `Startup`, so `PropMaps` does not exist yet
+        // (see `viewmodel::spawn_item`). `animate` runs after `feed::drain`,
+        // because the swing is triggered by a fact the drain publishes and
+        // the other order reacts a frame late.
+        .add_systems(
+            Update,
+            (
+                viewmodel::spawn_item,
+                viewmodel::animate
+                    .after(feed::drain)
+                    .after(viewmodel::spawn_item),
+            )
+                .run_if(world_running),
+        )
+        // The rig. `build` runs until the glTF is in and then costs one
+        // branch; `bind` catches every `AnimationPlayer` the scene spawner
+        // adds, and runs AFTER `Stream` because the body it walks up to is
+        // spawned by `bodies::stream` inside that set.
+        .add_systems(
+            Update,
+            (
+                anim::build,
+                anim::bind.after(Stream),
+                anim::reshade.after(Stream),
+                anim::drive.after(anim::bind),
+            )
+                .run_if(world_running),
+        )
         // The cloud deck hangs on the camera, so it waits for the rig too.
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
         // The listener IS the camera, so the ears wait for the rig as well.
@@ -522,6 +554,7 @@ impl Plugin for GatesRenderPlugin {
             (
                 ghost::level_keys,
                 ghost::track,
+                ghost::deploy_track,
                 ghost::place_key,
                 ghost::deploy_key,
             )

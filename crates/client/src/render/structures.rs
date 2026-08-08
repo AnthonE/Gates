@@ -71,6 +71,14 @@ const TIER: [(Color, f32, f32); 3] = [
 /// Deployable stand-ins by archetype (`sim_core::deploy` order: bag, hearth,
 /// box, fire, furnace, workbench, door): full size `w × h × d` in metres,
 /// colour, roughness, metallic. Cosmetics, same registry row.
+/// Public so the DEPLOY GHOST can be the size of what it becomes. Sharing the
+/// table is the whole point: a preview sized independently of the thing it
+/// previews is a preview of nothing.
+pub fn deploy_size(arch: usize) -> Vec3 {
+    let [w, h, d] = DEPLOY[arch.min(DEPLOY.len() - 1)].0;
+    Vec3::new(w, h, d)
+}
+
 const DEPLOY: [([f32; 3], Color, f32, f32); 7] = [
     (
         [1.2, 0.25, 0.7],
@@ -170,6 +178,41 @@ pub fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
     )
 }
 
+/// How far a stairs ramp runs in Z, metres. Shared with the build ghost for
+/// the same reason the doorway numbers are: a preview the wrong length is a
+/// preview of a different piece.
+pub const STAIRS_RUN_M: f32 = 4.15;
+
+/// The doorway's lintel: how tall it is, and how far its centre sits below the
+/// piece's own mid-height.
+///
+/// **Public because the BUILD GHOST draws the same doorway** and the two must
+/// not disagree. `RENDER.md` §8 states the stake in one line — the opening is
+/// 1.2 m x 2.1 m because `collide::edge_hit` blocks exactly `t` in `[0, 0.9]`
+/// and `[2.1, 3.0]`, so "draw it elsewhere and the frame lies about where a
+/// player can walk". A ghost that lies about it lies one step earlier, while
+/// the player is still deciding.
+///
+/// Derivation, and it is why these are two constants rather than one: the
+/// lintel's underside must land at 2.1 m so the opening is the height the sim
+/// blocks. At `LEVEL_H_M` 3.0 the piece's centre is 1.5, so a 0.9-tall lintel
+/// dropped 0.45 from centre spans 2.1..3.0 — exactly the band `edge_hit`
+/// refuses.
+pub const LINTEL_H_M: f32 = 0.9;
+/// How far the lintel's centre sits below the piece's mid-height, metres.
+pub const LINTEL_DROP_M: f32 = 0.45;
+
+/// Half the distance between the two door posts' centres, metres — each post
+/// hugs one end of the edge and the gap between them is the opening.
+pub fn door_post_gap() -> f32 {
+    (BUILD_CELL_M - SEAM_M - DOOR_POST_W_M) * 0.5
+}
+
+/// The clear span between the posts, metres. The lintel spans exactly this.
+pub fn door_opening_w() -> f32 {
+    ((BUILD_CELL_M - SEAM_M) - 2.0 * DOOR_POST_W_M).max(0.1)
+}
+
 fn build_kit(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> Kit {
     let tier = std::array::from_fn(|i| {
         let (base_color, perceptual_roughness, metallic) = TIER[i];
@@ -200,12 +243,8 @@ fn build_kit(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>
         post: meshes.add(Cuboid::new(WALL_THICKNESS_M, LEVEL_H_M, DOOR_POST_W_M)),
         // The lintel spans what the two posts leave: the doorway's opening is
         // the intended breach point and it has to read as one.
-        lintel: meshes.add(Cuboid::new(
-            WALL_THICKNESS_M,
-            0.9,
-            (span - 2.0 * DOOR_POST_W_M).max(0.1),
-        )),
-        stairs: meshes.add(Cuboid::new(span, SLAB_T, 4.15)),
+        lintel: meshes.add(Cuboid::new(WALL_THICKNESS_M, LINTEL_H_M, door_opening_w())),
+        stairs: meshes.add(Cuboid::new(span, SLAB_T, STAIRS_RUN_M)),
         tier,
         deploy_mesh,
         deploy_mat,
@@ -399,7 +438,7 @@ fn spawn_piece(
                 .id();
         }
         // A doorway keeps its opening: two posts and a lintel over the gap.
-        let gap = (BUILD_CELL_M - SEAM_M - DOOR_POST_W_M) * 0.5;
+        let gap = door_post_gap();
         return commands
             .spawn((super::WorldEntity, transform, Visibility::default()))
             .with_children(|c| {
@@ -416,7 +455,7 @@ fn spawn_piece(
                 c.spawn((
                     Mesh3d(kit.lintel.clone()),
                     MeshMaterial3d(mat.clone()),
-                    Transform::from_xyz(0.0, LEVEL_H_M * 0.5 - 0.45, 0.0),
+                    Transform::from_xyz(0.0, LEVEL_H_M * 0.5 - LINTEL_DROP_M, 0.0),
                 ));
             })
             .id();

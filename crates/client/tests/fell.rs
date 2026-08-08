@@ -20,6 +20,7 @@
 use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use client::render::props::{apply_fell, assets, Fellable, PropAssets, STUMP_LIFT_M};
+use client::render::textures::{MapSet, PropMaps};
 use client::render::tree::CONIFER_POOL;
 
 /// The variant this fixture's tree spawned as. **Deliberately not variant 0
@@ -73,7 +74,19 @@ fn fixture() -> (App, PropAssets) {
     // The needle card is generated into `Assets<Image>` rather than loaded off
     // disk, so building the pool now needs the image store too.
     let mut images = world.remove_resource::<Assets<Image>>().unwrap();
-    let a = assets(&mut meshes, &mut materials, &mut images);
+    // The prop maps are handles, never resolved: this fixture has no asset
+    // files and does not need them. `assets` only clones them into materials,
+    // so a default handle exercises exactly the same code path a loaded one
+    // would — and keeps this gate in the tier that runs without a GPU or a
+    // filesystem, which is the whole point of it.
+    let maps = PropMaps {
+        rock: MapSet::default(),
+        bark: MapSet::default(),
+        wood: MapSet::default(),
+        stone: MapSet::default(),
+        metal: MapSet::default(),
+    };
+    let a = assets(&mut meshes, &mut materials, &mut images, &maps);
     world.insert_resource(meshes);
     world.insert_resource(materials);
     world.insert_resource(images);
@@ -95,7 +108,7 @@ fn spawn_tree(app: &mut App, a: &PropAssets) -> Entity {
                 felled: false,
             },
             Mesh3d(a.pine_mesh(VARIANT).clone()),
-            MeshMaterial3d(a.foliage_material().clone()),
+            MeshMaterial3d(a.bark_material().clone()),
             Transform {
                 translation: Vec3::new(3.0, GROUND_Y, -7.0),
                 scale: Vec3::splat(SCALE),
@@ -204,7 +217,7 @@ fn a_respawned_slot_becomes_a_tree_again() {
     );
     assert_eq!(
         w.get::<MeshMaterial3d<StandardMaterial>>(e).unwrap().0,
-        *a.foliage_material()
+        *a.bark_material()
     );
     let y = w.get::<Transform>(e).unwrap().translation.y;
     assert!(
@@ -239,7 +252,7 @@ fn a_node_that_leaves_no_stump_simply_disappears() {
                 felled: false,
             },
             Mesh3d(a.pine_mesh(0).clone()),
-            MeshMaterial3d(a.foliage_material().clone()),
+            MeshMaterial3d(a.bark_material().clone()),
             Transform::from_xyz(0.0, GROUND_Y, 0.0),
             Visibility::Inherited,
         ))

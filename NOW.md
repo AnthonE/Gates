@@ -20,6 +20,103 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0u · The ghost tells the truth — what it still cannot promise *(client lane)*
+
+Landed 2026-08-07. The build ghost drew a doorway as a SOLID SLAB, so the
+preview of a doorway hid the one thing a doorway is (`RENDER.md` §8: the
+opening is what `collide::edge_hit` refuses, and drawing it elsewhere makes the
+frame lie about where a player can walk). It is three parts now — two posts and
+a lintel — off numbers shared with `structures.rs` rather than copied.
+
+Also landed: a **deploy ghost** (right-click outside build mode used to place a
+box blind, and `deploy_key`'s own header says guessing wrong costs the item);
+the refusal reason and working level shown while AIMING rather than after the
+click; and `NotShadowCaster`, which the module header had claimed since it was
+written while the code cast a shadow the whole time.
+
+Gated: `crates/client/tests/ghost.rs`, five assertions against
+`sim_core::collide::doorway_solid_at` — the sim's own predicate, extracted so
+the renderer is checked against the rule rather than against a copy of it.
+Three mutants run, all red.
+
+Remaining:
+
+1. **Which parts exist and where they go is still written twice** — once in
+   `ghost::shape_parts`, once in `structures::spawn_piece`. The dimensions are
+   shared and the doorway is gated against the sim, but a shape added to one
+   and not the other passes. One shared parts table both emit from is the fix.
+2. **The deploy ghost says WHERE, not WHETHER.** `place::verdict` answers for
+   build pieces only; the `REFUSE_D_*` set (needs a floor, needs a doorway,
+   hearth claim) is uncheckable client-side, so the preview is deliberately
+   neutral-coloured. Colouring it needs those checks mirrored, which is the
+   quantize-both-sides law applied to placement.
+3. **A door aimed at a doorway is not previewed as a door.** `deploy_key` sends
+   a plane-shape target and lets the sim answer `REFUSE_D_DOOR`; the ghost
+   inherits that and draws the door's box on the cell body rather than in the
+   edge it would fill.
+4. **Stairs are still a flat slab** in both the ghost and the piece — a ramp
+   drawn as a plate. Shared, so at least they agree.
+
+## 0v · Players are people — what the rig still cannot say *(client lane)*
+
+Landed 2026-08-07. Remote bodies were `Capsule3d` pills that slid and never
+faced anything, though the wire has carried `yaw` since the first snapshot and
+`bodies.rs` never read it. They are a skinned mannequin now (CC0, 46 clips,
+`assets/models/MANIFEST.md`) with gait chosen from derived speed, plus a held
+tool with bob/sway/swing (`render/viewmodel.rs`).
+
+Remaining, ranked:
+
+1. **Crouch, jump and swim are wired to nothing.** The clips are in the file
+   and the WIRE does not carry the facts — no grounded bit, no crouch bit — so
+   `BodyAnim` cannot see them. This is a protocol change (wall 6: version bump
+   + regenerated goldens in the same commit), not a client one.
+2. **No attack, gather or death animation on a remote.** `Feed` carries the
+   LOCAL player's hits only; a remote's swing is not a fact the client is told
+   about. `EV_*` has the events — this needs the draw path to read them per
+   body, which is the same gap `RENDER.md` §8 item 4 names for pieces.
+3. **Nobody holds anything.** The viewmodel is first-person only; a remote
+   mannequin has empty hands. The rig has hand joints, so this is an attachment
+   to a named joint rather than new art.
+4. **Root motion is ignored.** `Jog_Fwd_Loop` translates in place here because
+   position is the interpolator's; the `_RM` variants in the library are the
+   root-motion cuts and are deliberately unused. Feet will slide at speeds
+   between the clips' authored ones — the fix is scaling playback rate to
+   speed, which is a knob nobody has measured.
+5. **A plain worn-steel albedo is the missing texture.** The axe head carries
+   no map because the only metal in `assets/` is ribbed corrugated sheet
+   (`viewmodel.rs` and `assets/textures/MANIFEST.md` both record it).
+
+## 0w · The props carry a photograph — what is left after it *(client lane)*
+
+Landed 2026-08-07. Every non-ground surface was a flat `base_color`: 34 CC0
+textures shipped and **2 were sampled**, because no procedural mesh in the
+client had a UV. `props::Soup` box-projects per triangle (free on a soup — no
+shared vertices, so no seam and no shader), `blob_mesh` subdivides and displaces
+instead of being a 20-triangle icosahedron, and bark/wood/stone/metal/rock are
+bound. Licence rail widened the same day: `DECISIONS.md` 2026-08-07.
+
+Remaining, ranked by what the captures show:
+
+1. **The hemisphere fill, and it is now the top visual gap.** p10 71.0 against
+   a reference 41.0 — props v1 moved it 13 the wrong way by removing the
+   frame's accidental darks (`RENDER.md` §0). One owner, one iteration, inside
+   the coupled lighting set; do not touch it from a parallel lane.
+2. **Trees are small and sparse in the midground.** The wide vantages are an
+   empty green plain between the near clutter and the far ridge, where the
+   reference frames are dense. This is `terrain::scatter`'s density and the
+   conifer's scale, not a material.
+3. **Nothing sits IN the ground** (`ART.md` rule 2). The new boulder has a
+   clean elliptical intersection with the turf and no crowding or dirt skirt —
+   more visible now that the rock reads as a real object.
+4. **The far mesh speckles.** Grazing-angle aliasing on the 8 m LOD; the
+   candidate is anisotropy, registered at 4 for a browser reason that does not
+   survive the port (`ART.md` §7), so it is a proposal not an edit.
+5. **The viewmodel is two untextured boxes**, and it is in a third of the frame.
+6. **Roughness maps are still unread** — all nine of them. Blocked on an ORM
+   packing step, not on a slot: `metallic_roughness_texture` is glTF-packed and
+   its B channel is metallic, so a greyscale rough jpg would make every surface
+   a half-metal.
 ## 0p · The UI has a face and a measured palette — icons are what is left *(client lane)*
 
 **Second pass, 2026-08-07** (operator: *"the one you made looks super sub par…
