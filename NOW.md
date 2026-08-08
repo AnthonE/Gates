@@ -66,7 +66,20 @@ Remaining, in order. **Item 1 blocks items 3 and 4:**
    this asserts nothing. `panels/mod.rs`'s refusal ("a gate whose frames
    depend on a keystroke") was right about a *gate* and does not bind a
    viewer.
-2. **ICONS — now the single largest gap, and the only one blocked on art.**
+2. **DONE 2026-08-07 — icons, and the wheel rebuilt around them.** The wheel
+   was *"worse than even avg programmer art"* (operator) and the diagnosis was
+   structural, not colour: `building.jpeg` is a **cream annulus cut into
+   wedges** with a line-art glyph in each and the world showing through the
+   middle, and ours was a flat dark disc with rounded label boxes floating on
+   it. The annulus is now a baked texture (`render/panels/ring.rs`, ten images
+   at plugin-build time, geometry from the same `Rings` that `pick` resolves
+   with) and every cell and wedge carries an icon from **game-icons.net**
+   (CC BY 3.0, `ci/bake_icons.py`, 57 PNGs). Gate `tests/ui.rs` §G.
+   *Left behind:* two items share a glyph where the set had no second
+   candidate, and the wheel is still **two** rings where the reference has one
+   — see the hammer/blueprint note above, which is the same finding.
+
+   ~~**ICONS — the single largest gap, and the only one blocked on art.**~~
    Every cell in `crafting.png` is item artwork; every cell of ours is a
    clipped word. The reference wheel is a cream ring of red line-art glyphs;
    ours is a dark disc of text boxes. Two halves with very different costs:

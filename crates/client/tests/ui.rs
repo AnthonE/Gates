@@ -1227,3 +1227,111 @@ fn both_weights_are_in_use() {
         "the weight hierarchy has collapsed: {prose} prose sites, {label} label sites"
     );
 }
+
+// ---------------------------------------------------------------------------
+// §G · the icons ship, and the two lists agree
+//
+// The icons are CC BY 3.0 from game-icons.net. That licence is a *notice*
+// licence: the files may be redistributed and the credit has to travel with
+// them. The credit lives in `assets/icons/CREDITS.md`, which nothing links
+// against and nothing would notice the loss of — the same shape as the font
+// licence in §F, and the same reason for a gate.
+//
+// The second half is the drift that would actually bite: `icons::STEMS` is a
+// const list the render path reads, and `assets/icons/` is what ships. A stem
+// with no file draws an empty cell; a file with no stem is dead weight in the
+// depot. Neither is visible without opening the game.
+
+/// Where the client's assets live, from the crate root this test runs in.
+fn icon_dir() -> std::path::PathBuf {
+    std::path::Path::new("../../assets/icons").to_path_buf()
+}
+
+#[test]
+fn the_icons_ship_with_their_credit() {
+    let credits = icon_dir().join("CREDITS.md");
+    let text = std::fs::read_to_string(&credits)
+        .unwrap_or_else(|e| panic!("{} is missing: {e}", credits.display()));
+    // The three things CC BY 3.0 actually asks for: the work, the licence,
+    // and the authors.
+    assert!(
+        text.contains("game-icons.net"),
+        "the credit does not name the source"
+    );
+    assert!(
+        text.contains("Attribution 3.0") || text.contains("CC BY 3.0"),
+        "the credit does not name the licence"
+    );
+    for author in ["lorc", "delapouite"] {
+        assert!(
+            text.contains(author),
+            "the credit does not name {author}, whose icons ship"
+        );
+    }
+}
+
+#[test]
+fn every_stem_has_a_file_and_every_file_has_a_stem() {
+    let dir = icon_dir();
+    let on_disk: std::collections::BTreeSet<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{} is missing: {e}", dir.display()))
+        .filter_map(|e| {
+            let p = e.ok()?.path();
+            (p.extension()? == "png").then(|| p.file_stem()?.to_str().map(str::to_string))?
+        })
+        .collect();
+    let declared: std::collections::BTreeSet<String> = client::ui::icons::STEMS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let missing: Vec<_> = declared.difference(&on_disk).collect();
+    let orphan: Vec<_> = on_disk.difference(&declared).collect();
+    assert!(
+        missing.is_empty(),
+        "declared in icons::STEMS but not in assets/icons — these draw an \
+         empty cell: {missing:?}"
+    );
+    assert!(
+        orphan.is_empty(),
+        "in assets/icons but not declared — dead weight in the depot: {orphan:?}"
+    );
+    assert_eq!(
+        declared.len(),
+        client::ui::icons::STEMS.len(),
+        "icons::STEMS has a duplicate"
+    );
+}
+
+/// Every item the shard can send has a picture.
+///
+/// Reads `content/items.toml` directly rather than trusting a list: the whole
+/// failure this prevents is content growing an item that the client then
+/// draws as a clipped word in a 44 px cell.
+#[test]
+fn every_item_in_the_content_has_an_icon() {
+    let toml = std::fs::read_to_string("../../content/items.toml").expect("content/items.toml");
+    let declared: std::collections::BTreeSet<&str> =
+        client::ui::icons::STEMS.iter().copied().collect();
+
+    let mut missing = Vec::new();
+    for line in toml.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("name = \"") else {
+            continue;
+        };
+        let Some(name) = rest.strip_suffix('"') else {
+            continue;
+        };
+        let stem = client::ui::icons::stem(name);
+        if !declared.contains(stem.as_str()) {
+            missing.push(format!("{name} -> {stem}"));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "content items with no icon (bake them into assets/icons and add the \
+         stem to icons::STEMS):\n{}",
+        missing.join("\n")
+    );
+}

@@ -27,6 +27,7 @@ use super::{
     CELL_GAP_PX, CELL_PX, LINE, LINE_HOT, PANEL_BG, PANEL_H, SCROLL_PX_PER_LINE, TEXT, TEXT_DIM,
     TEXT_SHORT,
 };
+use crate::render::icons::Icons;
 use crate::ui::craft::{
     affordable, eta_seconds, ingredients, item_label, rows, seconds, station_label, Row, RAIL,
 };
@@ -66,7 +67,7 @@ pub struct CraftGo;
 pub struct CancelJob(pub usize);
 
 /// The rail and the browser.
-pub fn build_browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
+pub fn build_browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons: &Icons) {
     parent
         .spawn((
             Node {
@@ -79,7 +80,7 @@ pub fn build_browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCo
         ))
         .with_children(|panel| {
             rail(panel, ui, core);
-            browser(panel, ui, core);
+            browser(panel, ui, core, icons);
         });
 }
 
@@ -149,7 +150,7 @@ fn rail(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
         });
 }
 
-fn browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
+fn browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons: &Icons) {
     let mut list: Vec<Row> = Vec::new();
     rows(
         &core.recipes,
@@ -200,7 +201,7 @@ fn browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
                     ));
                 }
                 for row in list.iter() {
-                    recipe_cell(g, ui, core, row);
+                    recipe_cell(g, ui, core, icons, row);
                 }
             });
 
@@ -231,7 +232,13 @@ fn browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
         });
 }
 
-fn recipe_cell(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, row: &Row) {
+fn recipe_cell(
+    parent: &mut ChildSpawnerCommands,
+    ui: &Ui,
+    core: &ClientCore,
+    icons: &Icons,
+    row: &Row,
+) {
     let can = row.affordable > 0;
     let picked = ui.selected == Some(row.recipe);
     parent
@@ -250,14 +257,39 @@ fn recipe_cell(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, ro
             BorderColor::all(if picked { LINE_HOT } else { LINE }),
         ))
         .with_children(|c| {
-            c.spawn((
-                Text::new(item_label(&core.catalog, row.output)),
-                font_bold(10.0),
-                // Dimmed rather than hidden — the reference greys what you
-                // cannot afford so you can see what to go and get.
-                TextColor(if can { TEXT } else { TEXT_DIM }),
-                Pickable::IGNORE,
-            ));
+            // The recipe's output, as its picture. Dimmed rather than
+            // hidden when unaffordable — the reference greys what you cannot
+            // afford so you can see what to go and get, and a tint does that
+            // to an icon exactly as a colour does to a word.
+            let name = item_label(&core.catalog, row.output);
+            match icons.item(&name) {
+                Some(image) => c.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(4.0),
+                        top: Val::Px(4.0),
+                        width: Val::Px(CELL_PX - 10.0),
+                        height: Val::Px(CELL_PX - 10.0),
+                        ..default()
+                    },
+                    ImageNode {
+                        image,
+                        color: if can {
+                            Color::srgb(0.90, 0.87, 0.82)
+                        } else {
+                            Color::srgba(0.62, 0.60, 0.56, 0.55)
+                        },
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                )),
+                None => c.spawn((
+                    Text::new(name),
+                    font_bold(10.0),
+                    TextColor(if can { TEXT } else { TEXT_DIM }),
+                    Pickable::IGNORE,
+                )),
+            };
         });
 }
 

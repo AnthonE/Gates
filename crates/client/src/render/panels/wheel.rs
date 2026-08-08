@@ -33,10 +33,8 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use client_wasm::core::ClientCore;
 
-use super::{
-    font, font_bold, Panel, Ui, BADGE, CELL_BG, CELL_FULL, LINE, LINE_HOT, PANEL_BG, TEXT,
-    TEXT_DIM, TEXT_SHORT,
-};
+use super::{font, font_bold, ring, Panel, Ui, BADGE, TEXT_DIM, TEXT_SHORT};
+use crate::render::icons::Icons;
 use crate::ui::build::{
     costs, material_label, row_for, segment_angle, shape_blurb, shape_label, Hover, Rings,
     MATERIALS, SHAPES,
@@ -78,7 +76,15 @@ pub fn track(mut ui: ResMut<Ui>, window: Query<&Window, With<PrimaryWindow>>) {
 }
 
 /// Draw the wheel.
-pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
+///
+/// **The shape is the reference's, since 2026-08-07.** It was a flat dark
+/// disc with rounded label boxes floating on it — the operator's word was
+/// *"worse than even avg programmer art"*, and the diagnosis is structural
+/// rather than a colour: `building.jpeg` is a **cream annulus cut into
+/// wedges** with a line-art glyph in each and the world showing through the
+/// middle, and no arrangement of rectangles is that. The annulus is now a
+/// baked texture ([`super::ring`]) and the labels are icons.
+pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &Icons) {
     let rings = Rings::default();
     let shape = SHAPES[ui.shape.min(SHAPES.len() - 1)];
     let material = MATERIALS[ui.material.min(MATERIALS.len() - 1)];
@@ -93,31 +99,55 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
                 height: Val::Percent(100.0),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.02, 0.02, 0.025, 0.35)),
+            // Barely there. The reference dims the world a little and blurs
+            // it; we have no blur, and a heavy scrim in its place would hide
+            // the base you are aiming the piece at.
+            BackgroundColor(Color::srgba(0.02, 0.02, 0.025, 0.30)),
         ))
         .with_children(|root| {
             // The wheel box: centred by half-percent offsets and negative
             // margins, so every child can be placed in its local pixels.
-            root.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Percent(50.0),
-                    top: Val::Percent(50.0),
-                    margin: UiRect {
-                        left: Val::Px(-rings.rim),
-                        top: Val::Px(-rings.rim),
-                        ..default()
-                    },
-                    width: Val::Px(rings.rim * 2.0),
-                    height: Val::Px(rings.rim * 2.0),
-                    border_radius: BorderRadius::MAX,
+            // **No background** — the middle is the world, as it is in the
+            // reference, and the dark plate that used to sit here is what
+            // made the whole thing read as a dialog box.
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                top: Val::Percent(50.0),
+                margin: UiRect {
+                    left: Val::Px(-rings.rim),
+                    top: Val::Px(-rings.rim),
                     ..default()
                 },
-                BackgroundColor(PANEL_BG),
-            ))
+                width: Val::Px(rings.rim * 2.0),
+                height: Val::Px(rings.rim * 2.0),
+                ..default()
+            })
             .with_children(|box_| {
-                // The dead centre, drawn so the readout has a plate to sit
-                // on and the player can see where the wheel stops picking.
+                // The annulus, then the two chosen wedges over it. Three
+                // draws for a shape Bevy UI cannot express in nodes.
+                plate(box_, rings, ring::BASE);
+                plate(
+                    box_,
+                    rings,
+                    ring::SHAPE_HI[ui.shape.min(SHAPES.len() - 1)].clone(),
+                );
+                plate(
+                    box_,
+                    rings,
+                    ring::MAT_HI[ui.material.min(MATERIALS.len() - 1)].clone(),
+                );
+
+                // The readout sits in the dead centre, over the world — on a
+                // soft disc rather than bare.
+                //
+                // **This is not the old dialog plate coming back.** That was
+                // opaque and covered the whole wheel, which is what made it
+                // read as a box; this is the dead zone only, at 0.45, and it
+                // exists because the reference *blurs* the world behind its
+                // centre and we have no blur. Measured the hard way: the
+                // first cut had the sea horizon running straight through the
+                // word "Foundation".
                 box_.spawn((
                     Node {
                         position_type: PositionType::Absolute,
@@ -125,30 +155,29 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
                         top: Val::Px(rings.rim - rings.dead),
                         width: Val::Px(rings.dead * 2.0),
                         height: Val::Px(rings.dead * 2.0),
-                        padding: UiRect::all(Val::Px(16.0)),
+                        padding: UiRect::all(Val::Px(10.0)),
                         flex_direction: FlexDirection::Column,
                         align_items: AlignItems::Center,
                         justify_content: JustifyContent::Center,
-                        row_gap: Val::Px(4.0),
-                        border: UiRect::all(Val::Px(1.0)),
+                        row_gap: Val::Px(2.0),
                         border_radius: BorderRadius::MAX,
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.05, 0.05, 0.06, 0.95)),
-                    BorderColor::all(LINE),
+                    BackgroundColor(Color::srgba(0.05, 0.045, 0.04, 0.45)),
+                    Pickable::IGNORE,
                 ))
-                .with_children(|c| readout(c, ui, core, shape, material, row));
+                .with_children(|c| readout(c, ui, core, shape, material, row, icons));
 
                 for (i, s) in SHAPES.iter().enumerate() {
                     let on = i == ui.shape;
                     let live = row_for(&core.piece_defs, *s, material).is_some();
-                    chip(
+                    glyph(
                         box_,
                         rings,
                         (rings.split + rings.rim) * 0.5,
                         segment_angle(i, SHAPES.len()),
-                        96.0,
-                        30.0,
+                        38.0,
+                        icons.shape(shape_icon(*s)),
                         shape_label(*s),
                         on,
                         live,
@@ -157,13 +186,13 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
                 for (i, m) in MATERIALS.iter().enumerate() {
                     let on = i == ui.material;
                     let live = row_for(&core.piece_defs, shape, *m).is_some();
-                    chip(
+                    glyph(
                         box_,
                         rings,
                         (rings.dead + rings.split) * 0.5,
                         segment_angle(i, MATERIALS.len()),
-                        72.0,
-                        24.0,
+                        30.0,
+                        icons.shape(material_icon(*m)),
                         material_label(*m),
                         on,
                         live,
@@ -194,15 +223,59 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
         });
 }
 
-/// One label chip on a ring, placed along its segment's centre angle.
+/// One full-size ring texture, laid over the wheel box.
+fn plate(parent: &mut ChildSpawnerCommands, rings: Rings, image: Handle<Image>) {
+    parent.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(0.0),
+            top: Val::Px(0.0),
+            width: Val::Px(rings.rim * 2.0),
+            height: Val::Px(rings.rim * 2.0),
+            ..default()
+        },
+        ImageNode::new(image),
+        // The wheel is picked by arithmetic, never by nodes.
+        Pickable::IGNORE,
+    ));
+}
+
+/// The icon file for a shape and for a material. Separate from
+/// `shape_label` because a label is prose and a stem is an asset name — and
+/// because `icons::STEMS` has to be greppable for the gate.
+fn shape_icon(shape: u8) -> &'static str {
+    match shape {
+        sim_core::build::SHAPE_FOUNDATION => "shape_foundation",
+        sim_core::build::SHAPE_WALL => "shape_wall",
+        sim_core::build::SHAPE_DOORWAY => "shape_doorway",
+        sim_core::build::SHAPE_FLOOR => "shape_floor",
+        sim_core::build::SHAPE_STAIRS => "shape_stairs",
+        _ => "shape_roof",
+    }
+}
+
+fn material_icon(material: u8) -> &'static str {
+    match material {
+        sim_core::build::MAT_WOOD => "mat_wood",
+        sim_core::build::MAT_STONE => "mat_stone",
+        _ => "mat_metal",
+    }
+}
+
+/// One glyph on a ring, placed along its segment's centre angle.
+///
+/// The icon is tinted rather than swapped: white-on-transparent PNGs mean a
+/// chosen wedge (dark glyph on red), an ordinary wedge (red glyph on cream)
+/// and a dead one are three colours of one texture. Falls back to the label
+/// when no icon was baked — an empty wedge is the dark-panel defect.
 #[allow(clippy::too_many_arguments)]
-fn chip(
+fn glyph(
     parent: &mut ChildSpawnerCommands,
     rings: Rings,
     radius: f32,
     angle: f32,
-    w: f32,
-    h: f32,
+    size: f32,
+    icon: Option<Handle<Image>>,
     text: &str,
     selected: bool,
     live: bool,
@@ -210,45 +283,60 @@ fn chip(
     // Same convention as `pick`: 0 is up and the angle grows clockwise.
     let x = rings.rim + radius * angle.sin();
     let y = rings.rim - radius * angle.cos();
-    parent
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(x - w * 0.5),
-                top: Val::Px(y - h * 0.5),
-                width: Val::Px(w),
-                height: Val::Px(h),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(4.0)),
-                ..default()
-            },
-            BackgroundColor(if selected { CELL_FULL } else { CELL_BG }),
-            BorderColor::all(if selected { LINE_HOT } else { LINE }),
-            // The wheel is picked by arithmetic, not by nodes — a chip that
-            // ate the pointer would make the segment behind it dead.
-            Pickable::IGNORE,
-        ))
-        .with_children(|c| {
-            c.spawn((
-                Text::new(text.to_string()),
-                font_bold(12.0),
-                // A segment the content has no piece for is drawn dead
-                // rather than live-and-wrong.
-                TextColor(if !live {
-                    TEXT_SHORT
-                } else if selected {
-                    TEXT
-                } else {
-                    TEXT_DIM
-                }),
+    // On the chosen wedge the ground is red, so the glyph goes near-white;
+    // everywhere else the ground is cream and the glyph is the same red.
+    let tint = if !live {
+        Color::srgba(0.55, 0.50, 0.47, 0.55)
+    } else if selected {
+        Color::srgb(0.99, 0.97, 0.95)
+    } else {
+        Color::srgb(0.82, 0.25, 0.16)
+    };
+
+    let mut node = parent.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(x - size * 0.5),
+            top: Val::Px(y - size * 0.5),
+            width: Val::Px(size),
+            height: Val::Px(size),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        Pickable::IGNORE,
+    ));
+    match icon {
+        Some(image) => {
+            node.insert((
+                ImageNode {
+                    image,
+                    color: tint,
+                    ..default()
+                },
                 Pickable::IGNORE,
             ));
-        });
+        }
+        None => {
+            node.with_children(|c| {
+                c.spawn((
+                    Text::new(text.to_string()),
+                    font_bold(11.0),
+                    TextColor(tint),
+                    Pickable::IGNORE,
+                ));
+            });
+        }
+    }
 }
 
 /// The centre: what is chosen, what it is for, what it costs.
+///
+/// Over the world rather than on a plate, which is the reference's
+/// arrangement — so everything here is near-white and the chosen shape's own
+/// icon sits above it in red, the way `building.jpeg` puts a large red glyph
+/// over the name.
+#[allow(clippy::too_many_arguments)]
 fn readout(
     parent: &mut ChildSpawnerCommands,
     _ui: &Ui,
@@ -256,11 +344,27 @@ fn readout(
     shape: u8,
     material: u8,
     row: Option<u16>,
+    icons: &Icons,
 ) {
+    if let Some(image) = icons.shape(shape_icon(shape)) {
+        parent.spawn((
+            Node {
+                width: Val::Px(34.0),
+                height: Val::Px(34.0),
+                ..default()
+            },
+            ImageNode {
+                image,
+                color: Color::srgb(0.82, 0.25, 0.16),
+                ..default()
+            },
+            Pickable::IGNORE,
+        ));
+    }
     parent.spawn((
         Text::new(shape_label(shape).to_string()),
-        font_bold(20.0),
-        TextColor(TEXT),
+        font_bold(18.0),
+        TextColor(Color::srgb(0.99, 0.98, 0.96)),
         Pickable::IGNORE,
     ));
     parent.spawn((

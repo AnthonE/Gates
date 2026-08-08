@@ -43,6 +43,7 @@ use crate::ui::slots::Drag;
 
 pub mod craft;
 pub mod inv;
+pub mod ring;
 pub mod wheel;
 
 /// Which menu is up. One at a time: the wheel is a hold and the inventory
@@ -453,6 +454,10 @@ pub fn rebuild(
     mut ui: ResMut<Ui>,
     net: NonSend<super::Net>,
     roots: Query<Entity, With<PanelRoot>>,
+    // `Option`, because `icons::load` is a `Startup` system and a panel can
+    // in principle be asked for before it has run. A missing registry draws
+    // the labels it drew before rather than an empty ring.
+    icons: Option<Res<super::icons::Icons>>,
 ) {
     let core = &net.session.core;
 
@@ -499,7 +504,15 @@ pub fn rebuild(
 
     match ui.panel {
         Panel::None => {}
-        Panel::Inventory => inv::build_screen(&mut commands, &ui, core),
-        Panel::Wheel => wheel::build_screen(&mut commands, &ui, core),
+        Panel::Inventory => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            inv::build_screen(&mut commands, &ui, core, icons)
+        }
+        Panel::Wheel => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            wheel::build_screen(&mut commands, &ui, core, icons)
+        }
     }
 }

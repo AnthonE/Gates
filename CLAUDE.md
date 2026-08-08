@@ -421,6 +421,15 @@ which is neither.
   Only `meshgen::generate_tree_meshes` is called — settings and an `Rng` in,
   two meshes out; the crate's plugin is deliberately unused, because a plugin
   that regenerates entities on change would put tree state in the ECS.
+- **game-icons.net** (CC BY 3.0) — the client's item and building icons,
+  **shipped**: 57 white-on-transparent PNGs in `assets/icons/`, rasterised
+  from the project's public SVG archive by `ci/bake_icons.py`. CC BY is a
+  *notice* licence — `assets/icons/CREDITS.md` names the four authors whose
+  work ships (lorc, delapouite, carl-olsen, john-redman) and `tests/ui.rs` §G
+  fails if it stops travelling or if the baked set and `ui::icons::STEMS`
+  drift apart. **Nothing is traced from the reference game**: an icon set
+  anyone may redistribute with credit is not the IP rail's business, and the
+  rail is what forbids copying Rust's own art.
 - **Roboto Condensed** (Apache-2.0, © 2011 Google Inc.) — the client's UI
   face, **shipped**: `crates/client/fonts/RobotoCondensed-{Regular,Bold}.ttf`
   are compiled into the binary by `include_bytes!` and
