@@ -142,6 +142,27 @@ which is worse than plainly differing.
   economy asserting one thing and playing another.
 - **Smelt and craft times.** Same dependency, smaller blast radius.
 
+**And checking that dependency turned up something larger, so it is written
+here rather than left in a chat.** `[globals] farm_per_min` declares wood
+and stone at **50/min**. The sim's own numbers say a tree pays 200 wood in
+10 swings at the 38-tick cadence — **947/min standing at the node**, 1421
+with a metal hatchet. Nineteen to twenty-eight times apart. The declared
+rate is presumably meant to include walking between nodes, but nothing says
+so and nothing checks it, so **every farm-minute anchor in the balance
+system — `starter_minutes` 85.6, `satchel_minutes` 29.6, upkeep 8.56/day,
+`wood_wall_minutes` 7.0 — is priced off a number with no measured relation
+to the game.**
+
+Worse, the anchors do not agree with the *prose*: `CONTENT.md` §3 targets a
+starter base at **~45 min solo** and the computed anchor is **85.6**, 1.9×
+over, with no band asserting either way. The pacing table is a claim nobody
+has ever checked.
+
+That is not a reference-alignment problem and it would exist if the
+reference did not. It is the economy's own foundation being unmeasured, and
+it should be fixed **before** the gather yields move, or the move will be
+tuning one unmeasured number against another.
+
 **Nothing is live** — no season, no wipe, no player holding a number in
 their head from a shard of ours. So the cost of moving these is a
 re-derivation and a red band, not a broken save. That is the operator's
@@ -151,7 +172,7 @@ point and it is correct: take more of the math now, tune later.
 
 1. **The boar does not fight back.** Theirs charges and flees under half
    health; ours only flees. This is the single biggest "that's not how it
-   goes" moment left, and it is a mechanic (`ANIMALS.md` §9.5 item 2).
+   goes" moment left, and it is a mechanic (`ANIMALS.md` §9.5 item 1).
 2. **No per-material resistance** (§4) — the raid ladder is compressed above
    stone.
 3. **One animal.** Theirs has chicken, boar, stag, wolf, bear, each with a

@@ -28,6 +28,17 @@ standing instruction. Building blocks are 250/500/1000, a stone wall takes
 four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
 Two bands moved and the raid ratio re-priced itself to 1.04/1.73/3.46.
 
+**The largest open number question in the repo, found while checking the
+above: the economy has never been measured against the sim.**
+`farm_per_min` declares 50 wood/min; the sim pays **947/min** at a tree
+(200 wood / 10 swings / 38-tick cadence), 1421 with a metal hatchet.
+Nothing compares them, so `starter_minutes`, `satchel_minutes`, upkeep and
+the raid ratio are all priced off a number with no measured relation to
+play — and the anchors miss `CONTENT.md` §3's own prose (45 min starter
+target vs 85.6 computed) with no band on it. Decide what `farm_per_min`
+means, band the pacing table or stop claiming minutes, THEN move the gather
+yields. `DECISIONS.md` §open.
+
 **The audit (2026-08-08, second pass).** Asked to explain why we had rolled
 our own numbers, three of six reasons turned out to be cost dressed as
 principle (`BALANCE.md` §4). The meters are paid off — 500/250 with the
