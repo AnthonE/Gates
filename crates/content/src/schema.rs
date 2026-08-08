@@ -272,6 +272,46 @@ pub struct LootTable {
     pub entries: Vec<LootEntry>,
 }
 
+/// One animal species (`sim-core/src/mob.rs`).
+///
+/// Speeds are **percentages of the player's own**, not metres per second,
+/// and that is the schema being honest about the sim rather than being
+/// friendly: an animal drives `movement::step` through the same
+/// `InputFrame` a player does, so the only speed it can express is a
+/// fraction of `WALK_SPEED` (or of `SPRINT_SPEED` while it runs). A
+/// m/s field here would be a number the bake had to quietly round to the
+/// nearest 1/127th, and a content author would never learn which way.
+///
+/// Distances are metres and times are seconds — the units a balance pass
+/// is argued in. The bake converts both, so nothing in `mob.rs` knows what
+/// a second is.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mob {
+    /// `mob.<species>` — the ordinal the sim knows it by is resolved from
+    /// this name at bake, the way a loot table's container is.
+    pub id: String,
+    pub name: String,
+    pub hp: u32,
+    /// Amble speed, percent of `WALK_SPEED`.
+    pub walk_pct: u32,
+    /// Flight speed, percent of `SPRINT_SPEED`.
+    pub flee_pct: u32,
+    /// How long one fright lasts.
+    pub flee_seconds: u32,
+    /// Leash radius from the home the seed chose.
+    pub roam_m: u32,
+    /// A player closer than this starts a flight.
+    pub spook_m: u32,
+    /// Time between a death and the same slot standing up again at the
+    /// same home.
+    pub respawn_seconds: u32,
+    /// What the killing blow pays. Straight into the killer's inventory
+    /// (`mob::strike`), so these are stacks and not a weighted table —
+    /// butchering an animal is not opening a barrel.
+    pub drops: Vec<Stack>,
+}
+
 /// Bare tickers only (CLAUDE.md wall 8) — the enum cannot spell `$SCRY`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum Coin {

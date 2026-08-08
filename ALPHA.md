@@ -116,12 +116,23 @@ replay — the deterministic replay is the dupe investigation tool.
 
 ## 5 · Explicitly cut from alpha (so nobody re-litigates silently)
 
-Vehicles · farming · electricity · NPC/animal AI · voice chat · teams UI
+Vehicles · farming · electricity · ~~NPC/animal AI~~ **(animals un-cut
+2026-08-08, see below)** · voice chat · teams UI
 · ~~server browser (one shard)~~ **un-cut 2026-08-06, see below** ·
 anti-cheat beyond authoritative sim + anomaly log · localization · mobile
 controls (Android runs, but it's a desktop game) · monuments beyond the
 haven (TERRAIN's pad carver is the hook) · skin trading/editions (A3
 sells; trading is its own later gate).
+
+**Animals are back in** (operator, 2026-08-08 — `DECISIONS.md`: *"let's get
+a pig in"*). The cut was written as "NPC/animal AI", and what actually
+landed is the first half only: a fixed 64-slot roster of pigs that wander,
+flee and pay fat and cloth when killed. There is still no AI system — nothing
+hunts, packs or fights back — so the expensive part of the original cut
+stands. It was cheap because the walls had already paid for it: the terrain
+is a pure function, so there is no navmesh to bake, and an animal drives the
+same `movement::step` a player does. `reference/ANIMALS.md` is the research
+and §9.5 lists what v0 does not have.
 
 **The server browser is back in** (operator, 2026-08-06 — `DECISIONS.md`).
 It was cut on the reasoning that alpha runs one shard, so a browser has

@@ -1534,3 +1534,104 @@ fn spawn_kit_refusals() {
         "granted twice",
     );
 }
+
+/// The shipped pig crosses wall 7 intact: content says seconds, metres and
+/// percentages, and the sim receives ticks, centimetres and a move axis.
+#[test]
+fn the_shipped_pig_bakes() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let mc = c.bake_mobs().expect("the pig must bake");
+    let pig = mc.def(sim_core::mob::MOB_PIG);
+
+    assert_eq!(pig.hp, 80);
+    // 50% and 70% of the −127..=127 axis, floored.
+    assert_eq!(pig.gait, 63);
+    assert_eq!(pig.flee_gait, 88);
+    // **The catchability relation, and it is gameplay rather than balance.**
+    // The flight rides the sprint button, so `flee_gait/127` of
+    // `SPRINT_SPEED` is the pig's top speed and the player's is
+    // `SPRINT_SPEED` flat. A species at or above 127 can never be caught on
+    // foot however long the chase runs, which is what shipped for an hour
+    // on 2026-08-08 with every gate green — the defect was found by booting
+    // the game and looking. This is the assertion that would have caught it.
+    assert!(
+        pig.flee_gait < 127,
+        "a pig fleeing at {} of 127 runs at or above the player's sprint — \
+         it can never be melee'd, and no gate but this one notices",
+        pig.flee_gait
+    );
+    // Seconds → ticks at the sim's own rate, so this asserts the
+    // conversion and not the number: 3 s and 300 s at 30 Hz.
+    assert_eq!(pig.flee_ticks as u32, 3 * sim_core::limits::TICK_HZ);
+    assert_eq!(pig.respawn_ticks, 300 * sim_core::limits::TICK_HZ);
+    // Metres → centimetres, the unit the sim compares distances in.
+    assert_eq!(pig.roam_cm, 6_000);
+    assert_eq!(pig.spook_cm, 1_200);
+    // The leash must be wider than the fright radius or a pig spends its
+    // life being turned around — validate refuses it, assert it here too
+    // because this is the pair that produces the behaviour.
+    assert!(pig.roam_cm > pig.spook_cm);
+
+    // Drops resolve to real item indices, in file order, and the tail is
+    // `NO_ITEM` rather than a zero-count row nothing distinguishes.
+    let fat = c
+        .items
+        .iter()
+        .map(|i| i.id.as_str())
+        .filter(|id| *id == "item.fat")
+        .count();
+    assert_eq!(fat, 1, "the pig pays an item the set does not have");
+    assert_ne!(pig.loot[0].item, sim_core::gather::NO_ITEM);
+    assert_eq!(pig.loot[0].count, 15);
+    assert_ne!(pig.loot[1].item, sim_core::gather::NO_ITEM);
+    assert_eq!(pig.loot[2].item, sim_core::gather::NO_ITEM);
+    assert_ne!(pig.loot[0].item, pig.loot[1].item);
+}
+
+/// The mob validator refuses what it claims to. Each of these is a content
+/// bug that would read as a bug in the sim if it booted.
+#[test]
+fn mob_refusals() {
+    refuses("mobs.toml", "hp = 80", "hp = 0", "zero hp");
+    refuses(
+        "mobs.toml",
+        "walk_pct = 50",
+        "walk_pct = 0",
+        "1–100 percent",
+    );
+    refuses(
+        "mobs.toml",
+        "walk_pct = 50",
+        "walk_pct = 140",
+        "1–100 percent",
+    );
+    refuses("mobs.toml", "roam_m = 60", "roam_m = 10", "treadmill");
+    refuses(
+        "mobs.toml",
+        "flee_seconds = 3",
+        "flee_seconds = 0",
+        "scenery",
+    );
+    refuses(
+        "mobs.toml",
+        "respawn_seconds = 300",
+        "respawn_seconds = 0",
+        "zero respawn",
+    );
+    refuses(
+        "mobs.toml",
+        "item.fat",
+        "item.unobtainium",
+        "is not an item",
+    );
+    refuses("mobs.toml", "count = 15", "count = 0", "zero count");
+    // A species the sim has no roster kind for is a boot refusal, not a
+    // silently ignored row: the content hash would otherwise promise
+    // wildlife the shard does not have.
+    let mut srcs = sources();
+    let e = srcs.iter_mut().find(|(n, _)| *n == "mobs.toml").unwrap();
+    e.1 = e.1.replace("mob.pig", "mob.bear");
+    let c = build(&srcs).expect("a well-formed unknown species reaches the bake");
+    let err = c.bake_mobs().expect_err("an unknown species must not bake");
+    assert!(err.contains("no roster kind"), "got: {err}");
+}

@@ -75,8 +75,15 @@ The Rust loop, cut to what a skeleton must prove:
   banked OBOL, and skins. Nothing else.
 
 Out of scope for v1, by design (the skeleton must not wait on them):
-vehicles, farming, animal AI, electricity, teams UI (informal groups work
-day one), more monuments, anti-ESP occlusion culling (§10).
+vehicles, farming, ~~animal AI~~, electricity, teams UI (informal groups
+work day one), more monuments, anti-ESP occlusion culling (§10).
+
+**Animals are back in** (operator, 2026-08-08 — `DECISIONS.md`). The pig
+walks, flees and can be killed for fat and cloth; the design and what it
+deliberately does not have are `reference/ANIMALS.md` §9. What stays out of
+scope is the thing this line was really about — an **AI system**: nothing
+hunts, packs or fights back, and the roster is 64 fixed slots with a
+staggered think, not a spawner with behaviours.
 
 ## 3 · The economy
 

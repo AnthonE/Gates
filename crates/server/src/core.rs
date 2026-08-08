@@ -30,9 +30,10 @@ use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF};
 use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, CHAT_LOCAL_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES,
-    HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
-    SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK,
+    HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_MOBS, MAX_PLAYERS,
+    MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK,
 };
+use sim_core::mob;
 use sim_core::persist::PlayerSave;
 use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
@@ -60,6 +61,16 @@ fn addr_parts(addr: u32) -> (u8, u8, u8, u8) {
 /// entities.
 const PRIORITY_W_PLAYER: f32 = 100.0;
 const PRIORITY_HALF_SCALE_M: f32 = 32.0;
+
+/// Animals accrue at a quarter of a player's rate (`mob.rs`).
+///
+/// Not a guess about how interesting a pig is: it is the shed order stated
+/// where the shed happens. A snapshot that cannot carry everything must drop
+/// the animal before the player, because a player's position is what
+/// prediction reconciles and combat is fought on, and an animal's is what an
+/// interpolator smooths. A quarter puts a pig at 15 m on par with a player
+/// at 96 m, which is the trade this weight is claiming.
+const PRIORITY_W_MOB: f32 = 25.0;
 
 /// Consecutive byte-overflow refusals before the fill loop stops trying
 /// smaller records (bounded work per snapshot, not a wire number).
@@ -1891,6 +1902,45 @@ impl ShardCore {
                 c.accum[w] += PRIORITY_W_PLAYER / (1.0 + d_m / PRIORITY_HALF_SCALE_M);
             }
         }
+        // The roster, on the same band and the same accrual. Simpler than
+        // the player pass by exactly one thing: there is no tenant change
+        // to detect, because a roster slot is one animal for the life of
+        // the shard (client.rs). A death is therefore the only way an
+        // animal leaves, and it leaves the way a disconnect does — into
+        // the pending-removal set, so the client despawns it rather than
+        // holding a corpse that never moves again.
+        for slot in 0..MAX_MOBS {
+            let m = &self.world.mobs.m[slot];
+            if !m.alive {
+                if c.m_interest[slot] {
+                    overflow |= !c.pending_add(mob::mob_id(slot));
+                    c.m_interest[slot] = false;
+                }
+                c.m_accum[slot] = 0.0;
+                c.m_unsent[slot] = 0;
+                continue;
+            }
+            let dx = (m.body.qx - own.qx) as i64 * 3;
+            let dz = (m.body.qz - own.qz) as i64 * 3;
+            let d2 = dx * dx + dz * dz;
+            if c.m_interest[slot] {
+                if d2 > AOI_EXIT_CM * AOI_EXIT_CM {
+                    c.m_interest[slot] = false;
+                    c.m_accum[slot] = 0.0;
+                    c.m_unsent[slot] = 0;
+                    overflow |= !c.pending_add(mob::mob_id(slot));
+                }
+            } else if d2 <= AOI_ENTER_CM * AOI_ENTER_CM {
+                c.m_interest[slot] = true;
+                c.m_accum[slot] = 0.0;
+                c.m_unsent[slot] = 0;
+                c.pending_remove(mob::mob_id(slot));
+            }
+            if c.m_interest[slot] {
+                let d_m = ((d2 as f32).sqrt()) * 0.01;
+                c.m_accum[slot] += PRIORITY_W_MOB / (1.0 + d_m / PRIORITY_HALF_SCALE_M);
+            }
+        }
         if overflow {
             c.force_resync();
             ShardStats::bump(&stats.forced_resyncs);
@@ -1908,6 +1958,28 @@ impl ShardCore {
             sleeping: p.sleeping,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
+        }
+    }
+
+    /// One animal as the same record. Three of the nine fields have no
+    /// meaning here and each is answered rather than left to a default:
+    /// `pitch` is zero because nothing about a pig looks up or down;
+    /// `sleeping` is false because that bit means *nobody is driving this
+    /// body*, and something always is — dormancy is not the same fact and
+    /// a client would draw the slumped pose for it; `yaw` is the animal's
+    /// heading, which is both where it is going and where it is facing,
+    /// because a quadruped does not strafe.
+    fn wire_mob(slot: usize, m: &sim_core::mob::Mob) -> EntityState {
+        EntityState {
+            id: mob::mob_id(slot),
+            qx: m.body.qx,
+            qy: m.body.qy,
+            qz: m.body.qz,
+            qvy: m.body.qvy,
+            grounded: m.body.grounded,
+            sleeping: false,
+            yaw: m.yaw,
+            pitch: 0,
         }
     }
 
@@ -1967,11 +2039,33 @@ impl ShardCore {
 
         // Candidates: own entity first (reconciliation needs it every
         // snapshot), then interest by (stale-preempt, accumulator).
-        let mut order: [(u16, f32, bool); MAX_PLAYERS] = [(0, 0.0, false); MAX_PLAYERS];
+        //
+        // **One list, players and animals together**, ranked by the same
+        // two keys. That is the whole reason `PRIORITY_W_MOB` is a weight
+        // and not a second pass: a scheme that sent every player and then
+        // whatever animals fit would give the pig at your feet lower
+        // priority than a player at the far edge of AOI, and the
+        // accumulator exists precisely so that comparison is made on
+        // distance and staleness rather than on class. The index is
+        // packed — `< MAX_PLAYERS` is a world slot, above it a roster slot
+        // — because the alternative is two arrays and a merge, and the
+        // merge is the part that would get the ordering wrong.
+        const CANDIDATES: usize = MAX_PLAYERS + MAX_MOBS;
+        let mut order: [(u16, f32, bool); CANDIDATES] = [(0, 0.0, false); CANDIDATES];
         let mut n_cand = 0usize;
         for w in 0..MAX_PLAYERS {
             if c.interest[w] && self.world.players[w].active {
                 order[n_cand] = (w as u16, c.accum[w], c.unsent[w] >= STALENESS_CEILING - 1);
+                n_cand += 1;
+            }
+        }
+        for slot in 0..MAX_MOBS {
+            if c.m_interest[slot] && self.world.mobs.m[slot].alive {
+                order[n_cand] = (
+                    (MAX_PLAYERS + slot) as u16,
+                    c.m_accum[slot],
+                    c.m_unsent[slot] >= STALENESS_CEILING - 1,
+                );
                 n_cand += 1;
             }
         }
@@ -1990,11 +2084,15 @@ impl ShardCore {
                 return None;
             }
         }
-        let mut sent_mask = [false; MAX_PLAYERS];
+        let mut sent_mask = [false; MAX_PLAYERS + MAX_MOBS];
         let mut overflow_streak = 0u32;
         for &(w, _, _) in order[..n_cand].iter() {
             let w = w as usize;
-            let e = Self::wire_entity(&self.world.players[w]);
+            let e = if w < MAX_PLAYERS {
+                Self::wire_entity(&self.world.players[w])
+            } else {
+                Self::wire_mob(w - MAX_PLAYERS, &self.world.mobs.m[w - MAX_PLAYERS])
+            };
             match enc.add_entity(&e) {
                 Ok(()) => {
                     self.sent_buf[n_sent] = e;
@@ -2024,14 +2122,27 @@ impl ShardCore {
         };
 
         for (w, &was_sent) in sent_mask.iter().enumerate() {
-            if !c.interest[w] {
-                continue;
-            }
-            if was_sent {
-                c.accum[w] = 0.0;
-                c.unsent[w] = 0;
+            if w < MAX_PLAYERS {
+                if !c.interest[w] {
+                    continue;
+                }
+                if was_sent {
+                    c.accum[w] = 0.0;
+                    c.unsent[w] = 0;
+                } else {
+                    c.unsent[w] = c.unsent[w].saturating_add(1);
+                }
             } else {
-                c.unsent[w] = c.unsent[w].saturating_add(1);
+                let slot = w - MAX_PLAYERS;
+                if !c.m_interest[slot] {
+                    continue;
+                }
+                if was_sent {
+                    c.m_accum[slot] = 0.0;
+                    c.m_unsent[slot] = 0;
+                } else {
+                    c.m_unsent[slot] = c.m_unsent[slot].saturating_add(1);
+                }
             }
         }
         c.record_sent(

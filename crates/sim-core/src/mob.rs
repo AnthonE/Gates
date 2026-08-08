@@ -1,0 +1,612 @@
+//! Animals — the roster, the wander, and the kill (`reference/ANIMALS.md`).
+//!
+//! One species at v0 (the pig) and the whole file is written so a second
+//! costs a content row and nothing else.
+//!
+//! **There is no navmesh here and there is not going to be one**, which is
+//! the single biggest thing the research changed. The reference game bakes
+//! one on server start, at 100% CPU for minutes, and spent devblogs cutting
+//! its resolution to claw the boot time back (`reference/ANIMALS.md` §2).
+//! It has to: its world is a *file*, so the walkable surface is not knowable
+//! without walking it. Ours is a pure function — `terrain::height` and
+//! `terrain::slope` answer at any point for the cost of a hash — so an
+//! animal can steer and let `movement::step` say yes or no. That is not a
+//! cheaper navmesh, it is the absence of the problem a navmesh solves.
+//!
+//! **The animal drives the same capsule a player does.** A think tick sets
+//! a heading and a gait; the step builds an `InputFrame` out of them and
+//! calls `movement::step`. Every wall, cliff ratio, step-up, wade slowdown
+//! and tree the player collides with is therefore already true of the pig,
+//! for free, in the code the client predicts with — and the position it
+//! reaches is quantized by the same function, so the animal obeys
+//! quantize-both-sides without a second implementation to keep in step. The
+//! gait is what makes this honest rather than a shortcut: `InputFrame`'s
+//! move axis is `−127..=127` and `movement::step` scales speed by
+//! `move_z / 127`, so a grazing pig at gait 63 walks at 1.49 m/s out of the
+//! same `WALK_SPEED` a player sprints away from.
+//!
+//! **Bounded, per wall 4, and in two directions at once.** The roster is
+//! `MAX_MOBS` fixed slots — no spawn path can ask for a sixty-fifth pig.
+//! Decisions are phase-offset across `MOB_THINK_TICKS` (≈ 4 animals think
+//! per tick, not 64), and an animal with no player inside `MOB_WAKE_CM`
+//! does not step at all. Both of those are the reference game's own
+//! measures — a fixed think rate and dormancy at distance — and both are
+//! replay-safe here because their predicates are sim state and nothing
+//! else.
+//!
+//! Every number in `MobDef` is content (`content/mobs.toml`, wall 7); the
+//! constants in this file are structure — cadences, caps and the shape of
+//! the walk — and are registered in `DECISIONS.md` §open ("animals v0").
+
+use crate::collide::ColIndex;
+use crate::combat::{held_item, CombatContent};
+use crate::fmath::fabs;
+use crate::gather::{
+    inv_add, GatherContent, ItemStack, CONE_COS, DY_MAX_M, NO_ITEM, POINT_BLANK_M2,
+};
+use crate::input::{InputFrame, BTN_SPRINT};
+use crate::limits::{MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS, MOB_WAKE_CM};
+use crate::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
+use crate::occupy::Occupants;
+use crate::rng::cell_hash;
+use crate::terrain::{self, Haven};
+use crate::world::{EventQueue, Player, EV_GATHER, EV_HIT};
+use crate::yaw_lut::yaw_dir;
+
+/// Species ordinals. The wire does not carry one — a client reads the
+/// species off the roster slot the id names, because the roster's kinds are
+/// worldgen and worldgen is shared. One entry today; the array below is
+/// what makes a second a content row.
+pub const MOB_PIG: u8 = 0;
+pub const MOB_KINDS: usize = 1;
+
+/// Item rows one species may drop. Structural cap, not a knob: the bake
+/// refuses a longer table rather than truncating one.
+pub const MOB_LOOT_ROWS: usize = 4;
+
+/// Noise channels. Disjoint from every channel `terrain.rs` and `world.rs`
+/// spend, which is the only property that matters about them.
+const CH_MOB_HOME: u32 = 112;
+const CH_MOB_THINK: u32 = 113;
+
+/// Candidate homes drawn before a roster slot gives up and stays empty.
+/// Bounded like the spawn ring's `SPAWN_CANDIDATES` and for the same
+/// reason: this runs at world construction, once, and a loop that retried
+/// until it succeeded would be a hang on a seed with no land.
+const HOME_TRIES: i32 = 24;
+
+/// Ground an animal will stand on. Same walkability shape the spawn ring
+/// and the foundation use, so a pig's home is somewhere a player could
+/// have built.
+const HOME_MAX_SLOPE: f32 = 1.0;
+
+/// One species, as content sees it. Everything here is a number from
+/// `content/mobs.toml`; nothing in this struct is chosen in code.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MobDef {
+    /// Hit points at hatch. **Zero means inert** — the same door
+    /// `CombatContent::player_hp` uses: a content set that names no
+    /// animals leaves the roster empty and nothing hatches, so a shard can
+    /// run without wildlife and no code path has to ask whether it should.
+    pub hp: u16,
+    /// `InputFrame::move_z` while roaming, `0..=127` — the fraction of
+    /// `WALK_SPEED` this animal ambles at.
+    pub gait: u8,
+    /// `move_z` while fleeing. The sprint button rides with it, so the
+    /// speed ceiling is `SPRINT_SPEED` rather than `WALK_SPEED`.
+    pub flee_gait: u8,
+    /// How long one fright lasts, in ticks.
+    pub flee_ticks: u16,
+    /// Leash: planar centimetres from the home the seed chose. Past it the
+    /// animal heads home instead of wandering — the reference game's own
+    /// fix for animals that "ended up at the coast of the island"
+    /// (`reference/ANIMALS.md` §2), and the reason nothing here needs to
+    /// know how to swim.
+    pub roam_cm: i64,
+    /// A player closer than this, planar centimetres, starts a flight.
+    pub spook_cm: i64,
+    /// Ticks between a death and the same slot hatching again at the same
+    /// home. **The same home**, which is where we and the reference part
+    /// company on purpose: their refill re-samples the distribution and the
+    /// population migrates over a wipe (`reference/SPAWN.md` §3.5). Ours is
+    /// the slot model `TERRAIN.md` §2 already applies to trees.
+    pub respawn_ticks: u32,
+    /// What the killing blow pays, straight into the killer's inventory.
+    /// `NO_ITEM` ends the table.
+    pub loot: [ItemStack; MOB_LOOT_ROWS],
+}
+
+impl MobDef {
+    pub const INERT: Self = Self {
+        hp: 0,
+        gait: 0,
+        flee_gait: 0,
+        flee_ticks: 0,
+        roam_cm: 0,
+        spook_cm: 0,
+        respawn_ticks: 0,
+        loot: [ItemStack {
+            item: NO_ITEM,
+            count: 0,
+        }; MOB_LOOT_ROWS],
+    };
+}
+
+/// The baked species table (`content::Content::bake_mobs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MobContent {
+    pub defs: [MobDef; MOB_KINDS],
+}
+
+impl MobContent {
+    /// Inert: no species has hit points, so the roster never hatches.
+    pub const EMPTY: Self = Self {
+        defs: [MobDef::INERT; MOB_KINDS],
+    };
+
+    /// The fixture the probe and the sim tests run on — the alpha pig's
+    /// shape without a content directory. Loot is deliberately `NO_ITEM`
+    /// here: item *indices* are a property of the loaded set, and a
+    /// fixture that invented them would be asserting against a table it
+    /// made up.
+    pub fn probe_fixture() -> Self {
+        let mut c = Self::EMPTY;
+        c.defs[MOB_PIG as usize] = MobDef {
+            hp: 80,
+            gait: 63,
+            flee_gait: 127,
+            flee_ticks: 90,
+            roam_cm: 6_000,
+            spook_cm: 1_200,
+            respawn_ticks: 9_000,
+            loot: [ItemStack {
+                item: NO_ITEM,
+                count: 0,
+            }; MOB_LOOT_ROWS],
+        };
+        c
+    }
+
+    pub fn def(&self, kind: u8) -> MobDef {
+        self.defs
+            .get(kind as usize)
+            .copied()
+            .unwrap_or(MobDef::INERT)
+    }
+}
+
+/// One roster slot. Every field is sim state and every one of them is
+/// hashed — including `home_q*`, which never changes, because a shard that
+/// somehow disagreed about where an animal lives would disagree about every
+/// step it takes afterwards and the hash should say so on the first tick
+/// rather than the tenth.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Mob {
+    pub kind: u8,
+    /// Standing in the world. False either because it is dead and waiting
+    /// on `respawn_at`, or because this slot never found a home.
+    pub alive: bool,
+    /// A slot with no home is permanently empty — the seed had no land at
+    /// any of its `HOME_TRIES` draws. Kept as a flag rather than a
+    /// sentinel position so nothing has to know which coordinate means
+    /// "nowhere".
+    pub homed: bool,
+    pub hp: u16,
+    pub body: Body,
+    /// Heading, on the wire's yaw scale. The animal's whole steering state:
+    /// `movement::step` turns it into a direction through the same LUT a
+    /// player's view yaw goes through, and the snapshot ships it as the
+    /// facing a client draws.
+    pub yaw: u16,
+    /// `InputFrame::move_z` this animal is currently walking at. Zero is
+    /// grazing — standing still is a *state*, not the absence of one.
+    pub gait: i8,
+    /// Fleeing until this tick (0 = calm).
+    pub flee_until: u64,
+    /// Awake, as of the last think tick. Recomputed there and not per
+    /// tick, so a dormant animal costs one comparison a tick.
+    pub awake: bool,
+    /// Home, in position quanta — the leash's centre and the hatch point.
+    pub home_qx: i32,
+    pub home_qz: i32,
+    /// Tick this slot may hatch on. Zero on a fresh world, so every homed
+    /// slot hatches on tick 1 under armed content.
+    pub respawn_at: u64,
+}
+
+/// The roster: fixed slots, homes chosen once at world construction.
+///
+/// Built in `World::new` beside `terrain::haven` and for the same reason —
+/// it is a pure function of the seed, it costs a bounded number of terrain
+/// probes, and having it before the first tick means nothing in the tick
+/// has to ask whether the world is ready yet.
+#[derive(Clone)]
+pub struct Mobs {
+    pub m: [Mob; MAX_MOBS],
+}
+
+impl Mobs {
+    /// Every slot's home, drawn from the seed and rejected against the
+    /// terrain. Allocation-free and bounded: `MAX_MOBS × HOME_TRIES`
+    /// terrain probes, at construction, never in a tick.
+    pub fn new(seed: u64, haven: &Haven) -> Self {
+        let mut mobs = Self {
+            m: [Mob::default(); MAX_MOBS],
+        };
+        for (slot, mob) in mobs.m.iter_mut().enumerate() {
+            mob.kind = MOB_PIG;
+            let Some((x, z)) = home_of(seed, haven, slot) else {
+                continue;
+            };
+            mob.homed = true;
+            mob.home_qx = movement::quant_xz(x);
+            mob.home_qz = movement::quant_xz(z);
+            // Facing is drawn with the home so a fresh world is not a
+            // parade of pigs all pointing at +Z.
+            mob.yaw = ((cell_hash(seed, slot as i32, -1, CH_MOB_HOME) & 0xFF) as u16) << 8;
+        }
+        mobs
+    }
+
+    /// How many slots found land. The gate reads this; nothing in the sim
+    /// does.
+    pub fn homed(&self) -> usize {
+        self.m.iter().filter(|m| m.homed).count()
+    }
+
+    pub fn alive(&self) -> usize {
+        self.m.iter().filter(|m| m.alive).count()
+    }
+}
+
+/// The entity id of a roster slot. The high bit is the species-vs-player
+/// question answered for the client (`limits::MOB_ID_TAG`); the low bits
+/// are the slot, which is also how a client looks the animal back up.
+#[inline]
+pub fn mob_id(slot: usize) -> u32 {
+    MOB_ID_TAG | slot as u32
+}
+
+/// The roster slot an entity id names, or `None` for a player.
+#[inline]
+pub fn slot_of_id(id: u32) -> Option<usize> {
+    if id & MOB_ID_TAG == 0 {
+        return None;
+    }
+    let slot = (id & !MOB_ID_TAG) as usize;
+    (slot < MAX_MOBS).then_some(slot)
+}
+
+/// The LUT entry nearest a direction — the inverse `yaw_dir` does not
+/// have, and deliberately not an `atan2`.
+///
+/// Wall 1 forbids trig, but that is not the reason this is a search. The
+/// sim's direction space **is** the 256-entry table: `movement::step` will
+/// re-quantize any angle to it before moving anything, so picking the entry
+/// with the largest dot product is not an approximation of the right answer,
+/// it is the right answer. An `atan2` here would be a float approximation
+/// whose result gets rounded to this same table anyway.
+///
+/// Bounded and allocation-free: 256 iterations, on a think tick only, for
+/// the ≈ 4 animals thinking on it. A zero-length direction keeps the
+/// current heading, which is what a pig standing exactly on its target
+/// should do.
+fn yaw_toward(dx: f32, dz: f32, current: u16) -> u16 {
+    if dx * dx + dz * dz <= 0.0 {
+        return current;
+    }
+    let mut best = current;
+    let mut best_dot = f32::NEG_INFINITY;
+    for i in 0..256u16 {
+        let (ex, ez) = yaw_dir(i << 8);
+        let dot = ex * dx + ez * dz;
+        if dot > best_dot {
+            best_dot = dot;
+            best = i << 8;
+        }
+    }
+    best
+}
+
+/// The nearest player who could see this animal: planar distance² in
+/// centimetre² and the delta to them. Sleepers do not count — a body
+/// nobody is driving has no client watching, so it has no business keeping
+/// wildlife awake — but a body on the death screen does, because that
+/// player is still looking at the world.
+fn nearest_player(players: &[Player; MAX_PLAYERS], body: &Body) -> Option<(i64, i32, i32)> {
+    let mut best: Option<(i64, i32, i32)> = None;
+    for p in players.iter() {
+        if !p.active || p.sleeping {
+            continue;
+        }
+        let dx = p.body.qx - body.qx;
+        let dz = p.body.qz - body.qz;
+        // 3 cm quanta into centimetres, in i64 — the AOI convention.
+        let d2 = (dx as i64 * 3) * (dx as i64 * 3) + (dz as i64 * 3) * (dz as i64 * 3);
+        if best.is_none_or(|(bd2, _, _)| d2 < bd2) {
+            best = Some((d2, dx, dz));
+        }
+    }
+    best
+}
+
+/// One tick of the whole roster.
+///
+/// Order is slot order, which is the fixed order determinism wants, and the
+/// pass is over `MAX_MOBS` regardless of how many are alive — a scan whose
+/// length depends on liveness is a scan whose cost is a player's business.
+#[allow(clippy::too_many_arguments)]
+pub fn step(
+    seed: u64,
+    tick: u64,
+    mc: &MobContent,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    mobs: &mut Mobs,
+    players: &[Player; MAX_PLAYERS],
+) {
+    for slot in 0..MAX_MOBS {
+        let mob = &mut mobs.m[slot];
+        if !mob.homed {
+            continue;
+        }
+        let def = mc.def(mob.kind);
+        if !mob.alive {
+            // Hatching is the one thing a dormant slot still does. It is
+            // cheap, it is off a tick comparison, and an animal that only
+            // came back when somebody was standing there to watch would be
+            // a shard whose population depends on who logged in.
+            if def.hp > 0 && tick >= mob.respawn_at {
+                hatch(seed, mob, &def);
+            }
+            continue;
+        }
+
+        // The think tick, phase-offset by slot: `MAX_MOBS / MOB_THINK_TICKS`
+        // animals decide on any given tick and the rest only integrate.
+        if tick % MOB_THINK_TICKS == (slot as u64) % MOB_THINK_TICKS {
+            think(seed, tick, slot, &def, mob, players);
+        }
+        if !mob.awake {
+            continue;
+        }
+
+        let frame = InputFrame {
+            yaw: mob.yaw,
+            move_z: mob.gait,
+            buttons: if mob.flee_until > tick { BTN_SPRINT } else { 0 },
+            ..InputFrame::default()
+        };
+        movement::step(seed, cols, occ, &mut mob.body, &frame);
+    }
+}
+
+/// Stand the animal back up at its own home.
+fn hatch(seed: u64, mob: &mut Mob, def: &MobDef) {
+    // `Body::at` puts the capsule on the heightfield — the same one the
+    // home was chosen against at construction, so this lands standing.
+    // Re-quantized from the stored quanta rather than kept as floats:
+    // the home IS its quantized value, and dequantizing it here is what
+    // makes a hatch bit-identical to the construction that placed it.
+    let x = mob.home_qx as f32 * POS_XZ_Q;
+    let z = mob.home_qz as f32 * POS_XZ_Q;
+    mob.body = Body::at(seed, x, z);
+    mob.hp = def.hp;
+    mob.alive = true;
+    mob.gait = 0;
+    mob.flee_until = 0;
+    mob.awake = false;
+}
+
+/// One decision. Everything an animal chooses is chosen here, on the think
+/// tick, and the ticks in between only integrate what this left behind.
+fn think(
+    seed: u64,
+    tick: u64,
+    slot: usize,
+    def: &MobDef,
+    mob: &mut Mob,
+    players: &[Player; MAX_PLAYERS],
+) {
+    let near = nearest_player(players, &mob.body);
+    mob.awake = near.is_some_and(|(d2, _, _)| d2 <= MOB_WAKE_CM * MOB_WAKE_CM);
+    if !mob.awake {
+        // A dormant animal keeps its heading and stops walking, so it does
+        // not wake up mid-stride into a wall it never saw.
+        mob.gait = 0;
+        return;
+    }
+
+    // A player inside the spook radius starts a flight, and refreshes one
+    // already running — which is what makes chasing a pig work: the fright
+    // lasts `flee_ticks` past the last moment you were close.
+    if let Some((d2, _, _)) = near {
+        if d2 <= def.spook_cm * def.spook_cm {
+            mob.flee_until = tick + def.flee_ticks as u64;
+        }
+    }
+
+    if mob.flee_until > tick {
+        if let Some((_, dx, dz)) = near {
+            // Directly away, on the same LUT the walk uses.
+            mob.yaw = yaw_toward(-(dx as f32) * POS_XZ_Q, -(dz as f32) * POS_XZ_Q, mob.yaw);
+        }
+        mob.gait = def.flee_gait.min(127) as i8;
+        return;
+    }
+
+    // The leash. Two ways an animal is out of place and both answer "go
+    // home": past the roam radius, or standing on the beach — the second
+    // is what keeps a wanderer out of the sea without teaching anything
+    // here to swim.
+    let hdx = mob.home_qx - mob.body.qx;
+    let hdz = mob.home_qz - mob.body.qz;
+    let home_d2 = (hdx as i64 * 3) * (hdx as i64 * 3) + (hdz as i64 * 3) * (hdz as i64 * 3);
+    let x = mob.body.qx as f32 * POS_XZ_Q;
+    let z = mob.body.qz as f32 * POS_XZ_Q;
+    let beached = terrain::height(seed, x, z) <= terrain::BEACH_MAX_H;
+    if home_d2 > def.roam_cm * def.roam_cm || beached {
+        mob.yaw = yaw_toward(hdx as f32 * POS_XZ_Q, hdz as f32 * POS_XZ_Q, mob.yaw);
+        mob.gait = def.gait.min(127) as i8;
+        return;
+    }
+
+    // Otherwise: graze or amble. The draw is per (slot, think index), so it
+    // is a pure function of the world's own clock and reproduces under
+    // replay without anything being stored between ticks.
+    let draw = cell_hash(
+        seed,
+        slot as i32,
+        (tick / MOB_THINK_TICKS) as i32,
+        CH_MOB_THINK,
+    );
+    if draw & 3 == 0 {
+        mob.gait = 0;
+        return;
+    }
+    // A turn, not a new bearing. ±32 LUT entries is ±45°, and the
+    // difference between this and drawing a fresh heading every half second
+    // is the difference between an animal and a glitch.
+    let turn = ((draw >> 8) & 0x3F) as i32 - 32;
+    let idx = ((mob.yaw >> 8) as i32 + turn) & 0xFF;
+    mob.yaw = (idx as u16) << 8;
+    mob.gait = def.gait.min(127) as i8;
+}
+
+/// Resolve one already-taken swing (cadence paid, no node and no player
+/// hit) against the animals in front of the attacker.
+///
+/// The same pick every other target gets — nearest inside the weapon's
+/// reach and gather's aim cone — and it sits between the player scan and
+/// the raid scan in `world::tick` for the reason the order implies: a
+/// player is always the intended target over an animal, and an animal is
+/// always the intended target over the wall behind it.
+///
+/// The kill pays straight into the killer's inventory as `EV_GATHER`,
+/// which is not a shortcut: that event already means "these units entered
+/// your inventory" for gathering **and** for looting a backpack, the
+/// client already draws it as `+N Item`, and a butchering verb would be a
+/// second verb to design rather than a first animal to shoot. What the
+/// slice therefore does not have is a corpse — a killed pig leaves the
+/// snapshot and is simply gone. `NOW.md` carries that.
+///
+/// Bounded: one pass over `MAX_MOBS`, on a swing tick only, allocation-free.
+#[allow(clippy::too_many_arguments)]
+pub fn strike(
+    cc: &CombatContent,
+    gc: &GatherContent,
+    mc: &MobContent,
+    tick: u64,
+    attacker: usize,
+    players: &mut [Player; MAX_PLAYERS],
+    mobs: &mut Mobs,
+    events: &mut EventQueue,
+) -> bool {
+    let a = &players[attacker];
+    if !a.active || a.hp == 0 {
+        return false;
+    }
+    let Some(def) = cc.held_melee(held_item(a)) else {
+        return false;
+    };
+    let reach = def.reach_cm as f32 * 0.01;
+    let ax = a.body.qx as f32 * POS_XZ_Q;
+    let ay = a.body.qy as f32 * POS_Y_Q;
+    let az = a.body.qz as f32 * POS_XZ_Q;
+    let (fx, fz) = yaw_dir(a.frame.yaw);
+    let attacker_id = a.id;
+
+    let mut best: Option<(f32, usize)> = None;
+    for (slot, m) in mobs.m.iter().enumerate() {
+        if !m.alive || m.hp == 0 {
+            continue;
+        }
+        let dx = m.body.qx as f32 * POS_XZ_Q - ax;
+        let dy = m.body.qy as f32 * POS_Y_Q - ay;
+        let dz = m.body.qz as f32 * POS_XZ_Q - az;
+        let d2 = dx * dx + dz * dz;
+        if d2 > reach * reach || fabs(dy) > DY_MAX_M {
+            continue;
+        }
+        let aimed = d2 <= POINT_BLANK_M2 || dx * fx + dz * fz > CONE_COS * d2.sqrt();
+        if aimed && best.is_none_or(|(bd2, _)| d2 < bd2) {
+            best = Some((d2, slot));
+        }
+    }
+    let Some((_, slot)) = best else {
+        return false;
+    };
+
+    let species = mc.def(mobs.m[slot].kind);
+    let mob = &mut mobs.m[slot];
+    let died = def.damage >= mob.hp;
+    mob.hp -= def.damage.min(mob.hp);
+    // Hurt is the other way into a flight, and the only one that does not
+    // need the attacker to be close: shot from range, the animal still runs.
+    mob.flee_until = tick + species.flee_ticks as u64;
+    mob.awake = true;
+    // EV_HIT is the attacker's own fact and the server routes it by `a`,
+    // so a tagged mob id in `b` reaches the hand that swung and nothing
+    // else — the hitmarker, exactly as a player hit draws it.
+    events.push(EV_HIT, attacker_id, mob_id(slot), def.damage as u32);
+    if !died {
+        return true;
+    }
+    mob.alive = false;
+    mob.hp = 0;
+    mob.respawn_at = tick + species.respawn_ticks as u64;
+
+    for row in species.loot.iter() {
+        if row.item == NO_ITEM || row.count == 0 {
+            continue;
+        }
+        let stack_max = gc.stack_max_of(row.item);
+        let added = inv_add(&mut players[attacker].inv, row.item, row.count, stack_max);
+        // Announced even at zero — a full inventory loses the meat, and
+        // `EV_GATHER`'s contract is that the loss is said out loud rather
+        // than being silent (world.rs).
+        events.push(
+            EV_GATHER,
+            attacker_id,
+            ((row.item as u32) << 16) | added as u32,
+            0,
+        );
+    }
+    true
+}
+
+/// A home for one roster slot: uniform over the island square, rejected
+/// against the same walkability the spawn ring uses, plus the two authored
+/// sites.
+///
+/// Uniform-and-reject rather than the reference game's quadtree importance
+/// sampler (`reference/SPAWN.md` §3.1–3.2). Theirs exists because their
+/// spawn filter is a baked byte field over a map file that has to be
+/// sampled proportionally without scanning; ours can simply *ask the
+/// terrain* at any point, and 24 draws against ~50% land is a home for all
+/// but a handful of slots. What we do steal is the structure they got
+/// right: **sample cheaply and approximately, reject exactly.**
+fn home_of(seed: u64, haven: &Haven, slot: usize) -> Option<(f32, f32)> {
+    for attempt in 0..HOME_TRIES {
+        let h = cell_hash(seed, slot as i32, attempt, CH_MOB_HOME);
+        let x = ((h & 0xFFFF) as f32 / 65536.0) * terrain::ISLAND_SIZE;
+        let z = (((h >> 16) & 0xFFFF) as f32 / 65536.0) * terrain::ISLAND_SIZE;
+        // Inland: above the beach band, so the leash's centre is never
+        // somewhere the "go home" rule would immediately fire on.
+        if terrain::height(seed, x, z) <= terrain::BEACH_MAX_H {
+            continue;
+        }
+        if terrain::slope(seed, x, z) >= HOME_MAX_SLOPE {
+            continue;
+        }
+        // The two authored sites are the map's meeting places (TERRAIN.md
+        // §8). A pig standing in the haven's loot pad on every wipe is a
+        // free kill on a schedule, which is the opposite of what a
+        // destination is for.
+        if terrain::in_haven(haven, x, z) || terrain::in_waystation(haven, x, z) {
+            continue;
+        }
+        return Some((x, z));
+    }
+    None
+}

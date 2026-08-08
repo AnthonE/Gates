@@ -20,6 +20,47 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0m · The pig is in — what the roster still owes *(systems lane)*
+
+Landed 2026-08-08 (operator: *"let's get a pig in"*). 64 fixed roster slots,
+homes drawn from the seed, staggered think, dormancy at 240 m, a leash, a
+flight, and a kill that pays fat and cloth. No navmesh: the terrain is a pure
+function, so the animal steers and `movement::step` decides — which also
+means it inherits tree and piece collision for free. Research is
+`reference/ANIMALS.md`; the design call is `DECISIONS.md` 2026-08-08.
+
+**Three defects were found by booting the game and looking, and every gate
+was green through all of them** — which is what `CLAUDE.md`'s "the operator
+boots the game and looks" is for. (1) `flee_pct = 100` made the pig run at
+exactly the player's sprint, so it could never be caught or melee'd; now 70,
+and `tests/content.rs` gates `flee_gait < 127`. (2) The massing wore
+`props::tint1`, a **mean-1** modulation meant for a photograph, and rendered
+near-white on an untextured material; `boxes_mesh_with` splits the two and
+`tests/mob_mesh.rs` gates the mean. (3) `bodies.rs` drew a humanoid rig at
+every pig's position as well, because its only filter was "not me".
+
+Owed, in rank order — `reference/ANIMALS.md` §9.5 has the reasoning:
+
+1. **No corpse.** A killed pig leaves the snapshot and is gone; the loot is
+   paid straight into the killer's inventory as `EV_GATHER`. The reference's
+   actual interaction is a *butchering verb* on the body, which is a verb to
+   design, not a species to add.
+2. **Nothing fights back.** Needs a mob→player damage path, a new death
+   cause on the wire, and a combat-feel answer to being hit by something you
+   cannot reliably hit back.
+3. **No sound.** `sound/synth.rs` generates the bank at boot and has no
+   voice for an animal; the reference identifies a boar by its snorting
+   before you see it.
+4. **No animation, and the massing is boxy up close.** Legs do not move, so
+   a walking pig slides, and at 8 m the head barely separates from the body
+   (captured 2026-08-08). `anim.rs` drives the player rig off a glTF and there is no
+   equivalent here; the cheapest honest version is a per-leg transform off
+   the interpolated speed, not a rig.
+5. **`MAX_MOBS = 64` has never met a playtest.** It is derived (§ the wire
+   budget) rather than felt, and it is the one number a player answers.
+
+---
+
 ## 0u · The ghost tells the truth — what it still cannot promise *(client lane)*
 
 Landed 2026-08-07. The build ghost drew a doorway as a SOLID SLAB, so the

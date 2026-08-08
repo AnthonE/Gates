@@ -144,6 +144,7 @@ echo "   (needs libwayland-dev + libasound2-dev + libudev-dev — Bevy defaults,
 $NICE cargo clippy -p client --features render --all-targets -- -D warnings \
   || fail "clippy (native client)"
 $NICE cargo test -p client --features render --lib --test tree --test fell --test look --test ghost \
+  --test mob_mesh \
   || fail "native client suites"
 
 echo "== gate: wasm build (sim-core + protocol + client-wasm -> wasm32-unknown-unknown)"

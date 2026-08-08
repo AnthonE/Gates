@@ -35,6 +35,10 @@ use wtransport::{Connection, Endpoint, Identity, RecvStream, SendStream, ServerC
 
 /// Handshake must finish inside this or the session drops (edge flood
 /// control, DESIGN.md §10). Plumbing bound, DECISIONS.md §open row.
+/// Bits of the slot's claim generation that reach a player id. See the id
+/// derivation below: the ceiling is `limits::MOB_ID_TAG`, not arithmetic.
+const PLAYER_ID_GEN_MASK: u32 = 0x007F_FFFF;
+
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Writer poll cadence: how often per-connection outbound rings drain.
 /// Latency floor for a snapshot, far under the 66 ms snapshot interval.
@@ -161,6 +165,7 @@ pub async fn spawn_shard(
     survival: sim_core::survival::SurvivalContent,
     spawn_kit: sim_core::inventory::SpawnKit,
     loot: sim_core::loot::LootContent,
+    mobs: sim_core::mob::MobContent,
     catalog: ItemCatalog,
     saves: Saves,
     world_boot: crate::worldfile::WorldBoot,
@@ -256,6 +261,7 @@ pub async fn spawn_shard(
                     survival,
                     spawn_kit,
                     loot,
+                    mobs,
                     catalog,
                     world_blob,
                     world_idents,
@@ -763,7 +769,16 @@ async fn install(
     };
     // Player id: slot in the low byte, claim generation above — unique
     // across slot reuse, stable for the connection's life.
-    let id = (generation << 8) | slot as u32;
+    //
+    // The generation is masked to 23 bits **so bit 31 is never set**, and
+    // that is a wire contract rather than a tidiness: `limits::MOB_ID_TAG`
+    // is the high bit and it means "this class-D entity is an animal, draw
+    // it as one". `SlotTable::claim` masks to 30, which after the shift
+    // reaches bit 37 — so a slot re-claimed 2²³ times would have minted a
+    // player id that every client draws as a pig. 8.4 million reconnects on
+    // one slot is not a scenario, which is exactly why it would never have
+    // been found; the mask costs nothing and `tests/mob.rs` asserts it.
+    let id = ((generation & PLAYER_ID_GEN_MASK) << 8) | slot as u32;
     // Who this connection is, for the whole of its life. Recorded before the
     // sim is told anything, so a record coming back from the very first tick
     // already has a key to be filed under.
@@ -1250,6 +1265,7 @@ fn sim_thread(
     survival: sim_core::survival::SurvivalContent,
     spawn_kit: sim_core::inventory::SpawnKit,
     loot: sim_core::loot::LootContent,
+    mobs: sim_core::mob::MobContent,
     catalog: ItemCatalog,
     world_blob: Vec<u8>,
     world_idents: crate::worldfile::Identities,
@@ -1274,6 +1290,7 @@ fn sim_thread(
     core.world.survival = survival;
     core.world.spawn_kit = spawn_kit;
     core.world.loot = loot;
+    core.world.mob = mobs;
     core.catalog = catalog;
     // **The load, and this is the only place it may happen**: after the
     // content tables above are installed — the decoder range-checks every

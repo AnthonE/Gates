@@ -294,7 +294,16 @@ for (let i = 0; i < slotCount; i++) {
 // a v26 client's hello decodes to a different kind entirely, so the version
 // gate refuses it before any field is read. Nothing silent, which is the
 // one mercy of a width change over a field change.
-check(ex.client_proto_ver() === 27, "proto ver drifted without this gate hearing");
+// 28: animals. Not one bit of layout moved — an animal rides the class-D
+// record a player already rides, and the high bit of the entity id
+// (`limits::MOB_ID_TAG`) says which. The version turns on v18's precedent
+// that a widened MEANING is a wire change, and the mismatch it prevents is
+// squarely this file's business: a v27 client decodes every animal record
+// perfectly and draws a human being standing in a field, walking at half
+// speed and facing wherever the pig is going. Nothing errors, nothing is
+// short by a bit, and it would read as a renderer bug forever — which is
+// the same silent class as 26, arrived at from the opposite direction.
+check(ex.client_proto_ver() === 28, "proto ver drifted without this gate hearing");
 
 // Every hand-framed S->C event below is built here, from the field widths
 // `protocol/src/event.rs` declares — never from a byte literal. Wire v13

@@ -187,6 +187,23 @@ pub fn hash(c: &Content) -> u64 {
         }
     }
 
+    // Animals. Hashed like everything else the sim reads: two content sets
+    // whose pigs differ must not canonicalise identically, or a replay is
+    // handed a WAL header claiming a match it does not have.
+    h.s("mobs");
+    for m in sorted(&c.mobs, |m| &m.id) {
+        h.s(&m.id);
+        h.s(&m.name);
+        h.u(m.hp);
+        h.u(m.walk_pct);
+        h.u(m.flee_pct);
+        h.u(m.flee_seconds);
+        h.u(m.roam_m);
+        h.u(m.spook_m);
+        h.u(m.respawn_seconds);
+        h.stacks(&m.drops);
+    }
+
     h.s("skins");
     for s in sorted(&c.skins, |s| &s.id) {
         h.s(&s.id);

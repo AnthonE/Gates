@@ -42,6 +42,10 @@
   rate, range falloff curve, ballistic (speed, drop) or hitscan, ammo id
 - **armor**: slot, damage reduction %, movement penalty
 - **consumable**: health/food/water deltas over seconds
+- **mob**: one animal species — hp, speeds as a percentage of the player's
+  own, the leash and fright radii in metres, the respawn in seconds, and
+  the stacks a kill pays. `content/mobs.toml`; the sim's side is
+  `sim-core/src/mob.rs` and the design is `reference/ANIMALS.md` §9.
 - **deployable**: entity archetype (bag, hearth, cupboard, box, furnace,
   workbench), placement rules, hp
 - **loot_table**: container archetype → weighted entries + count range
@@ -95,8 +99,14 @@ N + rope + tarp) · door_metal · armor_roadsign (component-gated) ·
 medkit
 
 **Food**: berries · mushrooms · corn (meadow scatter) · cooked_meat
-(animals are post-alpha; meat drops from… nothing yet — cut meat, keep
-berries/mushrooms/corn) **(knob: cut list)**
+(cut meat, keep berries/mushrooms/corn) **(knob: cut list)**
+
+The parenthesis used to read "animals are post-alpha; meat drops from…
+nothing yet", and half of that is now wrong: animals landed 2026-08-08 and
+the pig drops `item.fat` and `item.cloth` (`content/mobs.toml`). **Meat is
+still cut, for the other half of the reason** — cooking is a verb we do not
+have, and one animal does not un-cut a verb. `item.fat` had existed since
+the first content set with nothing in the world dropping it; it does now.
 
 That's the whole alpha economy: two ores, one powder chain, one gun, one
 raid tool. Everything else is reachable-by-schema without touching sim.

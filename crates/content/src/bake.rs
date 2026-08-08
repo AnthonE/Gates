@@ -34,6 +34,7 @@ use sim_core::limits::{
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
 };
+use sim_core::mob::{MobContent, MobDef, MOB_LOOT_ROWS, MOB_PIG};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
@@ -898,5 +899,82 @@ impl Content {
             lc.tables[which] = t;
         }
         Ok(lc)
+    }
+    /// The animal species table (`sim-core/src/mob.rs`).
+    ///
+    /// Three conversions happen here and nowhere else, which is the point
+    /// of the bake: seconds become ticks, metres become the centimetres the
+    /// sim compares distances in, and a percentage of the player's speed
+    /// becomes the `−127..=127` move axis `movement::step` scales by. After
+    /// this, `mob.rs` does not know what a second, a metre or a percent is.
+    ///
+    /// The species *ordinal* is resolved from the id here, exactly as a
+    /// loot table's container is: an unknown name is a refusal at boot and
+    /// never a silently ignored row, because a shard that booted with a row
+    /// nothing reads is a shard whose content hash promises wildlife it
+    /// does not have.
+    pub fn bake_mobs(&self) -> Result<MobContent, String> {
+        let mut mc = MobContent::EMPTY;
+        for m in &self.mobs {
+            let which = match m.id.as_str() {
+                "mob.pig" => MOB_PIG as usize,
+                other => {
+                    return Err(format!(
+                        "bake: mobs names species `{other}`, which the sim has no roster kind for"
+                    ))
+                }
+            };
+            if mc.defs[which].hp != 0 {
+                return Err(format!("bake: duplicate mob row for `{}`", m.id));
+            }
+            if m.drops.len() > MOB_LOOT_ROWS {
+                return Err(format!(
+                    "bake: mob `{}` drops {} stacks, past the sim's {MOB_LOOT_ROWS}",
+                    m.id,
+                    m.drops.len()
+                ));
+            }
+            let small = |v: u32, what: &str| -> Result<u16, String> {
+                u16::try_from(v)
+                    .map_err(|_| format!("bake: mob `{}` {what} {v} overflows the sim", m.id))
+            };
+            // A percentage of the axis, floored: 50% is 63, which is
+            // 1.4882 m/s out of `WALK_SPEED`. Floored rather than rounded
+            // because the axis is the ceiling on speed and a content
+            // number should never buy more than it asked for.
+            let axis = |pct: u32| -> u8 { ((pct.min(100) * 127) / 100) as u8 };
+            let mut def = MobDef {
+                hp: small(m.hp, "hp")?,
+                gait: axis(m.walk_pct),
+                flee_gait: axis(m.flee_pct),
+                flee_ticks: small(
+                    m.flee_seconds
+                        .checked_mul(TICK_HZ)
+                        .ok_or_else(|| format!("bake: mob `{}` flee span overflows", m.id))?,
+                    "flee_seconds",
+                )?,
+                roam_cm: m.roam_m as i64 * 100,
+                spook_cm: m.spook_m as i64 * 100,
+                respawn_ticks: m
+                    .respawn_seconds
+                    .checked_mul(TICK_HZ)
+                    .ok_or_else(|| format!("bake: mob `{}` respawn span overflows", m.id))?,
+                loot: [ItemStack {
+                    item: NO_ITEM,
+                    count: 0,
+                }; MOB_LOOT_ROWS],
+            };
+            for (i, d) in m.drops.iter().enumerate() {
+                let item = self
+                    .item_index(&d.item)
+                    .ok_or_else(|| format!("bake: mob `{}` drops unknown `{}`", m.id, d.item))?;
+                def.loot[i] = ItemStack {
+                    item,
+                    count: small(d.count, "drop count")?,
+                };
+            }
+            mc.defs[which] = def;
+        }
+        Ok(mc)
     }
 }

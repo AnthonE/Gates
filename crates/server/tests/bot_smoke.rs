@@ -24,6 +24,7 @@ fn baked_content() -> (
     sim_core::backpack::BackpackContent,
     sim_core::survival::SurvivalContent,
     sim_core::loot::LootContent,
+    sim_core::mob::MobContent,
     protocol::ItemCatalog,
 ) {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
@@ -42,15 +43,17 @@ fn baked_content() -> (
         .bake_survival()
         .expect("shipped survival clock bakes");
     let loot = content.bake_loot().expect("shipped loot tables bake");
+    let mobs = content.bake_mobs().expect("shipped animals bake");
     let catalog = server::net::bake_catalog(&content).expect("shipped catalog bakes");
     (
-        gather, craft, build, deploy, combat, backpack, survival, loot, catalog,
+        gather, craft, build, deploy, combat, backpack, survival, loot, mobs, catalog,
     )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bot_smoke_50() {
-    let (gather, craft, build, deploy, combat, backpack, survival, loot, catalog) = baked_content();
+    let (gather, craft, build, deploy, combat, backpack, survival, loot, mobs, catalog) =
+        baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(0xC0FFEE),
         gather,
@@ -65,6 +68,7 @@ async fn test_bot_smoke_50() {
         // fresh inventory would be asserting on content instead of on code.
         sim_core::inventory::SpawnKit::EMPTY,
         loot,
+        mobs,
         catalog,
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
@@ -175,7 +179,8 @@ async fn test_action_lane_over_socket() {
         .recipe_index("recipe.hatchet_stone")
         .expect("shipped recipe");
 
-    let (gather, craft, build, deploy, combat, backpack, survival, loot, catalog) = baked_content();
+    let (gather, craft, build, deploy, combat, backpack, survival, loot, mobs, catalog) =
+        baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(11),
         gather,
@@ -190,6 +195,7 @@ async fn test_action_lane_over_socket() {
         // fresh inventory would be asserting on content instead of on code.
         sim_core::inventory::SpawnKit::EMPTY,
         loot,
+        mobs,
         catalog,
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
@@ -271,7 +277,8 @@ async fn test_version_gate_refuses() {
     use protocol::{encode_hello, Hello, MAX_STREAM_MSG_BYTES};
     use server::net::{read_frame, write_frame};
 
-    let (gather, craft, build, deploy, combat, backpack, survival, loot, catalog) = baked_content();
+    let (gather, craft, build, deploy, combat, backpack, survival, loot, mobs, catalog) =
+        baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(7),
         gather,
@@ -286,6 +293,7 @@ async fn test_version_gate_refuses() {
         // fresh inventory would be asserting on content instead of on code.
         sim_core::inventory::SpawnKit::EMPTY,
         loot,
+        mobs,
         catalog,
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
@@ -327,7 +335,7 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
 
     // Same shard, same everything, one config key apart.
     for (dev_spawn, want) in [(None, false), (Some((1024.0, 1024.0)), true)] {
-        let (gather, craft, build, deploy, combat, backpack, survival, loot, catalog) =
+        let (gather, craft, build, deploy, combat, backpack, survival, loot, mobs, catalog) =
             baked_content();
         let mut cfg = ShardConfig::ephemeral(13);
         cfg.dev_spawn = dev_spawn;
@@ -345,6 +353,7 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
             // fresh inventory would be asserting on content instead of on code.
             sim_core::inventory::SpawnKit::EMPTY,
             loot,
+            mobs,
             catalog,
             Saves::off(),
             server::worldfile::WorldBoot::off(),

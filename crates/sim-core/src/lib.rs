@@ -19,6 +19,7 @@ pub mod input;
 pub mod inventory;
 pub mod limits;
 pub mod loot;
+pub mod mob;
 pub mod movement;
 pub mod occupy;
 pub mod persist;

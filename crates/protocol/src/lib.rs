@@ -279,7 +279,34 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 ///
 /// Fixtures are keyed `v27_*` — all 74 renamed and regenerated (the kind
 /// width touches every one), plus two new: `v27_challenge` and `v27_auth`.
-pub const PROTO_VER: u16 = 27;
+/// v28 put animals on the snapshot lane (`sim-core/src/mob.rs`), and it is
+/// the cheapest kind of version turn and the most easily got wrong. **Not
+/// one bit of layout moved**: an animal is a class-D body exactly as a
+/// player is, so it rides the record that already exists, and what says
+/// which is which is the high bit of the id (`limits::MOB_ID_TAG`) — a bit
+/// the player-id allocator was quietly capable of setting and is now
+/// masked out of (`server/net.rs`).
+///
+/// The version turns anyway, on **v18's precedent stated one screen up**:
+/// *a widened meaning is a wire change even when the layout is
+/// byte-identical.* The consequence here is worse than v18's declined drag
+/// and about as bad as v22's mispredicted jump — a v27 client against a v28
+/// server parses every animal as a player and draws a human being standing
+/// in a field, walking at half speed and facing wherever the pig is going.
+/// It would look like a bug in the renderer forever. The handshake refusing
+/// the pairing is the correct outcome, and it is the only mechanism that
+/// can produce it.
+///
+/// The alternative — a `kind` field on `EntityState` — was rejected on
+/// cost: it spends bits on every record of every snapshot, including the
+/// overwhelming majority that are players, to carry a value that never
+/// changes for the life of an entity and that the id already distinguishes.
+/// Fixtures are keyed `v28_*`: all 76 renamed, and exactly **one** differs
+/// in bytes from its v27 self — `v28_hello`, which carries the version
+/// number. That single changed file is what a bump with no layout change
+/// looks like, and it is worth looking at: a diff here with more than one
+/// file in it would mean the layout moved after all.
+pub const PROTO_VER: u16 = 28;
 
 /// Datagram kind field width.
 ///

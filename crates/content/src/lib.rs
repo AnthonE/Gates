@@ -20,7 +20,7 @@ pub use balance::Anchors;
 
 /// Every file the content set is made of — exactly these, no extras.
 /// A missing file is a loud failure, never a defaulted section.
-pub const FILES: [&str; 11] = [
+pub const FILES: [&str; 12] = [
     "items.toml",
     "gatherables.toml",
     "recipes.toml",
@@ -30,6 +30,7 @@ pub const FILES: [&str; 11] = [
     "consumables.toml",
     "deployables.toml",
     "loot.toml",
+    "mobs.toml",
     "skins.toml",
     "balance.toml",
 ];
@@ -90,6 +91,13 @@ struct LootFile {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct MobsFile {
+    #[serde(default)]
+    mob: Vec<Mob>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SkinsFile {
     skin: Vec<Skin>,
 }
@@ -108,6 +116,10 @@ pub struct Content {
     pub consumables: Vec<Consumable>,
     pub deployables: Vec<Deployable>,
     pub loot_tables: Vec<LootTable>,
+    /// The animal roster's species table. Empty is legal and means a
+    /// shard with no wildlife — the file still has to exist, because a
+    /// missing file is a loud failure here and never a defaulted section.
+    pub mobs: Vec<Mob>,
     pub skins: Vec<Skin>,
     pub balance: Balance,
     anchors: Anchors,
@@ -173,6 +185,7 @@ impl Content {
         let consumables: ConsumablesFile = parse("consumables.toml", get("consumables.toml")?)?;
         let deployables: DeployablesFile = parse("deployables.toml", get("deployables.toml")?)?;
         let loot: LootFile = parse("loot.toml", get("loot.toml")?)?;
+        let mobs: MobsFile = parse("mobs.toml", get("mobs.toml")?)?;
         let skins: SkinsFile = parse("skins.toml", get("skins.toml")?)?;
         let balance: Balance = parse("balance.toml", get("balance.toml")?)?;
 
@@ -186,6 +199,7 @@ impl Content {
             consumables: consumables.consumable,
             deployables: deployables.deployable,
             loot_tables: loot.loot_table,
+            mobs: mobs.mob,
             skins: skins.skin,
             balance,
             anchors: Anchors::default(),
