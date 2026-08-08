@@ -84,7 +84,7 @@ ITEMS = {
     "spear_metal": "lorc/barbed-spear",
     "furnace": "delapouite/furnace",
     "box_large": "delapouite/cargo-crate",
-    "lock_code": "delapouite/padlock",
+    "lock_code": "delapouite/dial-padlock",
     "door_wood": "delapouite/door",
     "building_plan": "delapouite/notebook",
     "hammer": "lorc/claw-hammer",
@@ -103,14 +103,30 @@ ITEMS = {
     "corn": "delapouite/corn",
 }
 
-# One file in `assets/icons` is NOT baked from the archive and this is the
-# note that says so: `code_lock.png` was drawn here, procedurally, because
-# the box this repo builds on cannot reach game-icons.net (the egress proxy
-# refuses it) and a `content/items.toml` row with no picture fails
-# `tests/ui.rs` §G. It is ours, it is nobody's CC BY work, and CREDITS.md
-# says the same thing in the same words. Running this script on a box that
-# CAN reach the archive replaces it with `delapouite/padlock` and rewrites
-# the credit — which is the fix, and it is one command.
+# THE SECOND SOURCE, AND WHY IT IS NOT THE FIRST
+#
+# game-icons.net's zip is unreachable from this box (the egress proxy
+# refuses the domain), but the project's own GitHub repo is not:
+#
+#   git clone --depth 1 https://github.com/game-icons/icons /tmp/gi
+#
+# Its SVGs are the same drawings in their source form — a black background
+# rect followed by a white icon path — so the archive's
+# `ffffff/transparent` variant is that file with the rect removed:
+#
+#   svg.replace('<path d="M0 0h512v512H0z"/>', "", 1)
+#
+# **Measured, not assumed**: rasterised that way at PX, 35 of the 54
+# committed PNGs come back BYTE-IDENTICAL and 19 differ. The 19 are
+# upstream art drift — the drawings have been revised since the archive
+# snapshot these were baked from — which is exactly why this is a source
+# for a NEW icon and **not** a re-bake of the set. Running the whole map
+# through GitHub would silently redraw a third of the client's icons in a
+# commit about something else.
+#
+# So: the zip above stays the source of record, and the clone is what you
+# reach for when one row is added and the zip is out of reach. Say which
+# you used in the commit.
 
 # The wire carries an item's DISPLAY NAME, not its content id
 # (`protocol::ItemCatalog` is names only), so the file a cell looks for is
