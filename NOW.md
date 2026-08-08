@@ -134,6 +134,23 @@ already sends it. `DECISIONS.md` "the build wheel is one ring".
 
 ## 0p2 · What the UI still owes *(client lane)*
 
+**0 · Before the hammer's wheel: the action lane is FULL.** Demolish and
+rotate have no `Command` in `sim-core`, and adding either is not "add a code":
+`ACTION_SUB_BITS` is 4 and all sixteen codes are live, with a `const` assert
+and a unit test (`the_action_lane_has_the_room_it_claims`) both stating the
+room as **zero**. A seventeenth action widens the field to 5 bits, which moves
+every action message by one bit — a `PROTO_VER` turn and all 72 goldens
+regenerated, the v12 turn again. That is a price worth paying **once, for both
+verbs at the same time** (5 bits holds 32), not twice.
+
+And **rotate would be invisible in our game today.** A placed piece is
+`{cx, cz, level, loc, row, hp, uh}` — no facing, nothing to turn. In the
+reference rotation matters because a wall has a soft side and a doorway has a
+hinge side; ours are symmetric boxes. So rotate is a facing field across the
+store, `persist.rs`, the world save, the snapshot wire and the renderer, in
+service of a difference a player cannot see. **Demolish first, rotate when
+pieces have an asymmetry worth turning.**
+
 **1 · The hammer wants its own wheel.** The mouse is held-item modal now
 (`DECISIONS.md` 2026-08-07) and the plan's half is done: hold right for the
 shape ring, left click places, the ghost is up for as long as the plan is
