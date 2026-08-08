@@ -17,7 +17,7 @@
 //! panel's job is to put them somewhere a person can read.
 
 use bevy::prelude::*;
-use client_wasm::core::ClientCore;
+use client_core::core::ClientCore;
 use sim_core::craft::RecipeDef;
 
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};

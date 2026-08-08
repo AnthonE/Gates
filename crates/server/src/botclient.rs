@@ -2,7 +2,7 @@
 //! wtransport connection driving `sim_core::bots` random-walk inputs at
 //! 30 Hz and reconstructing snapshots through `ClientView` — the same
 //! snapshot contract the native client's `ClientCore` implements, out of
-//! the same shared crate (`client-wasm`). Used by `bin/bots` and the
+//! the same shared crate (`client-core`). Used by `bin/bots` and the
 //! 50-bot smoke gate.
 
 use crate::net::{client_handshake, read_event_frame};

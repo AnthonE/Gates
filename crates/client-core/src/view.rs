@@ -1,6 +1,6 @@
 //! The client side of the snapshot pipeline, pure (no I/O): apply
 //! datagrams, keep the applied-snapshot ring the delta baselines come
-//! from, produce ack fields. Lives in `client-wasm` so the browser (via
+//! from, produce ack fields. Lives in `client-core` so the browser (via
 //! the wasm bridge), the server's bot client, and the smoke/budget gates
 //! all reconstruct through the one implementation — the load tool can
 //! never drift from the thing it load-tests.

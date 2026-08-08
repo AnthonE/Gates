@@ -38,6 +38,8 @@ pub mod feed;
 pub mod death;
 // The build ghost: the cell being aimed at, and the click that commits it.
 pub mod ghost;
+// The blue wash over the piece a hammer is aimed at.
+pub mod highlight;
 pub mod hud;
 pub mod input;
 pub mod loading;
@@ -45,6 +47,7 @@ pub mod loading;
 // blends by, so the map and the world are one worldgen seen two ways.
 pub mod map;
 pub mod menu;
+pub mod mobs;
 // The in-game panels — inventory, crafting, the build wheel. Distinct from
 // `ui`, which is the chrome the full-screen MENU screens share: `ui` is what a
 // player sees instead of the world, `panels` is what they see on top of it.
@@ -217,7 +220,9 @@ pub fn world_teardown(
     mut clutter: ResMut<clutter::ClutterRing>,
     mut structures: ResMut<structures::StructRing>,
     mut ghost: ResMut<ghost::Ghost>,
+    mut highlight: ResMut<highlight::Highlight>,
     mut bodies: ResMut<bodies::Bodies>,
+    mut herd: ResMut<mobs::Herd>,
     mut eye: ResMut<Eye>,
     mut look: ResMut<input::Look>,
 ) {
@@ -237,7 +242,10 @@ pub fn world_teardown(
     // The ghost holds an `Entity` from the world that just went; keeping it
     // would have the next world's first aim insert components onto a dead id.
     *ghost = ghost::Ghost::default();
+    // Same reason, same shape: the hammer's wash holds an `Entity` too.
+    highlight::forget_in(&mut highlight);
     *bodies = bodies::Bodies::default();
+    *herd = mobs::Herd::default();
     *eye = Eye::default();
     *look = input::Look::default();
     commands.remove_resource::<WorldId>();
@@ -291,6 +299,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<clutter::ClutterRing>()
             .init_resource::<structures::StructRing>()
             .init_resource::<bodies::Bodies>()
+            .init_resource::<mobs::Herd>()
             .init_resource::<menu::Picked>()
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
@@ -300,6 +309,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<verbs::Near>()
             .init_resource::<death::Answer>()
             .init_resource::<ghost::Ghost>()
+            .init_resource::<highlight::Highlight>()
             .init_resource::<hud::Toast>()
             .init_resource::<Settings>()
             .init_resource::<feed::Feed>()
@@ -342,7 +352,10 @@ impl Plugin for GatesRenderPlugin {
         // Textures load at Startup rather than on entering the world: they
         // are wanted whichever screen comes first, and warming them while a
         // player reads the menu is free time the old shape did not have.
-        app.add_systems(Startup, (textures::load, icons::load, anim::load));
+        app.add_systems(
+            Startup,
+            (textures::load, icons::load, anim::load, mobs::load),
+        );
         // The sound bank is generated rather than loaded (`sound/synth.rs`)
         // and is built HERE, not at `Startup`. **`OnEnter(Screen::Loading)`
         // runs before `Startup`** on a connected start — Bevy schedules the
@@ -571,6 +584,9 @@ impl Plugin for GatesRenderPlugin {
                 ghost::deploy_track,
                 ghost::place_key,
                 ghost::deploy_key,
+                // After `verbs::resolve` has answered what is aimed at, and
+                // before the click that acts on it.
+                highlight::track,
             )
                 .chain()
                 .after(input::place_eye)
@@ -603,6 +619,7 @@ impl Plugin for GatesRenderPlugin {
                     clutter::stream,
                     structures::stream,
                     bodies::stream,
+                    mobs::stream,
                     rig::follow_eye,
                     hud::update,
                     // The feedback surface. Under `world_running` rather than

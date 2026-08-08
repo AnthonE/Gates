@@ -9,7 +9,7 @@ publish.workspace = true
 content = { path = "../content" }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
-client-wasm = { path = "../client-wasm" }
+client-core = { path = "../client-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "signal"] }
 # SIWE verification: recover the signer of a `personal_sign` signature and
 # derive its Ethereum address. Two small, ubiquitous crates and no way to do

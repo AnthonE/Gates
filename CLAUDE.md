@@ -66,6 +66,7 @@ pays the same doors and earns the same coins as a human.
 | `reference/AUDIO.md` | how the reference game decides what a player hears: the Unity mixer groups/snapshots it built first, the `audio.framebudget 0.3` convar, localized ambience, the 2–5 kHz carve, its four shipped audio bugs, and **§9 what it means for us** | **owns nothing** — research, not law, and a *cleaner* source than `SPAWN.md`: devblogs and the public convar list, nothing decompiled. Our answer is `crates/client/src/sound/` |
 | `reference/SAVES.md` | how the reference game remembers a player: **there is no player save file** — the body stays in the world as a sleeper and is saved because it is an entity, the save and the wire on one base class, the stop-the-world stall it never fixed, the wipe split, and **§9 what it means for us** | **owns nothing** — research, not law, and `AUDIO.md`'s clean source posture. The operator adopted its model (`DECISIONS.md` 2026-08-07), so §9 is a plan: read it before touching persistence. Our answer is `crates/server/src/store.rs` + `sim-core/src/persist.rs` |
 | `reference/WATER.md` | how the reference game does water: the order it rebuilt the sea in (**surface → optics → motion → reflections → foam**, waves third), depth-based colour extinction and thickness-based visibility as one idea, shoreline wetness worked from the *land* side, what its own settings screen says water costs, and **§9 what it means for us** | **owns nothing** — research, not law, `AUDIO.md`'s clean source posture (devblogs and a settings screen, nothing decompiled). Our answer is `crates/client/src/render/water.rs` + `crates/client/src/sound/water.rs` |
+| `reference/ANIMALS.md` | how survival games do animal mobs: the reference game's baked navmesh (100% CPU at boot) and the fixed think rate and dormancy it settled on, Valheim's ring spawners and two caps, Minecraft's mob cap and 1-in-800 despawn roll, and **§9 what it means for us** | **owns nothing** — research, not law, and `AUDIO.md`'s clean-source posture (devblogs, convar lists, wikis; nothing decompiled). The operator un-cut animals off it (`DECISIONS.md` 2026-08-08), so §9 is a landed design: read it before touching `crates/sim-core/src/mob.rs` |
 | `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is scry's `SUBSTRATE.md`; this owns only what an agent may do here |
 | `NOW.md` | what next | **the only list that answers that** |
 
@@ -314,7 +315,15 @@ well as `x11`), `libasound2-dev` (`bevy_audio` → cpal → `alsa-sys`),
 `libudev-dev` (`bevy_gilrs`) — each dies as a `pkg-config` panic 40 lines into
 a build script. To RUN a `--capture` probe: `libxkbcommon-x11-0` (winit
 panics in `EventLoop::new`), `mesa-vulkan-drivers` + `libvulkan1`, and
-`Xvfb`. Plus `rustup target add wasm32-unknown-unknown` for the wasm gates.
+`Xvfb`. Plus `rustup target add wasm32-unknown-unknown` for the parity gate
+— **which is not a web build**: `sim-core` compiles to a second target so
+`test_parity_wasm` can diff its state hashes against native byte for byte,
+which is wall 1's enforcement and is worth the same with no browser in
+existence. The crate that WAS a web build is gone (operator, 2026-08-08:
+*"we use desktop build no more web"*) — `client-wasm` is `client-core`, its
+1,635-line C-ABI bridge and the 1,266-line `ci/client_smoke.mjs` that drove
+it are deleted, and what that gate actually asserted is
+`crates/client-core/tests/wire.rs`.
 All of them are the same class — a wall that cannot run is not a wall, so
 install them rather than trimming the feature.
 

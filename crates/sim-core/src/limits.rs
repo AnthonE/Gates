@@ -330,6 +330,13 @@ pub const BOX_SLOTS: usize = 12;
 /// not the sweep's. Proposed default, DECISIONS.md §open (box v0).
 pub const MAX_BOX_SPILL_PER_TICK: usize = 16;
 
+/// Cook rows the sim preallocates for (`content/cooking.toml`,
+/// `oven.rs`). Structural cap like `MAX_RECIPES`: the bake refuses a set
+/// past this rather than silently dropping the tail, because a row the
+/// sim never sees is a transformation a player is told about by the
+/// catalog and cannot perform.
+pub const MAX_COOK_ROWS: usize = 32;
+
 /// Loot tables the sim preallocates for — one per container archetype
 /// (`content/loot.toml` ships 2: barrel and crate). The content bake
 /// refuses a set past this. Structural cap like `MAX_DEPLOY_DEFS`, not a
@@ -500,3 +507,73 @@ pub const ARROW_STEP_MM: i32 = 170;
 /// clamp from ever binding at tick time.
 /// Proposed default, DECISIONS.md §open (ranged v0).
 pub const MAX_ARROW_SUBSTEPS: usize = 16;
+
+/// Live animals one shard simulates, hard cap and roster length
+/// (`mob.rs`). Not a queue: the roster is a fixed array of slots, each
+/// with a home the seed chose once, so there is no overflow policy to
+/// state — a slot is alive or it is waiting to hatch, and nothing can
+/// ever ask for a sixty-fifth pig.
+///
+/// The number is a density, and it is stated as one: 64 animals over the
+/// ~2 km² of land a seed puts inside the continent falloff is ≈ 30 / km²,
+/// which is the same order as the reference game's own boar population
+/// (`reference/ANIMALS.md` §3). It is also sized against the wire rather
+/// than only against the ground: at the 176 m AOI radius one client's
+/// disc is 9.7 ha, or 2.3% of the island, so the expectation inside a
+/// client's interest set is **1.5 animals** and the tail is nowhere near
+/// `MAX_SNAPSHOT_ENTITIES`. A roster ten times this size would still fit
+/// the sim's tick budget and would not fit that. Proposed default,
+/// DECISIONS.md §open ("animals v0").
+pub const MAX_MOBS: usize = 64;
+
+/// The bit that says *this class-D entity is not a player*.
+///
+/// An animal rides the same snapshot lane a player does, because it is the
+/// same thing — a body moving continuously that a client must interpolate
+/// (NETCODE.md §1, class D). What it is not is a *player*, and the client
+/// has to know which mesh to draw before it can draw anything. The id
+/// carries that, in the high bit, rather than a `kind` field on
+/// `EntityState`: a field costs bits on **every** record of every snapshot
+/// including the 98% that are players, to say something that never changes
+/// for the life of an entity and that the id can say for free.
+///
+/// The cost is that the player id allocator may never set this bit, which
+/// is now enforced where ids are minted (`server/net.rs`) rather than
+/// hoped for. The wire layout does not move — but `PROTO_VER` does, on
+/// v18's precedent: *a widened meaning is a wire change even when the
+/// layout is byte-identical*, and a client that did not know this bit
+/// would draw a pig as a human being.
+pub const MOB_ID_TAG: u32 = 0x8000_0000;
+
+/// Ticks between one animal's decisions — half a second at 30 Hz, and the
+/// single most load-bearing number in `mob.rs`.
+///
+/// It is the reference game's own lesson, applied: their AI moved from
+/// thinking every frame to **thinking at a fixed rate**, and it is named
+/// in the devblogs as a server-performance change rather than a behaviour
+/// one (`reference/ANIMALS.md` §2). Ours is stronger than theirs because
+/// it is *phase-offset by roster slot*: mob `i` thinks on ticks where
+/// `tick % MOB_THINK_TICKS == i % MOB_THINK_TICKS`, so the per-tick
+/// decision work is `MAX_MOBS / MOB_THINK_TICKS` ≈ 4 animals and not 64.
+/// Movement still integrates every tick for every waking animal — a body
+/// that stepped at 2 Hz would visibly stutter, and the interpolator cannot
+/// invent what the sim did not send.
+///
+/// No overflow policy: it is a cadence, not a queue.
+pub const MOB_THINK_TICKS: u64 = 15;
+
+/// How close a player must be for an animal to be awake, in centimeters.
+///
+/// The reference game's word for this is *dormant* — NPCs at a distance
+/// from every player stop running (`reference/ANIMALS.md` §2) — and it is
+/// the reason a shard can hold thousands of them. Ours is a hard skip of
+/// the whole step, and it is **replay-safe rather than a caching trick**:
+/// the predicate reads player positions, which are sim state, so a replay
+/// wakes exactly the animals the live run woke, on the same ticks.
+///
+/// 240 m sits deliberately outside `AOI_EXIT_CM` (208 m): an animal is
+/// awake for the whole band in which any client can still see it, so
+/// nothing freezes in view. It is re-evaluated on the think tick, not
+/// every tick, so a waking animal can be up to `MOB_THINK_TICKS` late —
+/// half a second, at a distance of two hundred metres.
+pub const MOB_WAKE_CM: i64 = 24_000;

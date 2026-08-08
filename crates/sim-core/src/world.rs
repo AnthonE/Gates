@@ -18,6 +18,7 @@ use crate::limits::{
     MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
 };
 use crate::loot::{LootContent, LOOT_BARREL};
+use crate::mob;
 use crate::movement::{self, quant_xz, quant_y, Body};
 use crate::persist::PlayerSave;
 use crate::ranged;
@@ -246,6 +247,19 @@ pub const EV_PIECE_REPAIRED: u8 = 28;
 /// news a swing makes and is already drawn.
 pub const EV_CHARGE_PLACED: u8 = 29;
 
+/// An oven's fire went in or out (`oven.rs`). `a` = `cell_key(cx, cz)`,
+/// `b` = `level << 16 | lit`, `c` = the hand that pressed, or **0 when
+/// the oven ran dry and snuffed itself** — a fact with no actor behind
+/// it, the posture `EV_SLOT_RESPAWNED` already takes.
+///
+/// Absolute, never a delta, for the reason `EV_DOOR` is: a client that
+/// toggled optimistically is confirmed or corrected by the same event,
+/// and two presses racing must not leave the two sides disagreeing about
+/// which way the fire ended up. Broadcast, like the door: a lit fire is
+/// visible from outside the base it is in, so hiding it from the
+/// neighbourhood would make the sim disagree with the picture.
+pub const EV_OVEN: u8 = 30;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -253,7 +267,7 @@ pub const EV_CHARGE_PLACED: u8 = 29;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_CHARGE_PLACED;
+pub const EV_MAX: u8 = EV_OVEN;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -736,6 +750,10 @@ pub struct World {
     /// Baked deployable rules + upkeep globals (deploy.rs). Construction
     /// input too.
     pub deploy: DeployContent,
+    /// Baked fuel + cook rows (oven.rs). Construction input too; the
+    /// inert default leaves every fire cold, which is the game that
+    /// existed before the module.
+    pub cook: crate::oven::CookContent,
     /// Baked melee rows + max hp (combat.rs). Construction input too; the
     /// inert default leaves the world unable to hurt anyone.
     pub combat: CombatContent,
@@ -753,6 +771,31 @@ pub struct World {
     /// default leaves barrels standing, because a barrel that broke into
     /// nothing would be worse than one that does not break.
     pub loot: LootContent,
+    /// Baked animal species (mob.rs). Construction input too; the inert
+    /// default gives every species zero hit points and no slot ever
+    /// hatches, so a content set with no `mobs.toml` rows is a shard
+    /// without wildlife rather than a shard with invisible wildlife.
+    pub mob: mob::MobContent,
+    /// The animal roster — sim state, hashed. Homes are drawn from the
+    /// seed at construction beside `haven` and never move; everything else
+    /// in it is a tick's business.
+    ///
+    /// Boxed, the same one-allocation-at-construction posture `backpacks`,
+    /// `slot_cache` and `arrows` take: `World` is ~440 kB and is built on
+    /// the stack (`ShardCore::new`, every wire test, `probe.rs`).
+    ///
+    /// **This roster overflowed the wasm shadow stack when it landed inline,
+    /// and two branches found that wall on the same day from opposite
+    /// ends.** `test_parity_wasm` died as `memory access out of bounds`
+    /// inside `Deploys::new` — a constructor neither branch had touched —
+    /// because rustc's 1 MiB default had the gate at ~99%. The oven found it
+    /// with 8 kB of container state; this found it with 3.5 kB of animals.
+    /// The durable fix is theirs and it is `.cargo/config.toml`, which now
+    /// states a 4 MiB shadow stack instead of inheriting one. Boxing stays
+    /// because it is the right posture for a fixed-capacity store on a
+    /// stack-built `World`, not because it is what holds that gate up.
+    /// Nothing here allocates in the tick.
+    pub mobs: Box<mob::Mobs>,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
@@ -820,16 +863,22 @@ pub struct World {
 
 impl World {
     pub fn new(seed: u64) -> Self {
+        let haven = terrain::haven(seed);
         Self {
             seed,
             tick: 0,
             players: [Player::default(); MAX_PLAYERS],
             scatter: ScatterTable::alpha_default(),
-            haven: terrain::haven(seed),
+            mob: mob::MobContent::EMPTY,
+            // After `haven`, because a home is rejected against the two
+            // authored sites (mob.rs `home_of`).
+            mobs: Box::new(mob::Mobs::new(seed, &haven)),
+            haven,
             gather: GatherContent::EMPTY,
             craft: CraftContent::EMPTY,
             build: BuildContent::EMPTY,
             deploy: DeployContent::EMPTY,
+            cook: crate::oven::CookContent::EMPTY,
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
             survival: SurvivalContent::EMPTY,
@@ -1110,6 +1159,24 @@ impl World {
 
         // 3. Read both sides as copies.
         let src = self.cont_slot(slot, from_kind, from_slot, ci);
+        // An oven takes fuel, what it cooks, and what it made — nothing
+        // else (`oven.rs`, `inventory::REFUSE_M_OVEN`). Asked here, of
+        // the *source item*, after the address resolves and before
+        // anything is planned: a rule about what may enter a container is
+        // a property of this world's content, which `plan_move` has no
+        // access to and deliberately never will (it decides arithmetic,
+        // and only arithmetic). Rearranging inside the oven is untouched
+        // — the item is already in there.
+        if to_kind == inventory::CONT_BOX && from_kind != inventory::CONT_BOX {
+            let arch = self.deploys.oven_states().get(ci).map(|o| o.arch);
+            if let Some(arch) = arch.filter(|_| self.deploys.oven_index(cont).is_some()) {
+                if !self.cook.accepts(arch, src.item) {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_OVEN, addr);
+                    return;
+                }
+            }
+        }
         let dst = self.cont_slot(slot, to_kind, to_slot, ci);
 
         // 4. Plan. This is the whole of the validation, and it holds no
@@ -1683,17 +1750,35 @@ impl World {
                 loc,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    deploy::use_door(
-                        &self.deploy,
-                        &mut self.pieces,
+                    // One key, two verbs, picked by what stands at the
+                    // address — the reference's own E menu, where a door
+                    // offers open/close and a fire offers ignite/
+                    // extinguish. The two can never collide: a door lives
+                    // on a doorway's edge address and an oven on the
+                    // plane, so this is a lookup and not a guess about
+                    // what the player aimed at.
+                    let lit = crate::oven::toggle(
+                        &self.cook,
                         &mut self.deploys,
-                        &mut self.players[slot],
+                        &self.players[slot],
                         cx,
                         cz,
                         level,
-                        loc,
                         &mut self.events,
                     );
+                    if !lit {
+                        deploy::use_door(
+                            &self.deploy,
+                            &mut self.pieces,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::Lock {
@@ -2057,17 +2142,33 @@ impl World {
                     }
                     combat::Strike::Hit => {}
                     combat::Strike::Missed => {
-                        combat::raid(
+                        // node → player → **animal** → structure. An
+                        // animal outranks the wall behind it and never
+                        // outranks a player: standing between a raider and
+                        // a door must not become a way to eat the swing.
+                        let took = mob::strike(
                             &self.combat,
-                            &self.build,
-                            &self.deploy,
-                            seed,
-                            &self.players[i],
-                            &mut self.pieces,
-                            &mut self.deploys,
-                            &mut removals,
+                            &self.gather,
+                            &self.mob,
+                            tick,
+                            i,
+                            &mut self.players,
+                            &mut self.mobs,
                             &mut self.events,
                         );
+                        if !took {
+                            combat::raid(
+                                &self.combat,
+                                &self.build,
+                                &self.deploy,
+                                seed,
+                                &self.players[i],
+                                &mut self.pieces,
+                                &mut self.deploys,
+                                &mut removals,
+                                &mut self.events,
+                            );
+                        }
                     }
                 }
             }
@@ -2090,6 +2191,28 @@ impl World {
             tick,
             &mut removals,
             &mut self.events,
+        );
+
+        // The roster steps after the player loop and before the arrows, and
+        // both sides of that are deliberate. After the players, because an
+        // animal reads player positions to decide whether it is awake and
+        // which way to run, and reading them mid-loop would make the answer
+        // depend on the reader's slot index. Before the arrows, because a
+        // shot must resolve against where the animal ended this tick — the
+        // same rule the player loop's ordering states in the comment above.
+        mob::step(
+            seed,
+            tick,
+            &self.mob,
+            self.pieces.cols(),
+            &mut crate::occupy::Occupants {
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            },
+            &mut self.mobs,
+            &self.players,
         );
 
         // Arrows fly after the player loop, never inside it. Two reasons,
@@ -2132,6 +2255,18 @@ impl World {
             &mut self.sweep_piece,
             &mut self.sweep_deploy,
             &mut removals,
+            &mut self.events,
+        );
+        // Every oven whose turn this tick is: fuel down, byproduct banked,
+        // what is on the fire a step closer to done (oven.rs). Before the
+        // sweeps that can remove the thing it is stepping — an oven that
+        // decays this tick has already spent its period, which is the
+        // ordering a raid and a decay have to agree on.
+        crate::oven::sweep(
+            &self.cook,
+            &self.gather,
+            &mut self.deploys,
+            tick,
             &mut self.events,
         );
         // The structural backstop, after the sweep that can create work for
@@ -2320,6 +2455,39 @@ impl World {
             h.update(&buf);
             h.update(&a.flown.to_le_bytes());
         }
+        // The animal roster, on the arrow idiom above and for its reason:
+        // **skip-if-not-alive, no length prefix**, so a world whose content
+        // arms no species folds not one byte here and `GOLDEN_FINAL_HASH`
+        // stays evidence about the script it pins rather than about this
+        // slice landing.
+        //
+        // A slot's home is NOT hashed and that is the same call `haven`
+        // makes one field over: it is a pure function of the seed,
+        // recomputed identically by every build, so it is worldgen and not
+        // state. What is hashed is everything a tick can move — including
+        // `respawn_at` and `flee_until`, which are deadlines rather than
+        // counters for the reason `charges` states, and `awake`, because
+        // two shards that disagree about which animals are dormant will
+        // disagree about every position downstream of it.
+        for m in self.mobs.m.iter() {
+            if !m.alive {
+                continue;
+            }
+            let mut buf = [0u8; 40];
+            buf[0..4].copy_from_slice(&m.body.qx.to_le_bytes());
+            buf[4..8].copy_from_slice(&m.body.qy.to_le_bytes());
+            buf[8..12].copy_from_slice(&m.body.qz.to_le_bytes());
+            buf[12..16].copy_from_slice(&m.body.qvy.to_le_bytes());
+            buf[16] = m.body.grounded as u8;
+            buf[17] = m.kind;
+            buf[18] = m.gait as u8;
+            buf[19] = m.awake as u8;
+            buf[20..22].copy_from_slice(&m.yaw.to_le_bytes());
+            buf[22..24].copy_from_slice(&m.hp.to_le_bytes());
+            buf[24..32].copy_from_slice(&m.flee_until.to_le_bytes());
+            buf[32..40].copy_from_slice(&m.respawn_at.to_le_bytes());
+            h.update(&buf);
+        }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {
             let mut buf = [0u8; 17];
@@ -2396,6 +2564,23 @@ impl World {
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
                 h.update(&sb);
+            }
+        }
+        // Oven state, in its own pass beside the contents for the reason
+        // the bag cooldowns get one: it lives in a parallel array so the
+        // container-sync message does not carry it, and the digest
+        // follows the storage. It is state and not decoration — two
+        // shards that disagree about which fires are lit disagree about
+        // how much charcoal exists an hour from now.
+        for ov in self.deploys.oven_states() {
+            let mut buf = [0u8; 6];
+            buf[0] = ov.arch;
+            buf[1] = ov.lit as u8;
+            buf[2..4].copy_from_slice(&ov.burn.to_le_bytes());
+            buf[4..6].copy_from_slice(&ov.bank.to_le_bytes());
+            h.update(&buf);
+            for c in ov.cook.iter() {
+                h.update(&c.to_le_bytes());
             }
         }
         h.update(&(self.backpacks.len() as u64).to_le_bytes());

@@ -1,0 +1,29 @@
+# The wasm shadow stack, stated rather than defaulted.
+#
+# `World` is 434 kB — fixed-capacity by design (wall 4), and `probe_parity`
+# builds one on the stack per sequence. rustc's wasm32-unknown-unknown ships
+# a 1 MiB shadow stack, which put the parity gate at roughly 99% of it: on
+# 2026-08-08 the oven's 8 kB of per-container state (`oven.rs`) tipped it,
+# and the gate failed as
+#
+#   RuntimeError: memory access out of bounds
+#     at sim_core::deploy::Deploys::new
+#     at sim_core::world::World::new
+#
+# — an overflow reported inside a constructor that had not changed, for a
+# store that is boxed, on a build default nobody in this repo had ever
+# chosen. Diagnosed by measuring (`size_of::<World>()`) rather than by
+# reading the diff, which is `CLAUDE.md`'s rule for a red gate on a
+# capability question: ask whether the capability is genuinely absent or
+# whether we are asking for one we do not need. Here it is neither — the
+# stack is a link-time number and 1 MiB is simply too small for a sim whose
+# world state is a fixed 434 kB.
+#
+# 4 MiB, and the reason it is not 2: the ceiling has to hold a `World` plus
+# the constructor frames plus a copy, and the next store to grow should not
+# have to reopen this file. This changes no assertion in any gate and no
+# byte of any digest — the parity gate's native and wasm hashes are
+# identical either side of it, which is the check that would have caught it
+# if it did.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=4194304"]

@@ -19,7 +19,7 @@
 /// `protocol/lib.rs`: *a widened meaning is a wire change even when the
 /// layout is byte-identical.* Here the consequence is worse than v18's
 /// declined drag, because this bit feeds prediction. `movement::step` is
-/// shared verbatim by the server and `client-wasm`'s predictor, so a v22
+/// shared verbatim by the server and `client-core`'s predictor, so a v22
 /// client against a v21 server would predict an arc the server never runs and
 /// be hard-snapped back to the ground on every single press — a permanent,
 /// silent misprediction, which is precisely the class NETCODE's

@@ -1,6 +1,6 @@
 //! The client-loop gate (M0 "connect, predict/reconcile, interpolate"):
 //! `ClientCore` — the exact struct the native client drives, out of the
-//! shared `client-wasm` crate — against `ShardCore`, through real encoded
+//! shared `client-core` crate — against `ShardCore`, through real encoded
 //! datagrams both ways. No sockets, no clocks: fully deterministic, so the
 //! asserts are exact and quotable from this shared box.
 //!
@@ -10,7 +10,7 @@
 //! - loss ⇒ mispredictions happen, corrections flow, and the client
 //!   re-converges to the server's exact quantized state.
 
-use client_wasm::core::ClientCore;
+use client_core::core::ClientCore;
 use protocol::decode_input;
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
@@ -147,7 +147,7 @@ fn clean_delivery_predicts_bit_exact() {
         // Each client interpolates the other guy near his server truth.
         let other = id_of(1 - *slot);
         let ob = server_body(&core, other);
-        let mut rs = client_wasm::interp::RemoteState::default();
+        let mut rs = client_core::interp::RemoteState::default();
         assert!(
             c.interp.sample(other, c.render_tick(), &mut rs),
             "remote sampled"
@@ -253,7 +253,7 @@ fn churn_keeps_the_body_and_marks_it_asleep() {
         "the disconnected player's body left the world — sleepers are not \
          reaching the wire"
     );
-    let mut rs = client_wasm::interp::RemoteState::default();
+    let mut rs = client_core::interp::RemoteState::default();
     assert!(
         clients[0]
             .1

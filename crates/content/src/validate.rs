@@ -61,6 +61,10 @@ pub fn structural(c: &Content) -> Result<(), String> {
         check_id(&l.id, "loot.", "loot table")?;
         unique(&l.id)?;
     }
+    for m in &c.mobs {
+        check_id(&m.id, "mob.", "mob")?;
+        unique(&m.id)?;
+    }
     for s in &c.skins {
         check_id(&s.id, "skin.", "skin")?;
         unique(&s.id)?;
@@ -554,6 +558,58 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // Mobs: every band here is a *reachability* check rather than a taste
+    // one — an animal that cannot be killed, cannot be caught, or cannot be
+    // left behind is content that reads as a bug in the sim.
+    for m in &c.mobs {
+        if m.hp == 0 {
+            return Err(format!(
+                "mob `{}`: zero hp is how the roster says a species is disarmed — \
+                 a row that means it should be deleted, not written",
+                m.id
+            ));
+        }
+        if m.name.trim().is_empty() {
+            return Err(format!("mob `{}`: empty name", m.id));
+        }
+        if m.walk_pct == 0 || m.walk_pct > 100 || m.flee_pct == 0 || m.flee_pct > 100 {
+            return Err(format!(
+                "mob `{}`: speeds are 1–100 percent of the player's own",
+                m.id
+            ));
+        }
+        // The leash has to be wider than the fright radius, or the animal
+        // spends its whole life being turned around at the leash while a
+        // player stands inside the radius that started it.
+        if m.roam_m <= m.spook_m {
+            return Err(format!(
+                "mob `{}`: a {}m leash inside a {}m spook radius is a treadmill",
+                m.id, m.roam_m, m.spook_m
+            ));
+        }
+        if m.spook_m == 0 || m.flee_seconds == 0 {
+            return Err(format!(
+                "mob `{}`: an animal that never flees is scenery",
+                m.id
+            ));
+        }
+        if m.respawn_seconds == 0 {
+            return Err(format!(
+                "mob `{}`: a zero respawn hatches the slot on the tick it died",
+                m.id
+            ));
+        }
+        if m.drops.is_empty() {
+            return Err(format!("mob `{}`: killing it pays nothing", m.id));
+        }
+        for d in &m.drops {
+            item_exists(&d.item, &format!("mob `{}` drop", m.id))?;
+            if d.count == 0 {
+                return Err(format!("mob `{}`: zero count on `{}`", m.id, d.item));
+            }
+        }
+    }
+
     // Skins: appearance rows only (the schema already can't carry stats);
     // covered items must exist, prices are nonzero bare-ticker amounts.
     for s in &c.skins {
@@ -595,6 +651,81 @@ pub fn structural(c: &Content) -> Result<(), String> {
     for arch in &c.balance.banded_nodes {
         if !c.gatherables.iter().any(|g| g.archetype == *arch) {
             return Err(format!("balance: banded node {arch:?} has no gatherable"));
+        }
+    }
+
+    // The oven table (`content/cooking.toml`). Every rule here is a
+    // refusal of a *silently inert* oven rather than a taste call: a fire
+    // is the one deployable whose whole behaviour is content, so content
+    // that disarms it leaves a placeable object with no verb behind it
+    // and nothing else in the tree to notice.
+    let f = &c.fuel;
+    if !c.items.iter().any(|i| i.id == f.item) {
+        return Err(format!("fuel: `{}` is not an item", f.item));
+    }
+    if !c.items.iter().any(|i| i.id == f.byproduct) {
+        return Err(format!("fuel: byproduct `{}` is not an item", f.byproduct));
+    }
+    if f.seconds == 0 {
+        return Err("fuel: a unit that burns for 0 s never runs out".to_string());
+    }
+    if f.byproduct_pct > 100 {
+        return Err(format!(
+            "fuel: byproduct_pct {} is hundredths of ONE unit per unit burned, so 100 is the \
+             ceiling — a fire that pays more than it eats is a wood duplicator",
+            f.byproduct_pct
+        ));
+    }
+    if f.item == f.byproduct {
+        return Err("fuel: a byproduct that IS the fuel burns forever".to_string());
+    }
+    // The oven has to be reachable, exactly as the survival clock has to
+    // be answerable: a fuel nothing pays would arm the verb against a
+    // world that cannot use it. Gather is the payout path the check
+    // trusts (see the clock's own note above), and the fuel shipped
+    // today — wood — is what every tree pays.
+    if !c
+        .gatherables
+        .iter()
+        .any(|g| g.output == f.item || g.secondary.as_ref().is_some_and(|s| s.output == f.item))
+    {
+        return Err(format!(
+            "fuel: `{}` is not paid by any gatherable — an oven nothing can feed",
+            f.item
+        ));
+    }
+    let mut cook_seen = BTreeSet::new();
+    for k in &c.cooks {
+        if !c.items.iter().any(|i| i.id == k.input) {
+            return Err(format!("cook: input `{}` is not an item", k.input));
+        }
+        if !c.items.iter().any(|i| i.id == k.output) {
+            return Err(format!("cook: output `{}` is not an item", k.output));
+        }
+        if k.seconds == 0 {
+            return Err(format!("cook: `{}` converts in 0 s", k.input));
+        }
+        if k.input == k.output {
+            return Err(format!("cook: `{}` cooks into itself", k.input));
+        }
+        // The fuel is not a cook input, at any station: an oven consumes
+        // it as fuel first, so a row for it could never fire, and the
+        // move verb would be admitting an item for a transformation that
+        // does not happen.
+        if k.input == f.item {
+            return Err(format!(
+                "cook: `{}` is the fuel — it burns, it does not cook",
+                k.input
+            ));
+        }
+        // One row per (station, input). Two would make which one runs an
+        // accident of file order, which is the positional-payload trap
+        // wearing a content hat.
+        if !cook_seen.insert((k.station as u32, k.input.clone())) {
+            return Err(format!(
+                "cook: two rows for `{}` at the same station",
+                k.input
+            ));
         }
     }
 

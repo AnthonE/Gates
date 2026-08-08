@@ -115,7 +115,7 @@ fn hash_scatter_window(h: &mut Xxh3, seed: u64, haven: &terrain::Haven, x: f32, 
 /// coordinates on wasm than on native with `test_terrain_golden` and
 /// `test_parity_wasm` both green.
 ///
-/// That is not hypothetical drift. `client-wasm` resolves `terrain::haven`
+/// That is not hypothetical drift. `client-core` resolves `terrain::haven`
 /// on the WASM build (`bridge.rs`, `core.rs`) and the server resolves it
 /// natively, so those two answers agreeing IS the client↔server contract for
 /// where the island's destinations are, and nothing was holding it.

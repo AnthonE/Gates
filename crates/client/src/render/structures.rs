@@ -150,6 +150,20 @@ pub struct StructRing {
 }
 
 impl StructRing {
+    /// The entity drawing the piece or deployable at `addr`, if one stands.
+    ///
+    /// Exists for the hammer's highlight, which needs the thing the player is
+    /// looking at rather than a second derivation of where it would be. The
+    /// addressing arithmetic in `spawn_piece` is subtle enough — edge pieces
+    /// are canonical to a cell's west or north boundary, so the same physical
+    /// edge is never addressable twice — that a highlight computing its own
+    /// transform would be a second implementation of it, and the wheel's
+    /// oldest rule says what that costs.
+    pub fn entity_at(&self, addr: Addr, deploy: bool) -> Option<Entity> {
+        let map = if deploy { &self.deploys } else { &self.pieces };
+        map.get(&addr).map(|l| l.entity)
+    }
+
     /// Standing counts: pieces, deployables, bags. For the gates and for
     /// nothing on the hot path.
     pub fn counts(&self) -> (usize, usize, usize) {

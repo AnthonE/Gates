@@ -21,6 +21,7 @@ use bevy::prelude::*;
 
 use super::anim::{BodyAnim, Reshade, Rig};
 use super::Net;
+use sim_core::mob;
 
 /// Wire yaw is `0..65536` over a full turn (`interp::RemoteState`), and this
 /// is the one place it becomes radians. The sim's convention is yaw 0 facing
@@ -74,13 +75,25 @@ pub fn stream(
     let scene = rig.scene.clone().expect("rig.ready() checked above");
     let core = &net.session.core;
     let at = core.render_tick();
-    let mut rs = client_wasm::interp::RemoteState::default();
+    let mut rs = client_core::interp::RemoteState::default();
 
     store.gen = store.gen.wrapping_add(1);
     let gen = store.gen;
 
     for id in core.interp.ids() {
         if id == core.player_id {
+            continue;
+        }
+        // **Animals are on this lane too, and they are not people.** An
+        // animal is the same class-D record a player is (`protocol` v28);
+        // the only thing separating them is the high bit of the id, and
+        // this loop's `!= player_id` was the whole filter until there was
+        // something else on the wire. Without it every pig also grew a
+        // humanoid rig standing in it — caught in a capture, invisible to
+        // every gate, because a mannequin at a pig's coordinates is a
+        // perfectly well-formed remote body. `mobs::stream` takes the half
+        // this skips, and the two conditions are exact complements.
+        if mob::slot_of_id(id).is_some() {
             continue;
         }
         // **Stamp on PRESENCE, not on a successful sample**, and the two are

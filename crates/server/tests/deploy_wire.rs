@@ -7,7 +7,7 @@
 //! in-progress walk. Deterministic, no sockets; asserts are structural
 //! and exact (the build_wire shape).
 
-use client_wasm::core::{
+use client_core::core::{
     ClientCore, APPLIED_DEPLOYS, APPLIED_DEPLOY_DEFS, APPLIED_DEPLOY_REFUSED, APPLIED_DEPLOY_RESET,
     APPLIED_PIECE_REMOVED, APPLIED_STOCK,
 };
@@ -195,7 +195,7 @@ fn deployables_ride_the_wire() {
     );
     let flags = pump(&mut core, &stats, &mut clients);
     assert_ne!(
-        flags[1] & client_wasm::core::APPLIED_BUILD_REFUSED,
+        flags[1] & client_core::core::APPLIED_BUILD_REFUSED,
         0,
         "claim refusal never arrived"
     );
