@@ -333,7 +333,7 @@ fn build(commands: &mut Commands, settings: &Settings) {
         ))
         .with_children(|root| {
             root.spawn((
-                ui::label("SETTINGS", 30.0, ui::TITLE),
+                ui::strong("SETTINGS", 30.0, ui::TITLE),
                 Node {
                     margin: UiRect::new(Val::Px(34.0), Val::Px(0.0), Val::Px(26.0), Val::Px(16.0)),
                     ..default()
@@ -380,7 +380,7 @@ fn build(commands: &mut Commands, settings: &Settings) {
                                 },
                                 BackgroundColor(idle),
                                 BorderColor::all(if on { ui::ACCENT } else { ui::RULE }),
-                                children![ui::label(
+                                children![ui::strong(
                                     *name,
                                     16.0,
                                     if on { ui::TEXT } else { ui::DIM }
@@ -455,7 +455,7 @@ fn spawn_row(
                 frame(),
                 BackgroundColor(ui::ROW_IDLE),
                 children![
-                    ui::label(*label, 15.0, ui::TEXT),
+                    ui::strong(*label, 15.0, ui::TEXT),
                     ui::label(*value, 13.0, ui::FAINT),
                 ],
             ));
@@ -465,7 +465,7 @@ fn spawn_row(
                 frame(),
                 BackgroundColor(ui::ROW_IDLE),
                 children![
-                    ui::label(*label, 15.0, ui::TEXT),
+                    ui::strong(*label, 15.0, ui::TEXT),
                     (
                         Button,
                         Adjust {
@@ -483,7 +483,7 @@ fn spawn_row(
                         },
                         BackgroundColor(ui::ROW_IDLE),
                         BorderColor::all(ui::RULE),
-                        children![ui::label(settings.value(*knob), 14.0, ui::TEXT)],
+                        children![ui::strong(settings.value(*knob), 14.0, ui::TEXT)],
                     ),
                 ],
             ));
@@ -493,7 +493,7 @@ fn spawn_row(
                 frame(),
                 BackgroundColor(ui::ROW_IDLE),
                 children![
-                    ui::label(*label, 15.0, ui::TEXT),
+                    ui::strong(*label, 15.0, ui::TEXT),
                     (
                         Node {
                             flex_direction: FlexDirection::Row,
@@ -509,7 +509,7 @@ fn spawn_row(
                                     knob: *knob,
                                     delta: -1,
                                 },
-                                children![ui::label("-", 16.0, ui::TEXT)],
+                                children![ui::strong("-", 16.0, ui::TEXT)],
                             ),
                             (
                                 Node {
@@ -517,7 +517,7 @@ fn spawn_row(
                                     justify_content: JustifyContent::Center,
                                     ..default()
                                 },
-                                children![ui::label(settings.value(*knob), 15.0, ui::TEXT)],
+                                children![ui::strong(settings.value(*knob), 15.0, ui::TEXT)],
                             ),
                             (
                                 ui::stepper(),
@@ -525,7 +525,7 @@ fn spawn_row(
                                     knob: *knob,
                                     delta: 1,
                                 },
-                                children![ui::label("+", 16.0, ui::TEXT)],
+                                children![ui::strong("+", 16.0, ui::TEXT)],
                             ),
                         ],
                     ),

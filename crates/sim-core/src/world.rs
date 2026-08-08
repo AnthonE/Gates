@@ -746,6 +746,9 @@ pub struct World {
     /// input too; the inert default leaves the world without a clock, which
     /// is the game that existed before the module.
     pub survival: SurvivalContent,
+    /// What a fresh character is granted (`content/balance.toml`
+    /// `[[spawn_kit]]`). `EMPTY` is the default and means a naked spawn.
+    pub spawn_kit: inventory::SpawnKit,
     /// Baked loot tables (loot.rs). Construction input too; the inert
     /// default leaves barrels standing, because a barrel that broke into
     /// nothing would be worse than one that does not break.
@@ -830,6 +833,7 @@ impl World {
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
             survival: SurvivalContent::EMPTY,
+            spawn_kit: inventory::SpawnKit::EMPTY,
             loot: LootContent::EMPTY,
             pieces: Pieces::new(),
             deploys: Deploys::new(),
@@ -1342,6 +1346,11 @@ impl World {
                     ..Player::default()
                 };
                 survival::grant(&self.survival, &mut self.players[slot]);
+                // The spawn kit, on the FRESH arm only. A restore keeps what
+                // it saved; re-granting on every login would be an item
+                // printer, which is the same reason `survival::grant` is
+                // here and not below the match.
+                inventory::grant_kit(&self.spawn_kit, &mut self.players[slot]);
             }
             Some(s) => {
                 self.players[slot] = Player {

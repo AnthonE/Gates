@@ -79,10 +79,7 @@ pub fn setup(mut commands: Commands) {
             ..default()
         },
         Text::new(""),
-        TextFont {
-            font_size: 15.0,
-            ..default()
-        },
+        super::ui::font(15.0),
         TextColor(Color::srgba(0.98, 0.94, 0.80, 0.95)),
         Pickable::IGNORE,
     ));
@@ -269,10 +266,7 @@ pub fn draw(
         for (text, global) in lines {
             c.spawn((
                 Text::new(text),
-                TextFont {
-                    font_size: 14.0,
-                    ..default()
-                },
+                super::ui::font(14.0),
                 TextColor(if global {
                     Color::srgba(0.86, 0.88, 0.96, 0.90)
                 } else {

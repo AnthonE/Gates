@@ -420,6 +420,16 @@ Still owed: item icons in the cells (the hotbar knows only which cell is
 selected, not what is in it), status chips (`WET 36%`), and a viewmodel that
 is the held item rather than a stand-in.
 
+**The face landed 2026-08-07 and `render/ui.rs` owns it**, the same way it
+owns the palette and for a worse-founded reason: nothing owned it before, so
+all 42 `TextFont` sites here and across `render/panels/` were `..default()`
+and every screen drew in Bevy's embedded debug mono. Roboto Condensed, bold
+by default and regular for prose, embedded rather than loaded — an unresolved
+`Handle<Font>` draws nothing at all, and `OnEnter(Loading)` runs before
+`Startup`, which is the trap `audio::build_bank` already documents.
+`DECISIONS.md` "ui type v0" has the sources and what was deliberately left
+(the size scale, blocked on nothing being able to photograph a panel).
+
 ### R8 · Clouds — **LANDED**
 
 `ART.md` §4 states it outright: a cloudless gradient cannot reach the

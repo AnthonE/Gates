@@ -38,9 +38,10 @@ use sim_core::inventory::{CONT_SELF, REFUSE_M_MAX};
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS};
 
 use super::{
-    craft, GhostRoot, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL, CELL_GAP_PX, CELL_HOVER,
-    CELL_PX, LINE, LINE_HOT, PANEL_BG, SCRIM, TEXT, TEXT_DIM,
+    craft, font, font_bold, GhostRoot, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL,
+    CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, SCRIM, TEXT, TEXT_DIM,
 };
+use crate::render::icons::Icons;
 use crate::ui::craft::item_label;
 use crate::ui::slots::{
     container_cols, container_title, move_args, refusal_text, slots_in, Drag, Grab,
@@ -57,7 +58,7 @@ pub struct SlotCell {
 }
 
 /// Build the whole screen.
-pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
+pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &Icons) {
     commands
         .spawn((
             PanelRoot,
@@ -83,7 +84,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
                 ..default()
             })
             .with_children(|row| {
-                craft::build_browser(row, ui, core);
+                craft::build_browser(row, ui, core, icons);
                 craft::build_detail(row, ui, core);
             });
 
@@ -96,9 +97,9 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
                 ..default()
             })
             .with_children(|row| {
-                own_grid(row, core);
+                own_grid(row, core, icons);
                 if core.cont_kind != CONT_SELF {
-                    container_grid(row, core);
+                    container_grid(row, core, icons);
                 }
             });
 
@@ -107,10 +108,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
                     "drag to move   -   right-drag takes half   -   ctrl-drag takes one   \
                      -   right-click uses   -   Tab or Esc closes",
                 ),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
+                font(12.0),
                 TextColor(TEXT_DIM),
                 Node {
                     margin: UiRect::top(Val::Px(6.0)),
@@ -121,14 +119,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
 }
 
 fn header(root: &mut ChildSpawnerCommands, ui: &Ui) {
-    root.spawn((
-        Text::new("INVENTORY"),
-        TextFont {
-            font_size: 26.0,
-            ..default()
-        },
-        TextColor(TEXT),
-    ));
+    root.spawn((Text::new("INVENTORY"), font_bold(26.0), TextColor(TEXT)));
     // Always drawn, even empty: the line's job is to have somewhere to say
     // why something did not happen, and a line that appears and disappears
     // makes the panel jump when it does.
@@ -138,16 +129,13 @@ fn header(root: &mut ChildSpawnerCommands, ui: &Ui) {
         } else {
             ui.status.clone()
         }),
-        TextFont {
-            font_size: 13.0,
-            ..default()
-        },
+        font(13.0),
         TextColor(BADGE),
     ));
 }
 
 /// Your own 30 slots: the belt on its own row, then the grid.
-fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore) {
+fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
     row.spawn((
         Node {
             flex_direction: FlexDirection::Column,
@@ -163,7 +151,7 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore) {
         label(col, "YOU");
         // The belt is drawn apart from the grid because it is apart: it is
         // the row the world can see, and slot 0..6 is what `sel` indexes.
-        grid(col, core, CONT_SELF, 0, HOTBAR_SLOTS, HOTBAR_SLOTS);
+        grid(col, core, icons, CONT_SELF, 0, HOTBAR_SLOTS, HOTBAR_SLOTS);
         col.spawn((
             Node {
                 width: Val::Percent(100.0),
@@ -172,7 +160,15 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore) {
             },
             BackgroundColor(LINE),
         ));
-        grid(col, core, CONT_SELF, HOTBAR_SLOTS, INV_SLOTS, HOTBAR_SLOTS);
+        grid(
+            col,
+            core,
+            icons,
+            CONT_SELF,
+            HOTBAR_SLOTS,
+            INV_SLOTS,
+            HOTBAR_SLOTS,
+        );
     });
 }
 
@@ -180,7 +176,7 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore) {
 /// the wire ships `INV_SLOTS` slots whatever kind is open and the tail stays
 /// zero for a box, so a panel that drew all thirty would draw twelve slots
 /// and eighteen lies.
-fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore) {
+fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
     let kind = core.cont_kind;
     let n = slots_in(kind);
     row.spawn((
@@ -196,14 +192,16 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore) {
     ))
     .with_children(|col| {
         label(col, container_title(kind));
-        grid(col, core, kind, 0, n, container_cols(kind));
+        grid(col, core, icons, kind, 0, n, container_cols(kind));
     });
 }
 
 /// `slots` of `kind`, `cols` wide, drawn from the core's view of it.
+#[allow(clippy::too_many_arguments)]
 fn grid(
     parent: &mut ChildSpawnerCommands,
     core: &ClientCore,
+    icons: &Icons,
     kind: u8,
     from: usize,
     to: usize,
@@ -224,7 +222,7 @@ fn grid(
         })
         .with_children(|g| {
             for (slot, stack) in view.iter().enumerate().take(to).skip(from) {
-                cell(g, kind, slot, *stack, core);
+                cell(g, kind, slot, *stack, core, icons);
             }
         });
 }
@@ -235,6 +233,7 @@ fn cell(
     slot: usize,
     stack: ItemStack,
     core: &ClientCore,
+    icons: &Icons,
 ) {
     let filled = stack.count > 0;
     parent
@@ -256,25 +255,45 @@ fn cell(
         ))
         .with_children(|c| {
             if filled {
-                c.spawn((
-                    Text::new(item_label(&core.catalog, stack.item)),
-                    TextFont {
-                        font_size: 10.0,
-                        ..default()
-                    },
-                    TextColor(TEXT),
-                    Pickable::IGNORE,
-                ));
+                // **A picture, not a word.** `Gunpowde` and `Workbenc` are
+                // what a 44 px cell does to an item name, and every cell in
+                // `crafting.png` is artwork. The name still exists — the
+                // detail pane and the drag ghost print it — so the cell can
+                // afford to be the thing rather than the label for it.
+                let name = item_label(&core.catalog, stack.item);
+                match icons.item(&name) {
+                    Some(image) => c.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(4.0),
+                            top: Val::Px(4.0),
+                            width: Val::Px(CELL_PX - 10.0),
+                            height: Val::Px(CELL_PX - 10.0),
+                            ..default()
+                        },
+                        ImageNode {
+                            image,
+                            color: Color::srgb(0.90, 0.87, 0.82),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    )),
+                    // No icon baked for this item: the word, as before. An
+                    // empty cell would be the dark-panel defect.
+                    None => c.spawn((
+                        Text::new(name),
+                        font_bold(10.0),
+                        TextColor(TEXT),
+                        Pickable::IGNORE,
+                    )),
+                };
                 // A count of one is not drawn, which is the reference's own
                 // rule and keeps a screen of tools from reading as a screen
                 // of numbers.
                 if stack.count > 1 {
                     c.spawn((
                         Text::new(format!("{}", stack.count)),
-                        TextFont {
-                            font_size: 13.0,
-                            ..default()
-                        },
+                        font_bold(13.0),
                         TextColor(TEXT_DIM),
                         Node {
                             align_self: AlignSelf::FlexEnd,
@@ -290,10 +309,7 @@ fn cell(
 fn label(parent: &mut ChildSpawnerCommands, text: &str) {
     parent.spawn((
         Text::new(text.to_string()),
-        TextFont {
-            font_size: 12.0,
-            ..default()
-        },
+        font_bold(12.0),
         TextColor(TEXT_DIM),
     ));
 }
@@ -475,10 +491,7 @@ fn spawn_ghost(commands: &mut Commands, core: &ClientCore, stack: ItemStack, gra
                     item_label(&core.catalog, stack.item),
                     units
                 )),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
+                font_bold(12.0),
                 TextColor(TEXT),
                 Pickable::IGNORE,
             ));

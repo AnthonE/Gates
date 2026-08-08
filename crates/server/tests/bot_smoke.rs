@@ -60,6 +60,10 @@ async fn test_bot_smoke_50() {
         combat,
         backpack,
         survival,
+        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
+        // for a human looking at the game, and a suite that asserted on a
+        // fresh inventory would be asserting on content instead of on code.
+        sim_core::inventory::SpawnKit::EMPTY,
         loot,
         catalog,
         // Persistence off: these shards write no file, so the suite stays
@@ -181,6 +185,10 @@ async fn test_action_lane_over_socket() {
         combat,
         backpack,
         survival,
+        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
+        // for a human looking at the game, and a suite that asserted on a
+        // fresh inventory would be asserting on content instead of on code.
+        sim_core::inventory::SpawnKit::EMPTY,
         loot,
         catalog,
         // Persistence off: these shards write no file, so the suite stays
@@ -273,6 +281,10 @@ async fn test_version_gate_refuses() {
         combat,
         backpack,
         survival,
+        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
+        // for a human looking at the game, and a suite that asserted on a
+        // fresh inventory would be asserting on content instead of on code.
+        sim_core::inventory::SpawnKit::EMPTY,
         loot,
         catalog,
         // Persistence off: these shards write no file, so the suite stays
@@ -328,6 +340,10 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
             combat,
             backpack,
             survival,
+            // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
+            // for a human looking at the game, and a suite that asserted on a
+            // fresh inventory would be asserting on content instead of on code.
+            sim_core::inventory::SpawnKit::EMPTY,
             loot,
             catalog,
             Saves::off(),

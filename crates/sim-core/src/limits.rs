@@ -124,6 +124,13 @@ pub const PENDING_REMOVALS_CAP: usize = 256;
 /// default, DECISIONS.md §open (gather bounds row).
 pub const MAX_ITEM_DEFS: usize = 64;
 
+/// Stacks a fresh character may be granted at spawn (`content/balance.toml`
+/// `[[spawn_kit]]`). Bounded like everything else on a content-driven path:
+/// the kit lands in `INV_SLOTS`, so a kit longer than the inventory could
+/// only be silently truncated, and wall 4 wants the cap stated rather than
+/// discovered. Proposed default, DECISIONS.md §open ("spawn kit v0").
+pub const MAX_SPAWN_KIT: usize = INV_SLOTS;
+
 /// Inventory slots per player: 6 hotbar + 24 backpack (ALPHA.md §1).
 pub const INV_SLOTS: usize = 30;
 

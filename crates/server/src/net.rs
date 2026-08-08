@@ -159,6 +159,7 @@ pub async fn spawn_shard(
     combat: sim_core::combat::CombatContent,
     backpack: sim_core::backpack::BackpackContent,
     survival: sim_core::survival::SurvivalContent,
+    spawn_kit: sim_core::inventory::SpawnKit,
     loot: sim_core::loot::LootContent,
     catalog: ItemCatalog,
     saves: Saves,
@@ -253,6 +254,7 @@ pub async fn spawn_shard(
                     combat,
                     backpack,
                     survival,
+                    spawn_kit,
                     loot,
                     catalog,
                     world_blob,
@@ -1246,6 +1248,7 @@ fn sim_thread(
     combat: sim_core::combat::CombatContent,
     backpack: sim_core::backpack::BackpackContent,
     survival: sim_core::survival::SurvivalContent,
+    spawn_kit: sim_core::inventory::SpawnKit,
     loot: sim_core::loot::LootContent,
     catalog: ItemCatalog,
     world_blob: Vec<u8>,
@@ -1269,6 +1272,7 @@ fn sim_thread(
     core.world.combat = combat;
     core.world.backpack = backpack;
     core.world.survival = survival;
+    core.world.spawn_kit = spawn_kit;
     core.world.loot = loot;
     core.catalog = catalog;
     // **The load, and this is the only place it may happen**: after the

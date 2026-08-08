@@ -37,12 +37,12 @@
 
 use bevy::prelude::*;
 
-use crate::ui::build::Hover;
 use crate::ui::craft::{Cat, Facts};
 use crate::ui::slots::Drag;
 
 pub mod craft;
 pub mod inv;
+pub mod ring;
 pub mod wheel;
 
 /// Which menu is up. One at a time: the wheel is a hold and the inventory
@@ -97,13 +97,16 @@ pub struct Ui {
     pub status: String,
     /// Derived category facts, rebuilt when the content tables drip in.
     pub facts: Facts,
-    /// The wheel's latched choice: indices into `ui::build::SHAPES` and
-    /// `MATERIALS`. Latched rather than momentary, so releasing the wheel
-    /// over nothing keeps what was chosen last.
+    /// The wheel's latched choice: an index into `ui::build::SHAPES`.
+    /// Latched rather than momentary, so releasing the wheel over nothing
+    /// keeps what was chosen last.
+    ///
+    /// **There is no `material` beside it since 2026-08-07.** The blueprint
+    /// places one rung and the hammer climbs the ladder, which is the
+    /// reference's split — `ui::build::PLACE_MATERIAL` has the argument.
     pub shape: usize,
-    pub material: usize,
-    /// What the wheel's pointer is over this frame.
-    pub hover: Option<Hover>,
+    /// Which shape segment the wheel's pointer is over this frame.
+    pub hover: Option<usize>,
     /// Rebuild the panel's node tree on the next frame.
     pub dirty: bool,
     /// Change detection against the core. A menu that rebuilt every frame
@@ -140,7 +143,6 @@ impl Default for Ui {
             status: String::new(),
             facts: Facts::default(),
             shape: 0,
-            material: 0,
             hover: None,
             dirty: false,
             seen: Seen::default(),
@@ -176,26 +178,48 @@ pub struct GhostRoot;
 // translucency and the cell states, and nothing else. Proposed defaults,
 // `DECISIONS.md` §open "menu skin v0".
 
-pub use super::ui::{DIM as TEXT_DIM, RULE as LINE, TEXT};
+// The FACE comes from there too, and for a stronger reason than the colours:
+// a panel drawn in a different typeface from the Esc menu behind it does not
+// read as the same product at all. `ui::font_bold` is the common case — the
+// reference game's own UI default is `RobotoCondensed-Bold.ttf` — and
+// `ui::font` is for prose.
+pub use super::ui::{font, font_bold, ACCENT, DIM as TEXT_DIM, RULE as LINE, TEXT};
 
-/// Panel body: nearly opaque, so text over a lit world stays readable. The
-/// chrome's `PANEL` is the same hue at full alpha — it never has a world
-/// behind it to let through.
-pub const PANEL_BG: Color = Color::srgba(0.082, 0.082, 0.090, 0.97);
+/// Panel body — `#2b2723` off `crafting.png`'s recipe grid. Nearly opaque,
+/// so text over a lit world stays readable; the reference's is translucent
+/// over a *blurred* world, which we do not have and which is what lets it
+/// sit lower.
+pub const PANEL_BG: Color = Color::srgba(0.169, 0.153, 0.137, 0.97);
 /// The screen-wide scrim behind a panel.
-pub const SCRIM: Color = Color::srgba(0.02, 0.02, 0.025, 0.72);
-/// An empty cell.
-pub const CELL_BG: Color = Color::srgba(0.15, 0.15, 0.16, 0.9);
-/// A cell holding something.
-pub const CELL_FULL: Color = Color::srgba(0.22, 0.21, 0.19, 0.95);
+pub const SCRIM: Color = Color::srgba(0.055, 0.047, 0.039, 0.72);
+/// An empty cell. The reference's grid cells are the panel with a hairline,
+/// not a lighter block — the ITEM is what carries the value there, which is
+/// why our text-only cells need more separation than its do.
+pub const CELL_BG: Color = Color::srgba(0.220, 0.204, 0.184, 0.92);
+/// A cell holding something — `#47433c`, the detail pane's value.
+pub const CELL_FULL: Color = Color::srgba(0.278, 0.263, 0.235, 0.96);
 /// The cell the pointer is over, and the drag's source.
-pub const CELL_HOVER: Color = Color::srgba(0.34, 0.32, 0.26, 0.95);
+pub const CELL_HOVER: Color = Color::srgba(0.369, 0.353, 0.329, 0.98);
 /// The one hot line: a selected cell, the head of the queue, an armed button.
 pub const LINE_HOT: Color = Color::srgba(0.98, 0.86, 0.55, 0.95);
 /// A price the player cannot pay, and the reference's own colour for it.
 pub const TEXT_SHORT: Color = Color::srgb(0.86, 0.36, 0.30);
-/// The station badge.
-pub const BADGE: Color = Color::srgb(0.83, 0.74, 0.28);
+/// The station badge — `#9abc5c`, the green of `WORKBENCH LEVEL 1 REQUIRED`.
+/// It was a mustard yellow, which is not a colour on the reference panel.
+pub const BADGE: Color = Color::srgb(0.604, 0.737, 0.361);
+
+// ---- the three vitals, measured off `crafting.png`'s bottom-right stack --
+//
+// Health, water, food. The reference draws them as **filled bars with an
+// icon**, not as text, and these are the fills.
+/// Health — `#8cb640`.
+pub const VITAL_HP: Color = Color::srgb(0.549, 0.714, 0.251);
+/// Water — `#4e97d0`.
+pub const VITAL_WATER: Color = Color::srgb(0.306, 0.592, 0.816);
+/// Food — `#c36f36`.
+pub const VITAL_FOOD: Color = Color::srgb(0.765, 0.435, 0.212);
+/// The trough a vital bar sits in.
+pub const VITAL_TROUGH: Color = Color::srgba(0.106, 0.098, 0.086, 0.72);
 
 /// Grid cell edge, px. Proposed default, same `DECISIONS.md` row.
 ///
@@ -300,10 +324,20 @@ pub fn keys(
     net: NonSend<super::Net>,
     mut toast: ResMut<super::hud::Toast>,
     mut keyboard: ResMut<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
 ) {
-    // The wheel is a hold, so it is decided every frame rather than latched.
-    let holding_wheel = keyboard.pressed(KeyCode::KeyB);
+    // **The wheel is held RIGHT, and only by an item that owns one.**
+    //
+    // It was `B`, held, whatever was in your hand. Both halves were wrong
+    // against the reference, whose wiki says it for each item in as many
+    // words — *"right click when equipped for more options"* — and whose
+    // building interface is entirely held-item modal. `crate::ui::hold` has
+    // the argument and the reason binding away from the swing is free
+    // (neither item has an attack: the hammer's damage total is 0).
+    let core = &net.session.core;
+    let hand = crate::ui::hold::held_in_hand(&core.catalog, &core.inv, net.sel);
+    let holding_wheel = hand.opens_a_wheel() && mouse.pressed(MouseButton::Right);
     let was_inventory = ui.panel == Panel::Inventory;
 
     if keyboard.just_pressed(KeyCode::Tab) {
@@ -343,13 +377,20 @@ pub fn keys(
     // wheel on top of it.
     if ui.panel != Panel::Inventory {
         let want = if holding_wheel {
-            Panel::Wheel
+            // One wheel per item. The hammer's is the reference's second
+            // radial and is `NOW.md` §0p2; until it lands, holding right
+            // with a hammer opens nothing rather than opening the shapes,
+            // which would place with the wrong verb.
+            match hand {
+                crate::ui::hold::Held::Plan => Panel::Wheel,
+                _ => Panel::None,
+            }
         } else {
             Panel::None
         };
         if want != ui.panel {
             // Releasing the wheel commits whatever it was over — the latch
-            // lives in `ui.shape`/`ui.material`, which `wheel::track` has
+            // lives in `ui.shape`, which `wheel::track` has
             // already written, so there is nothing to resolve here.
             ui.panel = want;
             ui.hover = None;
@@ -431,6 +472,10 @@ pub fn rebuild(
     mut ui: ResMut<Ui>,
     net: NonSend<super::Net>,
     roots: Query<Entity, With<PanelRoot>>,
+    // `Option`, because `icons::load` is a `Startup` system and a panel can
+    // in principle be asked for before it has run. A missing registry draws
+    // the labels it drew before rather than an empty ring.
+    icons: Option<Res<super::icons::Icons>>,
 ) {
     let core = &net.session.core;
 
@@ -477,7 +522,15 @@ pub fn rebuild(
 
     match ui.panel {
         Panel::None => {}
-        Panel::Inventory => inv::build_screen(&mut commands, &ui, core),
-        Panel::Wheel => wheel::build_screen(&mut commands, &ui, core),
+        Panel::Inventory => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            inv::build_screen(&mut commands, &ui, core, icons)
+        }
+        Panel::Wheel => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            wheel::build_screen(&mut commands, &ui, core, icons)
+        }
     }
 }

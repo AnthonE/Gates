@@ -88,25 +88,36 @@ pub fn material_label(material: u8) -> &'static str {
     }
 }
 
-/// What the pointer is over. `None` from [`pick`] means the dead centre or
-/// past the wheel's rim — both of which release without choosing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Hover {
-    /// Outer ring: index into [`SHAPES`].
-    Shape(usize),
-    /// Middle ring: index into [`MATERIALS`].
-    Material(usize),
-}
+/// **The material a blueprint places in, and it is not a choice.**
+///
+/// The reference game's building plan places one thing — the cheapest rung —
+/// and the *hammer* is what walks a standing piece up the ladder. Ours had a
+/// second ring on the wheel for picking the material at placement time, which
+/// is a verb the reference does not have and which merged two of its menus
+/// into one (operator, 2026-08-07: *"you dont upgrade from holding blueprint
+/// … upgrade is the hammer you hold"*, then *"just remove the inner ring"*).
+///
+/// **Nothing is lost by pinning it.** `sim_core::build::upgrade` has existed
+/// since the build slice, `ACT_UPGRADE` is on the wire, and the client
+/// already sends it — `U` takes the piece you are looking at one rung up via
+/// `structure::next_material`. So stone and metal are reached the way the
+/// reference reaches them, by upgrading, rather than by being placed
+/// directly. What is still owed is that `U` should be a hammer wheel;
+/// `NOW.md` §0p2 carries it.
+pub const PLACE_MATERIAL: u8 = MATERIALS[0];
 
-/// The wheel's three radii, in pixels of the drawn wheel. Proposed defaults
-/// (`DECISIONS.md` §open, "build wheel v0"): the dead centre is wide enough
-/// to hold the readout, and each ring is a comfortable thumb's width.
+/// The wheel's two radii, in pixels of the drawn wheel. Proposed defaults
+/// (`DECISIONS.md` §open, "build wheel v0").
+///
+/// **One ring since 2026-08-07** — see [`PLACE_MATERIAL`]. The inner radius
+/// is `0.66 × rim`, which is the ratio measured off `Rust Images/
+/// building.jpeg` (the ring located programmatically, not by eye), and the
+/// dead centre it leaves is far roomier than the old 96 — which the readout
+/// needed, because five lines in a 192 px circle was already tight.
 #[derive(Clone, Copy, Debug)]
 pub struct Rings {
     /// Inside this is the readout, and dead.
     pub dead: f32,
-    /// Boundary between the material ring and the shape ring.
-    pub split: f32,
     /// The rim. Outside it the pointer has left the wheel.
     pub rim: f32,
 }
@@ -114,38 +125,28 @@ pub struct Rings {
 impl Default for Rings {
     fn default() -> Self {
         Self {
-            dead: 96.0,
-            split: 152.0,
+            dead: 141.0,
             rim: 214.0,
         }
     }
 }
 
-/// Which segment the pointer is in.
+/// Which shape segment the pointer is in, or `None` for the dead centre and
+/// anywhere past the rim — both of which release without choosing.
 ///
 /// `dx` is right-positive and **`dy` is up-positive** — mathematical
 /// orientation, not Bevy UI's downward y. The render layer negates once at
 /// the call site, which keeps the trigonometry here readable and testable
 /// without a windowing convention baked into it.
 ///
-/// Segment 0 of each ring is centred on **straight up**, and indices
-/// increase **clockwise**, which is what `dx.atan2(dy)` gives directly.
-pub fn pick(dx: f32, dy: f32, rings: Rings) -> Option<Hover> {
+/// Segment 0 is centred on **straight up**, and indices increase
+/// **clockwise**, which is what `dx.atan2(dy)` gives directly.
+pub fn pick(dx: f32, dy: f32, rings: Rings) -> Option<usize> {
     let r = (dx * dx + dy * dy).sqrt();
     if r < rings.dead || r > rings.rim {
         return None;
     }
-    let n = if r < rings.split {
-        MATERIALS.len()
-    } else {
-        SHAPES.len()
-    };
-    let seg = segment(dx, dy, n);
-    if r < rings.split {
-        Some(Hover::Material(seg))
-    } else {
-        Some(Hover::Shape(seg))
-    }
+    Some(segment(dx, dy, SHAPES.len()))
 }
 
 /// The segment index of a direction, in a ring of `n`, segment 0 centred up

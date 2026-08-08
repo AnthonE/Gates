@@ -142,6 +142,7 @@ pub fn resolve(
 #[allow(clippy::too_many_arguments)]
 pub fn keys(
     keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     mut net: NonSendMut<Net>,
     aimed: Res<Aimed>,
     near: Res<Near>,
@@ -177,6 +178,19 @@ pub fn keys(
         upgrade_near(&net, &near.0, &mut toast);
     }
     if !wheel_up && keys.just_pressed(KeyCode::KeyR) {
+        repair_near(&net, &near.0, &mut toast);
+    }
+    // **The hammer's left click is the repair swing** — the reference's own
+    // binding, and free because the hammer has no attack (damage total 0).
+    // `R` stays as well: it is what a player without a hammer out still has,
+    // and nothing in the reference forbids a keyboard shortcut.
+    //
+    // Not while a panel owns the pointer, for the reason `place_key` states:
+    // a left click on the wheel is a wedge being chosen.
+    let hand =
+        crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel);
+    let busy = ui.as_ref().map(|u| u.panel != Panel::None).unwrap_or(false);
+    if hand.repairs() && !busy && mouse.just_pressed(MouseButton::Left) {
         repair_near(&net, &near.0, &mut toast);
     }
     if keys.just_pressed(KeyCode::KeyX) {
