@@ -312,6 +312,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()
             .init_resource::<hud::Toast>()
+            .init_resource::<hud::Readout>()
             .init_resource::<Settings>()
             .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
@@ -628,6 +629,10 @@ impl Plugin for GatesRenderPlugin {
                     // up is still owed to the player, and a ring nobody drains
                     // is a ring that overflows and drops the newest.
                     hud::feedback,
+                    // The pinned readout: `Feed`'s second HUD reader,
+                    // which the drain architecture exists to make free
+                    // (`feed.rs` — a reader borrows, only the drain pops).
+                    hud::readout,
                     hud::prompt,
                 )
                     .in_set(Stream)

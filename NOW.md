@@ -743,16 +743,18 @@ Remaining, in order:
    the path was re-read for stragglers — `interp.ids()` is an iterator,
    `RemoteState` is `Copy` on the stack, spawns and `Reshade` fire on
    transitions only. Nothing on the per-frame path allocates.
-6. **The five read-side signals all have consumers now; what is still
-   dropped is the WHERE.** Verified one by one 2026-08-09: `pop_death` feeds
-   the kill feed (`feed.rs` → `hud.rs`), `struct_hit` and `stock` are HUD
-   toasts gated on freshness bits, `charge_placed` toasts its fuse, and
-   `mark_cell`/`mark8` drive the swing prompt's weak-spot line (`verbs.rs` →
-   `hud.rs`). Genuinely dropped: the address half of three — `struct_hit`'s
-   number is not drawn at the wall it names, `charge_placed`'s countdown is
-   a one-shot toast rather than a clock on the charge (`charge_deploy`
-   unread), and `stock_addr` never says WHICH hearth. Each is a world-space
-   anchor on surfaces that exist; none is blocked.
+6. **The five read-side signals all have consumers now; the WHERE landed
+   on the HUD for two of three.** `hud::readout` (2026-08-09) pins a line
+   under the toast, off `Feed`'s freshness bits (a second reader — the
+   drain architecture's point): `struct_hit` persists as the wall's
+   fraction plus bearing+distance and refreshes per hit, so a gather no
+   longer stomps a raid's progress mid-swing, and `charge_placed` is a
+   ticking clock with the bearing a defender runs on, not the one-shot
+   toast it was. Gated in `hud.rs`'s own tests (`whereabouts`, the two
+   line builders). Genuinely dropped still: the WORLD-SPACE anchors — a
+   number at the wall itself, a clock on the charge mesh
+   (`charge_deploy` unread until that mesh half wants it) — and
+   `stock_addr` never says WHICH hearth. None is blocked.
 
 ## 0s · The six unlanded loop branches — triaged, and five are dead
 
