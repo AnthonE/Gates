@@ -1493,6 +1493,13 @@ fn announce_door(deploys: &Deploys, i: usize, by: u32, events: &mut EventQueue) 
 /// must keep getting it for free: a fast path that skipped the check when
 /// closing would let a stranger shut you in.
 ///
+/// The tier is the **door tier** ([`Deploys::lock_passes`] →
+/// `Locks::passes`): any grant swings the leaf, which is a GUEST code's
+/// whole verb (`DOORS.md` §2.2) — deliberately one tier softer than
+/// `pick_up`'s `Locks::passes_full`. The guest press in
+/// `a_guest_works_a_locked_door_and_cannot_pocket_it` goes red if the
+/// two tiers are ever conflated again.
+///
 /// The shut bit in the collision index flips in the same call, so the
 /// tick that toggles is the tick that blocks (or opens); EV_DOOR
 /// announces the new state for the wire.
@@ -1511,7 +1518,7 @@ pub fn use_door(
     let Some(i) = door_in_reach(dc, deploys, p, cx, cz, level, loc, arch_is_door, events) else {
         return;
     };
-    if !deploys.locks.passes_full(cx, cz, level, loc, p.id) {
+    if !deploys.lock_passes(cx, cz, level, loc, p.id) {
         // Knocking is the whole reason a refusal here is not silent
         // (`DOORS.md` §4): it is the only channel a locked-out player has
         // to the person inside, and it costs one broadcast. Both go out —
@@ -4223,10 +4230,14 @@ mod tests {
     /// frame, which would pocket the lock: `ACCESS_OP_TAKE` wearing the
     /// pickup verb's clothes.
     ///
-    /// **Mutant-killer**: soften `pick_up`'s check back to the door-tier
-    /// `Locks::passes` and the guest's lift lands — the refusal
-    /// assertion goes red with the door out of the world and the lock in
-    /// the guest's pocket.
+    /// **Mutant-killer, both directions.** Soften `pick_up`'s check back
+    /// to the door-tier `Locks::passes` and the guest's lift lands — the
+    /// refusal assertion goes red with the door out of the world and the
+    /// lock in the guest's pocket. Harden `use_door`'s check up to
+    /// `Locks::passes_full` and the guest's press knocks instead of
+    /// swinging — the EV_DOOR assertions go red. The second direction
+    /// shipped once, behind a suite that asked only the predicate, which
+    /// is why this test drives the verb.
     #[test]
     fn a_guest_works_a_locked_door_and_cannot_pocket_it() {
         let dc = DeployContent::probe_fixture();
@@ -4288,10 +4299,47 @@ mod tests {
             (crate::world::EV_AUTH, crate::lock::GRANT_GUEST as u32),
             "the fixture minted a guest, not a member"
         );
-        assert!(
-            deploys.lock_passes(CX, CZ, 0, LOC_EDGE_W, guest.id),
-            "the door verb answers the guest"
+        // The guest's one verb, driven through the VERB and not the
+        // predicate: a `lock_passes` assert here once stayed green while
+        // `use_door` itself asked the wrong tier. Open, then close — the
+        // grant covers both presses (`DOORS.md` §1 fact 3).
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut guest,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
         );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2 & 1, last(&ev).3),
+            (crate::world::EV_DOOR, 1, guest.id),
+            "a GUEST code opens the locked door — the tier's whole verb"
+        );
+        assert!(
+            deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open,
+            "and the leaf actually swung"
+        );
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut guest,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2 & 1),
+            (crate::world::EV_DOOR, 0),
+            "and closes it again — open and close alike"
+        );
+        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
 
         pick_up(
             &dc,
