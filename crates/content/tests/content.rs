@@ -1165,12 +1165,29 @@ fn a_clock_with_no_answer_is_refused() {
         "[gatherable.secondary]\noutput = \"item.cloth_UNUSED\"",
         "is not an item",
     );
-    // The honest version of the same defect — the row simply absent.
-    refuses(
-        "gatherables.toml",
+    // The honest version of the same defect — the rows simply absent. Both
+    // of them, since 2026-08-09: the tree's mushrooms answer hunger on
+    // their own, so deleting only the bush's berries no longer starves the
+    // island — which is the redundancy working, not the check weakening.
+    let mut srcs = sources();
+    let g = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "gatherables.toml")
+        .unwrap();
+    for row in [
+        "\n[gatherable.secondary]\noutput = \"item.mushrooms\"\nper_hit = 1\n",
         "\n[gatherable.secondary]\noutput = \"item.berries\"\nper_hit = 5\n",
-        "\n",
-        "the clock has no answer",
+    ] {
+        assert!(
+            g.1.contains(row),
+            "test fixture rot: `{row}` not in gatherables.toml"
+        );
+        g.1 = g.1.replace(row, "\n");
+    }
+    let err = build(&srcs).expect_err("a foodless island must be refused");
+    assert!(
+        err.contains("the clock has no answer"),
+        "expected the unanswerable-clock refusal, got: {err}"
     );
     // And the thirst half. It takes **both** answers off the island now:
     // the drink verb (wire v15) is the second way to answer thirst, so
@@ -1180,9 +1197,20 @@ fn a_clock_with_no_answer_is_refused() {
     let mut srcs = sources();
     for (name, text) in srcs.iter_mut() {
         if *name == "consumables.toml" {
+            // **Every node-reachable water source, not just the bush.** This
+            // zeroed berries alone until 2026-08-08, when the tree grew a
+            // mushroom secondary in one lane while the other moved forage to
+            // the reference's hydrate-don't-feed split — so after the merge
+            // the "dry island" still had a drink in it and the refusal this
+            // asserts never fired. A fixture that names one row is a fixture
+            // that goes stale the moment the world grows a second.
             *text = text.replace(
                 "id = \"item.berries\"\nhealth = 0\nfood = 10\nwater = 20",
                 "id = \"item.berries\"\nhealth = 0\nfood = 10\nwater = 0",
+            );
+            *text = text.replace(
+                "id = \"item.mushrooms\"\nhealth = 3\nfood = 15\nwater = 5",
+                "id = \"item.mushrooms\"\nhealth = 3\nfood = 15\nwater = 0",
             );
         }
     }
@@ -1261,7 +1289,7 @@ fn the_shipped_loot_tables_bake() {
     let t = lc
         .table(sim_core::loot::LOOT_BARREL)
         .expect("the barrel table is armed");
-    assert_eq!(t.len, 8, "the barrel table lost or gained a row");
+    assert_eq!(t.len, 9, "the barrel table lost or gained a row");
     assert_eq!(t.rolls_min, 1);
     assert_eq!(t.rolls_max, 2);
     assert_eq!(t.hits, 3, "the barrel's hits came from content");
@@ -1369,6 +1397,128 @@ fn a_container_that_cannot_be_opened_is_refused() {
         "rolls_max = 2\nhits = 0",
         "would never open",
     );
+}
+
+/// The decay ladder must not invert.
+///
+/// The three numbers look like taste and one relationship in them is
+/// not: if metal rots faster than wood, an upgrade spends materials to
+/// *shorten* a base's life, and nothing downstream would ever say so —
+/// the sweep would just quietly eat the expensive walls first.
+#[test]
+fn an_inverted_decay_ladder_is_refused() {
+    refuses(
+        "balance.toml",
+        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { wood = 13, stone = 20, metal = 34 }",
+        "not monotone",
+    );
+    refuses(
+        "balance.toml",
+        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { wood = 34, stone = 20, metal = 0 }",
+        "never rots",
+    );
+}
+
+/// The ladder the sim plays is the ladder the file wrote, keyed by the
+/// sim's own material codes — the conversion boundary, gated like the
+/// bow's (`bows_bake_to_per_tick_integers_the_sim_can_integrate`).
+#[test]
+fn the_decay_ladder_reaches_the_sim_keyed_by_material() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let dc = c.bake_deployables().expect("shipped deployables must bake");
+    let d = &c.balance.globals.decay_pct_per_period;
+    for (m, code) in [
+        (
+            content::schema::Material::Wood,
+            sim_core::build::MAT_WOOD as usize,
+        ),
+        (
+            content::schema::Material::Stone,
+            sim_core::build::MAT_STONE as usize,
+        ),
+        (
+            content::schema::Material::Metal,
+            sim_core::build::MAT_METAL as usize,
+        ),
+    ] {
+        assert_eq!(
+            dc.decay_pct[code] as u32, d[&m],
+            "{m:?} reached the sim at the wrong index — the ladder is keyed \
+             by material and a crossed pair would rot the wrong walls"
+        );
+    }
+}
+
+/// The code lock's row and its placement class are one thing said twice,
+/// and the sim indexes on both (lock v1, `reference/DOORS.md` §9.1).
+///
+/// `place_deploy` picks the lock branch off the **archetype** and picks
+/// "the address must hold a door" off the **placement**. A row carrying
+/// one without the other is not a validation nicety: `lock` + `doorway`
+/// is a lock that mints a deploy record standing in an empty doorway, and
+/// `box` + `door` is a chest a player is invited to hang on a door.
+/// Neither crashes anything, which is exactly why it needs a gate.
+#[test]
+fn a_lock_and_its_placement_class_are_refused_apart() {
+    refuses(
+        "deployables.toml",
+        "archetype = \"lock\"\nplacement = \"door\"",
+        "archetype = \"lock\"\nplacement = \"doorway\"",
+        "a lock is placement `door`",
+    );
+    refuses(
+        "deployables.toml",
+        "archetype = \"box\"\nplacement = \"any\"",
+        "archetype = \"box\"\nplacement = \"door\"",
+        "placement `door` is the lock's alone",
+    );
+}
+
+/// One lock row, or none.
+///
+/// `deploy::lock_row` resolves the item a taken-off lock hands back by
+/// scanning the baked table for the archetype. With two rows that scan
+/// picks the first and returns the wrong item — silently, only on the
+/// take verb, and only for whoever bolted the second kind on.
+#[test]
+fn a_second_lock_row_is_refused() {
+    refuses(
+        "deployables.toml",
+        "id = \"item.lock_code\"\narchetype = \"lock\"",
+        "id = \"item.hammer\"\narchetype = \"lock\"\nplacement = \"door\"\nhp = 100\n\n[[deployable]]\nid = \"item.lock_code\"\narchetype = \"lock\"",
+        "the sim can only name one",
+    );
+}
+
+/// The lock reaches the sim as a real baked row the placement path can
+/// find, and it is the only one wearing `PLACE_DOOR`.
+#[test]
+fn the_code_lock_bakes_to_the_archetype_the_sim_branches_on() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let dc = c.bake_deployables().expect("shipped deployables must bake");
+    let rows: Vec<_> = dc.defs[..dc.def_count as usize]
+        .iter()
+        .filter(|d| d.arch == sim_core::deploy::ARCH_LOCK)
+        .collect();
+    assert_eq!(rows.len(), 1, "exactly one lock reaches the sim");
+    assert_eq!(
+        rows[0].placement,
+        sim_core::deploy::PLACE_DOOR,
+        "the lock's placement class is the one that wants an occupied address"
+    );
+    assert_eq!(
+        rows[0].item,
+        c.item_index("item.lock_code").expect("the lock is an item"),
+        "the row must resolve to the item the take verb hands back"
+    );
+    for d in dc.defs[..dc.def_count as usize].iter() {
+        assert!(
+            d.arch == sim_core::deploy::ARCH_LOCK || d.placement != sim_core::deploy::PLACE_DOOR,
+            "a non-lock wears the lock's placement class"
+        );
+    }
 }
 
 /// The bow's ballistics reach the sim as **per-tick integers**, and the
@@ -1684,6 +1834,215 @@ fn the_kill_the_fire_and_the_meal_are_one_loop() {
             .count(),
         1,
         "the pig pays raw meat more than once"
+    );
+}
+
+/// **The burnt link — the loop's fourth row, and the fire's own clock.**
+///
+/// A meal left on a lit fire keeps cooking: the burnt row's INPUT is the
+/// cooked row's OUTPUT, which is the whole mechanic (the oven advances
+/// whatever row matches what its slots hold, so overcooking is content and
+/// not code — `sim-core/oven.rs`'s header predicted exactly this shape).
+/// Delete just the burnt cook row and every other row still validates
+/// while the fire silently stops being able to ruin anything — this test
+/// is what notices.
+#[test]
+fn the_meal_left_on_the_fire_burns() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let burnt = c
+        .item_index("item.burnt_meat")
+        .expect("burnt meat is an item");
+    let cooked = c
+        .item_index("item.cooked_meat")
+        .expect("cooked meat is an item");
+
+    // 1 — the chain links: the burnt row consumes what the cooked row
+    // produces, at the same station. Matched through the cooked row rather
+    // than by literal id so the link itself is what is asserted.
+    let cooked_row = c
+        .cooks
+        .iter()
+        .find(|k| k.input == "item.raw_meat")
+        .expect("no cook row consumes raw meat");
+    let burnt_row = c
+        .cooks
+        .iter()
+        .find(|k| k.input == cooked_row.output)
+        .expect("nothing overcooks the cooked meat — the burnt state is gone");
+    assert_eq!(burnt_row.output, "item.burnt_meat");
+    assert_eq!(burnt_row.station, cooked_row.station);
+
+    // 2 — burnt is barely edible: the conservative call (the repo's
+    // reference notes give the burnt state's shape and no numbers) is the
+    // worst food in the set. STRICTLY worst — tying a real meal would make
+    // overcooking free — and it never heals, because a meal you ruined is
+    // not a bandage.
+    let row = c
+        .consumables
+        .iter()
+        .find(|k| k.id == "item.burnt_meat")
+        .expect("burnt meat is not food at all — the reference's burnt is barely edible");
+    assert!(row.food > 0, "burnt meat must be worth more than nothing");
+    assert_eq!(row.health, 0, "a ruined meal must not heal");
+    for other in c.consumables.iter().filter(|k| k.id != "item.burnt_meat") {
+        if other.food > 0 {
+            assert!(
+                row.food < other.food,
+                "burnt meat ({} food) must be strictly the worst food in the \
+                 set, but `{}` pays {}",
+                row.food,
+                other.id,
+                other.food
+            );
+        }
+    }
+
+    // 3 — the BAKED table carries the link too: the index the fire's
+    // finished cook pays into its own slots is an index the fire accepts
+    // again. Same argument as the loop test's step 4 — the sim never sees
+    // an id, only a rank.
+    let baked = c.bake_cooking().expect("cooking bakes");
+    let b = baked
+        .row_for(sim_core::deploy::ARCH_FIRE, cooked)
+        .copied()
+        .expect("a fire does not accept the cooked meat it just produced");
+    assert_eq!(b.output, burnt);
+
+    // 4 — the chain terminates: burnt meat is the end state, not a fuel
+    // and not a further input. A burnt→X row would put the fire on a
+    // treadmill nothing in the design asked for.
+    assert!(
+        !c.cooks.iter().any(|k| k.input == "item.burnt_meat"),
+        "burnt meat cooks into something — the overcook chain must end"
+    );
+}
+
+/// Every consumable id in `c` with no producer, walked from the live verbs.
+///
+/// The seed set is what the world pays DIRECTLY, one entry per verb the sim
+/// actually runs: a swing on a node (gather primary + secondary), a kill
+/// (mob drops), a smashed barrel (`gather::smash` rolls `LOOT_BARREL` and
+/// nothing else — no verb opens a cache or a crate yet, `loot.rs`'s own
+/// words, so counting their rows would be exactly the lie `validate.rs`'s
+/// clock comment warns about; when those verbs land, this widens in that
+/// commit), and the spawn kit. The closure then walks the transformations:
+/// the oven's burn (fuel → byproduct), cook rows, and recipes whose inputs
+/// — and whose station, itself an item that must be produced — are all
+/// reachable, to a fixpoint.
+fn unreachable_consumables(c: &Content) -> Vec<String> {
+    let mut have = std::collections::BTreeSet::new();
+    for g in &c.gatherables {
+        have.insert(g.output.as_str());
+        if let Some(s) = &g.secondary {
+            have.insert(s.output.as_str());
+        }
+    }
+    for m in &c.mobs {
+        for d in &m.drops {
+            have.insert(d.item.as_str());
+        }
+    }
+    for l in &c.loot_tables {
+        if l.container == "barrel" {
+            for e in &l.entries {
+                have.insert(e.item.as_str());
+            }
+        }
+    }
+    for s in &c.balance.spawn_kit {
+        have.insert(s.item.as_str());
+    }
+    loop {
+        let mut grew = false;
+        if have.contains(c.fuel.item.as_str()) {
+            grew |= have.insert(c.fuel.byproduct.as_str());
+        }
+        for k in &c.cooks {
+            if have.contains(k.input.as_str()) {
+                grew |= have.insert(k.output.as_str());
+            }
+        }
+        for r in &c.recipes {
+            let station_ok = match r.station {
+                content::schema::Station::None => true,
+                content::schema::Station::Workbench1 => have.contains("item.workbench1"),
+                content::schema::Station::Furnace => have.contains("item.furnace"),
+            };
+            if station_ok && r.inputs.iter().all(|i| have.contains(i.item.as_str())) {
+                grew |= have.insert(r.output.as_str());
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    c.consumables
+        .iter()
+        .filter(|k| !have.contains(k.id.as_str()))
+        .map(|k| k.id.clone())
+        .collect()
+}
+
+/// **Every consumable the content ships is REACHABLE** — the general form
+/// of the meal-loop gate, and the one that would have caught mushrooms and
+/// corn the day `consumables.toml` grew them. Five rows shipped 2026-08-03
+/// with the survival clock and two of them (`item.mushrooms`, `item.corn`)
+/// were producible by nothing for six days: parsed, validated, hashed into
+/// the WAL header, drawn in the eat verb's tables, and absent from every
+/// verb that puts an item in a hand. The clock wall (`validate.rs`) only
+/// asks that SOMETHING answers hunger, so berries alone kept it green —
+/// this asks the per-row question the wall deliberately does not.
+#[test]
+fn every_consumable_the_content_ships_is_reachable() {
+    let c = build(&sources()).expect("shipped content builds");
+    assert!(
+        c.consumables.len() >= 5,
+        "the consumable set shrank to {} rows — this gate is checking little",
+        c.consumables.len()
+    );
+    let missing = unreachable_consumables(&c);
+    assert!(
+        missing.is_empty(),
+        "consumables nothing in the world can produce: {missing:?} — every \
+         row in consumables.toml must be producible by a live verb chain \
+         (gather, kill, barrel smash, spawn kit; then burn/cook/recipe \
+         closure)"
+    );
+
+    // The enumeration is honest: strip one producer row and its consumable
+    // must be reported stranded — exactly, so a walk that quietly counted
+    // everything (or nothing) goes red here rather than in a shipped file.
+    let mut srcs = sources();
+    let g = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "gatherables.toml")
+        .unwrap();
+    let row = "\n[gatherable.secondary]\noutput = \"item.mushrooms\"\nper_hit = 1\n";
+    assert!(
+        g.1.contains(row),
+        "fixture rot: the tree's mushroom row moved"
+    );
+    g.1 = g.1.replace(row, "\n");
+    let mutant = build(&srcs).expect("still valid — berries keep the clock answered");
+    assert_eq!(
+        unreachable_consumables(&mutant),
+        vec!["item.mushrooms".to_string()],
+        "deleting the tree's mushroom secondary must strand exactly the mushrooms"
+    );
+
+    let mut srcs = sources();
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    let row = "    { item = \"item.corn\", weight = 8, count_min = 2, count_max = 4 },\n";
+    assert!(
+        l.1.contains(row),
+        "fixture rot: the barrel's corn row moved"
+    );
+    l.1 = l.1.replace(row, "");
+    let mutant = build(&srcs).expect("still valid — a loot row is not the clock's answer");
+    assert_eq!(
+        unreachable_consumables(&mutant),
+        vec!["item.corn".to_string()],
+        "deleting the barrel's corn row must strand exactly the corn"
     );
 }
 

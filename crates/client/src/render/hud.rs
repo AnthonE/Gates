@@ -154,6 +154,32 @@ pub struct PromptLine;
 #[derive(Component)]
 pub struct ToastLine;
 
+/// The pinned readout, under the toast: the WHERE half of the two latched
+/// address-carrying signals (`NOW.md` §0x item 6) — the wall being broken
+/// and the live charge. Its own line because the toast is an announce
+/// surface any gather can stomp, and a raid's progress line vanishing
+/// under `+2 × Wood` was the defect.
+#[derive(Component)]
+pub struct ReadoutLine;
+
+/// What the readout line is holding. `ClientCore::struct_hit` and
+/// `::charge_placed` are latches carrying the LAST of their kind, so this
+/// resource — filled off `Feed`'s freshness bits — is what turns "latest"
+/// into "live": the wall refreshes on every hit and fades like a toast,
+/// the charge counts down from the fuse the wire named and clears at zero.
+#[derive(Resource, Default)]
+pub struct Readout {
+    /// The wall's cell, hp pair, and seconds left on the surface.
+    wall: Option<(u16, u16)>,
+    wall_left: u16,
+    wall_max: u16,
+    wall_secs: f32,
+    /// The charge's cell and seconds to detonation. Cleared at zero — the
+    /// blast's own `EV_STRUCT_HIT` takes the surface back over.
+    charge: Option<(u16, u16)>,
+    charge_secs: f32,
+}
+
 /// The crosshair's four ticks. A frame with no crosshair reads as a
 /// flythrough for the same reason `ART.md` §8 says one with no viewmodel
 /// does, and it is the only thing on screen that says where a swing goes.
@@ -170,6 +196,14 @@ pub struct HitMark;
 /// rule about position an operator should read before we pin anything.
 #[derive(Component)]
 pub struct Compass;
+
+/// The code lock's keypad, drawn — the root of [`pad_overlay`]'s small
+/// panel. Spawned and despawned by the system itself, so it lives here in
+/// the HUD (over the world, pointer-free) and not in `panels::` (which
+/// would grab the pointer, the one thing a keypad must not do —
+/// `crate::ui::keypad` has the argument).
+#[derive(Component)]
+pub struct PadRoot;
 
 pub fn setup(mut commands: Commands) {
     // The hotbar: six cells, bottom centre.
@@ -391,6 +425,27 @@ pub fn setup(mut commands: Commands) {
         Pickable::IGNORE,
     ));
 
+    // The pinned readout, under the toast (cosmetics as the toast's: same
+    // family, one step down the screen). Bold where the toast is not,
+    // because it is a number being watched rather than a sentence being
+    // noticed.
+    commands.spawn((
+        super::WorldEntity,
+        ReadoutLine,
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Percent(62.0),
+            width: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        Text::new(""),
+        super::ui::font_bold(14.0),
+        TextColor(Color::srgba(0.98, 0.82, 0.55, 0.0)),
+        TextLayout::new_with_justify(Justify::Center),
+        Pickable::IGNORE,
+    ));
+
     // The compass strip, top centre: a 90° window on the bearing, letters at
     // the cardinals. `hud.js`'s shape, in text rather than in a canvas.
     commands.spawn((
@@ -452,31 +507,58 @@ pub fn update(
         // nothing; "TOO FAR" or "NO ROOM" beside it teaches the rule. Level is
         // here for the same reason: `R`/`F` step it and nothing showed it, so
         // a player building on level 2 by accident had no way to notice.
-        let out = match row_for(&core.piece_defs, shape, material) {
-            Some(_) => {
-                let why = match ghost.as_ref().map(|g| g.verdict) {
-                    Some(crate::ui::place::Verdict::No(w)) if !w.is_empty() => w,
-                    _ => "",
-                };
-                let level = ghost.as_ref().map(|g| g.level).unwrap_or(0);
-                if why.is_empty() {
-                    format!(
-                        "BUILD  {} {}  L{}   (hold right)",
-                        material_label(material),
-                        shape_label(shape),
-                        level
-                    )
-                } else {
-                    format!(
-                        "BUILD  {} {}  L{}  — {}",
-                        material_label(material),
-                        shape_label(shape),
-                        level,
-                        why.to_uppercase()
-                    )
-                }
+        // A held deployable claims the line ahead of the build latch: the
+        // hand decides what the mouse means (`ui::hold`), and its ghost has
+        // a verdict to say while AIMING — the same grammar the build ghost
+        // uses below, red reason and all, so a preview that has gone red
+        // names the sim's own sentence before the click spends the item.
+        let held = core.inv[(net.sel as usize).min(core.inv.len().saturating_sub(1))];
+        let deploy_held =
+            crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held.item)
+                .is_some();
+        let out = if deploy_held {
+            let name = core
+                .catalog
+                .name(held.item as usize)
+                .iter()
+                .map(|b| (*b as char).to_ascii_uppercase())
+                .collect::<String>();
+            let why = match ghost.as_ref().map(|g| g.deploy_verdict) {
+                Some(crate::ui::place::DeployVerdict::No(w)) if !w.is_empty() => w,
+                _ => "",
+            };
+            if why.is_empty() {
+                format!("PLACE  {name}   (right click)")
+            } else {
+                format!("PLACE  {name}  — {}", why.to_uppercase())
             }
-            None => "BUILD  -   (hold right)".to_string(),
+        } else {
+            match row_for(&core.piece_defs, shape, material) {
+                Some(_) => {
+                    let why = match ghost.as_ref().map(|g| g.verdict) {
+                        Some(crate::ui::place::Verdict::No(w)) if !w.is_empty() => w,
+                        _ => "",
+                    };
+                    let level = ghost.as_ref().map(|g| g.level).unwrap_or(0);
+                    if why.is_empty() {
+                        format!(
+                            "BUILD  {} {}  L{}   (hold right)",
+                            material_label(material),
+                            shape_label(shape),
+                            level
+                        )
+                    } else {
+                        format!(
+                            "BUILD  {} {}  L{}  — {}",
+                            material_label(material),
+                            shape_label(shape),
+                            level,
+                            why.to_uppercase()
+                        )
+                    }
+                }
+                None => "BUILD  -   (hold right)".to_string(),
+            }
         };
         if text.0 != out {
             text.0 = out;
@@ -576,6 +658,23 @@ pub fn feedback(
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
         });
     }
+    // Knocks and grants (lock v1). A knock is broadcast, so this fires
+    // for a door across the base as readily as the one in front of you —
+    // that is the feature, not a leak: the news a defender needs is
+    // exactly "somebody is at a door", and which door is on the event.
+    for _ in feed.knocks() {
+        toast.say("*knock knock*".to_string());
+    }
+    for (.., grant) in feed.auths() {
+        toast.say(
+            if *grant == sim_core::lock::GRANT_FULL {
+                "the lock remembers you"
+            } else {
+                "the lock remembers you as a guest"
+            }
+            .to_string(),
+        );
+    }
     // What the hearth is holding, after you feed it. `stock` is a latched
     // ROW TABLE rather than one value, so the same freshness rule applies —
     // and `stock_count` is how many of the rows are live, which is why the
@@ -598,20 +697,12 @@ pub fn feedback(
         }
     }
 
-    // The wall you are breaking. `struct_hit` is a LATCHED field, not a ring
-    // — it holds the last one — so this is gated on the freshness bit rather
-    // than on the field being non-zero, which would redraw the same hit every
-    // frame forever. `Feed::applied` exists for exactly this (see its doc).
-    //
-    // `max == 0` means the piece def for that row has not dripped in yet, and
-    // `ClientCore`'s own comment on the field says the caller must then draw
-    // NOTHING rather than a lie. A fraction over a max of zero is the lie.
-    if feed.applied & client_core::core::APPLIED_STRUCT_HIT != 0 {
-        let (_, _, _, _, left, max) = core.struct_hit;
-        if let Some(line) = struct_hit_line(left, max) {
-            toast.say(line);
-        }
-    }
+    // The wall being broken used to toast here and moved to [`readout`]:
+    // a toast is replaced by whatever speaks next, so mid-raid the one
+    // number a raider was watching vanished under every gather — and the
+    // toast never said WHERE, which is the half `struct_hit` carries that
+    // nothing drew. The charge's announce stays: it is a one-shot warning,
+    // which is what a toast is; the readout is its clock.
 
     // The kill feed. Every death on the shard reaches this ring, and until
     // now the only reader was the mixer (`render::audio`) — so a death was
@@ -677,12 +768,97 @@ pub fn feedback(
     }
 }
 
+/// The pinned readout: the WHERE of the two latched signals (`NOW.md` §0x
+/// item 6). Until this landed, `struct_hit` and `charge_placed` reached
+/// the toast, which said WHAT honestly and dropped the address half on
+/// the floor. This line persists instead: the wall's fraction refreshes
+/// on every hit with the bearing and distance of the wall it names, and
+/// the charge is a ticking CLOCK counted down client-side from the fuse
+/// the wire carried — with the bearing a defender actually runs on, since
+/// the charge most worth drawing is the one somebody else planted.
+///
+/// A second reader of `Feed`, which is the architecture doing its job
+/// (`feed.rs`: a reader is a `Res<_>` and cannot consume anything — no
+/// `pop_*` here, `tests/sound.rs` greps). The world-space anchors — a
+/// number at the wall itself, a clock on the charge mesh — are still not
+/// built; this is the HUD half, and `charge_deploy` stays unread until
+/// the mesh half wants it.
+pub fn readout(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    time: Res<Time>,
+    mut ro: ResMut<Readout>,
+    mut lines: Query<(&mut Text, &mut TextColor), With<ReadoutLine>>,
+) {
+    let core = &net.session.core;
+    // Latch on the freshness bits, never on the fields being non-zero —
+    // they hold the LAST of their kind forever (`Feed::applied`'s doc).
+    if feed.applied & client_core::core::APPLIED_STRUCT_HIT != 0 {
+        let (cx, cz, _, _, left, max) = core.struct_hit;
+        // `max == 0` is the defs-not-arrived state and pins nothing: the
+        // same honesty rule the toast held (`struct_hit_line`'s doc).
+        if max > 0 {
+            ro.wall = Some((cx, cz));
+            ro.wall_left = left;
+            ro.wall_max = max;
+            ro.wall_secs = TOAST_SECS;
+        }
+    }
+    if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 {
+        let (cx, cz, _, _, _, fuse) = core.charge_placed;
+        if fuse > 0 {
+            ro.charge = Some((cx, cz));
+            ro.charge_secs = fuse as f32 / sim_core::limits::TICK_HZ as f32;
+        }
+    }
+
+    // The clocks. Cosmetic fades and a countdown mirror, not a gate — the
+    // detonation itself is the sim's, and arrives as its own events.
+    let dt = time.delta_secs();
+    ro.wall_secs = (ro.wall_secs - dt).max(0.0);
+    if ro.wall_secs == 0.0 {
+        ro.wall = None;
+    }
+    ro.charge_secs = (ro.charge_secs - dt).max(0.0);
+    if ro.charge_secs == 0.0 {
+        ro.charge = None;
+    }
+
+    let Ok((mut text, mut color)) = lines.single_mut() else {
+        return;
+    };
+    let [px, _, pz] = core.predict.render_position();
+    // The clock outranks the wall on the one line: it is rarer, it is
+    // fatal, and it is bounded by its own fuse — the wall's timer keeps
+    // running underneath and the fraction is back when the charge clears.
+    let (want, alpha) = if let Some((cx, cz)) = ro.charge {
+        (
+            charge_readout(ro.charge_secs, &whereabouts(px, pz, cx, cz)),
+            1.0,
+        )
+    } else if let Some((cx, cz)) = ro.wall {
+        (
+            struct_readout(ro.wall_left, ro.wall_max, &whereabouts(px, pz, cx, cz)),
+            // The toast's own fade: full until the last second, then out.
+            ro.wall_secs.min(1.0),
+        )
+    } else {
+        (None, 0.0)
+    };
+    let want = want.unwrap_or_default();
+    if text.0 != want {
+        text.0 = want;
+    }
+    color.0 = color.0.with_alpha(alpha);
+}
+
 /// The centre prompt and the compass.
 pub fn prompt(
     aimed: Res<Aimed>,
     swung: Res<super::verbs::Swung>,
     in_weak: Res<super::verbs::InWeak>,
     look: Res<super::input::Look>,
+    pad: Res<super::verbs::Pad>,
     mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
     mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
 ) {
@@ -693,9 +869,19 @@ pub fn prompt(
         // player who pressed `E` on a prompt that named a swing would spend
         // the wrong verb. One prompt, and the key it names is the key that
         // acts on it.
-        let want = match aimed.0.prompt() {
-            s if !s.is_empty() => s,
-            _ => swing_prompt_weak(swung.0.occupant, in_weak.0),
+        // The keypad outranks both, and for the ordering's own reason
+        // turned up a level: while four digits are being typed, `E` and
+        // the swing are not what the keys mean, so a prompt naming them
+        // would name the wrong verb (lock v1, `crate::ui::keypad`). The
+        // pad itself is [`pad_overlay`]'s panel now, so this line goes
+        // quiet rather than saying the same thing twice.
+        let want = if pad.0.is_open() {
+            String::new()
+        } else {
+            match aimed.0.prompt() {
+                s if !s.is_empty() => s,
+                _ => swing_prompt_weak(swung.0.occupant, in_weak.0),
+            }
         };
         if text.0 != want {
             text.0 = want;
@@ -707,6 +893,132 @@ pub fn prompt(
             text.0 = want;
         }
     }
+}
+
+/// The keypad, as a small panel in the house grammar (`NOW.md` §0z item 3).
+///
+/// **Pointer-free is the bar**: this is presentation, not a mouse flow.
+/// The pad stays a resource beside [`super::verbs::Pad`] and its keys stay
+/// `verbs::keypad_keys`'s; nothing here is clickable, the cursor stays
+/// locked, and the world keeps rendering behind it. What changed is only
+/// that four digits and seven ops are a panel above the hotbar instead of
+/// one line through the middle of the door you are standing at.
+///
+/// Everything drawn is [`crate::ui::keypad`]'s own arithmetic —
+/// [`Keypad::cells`] for the digit boxes, `OPS_HINT` for the key line, the
+/// buffer's `len` for the cursor — so the overlay says exactly what the
+/// old HUD line said ([`Keypad::line`] composes the same pieces, and the
+/// unit tests hold them together).
+///
+/// Rebuilt only when the pad changes; a `Keypad` is sixteen bytes and the
+/// compare is the cost of a still frame.
+///
+/// [`Keypad::cells`]: crate::ui::keypad::Keypad::cells
+/// [`Keypad::line`]: crate::ui::keypad::Keypad::line
+pub fn pad_overlay(
+    mut commands: Commands,
+    pad: Res<super::verbs::Pad>,
+    roots: Query<Entity, With<PadRoot>>,
+    mut seen: Local<Option<crate::ui::keypad::Keypad>>,
+) {
+    if *seen == Some(pad.0) {
+        return;
+    }
+    *seen = Some(pad.0);
+    for e in roots.iter() {
+        commands.entity(e).despawn();
+    }
+    if !pad.0.is_open() {
+        return;
+    }
+
+    // Cosmetics ride the toast's row (`DECISIONS.md` §open, client
+    // cosmetics); the palette is `panels`'s, so a keypad and an inventory
+    // read as one product. Bottom-centred at the wheel hint's own hotbar
+    // clearance — the centre of the screen stays on the door.
+    use super::panels::{CELL_BG, CELL_FULL, LINE, LINE_HOT, PANEL_BG, TEXT_DIM};
+    let cells = pad.0.cells();
+    let cursor = pad.0.len();
+    commands
+        .spawn((
+            super::WorldEntity,
+            PadRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(76.0),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Pickable::IGNORE,
+        ))
+        .with_children(|row| {
+            row.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::all(Val::Px(10.0)),
+                    row_gap: Val::Px(6.0),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(PANEL_BG),
+                BorderColor::all(LINE),
+                Pickable::IGNORE,
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("CODE"),
+                    super::ui::font_bold(13.0),
+                    TextColor(TEXT_DIM),
+                    Pickable::IGNORE,
+                ));
+                // The four digit cells. Typed digits in the clear — the
+                // HUD line never masked them and the panel keeps its
+                // information; the next empty cell wears the hot line, so
+                // where the fifth keystroke would be dropped is visible.
+                panel
+                    .spawn((
+                        Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(6.0),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ))
+                    .with_children(|digits| {
+                        for (i, c) in cells.iter().enumerate() {
+                            digits.spawn((
+                                Node {
+                                    width: Val::Px(30.0),
+                                    height: Val::Px(36.0),
+                                    justify_content: JustifyContent::Center,
+                                    align_items: AlignItems::Center,
+                                    border: UiRect::all(Val::Px(1.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(if c.is_some() { CELL_FULL } else { CELL_BG }),
+                                BorderColor::all(if i == cursor { LINE_HOT } else { LINE }),
+                                Pickable::IGNORE,
+                                children![(
+                                    Text::new(match c {
+                                        Some(d) => d.to_string(),
+                                        None => String::new(),
+                                    }),
+                                    super::ui::font_bold(18.0),
+                                    TextColor(Color::srgb(0.98, 0.97, 0.95)),
+                                )],
+                            ));
+                        }
+                    });
+                panel.spawn((
+                    Text::new(crate::ui::keypad::OPS_HINT),
+                    super::ui::font(11.0),
+                    TextColor(TEXT_DIM),
+                    Pickable::IGNORE,
+                ));
+            });
+        });
 }
 
 /// The swing prompt, plus the weak-spot cue when the player is standing in
@@ -794,6 +1106,42 @@ fn struct_hit_line(left: u16, max: u16) -> Option<String> {
     } else {
         format!("{left}/{max}  ·  {pct}%")
     })
+}
+
+/// Where a build cell stands relative to the player: an eight-point
+/// bearing and a rounded distance, e.g. `NE 23M`. Planar, like every
+/// reach test on the sim side. The convention is [`crate::look::bearing_deg`]'s
+/// — north is `+Z`, degrees clockwise, `atan2(east, north)` — so this and
+/// the compass strip cannot disagree about which way NE is. Trig is fine
+/// here: this is the client, not sim-core.
+fn whereabouts(px: f32, pz: f32, cx: u16, cz: u16) -> String {
+    const POINTS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    let half = sim_core::build::BUILD_CELL_M * 0.5;
+    let dx = cx as f32 * sim_core::build::BUILD_CELL_M + half - px;
+    let dz = cz as f32 * sim_core::build::BUILD_CELL_M + half - pz;
+    let deg = dx.atan2(dz).to_degrees().rem_euclid(360.0);
+    let idx = (((deg / 45.0) + 0.5) as usize) % 8;
+    let dist = (dx * dx + dz * dz).sqrt();
+    format!("{} {:.0}M", POINTS[idx], dist)
+}
+
+/// The wall readout: [`struct_hit_line`]'s fraction plus where the wall
+/// stands. Composed rather than restated, so the honesty rules up there —
+/// `max == 0` says nothing, a standing wall never reads 0% — hold here by
+/// construction.
+fn struct_readout(left: u16, max: u16, whereat: &str) -> Option<String> {
+    Some(format!("{}  ·  {}", struct_hit_line(left, max)?, whereat))
+}
+
+/// The charge clock's line, or `None` once it is spent. Ceiling, for
+/// [`charge_line`]'s stated reason — a live thing must not read as
+/// finished, so the line says `1s` until the instant it is gone.
+fn charge_readout(secs_left: f32, whereat: &str) -> Option<String> {
+    if secs_left <= 0.0 {
+        return None;
+    }
+    let secs = secs_left.ceil() as u32;
+    Some(format!("CHARGE  ·  {secs}s  ·  {whereat}"))
 }
 
 /// One kill-feed line for a `(victim, killer)` pair.
@@ -983,6 +1331,59 @@ mod tests {
         // And a swing at nothing is silent rather than "[LMB] ".
         assert_eq!(swing_prompt(0), "");
         assert_eq!(swing_prompt(Occupant::Rock as u8), "");
+    }
+
+    /// The readout's WHERE. North is `+Z` (compass axes v0), a build cell
+    /// is 3 m, and the distance is measured to the cell's centre — the
+    /// same point every reach test on the sim side measures to.
+    #[test]
+    fn the_readout_names_where_the_wall_stands() {
+        let half = sim_core::build::BUILD_CELL_M * 0.5;
+        // Standing on cell (0,0)'s centre: cell (3,0) is 9 m due east
+        // (+X), cell (0,3) is 9 m due north (+Z).
+        assert_eq!(whereabouts(half, half, 3, 0), "E 9M");
+        assert_eq!(whereabouts(half, half, 0, 3), "N 9M");
+        assert_eq!(whereabouts(half, half, 3, 3), "NE 13M");
+        // From the far side the bearing flips.
+        let (px, pz) = (
+            6.0 * sim_core::build::BUILD_CELL_M + half,
+            6.0 * sim_core::build::BUILD_CELL_M + half,
+        );
+        assert_eq!(whereabouts(px, pz, 6, 3), "S 9M");
+        assert_eq!(whereabouts(px, pz, 3, 6), "W 9M");
+        // Underfoot must not panic or NaN; it reads as zero metres.
+        assert!(whereabouts(half, half, 0, 0).ends_with("0M"));
+    }
+
+    /// The wall line keeps `struct_hit_line`'s honesty (composed, not
+    /// restated), and the clock never says `0s` while it is live.
+    #[test]
+    fn the_pinned_lines_stay_honest() {
+        assert_eq!(
+            struct_readout(875, 0, "E 3M"),
+            None,
+            "no defs yet must pin nothing"
+        );
+        assert_eq!(
+            struct_readout(875, 1750, "E 3M"),
+            Some("875/1750  ·  50%  ·  E 3M".to_string())
+        );
+        assert_eq!(
+            struct_readout(0, 1750, "E 3M"),
+            Some("STRUCTURE DOWN  ·  E 3M".to_string())
+        );
+        assert_eq!(charge_readout(0.0, "NE 9M"), None, "a spent clock is gone");
+        assert_eq!(charge_readout(-1.0, "NE 9M"), None);
+        assert_eq!(
+            charge_readout(0.2, "NE 9M"),
+            Some("CHARGE  ·  1s  ·  NE 9M".to_string()),
+            "about to blow is 1s, never 0s"
+        );
+        assert_eq!(
+            charge_readout(7.01, "NE 9M"),
+            Some("CHARGE  ·  8s  ·  NE 9M".to_string()),
+            "a part-second rounds up, like the announce toast's"
+        );
     }
 
     #[test]

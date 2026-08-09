@@ -23,7 +23,7 @@ use sim_core::build::{
 };
 use sim_core::combat::CombatContent;
 use sim_core::craft::CraftContent;
-use sim_core::deploy::DeployContent;
+use sim_core::deploy::{DeployContent, ARCH_DOOR, ARCH_HEARTH};
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::loot::LootContent;
 use sim_core::movement::{Body, POS_XZ_Q};
@@ -39,8 +39,14 @@ const ROW_DOORWAY: u16 = 3;
 const DEPLOY_HEARTH: u16 = 0;
 const DEPLOY_DOOR: u16 = 2;
 
-fn armed() -> World {
-    let mut w = World::new(SEED);
+fn armed() -> Box<World> {
+    // On the heap from the first frame: a test thread's stack is 2 MiB and
+    // three live `World`s (fixture + `round_trip`'s rebuild + a return
+    // temporary) do not fit it in any build profile. One construction's
+    // frame does — the wasm parity probe proves that daily on a 1 MiB
+    // shadow stack — so the box is taken here, once, and every caller
+    // holds a pointer. CLAUDE.md's boxed-array trap, wearing test clothes.
+    let mut w = Box::new(World::new(SEED));
     w.gather = GatherContent::probe_fixture();
     w.craft = CraftContent::probe_fixture();
     w.build = BuildContent::probe_fixture();
@@ -113,7 +119,7 @@ fn stand_in_build_cell(w: &mut World, slot: usize) -> (u16, u16) {
 /// A world somebody has lived in: two bodies (one of them asleep), a
 /// foundation, a doorway, a hearth, a closed door, a chopped tree, and a
 /// few ticks of clock on all of it.
-fn a_lived_in_world() -> World {
+fn a_lived_in_world() -> Box<World> {
     let mut w = armed();
     w.dev_spawn = Some(w.spawn_pos(1));
     w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
@@ -184,13 +190,13 @@ fn a_lived_in_world() -> World {
 /// exactly lossless for one nobody was. `a_world_saved_mid_session_puts_
 /// everyone_to_bed` below owns the lossy half; everything that compares
 /// hashes starts here.
-fn a_quiet_world() -> World {
+fn a_quiet_world() -> Box<World> {
     let mut w = a_lived_in_world();
     w.tick(&[Command::Leave { id: 1 }]);
     w
 }
 
-fn round_trip(w: &World) -> World {
+fn round_trip(w: &World) -> Box<World> {
     let mut buf = vec![0u8; WORLD_SAVE_MAX_BYTES];
     let n = w.save_world(&mut buf).expect("a live world encodes");
     let mut back = armed();
@@ -420,14 +426,21 @@ fn two_shards_loading_one_file_stay_in_lockstep() {
         let origin = s.state_hash();
         let mut stamps = Vec::new();
         for t in 0..60u32 {
-            // A command stream with something in it: a takeover, then the
-            // ordinary clock. An empty script would agree even if the load
-            // had dropped half the world.
+            // A command stream with something in it: a takeover, a leave,
+            // a two-phase eviction, then the ordinary clock. An empty
+            // script would agree even if the load had dropped half the
+            // world, and the `Evict` is here because its id is the
+            // stream's fact — both loads must delete the same body on the
+            // same tick (`world.rs`, `Command::Evict`).
             if t == 5 {
                 s.tick(&[Command::Wake {
                     id: 0x0303,
                     sleeper: 2,
                 }]);
+            } else if t == 9 {
+                s.tick(&[Command::Leave { id: 0x0303 }]);
+            } else if t == 14 {
+                s.tick(&[Command::Evict { id: 0x0303 }]);
             } else {
                 s.tick(&[]);
             }
@@ -516,16 +529,21 @@ fn a_corrupt_world_is_refused_by_reason() {
         bent(&|b| b[COUNTS_AT + 2..COUNTS_AT + 4].copy_from_slice(&u16::MAX.to_le_bytes())),
         Err(WorldSaveError::CountOverCap)
     );
+    // A lock count past MAX_LOCKS — the sixth `u16` (lock v1).
+    assert_eq!(
+        bent(&|b| b[COUNTS_AT + 10..COUNTS_AT + 12].copy_from_slice(&u16::MAX.to_le_bytes())),
+        Err(WorldSaveError::CountOverCap)
+    );
     // A slot-life count past MAX_SLOT_LIVES — the u32 one.
     assert_eq!(
-        bent(&|b| b[COUNTS_AT + 14..COUNTS_AT + 18].copy_from_slice(&u32::MAX.to_le_bytes())),
+        bent(&|b| b[COUNTS_AT + 16..COUNTS_AT + 20].copy_from_slice(&u32::MAX.to_le_bytes())),
         Err(WorldSaveError::CountOverCap)
     );
 
     // A piece naming a content row that does not exist. The first piece
     // record's `row` byte sits after the player section.
     let players = w.players.iter().filter(|p| p.active).count();
-    let piece0 = COUNTS_AT + 18 + players * 240;
+    let piece0 = COUNTS_AT + 20 + players * 240;
     assert_eq!(
         bent(&|b| b[piece0 + 6] = 200),
         Err(WorldSaveError::BadContentRow),
@@ -536,6 +554,69 @@ fn a_corrupt_world_is_refused_by_reason() {
         bent(&|b| b[piece0..piece0 + 2].copy_from_slice(&u16::MAX.to_le_bytes())),
         Err(WorldSaveError::AddressOutOfRange)
     );
+}
+
+/// A forged save cannot claim a mirror state no lock verb can produce.
+/// The decoder reads each deploy record's `locked` byte for layout and
+/// drops it (`worldsave.rs`: the decoder deliberately distrusts the
+/// mirror bits — **both** of them), and `rebuild_doors` re-derives the
+/// pair from the lock section for the archetypes `lockable` names — so
+/// locked:true on a hearth, which the rebuild never visits, must come
+/// back cleared rather than ridden into the world. The door's byte is
+/// forged too: lockable, but with no lock in the file the rebuild clears
+/// it, which pins the half that already held.
+///
+/// **Mutant-killer**: put the file's `locked` back into the decoded
+/// record (`locked` instead of `locked: false` in `decode_into`) and the
+/// hearth's record loads locked with no lock anywhere — the last
+/// assertion goes red.
+#[test]
+fn forged_lock_bits_load_cleared_never_trusted() {
+    let w = a_lived_in_world();
+    assert!(w.deploys.locks().is_empty(), "fixture: no lock in the file");
+    let mut blob = vec![0u8; WORLD_SAVE_MAX_BYTES];
+    let n = w.save_world(&mut blob).expect("encodes");
+    blob.truncate(n);
+
+    // Walk to the deploy section the way the corruption test above does:
+    // head + counts, players at 240 each, pieces at 19 (11 + the
+    // placement tick), then 25 per deploy record (17 + bag_ready) with
+    // `locked` at offset 16 of each.
+    const COUNTS_AT: usize = 34;
+    let players = w.players.iter().filter(|p| p.active).count();
+    let deploy0 = COUNTS_AT + 20 + players * 240 + w.pieces.len() * 19;
+    let mut saw = (false, false);
+    for (i, rec) in w.deploys.entries().iter().enumerate() {
+        let at = deploy0 + i * 25;
+        // Anchor the offset math on the record's own address bytes
+        // before bending anything — a wrong stride would forge noise.
+        assert_eq!(
+            u16::from_le_bytes([blob[at], blob[at + 1]]),
+            rec.cx,
+            "the deploy stride drifted under this test"
+        );
+        blob[at + 16] = 1; // locked := true, hearth and door alike
+        match w.deploy.defs[rec.row as usize].arch {
+            ARCH_HEARTH => saw.0 = true,
+            ARCH_DOOR => saw.1 = true,
+            _ => {}
+        }
+    }
+    assert!(
+        saw.0 && saw.1,
+        "the fixture must cover a non-lockable and a lockable archetype"
+    );
+
+    let mut back = armed();
+    back.load(&blob)
+        .expect("a forged mirror bit is cleared, not refused");
+    for rec in back.deploys.entries() {
+        assert!(
+            !rec.locked && !rec.has_lock,
+            "no lock is in the file, so no record may load locked — \
+             whatever the file claimed"
+        );
+    }
 }
 
 /// A refused blob leaves the world untouched. The alternative is a shard

@@ -14,7 +14,7 @@
 //! loop seam) before any number about it is read.
 
 use client::sound::mixer::{Mixer, Request};
-use client::sound::steps::{surface_cue, Steps, STRIDE_M};
+use client::sound::steps::{remote, surface_cue, Steps, STRIDE_M};
 use client::sound::synth;
 use client::sound::{
     Bus, Cue, Mix, CUES, CUE_COUNT, CUE_QUEUE_CAP, MAX_AUDIBLE_M, SAMPLE_RATE, STARTS_PER_FRAME,
@@ -93,7 +93,7 @@ fn interface_cues_do_not_vary_in_pitch() {
 fn stackable_cues_carry_a_cooldown() {
     for cue in Cue::ALL {
         let d = cue.def();
-        if d.positional || cue.pitch_var() > 0.0 || cue == Cue::Death || cue == Cue::BedWind {
+        if d.positional || cue.pitch_var() > 0.0 || cue == Cue::Death || cue.is_bed() {
             continue;
         }
         assert!(
@@ -479,6 +479,86 @@ fn reset_forgets_the_previous_world() {
 }
 
 // ---------------------------------------------------------------------------
+// Remote footsteps (`NOW.md` §0x item 6): the local family's positional
+// twins. The odometer half is the SAME `Steps` gated above — a remote body
+// carries its own instance — so what is new here is the mapping, the table
+// row, and the mixer treating the cue as a place in the world.
+// ---------------------------------------------------------------------------
+
+/// Every surface has a remote twin, the twin is the same sound byte for
+/// byte, and what differs is exactly what should: positional at the body,
+/// outranking your own feet, on the step family's own radius.
+#[test]
+fn a_remote_step_is_the_same_boot_on_the_same_ground() {
+    let pairs = [
+        (Cue::StepSand, Cue::RemoteStepSand),
+        (Cue::StepGrass, Cue::RemoteStepGrass),
+        (Cue::StepLitter, Cue::RemoteStepLitter),
+        (Cue::StepRock, Cue::RemoteStepRock),
+        (Cue::StepWater, Cue::RemoteStepWater),
+    ];
+    for (local, far) in pairs {
+        assert_eq!(remote(local), far, "{local:?} maps to the wrong twin");
+        // The ground decides what a step sounds like, not whose boot it is.
+        assert_eq!(
+            synth::wav(local),
+            synth::wav(far),
+            "{far:?} is not {local:?}'s own waveform"
+        );
+        let (l, f) = (local.def(), far.def());
+        assert!(f.positional, "{far:?} is an own-fact - it must be a place");
+        assert!(!l.positional, "{local:?} grew a position");
+        assert_eq!(
+            f.radius_m, l.radius_m,
+            "the two step families drifted on how far a boot carries"
+        );
+        assert_eq!(f.gain, l.gain, "the two step families drifted on gain");
+        assert!(
+            f.priority > l.priority,
+            "another player's step is the sound that decides fights - it must \
+             outrank your own feet"
+        );
+        assert!(far.pitch_var() > 0.0, "{far:?} is diegetic and must vary");
+    }
+    // The mapping is closed over the step family: a non-step cue has no
+    // twin and passes through unchanged.
+    assert_eq!(remote(Cue::Swing), Cue::Swing);
+}
+
+/// The mixer hears a remote step where the body is and not past the radius:
+/// the one falloff law is the cull, exactly as it is for the falling tree.
+#[test]
+fn a_remote_step_is_heard_at_the_body_and_culled_by_distance() {
+    let mix = Mix::default();
+    // In earshot: one voice, positional, attenuated below the table gain.
+    let mut m = Mixer::new();
+    m.push(Request::at(Cue::RemoteStepGrass, [8.0, 0.0, 0.0]));
+    let starts: Vec<_> = m.tick(16.0, AT_ORIGIN, 0, &mix).to_vec();
+    assert_eq!(starts.len(), 1, "a nearby remote step was not heard");
+    assert_eq!(
+        starts[0].at,
+        Some([8.0, 0.0, 0.0]),
+        "the step did not play at the body"
+    );
+    assert!(
+        starts[0].gain < Cue::RemoteStepGrass.def().gain,
+        "8 m away did not attenuate"
+    );
+    // Past the radius: no voice at all, not a quiet one — and not counted
+    // as starvation, because a cue nobody could hear was never owed a slot.
+    let mut m = Mixer::new();
+    m.push(Request::at(
+        Cue::RemoteStepGrass,
+        [Cue::RemoteStepGrass.def().radius_m + 1.0, 0.0, 0.0],
+    ));
+    assert!(
+        m.tick(16.0, AT_ORIGIN, 0, &mix).is_empty(),
+        "a step past its radius was heard"
+    );
+    assert_eq!(m.starved, 0, "a culled step was counted as starvation");
+}
+
+// ---------------------------------------------------------------------------
 // The generated bank. Structural first, statistical second.
 // ---------------------------------------------------------------------------
 
@@ -535,7 +615,7 @@ fn every_cue_is_a_sound() {
         // both ends of every single playback. **Except the bed**, whose first
         // sample must be continuous with its LAST rather than with silence —
         // `the_bed_loops_without_a_seam` is its version of this check.
-        if cue == Cue::BedWind {
+        if cue.is_bed() {
             continue;
         }
         assert!(
@@ -572,20 +652,29 @@ fn the_bank_is_deterministic() {
     );
 }
 
-/// The bed loops forever, so its seam is heard more than any other sample in
-/// the game. Continuity across the join is the assertion.
+/// A bed loops forever, so its seam is heard more than any other sample in
+/// the game. Continuity across the join is the assertion, and it runs over
+/// **every** bed — the wind bed had this gate alone for two lanes, and the
+/// surf and submerged beds are generated by different functions that could
+/// each get the seam wrong in their own way.
 #[test]
-fn the_bed_loops_without_a_seam() {
-    let s = pcm(&synth::wav(Cue::BedWind));
+fn every_bed_loops_without_a_seam() {
+    for cue in Cue::ALL.iter().filter(|c| c.is_bed()) {
+        the_bed_loops_without_a_seam(*cue);
+    }
+}
+
+fn the_bed_loops_without_a_seam(cue: Cue) {
+    let s = pcm(&synth::wav(cue));
     let n = s.len();
     assert!(
         n > SAMPLE_RATE as usize * 4,
-        "the bed is under four seconds"
+        "{cue:?} is under four seconds"
     );
     // The join: the last sample flows into the first. A step here is the
     // click that would be heard once every loop, forever.
     let step = (s[0] - s[n - 1]).abs();
-    assert!(step < 0.25, "the bed's loop point steps by {step}");
+    assert!(step < 0.25, "{cue:?}'s loop point steps by {step}");
     // And the energy must not dip across the join, which is what a LINEAR
     // crossfade of two uncorrelated noise signals does (~3 dB) and what the
     // equal-power pair in `loop_seam` exists to prevent. Compare the window
@@ -597,7 +686,7 @@ fn the_bed_loops_without_a_seam() {
     let ratio = rms(&join) / middle;
     assert!(
         ratio > 0.6 && ratio < 1.7,
-        "the loop join is {ratio:.2}x the bed's own level - the crossfade is audible"
+        "{cue:?}'s loop join is {ratio:.2}x its own level - the crossfade is audible"
     );
 }
 
@@ -613,26 +702,103 @@ fn the_bed_loops_without_a_seam() {
 /// This is that finding turned back into a gate.
 #[test]
 fn the_bed_gusts() {
-    let s = pcm(&synth::wav(Cue::BedWind));
-    // Short-term level, in half-second windows across the whole loop.
-    let w = SAMPLE_RATE as usize / 2;
-    let levels: Vec<f32> = s.chunks(w).filter(|c| c.len() == w).map(rms).collect();
-    assert!(levels.len() >= 8, "the bed is too short to gust");
-    let lo = levels.iter().cloned().fold(f32::MAX, f32::min);
-    let hi = levels.iter().cloned().fold(0.0f32, f32::max);
     // Bounded from BOTH sides, and the second bound is the same lesson as the
     // first: the fix for the flat hiss overshot to a 5.4x swing, which does
     // not read as weather — it reads as the ambience cutting out once every
     // ten seconds. Wind gusts; it does not stop.
+    swings(Cue::BedWind, 1.35, 4.0);
+}
+
+/// Surf is the same finding with a different number. A sea moves **more** than
+/// wind does — a break arriving and draining away is most of what surf is, and
+/// a bed with a flat level is a hiss with salt in the name. The upper bound is
+/// looser than the wind's for the same reason and no looser than that: a surf
+/// bed that goes to silence between waves is a bed that switches off.
+#[test]
+fn the_surf_breaks() {
+    swings(Cue::BedSurf, 1.8, 6.0);
+}
+
+/// The submerged bed moves least of the three: water over your ears is a
+/// pressure, not an event. It still may not be a constant, or it is a test
+/// tone.
+#[test]
+fn the_submerged_bed_is_a_pressure_not_an_event() {
+    swings(Cue::BedUnder, 1.15, 3.0);
+}
+
+/// Short-term level across a bed's whole loop, in half-second windows.
+fn swings(cue: Cue, min: f32, max: f32) {
+    let s = pcm(&synth::wav(cue));
+    let w = SAMPLE_RATE as usize / 2;
+    let levels: Vec<f32> = s.chunks(w).filter(|c| c.len() == w).map(rms).collect();
+    assert!(levels.len() >= 8, "{cue:?} is too short to move");
+    let lo = levels.iter().cloned().fold(f32::MAX, f32::min);
+    let hi = levels.iter().cloned().fold(0.0f32, f32::max);
     let swing = hi / lo;
     assert!(
-        swing > 1.35,
-        "the bed's level only moves {swing:.2}x across its length - it is a flat hiss, not wind"
+        swing > min,
+        "{cue:?}'s level only moves {swing:.2}x across its length - it is a flat hiss"
     );
     assert!(
-        swing < 4.0,
-        "the bed's level moves {swing:.2}x - that is the ambience dropping out, not a gust"
+        swing < max,
+        "{cue:?}'s level moves {swing:.2}x - that is the ambience dropping out"
     );
+}
+
+/// **The submerged bed must be measurably darker than the one it replaces.**
+/// This is the honest version of "it sounds underwater": a real submerged mix
+/// is a steep low-pass and we have no filter node, so what `SNAPSHOTS` can
+/// actually promise is that the bed it crossfades to was *generated* dark.
+/// Measured as a zero-crossing rate, the same cheap spectral-centroid proxy
+/// the five footstep surfaces are separated by.
+#[test]
+fn the_submerged_bed_is_darker_than_the_air() {
+    let zcr = |cue: Cue| {
+        let s = pcm(&synth::wav(cue));
+        let n = s
+            .windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count();
+        n as f32 / s.len() as f32
+    };
+    let under = zcr(Cue::BedUnder);
+    let wind = zcr(Cue::BedWind);
+    let surf = zcr(Cue::BedSurf);
+    assert!(
+        under < wind * 0.8,
+        "the submerged bed's zero-crossing rate is {under:.4} against the wind's {wind:.4} - \
+         it is not darker, it is the same bed"
+    );
+    assert!(
+        under < surf,
+        "the submerged bed is brighter than the surf it is heard under"
+    );
+}
+
+/// A splash is a splash and not a large footstep: it is longer than every
+/// footstep in the bank, and it has a droplet tail — energy still arriving
+/// well after the burst has decayed.
+#[test]
+fn a_splash_outlasts_a_footstep() {
+    let splash = pcm(&synth::wav(Cue::Splash));
+    let step = pcm(&synth::wav(Cue::StepWater));
+    assert!(
+        splash.len() > step.len() * 2,
+        "the splash is {} samples against a water step's {} - it is a loud step",
+        splash.len(),
+        step.len()
+    );
+    // The last quarter must still carry something. Without the droplets it is
+    // an exponential that reached the noise floor two thirds in.
+    let q = splash.len() / 4;
+    let head = rms(&splash[..q]);
+    let tail = rms(&splash[3 * q..]);
+    assert!(
+        tail > head * 0.01,
+        "the splash's last quarter is {tail:.5} against a head of {head:.5} - no droplets"
+    );
+    assert!(tail < head, "the splash gets louder as it ends");
 }
 
 /// A footstep is a transient: most of its energy is in the first third. A
@@ -655,6 +821,59 @@ fn footsteps_are_transients() {
             "{cue:?} has a flat envelope (head {head:.4}, tail {tail:.4}) - it is a hiss"
         );
     }
+}
+
+/// The pig's voice is a snort, not a hiss, and this pins the two things that
+/// make it one. **Dark**: the whole cue lives under the 2–5 kHz band the
+/// reference carves clear for what matters (`reference/AUDIO.md` §4), so its
+/// zero-crossing rate must sit well below a bright transient's — the same
+/// proxy the footstep surfaces are separated by. **Double**: a pig snorts in
+/// pairs, so the energy must dip between the two exhales and come back —
+/// a single decaying burst would be a large footstep with a species name.
+#[test]
+fn a_snort_is_dark_and_double() {
+    let s = pcm(&synth::wav(Cue::Snort));
+    let zcr = |s: &[f32]| {
+        let n = s
+            .windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count();
+        n as f32 / s.len() as f32
+    };
+    let rock = pcm(&synth::wav(Cue::StepRock));
+    assert!(
+        zcr(&s) < zcr(&rock) * 0.8,
+        "the snort ({:.4}) is not darker than a rock step ({:.4}) - it is a hiss, not a breath",
+        zcr(&s),
+        zcr(&rock)
+    );
+    // The pair: first exhale, the gap, second exhale (`synth::snort`'s own
+    // timeline — bursts at 0.0 s and 0.24 s).
+    let at = |t: f32| ((t * SAMPLE_RATE as f32) as usize).min(s.len());
+    let first = rms(&s[at(0.02)..at(0.14)]);
+    let gap = rms(&s[at(0.18)..at(0.235)]);
+    let second = rms(&s[at(0.25)..at(0.38)]);
+    assert!(
+        first > gap * 1.1,
+        "no first exhale: burst {first:.4} against gap {gap:.4}"
+    );
+    assert!(
+        second > gap * 1.1,
+        "the snort does not snort twice: second burst {second:.4} against gap {gap:.4}"
+    );
+    // And the table row is a positional animal call, not an own-fact: a
+    // snort with no place would be refused by the mixer (its own gate above).
+    let d = Cue::Snort.def();
+    assert!(d.positional, "a snort happens at an animal, not to you");
+    assert!(
+        d.radius_m > 0.0 && d.radius_m < Cue::TreeFall.def().radius_m,
+        "the snort carries {} m - past the loudest thing in the forest",
+        d.radius_m
+    );
+    assert!(
+        Cue::Snort.pitch_var() > 0.0,
+        "a diegetic animal call must vary in pitch"
+    );
 }
 
 /// The surfaces must actually differ in brightness, or five footstep cues are
@@ -683,6 +902,385 @@ fn the_surfaces_differ_in_timbre() {
 // The one-drain rule, as a gate. Source-scanning, because the thing being
 // protected is a *call site*, not a value.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Water: snapshots, the surf level, and the waterline.
+// ---------------------------------------------------------------------------
+
+/// A bed is never started by the mixer. Asked for as a one-shot it would play
+/// its whole 10 s body once, at whatever gain the frame happened to have, on
+/// top of the looping entity already playing it — two copies of the same
+/// ambience drifting out of phase for the life of the sample.
+#[test]
+fn the_mixer_refuses_a_bed() {
+    let mut m = Mixer::new();
+    for cue in Cue::ALL.iter().filter(|c| c.is_bed()) {
+        m.push(Request::own(*cue));
+    }
+    let starts = m.tick(16.0, AT_ORIGIN, 0, &Mix::default());
+    assert!(starts.is_empty(), "the mixer started a bed");
+    assert_eq!(
+        m.dropped, 3,
+        "a refused bed was not counted as a caller bug"
+    );
+}
+
+/// The snapshot crossfade: bounded, monotone toward its target, and it
+/// actually arrives — a fade that asymptotes never reaches the state it is
+/// fading to, which is how the reference's underwater effect could stay on
+/// after a disconnect (`reference/WATER.md` §7).
+#[test]
+fn a_snapshot_fades_and_arrives() {
+    use client::sound::{Snapshot, Snapshots, SNAPSHOT_FADE_S};
+    let mut s = Snapshots::default();
+    assert_eq!(s.t(), 0.0);
+    let dt = SNAPSHOT_FADE_S / 10.0;
+    let mut prev = 0.0f32;
+    for _ in 0..10 {
+        let def = s.tick(Snapshot::Submerged, dt);
+        assert!(s.t() >= prev - 1e-6, "the fade went backwards");
+        assert!(
+            (0.0..=1.0).contains(&s.t()),
+            "the fade left [0,1]: {}",
+            s.t()
+        );
+        // Every level it publishes stays inside the two states it lerps.
+        assert!(def.game <= 1.0 && def.game >= 0.45 - 1e-6);
+        assert!((0.0..=1.0).contains(&def.under));
+        prev = s.t();
+    }
+    assert_eq!(s.t(), 1.0, "the fade did not arrive in SNAPSHOT_FADE_S");
+    // And back, in the same time.
+    for _ in 0..10 {
+        s.tick(Snapshot::Above, dt);
+    }
+    assert_eq!(s.t(), 0.0, "the fade did not return");
+    // A world left resets it outright: a half-submerged mix must not be
+    // carried into the next island.
+    s.tick(Snapshot::Submerged, dt);
+    s.reset();
+    assert_eq!(s.t(), 0.0);
+}
+
+/// Going under ducks the game bus and swaps the bed, and it does **not** touch
+/// the player's own sliders — a snapshot may only scale a mix down.
+#[test]
+fn the_submerged_snapshot_ducks_without_muting() {
+    use client::sound::{Snapshot, Snapshots, SNAPSHOTS};
+    let (above, under) = (&SNAPSHOTS[0], &SNAPSHOTS[1]);
+    assert_eq!(above.game, 1.0);
+    assert!(
+        under.game > 0.0 && under.game < above.game,
+        "submerged either mutes the game bus or does nothing to it"
+    );
+    assert_eq!(above.under, 0.0, "the submerged bed is audible above water");
+    assert!(under.wind < above.wind, "the wind survives underwater");
+    assert!(under.surf < above.surf && under.surf > 0.0);
+    assert_eq!(above.bed(Cue::BedWind), above.wind);
+    assert_eq!(under.bed(Cue::BedUnder), under.under);
+    assert_eq!(above.bed(Cue::Swing), 0.0, "a non-bed has a bed level");
+
+    // The player's sliders survive the snapshot.
+    let mix = Mix {
+        master: 0.5,
+        game: 0.8,
+        ambience: 0.7,
+    };
+    let mut s = Snapshots::default();
+    let def = s.tick(Snapshot::Above, 1.0);
+    let same = mix.under(&def);
+    assert_eq!(same.master, mix.master);
+    assert_eq!(same.game, mix.game);
+    let ducked = mix.under(under);
+    assert!(ducked.game < mix.game && ducked.master == mix.master);
+}
+
+/// The surf level reads the world, and it must read it the same way twice —
+/// it is a fixed probe rather than a search precisely so the bed does not
+/// flicker as a search finds different water.
+#[test]
+fn the_surf_reads_the_sea_around_it() {
+    use client::sound::water::{shore_exposure, surf_gain, SURF_FLOOR};
+    use sim_core::terrain::ISLAND_SIZE;
+    let seed = 0xA11CEu64;
+    let centre = ISLAND_SIZE * 0.5;
+
+    // The middle of the island is the furthest point from any shore there is.
+    let inland = shore_exposure(seed, centre, centre);
+    assert_eq!(inland, 0.0, "the island's centre hears surf");
+    assert_eq!(surf_gain(inland), 0.0, "silence is not silent");
+
+    // Well outside the coast ring, every probe point is sea.
+    let at_sea = shore_exposure(seed, centre + 1_200.0, centre);
+    assert_eq!(at_sea, 1.0, "the open sea is not all sea");
+    assert!((surf_gain(at_sea) - 1.0).abs() < 1e-6);
+
+    // Deterministic: same seed, same place, same answer.
+    assert_eq!(at_sea, shore_exposure(seed, centre + 1_200.0, centre));
+
+    // And the floor holds: any sea at all is more than nothing.
+    assert!(surf_gain(0.02) >= SURF_FLOOR);
+    assert!(surf_gain(1.0) <= 1.0);
+    let mut prev = -1.0f32;
+    for i in 0..=20 {
+        let g = surf_gain(i as f32 / 20.0);
+        assert!(g >= prev - 1e-6, "the surf gain fell as exposure rose");
+        prev = g;
+    }
+}
+
+/// Breaking the surface is an **edge**. The failure this rules out is the one
+/// a naive "am I under water" check produces: a body bobbing on the waterline
+/// asks for a splash every frame.
+#[test]
+fn a_splash_is_a_crossing_not_a_state() {
+    use client::sound::water::Waterline;
+    let mut w = Waterline::default();
+    // The first sample establishes a side and splashes at nothing — joining a
+    // world underwater is not a dive.
+    assert!(w.sample(-1.0, 0.016).is_none());
+    // Staying under is silent, however long.
+    for _ in 0..100 {
+        assert!(w.sample(-1.0, 0.016).is_none());
+    }
+    // Coming up is a crossing.
+    assert!(w.sample(0.4, 0.016).is_some());
+    assert!(w.sample(0.5, 0.016).is_none());
+    // Going back down is another, and a fast one is louder than a slow one.
+    let slow = {
+        let mut s = Waterline::default();
+        s.sample(0.05, 0.016);
+        s.sample(-0.01, 0.016).expect("no splash on a slow entry")
+    };
+    let fast = {
+        let mut s = Waterline::default();
+        s.sample(2.0, 0.016);
+        s.sample(-1.0, 0.016).expect("no splash on a fast entry")
+    };
+    assert!(
+        fast > slow,
+        "a dive is not louder than a step: {fast} vs {slow}"
+    );
+    assert!(slow > 0.0 && fast <= 1.0);
+    // A reset forgets the side, so the next world's first sample is not a
+    // crossing of the last world's waterline.
+    let mut r = Waterline::default();
+    r.sample(-1.0, 0.016);
+    r.reset();
+    assert!(
+        r.sample(5.0, 0.016).is_none(),
+        "a reset waterline still splashed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The two producers landed 2026-08-09: the pig's cadence, and the place
+// cue's supply line (broadcast rings, walks stay silent).
+// ---------------------------------------------------------------------------
+
+/// The snort cadence: primed silently, bounded, deterministic, and **not a
+/// metronome** — a fixed period is the tell that gives away a generated
+/// voice, the same way a clock-driven footstep gives away a footstep system.
+#[test]
+fn the_snort_cadence_is_not_a_metronome() {
+    use client::sound::pig::{Snorts, SNORT_JITTER, SNORT_PERIOD_S};
+    let lo = SNORT_PERIOD_S * (1.0 - SNORT_JITTER);
+    let hi = SNORT_PERIOD_S * (1.0 + SNORT_JITTER);
+    let dt = 0.05f32;
+
+    // First sight primes and says nothing — a world join must not be
+    // sixty-four pigs clearing their throats at once (the `Steps` /
+    // `Waterline` pattern: the first observation establishes state).
+    let mut s = Snorts::default();
+    assert!(!s.due(0, dt), "a pig snorted the instant it was seen");
+
+    // Ten minutes of frames for one animal: every interval inside the
+    // declared band, and the band actually used.
+    let mut s = Snorts::default();
+    let mut t = 0.0f32;
+    let mut fires = Vec::new();
+    while t < 600.0 {
+        if s.due(0, dt) {
+            fires.push(t);
+        }
+        t += dt;
+    }
+    assert!(
+        fires.len() >= 30,
+        "only {} snorts in ten minutes",
+        fires.len()
+    );
+    let intervals: Vec<f32> = fires.windows(2).map(|w| w[1] - w[0]).collect();
+    for i in &intervals {
+        assert!(
+            *i >= lo - dt * 2.0 && *i <= hi + dt * 2.0,
+            "interval {i:.2}s left the declared band [{lo}, {hi}]"
+        );
+    }
+    let min = intervals.iter().cloned().fold(f32::MAX, f32::min);
+    let max = intervals.iter().cloned().fold(0.0f32, f32::max);
+    assert!(
+        max - min > 1.0,
+        "the pig is a metronome: every interval within {:.2}s of every other",
+        max - min
+    );
+
+    // Two animals never share a schedule: across eight slots the first
+    // calls spread out rather than landing together.
+    let mut firsts = Vec::new();
+    for slot in 0..8 {
+        let mut s = Snorts::default();
+        let mut t = 0.0f32;
+        loop {
+            if s.due(slot, dt) {
+                firsts.push(t);
+                break;
+            }
+            t += dt;
+            assert!(t < 60.0, "slot {slot} never spoke");
+        }
+    }
+    let fmin = firsts.iter().cloned().fold(f32::MAX, f32::min);
+    let fmax = firsts.iter().cloned().fold(0.0f32, f32::max);
+    assert!(
+        fmax - fmin > 1.0,
+        "eight pigs spoke within {:.2}s of each other - a chorus",
+        fmax - fmin
+    );
+
+    // Deterministic: same slot, same frames, same schedule — the property
+    // that keeps the voice out of the OS's random stream.
+    let run = |slot: usize| {
+        let mut s = Snorts::default();
+        let mut t = 0.0f32;
+        let mut log = Vec::new();
+        while t < 120.0 {
+            if s.due(slot, dt) {
+                log.push(t.to_bits());
+            }
+            t += dt;
+        }
+        log
+    };
+    assert_eq!(run(5), run(5), "two identical runs spoke differently");
+
+    // A hitch that swallowed three intervals buys ONE snort, not a banked
+    // burst — the step odometer's rule, applied to a voice.
+    let mut s = Snorts::default();
+    s.due(2, dt); // prime
+    let mut fired = 0;
+    if s.due(2, 100.0) {
+        fired += 1;
+    }
+    for _ in 0..20 {
+        if s.due(2, 0.016) {
+            fired += 1;
+        }
+    }
+    assert_eq!(fired, 1, "a 100s hitch banked {fired} snorts");
+
+    // A reset forgets the schedule: the next world's herd primes afresh.
+    let mut s = Snorts::default();
+    s.due(1, dt);
+    s.reset();
+    assert!(!s.due(1, dt), "a reset herd spoke on first sight");
+}
+
+/// **The place cue's supply line: a placement broadcast rings, a sync walk
+/// never does.** This is the join-flood gate. The initial world sync (and
+/// every resync) restates the whole standing world as `PieceSync` /
+/// `DeploySync` walk batches — if those rang, a fresh join into a base
+/// would be N place cues at once, and the "fix" would be a timer knob
+/// deciding when the flood is over. Instead the core's ring is fed only by
+/// the `PiecePlaced` / `DeployPlaced` broadcasts, which the server sends
+/// exactly when a placement *happens* — so the guard is the wire's own
+/// distinction between an event and a restatement, and no clock is
+/// involved. Runs in the code tier against the real decoder: these are the
+/// same bytes the shard sends.
+#[test]
+fn a_placement_broadcast_rings_and_a_sync_walk_does_not() {
+    use client_core::core::ClientCore;
+    use protocol::{
+        encode_event_deploy_placed, encode_event_deploy_sync, encode_event_piece_placed,
+        encode_event_piece_sync, MAX_EVENT_MSG_BYTES,
+    };
+    use sim_core::build::{PieceRec, LOC_PLANE};
+    use sim_core::deploy::DeployRec;
+
+    let mut core = ClientCore::new(1, 7, 0);
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+
+    // The join flood: a reset walk restating a standing base, both stores.
+    let batch: [PieceRec; 6] = core::array::from_fn(|i| PieceRec {
+        cx: 10 + i as u16,
+        cz: 20,
+        level: 0,
+        loc: LOC_PLANE,
+        row: 0,
+        ..PieceRec::default()
+    });
+    let len = encode_event_piece_sync(true, &batch, &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    let dbatch = [DeployRec {
+        cx: 11,
+        cz: 20,
+        level: 0,
+        loc: LOC_PLANE,
+        row: 0,
+        ..DeployRec::default()
+    }];
+    let len = encode_event_deploy_sync(true, &dbatch, &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert!(
+        core.pop_placed().is_none(),
+        "a sync walk restating the world rang the place cue - a fresh join would be N cues at once"
+    );
+
+    // A live placement broadcast rings exactly once, with its address.
+    let rec = PieceRec {
+        cx: 40,
+        cz: 41,
+        level: 1,
+        loc: LOC_PLANE,
+        row: 0,
+        ..PieceRec::default()
+    };
+    let len = encode_event_piece_placed(&rec, &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert_eq!(
+        core.pop_placed(),
+        Some((40, 41, 1, LOC_PLANE, false)),
+        "a piece placement broadcast did not ring"
+    );
+    assert!(core.pop_placed().is_none(), "one placement rang twice");
+
+    // The wire then sends the walk's tail batch carrying the SAME record
+    // (broadcast first, walk after — `pump_events`' order); the mirror
+    // insert is idempotent, so the duplicate delivery stays silent.
+    let len = encode_event_piece_sync(false, &[rec], &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert!(
+        core.pop_placed().is_none(),
+        "the walk's tail batch double-rang a placement the broadcast already rang"
+    );
+
+    // A deployable broadcast rings too, carrying the store bit.
+    let drec = DeployRec {
+        cx: 50,
+        cz: 51,
+        level: 0,
+        loc: LOC_PLANE,
+        row: 0,
+        ..DeployRec::default()
+    };
+    let len = encode_event_deploy_placed(&drec, &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert_eq!(
+        core.pop_placed(),
+        Some((50, 51, 0, LOC_PLANE, true)),
+        "a deployable placement broadcast did not ring"
+    );
+}
 
 /// **`render::feed::drain` must be the only caller of `ClientCore::pop_*` in
 /// the client**, and this test exists because the alternative already
@@ -727,7 +1325,7 @@ fn only_the_feed_drain_pops_the_core() {
     // single-reader surface by nature (one composer) and `render/chat.rs` owns
     // it — if a second reader ever wants it, it joins the feed and joins this
     // list in the same commit.
-    const DESTRUCTIVE: [&str; 7] = [
+    const DESTRUCTIVE: [&str; 8] = [
         "pop_hit(",
         "pop_death(",
         "pop_toast(",
@@ -735,6 +1333,7 @@ fn only_the_feed_drain_pops_the_core() {
         "pop_craft_refusal(",
         "pop_build_refusal(",
         "pop_deploy_refusal(",
+        "pop_placed(",
     ];
 
     let mut offenders = Vec::new();

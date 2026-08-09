@@ -36,6 +36,10 @@ pub mod feed;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
+// The involuntary disconnect. The shard hanging up mid-play used to leave
+// the client in a dead world; `pause::Disconnect` is the verb the PLAYER
+// takes, and this is the state for when the shard takes it.
+pub mod disconnected;
 // The build ghost: the cell being aimed at, and the click that commits it.
 pub mod ghost;
 // The blue wash over the piece a hammer is aimed at.
@@ -64,6 +68,9 @@ pub mod terrain_mesh;
 pub mod textures;
 pub mod tree;
 pub mod ui;
+// The sea: a graded volume with a swell on it. `reference/WATER.md` is the
+// research, `TERRAIN.md` §4 is what it replaces.
+pub mod water;
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
 pub mod anim;
 pub mod verbs;
@@ -173,7 +180,11 @@ pub struct Stream;
 /// session behind it, opened from the server list there is nothing at all,
 /// and it is one state either way.
 pub fn world_running(state: Res<State<Screen>>, world: Option<Res<WorldId>>) -> bool {
-    world.is_some() && !matches!(state.get(), Screen::Menu | Screen::Connecting)
+    world.is_some()
+        && !matches!(
+            state.get(),
+            Screen::Menu | Screen::Connecting | Screen::Disconnected
+        )
 }
 
 /// Has the server told us **what** to load?
@@ -197,17 +208,19 @@ pub fn world_placed(eye: Res<Eye>) -> bool {
 /// Drop the world: every entity it spawned, every ring that indexed them, and
 /// the two resources that made it a world rather than a menu.
 ///
-/// Runs on entering `Screen::Menu`, which is both the disconnect path and the
-/// app's first frame — on the first frame it finds nothing and does nothing,
-/// which is why it needs no "have we ever had a world" flag.
+/// Runs on entering `Screen::Menu` — both the voluntary disconnect path and
+/// the app's first frame — and on entering `Screen::Disconnected`, the
+/// involuntary one. On the first frame it finds nothing and does nothing,
+/// which is why it needs no "have we ever had a world" flag; the same
+/// property is what lets `Disconnected → Menu` run it twice harmlessly.
 ///
 /// **The rings are reset rather than drained.** Each holds a map from a cell
 /// to the entity that draws it; a ring that kept its keys after the entities
 /// were despawned would report a chunk resident that is not, and the next
 /// world's loading screen would sit at a bar it could never fill.
-// Nine parameters because the world is nine things: its entities, the five
-// indexes that point at them, and the two view resources that would otherwise
-// carry the last world's eye into the next one.
+// A parameter per thing the world is: its entities, the five indexes that
+// point at them, and the view resources that would otherwise carry the last
+// world's eye — or its keypad — into the next one.
 #[allow(clippy::too_many_arguments)]
 pub fn world_teardown(
     mut commands: Commands,
@@ -222,6 +235,8 @@ pub fn world_teardown(
     mut herd: ResMut<mobs::Herd>,
     mut eye: ResMut<Eye>,
     mut look: ResMut<input::Look>,
+    mut readout: ResMut<hud::Readout>,
+    mut pad: ResMut<verbs::Pad>,
 ) {
     let mut n = 0usize;
     for e in entities.iter() {
@@ -243,6 +258,12 @@ pub fn world_teardown(
     highlight::forget_in(&mut highlight);
     *bodies = bodies::Bodies::default();
     *herd = mobs::Herd::default();
+    // The readout holds the LAST wall hit and charge clock — facts about
+    // the world that just went, worth up to TOAST_SECS of lies in the next.
+    *readout = hud::Readout::default();
+    // The keypad addresses a lock in the world that just went; left open it
+    // would draw over the next one and eat its digit keys.
+    pad.0.close();
     *eye = Eye::default();
     *look = input::Look::default();
     commands.remove_resource::<WorldId>();
@@ -304,15 +325,36 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<verbs::Swung>()
             .init_resource::<verbs::InWeak>()
             .init_resource::<verbs::Near>()
+            .init_resource::<verbs::Pad>()
             .init_resource::<death::Answer>()
+            .init_resource::<disconnected::Reason>()
+            .init_resource::<disconnected::Chosen>()
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()
             .init_resource::<hud::Toast>()
-            .init_resource::<Settings>()
+            .init_resource::<hud::Readout>()
             .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
             .init_resource::<audio::LastHp>()
+            .init_resource::<water::Sea>()
             .insert_non_send_resource(menu::Connecting::default());
+
+        // Settings come off disk ONCE, here — before the first frame, so the
+        // fov, vsync and volumes a player picked last run are what the first
+        // frame applies (`settings::apply_view`/`apply_window` run every
+        // Update). A capture run loads nothing and saves nothing: the visual
+        // gate's frames must not depend on the box's config file, so it takes
+        // the defaults and gets no `Disk` — which is also what makes
+        // `save_on_change` a no-op there.
+        if self.capture.is_none() {
+            let (settings, disk) = settings::load();
+            app.insert_resource(settings);
+            if let Some(disk) = disk {
+                app.insert_resource(disk);
+            }
+        } else {
+            app.init_resource::<Settings>();
+        }
 
         // `Menu` is inserted either way, because a system that reads it must
         // not care which door the app came through — and the disconnect that
@@ -445,6 +487,37 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(Update, death::watch.run_if(in_state(Screen::InWorld)));
 
+        // ---- the involuntary disconnect ------------------------------
+        // `watch` is ungated: its guard is `Net`'s presence (the module doc
+        // says why that is exactly the right set of states), and it runs
+        // after `place_eye` so it reads the latch the frame's own pump set
+        // rather than last frame's. Entry runs the SAME teardown chain the
+        // menu runs — the session under the world is dead, so the world
+        // goes before the screen is built, not when the player clicks
+        // through — and `setup` follows it in the chain so the reason line
+        // it draws was captured by `watch` before `Net` went away.
+        app.add_systems(Update, disconnected::watch.after(input::place_eye))
+            .add_systems(
+                OnEnter(Screen::Disconnected),
+                (world_teardown, disconnected::setup).chain(),
+            )
+            .add_systems(
+                OnEnter(Screen::Disconnected),
+                audio::teardown.after(world_teardown),
+            )
+            .add_systems(
+                OnEnter(Screen::Disconnected),
+                water::teardown.after(world_teardown),
+            )
+            .add_systems(OnEnter(Screen::Disconnected), map::forget)
+            .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
+            .add_systems(
+                Update,
+                (disconnected::click, disconnected::keys, disconnected::act)
+                    .chain()
+                    .run_if(in_state(Screen::Disconnected)),
+            );
+
         // ---- the map -------------------------------------------------
         // `open` is registered after the panels and after chat, so `M` typed
         // into a search box or a chat composer is theirs — both consume the
@@ -470,7 +543,9 @@ impl Plugin for GatesRenderPlugin {
         // The two `apply_*` systems are deliberately NOT gated on the screen
         // being open: a setting is a property of the client, not of the panel
         // that changed it, and the camera it applies to may not exist until
-        // two states later.
+        // two states later. `save_on_change` is ungated for the same reason —
+        // it watches the resource, not the screen — and it self-gates on the
+        // `Disk` resource, which a capture run never gets.
         app.add_systems(OnEnter(Screen::Settings), settings::setup)
             .add_systems(OnExit(Screen::Settings), settings::teardown)
             .add_systems(
@@ -479,7 +554,14 @@ impl Plugin for GatesRenderPlugin {
                     .chain()
                     .run_if(in_state(Screen::Settings)),
             )
-            .add_systems(Update, (settings::apply_view, settings::apply_window));
+            .add_systems(
+                Update,
+                (
+                    settings::apply_view,
+                    settings::apply_window,
+                    settings::save_on_change,
+                ),
+            );
 
         // One hover handler for every screen that has buttons on it.
         app.add_systems(Update, ui::hover);
@@ -497,7 +579,10 @@ impl Plugin for GatesRenderPlugin {
         // looking at the result.
         app.add_systems(
             OnEnter(Screen::Loading),
-            (rig::setup, terrain_mesh::setup_water),
+            // The sea replaced `terrain_mesh::setup_water` here: it builds one
+            // eye-centred mesh and a ripple map rather than a plane, and it
+            // needs nothing the rig owns.
+            (rig::setup, water::setup),
         )
         // The HUD's viewmodel is parented to the camera, so it must be
         // built after the rig has spawned one.
@@ -538,6 +623,13 @@ impl Plugin for GatesRenderPlugin {
         // Leaving a shard resets the step odometer and the bed's fade. The
         // bed entity itself is a `WorldEntity` and goes with the rest.
         .add_systems(OnEnter(Screen::Menu), audio::teardown.after(world_teardown))
+        // The sea's caches are one island's depths; the next island's would
+        // be read off them until the eye happened to cross a snap cell.
+        .add_systems(OnEnter(Screen::Menu), water::teardown.after(world_teardown))
+        // The swell runs wherever the world runs — it is a surface, not a
+        // streamer, and a sea that froze while the Esc menu was up would
+        // resume with a visible jump in every wave.
+        .add_systems(Update, water::animate.run_if(world_running))
         // Input is the one thing that is `InWorld` and nothing else: it is
         // the only system that writes what the sim reads, and a player
         // reading a settings pane must not be swinging an axe.
@@ -596,12 +688,18 @@ impl Plugin for GatesRenderPlugin {
                 input::place_eye,
                 (
                     terrain_mesh::stream,
+                    // The sea re-centres like a ring does, and for the same
+                    // reason: it reads `Eye::pos`, so it belongs where the
+                    // other things that read it are.
+                    water::stream,
                     props::stream,
                     props::harvest,
                     clutter::stream,
                     structures::stream,
                     bodies::stream,
                     mobs::stream,
+                    // The legs read the gait `mobs::stream` just advanced.
+                    mobs::trot,
                     rig::follow_eye,
                     hud::update,
                     // The feedback surface. Under `world_running` rather than
@@ -609,7 +707,16 @@ impl Plugin for GatesRenderPlugin {
                     // up is still owed to the player, and a ring nobody drains
                     // is a ring that overflows and drops the newest.
                     hud::feedback,
+                    // The pinned readout: `Feed`'s second HUD reader,
+                    // which the drain architecture exists to make free
+                    // (`feed.rs` — a reader borrows, only the drain pops).
+                    hud::readout,
                     hud::prompt,
+                    // The keypad's small panel, beside the prompt that
+                    // goes quiet while it is up. HUD, not `panels::` — it
+                    // must not grab the pointer, so it runs on a capture
+                    // build too (where the pad simply never opens).
+                    hud::pad_overlay,
                 )
                     .in_set(Stream)
                     .run_if(world_placed),
@@ -635,10 +742,22 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             (
+                // `water` first of the audio systems: it resolves the frame's
+                // snapshot, and both `bed` and `pump` scale everything they
+                // do by it.
+                audio::water,
                 audio::feed,
+                // The second positional cue: placements off the feed's
+                // broadcast-only ring (the join-flood guard is the core's).
+                audio::place,
                 audio::hurt,
                 audio::steps,
+                // Everyone else's, off the interpolated bodies `Stream`
+                // just moved — positional, culled by the mixer's falloff.
+                audio::remote_steps,
                 audio::fell,
+                // The pig's voice, off the herd `mobs::stream` just moved.
+                audio::pigs,
                 audio::bed,
                 audio::pump,
             )

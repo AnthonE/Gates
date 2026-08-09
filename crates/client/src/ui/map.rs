@@ -19,7 +19,11 @@
 //! the exception and is meant to be — a coastline you cannot find at a glance
 //! is the whole failure this screen exists to fix.
 
-use sim_core::terrain::{self, ISLAND_SIZE, SEA_LEVEL};
+use protocol::event::WireBag;
+use sim_core::build::BUILD_CELL_M;
+use sim_core::deploy::{DeployContent, DeployRec, ARCH_BAG, ARCH_HEARTH};
+use sim_core::movement::POS_XZ_Q;
+use sim_core::terrain::{self, Haven, ISLAND_SIZE, SEA_LEVEL};
 
 /// Metres per grid square. 2048 / 128 = 16 squares a side.
 pub const GRID_M: f32 = 128.0;
@@ -189,6 +193,184 @@ pub fn paint(seed: u64, size: usize, out: &mut [u8]) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The markers: the destinations, and the things on the island that are yours.
+//
+// A port of `web/src/map.js`'s `resolveMarks` (in git history; the layer was
+// lost when the map was), plus the tier the browser could not reach: the
+// haven pad and the waystations. The browser's comment says why it could not
+// mark them — `terrain::haven(seed)` had no bridge export — and that blocker
+// dissolved when the client became Rust: `render::WorldId` memoizes the same
+// `Haven` the server resolves, so the authored tier costs a read, not a wire
+// change. `NOW.md` §0a's "systems lane, one export please" is this, answered.
+//
+// Everything else here comes off data the client already holds: the deploy
+// mirror and the standing death bags, both streamed island-wide for the 3D
+// scene and `interact::resolve`. Nothing new crosses the wire.
+//
+// What it deliberately does NOT mark: boxes, doors, fires, furnaces,
+// workbenches, locks. A base is a dozen boxes and a door per room, and
+// marking them buries the two anchors a player is actually looking for
+// (`DECISIONS.md`, map marker cap v0 — retired with the browser, defaults
+// carried forward here). The death marker stays unbuilt: an operator call
+// (`ALPHA.md` §1 has the death screen's position rule), not a lane's.
+
+/// The most markers the map will draw. A wall (`CLAUDE.md` §4: bounded
+/// everything, with a stated overflow policy), not a budget a player meets —
+/// the marked archetypes are the two a base has one of, so a real map draws
+/// a handful. Overflow policy: drop-newest, and the refused count is kept on
+/// [`Marks`] rather than discarded — a cap that truncates silently reads as
+/// "everything is drawn" when it is not. `DECISIONS.md` §open, map markers v1.
+pub const MAP_MARKS_MAX: usize = 64;
+
+/// What a mark is a mark OF. `None` is the zero so a stale array slot cannot
+/// draw a bed — [`Marks::a`] is fixed-size and reused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MarkKind {
+    #[default]
+    None,
+    /// The haven pad: the island's one authored destination.
+    Haven,
+    /// A waystation: the lesser tier of the same search.
+    Waystation,
+    /// A deployed sleeping bag: where you WAKE.
+    Bed,
+    /// A hearth: the base's anchor, and what its upkeep is paid into.
+    Hearth,
+    /// A standing death backpack: where your stuff is.
+    Backpack,
+}
+
+impl MarkKind {
+    /// The fill, 0–255 RGB. NOT the ground palette's colours — a marker that
+    /// shared one would vanish over exactly that biome, and the test below
+    /// holds every fill a measured distance off every ground colour.
+    ///
+    /// Haven and waystation share one fill on purpose: they are one class of
+    /// thing (an authored destination, tiered), and the renderer separates
+    /// the tiers by size. Bed, hearth and bag are the browser layer's own
+    /// colours: cool blue for the thing you sleep on, ember for fire, straw
+    /// for loot.
+    pub fn fill(self) -> [f32; 3] {
+        match self {
+            // Never drawn: `Marks::count` bounds every reader. Black, so a
+            // bug that draws it anyway is visible instead of plausible.
+            MarkKind::None => [0.0, 0.0, 0.0],
+            MarkKind::Haven | MarkKind::Waystation => [232.0, 228.0, 218.0],
+            MarkKind::Bed => [127.0, 179.0, 255.0],
+            MarkKind::Hearth => [255.0, 157.0, 92.0],
+            MarkKind::Backpack => [232.0, 215.0, 106.0],
+        }
+    }
+}
+
+/// One marker, in map FRACTIONS (0..1 across the painted island) — the
+/// output of [`world_to_map`] at size 1, which is how the render layer places
+/// the player too, so a marker and the player cannot disagree about the
+/// projection.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Mark {
+    pub kind: MarkKind,
+    pub px: f32,
+    pub py: f32,
+}
+
+/// A reusable marker set: fixed storage, a live count, and the overflow
+/// count the cap refused — kept, never silent.
+pub struct Marks {
+    pub a: [Mark; MAP_MARKS_MAX],
+    /// How many entries of `a` are live.
+    pub count: usize,
+    /// How many marks the cap refused. Not drawn as marks; drawn as a number.
+    pub dropped: usize,
+}
+
+impl Default for Marks {
+    fn default() -> Self {
+        Self {
+            a: [Mark::default(); MAP_MARKS_MAX],
+            count: 0,
+            dropped: 0,
+        }
+    }
+}
+
+impl Marks {
+    fn push(&mut self, kind: MarkKind, x: f32, z: f32) {
+        if self.count >= MAP_MARKS_MAX {
+            self.dropped += 1;
+            return;
+        }
+        // THE projection — the same call the player's own marker goes
+        // through. A second copy of the north-is-up flip here is the
+        // positional defect class `CLAUDE.md` names: the island correct, the
+        // player correct, and your bed drawn as far south as it is north.
+        let (px, py) = world_to_map(x, z, 1);
+        self.a[self.count] = Mark { kind, px, py };
+        self.count += 1;
+    }
+}
+
+/// Fill `out` with every marker the map draws.
+///
+/// Push ORDER is the drop policy: authored destinations first, so the cap
+/// (drop-newest) can never cost the haven; then the player's anchors off the
+/// deploy mirror; then the standing bags.
+///
+/// `have` is `ClientCore::deploy_defs_have`, and the guard is load-bearing:
+/// an undripped row reads as `DeployDef::INERT`, whose arch is `ARCH_BAG` —
+/// so without it a not-yet-known deployable is drawn as somebody's bed.
+/// `interact::resolve` skips for the same reason.
+pub fn resolve_marks(
+    out: &mut Marks,
+    haven: &Haven,
+    deploys: &[DeployRec],
+    defs: &DeployContent,
+    have: u16,
+    bags: &[WireBag],
+) {
+    out.count = 0;
+    out.dropped = 0;
+
+    out.push(MarkKind::Haven, haven.x, haven.z);
+    for w in &haven.minor {
+        out.push(MarkKind::Waystation, w.x, w.z);
+    }
+
+    let have = have.min(defs.def_count);
+    let half = BUILD_CELL_M * 0.5;
+    for rec in deploys {
+        if (rec.row as u16) >= have {
+            continue;
+        }
+        let kind = match defs.defs[rec.row as usize].arch {
+            ARCH_BAG => MarkKind::Bed,
+            ARCH_HEARTH => MarkKind::Hearth,
+            // Everything else is deliberately unmarked — see the module note.
+            _ => continue,
+        };
+        // The cell CENTRE — where `interact::resolve` measures reach to and
+        // where the mesh stands. A marker on the corner sits up to half a
+        // cell off the thing it names.
+        out.push(
+            kind,
+            rec.cx as f32 * BUILD_CELL_M + half,
+            rec.cz as f32 * BUILD_CELL_M + half,
+        );
+    }
+
+    for bag in bags {
+        // A bag carries a quantized world position, not a grid cell — it is
+        // dropped where its owner died. y is the one term a map has no axis
+        // for.
+        out.push(
+            MarkKind::Backpack,
+            bag.qx as f32 * POS_XZ_Q,
+            bag.qz as f32 * POS_XZ_Q,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,5 +497,188 @@ mod tests {
                 "an unpainted pixel"
             );
         }
+    }
+
+    // ---- the markers ----------------------------------------------------
+
+    use sim_core::deploy::{DeployDef, ARCH_BOX, ARCH_DOOR, ARCH_FIRE};
+    use sim_core::terrain::WAYSTATIONS;
+
+    /// `1 + WAYSTATIONS` authored marks lead every resolve.
+    const AUTHORED: usize = 1 + WAYSTATIONS;
+
+    fn defs_with(arches: &[u8]) -> (DeployContent, u16) {
+        let mut d = DeployContent::EMPTY;
+        for (i, &arch) in arches.iter().enumerate() {
+            d.defs[i] = DeployDef {
+                arch,
+                ..DeployDef::INERT
+            };
+        }
+        d.def_count = arches.len() as u16;
+        (d, arches.len() as u16)
+    }
+
+    fn rec_at(cx: u16, cz: u16, row: u8) -> DeployRec {
+        DeployRec {
+            cx,
+            cz,
+            row,
+            ..DeployRec::default()
+        }
+    }
+
+    /// The authored tier is real, first, and lands where the terrain says the
+    /// pad is — through the SAME projection everything else uses. This is the
+    /// `NOW.md` §0a item: the one authored destination was unfindable.
+    #[test]
+    fn the_haven_leads_and_lands_on_its_own_pixel() {
+        let haven = terrain::haven(42);
+        let (defs, have) = defs_with(&[]);
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &[], &defs, have, &[]);
+
+        assert_eq!(out.count, AUTHORED, "haven + {WAYSTATIONS} waystations");
+        assert_eq!(out.dropped, 0);
+        assert_eq!(out.a[0].kind, MarkKind::Haven);
+        let (px, py) = world_to_map(haven.x, haven.z, 1);
+        assert_eq!((out.a[0].px, out.a[0].py), (px, py));
+        // On the island, strictly — a fraction at 0 or 1 is a pad in the sea.
+        for m in &out.a[..out.count] {
+            assert!(
+                m.px > 0.0 && m.px < 1.0,
+                "{:?} off the map: {}",
+                m.kind,
+                m.px
+            );
+            assert!(
+                m.py > 0.0 && m.py < 1.0,
+                "{:?} off the map: {}",
+                m.kind,
+                m.py
+            );
+        }
+        for (k, m) in out.a[1..AUTHORED].iter().enumerate() {
+            assert_eq!(m.kind, MarkKind::Waystation);
+            let w = &haven.minor[k];
+            assert_eq!((m.px, m.py), world_to_map(w.x, w.z, 1));
+        }
+    }
+
+    /// A bed marks the cell CENTRE — `interact::resolve`'s metric — and a bag
+    /// marks its dequantized drop position, both through `world_to_map`.
+    #[test]
+    fn anchors_mark_where_the_thing_stands() {
+        let haven = terrain::haven(42);
+        let (defs, have) = defs_with(&[ARCH_BAG, ARCH_HEARTH]);
+        let deploys = [rec_at(100, 200, 0), rec_at(300, 400, 1)];
+        let bags = [WireBag {
+            id: 9,
+            qx: 40_000,
+            qy: 123_456, // y has no map axis; a wild value must not matter
+            qz: 20_000,
+        }];
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags);
+
+        assert_eq!(out.count, AUTHORED + 3);
+        let half = BUILD_CELL_M * 0.5;
+        let bed = &out.a[AUTHORED];
+        assert_eq!(bed.kind, MarkKind::Bed);
+        assert_eq!(
+            (bed.px, bed.py),
+            world_to_map(100.0 * BUILD_CELL_M + half, 200.0 * BUILD_CELL_M + half, 1)
+        );
+        assert_eq!(out.a[AUTHORED + 1].kind, MarkKind::Hearth);
+        let bag = &out.a[AUTHORED + 2];
+        assert_eq!(bag.kind, MarkKind::Backpack);
+        assert_eq!(
+            (bag.px, bag.py),
+            world_to_map(40_000.0 * POS_XZ_Q, 20_000.0 * POS_XZ_Q, 1)
+        );
+    }
+
+    /// Boxes, doors and fires stay off the map — the marked set is the two
+    /// anchors a base has one of, not everything a base is made of.
+    #[test]
+    fn unmarked_archetypes_stay_off_the_map() {
+        let haven = terrain::haven(42);
+        let (defs, have) = defs_with(&[ARCH_BOX, ARCH_DOOR, ARCH_FIRE]);
+        let deploys = [rec_at(10, 10, 0), rec_at(11, 10, 1), rec_at(12, 10, 2)];
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[]);
+        assert_eq!(out.count, AUTHORED, "only the authored tier");
+    }
+
+    /// An undripped row reads as `DeployDef::INERT`, whose arch is `ARCH_BAG`
+    /// — so without the `have` guard a deployable this client has not been
+    /// told about yet is drawn as somebody's bed.
+    #[test]
+    fn a_row_past_the_drip_is_not_guessed_at() {
+        let haven = terrain::haven(42);
+        // The defs SAY bag at row 0, but the drip has delivered nothing.
+        let (defs, _) = defs_with(&[ARCH_BAG]);
+        let deploys = [rec_at(10, 10, 0)];
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[]);
+        assert_eq!(out.count, AUTHORED, "an unknown row must not mark");
+    }
+
+    /// The cap drops NEWEST, counts what it dropped, and can never cost the
+    /// authored tier, which pushes first.
+    #[test]
+    fn the_cap_drops_newest_and_says_so() {
+        let haven = terrain::haven(42);
+        let (defs, have) = defs_with(&[]);
+        let over = 20;
+        let bags: Vec<WireBag> = (0..MAP_MARKS_MAX + over)
+            .map(|i| WireBag {
+                id: i as u32,
+                qx: 30_000 + i as i32,
+                qy: 0,
+                qz: 30_000,
+            })
+            .collect();
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &[], &defs, have, &bags);
+
+        assert_eq!(out.count, MAP_MARKS_MAX);
+        assert_eq!(out.dropped, AUTHORED + over);
+        assert_eq!(out.a[0].kind, MarkKind::Haven, "authored is never dropped");
+        // A second resolve on the same `Marks` starts clean — the reuse bug
+        // the browser gated (an accumulating set draws yesterday's bags).
+        resolve_marks(&mut out, &haven, &[], &defs, have, &[]);
+        assert_eq!(out.count, AUTHORED);
+        assert_eq!(out.dropped, 0);
+    }
+
+    /// No marker fill may sit near a ground colour — a marker that shares
+    /// one vanishes over exactly that biome. Measured, not eyeballed: every
+    /// live kind keeps at least one channel 40 steps off every ground colour.
+    #[test]
+    fn marker_fills_are_not_the_ground_palette() {
+        let grounds = [SAND, GRASS, LITTER, ROCK, SEA_SHALLOW, SEA_DEEP];
+        for kind in [
+            MarkKind::Haven,
+            MarkKind::Waystation,
+            MarkKind::Bed,
+            MarkKind::Hearth,
+            MarkKind::Backpack,
+        ] {
+            let f = kind.fill();
+            for g in grounds {
+                let apart = (0..3).any(|c| (f[c] - g[c]).abs() >= 40.0);
+                assert!(apart, "{kind:?} fill {f:?} vanishes over {g:?}");
+            }
+        }
+    }
+
+    /// The zero of the marker array is `None` — a stale slot cannot draw a
+    /// bed, and `None` is black so drawing it anyway would be visible.
+    #[test]
+    fn a_stale_slot_is_nothing() {
+        assert_eq!(MarkKind::default(), MarkKind::None);
+        assert_eq!(Mark::default().kind, MarkKind::None);
+        assert_eq!(MarkKind::None.fill(), [0.0, 0.0, 0.0]);
     }
 }

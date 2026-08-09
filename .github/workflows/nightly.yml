@@ -1,10 +1,15 @@
 name: nightly
 
-# The builder, not the gate. Every night: run the gates against main,
-# then build the release server and the wasm client and upload both as
-# artifacts. Before M0 lands it reports "nothing to build yet" and exits
-# green — a builder with nothing to build is a fact, not a failure. (The
-# test gate, ci/gates.sh, is the one that is never allowed to skip-pass.)
+# The builder, not the gate. Every night: run the gates against main, build the
+# release server, and package the desktop client as a scry depot. (The test
+# gate, ci/gates.sh, is the one that is never allowed to skip-pass.)
+#
+# ⚠ The header used to say this built "the wasm client". It never did, and the
+# crate it named is gone (operator, 2026-08-08: "we use desktop build no more
+# web"). What it actually produced was one file — `target/release/shard` — so
+# every depot Gates has ever had was hand-built on one box, which is the
+# "random code in a random place" failure `ci/publish.sh` exists to end,
+# wearing a build artifact. The `depot` job below is the fix.
 on:
   schedule:
     - cron: "0 8 * * *"
@@ -18,22 +23,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-      - name: workspace check
-        id: ws
-        run: |
-          if [[ -f Cargo.toml ]]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::nothing to build yet — the workspace does not exist; M0 (NOW.md #1) is the current work"
-          fi
       - name: toolchain
-        if: steps.ws.outputs.exists == 'true'
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup target add wasm32-unknown-unknown
       - name: cache cargo
-        if: steps.ws.outputs.exists == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -42,17 +36,92 @@ jobs:
             target
           key: nightly-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
       - name: gates first
-        if: steps.ws.outputs.exists == 'true'
         run: ./ci/gates.sh
       - name: build server (release)
-        if: steps.ws.outputs.exists == 'true'
         run: cargo build --release -p server
-      - name: upload artifacts
-        if: steps.ws.outputs.exists == 'true'
+      - name: upload the server
         uses: actions/upload-artifact@v4
         with:
           name: gates-nightly-${{ github.run_id }}
           retention-days: 14
           path: |
             target/release/shard
-          if-no-files-found: warn
+          if-no-files-found: error
+
+  # The desktop build, packaged the way a player receives it. Separate from the
+  # job above because its dependencies and its runtime are both different: it
+  # needs three -dev packages a headless image has no reason to carry, and the
+  # release client is an ~8 minute compile.
+  #
+  # What this does NOT do is publish. A build goes live when the origin's
+  # `published.json` names it, and that file is written by a person who has
+  # looked at what they are about to serve (scry `CLAUDE.md`; `docs/LAUNCHER.md`
+  # §8 row 1b). This produces the tree that act would rsync, and stops.
+  depot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # `ci/depot.py` keys the build id on the commit — a shallow clone
+          # still has HEAD, but `git describe`-shaped reads want the history.
+          fetch-depth: 0
+      - name: toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: depot-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      # Each of these fails identically without its package — a `pkg-config
+      # exited with status code 1` panic from a *-sys build script, 40 lines
+      # into a build, with the crate named only in the backtrace. `libwayland`
+      # and `libudev` are capabilities a shipped desktop client genuinely
+      # wants; `libasound` is one bevy_audio asks for and this client does not
+      # use, and trimming that is `NOW.md` §0x, not this file's business.
+      - name: the three -dev packages --features render needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
+      # ci/depot.py builds, stages, strips and writes the index itself. It
+      # deliberately computes no digest — `scry digest` is the one
+      # implementation of the number that gets notarized, and a second one
+      # here would be scry's invariant 3 with money attached.
+      - name: package the depot
+        run: ./ci/depot.py --out target/depot
+      - name: what was packaged
+        run: |
+          set -euo pipefail
+          index=$(find target/depot -name depot.json -print -quit)
+          test -n "$index" || { echo "::error::no depot.json was written"; exit 1; }
+          python3 - "$index" <<'PY'
+          import json, sys
+          doc = json.load(open(sys.argv[1]))
+          n = len(doc["files"])
+          total = sum(f["bytes"] for f in doc["files"])
+          print(f"build {doc['build']} — {n} file(s), {total:,} bytes")
+          print(f"launch: {doc['launch']['exec']} {' '.join(doc['launch']['args'])}")
+          print("needs: " + ", ".join(doc.get("requires", {}).get("libs", [])))
+          # A depot with no files, or one that names no start command, would
+          # install cleanly and do nothing — refuse it here rather than on a
+          # player's disk.
+          assert n > 0, "a depot with no files is not a build"
+          assert doc["launch"]["exec"], "a depot with no launch.exec cannot start"
+          PY
+          echo "$index" >> "$GITHUB_STEP_SUMMARY"
+      - name: upload the depot
+        uses: actions/upload-artifact@v4
+        with:
+          name: gates-depot-${{ github.run_id }}
+          retention-days: 14
+          # The staged tree AS IT WOULD BE SERVED — depot.json beside the files
+          # it names, at the paths it names them at. An operator publishes by
+          # rsyncing this into the origin's depot root and writing
+          # published.json; nothing is repacked in between, because the digest
+          # is taken over the document exactly as written.
+          path: target/depot
+          if-no-files-found: error

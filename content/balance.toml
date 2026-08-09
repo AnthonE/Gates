@@ -27,6 +27,16 @@ upkeep_pct_per_day = 10
 # cheaper than this; 100 is the conservative end, and only the operator
 # loosens it. Proposed default, DECISIONS.md §open ("repair v0").
 repair_cost_pct = 100
+# Unpaid decay per upkeep period (1 h), as a % of the piece's max hp, by
+# the piece's own material. The reference's ladder, converted: it takes a
+# full-health block ~3 h of wood / ~5 h of stone / ~8 h of metal to rot
+# away once its upkeep runs out, so the tougher the grade the SLOWER it
+# goes and an upgrade buys time as well as hp. 100 / hours, rounded up.
+#
+# It replaces one flat 5 % for everything, which made a metal base rot at
+# a wooden one's rate and took twenty hours to do it. Proposed default,
+# DECISIONS.md §open ("upkeep/decay v1").
+decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }
 
 [bands]
 # Anchor 2 — TTK in body hits, no armor; per weapon kind.

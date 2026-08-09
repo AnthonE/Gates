@@ -76,10 +76,11 @@ use crate::gather::{ItemStack, SlotLife};
 use crate::input::InputFrame;
 use crate::limits::HOTBAR_SLOTS;
 use crate::limits::{
-    BOX_SLOTS, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD,
-    MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_HEARTHS, MAX_LIVE_CHARGES, MAX_PIECES, MAX_PLAYERS,
-    MAX_SLOT_LIVES,
+    BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP,
+    MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_HEARTHS,
+    MAX_LIVE_CHARGES, MAX_LOCKS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
 };
+use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
 use crate::movement;
 use crate::oven::OvenState;
 use crate::persist::{PlayerSave, SaveError, PLAYER_SAVE_BYTES};
@@ -92,15 +93,22 @@ use crate::world::{Player, World};
 /// refused at boot rather than reinterpreted (`server/src/store.rs` checks
 /// it), so a field added here without turning this number is a world
 /// silently decoded as a different world.
-pub const WORLD_SAVE_FORMAT: u16 = 2;
+///
+/// **3 skips no shape — it resolves a collision.** Two lanes were open at
+/// once and each bumped 1→2 for its own layout (the oven state inline on a
+/// container; the lock section, the crew tail and the two placement ticks).
+/// Merging them makes a third layout that is neither, and a version number
+/// that two different files can both claim is worse than no version number
+/// at all, so the merge takes the next free one.
+pub const WORLD_SAVE_FORMAT: u16 = 3;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
-/// the next bag id, and the eight section counts.
+/// the next bag id, and the nine section counts.
 const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + SECTION_COUNTS;
-/// Seven `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
+/// Eight `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
-const SECTION_COUNTS: usize = 7 * 2 + 4;
+const SECTION_COUNTS: usize = 8 * 2 + 4;
 
 /// One body: everything `PlayerSave` already validates, plus every
 /// remaining field `World::state_hash` reads off a player.
@@ -119,12 +127,20 @@ const SECTION_COUNTS: usize = 7 * 2 + 4;
 /// the weak-spot pair, the four death-screen facts, and `craft_done_at`.
 const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + 6 + 9 + 8;
 const PLAYER_BYTES: usize = PLAYER_SAVE_BYTES + PLAYER_TAIL_BYTES;
-const PIECE_BYTES: usize = 11;
+/// A piece record plus its placement tick, which lives in a parallel
+/// array in the store (`build.rs` says why it is not on the record) and
+/// is written inline here for `DEPLOY_BYTES`' reason — a file has no
+/// parallel arrays worth having.
+const PIECE_BYTES: usize = 11 + 8;
 /// A deploy record plus its `bag_ready` cooldown, which lives in a parallel
 /// array in the store (`deploy.rs` says why it is not on the record) and is
 /// written inline here because a file has no parallel arrays worth having.
-const DEPLOY_BYTES: usize = 17 + 8;
-const HEARTH_BYTES: usize = 9 + HEARTH_STOCK_ROWS * 4;
+const DEPLOY_BYTES: usize = 17 + 8 + 8;
+/// A hearth: address, owner, the stock rows, and the crew — its count
+/// and the whole backing array, for `LOCK_BYTES`' reason (every byte of a
+/// roster is hashed, tail included, so a save that dropped the tail would
+/// reload to a different hash).
+const HEARTH_BYTES: usize = 9 + HEARTH_STOCK_ROWS * 4 + 1 + HEARTH_CREW_CAP * 4;
 /// A container record plus its oven state, which lives in a parallel
 /// array for `bag_ready`'s reason and is written inline here for
 /// `DEPLOY_BYTES`'s: a file has no parallel arrays worth having. Every
@@ -132,6 +148,14 @@ const HEARTH_BYTES: usize = 9 + HEARTH_STOCK_ROWS * 4;
 /// six zeroed bytes plus twelve zeroed counters, which is the price of
 /// the two stores staying one store (`deploy::holds_items`).
 const BOX_BYTES: usize = 9 + BOX_SLOTS * 4 + 6 + BOX_SLOTS * 2;
+/// One code lock (lock v1). Address, owner, both codes, the locked bit,
+/// both remembered lists with their counts, and the three brute-force
+/// counters — the whole `LockRec`, because every field of it is hashed
+/// and a save that dropped one would load to a different `state_hash`
+/// than it was taken from (the `PLAYER_TAIL_BYTES` argument, one store
+/// over).
+const LOCK_BYTES: usize =
+    6 + 4 + 2 + 2 + 1 + 1 + 1 + LOCK_AUTH_CAP * 4 + LOCK_GUEST_CAP * 4 + 1 + 8 + 8;
 const BACKPACK_BYTES: usize = 28 + INV_SLOTS * 4;
 const CHARGE_BYTES: usize = 21;
 const SLOT_LIFE_BYTES: usize = 14;
@@ -149,6 +173,7 @@ pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_DEPLOYS * DEPLOY_BYTES
     + MAX_HEARTHS * HEARTH_BYTES
     + MAX_BOXES * BOX_BYTES
+    + MAX_LOCKS * LOCK_BYTES
     + MAX_BACKPACKS * BACKPACK_BYTES
     + MAX_LIVE_CHARGES * CHARGE_BYTES
     + MAX_SLOT_LIVES * SLOT_LIFE_BYTES;
@@ -195,6 +220,10 @@ pub enum WorldSaveError {
     BadCharge,
     /// A body's selected hotbar slot is past the hotbar.
     BadHotbarSlot,
+    /// A code lock carries a code outside 0000..=9999 (and not
+    /// `lock::CODE_NONE`). Refused rather than clamped: a clamped code is
+    /// a door whose owner's own four digits no longer open it.
+    BadCode,
 }
 
 impl WorldSaveError {
@@ -213,6 +242,7 @@ impl WorldSaveError {
             Self::BadBackpackId => "a backpack id is zero, duplicated, or past the next id",
             Self::BadCharge => "a charge names an impossible structure",
             Self::BadHotbarSlot => "a body selects a hotbar slot that does not exist",
+            Self::BadCode => "a code lock carries a code that is not four digits",
         }
     }
 }
@@ -294,6 +324,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     o.u16(w.deploys.len() as u16);
     o.u16(w.deploys.hearths().len() as u16);
     o.u16(w.deploys.boxes().len() as u16);
+    o.u16(w.deploys.locks().len() as u16);
     o.u16(w.backpacks.len() as u16);
     o.u16(w.charges.len() as u16);
     o.u32(w.slot_lives.len() as u32);
@@ -333,7 +364,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(p.death_range_cm);
         o.u64(p.craft_done_at);
     }
-    for p in w.pieces.entries() {
+    for (p, placed) in w.pieces.entries().iter().zip(w.pieces.placed()) {
         o.u16(p.cx);
         o.u16(p.cz);
         o.u8(p.level);
@@ -341,6 +372,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u8(p.row);
         o.u16(p.hp);
         o.u16(p.uh);
+        o.u64(*placed);
     }
     for (d, ready) in w.deploys.entries().iter().zip(w.deploys.bag_ready()) {
         o.u16(d.cx);
@@ -355,6 +387,9 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.b(d.locked);
         o.u64(*ready);
     }
+    for placed in w.deploys.placed() {
+        o.u64(*placed);
+    }
     for h in w.deploys.hearths() {
         o.u16(h.cx);
         o.u16(h.cz);
@@ -362,6 +397,10 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u32(h.owner);
         for s in h.stock.iter() {
             o.u32(*s);
+        }
+        o.u8(h.crew.len() as u8);
+        for id in h.crew.raw().iter() {
+            o.u32(*id);
         }
     }
     for (b, ov) in w.deploys.boxes().iter().zip(w.deploys.oven_states()) {
@@ -382,6 +421,27 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         for c in ov.cook.iter() {
             o.u16(*c);
         }
+    }
+    for l in w.deploys.locks() {
+        o.u16(l.cx);
+        o.u16(l.cz);
+        o.u8(l.level);
+        o.u8(l.loc);
+        o.u32(l.owner);
+        o.u16(l.code);
+        o.u16(l.guest_code);
+        o.b(l.locked);
+        o.u8(l.auth.len() as u8);
+        o.u8(l.guests.len() as u8);
+        for id in l.auth.raw().iter() {
+            o.u32(*id);
+        }
+        for id in l.guests.raw().iter() {
+            o.u32(*id);
+        }
+        o.u8(l.misses);
+        o.u64(l.last_miss);
+        o.u64(l.shut_until);
     }
     for b in w.backpacks.entries() {
         o.u32(b.id);
@@ -549,6 +609,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     let n_deploys = r.count(MAX_DEPLOYS)?;
     let n_hearths = r.count(MAX_HEARTHS)?;
     let n_boxes = r.count(MAX_BOXES)?;
+    let n_locks = r.count(MAX_LOCKS)?;
     let n_bags = r.count(MAX_BACKPACKS)?;
     let n_charges = r.count(MAX_LIVE_CHARGES)?;
     let n_slots = r.count32(MAX_SLOT_LIVES)?;
@@ -652,7 +713,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
 
     // --- pieces ---------------------------------------------------------
     let mut pieces = [PieceRec::default(); MAX_PIECES];
-    for p in pieces.iter_mut().take(n_pieces) {
+    let mut placed = crate::boxed_array::<u64, MAX_PIECES>(0);
+    for (i, p) in pieces.iter_mut().take(n_pieces).enumerate() {
         let cx = r.u16()?;
         let cz = r.u16()?;
         let level = r.u8()?;
@@ -660,6 +722,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let row = r.u8()?;
         let hp = r.u16()?;
         let uh = r.u16()?;
+        placed[i] = r.u64()?;
         if !build_addr_ok(cx, cz, level) {
             return Err(WorldSaveError::AddressOutOfRange);
         }
@@ -693,7 +756,10 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let hp = r.u16()?;
         let uh = r.u16()?;
         let open = r.b()?;
-        let locked = r.b()?;
+        // The locked byte is consumed (and bool-checked, so a corrupt
+        // file still refuses) but deliberately never kept — the mirror
+        // comment below says why.
+        let _locked = r.b()?;
         let ready = r.u64()?;
         if !build_addr_ok(cx, cz, level) {
             return Err(WorldSaveError::AddressOutOfRange);
@@ -711,9 +777,27 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             hp,
             uh,
             open,
-            locked,
+            // The two mirror bits are read but not trusted — **neither of
+            // them**: both are re-derived from the lock section by
+            // `World::rebuild_doors` at the commit below, exactly as the
+            // collision index is rebuilt from the pieces. The rebuild only
+            // walks archetypes `lockable` names, so the file's `locked`
+            // byte has to be dropped *here* or a forged save could present
+            // locked:true / has_lock:false on a fire or a hearth — a
+            // mirror state no lock verb can produce — and nothing after
+            // this line would ever look at it again.
+            has_lock: false,
+            locked: false,
         };
         bag_ready[i] = ready;
+    }
+    // The deploy placement clocks, in their own run rather than inline on
+    // the record: the record's own encoding is pinned by
+    // `tests/worldsave.rs`'s round trip and by `DEPLOY_BYTES`, and
+    // appending a second run is the change that does not move the first.
+    let mut deploy_placed = crate::boxed_array::<u64, MAX_DEPLOYS>(0);
+    for slot in deploy_placed.iter_mut().take(n_deploys) {
+        *slot = r.u64()?;
     }
 
     let mut hearths = [HearthRec::default(); MAX_HEARTHS];
@@ -726,15 +810,24 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         for s in stock.iter_mut() {
             *s = r.u32()?;
         }
+        let n_crew = r.u8()?;
+        let mut crew_ids = [0u32; HEARTH_CREW_CAP];
+        for id in crew_ids.iter_mut() {
+            *id = r.u32()?;
+        }
         if !build_addr_ok(cx, cz, level) {
             return Err(WorldSaveError::AddressOutOfRange);
         }
+        let Some(crew) = crate::deploy::CrewList::restore(&crew_ids, n_crew) else {
+            return Err(WorldSaveError::CountOverCap);
+        };
         *h = HearthRec {
             cx,
             cz,
             level,
             owner,
             stock,
+            crew,
         };
     }
 
@@ -782,6 +875,70 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             burn,
             bank,
             cook,
+        };
+    }
+
+    // --- code locks -------------------------------------------------------
+    let mut locks = [LockRec::default(); MAX_LOCKS];
+    for l in locks.iter_mut().take(n_locks) {
+        let cx = r.u16()?;
+        let cz = r.u16()?;
+        let level = r.u8()?;
+        let loc = r.u8()?;
+        let owner = r.u32()?;
+        let code = r.u16()?;
+        let guest_code = r.u16()?;
+        let locked = r.b()?;
+        let n_auth = r.u8()?;
+        let n_guests = r.u8()?;
+        let mut auth = [0u32; LOCK_AUTH_CAP];
+        for id in auth.iter_mut() {
+            *id = r.u32()?;
+        }
+        let mut guests = [0u32; LOCK_GUEST_CAP];
+        for id in guests.iter_mut() {
+            *id = r.u32()?;
+        }
+        let misses = r.u8()?;
+        let last_miss = r.u64()?;
+        let shut_until = r.u64()?;
+        if !build_addr_ok(cx, cz, level) {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+        // A count past its own array is refused whole, never clamped: a
+        // clamped count is a list that quietly forgot somebody, and the
+        // whole point of the roster's overflow policy is that it never
+        // forgets anyone silently. `Roster::restore` is where that rule
+        // lives, so this asks it rather than restating the comparison.
+        let (Some(auth), Some(guests)) = (
+            crate::lock::AuthList::restore(&auth, n_auth),
+            crate::lock::GuestList::restore(&guests, n_guests),
+        ) else {
+            return Err(WorldSaveError::CountOverCap);
+        };
+        // A code out of the four-digit range is refused for the reason a
+        // content row index is: `lock::apply` compares against it and a
+        // hand-edited value would make a door nobody can ever open.
+        // `CODE_NONE` is the one legal value above the range.
+        if (code > CODE_MAX && code != CODE_NONE)
+            || (guest_code > CODE_MAX && guest_code != CODE_NONE)
+        {
+            return Err(WorldSaveError::BadCode);
+        }
+        *l = LockRec {
+            cx,
+            cz,
+            level,
+            loc,
+            owner,
+            code,
+            guest_code,
+            locked,
+            auth,
+            guests,
+            misses,
+            last_miss,
+            shut_until,
         };
     }
 
@@ -886,13 +1043,16 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     w.sweep_support = sweep_support;
     w.evictions = evictions;
     w.players = players;
-    w.pieces.restore(&pieces[..n_pieces], &w.build);
+    w.pieces
+        .restore(&pieces[..n_pieces], &placed[..n_pieces], &w.build);
     w.deploys.restore(
         &deploys[..n_deploys],
         &bag_ready[..n_deploys],
+        &deploy_placed[..n_deploys],
         &hearths[..n_hearths],
         &boxes[..n_boxes],
         &ovens[..n_boxes],
+        &locks[..n_locks],
     );
     w.backpacks.restore(&bags[..n_bags], next_bag);
     w.charges.restore(&charges[..n_charges]);
@@ -927,19 +1087,32 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 52                    // head
+        let by_hand = 54                    // head
             + 100 * 240                     // players
-            + 8_192 * 11                    // pieces
-            + 1_024 * 25                    // deploys + bag_ready
-            + 256 * 25                      // hearths
+            + 8_192 * 19                    // pieces + placement tick
+            + 1_024 * 33                    // deploys + bag_ready + placed
+            + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
             + 256 * 87                      // containers: 57 + the oven's 30
+            + 512 * 98                      // code locks
             + 256 * 148                     // bags
             + 64 * 21                       // charges
             + 16_384 * 14; // harvested slots
-        assert_eq!(HEAD_BYTES, 52);
+        assert_eq!(HEAD_BYTES, 54);
+        // A lock is 98: 6 address + 4 owner + 2 + 2 codes + 1 locked + 2
+        // counts + 8 auth ids + 8 guest ids at four bytes each + 1 miss
+        // counter + 8 + 8 for the two tick deadlines.
+        assert_eq!(LOCK_BYTES, 98);
+        // A hearth is 66: 9 address + owner, 16 stock, then the crew's
+        // count and its whole ten-slot backing array.
+        assert_eq!(HEARTH_BYTES, 66);
+        // Both stores grew eight bytes a record at demolish v1: the
+        // placement tick is a parallel array in the store and inline
+        // here, for `DEPLOY_BYTES`' stated reason.
+        assert_eq!(PIECE_BYTES, 19);
+        assert_eq!(DEPLOY_BYTES, 33);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 437_044,
+            WORLD_SAVE_MAX_BYTES, 571_446,
             "the world save ceiling moved"
         );
     }

@@ -8,22 +8,23 @@ use crate::client::ClientNetState;
 use crate::stats::ShardStats;
 use crate::store::PlayerKey;
 use protocol::{
-    encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
+    encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_charge_placed,
     encode_event_chat, encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
     encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
-    encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
-    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_removed, encode_event_respawn, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
-    ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder,
-    SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_health, encode_event_hit, encode_event_inv, encode_event_knock,
+    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
+    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
+    encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog,
+    SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH,
+    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
-use sim_core::build::PieceRec;
+use sim_core::backpack::BAG_GONE_MAX;
+use sim_core::build::{PieceRec, LOC_PLANE};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::DeployRec;
 use sim_core::gather::{ItemStack, NO_ITEM};
@@ -35,13 +36,14 @@ use sim_core::limits::{
 };
 use sim_core::mob;
 use sim_core::persist::PlayerSave;
+use sim_core::survival::REFUSE_C_MAX;
 use sim_core::world::{
-    Command, Player, World, DEATH_BY_CLOCK, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
-    EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH,
-    EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER,
-    EV_HEALTH, EV_HIT, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT,
-    EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    Command, Player, World, DEATH_BY_CLOCK, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
+    EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
+    EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
+    EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 
 /// Unpack `sim_core::inventory::addr` — from kind, from slot, to kind, to
@@ -187,12 +189,15 @@ pub enum Admitted {
 /// hard ceiling on sleepers: a sleeper holds a world player slot, and there
 /// are `MAX_PLAYERS` of those.
 ///
-/// Entries go stale — the world evicts a sleeper on its own authority when
-/// a join needs the slot, and it does not report which. So a hit here is a
-/// *hint*, checked against `World::is_sleeper` before it is acted on, and a
-/// full table is swept of its dead entries before it is called full. That
-/// ordering is the reason this cannot wedge: staleness is bounded by the
-/// same number as the thing it tracks.
+/// Entries can go stale — a disconnect files the arrow *before* its `Leave`
+/// lands, so a `Leave` a full queue refused leaves an arrow at a body that
+/// never slept. (Eviction used to be the other source, when the world took
+/// sleepers on its own authority; two-phase eviction forgets the arrow at
+/// the pick, `connect_as`.) So a hit here is a *hint*, checked against
+/// `World::is_sleeper` before it is acted on, and a full table is swept of
+/// its dead entries before it is called full. That ordering is the reason
+/// this cannot wedge: staleness is bounded by the same number as the thing
+/// it tracks.
 struct SleeperIndex {
     entries: Box<[Option<(PlayerKey, u32)>]>,
 }
@@ -210,6 +215,19 @@ impl SleeperIndex {
             .flatten()
             .find(|(k, _)| k == key)
             .map(|(_, id)| *id)
+    }
+
+    /// The key filed for sleeper `id`, if any — `find` reversed, for the
+    /// eviction path: a victim is picked by body, and the record it leaves
+    /// behind has to be filed under the identity that will come back for
+    /// it. `None` ⇒ a guest's body: admitted, remembered by nobody, so
+    /// there is no record to file and never was.
+    fn key_of(&self, id: u32) -> Option<PlayerKey> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|(_, i)| *i == id)
+            .map(|(k, _)| *k)
     }
 
     fn forget(&mut self, key: &PlayerKey) {
@@ -289,6 +307,80 @@ impl ShardCore {
         self.connect_as(slot, id, None, None).is_some()
     }
 
+    /// Whether the next queued seat would meet a world with no free slot —
+    /// the moment two-phase eviction has to act. Counted against the world
+    /// **plus this window's own queue**: seats queued ahead will consume
+    /// free slots before this one lands and queued `Evict`s will open them,
+    /// so the arithmetic is about the world the join will actually meet,
+    /// not the one standing now. (A `Wake` is neither: a takeover reuses
+    /// the sleeper's own slot.)
+    fn slots_short(&self) -> bool {
+        let free = self.world.players.iter().filter(|p| !p.active).count();
+        let mut seats = 0usize;
+        let mut freed = 0usize;
+        for cmd in self.queued[..self.queued_len].iter() {
+            match cmd {
+                Command::Join { .. } | Command::JoinAs { .. } => seats += 1,
+                Command::Evict { .. } => freed += 1,
+                _ => {}
+            }
+        }
+        free + freed <= seats
+    }
+
+    /// Whether this window's queue has already committed the sleeping body
+    /// `id`: an `Evict` is about to remove it, or a `Wake` is about to hand
+    /// it back to its owner. Either way it is not available to be woken by
+    /// — or evicted for — the join being admitted now, and without this
+    /// check two joins in one window would nominate the same victim and
+    /// the second would land on a world with no slot to give.
+    fn spoken_for(&self, sleeper: u32) -> bool {
+        self.queued[..self.queued_len].iter().any(|cmd| match *cmd {
+            Command::Evict { id } => id == sleeper,
+            Command::Wake { sleeper: s, .. } => s == sleeper,
+            _ => false,
+        })
+    }
+
+    /// The eviction policy — **the longest-asleep sleeper**, ties broken on
+    /// slot index — moved here from `World::seat` with two-phase eviction:
+    /// the same scan `seat` ran when it evicted on its own authority, minus
+    /// bodies this window has already spoken for. The server owns the pick
+    /// because only the server can file the victim's save before the world
+    /// forgets the body; the world only obeys the id (`Command::Evict`),
+    /// which keeps the choice in the command stream (wall 5).
+    fn evict_victim(&self) -> Option<u32> {
+        let mut pick: Option<usize> = None;
+        for (i, p) in self.world.players.iter().enumerate() {
+            if !p.active || !p.sleeping || self.spoken_for(p.id) {
+                continue;
+            }
+            let older = match pick {
+                None => true,
+                Some(b) => p.slept_at < self.world.players[b].slept_at,
+            };
+            if older {
+                pick = Some(i);
+            }
+        }
+        pick.map(|i| self.world.players[i].id)
+    }
+
+    /// Players with a live connection right now — the number the status
+    /// endpoint publishes as `players` (`stats.rs` mirrors it each tick).
+    ///
+    /// Counted off `clients[].connected` rather than derived from the
+    /// `joins`/`leaves` counters, because those can legitimately disagree
+    /// with occupancy: a refused `connect_as` parks the link and rides the
+    /// LEAVING sweep out, which bumps `leaves` with no matching `join`, so
+    /// the difference drifts one short per refusal. An O(MAX_PLAYERS) scan
+    /// of a 100-element array, priced and justified where `sleepers` is
+    /// (`net.rs`): a second copy of the count could drift from the array
+    /// it describes.
+    pub fn connected(&self) -> usize {
+        self.clients.iter().filter(|c| c.connected).count()
+    }
+
     /// Install a client: onto the body they left behind if it is still
     /// standing, restoring `save` if it is not and the store had one, and
     /// as a fresh character otherwise.
@@ -308,6 +400,21 @@ impl ShardCore {
     /// `JoinAs` says it at more length). The takeover check is a pure read
     /// on the sim thread, which is the same posture `disconnect` already
     /// takes with `World::save_of`.
+    ///
+    /// **The second return value is two-phase eviction's phase one.** A
+    /// seat with no free slot needs one made, and the world no longer
+    /// evicts on its own authority — its record of the victim would be
+    /// frozen at their leave, so a sleeper raided and then evicted came
+    /// back from the stale record (`reference/SAVES.md` §9.2's one
+    /// remaining hole). Instead this picks the victim ([`Self::evict_victim`]),
+    /// takes a **current** save off the live body, queues `Command::Evict`
+    /// *ahead of* the join, and hands the record back — `Some` ⇒ the caller
+    /// must file it on the sweep's own write path, keyed, before the tick
+    /// that applies the `Evict`. `None` rides most admissions: no slot
+    /// pressure, a takeover (which reuses its own sleeper's slot), or a
+    /// keyless victim with no record to file. The record returns rather
+    /// than being pushed here because `ShardCore` holds no rings — the
+    /// same seam `disconnect` and `autosave` already cross by returning.
     #[must_use]
     pub fn connect_as(
         &mut self,
@@ -315,16 +422,58 @@ impl ShardCore {
         id: u32,
         key: Option<PlayerKey>,
         save: Option<PlayerSave>,
-    ) -> Option<Admitted> {
+    ) -> Option<(Admitted, Option<(PlayerKey, PlayerSave)>)> {
         // A hint from the index, verified against the world before it is
-        // trusted: the world evicts sleepers without telling anyone.
+        // trusted — and against this window's own queue, because a sleeper
+        // a queued `Evict` has already condemned is one this join must not
+        // count on waking.
         let sleeper = key
             .and_then(|k| self.sleepers.find(&k))
-            .filter(|&s| self.world.is_sleeper(s));
+            .filter(|&s| self.world.is_sleeper(s))
+            .filter(|&s| !self.spoken_for(s));
         let (cmd, how) = match (sleeper, save) {
             (Some(sleeper), _) => (Command::Wake { id, sleeper }, Admitted::TookOver),
             (None, Some(save)) => (Command::JoinAs { id, save }, Admitted::Restored),
             (None, None) => (Command::Join { id }, Admitted::Fresh),
+        };
+        // Two-phase eviction, phase one. Order is the design: save, then
+        // `Evict`, then the join — all inside one window, so the tick
+        // applies them back to back and the join lands on the freed slot.
+        let evicted = if !matches!(how, Admitted::TookOver) && self.slots_short() {
+            match self.evict_victim() {
+                Some(victim) => {
+                    // Room for both commands or neither: an `Evict` whose
+                    // join was then refused by a full queue would delete a
+                    // body and seat nobody in its place.
+                    if self.queued_len + 2 > MAX_COMMANDS_PER_TICK - MAX_PLAYERS {
+                        return None;
+                    }
+                    // The record comes off the live body NOW — the current
+                    // state, raid included, not the one frozen at the
+                    // victim's leave. A keyless victim is a guest: no
+                    // record to file, and never was one.
+                    let record = self
+                        .sleepers
+                        .key_of(victim)
+                        .and_then(|k| self.world.save_of(victim).map(|s| (k, s)));
+                    if let Some((k, _)) = record.as_ref() {
+                        // The arrow points at a body the command below is
+                        // about to remove.
+                        self.sleepers.forget(k);
+                    }
+                    let roomed = self.queue(Command::Evict { id: victim });
+                    debug_assert!(roomed, "room for two was checked above");
+                    record
+                }
+                // Every slot holds an awake body (or a sleeper this window
+                // already spoke for). Queue the join anyway: the world
+                // refuses it silently, which is the full-shard behaviour
+                // that predates sleepers, and the accept path hard-caps
+                // connections ahead of this.
+                None => None,
+            }
+        } else {
+            None
         };
         if !self.queue(cmd) {
             return None;
@@ -342,7 +491,7 @@ impl ShardCore {
         // The sweep must not read this connection's arrival as "nothing has
         // changed" against the previous tenant of the slot.
         self.last_saved[slot] = PlayerSave::EMPTY;
-        Some(how)
+        Some((how, evicted))
     }
 
     /// Encode the whole world into `out`, returning its length.
@@ -621,19 +770,35 @@ impl ShardCore {
                         level,
                         loc,
                     },
-                    ActionMsg::Lock {
+                    ActionMsg::Demolish {
+                        deploy,
                         cx,
                         cz,
                         level,
                         loc,
-                        locked,
-                    } => Command::Lock {
+                    } => Command::Demolish {
+                        id: c.id,
+                        deploy,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    },
+                    ActionMsg::Access {
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        op,
+                        code,
+                    } => Command::Access {
                         id: c.id,
                         cx,
                         cz,
                         level,
                         loc,
-                        locked,
+                        op,
+                        code,
                     },
                     ActionMsg::Upgrade {
                         cx,
@@ -1008,7 +1173,19 @@ impl ShardCore {
                             encode_event_consumed((ev.b >> 16) as u16, ev.b as u8, &mut self.ev_buf)
                         }
                         EV_DRANK => encode_event_drank(ev.b as u16, ev.c as u16, &mut self.ev_buf),
-                        _ => encode_event_consume_refused(ev.b as u8, &mut self.ev_buf),
+                        _ => {
+                            // NOW.md §5b: the wire field is four bits and
+                            // the reason domain is 1..=REFUSE_C_MAX — the
+                            // encoder bounds zero and the width, so a
+                            // forged 4..=15 would cross intact. The sim
+                            // can never mean one; refuse it into the same
+                            // counter the encoder's own range check uses.
+                            if !(1..=REFUSE_C_MAX).contains(&ev.b) {
+                                ShardStats::bump(&stats.encode_range_errors);
+                                continue;
+                            }
+                            encode_event_consume_refused(ev.b as u8, &mut self.ev_buf)
+                        }
                     };
                     match enc {
                         Ok(len) => {
@@ -1195,6 +1372,18 @@ impl ShardCore {
                     }
                 }
                 EV_BAG_REMOVED => {
+                    // NOW.md §5b: the wire field is two bits and the
+                    // reason domain tops out at BAG_GONE_MAX — the encoder
+                    // bounds the width, so a forged `why == 3` would cross
+                    // intact. The sim can never mean it; refuse it into
+                    // the same counter the encoder's own range check uses,
+                    // and refuse **before** the cursor loop below moves
+                    // anything (validation ahead of mutation — the
+                    // item-move trap).
+                    if ev.b > BAG_GONE_MAX {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        continue;
+                    }
                     // Same posture as a piece/deploy removal, including
                     // the walk restart: the store swap-removes, so a
                     // cursor inside the shrunken store is now pointing at
@@ -1230,7 +1419,43 @@ impl ShardCore {
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
-                    match encode_event_door(cx, cz, level, loc, open, locked, &mut self.ev_buf) {
+                    let has_lock = ev.b & 4 != 0;
+                    match encode_event_door(
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        open,
+                        locked,
+                        has_lock,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_KNOCK => {
+                    // A knock is broadcast for the same reason a door's
+                    // state is, and for one more: the whole point of the
+                    // event is that somebody *other* than the sender
+                    // hears it (`reference/DOORS.md` §4). AOI'ing it
+                    // would silence the case it exists for — a defender
+                    // asleep on the far side of their own base.
+                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+                    match encode_event_knock(cx, cz, level, loc, ev.c, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
@@ -1272,6 +1497,29 @@ impl ShardCore {
                                     self.clients[slot].ev_resync();
                                     ShardStats::bump(&stats.ev_resyncs);
                                 }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_AUTH => {
+                    // The opposite posture, one event apart: a grant is
+                    // true of exactly one player, so it goes to that
+                    // player and to nobody else. A broadcast here would
+                    // publish a base's access list to the shard.
+                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+                    let grant = ev.b as u8;
+                    let Some(slot) = self.client_slot_of(ev.c) else {
+                        continue;
+                    };
+                    match encode_event_auth(cx, cz, level, loc, grant, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
                             }
                         }
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
@@ -1715,10 +1963,17 @@ impl ShardCore {
         // written here rather than left to the reader: an open grants
         // nothing. Every tick the server resolves the handle again and
         // spends the *same* `in_reach` the move verb will spend, on the
-        // same quantized body position, against the same store. A forged
+        // same quantized body position, against the same store — and, for
+        // a box, the same `lock_passes` at the same plane address
+        // (`World::move_item`'s `CONT_BOX` arm; `DOORS.md` §9.8). A forged
         // open of a box across the map resolves and fails reach, so it
         // yields the close below and not one slot. A real open of a box
-        // the player then walks away from does the same. The set of
+        // the player then walks away from does the same. A locked box a
+        // stranger opens — or one that locks while their panel is up —
+        // does the same again, deliberately through the same close and
+        // not a new refusal: the sim already refuses every mutation, and
+        // a view that kept streaming a locked box's slots read-only would
+        // be raid intelligence the lock exists to hide. The set of
         // containers a client can see is therefore exactly the set it can
         // move items in — which is the quantize-both-sides law applied to
         // containers, and the reason a refusal can never disagree with
@@ -1737,12 +1992,24 @@ impl ShardCore {
                     .world
                     .deploys
                     .box_index(handle)
-                    .filter(|&i| self.world.deploys.box_in_reach(i, p)),
+                    .filter(|&i| self.world.deploys.box_in_reach(i, p))
+                    .filter(|&i| {
+                        // The box stands on the plane, so its lock shares
+                        // `box_key`'s triple plus `LOC_PLANE` — the move
+                        // path's address, byte for byte. An oven at the
+                        // same shape of address carries no lock
+                        // (`lockable`) and passes as bare.
+                        let b = self.world.deploys.boxes()[i];
+                        self.world
+                            .deploys
+                            .lock_passes(b.cx, b.cz, b.level, LOC_PLANE, p.id)
+                    }),
                 _ => None,
             };
             match live {
-                // Gone, or out of reach. Same message either way, and
-                // deliberately: "the bag despawned" and "you walked away"
+                // Gone, out of reach, or behind a lock that does not know
+                // this hand. Same message every way, and deliberately:
+                // "the bag despawned", "you walked away" and "it locked"
                 // are one fact to a panel, which is that it must shut. The
                 // client is told rather than left holding a view the
                 // server has stopped feeding — a stale panel is where a
@@ -2181,5 +2448,161 @@ impl ShardCore {
             &self.removed_buf[..n_removed],
         );
         Some(len)
+    }
+}
+
+/// NOW.md §5b, the S→C half: the two event payload domains the wire
+/// carries wider than the sim means — `EV_BAG_REMOVED`'s `why` (two bits,
+/// domain 0..=2) and `EV_CONSUME_REFUSED`'s `reason` (four bits, domain
+/// 1..=3) — are refused at the encode boundary. The sim cannot emit either
+/// forged value, which is exactly why these tests inject them into the
+/// world's ring directly and drive the **real** pump: the guard exists for
+/// the emitter bug that would otherwise put a meaningless fact on every
+/// client's screen. Unit tests rather than a wire suite because the pump
+/// is private and the seam (`world.events` is pub) needs no socket —
+/// `accept_chat`'s precedent, one lane over.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::{decode_event, EventMsg};
+    use sim_core::backpack::BackpackContent;
+
+    const SEED: u64 = 0x5B_F06E;
+    const PLAYER: u32 = 7;
+
+    /// Run the real event pump once, capturing every event-lane payload.
+    fn pumped(core: &mut ShardCore, stats: &ShardStats) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        core.pump_events(stats, &mut |lane, _slot, bytes: &[u8]| {
+            if lane == Lane::Event {
+                out.push(bytes.to_vec());
+            }
+            true
+        });
+        out
+    }
+
+    /// A core with one connected client, its join landed, and the event
+    /// ring drained to empty so a test's injected event is the only sim
+    /// event the next pump sees.
+    fn quiet_core(stats: &ShardStats) -> ShardCore {
+        let mut core = ShardCore::new(SEED);
+        assert!(core.connect(0, PLAYER), "connect");
+        core.tick(stats, |_, _, _| true);
+        // A direct world tick clears the ring; with no content armed and
+        // nobody moving, nothing refills it.
+        core.world.tick(&[]);
+        assert!(core.world.events.is_empty(), "ring quiet after setup");
+        core
+    }
+
+    #[test]
+    fn bag_removed_refuses_the_reason_the_sim_cannot_mean() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        // A real bag in the store, and a client mid-walk over it, so the
+        // cursor reset below the guard is a mutation the forged event
+        // would actually reach — the order half of the assert.
+        core.world.backpack = BackpackContent::probe_fixture();
+        let one = [ItemStack { item: 0, count: 1 }; INV_SLOTS];
+        let w = &mut core.world;
+        w.backpacks
+            .stand_up(&w.backpack, 0, 0, 0, PLAYER, &one, 0, &mut w.events)
+            .expect("bag stands");
+        core.world.tick(&[]); // flush the EV_BAG_DROPPED it pushed
+        assert!(core.world.events.is_empty(), "ring quiet again");
+        core.clients[0].bag_sync_cursor = 1;
+        core.clients[0].bag_sync_reset = false;
+
+        // Just outside the domain: why == 3 fits the two-bit field, so
+        // the encoder alone would put it on the wire.
+        core.world
+            .events
+            .push(EV_BAG_REMOVED, 42, BAG_GONE_MAX + 1, 0);
+        let range_before = ShardStats::get(&stats.encode_range_errors);
+        let sent = pumped(&mut core, &stats);
+        assert!(
+            !sent
+                .iter()
+                .any(|b| matches!(decode_event(b), Ok(EventMsg::BagRemoved { .. }))),
+            "a why the sim cannot mean crossed the wire"
+        );
+        assert_eq!(
+            ShardStats::get(&stats.encode_range_errors),
+            range_before + 1,
+            "the refusal is a count"
+        );
+        assert_eq!(
+            core.clients[0].bag_sync_cursor, 1,
+            "the walk cursor moved for a refused event — the refusal is \
+             not ordered before the mutation"
+        );
+        assert!(!core.clients[0].bag_sync_reset, "same, the reset flag");
+
+        // Just inside: why == BAG_GONE_MAX still crosses, and the cursor
+        // reset that comes with a real removal happens.
+        core.world.tick(&[]);
+        core.world.events.push(EV_BAG_REMOVED, 42, BAG_GONE_MAX, 0);
+        let sent = pumped(&mut core, &stats);
+        let removed = sent
+            .iter()
+            .filter_map(|b| match decode_event(b) {
+                Ok(EventMsg::BagRemoved { id, why }) => Some((id, why)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(removed, vec![(42, BAG_GONE_MAX as u8)]);
+        assert_eq!(
+            ShardStats::get(&stats.encode_range_errors),
+            range_before + 1,
+            "the in-domain reason is not counted as refused"
+        );
+    }
+
+    #[test]
+    fn consume_refused_refuses_the_reason_the_sim_cannot_mean() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+
+        // Just outside both ends of the domain: zero (the refusal that
+        // refuses to say why) and REFUSE_C_MAX + 1 (fits the four-bit
+        // field, so the encoder's width check alone would pass it).
+        let range_before = ShardStats::get(&stats.encode_range_errors);
+        core.world.events.push(EV_CONSUME_REFUSED, PLAYER, 0, 0);
+        core.world
+            .events
+            .push(EV_CONSUME_REFUSED, PLAYER, REFUSE_C_MAX + 1, 0);
+        let sent = pumped(&mut core, &stats);
+        assert!(
+            !sent
+                .iter()
+                .any(|b| matches!(decode_event(b), Ok(EventMsg::ConsumeRefused { .. }))),
+            "a reason the sim cannot mean crossed the wire"
+        );
+        assert_eq!(
+            ShardStats::get(&stats.encode_range_errors),
+            range_before + 2,
+            "both refusals are counts"
+        );
+
+        // Just inside: REFUSE_C_MAX itself still crosses.
+        core.world.tick(&[]);
+        core.world
+            .events
+            .push(EV_CONSUME_REFUSED, PLAYER, REFUSE_C_MAX, 0);
+        let sent = pumped(&mut core, &stats);
+        let reasons = sent
+            .iter()
+            .filter_map(|b| match decode_event(b) {
+                Ok(EventMsg::ConsumeRefused { reason }) => Some(reason),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reasons, vec![REFUSE_C_MAX as u8]);
+        assert_eq!(
+            ShardStats::get(&stats.encode_range_errors),
+            range_before + 2,
+            "the in-domain reason is not counted as refused"
+        );
     }
 }

@@ -395,8 +395,18 @@ says "worker", read "off the main schedule" for the native path.
   **(knob)**. The tier idea is browser-era — it existed because a WebGL page
   had to run on whatever opened it — and a native client with a system
   requirement may not need one at all; unresolved, not decided.
-- **Water**: a single animated plane at sea level with depth-fade alpha
-  and shore foam from the beach mask. Nothing simulates.
+- **Water** (shipped as water v0, `RENDER.md` §R8): one eye-centred mesh
+  rather than a plane — a 2 m uniform core with a geometric skirt to 2.6 km,
+  a four-wave swell with analytic normals whose amplitude goes to zero as the
+  water shallows, per-channel colour and alpha from `exp(-depth · extinction)`
+  off this file's own `height`, and shore foam banded by depth and weighted by
+  the *land's* slope. A tiling ripple normal map carries everything below the
+  shortest wave. **Nothing simulates**: the sim's only fact about water is
+  `SEA_LEVEL` and §3's swim rule, and the drawn surface is not consulted by
+  either. `reference/WATER.md` is the research.
+  The land side of the same seam is here too: the ground darkens and saturates
+  within `WET_BAND_M` of sea level, which is the reference's shoreline wetness
+  and `ART.md` §5's wet sand.
 - **Budgets** (within DESIGN §9's 300 draw calls / 1.5 M tris — **both
   browser-era and neither re-derived for the native client**, see there):
   terrain ≈ 40–60 draw calls and ~250 k tris at LOD; scatter instancing

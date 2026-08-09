@@ -271,6 +271,14 @@ rarity = "uncommon"
 slot = "hand"
 
 [[item]]
+id = "item.lock_code"
+name = "Code Lock"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+[[item]]
 id = "item.door_wood"
 name = "Wooden Door"
 stack = 1
@@ -424,6 +432,20 @@ slot = "hand"
 [[item]]
 id = "item.cooked_meat"
 name = "Cooked Meat"
+stack = 20
+tier = 0
+rarity = "common"
+slot = "hand"
+
+# The overcook. A meal left on a lit fire keeps cooking — the burnt row in
+# `cooking.toml` has the cooked half as its INPUT — so walking away from
+# the fire is what this item prices. Barely edible on purpose: the repo's
+# reference notes are silent on the reference's burnt numbers, so the
+# conservative call is the worst food in the set (`consumables.toml`),
+# clearly above nothing and clearly below every deliberate meal.
+[[item]]
+id = "item.burnt_meat"
+name = "Burnt Meat"
 stack = 20
 tier = 0
 rarity = "common"

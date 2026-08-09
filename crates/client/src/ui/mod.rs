@@ -36,14 +36,25 @@
 //! both: it decides *when a player enters the world*, and the version of
 //! that decision that lived inside a Bevy system could only be tested by a
 //! windowed run against a live shard.
+//!
+//! [`keypad`] is the code lock's four digits (lock v1). Deliberately
+//! pointer-free — a screen that takes your mouse to type four digits is a
+//! screen you die in — so the render layer draws it as a small overlay
+//! that grabs nothing, and the buffer rules and the key→op map are here
+//! where a test can hold them.
+//!
+//! [`hammer`] is the hammer's wheel — the second radial, whose segments
+//! fire on release where [`build`]'s latch.
 
 pub mod build;
 pub mod chat;
 pub mod craft;
 pub mod death;
+pub mod hammer;
 pub mod hold;
 pub mod icons;
 pub mod interact;
+pub mod keypad;
 pub mod load;
 pub mod map;
 pub mod place;

@@ -54,6 +54,13 @@ pub struct Swung(pub SwingPick);
 #[derive(Resource, Default)]
 pub struct InWeak(pub bool);
 
+/// The code lock's keypad, when one is up (lock v1). A resource rather
+/// than a `Panel` because it deliberately does **not** grab the pointer:
+/// the door is in front of you and the person on the other side of it is
+/// not waiting (`crate::ui::keypad` has the argument).
+#[derive(Resource, Default)]
+pub struct Pad(pub crate::ui::keypad::Keypad);
+
 /// The nearest structure, either store. Its own resource beside [`Aimed`]
 /// because `L`, `U`, `R` and the raid verb address a structure and `E` does
 /// not — see `ui::structure`'s header for why they cannot share a metric.
@@ -152,6 +159,7 @@ pub fn keys(
     aimed: Res<Aimed>,
     near: Res<Near>,
     mut toast: ResMut<Toast>,
+    mut pad: ResMut<Pad>,
     ui: Option<ResMut<Ui>>,
     chat: Option<Res<super::chat::Chat>>,
 ) {
@@ -176,8 +184,21 @@ pub fn keys(
     if keys.just_pressed(KeyCode::KeyE) {
         use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
     }
+    // The keypad claims its own keys while it is up, and gives every
+    // other binding back the moment it closes. Checked before the rest,
+    // so typing 1234 at a door cannot also select four hotbar slots.
+    if pad.0.is_open() {
+        keypad_keys(&keys, &net, &mut pad, &mut toast);
+        return;
+    }
     if keys.just_pressed(KeyCode::KeyL) {
-        lock_aimed(&net, &aimed.0, &mut toast);
+        access_aimed(&net, &aimed.0, &mut pad, &mut toast, false);
+    }
+    // `K` is the crew's leave, and it is only a hearth key: at a door the
+    // same letter is the keypad's LOCK, which is why `access_aimed` takes
+    // the bit rather than this reading the pick twice.
+    if keys.just_pressed(KeyCode::KeyK) {
+        access_aimed(&net, &aimed.0, &mut pad, &mut toast, true);
     }
     if keys.just_pressed(KeyCode::KeyU) {
         upgrade_near(&net, &near.0, &mut toast);
@@ -203,6 +224,13 @@ pub fn keys(
     }
     if keys.just_pressed(KeyCode::KeyC) {
         light_aimed(&net, &aimed.0, &mut toast);
+    }
+    // `Backspace` — take the nearest structure back down. A destructive
+    // verb gets a key nothing else is near, and one a hand resting on WASD
+    // cannot reach by accident: the sim gates it on a ten-minute window
+    // and a claim, but a misfire inside both is still a foundation gone.
+    if keys.just_pressed(KeyCode::Backspace) {
+        demolish_near(&net, &near.0, &mut toast);
     }
     if keys.just_pressed(KeyCode::KeyG) {
         // Eat what is in the selected hotbar slot. `G` rather than a
@@ -311,21 +339,219 @@ fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
     });
 }
 
-/// `L` — lock or unlock the aimed door.
+/// `L` and `K` — the access verb, on whatever the crosshair is on.
 ///
-/// It reads the pick's own `locked` bit and sends the OPPOSITE, because
-/// `ACT_LOCK` sets the state absolutely rather than toggling: a client that
-/// sent "locked" twice would leave a player pressing a key that does nothing.
-/// The wire carries the lock bit but never the owner, so whether this door is
-/// yours is the server's answer and arrives as `REFUSE_D_OWNER`.
-fn lock_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
-    if pick.verb != Verb::Door {
-        toast.say("no door in reach");
+/// **One key, two stores, because the sim's verb is one verb.** At
+/// anything a lock bolts to — a door or a box, and the set is the sim's
+/// own `deploy::lockable` by way of `ui::keypad::lock_target`, never a
+/// list here — it opens the keypad (which then speaks: six ops share one
+/// action code and which one a press means depends on four digits nobody
+/// has typed yet). At a hearth it sends a crew op immediately: there is
+/// nothing to type, and a pad that asked for four digits at a cupboard
+/// would be asking the wrong question.
+///
+/// `leave` is the `K` half. Passing it in rather than reading the pick
+/// twice is what keeps `K` meaning LOCK at a door and LEAVE at a hearth
+/// without two resolvers that could disagree about which is aimed at.
+///
+/// A lockable with no lock bolted on says so rather than opening an empty
+/// pad: the wire carries `has_lock` precisely so this prompt can be honest
+/// without the client learning anything about who the lock remembers.
+fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, leave: bool) {
+    use crate::ui::keypad::{lock_target, LockTarget};
+    if pick.verb == Verb::Hearth {
+        let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
+        let op = if leave {
+            sim_core::deploy::ACCESS_OP_CREW_LEAVE
+        } else {
+            sim_core::deploy::ACCESS_OP_CREW_JOIN
+        };
+        send(net, toast, "crew", |buf| {
+            protocol::encode_action_access(
+                cx,
+                cz,
+                level,
+                sim_core::build::LOC_PLANE,
+                op,
+                sim_core::lock::CODE_NONE,
+                buf,
+            )
+        });
         return;
     }
-    let (cx, cz, level, loc, want) = (pick.cx, pick.cz, pick.level, pick.loc, !pick.locked);
+    // `K` at a door is the keypad's own LOCK and is handled there; outside
+    // the pad and away from a hearth it means nothing.
+    if leave {
+        return;
+    }
+    match lock_target(pick) {
+        LockTarget::Pad(cx, cz, level, loc) => pad.0.open(cx, cz, level, loc),
+        LockTarget::Bare => toast.say(format!(
+            "no lock on that {} — deploy one",
+            // "DOOR"/"BOX", said the toast's way. The label is never
+            // empty here: a bare `lock_target` means the pick resolved a
+            // real lockable archetype, and every verb of one has a noun.
+            pick.verb.label().to_lowercase()
+        )),
+        LockTarget::None => toast.say("nothing to authorize in reach"),
+    }
+}
+
+/// The keypad's own keys: digits, backspace, escape, and the six ops.
+///
+/// Every verdict here is the sim's — this decides only *what to ask*. The
+/// three ops that need a code refuse to send without four digits, because
+/// a short code is a different code and a wrong one costs hp.
+fn keypad_keys(keys: &ButtonInput<KeyCode>, net: &Net, pad: &mut Pad, toast: &mut Toast) {
+    use crate::ui::keypad::{op_for, KeypadKey, Needs};
+
+    if keys.just_pressed(KeyCode::Escape) {
+        pad.0.close();
+        return;
+    }
+    if keys.just_pressed(KeyCode::Backspace) {
+        pad.0.backspace();
+    }
+    const DIGITS: [(KeyCode, u8); 20] = [
+        (KeyCode::Digit0, 0),
+        (KeyCode::Digit1, 1),
+        (KeyCode::Digit2, 2),
+        (KeyCode::Digit3, 3),
+        (KeyCode::Digit4, 4),
+        (KeyCode::Digit5, 5),
+        (KeyCode::Digit6, 6),
+        (KeyCode::Digit7, 7),
+        (KeyCode::Digit8, 8),
+        (KeyCode::Digit9, 9),
+        (KeyCode::Numpad0, 0),
+        (KeyCode::Numpad1, 1),
+        (KeyCode::Numpad2, 2),
+        (KeyCode::Numpad3, 3),
+        (KeyCode::Numpad4, 4),
+        (KeyCode::Numpad5, 5),
+        (KeyCode::Numpad6, 6),
+        (KeyCode::Numpad7, 7),
+        (KeyCode::Numpad8, 8),
+        (KeyCode::Numpad9, 9),
+    ];
+    for (key, d) in DIGITS {
+        if keys.just_pressed(key) {
+            pad.0.push(d);
+        }
+    }
+
+    const OPS: [(KeyCode, KeypadKey); 6] = [
+        (KeyCode::Enter, KeypadKey::Try),
+        (KeyCode::NumpadEnter, KeypadKey::Try),
+        (KeyCode::KeyS, KeypadKey::Set),
+        (KeyCode::KeyG, KeypadKey::Guest),
+        (KeyCode::KeyK, KeypadKey::Lock),
+        (KeyCode::KeyU, KeypadKey::Unlock),
+    ];
+    let mut want = None;
+    for (key, k) in OPS {
+        if keys.just_pressed(key) {
+            want = Some(k);
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyT) {
+        want = Some(KeypadKey::Take);
+    }
+    let Some(k) = want else { return };
+    let Some((op, needs)) = op_for(k) else { return };
+    let code = match needs {
+        Needs::Code => match pad.0.code() {
+            Some(c) => c,
+            None => {
+                toast.say("four digits");
+                return;
+            }
+        },
+        Needs::Nothing => sim_core::lock::CODE_NONE,
+    };
+    let Some((cx, cz, level, loc)) = pad.0.at else {
+        return;
+    };
     send(net, toast, "lock", |buf| {
-        protocol::encode_action_lock(cx, cz, level, loc, want, buf)
+        protocol::encode_action_access(cx, cz, level, loc, op, code, buf)
+    });
+    // One press, one op, pad gone. The alternative — leaving it up so the
+    // next key is another op — is a pad that eats `W` while a raider is
+    // walking through the door you just unlocked.
+    pad.0.close();
+}
+
+/// The hammer wheel's release (`NOW.md` §0p2 item 1): fire the picked
+/// segment at the nearest structure, through the same encoders `U`, `R`
+/// and `Backspace` press — zero new wire.
+///
+/// Every decision — the store filters, the next rung, the refusal
+/// sentences — is [`crate::ui::hammer::act`], pure and gated in
+/// `tests/ui.rs` §K. This translates its answer into a send, exactly as
+/// the keypad's `op_for` split keeps `keypad_keys` decisionless.
+pub fn hammer_fire(net: &Net, near: &Option<Target>, seg: usize, toast: &mut Toast) {
+    use crate::ui::hammer::{self, Act};
+    let Some(&verb) = hammer::VERBS.get(seg) else {
+        return;
+    };
+    let core = &net.session.core;
+    match hammer::act(verb, near.as_ref(), &core.piece_defs, core.piece_defs_have) {
+        Act::Demolish {
+            deploy,
+            cx,
+            cz,
+            level,
+            loc,
+        } => {
+            send(net, toast, "demolish", |buf| {
+                protocol::encode_action_demolish(deploy, cx, cz, level, loc, buf)
+            });
+        }
+        Act::Upgrade {
+            cx,
+            cz,
+            level,
+            loc,
+            material,
+        } => {
+            send(net, toast, "upgrade", |buf| {
+                protocol::encode_action_upgrade(cx, cz, level, loc, material, buf)
+            });
+        }
+        Act::Repair {
+            deploy,
+            cx,
+            cz,
+            level,
+            loc,
+        } => {
+            send(net, toast, "repair", |buf| {
+                protocol::encode_action_repair(deploy, cx, cz, level, loc, buf)
+            });
+        }
+        Act::Say(s) => toast.say(s),
+    }
+}
+
+/// `Backspace` — take the nearest structure back down (demolish v1).
+///
+/// Reads the same [`Near`] target `R` repairs and `U` upgrades, and
+/// carries the same store bit, because the three verbs address the same
+/// pair of stores and a fourth resolver would be a fourth chance to pick
+/// the doorway when the player meant the door.
+///
+/// Whether the grace window is still open is **not** asked here. It is
+/// arithmetic over a tick the client does not hold, and a prompt that
+/// guessed would tell a player their base is disposable ten minutes after
+/// it stopped being.
+fn demolish_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
+    let Some(t) = near else {
+        toast.say("nothing to take down in reach");
+        return;
+    };
+    let (deploy, cx, cz, level, loc) = (t.store == Store::Deploy, t.cx, t.cz, t.level, t.loc);
+    send(net, toast, "demolish", |buf| {
+        protocol::encode_action_demolish(deploy, cx, cz, level, loc, buf)
     });
 }
 

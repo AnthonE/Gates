@@ -29,6 +29,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `burlap_tunic.png` | `lorc/leather-vest` |
 | `charcoal.png` | `delapouite/coal-pile` |
 | `cloth.png` | `delapouite/rolled-cloth` |
+| `code_lock.png` | `delapouite/dial-padlock` |
 | `cooked_meat.png` | `lorc/chicken-leg` |
 | `corn.png` | `delapouite/corn` |
 | `crossbow.png` | `carl-olsen/crossbow` |
@@ -77,3 +78,18 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `wooden_door.png` | `delapouite/door` |
 | `wooden_spear.png` | `lorc/spears` |
 | `workbench.png` | `lorc/hammer-nails` |
+
+## Not from game-icons.net
+
+Ours, authored in `ci/icons/` and rasterised by the same script. **No
+attribution is owed for these and the CC BY notice above does not cover
+them** — they are listed so the line between what the licence covers and
+what it does not is written down rather than inferred from a table.
+
+Each is here because the archive has no icon for the thing, not because
+the archive was unreachable — that was true for one day and is not any
+more (`ci/bake_icons.py` fetches from GitHub).
+
+| file | source |
+|---|---|
+| `burnt_meat.png` | `ci/icons/burnt_meat.svg` (ours) |

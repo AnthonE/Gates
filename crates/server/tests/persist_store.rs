@@ -29,6 +29,13 @@ fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32
 }
 
+/// The id the slot table would mint for `slot`'s **second** tenant — a
+/// reconnect after the first claim, `generation << 8 | slot` with the
+/// generation bumped.
+fn id2_of(slot: usize) -> u32 {
+    (2 << 8) | slot as u32
+}
+
 fn key(s: &str) -> PlayerKey {
     PlayerKey::new(s.as_bytes()).expect("fits")
 }
@@ -134,7 +141,8 @@ fn a_shard_restart_remembers_a_player() {
     // file, which is exactly the case the record exists for
     // (`reference/SAVES.md` §9.2) — so the door taken must be `Restored`.
     assert_eq!(
-        core.connect_as(0, id_of(0), Some(me), Some(restored)),
+        core.connect_as(0, id_of(0), Some(me), Some(restored))
+            .map(|(how, _)| how),
         Some(Admitted::Restored),
         "a restoring join"
     );
@@ -167,7 +175,7 @@ fn an_unknown_key_is_a_fresh_character() {
     let stats = ShardStats::default();
     let mut core = armed_core();
     assert_eq!(
-        core.connect_as(0, id_of(0), None, None),
+        core.connect_as(0, id_of(0), None, None).map(|(how, _)| how),
         Some(Admitted::Fresh),
         "a keyless join"
     );
@@ -223,6 +231,218 @@ fn the_autosave_sweep_is_bounded_and_skips_the_unchanged() {
         }
     }
     assert_eq!(noticed, 1, "a player who moved was not saved");
+}
+
+/// **The raid-then-evict window, closed — the scenario `NOW.md` §0y item 3
+/// names.** A sleeper's store record is frozen at the moment they left
+/// (`disconnect` reads the body before queueing the `Leave`, and the
+/// autosave sweep walks *connection* slots, which a sleeper no longer
+/// holds). The world file made that harmless for a restart — the body
+/// itself persists — and left exactly one case: eviction. Before two-phase
+/// eviction, a sleeper raided after their leave and then evicted for slot
+/// pressure came back from the stale record, raid quietly undone.
+///
+/// This walks the whole window: leave (record frozen), raid (body
+/// changes), slot pressure (eviction — and the record handed back is the
+/// **current** body), rejoin (the current state comes back, not the
+/// frozen one).
+#[test]
+fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
+    const MAX: usize = sim_core::limits::MAX_PLAYERS;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let mut store = SaveStore::new();
+    let me = key("gets-raided");
+    let carried = ItemStack {
+        item: 3,
+        count: 128,
+    };
+
+    // Session one: join keyed, carry something, log off. The disconnect's
+    // exact save is the frozen record — the last one any sweep will take,
+    // because the sweep walks connection slots and this player no longer
+    // has one.
+    assert_eq!(
+        core.connect_as(0, id_of(0), Some(me), None)
+            .map(|(how, _)| how),
+        Some(Admitted::Fresh)
+    );
+    core.tick(&stats, |_, _, _| true);
+    let slot = world_slot(&core, id_of(0));
+    core.world.players[slot].inv[0] = carried;
+    let (_, frozen) = core.disconnect(0).expect("a leaving player has a record");
+    assert_eq!(frozen.inv[0], carried);
+    store.put(&me, 1, frozen);
+    core.tick(&stats, |_, _, _| true);
+    assert_eq!(core.world.sleepers(), 1);
+
+    // The raid, after the record froze: the sleeper is looted where it
+    // stands. From here the record and the body disagree.
+    core.world.players[slot].inv[0] = ItemStack::default();
+
+    // Slot pressure: fill every remaining world slot with awake players.
+    for s in 1..MAX {
+        assert!(core.connect(s, id_of(s)), "filler {s}");
+    }
+    core.tick(&stats, |_, _, _| true);
+    assert_eq!(core.world.sleepers(), 1, "the fill must not evict");
+
+    // The join that needs the sleeper's slot. Phase one hands back the
+    // victim's record **off the live body** — the raided state, not the
+    // frozen one — keyed, because the victim has no connection slot for
+    // the accept loop to resolve.
+    let stranger = id2_of(0);
+    let (how, evicted) = core
+        .connect_as(0, stranger, Some(key("newcomer")), None)
+        .expect("admitted");
+    assert_eq!(how, Admitted::Fresh);
+    let (victim_key, current) = evicted.expect("a full shard must evict, keyed");
+    assert_eq!(victim_key, me, "the record is filed under the victim's key");
+    assert_eq!(
+        current.inv[0],
+        ItemStack::default(),
+        "the eviction save is the frozen record, not the raided body"
+    );
+    // File it exactly as `drain_saves` would: by key, over the frozen one.
+    store.put(&me, 2, current);
+    core.tick(&stats, |_, _, _| true);
+    assert_eq!(
+        core.world.evictions, 1,
+        "the evict must land under the join"
+    );
+    assert_eq!(core.world.sleepers(), 0);
+    assert!(
+        core.world
+            .players
+            .iter()
+            .any(|p| p.active && p.id == stranger),
+        "the join must land on the freed slot"
+    );
+
+    // The victim returns. No body (evicted), so the store's record — and
+    // it is the current one. The connection slot comes from a filler
+    // logging off; its keyless sleeper is the next eviction's victim,
+    // which also pins the guest arm: no key, no record, still evicted.
+    core.disconnect(5);
+    core.tick(&stats, |_, _, _| true);
+    let restored = store.find(&me).expect("the eviction filed a record");
+    assert_eq!(restored.inv[0], ItemStack::default());
+    let (how, evicted) = core
+        .connect_as(5, id2_of(5), Some(me), Some(restored))
+        .expect("admitted");
+    assert_eq!(
+        how,
+        Admitted::Restored,
+        "an evicted sleeper comes back through the store"
+    );
+    assert!(
+        evicted.is_none(),
+        "a keyless victim has no record to file — and never had one"
+    );
+    core.tick(&stats, |_, _, _| true);
+    let p = core.world.players[world_slot(&core, id2_of(5))];
+    assert_eq!(
+        p.inv[0],
+        ItemStack::default(),
+        "the rejoin restored the stale pre-raid record — the raid was undone"
+    );
+    assert_eq!(core.world.evictions, 2);
+}
+
+/// Two joins in one window must nominate two different victims. Both picks
+/// happen against the same un-ticked world, so without the queue-aware
+/// arithmetic (`ShardCore::slots_short` / `spoken_for`) both would name the
+/// same longest-asleep body: the first `Evict` frees one slot, the first
+/// join takes it, the second `Evict` misses, and the second join lands on a
+/// full world and seats nobody.
+#[test]
+fn two_joins_in_one_window_evict_two_different_sleepers() {
+    const MAX: usize = sim_core::limits::MAX_PLAYERS;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let (a, b) = (key("older-sleeper"), key("newer-sleeper"));
+
+    // Two keyed sleepers, slept in a known order — a's body first, so it
+    // is the longest asleep and must be the first pick.
+    assert!(core.connect_as(0, id_of(0), Some(a), None).is_some());
+    assert!(core.connect_as(1, id_of(1), Some(b), None).is_some());
+    core.tick(&stats, |_, _, _| true);
+    core.disconnect(0);
+    core.tick(&stats, |_, _, _| true);
+    core.disconnect(1);
+    core.tick(&stats, |_, _, _| true);
+    assert_eq!(core.world.sleepers(), 2);
+
+    for s in 2..MAX {
+        assert!(core.connect(s, id_of(s)), "filler {s}");
+    }
+    core.tick(&stats, |_, _, _| true);
+
+    // One window, no tick between: the second pick must see the first's
+    // queued `Evict` and pass over its victim.
+    let (_, first) = core
+        .connect_as(0, id2_of(0), Some(key("stranger-one")), None)
+        .expect("admitted");
+    let (_, second) = core
+        .connect_as(1, id2_of(1), Some(key("stranger-two")), None)
+        .expect("admitted");
+    assert_eq!(
+        first.expect("keyed victim").0,
+        a,
+        "the first join must take the longest-asleep"
+    );
+    assert_eq!(
+        second.expect("keyed victim").0,
+        b,
+        "the second join re-picked the first victim — both evicts name one \
+         body, and the second join seats nobody"
+    );
+
+    core.tick(&stats, |_, _, _| true);
+    assert_eq!(core.world.evictions, 2);
+    assert_eq!(core.world.sleepers(), 0);
+    for id in [id2_of(0), id2_of(1)] {
+        assert!(
+            core.world.players.iter().any(|p| p.active && p.id == id),
+            "join {id:#x} was refused on a shard with a victim to give"
+        );
+    }
+    assert_eq!(
+        core.world.players.iter().filter(|p| p.active).count(),
+        MAX,
+        "the world over- or under-seated"
+    );
+}
+
+/// A takeover reuses its own sleeper's slot, so it must evict nobody — the
+/// `needs_slot` half of the eviction decision. A returning owner on a full
+/// shard is the commonest full-shard join there is, and charging a stranger
+/// a body for it would be an eviction with no join needing one.
+#[test]
+fn a_takeover_under_slot_pressure_evicts_nobody() {
+    const MAX: usize = sim_core::limits::MAX_PLAYERS;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let me = key("comes-back");
+
+    assert!(core.connect_as(0, id_of(0), Some(me), None).is_some());
+    core.tick(&stats, |_, _, _| true);
+    core.disconnect(0);
+    core.tick(&stats, |_, _, _| true);
+    for s in 1..MAX {
+        assert!(core.connect(s, id_of(s)), "filler {s}");
+    }
+    core.tick(&stats, |_, _, _| true);
+    assert_eq!(core.world.sleepers(), 1);
+
+    let (how, evicted) = core
+        .connect_as(0, id2_of(0), Some(me), None)
+        .expect("admitted");
+    assert_eq!(how, Admitted::TookOver);
+    assert!(evicted.is_none(), "a takeover charged somebody a body");
+    core.tick(&stats, |_, _, _| true);
+    assert_eq!(core.world.evictions, 0);
+    assert_eq!(core.world.sleepers(), 0, "the body is awake, not gone");
 }
 
 /// A disconnected slot has nothing to hand over, and asking twice does not

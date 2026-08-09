@@ -35,7 +35,8 @@
 use protocol::event::WireBag;
 use sim_core::build::BUILD_CELL_M;
 use sim_core::deploy::{
-    box_key, DeployContent, DeployRec, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
+    box_key, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
+    ARCH_HEARTH,
 };
 
 pub use sim_core::build::BUILD_REACH_M as REACH_M;
@@ -109,15 +110,25 @@ impl Verb {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Pick {
     pub verb: Verb,
+    /// The archetype of the record this pick resolved, exactly as the
+    /// deploy sync named it (`ARCH_BAG` for a bag, which arrives on its
+    /// own lane and has no deploy record). Carried so the access verb can
+    /// ask `sim_core::deploy::lockable` — the sim's own predicate — rather
+    /// than matching verbs, which would be a second copy of the lockable
+    /// set waiting to drift (`ui::keypad::lock_target`).
+    pub arch: u8,
     /// The container handle: a bag id, or a box's packed `box_key`.
     pub handle: u32,
     pub cx: u16,
     pub cz: u16,
     pub level: u8,
     pub loc: u8,
-    /// Door state, straight off the wire.
+    /// Door state, straight off the wire — all three bits (lock v1).
+    /// `has_lock` is what lets the prompt tell "bare" from "unlocked",
+    /// which are the same to `E` and completely different to `L`.
     pub open: bool,
     pub locked: bool,
+    pub has_lock: bool,
     /// Fire state, and the one field of a pick the resolver does not
     /// fill: whether a fire is burning lives in `ClientCore`'s own lit
     /// set rather than on the mirrored deploy record (`core.rs` says
@@ -154,9 +165,34 @@ impl Pick {
             Verb::Door => format!(
                 "[E] {} DOOR{}",
                 if self.open { "CLOSE" } else { "OPEN" },
-                if self.locked { "  ·  LOCKED" } else { "" }
+                // Three states, three sentences (lock v1): a bare door
+                // says nothing extra, a bolted-but-open one advertises
+                // its keypad, and a shut one says so. Naming `[L]` on
+                // the middle case is the only place a player learns the
+                // key exists.
+                match (self.has_lock, self.locked) {
+                    (false, _) => "",
+                    (true, false) => "  ·  [L] KEYPAD",
+                    (true, true) => "  ·  LOCKED  ·  [L] KEYPAD",
+                }
             ),
-            Verb::Hearth => "[E] FEED HEARTH".to_string(),
+            // The box borrows the door's whole lock grammar (locks on
+            // boxes, `DOORS.md` §9.8): a bare lid says nothing extra, a
+            // bolted one advertises its keypad, an armed one says LOCKED
+            // too. `E` stays the open — whether it succeeds against a
+            // locked lid is the sim's verdict, never this line's.
+            Verb::Box => format!(
+                "[E] OPEN BOX{}",
+                match (self.has_lock, self.locked) {
+                    (false, _) => "",
+                    (true, false) => "  ·  [L] KEYPAD",
+                    (true, true) => "  ·  LOCKED  ·  [L] KEYPAD",
+                }
+            ),
+            // The crew keys ride the hearth's prompt because there is
+            // nowhere else a player would look for them, and `L` is
+            // already the access key at a door (hearth crew v1).
+            Verb::Hearth => "[E] FEED HEARTH  ·  [L] JOIN CREW  ·  [K] LEAVE".to_string(),
             // Two verbs on one thing, and both named: the panel is where
             // the wood goes and `C` is the match. The state is stated the
             // way a door's is, because it is the same question — which
@@ -285,7 +321,8 @@ pub fn resolve(
         if (rec.row as u16) >= have {
             continue;
         }
-        let verb = match defs.defs[rec.row as usize].arch {
+        let arch = defs.defs[rec.row as usize].arch;
+        let verb = match arch {
             ARCH_DOOR => Verb::Door,
             ARCH_BOX => Verb::Box,
             ARCH_HEARTH => Verb::Hearth,
@@ -311,6 +348,7 @@ pub fn resolve(
         if !best.wins(&mut out, &aim, f, verb, x, z) {
             continue;
         }
+        out.arch = arch;
         out.handle = handle;
         out.cx = rec.cx;
         out.cz = rec.cz;
@@ -318,6 +356,7 @@ pub fn resolve(
         out.loc = rec.loc;
         out.open = rec.open;
         out.locked = rec.locked;
+        out.has_lock = rec.has_lock;
     }
 
     for bag in bags {
@@ -328,6 +367,7 @@ pub fn resolve(
         if !best.wins(&mut out, &aim, f, Verb::Bag, x, z) {
             continue;
         }
+        out.arch = ARCH_BAG;
         out.handle = bag.id;
         out.cx = 0;
         out.cz = 0;
@@ -335,6 +375,7 @@ pub fn resolve(
         out.loc = 0;
         out.open = false;
         out.locked = false;
+        out.has_lock = false;
     }
 
     out
@@ -369,6 +410,7 @@ mod tests {
             uh: 0,
             open: false,
             locked: false,
+            has_lock: false,
         }
     }
 
@@ -492,11 +534,25 @@ mod tests {
             verb: Verb::Door,
             ..Pick::default()
         };
+        // Bare: nothing but the verb. A door nobody has secured has no
+        // keypad to name and is not locked (lock v1).
         assert_eq!(p.prompt(), "[E] OPEN DOOR");
         p.open = true;
         assert_eq!(p.prompt(), "[E] CLOSE DOOR");
+        // Bolted but not armed: the keypad exists, the door is not shut.
+        // This is the state the two-bit prompt could not say, and the
+        // reason `has_lock` is on the wire at all.
+        p.has_lock = true;
+        assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
+        assert!(
+            !p.prompt().contains("LOCKED"),
+            "an unarmed lock is not a locked door: {}",
+            p.prompt()
+        );
+        // Armed: both.
         p.locked = true;
-        assert!(p.prompt().contains("LOCKED"));
+        assert!(p.prompt().contains("LOCKED"), "{}", p.prompt());
+        assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
     }
 
     #[test]

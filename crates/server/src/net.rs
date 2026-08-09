@@ -18,6 +18,7 @@ use protocol::{
     MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES, PROTO_VER, REFUSE_FULL, REFUSE_VERSION,
 };
 use rtrb::RingBuffer;
+use sim_core::input::BTN_MASK;
 use sim_core::limits::{
     ACTION_RING_CAP, CHAT_RING_CAP, CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP,
     INPUT_RING_CAP, MAX_PLAYERS, SAVE_RING_CAP, SNAPSHOT_RING_CAP, TICK_HZ, WORLD_RING_CAP,
@@ -447,13 +448,19 @@ async fn accept_loop(
 /// the newest record (limits.rs `SAVE_RING_CAP`), which costs freshness and
 /// never correctness — the sweep comes round again and a record is filed by
 /// key, in place.
+///
+/// One caller passes `key`: the eviction save, whose ring-drop story is
+/// different and still freshness — the store keeps the record the victim's
+/// leave filed, stale by the raid but present, and the same interval the
+/// autosave sweep already leaves at risk.
 fn push_save(
     save_tx: &mut rtrb::Producer<SaveMsg>,
     id: u32,
+    key: Option<PlayerKey>,
     save: sim_core::persist::PlayerSave,
     stats: &Arc<ShardStats>,
 ) {
-    if save_tx.push(SaveMsg { id, save }).is_err() {
+    if save_tx.push(SaveMsg { id, key, save }).is_err() {
         ShardStats::bump(&stats.save_ring_drops);
     }
 }
@@ -482,14 +489,26 @@ fn drain_saves(
     stats: &Arc<ShardStats>,
 ) {
     while let Ok(msg) = save_rx.pop() {
-        // `id = generation << 8 | slot` (see `install`), so the slot is the
-        // low byte and the generation check is the id equality below.
-        let slot = (msg.id & 0xFF) as usize;
-        if slot >= MAX_PLAYERS || keys[slot].id != msg.id {
-            continue;
-        }
-        let Some(key) = keys[slot].key else {
-            continue; // a guest: admitted, remembered by nobody
+        let key = match msg.key {
+            // The sim named the key itself: an eviction save. The victim's
+            // connection ended long ago, so the id below names a slot some
+            // later tenant may hold — the table here cannot resolve it, and
+            // the sim's own sleeper index was the last pairing standing
+            // (`SaveMsg::key`).
+            Some(key) => key,
+            None => {
+                // `id = generation << 8 | slot` (see `install`), so the
+                // slot is the low byte and the generation check is the id
+                // equality below.
+                let slot = (msg.id & 0xFF) as usize;
+                if slot >= MAX_PLAYERS || keys[slot].id != msg.id {
+                    continue;
+                }
+                let Some(key) = keys[slot].key else {
+                    continue; // a guest: admitted, remembered by nobody
+                };
+                key
+            }
         };
         let stamp = now_secs();
         let put = store.put(&key, stamp, msg.save);
@@ -877,6 +896,48 @@ async fn install(
     ));
 }
 
+/// The input half of the datagram lane, split out of the async task the
+/// way `accept_chat` is: the **wiring** — peek, decode, the domain
+/// refusal, then the ring, and which counter each exit moves — is
+/// reachable by a test without a socket.
+///
+/// The domain refusal is NOW.md §5b's: `buttons` is a full octet on the
+/// wire and the sim means only `BTN_MASK`'s four bits, so a frame carrying
+/// an unknown bit is a value no client of this version can have built —
+/// forged, not mistyped. The whole datagram is refused, exactly as decode
+/// already refuses a forged `sel` (`Malformed` refuses the datagram, not
+/// the frame), **before** anything reaches the ring: the refusal is
+/// ordered ahead of every mutation, so a forged head cannot smuggle a
+/// valid tail into the sim (the item-move trap's lesson, applied here).
+/// Counted (`input_dg_forged`), dropped, never a disconnect — the datagram
+/// lane's loss policy is redundancy, not framing trust.
+fn accept_input(
+    dg: &[u8],
+    input_tx: &mut rtrb::Producer<protocol::InputDatagram>,
+    stats: &ShardStats,
+) {
+    let ok = peek_kind(dg).map(|k| k == KIND_INPUT).unwrap_or(false);
+    if !ok {
+        ShardStats::bump(&stats.input_dg_bad);
+        return;
+    }
+    match decode_input(dg) {
+        Ok(decoded) => {
+            if decoded.frames().iter().any(|f| f.buttons & !BTN_MASK != 0) {
+                ShardStats::bump(&stats.input_dg_forged);
+                return;
+            }
+            ShardStats::bump(&stats.input_dg_ok);
+            if input_tx.push(decoded).is_err() {
+                // Ring full: drop newest — the next datagram
+                // re-carries the unacked tail (limits.rs).
+                ShardStats::bump(&stats.input_ring_drops);
+            }
+        }
+        Err(_) => ShardStats::bump(&stats.input_dg_bad),
+    }
+}
+
 async fn reader_task(
     connection: Connection,
     mut input_tx: rtrb::Producer<protocol::InputDatagram>,
@@ -886,22 +947,7 @@ async fn reader_task(
     generation: u32,
 ) {
     while let Ok(dg) = connection.receive_datagram().await {
-        let ok = peek_kind(&dg).map(|k| k == KIND_INPUT).unwrap_or(false);
-        if !ok {
-            ShardStats::bump(&stats.input_dg_bad);
-            continue;
-        }
-        match decode_input(&dg) {
-            Ok(decoded) => {
-                ShardStats::bump(&stats.input_dg_ok);
-                if input_tx.push(decoded).is_err() {
-                    // Ring full: drop newest — the next datagram
-                    // re-carries the unacked tail (limits.rs).
-                    ShardStats::bump(&stats.input_ring_drops);
-                }
-            }
-            Err(_) => ShardStats::bump(&stats.input_dg_bad),
-        }
+        accept_input(&dg, &mut input_tx, &stats);
     }
     slots.mark_leaving(slot, generation);
 }
@@ -1339,9 +1385,19 @@ fn sim_thread(
     while !shutdown.load(Ordering::Relaxed) {
         // Install fresh connections.
         while let Ok(c) = ctrl_rx.pop() {
-            if let Some(how) = core.connect_as(c.slot, c.id, c.key, c.save) {
+            if let Some((how, evicted)) = core.connect_as(c.slot, c.id, c.key, c.save) {
                 links[c.slot] = Some(c.link);
                 ShardStats::bump(&stats.joins);
+                // Two-phase eviction, the filing half: this join is about
+                // to cost a sleeper its slot, and this record is that body
+                // as it stands NOW — raid included — not as its leave left
+                // it. Keyed by the sim (the victim has no connection slot
+                // for `drain_saves` to resolve), and pushed before the
+                // tick below applies the `Evict`, on the same ring every
+                // other record rides.
+                if let Some((key, save)) = evicted {
+                    push_save(&mut save_tx, 0, Some(key), save, &stats);
+                }
                 // Counted here and nowhere else, because here is the only
                 // place that knows which door opened. The accept task can
                 // see that a record *exists*; it cannot see that the world
@@ -1386,7 +1442,7 @@ fn sim_thread(
                     // key into the accept loop's table ahead of this record
                     // (`KeySlot`). The order here is what closes that.
                     if let Some((id, save)) = core.disconnect(slot) {
-                        push_save(&mut save_tx, id, save, &stats);
+                        push_save(&mut save_tx, id, None, save, &stats);
                     }
                     slots.free(slot, generation);
                     ShardStats::bump(&stats.leaves);
@@ -1425,7 +1481,7 @@ fn sim_thread(
         // already `MAX_PLAYERS` ticks coarse, and it keeps the save read out
         // of the tick's own borrow of the world.
         if let Some((id, save)) = core.autosave() {
-            push_save(&mut save_tx, id, save, &stats);
+            push_save(&mut save_tx, id, None, save, &stats);
         }
         // Buffers coming home from the store thread.
         while let Ok(done) = world_done_rx.pop() {
@@ -1475,15 +1531,16 @@ fn sim_thread(
         });
         ShardStats::bump(&stats.ticks);
         stats.current_tick.store(core.world.tick, Ordering::Relaxed);
-        // Two gauges, mirrored off the world rather than accumulated here:
+        // Three gauges, mirrored off the state rather than accumulated here:
         // the eviction policy lives in `World::seat` and nothing on this
         // thread is told when it fires, so the counter is read, not bumped.
-        // `sleepers()` is an O(MAX_PLAYERS) scan of a 100-element array on
-        // a thread that has just done a tick's work — measured against the
-        // alternative, which is a second copy of the count that can drift
-        // from the array it describes.
+        // `sleepers()` and `connected()` are each an O(MAX_PLAYERS) scan of
+        // a 100-element array on a thread that has just done a tick's work —
+        // measured against the alternative, which is a second copy of the
+        // count that can drift from the array it describes.
         ShardStats::set(&stats.sleepers_evicted, core.world.evictions);
         ShardStats::set(&stats.sleepers, core.world.sleepers() as u64);
+        ShardStats::set(&stats.players, core.connected() as u64);
 
         // Pace (the boundary).
         next += tick_dur;
@@ -1532,7 +1589,7 @@ fn sim_thread(
     // leave takes and is what makes a clean restart cost nobody anything.
     for slot in 0..MAX_PLAYERS {
         if let Some((id, save)) = core.disconnect(slot) {
-            push_save(&mut save_tx, id, save, &stats);
+            push_save(&mut save_tx, id, None, save, &stats);
         }
     }
     // Both producers drop here, which is the signal the other two threads
@@ -1646,5 +1703,82 @@ mod tests {
         let bad = [KIND_CHAT as u8 | 0x08, 0xff, 0xff];
         accept_chat(&bad, &mut fresh, t0, &mut tx, &stats);
         assert_eq!(ShardStats::get(&stats.chat_bad), 1);
+    }
+
+    /// NOW.md §5b: the wire carries `buttons` as a full octet and the sim
+    /// means only `BTN_MASK` — a frame carrying an unknown bit is refused
+    /// at the accept boundary, through the **real** encode → decode path,
+    /// and nothing of that datagram reaches the ring (the refusal is
+    /// ordered before the mutation). The value just inside the boundary —
+    /// every meaningful bit at once — still crosses.
+    #[test]
+    fn accept_input_refuses_buttons_the_sim_cannot_mean() {
+        use protocol::{encode_input, InputDatagram};
+        use sim_core::input::InputFrame;
+
+        let stats = ShardStats::default();
+        let (mut tx, mut rx) = RingBuffer::<InputDatagram>::new(INPUT_RING_CAP);
+        let encode = |buttons: u8| {
+            let mut dg = InputDatagram::new(0, 0, 0);
+            dg.push(InputFrame {
+                buttons,
+                ..InputFrame::default()
+            })
+            .expect("one frame fits");
+            let mut buf = [0u8; 256];
+            let n = encode_input(&dg, &mut buf).expect("encodes");
+            (buf, n)
+        };
+
+        // Just inside: all four meaningful bits at once.
+        let (buf, n) = encode(BTN_MASK);
+        accept_input(&buf[..n], &mut tx, &stats);
+        assert_eq!(ShardStats::get(&stats.input_dg_ok), 1);
+        assert_eq!(ShardStats::get(&stats.input_dg_forged), 0);
+        let ringed = rx.pop().expect("the in-domain datagram is ringed");
+        assert_eq!(ringed.frames()[0].buttons, BTN_MASK);
+
+        // Just outside: bit 4 — the octet's first meaningless bit. The
+        // encoder writes it happily (the field is 8 wide since v0), which
+        // is exactly the slack being closed here.
+        let (buf, n) = encode(BTN_MASK | 0x10);
+        accept_input(&buf[..n], &mut tx, &stats);
+        assert_eq!(ShardStats::get(&stats.input_dg_forged), 1);
+        assert_eq!(
+            ShardStats::get(&stats.input_dg_ok),
+            1,
+            "a forged datagram must not also count as accepted"
+        );
+        assert_eq!(
+            ShardStats::get(&stats.input_dg_bad),
+            0,
+            "forged is not malformed — the bytes decode fine"
+        );
+        assert!(
+            rx.pop().is_err(),
+            "the forged datagram reached the ring — the refusal is not \
+             ordered before the mutation"
+        );
+
+        // A valid tail does not ride a forged head: one datagram, two
+        // frames, only the second in-domain — the whole datagram drops,
+        // exactly as decode's own `sel` refusal drops it.
+        let mut dg = InputDatagram::new(0, 0, 0);
+        dg.push(InputFrame {
+            buttons: 0x80,
+            ..InputFrame::default()
+        })
+        .expect("first frame fits");
+        dg.push(InputFrame {
+            seq: 1,
+            buttons: BTN_MASK,
+            ..InputFrame::default()
+        })
+        .expect("second frame fits");
+        let mut buf = [0u8; 256];
+        let n = encode_input(&dg, &mut buf).expect("encodes");
+        accept_input(&buf[..n], &mut tx, &stats);
+        assert_eq!(ShardStats::get(&stats.input_dg_forged), 2);
+        assert!(rx.pop().is_err(), "no frame of a forged datagram survives");
     }
 }

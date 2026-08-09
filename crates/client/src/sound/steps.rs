@@ -62,8 +62,26 @@ pub fn surface_cue(splat: [u8; 4], below_sea: bool) -> Cue {
     }
 }
 
-/// The odometer. One per player being listened to — today that is the local
-/// body only, and remote bodies are `NOW.md`'s to add.
+/// The positional twin of a local footstep cue — the same surface heard at
+/// another body (`render/audio.rs::remote_steps` is the producer). Identity
+/// on anything that is not a footstep: only the step family has remote
+/// twins, and every caller feeds this [`surface_cue`]'s own output.
+pub fn remote(cue: Cue) -> Cue {
+    match cue {
+        Cue::StepSand => Cue::RemoteStepSand,
+        Cue::StepGrass => Cue::RemoteStepGrass,
+        Cue::StepLitter => Cue::RemoteStepLitter,
+        Cue::StepRock => Cue::RemoteStepRock,
+        Cue::StepWater => Cue::RemoteStepWater,
+        other => other,
+    }
+}
+
+/// The odometer. One per body being listened to: the local player's lives in
+/// `render/audio.rs::Sound` and reads the predictor; each remote body
+/// carries its own (`render/audio.rs::RemoteSteps`) and reads the
+/// interpolator, which is the only truth a client has about someone else's
+/// feet.
 #[derive(Default)]
 pub struct Steps {
     /// Ground covered since the last step, metres.

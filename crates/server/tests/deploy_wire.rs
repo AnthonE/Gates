@@ -310,11 +310,14 @@ fn deployables_ride_the_wire() {
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }
 
-/// The door lane end to end: a door places closed, the use action toggles
-/// it, every client's mirror **and** its predictor collision index follow,
-/// a late joiner learns the state from the sync walk (not from having
-/// been there), and a use aimed at something that isn't a door bounces
-/// with its reason.
+/// The door lane end to end (lock v1): a door places **bare** and closed
+/// and anyone in reach may work it, a code lock bolted on and armed makes
+/// it answer only to who it remembers, a refused press **knocks** to the
+/// whole shard while the refusal itself stays with its sender, the right
+/// code grants — to that sender alone — every client's mirror and its
+/// predictor collision index follow, a late joiner learns all three bits
+/// from the sync walk (not from having been there), and a use aimed at
+/// something that isn't a door bounces with its reason.
 #[test]
 fn doors_toggle_across_the_wire() {
     let stats = ShardStats::default();
@@ -334,10 +337,12 @@ fn doors_toggle_across_the_wire() {
         pump(&mut core, &stats, &mut clients);
     }
 
-    // The kit: wood for the foundation and the doorway, one door.
+    // The kit: wood for the foundation and the doorway, one door, and a
+    // code lock to bolt onto it.
     let w0 = world_slot(&core, id_of(0));
     core.world.players[w0].inv[0] = ItemStack { item: 0, count: 50 };
     core.world.players[w0].inv[1] = ItemStack { item: 4, count: 5 };
+    core.world.players[w0].inv[2] = ItemStack { item: 7, count: 2 };
 
     for a in [
         ActionMsg::Place {
@@ -394,8 +399,9 @@ fn doors_toggle_across_the_wire() {
     assert_eq!(placed.len(), 2, "the placement must reach both clients");
     for (slot, rec) in placed {
         assert!(
-            rec.locked,
-            "the placed-door broadcast to {slot} lost its lock"
+            !rec.locked && !rec.has_lock,
+            "the placed-door broadcast to {slot} says it is secured, and a \
+             door places BARE (lock v1) — the security is what costs"
         );
         assert!(!rec.open, "and it must announce the leaf shut");
     }
@@ -409,7 +415,7 @@ fn doors_toggle_across_the_wire() {
             .find(|r| r.loc == LOC_EDGE_W)
             .expect("door in the mirror");
         assert!(!rec.open, "doors place closed");
-        assert!(rec.locked, "doors place locked (lock v0), and say so");
+        assert!(!rec.has_lock, "and bare (lock v1), and say so");
         assert_eq!(
             c.pieces.cols().get(CX, CZ).shut_w & 1,
             1,
@@ -417,8 +423,8 @@ fn doors_toggle_across_the_wire() {
         );
     }
 
-    // The bystander's hand bounces off it: locked, and not theirs. The
-    // refusal is the sender's alone, and the door never moves.
+    // Bare, the bystander's hand works it — that is the whole reason a
+    // lock costs anything (`reference/DOORS.md` §5).
     act(
         &mut core,
         1,
@@ -430,12 +436,125 @@ fn doors_toggle_across_the_wire() {
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
+    assert_eq!(flags[1] & APPLIED_DEPLOY_REFUSED, 0, "a bare door refused");
+    assert!(
+        core.world
+            .deploys
+            .find(CX, CZ, 0, LOC_EDGE_W)
+            .expect("door in the world")
+            .open,
+        "a door nobody has secured is anyone's"
+    );
+    // Shut it again so the arc below starts where it did before.
+    act(
+        &mut core,
+        1,
+        ActionMsg::Use {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+
+    // The owner bolts a code lock on. No deploy record is minted — a lock
+    // is a record *about* one — so what crosses is the door's own
+    // announcement, carrying the new bit.
+    act(
+        &mut core,
+        0,
+        ActionMsg::Deploy {
+            row: 5,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+        },
+    );
+    let deploys_before = core.world.deploys.len();
+    seen.clear();
+    pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    assert_eq!(
+        core.world.deploys.len(),
+        deploys_before,
+        "a lock must not mint a deployable record"
+    );
+    assert_eq!(core.world.deploys.locks().len(), 1, "it minted a lock");
+    assert_eq!(
+        seen.iter()
+            .filter(|(_, m)| matches!(
+                m,
+                protocol::EventMsg::Door {
+                    has_lock: true,
+                    locked: false,
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "bolting a lock on must announce has_lock to both clients, and \
+         must not announce it as locked — an unarmed lock is not a locked \
+         door"
+    );
+
+    // ...and arms it with a code. Now it is shut to everyone else.
+    act(
+        &mut core,
+        0,
+        ActionMsg::Access {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+            op: sim_core::deploy::ACCESS_OP_SET_CODE,
+            code: 1234,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+    for (_, c) in &clients {
+        let rec = c
+            .deploys
+            .entries()
+            .iter()
+            .find(|r| r.loc == LOC_EDGE_W)
+            .expect("door in the mirror");
+        assert!(rec.locked && rec.has_lock, "the arming never crossed");
+    }
+
+    // The bystander's hand bounces off it — and KNOCKS. The refusal is
+    // the sender's alone; the knock is everyone's, which is the point of
+    // having one at all.
+    act(
+        &mut core,
+        1,
+        ActionMsg::Use {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+        },
+    );
+    seen.clear();
+    let flags = pump_seen(&mut core, &stats, &mut clients, &mut seen);
     assert_ne!(flags[1] & APPLIED_DEPLOY_REFUSED, 0);
     assert_eq!(
         clients[1].1.pop_deploy_refusal(),
         Some(sim_core::deploy::REFUSE_D_OWNER as u8)
     );
     assert_eq!(clients[0].1.pop_deploy_refusal(), None, "refusal leaked");
+    assert_eq!(
+        seen.iter()
+            .filter(|(_, m)| matches!(m, protocol::EventMsg::Knock { .. }))
+            .count(),
+        2,
+        "a knock must reach the shard, not only the hand that knocked — \
+         it is the one channel a locked-out player has to the person inside"
+    );
+    assert!(
+        clients[0].1.pop_knock().is_some(),
+        "the OWNER is who a knock is for"
+    );
     assert!(
         !core
             .world
@@ -444,6 +563,44 @@ fn doors_toggle_across_the_wire() {
             .expect("door in the world")
             .open,
         "a refused use must not swing the door"
+    );
+
+    // The bystander enters the code. The grant is an own-fact: it reaches
+    // them and nobody else, because a broadcast here would publish the
+    // base's access list to the shard.
+    act(
+        &mut core,
+        1,
+        ActionMsg::Access {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_EDGE_W,
+            op: sim_core::deploy::ACCESS_OP_ENTER,
+            code: 1234,
+        },
+    );
+    seen.clear();
+    pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    let auths: Vec<_> = seen
+        .iter()
+        .filter(|(_, m)| matches!(m, protocol::EventMsg::Auth { .. }))
+        .collect();
+    assert_eq!(auths.len(), 1, "a grant is unicast, not broadcast");
+    assert_eq!(auths[0].0, 1usize, "and it went to the wrong client");
+    assert_eq!(
+        clients[1].1.pop_auth().map(|a| a.4),
+        Some(sim_core::lock::GRANT_FULL),
+        "the main code grants full rights"
+    );
+    assert!(
+        !core
+            .world
+            .deploys
+            .find(CX, CZ, 0, LOC_EDGE_W)
+            .expect("door in the world")
+            .open,
+        "entering a code is not opening a door — it is being remembered"
     );
 
     // The use action opens it — for everyone, including the bystander.
@@ -514,9 +671,9 @@ fn doors_toggle_across_the_wire() {
                 if *slot == 2
                     && recs[..*count as usize]
                         .iter()
-                        .any(|r| r.loc == LOC_EDGE_W && r.open && r.locked)
+                        .any(|r| r.loc == LOC_EDGE_W && r.open && r.locked && r.has_lock)
         )),
-        "the sync walk must carry the door's open AND locked bits"
+        "the sync walk must carry all three of the door's bits"
     );
     let late = &clients[2].1;
     let rec = late
@@ -537,12 +694,13 @@ fn doors_toggle_across_the_wire() {
     act(
         &mut core,
         0,
-        ActionMsg::Lock {
+        ActionMsg::Access {
             cx: CX,
             cz: CZ,
             level: 0,
             loc: LOC_EDGE_W,
-            locked: false,
+            op: sim_core::deploy::ACCESS_OP_UNLOCK,
+            code: 0,
         },
     );
     seen.clear();

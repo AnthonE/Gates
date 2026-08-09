@@ -341,6 +341,18 @@ inputs = [
     { item = "item.tarp", count = 1 },
 ]
 
+# The security is what costs, not the door (`reference/DOORS.md` §9.2).
+# 100 metal fragments is the reference's own price and it is a real
+# early-game gate here for the same reason it is there: a fresh base is a
+# door anybody can open for as long as it takes to smelt.
+[[recipe]]
+id = "recipe.lock_code"
+output = "item.lock_code"
+count = 1
+station = "workbench1"
+seconds = 20
+inputs = [{ item = "item.metal_frags", count = 100 }]
+
 [[recipe]]
 id = "recipe.door_metal"
 output = "item.door_metal"

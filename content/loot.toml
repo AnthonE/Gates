@@ -45,6 +45,13 @@ entries = [
     { item = "item.gears", weight = 10, count_min = 1, count_max = 2 },
     { item = "item.rope", weight = 12, count_min = 1, count_max = 2 },
     { item = "item.tarp", weight = 8, count_min = 1, count_max = 1 },
+    # Corn: the reference grows wild crops by its rivers and stocks its
+    # roadside food crates with the harvest; this island has neither a river
+    # nor a crop node, so the coast road's own container carries the ration
+    # (CONTENT §2). 2–4 corn is 50–100 food — one find pays about what a
+    # bush pickup pays (75) — at the tarp's weight, so the barrel stays
+    # components-weighted.
+    { item = "item.corn", weight = 8, count_min = 2, count_max = 4 },
     { item = "item.revolver", weight = 1, count_min = 1, count_max = 1 },
 ]
 

@@ -15,6 +15,12 @@
 //! against the same shard, at the same `PROTO_VER`.
 
 pub mod args;
+// The settings file: path, format, version, and the unknown-key policy. NOT
+// feature-gated, for `ui`'s reason exactly: parse and serialize are pure, and
+// a test behind `--features render` runs in the renderer tier where nobody
+// looks at it. `render/settings.rs` is the Bevy half (load once, save on
+// change). The server-side precedent is `server/src/config.rs`.
+pub mod config;
 // Which way is right. Pure and unconditional for the same reason `ui` is:
 // the mapping from a keypress to a wire axis is arithmetic, it was WRONG
 // (see the module header), and a mapping that lives inside a Bevy system is
@@ -181,6 +187,33 @@ pub struct Session {
     datagrams: tokio::sync::mpsc::Receiver<Vec<u8>>,
     snapshots: u64,
     input_buf: [u8; DATAGRAM_BUDGET_BYTES],
+    /// The shard hung up. Latched by [`Session::pump`] when either receive
+    /// lane's reader task ends — the event task on a closed or desynced
+    /// stream, the datagram task on a dead connection — because a reader
+    /// hanging up is the one fact both failure shapes share. Sticky on
+    /// purpose: a connection does not come back, and a flag that cleared
+    /// itself would let one hopeful frame un-say it.
+    closed: bool,
+}
+
+/// Drain one lane without blocking, handing each message to `each`; answer
+/// whether the lane's sender has hung up.
+///
+/// **The buffered last words land before the hangup is reported** — tokio's
+/// mpsc yields everything queued ahead of the drop before it answers
+/// `Disconnected`, and the test below pins that, because the whole disconnect
+/// path leans on it: the facts the server sent in its final flush (a kick's
+/// toast, the last snapshot) must reach the core before the client declares
+/// the session over, or the reason for the hangup is the first thing lost.
+fn drain_lane(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>, mut each: impl FnMut(&[u8])) -> bool {
+    use tokio::sync::mpsc::error::TryRecvError;
+    loop {
+        match rx.try_recv() {
+            Ok(bytes) => each(&bytes),
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => return true,
+        }
+    }
 }
 
 impl Session {
@@ -340,7 +373,17 @@ impl Session {
             datagrams,
             snapshots: 0,
             input_buf: [0u8; DATAGRAM_BUDGET_BYTES],
+            closed: false,
         })
+    }
+
+    /// Whether the shard has hung up on this session. `pump` keeps working
+    /// after it turns true — the drains are no-ops and the datagram send goes
+    /// nowhere — so a caller may notice at its own cadence; what it must not
+    /// do is keep drawing a live world over a dead wire, which is
+    /// `render::disconnected`'s job to end.
+    pub fn closed(&self) -> bool {
+        self.closed
     }
 
     /// Queue one already-encoded C→S message for the reliable lane — the
@@ -372,24 +415,33 @@ impl Session {
     /// network inside a frame: one slow read would become a dropped frame,
     /// and the client is a hot path too (CLAUDE.md traps).
     pub fn pump(&mut self, dt_ms: f64) -> Frame {
+        let core = &mut self.core;
+        let snapshots = &mut self.snapshots;
         // Datagrams first: freshest state before we predict on top of it.
-        while let Ok(dgram) = self.datagrams.try_recv() {
-            if self.core.on_datagram(&dgram) != Ingest::Error {
-                self.snapshots += 1;
+        let dg_gone = drain_lane(&mut self.datagrams, |dgram| {
+            if core.on_datagram(dgram) != Ingest::Error {
+                *snapshots += 1;
             }
-        }
-        while let Ok(bytes) = self.events.try_recv() {
+        });
+        let applied = &mut self.applied;
+        let applied2 = &mut self.applied2;
+        let ev_gone = drain_lane(&mut self.events, |bytes| {
             // A malformed message contributes no flags. The `Err` is dropped
             // here exactly as the retired `let _` dropped it — surfacing a
             // decode error is its own slice and not this one's; what changes
             // is that a SUCCESSFUL decode no longer goes unnoticed.
-            if let Ok(flags) = self.core.on_stream(&bytes) {
-                self.applied |= flags;
+            if let Ok(flags) = core.on_stream(bytes) {
+                *applied |= flags;
                 // Read INSIDE the loop, not after it: `applied2()` describes
                 // the message just decoded and is overwritten by the next.
-                self.applied2 |= self.core.applied2();
+                *applied2 |= core.applied2();
             }
-        }
+        });
+        // Either lane's reader ending means the connection under both is
+        // done — the tasks only return on a transport-level failure. OR'd
+        // into a latch rather than assigned, so one lane outliving the other
+        // by a frame cannot flicker the answer back to alive.
+        self.closed |= dg_gone || ev_gone;
 
         let tick = self.core.advance(dt_ms);
 
@@ -404,5 +456,47 @@ impl Session {
             tick,
             snapshots: self.snapshots,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drain_lane;
+
+    /// The disconnect detector must not cry wolf: an empty lane whose sender
+    /// is alive is a quiet frame, not a dead shard.
+    #[test]
+    fn a_quiet_lane_is_not_a_dead_one() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+        let mut got = 0;
+        assert!(!drain_lane(&mut rx, |_| got += 1));
+        assert_eq!(got, 0);
+        tx.try_send(vec![1]).unwrap();
+        assert!(!drain_lane(&mut rx, |_| got += 1));
+        assert_eq!(got, 1, "a delivered message is handed over exactly once");
+        drop(tx);
+    }
+
+    /// The property the whole disconnect path leans on: everything the
+    /// server managed to send before the hangup is delivered IN the drain
+    /// that reports the hangup — the kick's own toast must not be the first
+    /// casualty of noticing the kick.
+    #[test]
+    fn the_last_words_land_before_the_hangup_is_reported() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+        tx.try_send(vec![1]).unwrap();
+        tx.try_send(vec![2, 2]).unwrap();
+        drop(tx); // the reader task ending is exactly this drop
+        let mut got: Vec<usize> = Vec::new();
+        assert!(
+            drain_lane(&mut rx, |b| got.push(b.len())),
+            "a dropped sender must be reported as gone"
+        );
+        assert_eq!(got, [1, 2], "both buffered messages arrive first, in order");
+        // And the verdict is repeatable: asking a dead lane again says dead
+        // again, which is what lets `pump` run on after the latch is set.
+        assert!(drain_lane(&mut rx, |_| unreachable!(
+            "nothing left to hand over"
+        )));
     }
 }

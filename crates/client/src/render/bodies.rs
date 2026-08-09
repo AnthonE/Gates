@@ -146,6 +146,11 @@ pub fn stream(
                         super::WorldEntity,
                         Body(id),
                         anim,
+                        // The step odometer, fresh: a body that re-enters
+                        // AOI must not measure the gap as ground covered
+                        // (`audio::RemoteSteps` — the producer reads the
+                        // transform this system writes).
+                        super::audio::RemoteSteps::default(),
                         // Painted as soon as the scene's meshes exist; until
                         // then the body wears the library's own preview
                         // colours, which is one or two frames.

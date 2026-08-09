@@ -64,8 +64,11 @@ pays the same doors and earns the same coins as a human.
 | `RENDER.md` | the **native** client's render path: the Bevy-draws-not-decides boundary, the slice order, the native visual gate, the budgets | owns the path, never the bar — `ART.md` outranks it everywhere |
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
 | `reference/AUDIO.md` | how the reference game decides what a player hears: the Unity mixer groups/snapshots it built first, the `audio.framebudget 0.3` convar, localized ambience, the 2–5 kHz carve, its four shipped audio bugs, and **§9 what it means for us** | **owns nothing** — research, not law, and a *cleaner* source than `SPAWN.md`: devblogs and the public convar list, nothing decompiled. Our answer is `crates/client/src/sound/` |
+| `reference/BUILDING.md` | how the reference game decides **who may build here**: the cupboard's authorized list (one pattern it reuses three times), privilege as a *volume emitted by the blocks* rather than a sphere around the cupboard, upkeep as a cost and the activity-keyed decay bug that caused it, the decay ladder, the demolish/rotate grace window, and **§9 what it means for us** | **owns nothing** — research, not law, `DOORS.md`'s posture and its proxy caveat too. Written because `DOORS.md` §9 kept pointing at it: our hearth's claim is still `owner == placer`, which is **lock v0's bug in the building system** |
+| `reference/DOORS.md` | how the reference game decides **who is allowed through a door**: the lock is a separate entity and a door with no lock is anyone's, the code lock's remembered list and its guest tier, the two goes it took them to rate-limit a keypad, knocking as a verb, and **§9 what it means for us** | **owns nothing** — research, not law, and `AUDIO.md`'s source posture with one caveat §0 states in full: every page fetch was blocked by this box's proxy, so the devblog and wiki tiers arrived as *search summaries*. The operator adopted it (`DECISIONS.md` 2026-08-08), so §9 is built: our answer is `crates/sim-core/lock.rs` |
 | `reference/SAVES.md` | how the reference game remembers a player: **there is no player save file** — the body stays in the world as a sleeper and is saved because it is an entity, the save and the wire on one base class, the stop-the-world stall it never fixed, the wipe split, and **§9 what it means for us** | **owns nothing** — research, not law, and `AUDIO.md`'s clean source posture. The operator adopted its model (`DECISIONS.md` 2026-08-07), so §9 is a plan: read it before touching persistence. Our answer is `crates/server/src/store.rs` + `sim-core/src/persist.rs` |
 | `reference/BALANCE.md` | which of our numbers are the reference game's and which are ours: what matched already, what moved on 2026-08-08, and **§4 what deliberately did not move** | **owns one thing, unlike the other `reference/*.md`** — §6's standing instruction, that a number with a reference equivalent and no reason of ours to differ takes theirs and cites it. The bands in `CONTENT.md` §4 still decide whether it may land |
+| `reference/WATER.md` | how the reference game does water: the order it rebuilt the sea in (**surface → optics → motion → reflections → foam**, waves third), depth-based colour extinction and thickness-based visibility as one idea, shoreline wetness worked from the *land* side, what its own settings screen says water costs, and **§9 what it means for us** | **owns nothing** — research, not law, `AUDIO.md`'s clean source posture (devblogs and a settings screen, nothing decompiled). Our answer is `crates/client/src/render/water.rs` + `crates/client/src/sound/water.rs` |
 | `reference/ANIMALS.md` | how survival games do animal mobs: the reference game's baked navmesh (100% CPU at boot) and the fixed think rate and dormancy it settled on, Valheim's ring spawners and two caps, Minecraft's mob cap and 1-in-800 despawn roll, and **§9 what it means for us** | **owns nothing** — research, not law, and `AUDIO.md`'s clean-source posture (devblogs, convar lists, wikis; nothing decompiled). The operator un-cut animals off it (`DECISIONS.md` 2026-08-08), so §9 is a landed design: read it before touching `crates/sim-core/src/mob.rs` |
 | `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is scry's `SUBSTRATE.md`; this owns only what an agent may do here |
 | `NOW.md` | what next | **the only list that answers that** |
@@ -185,9 +188,13 @@ do not rediscover)
   caught none of them. Ours has the same hole: swap `a` and `b` at an
   `events.push` site and the encoder is untouched (golden green), the
   event queue is not in `state_hash` (replay green), and every field is
-  `u32` (clippy green). `reference/FINDINGS.md` §1 has the shape of a gate
-  that would catch it; until one exists, the `/// EV_*: a = … b = …` lines
-  in `world.rs` are law with no gate.
+  `u32` (clippy green). `reference/FINDINGS.md` §1 had the shape of the
+  gate that catches it, and it exists now: `crates/sim-core/tests/
+  event_roles.rs` role-checks every event's payload against its
+  `/// EV_*: a = … b = …` doc line — 32 of 32 as of 2026-08-09, each
+  proven red under its own a/b swap. The trap stays listed because the
+  mechanism (three green gates over a wrong payload) is what to remember
+  when the NEXT event lands: an event without its role gate re-opens it.
 - **The item-move verb is the most bug-prone thing in the reference, and
   it fails as a kick.** Three Oxide fixes in 28 minutes on one 2019 day —
   the third titled as a fix of the fix — all one-line splice-point moves
@@ -214,6 +221,24 @@ do not rediscover)
   loader also trusts the file outright; ours cannot, because a save is the one
   non-command path into `World`. `reference/SAVES.md` §4 and §9.3 have the
   measurements and the sources.
+- **A big fixed array constructed on the stack can blow wasm's shadow
+  stack, and the native build will not tell you.** `Box::new(Store::new())`
+  materialises the whole struct in a frame before moving it to the heap.
+  `World::new` already builds ~100 player records, a 1 024-piece store and a
+  1 024-deploy store that way; on 2026-08-08 a 52 KB lock store on top of it
+  turned `test_parity_wasm` into `RuntimeError: memory access out of bounds`
+  inside `Deploys::new`, with every native test green — **wall 1's own gate
+  failing for a reason with nothing to do with determinism**. wasm32's
+  shadow stack is 1 MiB and there is no guard page, so the symptom is an
+  out-of-bounds read and not a stack-overflow message. The fix is to fill on
+  the heap (`vec![..; N].into_boxed_slice().try_into()`), which allocates
+  where the old code allocated anyway. The stores that predate this still
+  use the stack form; they fit today, and the next one to be added will not.
+  **Seen three times in one day** — the lock store found it, the hearth crew
+  hit it again, and the third surfaced *inside dlmalloc* rather than in the
+  constructor, because the frame that tipped it over was the allocator's own.
+  `crate::boxed_array` is the fix and the arrays in `Pieces` and `Deploys`
+  all use it now; the piece store alone was 98 KB in a frame.
 - **Tonemap, sky, exposure, and fog are one owner.** Split across parallel
   passes they break each other's assumptions faster than they improve
   (measured elsewhere: three parallel rounds worsened visual defects
@@ -374,12 +399,17 @@ a box that installs only what that line lists still fails. Running the client
 adds a fourth, and it is a runtime `.so` rather than a build dep, so
 `pkg-config` never mentions it: `libxkbcommon-x11-0`, whose absence panics
 inside `winit` at `App::run` with every gate already green. **Then ask the
-second question for each**, because one of the four does not survive it:
-`alsa` is required solely because `bevy_audio` is on by default and this
-client has **zero** audio call sites. That is not a missing capability, it is
-one we request and do not use, and the trim is `NOW.md` §0x item 1. `wayland`
-(and `x11`) are real — a shipped desktop client faces both — and `libudev` is
-`bevy_gilrs`, which is gamepads and wanted.
+second question for each** — and the answer moved under this entry once
+already, which is its own lesson: this paragraph used to say `alsa` was
+requested and unused, and since audio v0 (2026-08-06) **`bevy_audio` is
+load-bearing** — `render/audio.rs` plays the generated bank through it — so
+`alsa` earns its keep. `wayland` (and `x11`) are real — a shipped desktop
+client faces both. `libudev` is `bevy_gilrs`, which grep still shows
+**unused** (no gamepad code) — that and `vorbis` are the honest trim
+targets, while `bevy_gltf`/`bevy_animation` joined the load-bearing set
+with the mannequin (2026-08-07). `NOW.md` §0x's trim item tracks what a
+grep actually shows rather than what this paragraph last said — re-verify
+there before trimming anything.
 Neither of these repeals the rule above:
 they are missing capabilities, which are diagnosable and permanent, not timing,
 which is neither.
@@ -394,6 +424,16 @@ which is neither.
   a patch applied here fixes Gates and leaves every other game on the broken
   copy. `crates/client/src/scry.rs` is our wrapper and is ours to change.
   Not third-party: same author, same licence, no notice owed.
+  ⚠ **The pin catches a local edit and is blind to upstream moving**, and the
+  two are not the same failure. Found 2026-08-09: the copy sat 326 lines
+  behind the source with every gate in both repos green — no Windows
+  transport (it `use`d `std::os::unix::net` unconditionally, so a Windows
+  build of this client could not compile), no `prove`, no `profile`. Nothing
+  gates a file in another repo, so the check is a command you run when you
+  touch this seam: `sha256sum crates/client/src/scry_overlay.rs` must appear
+  in `sdk/SHA256SUMS` upstream. Re-vendoring is `cp` + re-pin + `cargo test
+  -p client --lib scry`, and check the CALL SITES, not just the compile —
+  `Overlay::title` changed shape under us and only luck kept it uncalled.
 - The depot the launcher installs is written by `ci/depot.py`, gated by
   `--self-test` in `ci/gates.sh`. It deliberately does **not** compute the
   depot digest — `scry digest` does, and a second implementation of the number

@@ -39,8 +39,12 @@ use bevy::audio::{
 use bevy::prelude::*;
 
 use crate::sound::mixer::{Mixer, Request, Start};
+use crate::sound::pig::Snorts;
 use crate::sound::steps::Steps;
-use crate::sound::{synth, Cue, Mix, CUE_COUNT, MAX_AUDIBLE_M, VOICE_CAP};
+use crate::sound::water::Waterline;
+use crate::sound::{
+    synth, Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, MAX_AUDIBLE_M, VOICE_CAP,
+};
 
 use super::rig::EyeCam;
 use super::{Eye, Net};
@@ -59,9 +63,17 @@ pub const SPATIAL_SCALE: f32 = 1.0 / 128.0;
 /// panning curve's sharpness, not its range (`DECISIONS.md` §open, audio v0).
 pub const EAR_GAP_M: f32 = 0.22;
 
-/// How fast the bed's gain follows the world, per second. A bed that snapped
+/// How fast a bed's gain follows the world, per second. A bed that snapped
 /// would click every time the tree count under the camera changed by one.
+///
+/// **This is the WORLD's half of a bed's level, not the mixer's.** A snapshot
+/// moves the same gains far faster (`sound::SNAPSHOT_FADE_S`, 0.3 s against
+/// 2 s here), and that asymmetry is deliberate: walking out of a forest is a
+/// slow fact and putting your head under water is an instant one.
 pub const BED_FADE_PER_S: f32 = 0.5;
+
+/// The looping beds, in the order [`Sound::bed_gain`] indexes them.
+pub const BEDS: [Cue; 3] = [Cue::BedWind, Cue::BedSurf, Cue::BedUnder];
 
 /// The generated bank: one `AudioSource` per [`Cue`], in `Cue::ALL` order.
 #[derive(Resource)]
@@ -85,11 +97,19 @@ impl Bank {
 pub struct Sound {
     pub mixer: Mixer,
     pub steps: Steps,
-    /// The bed's current gain, moving toward its target at
+    /// The waterline, as a thing the local body crosses.
+    pub waterline: Waterline,
+    /// Each roster slot's snort clock (`sound::pig` — pure; [`pigs`] is
+    /// the producer that reads it against the drawn herd).
+    pub snorts: Snorts,
+    /// Each bed's current gain, moving toward its target at
     /// [`BED_FADE_PER_S`]. Held rather than recomputed so the crossfade is
     /// state, not a function of a frame.
-    bed_gain: f32,
-    bed_target: f32,
+    bed_gain: [f32; BEDS.len()],
+    bed_target: [f32; BEDS.len()],
+    /// The snapshot crossfade, and this frame's resolved mixer state.
+    snapshots: Snapshots,
+    snap: SnapshotDef,
 }
 
 impl Sound {
@@ -103,9 +123,9 @@ impl Sound {
 #[derive(Component)]
 pub struct Voice;
 
-/// The bed's single looping entity.
+/// One looping bed, and which one.
 #[derive(Component)]
-pub struct Bed;
+pub struct Bed(pub Cue);
 
 /// Build the bank, at plugin-build time rather than in a schedule.
 ///
@@ -151,19 +171,27 @@ pub fn setup(mut commands: Commands, bank: Res<Bank>, cam: Query<Entity, With<Ey
     };
     commands.entity(cam).insert(SpatialListener::new(EAR_GAP_M));
 
-    // The bed starts SILENT and fades in. Entering a world at full ambience
+    // Every bed starts SILENT and fades in. Entering a world at full ambience
     // on the first frame of the loading screen is the audio version of the
     // world popping in, and the fade is already the mechanism.
-    commands.spawn((
-        super::WorldEntity,
-        Bed,
-        AudioPlayer(bank.get(Cue::BedWind)),
-        PlaybackSettings {
-            mode: PlaybackMode::Loop,
-            volume: Volume::SILENT,
-            ..default()
-        },
-    ));
+    //
+    // **All three run from the first frame, at zero.** A bed spawned on demand
+    // would start its 10.5 s loop wherever the player happened to break the
+    // surface, so the submerged bed would open on a bubble or on nothing; and
+    // a voice started under an already-open snapshot has no silence to fade
+    // up from.
+    for cue in BEDS {
+        commands.spawn((
+            super::WorldEntity,
+            Bed(cue),
+            AudioPlayer(bank.get(cue)),
+            PlaybackSettings {
+                mode: PlaybackMode::Loop,
+                volume: Volume::SILENT,
+                ..default()
+            },
+        ));
+    }
 }
 
 /// Reset what the world owned. The bed and the listener go with the camera
@@ -172,8 +200,18 @@ pub fn setup(mut commands: Commands, bank: Res<Bank>, cam: Query<Entity, With<Ey
 /// covered and fires a burst of footsteps on the first frame of the next.
 pub fn teardown(mut sound: ResMut<Sound>, mut last_hp: ResMut<LastHp>) {
     sound.steps.reset();
-    sound.bed_gain = 0.0;
-    sound.bed_target = 0.0;
+    // The herd's clocks too: a countdown carried into the next island would
+    // voice its pigs on this island's schedule.
+    sound.snorts.reset();
+    sound.bed_gain = [0.0; BEDS.len()];
+    sound.bed_target = [0.0; BEDS.len()];
+    // The waterline and the snapshot go with it, and the second one is the
+    // reference's own shipped bug: their underwater sound effect stayed on
+    // after disconnecting from a server (`reference/WATER.md` §7). A mix state
+    // that outlives its cause.
+    sound.waterline.reset();
+    sound.snapshots.reset();
+    sound.snap = SnapshotDef::default();
     // The same rule for health: a stale `LastHp` would read the next world's
     // first health message as a fall from the last world's and play a hurt
     // sound to a player who just joined.
@@ -203,6 +241,47 @@ pub fn steps(
     let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
     let cue = crate::sound::steps::surface_cue(splat, below_sea);
     sound.play(Request::own(cue).with_gain(step.gain));
+}
+
+/// One remote body's step odometer — the same `sound::steps::Steps` the
+/// local player runs, one per drawn body, carried as a component so it dies
+/// with the entity and a body that leaves AOI and returns starts fresh (no
+/// map to sweep, no reset to remember). `bodies::stream` inserts it at
+/// spawn.
+#[derive(Component, Default)]
+pub struct RemoteSteps(pub Steps);
+
+/// Another player's footsteps — the sound that decides fights, and until
+/// this system nothing produced it: only the local body has a predictor,
+/// so a remote's cadence comes off the same distance-integrated odometer
+/// fed the INTERPOLATED transform `bodies::stream` just wrote (this runs
+/// after `Stream`). The surface is `terrain::splat` at THEIR position, the
+/// cue is the local family's positional twin (`steps::remote`), and "only
+/// nearby" is the mixer's own falloff at the cue's radius — the falling
+/// tree's pattern: push with a position, let the one distance law cull.
+///
+/// Two honest gaps, both the wire's: there is no grounded bit (`NOW.md`
+/// §0v item 1), so a jumping remote ticks the odometer by the horizontal
+/// half of its arc; and a teleport (death, respawn) reads as ground
+/// covered, which the odometer's own hitch cap bounds at ONE step. A
+/// sleeper stands still and the speed floor keeps it silent for free.
+pub fn remote_steps(
+    world: Res<super::WorldId>,
+    time: Res<Time>,
+    mut bodies: Query<(&Transform, &mut RemoteSteps), With<super::bodies::Body>>,
+    mut sound: ResMut<Sound>,
+) {
+    let dt = time.delta_secs();
+    for (t, mut steps) in bodies.iter_mut() {
+        let pos = [t.translation.x, t.translation.y, t.translation.z];
+        let Some(step) = steps.0.sample(pos, true, dt) else {
+            continue;
+        };
+        let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
+        let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
+        let cue = crate::sound::steps::remote(crate::sound::steps::surface_cue(splat, below_sea));
+        sound.play(Request::at(cue, pos).with_gain(step.gain));
+    }
 }
 
 /// This frame's own-facts, as cues.
@@ -274,6 +353,61 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
     }
 }
 
+/// A placement landing — the second positional cue, at the cell it landed.
+///
+/// **Reads [`super::feed::Feed`]; pops nothing** (`feed::drain` is the one
+/// pop site). The join-flood guard lives in the CORE, not here: the ring
+/// behind `Feed::placed` is fed only by the `PiecePlaced`/`DeployPlaced`
+/// broadcasts — a placement *happening* — and never by the sync walks, which
+/// merely restate the world. So a fresh join streaming every standing piece,
+/// or a resync restating them, produces zero entries here by construction,
+/// with no timer deciding when the flood is over. Distance does the rest the
+/// way it does for the falling tree: the request carries the position and
+/// `sound::falloff` culls it at the cue's own radius.
+///
+/// The position is [`super::structures::base_transform`]'s — the same
+/// anchor the mesh stands at, edge canonicalisation included, so the sound
+/// cannot come from a different place than the wall appears in.
+pub fn place(feed: Res<super::feed::Feed>, world: Res<super::WorldId>, mut sound: ResMut<Sound>) {
+    for &(cx, cz, level, loc, _deploy) in feed.placed() {
+        let p = super::structures::base_transform(world.seed, (cx, cz, level, loc)).translation;
+        sound.play(Request::at(Cue::Place, [p.x, p.y, p.z]));
+    }
+}
+
+/// The pig's voice, off the drawn herd's interpolated positions.
+///
+/// Dormancy-respecting by construction: a `Pig` entity exists only for a
+/// mob inside AOI (208 m), and every mob a client can see is awake —
+/// `MOB_WAKE_CM` (240 m) deliberately encloses AOI (`limits.rs`), so a
+/// voiced pig is always a simmed pig. "Only nearby" is then the mixer's own
+/// falloff at the cue's 40 m radius — the falling-tree pattern: push with a
+/// position, let the one distance law cull.
+///
+/// The cadence is `sound::pig`'s — hashed per roster slot and cycle, so it
+/// is deterministic (no OS randomness) and not a metronome. The snout
+/// height puts the emitter at the head rather than under the hooves.
+pub fn pigs(
+    herd: Query<(&super::mobs::Pig, &Transform)>,
+    time: Res<Time>,
+    mut sound: ResMut<Sound>,
+) {
+    let dt = time.delta_secs();
+    for (pig, t) in herd.iter() {
+        let Some(slot) = sim_core::mob::slot_of_id(pig.0) else {
+            continue;
+        };
+        if !sound.snorts.due(slot, dt) {
+            continue;
+        }
+        let p = t.translation;
+        sound.play(Request::at(
+            Cue::Snort,
+            [p.x, p.y + super::mobs::PIG_H_M * 0.6, p.z],
+        ));
+    }
+}
+
 /// Health, as a change rather than as an event.
 ///
 /// `EV_HEALTH` is absolute and own-fact (`sim_core::world`), so "I was hurt"
@@ -302,13 +436,17 @@ pub fn hurt(net: NonSend<Net>, mut last: ResMut<LastHp>, mut sound: ResMut<Sound
 /// looping voice whose gain reads how many scatter props are drawn nearby —
 /// so the bed already answers to the world rather than being a constant, and
 /// it costs one query length per frame instead of an emitter set.
+// Seven: the mix state to write, where the ears are, which island this is, the
+// cover query, the clock, the player's sliders, and the sinks to move.
+#[allow(clippy::too_many_arguments)]
 pub fn bed(
     mut sound: ResMut<Sound>,
     eye: Res<Eye>,
+    world: Res<super::WorldId>,
     props: Query<&GlobalTransform, With<super::props::Fellable>>,
     time: Res<Time>,
     settings: Res<super::Settings>,
-    mut sinks: Query<&mut AudioSink, With<Bed>>,
+    mut sinks: Query<(&Bed, &mut AudioSink)>,
 ) {
     // How much cover is within earshot, 0..1. `COVER_FULL` scatter slots
     // inside the radius is "in the woods"; none is "on the beach".
@@ -329,20 +467,60 @@ pub fn bed(
     // Open ground is windier than the inside of a forest, but a forest is not
     // silent — it is the same wind in the canopy. So the bed never drops
     // below half, and cover moves it rather than gating it.
-    sound.bed_target = 1.0 - 0.45 * cover;
+    sound.bed_target[0] = 1.0 - 0.45 * cover;
+    // The surf reads how much sea is within earshot, from the same
+    // `terrain::height` the water is drawn from — 24 taps, a fixed pattern, so
+    // the level cannot flicker as a search finds different water.
+    sound.bed_target[1] = crate::sound::water::surf_gain(crate::sound::water::shore_exposure(
+        world.seed, eye.pos.x, eye.pos.z,
+    ));
+    // The submerged bed has no world level of its own: it is entirely the
+    // snapshot's, which is the point of a snapshot.
+    sound.bed_target[2] = 1.0;
 
     let d = BED_FADE_PER_S * time.delta_secs();
-    let (g, t) = (sound.bed_gain, sound.bed_target);
-    sound.bed_gain = if g < t {
-        (g + d).min(t)
-    } else {
-        (g - d).max(t)
-    };
+    for i in 0..BEDS.len() {
+        let (g, t) = (sound.bed_gain[i], sound.bed_target[i]);
+        sound.bed_gain[i] = if g < t {
+            (g + d).min(t)
+        } else {
+            (g - d).max(t)
+        };
+    }
 
-    let mix = mix_of(&settings);
-    let level = sound.bed_gain * Cue::BedWind.def().gain * mix.bus_gain(Cue::BedWind.def().bus);
-    for mut sink in sinks.iter_mut() {
+    let snap = sound.snap;
+    let mix = mix_of(&settings).under(&snap);
+    for (bed, mut sink) in sinks.iter_mut() {
+        let Some(i) = BEDS.iter().position(|c| *c == bed.0) else {
+            continue;
+        };
+        let def = bed.0.def();
+        let level = sound.bed_gain[i] * snap.bed(bed.0) * def.gain * mix.bus_gain(def.bus);
         sink.set_volume(Volume::Linear(level));
+    }
+}
+
+/// The waterline: which snapshot the mix is in, and the splash on crossing it.
+///
+/// **Runs before [`bed`] and [`pump`]**, because both read the snapshot this
+/// resolves and a mix state one frame stale is a mix that comes up as your
+/// head goes back under.
+pub fn water(net: NonSend<Net>, eye: Res<Eye>, time: Res<Time>, mut sound: ResMut<Sound>) {
+    let dt = time.delta_secs();
+    // The EARS, not the feet: the mix changes when your head goes under, and a
+    // player wading chest-deep is still hearing the world above.
+    let want = if crate::sound::water::submerged(eye.pos.y) {
+        Snapshot::Submerged
+    } else {
+        Snapshot::Above
+    };
+    sound.snap = sound.snapshots.tick(want, dt);
+
+    // The feet, for the splash: breaking the surface is your body entering the
+    // water, which happens well before your head does.
+    let feet = net.session.core.predict.render_position()[1];
+    if let Some(gain) = sound.waterline.sample(feet, dt) {
+        sound.play(Request::own(Cue::Splash).with_gain(gain));
     }
 }
 
@@ -366,7 +544,7 @@ pub fn pump(
     voices: Query<(), With<Voice>>,
     mut reported: Local<u32>,
 ) {
-    let mix = mix_of(&settings);
+    let mix = mix_of(&settings).under(&sound.snap);
     // **One frame stale, deliberately.** A voice spawned through `Commands`
     // is not queryable until the next flush, so `live` is last frame's count
     // and the pool can overshoot by at most one frame's budget —

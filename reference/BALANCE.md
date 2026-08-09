@@ -172,11 +172,14 @@ point and it is correct: take more of the math now, tune later.
 
 1. **The boar does not fight back.** Theirs charges and flees under half
    health; ours only flees. This is the single biggest "that's not how it
-   goes" moment left, and it is a mechanic (`ANIMALS.md` §9.5 item 1).
+   goes" moment left, and it is a mechanic (`ANIMALS.md` §9.5 item 3) —
+   with a wire cost found since: the death-cause field has been saturated
+   at 2 bits since v24, so it is a widening.
 2. **No per-material resistance** (§4) — the raid ladder is compressed above
    stone.
 3. **One animal.** Theirs has chicken, boar, stag, wolf, bear, each with a
-   role. We have a pig.
+   role. We have a pig. (The pig itself is no longer thin — it drops a
+   corpse, snorts and trots as of 2026-08-09.)
 4. **No radiation, no monuments, no scientists.** Out of alpha scope
    entirely (`ALPHA.md` §5), listed so nobody reads their absence as a
    balance decision.

@@ -425,7 +425,8 @@ fn segments_increase_clockwise() {
 
 #[test]
 fn every_direction_lands_in_exactly_one_segment() {
-    for n in [3usize, 6] {
+    // 4 is the hammer wheel's count (§K rides this arithmetic).
+    for n in [3usize, 4, 6] {
         let mut hits = vec![0u32; n];
         // A full sweep at a degree a step: no direction may fall outside the
         // ring, and every segment must be reachable.
@@ -448,7 +449,7 @@ fn the_labels_sit_in_the_segments_they_name() {
     // resolved by `segment`. If those two ever disagree the wheel highlights
     // one thing and selects another, so they are checked against each other
     // rather than each against a constant.
-    for n in [3usize, 6] {
+    for n in [3usize, 4, 6] {
         for i in 0..n {
             let a = build::segment_angle(i, n);
             assert_eq!(build::segment(a.sin(), a.cos(), n), i);
@@ -1389,4 +1390,443 @@ fn the_content_still_names_the_plan_and_the_hammer() {
              to a swing. Rename the constant with the item, in one commit."
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// §I · the 44 px cell's fallback label
+//
+// A cell with no baked icon prints the item's name (the dark-panel rule: an
+// empty cell says nothing). The cell clips, so nothing bleeds over borders —
+// but a clip cuts mid-glyph and `Gunpowde` reads as a typo, which is the
+// operator-found half of `NOW.md` §0p2 item 3. `cell_abbrev` cuts on purpose
+// instead: within budget passes through, over budget is cut with a trailing
+// `.` that says the cut was chosen. Pure arithmetic, so it is gated here in
+// the code tier rather than trusted behind a window.
+
+#[test]
+fn a_name_that_fits_the_cell_is_left_alone() {
+    for name in ["Wood", "Stone", "Torch", "#12", "#65535"] {
+        assert_eq!(
+            craft::cell_abbrev(name, craft::CELL_LINE_CHARS),
+            name,
+            "a fitting name must pass through untouched"
+        );
+    }
+}
+
+#[test]
+fn the_operators_three_names_read_as_abbreviations_not_typos() {
+    // The three names the first look found bleeding (`NOW.md` §0p2 item 3).
+    // Each cut ends in `.`, so the cell reads as deliberate.
+    assert_eq!(craft::cell_abbrev("Gunpowder", 7), "Gunpow.");
+    assert_eq!(craft::cell_abbrev("Workbench", 7), "Workbe.");
+    assert_eq!(craft::cell_abbrev("Metal Fragments", 7), "Metal Fragme.");
+}
+
+#[test]
+fn no_emitted_word_exceeds_the_line_budget() {
+    // Names off the content's own shape: multi-word, long single words, and
+    // the degenerate budgets. Every word of every result fits its line, so
+    // the clip never gets to cut mid-glyph. Budget 1 is in the sweep since
+    // the guard landed: it used to emit a 2-char `X.`, and the sweep used
+    // to start at 2 — the contract and its gate had the same blind spot.
+    for name in [
+        "Metal Fragments",
+        "Low Grade Fuel",
+        "Sheet Metal Door",
+        "Antidisestablishmentarianism",
+        "a",
+    ] {
+        for budget in [1usize, 2, 4, 7, 12] {
+            let out = craft::cell_abbrev(name, budget);
+            for word in out.split(' ') {
+                assert!(
+                    word.chars().count() <= budget,
+                    "`{word}` (of `{out}`, budget {budget}) still overflows the line"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_one_character_budget_keeps_the_glyph_and_drops_the_marker() {
+    // No room for `.`: the first glyph alone is the only emission that
+    // holds the budget, and it beats a lone `.` that says nothing.
+    assert_eq!(craft::cell_abbrev("Gunpowder", 1), "G");
+    assert_eq!(craft::cell_abbrev("Metal Fragments", 1), "M F");
+    // Chars, not bytes, in the degenerate case too.
+    assert_eq!(craft::cell_abbrev("Ébénisterie", 1), "É");
+    // A word that fits a budget of one still passes through untouched.
+    assert_eq!(craft::cell_abbrev("a", 1), "a");
+}
+
+// ---------------------------------------------------------------------------
+// §J · the L verb's target — a lock bolts where the SIM says it bolts
+//
+// Locks-on-boxes landed in the sim (`DOORS.md` §9.8) while the client's `L`
+// kept targeting doors alone. The fix is deliberately not a second list: the
+// pick carries the archetype the deploy sync named (`Pick::arch`), and
+// `keypad::lock_target` asks `sim_core::deploy::lockable` — the predicate
+// the sim's own lock verb gates on. So the load-bearing test here is the
+// agreement sweep, not the box case: a lockable set restated in the client
+// would pass a box test today and drift silently on the next archetype.
+
+use client::ui::interact as pick_mod;
+use client::ui::keypad::{lock_target, LockTarget};
+use sim_core::deploy::{DeployDef, DeployRec, ARCH_BOX, ARCH_DOOR, ARCH_LOCK};
+
+/// A pick as `resolve` would fill it for a deploy record: address, sync'd
+/// archetype, and the wire's lock mirror bit.
+fn lock_pick(arch: u8, has_lock: bool) -> pick_mod::Pick {
+    pick_mod::Pick {
+        arch,
+        has_lock,
+        cx: 3,
+        cz: 4,
+        level: 1,
+        loc: 2,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_resolver_hands_l_the_arch_the_sync_named() {
+    // One box record, aimed at. `resolve` must stamp the pick with the
+    // archetype from the def table — the fact `lock_target` runs on.
+    let mut defs = DeployContent::EMPTY;
+    defs.defs[0] = DeployDef {
+        arch: ARCH_BOX,
+        ..DeployDef::INERT
+    };
+    defs.def_count = 1;
+    let recs = [DeployRec {
+        cx: 2,
+        cz: 2,
+        row: 0,
+        owner: 1,
+        hp: 100,
+        has_lock: true,
+        locked: true,
+        ..DeployRec::default()
+    }];
+    let cell = 2.0 * sim_core::build::BUILD_CELL_M + sim_core::build::BUILD_CELL_M * 0.5;
+    let p = pick_mod::resolve(
+        pick_mod::Aim::new(cell, cell - 2.0, 0.0, 1.0),
+        &recs,
+        &defs,
+        1,
+        &[],
+    );
+    assert_eq!(p.verb, pick_mod::Verb::Box);
+    assert_eq!(p.arch, ARCH_BOX, "the sync's archetype rides the pick");
+    assert!(p.has_lock && p.locked, "the wire's mirror bits ride it too");
+    // And the whole chain: this pick opens the keypad at the box's own
+    // plane address, exactly as a door's would at its edge.
+    assert_eq!(lock_target(&p), LockTarget::Pad(2, 2, 0, 0));
+}
+
+#[test]
+fn a_box_with_a_lock_opens_the_keypad_where_a_door_does() {
+    // Same flow, both archetypes, addresses preserved verbatim — the sim
+    // answers refusals at the address the record carries, so the client
+    // must not normalize it.
+    assert_eq!(
+        lock_target(&lock_pick(ARCH_DOOR, true)),
+        LockTarget::Pad(3, 4, 1, 2)
+    );
+    assert_eq!(
+        lock_target(&lock_pick(ARCH_BOX, true)),
+        LockTarget::Pad(3, 4, 1, 2)
+    );
+    // Bare lockables prompt for a lock rather than opening an empty pad.
+    assert_eq!(lock_target(&lock_pick(ARCH_DOOR, false)), LockTarget::Bare);
+    assert_eq!(lock_target(&lock_pick(ARCH_BOX, false)), LockTarget::Bare);
+    // A default pick (nothing in reach) offers nothing, lock bit or not.
+    assert_eq!(lock_target(&pick_mod::Pick::default()), LockTarget::None);
+}
+
+#[test]
+fn the_lockable_set_is_the_sims_not_a_second_list() {
+    // The agreement sweep, over every archetype the schema could name
+    // (`ARCH_LOCK` is the highest today; the headroom past it costs
+    // nothing and catches an addition that skips a number). If the sim
+    // grows or shrinks `lockable`, this fails HERE rather than shipping a
+    // keypad the sim refuses — the mirror property itself is the gate.
+    for arch in 0..=(ARCH_LOCK + 8) {
+        let opens = lock_target(&lock_pick(arch, true)) == LockTarget::Pad(3, 4, 1, 2);
+        assert_eq!(
+            opens,
+            sim_core::deploy::lockable(arch),
+            "arch {arch}: the client and `deploy::lockable` disagree"
+        );
+        // And nothing bare ever opens a pad, lockable or not.
+        assert!(
+            !matches!(lock_target(&lock_pick(arch, false)), LockTarget::Pad(..)),
+            "arch {arch}: an empty pad opened with no lock bolted on"
+        );
+    }
+}
+
+#[test]
+fn a_box_prompt_advertises_its_keypad_like_a_door() {
+    let mut p = pick_mod::Pick {
+        verb: pick_mod::Verb::Box,
+        arch: ARCH_BOX,
+        ..Default::default()
+    };
+    // Bare: the verb alone — no keypad to name (lock v1's door rule).
+    assert_eq!(p.prompt(), "[E] OPEN BOX");
+    // Bolted but not armed: the keypad is named, LOCKED is not claimed.
+    p.has_lock = true;
+    assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
+    assert!(
+        !p.prompt().contains("LOCKED"),
+        "an unarmed lock is not a locked box: {}",
+        p.prompt()
+    );
+    // Armed: both, and `E` still offers the open — whether it succeeds is
+    // the sim's verdict, not the prompt's.
+    p.locked = true;
+    assert!(p.prompt().contains("LOCKED"), "{}", p.prompt());
+    assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
+    assert!(p.prompt().starts_with("[E] OPEN BOX"), "{}", p.prompt());
+}
+
+#[test]
+fn a_cut_is_marked_and_a_multibyte_name_is_cut_on_chars_not_bytes() {
+    let out = craft::cell_abbrev("Gunpowder", 7);
+    assert!(out.ends_with('.'), "a cut word must end in `.`");
+    // chars, not bytes: a name with multibyte glyphs must not split one.
+    let out = craft::cell_abbrev("Ébénisterie", 7);
+    assert_eq!(out, "Ébénis.");
+}
+
+// ---------------------------------------------------------------------------
+// §K · the hammer's wheel — four live verbs, firing on release
+//
+// The second radial (`NOW.md` §0p2 item 1). What is gated here is what could
+// be silently wrong: the segment set (a rotate wedge would be a dead button;
+// a missing verb would be a mechanic no wheel reaches), the pick arithmetic
+// (§D's, at this ring's own count), and `hammer::act` — the store filters
+// that keep a release named PICK UP from felling a wall, since pick-up and
+// demolish are ONE wire verb split by the store bit (`ACT_DEMOLISH`), which
+// is exactly the positional-payload class `CLAUDE.md` warns about.
+
+use client::ui::hammer::{self, Act, Verb as HVerb};
+use client::ui::structure::{Store, Target};
+use sim_core::build::PieceDef;
+use sim_core::limits::MAX_PIECE_COSTS;
+
+/// A wood→stone→metal ladder, one shape — enough for the rung question.
+fn hammer_piece_defs() -> (BuildContent, u16) {
+    let mut c = BuildContent::EMPTY;
+    for (i, material) in [MAT_WOOD, MAT_STONE, MAT_METAL].into_iter().enumerate() {
+        c.pieces[i] = PieceDef {
+            shape: SHAPE_WALL,
+            material,
+            hp: 500,
+            n_costs: 0,
+            costs: [(0, 0); MAX_PIECE_COSTS],
+        };
+    }
+    c.piece_count = 3;
+    (c, 3)
+}
+
+fn target(store: Store, row: u8, hp: u16, hp_max: u16) -> Target {
+    Target {
+        store,
+        cx: 7,
+        cz: 9,
+        level: 1,
+        loc: 2,
+        row,
+        hp,
+        hp_max,
+    }
+}
+
+#[test]
+fn the_ring_is_four_distinct_verbs_and_rotate_is_not_one() {
+    // Four segments, each verb exactly once. Rotate has no segment and no
+    // variant to give one to — a placed piece has no facing, so a rotate
+    // wedge would teach a verb the game does not have (§0p2 item 0).
+    assert_eq!(hammer::VERBS.len(), 4);
+    for v in [
+        HVerb::Upgrade,
+        HVerb::Repair,
+        HVerb::Demolish,
+        HVerb::PickUp,
+    ] {
+        assert_eq!(
+            hammer::VERBS.iter().filter(|w| **w == v).count(),
+            1,
+            "{v:?} must appear exactly once"
+        );
+        assert!(
+            !hammer::label(v).is_empty(),
+            "a blank wedge is the dark-panel defect"
+        );
+        assert!(!hammer::blurb(v).is_empty());
+    }
+}
+
+#[test]
+fn the_hammer_pick_is_the_shape_wheels_arithmetic_at_four() {
+    let r = Rings::default();
+    // Dead centre and past the rim release without firing.
+    assert_eq!(hammer::pick(0.0, 0.0, r), None);
+    assert_eq!(hammer::pick(0.0, r.dead - 1.0, r), None);
+    assert_eq!(hammer::pick(0.0, r.rim + 1.0, r), None);
+    // Four quadrants, clockwise from up — and each segment's own centre
+    // angle picks it, the same drawn-vs-picked agreement §D holds for the
+    // shapes.
+    let mid = (r.dead + r.rim) * 0.5;
+    assert_eq!(hammer::pick(0.0, mid, r), Some(0));
+    assert_eq!(hammer::pick(mid, 0.0, r), Some(1));
+    assert_eq!(hammer::pick(0.0, -mid, r), Some(2));
+    assert_eq!(hammer::pick(-mid, 0.0, r), Some(3));
+    for i in 0..hammer::VERBS.len() {
+        let a = build::segment_angle(i, hammer::VERBS.len());
+        assert_eq!(hammer::pick(a.sin() * mid, a.cos() * mid, r), Some(i));
+    }
+}
+
+#[test]
+fn each_verb_acts_only_through_its_own_store() {
+    let (defs, have) = hammer_piece_defs();
+    let piece = target(Store::Piece, 0, 250, 500);
+    let deploy = target(Store::Deploy, 0, 250, 500);
+
+    // Demolish fells a PIECE (deploy bit false) and refuses a deployable —
+    // the same four numbers with the bit flipped would silently pick the
+    // box up instead, which is the whole reason the filter exists.
+    assert_eq!(
+        hammer::act(HVerb::Demolish, Some(&piece), &defs, have),
+        Act::Demolish {
+            deploy: false,
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: 2
+        }
+    );
+    assert!(matches!(
+        hammer::act(HVerb::Demolish, Some(&deploy), &defs, have),
+        Act::Say(_)
+    ));
+
+    // Pick-up lifts a DEPLOYABLE (deploy bit true) and refuses a piece.
+    assert_eq!(
+        hammer::act(HVerb::PickUp, Some(&deploy), &defs, have),
+        Act::Demolish {
+            deploy: true,
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: 2
+        }
+    );
+    assert!(matches!(
+        hammer::act(HVerb::PickUp, Some(&piece), &defs, have),
+        Act::Say(_)
+    ));
+
+    // Repair addresses both stores, and the bit follows the store.
+    assert_eq!(
+        hammer::act(HVerb::Repair, Some(&piece), &defs, have),
+        Act::Repair {
+            deploy: false,
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: 2
+        }
+    );
+    assert_eq!(
+        hammer::act(HVerb::Repair, Some(&deploy), &defs, have),
+        Act::Repair {
+            deploy: true,
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: 2
+        }
+    );
+}
+
+#[test]
+fn upgrade_picks_the_next_rung_the_way_u_does() {
+    let (defs, have) = hammer_piece_defs();
+    // Wood (row 0) upgrades into stone — `structure::next_material`'s
+    // answer, the same one press `U` sends.
+    assert_eq!(
+        hammer::act(
+            HVerb::Upgrade,
+            Some(&target(Store::Piece, 0, 500, 500)),
+            &defs,
+            have
+        ),
+        Act::Upgrade {
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: 2,
+            material: MAT_STONE
+        }
+    );
+    // Metal (row 2) is the top of the ladder.
+    assert_eq!(
+        hammer::act(
+            HVerb::Upgrade,
+            Some(&target(Store::Piece, 2, 500, 500)),
+            &defs,
+            have
+        ),
+        Act::Say("nothing to upgrade into")
+    );
+    // A deployable has no ladder — `upgrade_near`'s own sentence.
+    assert_eq!(
+        hammer::act(
+            HVerb::Upgrade,
+            Some(&target(Store::Deploy, 0, 500, 500)),
+            &defs,
+            have
+        ),
+        Act::Say("that is not a building piece")
+    );
+}
+
+#[test]
+fn refusals_before_the_round_trip_match_the_key_paths() {
+    let (defs, have) = hammer_piece_defs();
+    // Nothing in reach: every verb says so instead of sending.
+    for v in hammer::VERBS {
+        assert!(
+            matches!(hammer::act(v, None, &defs, have), Act::Say(_)),
+            "{v:?} with no target must refuse, not send"
+        );
+    }
+    // An intact piece has nothing to mend — `repair_near`'s guard.
+    assert_eq!(
+        hammer::act(
+            HVerb::Repair,
+            Some(&target(Store::Piece, 0, 500, 500)),
+            &defs,
+            have
+        ),
+        Act::Say("not damaged")
+    );
+    // An undripped row (max 0) sends and lets the sim answer, because the
+    // client does not know the maximum — also `repair_near`'s rule.
+    assert!(matches!(
+        hammer::act(
+            HVerb::Repair,
+            Some(&target(Store::Piece, 0, 100, 0)),
+            &defs,
+            have
+        ),
+        Act::Repair { .. }
+    ));
 }

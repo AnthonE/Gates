@@ -197,7 +197,49 @@ const TICKS: u64 = 900;
 /// beside a red equality assert would be the bug the constant exists to
 /// catch; beside a green one it is the state definition widening, which is
 /// exactly what a slice that adds a field to `Player` is supposed to do.
-const GOLDEN_FINAL_HASH: u64 = 0x2B2C_9D78_9589_F228;
+/// Regenerated once more by **lock v1**, and this is the *first* shape —
+/// the verb landing, not the definition widening. The lock store is
+/// hashed on the arrow idiom (no length prefix), so an empty one folds
+/// nothing and this number would not have moved on its own; it moved
+/// because the script now bolts a code lock onto the door at tick 155,
+/// misses its code at 156 (a **shock**, so a door verb writes a body's
+/// hp) and arms it at 158. Three real state changes on the replayed
+/// surface, one of them to a player record.
+///
+/// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
+/// this value was read off, which is the check that separates the two
+/// shapes: a regenerated golden beside a red equality assert is the drift
+/// this constant exists to catch, beside a green one it is the verb.
+/// Regenerated once more by the **building-rights** slice, and it is
+/// both shapes at once — which is why they are separated here rather
+/// than asserted together. **The definition widened**: `state_hash` gained
+/// the crew list on every hearth and a placement tick on every piece and
+/// deployable, and the script's pieces all carry non-zero ticks, so the
+/// number would have moved with no verb changed. **And the verbs
+/// landed**: the script now runs the crew ops through `Command::Access`
+/// and both halves of `Command::Demolish`, one of which is refused by the
+/// grace window on purpose.
+///
+/// Regenerated once more, in the same commit, by **upkeep/decay v1** —
+/// and this one is purely the first shape, a verb changing. No state was
+/// added: upkeep now charges **per material** rather than demanding one
+/// hearth cover a whole piece, and an unpaid piece rots at its own
+/// material's rate rather than a flat 5 %. The script leaps thirty
+/// upkeep periods at its midpoint, so both changes bite hard on it.
+///
+/// Regenerated once more by the **merge** of the building-rights branch
+/// with the oven/mob work that landed on `main` in parallel. Purely the
+/// first shape again and none of it a behaviour change of mine: the
+/// probe fixture grew a sixth deployable row, the oven's burn state is
+/// hashed, animals are on the world, and the script's kit grew the
+/// fixture's two new items. Two branches that each moved this number
+/// cannot both be right about it, so it is read fresh off the merged
+/// tree.
+///
+/// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
+/// this value was read off, which is the check that keeps a regenerated
+/// golden evidence rather than a shrug.
+const GOLDEN_FINAL_HASH: u64 = 0x7278_55C8_AA9A_A6D4;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
@@ -533,9 +575,20 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         if t == 149 {
             for w in 0..8usize {
                 if world.players[w].active {
-                    for (k, &(item, count)) in [(0u16, 200u16), (1, 200), (2, 50), (3, 50), (4, 50)]
-                        .iter()
-                        .enumerate()
+                    for (k, &(item, count)) in [
+                        (0u16, 200u16),
+                        (1, 200),
+                        (2, 50),
+                        (3, 50),
+                        (4, 50),
+                        // Item 6 is the probe fixture's fire (oven v0) and
+                        // item 7 its code lock (lock v1) — the hands the
+                        // oven and lock arcs below need.
+                        (6, 50),
+                        (7, 50),
+                    ]
+                    .iter()
+                    .enumerate()
                     {
                         world.players[w].inv[20 + k] = sim_core::gather::ItemStack { item, count };
                     }
@@ -662,15 +715,32 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     loc: sim_core::build::LOC_EDGE_N,
                     material: sim_core::build::MAT_METAL,
                 }),
-                155 | 156 | 158 => cmds.push(Command::Lock {
-                    // 156 is a hand that does not own this door — the
-                    // refusal path, on the replayed surface too.
+                // Lock v1's whole arc on the replayed surface: bolt the
+                // code lock on, arm it with a code, miss the code once
+                // (the shock — a *player hp* write from a door verb, and
+                // therefore state a replay must reproduce exactly), then
+                // unlock it again. 156 is a hand the lock does not
+                // remember, so the refusal path is replayed too.
+                155 => cmds.push(Command::PlaceDeploy {
+                    id,
+                    row: 5,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: sim_core::build::LOC_EDGE_W,
+                }),
+                156 | 158 => cmds.push(Command::Access {
                     id: if t == 156 { world.players[1].id } else { id },
                     cx,
                     cz,
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_W,
-                    locked: t == 158,
+                    op: if t == 156 {
+                        sim_core::deploy::ACCESS_OP_ENTER
+                    } else {
+                        sim_core::deploy::ACCESS_OP_SET_CODE
+                    },
+                    code: if t == 156 { 4321 } else { 1234 },
                 }),
                 // Then the repair verb, on the one address that names two
                 // things: the doorway placed at 152 and the door hung in
@@ -681,6 +751,24 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 // rather than as `REFUSE_B_INTACT` — and a repair mutates
                 // a structure store *and* `Player::inv`, which is what
                 // puts the verb inside this gate instead of beside it.
+                // Demolish v1, both stores and both sides of the window:
+                // 167 lands (the doorway at 152 is still inside its ten
+                // minutes at this tick) and 168 is refused, because the
+                // foundation this arc stands on went up hundreds of ticks
+                // earlier. A verb whose refusal never replays is a verb
+                // half-covered.
+                167 | 168 => cmds.push(Command::Demolish {
+                    id,
+                    deploy: false,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: if t == 167 {
+                        sim_core::build::LOC_EDGE_N
+                    } else {
+                        sim_core::build::LOC_PLANE
+                    },
+                }),
                 163 | 164 => cmds.push(Command::Repair {
                     id,
                     deploy: t == 164,

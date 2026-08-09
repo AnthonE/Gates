@@ -16,6 +16,15 @@ pub struct ShardStats {
     pub ticks_dropped: AtomicU64,
     pub joins: AtomicU64,
     pub leaves: AtomicU64,
+    /// Bodies with a live connection right now — a gauge like `sleepers`,
+    /// mirrored off `ShardCore::connected` each tick, never accumulated
+    /// here. It exists because `joins - leaves` is NOT this number: a
+    /// refused install rides the LEAVING sweep out and bumps `leaves` with
+    /// no matching `join`, so the counter pair drifts one short per
+    /// refusal while the array it would describe does not. The status
+    /// endpoint (`status.rs`) reads this, and it is the honest count the
+    /// shard list's `players` column has been waiting on.
+    pub players: AtomicU64,
     pub refused_version: AtomicU64,
     /// Joins refused for want of a proven identity (`REFUSE_AUTH`): a
     /// signature that failed to verify, or a guest where `require_auth`
@@ -31,6 +40,13 @@ pub struct ShardStats {
     /// Input datagrams that failed to decode (client-driven bytes; never a
     /// panic, always a count).
     pub input_dg_bad: AtomicU64,
+    /// Input datagrams that decoded but carried a value the sim can never
+    /// mean — a button bit outside `BTN_MASK` (NOW.md §5b). Counted apart
+    /// from `input_dg_bad` because the two accuse differently: bad bytes
+    /// are line noise or a broken client, a forged in-layout value is a
+    /// client this version cannot have built. Dropped, never a disconnect —
+    /// the datagram lane's loss policy is redundancy, not framing trust.
+    pub input_dg_forged: AtomicU64,
     /// Inbound ring full — datagram dropped (redundancy re-carries).
     pub input_ring_drops: AtomicU64,
     /// Snapshots encoded and handed to rings.
@@ -88,11 +104,12 @@ pub struct ShardStats {
     /// a shard where it stays 0 while `sleepers_evicted` climbs is one
     /// where bodies are being reaped before their owners get back.
     pub takeovers: AtomicU64,
-    /// Sleeping bodies the world deleted to seat a join (`world.rs` `seat`).
-    /// Mirrored out of `World::evictions`, which is where the policy lives;
-    /// this is the operator-facing copy. Nonzero means the shard is past
-    /// `MAX_PLAYERS` distinct recent visitors and somebody came back to a
-    /// record instead of a body.
+    /// Sleeping bodies deleted to free a slot for a join (`world.rs`
+    /// `Command::Evict` — two-phase, so the victim's current save was
+    /// filed first; the policy is `ShardCore::evict_victim`). Mirrored out
+    /// of `World::evictions`; this is the operator-facing copy. Nonzero
+    /// means the shard is past `MAX_PLAYERS` distinct recent visitors and
+    /// somebody came back to a record instead of a body.
     pub sleepers_evicted: AtomicU64,
     /// Bodies asleep in the world right now — a gauge, not a counter, set
     /// each publish rather than bumped.

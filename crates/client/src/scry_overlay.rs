@@ -37,9 +37,25 @@
 use std::env;
 use std::fmt;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
+
+// ── the transport, and the one thing that differs by platform ───────────────
+//
+// On unix the door is a UNIX stream socket. On Windows there is no `AF_UNIX`
+// in `std`, so it is a **named pipe** — which opens as an ordinary file, and
+// `File` already has the `try_clone` + `Read` + `Write` shape `UnixStream`
+// has. That is why this is a type alias and not an abstraction: the client
+// logic below is byte-identical on both platforms.
+
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+
+#[cfg(unix)]
+type Stream = UnixStream;
+
+#[cfg(windows)]
+type Stream = std::fs::File;
 
 pub const PROTOCOL: i64 = 1;
 pub const SOCKET_ENV: &str = "SCRY_LAUNCHER_SOCKET";
@@ -345,6 +361,100 @@ pub struct Signature {
     pub backend: String,
 }
 
+/// An identity proof — see [`Overlay::prove`].
+///
+/// ⚠ **`message` is an echo, not evidence.** It is here so a game can log or
+/// display what was signed. A server MUST recompute the message from what it
+/// already knows and verify against that; checking a signature against a
+/// message the client supplied proves only that the client can do arithmetic.
+#[derive(Debug, Clone)]
+pub struct Proof {
+    pub signature: String,
+    pub address: Option<String>,
+    pub message: String,
+}
+
+/// What the town says about one address — see [`Overlay::profile`].
+///
+/// Every field is a claim about a stranger, and `sworn` is the only thing
+/// separating a checked name from a typed one.
+///
+/// `found == false` is a real answer: *we looked, there is no sworn identity*.
+/// It is not the same as [`Overlay::profile`] returning `None`, which means we
+/// could not look at all.
+#[derive(Debug, Clone)]
+pub struct Profile {
+    pub raw: Value,
+    pub reachable: bool,
+    pub found: bool,
+}
+
+impl Profile {
+    /// The SWORN name — in the locked index, and it cost SCRY to change.
+    pub fn handle(&self) -> Option<String> {
+        self.raw.opt_str("handle")
+    }
+
+    /// SELF-DECLARED. Whatever its owner typed. See [`Profile::label`].
+    pub fn display_name(&self) -> Option<String> {
+        self.raw.opt_str("display_name")
+    }
+
+    pub fn sworn(&self) -> bool {
+        self.raw.get("sworn").map(Value::as_bool).unwrap_or(false)
+    }
+
+    pub fn address(&self) -> Option<String> {
+        self.raw.opt_str("address")
+    }
+
+    /// A path on the origin — join it to the host before fetching.
+    pub fn avatar(&self) -> Option<String> {
+        self.raw.opt_str("avatar")
+    }
+
+    /// How many vows this wallet holds. One party, several identities.
+    pub fn identities(&self) -> i64 {
+        self.raw
+            .get("identities")
+            .and_then(Value::as_i64)
+            .unwrap_or(1)
+    }
+
+    /// A path you fetch yourself — `achievements`, `holdings`, `reputation`,
+    /// `vow`, `tip`. One verb is one origin read, the way Steam splits
+    /// summaries from achievements.
+    pub fn link(&self, what: &str) -> Option<String> {
+        self.raw.get("links")?.opt_str(what)
+    }
+
+    /// The one string safe to draw without thinking about it.
+    ///
+    /// A sworn name renders bare; anything self-declared gets `~`, the town's
+    /// marker for *this party said so and nobody checked* (`ACHIEVEMENTS.md`).
+    /// A surface that shows a claimed name in the clothes of a checked one has
+    /// lied for free, and it is the cheapest mistake to make and the hardest to
+    /// notice.
+    pub fn label(&self) -> String {
+        if self.sworn() {
+            if let Some(h) = self.handle() {
+                return h;
+            }
+        }
+        if let Some(n) = self.display_name() {
+            if !n.is_empty() {
+                return format!("~{n}");
+            }
+        }
+        let addr = self.address().unwrap_or_default();
+        if addr.len() >= 10 {
+            format!("{}…{}", &addr[..6], &addr[addr.len() - 4..])
+        } else {
+            "anonymous".to_string()
+        }
+    }
+}
+
 /// Why a signature did not come back. **`Handoff` is not a failure** — it
 /// means the player's signer is their browser and the act finishes there. A
 /// game that retries on it will spin forever; show the link instead.
@@ -375,12 +485,26 @@ impl std::error::Error for SignError {}
 
 // ── the client ──────────────────────────────────────────────────────────────
 
+/// Where the door is when nobody named one.
+///
+/// ⚠ **This must agree with the launcher's own default exactly**
+/// (`scry-broker/src/transport.rs`). A mismatch is the worst shape of bug
+/// here: a game finds no launcher on a machine that is running one, reports
+/// the normal "playing anonymously", and nothing anywhere is red.
+/// `$SCRY_LAUNCHER_SOCKET` is set by the launcher on every native build it
+/// starts and wins over both defaults, which is why that is the path a game
+/// should actually end up using.
 pub fn default_socket() -> PathBuf {
     if let Ok(p) = env::var(SOCKET_ENV) {
         if !p.is_empty() {
             return PathBuf::from(p);
         }
     }
+    platform_default()
+}
+
+#[cfg(unix)]
+fn platform_default() -> PathBuf {
     if let Ok(rt) = env::var("XDG_RUNTIME_DIR") {
         if !rt.is_empty() {
             return PathBuf::from(rt).join("scry").join("launcher.sock");
@@ -389,9 +513,82 @@ pub fn default_socket() -> PathBuf {
     PathBuf::from(env::var("HOME").unwrap_or_default()).join(".cache/scry/launcher/launcher.sock")
 }
 
+/// One pipe per user, because the Windows pipe namespace is machine-wide. Two
+/// people signed into one box must not land on the same door — a game would
+/// otherwise ask the wrong session's launcher to sign.
+#[cfg(windows)]
+fn platform_default() -> PathBuf {
+    let user = env::var("USERNAME").unwrap_or_default();
+    let user: String = user
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let user = if user.is_empty() {
+        "default".to_string()
+    } else {
+        user
+    };
+    PathBuf::from(format!(r"\\.\pipe\scry-launcher-{user}"))
+}
+
+/// Open the door, or say there is none. **`Err` is a normal state** — it means
+/// no launcher is running, and a game plays fine without one.
+#[cfg(unix)]
+fn open_stream(path: &std::path::Path, timeout: Duration) -> Result<Stream, String> {
+    let stream =
+        UnixStream::connect(path).map_err(|e| format!("no launcher at {}: {e}", path.display()))?;
+    // A consent prompt waits for a person, so these are generous. A short read
+    // timeout turns "the player was reading the message" into a bug.
+    stream.set_read_timeout(Some(timeout)).ok();
+    stream.set_write_timeout(Some(timeout)).ok();
+    Ok(stream)
+}
+
+/// The Windows half — a named pipe, which opens as a file.
+///
+/// ⚠ **The timeout bounds the CONNECT, not the reads, and that difference is
+/// real.** `WaitNamedPipeW` waits for a free instance for `timeout` and then
+/// gives up, so a launcher that is not running still fails fast. Once open,
+/// reads block: bounding them wants overlapped I/O, which is a great deal of
+/// machinery for a file whose whole property is that it vendors with no crates
+/// and no build script.
+///
+/// What that costs, said plainly rather than discovered: a launcher that
+/// accepts a connection and then never answers will hang the calling game
+/// instead of erroring after `timeout`. On unix the same launcher returns an
+/// error. That is a launcher bug in both cases; on Windows the game feels it as
+/// a freeze. A game that cares should call the SDK off its main thread — which
+/// is good practice anyway, because a consent prompt waits for a human.
+#[cfg(windows)]
+fn open_stream(path: &std::path::Path, timeout: Duration) -> Result<Stream, String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    extern "system" {
+        fn WaitNamedPipeW(name: *const u16, timeout_ms: u32) -> i32;
+    }
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+    // Not fatal on its own: the pipe may already have a free instance, in
+    // which case the open below simply succeeds. This only makes a busy
+    // launcher wait rather than fail instantly.
+    // SAFETY: `wide` is a NUL-terminated UTF-16 buffer that outlives the call.
+    unsafe { WaitNamedPipeW(wide.as_ptr(), ms) };
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("no launcher at {}: {e}", path.display()))
+}
+
 pub struct Overlay {
-    stream: UnixStream,
-    reader: BufReader<UnixStream>,
+    stream: Stream,
+    reader: BufReader<Stream>,
     pub hello: Value,
 }
 
@@ -408,10 +605,7 @@ impl Overlay {
         version: &str,
         timeout: Duration,
     ) -> Result<Overlay, String> {
-        let stream = UnixStream::connect(path)
-            .map_err(|e| format!("no launcher at {}: {e}", path.display()))?;
-        stream.set_read_timeout(Some(timeout)).ok();
-        stream.set_write_timeout(Some(timeout)).ok();
+        let stream = open_stream(path, timeout)?;
         let reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
         let mut ov = Overlay {
             stream,
@@ -431,10 +625,15 @@ impl Overlay {
         Ok(ov)
     }
 
-    /// Which backend the player configured: `browser` · `arca` · `external` ·
-    /// `none`. Worth reading before asking — with `none` there is nothing to
+    /// Which backend holds the key: `local` · `browser` · `arca` · `external`
+    /// · `none`. Worth reading before asking — with `none` there is nothing to
     /// ask, and with `browser` expect a handoff rather than a signature and
     /// shape the UI for it.
+    ///
+    /// ⚠ **`local` is what the shipped client reports** once the player has
+    /// made an account in it, and it is the only backend `prove` works on. The
+    /// others are reachable by anyone building on the launcher crates; a
+    /// downloaded launcher answers `local` or `none` and nothing else.
     pub fn signer(&self) -> String {
         self.hello.str_or_empty("signer")
     }
@@ -486,6 +685,59 @@ impl Overlay {
         Err(SignError::Refused(reason))
     }
 
+    /// **Prove to your own server who is playing.** This is the verb behind a
+    /// ticket check, and it is the one to reach for — not [`Overlay::address`],
+    /// which is a claim anything can make.
+    ///
+    /// The reply is a **SIWE (EIP-4361) message and signature**, so your
+    /// backend needs no scry-specific code — hand both to any `siwe` library
+    /// (JS, Python, Rust, Go; built into viem and ethers):
+    ///
+    /// ```text
+    /// let m = siwe::Message::from_str(&body.message)?;
+    /// m.verify(&sig, &VerificationOpts {
+    ///     domain: Some("shard-3.gates.example".parse()?),
+    ///     nonce:  Some(the_nonce_you_issued),
+    ///     ..Default::default()
+    /// })?;
+    /// // m.address is now proven. Look it up and admit or kick.
+    /// ```
+    ///
+    /// `server` is your **domain** — `shard-3.gates.example`, optionally with
+    /// `:port`. No scheme, no path: EIP-4361 binds the domain, and the launcher
+    /// writes the `URI:` line itself.
+    ///
+    /// ⚠ **The nonce must be one you issued and have not seen before**, and
+    /// EIP-4361 requires **at least 8 alphanumeric characters**. A dashed uuid
+    /// is refused — strip the dashes. A signature over a message with no fresh
+    /// nonce is valid forever to anyone who captures it.
+    ///
+    /// ⚠ **Do not recompute the message string and compare.** It carries
+    /// `Issued At` from the launcher's clock, so you cannot rebuild it. Parse
+    /// it and check the fields you care about — which is what `verify` does,
+    /// and why passing your own domain and nonce to it is the whole check.
+    ///
+    /// **No consent prompt fires for this**, and that is by construction rather
+    /// than by permission: the launcher composes every word of the message, so
+    /// a game cannot smuggle a sentence into an unprompted signature. `sign` —
+    /// where the game writes the text — still asks the player.
+    pub fn prove(&mut self, server: &str, nonce: &str) -> Result<Proof, SignError> {
+        let req = json::object(&[
+            ("op", Field::S("prove")),
+            ("nonce", Field::S(nonce)),
+            ("server", Field::S(server)),
+        ]);
+        let reply = self.call(&req).map_err(SignError::NoLauncher)?;
+        if reply.as_bool_key("ok") {
+            return Ok(Proof {
+                signature: reply.str_or_empty("signature"),
+                address: reply.opt_str("address"),
+                message: reply.str_or_empty("message"),
+            });
+        }
+        Err(SignError::Refused(reply.str_or_empty("reason")))
+    }
+
     /// The URL of a title's shard list, which YOU fetch. The launcher does not
     /// proxy it — a launcher between a game and its own server list is a cache
     /// nobody asked for and a ranking nobody can see.
@@ -503,7 +755,15 @@ impl Overlay {
         }
     }
 
-    pub fn title(&mut self, slug: &str) -> Option<Value> {
+    /// The URL of this title's **manifest**, which YOU fetch.
+    ///
+    /// ⚠ It returns a url, not a title object — the launcher does not proxy a
+    /// game's own documents, the same rule [`Overlay::servers_url`] states.
+    /// This read `reply.get("title")` until 2026-08-07 and therefore answered
+    /// `None` for every slug against the real broker, which has always replied
+    /// with `url`. It went unnoticed because this client was only ever driven
+    /// against a second broker that no longer exists.
+    pub fn title(&mut self, slug: &str) -> Option<String> {
         let reply = self
             .call(&json::object(&[
                 ("op", Field::S("title")),
@@ -511,7 +771,7 @@ impl Overlay {
             ]))
             .ok()?;
         if reply.as_bool_key("ok") {
-            reply.get("title").cloned()
+            reply.opt_str("url")
         } else {
             None
         }
@@ -548,6 +808,46 @@ impl Overlay {
             reply.get("overlay").cloned()
         } else {
             None
+        }
+    }
+
+    /// **A name and a face to draw** — Steam's `GetPlayerSummaries`.
+    ///
+    /// Pass `""` for the address this launcher watches, or an address to look
+    /// somebody else up — the one you recovered from [`Overlay::prove`], say,
+    /// or another player on your shard.
+    ///
+    /// ⚠ **Three states, and a game that collapses them tells a lie.** `None`
+    /// means *we could not look*: the origin was unreachable, or this launcher
+    /// has no reader. [`Profile::found`] `== false` means *we looked and there
+    /// is no sworn identity*, which is a normal way to play. Drawing "no name"
+    /// for the first invents a fact about a stranger, and it is the cheapest
+    /// mistake in this file to make.
+    ///
+    /// ⚠ **This is not authentication.** It describes an address; it does not
+    /// establish that the player holds its key. Call [`Overlay::prove`] for
+    /// that, then look up the address you recovered.
+    pub fn profile(&mut self, address: &str) -> Option<Profile> {
+        let mut fields = vec![("op", Field::S("profile"))];
+        if !address.is_empty() {
+            fields.push(("address", Field::S(address)));
+        }
+        let reply = self.call(&json::object(&fields)).ok()?;
+        if !reply.as_bool_key("ok") {
+            return None;
+        }
+        let reachable = reply.get("reachable").map(Value::as_bool).unwrap_or(true);
+        match reply.get("profile") {
+            Some(Value::Null) | None => Some(Profile {
+                raw: Value::Null,
+                reachable,
+                found: false,
+            }),
+            Some(v) => Some(Profile {
+                raw: v.clone(),
+                reachable,
+                found: true,
+            }),
         }
     }
 

@@ -114,9 +114,12 @@ crossbow
 N + rope + tarp) · door_metal · armor_roadsign (component-gated) ·
 medkit
 
-**Food**: berries · mushrooms · corn (meadow scatter) · **raw_meat +
-cooked_meat** (the pig drops raw, a campfire cooks it, and only the cooked
-half is edible) **(knob: cut list)**
+**Food**: berries (the bush's side payout) · mushrooms (the tree's — the
+forest floor pays through the tree that shades it, because a meadow/crop
+node archetype is a sim occupant we don't have) · corn (a coast-road
+barrel ration, standing in for the reference's riverside crops and
+roadside food crates) · **raw_meat + cooked_meat** (the pig drops raw, a
+campfire cooks it, and only the cooked half is edible) **(knob: cut list)**
 
 The parenthesis used to read "animals are post-alpha; meat drops from…
 nothing yet", and **both halves of that stopped being true on 2026-08-08**,
@@ -190,7 +193,8 @@ hash notes it, replays unaffected retroactively.
 ## 5 · Loot tables (alpha)
 
 - **barrel** (coast road): components-weighted, small metal_frags,
-  lowgrade; rare: revolver blueprint-free drop **(knob: drop vs craft-only)**
+  lowgrade, a corn ration (§2's food line); rare: revolver blueprint-free
+  drop **(knob: drop vs craft-only)**
 - **crate** (haven periphery + headlands): T1/T2 mats, powder chain
   pieces, medkit
 - Barrels respawn on the slot system (`TERRAIN.md` §2), 15–30 min

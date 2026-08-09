@@ -36,7 +36,7 @@ pub fn stem(name: &str) -> String {
 /// not do I/O to find out what it has — and because a gate can then compare
 /// it against the directory and fail on either half drifting
 /// (`tests/ui.rs` §G).
-pub const STEMS: [&str; 56] = [
+pub const STEMS: [&str; 58] = [
     // the wheel
     "shape_foundation",
     "shape_wall",
@@ -77,6 +77,7 @@ pub const STEMS: [&str; 56] = [
     "metal_spear",
     "furnace",
     "large_box",
+    "code_lock",
     "wooden_door",
     "building_plan",
     "hammer",
@@ -93,10 +94,12 @@ pub const STEMS: [&str; 56] = [
     "berries",
     "mushrooms",
     "corn",
-    // The food loop's pair. Their PNGs are the only two in `assets/icons/`
-    // that are not game-icons.net — see that directory's `CREDITS.md`.
+    // The food loop's states. Their PNGs are the only three in
+    // `assets/icons/` that are not game-icons.net — see that directory's
+    // `CREDITS.md`.
     "raw_meat",
     "cooked_meat",
+    "burnt_meat",
 ];
 
 #[cfg(test)]

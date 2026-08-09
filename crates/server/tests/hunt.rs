@@ -1,5 +1,5 @@
 //! `hunt` — a naked spawn can actually catch and kill a pig, and the kill
-//! pays a raw food a campfire will take.
+//! leaves a corpse bag whose loot is a raw food a campfire will take.
 //!
 //! **This is the gate for a defect no other gate could see.** The pig's
 //! flight speed shipped at 100% of `SPRINT_SPEED` for one build: every
@@ -60,6 +60,11 @@ fn a_sprinting_player_can_catch_and_kill_a_pig() {
     core.world.combat = c.bake_combat().expect("weapons bake");
     core.world.gather = c.bake_gather().expect("gather bakes");
     core.world.spawn_kit = c.bake_spawn_kit().expect("the kit bakes");
+    // The bag ladder, because the kill's payout IS a bag now: a killed pig
+    // stands its loot up as a ground container at the death position, and
+    // a shipped content set that disarmed backpacks would make every hunt
+    // pay nothing — this line is where that regression reddens.
+    core.world.backpack = c.bake_backpack().expect("the bag ladder bakes");
     core.tick(&stats, |_, _, _| true);
 
     let slot = core
@@ -121,12 +126,14 @@ fn a_sprinting_player_can_catch_and_kill_a_pig() {
         frame.buttons = BTN_SPRINT | BTN_PRIMARY;
         core.world.tick(&[Command::Input { id: 0x100, frame }]);
         if !core.world.mobs.m[slot].alive {
-            caught = Some(t);
+            // (bx, bz) was read before the killing tick and the strike
+            // resolves before the roster steps, so it is the death address.
+            caught = Some((t, bx, bz));
             break;
         }
     }
 
-    let t = caught.unwrap_or_else(|| {
+    let (t, bx, bz) = caught.unwrap_or_else(|| {
         let (px, pz) = (core.world.players[p].body.qx, core.world.players[p].body.qz);
         let (bx, bz) = (
             core.world.mobs.m[slot].body.qx,
@@ -142,13 +149,54 @@ fn a_sprinting_player_can_catch_and_kill_a_pig() {
     });
     println!("caught in {t} ticks ({:.1} s)", t as f32 / TICK_HZ as f32);
 
-    // And the kill paid the raw food the fire is waiting for.
+    // The kill left a body, not a payment: the loot stands in a ground bag
+    // at the death position, and the killer's pockets hold none of it yet.
     let raw = c.item_index("item.raw_meat").expect("raw meat is an item");
-    let got: u32 = core.world.players[p]
-        .inv
-        .iter()
-        .filter(|s| s.item == raw)
-        .map(|s| s.count as u32)
-        .sum();
-    assert!(got > 0, "the kill paid no raw meat");
+    let carried = |core: &ShardCore, item: u16| -> u32 {
+        core.world.players[p]
+            .inv
+            .iter()
+            .filter(|s| s.item == item && s.count > 0)
+            .map(|s| s.count as u32)
+            .sum()
+    };
+    assert_eq!(
+        carried(&core, raw),
+        0,
+        "the blow itself paid raw meat into the killer — the corpse bag \
+         was bypassed"
+    );
+    assert_eq!(
+        core.world.backpacks.len(),
+        1,
+        "the kill stood up exactly one corpse bag"
+    );
+    let bag = core.world.backpacks.entries()[0];
+    assert_eq!(
+        (bag.qx, bag.qz),
+        (bx, bz),
+        "the bag is where the pig died, not where the killer stood"
+    );
+
+    // E — the same loot verb every ground bag answers. The chase ends with
+    // the killer on top of the body (melee reach 2 m < loot reach 5 m), so
+    // no walk is owed; the take pays exactly the mobs.toml rows.
+    core.world.tick(&[Command::Loot { id: 0x100 }]);
+    let def = core.world.mob.def(0);
+    for row in def.loot.iter() {
+        if row.item == sim_core::gather::NO_ITEM || row.count == 0 {
+            continue;
+        }
+        assert_eq!(
+            carried(&core, row.item),
+            row.count as u32,
+            "looting the corpse must pay exactly the content row for item {}",
+            row.item
+        );
+    }
+    assert!(carried(&core, raw) > 0, "the hunt paid no raw meat");
+    assert!(
+        core.world.backpacks.is_empty(),
+        "an emptied corpse bag leaves the world"
+    );
 }

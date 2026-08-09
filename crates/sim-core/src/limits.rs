@@ -317,6 +317,83 @@ pub const MAX_BOXES: usize = 256;
 /// Proposed default, DECISIONS.md §open (box v0).
 pub const BOX_SLOTS: usize = 12;
 
+/// Code locks bolted onto doors at once (`lock.rs`). Its own dense list
+/// beside the hearths and the boxes, for the reason both of those have
+/// one: `DeployRec` is the struct the wire mirrors, so a code, two
+/// remembered lists and two timers may not ride on it. Overflow policy:
+/// **refuse** the placement with `REFUSE_D_FULL`, the posture `MAX_BOXES`
+/// takes, and correct here for its reason — a lock that was never bolted
+/// on loses nothing, and the door stays exactly as usable as it was.
+/// Sized under `MAX_DEPLOYS` on purpose: every lock needs a door under
+/// it, and a shard with 512 locked doors is a shard with 512 bases.
+/// Proposed default, DECISIONS.md §open (lock v1).
+pub const MAX_LOCKS: usize = 512;
+
+/// Players one lock remembers with **full** rights — the ones who entered
+/// its main code, plus whoever bolted it on. The reference's list is
+/// unbounded (`reference/DOORS.md` §2.2); ours cannot be (wall 4).
+/// Overflow policy: **refuse the code entry** with `REFUSE_D_AUTH_FULL`.
+/// Never evict: dropping the oldest entry would make a door that forgets
+/// the person who owns it, which is the one failure this cap must not
+/// have. Proposed default, DECISIONS.md §open (lock v1).
+pub const LOCK_AUTH_CAP: usize = 8;
+
+/// Players one lock remembers as **guests** — entered the guest code, may
+/// work the door and nothing else (`reference/DOORS.md` §2.2, Devblog
+/// 149). Its own list rather than a rights bit inside `LOCK_AUTH_CAP`, so
+/// a crowd of guests can never crowd out the owners. Same overflow
+/// policy, same refusal. Proposed default, DECISIONS.md §open (lock v1).
+pub const LOCK_GUEST_CAP: usize = 8;
+
+/// The **grace window** on a fresh placement, in ticks — 10 min at the
+/// 30 Hz tick, the reference's own figure for a foundation
+/// (`reference/BUILDING.md` §6; their sources disagree about whether
+/// other pieces get 30, and §6 says so rather than picking). Inside it a
+/// piece can be demolished for a full refund by anyone who may build
+/// there; outside it a piece comes down by explosives only.
+///
+/// It is a *mistake-fix*, not a verb: the question every player asks in
+/// their first hour is "I put the foundation in the wrong place", and ten
+/// minutes answers it without making a crewmate able to dismantle a base
+/// they were let into. Proposed default, DECISIONS.md §open (demolish v1).
+pub const DEMOLISH_WINDOW_TICKS: u64 = 18_000;
+
+/// Cells of connected structure one privilege walk may visit
+/// (`claim.rs`, privilege v1). The reference asks its question of a
+/// physics volume and needs a persistent building identity to afford it;
+/// ours is a breadth-first walk over the build grid, and this is what
+/// bounds it (wall 4).
+///
+/// Overflow policy: **the walk stops, and privilege does not extend past
+/// it.** That is the honest failure for a bounded search — it can
+/// under-claim and never over-claim, so the worst case is somebody
+/// building against the far wall of a base bigger than 256 cells (768 m
+/// of footprint), and it can never lock a player out of open ground.
+/// Proposed default, DECISIONS.md §open (privilege v1).
+pub const PRIV_BFS_CELLS: usize = 256;
+
+/// Slots in the claim cache's open-addressed cell → volume map — the
+/// rebuild scratch that makes re-walking every hearth's privilege volume
+/// affordable in one tick (`claim::ClaimCache`, the upkeep sweep's
+/// coverage shape). Structural cap derived exactly as `COL_INDEX_SLOTS`
+/// is: 2 × `MAX_PIECES`, power of two, and it can never pass half load
+/// because a cell enters the map at most once and only when built, so the
+/// key count is bounded by the piece store that built it. Overflow policy:
+/// none reachable — every probe terminates at an empty slot while load
+/// stays under half, and the pool insert beside it stops at `MAX_PIECES`
+/// regardless. Not a knob.
+pub const CLAIM_INDEX_SLOTS: usize = 16_384;
+
+/// Players one hearth remembers as its **crew** — who may build, upgrade,
+/// repair and deploy inside its claim (`reference/BUILDING.md` §2). Ten in
+/// the reference's own vanilla cap, and the same number here for the same
+/// reason it is a number at all: a base is a group, and an unbounded group
+/// is an unbounded array in a `HearthRec` the wire mirrors nothing of.
+/// Overflow policy: **refuse, never evict** — the `Roster`'s rule, and the
+/// one this cap must not break is that a hearth never forgets whoever
+/// placed it. Proposed default, DECISIONS.md §open (hearth crew v1).
+pub const HEARTH_CREW_CAP: usize = 10;
+
 /// Broken-box spills awaiting a ground bag, drained at the end of the
 /// tick that broke them (`world.rs`). A box is emptied where it stood by
 /// the same `stand_up` a corpse and a barrel use, but the removal path

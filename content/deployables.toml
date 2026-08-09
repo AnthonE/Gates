@@ -1,7 +1,14 @@
 # Gates · content/deployables.toml — placeable entities (CONTENT.md §1).
-# placement: ground | foundation | doorway | any. Doors declare `material`
-# so validation can hold them under their material's wall hp (the door is
-# the intended breach point); non-doors must not declare one.
+# placement: ground | foundation | doorway | any | door. Doors declare
+# `material` so validation can hold them under their material's wall hp
+# (the door is the intended breach point); non-doors must not declare one.
+#
+# `door` is the code lock's placement class and its alone (lock v1): it is
+# the one class whose target must be OCCUPIED, by a door. A lock mints no
+# deploy record — it lives in the sim's lock store, keyed by the door's
+# address — so its `hp` is carried for the schema and never tracked: a
+# lock dies with what it is bolted to, which is the reference's own rule
+# (`reference/DOORS.md` §2.2).
 
 [[deployable]]
 id = "item.sleeping_bag"
@@ -44,6 +51,12 @@ id = "item.workbench1"
 archetype = "workbench"
 placement = "foundation"
 hp = 400
+
+[[deployable]]
+id = "item.lock_code"
+archetype = "lock"
+placement = "door"
+hp = 100
 
 [[deployable]]
 id = "item.door_wood"

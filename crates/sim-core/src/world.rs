@@ -111,10 +111,15 @@ pub const EV_DEPLOY_REMOVED: u8 = 12;
 /// EV_STOCK: a = feeder player id, b = hearth cell key, c = level — the
 /// feed ack; the wire reads the hearth's stock from the world at encode.
 pub const EV_STOCK: u8 = 13;
-/// EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | locked << 1
-/// | open, c = the player whose action changed it. The door's whole state,
-/// absolute, whether the toggle or the lock moved (lock v0). Broadcast —
-/// door state is a world fact like a placement.
+/// EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | has_lock << 2
+/// | locked << 1 | open, c = the player whose action changed it. The
+/// door's whole state, absolute, whether the toggle, the lock or the
+/// keypad moved it (lock v1). Broadcast — door state is a world fact like
+/// a placement. The three bits are the door as the world sees it and
+/// nothing more: no code, no owner and no remembered list is on this
+/// lane, because none of it is a client's to know. A **box's** lock rides
+/// the same lane (locks on boxes): the event is addressed, and a box's
+/// `open` bit is simply always 0.
 pub const EV_DOOR: u8 = 14;
 /// EV_HIT: a = attacker player id, b = victim player id, c = damage dealt.
 /// The attacker's fact — the hitmarker, not the truth; EV_HEALTH is what
@@ -129,11 +134,11 @@ pub const EV_HEALTH: u8 = 16;
 pub const EV_DEATH: u8 = 17;
 /// EV_BAG_DROPPED: a = container id, b = the container's owner — the
 /// player whose body it came off for a death bag, the smasher for a
-/// barrel's loot (`backpack::stand_up`). Broadcast — a container on the
-/// ground is a world fact like a placement; the wire reads its position
-/// out of the store at encode, the way a hearth's stock is read
-/// (backpack.rs), and carries no owner at all, so `b` is a sim-side fact
-/// only.
+/// barrel's loot, the dead animal's tagged mob id for a corpse bag
+/// (`backpack::stand_up`). Broadcast — a container on the ground is a
+/// world fact like a placement; the wire reads its position out of the
+/// store at encode, the way a hearth's stock is read (backpack.rs), and
+/// carries no owner at all, so `b` is a sim-side fact only.
 pub const EV_BAG_DROPPED: u8 = 18;
 /// EV_BAG_REMOVED: a = backpack id, b = `backpack::BAG_GONE_*` (despawn,
 /// emptied, evicted). Broadcast, and it restarts in-progress bag sync
@@ -259,6 +264,27 @@ pub const EV_CHARGE_PLACED: u8 = 29;
 /// visible from outside the base it is in, so hiding it from the
 /// neighbourhood would make the sim disagree with the picture.
 pub const EV_OVEN: u8 = 30;
+/// EV_KNOCK: a = build cell key, b = level << 16 | loc << 8, c = the
+/// player who knocked. Broadcast, and that **is** the feature: a knock is
+/// the only channel a locked-out player has to the person inside
+/// (`reference/DOORS.md` §4, shipped by the reference in Nov 2014). It
+/// rides the refusal path — every press the lock turns away knocks — so
+/// there is no verb to forge and nothing to rate-limit beyond the reach
+/// check the press already paid.
+///
+/// No state, nothing persisted, no field for *why*: a knock says somebody
+/// is at the door and deliberately not who is allowed through it.
+pub const EV_KNOCK: u8 = 31;
+/// EV_AUTH: a = build cell key, b = level << 16 | loc << 8 | grant, c =
+/// the player now remembered (`lock::GRANT_*`). **Own-fact** — the sender
+/// learns their own rights and nobody learns anyone else's, which is the
+/// same posture `EV_HEALTH` takes and the reason a lock's remembered list
+/// never crosses the wire as a list.
+///
+/// Only a *correct* code produces one; a wrong one is
+/// `EV_DEPLOY_REFUSED` with `REFUSE_D_CODE`, so the two outcomes are two
+/// codes and a client cannot mistake silence for a grant.
+pub const EV_AUTH: u8 = 32;
 
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
@@ -267,7 +293,7 @@ pub const EV_OVEN: u8 = 30;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_OVEN;
+pub const EV_MAX: u8 = EV_AUTH;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -469,12 +495,14 @@ pub struct Player {
     /// slots are `MAX_PLAYERS` and sleepers hold them, so a shard with
     /// every slot asleep must still admit a player (wall 4 — every store
     /// has a cap and a stated overflow policy). The policy is **evict the
-    /// longest-asleep**, and this is the key it is ordered by. Ties break
-    /// on slot index, which is why the scan is a `for` over slot order and
-    /// not a `min_by_key`.
+    /// longest-asleep**, and this is the key it is ordered by. The scan
+    /// lives on the server (`ShardCore::evict_victim` — two-phase eviction,
+    /// so the victim's save is taken before the body is removed), which
+    /// reads this field through the world it owns.
     ///
-    /// Sim state, so it is hashed: two shards that disagreed about it
-    /// would evict different bodies and diverge from that tick on.
+    /// Sim state, so it is hashed: it is what the server's pick is ordered
+    /// by, and a shard that drifted on it would nominate a different
+    /// victim on its next replayed session.
     pub slept_at: u64,
 }
 
@@ -567,6 +595,31 @@ pub enum Command {
         id: u32,
         sleeper: u32,
     },
+    /// Remove the sleeping body `id` — **the second phase of two-phase
+    /// eviction**, and the only way a body ever vacates its slot (death
+    /// does not: the corpse keeps it while the death screen waits).
+    ///
+    /// `seat` used to evict the longest-asleep sleeper on its own authority
+    /// when a join found no free slot. That was right for the world and
+    /// wrong for persistence (`reference/SAVES.md` §9.2): the store's
+    /// record for the victim was frozen at the moment they left, so a
+    /// sleeper raided *after* that and then evicted came back from the
+    /// stale record — the raid quietly undone. Only the server can take a
+    /// current save off the live body, so the order has to be: pick the
+    /// victim, take its save, **then** queue this, then the join — and the
+    /// policy (longest-asleep, `ShardCore::evict_victim`) moved to the
+    /// server with the save. The id travels here so a replayed stream
+    /// evicts the same body (wall 5); `evictions` is hashed and counts it.
+    ///
+    /// A miss — `id` names nobody, or a body that is awake — is legal and
+    /// a no-op, `Wake`'s posture: a WAL replayed against a world that
+    /// diverged must refuse rather than delete a body somebody is driving.
+    /// **Not reachable from the wire**: no `ActionMsg` maps to a command in
+    /// this family (a client must not be able to evict anybody) — it is
+    /// minted by `ShardCore::connect_as` alone, beside `Join` and `Leave`.
+    Evict {
+        id: u32,
+    },
     Input {
         id: u32,
         frame: InputFrame,
@@ -621,15 +674,41 @@ pub enum Command {
         level: u8,
         loc: u8,
     },
-    /// Set the lock bit of the door at the address (owner-only; absolute,
-    /// never a toggle — deploy.rs validates and refuses by event).
-    Lock {
+    /// Take the thing at the address back down and get it back —
+    /// **demolish v1**. `deploy` picks the store, `Repair`'s bit for
+    /// `Repair`'s reason: a door and its doorway share one address.
+    ///
+    /// The two halves are deliberately different verbs wearing one
+    /// command. A **piece** comes down only inside its grace window and
+    /// refunds whole (`build::demolish`); a **deployable** comes up any
+    /// time you may build there and returns its item (`deploy::pick_up`).
+    /// The reference draws the line in the same place and for the same
+    /// reason: a box is furniture, a wall is a base.
+    Demolish {
+        id: u32,
+        deploy: bool,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
+    /// Run one access op at the address — **who may do this here**.
+    /// `deploy::ACCESS_OP_*` names the nine: 0..=5 against the code lock
+    /// on a door (`deploy::lock_op`), 6..=8 against the hearth's crew
+    /// (`deploy::crew_op`). One command with an op field rather than nine,
+    /// because the wire's action space was full at fifteen in four bits.
+    ///
+    /// Both halves validate and refuse by event, never by panic, and both
+    /// re-check the op and the code the wire already checked — a replayed
+    /// frame reaches the sim without passing a decoder.
+    Access {
         id: u32,
         cx: u16,
         cz: u16,
         level: u8,
         loc: u8,
-        locked: bool,
+        op: u8,
+        code: u16,
     },
     /// Upgrade the piece at the address into `material` — same shape, same
     /// address, a rung up the ladder (build.rs validates and refuses by
@@ -820,11 +899,12 @@ pub struct World {
     /// cascade capped mid-fall leaves pieces standing on nothing, and this
     /// cursor is what finds them on a later tick.
     pub sweep_support: u32,
-    /// How many sleeping bodies this world has evicted to seat a join
-    /// (`seat`). Wall 4 asks every cap for a stated overflow policy, and a
-    /// policy nobody can measure is the mood the walls list warns about —
-    /// this is the number that says whether "evict the longest-asleep" ever
-    /// fires in practice or is dead code guarding an unreachable case.
+    /// How many sleeping bodies this world has evicted to free a slot
+    /// (`Command::Evict`). Wall 4 asks every cap for a stated overflow
+    /// policy, and a policy nobody can measure is the mood the walls list
+    /// warns about — this is the number that says whether "evict the
+    /// longest-asleep" ever fires in practice or is dead code guarding an
+    /// unreachable case.
     ///
     /// Hashed, though it drives nothing. An eviction is the one sim event
     /// whose evidence is an *absence*: the body is simply not in the player
@@ -1148,6 +1228,28 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
                 }
+                // The lock's question, asked where the box actually opens
+                // (locks on boxes, `DOORS.md` §9.8). The move verb IS the
+                // box's open path — the container view is a subscription
+                // that grants nothing — so this one check gates deposit
+                // and withdrawal alike, on both halves of a move. The box
+                // stands on the plane (`loc_fits_placement`), so its lock
+                // shares `box_key`'s triple plus `LOC_PLANE`; an oven at
+                // the same shape of address can carry no lock (`lockable`)
+                // and passes as bare. The refusal is the locked door's
+                // own, not a move reason: the panel draws server truth and
+                // predicted nothing to roll back (`ui/slots.rs`), and
+                // *this lock does not know you* is one sentence whichever
+                // verb it refused.
+                let b = self.deploys.boxes()[i];
+                if !self
+                    .deploys
+                    .lock_passes(b.cx, b.cz, b.level, build::LOC_PLANE, pid)
+                {
+                    self.events
+                        .push(EV_DEPLOY_REFUSED, pid, deploy::REFUSE_D_OWNER, 0);
+                    return;
+                }
                 Some(i)
             }
             _ => None,
@@ -1360,45 +1462,25 @@ impl World {
         if self.slot_of(id).is_some() {
             return;
         }
-        // A genuinely empty slot first; failing that, the longest-asleep
-        // body is evicted to make one.
+        // A genuinely empty slot, or a silent refusal. Eviction is no
+        // longer this function's call: it used to take the longest-asleep
+        // sleeper on its own authority here, which was right for the world
+        // and wrong for persistence — the victim's record was frozen at
+        // their leave, so a sleeper raided and then evicted came back from
+        // the stale record (`reference/SAVES.md` §9.2's one remaining
+        // hole). The server now picks the victim, takes a current save off
+        // the live body, and queues `Command::Evict` *ahead of* the join
+        // that needs the slot (`ShardCore::connect_as`) — so by the time a
+        // legitimate full-shard join reaches this line, the slot is free.
         //
-        // **Sleepers are why this is not just `position(|p| !p.active)`
-        // any more.** A body that stays after its connection ends holds a
-        // slot, and slots are `MAX_PLAYERS` — so without an eviction rule
-        // a shard that a hundred people had ever visited would refuse the
-        // hundred-and-first forever, which is wall 4's "no cap without a
-        // stated overflow policy" failing in the direction that looks like
-        // the server being down.
-        //
-        // Evicting is not losing the player: the store still holds their
-        // record (`reference/SAVES.md` §9.2 — the record's job is exactly
-        // "how you come back when the world has not got you"), so an
-        // evicted sleeper returns through `JoinAs` as they did before
-        // sleepers existed. What is lost is the interval since that record
-        // was last swept, which is the same bound the autosave already
-        // carries.
-        let slot = match self.players.iter().position(|p| !p.active) {
-            Some(s) => s,
-            None => {
-                let mut pick = usize::MAX;
-                for i in 0..MAX_PLAYERS {
-                    if self.players[i].sleeping
-                        && (pick == usize::MAX
-                            || self.players[i].slept_at < self.players[pick].slept_at)
-                    {
-                        pick = i;
-                    }
-                }
-                if pick == usize::MAX {
-                    // Every slot holds an awake player. Refuse silently;
-                    // the accept path already hard-caps at the shard limit.
-                    return;
-                }
-                self.players[pick].active = false;
-                self.evictions += 1;
-                pick
-            }
+        // A join with no free slot and no eviction ahead of it is refused
+        // silently, exactly as a shard full of awake players always was:
+        // the accept path already hard-caps connections at the shard
+        // limit, so this is a WAL replayed against a diverged world or a
+        // server that mis-counted, and neither may seat a body over one
+        // that is standing.
+        let Some(slot) = self.players.iter().position(|p| !p.active) else {
+            return;
         };
         match save {
             None => {
@@ -1549,6 +1631,26 @@ impl World {
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
     }
 
+    /// The world-side half of two-phase eviction: remove the sleeping body
+    /// `id`, exactly as `seat`'s own-authority eviction used to — the slot
+    /// goes inactive and the eviction is counted (`evictions` is hashed, so
+    /// two shards that evicted different bodies diverge loudly). Everything
+    /// else in the record is residue the next `seat` overwrites, invisible
+    /// until then because every read of a player — `state_hash` included —
+    /// filters on `active` first.
+    ///
+    /// Only a **sleeping** body: the server picks victims from the sleeper
+    /// population, and a replayed stream whose world diverged must refuse
+    /// to delete a body somebody is driving (`Command::Evict` says why a
+    /// miss is legal).
+    fn evict(&mut self, id: u32) {
+        let Some(slot) = self.sleeper_slot(id) else {
+            return;
+        };
+        self.players[slot].active = false;
+        self.evictions += 1;
+    }
+
     /// Re-apply every door's shut bit to the collision index, after a world
     /// load has replaced both stores.
     ///
@@ -1567,13 +1669,36 @@ impl World {
     /// same expression `deploy.rs`'s use-toggle writes, deliberately
     /// duplicated rather than shared, because the toggle owns *when* and
     /// this owns *from what*.
+    /// The lock's two mirror bits are re-derived in the same pass and for
+    /// the same reason (lock v1). `DeployRec::has_lock` and
+    /// `DeployRec::locked` are a *view* of `lock.rs`'s store, and a saved
+    /// view is a saved cache: the file could carry a locked door whose
+    /// lock is not in the file's lock section, and the shard would draw a
+    /// locked door that the access check waves everyone through. Deriving
+    /// them here means the store is the only thing the save has to get
+    /// right, which is the same argument that keeps `Pieces::cols` out of
+    /// the file entirely. Every lockable archetype gets the derivation —
+    /// a **box** carries the same lock as a door (locks on boxes,
+    /// `DOORS.md` §9.8); only the door touches the collision index,
+    /// because only a door has a leaf that blocks.
     pub fn rebuild_doors(&mut self) {
         for i in 0..self.deploys.len() {
             let d = self.deploys.entries()[i];
-            if self.deploy.defs[d.row as usize].arch != crate::deploy::ARCH_DOOR {
+            let arch = self.deploy.defs[d.row as usize].arch;
+            if arch == crate::deploy::ARCH_DOOR {
+                self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
+            }
+            if !crate::deploy::lockable(arch) {
                 continue;
             }
-            self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
+            let lock = self
+                .deploys
+                .locks()
+                .iter()
+                .find(|l| l.cx == d.cx && l.cz == d.cz && l.level == d.level && l.loc == d.loc)
+                .copied();
+            self.deploys
+                .set_lock_mirror(i, lock.is_some(), lock.is_some_and(|l| l.locked));
         }
     }
 
@@ -1613,7 +1738,7 @@ impl World {
         self.slot_of(id).map(|s| PlayerSave::of(&self.players[s]))
     }
 
-    fn apply(&mut self, cmd: &Command) {
+    fn apply(&mut self, cmd: &Command, removals: &mut usize) {
         match *cmd {
             Command::Join { id } => self.seat(id, None),
             Command::JoinAs { id, save } => self.seat(id, Some(save)),
@@ -1642,6 +1767,7 @@ impl World {
                 }
             }
             Command::Wake { id, sleeper } => self.take_over(id, sleeper),
+            Command::Evict { id } => self.evict(id),
             Command::Input { id, frame } => {
                 if let Some(slot) = self.slot_of(id) {
                     let mut frame = frame;
@@ -1650,6 +1776,12 @@ impl World {
                         // command (bot, test, WAL) falls back to slot 0.
                         frame.sel = 0;
                     }
+                    // The wire refuses unknown button bits at the server's
+                    // accept boundary (net.rs `accept_input`); a non-wire
+                    // command is masked instead — `sel`'s rule, applied to
+                    // bits. The stored frame is hashed, so a bit no verb
+                    // reads must never reach it (NOW.md §5b).
+                    frame.buttons &= crate::input::BTN_MASK;
                     self.players[slot].frame = frame;
                 }
             }
@@ -1781,26 +1913,88 @@ impl World {
                     }
                 }
             }
-            Command::Lock {
+            Command::Demolish {
+                id,
+                deploy,
+                cx,
+                cz,
+                level,
+                loc,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    if deploy {
+                        deploy::pick_up(
+                            &self.deploy,
+                            &self.gather,
+                            &mut self.pieces,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            &mut self.events,
+                        );
+                    } else {
+                        build::demolish(
+                            &self.deploy,
+                            &self.build,
+                            &self.gather,
+                            &mut self.pieces,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            self.tick,
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            removals,
+                            &mut self.events,
+                        );
+                    }
+                }
+            }
+            Command::Access {
                 id,
                 cx,
                 cz,
                 level,
                 loc,
-                locked,
+                op,
+                code,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    deploy::set_lock(
-                        &self.deploy,
-                        &mut self.deploys,
-                        &self.players[slot],
-                        cx,
-                        cz,
-                        level,
-                        loc,
-                        locked,
-                        &mut self.events,
-                    );
+                    // The one branch: a crew op addresses the hearth on
+                    // the cell body, every other op addresses the lock on
+                    // a door's edge. `deploy::op_is_crew` is the split,
+                    // written once so the wire's range check and this
+                    // cannot disagree about which store an op means.
+                    if deploy::op_is_crew(op) {
+                        deploy::crew_op(
+                            &mut self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            op,
+                            &mut self.events,
+                        );
+                    } else {
+                        deploy::lock_op(
+                            &self.deploy,
+                            &self.gather,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            op,
+                            code,
+                            self.tick,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::Upgrade {
@@ -1951,8 +2145,14 @@ impl World {
     /// respawns, stamp the hash on cadence.
     pub fn tick(&mut self, commands: &[Command]) {
         self.events.clear();
+        // The tick's structural removal budget is minted **before** the
+        // commands rather than after them, because since demolish v1 a
+        // command can take a piece out of the store and seed a cascade —
+        // so the verbs and the sweep spend one allowance between them.
+        // Two budgets would be two caps and therefore no cap.
+        let mut removals = MAX_REMOVALS_PER_TICK;
         for cmd in commands.iter().take(MAX_COMMANDS_PER_TICK) {
-            self.apply(cmd);
+            self.apply(cmd, &mut removals);
         }
         let seed = self.seed;
         let tick = self.tick;
@@ -1965,8 +2165,8 @@ impl World {
         //
         // Deliberately not a `World` field. It is spent and forgotten
         // inside one tick exactly as `events` is, and a store that lives
-        // across ticks is a store `state_hash` has to answer for.
-        let mut removals = MAX_REMOVALS_PER_TICK;
+        // across ticks is a store `state_hash` has to answer for. Minted
+        // at the top of `tick` since demolish v1 — see there.
         // Slot order, and inside a slot: move, swing, craft. The swing is
         // one arm — `gather::swing` gets first claim on it (a tree in
         // reach is always the nearer target) and hands it on only when
@@ -2148,12 +2348,13 @@ impl World {
                         // a door must not become a way to eat the swing.
                         let took = mob::strike(
                             &self.combat,
-                            &self.gather,
+                            &self.backpack,
                             &self.mob,
                             tick,
                             i,
-                            &mut self.players,
+                            &self.players,
                             &mut self.mobs,
+                            &mut self.backpacks,
                             &mut self.events,
                         );
                         if !took {
@@ -2414,6 +2615,15 @@ impl World {
             h.update(&buf);
         }
         h.update(&(self.pieces.len() as u64).to_le_bytes());
+        // The placement clocks, in their own pass rather than widening
+        // the buffer below — they live in a parallel array precisely so
+        // the wire's mirror of `PieceRec` does not carry them
+        // (`build.rs`), and the digest follows the storage. State like
+        // any other timer: two shards that disagree about when a wall
+        // went up disagree about whether it can still be taken down.
+        for t in self.pieces.placed() {
+            h.update(&t.to_le_bytes());
+        }
         for r in self.pieces.entries() {
             let mut buf = [0u8; 12];
             buf[0..2].copy_from_slice(&r.cx.to_le_bytes());
@@ -2503,6 +2713,46 @@ impl World {
             buf[16] = d.locked as u8;
             h.update(&buf);
         }
+        // The code locks (lock v1). Every byte is state a shard can
+        // disagree about and a raid can turn on: two shards that disagree
+        // about a remembered list disagree about who is inside the base
+        // ten seconds from now, and the miss counters decide whether the
+        // next press is a shock or a shut keypad.
+        //
+        // Hashed on the **arrow** idiom — no length prefix — and that is
+        // deliberate for the reason the arrow store states next door: a
+        // `h.update(&len)` folds eight zero bytes even for an empty store
+        // and would move `GOLDEN_FINAL_HASH` for a slice the replay
+        // script never exercises. A dense store's iteration order is
+        // insert order rewritten by swap-remove, and both are commands'
+        // consequences, so it is as deterministic as `entries` above.
+        for l in self.deploys.locks() {
+            let mut buf = [0u8; 14];
+            buf[0..2].copy_from_slice(&l.cx.to_le_bytes());
+            buf[2..4].copy_from_slice(&l.cz.to_le_bytes());
+            buf[4] = l.level;
+            buf[5] = l.loc;
+            buf[6..10].copy_from_slice(&l.owner.to_le_bytes());
+            buf[10..12].copy_from_slice(&l.code.to_le_bytes());
+            buf[12..14].copy_from_slice(&l.guest_code.to_le_bytes());
+            h.update(&buf);
+            let mut sb = [0u8; 20];
+            sb[0] = l.locked as u8;
+            sb[1] = l.auth.len() as u8;
+            sb[2] = l.guests.len() as u8;
+            sb[3] = l.misses;
+            sb[4..12].copy_from_slice(&l.last_miss.to_le_bytes());
+            sb[12..20].copy_from_slice(&l.shut_until.to_le_bytes());
+            h.update(&sb);
+            // The lists themselves, whole rather than to `n_auth`: a slot
+            // past the count is zeroed by `reset_lists` and by
+            // `remove_at`, so folding all of it is folding state, and a
+            // store that ever left residue there would be caught rather
+            // than hidden.
+            for id in l.auth.raw().iter().chain(l.guests.raw().iter()) {
+                h.update(&id.to_le_bytes());
+            }
+        }
         // Burning fuses. State as plainly as anything here: two shards
         // that disagree about a live charge disagree about whether a base
         // is standing ten seconds from now, and `fires_at` is hashed
@@ -2535,6 +2785,10 @@ impl World {
         for r in self.deploys.bag_ready() {
             h.update(&r.to_le_bytes());
         }
+        // ...and the deploy placement clocks, for the same reason.
+        for t in self.deploys.placed() {
+            h.update(&t.to_le_bytes());
+        }
         h.update(&(self.deploys.hearths().len() as u64).to_le_bytes());
         for hr in self.deploys.hearths() {
             let mut buf = [0u8; 12];
@@ -2545,6 +2799,16 @@ impl World {
             h.update(&buf);
             for s in hr.stock.iter() {
                 h.update(&s.to_le_bytes());
+            }
+            // The crew (hearth crew v1). State as plainly as the stock is:
+            // two shards that disagree about who may build inside a claim
+            // disagree about whether the next foundation lands. The whole
+            // backing array, tail included, for `Roster`'s stated reason —
+            // residue there would be invisible state, and `remove` zeroes
+            // what it vacates precisely so this fold is exact.
+            h.update(&(hr.crew.len() as u32).to_le_bytes());
+            for id in hr.crew.raw().iter() {
+                h.update(&id.to_le_bytes());
             }
         }
         // Box contents, in the dense list's own order — which is
