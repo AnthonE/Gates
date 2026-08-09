@@ -15,6 +15,79 @@ they land in `RIPLIST.md` §4/§5.
 
 Ordered by what it unblocks.
 
+**What is actually reachable from here** (probed 2026-08-09):
+`api.github.com` and `raw.githubusercontent.com` — and the API is bound
+to this session's own repos, so it cannot even be searched. Everything
+else in this file answers 403. Blocked domains must not be pulled
+through a third-party fetch proxy or a cache mirror: that is routing
+around the denial, and datamined dumps would breach our own
+nothing-decompiled rail besides. **WebSearch still works** — summaries,
+never page text — which is how every figure in `RIPLIST.md` §4/§5
+arrived.
+
+**The pipe back in**: paste raw text into a file on the working branch,
+or into chat. `raw.githubusercontent.com` is readable, so a file pushed
+to this repo can be parsed directly. Raw dumps are fine — no need to
+tidy them; the parsing is the cheap half.
+
+---
+
+## 0 · The dump list — exact questions, in priority order
+
+Answer inline next to each; a number without its unit or tool is worth
+little. Mark anything a source hedges on ("about 20%") as hedged.
+
+### Tier 1 — unblocks the biggest queued row (`RIPLIST.md` §2 row 1)
+
+For **each** of stone node, metal node, sulfur node, tree:
+
+1. total yield per node, vanilla 1×
+2. hits/swings to clear it
+3. yield per hit, if stated
+4. all of the above **per tool** — rock, stone pickaxe/hatchet, metal
+   pickaxe/hatchet, salvaged icepick/axe, jackhammer/chainsaw
+5. does it vary by tree species / node size / biome, and by how much
+
+Where: `wiki.facepunch.com/rust/` (Ore_nodes and per-tool pages),
+`rustlabs.com` tool pages, `rust.fandom.com/wiki/Nodes`.
+**Settle the sulfur split while there: 300 or 200?**
+
+### Tier 2 — confirms mechanics we shipped on 2026-08-09
+
+6. **Devblog 170** — the hotspot's exact percentages (150% base → 300%
+   ceiling?), and the *"you will not actually earn more resources… you
+   can harvest the ore faster"* line **verbatim**. Our whole marker
+   model rests on a paraphrase of this sentence.
+7. **Devblog 166** — the final-strike share: exactly 20%, or "about"?
+   And is HQM obtainable *only* from that strike?
+8. **Devblog 187** — the tree's half-standing/half-on-the-fall split.
+9. **Any patch note after ~2020** touching either minigame. Our only
+   hard hit-count table is from 2017 and predates both — this is the
+   single biggest staleness risk in the whole research.
+
+Where: `rust.facepunch.com/news` (devblog index).
+
+### Tier 3 — balance surface we have never touched
+
+10. **Smelt times** — seconds per ore in a furnace, wood burned per ore,
+    and whether a furnace smelts in parallel or sequentially (two
+    sources contradicted each other on this).
+11. **Craft times** — seconds per item, and the workbench tier gating.
+12. **Animal health and drops** — chicken, boar, stag, wolf, bear.
+13. **Upkeep** — the exact %/24 h and the low-stock ramp (we match the
+    ~10% but not the ramp).
+
+### Tier 4 — the threat/logistics decomposition, our weakest evidence
+
+14. The **Austrian Journal of Political Science** paper on the
+    Hobbesian/Lockean state of nature in Rust (`oezp.at`) — its actual
+    encounter percentages. Highest-value single item on this page.
+15. **r/playrust**, searched for "sulfur per hour", "how long to T3",
+    "solo vs group" — player-reported throughput on **vanilla 1×**, and
+    how much of a session is farming vs travel vs fighting. Reddit was
+    unreachable to the research agent by fetch *and* by search, so we
+    have none of the primary community source.
+
 ---
 
 ## 1 · Would settle a queued row today
