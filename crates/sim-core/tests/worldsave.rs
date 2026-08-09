@@ -516,16 +516,21 @@ fn a_corrupt_world_is_refused_by_reason() {
         bent(&|b| b[COUNTS_AT + 2..COUNTS_AT + 4].copy_from_slice(&u16::MAX.to_le_bytes())),
         Err(WorldSaveError::CountOverCap)
     );
+    // A lock count past MAX_LOCKS — the sixth `u16` (lock v1).
+    assert_eq!(
+        bent(&|b| b[COUNTS_AT + 10..COUNTS_AT + 12].copy_from_slice(&u16::MAX.to_le_bytes())),
+        Err(WorldSaveError::CountOverCap)
+    );
     // A slot-life count past MAX_SLOT_LIVES — the u32 one.
     assert_eq!(
-        bent(&|b| b[COUNTS_AT + 14..COUNTS_AT + 18].copy_from_slice(&u32::MAX.to_le_bytes())),
+        bent(&|b| b[COUNTS_AT + 16..COUNTS_AT + 20].copy_from_slice(&u32::MAX.to_le_bytes())),
         Err(WorldSaveError::CountOverCap)
     );
 
     // A piece naming a content row that does not exist. The first piece
     // record's `row` byte sits after the player section.
     let players = w.players.iter().filter(|p| p.active).count();
-    let piece0 = COUNTS_AT + 18 + players * 240;
+    let piece0 = COUNTS_AT + 20 + players * 240;
     assert_eq!(
         bent(&|b| b[piece0 + 6] = 200),
         Err(WorldSaveError::BadContentRow),

@@ -8,20 +8,20 @@ use crate::client::ClientNetState;
 use crate::stats::ShardStats;
 use crate::store::PlayerKey;
 use protocol::{
-    encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
+    encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_build_refused, encode_event_catalog, encode_event_charge_placed,
     encode_event_chat, encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
     encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
-    encode_event_health, encode_event_hit, encode_event_inv, encode_event_move_refused,
-    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_removed, encode_event_respawn, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
-    ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder,
-    SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_health, encode_event_hit, encode_event_inv, encode_event_knock,
+    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
+    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
+    encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog,
+    SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH,
+    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::PieceRec;
 use sim_core::craft::CraftJob;
@@ -36,12 +36,12 @@ use sim_core::limits::{
 use sim_core::mob;
 use sim_core::persist::PlayerSave;
 use sim_core::world::{
-    Command, Player, World, DEATH_BY_CLOCK, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_BUILD_REFUSED,
-    EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH,
-    EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER,
-    EV_HEALTH, EV_HIT, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT,
-    EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    Command, Player, World, DEATH_BY_CLOCK, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
+    EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
+    EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
+    EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 
 /// Unpack `sim_core::inventory::addr` — from kind, from slot, to kind, to
@@ -621,19 +621,35 @@ impl ShardCore {
                         level,
                         loc,
                     },
-                    ActionMsg::Lock {
+                    ActionMsg::Demolish {
+                        deploy,
                         cx,
                         cz,
                         level,
                         loc,
-                        locked,
-                    } => Command::Lock {
+                    } => Command::Demolish {
+                        id: c.id,
+                        deploy,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    },
+                    ActionMsg::Access {
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        op,
+                        code,
+                    } => Command::Access {
                         id: c.id,
                         cx,
                         cz,
                         level,
                         loc,
-                        locked,
+                        op,
+                        code,
                     },
                     ActionMsg::Upgrade {
                         cx,
@@ -1230,7 +1246,43 @@ impl ShardCore {
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
-                    match encode_event_door(cx, cz, level, loc, open, locked, &mut self.ev_buf) {
+                    let has_lock = ev.b & 4 != 0;
+                    match encode_event_door(
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        open,
+                        locked,
+                        has_lock,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_KNOCK => {
+                    // A knock is broadcast for the same reason a door's
+                    // state is, and for one more: the whole point of the
+                    // event is that somebody *other* than the sender
+                    // hears it (`reference/DOORS.md` §4). AOI'ing it
+                    // would silence the case it exists for — a defender
+                    // asleep on the far side of their own base.
+                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+                    match encode_event_knock(cx, cz, level, loc, ev.c, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
@@ -1272,6 +1324,29 @@ impl ShardCore {
                                     self.clients[slot].ev_resync();
                                     ShardStats::bump(&stats.ev_resyncs);
                                 }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_AUTH => {
+                    // The opposite posture, one event apart: a grant is
+                    // true of exactly one player, so it goes to that
+                    // player and to nobody else. A broadcast here would
+                    // publish a base's access list to the shard.
+                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+                    let grant = ev.b as u8;
+                    let Some(slot) = self.client_slot_of(ev.c) else {
+                        continue;
+                    };
+                    match encode_event_auth(cx, cz, level, loc, grant, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
                             }
                         }
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),

@@ -71,6 +71,15 @@ pub struct Feed {
     n_gathered: usize,
     crafted: [(u16, u16); FEED_CAP],
     n_crafted: usize,
+    /// Knocks heard this frame: the door's address and who knocked (lock
+    /// v1). Broadcast, so this is the one entry here that can be somebody
+    /// else's action — the mixer wants the address, the HUD wants to say
+    /// somebody is at the door.
+    knocks: [(u16, u16, u8, u8, u32); FEED_CAP],
+    n_knocks: usize,
+    /// Grants earned this frame: address + `sim_core::lock::GRANT_*`.
+    auths: [(u16, u16, u8, u8, u8); FEED_CAP],
+    n_auths: usize,
     /// Every `APPLIED*` bit raised since the last drain.
     ///
     /// **Latched facts need this and rings do not.** `struct_hit`,
@@ -106,6 +115,14 @@ impl Feed {
     pub fn crafted(&self) -> &[(u16, u16)] {
         &self.crafted[..self.n_crafted]
     }
+    /// Knocks heard this frame, oldest first.
+    pub fn knocks(&self) -> &[(u16, u16, u8, u8, u32)] {
+        &self.knocks[..self.n_knocks]
+    }
+    /// Grants earned this frame, oldest first.
+    pub fn auths(&self) -> &[(u16, u16, u8, u8, u8)] {
+        &self.auths[..self.n_auths]
+    }
 
     fn clear(&mut self) {
         self.damage = 0;
@@ -114,6 +131,8 @@ impl Feed {
         self.n_refusals = 0;
         self.n_gathered = 0;
         self.n_crafted = 0;
+        self.n_knocks = 0;
+        self.n_auths = 0;
     }
 
     fn push_refusal(&mut self, which: Refused, code: u8) {
@@ -168,6 +187,24 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     }
     while let Some(code) = core.pop_deploy_refusal() {
         feed.push_refusal(Refused::Deploy, code);
+    }
+    while let Some(k) = core.pop_knock() {
+        if feed.n_knocks >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_knocks;
+            feed.knocks[n] = k;
+            feed.n_knocks += 1;
+        }
+    }
+    while let Some(a) = core.pop_auth() {
+        if feed.n_auths >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_auths;
+            feed.auths[n] = a;
+            feed.n_auths += 1;
+        }
     }
     while let Some(t) = core.pop_toast() {
         if feed.n_gathered >= FEED_CAP {

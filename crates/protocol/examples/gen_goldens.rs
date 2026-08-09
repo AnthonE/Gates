@@ -7,15 +7,16 @@
 #![allow(clippy::disallowed_macros)]
 
 use protocol::{
-    encode_action_cancel, encode_action_craft, encode_action_deploy, encode_action_feed,
-    encode_action_lock, encode_action_loot, encode_action_place, encode_action_repair,
-    encode_action_upgrade, encode_action_use, encode_chat, encode_event_bag_dropped,
-    encode_event_bag_removed, encode_event_bag_sync, encode_event_build_refused,
-    encode_event_catalog, encode_event_chat, encode_event_consume_refused, encode_event_consumed,
-    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
-    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_piece_defs, encode_event_piece_placed,
+    encode_action_access, encode_action_cancel, encode_action_craft, encode_action_demolish,
+    encode_action_deploy, encode_action_feed, encode_action_loot, encode_action_place,
+    encode_action_repair, encode_action_upgrade, encode_action_use, encode_chat, encode_event_auth,
+    encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
+    encode_event_build_refused, encode_event_catalog, encode_event_chat,
+    encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
+    encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
+    encode_event_inv, encode_event_knock, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_removed, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
     encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark, encode_hello,
@@ -178,13 +179,31 @@ fn main() {
     let len = encode_action_use(cx, cz, level, loc, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[35], &buf[..len]);
 
-    let (cx, cz, level, loc, locked) = goldens::action_lock();
-    let len = encode_action_lock(cx, cz, level, loc, locked, &mut buf).unwrap();
+    let (cx, cz, level, loc, op, code) = goldens::action_access();
+    let len = encode_action_access(cx, cz, level, loc, op, code, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[36], &buf[..len]);
 
-    let (cx, cz, level, loc, open, locked) = goldens::event_door();
-    let len = encode_event_door(cx, cz, level, loc, open, locked, &mut buf).unwrap();
+    let (cx, cz, level, loc, open, locked, has_lock) = goldens::event_door();
+    let len = encode_event_door(cx, cz, level, loc, open, locked, has_lock, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[37], &buf[..len]);
+
+    // Lock v1's two new lanes, written at the tail of the list for the
+    // reason `goldens::FIXTURES` states there.
+    let (cx, cz, level, loc, by) = goldens::event_knock();
+    let len = encode_event_knock(cx, cz, level, loc, by, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[78], &buf[..len]);
+
+    let (cx, cz, level, loc, grant) = goldens::event_auth();
+    let len = encode_event_auth(cx, cz, level, loc, grant, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[79], &buf[..len]);
+
+    let (cx, cz, level, loc, op, code) = goldens::action_access_crew();
+    let len = encode_action_access(cx, cz, level, loc, op, code, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[80], &buf[..len]);
+
+    let (deploy, cx, cz, level, loc) = goldens::action_demolish();
+    let len = encode_action_demolish(deploy, cx, cz, level, loc, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[81], &buf[..len]);
 
     let (cx, cz, level, loc, material) = goldens::action_upgrade();
     let len = encode_action_upgrade(cx, cz, level, loc, material, &mut buf).unwrap();

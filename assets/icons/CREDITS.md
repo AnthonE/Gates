@@ -29,6 +29,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `burlap_tunic.png` | `lorc/leather-vest` |
 | `charcoal.png` | `delapouite/coal-pile` |
 | `cloth.png` | `delapouite/rolled-cloth` |
+| `code_lock.png` | `delapouite/dial-padlock` |
 | `corn.png` | `delapouite/corn` |
 | `crossbow.png` | `carl-olsen/crossbow` |
 | `fire_pit.png` | `lorc/campfire` |

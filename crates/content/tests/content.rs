@@ -1335,6 +1335,128 @@ fn a_container_that_cannot_be_opened_is_refused() {
     );
 }
 
+/// The decay ladder must not invert.
+///
+/// The three numbers look like taste and one relationship in them is
+/// not: if metal rots faster than wood, an upgrade spends materials to
+/// *shorten* a base's life, and nothing downstream would ever say so —
+/// the sweep would just quietly eat the expensive walls first.
+#[test]
+fn an_inverted_decay_ladder_is_refused() {
+    refuses(
+        "balance.toml",
+        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { wood = 13, stone = 20, metal = 34 }",
+        "not monotone",
+    );
+    refuses(
+        "balance.toml",
+        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { wood = 34, stone = 20, metal = 0 }",
+        "never rots",
+    );
+}
+
+/// The ladder the sim plays is the ladder the file wrote, keyed by the
+/// sim's own material codes — the conversion boundary, gated like the
+/// bow's (`bows_bake_to_per_tick_integers_the_sim_can_integrate`).
+#[test]
+fn the_decay_ladder_reaches_the_sim_keyed_by_material() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let dc = c.bake_deployables().expect("shipped deployables must bake");
+    let d = &c.balance.globals.decay_pct_per_period;
+    for (m, code) in [
+        (
+            content::schema::Material::Wood,
+            sim_core::build::MAT_WOOD as usize,
+        ),
+        (
+            content::schema::Material::Stone,
+            sim_core::build::MAT_STONE as usize,
+        ),
+        (
+            content::schema::Material::Metal,
+            sim_core::build::MAT_METAL as usize,
+        ),
+    ] {
+        assert_eq!(
+            dc.decay_pct[code] as u32, d[&m],
+            "{m:?} reached the sim at the wrong index — the ladder is keyed \
+             by material and a crossed pair would rot the wrong walls"
+        );
+    }
+}
+
+/// The code lock's row and its placement class are one thing said twice,
+/// and the sim indexes on both (lock v1, `reference/DOORS.md` §9.1).
+///
+/// `place_deploy` picks the lock branch off the **archetype** and picks
+/// "the address must hold a door" off the **placement**. A row carrying
+/// one without the other is not a validation nicety: `lock` + `doorway`
+/// is a lock that mints a deploy record standing in an empty doorway, and
+/// `box` + `door` is a chest a player is invited to hang on a door.
+/// Neither crashes anything, which is exactly why it needs a gate.
+#[test]
+fn a_lock_and_its_placement_class_are_refused_apart() {
+    refuses(
+        "deployables.toml",
+        "archetype = \"lock\"\nplacement = \"door\"",
+        "archetype = \"lock\"\nplacement = \"doorway\"",
+        "a lock is placement `door`",
+    );
+    refuses(
+        "deployables.toml",
+        "archetype = \"box\"\nplacement = \"any\"",
+        "archetype = \"box\"\nplacement = \"door\"",
+        "placement `door` is the lock's alone",
+    );
+}
+
+/// One lock row, or none.
+///
+/// `deploy::lock_row` resolves the item a taken-off lock hands back by
+/// scanning the baked table for the archetype. With two rows that scan
+/// picks the first and returns the wrong item — silently, only on the
+/// take verb, and only for whoever bolted the second kind on.
+#[test]
+fn a_second_lock_row_is_refused() {
+    refuses(
+        "deployables.toml",
+        "id = \"item.lock_code\"\narchetype = \"lock\"",
+        "id = \"item.hammer\"\narchetype = \"lock\"\nplacement = \"door\"\nhp = 100\n\n[[deployable]]\nid = \"item.lock_code\"\narchetype = \"lock\"",
+        "the sim can only name one",
+    );
+}
+
+/// The lock reaches the sim as a real baked row the placement path can
+/// find, and it is the only one wearing `PLACE_DOOR`.
+#[test]
+fn the_code_lock_bakes_to_the_archetype_the_sim_branches_on() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let dc = c.bake_deployables().expect("shipped deployables must bake");
+    let rows: Vec<_> = dc.defs[..dc.def_count as usize]
+        .iter()
+        .filter(|d| d.arch == sim_core::deploy::ARCH_LOCK)
+        .collect();
+    assert_eq!(rows.len(), 1, "exactly one lock reaches the sim");
+    assert_eq!(
+        rows[0].placement,
+        sim_core::deploy::PLACE_DOOR,
+        "the lock's placement class is the one that wants an occupied address"
+    );
+    assert_eq!(
+        rows[0].item,
+        c.item_index("item.lock_code").expect("the lock is an item"),
+        "the row must resolve to the item the take verb hands back"
+    );
+    for d in dc.defs[..dc.def_count as usize].iter() {
+        assert!(
+            d.arch == sim_core::deploy::ARCH_LOCK || d.placement != sim_core::deploy::PLACE_DOOR,
+            "a non-lock wears the lock's placement class"
+        );
+    }
+}
+
 /// The bow's ballistics reach the sim as **per-tick integers**, and the
 /// numbers are the data's own converted once.
 ///

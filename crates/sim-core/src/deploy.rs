@@ -43,39 +43,50 @@
 //!   clears the shut bit with the record. The state is absolute on the
 //!   wire, never a delta, so the client that toggled optimistically
 //!   (NETCODE.md §6.1) is confirmed or corrected by the same event.
-//! - **Locks** (lock v0, DECISIONS.md §open): a door places **locked to
-//!   its placer**, and a locked door only uses for its owner — every
-//!   other hand bounces with `REFUSE_D_OWNER`. The **lock** action sets
-//!   that bit absolutely (not a toggle: two presses racing must not
-//!   fight) and only the owner may, so unlocking is how a door becomes
-//!   public — a shop front, a shared hut. Locking never moves the leaf:
-//!   an open door locks open, and its owner is the one who can shut it.
-//!   The bit rides the same EV_DOOR announcement as the open bit, so one
-//!   lane carries the whole door state, absolute, to everyone.
+//! - **Locks** (lock v1, DECISIONS.md §open, `reference/DOORS.md` §9): a
+//!   door places **bare** — no lock, workable by anyone in reach — and
+//!   security is a **code lock**, an item somebody crafted and bolted on
+//!   (`ARCH_LOCK`, placement class `door`). The lock and everything it
+//!   remembers live in `lock.rs`'s dense store, keyed by the door's own
+//!   address exactly as a hearth's stock and a box's contents are keyed by
+//!   theirs; `DeployRec::locked` survives as a **mirror** of that store's
+//!   verdict, which is what keeps the wire, the client and EV_DOOR
+//!   unchanged from lock v0. The **lock** action carries an op and a
+//!   four-digit code (`deploy::ACCESS_OP_*`) and is absolute rather than a
+//!   toggle, for lock v0's reason: two presses racing must agree on the
+//!   result, not swap it. Locking never moves the leaf.
+//!
+//!   This retires lock v0's "a door places locked to its placer". That
+//!   rule made the door free and the security free; the reference makes
+//!   the door free and charges for the security, and an unlocked door
+//!   stops being a state a player chooses and becomes the state of a door
+//!   nobody has paid for yet (`DOORS.md` §9.2).
 //!
 //! Not in this slice (documented, not forgotten): no support cascade when
 //! a piece decays away (floating pieces keep decaying on their own if
-//! unpaid), no *shared* access — a lock answers to one owner id, and
-//! codes/crew lists are the question §open asks (the hearth's claim is
-//! owner-only for the same reason), no owner on the wire (a stranger's
-//! locked door refuses after the press, which the mispredict path already
-//! rolls back — DESIGN.md §5.6's own example), no lock item (the lock is a
-//! property of the door, not a deployable).
+//! unpaid), no lock on a **box** — the predicate is the same function and
+//! a box has an address, so it is a follow-on with no new concepts
+//! (`DOORS.md` §9.8) — no **key** lock, which is blocked on per-item
+//! instance data our `ItemStack` has no room for and is the system the
+//! reference itself gave up on (§9.7), and no pickup verb for an
+//! unsecured door (§9.10, verb 9).
 
 use crate::build::{
     BuildContent, Pieces, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, SHAPE_DOORWAY,
 };
 use crate::craft::{inv_count, inv_take};
-use crate::gather::ItemStack;
+use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{
-    BOX_SLOTS, HEARTH_STOCK_ROWS, MAX_BOXES, MAX_BOX_SPILL_PER_TICK, MAX_BUILD_COORD,
-    MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_HEARTHS,
-    UPKEEP_SWEEP_PER_TICK,
+    BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, MAX_BOXES, MAX_BOX_SPILL_PER_TICK,
+    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_HEARTHS,
+    MAX_LOCKS, UPKEEP_SWEEP_PER_TICK,
 };
+use crate::lock::{self, LockRec, Locks, Outcome};
+use crate::roster::{Added, Roster};
 use crate::terrain;
 use crate::world::{
-    EventQueue, Player, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_PIECE_REMOVED, EV_STOCK, EV_STRUCT_HIT, STRUCT_DEPLOY_BIT,
+    EventQueue, Player, EV_AUTH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
+    EV_HEALTH, EV_KNOCK, EV_PIECE_REMOVED, EV_STOCK, EV_STRUCT_HIT, STRUCT_DEPLOY_BIT,
 };
 
 /// Archetype codes (schema order: CONTENT.md §1 deployable).
@@ -86,6 +97,54 @@ pub const ARCH_FIRE: u8 = 3;
 pub const ARCH_FURNACE: u8 = 4;
 pub const ARCH_WORKBENCH: u8 = 5;
 pub const ARCH_DOOR: u8 = 6;
+/// A code lock (lock v1). The one archetype that does **not** become a
+/// `DeployRec`: it bolts onto a door's address and lives in `lock.rs`'s
+/// store, because the reference's lock is a separate entity parented to
+/// the door and ours has to be a separate record for the same reason —
+/// `DeployRec` is what the wire mirrors, and a code, two lists and two
+/// timers may not ride on it.
+pub const ARCH_LOCK: u8 = 7;
+
+/// The **access verb's** operations — `Command::Access`'s `op`, wire
+/// `ACT_ACCESS`. One action with an op field rather than nine action
+/// codes, because the action space was full at 15 in four bits and a
+/// width bump there costs every C→S message a bit; the op is four bits
+/// inside this one payload instead.
+///
+/// **One op space, two stores, and that is the point.** 0..=5 run against
+/// the code lock at a door (`lock.rs`); 6..=8 run against the hearth's
+/// crew (`crew_op`). They share a space because they are one question —
+/// *who may do this here* — and the answer is a `Roster` either way; and
+/// they share a *wire field*, so a second space would mean a second width
+/// for the domain gate to bound and a second chance to get it wrong.
+///
+/// The home of the whole space is here rather than in `lock.rs` because
+/// the dispatcher is here: a module that declared ops it does not
+/// implement would be a comment that goes stale silently.
+pub const ACCESS_OP_SET_CODE: u8 = 0;
+pub const ACCESS_OP_SET_GUEST: u8 = 1;
+pub const ACCESS_OP_ENTER: u8 = 2;
+pub const ACCESS_OP_LOCK: u8 = 3;
+pub const ACCESS_OP_UNLOCK: u8 = 4;
+pub const ACCESS_OP_TAKE: u8 = 5;
+/// Join the crew of the hearth at the address (hearth crew v1).
+pub const ACCESS_OP_CREW_JOIN: u8 = 6;
+/// Leave it.
+pub const ACCESS_OP_CREW_LEAVE: u8 = 7;
+/// Clear it back to the clearer alone.
+pub const ACCESS_OP_CREW_CLEAR: u8 = 8;
+/// The highest op above, named rather than counted — the wire refuses
+/// past it and the sim refuses past it, in that order.
+pub const ACCESS_OP_MAX: u8 = ACCESS_OP_CREW_CLEAR;
+/// Whether an op addresses the hearth's crew rather than a door's lock.
+/// The one place the split is written down, so the wire's range check and
+/// the dispatcher cannot disagree about which half an op belongs to.
+pub fn op_is_crew(op: u8) -> bool {
+    matches!(
+        op,
+        ACCESS_OP_CREW_JOIN | ACCESS_OP_CREW_LEAVE | ACCESS_OP_CREW_CLEAR
+    )
+}
 
 /// Does a deployable of this archetype hold items — that is, does
 /// placing it stand up a container record in the box store?
@@ -105,6 +164,9 @@ pub const PLACE_GROUND: u8 = 0;
 pub const PLACE_FOUNDATION: u8 = 1;
 pub const PLACE_DOORWAY: u8 = 2;
 pub const PLACE_ANY: u8 = 3;
+/// On a door — the only class that wants the address **occupied**, and
+/// occupied by one specific archetype at that.
+pub const PLACE_DOOR: u8 = 4;
 
 /// Integer refusal reasons (CLAUDE.md wall 3), carried by
 /// EV_DEPLOY_REFUSED / the deploy-refused wire subtype.
@@ -121,13 +183,47 @@ pub const REFUSE_D_BAG_CAP: u32 = 9;
 pub const REFUSE_D_HEARTH: u32 = 10;
 /// A use request named an address holding no door.
 pub const REFUSE_D_DOOR: u32 = 11;
-/// The door isn't yours: a use on someone else's **locked** door, or a
-/// lock request on a door you didn't place (lock v0).
+/// The lock says no: a use on a locked door you are not remembered by, or
+/// a full-rights lock op from a guest or a stranger (lock v1). One reason
+/// for both halves, because both are the same sentence — *this lock does
+/// not know you* — and a client that could tell them apart would learn
+/// something about the lock it was refused by.
 pub const REFUSE_D_OWNER: u32 = 12;
 /// A use press on an oven with nothing in it that burns (oven v0,
 /// `oven.rs`). Lighting is a match, not a delivery: the fuel has to be
 /// inside already.
 pub const REFUSE_D_FUEL: u32 = 13;
+/// A lock op named an address carrying no lock (lock v1).
+pub const REFUSE_D_NO_LOCK: u32 = 14;
+/// A lock placement named a door that already carries one. The reference's
+/// rule and ours: one lock per door, and bolting a second on is how a
+/// raider would otherwise evict an owner for the price of an item.
+pub const REFUSE_D_HAS_LOCK: u32 = 15;
+/// Wrong code. The shock has already been taken off the sender's hp —
+/// this is the announcement, not the punishment.
+pub const REFUSE_D_CODE: u32 = 16;
+/// The keypad is shut: `lock::LOCKOUT_TRIES` wrong codes inside
+/// `lock::LOCKOUT_TICKS`. A *correct* code is refused too while it lasts,
+/// which is the point.
+pub const REFUSE_D_LOCKOUT: u32 = 17;
+/// A remembered list is full (`limits.rs` `LOCK_AUTH_CAP` /
+/// `LOCK_GUEST_CAP`). Wall 4's overflow policy, said out loud: refuse,
+/// never evict — a door that forgot its owner is the one failure this cap
+/// may not have.
+pub const REFUSE_D_AUTH_FULL: u32 = 18;
+/// A pickup named a container that still has something in it. Refused
+/// rather than spilled: a box that vanished with its contents into an
+/// inventory that could not hold them would be the worst kind of loss —
+/// silent, and caused by the player's own verb.
+pub const REFUSE_D_NOT_EMPTY: u32 = 19;
+// Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
+// op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
+// verb already says in those words; a crew op from a hand the hearth does
+// not know is `REFUSE_D_OWNER`, for the reason the lock's is — *this
+// thing does not know you* is one sentence whichever list refused it. The
+// reason ledger is a closed set the client's table mirrors row for row
+// (`client/ui/refusals.rs`), and two codes for one sentence is exactly
+// how the two drift.
 
 /// Hearth privilege radius in meters, planar from the hearth's cell
 /// center. Proposed default, DECISIONS.md §open ("deployables v0").
@@ -139,8 +235,15 @@ pub const UPKEEP_PERIOD_TICKS: u64 = 108_000;
 /// (content/balance.toml) over hourly charges. Calendar arithmetic, not
 /// a knob.
 pub const PERIODS_PER_DAY: u32 = 24;
-/// Unpaid decay per period, % of max hp (min 1 hp). Proposed default,
-/// DECISIONS.md §open ("upkeep/decay v0").
+/// Materials the decay ladder is keyed by — `build::MAT_*`, whose set is
+/// closed and three long.
+pub const DECAY_MATERIALS: usize = 3;
+
+/// Fallback decay per period, % of max hp, for content that prices no
+/// ladder and for the one store that has no material: **deployables**.
+/// A box is not wood or stone in the piece sense, so it keeps the flat
+/// rate the whole world used before upkeep/decay v1.
+/// Proposed default, DECISIONS.md §open ("upkeep/decay v0").
 pub const DECAY_PCT_PER_PERIOD: u32 = 5;
 /// Units per upkeep material one feed press moves. Proposed default,
 /// DECISIONS.md §open ("deployables v0").
@@ -210,6 +313,11 @@ pub struct DeployContent {
     pub mat_count: u8,
     /// `content/balance.toml` globals.upkeep_pct_per_day.
     pub upkeep_pct_per_day: u16,
+    /// Unpaid decay per period as a % of max hp, indexed by
+    /// `build::MAT_*` (upkeep/decay v1). A zero entry means the content
+    /// priced no ladder and `DECAY_PCT_PER_PERIOD` answers instead, which
+    /// is what keeps an older `balance.toml` playing the game it played.
+    pub decay_pct: [u16; DECAY_MATERIALS],
 }
 
 impl DeployContent {
@@ -221,6 +329,7 @@ impl DeployContent {
         mats: [0; HEARTH_STOCK_ROWS],
         mat_count: 0,
         upkeep_pct_per_day: 0,
+        decay_pct: [0; DECAY_MATERIALS],
     };
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
@@ -236,7 +345,7 @@ impl DeployContent {
     /// target inside the gates rather than only in a unit test.
     pub fn probe_fixture() -> Self {
         let mut d = Self::EMPTY;
-        d.def_count = 5;
+        d.def_count = 6;
         d.defs[0] = DeployDef {
             arch: ARCH_HEARTH,
             placement: PLACE_FOUNDATION,
@@ -282,10 +391,30 @@ impl DeployContent {
             n_costs: 1,
             costs: [(0, 25), (0, 0), (0, 0), (0, 0)],
         };
+        // The code lock (lock v1). In the probe fixture rather than only
+        // in `content/` because the parity, alloc and replay gates all
+        // install *this* table, and a wall that cannot see a verb is not
+        // a wall — the lock ops have to run inside every one of them.
+        //
+        // Item **7**, not 6: the oven above already spends 6, and two
+        // deployables sharing an item would make `lock_row`'s give-back
+        // hand out an oven.
+        d.defs[5] = DeployDef {
+            arch: ARCH_LOCK,
+            placement: PLACE_DOOR,
+            hp: 40,
+            item: 7,
+            n_costs: 1,
+            costs: [(1, 12), (0, 0), (0, 0), (0, 0)],
+        };
         // The build probe fixture costs items 0 and 1.
         d.mats = [0, 1, 0, 0];
         d.mat_count = 2;
         d.upkeep_pct_per_day = 10;
+        // A ladder in the probe fixture, so the parity/replay/alloc gates
+        // walk the *keyed* path rather than the fallback — a wall that
+        // only ever sees the default is not watching the feature.
+        d.decay_pct = [34, 20, 13];
         d
     }
 }
@@ -309,23 +438,44 @@ pub struct DeployRec {
     /// place closed; the use action toggles. Sim state, hashed, and on
     /// the wire (the deploy record's open bit, wire v6).
     pub open: bool,
-    /// Lock state (ARCH_DOOR only; false for everything else). Doors
-    /// place **locked** to `owner`, and a locked door only uses for its
-    /// owner; the lock action sets this absolutely. Sim state, hashed,
-    /// and on the wire (the deploy record's locked bit, wire v8).
+    /// Whether a code lock is bolted to this address (ARCH_DOOR only;
+    /// false for everything else). A **mirror** of `lock.rs`'s store, not
+    /// the truth — the truth is a `LockRec`, and this bit exists so the
+    /// wire and the client can draw the door without ever seeing a code
+    /// or a remembered list. Sim state, hashed, on the wire (wire v19).
+    pub has_lock: bool,
+    /// Whether that lock is locked. The other mirror bit, and the one
+    /// that decides whether `lock::LockRec::passes` is consulted at all.
+    /// `has_lock == false` implies this is false; the pair is kept in
+    /// lockstep by every lock verb and re-derived by
+    /// `World::rebuild_doors` after a load, exactly as the collision
+    /// index's shut bits are.
     pub locked: bool,
 }
 
-/// One hearth's claim + stock, in the dense hearth list. Identity is the
-/// grid address of its deploy record; stock rows align to
+/// The hearth's crew list — who may build inside its claim. Named so
+/// `worldsave` and `state_hash` can spell it without restating the cap.
+pub type CrewList = Roster<HEARTH_CREW_CAP>;
+
+/// One hearth's claim + stock + **crew**, in the dense hearth list.
+/// Identity is the grid address of its deploy record; stock rows align to
 /// `DeployContent::mats`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HearthRec {
     pub cx: u16,
     pub cz: u16,
     pub level: u8,
+    /// Who placed it. Kept for the reason `LockRec::owner` is kept —
+    /// somebody has to be the one it came from — and, like that one, it
+    /// is **not** the access check. `crew` is.
     pub owner: u32,
     pub stock: [u32; HEARTH_STOCK_ROWS],
+    /// Who may build, upgrade, repair and deploy inside the claim
+    /// (hearth crew v1, `reference/BUILDING.md` §9.1). Placing the hearth
+    /// joins its crew, which is the reference's own rule — the act of
+    /// putting the cupboard down is the act of joining its list (§1 fact
+    /// 4) — so this is never empty on a live record.
+    pub crew: CrewList,
 }
 
 /// One deployed box's contents, in the dense box list. Identity is the
@@ -425,7 +575,10 @@ impl BoxStore {
 /// the sweep cursor's, deterministic); the wire layer restarts in-progress
 /// sync walks on any removal.
 pub struct Deploys {
-    entries: [DeployRec; MAX_DEPLOYS],
+    /// Boxed, like every large array here, so `Deploys::new` never puts
+    /// one in a stack frame — [`crate::boxed_array`] has the measurement
+    /// and the wasm failure it prevents.
+    entries: Box<[DeployRec; MAX_DEPLOYS]>,
     len: usize,
     /// Bag respawn cooldowns, index-aligned to `entries`: the first tick
     /// `entries[i]` may be woken on again. Meaningless for every archetype
@@ -439,25 +592,40 @@ pub struct Deploys {
     /// client's event enum by 192 bytes it can never read. The client draws
     /// a bag; it does not adjudicate one. Kept aligned by `insert` and by
     /// `remove_at`, whose swap-remove moves both halves together.
-    bag_ready: [u64; MAX_DEPLOYS],
-    hearths: [HearthRec; MAX_HEARTHS],
+    bag_ready: Box<[u64; MAX_DEPLOYS]>,
+    /// When each entry was placed, index-aligned to `entries` — the
+    /// pickup window's clock. A parallel array for `bag_ready`'s reason,
+    /// stated one field up: `DeployRec` is what the deploy-sync packet
+    /// mirrors.
+    placed: Box<[u64; MAX_DEPLOYS]>,
+    hearths: Box<[HearthRec; MAX_HEARTHS]>,
     hearth_count: usize,
     /// The box contents, on the heap. Same wire decision as `bag_ready`
     /// above and the same one as the hearth list: `DeployRec` is what the
     /// deploy-sync packet mirrors, so a box's twelve stacks may not ride
     /// on it.
     boxes: Box<BoxStore>,
+    /// The code locks bolted onto doors (lock v1, `lock.rs`). Third store
+    /// with the same justification as the two above, and the strongest
+    /// case of the three: a lock carries two codes, two remembered lists
+    /// and two tick counters, none of which a client may see.
+    ///
+    /// Not `Box<Locks>` — `Locks` boxes its own array, for the shadow-stack
+    /// reason its doc comment records.
+    locks: Locks,
 }
 
 impl Deploys {
     pub fn new() -> Self {
         Self {
-            entries: [DeployRec::default(); MAX_DEPLOYS],
+            entries: crate::boxed_array(DeployRec::default()),
             len: 0,
-            bag_ready: [0; MAX_DEPLOYS],
-            hearths: [HearthRec::default(); MAX_HEARTHS],
+            bag_ready: crate::boxed_array(0),
+            placed: crate::boxed_array(0),
+            hearths: crate::boxed_array(HearthRec::default()),
             hearth_count: 0,
             boxes: Box::new(BoxStore::new()),
+            locks: Locks::new(),
         }
     }
 
@@ -480,8 +648,49 @@ impl Deploys {
         &self.bag_ready[..self.len]
     }
 
+    /// The live half of `placed`, index-aligned to `entries()`. Sim state
+    /// like `bag_ready`, and read by `state_hash` and `worldsave` for the
+    /// same reason.
+    pub fn placed(&self) -> &[u64] {
+        &self.placed[..self.len]
+    }
+
+    /// The tick entry `i` was placed on. A stale index reads 0 —
+    /// "placed at tick 0", long out of its window, which is the safe
+    /// direction because it refuses rather than refunds.
+    pub fn placed_at(&self, i: usize) -> u64 {
+        if i >= self.len {
+            return 0;
+        }
+        self.placed[i]
+    }
+
     pub fn hearths(&self) -> &[HearthRec] {
         &self.hearths[..self.hearth_count]
+    }
+
+    /// Stand a hearth at an address with no placement rules applied.
+    /// **Fixtures only**, for `Pieces::insert_for_test`'s reason.
+    #[cfg(test)]
+    pub(crate) fn push_hearth_for_test(&mut self, cx: u16, cz: u16, level: u8, owner: u32) {
+        self.hearths[self.hearth_count] = HearthRec {
+            cx,
+            cz,
+            level,
+            owner,
+            stock: [0; HEARTH_STOCK_ROWS],
+            crew: CrewList::of(owner),
+        };
+        self.hearth_count += 1;
+    }
+
+    /// The hearth records, writable. **Tests and fixtures only** — every
+    /// live path reaches a crew through `crew_op`, which is where the
+    /// rights checks are; a second writer would be a second place for
+    /// "may this hand change this list" to be decided.
+    #[cfg(test)]
+    pub(crate) fn hearths_mut(&mut self) -> &mut [HearthRec] {
+        &mut self.hearths[..self.hearth_count]
     }
 
     /// The live box records. Read by `state_hash` (contents are sim
@@ -490,36 +699,73 @@ impl Deploys {
         &self.boxes.entries[..self.boxes.len]
     }
 
+    /// The live code locks. Read by `state_hash` (a code and a remembered
+    /// list are sim state as much as a box's contents are), by
+    /// `worldsave`, and by the gates.
+    pub fn locks(&self) -> &[LockRec] {
+        self.locks.entries()
+    }
+
+    /// Write the two mirror bits of `entries[i]` from the lock store's
+    /// verdict. `World::rebuild_doors` is the only caller and the doc
+    /// there is the argument; it exists as a method because `entries` is
+    /// private and a load must not be able to set them independently of
+    /// each other (`has_lock == false` implies `locked == false`).
+    pub(crate) fn set_lock_mirror(&mut self, i: usize, has_lock: bool, locked: bool) {
+        self.entries[i].has_lock = has_lock;
+        self.entries[i].locked = has_lock && locked;
+    }
+
+    /// Whether the lock at this address (if any) lets `id` work the leaf.
+    /// **The one access question**, so `use_door`, the client's own mirror
+    /// and any later container check all read the same answer.
+    pub fn lock_passes(&self, cx: u16, cz: u16, level: u8, loc: u8, id: u32) -> bool {
+        self.locks.passes(cx, cz, level, loc, id)
+    }
+
     /// Replace every store from a decoded world save. Boot-only
     /// (`worldsave.rs`).
     ///
-    /// Four arrays because the store is four arrays, and the file writes
-    /// `bag_ready` inline on the deploy record it belongs to — so the one
+    /// Seven arrays because the store is seven arrays, and the file writes
+    /// each parallel one inline on the record it belongs to — so the one
     /// invariant worth stating is the one the caller has to hold up:
-    /// `ready` is index-aligned to `recs`, exactly as the field it lands in
-    /// is index-aligned to `entries`. A shorter `ready` leaves the tail at
-    /// zero, which reads as "ready from the first tick" and not as a
-    /// sentinel, so the failure would be silently generous bags rather than
-    /// a panic. The decoder writes them as one record and cannot produce
-    /// that; the `debug_assert` is here so a second caller cannot either.
+    /// `ready` is index-aligned to `recs` and `ovens` to `boxes`, exactly
+    /// as the fields they land in are index-aligned to their entries. A
+    /// shorter `ready` leaves the tail at zero, which reads as "ready from
+    /// the first tick" and not as a sentinel, so the failure would be
+    /// silently generous bags rather than a panic. The decoder writes them
+    /// as one record and cannot produce that; the `debug_assert`s are here
+    /// so a second caller cannot either.
+    ///
+    /// The argument count is over clippy's line and stays that way rather
+    /// than being bundled into a struct: every one of these is a decoded
+    /// slice the caller already has laid out separately, and a wrapper
+    /// would be a type that exists for one call site and hides which
+    /// slices have to be aligned to which.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn restore(
         &mut self,
         recs: &[DeployRec],
         ready: &[u64],
+        placed: &[u64],
         hearths: &[HearthRec],
         boxes: &[BoxRec],
         ovens: &[crate::oven::OvenState],
+        locks: &[LockRec],
     ) {
         debug_assert_eq!(recs.len(), ready.len(), "bag_ready must be index-aligned");
         self.len = recs.len().min(MAX_DEPLOYS);
         self.entries[..self.len].copy_from_slice(&recs[..self.len]);
         self.bag_ready[..self.len].copy_from_slice(&ready[..self.len]);
+        self.placed[..self.len].copy_from_slice(&placed[..self.len]);
         self.hearth_count = hearths.len().min(MAX_HEARTHS);
         self.hearths[..self.hearth_count].copy_from_slice(&hearths[..self.hearth_count]);
         debug_assert_eq!(boxes.len(), ovens.len(), "oven state must be index-aligned");
         self.boxes.len = boxes.len().min(MAX_BOXES);
         self.boxes.entries[..self.boxes.len].copy_from_slice(&boxes[..self.boxes.len]);
         self.boxes.ovens[..self.boxes.len].copy_from_slice(&ovens[..self.boxes.len]);
+        self.locks.len = locks.len().min(MAX_LOCKS);
+        self.locks.entries[..self.locks.len].copy_from_slice(&locks[..self.locks.len]);
         // The spill list is within-tick scratch (`BoxStore`), never state:
         // a save taken between ticks cannot hold one, and a load must not
         // leave a stale one for `World::step` to stand a bag up from.
@@ -664,13 +910,14 @@ impl Deploys {
         self.entries[i].hp = hp;
     }
 
-    fn insert(&mut self, rec: DeployRec) -> bool {
+    fn insert(&mut self, rec: DeployRec, tick: u64) -> bool {
         if self.len == MAX_DEPLOYS {
             return false;
         }
         self.entries[self.len] = rec;
         // A bag is born ready: place one and the next death is answered.
         self.bag_ready[self.len] = 0;
+        self.placed[self.len] = tick;
         self.len += 1;
         true
     }
@@ -681,9 +928,10 @@ impl Deploys {
         let rec = self.entries[i];
         self.len -= 1;
         self.entries[i] = self.entries[self.len];
-        // Both halves move together or the cooldown array stops describing
+        // Every half moves together or a parallel array stops describing
         // the record it is indexed against.
         self.bag_ready[i] = self.bag_ready[self.len];
+        self.placed[i] = self.placed[self.len];
         if dc.defs[rec.row as usize].arch == ARCH_HEARTH {
             if let Some(h) = self.hearths[..self.hearth_count]
                 .iter()
@@ -740,7 +988,12 @@ impl Deploys {
     pub fn foreign_claim(&self, x: f32, z: f32, placer: u32) -> bool {
         let r2 = HEARTH_RADIUS_M * HEARTH_RADIUS_M;
         self.hearths[..self.hearth_count].iter().any(|h| {
-            if h.owner == placer {
+            // The crew, not the owner (hearth crew v1). This one line is
+            // the whole of "a base can be shared": before it, `h.owner ==
+            // placer` made every claim answer to exactly one id, which is
+            // lock v0's bug living in the building system
+            // (`reference/BUILDING.md` §9.1).
+            if h.crew.contains(placer) {
                 return false;
             }
             let (hx, hz) = cell_center(h.cx, h.cz);
@@ -858,7 +1111,8 @@ fn player_xz(p: &Player) -> (f32, f32) {
 /// Whether `loc` is the kind of slot the placement class occupies.
 fn loc_fits_placement(placement: u8, loc: u8) -> bool {
     match placement {
-        PLACE_DOORWAY => loc == LOC_EDGE_W || loc == LOC_EDGE_N,
+        // A lock goes where a door goes, because it goes *on* one.
+        PLACE_DOORWAY | PLACE_DOOR => loc == LOC_EDGE_W || loc == LOC_EDGE_N,
         PLACE_GROUND | PLACE_FOUNDATION | PLACE_ANY => loc == LOC_PLANE,
         _ => false,
     }
@@ -907,7 +1161,9 @@ pub fn place_deploy(
         || (cz as usize) >= MAX_BUILD_COORD
         || (level as usize) >= MAX_BUILD_LEVELS
         || !loc_fits_placement(def.placement, loc)
-        || deploys.find(cx, cz, level, loc).is_some()
+        // Every class but one wants the address **empty**; the lock wants
+        // it occupied, and by a door (its `supported` arm below says so).
+        || (def.placement != PLACE_DOOR && deploys.find(cx, cz, level, loc).is_some())
         // The one address a box may not have: `box_key(0, 0, 0)` is 0, and
         // 0 is the reserved "no container" handle (`box_index`). Refusing
         // it here is the minting half of that pair — a box placed at this
@@ -927,7 +1183,7 @@ pub fn place_deploy(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
         return;
     }
-    if deploys.foreign_claim(ax, az, p.id) {
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_CLAIM, 0);
         return;
     }
@@ -941,6 +1197,13 @@ pub fn place_deploy(
         PLACE_DOORWAY => pieces
             .find(cx, cz, level, loc)
             .is_some_and(|r| bc.pieces[r.row as usize].shape == SHAPE_DOORWAY),
+        // A lock's support is the door itself. Anyone in reach may bolt
+        // one onto a door that has none — including a door somebody else
+        // built, which is the reference's claim mechanic (`DOORS.md` §5:
+        // the lock is not only who opens it, it is whose door this is).
+        PLACE_DOOR => deploys
+            .find(cx, cz, level, loc)
+            .is_some_and(|r| dc.defs[r.row as usize].arch == ARCH_DOOR),
         _ => false,
     };
     if !supported {
@@ -952,10 +1215,48 @@ pub fn place_deploy(
         events.push(EV_DEPLOY_REFUSED, p.id, reason, 0);
         return;
     }
+    if def.arch == ARCH_LOCK {
+        // The lock's whole placement, and it returns rather than falling
+        // through: no `DeployRec` is minted, because a lock is not a
+        // deployable — it is a record about one (`lock.rs`).
+        if deploys.locks.find(cx, cz, level, loc).is_some() {
+            events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_HAS_LOCK, 0);
+            return;
+        }
+        if deploys.locks.len() == MAX_LOCKS {
+            events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
+            return;
+        }
+        if !lock::holds(&p.inv, def.item) {
+            events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_COST, 0);
+            return;
+        }
+        deploys
+            .locks
+            .insert(LockRec::fresh(cx, cz, level, loc, p.id));
+        inv_take(&mut p.inv, def.item, 1);
+        // Bolted on, not armed: a fresh lock has no code and lets
+        // everyone through until `ACCESS_OP_SET_CODE` gives it one, which
+        // is the reference's own sequence. The door announcement carries
+        // the new `has_lock` bit so the client can prompt for a code.
+        let di = deploys
+            .find_index(cx, cz, level, loc)
+            .expect("the support check just found the door");
+        deploys.entries[di].has_lock = true;
+        deploys.entries[di].locked = false;
+        announce_door(deploys, di, p.id, events);
+        return;
+    }
     if def.arch == ARCH_HEARTH {
         // No hearth inside any hearth's radius (own included), and the
         // dense hearth list is a hard cap.
-        if deploys.covering_hearth(ax, az, false).is_some() {
+        // No hearth inside any claim, own included — and *claim* is now
+        // the base's volume rather than the old circle, so two hearths in
+        // one building refuse each other however far apart they stand
+        // along it. That is the reference's "one cupboard per building"
+        // (`BUILDING.md` §2) falling out of the shape rather than needing
+        // a building identity to enforce.
+        if crate::claim::any_claim(pieces, deploys, ax, az) {
             events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OVERLAP, 0);
             return;
         }
@@ -989,11 +1290,14 @@ pub fn place_deploy(
         hp: def.hp,
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
         open: false,
-        // A door is born locked to the hand that placed it (lock v0): the
-        // base is the point of the base. Everything else ignores the bit.
-        locked: def.arch == ARCH_DOOR,
+        // A door is born **bare** (lock v1). lock v0 had it born locked to
+        // its placer, which made the door free and the security free; the
+        // security is what costs now, and a door nobody has bolted a lock
+        // onto is a door anyone in reach may work (`DOORS.md` §9.2).
+        has_lock: false,
+        locked: false,
     };
-    if !deploys.insert(rec) {
+    if !deploys.insert(rec, tick) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
         return;
     }
@@ -1008,6 +1312,10 @@ pub fn place_deploy(
             level,
             owner: p.id,
             stock: [0; HEARTH_STOCK_ROWS],
+            // Placing it joins its crew — the reference's own rule
+            // (`BUILDING.md` §1 fact 4), and the reason there is no
+            // separate "authorize yourself at your own hearth" step.
+            crew: CrewList::of(p.id),
         };
         deploys.hearth_count += 1;
     }
@@ -1125,17 +1433,31 @@ fn announce_door(deploys: &Deploys, i: usize, by: u32, events: &mut EventQueue) 
     events.push(
         EV_DOOR,
         crate::gather::cell_key(d.cx, d.cz),
-        ((d.level as u32) << 16) | ((d.loc as u32) << 8) | ((d.locked as u32) << 1) | d.open as u32,
+        ((d.level as u32) << 16)
+            | ((d.loc as u32) << 8)
+            | ((d.has_lock as u32) << 2)
+            | ((d.locked as u32) << 1)
+            | d.open as u32,
         by,
     );
 }
 
 /// Apply one use request (`Command::Use`): toggle the door at the
-/// address. Any player within build reach may toggle an **unlocked**
-/// door; a locked one answers only to its owner (lock v0) and bounces
-/// every other hand with `REFUSE_D_OWNER`. The shut bit in the collision
-/// index flips in the same call, so the tick that toggles is the tick
-/// that blocks (or opens); EV_DOOR announces the new state for the wire.
+/// address. Any player within build reach may toggle a door the lock at
+/// that address lets them through — which is **every** door with no lock
+/// on it, and every door whose lock is unlocked (lock v1). A refusal
+/// **knocks**: the shut bit does not move, the sender gets
+/// `REFUSE_D_OWNER`, and everyone gets `EV_KNOCK`.
+///
+/// One predicate, asked once, for open and for close alike — the
+/// reference asks its lock on `OnTryToOpen` *and* `OnTryToClose`
+/// (`reference/DOORS.md` §1 fact 3) and a toggle gets that for free. It
+/// must keep getting it for free: a fast path that skipped the check when
+/// closing would let a stranger shut you in.
+///
+/// The shut bit in the collision index flips in the same call, so the
+/// tick that toggles is the tick that blocks (or opens); EV_DOOR
+/// announces the new state for the wire.
 #[allow(clippy::too_many_arguments)]
 pub fn use_door(
     dc: &DeployContent,
@@ -1151,7 +1473,17 @@ pub fn use_door(
     let Some(i) = door_in_reach(dc, deploys, p, cx, cz, level, loc, events) else {
         return;
     };
-    if deploys.entries[i].locked && deploys.entries[i].owner != p.id {
+    if !deploys.locks.passes(cx, cz, level, loc, p.id) {
+        // Knocking is the whole reason a refusal here is not silent
+        // (`DOORS.md` §4): it is the only channel a locked-out player has
+        // to the person inside, and it costs one broadcast. Both go out —
+        // the sender still learns *why* nothing swung.
+        events.push(
+            EV_KNOCK,
+            crate::gather::cell_key(cx, cz),
+            ((level as u32) << 16) | ((loc as u32) << 8),
+            p.id,
+        );
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
         return;
     }
@@ -1161,32 +1493,268 @@ pub fn use_door(
     announce_door(deploys, i, p.id, events);
 }
 
-/// Apply one lock request (`Command::Lock`): set the door's lock bit to
-/// `locked`. Owner-only, and absolute rather than a toggle — two presses
-/// racing would otherwise fight over the state (the same reason the use
-/// action carries no state). The leaf never moves: locking an open door
-/// leaves it open, and only its owner can then shut it.
+/// Apply one lock request (`Command::Access`): run `op` against the code
+/// lock at the address (lock v1, `lock.rs` owns the rules).
+///
+/// Absolute rather than a toggle, for lock v0's reason: two presses
+/// racing must agree on the result, not swap it. The leaf never moves —
+/// locking an open door leaves it open, and whoever the lock remembers is
+/// then the one who can shut it.
+///
+/// This function is the **seam**, and it is deliberately the only one:
+/// `lock.rs` decides, `deploy.rs` spends the item, mirrors the bit onto
+/// `DeployRec` and pushes the events. Neither half writes the other's
+/// state, so the reason code and the announcement shape exist in exactly
+/// one place each.
 #[allow(clippy::too_many_arguments)]
-pub fn set_lock(
+pub fn lock_op(
     dc: &DeployContent,
+    gc: &GatherContent,
+    deploys: &mut Deploys,
+    p: &mut Player,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    op: u8,
+    code: u16,
+    tick: u64,
+    events: &mut EventQueue,
+) {
+    let Some(di) = door_in_reach(dc, deploys, p, cx, cz, level, loc, events) else {
+        return;
+    };
+    let Some(li) = deploys.locks.find_index(cx, cz, level, loc) else {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_NO_LOCK, 0);
+        return;
+    };
+    match lock::apply(&mut deploys.locks, li, p.id, op, code, tick) {
+        Outcome::Done { relock } => {
+            deploys.entries[di].locked = relock;
+            announce_door(deploys, di, p.id, events);
+        }
+        Outcome::Removed => {
+            // The lock item comes back to the hand that unbolted it, and
+            // the door is anyone's again (`DOORS.md` §7 verb 8). A full
+            // inventory loses it, which is what every other give here
+            // does; the alternative is a lock that cannot be taken off by
+            // a player carrying a full load, and that is worse.
+            if let Some(r) = lock_row(dc) {
+                let item = dc.defs[r].item;
+                lock::give_back(&mut p.inv, item, gc.stack_max_of(item));
+            }
+            deploys.entries[di].has_lock = false;
+            deploys.entries[di].locked = false;
+            announce_door(deploys, di, p.id, events);
+        }
+        Outcome::Authorized { grant } => {
+            events.push(
+                EV_AUTH,
+                crate::gather::cell_key(cx, cz),
+                ((level as u32) << 16) | ((loc as u32) << 8) | grant as u32,
+                p.id,
+            );
+        }
+        Outcome::Wrong { shock, shut } => {
+            lock::shock(&mut p.hp, shock);
+            // Absolute, like every other health reading (`EV_HEALTH`'s own
+            // doc): a client that misses this one hears the whole truth
+            // from the next.
+            events.push(EV_HEALTH, p.id, p.hp as u32, p.hp_max as u32);
+            let reason = if shut {
+                REFUSE_D_LOCKOUT
+            } else {
+                REFUSE_D_CODE
+            };
+            events.push(EV_DEPLOY_REFUSED, p.id, reason, 0);
+        }
+        Outcome::LockedOut => events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_LOCKOUT, 0),
+        Outcome::Denied => events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0),
+        Outcome::ListFull => events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_AUTH_FULL, 0),
+        Outcome::BadOp => events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0),
+    }
+}
+
+/// Take a deployable back up and return its item — **pickup v1**
+/// (`reference/BUILDING.md` §7 verb 11, and `DOORS.md` §7 verb 9, which
+/// are the same verb seen from two documents).
+///
+/// **Deliberately not window-gated, where the piece verb is.** The
+/// reference lets an authorized player pick a deployable up inside
+/// privilege at any time and only time-boxes *building blocks*, and the
+/// asymmetry is right: a box is furniture and a wall is a base. The
+/// consequence worth stating is the one `DOORS.md` §5 already states —
+/// on unclaimed ground **anyone in reach may take it**, which is what
+/// makes a hearth worth placing.
+///
+/// A door with a lock on it is the one extra check: the lock is the thing
+/// saying whose door it is, so a hand it does not know cannot lift the
+/// door out of the frame. Without that, every code lock in the game would
+/// be defeated by picking up what it is bolted to.
+#[allow(clippy::too_many_arguments)]
+pub fn pick_up(
+    dc: &DeployContent,
+    gc: &GatherContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    p: &mut Player,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    events: &mut EventQueue,
+) {
+    let Some(i) = deploys.find_index(cx, cz, level, loc) else {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
+        return;
+    };
+    let (ax, az) = cell_center(cx, cz);
+    let (px, pz) = player_xz(p);
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
+        return;
+    }
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_CLAIM, 0);
+        return;
+    }
+    if !deploys.locks.passes(cx, cz, level, loc, p.id) {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+        return;
+    }
+    let rec = deploys.entries[i];
+    let def = dc.defs[rec.row as usize];
+    // A container comes up empty or not at all.
+    if def.arch == ARCH_BOX
+        && deploys
+            .box_index(box_key(cx, cz, level))
+            .is_some_and(|b| !deploys.boxes.entries[b].is_empty())
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_NOT_EMPTY, 0);
+        return;
+    }
+    // ...and a hearth with stock in it would take the stock with it.
+    if def.arch == ARCH_HEARTH
+        && deploys.hearths[..deploys.hearth_count]
+            .iter()
+            .any(|h| h.cx == cx && h.cz == cz && h.level == level && h.stock.iter().any(|&s| s > 0))
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_NOT_EMPTY, 0);
+        return;
+    }
+    // A door's lock comes up with it, as a second item: it is a separate
+    // thing bolted on (`DOORS.md` §1 fact 1), so it is separately
+    // returned rather than destroyed with the frame.
+    if deploys.locks.find(cx, cz, level, loc).is_some() {
+        if let Some(r) = lock_row(dc) {
+            let item = dc.defs[r].item;
+            lock::give_back(&mut p.inv, item, gc.stack_max_of(item));
+        }
+    }
+    crate::gather::inv_add(&mut p.inv, def.item, 1, gc.stack_max_of(def.item));
+    drop_deploy(dc, pieces, deploys, i, events);
+}
+
+/// Apply one crew op to the hearth at the address (hearth crew v1,
+/// `reference/BUILDING.md` §9.1). `Command::Access` routes here when the
+/// address holds a hearth and to `lock_op` when it holds a door — one
+/// verb, because "who may do this here" is one question and the answer
+/// lives in a `Roster` either way.
+///
+/// The reference's own three (`BUILDING.md` §2): press to add yourself,
+/// press again to remove yourself, hold for clear. **Self-service is the
+/// whole model** — you authorize *yourself* at a hearth whose crew let you
+/// reach it, which is why there is no id on the wire and nothing to forge:
+/// the only player a crew op can name is its sender.
+#[allow(clippy::too_many_arguments)]
+pub fn crew_op(
     deploys: &mut Deploys,
     p: &Player,
     cx: u16,
     cz: u16,
     level: u8,
-    loc: u8,
-    locked: bool,
+    op: u8,
     events: &mut EventQueue,
 ) {
-    let Some(i) = door_in_reach(dc, deploys, p, cx, cz, level, loc, events) else {
+    let Some(h) = deploys.hearths[..deploys.hearth_count]
+        .iter()
+        .position(|hr| hr.cx == cx && hr.cz == cz && hr.level == level)
+    else {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_HEARTH, 0);
         return;
     };
-    if deploys.entries[i].owner != p.id {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+    let (ax, az) = cell_center(cx, cz);
+    let (px, pz) = player_xz(p);
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
         return;
     }
-    deploys.entries[i].locked = locked;
-    announce_door(deploys, i, p.id, events);
+    let crew = &mut deploys.hearths[h].crew;
+    match op {
+        // **Anyone in reach may join an empty-crewed hearth, and only the
+        // crew may join a crewed one.** The first half cannot happen —
+        // placing joins the crew, so a live hearth always has at least one
+        // member — but stating it here is what makes the rule readable as
+        // the same one the lock keeps: an unclaimed thing is anyone's.
+        ACCESS_OP_CREW_JOIN => {
+            if !crew.is_empty() && !crew.contains(p.id) {
+                events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+                return;
+            }
+            if crew.add(p.id) == Added::Full {
+                events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_AUTH_FULL, 0);
+                return;
+            }
+        }
+        ACCESS_OP_CREW_LEAVE => {
+            // Leaving is not gated: a hand the crew does not know is
+            // already not on it, and a refusal there would tell a
+            // stranger whether they were. `remove` returning false is
+            // simply nothing happening.
+            crew.remove(p.id);
+        }
+        ACCESS_OP_CREW_CLEAR => {
+            if !crew.contains(p.id) {
+                events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+                return;
+            }
+            // Clear to the clearer, one operation. A bare `clear()` would
+            // leave the hearth crewless for the instant between two
+            // statements, and an empty crew is a hearth anyone may join.
+            crew.reset_to(p.id);
+        }
+        _ => {
+            events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0);
+            return;
+        }
+    }
+    // The sender's own standing afterwards, absolute, to the sender only —
+    // `EV_AUTH`'s existing shape, reused rather than duplicated. A crew
+    // grant is full or nothing: there is no guest tier for building.
+    let grant = if deploys.hearths[h].crew.contains(p.id) {
+        lock::GRANT_FULL
+    } else {
+        lock::GRANT_NONE
+    };
+    events.push(
+        EV_AUTH,
+        crate::gather::cell_key(cx, cz),
+        ((level as u32) << 16) | ((LOC_PLANE as u32) << 8) | grant as u32,
+        p.id,
+    );
+}
+
+/// The baked row of the code lock, if the loaded content has one. A table
+/// with no lock row is inert content and the take verb simply returns
+/// nothing — the same posture every other verb here takes toward the
+/// `EMPTY` default (a shard booted without locks plays the game it played
+/// before, wall 7).
+fn lock_row(dc: &DeployContent) -> Option<usize> {
+    dc.defs[..dc.def_count as usize]
+        .iter()
+        .position(|d| d.arch == ARCH_LOCK)
 }
 
 /// Per-period charge for one cost row: `ceil(cost × pct / 100 / 24)`.
@@ -1195,9 +1763,25 @@ fn charge_of(cost: u16, pct: u16) -> u32 {
     num.div_ceil(100 * PERIODS_PER_DAY)
 }
 
-/// Per-period decay for a def's max hp: `max(1, maxhp × pct / 100)`.
-fn decay_of(max_hp: u16) -> u16 {
-    ((max_hp as u32 * DECAY_PCT_PER_PERIOD) / 100).max(1) as u16
+/// Per-period decay for a max hp at a rate: `max(1, maxhp × pct / 100)`.
+///
+/// The floor is what stops a 1 % rate on a 50 hp piece rounding to zero
+/// and making it immortal — a decay that never subtracts is a decay
+/// that is off, and off is a thing content should have to *say*
+/// (`upkeep_pct_per_day = 0`) rather than stumble into.
+fn decay_at(max_hp: u16, pct: u32) -> u16 {
+    ((max_hp as u32 * pct) / 100).max(1) as u16
+}
+
+/// The rate a **piece** of this material rots at, from the baked ladder.
+/// Content that priced no ladder falls back to the flat rate, so a shard
+/// on an older `balance.toml` plays exactly the game it played before —
+/// a new table may add a rule, never silently change one (wall 7).
+fn piece_decay_pct(dc: &DeployContent, material: u8) -> u32 {
+    match dc.decay_pct.get(material as usize) {
+        Some(&p) if p > 0 => p as u32,
+        _ => DECAY_PCT_PER_PERIOD,
+    }
 }
 
 /// Remove the piece at store index `i` and the deployable standing at the
@@ -1248,6 +1832,14 @@ fn drop_deploy(
     deploys.remove_at(di, dc);
     if dc.defs[rec.row as usize].arch == ARCH_DOOR {
         pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, false);
+        // A lock dies with what it is bolted to (`DOORS.md` §2.2). Here
+        // rather than at each caller, because this is the one removal
+        // path — decay, a raid swing and a collapsing doorway all arrive
+        // through it, and a lock left behind at a dead address would
+        // silently refuse the next door built there.
+        deploys
+            .locks
+            .remove_at_address(rec.cx, rec.cz, rec.level, rec.loc);
     }
     events.push(
         EV_DEPLOY_REMOVED,
@@ -1393,39 +1985,59 @@ pub fn upkeep_sweep(
         while uh < h_now && steps < SWEEP_CATCHUP_MAX {
             steps += 1;
             uh += 1;
-            // First hearth in list order that can pay the whole charge.
-            let payer = deploys.hearths[..deploys.hearth_count]
-                .iter()
-                .position(|hr| {
-                    let (hx, hz) = cell_center(hr.cx, hr.cz);
-                    let (dx, dz) = (hx - x, hz - z);
-                    if dx * dx + dz * dz > HEARTH_RADIUS_M * HEARTH_RADIUS_M {
-                        return false;
-                    }
-                    (0..dc.mat_count as usize).all(|m| {
-                        let due: u32 = def
-                            .costs
-                            .iter()
-                            .take(def.n_costs as usize)
-                            .filter(|&&(item, _)| item == dc.mats[m])
-                            .map(|&(_, cost)| charge_of(cost, dc.upkeep_pct_per_day))
-                            .sum();
-                        hr.stock[m] >= due
-                    })
-                });
-            if let Some(hi) = payer {
-                for m in 0..dc.mat_count as usize {
-                    let due: u32 = def
-                        .costs
-                        .iter()
-                        .take(def.n_costs as usize)
-                        .filter(|&&(item, _)| item == dc.mats[m])
-                        .map(|&(_, cost)| charge_of(cost, dc.upkeep_pct_per_day))
-                        .sum();
-                    deploys.hearths[hi].stock[m] -= due;
+            // **Per material, not all-or-nothing** (upkeep/decay v1,
+            // `reference/BUILDING.md` §4). Each cost row is charged to the
+            // first hearth in list order that is in radius and can cover
+            // *that row*; the piece is protected only if **every** row
+            // found a payer.
+            //
+            // The old rule wanted one hearth to cover the whole charge, so
+            // a hearth holding stone but no wood protected nothing at all
+            // — half a stock did half of nothing. The reference's is the
+            // better sentence and it is not more code: *if your stone runs
+            // out, only the stone parts of your base lose health.*
+            //
+            // Rows are charged as they are found rather than after a
+            // whole-piece check, so a piece that pays three rows and
+            // misses the fourth has still spent the three. That is the
+            // honest reading of a partial payment: the materials went into
+            // the base, and the base still rots for want of the one that
+            // did not.
+            // **A hearth has to be there at all**, before any row is
+            // priced. Without this the per-row loop calls a piece paid
+            // when it simply costs nothing, and an unpriced piece in open
+            // ground would never rot — which is the old rule's one
+            // property worth keeping: no hearth, no protection.
+            let mut all_paid = deploys.hearths[..deploys.hearth_count].iter().any(|hr| {
+                let (hx, hz) = cell_center(hr.cx, hr.cz);
+                let (dx, dz) = (hx - x, hz - z);
+                dx * dx + dz * dz <= HEARTH_RADIUS_M * HEARTH_RADIUS_M
+            });
+            for m in 0..(if all_paid { dc.mat_count as usize } else { 0 }) {
+                let due: u32 = def
+                    .costs
+                    .iter()
+                    .take(def.n_costs as usize)
+                    .filter(|&&(item, _)| item == dc.mats[m])
+                    .map(|&(_, cost)| charge_of(cost, dc.upkeep_pct_per_day))
+                    .sum();
+                if due == 0 {
+                    continue;
                 }
-            } else {
-                let d = decay_of(def.hp);
+                let payer = deploys.hearths[..deploys.hearth_count]
+                    .iter()
+                    .position(|hr| {
+                        let (hx, hz) = cell_center(hr.cx, hr.cz);
+                        let (dx, dz) = (hx - x, hz - z);
+                        dx * dx + dz * dz <= HEARTH_RADIUS_M * HEARTH_RADIUS_M && hr.stock[m] >= due
+                    });
+                match payer {
+                    Some(hi) => deploys.hearths[hi].stock[m] -= due,
+                    None => all_paid = false,
+                }
+            }
+            if !all_paid {
+                let d = decay_at(def.hp, piece_decay_pct(dc, def.material));
                 if hp <= d {
                     hp = 0;
                     removed = true;
@@ -1497,7 +2109,9 @@ pub fn upkeep_sweep(
             // Covered by any stocked hearth ⇒ free; uncovered ⇒ decay.
             // (An empty hearth covers nothing, itself included.)
             if deploys.covering_hearth(x, z, true).is_none() {
-                let d = decay_of(def.hp);
+                // The flat rate: a deployable has no build material, so
+                // the ladder has nothing to key on (`piece_decay_pct`).
+                let d = decay_at(def.hp, DECAY_PCT_PER_PERIOD);
                 if hp <= d {
                     hp = 0;
                     removed = true;
@@ -2353,7 +2967,7 @@ mod tests {
         deploys: &mut Deploys,
         ev: &mut EventQueue,
     ) -> Player {
-        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (4, 2)]);
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (4, 2), (7, 2)]);
         founded(bc, pieces, &mut p, CX, CZ);
         crate::build::place(
             SEED, bc, deploys, pieces, &mut p, 0, 3, CX, CZ, 0, LOC_EDGE_W, ev,
@@ -2585,8 +3199,9 @@ mod tests {
         // Placed closed: sim state, the shut bit, and the walk agree.
         assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
         assert!(
-            deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked,
-            "a door places locked to its placer (lock v0)"
+            !deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().has_lock
+                && !deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked,
+            "a door places BARE (lock v1) — the security is what costs"
         );
         assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
         assert!(
@@ -2611,9 +3226,9 @@ mod tests {
             (
                 crate::world::EV_DOOR,
                 crate::gather::cell_key(CX, CZ),
-                // open, and still locked — the announcement is the whole
-                // door, absolute (lock v0).
-                (LOC_EDGE_W as u32) << 8 | 2 | 1,
+                // open, no lock — the announcement is the whole door,
+                // absolute (lock v1: has_lock << 2 | locked << 1 | open).
+                (LOC_EDGE_W as u32) << 8 | 1,
                 7
             )
         );
@@ -2644,19 +3259,105 @@ mod tests {
         );
     }
 
+    /// Bolt the probe fixture's code lock (row 4) onto the door `doored`
+    /// hung, and arm it with `code`. Returns nothing: every assertion the
+    /// callers make is about the store, which is where the truth is.
+    fn locked_door(
+        dc: &DeployContent,
+        deploys: &mut Deploys,
+        p: &mut Player,
+        code: u16,
+        ev: &mut EventQueue,
+    ) {
+        let bc = BuildContent::probe_fixture();
+        let mut pieces_unused = Pieces::new();
+        let _ = &mut pieces_unused;
+        let _ = &bc;
+        lock_op(
+            dc,
+            &GatherContent::probe_fixture(),
+            deploys,
+            p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            crate::deploy::ACCESS_OP_SET_CODE,
+            code,
+            0,
+            ev,
+        );
+    }
+
+    /// The whole lock v1 access model on one door: bare, then bolted, then
+    /// armed, then shared two ways.
     #[test]
-    fn a_locked_door_answers_only_to_its_owner() {
+    fn a_bare_door_is_anyones_and_a_lock_is_what_claims_it() {
         let dc = DeployContent::probe_fixture();
         let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
         let mut pieces = Pieces::new();
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
-        // A second hand at the same doorway, in reach, empty-handed.
         let mut stranger = player_at_cell(CX, CZ, &[]);
         stranger.id = 9;
 
-        // Locked: the stranger bounces and the leaf does not move.
+        // Bare: the stranger works it, which is the reference's rule and
+        // the reason a lock costs anything at all.
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev).0,
+            crate::world::EV_DOOR,
+            "a bare door is anyone's"
+        );
+        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
+
+        // Bolt one on. Placing the lock mints no deploy record — it is a
+        // record *about* one — and the door announces its new bit.
+        let before = deploys.len();
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), before, "a lock is not a deployable record");
+        assert_eq!(deploys.locks().len(), 1, "it is a lock record");
+        let d = deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        assert!(d.has_lock && !d.locked, "bolted on, not yet armed");
+        assert_eq!(
+            last(&ev).2 & 7,
+            4 | 1,
+            "EV_DOOR carries has_lock << 2 over the open leaf"
+        );
+
+        // Unarmed, it still lets everyone through: arming is set_code.
+        assert!(deploys.lock_passes(CX, CZ, 0, LOC_EDGE_W, stranger.id));
+
+        // Arm it. Now the stranger bounces — and knocks.
+        locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
+        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked);
+        let open_before = deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open;
         use_door(
             &dc,
             &mut pieces,
@@ -2671,37 +3372,49 @@ mod tests {
         assert_eq!(
             (last(&ev).0, last(&ev).2),
             (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER),
-            "a locked door refuses a foreign hand"
+            "a locked door refuses a hand it does not know"
         );
-        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
-        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1, "and stays sealed");
+        assert_eq!(
+            ev.entries()[ev.len() - 2].code,
+            crate::world::EV_KNOCK,
+            "and the refusal KNOCKS — the one channel a locked-out player has"
+        );
+        assert_eq!(
+            deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open,
+            open_before,
+            "the leaf did not move"
+        );
 
-        // The owner's own press still works, locked and all.
-        use_door(
+        // The code is the mechanic: entering it authorizes, it does not
+        // open. The door does not move on this press.
+        let open_at_entry = deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open;
+        lock_op(
             &dc,
-            &mut pieces,
+            &gc,
             &mut deploys,
-            &mut p,
+            &mut stranger,
             CX,
             CZ,
             0,
             LOC_EDGE_W,
+            crate::deploy::ACCESS_OP_ENTER,
+            1234,
+            0,
             &mut ev,
         );
-        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
-
-        // Unlocked, the door is public again — the door v0 behavior, now
-        // something its owner chooses rather than the only option.
-        set_lock(&dc, &mut deploys, &p, CX, CZ, 0, LOC_EDGE_W, false, &mut ev);
         assert_eq!(
-            last(&ev),
+            (last(&ev).0, last(&ev).2 & 0xff, last(&ev).3),
             (
-                crate::world::EV_DOOR,
-                crate::gather::cell_key(CX, CZ),
-                // Still open: unlocking never moves the leaf.
-                (LOC_EDGE_W as u32) << 8 | 1,
-                7
-            )
+                crate::world::EV_AUTH,
+                crate::lock::GRANT_FULL as u32,
+                stranger.id
+            ),
+            "a correct code announces the grant, to its sender only"
+        );
+        assert_eq!(
+            deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open,
+            open_at_entry,
+            "entering a code is not opening a door"
         );
         use_door(
             &dc,
@@ -2714,73 +3427,923 @@ mod tests {
             LOC_EDGE_W,
             &mut ev,
         );
-        assert_eq!(last(&ev).0, crate::world::EV_DOOR, "an unlocked door opens");
-        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
-        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
-
-        // And a stranger may not lock what a stranger does not own.
-        set_lock(
-            &dc,
-            &mut deploys,
-            &stranger,
-            CX,
-            CZ,
-            0,
-            LOC_EDGE_W,
-            true,
-            &mut ev,
-        );
         assert_eq!(
-            (last(&ev).0, last(&ev).2),
-            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER)
+            last(&ev).0,
+            crate::world::EV_DOOR,
+            "and thereafter the door simply works"
         );
-        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked);
     }
 
+    /// A wrong code costs hp, escalating, and never the last point of it.
     #[test]
-    fn lock_is_absolute_and_bounces_like_a_use() {
+    fn a_wrong_code_shocks_and_the_eighth_shuts_the_keypad() {
         let dc = DeployContent::probe_fixture();
         let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
         let mut pieces = Pieces::new();
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
-        let p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
-
-        // Absolute, not a toggle: the same request twice is the same
-        // state twice (two presses racing must not fight).
-        for _ in 0..2 {
-            set_lock(&dc, &mut deploys, &p, CX, CZ, 0, LOC_EDGE_W, false, &mut ev);
-            assert_eq!(last(&ev).0, crate::world::EV_DOOR);
-            assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked);
-        }
-        set_lock(&dc, &mut deploys, &p, CX, CZ, 0, LOC_EDGE_W, true, &mut ev);
-        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked);
-        assert_eq!(
-            last(&ev).2 & 3,
-            2,
-            "EV_DOOR carries locked = 1 over a closed leaf"
-        );
-
-        // The address must hold a door, and the hand must be in reach —
-        // the same two refusals the use action bounces with.
-        set_lock(&dc, &mut deploys, &p, CX, CZ, 0, LOC_PLANE, true, &mut ev);
-        assert_eq!(last(&ev).2, REFUSE_D_DOOR, "no door at that address");
-        let far = player_at_cell(CX + 7, CZ, &[]);
-        set_lock(
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
             &dc,
+            &bc,
+            &mut pieces,
             &mut deploys,
-            &far,
+            &mut p,
+            0,
+            5,
             CX,
             CZ,
             0,
             LOC_EDGE_W,
-            false,
+            &mut ev,
+        );
+        locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
+
+        let mut raider = player_at_cell(CX, CZ, &[]);
+        raider.id = 9;
+        raider.hp = 100;
+        raider.hp_max = 100;
+        let wrong = |deploys: &mut Deploys, r: &mut Player, ev: &mut EventQueue| {
+            lock_op(
+                &dc,
+                &gc,
+                deploys,
+                r,
+                CX,
+                CZ,
+                0,
+                LOC_EDGE_W,
+                crate::deploy::ACCESS_OP_ENTER,
+                4321,
+                0,
+                ev,
+            );
+        };
+        wrong(&mut deploys, &mut raider, &mut ev);
+        assert_eq!(raider.hp, 95, "the first miss is one step");
+        assert_eq!(last(&ev).2, REFUSE_D_CODE);
+        wrong(&mut deploys, &mut raider, &mut ev);
+        assert_eq!(raider.hp, 85, "the second is two");
+        for _ in 0..6 {
+            wrong(&mut deploys, &mut raider, &mut ev);
+        }
+        assert_eq!(
+            last(&ev).2,
+            REFUSE_D_LOCKOUT,
+            "the eighth miss shuts the keypad"
+        );
+        // ...and the *correct* code is refused while it is shut, which is
+        // the point of a lockout.
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut raider,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            crate::deploy::ACCESS_OP_ENTER,
+            1234,
+            0,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_D_LOCKOUT);
+        assert!(!deploys.lock_passes(CX, CZ, 0, LOC_EDGE_W, raider.id));
+
+        // The floor: a body cannot be finished by a keypad.
+        raider.hp = 1;
+        wrong(&mut deploys, &mut raider, &mut ev);
+        assert_eq!(raider.hp, 1, "a lock may maim, never kill");
+    }
+
+    /// The lock verb's shape: full-rights ops bounce for a stranger, the
+    /// address must hold a door and a lock, and reach is the door's own.
+    #[test]
+    fn lock_ops_bounce_on_rights_reach_and_a_missing_lock() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+
+        // No lock on the door yet: every op says so, rather than saying
+        // "not yours" — a client that could not tell those apart would
+        // prompt for a code at a door with no keypad.
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            crate::deploy::ACCESS_OP_UNLOCK,
+            0,
+            0,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_D_NO_LOCK);
+
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        // One lock per door.
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_D_HAS_LOCK);
+        locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
+
+        // A stranger may not arm, disarm, or unbolt it.
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = 9;
+        for op in [
+            crate::deploy::ACCESS_OP_SET_CODE,
+            crate::deploy::ACCESS_OP_SET_GUEST,
+            crate::deploy::ACCESS_OP_LOCK,
+            crate::deploy::ACCESS_OP_UNLOCK,
+            crate::deploy::ACCESS_OP_TAKE,
+        ] {
+            lock_op(
+                &dc,
+                &gc,
+                &mut deploys,
+                &mut stranger,
+                CX,
+                CZ,
+                0,
+                LOC_EDGE_W,
+                op,
+                1111,
+                0,
+                &mut ev,
+            );
+            assert_eq!(last(&ev).2, REFUSE_D_OWNER, "op {op} is full-rights");
+        }
+        assert_eq!(deploys.locks().len(), 1, "and the lock is still on");
+
+        // The two refusals the use verb bounces with, unchanged.
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::deploy::ACCESS_OP_UNLOCK,
+            0,
+            0,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_D_DOOR, "no door at that address");
+        let mut far = player_at_cell(CX + 7, CZ, &[]);
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut far,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            crate::deploy::ACCESS_OP_UNLOCK,
+            0,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_D_REACH, "a lock has the build reach");
         assert!(
             deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked,
-            "a refused lock leaves the bit where it was"
+            "a refused op leaves the bit where it was"
+        );
+
+        // Taking it off returns the item and makes the door anyone's.
+        let held = crate::craft::inv_count(&p.inv, 7);
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            crate::deploy::ACCESS_OP_TAKE,
+            0,
+            0,
+            &mut ev,
+        );
+        assert_eq!(deploys.locks().len(), 0);
+        assert_eq!(
+            crate::craft::inv_count(&p.inv, 7),
+            held + 1,
+            "the item comes back"
+        );
+        let d = deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        assert!(!d.has_lock && !d.locked, "and both mirror bits cleared");
+        assert!(deploys.lock_passes(CX, CZ, 0, LOC_EDGE_W, stranger.id));
+    }
+
+    /// Pickup v1: a deployable comes back up any time you may build
+    /// there, and comes up **empty or not at all**.
+    #[test]
+    fn a_deployable_comes_back_up_and_a_full_one_does_not() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (2, 2), (3, 2)]);
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+
+        // A workbench (row 1, item 3) on the foundation. No hearth stands,
+        // so the ground is unclaimed and anyone in reach may lift it —
+        // which is `DOORS.md` §5's rule and the reason a hearth is worth
+        // placing at all.
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 1);
+        let held = crate::craft::inv_count(&p.inv, 3);
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = 9;
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 0, "unclaimed furniture is anyone's");
+        assert_eq!(
+            crate::craft::inv_count(&stranger.inv, 3),
+            1,
+            "and the item goes to the hand that lifted it"
+        );
+        assert_eq!(
+            crate::craft::inv_count(&p.inv, 3),
+            held,
+            "not to the placer"
+        );
+
+        // A hearth with stock in it refuses: lifting it would take the
+        // stock with it.
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.hearths().len(), 1);
+        deploys.hearths_mut()[0].stock[0] = 5;
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_NOT_EMPTY)
+        );
+        assert_eq!(deploys.hearths().len(), 1, "and it is still standing");
+        deploys.hearths_mut()[0].stock[0] = 0;
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.hearths().len(), 0, "emptied, it lifts");
+    }
+
+    /// A locked door cannot be lifted out of its frame by a hand the lock
+    /// does not know — without this, every code lock in the game is
+    /// defeated by picking up what it is bolted to.
+    #[test]
+    fn a_lock_guards_the_door_against_being_picked_up() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
+
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = 9;
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER),
+            "the lock is what says whose door it is, and lifting is a way \
+             through it"
+        );
+        assert_eq!(deploys.len(), 1, "the door is still hanging");
+
+        // The hand the lock knows lifts it, and the lock comes up as a
+        // second item rather than being destroyed with the frame.
+        let doors = crate::craft::inv_count(&p.inv, 4);
+        let locks = crate::craft::inv_count(&p.inv, 7);
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 0);
+        assert_eq!(deploys.locks().len(), 0, "and the lock came off with it");
+        assert_eq!(crate::craft::inv_count(&p.inv, 4), doors + 1, "the door");
+        assert_eq!(crate::craft::inv_count(&p.inv, 7), locks + 1, "the lock");
+    }
+
+    /// Upkeep/decay v1: a half-stocked hearth does half the job, and an
+    /// unpaid piece rots at its own material's rate.
+    #[test]
+    fn upkeep_is_charged_per_material_and_decay_follows_the_grade() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 250), (1, 250), (2, 2)]);
+
+        // Two pieces at the same cell: the foundation (row 0, item 0 =
+        // "wood") and a floor one storey up (row 2, item 1 = "stone" in
+        // the build fixture). One hearth covering both.
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        crate::build::place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        crate::build::place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            0,
+            2,
+            CX,
+            CZ,
+            1,
+            LOC_PLANE,
+            &mut ev,
+        );
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.hearths().len(), 1);
+
+        // Stock material row 0 only. Under the OLD rule this hearth paid
+        // for nothing, because no piece's whole charge was covered.
+        deploys.hearths_mut()[0].stock[0] = 100_000;
+        deploys.hearths_mut()[0].stock[1] = 0;
+
+        let hp_before: Vec<u16> = pieces.entries().iter().map(|r| r.hp).collect();
+        let rows: Vec<u8> = pieces.entries().iter().map(|r| r.row).collect();
+        let mut cursor_p = 0u32;
+        let mut cursor_d = 0u32;
+        let mut budget = 64usize;
+        upkeep_sweep(
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            UPKEEP_PERIOD_TICKS,
+            &mut cursor_p,
+            &mut cursor_d,
+            &mut budget,
+            &mut ev,
+        );
+        let hp_after: Vec<u16> = pieces.entries().iter().map(|r| r.hp).collect();
+
+        // At least one piece was paid for and at least one was not: that
+        // pair is the whole feature, and asserting "some rotted, some did
+        // not" is what a single flat rate could never produce from one
+        // half-stocked hearth.
+        let intact = hp_before
+            .iter()
+            .zip(&hp_after)
+            .filter(|(a, b)| a == b)
+            .count();
+        let rotted = hp_before.len() - intact;
+        assert!(
+            intact > 0 && rotted > 0,
+            "a hearth stocked with one material must protect the parts made \
+             of it and no others — got {intact} intact, {rotted} rotted"
+        );
+        assert!(
+            deploys.hearths()[0].stock[0] < 100_000,
+            "and it must actually have spent the material it had"
+        );
+
+        // The ladder: the fixture prices wood 34 / stone 20 / metal 13, so
+        // a wooden piece loses more of its max hp per period than a stone
+        // one. Read off the content rather than typed, so a re-price moves
+        // the assertion with it.
+        let wood = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_WOOD));
+        let stone = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_STONE));
+        let metal = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_METAL));
+        assert!(
+            wood > stone && stone > metal,
+            "the tougher the grade the slower it rots ({wood}/{stone}/{metal})"
+        );
+        let _ = rows;
+    }
+
+    /// Content that prices no ladder plays the game it played before.
+    #[test]
+    fn an_unpriced_ladder_falls_back_to_the_flat_rate() {
+        let mut dc = DeployContent::probe_fixture();
+        dc.decay_pct = [0; DECAY_MATERIALS];
+        for m in [
+            crate::build::MAT_WOOD,
+            crate::build::MAT_STONE,
+            crate::build::MAT_METAL,
+        ] {
+            assert_eq!(
+                piece_decay_pct(&dc, m),
+                DECAY_PCT_PER_PERIOD,
+                "a new table may add a rule, never silently change one"
+            );
+        }
+        // ...and a rate that would round to nothing still subtracts.
+        assert_eq!(decay_at(50, 1), 1, "a decay that never subtracts is off");
+    }
+
+    /// A hearth with a crew is a base two people can build in — the whole
+    /// of hearth crew v1, and the thing `foreign_claim` could not say
+    /// before it (`reference/BUILDING.md` §9.1).
+    #[test]
+    fn a_hearth_answers_to_its_crew_and_not_to_one_id() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut owner = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (2, 2), (3, 2)]);
+        founded(&bc, &mut pieces, &mut owner, CX, CZ);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.hearths().len(), 1, "the hearth stands");
+        assert_eq!(
+            deploys.hearths()[0].crew.members(),
+            &[owner.id],
+            "placing it joins its crew — there is no separate authorize step"
+        );
+
+        // A stranger in reach is refused by the claim, exactly as before.
+        let mut friend = player_at_cell(CX, CZ, &[]);
+        friend.id = 9;
+        let (ax, az) = cell_center(CX, CZ);
+        assert!(
+            deploys.foreign_claim(ax, az, friend.id),
+            "an outsider is outside"
+        );
+        assert!(!deploys.foreign_claim(ax, az, owner.id));
+
+        // ...and may not join a crewed hearth on their own say-so. This
+        // is the check that keeps a claim a claim.
+        crew_op(
+            &mut deploys,
+            &friend,
+            CX,
+            CZ,
+            0,
+            ACCESS_OP_CREW_JOIN,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER),
+            "a stranger cannot authorize themselves into somebody's base"
+        );
+        assert!(deploys.foreign_claim(ax, az, friend.id));
+    }
+
+    /// The three crew ops, their refusals, and the one grant event.
+    #[test]
+    fn the_crew_ops_join_leave_and_clear() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut owner = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (2, 2), (3, 2)]);
+        founded(&bc, &mut pieces, &mut owner, CX, CZ);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        let (ax, az) = cell_center(CX, CZ);
+
+        // The owner leaves. Nothing gates a leave — a refusal there would
+        // tell a stranger whether they were on the list.
+        crew_op(
+            &mut deploys,
+            &owner,
+            CX,
+            CZ,
+            0,
+            ACCESS_OP_CREW_LEAVE,
+            &mut ev,
+        );
+        assert!(deploys.hearths()[0].crew.is_empty());
+        assert_eq!(
+            (last(&ev).0, last(&ev).2 & 0xff),
+            (crate::world::EV_AUTH, crate::lock::GRANT_NONE as u32),
+            "leaving announces the sender's own standing, absolute"
+        );
+        assert!(
+            deploys.foreign_claim(ax, az, owner.id),
+            "and off the crew, even the placer is outside their own claim"
+        );
+
+        // An empty crew is anyone's — the same rule a bare door keeps.
+        let mut friend = player_at_cell(CX, CZ, &[]);
+        friend.id = 9;
+        crew_op(
+            &mut deploys,
+            &friend,
+            CX,
+            CZ,
+            0,
+            ACCESS_OP_CREW_JOIN,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2 & 0xff, last(&ev).3),
+            (
+                crate::world::EV_AUTH,
+                crate::lock::GRANT_FULL as u32,
+                friend.id
+            ),
+            "the grant is the sender's own fact"
+        );
+        assert!(!deploys.foreign_claim(ax, az, friend.id));
+
+        // Now crewed, the owner is the outsider and must be let back in by
+        // somebody who is on it. Joining twice is not a bug.
+        crew_op(
+            &mut deploys,
+            &owner,
+            CX,
+            CZ,
+            0,
+            ACCESS_OP_CREW_JOIN,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_D_OWNER);
+        deploys.hearths_mut()[0].crew.add(owner.id);
+        crew_op(
+            &mut deploys,
+            &owner,
+            CX,
+            CZ,
+            0,
+            ACCESS_OP_CREW_JOIN,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_AUTH, "a double press is fine");
+        assert_eq!(deploys.hearths()[0].crew.len(), 2);
+
+        // Clear takes it back to the clearer alone, in one step — never
+        // through an empty crew, which anyone could have joined.
+        crew_op(
+            &mut deploys,
+            &owner,
+            CX,
+            CZ,
+            0,
+            ACCESS_OP_CREW_CLEAR,
+            &mut ev,
+        );
+        assert_eq!(deploys.hearths()[0].crew.members(), &[owner.id]);
+        assert!(
+            deploys.foreign_claim(ax, az, friend.id),
+            "the friend is out"
+        );
+
+        // The two shape refusals: no hearth there, and out of reach.
+        crew_op(
+            &mut deploys,
+            &owner,
+            CX + 3,
+            CZ,
+            0,
+            ACCESS_OP_CREW_JOIN,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_D_HEARTH, "no hearth at that address");
+        let far = player_at_cell(CX + 7, CZ, &[]);
+        crew_op(&mut deploys, &far, CX, CZ, 0, ACCESS_OP_CREW_JOIN, &mut ev);
+        assert_eq!(last(&ev).2, REFUSE_D_REACH, "a crew op has the build reach");
+        assert_eq!(deploys.hearths()[0].crew.len(), 1);
+    }
+
+    /// A crew is what lets a second pair of hands build in the base, and
+    /// this is that sentence as the three verbs it actually gates.
+    #[test]
+    fn a_crewmate_may_build_upgrade_and_deploy_inside_the_claim() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut owner = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (2, 2), (3, 2)]);
+        founded(&bc, &mut pieces, &mut owner, CX, CZ);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+
+        let mut friend = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (3, 2)]);
+        friend.id = 9;
+        // Outside the crew: the wall refuses.
+        crate::build::place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut friend,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_BUILD_REFUSED, crate::build::REFUSE_B_CLAIM)
+        );
+
+        // On it: the same wall lands.
+        deploys.hearths_mut()[0].crew.add(friend.id);
+        crate::build::place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut friend,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev).0,
+            crate::world::EV_PIECE_PLACED,
+            "a crewmate builds in the base"
+        );
+        // ...and the deploy verb gates on the same predicate. Asserted as
+        // "the claim stopped being the reason" rather than as a landing,
+        // because a landing would also be asserting this fixture's
+        // terrain and support, which are not what a crew changes.
+        let mut outsider = player_at_cell(CX, CZ, &[(3, 2)]);
+        outsider.id = 11;
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut outsider,
+            0,
+            1,
+            CX,
+            CZ,
+            1,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_CLAIM),
+            "an outsider's deploy is refused BY THE CLAIM"
+        );
+        deploys.hearths_mut()[0].crew.add(outsider.id);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut outsider,
+            0,
+            1,
+            CX,
+            CZ,
+            1,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_ne!(
+            last(&ev).2,
+            REFUSE_D_CLAIM,
+            "and on the crew the claim is no longer what refuses it"
+        );
+    }
+
+    /// A lock dies with the door it is bolted to — the one removal path.
+    #[test]
+    fn a_removed_door_takes_its_lock_with_it() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
+        assert_eq!(deploys.locks().len(), 1);
+
+        let di = deploys.find_index(CX, CZ, 0, LOC_EDGE_W).expect("the door");
+        drop_deploy(&dc, &mut pieces, &mut deploys, di, &mut ev);
+        assert_eq!(
+            deploys.locks().len(),
+            0,
+            "a lock left at a dead address would refuse the next door built there"
         );
     }
 

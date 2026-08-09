@@ -20,7 +20,7 @@ use crate::{
 use sim_core::backpack::BackpackRec;
 use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_ROOF};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
-use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_DOOR, PLACE_ANY};
+use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_LOCK, PLACE_DOOR};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
 use sim_core::limits::{
@@ -162,6 +162,21 @@ const SUB_PIECE_REPAIRED: u32 = 39;
 /// actor. `SUB_PIECE_REPAIRED`'s address layout, with the fuse where its
 /// `healed`/`hp` pair sits.
 const SUB_CHARGE_PLACED: u32 = 40;
+/// The oven at the address is now lit or out (oven v0, `sim-core/oven.rs`).
+/// `SUB_DOOR`'s shape minus the `loc` — an oven stands on the plane, never
+/// on an edge — plus the actor, because "who lit this" is the one thing a
+/// door's event does not have to carry and a fire's does: zero means the
+/// fire ran out of fuel and snuffed itself, and a client that could not
+/// tell that from a hand on the switch would owe a toast it should not
+/// print.
+const SUB_OVEN: u32 = 41;
+/// Somebody knocked (lock v1, wire v30). Broadcast, `SUB_DOOR`'s address
+/// with a player id where its three state bits sit.
+const SUB_KNOCK: u32 = 42;
+/// A correct code (lock v1, wire v30). **Own-fact**, and the reason it is
+/// its own subtype rather than a fourth bit on `SUB_DOOR`: `SUB_DOOR` is a
+/// broadcast, and a grant is true of exactly one recipient.
+const SUB_AUTH: u32 = 43;
 /// The highest live subtype, named rather than counted — `world.rs`'s
 /// `EV_MAX` discipline applied to the wire half.
 ///
@@ -171,15 +186,7 @@ const SUB_CHARGE_PLACED: u32 = 40;
 /// probe of a **live** code — it caught it here only because the new
 /// decoder arm rejected its all-zero payload, which is luck, not a gate.
 /// Deriving the probe from this constant is what makes it stay a probe.
-/// The oven at the address is now lit or out (oven v0, `sim-core/oven.rs`).
-/// `SUB_DOOR`'s shape minus the `loc` — an oven stands on the plane, never
-/// on an edge — plus the actor, because "who lit this" is the one thing a
-/// door's event does not have to carry and a fire's does: zero means the
-/// fire ran out of fuel and snuffed itself, and a client that could not
-/// tell that from a hand on the switch would owe a toast it should not
-/// print.
-const SUB_OVEN: u32 = 41;
-const SUB_MAX: u32 = SUB_OVEN;
+const SUB_MAX: u32 = SUB_AUTH;
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
 /// worst shape of wire drift there is, since both ends would agree on
@@ -271,8 +278,14 @@ const DEPLOY_COSTS_BITS: u32 = 3;
 const DEPLOY_SYNC_COUNT_BITS: u32 = 5;
 const DEPLOY_DEFS_TOTAL_BITS: u32 = 5;
 const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
+/// Three bits, and `ARCH_LOCK` = 7 is now the last value one holds — a
+/// ninth archetype costs a width bump and a `PROTO_VER` turn.
 const ARCH_BITS: u32 = 3;
-const PLACEMENT_BITS: u32 = 2;
+/// Widened 2 → 3 in wire v28: `PLACE_DOOR` is the fifth placement class
+/// (lock v1) and two bits held exactly four. Three of the eight values
+/// are now forgeable, so the decoder range-checks the field, which two
+/// bits never had to.
+const PLACEMENT_BITS: u32 = 3;
 const STOCK_COUNT_BITS: u32 = 3;
 const BAG_SYNC_COUNT_BITS: u32 = 5;
 /// Container-sync slot count. `CONT_SYNC_BATCH` is `INV_SLOTS` = 30, so
@@ -508,11 +521,20 @@ pub enum EventMsg {
         loc: u8,
     },
     /// The door at the address changed state (broadcast — a door is a
-    /// world fact like the piece it sits in). `open` and `locked` are the
+    /// world fact like the piece it sits in). All three bits are the
     /// state after the action, never a delta: a client that missed one
-    /// hears the truth from the next one. Which hand may open a locked
-    /// door is not on the wire — the owner id stays sim-side, so a client
-    /// presses and learns from the outcome (lock v0).
+    /// hears the truth from the next one.
+    ///
+    /// `has_lock` says a code lock is bolted on and `locked` says it is
+    /// armed; the two are separate because "bare", "bolted but open to
+    /// all" and "shut" are three different prompts and a client that
+    /// could not tell the first two apart would offer a keypad at a door
+    /// with no keypad (lock v1).
+    ///
+    /// **Who the lock remembers is not on the wire, and neither is the
+    /// code.** The client presses and learns from the outcome, which is
+    /// `DESIGN.md` §5.6's own mispredict example — the alternative is a
+    /// broadcast that differs per recipient.
     Door {
         cx: u16,
         cz: u16,
@@ -520,6 +542,33 @@ pub enum EventMsg {
         loc: u8,
         open: bool,
         locked: bool,
+        has_lock: bool,
+    },
+    /// Somebody knocked on the door at the address (broadcast). The one
+    /// event in this enum whose *whole* purpose is to be heard by people
+    /// it is not addressed to: a knock is what a locked-out player has
+    /// instead of a door (`reference/DOORS.md` §4).
+    ///
+    /// No state and no reason field — it says somebody is at the door and
+    /// deliberately not whether they were refused for want of a code, a
+    /// list or a lock.
+    Knock {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        by: u32,
+    },
+    /// A correct code: the lock at the address now remembers **you**, at
+    /// `grant` (`sim_core::lock::GRANT_*`). Own-fact, like `Health` — a
+    /// client learns its own rights and nothing about anyone else's, so
+    /// the remembered list never leaves the sim as a list.
+    Auth {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        grant: u8,
     },
     /// The oven at the address is now `lit` (broadcast). Absolute, never
     /// a delta, for `Door`'s reason. `by` is the hand that pressed, or 0
@@ -1102,13 +1151,14 @@ pub fn encode_event_piece_defs(
     Ok((w.finish(), count))
 }
 
-/// One placed-deployable record on the wire: 31 bits, shared by the
+/// One placed-deployable record on the wire: 32 bits, shared by the
 /// placed broadcast and the sync batches. Every width is exact, so only
-/// sim-impossible addresses need refusing at encode. The trailing two
-/// bits are the door's open and locked state — meaningless for every
-/// other archetype, and always 0 there, so they cost two bits and save a
-/// second lane for the join walk (a client that walked in must see which
-/// doors stand open, and which stand locked).
+/// sim-impossible addresses need refusing at encode. The trailing three
+/// bits are the door's open, locked and has-lock state — meaningless for
+/// every other archetype, and always 0 there, so they cost three bits and
+/// save a second lane for the join walk (a client that walked in must see
+/// which doors stand open, which stand locked, and which carry a keypad
+/// at all).
 fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError> {
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
@@ -1125,6 +1175,7 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write(rec.row as u32, DEPLOY_ROW_BITS)?;
     w.write_bit(rec.open)?;
     w.write_bit(rec.locked)?;
+    w.write_bit(rec.has_lock)?;
     Ok(())
 }
 
@@ -1137,6 +1188,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
         row: r.read(DEPLOY_ROW_BITS)? as u8,
         open: r.read_bit()?,
         locked: r.read_bit()?,
+        has_lock: r.read_bit()?,
         ..DeployRec::default()
     })
 }
@@ -1190,7 +1242,7 @@ pub fn encode_event_deploy_defs(
     w.write(first as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(count as u32, DEPLOY_DEFS_COUNT_BITS)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_DOOR || def.placement > PLACE_ANY || def.hp == 0 {
+        if def.arch > ARCH_LOCK || def.placement > PLACE_DOOR || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS {
@@ -1319,6 +1371,7 @@ pub fn encode_event_stock(
 /// Absolute state, not a toggle: two of these crossing never leave a
 /// client inverted, and one lane carries the whole door so a client never
 /// holds half of it.
+#[allow(clippy::too_many_arguments)]
 pub fn encode_event_door(
     cx: u16,
     cz: u16,
@@ -1326,13 +1379,10 @@ pub fn encode_event_door(
     loc: u8,
     open: bool,
     locked: bool,
+    has_lock: bool,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    if cx as usize >= MAX_BUILD_COORD
-        || cz as usize >= MAX_BUILD_COORD
-        || level as usize >= MAX_BUILD_LEVELS
-        || loc > LOC_EDGE_N
-    {
+    if !door_addr_ok(cx, cz, level, loc) {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_DOOR)?;
@@ -1342,6 +1392,81 @@ pub fn encode_event_door(
     w.write(loc as u32, BUILD_LOC_BITS)?;
     w.write_bit(open)?;
     w.write_bit(locked)?;
+    w.write_bit(has_lock)?;
+    Ok(w.finish())
+}
+
+/// The address every door-lane message shares. One predicate, because
+/// three encoders refusing on three copies of the same four comparisons
+/// is three chances for one of them to drift.
+fn door_addr_ok(cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+    (cx as usize) < MAX_BUILD_COORD
+        && (cz as usize) < MAX_BUILD_COORD
+        && (level as usize) < MAX_BUILD_LEVELS
+        && loc <= LOC_EDGE_N
+}
+
+/// Somebody knocked on the door at the address (broadcast, lock v1).
+pub fn encode_event_knock(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    by: u32,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if !door_addr_ok(cx, cz, level, loc) {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_KNOCK)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    w.write(by, 32)?;
+    Ok(w.finish())
+}
+
+/// Width of a grant (`sim_core::lock::GRANT_*`): three values in two bits,
+/// so the fourth is forgeable and the decoder refuses it.
+const LOCK_GRANT_BITS: u32 = 2;
+/// Width of the access op (`sim_core::deploy::ACCESS_OP_*`). **Widened
+/// 3 → 4 in wire v29**: the hearth's three crew ops joined the lock's six
+/// in one space, and three bits hold eight. Seven of the sixteen values
+/// are now forgeable, so the decoder range-checks rather than trusting
+/// the field.
+///
+/// **Declared here rather than beside its encoder in `lib.rs`**, which is
+/// where the C→S action lane lives, and that is on purpose: the
+/// wire-domain gate below reads *this file* for the widths it bounds, so a
+/// width declared one module away would be a domain with no gate — which
+/// is the exact 2026-08-05 shape that gate exists for.
+pub(crate) const ACCESS_OP_BITS: u32 = 4;
+/// Width of a four-digit code (0..=9999). A **magnitude**, not a domain —
+/// the value is a number a player types, not a member of an enumeration —
+/// so it is classified in `MAGNITUDES` below. Fourteen bits leave
+/// 10 000..=16 383 forgeable, hence the decode-side check in `lib.rs`.
+pub(crate) const LOCK_CODE_BITS: u32 = 14;
+
+/// The lock at the address now remembers the recipient, at `grant`
+/// (own-fact, lock v1).
+pub fn encode_event_auth(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    grant: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if !door_addr_ok(cx, cz, level, loc) || grant > sim_core::lock::GRANT_FULL {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_AUTH)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    w.write(grant as u32, LOCK_GRANT_BITS)?;
     Ok(w.finish())
 }
 
@@ -2047,7 +2172,11 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let hp = r.read(16)? as u16;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_DOOR || hp == 0 || n_costs as usize > MAX_DEPLOY_COSTS {
+                if arch > ARCH_LOCK
+                    || placement > PLACE_DOOR
+                    || hp == 0
+                    || n_costs as usize > MAX_DEPLOY_COSTS
+                {
                     return Err(WireError::Malformed);
                 }
                 let mut costs = [(0u16, 0u16); MAX_DEPLOY_COSTS];
@@ -2135,6 +2264,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             loc: r.read(BUILD_LOC_BITS)? as u8,
             open: r.read_bit()?,
             locked: r.read_bit()?,
+            has_lock: r.read_bit()?,
         },
         SUB_OVEN => EventMsg::Oven {
             cx: r.read(BUILD_CELL_BITS)? as u16,
@@ -2143,6 +2273,34 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             lit: r.read_bit()?,
             by: r.read(32)?,
         },
+        SUB_KNOCK => EventMsg::Knock {
+            cx: r.read(BUILD_CELL_BITS)? as u16,
+            cz: r.read(BUILD_CELL_BITS)? as u16,
+            level: r.read(BUILD_LEVEL_BITS)? as u8,
+            loc: r.read(BUILD_LOC_BITS)? as u8,
+            by: r.read(32)?,
+        },
+        // The grant is two bits holding three values, so the fourth is
+        // forgeable and refused rather than clamped — a client told it
+        // holds rights the sim never granted would draw an open door it
+        // cannot open.
+        SUB_AUTH => {
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            let grant = r.read(LOCK_GRANT_BITS)? as u8;
+            if grant > sim_core::lock::GRANT_FULL {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Auth {
+                cx,
+                cz,
+                level,
+                loc,
+                grant,
+            }
+        }
         // The relay is held to the sender's own rule: `read_text`
         // sanitizes or refuses, so a client never renders a line the
         // server would not have accepted.
@@ -2782,7 +2940,7 @@ mod tests {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
-        assert_eq!(took, 5, "fixture has 5 rows, all fit one batch");
+        assert_eq!(took, 6, "fixture has 6 rows, all fit one batch");
         match decode_event(&buf[..len]).unwrap() {
             EventMsg::DeployDefs {
                 total,
@@ -2790,17 +2948,19 @@ mod tests {
                 count,
                 rows,
             } => {
-                assert_eq!((total, first, count), (5, 0, 5));
+                assert_eq!((total, first, count), (6, 0, 6));
                 assert_eq!(rows[0], dc.defs[0], "decode rebuilds the sim row");
                 assert_eq!(rows[3], dc.defs[3]);
-                // The oven row (oven v0), which is the fixture's newest and
-                // therefore the one a batch walk would drop off the end.
+                // The oven row (oven v0) and the code lock row (lock v1),
+                // the fixture's two newest and therefore the ones a batch
+                // walk would drop off the end.
                 assert_eq!(rows[4], dc.defs[4]);
+                assert_eq!(rows[5], dc.defs[5]);
             }
             other => panic!("wrong variant: {other:?}"),
         }
         assert_eq!(
-            encode_event_deploy_defs(&dc, 5, &mut buf),
+            encode_event_deploy_defs(&dc, 6, &mut buf),
             Err(WireError::Range),
             "cursor past the table refuses"
         );
@@ -3339,6 +3499,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/ranged.rs"),
         },
         Module {
+            file: "claim.rs",
+            src: include_str!("../../sim-core/src/claim.rs"),
+        },
+        Module {
             file: "collide.rs",
             src: include_str!("../../sim-core/src/collide.rs"),
         },
@@ -3373,6 +3537,14 @@ mod wire_domains {
         Module {
             file: "limits.rs",
             src: include_str!("../../sim-core/src/limits.rs"),
+        },
+        Module {
+            file: "lock.rs",
+            src: include_str!("../../sim-core/src/lock.rs"),
+        },
+        Module {
+            file: "roster.rs",
+            src: include_str!("../../sim-core/src/roster.rs"),
         },
         Module {
             file: "loot.rs",
@@ -3424,7 +3596,7 @@ mod wire_domains {
         },
     ];
 
-    /// All ten domains this module bounds. Widths are the private consts
+    /// All twelve domains this module bounds. Widths are the private consts
     /// above, so this table cannot drift from the encoder — it *is* the
     /// encoder's constants.
     ///
@@ -3483,9 +3655,9 @@ mod wire_domains {
             prefix: "pub const REFUSE_B_",
             ty: ": u32 = ",
             exempt: &[],
-            min_members: 11,
+            min_members: 13,
             bits: REFUSE_B_BITS,
-            live_max: 10,
+            live_max: 12,
         },
         Domain {
             what: "container kind",
@@ -3531,9 +3703,9 @@ mod wire_domains {
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 7,
+            min_members: 8,
             bits: ARCH_BITS,
-            live_max: 6,
+            live_max: 7,
         },
         Domain {
             what: "deploy placement",
@@ -3543,9 +3715,9 @@ mod wire_domains {
             prefix: "pub const PLACE_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 4,
+            min_members: 5,
             bits: PLACEMENT_BITS,
-            live_max: 3,
+            live_max: 4,
         },
         Domain {
             what: "craft station",
@@ -3558,6 +3730,30 @@ mod wire_domains {
             min_members: 3,
             bits: STATION_BITS,
             live_max: 2,
+        },
+        Domain {
+            what: "lock grant",
+            sim_site: "lock.rs GRANT_*",
+            wire_site: "LOCK_GRANT_BITS",
+            home: "lock.rs",
+            prefix: "pub const GRANT_",
+            ty: ": u8 = ",
+            exempt: &[],
+            min_members: 3,
+            bits: LOCK_GRANT_BITS,
+            live_max: 2,
+        },
+        Domain {
+            what: "access op",
+            sim_site: "deploy.rs ACCESS_OP_*",
+            wire_site: "ACCESS_OP_BITS",
+            home: "deploy.rs",
+            prefix: "pub const ACCESS_OP_",
+            ty: ": u8 = ",
+            exempt: &["MAX"],
+            min_members: 9,
+            bits: ACCESS_OP_BITS,
+            live_max: 8,
         },
         Domain {
             what: "bag-removal reason",
@@ -3711,7 +3907,7 @@ mod wire_domains {
     fn the_domain_table_states_its_own_coverage() {
         assert_eq!(
             DOMAINS.len(),
-            11,
+            13,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \
@@ -3829,11 +4025,19 @@ mod wire_domains {
             "STOCK_COUNT_BITS",
             "BAG_SYNC_COUNT_BITS",
             "CONT_COUNT_BITS",
+            "LOCK_CODE_BITS",
         ];
 
         let mut widths = Vec::new();
         for line in WIRE_SRC.lines() {
-            let Some(rest) = line.trim().strip_prefix("const ") else {
+            // An optional `pub(crate)` first: two of these widths are
+            // spent by the C→S encoder in `lib.rs` and declared here so
+            // this gate can see them at all. A scrape that only read
+            // private consts would have skipped exactly the widths that
+            // needed a reason to live in this file.
+            let line = line.trim();
+            let line = line.strip_prefix("pub(crate) ").unwrap_or(line);
+            let Some(rest) = line.strip_prefix("const ") else {
                 continue;
             };
             let Some((name, _)) = rest.split_once(": u32 = ") else {

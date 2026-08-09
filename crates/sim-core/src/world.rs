@@ -111,10 +111,13 @@ pub const EV_DEPLOY_REMOVED: u8 = 12;
 /// EV_STOCK: a = feeder player id, b = hearth cell key, c = level — the
 /// feed ack; the wire reads the hearth's stock from the world at encode.
 pub const EV_STOCK: u8 = 13;
-/// EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | locked << 1
-/// | open, c = the player whose action changed it. The door's whole state,
-/// absolute, whether the toggle or the lock moved (lock v0). Broadcast —
-/// door state is a world fact like a placement.
+/// EV_DOOR: a = build cell key, b = level << 16 | loc << 8 | has_lock << 2
+/// | locked << 1 | open, c = the player whose action changed it. The
+/// door's whole state, absolute, whether the toggle, the lock or the
+/// keypad moved it (lock v1). Broadcast — door state is a world fact like
+/// a placement. The three bits are the door as the world sees it and
+/// nothing more: no code, no owner and no remembered list is on this
+/// lane, because none of it is a client's to know.
 pub const EV_DOOR: u8 = 14;
 /// EV_HIT: a = attacker player id, b = victim player id, c = damage dealt.
 /// The attacker's fact — the hitmarker, not the truth; EV_HEALTH is what
@@ -259,6 +262,27 @@ pub const EV_CHARGE_PLACED: u8 = 29;
 /// visible from outside the base it is in, so hiding it from the
 /// neighbourhood would make the sim disagree with the picture.
 pub const EV_OVEN: u8 = 30;
+/// EV_KNOCK: a = build cell key, b = level << 16 | loc << 8, c = the
+/// player who knocked. Broadcast, and that **is** the feature: a knock is
+/// the only channel a locked-out player has to the person inside
+/// (`reference/DOORS.md` §4, shipped by the reference in Nov 2014). It
+/// rides the refusal path — every press the lock turns away knocks — so
+/// there is no verb to forge and nothing to rate-limit beyond the reach
+/// check the press already paid.
+///
+/// No state, nothing persisted, no field for *why*: a knock says somebody
+/// is at the door and deliberately not who is allowed through it.
+pub const EV_KNOCK: u8 = 31;
+/// EV_AUTH: a = build cell key, b = level << 16 | loc << 8 | grant, c =
+/// the player now remembered (`lock::GRANT_*`). **Own-fact** — the sender
+/// learns their own rights and nobody learns anyone else's, which is the
+/// same posture `EV_HEALTH` takes and the reason a lock's remembered list
+/// never crosses the wire as a list.
+///
+/// Only a *correct* code produces one; a wrong one is
+/// `EV_DEPLOY_REFUSED` with `REFUSE_D_CODE`, so the two outcomes are two
+/// codes and a client cannot mistake silence for a grant.
+pub const EV_AUTH: u8 = 32;
 
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
@@ -267,7 +291,7 @@ pub const EV_OVEN: u8 = 30;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_OVEN;
+pub const EV_MAX: u8 = EV_AUTH;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -621,15 +645,41 @@ pub enum Command {
         level: u8,
         loc: u8,
     },
-    /// Set the lock bit of the door at the address (owner-only; absolute,
-    /// never a toggle — deploy.rs validates and refuses by event).
-    Lock {
+    /// Take the thing at the address back down and get it back —
+    /// **demolish v1**. `deploy` picks the store, `Repair`'s bit for
+    /// `Repair`'s reason: a door and its doorway share one address.
+    ///
+    /// The two halves are deliberately different verbs wearing one
+    /// command. A **piece** comes down only inside its grace window and
+    /// refunds whole (`build::demolish`); a **deployable** comes up any
+    /// time you may build there and returns its item (`deploy::pick_up`).
+    /// The reference draws the line in the same place and for the same
+    /// reason: a box is furniture, a wall is a base.
+    Demolish {
+        id: u32,
+        deploy: bool,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
+    /// Run one access op at the address — **who may do this here**.
+    /// `deploy::ACCESS_OP_*` names the nine: 0..=5 against the code lock
+    /// on a door (`deploy::lock_op`), 6..=8 against the hearth's crew
+    /// (`deploy::crew_op`). One command with an op field rather than nine,
+    /// because the wire's action space was full at fifteen in four bits.
+    ///
+    /// Both halves validate and refuse by event, never by panic, and both
+    /// re-check the op and the code the wire already checked — a replayed
+    /// frame reaches the sim without passing a decoder.
+    Access {
         id: u32,
         cx: u16,
         cz: u16,
         level: u8,
         loc: u8,
-        locked: bool,
+        op: u8,
+        code: u16,
     },
     /// Upgrade the piece at the address into `material` — same shape, same
     /// address, a rung up the ladder (build.rs validates and refuses by
@@ -1567,6 +1617,15 @@ impl World {
     /// same expression `deploy.rs`'s use-toggle writes, deliberately
     /// duplicated rather than shared, because the toggle owns *when* and
     /// this owns *from what*.
+    /// The lock's two mirror bits are re-derived in the same pass and for
+    /// the same reason (lock v1). `DeployRec::has_lock` and
+    /// `DeployRec::locked` are a *view* of `lock.rs`'s store, and a saved
+    /// view is a saved cache: the file could carry a locked door whose
+    /// lock is not in the file's lock section, and the shard would draw a
+    /// locked door that the access check waves everyone through. Deriving
+    /// them here means the store is the only thing the save has to get
+    /// right, which is the same argument that keeps `Pieces::cols` out of
+    /// the file entirely.
     pub fn rebuild_doors(&mut self) {
         for i in 0..self.deploys.len() {
             let d = self.deploys.entries()[i];
@@ -1574,6 +1633,14 @@ impl World {
                 continue;
             }
             self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
+            let lock = self
+                .deploys
+                .locks()
+                .iter()
+                .find(|l| l.cx == d.cx && l.cz == d.cz && l.level == d.level && l.loc == d.loc)
+                .copied();
+            self.deploys
+                .set_lock_mirror(i, lock.is_some(), lock.is_some_and(|l| l.locked));
         }
     }
 
@@ -1613,7 +1680,7 @@ impl World {
         self.slot_of(id).map(|s| PlayerSave::of(&self.players[s]))
     }
 
-    fn apply(&mut self, cmd: &Command) {
+    fn apply(&mut self, cmd: &Command, removals: &mut usize) {
         match *cmd {
             Command::Join { id } => self.seat(id, None),
             Command::JoinAs { id, save } => self.seat(id, Some(save)),
@@ -1781,26 +1848,88 @@ impl World {
                     }
                 }
             }
-            Command::Lock {
+            Command::Demolish {
+                id,
+                deploy,
+                cx,
+                cz,
+                level,
+                loc,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    if deploy {
+                        deploy::pick_up(
+                            &self.deploy,
+                            &self.gather,
+                            &mut self.pieces,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            &mut self.events,
+                        );
+                    } else {
+                        build::demolish(
+                            &self.deploy,
+                            &self.build,
+                            &self.gather,
+                            &mut self.pieces,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            self.tick,
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            removals,
+                            &mut self.events,
+                        );
+                    }
+                }
+            }
+            Command::Access {
                 id,
                 cx,
                 cz,
                 level,
                 loc,
-                locked,
+                op,
+                code,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    deploy::set_lock(
-                        &self.deploy,
-                        &mut self.deploys,
-                        &self.players[slot],
-                        cx,
-                        cz,
-                        level,
-                        loc,
-                        locked,
-                        &mut self.events,
-                    );
+                    // The one branch: a crew op addresses the hearth on
+                    // the cell body, every other op addresses the lock on
+                    // a door's edge. `deploy::op_is_crew` is the split,
+                    // written once so the wire's range check and this
+                    // cannot disagree about which store an op means.
+                    if deploy::op_is_crew(op) {
+                        deploy::crew_op(
+                            &mut self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            op,
+                            &mut self.events,
+                        );
+                    } else {
+                        deploy::lock_op(
+                            &self.deploy,
+                            &self.gather,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            op,
+                            code,
+                            self.tick,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::Upgrade {
@@ -1951,8 +2080,14 @@ impl World {
     /// respawns, stamp the hash on cadence.
     pub fn tick(&mut self, commands: &[Command]) {
         self.events.clear();
+        // The tick's structural removal budget is minted **before** the
+        // commands rather than after them, because since demolish v1 a
+        // command can take a piece out of the store and seed a cascade —
+        // so the verbs and the sweep spend one allowance between them.
+        // Two budgets would be two caps and therefore no cap.
+        let mut removals = MAX_REMOVALS_PER_TICK;
         for cmd in commands.iter().take(MAX_COMMANDS_PER_TICK) {
-            self.apply(cmd);
+            self.apply(cmd, &mut removals);
         }
         let seed = self.seed;
         let tick = self.tick;
@@ -1965,8 +2100,8 @@ impl World {
         //
         // Deliberately not a `World` field. It is spent and forgotten
         // inside one tick exactly as `events` is, and a store that lives
-        // across ticks is a store `state_hash` has to answer for.
-        let mut removals = MAX_REMOVALS_PER_TICK;
+        // across ticks is a store `state_hash` has to answer for. Minted
+        // at the top of `tick` since demolish v1 — see there.
         // Slot order, and inside a slot: move, swing, craft. The swing is
         // one arm — `gather::swing` gets first claim on it (a tree in
         // reach is always the nearer target) and hands it on only when
@@ -2414,6 +2549,15 @@ impl World {
             h.update(&buf);
         }
         h.update(&(self.pieces.len() as u64).to_le_bytes());
+        // The placement clocks, in their own pass rather than widening
+        // the buffer below — they live in a parallel array precisely so
+        // the wire's mirror of `PieceRec` does not carry them
+        // (`build.rs`), and the digest follows the storage. State like
+        // any other timer: two shards that disagree about when a wall
+        // went up disagree about whether it can still be taken down.
+        for t in self.pieces.placed() {
+            h.update(&t.to_le_bytes());
+        }
         for r in self.pieces.entries() {
             let mut buf = [0u8; 12];
             buf[0..2].copy_from_slice(&r.cx.to_le_bytes());
@@ -2503,6 +2647,46 @@ impl World {
             buf[16] = d.locked as u8;
             h.update(&buf);
         }
+        // The code locks (lock v1). Every byte is state a shard can
+        // disagree about and a raid can turn on: two shards that disagree
+        // about a remembered list disagree about who is inside the base
+        // ten seconds from now, and the miss counters decide whether the
+        // next press is a shock or a shut keypad.
+        //
+        // Hashed on the **arrow** idiom — no length prefix — and that is
+        // deliberate for the reason the arrow store states next door: a
+        // `h.update(&len)` folds eight zero bytes even for an empty store
+        // and would move `GOLDEN_FINAL_HASH` for a slice the replay
+        // script never exercises. A dense store's iteration order is
+        // insert order rewritten by swap-remove, and both are commands'
+        // consequences, so it is as deterministic as `entries` above.
+        for l in self.deploys.locks() {
+            let mut buf = [0u8; 14];
+            buf[0..2].copy_from_slice(&l.cx.to_le_bytes());
+            buf[2..4].copy_from_slice(&l.cz.to_le_bytes());
+            buf[4] = l.level;
+            buf[5] = l.loc;
+            buf[6..10].copy_from_slice(&l.owner.to_le_bytes());
+            buf[10..12].copy_from_slice(&l.code.to_le_bytes());
+            buf[12..14].copy_from_slice(&l.guest_code.to_le_bytes());
+            h.update(&buf);
+            let mut sb = [0u8; 20];
+            sb[0] = l.locked as u8;
+            sb[1] = l.auth.len() as u8;
+            sb[2] = l.guests.len() as u8;
+            sb[3] = l.misses;
+            sb[4..12].copy_from_slice(&l.last_miss.to_le_bytes());
+            sb[12..20].copy_from_slice(&l.shut_until.to_le_bytes());
+            h.update(&sb);
+            // The lists themselves, whole rather than to `n_auth`: a slot
+            // past the count is zeroed by `reset_lists` and by
+            // `remove_at`, so folding all of it is folding state, and a
+            // store that ever left residue there would be caught rather
+            // than hidden.
+            for id in l.auth.raw().iter().chain(l.guests.raw().iter()) {
+                h.update(&id.to_le_bytes());
+            }
+        }
         // Burning fuses. State as plainly as anything here: two shards
         // that disagree about a live charge disagree about whether a base
         // is standing ten seconds from now, and `fires_at` is hashed
@@ -2535,6 +2719,10 @@ impl World {
         for r in self.deploys.bag_ready() {
             h.update(&r.to_le_bytes());
         }
+        // ...and the deploy placement clocks, for the same reason.
+        for t in self.deploys.placed() {
+            h.update(&t.to_le_bytes());
+        }
         h.update(&(self.deploys.hearths().len() as u64).to_le_bytes());
         for hr in self.deploys.hearths() {
             let mut buf = [0u8; 12];
@@ -2545,6 +2733,16 @@ impl World {
             h.update(&buf);
             for s in hr.stock.iter() {
                 h.update(&s.to_le_bytes());
+            }
+            // The crew (hearth crew v1). State as plainly as the stock is:
+            // two shards that disagree about who may build inside a claim
+            // disagree about whether the next foundation lands. The whole
+            // backing array, tail included, for `Roster`'s stated reason —
+            // residue there would be invisible state, and `remove` zeroes
+            // what it vacates precisely so this fold is exact.
+            h.update(&(hr.crew.len() as u32).to_le_bytes());
+            for id in hr.crew.raw().iter() {
+                h.update(&id.to_le_bytes());
             }
         }
         // Box contents, in the dense list's own order — which is

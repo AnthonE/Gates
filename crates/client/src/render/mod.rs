@@ -307,6 +307,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<verbs::Swung>()
             .init_resource::<verbs::InWeak>()
             .init_resource::<verbs::Near>()
+            .init_resource::<verbs::Pad>()
             .init_resource::<death::Answer>()
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()

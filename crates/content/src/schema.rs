@@ -223,6 +223,9 @@ pub enum Placement {
     Foundation,
     Doorway,
     Any,
+    /// On a door — the only class whose target must be **occupied**, and
+    /// occupied by one specific archetype (lock v1).
+    Door,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -235,6 +238,10 @@ pub enum DeployArchetype {
     Furnace,
     Workbench,
     Door,
+    /// A code lock. The one archetype that becomes no deploy record: it
+    /// bolts onto a door's address and lives in the sim's lock store
+    /// (`sim-core/lock.rs`, `reference/DOORS.md` §9.1).
+    Lock,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -383,6 +390,10 @@ pub struct Globals {
     /// build cost (100 = the damage's worth exactly). Percent so the file
     /// stays integer-only, like `raid_ratio_stone_pct`.
     pub repair_cost_pct: u32,
+    /// Unpaid decay per upkeep period, % of max hp, keyed by material.
+    /// A map rather than three fields so a fourth grade is a data change
+    /// (`Material`'s own set is what validate checks it against).
+    pub decay_pct_per_period: BTreeMap<Material, u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

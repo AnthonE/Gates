@@ -271,6 +271,14 @@ rarity = "uncommon"
 slot = "hand"
 
 [[item]]
+id = "item.lock_code"
+name = "Code Lock"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+[[item]]
 id = "item.door_wood"
 name = "Wooden Door"
 stack = 1

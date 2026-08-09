@@ -576,6 +576,23 @@ pub fn feedback(
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
         });
     }
+    // Knocks and grants (lock v1). A knock is broadcast, so this fires
+    // for a door across the base as readily as the one in front of you —
+    // that is the feature, not a leak: the news a defender needs is
+    // exactly "somebody is at a door", and which door is on the event.
+    for _ in feed.knocks() {
+        toast.say("*knock knock*".to_string());
+    }
+    for (.., grant) in feed.auths() {
+        toast.say(
+            if *grant == sim_core::lock::GRANT_FULL {
+                "the lock remembers you"
+            } else {
+                "the lock remembers you as a guest"
+            }
+            .to_string(),
+        );
+    }
     // What the hearth is holding, after you feed it. `stock` is a latched
     // ROW TABLE rather than one value, so the same freshness rule applies —
     // and `stock_count` is how many of the rows are live, which is why the
@@ -683,6 +700,7 @@ pub fn prompt(
     swung: Res<super::verbs::Swung>,
     in_weak: Res<super::verbs::InWeak>,
     look: Res<super::input::Look>,
+    pad: Res<super::verbs::Pad>,
     mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
     mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
 ) {
@@ -693,9 +711,17 @@ pub fn prompt(
         // player who pressed `E` on a prompt that named a swing would spend
         // the wrong verb. One prompt, and the key it names is the key that
         // acts on it.
-        let want = match aimed.0.prompt() {
-            s if !s.is_empty() => s,
-            _ => swing_prompt_weak(swung.0.occupant, in_weak.0),
+        // The keypad outranks both, and for the ordering's own reason
+        // turned up a level: while four digits are being typed, `E` and
+        // the swing are not what the keys mean, so a prompt naming them
+        // would name the wrong verb (lock v1, `crate::ui::keypad`).
+        let want = if pad.0.is_open() {
+            pad.0.line()
+        } else {
+            match aimed.0.prompt() {
+                s if !s.is_empty() => s,
+                _ => swing_prompt_weak(swung.0.occupant, in_weak.0),
+            }
         };
         if text.0 != want {
             text.0 = want;

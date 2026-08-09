@@ -21,7 +21,8 @@ use sim_core::combat::{CombatContent, MeleeDef, RangedDef, ThrowDef};
 use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
-    ARCH_WORKBENCH, PLACE_ANY, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_GROUND,
+    ARCH_LOCK, ARCH_WORKBENCH, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION,
+    PLACE_GROUND,
 };
 use sim_core::gather::ItemStack;
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
@@ -379,12 +380,14 @@ impl Content {
                     DeployArchetype::Furnace => ARCH_FURNACE,
                     DeployArchetype::Workbench => ARCH_WORKBENCH,
                     DeployArchetype::Door => ARCH_DOOR,
+                    DeployArchetype::Lock => ARCH_LOCK,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
                     Placement::Foundation => PLACE_FOUNDATION,
                     Placement::Doorway => PLACE_DOORWAY,
                     Placement::Any => PLACE_ANY,
+                    Placement::Door => PLACE_DOOR,
                 },
                 hp,
                 item: self
@@ -418,6 +421,15 @@ impl Content {
             dc.mats[n] = item;
         }
         dc.mat_count = mats.len() as u8;
+        for (m, pct) in &self.balance.globals.decay_pct_per_period {
+            let idx = match m {
+                Material::Wood => sim_core::build::MAT_WOOD,
+                Material::Stone => sim_core::build::MAT_STONE,
+                Material::Metal => sim_core::build::MAT_METAL,
+            } as usize;
+            dc.decay_pct[idx] = u16::try_from(*pct)
+                .map_err(|_| format!("bake: decay_pct_per_period {pct} overflows u16"))?;
+        }
         dc.upkeep_pct_per_day =
             u16::try_from(self.balance.globals.upkeep_pct_per_day).map_err(|_| {
                 format!(
