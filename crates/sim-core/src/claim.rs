@@ -51,8 +51,8 @@
 //! wall-1 set.
 
 use crate::build::{build_cell_of, Pieces, BUILD_CELL_M};
-use crate::deploy::Deploys;
-use crate::limits::{MAX_BUILD_COORD, PRIV_BFS_CELLS};
+use crate::deploy::{Deploys, HearthRec};
+use crate::limits::{CLAIM_INDEX_SLOTS, MAX_BUILD_COORD, MAX_HEARTHS, MAX_PIECES, PRIV_BFS_CELLS};
 
 /// How far privilege reaches from a piece of the base, in meters. The
 /// reference's own figure — roughly 16 m of cushion beyond the outermost
@@ -221,6 +221,296 @@ pub fn any_claim(pieces: &Pieces, deploys: &Deploys, x: f32, z: f32) -> bool {
     hearths
         .iter()
         .any(|h| w.seen[..w.len].contains(&key(h.cx, h.cz)))
+}
+
+// ---------------------------------------------------------------------------
+// The cached volume — the same shape, held still for the sweep
+// ---------------------------------------------------------------------------
+
+/// "No volume": the hearth's own cell held no structure when the cache was
+/// last built, or the cache has never been built at all. Either way the
+/// hearth covers nothing, which is the safe direction — an unbuilt cache
+/// under-covers (things decay a period early) and can never protect a
+/// piece the live walk would not.
+const VOL_NONE: u16 = u16::MAX;
+
+/// A table key is a cell key with a bit that cannot be zero, so zero can
+/// mean *empty slot* — `collide::ColIndex`'s encoding, for its reason.
+const TBL_OCCUPIED: u32 = 1 << 31;
+
+/// Fibonacci-hash home slot — pure integer, wasm-identical, the same mix
+/// `collide::ColIndex` uses.
+#[inline]
+fn tbl_home(key: u32) -> usize {
+    (key.wrapping_mul(0x9E37_79B1) >> 18) as usize & (CLAIM_INDEX_SLOTS - 1)
+}
+
+/// **The privilege volumes, cached per hearth** — the shape [`foreign_claim`]
+/// walks per query, computed once per mutation instead of once per tick.
+///
+/// The upkeep sweep asks "which hearths cover this point" for every due
+/// entry, every tick. The walk above is priced for a keypress; per tick it
+/// is not affordable, and that is the whole reason this cache exists
+/// (`NOW.md` §0aa items 1–2 were one item wearing two numbers). What is
+/// cached per hearth is its **connected component** of built cells — the
+/// cells [`reach`] would flood through — and a query is then "is the point
+/// within [`PRIV_CUSHION_M`] of any cached cell", which is exactly the
+/// walk's own answer with the flood direction reversed (connectivity is
+/// symmetric, so seeding from the hearth instead of the point changes
+/// nothing but the cost model).
+///
+/// ## Determinism (wall 5), the whole argument
+///
+/// The cache is a **pure function** of the piece store and the hearth
+/// list, both of which are canonical sim state. It is rebuilt at exactly
+/// one place — the top of `deploy::upkeep_sweep`, a fixed point in every
+/// tick, after the tick's commands and before any coverage question —
+/// and only when the generation stamps say a piece or a hearth changed
+/// since the last rebuild. Those stamps advance only at command
+/// application and sweep removals, which are stream-ordered, so a live
+/// run and its replay rebuild on the same ticks from identical inputs
+/// and hold identical caches. There is **no lazy fill on first query**:
+/// the refresh runs whether or not any entry is due, so no query order
+/// can influence what the cache holds. Mutations *inside* a sweep (a
+/// decay cascade taking pieces out mid-walk) leave the geometry one tick
+/// stale for the remainder of that sweep — deterministically, since a
+/// replay performs the same removals in the same visits — and the next
+/// tick's refresh picks them up; the hearth *list* alignment, which
+/// cannot be allowed to go stale even for a tick (a swap-removed hearth
+/// would inherit another base's volume), is kept exact by
+/// [`ClaimCache::hearth_swap_remove`].
+///
+/// Like `Pieces::cols`, it is derived state: never hashed, never saved.
+///
+/// ## Bounds (wall 4)
+///
+/// Everything rides existing caps. The pool holds each built cell at most
+/// once, so it is `MAX_PIECES` long and cannot fill past the store that
+/// feeds it; a single volume stops at [`PRIV_BFS_CELLS`] with the walk's
+/// own stated policy (under-claim, never over-claim); the volume lists
+/// ride `MAX_HEARTHS`; and the scratch map is `CLAIM_INDEX_SLOTS`
+/// (limits.rs has the derivation). A rebuild is one bounded pass —
+/// O(cells walked) probes plus one table clear — so a placement-spamming
+/// client buys at most one rebuild per tick, not one per placement.
+///
+/// The one shape difference from the per-query walk, stated: a component
+/// bigger than `PRIV_BFS_CELLS` is pooled in breadth-first order from the
+/// **first hearth in list order** that reached it, and a later hearth on
+/// the same component shares that truncated volume rather than walking
+/// its own 256 cells from itself. Both under-claim; neither over-claims.
+pub(crate) struct ClaimCache {
+    /// Cells of every hearth-bearing component, packed back to back in
+    /// walk order; volume `v` is `pool[vol_start[v]..][..vol_len[v]]`.
+    pool: Box<[u32; MAX_PIECES]>,
+    pool_len: usize,
+    vol_start: [u16; MAX_HEARTHS],
+    vol_len: [u16; MAX_HEARTHS],
+    /// Planar bounds per volume, **cushion-expanded**, in metres:
+    /// `[min_x, min_z, max_x, max_z]`. The cheap pre-reject that keeps a
+    /// covers() miss at four compares instead of a cell scan.
+    vol_bb: [[f32; 4]; MAX_HEARTHS],
+    vol_count: usize,
+    /// Which volume claims for each hearth, index-aligned to the hearth
+    /// list ([`VOL_NONE`] = none). The one row `Deploys::remove_at` must
+    /// keep aligned mid-tick.
+    vol_of: [u16; MAX_HEARTHS],
+    /// Open-addressed cell → volume map, rebuild-only scratch (queries
+    /// never touch it). Lives here rather than in a stack frame because
+    /// 96 KB of scratch in a frame is the wasm shadow-stack trap
+    /// (`crate::boxed_array`'s doc), and clearing it is a `fill`, not an
+    /// allocation.
+    tbl_key: Box<[u32; CLAIM_INDEX_SLOTS]>,
+    tbl_vol: Box<[u16; CLAIM_INDEX_SLOTS]>,
+    /// The generation stamps the cache was built against — `u64::MAX`
+    /// (never a live gen, which start at 0) until the first rebuild, so a
+    /// fresh or freshly-loaded world always rebuilds on its first sweep.
+    stamp_pieces: u64,
+    stamp_hearths: u64,
+}
+
+impl ClaimCache {
+    pub(crate) fn new() -> Box<Self> {
+        Box::new(Self {
+            pool: crate::boxed_array(0),
+            pool_len: 0,
+            vol_start: [0; MAX_HEARTHS],
+            vol_len: [0; MAX_HEARTHS],
+            vol_bb: [[0.0; 4]; MAX_HEARTHS],
+            vol_count: 0,
+            vol_of: [VOL_NONE; MAX_HEARTHS],
+            tbl_key: crate::boxed_array(0),
+            tbl_vol: crate::boxed_array(0),
+            stamp_pieces: u64::MAX,
+            stamp_hearths: u64::MAX,
+        })
+    }
+
+    /// Whether the cache still describes stores at these generations.
+    pub(crate) fn fresh_for(&self, pieces_gen: u64, hearth_gen: u64) -> bool {
+        self.stamp_pieces == pieces_gen && self.stamp_hearths == hearth_gen
+    }
+
+    /// Mirror the hearth list's swap-remove so `vol_of` keeps describing
+    /// the hearth it is indexed against — `bag_ready`'s parallel-array
+    /// contract, applied to the cache row. The volumes themselves are not
+    /// touched: geometry staleness inside the removing tick is accepted
+    /// and documented above; row misalignment is not.
+    pub(crate) fn hearth_swap_remove(&mut self, i: usize, last: usize) {
+        self.vol_of[i] = self.vol_of[last];
+        self.vol_of[last] = VOL_NONE;
+    }
+
+    /// Rebuild every hearth's volume from the stores. One table clear,
+    /// then one breadth-first walk per **component** (hearths sharing a
+    /// component share a walk — the map is what makes the share O(1)).
+    pub(crate) fn rebuild(
+        &mut self,
+        pieces: &Pieces,
+        hearths: &[HearthRec],
+        pieces_gen: u64,
+        hearth_gen: u64,
+    ) {
+        self.tbl_key.fill(0);
+        self.vol_count = 0;
+        self.pool_len = 0;
+        for (hi, h) in hearths.iter().enumerate().take(MAX_HEARTHS) {
+            let (hcx, hcz) = (h.cx, h.cz);
+            let seed = TBL_OCCUPIED | key(hcx, hcz);
+            // Share: a hearth standing on a component an earlier walk
+            // already pooled reuses that volume. The probe terminates at
+            // the first empty slot (limits.rs: the table never passes
+            // half load), and that slot is exactly where the seed goes if
+            // this walk turns out to be a new one.
+            let mut slot = tbl_home(seed);
+            let mut found = VOL_NONE;
+            loop {
+                let k = self.tbl_key[slot];
+                if k == 0 {
+                    break;
+                }
+                if k == seed {
+                    found = self.tbl_vol[slot];
+                    break;
+                }
+                slot = (slot + 1) & (CLAIM_INDEX_SLOTS - 1);
+            }
+            if found != VOL_NONE {
+                self.vol_of[hi] = found;
+                continue;
+            }
+            if !built(pieces, hcx, hcz) {
+                // A hearth whose own cell holds no piece (a hostile save
+                // could present one; the verbs cannot) emits nothing.
+                self.vol_of[hi] = VOL_NONE;
+                continue;
+            }
+            // A new volume: breadth-first from the hearth's cell over
+            // built cells, the pool slice doubling as the queue exactly
+            // as `Walk::seen` does, neighbour order fixed.
+            let v = self.vol_count as u16;
+            let start = self.pool_len;
+            self.pool[self.pool_len] = key(hcx, hcz);
+            self.pool_len += 1;
+            self.tbl_key[slot] = seed;
+            self.tbl_vol[slot] = v;
+            let mut at = start;
+            'walk: while at < self.pool_len {
+                let c = self.pool[at];
+                at += 1;
+                let (cx, cz) = ((c >> 16) as i32, (c & 0xFFFF) as i32);
+                for (dx, dz) in [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)] {
+                    let (nx, nz) = (cx + dx, cz + dz);
+                    if nx < 0
+                        || nz < 0
+                        || nx >= MAX_BUILD_COORD as i32
+                        || nz >= MAX_BUILD_COORD as i32
+                    {
+                        continue;
+                    }
+                    let (nx, nz) = (nx as u16, nz as u16);
+                    if !built(pieces, nx, nz) {
+                        continue;
+                    }
+                    let nk = TBL_OCCUPIED | key(nx, nz);
+                    let mut s = tbl_home(nk);
+                    loop {
+                        let k = self.tbl_key[s];
+                        if k == nk {
+                            break; // seen — by this walk, or held by an
+                                   // earlier capped one (both stop here)
+                        }
+                        if k == 0 {
+                            if self.pool_len - start == PRIV_BFS_CELLS
+                                || self.pool_len == MAX_PIECES
+                            {
+                                // The cap — the walk's own stated policy:
+                                // it stops, and privilege does not extend
+                                // past it. (The pool bound is provably
+                                // unreachable — each pooled cell is built
+                                // and distinct — but stated is cheaper
+                                // than proven every time this is read.)
+                                break 'walk;
+                            }
+                            self.tbl_key[s] = nk;
+                            self.tbl_vol[s] = v;
+                            self.pool[self.pool_len] = key(nx, nz);
+                            self.pool_len += 1;
+                            break;
+                        }
+                        s = (s + 1) & (CLAIM_INDEX_SLOTS - 1);
+                    }
+                }
+            }
+            // The cushion-expanded bounds of what got pooled.
+            let (mut min_x, mut min_z) = (f32::INFINITY, f32::INFINITY);
+            let (mut max_x, mut max_z) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+            for &k in &self.pool[start..self.pool_len] {
+                let px = (k >> 16) as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
+                let pz = (k & 0xFFFF) as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
+                min_x = min_x.min(px);
+                min_z = min_z.min(pz);
+                max_x = max_x.max(px);
+                max_z = max_z.max(pz);
+            }
+            self.vol_bb[v as usize] = [
+                min_x - PRIV_CUSHION_M,
+                min_z - PRIV_CUSHION_M,
+                max_x + PRIV_CUSHION_M,
+                max_z + PRIV_CUSHION_M,
+            ];
+            self.vol_start[v as usize] = start as u16;
+            self.vol_len[v as usize] = (self.pool_len - start) as u16;
+            self.vol_of[hi] = v;
+            self.vol_count += 1;
+        }
+        self.stamp_pieces = pieces_gen;
+        self.stamp_hearths = hearth_gen;
+    }
+
+    /// Whether hearth `hearth`'s cached volume covers the planar point —
+    /// the walk's own predicate ("within the cushion of the connected
+    /// structure that reaches this hearth"), read instead of walked.
+    pub(crate) fn covers(&self, hearth: usize, x: f32, z: f32) -> bool {
+        if hearth >= MAX_HEARTHS {
+            return false;
+        }
+        let v = self.vol_of[hearth];
+        if v == VOL_NONE {
+            return false;
+        }
+        let bb = self.vol_bb[v as usize];
+        if x < bb[0] || z < bb[1] || x > bb[2] || z > bb[3] {
+            return false;
+        }
+        let s = self.vol_start[v as usize] as usize;
+        let e = s + self.vol_len[v as usize] as usize;
+        self.pool[s..e].iter().any(|&k| {
+            let px = (k >> 16) as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
+            let pz = (k & 0xFFFF) as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
+            let (dx, dz) = (px - x, pz - z);
+            dx * dx + dz * dz <= CUSHION2
+        })
+    }
 }
 
 #[cfg(test)]
@@ -403,5 +693,72 @@ mod tests {
         assert!(!foreign_claim(
             &w.pieces, &w.deploys, 100.0, 100.0, STRANGER
         ));
+    }
+
+    /// **The sweep's shape is the verbs' shape.** The cached volume the
+    /// upkeep sweep reads and the walk the build verbs run must answer
+    /// identically at every point (below the cap, where the two flood
+    /// directions are exactly symmetric) — this is the gate on "the
+    /// semantics of covered may drift only from circle to base-shape",
+    /// asserted as a point-by-point equality rather than prose.
+    #[test]
+    fn the_cached_volume_and_the_walk_agree_on_the_claim_shape() {
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        for cx in 100..120u16 {
+            pieces.insert_for_test(cx, 100, 0, LOC_PLANE, 0, &bc);
+        }
+        deploys.push_hearth_for_test(100, 100, 0, OWNER);
+        deploys.refresh_claims(&pieces);
+        for cx in 90..=130u16 {
+            for cz in 92..=108u16 {
+                let (x, z) = centre(cx, cz);
+                assert_eq!(
+                    deploys.hearth_covers(0, x, z),
+                    any_claim(&pieces, &deploys, x, z),
+                    "the cached shape and the walked shape disagree at ({cx},{cz})"
+                );
+            }
+        }
+    }
+
+    /// Two hearths standing on one connected base share one cached
+    /// volume (the rebuild walks each component once); demolishing the
+    /// middle splits the base, and after a refresh each hearth covers
+    /// its own island and not the other's.
+    #[test]
+    fn two_hearths_share_a_component_until_it_splits() {
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        for cx in 100..120u16 {
+            pieces.insert_for_test(cx, 100, 0, LOC_PLANE, 0, &bc);
+        }
+        deploys.push_hearth_for_test(100, 100, 0, OWNER);
+        deploys.push_hearth_for_test(119, 100, 0, OWNER);
+        deploys.refresh_claims(&pieces);
+        let near = centre(100, 100);
+        let far = centre(119, 100);
+        assert!(deploys.hearth_covers(0, far.0, far.1));
+        assert!(deploys.hearth_covers(1, near.0, near.1));
+
+        // Take out the middle: 103..=116 leaves two three-cell islands
+        // 42 m apart — far outside the cushion, so coverage has to split
+        // with the structure.
+        for cx in 103..=116u16 {
+            let i = pieces.find_index(cx, 100, 0, LOC_PLANE).unwrap();
+            let shape = bc.pieces[pieces.entries()[i].row as usize].shape;
+            pieces.remove_at(i, shape);
+        }
+        deploys.refresh_claims(&pieces);
+        assert!(
+            deploys.hearth_covers(0, near.0, near.1) && !deploys.hearth_covers(0, far.0, far.1),
+            "hearth 0 keeps its island and loses the other"
+        );
+        assert!(
+            deploys.hearth_covers(1, far.0, far.1) && !deploys.hearth_covers(1, near.0, near.1),
+            "hearth 1 likewise"
+        );
     }
 }
