@@ -426,14 +426,21 @@ fn two_shards_loading_one_file_stay_in_lockstep() {
         let origin = s.state_hash();
         let mut stamps = Vec::new();
         for t in 0..60u32 {
-            // A command stream with something in it: a takeover, then the
-            // ordinary clock. An empty script would agree even if the load
-            // had dropped half the world.
+            // A command stream with something in it: a takeover, a leave,
+            // a two-phase eviction, then the ordinary clock. An empty
+            // script would agree even if the load had dropped half the
+            // world, and the `Evict` is here because its id is the
+            // stream's fact — both loads must delete the same body on the
+            // same tick (`world.rs`, `Command::Evict`).
             if t == 5 {
                 s.tick(&[Command::Wake {
                     id: 0x0303,
                     sleeper: 2,
                 }]);
+            } else if t == 9 {
+                s.tick(&[Command::Leave { id: 0x0303 }]);
+            } else if t == 14 {
+                s.tick(&[Command::Evict { id: 0x0303 }]);
             } else {
                 s.tick(&[]);
             }
