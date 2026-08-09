@@ -372,6 +372,18 @@ pub const DEMOLISH_WINDOW_TICKS: u64 = 18_000;
 /// Proposed default, DECISIONS.md §open (privilege v1).
 pub const PRIV_BFS_CELLS: usize = 256;
 
+/// Slots in the claim cache's open-addressed cell → volume map — the
+/// rebuild scratch that makes re-walking every hearth's privilege volume
+/// affordable in one tick (`claim::ClaimCache`, the upkeep sweep's
+/// coverage shape). Structural cap derived exactly as `COL_INDEX_SLOTS`
+/// is: 2 × `MAX_PIECES`, power of two, and it can never pass half load
+/// because a cell enters the map at most once and only when built, so the
+/// key count is bounded by the piece store that built it. Overflow policy:
+/// none reachable — every probe terminates at an empty slot while load
+/// stays under half, and the pool insert beside it stops at `MAX_PIECES`
+/// regardless. Not a knob.
+pub const CLAIM_INDEX_SLOTS: usize = 16_384;
+
 /// Players one hearth remembers as its **crew** — who may build, upgrade,
 /// repair and deploy inside its claim (`reference/BUILDING.md` §2). Ten in
 /// the reference's own vanilla cap, and the same number here for the same

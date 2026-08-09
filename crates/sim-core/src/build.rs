@@ -274,6 +274,17 @@ pub struct Pieces {
     entries: Box<[PieceRec; MAX_PIECES]>,
     len: usize,
     cols: Box<crate::collide::ColIndex>,
+    /// Bumped by every insert, removal and restore — the stamp
+    /// `claim::ClaimCache` compares to know whether the base shapes it
+    /// cached can have changed. **Derived-cache plumbing, not state**: it
+    /// is never hashed and never saved, exactly like `cols`, and wall 5
+    /// does not rest on its value — only on the cache it invalidates being
+    /// a pure function of the pieces, which it is (`claim.rs`). It bumps
+    /// on *any* store change rather than only footprint-changing ones
+    /// (a second wall in an already-built cell bumps it too), because an
+    /// extra rebuild costs a bounded walk and a missed one costs a wall
+    /// the sweep still thinks is standing.
+    gen: u64,
 }
 
 impl Pieces {
@@ -283,7 +294,14 @@ impl Pieces {
             entries: crate::boxed_array(PieceRec::default()),
             len: 0,
             cols: Box::new(crate::collide::ColIndex::new()),
+            gen: 0,
         }
+    }
+
+    /// The store-change stamp (`gen`'s own doc). Read by
+    /// `Deploys::refresh_claims` and nothing else.
+    pub(crate) fn footprint_gen(&self) -> u64 {
+        self.gen
     }
 
     /// The tick entry `i` was placed on — the demolish window's clock.
@@ -384,6 +402,7 @@ impl Pieces {
         self.placed[self.len] = tick;
         self.len += 1;
         self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+        self.gen += 1;
         true
     }
 
@@ -396,6 +415,7 @@ impl Pieces {
         // Both halves move together, which is the whole contract of a
         // parallel array (`placed`'s own doc).
         self.placed[i] = self.placed[self.len];
+        self.gen += 1;
     }
 
     /// Write entry `i`'s hp alone — the raid verb's write (deploy.rs
@@ -436,6 +456,7 @@ impl Pieces {
     /// Boot-only, like everything on the load path.
     pub(crate) fn restore(&mut self, recs: &[PieceRec], placed: &[u64], bc: &BuildContent) {
         debug_assert_eq!(recs.len(), placed.len(), "placed must be index-aligned");
+        self.gen += 1;
         self.cols.clear();
         self.len = recs.len().min(MAX_PIECES);
         self.entries[..self.len].copy_from_slice(&recs[..self.len]);

@@ -26,15 +26,22 @@ Landed 2026-08-08. `reference/BUILDING.md` is the research; the four rows
 in `DECISIONS.md` §open (hearth crew v1, privilege v1, demolish v1,
 upkeep/decay v1) are what was built. What remains:
 
-1. **Upkeep coverage is still a circle.** `privilege v1` moved the *build*
-   verbs onto the base's own volume, and `covering_hearth` — the upkeep
-   sweep's test — still asks `HEARTH_RADIUS_M`. Different questions, and
-   the sweep runs per tick where the walk runs per keypress, so the split
-   is deliberate rather than half-finished. It is still a split, and a
-   long base is protected by a shape that is not the one that claims it.
-2. **The privilege walk has no cache.** One BFS per placement, capped at
-   `PRIV_BFS_CELLS`. Fine for a keypress; it would not be fine if
-   something per-tick started asking.
+1. ~~**Upkeep coverage is still a circle.**~~ **DONE 2026-08-09**, one
+   slice with item 2: the sweep's coverage questions (`covering_hearth`
+   and the piece half) now ask the base's own cached volume, so the shape
+   that claims a base is the shape that pays for it — a long base's far
+   end is covered, a detached shack inside the old 24 m circle is not.
+   `HEARTH_RADIUS_M` has no live reader left; its doc says what keeps it.
+2. ~~**The privilege walk has no cache.**~~ **DONE 2026-08-09** —
+   `claim::ClaimCache` in `Deploys`: one walk per *component* per rebuild
+   (open-addressed scratch, `limits.rs CLAIM_INDEX_SLOTS`; pool rides
+   `MAX_PIECES`, per-volume cap `PRIV_BFS_CELLS`), rebuilt at one fixed
+   point (the sweep's top) only when a piece/hearth generation stamp
+   moved. Derived like `Pieces::cols` — never hashed, never saved; the
+   wall-5 argument is on the struct. Gated: long base, detached-in-circle,
+   a demolish-invalidation mutant-killer, cached-vs-walked point equality.
+   The keypress walk stays per-query on purpose (a command must never
+   read a cache the tick has not folded).
 3. ~~**Locks on boxes** (`DOORS.md` §9.8)~~ Landed (see §0z item 1 for
    what remains: the client's L verb and the server's container view).
 4. **No `AutoTurret`, so the roster has two customers and not three.**
