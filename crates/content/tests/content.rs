@@ -179,6 +179,20 @@ fn hash_moves_with_values() {
         build(&srcs).unwrap().hash(),
         "the satchel's fuse must move the content hash"
     );
+
+    // The declared farm rate. `canon.rs` walks it, but no probe proved the
+    // walk until the farm-rate agreement check landed on top of it — and a
+    // rate the anchors price everything with, canonicalising identically
+    // across a disagreement, is the exact defect class this test exists
+    // for.
+    let mut srcs = sources();
+    let b = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    b.1 = b.1.replace("\"item.wood\" = 50", "\"item.wood\" = 49");
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the declared farm rate must move the content hash"
+    );
 }
 
 /// The raid tool reaches the sim, and the raid ratio is arithmetic a
@@ -450,6 +464,16 @@ fn band_breaks_refused() {
         "\"item.hatchet_metal\" = 3",
         "band break: node yield",
     );
+    // The declared effective rate may never beat standing at the node:
+    // wood's at-node ceiling is 2060/min (30 on the finding hit, then
+    // 9 weak-marked 45s, over ten 38-tick swings), and a declaration
+    // above it prices walking as a bonus.
+    refuses(
+        "balance.toml",
+        "\"item.wood\" = 50",
+        "\"item.wood\" = 3000",
+        "farm rate break",
+    );
     // Armor: 60% reduction turns 4 hits into 10 — over the +2 cap.
     refuses(
         "armor.toml",
@@ -463,6 +487,52 @@ fn band_breaks_refused() {
         "headshot_mult = 2",
         "headshot_mult = 5",
         "band break: headshot",
+    );
+}
+
+/// The declared farm rate is now compared against the sim's own arithmetic
+/// — the latent defect `reference/BALANCE.md` §4.3 named ("nothing checks
+/// that it agrees with `yield_per_hit`") is closed as a ceiling: an
+/// effective travel-included rate can never beat standing at the node.
+/// The values here are the shipped set's derivation, pinned so the
+/// at-node side is hand-checkable: per node cycle, the best tier-≤1
+/// per-hit finds the weak mark and the remaining `hits − 1` strike it
+/// (per-hit × 1.5, floored), over `hits` swings at the 38-tick cadence —
+/// the farmwalk measured a walker beating the weakless ceiling, so the
+/// bonus is part of standing at the node, not a footnote to it. A yield
+/// or cadence move re-pins these numbers in the same commit — that is
+/// fixture discipline, not rot.
+#[test]
+fn the_declared_farm_rate_cannot_beat_standing_at_the_node() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let rates = &c.anchors().farm_rates;
+    // (item, declared, at-node): wood/stone best tier-≤1 swing is the
+    // metal tool's 30 → (30 + 9 × 45) × 1800 / 380 = 2060; ores likewise
+    // 2060; cloth is the bush's hand 10, one hit, no weak mark → 473.
+    // Declared sits 20–41× under the ceiling — the travel term the
+    // farmwalk measures, recorded where it is visible.
+    for (item, declared, at_node) in [
+        ("item.wood", 50, 2060),
+        ("item.stone", 50, 2060),
+        ("item.metal_ore", 30, 2060),
+        ("item.sulfur_ore", 30, 2060),
+        ("item.cloth", 20, 473),
+    ] {
+        let row = rates
+            .iter()
+            .find(|(id, _, _)| id == item)
+            .unwrap_or_else(|| panic!("no farm-rate anchor row for `{item}`"));
+        assert_eq!(
+            (row.1, row.2),
+            (declared, at_node),
+            "`{item}`: declared/at-node moved — re-pin alongside the data \
+             (and re-read the DECISIONS.md §open farm rate row)"
+        );
+    }
+    assert_eq!(
+        rates.len(),
+        5,
+        "a new farm_per_min row landed without extending this pin"
     );
 }
 

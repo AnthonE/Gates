@@ -14,6 +14,12 @@ player_hp = 100
 # Effective gather rate at tier-1 tools, units/min, travel included —
 # the farm-minute currency every cost anchor is priced in (anchor 3).
 # Craft seconds are ignored: farm time dominates at these scales.
+# Gated (balance.rs): a row may never exceed the sim's at-node ceiling
+# (best tier-≤1 yield/hit, weak mark included, at the swing cadence), and
+# every row must be a node output some tier-≤1 swing pays. The gap to
+# at-node is the travel term — measured by `crates/server/tests/
+# farmwalk.rs`, its meaning still the operator's knob (DECISIONS.md
+# §open, "the economy has never been measured").
 farm_per_min = { "item.wood" = 50, "item.stone" = 50, "item.metal_ore" = 30, "item.sulfur_ore" = 30, "item.cloth" = 20 }
 # Barrel-only drops (components, fat) priced as road-minutes per unit.
 component_minutes = { "item.gears" = 4, "item.rope" = 4, "item.tarp" = 4, "item.fat" = 2 }
@@ -51,7 +57,7 @@ armor_extra_hits_max = 2
 # Anchor 3 — a banded node's total yield and hit count at tier-1 tools.
 node_yield = [250, 400]
 node_hits = [8, 12]
-# "A full wood wall ≈ 7 min of wood at T1 tools" (CONTENT §3).
+# "A full wood wall ≈ 7 min of wood at T1 tools" (CONTENT §4 anchor 3).
 wood_wall_minutes = [5, 9]
 # Anchor 1 — satchels-to-break-a-stone-wall in farm-minutes over the
 # starter build in farm-minutes; below ~1.0 nobody builds, above ~3

@@ -163,6 +163,13 @@ reference did not. It is the economy's own foundation being unmeasured, and
 it should be fixed **before** the gather yields move, or the move will be
 tuning one unmeasured number against another.
 
+*(2026-08-09: the checking half landed — `balance.rs` refuses a declared
+rate above the sim's at-node ceiling, weak mark included, and the travel
+term is measured: `server tests/farmwalk.rs` walked 1001 wood/min
+effective at the kit hatchet, 72.9% duty. "Nothing checks it" above is
+kept as the finding it was; the semantics speak and the yield move are
+what remain — `DECISIONS.md` §open.)*
+
 **Nothing is live** — no season, no wipe, no player holding a number in
 their head from a shard of ours. So the cost of moving these is a
 re-derivation and a red band, not a broken save. That is the operator's

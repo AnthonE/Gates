@@ -39,26 +39,21 @@ standing instruction. Building blocks are 250/500/1000, a stone wall takes
 four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
 Two bands moved and the raid ratio re-priced itself to 1.04/1.73/3.46.
 
-**The largest open number question in the repo, found while checking the
-above: the economy has never been measured against the sim.**
-`farm_per_min` declares 50 wood/min; the sim pays **947/min** at a tree
-(200 wood / 10 swings / 38-tick cadence), 1421 with a metal hatchet.
-Nothing compares them, so `starter_minutes`, `satchel_minutes`, upkeep and
-the raid ratio are all priced off a number with no measured relation to
-play — and the anchors miss `CONTENT.md` §3's own prose (45 min starter
-target vs 85.6 computed) with no band on it. Decide what `farm_per_min`
-means, band the pacing table or stop claiming minutes, THEN move the gather
-yields. `DECISIONS.md` §open.
-
-**The audit (2026-08-08, second pass).** Asked to explain why we had rolled
-our own numbers, three of six reasons turned out to be cost dressed as
-principle (`BALANCE.md` §4). The meters are paid off — 500/250 with the
-reference's meat-feeds/forage-hydrates split. Gather yields are the one
-left, and the blocker is real: `[globals] farm_per_min` is declared
-separately from `yield_per_hit` and **nothing checks the two agree**, so
-moving yields means re-deriving `farm_per_min`, `node_yield`, `node_hits`
-and four anchors in one commit. That is the next content slice, and the
-missing agreement check is worth landing with it.
+**The economy is measured now (2026-08-09), and the agreement check is
+in.** `balance.rs` refuses a `farm_per_min` above the sim's at-node
+ceiling (weak mark included — the walker's first run beat the naive
+ceiling, so the bonus is part of standing at the node), pinned with its
+derivation in `content.rs` and a hash probe `farm_per_min` never had. The
+travel term is measured, the way the §open row asked: `server
+tests/farmwalk.rs` walks a greedy farmer tree-to-tree on the real island
+— **1001 wood/min effective at the kit hatchet, 72.9% duty** against the
+declared 50, so the farm-minute currency is ~20× slower than play and
+`starter_minutes` 85.6 / `satchel_minutes` 29.6 / upkeep 8.56 are model
+prices, not clock claims (`CONTENT.md` §3's header says so now). What
+remains is the operator's speak on the `DECISIONS.md` §open row
+(semantics PROPOSED there), then the yield move — which also wants
+reference data `BALANCE.md` never recorded (per-hit yields for
+stone/sulfur/metal nodes, tool multipliers).
 
 What a returning player still finds wrong, in rank order:
 
