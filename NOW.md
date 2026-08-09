@@ -55,12 +55,17 @@ whole slice. What remains, in order:
    `REFUSE_D_OWNER`, the mirror bits ride the existing wire record (zero
    protocol edits), and `rebuild_doors` re-derives them for boxes at load.
    Gated by `tests/lock_box.rs` (a mutant-killer on the open-path check)
-   and three tests beside the door's in `deploy.rs`. **Remains, two
-   halves, neither sim**: the client's `L` verb only targets doors
-   (`ui/keypad.rs` — client lane), and the server's container *view*
-   (`server/core.rs` cont sync) still shows a locked box's slots read-only
-   to a stranger; gate it on the same `Deploys::lock_passes` at the box's
-   plane address when the server lane is open.
+   and three tests beside the door's in `deploy.rs`. **The client half
+   landed 2026-08-09**: `L` targets whatever the sim's `deploy::lockable`
+   says takes a lock — the pick carries the deploy sync's archetype and
+   `ui::keypad::lock_target` asks the sim's own predicate, no second list;
+   the box prompt advertises `[L] KEYPAD`/`LOCKED` in the door's grammar.
+   Gated by `tests/ui.rs` §J, whose load-bearing test is the agreement
+   sweep against `lockable` itself. **Remains, one half**: the server's
+   container *view* (`server/core.rs` cont sync) still shows a locked
+   box's slots read-only to a stranger; gate it on the same
+   `Deploys::lock_passes` at the box's plane address when the server lane
+   is open.
 2. ~~**A pickup verb for an unsecured deployable.**~~ Landed with
    demolish v1 (§0aa), including the rule that a locked door cannot be
    lifted out of its frame.
