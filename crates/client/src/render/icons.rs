@@ -1,4 +1,4 @@
-//! Item and building icons.
+//! Item, building-shape and hammer-verb icons.
 //!
 //! **Why this exists.** Every cell in `Rust Images/crafting.png` is a picture
 //! of the thing; every cell of ours was a clipped word (`Gunpowde`,
@@ -58,6 +58,16 @@ impl Icons {
 
     /// A building shape's icon — `shape_wall`, `shape_foundation`, …
     pub fn shape(&self, key: &str) -> Option<Handle<Image>> {
+        self.by_name.get(key).cloned()
+    }
+
+    /// A hammer verb's icon — `verb_upgrade`, `verb_demolish`, …
+    ///
+    /// The same lookup [`Self::shape`] does and deliberately not the same
+    /// function: these are keyed by a literal stem rather than by a name off
+    /// the wire, and which map a call site is reading is worth being able to
+    /// grep for.
+    pub fn verb(&self, key: &str) -> Option<Handle<Image>> {
         self.by_name.get(key).cloned()
     }
 }

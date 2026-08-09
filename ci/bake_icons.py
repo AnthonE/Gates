@@ -64,11 +64,14 @@ def source_svg(path):
 OUT = ROOT / "assets/icons"
 PX = 128
 
-# The six building shapes the wheel draws. **No material icons**: the wheel
-# is one ring since 2026-08-07 — the blueprint places the bottom rung and the
-# hammer climbs the ladder — so `mat_wood`/`mat_stone`/`mat_metal` had no
-# draw site and shipping them was dead weight in the depot. They come back
-# with the hammer wheel, not before.
+# The six building shapes the shape wheel draws. **Still no material icons**,
+# and the hammer wheel landing is what settles that: the wheel is one ring
+# since 2026-08-07 — the blueprint places the bottom rung and the hammer
+# climbs the ladder — so `mat_wood`/`mat_stone`/`mat_metal` had no draw site.
+# This comment used to say they came back with the hammer wheel; the hammer
+# wheel is here and they did not, because `structure::next_material` picks the
+# rung and never asks the player which. They come back with a verb that offers
+# a choice, or not at all.
 SHAPES = {
     "shape_foundation": "delapouite/flat-platform",
     "shape_wall": "delapouite/brick-wall",
@@ -76,6 +79,29 @@ SHAPES = {
     "shape_floor": "delapouite/floor-hatch",
     "shape_stairs": "delapouite/3d-stairs",
     "shape_roof": "delapouite/great-pyramid",
+}
+
+# The four verbs on the hammer's wheel, keyed as `ui::hammer::verb_icon`
+# names them.
+#
+# **Chosen at the size they are drawn, not off the archive's preview page.**
+# A wedge glyph is a 38 px node fed by a 128 px bake and tinted flat — red on
+# the cream band, near-white on the chosen wedge — so the only question that
+# matters is what survives that, and it was answered by rendering the
+# candidates under both tints before picking (`delapouite/monkey-wrench` and
+# `skoll/open-palm` both read fine at 512 and go thin and characterless at
+# 38). The second criterion is that the four differ from EACH OTHER in
+# silhouette, because the ring is scanned at a flick: chevrons, a circle, a
+# tower, a hand.
+#
+# `delapouite/broken-wall` lost demolish on a rule rather than a look — it is
+# the same drawing family as `shape_wall`'s `delapouite/brick-wall`, and a
+# verb that looks like a shape is the positional-payload trap wearing a menu.
+VERBS = {
+    "verb_upgrade": "delapouite/upgrade",
+    "verb_repair": "lorc/auto-repair",
+    "verb_demolish": "lorc/demolish",
+    "verb_pick_up": "lorc/grab",
 }
 
 # Every item in `content/items.toml`, by its id minus the `item.` prefix.
@@ -217,6 +243,7 @@ if unknown:
     sys.exit(f"map names items the content does not have: {unknown}")
 
 ALL = dict(SHAPES)
+ALL.update(VERBS)
 for item_id, icon in ITEMS.items():
     ALL[norm(BY_ID[item_id])] = icon
 MINE = {norm(BY_ID[item_id]): f for item_id, f in OURS.items()}

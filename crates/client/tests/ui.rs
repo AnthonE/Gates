@@ -1328,6 +1328,40 @@ fn every_stem_has_a_file_and_every_file_has_a_stem() {
     );
 }
 
+/// Every wedge on both wheels has a picture.
+///
+/// The item half below reads `content/items.toml` because content grows; this
+/// half reads the two verb/shape maps because *code* grows, and the failure
+/// is the same one from the other end. Add a seventh shape or a fifth verb,
+/// forget the bake, and nothing breaks loudly: `Icons::shape`/`verb` return
+/// `None`, `glyph` falls back to the label, and the wheel quietly goes back
+/// to being the text wheel these icons replaced.
+#[test]
+fn every_wedge_on_both_wheels_has_an_icon() {
+    let declared: std::collections::BTreeSet<&str> =
+        client::ui::icons::STEMS.iter().copied().collect();
+
+    let mut missing = Vec::new();
+    for shape in client::ui::build::SHAPES {
+        let stem = client::ui::build::shape_icon(shape);
+        if !declared.contains(stem) {
+            missing.push(format!("shape {shape} -> {stem}"));
+        }
+    }
+    for verb in client::ui::hammer::VERBS {
+        let stem = client::ui::hammer::verb_icon(verb);
+        if !declared.contains(stem) {
+            missing.push(format!("{} -> {stem}", client::ui::hammer::label(verb)));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "wheel segments whose icon stem is not in icons::STEMS — these draw \
+         their label instead of a glyph:\n{}",
+        missing.join("\n")
+    );
+}
+
 /// Every item the shard can send has a picture.
 ///
 /// Reads `content/items.toml` directly rather than trusting a list: the whole

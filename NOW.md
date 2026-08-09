@@ -303,9 +303,11 @@ and the typeface all landed (2026-08-07/09; `DECISIONS.md` "ui palette v1",
    placed piece is `{cx, cz, level, loc, row, hp, uh}` — rotate waits on an
    asymmetry worth turning, not on lane room (`ACTION_SUB_BITS` is 5 since
    v30; the lane holds 32).
-2. **The hammer wheel's wedges are text** (no verb icons baked; `glyph`'s
-   fallback carries them) and the centre readout names the verb, not the
-   target or the upgrade's cost.
+2. **The centre readout names the verb, not the target or the upgrade's
+   cost.** The wedges are glyphs now (2026-08-09, `ui::hammer::verb_icon`,
+   gated with the shape wheel's in `tests/ui.rs` §G); what is still text-only
+   is the middle, and filling it wants `verbs::Near` at draw time, which
+   `panels::rebuild` does not hold.
 3. **Nothing in this repo can photograph a panel.** `render/panels/` is not
    registered on a `--capture` run, so inventory, crafting and the wheel —
    ~1,400 lines and the screens a player spends the most time in — are seen
@@ -321,6 +323,14 @@ and the typeface all landed (2026-08-07/09; `DECISIONS.md` "ui palette v1",
    plugin that spawns entities from data — the same reason
    `bevy_procedural_tree`'s plugin is deliberately unused. The iteration win
    it was wanted for is item 3's, and item 3 costs a fraction as much.
+6. **Surveyed and refused: the freegameui.net asset MCP** (~2,100 CC0 UI
+   SVGs, 2026-08-09). CC0 is welcome (`ART.md` §7) and the licence was never
+   the objection: its gateway 403s from this box while `raw.githubusercontent
+   .com` answers 200, so it cannot serve the loop; a tool that writes files
+   into `assets/` bypasses `bake_icons.py` and §G, which are what make an
+   icon re-bakeable; and pre-coloured button/gauge kits fight the
+   tint-at-draw design the whole icon path is built on. A second source in
+   the baker is the cheap version and is what item 2's glyphs used.
 
 ## 0y · Persistence takes the reference game's shape *(server lane)*
 

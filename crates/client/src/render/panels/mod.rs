@@ -562,8 +562,13 @@ pub fn rebuild(
             let icons = icons.as_deref().unwrap_or(&fallback);
             wheel::build_screen(&mut commands, &ui, core, icons)
         }
-        // No core and no icons: the hammer wheel draws four fixed verbs,
-        // and what they would act on is `verbs::Near`'s at release time.
-        Panel::Hammer => wheel::build_hammer_screen(&mut commands, &ui),
+        // No core: the hammer wheel draws four fixed verbs, and what they
+        // would act on is `verbs::Near`'s at release time. Icons it does
+        // want, since 2026-08-09 — the wedges are glyphs now.
+        Panel::Hammer => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            wheel::build_hammer_screen(&mut commands, &ui, icons)
+        }
     }
 }
