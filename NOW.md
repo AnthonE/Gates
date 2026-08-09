@@ -248,10 +248,15 @@ Three mutants run, all red.
 
 Remaining:
 
-1. **Which parts exist and where they go is still written twice** — once in
-   `ghost::shape_parts`, once in `structures::spawn_piece`. The dimensions are
-   shared and the doorway is gated against the sim, but a shape added to one
-   and not the other passes. One shared parts table both emit from is the fix.
+1. ~~Which parts exist and where they go is still written twice~~ **DONE
+   2026-08-09** — `structures::shape_parts` is the one table; the piece and
+   the ghost both emit from it, and `base_transform` shares the edge
+   canonicalisation the same way. The duplicate had already diverged, which
+   is the finding: the ghost hung the doorway's lintel at waist height
+   (centre 1.05 m against the piece's 2.55 m) and previewed stairs as a
+   level plate against the piece's pitched ramp — every CONSTANT shared,
+   layout not, and no gate could see either. `tests/ghost.rs` now reads the
+   table's own emit against the sim.
 2. **The deploy ghost says WHERE, not WHETHER.** `place::verdict` answers for
    build pieces only; the `REFUSE_D_*` set (needs a floor, needs a doorway,
    hearth claim) is uncheckable client-side, so the preview is deliberately
@@ -436,12 +441,15 @@ Remaining, in order. **Item 1 blocks items 3 and 4:**
    traced from the reference (the IP rail). `ART.md` §7 permits real assets.
    **This is the operator question**, and it gates how the panels ever stop
    reading as a spreadsheet.
-3. **Two defects the first look found, both cheap.** An item name overflows
-   its 44 px cell — `Gunpowde`, `Workbenc`, `Metal Fragments` bleeding over
-   its border — so the browser is least readable exactly where content grew;
-   it wants clipping plus an abbreviation, not a bigger cell (the 720p budget
-   is why). And the wheel's hint line is drawn at `bottom: 40px`, straight
-   through the hotbar behind it.
+3. ~~Two defects the first look found, both cheap~~ **DONE 2026-08-09 — and
+   half was already done and unrecorded.** The wheel's hint line moved clear
+   of the hotbar (`bottom: 76px`) with the icons landing; this item never
+   updated. The name half: cells have clipped since the icons
+   (`Overflow::clip`), and the no-icon fallback now abbreviates instead of
+   letting the clip cut mid-glyph — `ui::craft::cell_abbrev`, `Gunpow.` not
+   `Gunpowde` (`DECISIONS.md` §open `CELL_LINE_CHARS`; gate `tests/ui.rs`
+   §I). With every content item iconed (§G), the fallback fires only for a
+   shard item this build has no icon for.
 4. **Twelve sizes is not a scale.** Collapsing to five is a real improvement
    and may not be done blind: the numbers were budgeted against 720p and the
    first cut clipped a column at both ends.
@@ -718,18 +726,21 @@ Remaining, in order:
    and three material changes measured byte-identical statistics before
    anyone read the log. Do not land this on a compile alone; it wants disk
    headroom and a `--capture` run that someone looks at.
-5. **`bodies::stream` allocates a `Vec` per frame** and scans it linearly to
-   retire remotes. `structures::stream` does the same job with a generation
-   stamp and no allocation; this is the same fix, four lines.
-6. **Five read-side signals are still decoded and dropped.** The verb list is
-   complete; this is not. `pop_death` is the kill FEED (every death, not your
-   own — the death SCREEN reads `core.dead` and the `own_death_*` fields and
-   is done); `struct_hit` is the damage number on a wall you are breaking;
-   `charge_placed` is the countdown on a charged one; `stock`/`stock_addr` is
-   what a hearth is holding; `mark_cell`/`mark8` is the gather weak spot,
-   which is the reference's own `OnDispenserBonus` and the closest thing this
-   game has to a skill expression. Each is a small HUD slice on top of what
-   this branch built, and none of them is blocked.
+5. ~~`bodies::stream` allocates a `Vec` per frame~~ **DONE, verified
+   2026-08-09**: the generation stamp landed (`store.gen`, `bodies.rs`), and
+   the path was re-read for stragglers — `interp.ids()` is an iterator,
+   `RemoteState` is `Copy` on the stack, spawns and `Reshade` fire on
+   transitions only. Nothing on the per-frame path allocates.
+6. **The five read-side signals all have consumers now; what is still
+   dropped is the WHERE.** Verified one by one 2026-08-09: `pop_death` feeds
+   the kill feed (`feed.rs` → `hud.rs`), `struct_hit` and `stock` are HUD
+   toasts gated on freshness bits, `charge_placed` toasts its fuse, and
+   `mark_cell`/`mark8` drive the swing prompt's weak-spot line (`verbs.rs` →
+   `hud.rs`). Genuinely dropped: the address half of three — `struct_hit`'s
+   number is not drawn at the wall it names, `charge_placed`'s countdown is
+   a one-shot toast rather than a clock on the charge (`charge_deploy`
+   unread), and `stock_addr` never says WHICH hearth. Each is a world-space
+   anchor on surfaces that exist; none is blocked.
 
 ## 0s · The six unlanded loop branches — triaged, and five are dead
 
