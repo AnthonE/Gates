@@ -133,7 +133,13 @@ which is worse than plainly differing.
 
 - **Gather yields and node totals.** Theirs: a tree is ~460 wood over ~16
   hits with a stone hatchet, a stone node 1000, sulfur 300. Ours are ~200
-  over 10 hits and in the same *shape* but a different *scale*. This is not
+  over 10 hits and in the same *shape* but a different *scale*.
+  ⚠ **The tree figure is misattributed and the correction is
+  `RIPLIST.md` §4** (2026-08-09): 459 wood over 16 hits is the **metal**
+  hatchet in the source table, and that table is from 2017 — it predates
+  the tree minigame that restructured per-hit yield entirely. The stone
+  hatchet's wood total is one of the numbers no public source records.
+  This is not
   a lookup because `[globals] farm_per_min` is a **separately declared**
   number that the anchors price everything with — and nothing currently
   checks that it agrees with `yield_per_hit`, which is its own latent

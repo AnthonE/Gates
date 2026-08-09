@@ -39,43 +39,29 @@ standing instruction. Building blocks are 250/500/1000, a stone wall takes
 four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
 Two bands moved and the raid ratio re-priced itself to 1.04/1.73/3.46.
 
-**The agreement check is in and the ceiling is measured (2026-08-09).**
-`balance.rs` refuses a `farm_per_min` above the sim's at-node ceiling
-(weak mark included — the walker's first run beat the naive ceiling, so
-the bonus is part of standing at the node), pinned in `content.rs` with a
-hash probe `farm_per_min` never had. `server tests/farmwalk.rs` walks a
-greedy farmer tree-to-tree on the real island: **1001 wood/min, 72.9%
-duty against that tool's 1373/min ceiling, ~20× the declared 50**.
+**The measurement landed 2026-08-09 and `reference/RIPLIST.md` is now the
+queue for this item** — what is taken, what is outstanding, what blocks
+each row, and the six steps for executing one. Read it before touching a
+balance number; do not re-derive that list here.
 
-**That 20× is an upper bound on the error, not the error** (operator,
-2026-08-09: the reference is hardcore PvP — *"your NEVER solo farming and
-people and animals are randomly killing you"*). The walker is alone,
-uncontested, never banks a load and never dies carrying one; a populated
-shard subtracts a threat term this island cannot charge, because nothing
-fights back yet (§0m item 2). A travel-and-threat-inclusive 50/min may be
-close to right, which is why the semantics stayed the operator's.
+Two results worth carrying at this level. `balance.rs` refuses a
+`farm_per_min` above the sim's at-node ceiling and `tests/farmwalk.rs`
+measures **1001 wood/min, 72.9% duty**, ~20× the declared 50. But that
+20× is a **debt owed by the world, not an error in the number**: their
+ladder falls ~30× from at-node to real farming with no threat in it at
+all, ours charges 1.37×, and applying their decomposition to our ceiling
+puts the declared 50 inside the band. So the queue's ranking inverted —
+**logistics friction (~10–30×) outranks mob→player damage (~2–5×)**, and
+threat wants modelling as trip shape, never as a rate multiplier.
 
-Next: `reference/RIPLIST.md` is the queue — every number with a reference
-equivalent, what blocks taking it, and the research gaps that block three
-of the four nodes.
-
-What a returning player still finds wrong, in rank order:
-
-1. **The boar does not fight back.** Theirs charges and flees under half
-   health. Biggest "that's not how it goes" moment left, and it is a
-   mechanic not a number — mob→player damage needs a death cause on the
-   wire (§0m, `ANIMALS.md` §9.5).
-2. **No per-material damage resistance.** Theirs scales damage by what it
-   hits, which is why their stone wall takes 4 satchels and their sheet
-   metal takes 23; ours takes 8 because we have one `structure` column. The
-   ordering is right and the early game is right; the ladder above stone is
-   compressed. A schema column plus a sim multiply.
-3. **One animal.** Chicken, stag, wolf, bear all have roles there.
-4. **Gather yields, smelt and craft times are still ours, and that is a
-   deferral rather than a decision** — `BALANCE.md` §4.2/§4.3 is the
-   audit (the 2026-08-08 second pass). Upkeep, decay
-   and the armour ladder ARE on purpose (different mechanisms, not
-   different numbers), and `BALANCE.md` §4.1 is the list that stays.
+Still wrong for a returning player, in rank order, all of it detailed in
+`RIPLIST.md` §2: the boar does not fight back; no per-material damage
+resistance (one `structure` column, so the ladder above stone is
+compressed); one animal; and gather yields, smelt and craft times are
+still ours — node totals are `READY` now, per-hit yields are not, and our
+schema does not need them. Upkeep, decay and the armour ladder differ on
+purpose (`BALANCE.md` §4.1), though the upkeep *rate* turned out to match
+theirs.
 
 ---
 
