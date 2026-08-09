@@ -20,22 +20,22 @@
 id = "mob.pig"
 name = "Pig"
 
-# **80 hp is four hits with the wooden spear, three with the metal spear or
-# the bow** — and the first draft of this line said "three hits with the
-# stone hatchet", which was simply false. `weapons.toml` arms six things and
-# a hatchet is not one of them: hatchets and pickaxes are *gather tools*,
-# they have no melee row, and `held_melee` returns `None` for them. So a pig
-# cannot be killed with the spawn kit at all, and the sentence pricing it
-# against "the tool a naked spawn has" was pricing it against a tool that
-# does no damage to anything. `crates/server/tests/hunt.rs` is what found
-# that, by trying.
+# **150 hp — the reference game's boar, and ours now too** (operator,
+# 2026-08-08: balance close to the reference so a player coming from it is
+# not lost). Six hits with the stone hatchet a fresh spawn carries, five
+# with the metal one or the bow. Measured end to end by
+# `crates/server/tests/hunt.rs`: 12.7 s from a 12 m start, chasing.
 #
-# What 80 actually means: the wooden spear is the first weapon in the game
-# (T0, `recipes.toml`), so the walk is gather → craft a spear → hunt, and
-# the metal spear and the bow each take a hit off the count, which is the
-# upgrade being worth something. Deliberately cheaper than the reference
-# boar, which is a mid-game animal with a bite.
-hp = 80
+# This line has been wrong twice and both errors are kept, because both were
+# found by making something actually do it rather than by reading. It first
+# said "three hits with the stone hatchet", which was false — a hatchet had
+# **no melee row at all**, so `held_melee` returned `None` for every pocket
+# the spawn kit fills and a pig could not be hurt by anything a fresh
+# character owned. Then it said "four with the wooden spear", true but
+# pricing the animal against a *crafted* weapon, which quietly moved the
+# first kill behind a workbench walk. Tools are armed now, and the number
+# comes from the reference rather than from us (`reference/BALANCE.md`).
+hp = 150
 
 # 50% of WALK_SPEED = 1.49 m/s, an amble a player outwalks without trying.
 walk_pct = 50
@@ -89,7 +89,7 @@ respawn_seconds = 300
 # content set with nothing in the world dropping it, and cloth is the
 # sleeping bag.
 drops = [
-  { item = "item.raw_meat", count = 3 },
+  { item = "item.raw_meat", count = 5 },
   { item = "item.fat", count = 15 },
   { item = "item.cloth", count = 10 },
 ]

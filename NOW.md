@@ -31,6 +31,54 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0b · Balance sits on the reference's numbers now — what is still off *(content lane)*
+
+Landed 2026-08-08 (operator: *"balance the game similar to rust so people
+dont get too lost"*). `reference/BALANCE.md` is the research and §6 is the
+standing instruction. Building blocks are 250/500/1000, a stone wall takes
+four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
+Two bands moved and the raid ratio re-priced itself to 1.04/1.73/3.46.
+
+**The largest open number question in the repo, found while checking the
+above: the economy has never been measured against the sim.**
+`farm_per_min` declares 50 wood/min; the sim pays **947/min** at a tree
+(200 wood / 10 swings / 38-tick cadence), 1421 with a metal hatchet.
+Nothing compares them, so `starter_minutes`, `satchel_minutes`, upkeep and
+the raid ratio are all priced off a number with no measured relation to
+play — and the anchors miss `CONTENT.md` §3's own prose (45 min starter
+target vs 85.6 computed) with no band on it. Decide what `farm_per_min`
+means, band the pacing table or stop claiming minutes, THEN move the gather
+yields. `DECISIONS.md` §open.
+
+**The audit (2026-08-08, second pass).** Asked to explain why we had rolled
+our own numbers, three of six reasons turned out to be cost dressed as
+principle (`BALANCE.md` §4). The meters are paid off — 500/250 with the
+reference's meat-feeds/forage-hydrates split. Gather yields are the one
+left, and the blocker is real: `[globals] farm_per_min` is declared
+separately from `yield_per_hit` and **nothing checks the two agree**, so
+moving yields means re-deriving `farm_per_min`, `node_yield`, `node_hits`
+and four anchors in one commit. That is the next content slice, and the
+missing agreement check is worth landing with it.
+
+What a returning player still finds wrong, in rank order:
+
+1. **The boar does not fight back.** Theirs charges and flees under half
+   health. Biggest "that's not how it goes" moment left, and it is a
+   mechanic not a number — mob→player damage needs a death cause on the
+   wire (§0m, `ANIMALS.md` §9.5).
+2. **No per-material damage resistance.** Theirs scales damage by what it
+   hits, which is why their stone wall takes 4 satchels and their sheet
+   metal takes 23; ours takes 8 because we have one `structure` column. The
+   ordering is right and the early game is right; the ladder above stone is
+   compressed. A schema column plus a sim multiply.
+3. **One animal.** Chicken, stag, wolf, bear all have roles there.
+4. **Gather yields, smelt and craft times are still ours, and that is a
+   deferral rather than a decision** — see the audit above. Upkeep, decay
+   and the armour ladder ARE on purpose (different mechanisms, not
+   different numbers), and `BALANCE.md` §4.1 is the list that stays.
+
+---
+
 ## 0ab · The store seam — what the SDK re-vendor and the depot job left *(platform lane)*
 
 Landed 2026-08-09. The vendored SDK was **326 lines behind upstream** with
@@ -130,6 +178,34 @@ terrain is a pure function, so the animal steers and `movement::step`
 decides. Research `reference/ANIMALS.md`; calls `DECISIONS.md` 2026-08-08
 and §open ("pig voice v0", "pig gait v0"). Owed, in rank order — §9.5 has
 the reasoning:
+
+**Three defects were found by booting the game and looking, and every gate
+was green through all of them** — which is what `CLAUDE.md`'s "the operator
+boots the game and looks" is for. (1) `flee_pct = 100` made the pig run at
+exactly the player's sprint, so it could never be caught or melee'd; now 70,
+and `tests/content.rs` gates `flee_gait < 127`. (2) The massing wore
+`props::tint1`, a **mean-1** modulation meant for a photograph, and rendered
+near-white on an untextured material; `boxes_mesh_with` splits the two and
+`tests/mob_mesh.rs` gates the mean. (3) `bodies.rs` drew a humanoid rig at
+every pig's position as well, because its only filter was "not me".
+
+**§0v below and this item closed each other** (operator: *"go ahead and
+finish"*). The oven shipped cooking nothing because nothing on the island
+was raw; the pig is the first thing that is, and raw meat is the only item
+in the set you cannot eat — which is what gives the fire a job.
+
+**Making the sim actually do it (`server/tests/hunt.rs`) found a hole, not
+a tuning problem.** The kit had **no weapon in it**: `weapons.toml` armed
+six things and no tool was one, so `held_melee` was `None` for every pocket
+a fresh character owns and a hatchet could not hurt a pig, a player or a
+door. Five content rows fixed it (`DECISIONS.md` 2026-08-08) and the hunt
+now runs **10.1 s** from a 12 m start with the kit's own stone hatchet. The
+test also reddens with the right message when `flee_pct` goes back to 100,
+so yesterday's capture-found defect is gated rather than remembered.
+
+Left open by that: whether `ttk_melee` should widen so a rock is
+meaningfully worse than a crafted spear rather than one hit worse. A band
+is a knob — `DECISIONS.md` §open, "tools as weapons".
 
 1. **A butchering VERB** — the reference's actual interaction, a tool-gated
    harvest on the body. Its landing place exists now: the corpse bag

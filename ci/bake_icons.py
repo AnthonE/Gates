@@ -3,7 +3,8 @@
 
 Run when an item is added to `content/items.toml` or a mapping below changes:
 
-    GAME_ICONS_DIR=/tmp/game-icons python3 ci/bake_icons.py
+    python3 ci/bake_icons.py                 # fetches from github.com/game-icons/icons
+    GAME_ICONS_DIR=/tmp/game-icons ...       # or reads a local unzipped archive
 
 Needs `cairosvg`. Writes `assets/icons/*.png` and `assets/icons/CREDITS.md`,
 both of which are committed — the depot ships `assets/` wholesale and no
@@ -21,6 +22,7 @@ import os
 import pathlib
 import re
 import sys
+import urllib.request
 
 import cairosvg
 
@@ -33,6 +35,32 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = pathlib.Path(
     os.environ.get("GAME_ICONS_DIR", "/tmp/game-icons")
 ) / "icons/ffffff/transparent/1x1"
+
+# **The archive is now the fallback, not the requirement**, and that is worth
+# a paragraph because the old shape cost real work. `game-icons.net` is behind
+# some environments' egress policy (this repo has hit that block on every 3D
+# asset host — `DECISIONS.md` 2026-08-07), so "fetch the zip by hand first"
+# made adding an item impossible from those boxes; two icons were hand-drawn
+# on 2026-08-08 for exactly that reason and then thrown away when someone
+# asked the obvious question. The project publishes its sources on GitHub,
+# which is reachable wherever `git push` is.
+#
+# The repo's SVGs are black-background + white path, where the archive ships a
+# pre-recoloured white-on-transparent variant — so the full-canvas background
+# rect is stripped on the way through. Verified equivalent rather than assumed:
+# baking `delapouite/corn` from GitHub reproduces the committed
+# `assets/icons/corn.png` to within two antialiased pixels.
+GH = "https://raw.githubusercontent.com/game-icons/icons/master"
+BG_RECT = re.compile(r'<path d="M0 0h512v512H0z"\s*/>')
+
+
+def source_svg(path):
+    """The icon's SVG text, from the local archive or from GitHub."""
+    local = SRC / f"{path}.svg"
+    if local.is_file():
+        return local.read_text()
+    with urllib.request.urlopen(f"{GH}/{path}.svg", timeout=60) as r:
+        return BG_RECT.sub("", r.read().decode(), count=1)
 OUT = ROOT / "assets/icons"
 PX = 128
 
@@ -101,6 +129,14 @@ ITEMS = {
     "berries": "delapouite/berries-bowl",
     "mushrooms": "delapouite/mushrooms",
     "corn": "delapouite/corn",
+    # The food loop's pair. A flat marbled cut and a drumstick are the two
+    # most different meat silhouettes in the set, which is what a hotbar
+    # holding both at 44 px needs — and a drumstick is the universal
+    # game-shorthand for cooked, so the pair reads raw/cooked without a
+    # label. (`delapouite/hot-meal`, a steaming cloche, says *cooked* more
+    # loudly and *meat* not at all; it lost on that.)
+    "raw_meat": "delapouite/steak",
+    "cooked_meat": "lorc/chicken-leg",
 }
 
 # THE SECOND SOURCE, AND WHY IT IS NOT THE FIRST
@@ -135,25 +171,29 @@ ITEMS = {
 # Fuel" — so this is derived from `content/items.toml` rather than typed out,
 # and a rename that broke it would break it loudly here instead of silently
 # in a cell.
-# The icons that are OURS, and the reason they exist.
+# The icons that are OURS — one, now, and for a reason that outlived the
+# one it was written for.
 #
-# `raw_meat` and `cooked_meat` are not in the archive's table because they
-# could not be rasterised from it: game-icons.net is behind this session's
-# egress policy, the same block `DECISIONS.md` 2026-08-07 records for every
-# 3D asset host, and the food loop needed two pictures the day it landed.
-# `burnt_meat` followed by the same route for the same reason — the burnt
-# state's item could not land without a picture (NOW.md §0v records the
-# park), and the archive is still unreachable. They are authored SVGs in
-# `ci/icons/`, committed so they regenerate, drawn in the archive's own
-# 512-unit box at the archive's own weight.
+# `raw_meat`, `cooked_meat` and `burnt_meat` were all hand-drawn on
+# 2026-08-08 because game-icons.net was behind this session's egress policy
+# and the food loop needed pictures the day it landed. **That reason is
+# gone**: the project publishes its sources on GitHub, which is reachable,
+# and `source_svg` above fetches from there — so the first two are archive
+# icons again (`delapouite/steak`, `lorc/chicken-leg`) and their SVGs are
+# deleted.
 #
-# They are kept in a SEPARATE map rather than dropped into `ITEMS` because
-# the CC BY notice below is generated from that map: sweeping our own art
-# into a credit table would claim a licence over files the licence does not
-# cover, which is the opposite of what a notice licence asks for.
+# `burnt_meat` stays ours, and this is the honest reason rather than the
+# inherited one: **the archive has no burnt-meat icon.** Probed
+# `burning-meat`, `carbonized-material`, `ash-cloud` and four more; the
+# nearest hits are `lorc/burning-embers` and `lorc/fire-silhouette`, neither
+# of which reads as food. A drawing of ours beats a picture of the wrong
+# thing.
+#
+# It is kept in a SEPARATE map rather than dropped into `ITEMS` because the
+# CC BY notice below is generated from that map: sweeping our own art into a
+# credit table would claim a licence over a file the licence does not cover,
+# which is the opposite of what a notice licence asks for.
 OURS = {
-    "raw_meat": "raw_meat",
-    "cooked_meat": "cooked_meat",
     "burnt_meat": "burnt_meat",
 }
 OURS_SRC = ROOT / "ci/icons"
@@ -164,7 +204,7 @@ BY_ID = {i: n for i, n in PAIRS}
 if len(BY_ID) != len(ITEMS) + len(OURS):
     sys.exit(
         f"content has {len(BY_ID)} items, the maps have "
-        f"{len(ITEMS)} + {len(OURS)} ours"
+        f"{len(ITEMS)} archive + {len(OURS)} ours"
     )
 
 
@@ -180,24 +220,29 @@ ALL = dict(SHAPES)
 for item_id, icon in ITEMS.items():
     ALL[norm(BY_ID[item_id])] = icon
 MINE = {norm(BY_ID[item_id]): f for item_id, f in OURS.items()}
-
-# Bake a subset by stem when asked. The archive is a hand-fetched zip that
-# this box cannot reach, so re-baking our own two must not require it —
-# `python3 ci/bake_icons.py raw_meat cooked_meat` does exactly that.
+# Bake a subset by stem when asked: `python3 ci/bake_icons.py raw_meat`.
+#
+# **Prefer that to a full run when you are adding an item.** The committed
+# PNGs were baked from the downloaded archive, whose SVGs are the same
+# artwork with slightly different path data; re-rendering them through the
+# GitHub source changes ~20 files by a pixel or two along hard edges with no
+# visual difference at all (measured 2026-08-08). That churn is noise in a
+# diff about one item, and re-baking the set is a deliberate act rather than
+# a side effect of adding a picture.
 only = set(sys.argv[1:])
 todo = {k: v for k, v in ALL.items() if not only or k in only}
 todo_mine = {k: v for k, v in MINE.items() if not only or k in only}
 
-missing = [(k, v) for k, v in todo.items() if not (SRC / f"{v}.svg").is_file()]
-if missing:
-    for k, v in missing:
-        print(f"MISSING  {k} -> {v}", file=sys.stderr)
-    sys.exit(f"{len(missing)} icon(s) not in the archive")
-
 OUT.mkdir(parents=True, exist_ok=True)
+failed = []
 for name, path in sorted(todo.items()):
+    try:
+        svg = source_svg(path)
+    except Exception as e:  # network or a name the project renamed
+        failed.append((name, path, e))
+        continue
     cairosvg.svg2png(
-        url=str(SRC / f"{path}.svg"),
+        bytestring=svg.encode(),
         write_to=str(OUT / f"{name}.png"),
         output_width=PX,
         output_height=PX,
@@ -209,6 +254,10 @@ for name, path in sorted(todo_mine.items()):
         output_width=PX,
         output_height=PX,
     )
+if failed:
+    for name, path, e in failed:
+        print(f"MISSING  {name} -> {path}: {e}", file=sys.stderr)
+    sys.exit(f"{len(failed)} icon(s) could not be sourced")
 
 # The attribution the CC BY 3.0 licence requires, per author actually used.
 authors = sorted({v.split("/")[0] for v in ALL.values()})
@@ -228,16 +277,13 @@ credits.write_text(
     "| file | source icon |\n|---|---|\n"
     + "".join(f"| `{k}.png` | `{v}` |\n" for k, v in sorted(ALL.items()))
     + "\n## Not from game-icons.net\n\n"
-    "These are **ours**, authored in `ci/icons/` and rasterised by the same\n"
-    "script. No attribution is owed for them and the CC BY notice above does\n"
-    "not cover them — they are listed here so the line between what the\n"
-    "licence covers and what it does not is written down rather than\n"
-    "inferred from a table.\n\n"
-    "They exist because game-icons.net is unreachable from the environment\n"
-    "the food loop landed in (`DECISIONS.md` 2026-08-07 records the same\n"
-    "block for every 3D asset host), and two pictures were needed that day.\n"
-    "Replacing them with archive icons later is a mapping move in\n"
-    "`ci/bake_icons.py` and nothing else.\n\n"
+    "Ours, authored in `ci/icons/` and rasterised by the same script. **No\n"
+    "attribution is owed for these and the CC BY notice above does not cover\n"
+    "them** — they are listed so the line between what the licence covers and\n"
+    "what it does not is written down rather than inferred from a table.\n\n"
+    "Each is here because the archive has no icon for the thing, not because\n"
+    "the archive was unreachable — that was true for one day and is not any\n"
+    "more (`ci/bake_icons.py` fetches from GitHub).\n\n"
     "| file | source |\n|---|---|\n"
     + "".join(f"| `{k}.png` | `ci/icons/{v}.svg` (ours) |\n" for k, v in sorted(MINE.items()))
 )

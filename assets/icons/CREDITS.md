@@ -30,6 +30,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `charcoal.png` | `delapouite/coal-pile` |
 | `cloth.png` | `delapouite/rolled-cloth` |
 | `code_lock.png` | `delapouite/dial-padlock` |
+| `cooked_meat.png` | `lorc/chicken-leg` |
 | `corn.png` | `delapouite/corn` |
 | `crossbow.png` | `carl-olsen/crossbow` |
 | `fire_pit.png` | `lorc/campfire` |
@@ -51,6 +52,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `metal_spear.png` | `lorc/barbed-spear` |
 | `mushrooms.png` | `delapouite/mushrooms` |
 | `pistol_round.png` | `delapouite/heavy-bullets` |
+| `raw_meat.png` | `delapouite/steak` |
 | `revolver.png` | `delapouite/revolver` |
 | `roadsign_vest.png` | `lorc/armor-vest` |
 | `rock.png` | `john-redman/rock` |
@@ -79,20 +81,15 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 
 ## Not from game-icons.net
 
-These are **ours**, authored in `ci/icons/` and rasterised by the same
-script. No attribution is owed for them and the CC BY notice above does
-not cover them — they are listed here so the line between what the
-licence covers and what it does not is written down rather than
-inferred from a table.
+Ours, authored in `ci/icons/` and rasterised by the same script. **No
+attribution is owed for these and the CC BY notice above does not cover
+them** — they are listed so the line between what the licence covers and
+what it does not is written down rather than inferred from a table.
 
-They exist because game-icons.net is unreachable from the environment
-the food loop landed in (`DECISIONS.md` 2026-08-07 records the same
-block for every 3D asset host), and two pictures were needed that day.
-Replacing them with archive icons later is a mapping move in
-`ci/bake_icons.py` and nothing else.
+Each is here because the archive has no icon for the thing, not because
+the archive was unreachable — that was true for one day and is not any
+more (`ci/bake_icons.py` fetches from GitHub).
 
 | file | source |
 |---|---|
 | `burnt_meat.png` | `ci/icons/burnt_meat.svg` (ours) |
-| `cooked_meat.png` | `ci/icons/cooked_meat.svg` (ours) |
-| `raw_meat.png` | `ci/icons/raw_meat.svg` (ours) |

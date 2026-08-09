@@ -100,7 +100,7 @@ fn test_content() {
     // The raid lane by hand: the door is breachable, every wall is not,
     // and the ladder rises. Same shape-pinning as the ratio above.
     assert!(a.door_breach_swings >= 30 && a.door_breach_swings <= 80);
-    assert!(a.wall_breach_swings[0] >= 150);
+    assert!(a.wall_breach_swings[0] >= 60);
     assert!(
         a.wall_breach_swings[0] < a.wall_breach_swings[1]
             && a.wall_breach_swings[1] < a.wall_breach_swings[2]
@@ -399,26 +399,30 @@ fn missing_file_refused() {
 
 #[test]
 fn band_breaks_refused() {
-    // TTK: a 5-damage spear is 20 hits to kill — far out of melee 3–5.
+    // TTK: a 5-damage melee row is 20 hits to kill — far out of melee 3–5.
+    // Keyed off the stone hatchet's 25, the first `melee` row in the file.
     refuses(
         "weapons.toml",
         "kind = \"melee\"\ndamage = 25",
         "kind = \"melee\"\ndamage = 5",
         "band break: ttk",
     );
-    // Raid ratio: a 100-structure satchel needs 18 to open stone — past
-    // 3×. The ratio divides by the `structure` column, not `damage`.
+    // Raid ratio: the satchel's own column, and the fixture is the value
+    // this file shipped BEFORE the reference alignment (2026-08-08). At
+    // 500 a satchel opens a 500-hp stone wall in one throw, so raiding
+    // costs a third of what building does — 0.35× against a [1.0, 3.0]
+    // band. The ratio divides by `structure`, not `damage`.
     refuses(
         "weapons.toml",
+        "structure = 125",
         "structure = 500",
-        "structure = 100",
         "band break: stone raid ratio",
     );
     // A weapon better against a wall than a person is refused outright,
-    // no band consulted: the spear that kills in 25 cannot chip 99.
+    // no band consulted: what kills in 25 cannot chip 99.
     refuses(
         "weapons.toml",
-        "damage = 25\nstructure = 3",
+        "damage = 25\nstructure = 2",
         "damage = 25\nstructure = 99",
         "exceeds its own body damage",
     );
@@ -470,7 +474,7 @@ fn band_breaks_refused() {
 fn upgrade_ladder_must_be_whole() {
     refuses(
         "building.toml",
-        "[[piece]]\nid = \"build.roof_wood\"\nshape = \"roof\"\nmaterial = \"wood\"\nhp = 750\ncost = [{ item = \"item.wood\", count = 350 }]\n",
+        "[[piece]]\nid = \"build.roof_wood\"\nshape = \"roof\"\nmaterial = \"wood\"\nhp = 250\ncost = [{ item = \"item.wood\", count = 350 }]\n",
         "",
         "upgrade ladder must be whole",
     );
@@ -609,13 +613,13 @@ fn bake_building_carries_the_shipped_numbers() {
     let bc = c.bake_building().expect("shipped building set must bake");
     assert_eq!(bc.piece_count as usize, c.pieces.len());
 
-    // building.toml build.wall_stone: shape wall, stone, hp 1750,
+    // building.toml build.wall_stone: shape wall, stone, hp 500,
     // 350 stone — read back from the baked row.
     let idx = c.piece_index("build.wall_stone").unwrap() as usize;
     let def = &bc.pieces[idx];
     assert_eq!(def.shape, sim_core::build::SHAPE_WALL);
     assert_eq!(def.material, sim_core::build::MAT_STONE);
-    assert_eq!(def.hp, 1750);
+    assert_eq!(def.hp, 500);
     assert_eq!(def.n_costs, 1);
     let stone = c.item_index("item.stone").unwrap();
     assert_eq!(def.costs[0], (stone, 350));
@@ -639,7 +643,7 @@ fn bake_building_refuses_out_of_cap_rows() {
         .iter_mut()
         .find(|(n, _)| *n == "building.toml")
         .unwrap();
-    entry.1 = entry.1.replacen("hp = 3000\n", "hp = 70000\n", 1);
+    entry.1 = entry.1.replacen("hp = 1000\n", "hp = 70000\n", 1);
     let c = build(&srcs).expect("oversize hp is a bake error, not a schema error");
     let err = c.bake_building().expect_err("70000-hp piece baked");
     assert!(err.contains("overflows u16"), "{err}");
@@ -994,12 +998,44 @@ fn bake_survival_plays_the_clock_the_data_declares() {
 
     // **The answer, priced in the clock's own units.** A validator refuses
     // content with no food source at all; this is the arithmetic that says
-    // the source is worth walking to. One bush pickup must buy back a
+    // the source is worth walking to. One harvest must buy back a
     // meaningful share of a span, or the loop is a treadmill that happens
     // to pass a boolean.
+    //
+    // **A harvest is no longer only a bush.** This scanned nodes alone
+    // until 2026-08-08, when the reference alignment moved the meters to
+    // 500/250 and forage to the reference's own calorie-poor values — at
+    // which point a bush bought 6 minutes and this assertion failed,
+    // correctly, on a rule that had gone stale rather than on a bad number.
+    // The reference's food economy is **meat-centric**: forage hydrates,
+    // meat feeds, and a player who eats only berries starves. So the source
+    // set is nodes AND what an animal drops, and the bar is unchanged —
+    // *something* in the world has to be worth walking to, and now the
+    // thing that is, is the pig.
     let gc = c.bake_gather().expect("shipped gather table must bake");
+    let mc = c.bake_mobs().expect("shipped animals must bake");
     let mut best_food_min = 0u32;
     let mut best_water_min = 0u32;
+    // What a kill pays, run through the fire: raw meat is not edible, so
+    // the food a mob is worth is its cooked output's row.
+    let cooks = c.bake_cooking().expect("shipped cooking must bake");
+    for def in mc.defs.iter() {
+        for drop in def.loot.iter() {
+            if drop.item == sim_core::gather::NO_ITEM || drop.count == 0 {
+                continue;
+            }
+            let eaten = cooks
+                .row_for(sim_core::deploy::ARCH_FIRE, drop.item)
+                .map(|r| r.output)
+                .unwrap_or(drop.item);
+            let row = sc.consumable[eaten as usize];
+            best_food_min = best_food_min
+                .max((row.food as u32 * drop.count as u32 * s.food_minutes_to_empty) / s.max_food);
+            best_water_min = best_water_min.max(
+                (row.water as u32 * drop.count as u32 * s.water_minutes_to_empty) / s.max_water,
+            );
+        }
+    }
     for node in gc.nodes.iter() {
         for (item, per_hit) in [
             (node.output, node.hand_yield),
@@ -1020,7 +1056,7 @@ fn bake_survival_plays_the_clock_the_data_declares() {
     }
     assert!(
         best_food_min >= 20,
-        "the best food a node pays buys {best_food_min} min of a \
+        "the best food in the world buys {best_food_min} min of a \
          {}-min hunger span — a source nobody would cross the island for",
         s.food_minutes_to_empty
     );
@@ -1074,7 +1110,7 @@ fn bake_gather_carries_the_side_payout() {
 fn a_clock_that_would_not_tick_is_refused() {
     refuses(
         "balance.toml",
-        "max_water = 100",
+        "max_water = 250",
         "max_water = 0",
         "must be ≥ 1",
     );
@@ -1161,9 +1197,20 @@ fn a_clock_with_no_answer_is_refused() {
     let mut srcs = sources();
     for (name, text) in srcs.iter_mut() {
         if *name == "consumables.toml" {
+            // **Every node-reachable water source, not just the bush.** This
+            // zeroed berries alone until 2026-08-08, when the tree grew a
+            // mushroom secondary in one lane while the other moved forage to
+            // the reference's hydrate-don't-feed split — so after the merge
+            // the "dry island" still had a drink in it and the refusal this
+            // asserts never fired. A fixture that names one row is a fixture
+            // that goes stale the moment the world grows a second.
             *text = text.replace(
-                "id = \"item.berries\"\nhealth = 0\nfood = 15\nwater = 5",
-                "id = \"item.berries\"\nhealth = 0\nfood = 15\nwater = 0",
+                "id = \"item.berries\"\nhealth = 0\nfood = 10\nwater = 20",
+                "id = \"item.berries\"\nhealth = 0\nfood = 10\nwater = 0",
+            );
+            *text = text.replace(
+                "id = \"item.mushrooms\"\nhealth = 3\nfood = 15\nwater = 5",
+                "id = \"item.mushrooms\"\nhealth = 3\nfood = 15\nwater = 0",
             );
         }
     }
@@ -1682,7 +1729,7 @@ fn the_shipped_pig_bakes() {
     let mc = c.bake_mobs().expect("the pig must bake");
     let pig = mc.def(sim_core::mob::MOB_PIG);
 
-    assert_eq!(pig.hp, 80);
+    assert_eq!(pig.hp, 150);
     // 50% and 70% of the −127..=127 axis, floored.
     assert_eq!(pig.gait, 63);
     assert_eq!(pig.flee_gait, 88);
@@ -2003,7 +2050,7 @@ fn every_consumable_the_content_ships_is_reachable() {
 /// bug that would read as a bug in the sim if it booted.
 #[test]
 fn mob_refusals() {
-    refuses("mobs.toml", "hp = 80", "hp = 0", "zero hp");
+    refuses("mobs.toml", "hp = 150", "hp = 0", "zero hp");
     refuses(
         "mobs.toml",
         "walk_pct = 50",

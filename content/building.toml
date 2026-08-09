@@ -11,21 +11,21 @@
 id = "build.foundation_wood"
 shape = "foundation"
 material = "wood"
-hp = 750
+hp = 250
 cost = [{ item = "item.wood", count = 350 }]
 
 [[piece]]
 id = "build.foundation_stone"
 shape = "foundation"
 material = "stone"
-hp = 1750
+hp = 500
 cost = [{ item = "item.stone", count = 350 }]
 
 [[piece]]
 id = "build.foundation_metal"
 shape = "foundation"
 material = "metal"
-hp = 3000
+hp = 1000
 cost = [{ item = "item.metal_frags", count = 200 }]
 
 # --- wall ---------------------------------------------------------------
@@ -34,21 +34,21 @@ cost = [{ item = "item.metal_frags", count = 200 }]
 id = "build.wall_wood"
 shape = "wall"
 material = "wood"
-hp = 750
+hp = 250
 cost = [{ item = "item.wood", count = 350 }]
 
 [[piece]]
 id = "build.wall_stone"
 shape = "wall"
 material = "stone"
-hp = 1750
+hp = 500
 cost = [{ item = "item.stone", count = 350 }]
 
 [[piece]]
 id = "build.wall_metal"
 shape = "wall"
 material = "metal"
-hp = 3000
+hp = 1000
 cost = [{ item = "item.metal_frags", count = 200 }]
 
 # --- doorway ------------------------------------------------------------
@@ -57,21 +57,21 @@ cost = [{ item = "item.metal_frags", count = 200 }]
 id = "build.doorway_wood"
 shape = "doorway"
 material = "wood"
-hp = 750
+hp = 250
 cost = [{ item = "item.wood", count = 280 }]
 
 [[piece]]
 id = "build.doorway_stone"
 shape = "doorway"
 material = "stone"
-hp = 1750
+hp = 500
 cost = [{ item = "item.stone", count = 280 }]
 
 [[piece]]
 id = "build.doorway_metal"
 shape = "doorway"
 material = "metal"
-hp = 3000
+hp = 1000
 cost = [{ item = "item.metal_frags", count = 160 }]
 
 # --- floor --------------------------------------------------------------
@@ -80,21 +80,21 @@ cost = [{ item = "item.metal_frags", count = 160 }]
 id = "build.floor_wood"
 shape = "floor"
 material = "wood"
-hp = 750
+hp = 250
 cost = [{ item = "item.wood", count = 350 }]
 
 [[piece]]
 id = "build.floor_stone"
 shape = "floor"
 material = "stone"
-hp = 1750
+hp = 500
 cost = [{ item = "item.stone", count = 350 }]
 
 [[piece]]
 id = "build.floor_metal"
 shape = "floor"
 material = "metal"
-hp = 3000
+hp = 1000
 cost = [{ item = "item.metal_frags", count = 200 }]
 
 # --- stairs -------------------------------------------------------------
@@ -103,21 +103,21 @@ cost = [{ item = "item.metal_frags", count = 200 }]
 id = "build.stairs_wood"
 shape = "stairs"
 material = "wood"
-hp = 750
+hp = 250
 cost = [{ item = "item.wood", count = 200 }]
 
 [[piece]]
 id = "build.stairs_stone"
 shape = "stairs"
 material = "stone"
-hp = 1750
+hp = 500
 cost = [{ item = "item.stone", count = 200 }]
 
 [[piece]]
 id = "build.stairs_metal"
 shape = "stairs"
 material = "metal"
-hp = 3000
+hp = 1000
 cost = [{ item = "item.metal_frags", count = 120 }]
 
 # --- roof ---------------------------------------------------------------
@@ -126,19 +126,19 @@ cost = [{ item = "item.metal_frags", count = 120 }]
 id = "build.roof_wood"
 shape = "roof"
 material = "wood"
-hp = 750
+hp = 250
 cost = [{ item = "item.wood", count = 350 }]
 
 [[piece]]
 id = "build.roof_stone"
 shape = "roof"
 material = "stone"
-hp = 1750
+hp = 500
 cost = [{ item = "item.stone", count = 350 }]
 
 [[piece]]
 id = "build.roof_metal"
 shape = "roof"
 material = "metal"
-hp = 3000
+hp = 1000
 cost = [{ item = "item.metal_frags", count = 200 }]

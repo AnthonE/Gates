@@ -253,24 +253,32 @@ correct in general: **sample cheaply and approximately, reject exactly.**
 
 ### 9.5 · What v0 does not have, in the order it should be added
 
-1. **Nothing fights back** (§7). A mob→player damage path needs a new death
-   cause on the wire and a reason for a player to be hit by something they
-   cannot hit back at reliably — which is a combat-feel question, not a
-   plumbing one.
-2. **No corpse.** A killed animal leaves the snapshot and is gone; the loot
-   is paid into the killer's inventory as `EV_GATHER`. A butchering verb
-   (hit the corpse with a tool for meat) is the reference's actual
-   interaction and it is a verb, not a species.
-3. **No meat.** Cut because there was no cooking — and `sim-core/oven.rs`
-   landed the same day this did, with an **empty** cook table for the
-   mirror-image reason ("cooking wants a raw food and the island pays
-   none"). So the blocker is gone and what remains is two content rows and
-   a `drops` line. Left for a spoken call on the food set rather than taken
-   here (`NOW.md` §0m and §0v).
-4. **No blind spot.** Their "sneak up from behind" is a bearing test in
+Rewritten 2026-08-09: three of the five landed in the days after this file
+was written, so what follows is the survivors plus what closing them exposed.
+
+1. ~~**No corpse.**~~ **DONE** — a killed animal stands up a ground bag at
+   the death cell (`mob::strike` → `backpack::stand_up`), looted with the
+   same verb every bag answers. What it *unblocks* is the next item.
+2. **No butchering verb.** The reference's actual interaction is a
+   tool-gated harvest on the body, paying more to a better tool. The corpse
+   bag is the landing place for it and did not exist until now.
+3. **Nothing fights back** (§7). Still the biggest fidelity gap. Needs a
+   mob→player damage path and a combat-feel answer to being hit by something
+   you cannot reliably hit back — and, measured since this file was written,
+   **the wire's death-cause field has been saturated at 2 bits since v24**,
+   so it is a widening rather than a spare code.
+4. ~~**No meat.**~~ **DONE 2026-08-08.** Cut because there was no cooking;
+   `sim-core/oven.rs` landed the same day with an empty cook table for the
+   mirror-image reason, so the two halves closed each other. The pig drops
+   raw meat, a campfire cooks it, only the cooked half is edible, and a
+   second cook row burns it.
+5. ~~**No sound, no animation.**~~ **DONE** — a hashed snort and a
+   distance-integrated trot. What is left is the *massing*: at 8 m the head
+   barely separates from the body, which is geometry rather than motion.
+6. **No blind spot.** Their "sneak up from behind" is a bearing test in
    `think` and about four lines; it wants the crouch verb to mean something
    first.
-5. **No packs.** Their wolves and deer form them, and it is the most
-   expensive item on this list — a second animal reading a *first* animal's
-   state is the thing that turns a roster into an AI system, which is
-   exactly what their 2021 rework was cleaning up after.
+7. **No packs.** Their wolves and deer form them, and it is the most
+   expensive item here — a second animal reading a *first* animal's state is
+   what turns a roster into an AI system, which is exactly what their 2021
+   rework was cleaning up after.

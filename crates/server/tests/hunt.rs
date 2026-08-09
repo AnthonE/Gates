@@ -90,31 +90,29 @@ fn a_sprinting_player_can_catch_and_kill_a_pig() {
         .position(|p| p.active)
         .expect("seated");
 
-    // **The spear, put in hand, because the spawn kit contains no weapon.**
-    // That is not a workaround, it is the finding this test produced: the
-    // kit is a *building* kit (plan, hammer, hatchet, pickaxe, torch,
-    // bandage) and `weapons.toml` arms six things, none of which is a
-    // hatchet — tools have no melee row, so `held_melee` is `None` for
-    // every pocket a fresh character owns. An earlier cut of this test hunted
-    // a pig with a building plan for sixty seconds and blamed the animal.
+    // **What the spawn kit actually holds**, found rather than assumed.
     //
-    // The wooden spear is the first weapon the game lets you craft (T0), so
-    // this is the earliest hand that can hunt at all, which is the state the
-    // claim is about.
+    // An earlier cut of this test hunted a pig with a *building plan* for
+    // sixty seconds and blamed the animal — the plan has no damage by
+    // design (`DECISIONS.md` 2026-08-07, the held-item modal mouse). The
+    // next cut put a crafted spear in hand, because at the time
+    // `weapons.toml` armed six things and none of them was a tool, so a
+    // fresh character genuinely could not hunt. Tools are armed now
+    // (2026-08-08), which is what makes this loop reachable from the beach:
+    // the assertion is that SOME pocket a fresh character owns can kill,
+    // not which one.
     let combat = c.bake_combat().expect("weapons bake");
-    let spear = c
-        .item_index("item.spear_wood")
-        .expect("the content still names a wooden spear");
-    assert!(
-        combat.held_melee(spear).is_some(),
-        "the first weapon in the game does no damage"
-    );
-    core.world.players[p].inv[0] = sim_core::gather::ItemStack {
-        item: spear,
-        count: 1,
-    };
+    let frame_sel = (0..sim_core::limits::HOTBAR_SLOTS as u8)
+        .find(|&s| {
+            let held = core.world.players[p].inv[s as usize];
+            held.count > 0 && combat.held_melee(held.item).is_some()
+        })
+        .expect(
+            "the spawn kit arms a fresh character with nothing that swings — \
+             a naked spawn cannot hunt, and the food loop starts at a kill",
+        );
     let mut frame = core.world.players[p].frame;
-    frame.sel = 0;
+    frame.sel = frame_sel;
     let mut caught = None;
     for t in 0..HUNT_LIMIT_TICKS {
         let (px, pz) = (core.world.players[p].body.qx, core.world.players[p].body.qz);

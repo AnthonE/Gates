@@ -10,20 +10,28 @@
 
 ## 0 · The rules that make data safe
 
-- **The content hash is part of determinism**: xxh3 over the canonical
-  serialized content set, pinned into every WAL header. A replay loads
-  the content it was played under; a balance patch is visible in the
-  record. Changing content mid-wipe is allowed (hotfix) but stamps a WAL
-  event.
-- **Ids are permanent strings** (`item.stone_hatchet`); renames are new
-  ids with a migration row. The WAL refers to ids forever.
-- **`test_content` gates every commit**: schema validity, no orphan
-  recipe inputs/outputs, every loot entry exists, every item has a
-  despawn tier, and — the teeth — **computed balance bands** (§4): TTK,
-  farm-hours, and raid-cost ratios are derived from the data and asserted
-  inside declared ranges. A balance edit that breaks the band fails CI
-  and forces the band (a `DECISIONS.md` knob) to be re-spoken, not
-  silently drifted.
+**Are these the reference game's numbers?** Some of them are, deliberately,
+since 2026-08-08 — and `reference/BALANCE.md` is the file that answers this
+properly. The short version:
+
+- **Where a number has an equivalent in the reference and we have no reason
+  of our own to differ, we take theirs and cite it at the row.** The
+  operator's reason is product, not laziness: a player arriving from that
+  game carries a table in their head, and every number of ours that
+  contradicts it costs them a death to learn nothing about *our* game.
+  Building blocks (250/500/1000), melee and tool damage, satchels-per-stone-
+  wall, the boar's health.
+- **Where we differ, the row says why.** The survival meters, gather yields,
+  smelt rates, craft times, upkeep, decay and the armour ladder are all ours
+  — mostly because they drive `§4`'s computed anchors, so moving one is a
+  re-derivation of the economy rather than a lookup.
+- **The bands still decide.** A reference value that does not fit our sim is
+  refused by `test_content` exactly as an invented one would be, which is
+  what stops "match the reference" from becoming "copy the spreadsheet". Two
+  bands moved to admit the new numbers and both are spoken in
+  `DECISIONS.md`.
+- **The rails are unchanged and were never about arithmetic**: no traced
+  art, no proper nouns, nothing decompiled (`ART.md` §7).
 
 ## 1 · Schemas (the shape, abridged — the .toml files are authoritative)
 
