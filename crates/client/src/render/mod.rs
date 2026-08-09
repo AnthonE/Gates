@@ -36,6 +36,10 @@ pub mod feed;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
+// The involuntary disconnect. The shard hanging up mid-play used to leave
+// the client in a dead world; `pause::Disconnect` is the verb the PLAYER
+// takes, and this is the state for when the shard takes it.
+pub mod disconnected;
 // The build ghost: the cell being aimed at, and the click that commits it.
 pub mod ghost;
 // The blue wash over the piece a hammer is aimed at.
@@ -176,7 +180,11 @@ pub struct Stream;
 /// session behind it, opened from the server list there is nothing at all,
 /// and it is one state either way.
 pub fn world_running(state: Res<State<Screen>>, world: Option<Res<WorldId>>) -> bool {
-    world.is_some() && !matches!(state.get(), Screen::Menu | Screen::Connecting)
+    world.is_some()
+        && !matches!(
+            state.get(),
+            Screen::Menu | Screen::Connecting | Screen::Disconnected
+        )
 }
 
 /// Has the server told us **what** to load?
@@ -200,9 +208,11 @@ pub fn world_placed(eye: Res<Eye>) -> bool {
 /// Drop the world: every entity it spawned, every ring that indexed them, and
 /// the two resources that made it a world rather than a menu.
 ///
-/// Runs on entering `Screen::Menu`, which is both the disconnect path and the
-/// app's first frame — on the first frame it finds nothing and does nothing,
-/// which is why it needs no "have we ever had a world" flag.
+/// Runs on entering `Screen::Menu` — both the voluntary disconnect path and
+/// the app's first frame — and on entering `Screen::Disconnected`, the
+/// involuntary one. On the first frame it finds nothing and does nothing,
+/// which is why it needs no "have we ever had a world" flag; the same
+/// property is what lets `Disconnected → Menu` run it twice harmlessly.
 ///
 /// **The rings are reset rather than drained.** Each holds a map from a cell
 /// to the entity that draws it; a ring that kept its keys after the entities
@@ -313,6 +323,8 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<verbs::Near>()
             .init_resource::<verbs::Pad>()
             .init_resource::<death::Answer>()
+            .init_resource::<disconnected::Reason>()
+            .init_resource::<disconnected::Chosen>()
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()
             .init_resource::<hud::Toast>()
@@ -470,6 +482,37 @@ impl Plugin for GatesRenderPlugin {
                     .run_if(in_state(Screen::Dead)),
             )
             .add_systems(Update, death::watch.run_if(in_state(Screen::InWorld)));
+
+        // ---- the involuntary disconnect ------------------------------
+        // `watch` is ungated: its guard is `Net`'s presence (the module doc
+        // says why that is exactly the right set of states), and it runs
+        // after `place_eye` so it reads the latch the frame's own pump set
+        // rather than last frame's. Entry runs the SAME teardown chain the
+        // menu runs — the session under the world is dead, so the world
+        // goes before the screen is built, not when the player clicks
+        // through — and `setup` follows it in the chain so the reason line
+        // it draws was captured by `watch` before `Net` went away.
+        app.add_systems(Update, disconnected::watch.after(input::place_eye))
+            .add_systems(
+                OnEnter(Screen::Disconnected),
+                (world_teardown, disconnected::setup).chain(),
+            )
+            .add_systems(
+                OnEnter(Screen::Disconnected),
+                audio::teardown.after(world_teardown),
+            )
+            .add_systems(
+                OnEnter(Screen::Disconnected),
+                water::teardown.after(world_teardown),
+            )
+            .add_systems(OnEnter(Screen::Disconnected), map::forget)
+            .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
+            .add_systems(
+                Update,
+                (disconnected::click, disconnected::keys, disconnected::act)
+                    .chain()
+                    .run_if(in_state(Screen::Disconnected)),
+            );
 
         // ---- the map -------------------------------------------------
         // `open` is registered after the panels and after chat, so `M` typed
