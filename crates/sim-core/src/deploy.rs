@@ -1176,10 +1176,14 @@ pub fn box_drop_pos(seed: u64, cx: u16, cz: u16, level: u8) -> (f32, f32, f32) {
 
 /// The point `place_deploy` measures reach to, for every `loc`. `build.rs`
 /// measures `repair` to `build::anchor` instead, which is this point for a
-/// plane and half a cell off it for an edge; `pub(crate)` so the test that
+/// plane and half a cell off it for an edge; named so the test that
 /// pins that relation can name both functions rather than re-deriving one of
 /// them and gating its own arithmetic.
-pub(crate) fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
+///
+/// `pub` because the client's deploy ghost is the second caller
+/// (`client/ui/place.rs::deploy_verdict`): its reach guess must measure to
+/// the same point this verb refuses on, not to a copy of it.
+pub fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
     (
         cx as f32 * crate::build::BUILD_CELL_M + crate::build::BUILD_CELL_M * 0.5,
         cz as f32 * crate::build::BUILD_CELL_M + crate::build::BUILD_CELL_M * 0.5,
@@ -1194,7 +1198,12 @@ fn player_xz(p: &Player) -> (f32, f32) {
 }
 
 /// Whether `loc` is the kind of slot the placement class occupies.
-fn loc_fits_placement(placement: u8, loc: u8) -> bool {
+///
+/// `pub` because the client's deploy ghost is the second caller
+/// (`client/ui/place.rs::deploy_verdict`): a preview that guessed this rule
+/// instead of asking it would be the drift the quantize-both-sides law
+/// exists to close.
+pub fn loc_fits_placement(placement: u8, loc: u8) -> bool {
     match placement {
         PLACE_DOORWAY => loc == LOC_EDGE_W || loc == LOC_EDGE_N,
         // A lock goes where its target lives: a door on a doorway's edge,

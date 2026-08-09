@@ -633,27 +633,29 @@ fn spawn_piece(
         .id()
 }
 
-fn spawn_deploy(
-    commands: &mut Commands,
-    kit: &Kit,
-    seed: u64,
-    rec: &DeployRec,
-    arch: u8,
-) -> Entity {
+/// Where a deployable of `arch` stands at `addr` — the centre of its box,
+/// posed. **The one emit site** both the standing deployable
+/// ([`spawn_deploy`]) and the deploy ghost (`ghost::deploy_track`) use, the
+/// parts-table seam applied to deployables (`NOW.md` §0u item 3): a door
+/// used to preview as a box on the cell body because the ghost had its own
+/// idea of where a deployable goes, and this function is now the only idea.
+///
+/// A door fills its doorway edge, oriented like the wall there; open, it
+/// swings off the hinge end and lies across the cell — the same read the
+/// sim's collision has, so a player never walks through a leaf that still
+/// looks shut. Everything else stands on the level plane at cell centre.
+pub fn deploy_transform(seed: u64, addr: Addr, arch: u8, open: bool) -> Transform {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
     let [_, h, d] = DEPLOY[idx].0;
-    let base_y = level_base_y(seed, rec.cx, rec.cz, rec.level);
-    let (cxm, czm) = cell_center(rec.cx, rec.cz);
-    let x0 = rec.cx as f32 * BUILD_CELL_M;
-    let z0 = rec.cz as f32 * BUILD_CELL_M;
+    let (cx, cz, level, loc) = addr;
+    let base_y = level_base_y(seed, cx, cz, level);
+    let (cxm, czm) = cell_center(cx, cz);
+    let x0 = cx as f32 * BUILD_CELL_M;
+    let z0 = cz as f32 * BUILD_CELL_M;
     let y = base_y + h * 0.5;
     let quarter = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
 
-    // A door fills its doorway edge, oriented like the wall there; open, it
-    // swings off the hinge end and lies across the cell — the same read the
-    // sim's collision has, so a player never walks through a leaf that still
-    // looks shut. Everything else stands on the level plane at cell centre.
-    let transform = match (rec.loc, rec.open) {
+    match (loc, open) {
         (LOC_EDGE_W, false) => Transform::from_xyz(x0, y, czm),
         (LOC_EDGE_W, true) => {
             Transform::from_xyz(x0 + d * 0.5, y, z0 + BUILD_CELL_M * 0.5 - d * 0.5)
@@ -664,7 +666,18 @@ fn spawn_deploy(
             Transform::from_xyz(x0 + BUILD_CELL_M * 0.5 - d * 0.5, y, z0 + d * 0.5)
         }
         _ => Transform::from_xyz(cxm, y, czm),
-    };
+    }
+}
+
+fn spawn_deploy(
+    commands: &mut Commands,
+    kit: &Kit,
+    seed: u64,
+    rec: &DeployRec,
+    arch: u8,
+) -> Entity {
+    let idx = (arch as usize).min(DEPLOY.len() - 1);
+    let transform = deploy_transform(seed, (rec.cx, rec.cz, rec.level, rec.loc), arch, rec.open);
 
     let mat = if arch == ARCH_DOOR && rec.locked {
         kit.door_locked.clone()

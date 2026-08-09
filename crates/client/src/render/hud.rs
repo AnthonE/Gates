@@ -507,31 +507,58 @@ pub fn update(
         // nothing; "TOO FAR" or "NO ROOM" beside it teaches the rule. Level is
         // here for the same reason: `R`/`F` step it and nothing showed it, so
         // a player building on level 2 by accident had no way to notice.
-        let out = match row_for(&core.piece_defs, shape, material) {
-            Some(_) => {
-                let why = match ghost.as_ref().map(|g| g.verdict) {
-                    Some(crate::ui::place::Verdict::No(w)) if !w.is_empty() => w,
-                    _ => "",
-                };
-                let level = ghost.as_ref().map(|g| g.level).unwrap_or(0);
-                if why.is_empty() {
-                    format!(
-                        "BUILD  {} {}  L{}   (hold right)",
-                        material_label(material),
-                        shape_label(shape),
-                        level
-                    )
-                } else {
-                    format!(
-                        "BUILD  {} {}  L{}  — {}",
-                        material_label(material),
-                        shape_label(shape),
-                        level,
-                        why.to_uppercase()
-                    )
-                }
+        // A held deployable claims the line ahead of the build latch: the
+        // hand decides what the mouse means (`ui::hold`), and its ghost has
+        // a verdict to say while AIMING — the same grammar the build ghost
+        // uses below, red reason and all, so a preview that has gone red
+        // names the sim's own sentence before the click spends the item.
+        let held = core.inv[(net.sel as usize).min(core.inv.len().saturating_sub(1))];
+        let deploy_held =
+            crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held.item)
+                .is_some();
+        let out = if deploy_held {
+            let name = core
+                .catalog
+                .name(held.item as usize)
+                .iter()
+                .map(|b| (*b as char).to_ascii_uppercase())
+                .collect::<String>();
+            let why = match ghost.as_ref().map(|g| g.deploy_verdict) {
+                Some(crate::ui::place::DeployVerdict::No(w)) if !w.is_empty() => w,
+                _ => "",
+            };
+            if why.is_empty() {
+                format!("PLACE  {name}   (right click)")
+            } else {
+                format!("PLACE  {name}  — {}", why.to_uppercase())
             }
-            None => "BUILD  -   (hold right)".to_string(),
+        } else {
+            match row_for(&core.piece_defs, shape, material) {
+                Some(_) => {
+                    let why = match ghost.as_ref().map(|g| g.verdict) {
+                        Some(crate::ui::place::Verdict::No(w)) if !w.is_empty() => w,
+                        _ => "",
+                    };
+                    let level = ghost.as_ref().map(|g| g.level).unwrap_or(0);
+                    if why.is_empty() {
+                        format!(
+                            "BUILD  {} {}  L{}   (hold right)",
+                            material_label(material),
+                            shape_label(shape),
+                            level
+                        )
+                    } else {
+                        format!(
+                            "BUILD  {} {}  L{}  — {}",
+                            material_label(material),
+                            shape_label(shape),
+                            level,
+                            why.to_uppercase()
+                        )
+                    }
+                }
+                None => "BUILD  -   (hold right)".to_string(),
+            }
         };
         if text.0 != out {
             text.0 = out;

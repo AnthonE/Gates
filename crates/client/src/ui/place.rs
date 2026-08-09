@@ -27,8 +27,14 @@
 //! avoid, so every check here is one the sim runs the same way.
 
 use sim_core::build::{
-    anchor, build_cell_of, foundation_terrain_ok, BuildContent, BUILD_REACH_M, LOC_EDGE_N,
-    LOC_EDGE_W, LOC_PLANE, LOC_RISER, SHAPE_DOORWAY, SHAPE_FOUNDATION, SHAPE_STAIRS, SHAPE_WALL,
+    anchor, build_cell_of, foundation_terrain_ok, BuildContent, PieceRec, BUILD_REACH_M,
+    LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, LOC_RISER, SHAPE_DOORWAY, SHAPE_FOUNDATION, SHAPE_STAIRS,
+    SHAPE_WALL,
+};
+use sim_core::craft::inv_count;
+use sim_core::deploy::{
+    box_key, cell_center, loc_fits_placement, lockable, DeployContent, DeployRec, ARCH_BOX,
+    ARCH_LOCK, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_GROUND,
 };
 use sim_core::gather::ItemStack;
 use sim_core::limits::{INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS};
@@ -180,6 +186,237 @@ pub fn verdict(t: Target, row: u16, shape: u8, site: &Site<'_>) -> Verdict {
     }
 
     Verdict::Ok
+}
+
+// ---------------------------------------------------------------------------
+// The deploy half — WHETHER, not just WHERE (`NOW.md` §0u item 2)
+// ---------------------------------------------------------------------------
+
+/// What the client can tell about a deploy placement before sending it.
+///
+/// Two states, not three, and the missing `Ok` is the point: `REFUSE_D_CLAIM`
+/// needs the hearth crew lists and the claim walk over the sim's own stores,
+/// and neither is client-visible (the wire's deploy record carries no owner
+/// and no crew — `protocol::event::write_deploy_rec`). So "nothing this
+/// client can check refuses it" can never be promoted to "the sim will take
+/// it", and a variant that said so would be a green ghost on a claim refusal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeployVerdict {
+    /// One of the refusals the client can mirror, computed by the sim's own
+    /// predicates on the client's own mirror. The sentence is the refusal
+    /// table's row for the sim's constant (`ui::refusals::DEPLOY`), so the
+    /// guess and the refusal that would follow it read identically.
+    ///
+    /// A red is always a true refusal — every check here is one the sim runs
+    /// the same way — but not always the FIRST sentence the server would say:
+    /// the sim refuses a foreign claim before support, and the claim is the
+    /// one rung this client cannot see.
+    No(&'static str),
+    /// Nothing this client can check refuses it — **not** "the sim would
+    /// take it" (see the type doc). Also the state nobody has computed yet:
+    /// the default that coloured would be a verdict nobody earned.
+    #[default]
+    Unknown,
+}
+
+impl DeployVerdict {
+    pub fn refused(self) -> bool {
+        matches!(self, DeployVerdict::No(_))
+    }
+
+    pub fn why(self) -> &'static str {
+        match self {
+            DeployVerdict::No(s) => s,
+            DeployVerdict::Unknown => "",
+        }
+    }
+}
+
+/// Which address the held deployable is aimed at, from its placement class.
+///
+/// A doorway-class deployable (the door) resolves an EDGE the way a wall
+/// does — `place_deploy` requires the doorway piece at the identical
+/// address, so aiming it at the cell body could only ever refuse
+/// (`loc_fits_placement`). Everything else stands on the cell body at
+/// level 0, which is `deploy_key`'s original plane-shape target. `level`
+/// is the ghost's working-level latch and only the doorway class reads it:
+/// a ground/foundation body deploy is sent at level 0 exactly as before.
+pub fn deploy_target(x: f32, z: f32, fx: f32, fz: f32, placement: u8, level: u8) -> Target {
+    if placement == PLACE_DOORWAY {
+        target(x, z, fx, fz, SHAPE_DOORWAY, level)
+    } else {
+        target(x, z, fx, fz, SHAPE_FOUNDATION, 0)
+    }
+}
+
+/// Everything the deploy pre-check reads — the client's mirror, whole.
+pub struct DeploySite<'a> {
+    pub seed: u64,
+    /// The player's feet, world XZ.
+    pub at: (f32, f32),
+    /// The placed-piece mirror (support lives here).
+    pub pieces: &'a [PieceRec],
+    pub piece_defs: &'a BuildContent,
+    /// Rows of `piece_defs` that have dripped in.
+    pub piece_have: u16,
+    /// The placed-deployable mirror (occupancy and lock targets live here).
+    pub deploys: &'a [DeployRec],
+    pub deploy_defs: &'a DeployContent,
+    /// Rows of `deploy_defs` that have dripped in.
+    pub deploy_have: u16,
+    pub inv: &'a [ItemStack; INV_SLOTS],
+}
+
+impl DeploySite<'_> {
+    fn deploy_at(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<&DeployRec> {
+        self.deploys
+            .iter()
+            .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
+    }
+
+    fn piece_at(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<&PieceRec> {
+        self.pieces
+            .iter()
+            .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
+    }
+}
+
+/// The deploy refusals a client can see for itself, in `place_deploy`'s own
+/// order, each computed the way the sim computes it.
+///
+/// ## The split, stated (the module's honesty rule)
+///
+/// **Mirrored** — a pure function of state the mirror holds, answered by the
+/// sim's own functions (`loc_fits_placement`, `box_key`, `cell_center`,
+/// `foundation_terrain_ok`, `lockable`, `lock::holds`, `inv_count`) plus the
+/// address lookups the mirror exists for: `REFUSE_D_KIND`, `REFUSE_D_SPOT`,
+/// `REFUSE_D_REACH`, `REFUSE_D_SUPPORT`, `REFUSE_D_TERRAIN`,
+/// `REFUSE_D_HAS_LOCK`, `REFUSE_D_COST`.
+///
+/// **Unknown, and why** — the verdict stays [`DeployVerdict::Unknown`] and
+/// the ghost stays neutral for: `REFUSE_D_CLAIM` (needs every hearth's crew
+/// list, which the wire never carries) and `REFUSE_D_OVERLAP` (the claim
+/// walk is `claim::reach` over the sim's own `Pieces` store — calling it on
+/// the mirror would mean either duplicating the flood fill here or reshaping
+/// sim code, both forbidden); `REFUSE_D_BAG_CAP` (counts bags by owner, and
+/// the wire's deploy record carries no owner); `REFUSE_D_FULL` (the server's
+/// store lengths — the same "world capacity is the server's alone" the build
+/// verdict declares). A support answer that hangs on an undripped def row is
+/// Unknown too, for the reason `structures::stream` skips those rows.
+pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdict {
+    // KIND. A row past the declared table is refused outright; a declared
+    // row that has not dripped in yet is one this client cannot judge.
+    if (row as u16) >= site.deploy_defs.def_count {
+        return DeployVerdict::No("no such deployable");
+    }
+    let have = site.deploy_have.min(site.deploy_defs.def_count);
+    if (row as u16) >= have {
+        return DeployVerdict::Unknown;
+    }
+    let def = &site.deploy_defs.defs[row as usize];
+    if def.hp == 0 {
+        return DeployVerdict::No("no such deployable");
+    }
+
+    // SPOT. The loc rule is the sim's own function; occupancy is the same
+    // address comparison its `find` makes (every class but the lock wants
+    // the address empty); the reserved box address is the sim's own key.
+    if !loc_fits_placement(def.placement, t.loc)
+        || (def.placement != PLACE_DOOR && site.deploy_at(t.cx, t.cz, t.level, t.loc).is_some())
+        || (def.arch == ARCH_BOX && box_key(t.cx, t.cz, t.level) == 0)
+    {
+        return DeployVerdict::No("spot taken");
+    }
+
+    // REACH, measured to the sim's own point via the sim's own function —
+    // the cell CENTRE for every loc, where build reach uses the anchor.
+    let (ax, az) = cell_center(t.cx, t.cz);
+    let (dx, dz) = (ax - site.at.0, az - site.at.1);
+    if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
+        return DeployVerdict::No("out of reach");
+    }
+
+    // REFUSE_D_CLAIM sits here in the sim's ladder and is Unknown (module
+    // doc) — so every red below is still a true refusal, just possibly not
+    // the first sentence the server would say.
+
+    // SUPPORT / TERRAIN, per placement class — the sim's `supported` match,
+    // its store lookups answered by the mirror.
+    let ground_ok = site.piece_at(t.cx, t.cz, 0, LOC_PLANE).is_none()
+        && foundation_terrain_ok(site.seed, ax, az);
+    match def.placement {
+        PLACE_GROUND => {
+            if t.level != 0 {
+                return DeployVerdict::No("needs support");
+            }
+            if !ground_ok {
+                return DeployVerdict::No("bad ground");
+            }
+        }
+        PLACE_FOUNDATION => {
+            if site.piece_at(t.cx, t.cz, t.level, LOC_PLANE).is_none() {
+                return DeployVerdict::No("needs support");
+            }
+        }
+        PLACE_ANY => {
+            if site.piece_at(t.cx, t.cz, t.level, LOC_PLANE).is_none()
+                && !(t.level == 0 && ground_ok)
+            {
+                return DeployVerdict::No("needs support");
+            }
+        }
+        PLACE_DOORWAY => match site.piece_at(t.cx, t.cz, t.level, t.loc) {
+            None => return DeployVerdict::No("needs support"),
+            Some(r) => {
+                if (r.row as u16) >= site.piece_have.min(site.piece_defs.piece_count) {
+                    return DeployVerdict::Unknown; // shape not dripped yet
+                }
+                if site.piece_defs.pieces[r.row as usize].shape != SHAPE_DOORWAY {
+                    return DeployVerdict::No("needs support");
+                }
+            }
+        },
+        PLACE_DOOR => match site.deploy_at(t.cx, t.cz, t.level, t.loc) {
+            None => return DeployVerdict::No("needs support"),
+            Some(r) => {
+                if (r.row as u16) >= have {
+                    return DeployVerdict::Unknown; // target's arch not dripped
+                }
+                if !lockable(site.deploy_defs.defs[r.row as usize].arch) {
+                    return DeployVerdict::No("needs support");
+                }
+            }
+        },
+        // The sim's `_ => false` arm: an unknown class never stands.
+        _ => return DeployVerdict::No("needs support"),
+    }
+
+    // The lock's extra rungs, in the sim's order. Its store is not
+    // mirrored, but the `has_lock` bit on the record it bolts to is kept in
+    // lockstep by every lock verb — that bit IS the wire's view of the
+    // store. `MAX_LOCKS` (REFUSE_D_FULL) stays Unknown.
+    if def.arch == ARCH_LOCK {
+        if site
+            .deploy_at(t.cx, t.cz, t.level, t.loc)
+            .is_some_and(|r| r.has_lock)
+        {
+            return DeployVerdict::No("that door already has a lock");
+        }
+        if !sim_core::lock::holds(site.inv, def.item) {
+            return DeployVerdict::No("item not in inventory");
+        }
+        return DeployVerdict::Unknown;
+    }
+
+    // REFUSE_D_OVERLAP, the hearth cap, the bag cap and the box-store cap
+    // sit here in the sim's ladder and are Unknown (module doc).
+
+    // COST: the deployable's own item, counted the way the sim counts it.
+    if inv_count(site.inv, def.item) < 1 {
+        return DeployVerdict::No("item not in inventory");
+    }
+
+    DeployVerdict::Unknown
 }
 
 #[cfg(test)]
@@ -361,5 +598,65 @@ mod tests {
                 "{s:?} is not in the build refusal table"
             );
         }
+    }
+
+    /// The deploy verdict's sentences, bound to the sim's own CONSTANTS
+    /// through the refusal table — the binding no transposition survives
+    /// (`refusals.rs`'s own discipline). A verdict sentence that drifted
+    /// from the table would make the guess and the refusal that follows it
+    /// read as two different problems.
+    #[test]
+    fn every_deploy_verdict_sentence_is_the_tables_row_for_its_code() {
+        use sim_core::deploy::{
+            REFUSE_D_COST, REFUSE_D_HAS_LOCK, REFUSE_D_KIND, REFUSE_D_REACH, REFUSE_D_SPOT,
+            REFUSE_D_SUPPORT, REFUSE_D_TERRAIN,
+        };
+        for (code, said) in [
+            (REFUSE_D_KIND, "no such deployable"),
+            (REFUSE_D_SPOT, "spot taken"),
+            (REFUSE_D_REACH, "out of reach"),
+            (REFUSE_D_SUPPORT, "needs support"),
+            (REFUSE_D_TERRAIN, "bad ground"),
+            (REFUSE_D_HAS_LOCK, "that door already has a lock"),
+            (REFUSE_D_COST, "item not in inventory"),
+        ] {
+            assert_eq!(
+                super::super::refusals::deploy(code as u8),
+                said,
+                "the verdict's sentence for code {code} is not the table's"
+            );
+        }
+    }
+
+    /// A doorway-class deployable aims at an EDGE, everything else at the
+    /// cell body on level 0 — the split `deploy_target` exists for, and the
+    /// reason a door stopped previewing on the plane (`NOW.md` §0u item 3).
+    #[test]
+    fn a_door_aims_at_an_edge_and_a_box_at_the_cell_body() {
+        for i in 0..16 {
+            let a = i as f32 * std::f32::consts::TAU / 16.0;
+            let door = deploy_target(40.0, 40.0, a.sin(), a.cos(), PLACE_DOORWAY, 1);
+            assert!(
+                door.loc == LOC_EDGE_W || door.loc == LOC_EDGE_N,
+                "bearing {i}: a door resolved loc {}",
+                door.loc
+            );
+            assert_eq!(door.level, 1, "a door follows the working level");
+            let body = deploy_target(40.0, 40.0, a.sin(), a.cos(), PLACE_GROUND, 1);
+            assert_eq!(body.loc, LOC_PLANE);
+            assert_eq!(body.level, 0, "a body deploy is sent at level 0");
+        }
+    }
+
+    /// The default verdict is the NEUTRAL one. A default that refused would
+    /// draw red on the frame before anything had been checked — the exact
+    /// failure direction the module forbids (red on something the sim would
+    /// have accepted), inverted from the build verdict's default for the
+    /// inverted reason.
+    #[test]
+    fn a_deploy_verdict_nobody_computed_is_unknown() {
+        assert_eq!(DeployVerdict::default(), DeployVerdict::Unknown);
+        assert!(!DeployVerdict::default().refused());
+        assert_eq!(DeployVerdict::No("spot taken").why(), "spot taken");
     }
 }

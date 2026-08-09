@@ -302,15 +302,28 @@ Remaining:
    level plate against the piece's pitched ramp — every CONSTANT shared,
    layout not, and no gate could see either. `tests/ghost.rs` now reads the
    table's own emit against the sim.
-2. **The deploy ghost says WHERE, not WHETHER.** `place::verdict` answers for
-   build pieces only; the `REFUSE_D_*` set (needs a floor, needs a doorway,
-   hearth claim) is uncheckable client-side, so the preview is deliberately
-   neutral-coloured. Colouring it needs those checks mirrored, which is the
-   quantize-both-sides law applied to placement.
-3. **A door aimed at a doorway is not previewed as a door.** `deploy_key` sends
-   a plane-shape target and lets the sim answer `REFUSE_D_DOOR`; the ghost
-   inherits that and draws the door's box on the cell body rather than in the
-   edge it would fill.
+2. ~~The deploy ghost says WHERE, not WHETHER~~ **DONE 2026-08-09** —
+   `place::deploy_verdict` mirrors KIND, SPOT, REACH, SUPPORT, TERRAIN,
+   HAS_LOCK and COST by calling the sim's own predicates
+   (`loc_fits_placement`, `cell_center`, `box_key`, `foundation_terrain_ok`,
+   `lockable`, `lock::holds`, `inv_count` — made `pub` where needed, no
+   logic copied); red wears the refusal table's own sentence on the HUD
+   line while aiming. CLAIM/OVERLAP stay **Unknown** (crew lists never on
+   the wire; the claim walk takes the sim's own stores), BAG_CAP too (no
+   owner on the wire), caps are the server's — so the verdict has no Ok and
+   the ghost never turns ready-blue. `tests/ghost.rs` drives client verdict
+   and sim refusal on one state, one test per mirrored reason plus the
+   neutral set; two colouring mutants run red.
+3. ~~A door aimed at a doorway is not previewed as a door~~ **DONE
+   2026-08-09** — a doorway-class deployable aims an EDGE
+   (`place::deploy_target`; the working-level latch carries over), the
+   ghost is posed by `structures::deploy_transform` — extracted from
+   `spawn_deploy`, the one pose site — and `deploy_key` sends the ghost's
+   latched edge target, so a door is now placeable at all (it used to send
+   the plane and always refuse). Gated: the door stands ON the boundary,
+   carries the north quarter-turn, and fits the opening the parts table
+   leaves. Locks still target the plane (a lock on a DOOR is unreachable
+   by aim; on a box it works) — noted, not built.
 4. **Stairs are still a flat slab** in both the ghost and the piece — a ramp
    drawn as a plate. Shared, so at least they agree.
 
