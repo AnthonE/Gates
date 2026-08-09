@@ -733,10 +733,13 @@ Remaining, in order:
    native test when one of these is next touched: the haven shelter, the
    waystation canopy, the clutter ring, and the occupant table for everything
    that is not a tree.
-3. **No swing prompt.** `interact.js`'s second resolver (`resolveSwing`, a 2 m
-   cone with a vertical window and a point-blank exception over the scatter
-   cells) has no native port, so the crosshair names what `E` would do and
-   never what a swing would hit.
+3. ~~**No swing prompt.**~~ **Stale — it landed 2026-08-05** (`2429de6`,
+   merged `46dafcc`, judged PASS; this line just never came down). The second
+   resolver is `ui/interact.rs::resolve_swing`, ported from `gather::swing`'s
+   own bounds rather than the browser's hand-mirror of them; the HUD names it
+   where `E` is silent (`hud.rs`, with the weak-spot cue beside it), and
+   `tests/ui.rs` gates the cone accept/reject, the vertical window, and the
+   point-blank exception. Nothing was owed here but this correction.
 4. **The Bevy feature trim — and this item was WRONG, which is the finding.**
    It said wayland and alsa are unused. **`bevy_audio` is load-bearing since
    audio v0**: `render/audio.rs` uses `AudioSource`, `SpatialListener`,
@@ -895,10 +898,16 @@ Remaining, in order:
    neither loads nor saves. Gates: `config::tests` (code tier) and
    `render::settings::tests`. `DECISIONS.md` §open "settings v0" has the
    policy in full.
-5. **No `Screen::Disconnected`.** A shard that drops the session mid-play still
-   leaves the client sitting in a dead world — `pause::Disconnect` is a verb
-   the *player* takes, and the involuntary half has no state. `world_teardown`
-   is now the piece that makes it cheap to add.
+5. ~~**No `Screen::Disconnected`.**~~ **DONE 2026-08-09.** `Session::pump`
+   latches the hangup (either receive lane's reader task ending; the
+   extracted `drain_lane` is gated in `lib.rs`, including that the buffered
+   last words land *before* the hangup is reported). `render/disconnected.rs`
+   is the state: `watch` turns the latch into `Screen::Disconnected`, entry
+   runs the menu's own teardown chain — `world_teardown` was the piece that
+   made this cheap, as predicted — and the screen names the shard in the
+   failed connect's `"{addr}: {why}"` grammar, with the server list and quit
+   as its rows. Voluntary `pause::Disconnect` is untouched. Ungated: the
+   end-to-end kill-the-shard-mid-play run, a by-hand check on this box.
 
 ## 0t · the native pine is generated — what it bought, and what it owes
 
