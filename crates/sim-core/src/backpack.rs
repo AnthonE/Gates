@@ -252,9 +252,10 @@ impl Backpacks {
 
     /// Stand a container up at a quantized address holding `items`.
     ///
-    /// The one insert path: a death bag and a smashed barrel's loot are
-    /// the same object — a container on the ground with a lifetime, an
-    /// address, and slots the move verb already resolves as `CONT_BAG`.
+    /// The one insert path: a death bag, a smashed barrel's loot and a
+    /// killed animal's corpse (`mob::strike`) are the same object — a
+    /// container on the ground with a lifetime, an address, and slots the
+    /// move verb already resolves as `CONT_BAG`.
     /// Splitting them into two stores would have bought a second wire
     /// message, a second sync walk and a second eviction policy for one
     /// difference (where the items came from) that nothing downstream

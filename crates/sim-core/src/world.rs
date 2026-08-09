@@ -134,11 +134,11 @@ pub const EV_HEALTH: u8 = 16;
 pub const EV_DEATH: u8 = 17;
 /// EV_BAG_DROPPED: a = container id, b = the container's owner — the
 /// player whose body it came off for a death bag, the smasher for a
-/// barrel's loot (`backpack::stand_up`). Broadcast — a container on the
-/// ground is a world fact like a placement; the wire reads its position
-/// out of the store at encode, the way a hearth's stock is read
-/// (backpack.rs), and carries no owner at all, so `b` is a sim-side fact
-/// only.
+/// barrel's loot, the dead animal's tagged mob id for a corpse bag
+/// (`backpack::stand_up`). Broadcast — a container on the ground is a
+/// world fact like a placement; the wire reads its position out of the
+/// store at encode, the way a hearth's stock is read (backpack.rs), and
+/// carries no owner at all, so `b` is a sim-side fact only.
 pub const EV_BAG_DROPPED: u8 = 18;
 /// EV_BAG_REMOVED: a = backpack id, b = `backpack::BAG_GONE_*` (despawn,
 /// emptied, evicted). Broadcast, and it restarts in-progress bag sync
@@ -2342,12 +2342,13 @@ impl World {
                         // a door must not become a way to eat the swing.
                         let took = mob::strike(
                             &self.combat,
-                            &self.gather,
+                            &self.backpack,
                             &self.mob,
                             tick,
                             i,
-                            &mut self.players,
+                            &self.players,
                             &mut self.mobs,
+                            &mut self.backpacks,
                             &mut self.events,
                         );
                         if !took {

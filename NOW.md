@@ -153,7 +153,7 @@ Remaining, in order:
 
 Landed 2026-08-08 (operator: *"let's get a pig in"*). 64 fixed roster slots,
 homes drawn from the seed, staggered think, dormancy at 240 m, a leash, a
-flight, and a kill that pays fat and cloth. No navmesh: the terrain is a pure
+flight, and a kill that leaves a corpse bag (item 1). No navmesh: the terrain is a pure
 function, so the animal steers and `movement::step` decides — which also
 means it inherits tree and piece collision for free. Research is
 `reference/ANIMALS.md`; the design call is `DECISIONS.md` 2026-08-08.
@@ -195,10 +195,17 @@ later is a mapping move in `ci/bake_icons.py` and nothing else.
 
 Owed, in rank order — `reference/ANIMALS.md` §9.5 has the reasoning:
 
-1. **No corpse.** A killed pig leaves the snapshot and is gone; the loot is
-   paid straight into the killer's inventory as `EV_GATHER`. The reference's
-   actual interaction is a *butchering verb* on the body, which is a verb to
-   design, not a species to add.
+1. ~~**No corpse.**~~ **The bag half is DONE 2026-08-09** — a killed pig
+   stands its `mobs.toml` rows up as a ground bag at the death position
+   (`mob::strike` → `backpack::stand_up`: same store, caps, eviction and
+   rarity-ladder expiry as a player's death bag, no wire change), and the
+   killer loots it with E; the blow itself pays nothing. Gated in
+   `sim-core/tests/mob.rs` (bag spawn, inventory untouched until E, the
+   inert-ladder policy) and `server/tests/hunt.rs` (the chase ends at a
+   corpse; looting pays exactly the content rows). What remains is the
+   reference's actual interaction — a *butchering VERB*, a tool-gated
+   harvest on the body — and it now has a landing place: the verb's
+   output is this bag.
 2. **Nothing fights back.** Needs a mob→player damage path, a new death
    cause on the wire, and a combat-feel answer to being hit by something you
    cannot reliably hit back.

@@ -72,7 +72,10 @@ spook_m = 12
 # (reference/SPAWN.md §3.5).
 respawn_seconds = 300
 
-# What the kill pays, straight into the killer's inventory.
+# What the corpse holds. The kill stands these rows up as a ground bag at
+# the death position (`mob::strike` → `backpack::stand_up`) — the killer
+# walks over and loots it with E like any bag; nothing is paid into an
+# inventory by the blow itself.
 #
 # **Raw meat leads, and it is the reason the campfire has a job.** Meat was
 # cut from the alpha food set because nothing dropped it and nothing could
