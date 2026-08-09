@@ -371,6 +371,58 @@ mod tests {
         "addr": "game.moreright.xyz:61234", "players": 47, "max_players": 100,
         "map": "island", "ping_ms": 31}]}"#;
 
+    /// What `ci/shardlist.py` actually writes, verbatim, for a two-shard
+    /// `shards.toml` — one publishing a status endpoint and one not.
+    ///
+    /// **The generator and this parser are in two languages and nothing else
+    /// compares them on a whole document.** `--self-test` reads this file's
+    /// CAPS out of the Rust source, which catches a cap that drifts and would
+    /// not catch a field that was renamed, reordered or dropped. Regenerate:
+    ///
+    /// ```text
+    /// ./ci/shardlist.py --shards shards.toml --out -
+    /// ```
+    const GENERATED: &str = r#"{
+  "servers": [
+    {
+      "addr": "game.moreright.xyz:61234",
+      "id": "eu-1",
+      "map": "island 20260731",
+      "max_players": 100,
+      "name": "Gates EU 1",
+      "status_url": "https://game.moreright.xyz:8080/status.json"
+    },
+    {
+      "addr": "127.0.0.1:4433",
+      "id": "dev",
+      "max_players": 100,
+      "name": "Dev shard"
+    }
+  ]
+}"#;
+
+    #[test]
+    fn what_the_generator_writes_is_what_this_reads() {
+        let rows = parse(GENERATED.as_bytes()).expect("our own generator's output");
+        assert_eq!(rows.len(), 2);
+
+        // The pair that is the whole design: the generator says WHERE the
+        // count lives and never what it would have found.
+        assert_eq!(rows[0].id, "eu-1");
+        assert_eq!(rows[0].players, None, "the generator must not bake a count");
+        assert_eq!(rows[0].population(), "?/100");
+        assert_eq!(
+            rows[0].status_url.as_deref(),
+            Some("https://game.moreright.xyz:8080/status.json")
+        );
+        // The name survives to the transport unresolved — the SNI property.
+        assert_eq!(rows[0].url(), "https://game.moreright.xyz:61234");
+
+        // A shard with no endpoint stays `?`, which is correct and permanent.
+        assert_eq!(rows[1].status_url, None);
+        assert_eq!(rows[1].population(), "?/100");
+    }
+
     #[test]
     fn the_documented_shape_parses() {
         let rows = parse(SPEC.as_bytes()).expect("spec shape");
