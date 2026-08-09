@@ -98,3 +98,16 @@ seed = 20260731
 # again — so the only cost of a shorter interval is disk.
 #
 # world_save_interval_ticks = 1800
+
+# The status endpoint (crates/server/src/status.rs): plain HTTP on its own
+# thread, GET /status.json answering {"players":N,"max_players":100,"tick":T}
+# — integers read off the shard's counters, never touching the sim. It is
+# what lights the `players` column in the shard list (ci/shardlist.py).
+#
+# Unset (the default) serves NOTHING: a shard advertises no numbers until
+# its operator says where to listen, and putting the URL anywhere public is
+# a separate act again. TCP, not UDP — open the port separately from the
+# game's; on the public box that means the cloud firewall too (see the
+# 2026-08-03 row in DECISIONS.md for why ufw alone buys nothing there).
+# DECISIONS.md §open "shard status endpoint v0".
+# status_addr = "127.0.0.1:8080"

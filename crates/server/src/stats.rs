@@ -16,6 +16,15 @@ pub struct ShardStats {
     pub ticks_dropped: AtomicU64,
     pub joins: AtomicU64,
     pub leaves: AtomicU64,
+    /// Bodies with a live connection right now — a gauge like `sleepers`,
+    /// mirrored off `ShardCore::connected` each tick, never accumulated
+    /// here. It exists because `joins - leaves` is NOT this number: a
+    /// refused install rides the LEAVING sweep out and bumps `leaves` with
+    /// no matching `join`, so the counter pair drifts one short per
+    /// refusal while the array it would describe does not. The status
+    /// endpoint (`status.rs`) reads this, and it is the honest count the
+    /// shard list's `players` column has been waiting on.
+    pub players: AtomicU64,
     pub refused_version: AtomicU64,
     /// Joins refused for want of a proven identity (`REFUSE_AUTH`): a
     /// signature that failed to verify, or a guest where `require_auth`

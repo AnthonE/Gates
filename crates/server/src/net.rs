@@ -1475,15 +1475,16 @@ fn sim_thread(
         });
         ShardStats::bump(&stats.ticks);
         stats.current_tick.store(core.world.tick, Ordering::Relaxed);
-        // Two gauges, mirrored off the world rather than accumulated here:
+        // Three gauges, mirrored off the state rather than accumulated here:
         // the eviction policy lives in `World::seat` and nothing on this
         // thread is told when it fires, so the counter is read, not bumped.
-        // `sleepers()` is an O(MAX_PLAYERS) scan of a 100-element array on
-        // a thread that has just done a tick's work — measured against the
-        // alternative, which is a second copy of the count that can drift
-        // from the array it describes.
+        // `sleepers()` and `connected()` are each an O(MAX_PLAYERS) scan of
+        // a 100-element array on a thread that has just done a tick's work —
+        // measured against the alternative, which is a second copy of the
+        // count that can drift from the array it describes.
         ShardStats::set(&stats.sleepers_evicted, core.world.evictions);
         ShardStats::set(&stats.sleepers, core.world.sleepers() as u64);
+        ShardStats::set(&stats.players, core.connected() as u64);
 
         // Pace (the boundary).
         next += tick_dur;
