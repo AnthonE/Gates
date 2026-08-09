@@ -423,6 +423,16 @@ which is neither.
   a patch applied here fixes Gates and leaves every other game on the broken
   copy. `crates/client/src/scry.rs` is our wrapper and is ours to change.
   Not third-party: same author, same licence, no notice owed.
+  ⚠ **The pin catches a local edit and is blind to upstream moving**, and the
+  two are not the same failure. Found 2026-08-09: the copy sat 326 lines
+  behind the source with every gate in both repos green — no Windows
+  transport (it `use`d `std::os::unix::net` unconditionally, so a Windows
+  build of this client could not compile), no `prove`, no `profile`. Nothing
+  gates a file in another repo, so the check is a command you run when you
+  touch this seam: `sha256sum crates/client/src/scry_overlay.rs` must appear
+  in `sdk/SHA256SUMS` upstream. Re-vendoring is `cp` + re-pin + `cargo test
+  -p client --lib scry`, and check the CALL SITES, not just the compile —
+  `Overlay::title` changed shape under us and only luck kept it uncalled.
 - The depot the launcher installs is written by `ci/depot.py`, gated by
   `--self-test` in `ci/gates.sh`. It deliberately does **not** compute the
   depot digest — `scry digest` does, and a second implementation of the number
