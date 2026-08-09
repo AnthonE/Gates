@@ -144,28 +144,81 @@ theirs.
 
 ## 4 · The gather research (2026-08-09) — what we have and what is missing
 
-Same source posture as `DOORS.md` §0, and it must be read before any
-figure here is used: **this box's proxy blocks the entire Rust web**
-(`wiki.facepunch.com`, `rust.fandom.com`, `rustclash`, `rusthelp`,
-`umod.org` all refused). Three GitHub raw files were genuinely fetched —
-§4.4's plugin syntax and §4.3's `spawn.*` defaults are the *only* figures
-below verified against primary text. **Everything else is a search
-engine's paraphrase of a page nobody opened**, including every devblog
-quotation. Two contamination cases were caught in the making: one SEO
-site's sulfur figure propagating into several summaries and wearing
-several hats, and a "tree guide" that turned out to be a different game.
+**Source posture upgraded 2026-08-09 (second pass).** The paragraph that
+stood here said the proxy blocked the entire Rust web and that every
+figure below was "a search engine's paraphrase of a page nobody opened."
+A re-probe disproved it: `rust.facepunch.com/news` and `rusthelp.com`
+serve full text. **Every devblog quotation in §4.3 is now read from the
+devblog itself**, and §4.1's per-tool tables are read from a page, not a
+summary. `SOURCES.md` carries the measured host map.
 
-Confidence labels are mandatory and never averaged (§0's rule, and why
-our boar remembers both 80 and 150).
+What did not change is the contamination warning, and it now has a
+receipt — see §4.1. Confidence labels stay mandatory and are never
+averaged (§0's rule, and why our boar remembers both 80 and 150).
 
 ### 4.1 · Node totals — vanilla 1×, best tool
 
 | node | conf | theirs | ours |
 |---|---|---|---|
 | stone | EXACT | **1000** | 300 |
-| metal ore | EXACT | **600** (+2 HQM, DISPUTED 1–2 chance-based) | 300 |
-| sulfur ore | **DISPUTED** | **300** (several sources, long-established) vs **200** (one SEO site, claimed July-2026 verification) vs ~250 | 300 |
-| tree (wood) | DISPUTED | **500 / 750 / 1000** by tree prefab; "large trees ~650"; small sources (logs, driftwood) ~¼ | 300 |
+| metal ore | EXACT | **600** (+**2** HQM, flat, not chance-based) | 300 |
+| sulfur ore | **EXACT — dispute settled 2026-08-09** | **300** | 300 |
+| tree (wood) | EXACT per tool, banded per species | **1000** best tool on a large tree; species bands below | 300 |
+
+**The sulfur dispute is closed, and the way it closed is the useful part.**
+The 200 camp traces to one SEO page (`rustly.com`) — and that same page,
+in the same table, calls stone **750** and metal **500**. Both are wrong
+against figures we already hold as EXACT, and wrong in the same direction.
+A source that misses two checkable numbers does not get to arbitrate the
+third. The page that gets stone **1000** and metal **600** right
+(`rusthelp.com`) says sulfur **300**, and inherits that credibility.
+Generalise it: **score a source on the cells you can already check before
+reading the cell you came for.** That test cost nothing and settled a row
+that had been disputed for two passes.
+
+### 4.1a · Per-tool totals — read from tables, not summaries
+
+Ore, total per node (`rusthelp.com`; the three best tools tie on total and
+differ only in time):
+
+| tool | stone | metal | +HQM | sulfur |
+|---|---|---|---|---|
+| jackhammer | 1000 | 600 | 2 | 300 |
+| salvaged icepick | 1000 | 600 | 2 | 300 |
+| pickaxe | 1000 | 600 | 2 | 300 |
+| stone pickaxe | 794 | 485 | 2 | 257 |
+| salvaged hammer | 536 | 358 | **0** | 146 |
+| bone club | 450 | 286 | **0** | 134 |
+| rock | 375 | 250 | **0** | 100 |
+
+Wood, total from one large tree (`corrosionhour.com`): rock **500**,
+stone hatchet **810**, metal hatchet **867**, salvaged axe **1000**,
+chainsaw **1000**.
+
+**The HQM column is the finding, not the yields.** HQM is 0 for exactly
+the three tools Devblog 166 says cannot trigger the finishing bonus — an
+independent table, gathered years later, reproducing a devblog sentence it
+never cites. That is the strongest corroboration in this document, and it
+means §4.3(b)'s finish-bonus model is confirmed twice over.
+
+**Nobody publishes hit counts any more, and that is a fact about the
+mechanic.** Every current source gives *durations* (jackhammer 4 s →
+rock ~1 m 4 s, roughly halved when hotspots are struck) and no hit counts
+at all. Post-minigame, hits-to-clear is not a constant — it is a function
+of how many marks the player hits. The 2017 table in §4.2 is not merely
+old, it measures a quantity the game no longer holds fixed. **Do not go
+looking for a modern hit-count table; it does not exist because it cannot.**
+
+### 4.1b · Species and size variance (Tier-1 question 5, answered)
+
+Wood total is set by species and size, where ore total is set by tool:
+large beech/oak **1000** (max), smaller pine/palm **~¾**, fallen logs and
+driftwood **~¼** (`rusthelp` bands them 500–1000 large, 250–750 medium,
+50–200 sapling, 125–300 dead log). Biome is listed as a *location* for
+nodes — Forest, Snow, Tundra, Desert, Jungle — with **no yield variation
+by biome** stated for ore. Devblog 186 adds that small bare trees and some
+palms have the **minigame disabled entirely** because you hit them in the
+same place anyway — a species carve-out in the mechanic, not just a number.
 
 **Their totals are known; their per-hit numbers mostly are not — and our
 schema does not need them.** We declare `hits × yield_per_hit`, so a total
@@ -210,15 +263,25 @@ marked swing spends `HIT_UNIT + weak_spot_bonus_pct` of it and is paid
 pro rata, so the total is invariant and the glint empties a tree in 7
 swings instead of 10. The research that produced this is below.
 
-Facepunch, Devblog 170:
-the node's overall yield does not increase — *"you will not actually earn
-more resources, but by using skill and good aim you can harvest the ore
-faster."* Ore hotspot is 150% on that hit, stacking to 300%, reset to zero
-on a miss, moving but never more than ~a foot and never to the far side,
-and **invisible at night** without a lit hat. The tree mark appears only
-*after* the first hit, placed relative to the first impact, later marks
-closer together and always travelling the same direction; a metal hatchet
-ramps 16 wood/hit by +2 per mark hit, capped at 30.
+**Devblog 170, now read from the devblog and not a summary** — the whole
+marker model rested on a paraphrase of this sentence, so here it is
+whole, typo and all:
+
+> It should be noted that you will not actually earn more resources, but
+> by using skill and good aim you can harvest the ore faster than just
+> AFK spamming a node infront of you.
+
+Ore hotspot is **150%** on that hit, stacking to a maximum of **300%**,
+and *"if you miss, this bonus is reset to zero."* The 150/300/reset trio
+is confirmed twice — the devblog and the current `wiki.facepunch.com`
+Ore_nodes page, which still describes the mechanic in the present tense.
+The hotspot is **invisible at night** without a light.
+
+**Still unverified, and it should stop being quoted as if it were not:**
+the metal hatchet's *16 wood/hit ramping +2 per mark hit, capped at 30*.
+Devblog 186 says only that *"every time you hit one of the marks, your
+gathering multiplier increases"* — no numbers. The 16→30 figures came
+from a summary and no primary text has been found for them.
 
 Ours *used to* pay 1.5× extra yield on the hit, which made a skilled
 player richer where theirs makes one faster and everyone equally rich.
@@ -228,14 +291,34 @@ computed the bonus as extra yield. Both moved together — the ceiling is
 now the invariant total over the fewest swings, 2030/min.
 
 **(b) They have a finishing bonus — and now so do we.** ✅ TAKEN
-2026-08-09 (operator: *"we need the finish bonus"*). The final strike on
-an ore node pays ~20% of the node total, stated purpose *"to mitigate
-cherry picking and leaving half finished nodes around the map"* (Devblog
-166) — and HQM is available **only** as that final-strike bonus. A tree
-withholds **half** its wood to the moment it falls (Devblog 187). Both
-numbers are taken as `finish_bonus_pct`: 20 on each ore node, 50 on the
-tree, cited at their rows. It is a redistribution and never a bonus on
-top, so a half-chopped node is now what costs a player.
+2026-08-09 (operator: *"we need the finish bonus"*). Re-read from the
+devblogs themselves 2026-08-09, and two details were wrong here:
+
+- **The 20% is hedged in the original.** Devblog 166, verbatim: *"The
+  final hit will yield a bonus of about 20% of the total, which is not
+  only satisfying but should mitigate cherry picking."* **"about 20%"** —
+  so `finish_bonus_pct = 20` is a *reading* of a hedge, not a taken
+  constant. It is a fine reading; it is not EXACT, and this row should
+  stop implying it is.
+- **The tree split is Devblog 186, not 187.** Verbatim: *"You now receive
+  half while harvesting and the other half as a finishing bonus."* Our
+  `finish_bonus_pct = 50` is right; only the citation was wrong. Note it
+  is a *finishing bonus*, not a fall-triggered payout — the fall is the
+  tell (*"the tree will actually fall over now!"*), not the trigger.
+  Devblog 187 is the *marker placement* pass (first X relative to first
+  impact, later marks closer and always travelling one direction).
+
+**And a rule we did not have: the bonus requires a real tool.** Devblog
+166 — *"you can only receive this bonus with a proper tool. Bone clubs
+and stones do not trigger it."* §4.1a's HQM column reproduces this
+exactly. We do not model it, so a rock currently finishes a node for full
+value where theirs pays nothing. That is a gap, and it is the cheap half
+of a tool ladder.
+
+HQM is available **only** as that final-strike bonus, at a flat **2**.
+Both shares are taken as `finish_bonus_pct`: 20 on each ore node, 50 on
+the tree, cited at their rows. It is a redistribution and never a bonus
+on top, so a half-chopped node is what costs a player.
 
 **Not taken, and worth naming**: HQM gated *only* to the final strike is
 their sharpest version of this and we have no HQM tier to gate. If one
@@ -260,21 +343,74 @@ for wood, stone, metal ore, sulfur ore and metal fragments — ours already
 match. Teas raise totals (+20/35/50% ore, +200% pure wood); one 1000-wood
 stack smelts ~200 metal ore / 400 sulfur / 100 HQM [APPROX].
 
-### 4.5 · Still missing
+### 4.5 · Closed 2026-08-09, and what is left
 
-- **stone hatchet wood total** — absent from every table found; the exact
-  number `BALANCE.md` had wrong
-- **modern (post-2017) hit counts** per node per tool — sources give
-  clear *times*, never hits, because the marker makes hits a function of
-  aim
-- **bare-hand yields** — only the rock's ~⅓ ratio, no absolutes
-- **per-species tree totals** in current Rust; biome effects as numbers
-  ("swamp trees yield less", never by how much)
-- **smelt and craft times** per recipe (§2 row 3)
-- **animal health and drops** beyond the boar (§2 row 4)
-- **whether the 0.8 tool ratio is an engine constant** — unresolvable
-  under this posture: confirming it needs decompiled source, which the IP
-  rail forbids. Mark permanently unresolvable, not merely unknown.
+Closed by the second pass: **stone hatchet wood total = 810** (the number
+`BALANCE.md` had wrong); **bare-hand/rock absolutes** (§4.1a, no longer a
+ratio); **per-species tree totals** (§4.1b); **smelt, craft, animals,
+upkeep** (§4.6).
+
+Still missing, and two of these are now known to be *unobtainable* rather
+than merely unfound:
+
+- **modern per-tool hit counts** — **cannot exist.** §4.1a: the marker
+  makes hits a function of aim, so current sources publish times. Stop
+  looking.
+- **whether the 0.8 tool ratio is an engine constant** — permanently
+  unresolvable: confirming it needs decompiled source, which the IP rail
+  forbids.
+- **biome effects as numbers** — every source lists biomes as *locations*
+  for nodes and none states a yield delta. Likely there is none for ore;
+  unconfirmed for trees.
+- **the metal hatchet 16→30 per-hit ramp** — quoted for two passes, no
+  primary text (§4.3a).
+- **the `oezp.at` encounter percentages** — §5.5, and the one fetch this
+  box still cannot make.
+
+### 4.6 · Tier 3 — the balance surface nobody had touched
+
+All from current secondary sources, cross-checked where possible; none of
+it is devblog-primary, so **APPROX unless marked**.
+
+**Smelting.** Metal ore and sulfur ore **2.5 s each**, HQM **10 s** (a
+second source says 3.3 / 1.7 / 6.7 — *recorded, not averaged*, per §0).
+Wood cost ~**1.67 wood per ore** in a standard furnace, ~**0.33** in a
+large furnace; the electric furnace burns none. Every wood burned has
+~**75%** chance of 1 charcoal.
+
+**The furnace is PARALLEL, and this was the contradiction to settle.**
+Each slot smelts one ore simultaneously, so splitting 10 000 sulfur across
+five furnaces costs the *same wood* and one-fifth the time. More furnaces
+never cost more wood. Anyone modelling a furnace as a sequential queue
+gets throughput wrong by the slot count.
+
+**Craft times.** Gating is by workbench tier; the interesting part is that
+a *higher* bench than required pays a speed rebate — **50% faster one tier
+up, capped at 75% two tiers up**, and the player must stay in range for
+the duration. Worked example: a revolver **10 s at T1 → 2.5 s at T3**.
+
+**Animals** (HP / notable drops):
+
+| animal | hp | drops |
+|---|---|---|
+| chicken | 25 | 2 chicken breast, 6 cloth, 12 bone |
+| boar | **~80** | 8 pork, 40 fat, 20 leather, 10 cloth, 50 bone |
+| stag | ~80 | 4–5 venison, 10 fat, 50 leather, 25 cloth, 50 bone |
+| wolf | 100 | 5 wolf meat, 10 fat, 75 leather, 35 cloth, 40 bone |
+| bear | 400 | 19 bear meat, 100 fat, 100 leather, 50 cloth, 150 bone |
+
+**The boar reads ~80 here, and we shipped 150.** §1 took 150 from a source
+split 80/150; this pass lands on 80. That does not flip the row on its own
+— but the 150 camp is now the thinner one, and `mobs.toml` should carry
+both until someone breaks the tie.
+
+**Upkeep — the ramp we were missing.** ~**10%**/24 h while the cupboard is
+above **50%** stocked, ramping toward ~**30%**/24 h below it: a **3×**
+penalty for a thin stockpile, and the threshold is the half-full line.
+`balance.toml` already matches the 10%; the threshold and the 3× are the
+new half. Decay-once-empty, from `wiki.facepunch.com` and so the firmest
+figure in this section: twig 1 h, wood 3 h, stone 5 h, metal 8 h,
+armoured 12 h.
 
 ---
 
@@ -377,9 +513,33 @@ their sulfur is not our sulfur until §2 row 1 lands.
 Nothing public gives a **time-split of a session**, a **deaths-per-hour**
 figure, a **contested-vs-uncontested throughput ratio**, or **offline-raid
 prevalence** — the four numbers that would settle the threat term
-properly. The single highest-value unfetched source is an *Austrian
-Journal of Political Science* paper studying the Hobbesian/Lockean state
-of nature in Rust — real methodology, and its headline finding (players
-favour non-violent and defensive behaviour over offensive) **cuts against
-a large threat term**. Blocked here; worth fetching from a box with open
-egress.
+properly.
+
+**The `oezp.at` paper is identified but still unread, and the reason
+changed** (2026-08-09). It is Jan Byczkowski, *"The Potential for Survival
+Games as a Research Medium in Political Science: Investigating the
+Hobbesian and Lockean State of Nature in Rust"*, **Austrian Journal of
+Political Science vol. 54 no. 2 (2025)**,
+`oezp.at/OEZP/en/article/view/4231` (PDF galley `/download/4231/3257`).
+It is **not** blocked by policy — every article URL on that OJS instance
+exceeds 10 redirects, and `academia.edu` 403s. So it is a broken fetch,
+not a denial, and a browser would very likely just open it.
+
+Confirmed from the abstract, three independent search summaries agreeing:
+in the game's anarchic environment — *which in certain aspects encourages
+violence by lowering the stakes* — **players nonetheless favour
+non-violent behaviour and defensive violence over offensive violence.**
+
+**What is still missing is every number in it**: encounter count, sample
+size, and the violent/non-violent and offensive/defensive percentages.
+The direction of the finding is established and it cuts against a large
+threat term; the magnitude is not. **Do not price a threat term off the
+abstract** — the headline is qualitative and §5.2 already warns that
+threat acts on trip shape rather than rate.
+
+**r/playrust remains unavailable and is now known to be unavailable at the
+tool layer**, not the network: fetches are refused before egress, so no
+amount of open proxy fixes it. Vanilla-1× throughput, "how long to T3" and
+solo-vs-group session shape are still entirely unsourced. A human with a
+browser is the only route to both this and the paper — `SOURCES.md` §0
+Tier 4 is where they belong, and both rows stand.

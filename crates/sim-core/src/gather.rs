@@ -118,12 +118,20 @@ pub struct NodeDef {
     /// and handed over on the swing that exhausts it, % (content
     /// `finish_bonus_pct`); 0 pays evenly.
     ///
-    /// The reference's anti-cherry-picking rule (Devblog 166, *"should
-    /// mitigate cherry picking and leaving half finished nodes around
-    /// the map"*): their ore node pays ~20% of its total on the final
-    /// strike and their tree withholds half its wood until it falls. It
-    /// is a *redistribution*, never a bonus on top — a node abandoned
-    /// half-struck is worth strictly less per swing than one finished.
+    /// The reference's anti-cherry-picking rule (Devblog 166, *"The final
+    /// hit will yield a bonus of about 20% of the total, which is not only
+    /// satisfying but should mitigate cherry picking"* — their own hedge
+    /// on the 20%, so ours is a reading of it, not a taken constant).
+    /// Their tree splits the same way at half: *"You now receive half
+    /// while harvesting and the other half as a finishing bonus"*
+    /// (Devblog **186**, not 187 — the fall is the tell, not the
+    /// trigger). It is a *redistribution*, never a bonus on top — a node
+    /// abandoned half-struck is worth strictly less per swing than one
+    /// finished.
+    ///
+    /// **Not modelled:** theirs pays this bonus only to a proper tool
+    /// (Devblog 166: *"Bone clubs and stones do not trigger it"*), so our
+    /// rock finishes a node for full value where theirs pays nothing.
     pub finish_pct: u16,
     /// (item index, units per swing) rows; `(NO_ITEM, 0)` = empty row.
     pub tools: [(u16, u16); MAX_TOOLS_PER_NODE],

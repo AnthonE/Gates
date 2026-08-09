@@ -1,11 +1,13 @@
 # reference/SOURCES.md — what to read, and which question it settles
 
-**This box cannot reach any of it.** Every Rust domain answers `403` at
-the egress gateway — `rust.facepunch.com`, `wiki.facepunch.com`,
-`rust.fandom.com`, `reddit.com`, `rustlabs.com`, `umod.org` — which is an
-organization policy denial, not a transient failure, and the proxy's own
-README says to report it rather than route around it. GitHub raw is
-reachable, and that is the entire list of what is.
+**Most of it is reachable, and the line above used to say the opposite.**
+Re-probed 2026-08-09 (second probe, same day): `rust.facepunch.com/news`
+and `wiki.facepunch.com` **serve full page text**, and the devblog
+quotations in `RIPLIST.md` §4.3 are now primary-text, not paraphrase. The
+earlier "every Rust domain 403s" reading was wrong — whatever produced it
+was not an organization policy denial, because the same hosts answer now.
+Do not trust a blanket claim of blockage in this file again without
+re-probing; that claim cost a whole research pass its confidence.
 
 So this file exists for a human with a browser. Each row says **what to
 look for**, not just where — a link with no question attached comes back
@@ -15,15 +17,25 @@ they land in `RIPLIST.md` §4/§5.
 
 Ordered by what it unblocks.
 
-**What is actually reachable from here** (probed 2026-08-09):
-`api.github.com` and `raw.githubusercontent.com` — and the API is bound
-to this session's own repos, so it cannot even be searched. Everything
-else in this file answers 403. Blocked domains must not be pulled
-through a third-party fetch proxy or a cache mirror: that is routing
-around the denial, and datamined dumps would breach our own
-nothing-decompiled rail besides. **WebSearch still works** — summaries,
-never page text — which is how every figure in `RIPLIST.md` §4/§5
-arrived.
+**The measured map** (re-probed 2026-08-09, and it is mixed — probe the
+row you need rather than assuming either extreme):
+
+| host | state | note |
+|---|---|---|
+| `rust.facepunch.com/news` | **OPEN** | devblogs served verbatim; note 170 is `/news/devblog170`, no hyphen, while 166/186/187 take the hyphen |
+| `wiki.facepunch.com` | **OPEN** | serves prose, but carries **no** yield tables — the numbers are not there to take |
+| `rusthelp.com` | **OPEN** | the per-tool yield tables; `/world/<node>` and `/items/<item>` |
+| `corrosionhour.com`, `rustly.com`, `xgamingserver.com` | OPEN | SEO tier — usable only cross-checked, and `rustly` is measurably wrong (§4.1) |
+| `wiki.rustclash.com` (ex-`rustlabs.com`) | **403** | bot protection, not policy; `rustlabs.com` 301s here |
+| `rust.fandom.com` | **402** | Fandom paywall/bot wall |
+| `reddit.com` | **BLOCKED** | refused by the *tool layer*, not the network — no workaround from here |
+| `oezp.at` | **REDIRECT LOOP** | every article URL exceeds 10 redirects; abstract reachable by search only |
+| `raw.githubusercontent.com` | OPEN | as before |
+
+Unchanged rails: blocked hosts must not be pulled through a fetch proxy
+or cache mirror, and datamined dumps breach the nothing-decompiled rail.
+**WebSearch works** and is still the only route to Reddit-shaped and
+paywalled material — summaries, never page text.
 
 **The pipe back in**: paste raw text into a file on the working branch,
 or into chat. `raw.githubusercontent.com` is readable, so a file pushed
@@ -37,51 +49,41 @@ tidy them; the parsing is the cheap half.
 Answer inline next to each; a number without its unit or tool is worth
 little. Mark anything a source hedges on ("about 20%") as hedged.
 
-### Tier 1 — unblocks the biggest queued row (`RIPLIST.md` §2 row 1)
+### Tiers 1–3 — ✅ ANSWERED 2026-08-09, do not re-run
 
-For **each** of stone node, metal node, sulfur node, tree:
+All of it landed in `RIPLIST.md` §4.1–§4.6 from this box, once the hosts
+above turned out to be open. Summary of what closed:
 
-1. total yield per node, vanilla 1×
-2. hits/swings to clear it
-3. yield per hit, if stated
-4. all of the above **per tool** — rock, stone pickaxe/hatchet, metal
-   pickaxe/hatchet, salvaged icepick/axe, jackhammer/chainsaw
-5. does it vary by tree species / node size / biome, and by how much
+- **Tier 1** — per-tool totals for all three ore nodes and the tree
+  (§4.1a), species/size bands (§4.1b), and **sulfur settled at 300**, by
+  scoring the two candidate pages on cells we could already check.
+- **Tier 2** — Devblogs 170, 166 and **186** read verbatim (§4.3). Three
+  corrections fell out: the 20% is *hedged* in the original, the tree
+  split is **186 not 187**, and the finish bonus **requires a proper
+  tool**. The staleness question resolved the other way — the 2026 wiki
+  still describes both minigames in the present tense.
+- **Tier 3** — smelt (**parallel**, contradiction settled), craft-time
+  rebates, the animal roster, and the upkeep ramp (§4.6).
 
-Where: `wiki.facepunch.com/rust/` (Ore_nodes and per-tool pages),
-`rustlabs.com` tool pages, `rust.fandom.com/wiki/Nodes`.
-**Settle the sulfur split while there: 300 or 200?**
-
-### Tier 2 — confirms mechanics we shipped on 2026-08-09
-
-6. **Devblog 170** — the hotspot's exact percentages (150% base → 300%
-   ceiling?), and the *"you will not actually earn more resources… you
-   can harvest the ore faster"* line **verbatim**. Our whole marker
-   model rests on a paraphrase of this sentence.
-7. **Devblog 166** — the final-strike share: exactly 20%, or "about"?
-   And is HQM obtainable *only* from that strike?
-8. **Devblog 187** — the tree's half-standing/half-on-the-fall split.
-9. **Any patch note after ~2020** touching either minigame. Our only
-   hard hit-count table is from 2017 and predates both — this is the
-   single biggest staleness risk in the whole research.
-
-Where: `rust.facepunch.com/news` (devblog index).
-
-### Tier 3 — balance surface we have never touched
-
-10. **Smelt times** — seconds per ore in a furnace, wood burned per ore,
-    and whether a furnace smelts in parallel or sequentially (two
-    sources contradicted each other on this).
-11. **Craft times** — seconds per item, and the workbench tier gating.
-12. **Animal health and drops** — chicken, boar, stag, wolf, bear.
-13. **Upkeep** — the exact %/24 h and the low-stock ramp (we match the
-    ~10% but not the ramp).
+**One Tier-1 item is now known to be unobtainable rather than unfound:**
+modern hit counts do not exist publicly, because the marker made
+hits-to-clear a function of aim. Sources publish *times*. Do not go
+looking.
 
 ### Tier 4 — the threat/logistics decomposition, our weakest evidence
 
-14. The **Austrian Journal of Political Science** paper on the
-    Hobbesian/Lockean state of nature in Rust (`oezp.at`) — its actual
-    encounter percentages. Highest-value single item on this page.
+14. **STILL OPEN, and now fully identified.** Jan Byczkowski, *"The
+    Potential for Survival Games as a Research Medium in Political
+    Science: Investigating the Hobbesian and Lockean State of Nature in
+    Rust"*, Austrian Journal of Political Science **54(2), 2025** —
+    `oezp.at/OEZP/en/article/view/4231`, PDF galley
+    `oezp.at/OEZP/en/article/download/4231/3257`. **Not blocked: the OJS
+    instance redirect-loops (>10 hops) on every article URL from here,
+    and `academia.edu` 403s.** A browser will very likely just open it.
+    Bring back: encounter count, sample size, and the violent/non-violent
+    and offensive/defensive percentages. The abstract is confirmed
+    (players favour non-violent and *defensive* violence); it is the
+    magnitudes we lack. Highest-value single item on this page.
 15. **r/playrust**, searched for "sulfur per hour", "how long to T3",
     "solo vs group" — player-reported throughput on **vanilla 1×**, and
     how much of a session is farming vs travel vs fighting. Reddit was
