@@ -23,6 +23,7 @@ use protocol::{
     SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH,
     DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
+use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{PieceRec, LOC_PLANE};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::DeployRec;
@@ -35,6 +36,7 @@ use sim_core::limits::{
 };
 use sim_core::mob;
 use sim_core::persist::PlayerSave;
+use sim_core::survival::REFUSE_C_MAX;
 use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
@@ -1171,7 +1173,19 @@ impl ShardCore {
                             encode_event_consumed((ev.b >> 16) as u16, ev.b as u8, &mut self.ev_buf)
                         }
                         EV_DRANK => encode_event_drank(ev.b as u16, ev.c as u16, &mut self.ev_buf),
-                        _ => encode_event_consume_refused(ev.b as u8, &mut self.ev_buf),
+                        _ => {
+                            // NOW.md §5b: the wire field is four bits and
+                            // the reason domain is 1..=REFUSE_C_MAX — the
+                            // encoder bounds zero and the width, so a
+                            // forged 4..=15 would cross intact. The sim
+                            // can never mean one; refuse it into the same
+                            // counter the encoder's own range check uses.
+                            if !(1..=REFUSE_C_MAX).contains(&ev.b) {
+                                ShardStats::bump(&stats.encode_range_errors);
+                                continue;
+                            }
+                            encode_event_consume_refused(ev.b as u8, &mut self.ev_buf)
+                        }
                     };
                     match enc {
                         Ok(len) => {
@@ -1358,6 +1372,18 @@ impl ShardCore {
                     }
                 }
                 EV_BAG_REMOVED => {
+                    // NOW.md §5b: the wire field is two bits and the
+                    // reason domain tops out at BAG_GONE_MAX — the encoder
+                    // bounds the width, so a forged `why == 3` would cross
+                    // intact. The sim can never mean it; refuse it into
+                    // the same counter the encoder's own range check uses,
+                    // and refuse **before** the cursor loop below moves
+                    // anything (validation ahead of mutation — the
+                    // item-move trap).
+                    if ev.b > BAG_GONE_MAX {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        continue;
+                    }
                     // Same posture as a piece/deploy removal, including
                     // the walk restart: the store swap-removes, so a
                     // cursor inside the shrunken store is now pointing at
@@ -2422,5 +2448,161 @@ impl ShardCore {
             &self.removed_buf[..n_removed],
         );
         Some(len)
+    }
+}
+
+/// NOW.md §5b, the S→C half: the two event payload domains the wire
+/// carries wider than the sim means — `EV_BAG_REMOVED`'s `why` (two bits,
+/// domain 0..=2) and `EV_CONSUME_REFUSED`'s `reason` (four bits, domain
+/// 1..=3) — are refused at the encode boundary. The sim cannot emit either
+/// forged value, which is exactly why these tests inject them into the
+/// world's ring directly and drive the **real** pump: the guard exists for
+/// the emitter bug that would otherwise put a meaningless fact on every
+/// client's screen. Unit tests rather than a wire suite because the pump
+/// is private and the seam (`world.events` is pub) needs no socket —
+/// `accept_chat`'s precedent, one lane over.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::{decode_event, EventMsg};
+    use sim_core::backpack::BackpackContent;
+
+    const SEED: u64 = 0x5B_F06E;
+    const PLAYER: u32 = 7;
+
+    /// Run the real event pump once, capturing every event-lane payload.
+    fn pumped(core: &mut ShardCore, stats: &ShardStats) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        core.pump_events(stats, &mut |lane, _slot, bytes: &[u8]| {
+            if lane == Lane::Event {
+                out.push(bytes.to_vec());
+            }
+            true
+        });
+        out
+    }
+
+    /// A core with one connected client, its join landed, and the event
+    /// ring drained to empty so a test's injected event is the only sim
+    /// event the next pump sees.
+    fn quiet_core(stats: &ShardStats) -> ShardCore {
+        let mut core = ShardCore::new(SEED);
+        assert!(core.connect(0, PLAYER), "connect");
+        core.tick(stats, |_, _, _| true);
+        // A direct world tick clears the ring; with no content armed and
+        // nobody moving, nothing refills it.
+        core.world.tick(&[]);
+        assert!(core.world.events.is_empty(), "ring quiet after setup");
+        core
+    }
+
+    #[test]
+    fn bag_removed_refuses_the_reason_the_sim_cannot_mean() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        // A real bag in the store, and a client mid-walk over it, so the
+        // cursor reset below the guard is a mutation the forged event
+        // would actually reach — the order half of the assert.
+        core.world.backpack = BackpackContent::probe_fixture();
+        let one = [ItemStack { item: 0, count: 1 }; INV_SLOTS];
+        let w = &mut core.world;
+        w.backpacks
+            .stand_up(&w.backpack, 0, 0, 0, PLAYER, &one, 0, &mut w.events)
+            .expect("bag stands");
+        core.world.tick(&[]); // flush the EV_BAG_DROPPED it pushed
+        assert!(core.world.events.is_empty(), "ring quiet again");
+        core.clients[0].bag_sync_cursor = 1;
+        core.clients[0].bag_sync_reset = false;
+
+        // Just outside the domain: why == 3 fits the two-bit field, so
+        // the encoder alone would put it on the wire.
+        core.world
+            .events
+            .push(EV_BAG_REMOVED, 42, BAG_GONE_MAX + 1, 0);
+        let range_before = ShardStats::get(&stats.encode_range_errors);
+        let sent = pumped(&mut core, &stats);
+        assert!(
+            !sent
+                .iter()
+                .any(|b| matches!(decode_event(b), Ok(EventMsg::BagRemoved { .. }))),
+            "a why the sim cannot mean crossed the wire"
+        );
+        assert_eq!(
+            ShardStats::get(&stats.encode_range_errors),
+            range_before + 1,
+            "the refusal is a count"
+        );
+        assert_eq!(
+            core.clients[0].bag_sync_cursor, 1,
+            "the walk cursor moved for a refused event — the refusal is \
+             not ordered before the mutation"
+        );
+        assert!(!core.clients[0].bag_sync_reset, "same, the reset flag");
+
+        // Just inside: why == BAG_GONE_MAX still crosses, and the cursor
+        // reset that comes with a real removal happens.
+        core.world.tick(&[]);
+        core.world.events.push(EV_BAG_REMOVED, 42, BAG_GONE_MAX, 0);
+        let sent = pumped(&mut core, &stats);
+        let removed = sent
+            .iter()
+            .filter_map(|b| match decode_event(b) {
+                Ok(EventMsg::BagRemoved { id, why }) => Some((id, why)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(removed, vec![(42, BAG_GONE_MAX as u8)]);
+        assert_eq!(
+            ShardStats::get(&stats.encode_range_errors),
+            range_before + 1,
+            "the in-domain reason is not counted as refused"
+        );
+    }
+
+    #[test]
+    fn consume_refused_refuses_the_reason_the_sim_cannot_mean() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+
+        // Just outside both ends of the domain: zero (the refusal that
+        // refuses to say why) and REFUSE_C_MAX + 1 (fits the four-bit
+        // field, so the encoder's width check alone would pass it).
+        let range_before = ShardStats::get(&stats.encode_range_errors);
+        core.world.events.push(EV_CONSUME_REFUSED, PLAYER, 0, 0);
+        core.world
+            .events
+            .push(EV_CONSUME_REFUSED, PLAYER, REFUSE_C_MAX + 1, 0);
+        let sent = pumped(&mut core, &stats);
+        assert!(
+            !sent
+                .iter()
+                .any(|b| matches!(decode_event(b), Ok(EventMsg::ConsumeRefused { .. }))),
+            "a reason the sim cannot mean crossed the wire"
+        );
+        assert_eq!(
+            ShardStats::get(&stats.encode_range_errors),
+            range_before + 2,
+            "both refusals are counts"
+        );
+
+        // Just inside: REFUSE_C_MAX itself still crosses.
+        core.world.tick(&[]);
+        core.world
+            .events
+            .push(EV_CONSUME_REFUSED, PLAYER, REFUSE_C_MAX, 0);
+        let sent = pumped(&mut core, &stats);
+        let reasons = sent
+            .iter()
+            .filter_map(|b| match decode_event(b) {
+                Ok(EventMsg::ConsumeRefused { reason }) => Some(reason),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reasons, vec![REFUSE_C_MAX as u8]);
+        assert_eq!(
+            ShardStats::get(&stats.encode_range_errors),
+            range_before + 2,
+            "the in-domain reason is not counted as refused"
+        );
     }
 }

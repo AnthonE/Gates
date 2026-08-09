@@ -40,6 +40,13 @@ pub struct ShardStats {
     /// Input datagrams that failed to decode (client-driven bytes; never a
     /// panic, always a count).
     pub input_dg_bad: AtomicU64,
+    /// Input datagrams that decoded but carried a value the sim can never
+    /// mean — a button bit outside `BTN_MASK` (NOW.md §5b). Counted apart
+    /// from `input_dg_bad` because the two accuse differently: bad bytes
+    /// are line noise or a broken client, a forged in-layout value is a
+    /// client this version cannot have built. Dropped, never a disconnect —
+    /// the datagram lane's loss policy is redundancy, not framing trust.
+    pub input_dg_forged: AtomicU64,
     /// Inbound ring full — datagram dropped (redundancy re-carries).
     pub input_ring_drops: AtomicU64,
     /// Snapshots encoded and handed to rings.

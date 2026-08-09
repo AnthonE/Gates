@@ -1776,6 +1776,12 @@ impl World {
                         // command (bot, test, WAL) falls back to slot 0.
                         frame.sel = 0;
                     }
+                    // The wire refuses unknown button bits at the server's
+                    // accept boundary (net.rs `accept_input`); a non-wire
+                    // command is masked instead — `sel`'s rule, applied to
+                    // bits. The stored frame is hashed, so a bit no verb
+                    // reads must never reach it (NOW.md §5b).
+                    frame.buttons &= crate::input::BTN_MASK;
                     self.players[slot].frame = frame;
                 }
             }

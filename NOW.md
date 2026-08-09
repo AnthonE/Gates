@@ -1644,27 +1644,31 @@ What remains:
 
 ## 5b · The wire accepts values the sim can never mean
 
-`every_domain_fits_its_wire_field` (`protocol/src/event.rs`) now gates ten
-value domains against the fields that carry them — a sim domain outgrowing
-its wire field is the shape of the 2026-08-05 FAIL, and it is caught now.
-Writing it measured two live holes running the *other* way, left unfixed on
-purpose: narrowing what decodes is a wire act, and that pass was a gate.
+`every_domain_fits_its_wire_field` (`protocol/src/event.rs`) gates ten
+value domains against the fields that carry them; writing it measured two
+holes running the *other* way. **The sim/server side of both is now closed**
+(lane/wire-values) — refusals at our own boundaries, protocol untouched,
+goldens unmoved:
 
-- **`BAG_GONE_*`** — `encode_event_bag_removed` bounds against the *width*
-  (`why >= 1 << BAG_GONE_BITS`), not the domain (largest live is 2), and
-  the decoder does not bound it at all. `why == 3` round-trips as a
-  removal reason that means nothing.
-- **`REFUSE_C_*`** — 4 bits for a domain topping out at 3, and neither end
-  bounds the upper edge; only `reason == 0` is refused. Values 4..15 cross
-  intact.
+- **`BAG_GONE_*` / `REFUSE_C_*`** — the pump refuses a reason outside the
+  domain before encoding or moving a cursor (`server/core.rs`, counted
+  into `encode_range_errors`), against `BAG_GONE_MAX`/`REFUSE_C_MAX` — new
+  in `backpack.rs`/`survival.rs`, literals because protocol's scrape has
+  no exempt row for them yet, kept honest by
+  `sim-core/tests/domain_ledger.rs`. `server --lib`'s `*_cannot_mean`
+  tests drive the forged and the just-inside value through the real pump.
+- **`buttons` bits 4–7** (§5c's tail) — `accept_input` (`server/net.rs`)
+  refuses a decoded datagram carrying a bit outside `BTN_MASK`
+  (`input.rs`), counted (`input_dg_forged`), never a disconnect;
+  `world::apply` masks non-wire frames (`sel`'s fallback rule) so no
+  unmeant bit reaches `state_hash`.
 
-Both are forgery slack, not drift: the sim cannot emit either today, so
-nothing is broken for a player. The fix is the closed-set posture
-`DEATH_BY_*` now has — a derived `*_MAX` on the sim side, checked at both
-ends — and it wants its own pass because it changes what decodes, which
-means deciding whether a narrowing owes `PROTO_VER` a bump.
+Still open, and it is the wire act this item always named: the *decode*
+side — the client's decoder taking `why == 3` / `reason` 4..15, the button
+octet — plus deriving the two `*_MAX`s into protocol's exempt list and the
+`PROTO_VER` judgement for narrowing what decodes. One protocol pass.
 
-Systems lane (`crates/protocol`, `crates/sim-core`).
+Systems lane (`crates/protocol`).
 
 ---
 
@@ -1763,8 +1767,9 @@ range is not part of the wire contract at all and the bytes may move without a
 turn. Decide that first; it is the actual question.
 
 Same shape one level down: `decode_input` reads all 8 bits with no domain
-check, so bits 4–7 round-trip as meaningless buttons. That is §5b's forgery
-slack, not drift, and belongs with §5b's pass.
+check. The server now refuses the unmeant bits at its accept boundary
+(§5b, `accept_input`); whether decode itself should narrow is the same
+protocol pass §5b still owes.
 
 
 ## 5d · The agent player has a spec and no code *(systems lane)*
