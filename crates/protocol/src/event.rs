@@ -1154,11 +1154,12 @@ pub fn encode_event_piece_defs(
 /// One placed-deployable record on the wire: 32 bits, shared by the
 /// placed broadcast and the sync batches. Every width is exact, so only
 /// sim-impossible addresses need refusing at encode. The trailing three
-/// bits are the door's open, locked and has-lock state — meaningless for
-/// every other archetype, and always 0 there, so they cost three bits and
-/// save a second lane for the join walk (a client that walked in must see
-/// which doors stand open, which stand locked, and which carry a keypad
-/// at all).
+/// bits are open, locked and has-lock state. Open is the door's alone;
+/// locked and has-lock ride for every lockable archetype — a door or a
+/// box (`sim_core::deploy::lockable`) — and all three are 0 for the rest,
+/// so they cost three bits and save a second lane for the join walk (a
+/// client that walked in must see which doors stand open, and which
+/// leaves stand locked or carry a keypad at all).
 fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError> {
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
