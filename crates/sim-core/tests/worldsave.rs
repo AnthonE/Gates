@@ -39,8 +39,14 @@ const ROW_DOORWAY: u16 = 3;
 const DEPLOY_HEARTH: u16 = 0;
 const DEPLOY_DOOR: u16 = 2;
 
-fn armed() -> World {
-    let mut w = World::new(SEED);
+fn armed() -> Box<World> {
+    // On the heap from the first frame: a test thread's stack is 2 MiB and
+    // three live `World`s (fixture + `round_trip`'s rebuild + a return
+    // temporary) do not fit it in any build profile. One construction's
+    // frame does — the wasm parity probe proves that daily on a 1 MiB
+    // shadow stack — so the box is taken here, once, and every caller
+    // holds a pointer. CLAUDE.md's boxed-array trap, wearing test clothes.
+    let mut w = Box::new(World::new(SEED));
     w.gather = GatherContent::probe_fixture();
     w.craft = CraftContent::probe_fixture();
     w.build = BuildContent::probe_fixture();
@@ -113,7 +119,7 @@ fn stand_in_build_cell(w: &mut World, slot: usize) -> (u16, u16) {
 /// A world somebody has lived in: two bodies (one of them asleep), a
 /// foundation, a doorway, a hearth, a closed door, a chopped tree, and a
 /// few ticks of clock on all of it.
-fn a_lived_in_world() -> World {
+fn a_lived_in_world() -> Box<World> {
     let mut w = armed();
     w.dev_spawn = Some(w.spawn_pos(1));
     w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
@@ -184,13 +190,13 @@ fn a_lived_in_world() -> World {
 /// exactly lossless for one nobody was. `a_world_saved_mid_session_puts_
 /// everyone_to_bed` below owns the lossy half; everything that compares
 /// hashes starts here.
-fn a_quiet_world() -> World {
+fn a_quiet_world() -> Box<World> {
     let mut w = a_lived_in_world();
     w.tick(&[Command::Leave { id: 1 }]);
     w
 }
 
-fn round_trip(w: &World) -> World {
+fn round_trip(w: &World) -> Box<World> {
     let mut buf = vec![0u8; WORLD_SAVE_MAX_BYTES];
     let n = w.save_world(&mut buf).expect("a live world encodes");
     let mut back = armed();
