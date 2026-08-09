@@ -88,6 +88,15 @@ pub struct Row {
     pub name: String,
     pub addr: String,
     pub detail: String,
+    /// The list row this came from. `None` on the Direct row, which is not a
+    /// shard anybody published — it is the address this binary was started
+    /// with, and there is no document behind it to poll.
+    ///
+    /// Kept whole rather than as loose fields so `detail` has exactly one
+    /// place it is computed: a poll rewrites the count *in the shard* and the
+    /// line is re-derived, which is what keeps a refreshed row from losing
+    /// the map and ping it already had.
+    pub shard: Option<Shard>,
 }
 
 impl Row {
@@ -96,10 +105,12 @@ impl Row {
             name: "Direct".into(),
             addr: addr.to_string(),
             detail: "the address this client was started with".into(),
+            shard: None,
         }
     }
 
-    fn from_shard(s: &Shard) -> Self {
+    /// The second line of a row: population, then whatever else it states.
+    fn detail_of(s: &Shard) -> String {
         let mut detail = s.population();
         if let Some(m) = &s.map {
             detail.push_str("  ");
@@ -108,11 +119,36 @@ impl Row {
         if let Some(p) = s.ping_ms {
             detail.push_str(&format!("  {p} ms"));
         }
+        detail
+    }
+
+    fn from_shard(s: &Shard) -> Self {
         Self {
             name: s.name.clone(),
             addr: s.addr.clone(),
-            detail,
+            detail: Self::detail_of(s),
+            shard: Some(s.clone()),
         }
+    }
+
+    /// Where this row's live count is polled from, if anywhere.
+    fn status_url(&self) -> Option<&str> {
+        self.shard.as_ref()?.status_url.as_deref()
+    }
+
+    /// Fold a poll in. Returns whether the drawn line actually changed, which
+    /// is what decides a rebuild: re-spawning the whole screen every ten
+    /// seconds to redraw an identical `3/100` is a visible flicker for
+    /// nothing.
+    fn apply_status(&mut self, st: &shardlist::Status) -> bool {
+        let Some(s) = self.shard.as_mut() else {
+            return false;
+        };
+        s.apply_status(st);
+        let redrawn = Self::detail_of(s);
+        let changed = redrawn != self.detail;
+        self.detail = redrawn;
+        changed
     }
 }
 
@@ -139,6 +175,14 @@ pub struct Menu {
     /// the main thread for no benefit. tokio's is `Sync`, its unbounded
     /// sender is not async, and tokio is already a dependency.
     fetch: Option<tokio::sync::mpsc::UnboundedReceiver<Result<Vec<Shard>, String>>>,
+    /// The in-flight round of status polls, one per row that names an
+    /// endpoint. Collected as a batch rather than per row so the frame does
+    /// one `try_recv` however many shards are listed.
+    status_poll: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<(usize, shardlist::Status)>>>,
+    /// Seconds since the last round went out. Bevy's frame delta, not an
+    /// `Instant` — the screen has one clock and it is the renderer's, which
+    /// is the same rule `Connecting::waited_s` follows.
+    since_poll: f32,
 }
 
 impl Menu {
@@ -155,9 +199,34 @@ impl Menu {
             dirty: false,
             servers_url,
             fetch: None,
+            status_poll: None,
+            since_poll: 0.0,
         }
     }
 }
+
+/// How often the menu re-polls every listed shard's `/status.json`, in
+/// seconds.
+///
+/// **PROPOSED — `DECISIONS.md` §open, "shard status poll v0".** The count is
+/// polled rather than read out of the shard list because a baked number is
+/// stale the moment the document is written (`shardlist.rs` module docs). Ten
+/// seconds is chosen against what the number is *for*: a player deciding which
+/// of four shards to join needs "busy or empty", not a live scoreboard, and
+/// the endpoint is a plain TCP GET a shard answers serially on one thread.
+/// With the sixty-four-row cap that is at most 6.4 requests a second across
+/// the whole list from one client, and a shard that does not answer costs the
+/// row nothing — it keeps whatever count it had.
+pub const STATUS_POLL_SECS: f32 = 10.0;
+
+/// How long a single status poll may take before it is abandoned, in seconds.
+///
+/// **PROPOSED — `DECISIONS.md` §open, "shard status poll v0".** Shorter than
+/// `STATUS_POLL_SECS` on purpose: a round must finish before the next one is
+/// due, or a slow shard would stack rounds until the list is polling itself
+/// in a loop. Comfortably past a transatlantic round trip, and a shard that
+/// misses it reads as `?` rather than as zero.
+pub const STATUS_TIMEOUT_S: u64 = 4;
 
 /// How long the connect screen waits before giving up, in seconds.
 ///
@@ -282,10 +351,109 @@ pub fn poll_fetch(mut menu: ResMut<Menu>) {
             menu.status = format!("{} shard(s)", shards.len());
             menu.rows.extend(shards.iter().map(Row::from_shard));
             menu.dirty = true;
+            // Poll the counts immediately rather than after the interval: the
+            // rows have just appeared reading `?`, and the whole point of the
+            // endpoint is that they do not stay that way while the player
+            // looks at them.
+            menu.since_poll = STATUS_POLL_SECS;
         }
         // The reason is drawn verbatim. `shardlist::parse` writes these for
         // a reader, which is why they name the row and the cap.
         Err(why) => menu.status = why,
+    }
+}
+
+/// Send a round of status polls, on a thread, at most one round at a time.
+///
+/// **This is what makes the count real.** The shard list names where each
+/// shard answers `GET /status.json` and this is the half that asks — see
+/// `shardlist.rs`'s module docs for why the number is not simply written into
+/// the document by the generator.
+///
+/// One thread for the whole round, walked serially. A thread per row would be
+/// sixty-four threads on a full list to save a few hundred milliseconds of
+/// something nobody is waiting on, and the frame loop only ever `try_recv`s
+/// either way.
+pub fn begin_status_poll(time: Res<Time>, mut menu: ResMut<Menu>) {
+    if menu.status_poll.is_some() {
+        // A round is still out. Do not stack another on top of it — that is
+        // how a slow shard turns a ten-second poll into a busy loop.
+        return;
+    }
+    menu.since_poll += time.delta_secs();
+    if menu.since_poll < STATUS_POLL_SECS {
+        return;
+    }
+    menu.since_poll = 0.0;
+
+    let targets: Vec<(usize, String)> = menu
+        .rows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| r.status_url().map(|u| (i, u.to_string())))
+        .collect();
+    if targets.is_empty() {
+        return;
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        let got: Vec<(usize, shardlist::Status)> = targets
+            .iter()
+            // A shard that does not answer contributes NOTHING to this vec.
+            // That is the whole honesty rule in one `filter_map`: the row keeps
+            // the count it had, rather than being zeroed by a timeout and
+            // reading as "everyone left".
+            .filter_map(|(i, url)| Some((*i, status_blocking(url).ok()?)))
+            .collect();
+        let _ = tx.send(got);
+    });
+    menu.status_poll = Some(rx);
+}
+
+/// One status GET, capped and timed out. The sibling of `fetch_blocking`, and
+/// bounded for the same reason: this is a request to a host named in a
+/// document fetched from another host.
+fn status_blocking(url: &str) -> Result<shardlist::Status, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(STATUS_TIMEOUT_S)))
+        .build()
+        .into();
+    let mut res = agent.get(url).call().map_err(|e| format!("status: {e}"))?;
+    let bytes = res
+        .body_mut()
+        .with_config()
+        .limit((shardlist::MAX_STATUS_BYTES + 1) as u64)
+        .read_to_vec()
+        .map_err(|e| format!("status: {e}"))?;
+    shardlist::parse_status(&bytes)
+}
+
+/// Collect a finished round and redraw only if a number moved.
+pub fn poll_status(mut menu: ResMut<Menu>) {
+    let Some(rx) = &mut menu.status_poll else {
+        return;
+    };
+    let got = match rx.try_recv() {
+        Ok(got) => got,
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return,
+        // The thread died without sending. Drop the round and let the timer
+        // start the next one; a status poll is not worth a status line, which
+        // belongs to the shard list itself.
+        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+            menu.status_poll = None;
+            return;
+        }
+    };
+    menu.status_poll = None;
+    let mut changed = false;
+    for (i, st) in got {
+        if let Some(row) = menu.rows.get_mut(i) {
+            changed |= row.apply_status(&st);
+        }
+    }
+    if changed {
+        menu.dirty = true;
     }
 }
 
@@ -634,18 +802,76 @@ mod tests {
         assert!(m.status.contains("--servers"), "{}", m.status);
     }
 
-    #[test]
-    fn a_row_never_invents_a_population() {
-        let s = Shard {
+    fn shard(addr: &str) -> Shard {
+        Shard {
             id: "a".into(),
             name: "A".into(),
-            addr: "h:1".into(),
+            addr: addr.into(),
             players: None,
             max_players: None,
             map: None,
             ping_ms: None,
-        };
+            status_url: None,
+        }
+    }
+
+    #[test]
+    fn a_row_never_invents_a_population() {
         // `?`, never `0/0` — the row states what it knows and no more.
-        assert_eq!(Row::from_shard(&s).detail, "?");
+        assert_eq!(Row::from_shard(&shard("h:1")).detail, "?");
+    }
+
+    #[test]
+    fn a_poll_rewrites_the_count_and_keeps_the_rest_of_the_line() {
+        // The regression this row shape exists to prevent: `detail` used to
+        // be a string built once, so folding a count in would have had to
+        // rebuild it — and the obvious rebuild loses the map and the ping.
+        let mut s = shard("h:1");
+        s.map = Some("island 20260731".into());
+        s.ping_ms = Some(31);
+        let mut row = Row::from_shard(&s);
+        assert_eq!(row.detail, "?  island 20260731  31 ms");
+
+        let st = shardlist::parse_status(br#"{"players":3,"max_players":100}"#).unwrap();
+        assert!(row.apply_status(&st), "the line changed and must redraw");
+        assert_eq!(row.detail, "3/100  island 20260731  31 ms");
+
+        // The same count again is not a redraw. Rebuilding the screen every
+        // ten seconds to draw an identical line is a flicker for nothing.
+        assert!(!row.apply_status(&st), "an unchanged line must not redraw");
+    }
+
+    #[test]
+    fn only_a_listed_shard_is_polled() {
+        // The Direct row is the address this binary was started with, not a
+        // shard anybody published — there is no document behind it naming a
+        // status endpoint, and it must not be invented.
+        let m = Menu::new("127.0.0.1:4433", None);
+        assert_eq!(m.rows[0].status_url(), None);
+        let st = shardlist::parse_status(br#"{"players":3,"max_players":100}"#).unwrap();
+        let mut direct = Row::direct("127.0.0.1:4433");
+        assert!(!direct.apply_status(&st), "the direct row has no count to set");
+        assert_eq!(direct.detail, "the address this client was started with");
+
+        // A listed shard that names one is polled; one that does not, is not.
+        let mut s = shard("h:1");
+        assert_eq!(Row::from_shard(&s).status_url(), None);
+        s.status_url = Some("https://h:8080/status.json".into());
+        assert_eq!(
+            Row::from_shard(&s).status_url(),
+            Some("https://h:8080/status.json")
+        );
+    }
+
+    #[test]
+    fn the_poll_interval_outlasts_its_own_timeout() {
+        // A round must finish before the next is due, or a slow shard stacks
+        // rounds until the list is polling itself in a loop. `begin_status_poll`
+        // also refuses to start a second round, so this is belt and braces —
+        // but the constant that makes it true should not drift silently.
+        assert!(
+            (STATUS_TIMEOUT_S as f32) < STATUS_POLL_SECS,
+            "a poll can outlive its own interval"
+        );
     }
 }

@@ -26,6 +26,10 @@ pub mod config;
 // (see the module header), and a mapping that lives inside a Bevy system is
 // one no test in the code tier can call.
 pub mod look;
+// Join links — `scry://join/gates/host:port`. Unconditional for the reason
+// `shardlist` is: it parses a string a stranger wrote and handed to a friend,
+// which is the input in this client that most needs a test in the code tier.
+pub mod deeplink;
 pub mod scry;
 pub mod shardlist;
 // The audio model — which sound, how loud, how many at once, and the

@@ -427,6 +427,11 @@ impl Plugin for GatesRenderPlugin {
             Update,
             (
                 menu::poll_fetch,
+                // The count half, after the list half: `poll_fetch` is what
+                // creates the rows a poll addresses by index, and both feed
+                // the one `rebuild_on_new_rows` below.
+                menu::begin_status_poll,
+                menu::poll_status,
                 menu::rebuild_on_new_rows,
                 menu::refresh_status,
                 menu::click,
