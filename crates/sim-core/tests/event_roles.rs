@@ -53,9 +53,9 @@
 //!    state and not a clock — `CLAUDE.md`'s wall-clock rule is untouched.
 //!
 //! Coverage is stated, never implied: `coverage_is_stated_not_implied`
-//! pins how many of the 25 codes are checked by role, so the gate can
-//! never read as "the event lane is covered" while covering thirteen, and
-//! a new `EV_*` cannot land without someone classifying it.
+//! pins how many of the lane's `EV_MAX` codes are checked by role, so the
+//! gate can never read as "the event lane is covered" while covering
+//! thirteen, and a new `EV_*` cannot land without someone classifying it.
 //!
 //! There are three arrangements. `duel_world` is `combat.rs`'s duel —
 //! `dev_spawn` pins both players to the ring's own spawn for id 1, which
@@ -74,7 +74,7 @@
 //! each constant with the blindness they exist to remove. None of them is
 //! a knob — no shipping code reads one.
 
-use sim_core::backpack::BackpackContent;
+use sim_core::backpack::{BackpackContent, BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
 use sim_core::build::{
     foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE,
     REFUSE_B_COST, REFUSE_B_PIECE,
@@ -82,9 +82,10 @@ use sim_core::build::{
 use sim_core::combat::CombatContent;
 use sim_core::craft::{CraftContent, REFUSE_INPUTS, REFUSE_RECIPE};
 use sim_core::deploy::{box_key, DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
-use sim_core::gather::{cell_key, GatherContent, ItemStack};
+use sim_core::gather::{cell_key, weak_mark8, GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
+use sim_core::limits::TICK_HZ;
 use sim_core::loot::LootContent;
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::oven::CookContent;
@@ -2415,6 +2416,484 @@ fn charge_placed_names_the_cell_then_the_address_then_the_fuse() {
     );
 }
 
+// ---------------------------------------------------------------------
+// The last five: EV_WEAK_MARK, EV_SLOT_RESPAWNED, EV_CRAFT_DONE,
+// EV_BAG_REMOVED, EV_RESPAWN — the codes the ledger carried as a stated
+// debt (`NOW.md` §4). None of them needed new machinery, only their causes
+// driven to the end: a respawn timer leapt to the way `bag_respawn.rs`
+// leaps a cooldown, a death answered twice, a bag watched out of the world
+// by two different exits.
+// ---------------------------------------------------------------------
+
+/// Where the second weak-spot swing stands: on the mark's own heading,
+/// 1 m out from the node — inside the fixture spear's 2 m reach, outside
+/// `POINT_BLANK_M2` (point blank has no bearing to judge and never
+/// bonuses, so a swing from here is the one that can set the bit).
+const WEAK_STAND_M: f32 = 1.0;
+
+/// `until`, facing a chosen yaw. For the one cause where where you stand
+/// AND where you look are both the fixture: the weak-spot sector compares
+/// the swinger's bearing against the mark's heading, and `until`'s fixed
+/// north-facing frame cannot stand in an arbitrary sector.
+fn until_facing(w: &mut World, yaw: u16, code: u8) {
+    let mut seq = 0u16;
+    for _ in 0..MAX_STEPS {
+        w.tick(&[Command::Input {
+            id: ATTACKER,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_PRIMARY,
+                yaw,
+                pitch: 128,
+                move_x: 0,
+                move_z: 0,
+                sel: 0,
+            },
+        }]);
+        seq = seq.wrapping_add(1);
+        if count(w, code) > 0 {
+            return;
+        }
+    }
+    panic!("event code {code} never landed in {MAX_STEPS} sim ticks");
+}
+
+/// `EV_WEAK_MARK: a = player id, b = cell key, c = weak-hit bit << 8 |
+/// next mark heading`.
+///
+/// The packed `c` is the risk: bit 8 says the hit that just landed stood
+/// in the mark's sector, the low byte says where the NEXT mark points.
+/// Read on two consecutive hits — the first from point blank, which never
+/// bonuses and whose mark is only being announced now, then a second from
+/// inside the sector that announcement named — so the bit is seen clear
+/// AND set at one node while the heading matches `weak_mark8`'s pure
+/// function both times. A reversed pack cannot reproduce the sequence:
+/// bit 8 as the heading would put the first mark's whole value in one
+/// flag, and the second event's low byte would stop tracking the chase.
+#[test]
+fn weak_mark_names_the_swinger_then_the_cell_then_bit_over_heading() {
+    let mut w = duel_world();
+    let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::Tree);
+    let ck = cell_key(cx, cz);
+    w.players[0].body = Body::at(SEED, x, z);
+    until(&mut w, EV_WEAK_MARK);
+    let first = only(&w, EV_WEAK_MARK);
+    assert_eq!(first.a, ATTACKER, "EV_WEAK_MARK.a is the SWINGER");
+    assert_eq!(
+        first.b, ck,
+        "EV_WEAK_MARK.b is the CELL KEY of the node being chased"
+    );
+    assert_eq!(
+        first.c >> 8,
+        0,
+        "the first hit cannot be a weak hit — the mark it would have had \
+         to stand in is only being announced by this event"
+    );
+    let mark = weak_mark8(SEED, cx, cz, ATTACKER, 1);
+    assert_eq!(
+        first.c & 0xff,
+        mark as u32,
+        "EV_WEAK_MARK.c's low byte is the NEXT mark heading, \
+         `weak_mark8`'s own value after one landed hit"
+    );
+
+    // Stand where that heading points and face back at the node — the
+    // sector the sim itself just named — then land the second hit.
+    let (mx, mz) = yaw_dir((mark as u16) << 8);
+    w.players[0].body = Body::at(SEED, x + mx * WEAK_STAND_M, z + mz * WEAK_STAND_M);
+    let back = (((mark as u16) + 128) & 0xff) << 8;
+    until_facing(&mut w, back, EV_WEAK_MARK);
+    let second = only(&w, EV_WEAK_MARK);
+    distinct3(second, "EV_WEAK_MARK");
+    assert_eq!(second.a, ATTACKER, "EV_WEAK_MARK.a is still the swinger");
+    assert_eq!(second.b, ck, "EV_WEAK_MARK.b is still the same node");
+    assert_eq!(
+        second.c >> 8,
+        1,
+        "EV_WEAK_MARK.c's bit 8 is the WEAK-HIT bit, and this swing stood \
+         in the sector the previous event named"
+    );
+    assert_eq!(
+        second.c & 0xff,
+        weak_mark8(SEED, cx, cz, ATTACKER, 2) as u32,
+        "and the low byte is the heading for hit three — the chase moved on"
+    );
+}
+
+/// `EV_SLOT_RESPAWNED: a = cell key, b = 0.`
+///
+/// The one code that needed a timer to elapse: the window is 20–45 min of
+/// sim ticks, so the clock is leapt to one tick short of the store's own
+/// `respawn_at` — `bag_respawn.rs`'s cooldown leap, the same arithmetic
+/// the minutes would have done — and the event must then land on exactly
+/// the tick the timer names. The swap this catches is quiet: `a` and `b`
+/// reversed reads `(0, cell key)`, and with `b` documented as 0 the zero
+/// in `a` would address no cell on any client.
+#[test]
+fn slot_respawned_names_the_cell_that_stood_back_up() {
+    let mut w = duel_world();
+    let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::Tree);
+    assert_ne!(
+        cx, cz,
+        "the scanned cell packs the same value into both halves of its \
+         key, so this check cannot see the key pack reversed"
+    );
+    w.players[0].body = Body::at(SEED, x, z);
+    until(&mut w, EV_SLOT_HARVESTED);
+    let due = w
+        .slot_lives
+        .find(cx, cz)
+        .expect("the felled tree holds a life record")
+        .respawn_at;
+    assert!(due > w.tick, "the harvested slot must carry a future timer");
+
+    w.tick = due - 1;
+    until_quiet(&mut w, EV_SLOT_RESPAWNED);
+    assert_eq!(
+        w.tick,
+        due + 1,
+        "the release landed on some other tick than the one the timer \
+         names — respawn_at is on the wire's side of a doc comment too"
+    );
+    let ev = only(&w, EV_SLOT_RESPAWNED);
+    assert_ne!(
+        ev.a, 0,
+        "the cell key is zero, so this check cannot see a swap against the \
+         documented-zero b. Scan a different slot, not the assertion."
+    );
+    assert_eq!(
+        ev.a,
+        cell_key(cx, cz),
+        "EV_SLOT_RESPAWNED.a is the CELL KEY of the slot that stood up"
+    );
+    assert_eq!(ev.b, 0, "EV_SLOT_RESPAWNED.b is documented as 0");
+    assert_eq!(ev.c, 0, "and c states no role either");
+    assert!(
+        w.slot_lives.find(cx, cz).is_none(),
+        "the slot is announced standing but its life record remains — the \
+         event under test did not ride the release"
+    );
+}
+
+/// The craft fixture's two-input recipe (row 1): 2 × item 1 + 1 × item 2
+/// pay one unit of item 3 over 3 ticks. Row 1 rather than row 0 because
+/// row 0 pays **2 × item 2** — the same number in both halves of
+/// `EV_CRAFT_DONE.b`, which `distinct_halves` rightly refuses.
+const RECIPE_PAYS_ONE: u16 = 1;
+/// Row 0, used for the other cause: its output can be denied a slot while
+/// its inputs still pay, which is what drives the announced-loss zero.
+const RECIPE_OVERFLOWS: u16 = 0;
+
+/// `EV_CRAFT_DONE: a = player id, b = item index << 16 | units actually
+/// added (0 = full inventory; the loss is announced, never silent)`.
+///
+/// Two causes because the low half has two meanings to prove: the units
+/// that landed when they fit, and the announced zero when nothing did. A
+/// reversed pack survives neither — the first reads `1 << 16 | 3`, the
+/// second reads `0 << 16 | 2`, and both are checked whole against the
+/// fixture's own row.
+#[test]
+fn craft_done_names_the_crafter_then_item_over_units() {
+    let mut w = lone_world();
+    w.craft = CraftContent::probe_fixture();
+    let def = w.craft.recipes[RECIPE_PAYS_ONE as usize];
+    assert_ne!(
+        def.output as u32, def.out_count as u32,
+        "the recipe pays its own row number of units, so this check cannot \
+         see the pack reversed. Use a different row, not a weaker assertion."
+    );
+    for s in w.players[0].inv.iter_mut() {
+        *s = ItemStack::default();
+    }
+    w.players[0].inv[0] = ItemStack { item: 1, count: 2 };
+    w.players[0].inv[1] = ItemStack { item: 2, count: 1 };
+    w.tick(&[Command::Craft {
+        id: BODY,
+        recipe: RECIPE_PAYS_ONE,
+        count: 1,
+    }]);
+    assert_eq!(
+        count(&w, EV_CRAFT_REFUSED),
+        0,
+        "the enqueue was refused — the fixture, not the mechanic"
+    );
+    until_quiet(&mut w, EV_CRAFT_DONE);
+    let done = only(&w, EV_CRAFT_DONE);
+    distinct3(done, "EV_CRAFT_DONE");
+    distinct_halves(done.b, "EV_CRAFT_DONE.b");
+    assert_eq!(done.a, BODY, "EV_CRAFT_DONE.a is who crafted");
+    assert_eq!(
+        done.b >> 16,
+        def.output as u32,
+        "EV_CRAFT_DONE.b's HIGH half is the ITEM index"
+    );
+    assert_eq!(
+        done.b & 0xffff,
+        def.out_count as u32,
+        "EV_CRAFT_DONE.b's LOW half is the units actually added"
+    );
+    assert_eq!(
+        w.players[0].inv[0],
+        ItemStack {
+            item: def.output,
+            count: def.out_count,
+        },
+        "and the inventory holds what the event announced"
+    );
+
+    // Cause two: the output has nowhere to land. The inputs sit in a
+    // stack the batch does not empty, every other slot is full of the
+    // output at its own ceiling, and the doc's parenthetical is the law
+    // under test: the loss is announced, never silent.
+    w.players[0].inv[0] = ItemStack { item: 0, count: 4 };
+    for s in w.players[0].inv.iter_mut().skip(1) {
+        *s = ItemStack {
+            item: 2,
+            count: 100,
+        };
+    }
+    w.tick(&[Command::Craft {
+        id: BODY,
+        recipe: RECIPE_OVERFLOWS,
+        count: 1,
+    }]);
+    until_quiet(&mut w, EV_CRAFT_DONE);
+    let lost = only(&w, EV_CRAFT_DONE);
+    assert_eq!(
+        lost.a, BODY,
+        "EV_CRAFT_DONE.a is who crafted, paid and lost"
+    );
+    assert_eq!(
+        lost.b >> 16,
+        w.craft.recipes[RECIPE_OVERFLOWS as usize].output as u32,
+        "the HIGH half still names the item that was owed"
+    );
+    assert_eq!(
+        lost.b & 0xffff,
+        0,
+        "EV_CRAFT_DONE.b's LOW half is 0 — a full inventory's loss is \
+         announced, never silent"
+    );
+    assert!(
+        w.players[0]
+            .inv
+            .iter()
+            .skip(1)
+            .all(|s| s.item == 2 && s.count == 100),
+        "the overflow leaked into a stack that was already at its ceiling"
+    );
+}
+
+/// `EV_BAG_REMOVED: a = backpack id, b = backpack::BAG_GONE_* (despawn,
+/// emptied, evicted)`.
+///
+/// Two of the three exits, driven on two different bags: the first bag
+/// times out (`BAG_GONE_DESPAWN`), the second is emptied by a loot
+/// (`BAG_GONE_EMPTIED`). Two bags is not decoration — the first bag's id
+/// is 1 and so is `BAG_GONE_EMPTIED`, so emptying bag 1 is the one case a
+/// swapped `a` and `b` read green; letting it despawn instead (0 against
+/// 1) and emptying bag 2 (2 against 1) keeps every pair apart.
+#[test]
+fn bag_removed_names_the_bag_then_why() {
+    let mut w = duel_world();
+    arm_victim_with_junk(&mut w);
+    until(&mut w, EV_BAG_DROPPED);
+    let first_bag = w.backpacks.next_id() - 1;
+
+    // Cause one: the timer. JUNK is item 7, the fixture ladder's
+    // short-lived half, so the despawn fits the quiet-step bound.
+    until_quiet(&mut w, EV_BAG_REMOVED);
+    let gone = only(&w, EV_BAG_REMOVED);
+    assert_ne!(
+        gone.a, gone.b,
+        "EV_BAG_REMOVED carries the same value twice, so this check cannot \
+         see a swap"
+    );
+    assert_eq!(gone.a, first_bag, "EV_BAG_REMOVED.a is the BAG id");
+    assert_eq!(
+        gone.b, BAG_GONE_DESPAWN,
+        "EV_BAG_REMOVED.b is why, and a timer running out is DESPAWN"
+    );
+    assert_eq!(gone.c, 0, "EV_BAG_REMOVED states no role for c");
+    assert!(
+        w.backpacks.find(first_bag).is_none(),
+        "the bag is announced gone but still in the store"
+    );
+
+    // Cause two: emptied. The victim wakes, is re-armed and dies again,
+    // so the loot opens a second bag whose id cannot alias the reason.
+    w.tick(&[
+        Command::Input {
+            id: ATTACKER,
+            frame: InputFrame {
+                seq: u16::MAX,
+                buttons: 0,
+                yaw: YAW,
+                pitch: 128,
+                move_x: 0,
+                move_z: 0,
+                sel: 0,
+            },
+        },
+        Command::Respawn {
+            id: VICTIM,
+            on_bag: false,
+        },
+    ]);
+    let (fx, fz) = yaw_dir(YAW);
+    let a = w.players[0].body;
+    let (ax, az) = (a.qx as f32 * POS_XZ_Q, a.qz as f32 * POS_XZ_Q);
+    w.players[1].body = Body::at(SEED, ax + fx * REACH_M, az + fz * REACH_M);
+    arm_victim_with_junk(&mut w);
+    until(&mut w, EV_BAG_DROPPED);
+    let second_bag = w.backpacks.next_id() - 1;
+
+    w.tick(&[Command::Loot { id: ATTACKER }]);
+    let emptied = only(&w, EV_BAG_REMOVED);
+    assert_ne!(
+        emptied.a, emptied.b,
+        "the second bag's id equals the reason ordinal, so this check \
+         cannot see a swap. Drive another death; do not relax the assertion."
+    );
+    assert_eq!(emptied.a, second_bag, "EV_BAG_REMOVED.a is the looted bag");
+    assert_eq!(
+        emptied.b, BAG_GONE_EMPTIED,
+        "EV_BAG_REMOVED.b is why, and a loot that takes everything is \
+         EMPTIED"
+    );
+    assert_eq!(emptied.c, 0, "EV_BAG_REMOVED states no role for c");
+    assert!(
+        w.backpacks.find(second_bag).is_none(),
+        "the emptied bag is announced gone but still standing"
+    );
+    assert_ne!(
+        gone.b, emptied.b,
+        "two different exits reported the same reason code — `b` is not \
+         carrying the cause, so pinning it against one constant proves \
+         nothing"
+    );
+}
+
+/// Row 3 of `DeployContent::probe_fixture` is the ground-class sleeping
+/// bag; placing one consumes one unit of its own item 5.
+const DEPLOY_BAG: u16 = 3;
+const BAG_PLACE_ITEM: u16 = 5;
+
+/// Empty both meters and run until the clock takes the body —
+/// `bag_respawn.rs`'s own `die`, restated here because that file's helper
+/// is not importable. Bounded in sim ticks, never milliseconds.
+fn starve(w: &mut World) {
+    let before = w.players[0].deaths;
+    w.players[0].food = 0;
+    w.players[0].water = 0;
+    for _ in 0..120 * TICK_HZ {
+        w.tick(&[]);
+        if w.players[0].deaths > before {
+            return;
+        }
+    }
+    panic!("the clock never killed the body — the survival fixture changed under this test");
+}
+
+/// `EV_RESPAWN: a = player id, b = 1 if the body woke on its own sleeping
+/// bag, 0 if the spawn ring answered instead`.
+///
+/// One death answered each way. The body is id 6, and not for variety:
+/// `b` is 1 on the bag path, so a player id of 1 — every other test's
+/// favourite — is exactly the id where a swapped `a` and `b` read green
+/// on the path most worth checking. Each answer is also held against the
+/// position the body actually woke at, so `b` is proven to name the
+/// anchor that really answered rather than whatever the emit site claims.
+#[test]
+fn respawn_names_the_player_then_which_anchor_answered() {
+    const SLEEPER: u32 = 6;
+    let mut w = World::new(SEED);
+    w.combat = CombatContent::probe_fixture();
+    w.survival = SurvivalContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.tick(&[Command::Join { id: SLEEPER }]);
+    let (cx, cz) = buildable_cell(SEED);
+    let (x, z) = (
+        (cx as f32 + 0.5) * BUILD_CELL_M,
+        (cz as f32 + 0.5) * BUILD_CELL_M,
+    );
+    w.players[0].body = Body::at(SEED, x, z);
+
+    // Cause one: the beach button. No bag exists yet either, so both
+    // reasons the ring can answer agree about what `b` must say.
+    starve(&mut w);
+    w.tick(&[Command::Respawn {
+        id: SLEEPER,
+        on_bag: false,
+    }]);
+    let beach = only(&w, EV_RESPAWN);
+    assert_eq!(beach.a, SLEEPER, "EV_RESPAWN.a is who woke");
+    assert_eq!(
+        beach.b, 0,
+        "EV_RESPAWN.b is 0 when the spawn ring answered — the beach \
+         button never claims a bag"
+    );
+    assert_eq!(beach.c, 0, "EV_RESPAWN states no role for c");
+    let (rx, rz) = w.spawn_pos_n(SLEEPER, 1);
+    let ring = Body::at(SEED, rx, rz);
+    assert_eq!(
+        (w.players[0].body.qx, w.players[0].body.qz),
+        (ring.qx, ring.qz),
+        "b said the ring answered, so the body must be standing on the ring"
+    );
+
+    // Cause two: a bag of the body's own, placed through the real verb,
+    // asked for by the button that wants one.
+    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].inv[0] = ItemStack {
+        item: BAG_PLACE_ITEM,
+        count: 1,
+    };
+    let before = w.deploys.len();
+    w.tick(&[Command::PlaceDeploy {
+        id: SLEEPER,
+        row: DEPLOY_BAG,
+        cx,
+        cz,
+        level: GROUND,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(
+        w.deploys.len(),
+        before + 1,
+        "the bag did not place at ({cx}, {cz}) — the fixture, not the mechanic"
+    );
+    starve(&mut w);
+    w.tick(&[Command::Respawn {
+        id: SLEEPER,
+        on_bag: true,
+    }]);
+    let bagged = only(&w, EV_RESPAWN);
+    assert_ne!(
+        bagged.a, bagged.b,
+        "the sleeper's id equals the bag answer, so this check cannot see \
+         a swap. Join a different id; do not relax the assertion."
+    );
+    assert_eq!(bagged.a, SLEEPER, "EV_RESPAWN.a is still who woke");
+    assert_eq!(
+        bagged.b, 1,
+        "EV_RESPAWN.b is 1 when the body woke on its OWN bag"
+    );
+    assert_eq!(bagged.c, 0, "EV_RESPAWN states no role for c");
+    let on_bag = Body::at(SEED, x, z);
+    assert_eq!(
+        (w.players[0].body.qx, w.players[0].body.qz),
+        (on_bag.qx, on_bag.qz),
+        "b said the bag answered, so the body must be standing on the bag"
+    );
+    assert_ne!(
+        beach.b, bagged.b,
+        "two different anchors reported the same answer — `b` is not \
+         carrying which one woke you, so pinning it against one constant \
+         proves nothing"
+    );
+}
+
 /// Is `name` read by an `only(&w, …)` call anywhere in this file?
 ///
 /// `only` is this file's universal idiom for "I drove a real cause and
@@ -2511,12 +2990,15 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
 /// against whether an `only(&w, …)` call for it actually exists in this
 /// file.
 ///
-/// Closing the five that remain is queued work (`NOW.md` §4,
-/// `reference/FINDINGS.md` §1), not a reason to leave the rest unchecked.
+/// Every code in the lane now carries a role check; `NOT_COVERED` is
+/// empty and stays as the seat the next `EV_*` must be classified into.
+/// The stronger form — a payload-role table both the emit site and the
+/// check read, so a swap is a compile error (`reference/FINDINGS.md` §1)
+/// — is still open, and it is a different shape of work than this ledger.
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 27] = [
+    const COVERED: [(&str, u8); 32] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
@@ -2544,19 +3026,21 @@ fn coverage_is_stated_not_implied() {
         ("EV_OVEN", EV_OVEN),
         ("EV_KNOCK", EV_KNOCK),
         ("EV_AUTH", EV_AUTH),
-    ];
-    /// What is knowingly still byte-golden only. Named, not just counted,
-    /// so the gate can check that none of these quietly grew a check.
-    const NOT_COVERED: [(&str, u8); 5] = [
         ("EV_SLOT_RESPAWNED", EV_SLOT_RESPAWNED),
         ("EV_WEAK_MARK", EV_WEAK_MARK),
         ("EV_CRAFT_DONE", EV_CRAFT_DONE),
         ("EV_BAG_REMOVED", EV_BAG_REMOVED),
         ("EV_RESPAWN", EV_RESPAWN),
     ];
+    /// What is knowingly still byte-golden only: nothing, since the last
+    /// five landed. The seat stays — named, not just counted — so the next
+    /// `EV_*` has somewhere to be classified while its check is written,
+    /// and the arithmetic below still refuses a code that lands in neither
+    /// list.
+    const NOT_COVERED: [(&str, u8); 0] = [];
     /// Change this number in the same commit that changes `NOT_COVERED`,
     /// never on its own.
-    const UNCOVERED: usize = 5;
+    const UNCOVERED: usize = 0;
 
     const SELF_SRC: &str = include_str!("event_roles.rs");
 

@@ -1519,7 +1519,7 @@ than raising `RUST_MIN_STACK` and calling it fixed.
 
 ---
 
-## 4 · The event lane's payloads are law with no gate — 24 of 29 now gated
+## 4 · The event lane's payloads are law — all 32 codes now gated by role
 
 Swap `a` and `b` at an `events.push` site and every wall stays green: the
 encoder is untouched (`test_protocol_golden`), the ring is not in
@@ -1527,26 +1527,24 @@ encoder is untouched (`test_protocol_golden`), the ring is not in
 `reference/FINDINGS.md` §1 measured in the reference — 49 Oxide commits on
 hook arguments, ~27 correcting a payload that had already shipped wrong.
 
-**Landed (systems, `loop/event-refusal-roles`):** the refusal family —
-`EV_CRAFT_REFUSED`, `EV_BUILD_REFUSED`, `EV_DEPLOY_REFUSED` — has role
-checks. 55 of the lane's 103 emit sites, previously unroled, all shaped
-`(player, reason, 0)`. Two causes per code so `b` is proven a channel and
-not a constant. Trap found and written into the fixture: `BUILDER` is id 4
-and `REFUSE_B_REACH`/`REFUSE_D_REACH` are both ordinal **4**, so the
-obvious out-of-reach cause is the one case where a swap reads green.
+**Landed (systems, `lane/event-gates`): the last five.** `EV_CRAFT_DONE`
+(fixture row 1, whose output ≠ count — row 0 packs 2/2 and is swap-blind —
+plus the full-inventory `b & 0xffff == 0` announced loss), `EV_BAG_REMOVED`
+(despawned, then emptied **on a second bag**: bag 1's id equals
+`BAG_GONE_EMPTIED`), `EV_RESPAWN` (beach then bag, body id 6 because id 1
+aliases the bag answer; each `b` held against where the body actually
+woke), `EV_WEAK_MARK` (two hits: the bit seen clear then set while the
+heading matches `weak_mark8` both times), `EV_SLOT_RESPAWNED` (the clock
+leapt to the store's own `respawn_at` — `bag_respawn.rs`'s cooldown
+arithmetic — and the event must land on the timer's own tick). All five
+a/b-swap mutants reproduced red before landing. `NOT_COVERED` is empty,
+`UNCOVERED` is 0, and the ledger seat stays for the next `EV_*`.
 
-Also: `coverage_is_stated_not_implied` could lie in both directions and no
-longer can. `COVERED`/`NOT_COVERED` name each code as well as numbering it,
-both are cross-checked against `world.rs`'s declarations, and coverage must
-be witnessed by a real `only(&w, EV_*)` call. Five mutations proved each
-gate red — a swapped emit site, an unearned claim, a name/value transpose.
-
-**Remains:** 5 codes with no role check — `EV_SLOT_RESPAWNED`,
-`EV_WEAK_MARK`, `EV_CRAFT_DONE`, `EV_BAG_REMOVED`, `EV_RESPAWN`. The last
-three are cheap (`bag_respawn.rs` and `gather.rs` already drive the
-causes); `EV_SLOT_RESPAWNED` needs a respawn timer to elapse and is the
-one worth its own look. Note `CLAUDE.md`'s trap list still reads "law with
-no gate" flat — left alone deliberately, it is a shared doc mid-run.
+**Remains:** not tests. The stronger form is a payload-role table both the
+emit site and the check read, a swap as a *compile* error
+(`reference/FINDINGS.md` §1 end) — bigger than one pass. `CLAUDE.md`'s
+trap list still reads "law with no gate" flat — left alone deliberately,
+it is a shared doc mid-run.
 
 ---
 
@@ -1608,9 +1606,9 @@ magnitude list. No wire move — `PROTO_VER` 19, goldens green.
 
 What remains:
 
-- **§4's other half.** Role coverage is still 19 of `EV_MAX` codes, 8
-  uncovered (`coverage_is_stated_not_implied`). The a/b swap gate is the
-  unfinished part; the value gate is done.
+- ~~§4's other half~~ — **done** (`lane/event-gates`): every `EV_MAX`
+  code carries a role check and the ledger's `NOT_COVERED` is empty. What
+  §4 still wants is the compile-error role table, not more tests.
 - **`death_causes_are_a_closed_ledger`** (`event_roles.rs`) still scrapes
   `world.rs` alone. Narrow now — the protocol gate catches a stray value
   crate-wide — but its *contiguity* claim is still file-local.
