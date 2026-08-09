@@ -149,6 +149,21 @@ pub const ACCENT: Color = Color::srgb(0.224, 0.510, 0.729);
 pub const ACCENT_HOVER: Color = Color::srgb(0.290, 0.580, 0.800);
 /// Hairline borders.
 pub const RULE: Color = Color::srgba(0.75, 0.72, 0.62, 0.28);
+/// The shell's two grounds, and they are the same family as `BG` rather than
+/// new hues: the reference's front end is a scrim over a rendered scene, so
+/// its panels are *darker* than the world behind them and read as depth. Ours
+/// has no scene behind it yet (`NOW.md` — the menu backdrop is the follow-on
+/// this shell makes possible), so the two grounds carry the depth on their
+/// own: the control column sits above the page, the content pane below it.
+pub const PANEL_BG: Color = Color::srgba(0.145, 0.133, 0.118, 1.0);
+pub const PANE_BG: Color = Color::srgba(0.086, 0.078, 0.070, 1.0);
+/// The wordmark's block. The one saturated thing on the front screen, and the
+/// reference makes the same call — its logo mark is the only colour on an
+/// otherwise grey menu.
+pub const MARK: Color = Color::srgb(0.804, 0.243, 0.176);
+/// A nav entry at rest. Dimmer than `DIM`, because the whole effect depends
+/// on the picked entry being obviously brighter than the rest.
+pub const NAV_IDLE: Color = Color::srgba(0.62, 0.60, 0.57, 0.65);
 /// Type, in three weights of attention.
 pub const TITLE: Color = Color::srgb(0.93, 0.92, 0.90);
 pub const TEXT: Color = Color::srgb(0.92, 0.90, 0.85);
@@ -212,7 +227,13 @@ pub fn screen(bg: Color) -> impl Bundle {
     )
 }
 
-/// GATES, at the top of whichever screen the player is on.
+/// A screen's own heading — `YOU DIED`, `DISCONNECTED`.
+///
+/// **Not the wordmark**, which is [`wordmark`] and is the game's identity
+/// rather than a screen's. The two were the same call until the shell landed
+/// and every screen's heading was the word GATES; they are different jobs, and
+/// a screen that shouts its own name where the reference shouts what just
+/// happened to you is a screen that has nothing to say.
 pub fn title(text: &str) -> impl Bundle {
     (
         Text::new(text.to_string()),
@@ -260,6 +281,211 @@ pub fn row(width_px: f32) -> impl Bundle {
         BorderColor::all(RULE),
         Hover::default(),
     )
+}
+
+// ---- the shell ------------------------------------------------------------
+//
+// **The five reference frames the operator pasted are one screen, not five.**
+// Main menu, PLAY GAME, NEWS, INVENTORY and WORKSHOP all draw: a wordmark
+// pinned top-left, a vertical nav column under it that never moves and never
+// re-orders, and — for every entry except the bare menu — a tinted control
+// panel plus a wide content pane filling the rest. Picking a nav entry swaps
+// what is in those two columns and touches nothing else. That single fact is
+// why their front end reads as one product and why ours read as five
+// unrelated screens: we had five independent full-screen states, each
+// centring its own column, each rebuilding its own title.
+//
+// So the shell is the thing worth copying, ahead of any individual screen.
+// What is deliberately NOT copied is their nav's length — NEWS, INVENTORY,
+// ITEM STORE, WORKSHOP and RUST+ are five entries with a live service behind
+// each, and drawing a dead one is the greyed-row dishonesty `settings.rs`
+// already refuses.
+
+/// The wordmark, top-left, at the size the reference draws its own.
+///
+/// A text mark rather than an image: this repo has no logo asset and an
+/// invented one is a brand decision, not a render one. The block that
+/// precedes it is the reference's own arrangement — a mark, then the word —
+/// and it is the one piece of visual identity the shell needs to stop looking
+/// like a debug overlay.
+pub fn wordmark() -> impl Bundle {
+    (
+        Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(12.0),
+            ..default()
+        },
+        children![
+            (
+                Node {
+                    width: Val::Px(38.0),
+                    height: Val::Px(38.0),
+                    ..default()
+                },
+                BackgroundColor(MARK),
+            ),
+            strong("GATES", 40.0, TITLE),
+        ],
+    )
+}
+
+/// One entry in the nav column.
+///
+/// **Dim at rest, bright when picked** — the reference's exact treatment, and
+/// the reason its menu has no buttons on it: the type *is* the button, so the
+/// screen carries no chrome it does not need. `Hover` handles the pointer,
+/// and the colour a nav entry rests at is carried per entity because the
+/// picked one must not be repainted on the way past it (the same reason
+/// [`Hover`] exists at all).
+pub fn nav_item(text: &str, picked: bool) -> impl Bundle {
+    (
+        Button,
+        Node {
+            padding: UiRect::axes(Val::Px(0.0), Val::Px(7.0)),
+            ..default()
+        },
+        // Transparent, not a panel: the nav floats over the backdrop.
+        BackgroundColor(Color::NONE),
+        Hover::new(Color::NONE, Color::NONE),
+        children![strong(
+            text.to_string(),
+            26.0,
+            if picked { TITLE } else { NAV_IDLE },
+        )],
+    )
+}
+
+/// The tinted control column — the reference's filter panel, its YOUR ITEMS
+/// column, its resource header.
+///
+/// **Its tint is ours, and that is stated rather than hidden.** The
+/// reference's is a warm red at low alpha over the blurred scene; the frames
+/// that show it are not in `Rust Images/`, so it cannot be sampled the way
+/// every colour in the palette above was, and inventing a number while
+/// claiming a measurement is the failure mode `ART.md` exists to prevent.
+/// This is [`PANEL`] — measured, off `crafting.png` — until a frame lands
+/// beside it to re-derive from.
+pub fn panel(width_px: f32) -> impl Bundle {
+    (
+        Node {
+            width: Val::Px(width_px),
+            height: Val::Percent(100.0),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(10.0),
+            padding: UiRect::all(Val::Px(16.0)),
+            ..default()
+        },
+        BackgroundColor(PANEL_BG),
+    )
+}
+
+/// The wide content column beside it.
+///
+/// The right padding is not cosmetic slack: without it a right-aligned column
+/// — the server list's PING — sits flush against the window edge, which reads
+/// as a table that has been cut off rather than one that ends. The reference
+/// leaves the same margin.
+pub fn pane() -> impl Bundle {
+    (
+        Node {
+            flex_grow: 1.0,
+            height: Val::Percent(100.0),
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::new(Val::Px(0.0), Val::Px(20.0), Val::Px(0.0), Val::Px(0.0)),
+            ..default()
+        },
+        BackgroundColor(PANE_BG),
+    )
+}
+
+/// A small heading over a group of controls — the reference's `PLAYER SLOTS`
+/// and `WIPE SCHEDULE`.
+pub fn group(text: &str) -> impl Bundle {
+    (
+        strong(text.to_string(), 12.0, FAINT),
+        Node {
+            margin: UiRect::top(Val::Px(6.0)),
+            ..default()
+        },
+    )
+}
+
+/// A wide flat button — CLEAR FILTERS, REFRESH, Create a new item.
+pub fn button(width_px: f32, accent: bool) -> impl Bundle {
+    (
+        Button,
+        Node {
+            width: Val::Px(width_px),
+            padding: UiRect::axes(Val::Px(10.0), Val::Px(9.0)),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        BackgroundColor(if accent { ACCENT } else { ROW_IDLE }),
+        Hover::new(
+            if accent { ACCENT } else { ROW_IDLE },
+            if accent { ACCENT_HOVER } else { ROW_HOVER },
+        ),
+    )
+}
+
+/// A checkable filter row — the reference's radio group drawn as a mark plus
+/// a label, because a filter that is a toggle should not draw a radio.
+pub fn check(on: bool) -> impl Bundle {
+    (
+        Button,
+        Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(9.0),
+            padding: UiRect::axes(Val::Px(2.0), Val::Px(5.0)),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        Hover::new(Color::NONE, ROW_IDLE),
+        children![(
+            Node {
+                width: Val::Px(13.0),
+                height: Val::Px(13.0),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(if on { ACCENT } else { Color::NONE }),
+            BorderColor::all(RULE),
+        )],
+    )
+}
+
+/// A table row in the content pane — the server list's, and whatever comes
+/// after it. Full width, hairline-separated, hovering as one object.
+pub fn table_row() -> impl Bundle {
+    (
+        Button,
+        Node {
+            width: Val::Percent(100.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(10.0),
+            padding: UiRect::axes(Val::Px(12.0), Val::Px(9.0)),
+            border: UiRect::bottom(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(ROW_IDLE),
+        BorderColor::all(RULE),
+        Hover::default(),
+    )
+}
+
+/// A fixed-width right-aligned column — `PLAYERS` and `PING`, header and cell
+/// alike, so the two cannot drift apart by being sized independently.
+pub fn column(width_px: f32) -> Node {
+    Node {
+        width: Val::Px(width_px),
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::FlexEnd,
+        ..default()
+    }
 }
 
 /// A small square button — the `-` and `+` either side of a numeric setting.

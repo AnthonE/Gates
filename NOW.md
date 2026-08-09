@@ -415,6 +415,35 @@ and Map exist, the look/strafe inversion is fixed (`look.rs`). Remaining:
    mesh (`charge_deploy` unread until that mesh half wants it), and
    `stock_addr` never says WHICH hearth. None is blocked.
 
+## 0s · The front door has a shell — what it still cannot draw *(client lane)*
+
+Landed 2026-08-09 (operator: *"do we need a pop up that we are loading? rust
+and league of legends do that"*, plus five reference frames). Three pieces.
+`Screen::Boot` is the splash: the window is the first thing a double-click
+gets, and the launcher handshake and connect happen behind it as states —
+so a dead shard on the launcher path lands on the server list with its
+reason instead of `exit(1)`-ing into a terminal nobody has. `render/ui.rs`
+owns the **shell** the five frames share (wordmark, nav column, tinted
+panel, content pane). The browser behind PLAY GAME is the reference's table:
+`SERVER NAME`/`PLAYERS`/`PING`, a persisted star, a search box, slot
+filters, CLEAR/REFRESH. Arithmetic is `ui/{boot,servers}.rs`, gated in
+`tests/ui.rs` §L; knobs in `DECISIONS.md` §open. Remaining:
+
+1. **No scene behind the scrim, and this is the biggest visual delta left.**
+   Every reference frame is a dark wash over a rendered world; ours is flat
+   charcoal, which is why it still reads as a tool rather than a game. The
+   island is a pure function of the seed, so a menu backdrop needs no server
+   — but every streamer is gated on `WorldId` + `world_running`, and a menu
+   that inserted one would collide with `world_teardown`. Design the seam
+   before writing it.
+2. **The splash cannot cover its own first 3 s.** wgpu adapter enumeration
+   and window creation precede the first Bevy frame (measured under
+   llvmpipe here). Covering it needs a second process or an OS-level
+   window; not taken, and `DECISIONS.md` §open says so.
+3. **Ungated, by hand only:** the star, the search box and the filters were
+   driven headless and looked at on one screenshot, never clicked against a
+   populated list — nothing publishes one yet (§0v item 1).
+
 ## 0w · The native menus landed — what they cannot do *(client lane)*
 
 Landed 2026-08-06: `Tab` inventory + crafting, `B` build wheel, drag/drop —

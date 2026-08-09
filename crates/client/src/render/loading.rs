@@ -104,7 +104,11 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, world: Opt
         LoadingRoot,
         ui::screen(ui::BG),
         children![
-            ui::title("GATES"),
+            // The wordmark, not a bare word: this screen sits between the
+            // splash and the world, and all three now carry the same mark in
+            // the same weight. A flow that changes its own identity halfway
+            // through is what the shell exists to stop.
+            ui::wordmark(),
             ui::label(format!("entering {where_to}    {seed}"), 15.0, ui::DIM),
             // The track, and the fill inside it.
             (

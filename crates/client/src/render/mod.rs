@@ -23,6 +23,10 @@ use crate::Session;
 // only by a windowed run with a sound card is a mixer with no gate.
 pub mod audio;
 pub mod bodies;
+// The boot splash. The window is the first thing a double-click gets now, and
+// the launcher handshake and connect happen behind it as states rather than
+// before it as preconditions.
+pub mod boot;
 pub mod capture;
 pub mod icons;
 // Chat. Not registered on a capture run, like the panels: a gate whose
@@ -183,7 +187,7 @@ pub fn world_running(state: Res<State<Screen>>, world: Option<Res<WorldId>>) -> 
     world.is_some()
         && !matches!(
             state.get(),
-            Screen::Menu | Screen::Connecting | Screen::Disconnected
+            Screen::Boot | Screen::Menu | Screen::Connecting | Screen::Disconnected
         )
 }
 
@@ -296,10 +300,22 @@ pub struct Start {
     pub direct: String,
     /// The shard list to fetch, if any.
     pub servers_url: Option<String>,
-    /// `gates.rs` already connected, so skip the server list and open on the
-    /// loading screen. The probe harness and a launcher join both arrive this
-    /// way: the first must not wait on a click, the second has already chosen.
+    /// `gates.rs` already connected before the window, so open on the loading
+    /// screen. **Only `--capture` arrives this way now**, and the module doc
+    /// on `boot` has the argument: a probe harness must not photograph a
+    /// half-finished handshake, so its connect stays a precondition, while a
+    /// launcher join became a state (`chosen`) so that a dead shard lands on
+    /// the server list instead of on a stderr nobody is reading.
     pub connected: bool,
+    /// A shard was named on the command line or by the launcher, and the
+    /// player must not be asked to pick again. The splash hands straight to
+    /// `Connecting` (`crate::ui::boot::Next`).
+    pub chosen: bool,
+    /// `--identity`, for the launcher handshake the splash now runs.
+    pub identity: Option<String>,
+    /// Nothing to ask a launcher — `--no-launcher`, or a start that already
+    /// resolved its player before the window.
+    pub no_launcher: bool,
 }
 
 pub struct GatesRenderPlugin {
@@ -319,6 +335,8 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<bodies::Bodies>()
             .init_resource::<mobs::Herd>()
             .init_resource::<menu::Picked>()
+            .init_resource::<menu::Browse>()
+            .init_resource::<boot::Who>()
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
             .init_resource::<verbs::Aimed>()
@@ -347,8 +365,15 @@ impl Plugin for GatesRenderPlugin {
         // the defaults and gets no `Disk` — which is also what makes
         // `save_on_change` a no-op there.
         if self.capture.is_none() {
-            let (settings, disk) = settings::load();
+            let (settings, favourites, disk) = settings::load();
             app.insert_resource(settings);
+            // The starred shards come off the same file and land on the
+            // browser's own resource — a favourite is not a knob, and
+            // `settings::save_on_change` is the one writer for both.
+            app.insert_resource(menu::Browse {
+                favourites,
+                ..default()
+            });
             if let Some(disk) = disk {
                 app.insert_resource(disk);
             }
@@ -360,24 +385,36 @@ impl Plugin for GatesRenderPlugin {
         // not care which door the app came through — and the disconnect that
         // returns to it is what `pause` now spends a verb on.
         //
-        // **A connected start opens on `Loading`, not `InWorld`**, and that
-        // includes `--capture`: the world's rings take ~25 frames to fill
-        // whoever asked for them, and the state that owns that interval is
-        // the one that owns the rig. A capture run entering `InWorld` on
-        // frame one would enter a state whose `OnEnter` no longer builds
-        // anything, and photograph an empty world.
+        // **Every start that is not a capture run opens on `Boot`.** The
+        // splash is the window a double-click gets, and what it hands off to
+        // is one bit — `chosen` — resolved in `crate::ui::boot` rather than
+        // here. A capture run still opens on `Loading`, because its connect
+        // happened before the window and its rings take ~25 frames to fill:
+        // entering `InWorld` on frame one would enter a state whose `OnEnter`
+        // no longer builds anything, and photograph an empty world.
         app.insert_state(if self.start.connected {
             Screen::Loading
         } else {
-            Screen::Menu
+            Screen::Boot
         })
         .insert_resource(Menu::new(
             &self.start.direct,
             self.start.servers_url.clone(),
+        ))
+        .insert_resource(boot::Direct(self.start.direct.clone()))
+        .insert_resource(boot::Warmup::new(
+            self.start.chosen,
+            self.start.identity.clone(),
+            // A capture run has already resolved its player and must not
+            // reach for a socket outside the repo — a gate whose result
+            // depends on what else is running on the box is not a gate.
+            self.start.no_launcher || self.start.connected,
         ));
         // The direct address is also what the loading and pause screens name,
-        // and on a `--server` start nothing has been "picked" — so the field
-        // those screens read is seeded here rather than left empty.
+        // and on a capture start nothing has been "picked" — so the field
+        // those screens read is seeded here rather than left empty. Every
+        // other start fills it in `boot::teardown` on the way out of the
+        // splash.
         if self.start.connected {
             if let Some(mut c) = app
                 .world_mut()
@@ -414,6 +451,13 @@ impl Plugin for GatesRenderPlugin {
         // has the whole argument for compiling them in.
         ui::build_fonts(app);
 
+        // ---- the boot splash -----------------------------------------
+        // The first screen a double-click gets. `update` is the only system
+        // that can leave it, and it leaves on observable state — see `boot`.
+        app.add_systems(OnEnter(Screen::Boot), (boot::begin_greet, boot::setup))
+            .add_systems(OnExit(Screen::Boot), boot::teardown)
+            .add_systems(Update, boot::update.run_if(in_state(Screen::Boot)));
+
         // ---- the menu ------------------------------------------------
         // `world_teardown` first: entering the menu from a live world is the
         // disconnect path, and the menu must not be built over a world that
@@ -428,15 +472,16 @@ impl Plugin for GatesRenderPlugin {
             (
                 menu::poll_fetch,
                 // The count half, after the list half: `poll_fetch` is what
-                // creates the rows a poll addresses by index, and both feed
-                // the one `rebuild_on_new_rows` below.
+                // creates the rows a poll addresses by index, and both raise
+                // the one `dirty` flag `rebuild` below acts on.
                 menu::begin_status_poll,
                 menu::poll_status,
-                menu::rebuild_on_new_rows,
-                menu::refresh_status,
                 menu::click,
                 menu::keys,
                 menu::take_pick,
+                // Last, so a click, a keystroke and a landed fetch all reach
+                // the screen on the frame they happen rather than the next.
+                menu::rebuild,
             )
                 .chain()
                 .run_if(in_state(Screen::Menu)),
