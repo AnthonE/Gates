@@ -46,15 +46,3 @@ input = "item.raw_meat"
 output = "item.cooked_meat"
 station = "fire"
 seconds = 20
-
-# The burnt state, exactly as the oven's header predicted it: a cook row
-# whose input is the cooked item, so overcooking is content and not a
-# mechanic. Leave the meal on a lit fire for another cook's worth of time
-# and it is barely food (`consumables.toml`); the fire does not babysit.
-# Same 20 s as the cook above — one cadence, so "come back within one
-# cook of done" is the whole rule a player has to learn.
-[[cook]]
-input = "item.cooked_meat"
-output = "item.burnt_meat"
-station = "fire"
-seconds = 20
