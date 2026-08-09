@@ -225,6 +225,7 @@ pub fn world_teardown(
     mut herd: ResMut<mobs::Herd>,
     mut eye: ResMut<Eye>,
     mut look: ResMut<input::Look>,
+    mut readout: ResMut<hud::Readout>,
 ) {
     let mut n = 0usize;
     for e in entities.iter() {
@@ -246,6 +247,9 @@ pub fn world_teardown(
     highlight::forget_in(&mut highlight);
     *bodies = bodies::Bodies::default();
     *herd = mobs::Herd::default();
+    // The readout holds the LAST wall hit and charge clock — facts about
+    // the world that just went, worth up to TOAST_SECS of lies in the next.
+    *readout = hud::Readout::default();
     *eye = Eye::default();
     *look = input::Look::default();
     commands.remove_resource::<WorldId>();
