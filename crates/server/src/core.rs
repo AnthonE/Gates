@@ -289,6 +289,21 @@ impl ShardCore {
         self.connect_as(slot, id, None, None).is_some()
     }
 
+    /// Players with a live connection right now — the number the status
+    /// endpoint publishes as `players` (`stats.rs` mirrors it each tick).
+    ///
+    /// Counted off `clients[].connected` rather than derived from the
+    /// `joins`/`leaves` counters, because those can legitimately disagree
+    /// with occupancy: a refused `connect_as` parks the link and rides the
+    /// LEAVING sweep out, which bumps `leaves` with no matching `join`, so
+    /// the difference drifts one short per refusal. An O(MAX_PLAYERS) scan
+    /// of a 100-element array, priced and justified where `sleepers` is
+    /// (`net.rs`): a second copy of the count could drift from the array
+    /// it describes.
+    pub fn connected(&self) -> usize {
+        self.clients.iter().filter(|c| c.connected).count()
+    }
+
     /// Install a client: onto the body they left behind if it is still
     /// standing, restoring `save` if it is not and the store had one, and
     /// as a fresh character otherwise.

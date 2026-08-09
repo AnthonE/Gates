@@ -112,6 +112,18 @@ pub struct ShardConfig {
     /// Proposed default 1800 ticks = 60 s at 30 Hz, DECISIONS.md §open
     /// ("world persistence v0").
     pub world_save_interval_ticks: u64,
+    /// Where the status endpoint listens (`status.rs`): a plain HTTP
+    /// responder answering `GET /status.json` with integers read off
+    /// `ShardStats` atomics — `players`, `max_players`, `tick` — on its own
+    /// thread, never touching the sim. It is what lights the shard list's
+    /// `players` column (`ci/shardlist.py` is the eventual consumer).
+    ///
+    /// Unset is the shipping default and serves **nothing**, which is the
+    /// honest state: a live shard changes nothing until its operator says
+    /// where to listen, and publishing the resulting URL anywhere is a
+    /// separate operator act again. Port 0 binds ephemeral (the test path,
+    /// same as `bind`). DECISIONS.md §open ("shard status endpoint v0").
+    pub status_addr: Option<SocketAddr>,
     /// The shard's name for SIWE domain binding — what goes in the signed
     /// message, and what a player sees in their wallet prompt.
     ///
@@ -139,6 +151,7 @@ impl ShardConfig {
             save_file: None,
             world_file: None,
             world_save_interval_ticks: DEFAULT_WORLD_SAVE_INTERVAL_TICKS,
+            status_addr: None,
             domain: "127.0.0.1".into(),
         }
     }
@@ -158,6 +171,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut save_file: Option<String> = None;
     let mut world_file: Option<String> = None;
     let mut world_save_interval_ticks: u64 = DEFAULT_WORLD_SAVE_INTERVAL_TICKS;
+    let mut status_addr: Option<SocketAddr> = None;
     let mut domain: Option<String> = None;
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
@@ -288,6 +302,17 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 world_save_interval_ticks = v;
             }
+            // A `SocketAddr` like `bind`, and refused when it does not parse
+            // — an empty value fails the same parse, so the "a line the
+            // operator wrote is a line they meant" rule holds without a
+            // separate check. Off is the key being absent.
+            "status_addr" => {
+                status_addr = Some(
+                    value
+                        .parse()
+                        .map_err(|e| format!("shard.toml line {}: bad status_addr: {e}", n + 1))?,
+                );
+            }
             "domain" => {
                 if value.is_empty() || value.len() > protocol::DOMAIN_MAX {
                     return Err(format!(
@@ -318,6 +343,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         save_file,
         world_file,
         world_save_interval_ticks,
+        status_addr,
         // Unset ⇒ the bind host, which is what a dev shard on loopback
         // wants and what a shard behind a DNS name must override.
         domain: domain.unwrap_or_else(|| {

@@ -824,10 +824,15 @@ Remaining, in order:
    `DECISIONS.md` §open and an operator act: serve `servers.json`, set
    `servers.url` in scry's `data/launcher/gates.manifest.json`. Until then both
    the menu and the launcher's Servers window are correctly dark.
-2. **No player counts, and this is the honest half.** `players`/`ping_ms` are
-   omitted, never zeroed — the shard serves no status endpoint. `stats.rs`
-   already holds `joins`/`leaves` as atomics and its header names the status
-   page as what would read them. That endpoint is the whole slice.
+2. **Player counts: the shard's half landed; lighting them is an operator
+   act.** `status_addr` (`DECISIONS.md` §open "shard status endpoint v0")
+   serves `GET /status.json` — `players`/`max_players`/`tick` as integers,
+   off `ShardStats` on its own thread. `players` is a real occupancy gauge
+   (`ShardCore::connected`), not `joins - leaves`, which drifts on refused
+   installs. Absent by default, so live shards change nothing until the
+   operator sets it, opens the TCP port, and points a reader at the URL —
+   `ci/shardlist.py` still omits `players` (untouched, its own slice) and
+   both readers still draw `?`. Gate: `crates/server/tests/status.rs`.
 3. **`ci/gates.sh` never builds `--features render`, so nothing in CI compiles
    the native client at all** — the code tier's `clippy --workspace` and
    `cargo test --workspace` both run with the feature off (it is off by default

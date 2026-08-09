@@ -307,6 +307,7 @@ async fn main() {
     // `require_auth = true` proved a joiner carried *something*. It now
     // proves they hold the private key behind the address they claim
     // (`auth.rs`), which is the thing the warning was waiting for.
+    let status_addr = cfg.status_addr;
     let handle = match spawn_shard(
         cfg, gather, craft, build, deploy, combat, backpack, survival, cook, spawn_kit, loot, mobs,
         catalog, saves, world_boot,
@@ -321,6 +322,21 @@ async fn main() {
     };
     println!("shard up on {} (seed {seed})", handle.local_addr);
     println!("dev cert sha256 {}", handle.cert_hash);
+    // The status endpoint, only where the operator said (config.rs says why
+    // absent-serves-nothing is the default). A bind failure refuses the boot
+    // rather than running without it: a shard whose config names an endpoint
+    // it silently does not serve is the config-says-X-shard-does-Y defect
+    // the parser refuses everywhere else. Daemon thread — shutdown neither
+    // signals nor joins it, so the flush path above cannot hang on it.
+    if let Some(addr) = status_addr {
+        match server::status::spawn_status(addr, handle.stats.clone()) {
+            Ok(bound) => println!("status on http://{bound}/status.json"),
+            Err(e) => {
+                eprintln!("shard: status endpoint bind {addr}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
 
     // **The thing that turns a `systemctl stop` into a save.**
     //
