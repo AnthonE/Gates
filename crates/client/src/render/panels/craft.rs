@@ -29,7 +29,8 @@ use super::{
 };
 use crate::render::icons::Icons;
 use crate::ui::craft::{
-    affordable, eta_seconds, ingredients, item_label, rows, seconds, station_label, Row, RAIL,
+    affordable, cell_abbrev, eta_seconds, ingredients, item_label, rows, seconds, station_label,
+    Row, CELL_LINE_CHARS, RAIL,
 };
 
 /// The recipe grid, which scrolls.
@@ -283,8 +284,11 @@ fn recipe_cell(
                     },
                     Pickable::IGNORE,
                 )),
+                // No icon baked: the word, abbreviated to the cell
+                // (`ui::craft::cell_abbrev`) — the clip alone cuts
+                // mid-glyph, and `Workbenc` reads as a defect.
                 None => c.spawn((
-                    Text::new(name),
+                    Text::new(cell_abbrev(&name, CELL_LINE_CHARS)),
                     font_bold(10.0),
                     TextColor(if can { TEXT } else { TEXT_DIM }),
                     Pickable::IGNORE,

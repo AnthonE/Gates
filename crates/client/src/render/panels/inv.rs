@@ -42,7 +42,7 @@ use super::{
     CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, SCRIM, TEXT, TEXT_DIM,
 };
 use crate::render::icons::Icons;
-use crate::ui::craft::item_label;
+use crate::ui::craft::{cell_abbrev, item_label, CELL_LINE_CHARS};
 use crate::ui::slots::{
     container_cols, container_title, move_args, refusal_text, slots_in, Drag, Grab,
 };
@@ -278,10 +278,13 @@ fn cell(
                         },
                         Pickable::IGNORE,
                     )),
-                    // No icon baked for this item: the word, as before. An
-                    // empty cell would be the dark-panel defect.
+                    // No icon baked for this item: the word, as before —
+                    // abbreviated to the cell (`ui::craft::cell_abbrev`),
+                    // because the clip alone cuts mid-glyph and `Gunpowde`
+                    // reads as a defect. An empty cell would be the
+                    // dark-panel defect.
                     None => c.spawn((
-                        Text::new(name),
+                        Text::new(cell_abbrev(&name, CELL_LINE_CHARS)),
                         font_bold(10.0),
                         TextColor(TEXT),
                         Pickable::IGNORE,

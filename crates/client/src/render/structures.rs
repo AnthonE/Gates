@@ -35,7 +35,8 @@
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::build::{
-    BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, SHAPE_DOORWAY, SHAPE_STAIRS, SHAPE_WALL,
+    BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, SHAPE_DOORWAY, SHAPE_ROOF, SHAPE_STAIRS,
+    SHAPE_WALL,
 };
 use sim_core::collide::{DOOR_POST_W_M, PIECE_LIFT_M, WALL_THICKNESS_M};
 use sim_core::deploy::{
@@ -127,11 +128,10 @@ struct Live {
 /// of pieces over five shapes and three materials; one `StandardMaterial`
 /// per piece would be one draw call per piece.
 struct Kit {
-    slab: Handle<Mesh>,
-    wall: Handle<Mesh>,
-    post: Handle<Mesh>,
-    lintel: Handle<Mesh>,
-    stairs: Handle<Mesh>,
+    /// One mesh per (shape, part), sized from [`shape_parts`] — the one
+    /// table — and deduplicated by size, so the doorway's two posts share a
+    /// mesh and the three slab shapes share one slab.
+    shape_mesh: [[Option<Handle<Mesh>>; MAX_PARTS]; N_SHAPES],
     tier: [Handle<StandardMaterial>; 3],
     deploy_mesh: [Handle<Mesh>; 7],
     deploy_mat: [Handle<StandardMaterial>; 7],
@@ -227,6 +227,156 @@ pub fn door_opening_w() -> f32 {
     ((BUILD_CELL_M - SEAM_M) - 2.0 * DOOR_POST_W_M).max(0.1)
 }
 
+/// One drawn part of a build shape: the box's full extents, its centre, and
+/// the pitch it carries.
+///
+/// The offset is relative to the piece's **base point** — the address's
+/// canonical anchor in the west/plane orientation: the west boundary's
+/// midpoint for an edge piece, the cell centre for a body piece, always at
+/// the level's base height (`level_base_y`). A north edge is the same parts
+/// under the root's quarter-turn ([`base_transform`]), exactly as the sim
+/// canonicalises the two edges to one shape (`build.rs`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Part {
+    /// Full extents of the box, metres.
+    pub size: Vec3,
+    /// The box centre, metres, relative to the base point.
+    pub offset: Vec3,
+    /// Rotation about the part's local X axis, radians — the stairs' ramp
+    /// pitch. Zero for every other shape.
+    pub x_rot: f32,
+}
+
+impl Part {
+    /// The part's transform relative to the base point. Scale is untouched,
+    /// so the ghost can put the unit cube's scale on top of it.
+    pub fn transform(&self) -> Transform {
+        Transform::from_translation(self.offset).with_rotation(Quat::from_rotation_x(self.x_rot))
+    }
+}
+
+/// The most parts any shape emits — the doorway's two posts and lintel.
+pub const MAX_PARTS: usize = 3;
+
+/// How many shapes the parts table covers: the sim's own last shape, plus
+/// one. A shape past it is drawn as the fallback slab, same as one the
+/// table has no arm for.
+pub const N_SHAPES: usize = SHAPE_ROOF as usize + 1;
+
+/// Which parts a shape has and where they go — **the one table** both the
+/// standing piece ([`spawn_piece`]) and the build ghost (`ghost::track`)
+/// emit from (`NOW.md` §0u item 1).
+///
+/// It used to be written twice, and the copies had already diverged the way
+/// only a duplicate can: the ghost drew the doorway's lintel centred at
+/// 1.05 m — waist height, hanging in the opening it exists to cap — where
+/// the piece drew it at 2.55 m, undersides 0.6 m against 2.1 m. And the
+/// ghost previewed stairs as a level plate where the piece pitches its ramp.
+/// Both files shared every CONSTANT and still disagreed, because which parts
+/// exist and where they go was layout, not dimension, and the layout was the
+/// half nothing gated. `crates/client/tests/ghost.rs` now reads this table's
+/// own emit against the sim.
+///
+/// Returns a fixed array and a live count rather than pushing to a `Vec`:
+/// the ghost reads it on the frame path, and a [`Part`] is plain data.
+pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
+    let span = BUILD_CELL_M - SEAM_M;
+    let none = Part {
+        size: Vec3::ZERO,
+        offset: Vec3::ZERO,
+        x_rot: 0.0,
+    };
+    match shape {
+        SHAPE_WALL => (
+            [
+                Part {
+                    size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M, span),
+                    offset: Vec3::new(0.0, LEVEL_H_M * 0.5, 0.0),
+                    x_rot: 0.0,
+                },
+                none,
+                none,
+            ],
+            1,
+        ),
+        SHAPE_DOORWAY => {
+            // Two posts hugging each end of the edge, and the lintel over
+            // what they leave.
+            let gap = door_post_gap();
+            let post = |z: f32| Part {
+                size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M, DOOR_POST_W_M),
+                offset: Vec3::new(0.0, LEVEL_H_M * 0.5, z),
+                x_rot: 0.0,
+            };
+            (
+                [
+                    post(-gap),
+                    post(gap),
+                    // The lintel's underside is the top of the opening the
+                    // sim refuses to let a player through: centred at
+                    // `LEVEL_H_M - LINTEL_DROP_M` = 2.55 m, it spans exactly
+                    // 2.1..3.0 (`LINTEL_H_M`'s own derivation, above).
+                    Part {
+                        size: Vec3::new(WALL_THICKNESS_M, LINTEL_H_M, door_opening_w()),
+                        offset: Vec3::new(0.0, LEVEL_H_M - LINTEL_DROP_M, 0.0),
+                        x_rot: 0.0,
+                    },
+                ],
+                3,
+            )
+        }
+        SHAPE_STAIRS => (
+            [
+                // A ramp through the level. The grid stores no facing, so it
+                // always rises toward +Z (cosmetic v0 — the browser's choice
+                // too), pitched the way the standing piece has always been.
+                Part {
+                    size: Vec3::new(span, SLAB_T, STAIRS_RUN_M),
+                    offset: Vec3::new(0.0, LEVEL_H_M * 0.5, 0.0),
+                    x_rot: -std::f32::consts::FRAC_PI_4,
+                },
+                none,
+                none,
+            ],
+            1,
+        ),
+        // Foundation / floor / roof — and any shape the defs name that this
+        // table does not: the slab whose TOP is the level plane, which is
+        // the surface the sim stands players on.
+        _ => (
+            [
+                Part {
+                    size: Vec3::new(span, SLAB_T, span),
+                    offset: Vec3::new(0.0, -SLAB_T * 0.5, 0.0),
+                    x_rot: 0.0,
+                },
+                none,
+                none,
+            ],
+            1,
+        ),
+    }
+}
+
+/// The world transform of an address's base point: the canonical anchor
+/// [`shape_parts`]' offsets are relative to, plus the quarter-turn a north
+/// edge carries. Shared with the build ghost for the reason the parts are:
+/// the ghost and the piece it becomes must be the same object in the same
+/// pose, and edge canonicalisation written twice is how they stop being.
+pub fn base_transform(seed: u64, (cx, cz, level, loc): Addr) -> Transform {
+    let base_y = level_base_y(seed, cx, cz, level);
+    let (cxm, czm) = cell_center(cx, cz);
+    let (pos, yaw) = match loc {
+        LOC_EDGE_W => (Vec3::new(cx as f32 * BUILD_CELL_M, base_y, czm), 0.0),
+        LOC_EDGE_N => (
+            Vec3::new(cxm, base_y, cz as f32 * BUILD_CELL_M),
+            std::f32::consts::FRAC_PI_2,
+        ),
+        _ => (Vec3::new(cxm, base_y, czm), 0.0),
+    };
+    Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw))
+}
+
 fn build_kit(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> Kit {
     let tier = std::array::from_fn(|i| {
         let (base_color, perceptual_roughness, metallic) = TIER[i];
@@ -250,15 +400,33 @@ fn build_kit(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>
             ..default()
         })
     });
-    let span = BUILD_CELL_M - SEAM_M;
+    // The piece meshes, from the shared table and nowhere else. Dedup is by
+    // exact size — the sizes that repeat are the same expressions evaluated
+    // twice, so `==` is the right comparison and a near-miss SHOULD build a
+    // second mesh, because a near-miss is two parts claiming to differ.
+    const NO_MESH: Option<Handle<Mesh>> = None;
+    // The outer repeat can't be `[[NO_MESH; MAX_PARTS]; N_SHAPES]`: only the
+    // inner repeat's operand is a const item — the outer would Copy a built
+    // non-Copy row (E0277). `from_fn` evaluates the const repeat per row.
+    let mut shape_mesh: [[Option<Handle<Mesh>>; MAX_PARTS]; N_SHAPES] =
+        std::array::from_fn(|_| [NO_MESH; MAX_PARTS]);
+    let mut sized: Vec<(Vec3, Handle<Mesh>)> = Vec::new();
+    for (shape, row) in shape_mesh.iter_mut().enumerate() {
+        let (parts, n) = shape_parts(shape as u8);
+        for (slot, part) in row.iter_mut().zip(&parts[..n]) {
+            let handle = match sized.iter().find(|(size, _)| *size == part.size) {
+                Some((_, h)) => h.clone(),
+                None => {
+                    let h = meshes.add(Cuboid::new(part.size.x, part.size.y, part.size.z));
+                    sized.push((part.size, h.clone()));
+                    h
+                }
+            };
+            *slot = Some(handle);
+        }
+    }
     Kit {
-        slab: meshes.add(Cuboid::new(span, SLAB_T, span)),
-        wall: meshes.add(Cuboid::new(WALL_THICKNESS_M, LEVEL_H_M, span)),
-        post: meshes.add(Cuboid::new(WALL_THICKNESS_M, LEVEL_H_M, DOOR_POST_W_M)),
-        // The lintel spans what the two posts leave: the doorway's opening is
-        // the intended breach point and it has to read as one.
-        lintel: meshes.add(Cuboid::new(WALL_THICKNESS_M, LINTEL_H_M, door_opening_w())),
-        stairs: meshes.add(Cuboid::new(span, SLAB_T, STAIRS_RUN_M)),
+        shape_mesh,
         tier,
         deploy_mesh,
         deploy_mat,
@@ -423,81 +591,45 @@ fn spawn_piece(
     commands: &mut Commands,
     kit: &Kit,
     seed: u64,
-    (cx, cz, level, loc): Addr,
+    addr: Addr,
     shape: u8,
     material: u8,
 ) -> Entity {
     let mat = kit.tier[(material as usize).min(2)].clone();
-    let base_y = level_base_y(seed, cx, cz, level);
-    let (cxm, czm) = cell_center(cx, cz);
+    // Edge pieces stand on the cell's west (x = cx·3) or north (z = cz·3)
+    // boundary — canonical, so one physical edge is never addressable twice
+    // (`build.rs`) — and the parts are the shared table's, so this and the
+    // build ghost are the same object in the same pose.
+    let root = base_transform(seed, addr);
+    let (parts, n) = shape_parts(shape);
+    let meshes = &kit.shape_mesh[(shape as usize).min(N_SHAPES - 1)];
 
-    if shape == SHAPE_WALL || shape == SHAPE_DOORWAY {
-        // Edge pieces stand on the cell's west (x = cx·3) or north
-        // (z = cz·3) boundary — canonical, so one physical edge is never
-        // addressable twice (`build.rs`).
-        let transform = if loc == LOC_EDGE_W {
-            Transform::from_xyz(cx as f32 * BUILD_CELL_M, base_y + LEVEL_H_M * 0.5, czm)
-        } else {
-            Transform::from_xyz(cxm, base_y + LEVEL_H_M * 0.5, cz as f32 * BUILD_CELL_M)
-                .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2))
-        };
-        if shape == SHAPE_WALL {
-            return commands
-                .spawn((
-                    super::WorldEntity,
-                    Mesh3d(kit.wall.clone()),
-                    MeshMaterial3d(mat),
-                    transform,
-                ))
-                .id();
-        }
-        // A doorway keeps its opening: two posts and a lintel over the gap.
-        let gap = door_post_gap();
-        return commands
-            .spawn((super::WorldEntity, transform, Visibility::default()))
-            .with_children(|c| {
-                c.spawn((
-                    Mesh3d(kit.post.clone()),
-                    MeshMaterial3d(mat.clone()),
-                    Transform::from_xyz(0.0, 0.0, -gap),
-                ));
-                c.spawn((
-                    Mesh3d(kit.post.clone()),
-                    MeshMaterial3d(mat.clone()),
-                    Transform::from_xyz(0.0, 0.0, gap),
-                ));
-                c.spawn((
-                    Mesh3d(kit.lintel.clone()),
-                    MeshMaterial3d(mat.clone()),
-                    Transform::from_xyz(0.0, LEVEL_H_M * 0.5 - LINTEL_DROP_M, 0.0),
-                ));
-            })
-            .id();
-    }
-
-    if shape == SHAPE_STAIRS {
-        // A ramp through the level. The grid stores no facing, so the ramp
-        // always rises toward +Z (cosmetic v0 — the browser's choice too).
+    if n == 1 {
+        // A one-part shape stays ONE entity with the mesh on it, root and
+        // part composed. Not a style choice: the hammer highlight reads
+        // `Transform` + `Mesh3d` off the entity `entity_at` answers
+        // (`highlight.rs`), and a bare root over a single child would hide
+        // both from it.
         return commands
             .spawn((
                 super::WorldEntity,
-                Mesh3d(kit.stairs.clone()),
+                Mesh3d(meshes[0].clone().expect("every live part has a mesh")),
                 MeshMaterial3d(mat),
-                Transform::from_xyz(cxm, base_y + LEVEL_H_M * 0.5, czm)
-                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_4)),
+                root * parts[0].transform(),
             ))
             .id();
     }
-
-    // Foundation / floor / roof: a slab whose TOP is the level plane, which
-    // is the surface the sim stands players on.
     commands
-        .spawn((
-            super::WorldEntity,
-            Mesh3d(kit.slab.clone()),
-            MeshMaterial3d(mat),
-            Transform::from_xyz(cxm, base_y - SLAB_T * 0.5, czm),
-        ))
+        .spawn((super::WorldEntity, root, Visibility::default()))
+        .with_children(|c| {
+            for (part, mesh) in parts[..n].iter().zip(meshes) {
+                c.spawn((
+                    Mesh3d(mesh.clone().expect("every live part has a mesh")),
+                    MeshMaterial3d(mat.clone()),
+                    part.transform(),
+                ));
+            }
+        })
         .id()
 }
 
