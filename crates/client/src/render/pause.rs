@@ -104,6 +104,23 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>) {
         format!("connected to {}", connecting.addr)
     };
 
+    // The invite. Drawn rather than copied to a clipboard because a clipboard
+    // is a dependency this client does not have, and drawn *here* because
+    // this is the screen a player is already on when they go to tell someone
+    // where they are. `deeplink::link_for` is the one place the shareable
+    // form is written, so what is on screen is what the parser accepts.
+    //
+    // **A link is only as good as the address it carries**, and a loopback one
+    // is not shareable — a friend who follows `scry://join/gates/127.0.0.1:4433`
+    // arrives at their own machine. Say nothing rather than offer a link that
+    // is wrong for everyone but the person reading it.
+    let invite = match connecting.addr.split_once(':').map(|(h, _)| h) {
+        Some(host) if is_shareable(host) => {
+            format!("invite  {}", crate::deeplink::link_for(&connecting.addr))
+        }
+        _ => String::new(),
+    };
+
     // No camera: the world's `Camera3d` is up, and the UI draws against it.
     commands
         .spawn((
@@ -116,6 +133,13 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>) {
             root.spawn(ui::title("GATES"));
             root.spawn((
                 ui::label(addr, 14.0, ui::DIM),
+                Node {
+                    margin: UiRect::bottom(Val::Px(2.0)),
+                    ..default()
+                },
+            ));
+            root.spawn((
+                ui::label(invite, 13.0, ui::FAINT),
                 Node {
                     margin: UiRect::bottom(Val::Px(14.0)),
                     ..default()
@@ -221,6 +245,28 @@ pub fn act(
     }
 }
 
+/// Would a link to this host mean anything to someone else?
+///
+/// Loopback and the unspecified address resolve to *the reader's own machine*,
+/// so a link carrying one is not merely useless — it is actively wrong, and it
+/// fails in the most confusing way available (the friend's client connects to
+/// nothing, or to their own dev shard). A private-range address is a narrower
+/// case and is deliberately allowed: two people on one LAN is a real way to
+/// play this, and the address is correct for exactly the audience most likely
+/// to be handed it.
+fn is_shareable(host: &str) -> bool {
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']');
+    !(h.is_empty()
+        || h.eq_ignore_ascii_case("localhost")
+        || h == "::"
+        || h == "::1"
+        || h == "0.0.0.0"
+        // 127.0.0.0/8, all of it — 127.0.0.1 is the common one and
+        // 127.0.1.1 is what a Debian box calls itself.
+        || h.strip_prefix("127.")
+            .is_some_and(|rest| rest.split('.').count() == 3))
+}
+
 pub fn teardown(mut commands: Commands, roots: Query<Entity, With<PauseRoot>>) {
     for e in roots.iter() {
         commands.entity(e).despawn();
@@ -254,6 +300,49 @@ mod tests {
                 assert_ne!(a.0, b.0, "{:?} is drawn twice", a.0);
             }
         }
+    }
+
+    #[test]
+    fn an_invite_is_offered_only_when_it_would_work_for_someone_else() {
+        // The dev shard is the address this screen sees most often, and a
+        // link to it is wrong for every reader but the one looking at it.
+        for mine in [
+            "127.0.0.1",
+            "127.0.1.1",
+            "localhost",
+            "LOCALHOST",
+            "0.0.0.0",
+            "::1",
+            "::",
+            "",
+        ] {
+            assert!(!is_shareable(mine), "{mine:?} is not shareable");
+        }
+        for theirs in [
+            "game.moreright.xyz",
+            "10.0.0.4",
+            "192.168.1.20",
+            "203.0.113.7",
+        ] {
+            assert!(is_shareable(theirs), "{theirs:?} is shareable");
+        }
+        // A bracketed v6 literal arrives with its brackets on, from the same
+        // `split_once(':')` that produces every other host here.
+        assert!(!is_shareable("[::1]"));
+        assert!(is_shareable("[2001:db8::1]"));
+    }
+
+    #[test]
+    fn the_drawn_invite_is_a_link_the_parser_accepts() {
+        // The screen and the parser must not be able to disagree about the
+        // shareable form — this is what keeps `link_for` the single writer.
+        let link = crate::deeplink::link_for("game.moreright.xyz:61234");
+        assert_eq!(
+            crate::deeplink::parse(&link)
+                .expect("drawn link parses")
+                .addr,
+            "game.moreright.xyz:61234"
+        );
     }
 
     #[test]

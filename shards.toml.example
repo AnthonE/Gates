@@ -33,11 +33,33 @@ map = "island 20260731"
 # a joiner the shard turns away at the door.
 # max_players = 60
 
-# players / ping_ms are deliberately NOT set here and cannot be set honestly
-# today: the shard serves no status endpoint, so there is no live count to
-# read. Both readers draw `?` for an absent count. Writing a 0 would make a
-# busy shard read as empty, which is worse than saying nothing.
+# WHERE THIS SHARD'S LIVE PLAYER COUNT IS READ FROM. Optional.
 #
-# What would light them: a status endpoint on the shard (stats.rs already
-# holds `joins`/`leaves` as atomics and its header names "the status page" as
-# the thing that would read them) plus a step here that polls it.
+# Set it and both readers — the launcher's Servers window and the game's own
+# intro screen — poll this url every ten seconds and draw the answer. Leave it
+# out and both draw `?`, which is the honest state for a shard that publishes
+# no numbers.
+#
+# It is the `status_addr` endpoint from shard.toml (crates/server/src/
+# status.rs), reachable from wherever players are: `GET /status.json` →
+# {"players":3,"max_players":100,"tick":123456}. Three things to know:
+#
+#   1. TCP, not UDP, and a DIFFERENT PORT from the game's. Open it separately
+#      — on the public box that means the cloud firewall too, not just ufw
+#      (DECISIONS.md, the 2026-08-03 row).
+#   2. The count is POLLED, never baked into the list. ci/shardlist.py could
+#      have written a number here and deliberately does not: a count fixed at
+#      generation time describes the shard as it was whenever someone last ran
+#      the script, and the document is then served for weeks. A busy shard
+#      reading as empty is exactly what the `?` was protecting against.
+#   3. A shard that does not answer costs the row nothing. The reader keeps
+#      the last count it got, so a blip does not read as "everyone left".
+#
+# status_url = "https://game.moreright.xyz:8080/status.json"
+
+# players / ping_ms are deliberately NOT set here. `players` is what
+# status_url lights, live, and writing one here would freeze it at whatever it
+# was when this file was last edited. `ping_ms` is a measurement only the
+# reader can make — the distance from a player to a shard is not a property of
+# the shard — so neither this file nor the generator can state one honestly.
+# Both readers draw `?` for an absent count.

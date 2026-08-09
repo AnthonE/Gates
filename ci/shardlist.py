@@ -20,12 +20,21 @@ client would refuse.
 
 ## Three things this deliberately does NOT do
 
-**It does not invent a player count.** `players` is omitted from a row unless
-`shards.toml` states one, and nothing here can state one honestly today: the
-shard has no status endpoint, so there is no number to read. The launcher
-already draws `?` for an absent count and so does our menu. Writing `0` there
-would be the "card advertising a reward the rule cannot pay" defect in its
-smallest form — a live shard with four people on it reading as empty.
+**It does not invent a player count — and it does not measure one either.**
+`players` is omitted from a row unless `shards.toml` states one. This script
+could poll each shard's `/status.json` and bake the answer in, and that would
+be worse than the `?` it replaced: a number written at generation time
+describes the shard as it was whenever an operator last ran this command, and
+the document is then copied to an origin and served for hours or weeks. A
+count that is confidently wrong is a live shard with four people on it reading
+as empty, arriving by a slower road.
+
+So a row carries **`status_url`** instead — where that shard answers
+`GET /status.json` (`crates/server/src/status.rs`) — and each reader polls it
+live. The generator stays a pure generator with no network (which is what lets
+`--self-test` promise the same), and the number a player reads is one somebody
+measured seconds ago. Both readers already do this: the game's menu polls every
+`STATUS_POLL_SECS`, and so does the launcher's Servers window.
 
 **It does not type the player cap.** `max_players` defaults to `MAX_PLAYERS`
 parsed out of `crates/sim-core/src/limits.rs`, because a published cap that
@@ -57,6 +66,8 @@ KIND = "scry-shardlist-v1"
 MAX_SHARDS = 64
 MAX_FIELD_BYTES = 96
 MAX_DOC_BYTES = 64 * 1024
+# A url is legitimately longer than a name, so `status_url` has its own cap.
+MAX_URL_BYTES = 256
 
 LIMITS_RS = ROOT / "crates" / "sim-core" / "src" / "limits.rs"
 SHARDS_TOML = ROOT / "shards.toml"
@@ -105,6 +116,27 @@ def check_addr(addr: str) -> None:
         raise SystemExit(f"shardlist: {addr!r} has a bad port {port!r}")
 
 
+def check_status_url(url: str) -> None:
+    """The same shape check `shardlist::check_status_url` makes.
+
+    Refused rather than carried: a url a reader cannot fetch becomes a row that
+    blames the network for a typo in this file.
+    """
+    if not isinstance(url, str) or not url.strip():
+        raise SystemExit("shardlist: status_url is empty")
+    if url.strip() != url:
+        raise SystemExit(f"shardlist: status_url {url!r} is padded")
+    if len(url.encode()) > MAX_URL_BYTES:
+        raise SystemExit(f"shardlist: status_url is over the {MAX_URL_BYTES}-byte cap")
+    if any(c.isspace() for c in url):
+        raise SystemExit(f"shardlist: status_url {url!r} contains whitespace")
+    if not url.startswith(("https://", "http://")):
+        raise SystemExit(f"shardlist: status_url {url!r} is not an http(s) url")
+    rest = url.split("://", 1)[1]
+    if not rest or rest.startswith("/"):
+        raise SystemExit(f"shardlist: status_url {url!r} has no host")
+
+
 def build_doc(rows: list[dict], cap: int) -> dict:
     """Turn parsed `shards.toml` rows into the document, validating as it goes."""
     if len(rows) > MAX_SHARDS:
@@ -148,6 +180,12 @@ def build_doc(rows: list[dict], cap: int) -> dict:
         entry["max_players"] = mp
         if "map" in row:
             entry["map"] = need("map")
+        # Where this shard's LIVE count is read from. Optional — a shard whose
+        # operator has not armed `status_addr` (or has not opened the port)
+        # states nothing, and both readers keep drawing `?` for it.
+        if "status_url" in row:
+            check_status_url(row["status_url"])
+            entry["status_url"] = row["status_url"]
         # `players` only if the file states one. See the header: nothing here
         # can measure it, and a zero would read as an empty shard.
         if "players" in row:
@@ -209,7 +247,8 @@ def self_test() -> int:
     # The caps here must be the caps the client refuses at, or this script
     # will happily write documents the game cannot read.
     rs = (ROOT / "crates" / "client" / "src" / "shardlist.rs").read_text(encoding="utf-8")
-    for name, val in (("MAX_SHARDS", MAX_SHARDS), ("MAX_FIELD_BYTES", MAX_FIELD_BYTES)):
+    for name, val in (("MAX_SHARDS", MAX_SHARDS), ("MAX_FIELD_BYTES", MAX_FIELD_BYTES),
+                      ("MAX_URL_BYTES", MAX_URL_BYTES)):
         m = re.search(rf"pub const {name}: usize = ([0-9_]+);", rs)
         ok(m is not None, f"{name} is declared in the client's parser")
         ok(int(m.group(1).replace("_", "")) == val, f"{name} agrees with the client ({val})")
@@ -224,6 +263,28 @@ def self_test() -> int:
     # The load-bearing one: an unmeasured count must be ABSENT, not zero.
     ok("players" not in row, "no player count is invented")
     ok("ping_ms" not in row, "no ping is invented")
+
+    ok("players" not in row, "no player count is BAKED either — status_url is how it lights")
+
+    # `status_url` — the field that makes the count live. Optional, and the
+    # row above proves its absence is fine.
+    lit = build_doc(
+        [{"id": "eu-1", "name": "Gates EU 1", "addr": "game.moreright.xyz:61234",
+          "status_url": "https://game.moreright.xyz:8080/status.json"}], cap)["servers"][0]
+    ok(lit["status_url"] == "https://game.moreright.xyz:8080/status.json",
+       "a row may name where its live count is polled from")
+    # Still no baked count beside it: naming the endpoint is not claiming a
+    # number, and a reader that cannot reach it must draw `?`.
+    ok("players" not in lit, "naming a status endpoint does not invent a count")
+
+    for bad in ("game.moreright.xyz:8080/status.json", "ftp://h/status.json",
+                "https://", "https:///status.json", "https://h/ status.json",
+                "", "  https://h/s.json"):
+        refuses([{"id": "a", "name": "n", "addr": "h:1", "status_url": bad}], cap,
+                f"status_url {bad!r}")
+    refuses([{"id": "a", "name": "n", "addr": "h:1",
+              "status_url": "https://h/" + "x" * MAX_URL_BYTES}], cap,
+            "a status_url over the cap")
 
     ok(build_doc([], cap) == {"servers": []}, "an empty list is a valid document")
 

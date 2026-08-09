@@ -38,10 +38,15 @@ gates — the Gates desktop client
 
   ADDR                 shard address, host:port (default 127.0.0.1:4433).
                        A NAME is normal — the public shard's certificate is
-                       issued for one, and the transport resolves it
+                       issued for one, and the transport resolves it.
+                       A join link (scry://join/gates/host:port) may be given
+                       here too — that is how the OS hands one to this binary
   --server ADDR        the same, named. Wins over the positional form.
                        Given, the client joins it straight away; absent, it
                        opens the server menu instead
+  --join LINK          a join link, named. Equivalent to --server with the
+                       address the link carries — a link is a way of spelling
+                       an address, never a second way to connect
   --servers URL        where to fetch the scry-shardlist-v1 document the menu
                        lists. Absent, the menu offers the default shard only
                        and says why the rest of it is empty
@@ -94,6 +99,7 @@ pub enum Parsed {
 
 pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     let mut server_flag: Option<String> = None;
+    let mut join_flag: Option<String> = None;
     let mut server_pos: Option<String> = None;
     let mut servers_url: Option<String> = None;
     let mut identity: Option<String> = None;
@@ -108,6 +114,10 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
             "--server" => match it.next() {
                 Some(v) => server_flag = Some(v),
                 None => return Parsed::Bad("--server needs an address".into()),
+            },
+            "--join" => match it.next() {
+                Some(v) => join_flag = Some(v),
+                None => return Parsed::Bad("--join needs a join link".into()),
             },
             // Same empty-placeholder rule as the two below: a launcher that
             // has no shard list substitutes "" rather than dropping the flag.
@@ -143,11 +153,35 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     // An EMPTY --server is the same case as an empty --identity: the launcher
     // substituted a placeholder it had no value for. Fall back rather than
     // failing to parse "" as an address.
+    //
+    // `--server` beats `--join` beats the positional, which is the existing
+    // precedence with the link form slotted where it belongs: an operator who
+    // typed an explicit address means it, and a link is the least explicit of
+    // the three because it usually arrived from someone else.
     let given = server_flag
         .filter(|s| !s.trim().is_empty())
+        .or(join_flag.filter(|s| !s.trim().is_empty()))
         .or(server_pos.filter(|s| !s.trim().is_empty()));
     let server_given = given.is_some();
     let raw = given.unwrap_or_else(|| DEFAULT_SERVER.to_string());
+
+    // A join link resolves to the address it carries and then follows exactly
+    // the path a typed one does — same field, same shape check, same
+    // menu-skipping `server_given`. `deeplink::parse` is what refuses a link
+    // for another title or one carrying anything past the address.
+    //
+    // Checked BEFORE `check_addr` so a malformed link is refused as a bad
+    // *link*, naming the shape a link should have; falling through would
+    // report `"scry://join/gates/nonsense" is a url, not a host:port`, which
+    // names the wrong mistake to someone who was handed a link by a friend.
+    let raw = if crate::deeplink::is_link(&raw) {
+        match crate::deeplink::parse(&raw) {
+            Ok(j) => j.addr,
+            Err(why) => return Parsed::Bad(why),
+        }
+    } else {
+        raw
+    };
 
     // Shape only. Resolving here would put a DNS lookup inside argument
     // parsing, which is I/O in the one part of startup that has to stay
@@ -333,6 +367,55 @@ mod tests {
         // blames the network.
         assert!(matches!(a(&["--servers", "example.test"]), Parsed::Bad(_)));
         assert!(matches!(a(&["--servers"]), Parsed::Bad(_)));
+    }
+
+    #[test]
+    fn a_join_link_is_a_way_of_spelling_an_address() {
+        // Both doors, and both must land in the same field as a typed one —
+        // including `server_given`, which is what skips the menu. A player who
+        // clicked a friend's link has chosen a shard exactly as firmly as one
+        // who picked a row.
+        for argv in [
+            vec!["scry://join/gates/game.moreright.xyz:61234"],
+            vec!["--join", "scry://join/gates/game.moreright.xyz:61234"],
+            vec!["gates://game.moreright.xyz:61234"],
+        ] {
+            let x = run(&argv);
+            assert_eq!(x.server, "game.moreright.xyz:61234", "{argv:?}");
+            assert!(x.server_given, "{argv:?} must skip the menu");
+        }
+    }
+
+    #[test]
+    fn a_bad_link_is_refused_as_a_link_and_not_as_an_address() {
+        // The message names the mistake the player actually made. Falling
+        // through to `check_addr` would report "is a url, not a host:port" to
+        // someone who was handed a url on purpose.
+        let why = match a(&["scry://join/some-other-game/h:1"]) {
+            Parsed::Bad(why) => why,
+            other => panic!("expected Bad, got {other:?}"),
+        };
+        assert!(why.contains("some-other-game"), "{why}");
+        assert!(!why.contains("bad address"), "{why}");
+
+        assert!(matches!(a(&["scry://join/gates/nonsense"]), Parsed::Bad(_)));
+        assert!(matches!(a(&["--join", "not-a-link"]), Parsed::Bad(_)));
+        assert!(matches!(a(&["--join"]), Parsed::Bad(_)));
+    }
+
+    #[test]
+    fn an_explicit_address_still_beats_a_link() {
+        // Precedence, pinned: --server > --join > positional.
+        let x = run(&["--join", "scry://join/gates/h:1", "--server", "5.6.7.8:2"]);
+        assert_eq!(x.server, "5.6.7.8:2");
+        let x = run(&["scry://join/gates/h:1", "--join", "scry://join/gates/h:2"]);
+        assert_eq!(x.server, "h:2");
+        // An unfilled --join is absence, the same rule every other flag here
+        // follows — it must not become "no server" when a positional exists.
+        let x = run(&["h:9", "--join", ""]);
+        assert_eq!(x.server, "h:9");
+        assert_eq!(run(&["--join", ""]).server, DEFAULT_SERVER);
+        assert!(!run(&["--join", ""]).server_given);
     }
 
     #[test]

@@ -97,7 +97,10 @@ What remains, in order:
 2. **The shard list is written and never served.** `ci/shardlist.py` produces
    the document and both consumers parse it, but `manifest.servers.url` on
    scry's side is `null`, so the launcher's Servers window and our own menu
-   are dark for the same missing file.
+   are dark for the same missing file. Everything downstream of that one
+   publish now exists: live counts via `status_url`, and join links
+   (`scry://join/gates/host:port`, `deeplink.rs`). Registering the scheme
+   with the desktop is the launcher's installer, and is not done.
 3. **`prove` has no call site.** `sign_siwe` hands the launcher a string this
    process composed; `Overlay::prove(server, nonce)` binds it to a name and a
    nonce the SHARD chose, which is the difference between a signature a shard
@@ -445,12 +448,14 @@ hangup through the menu's own teardown. Remaining:
    `DECISIONS.md` §open and an operator act: serve `servers.json`, set
    `servers.url` in scry's `data/launcher/gates.manifest.json`. Until then
    both the menu and the launcher's Servers window are correctly dark.
-2. **Player counts: the shard's half landed; lighting them is an operator
-   act.** `status_addr` serves `GET /status.json` off `ShardStats`
-   (`tests/status.rs`; `DECISIONS.md` §open "shard status endpoint v0").
-   Absent by default: the operator sets the knob, opens the TCP port, points
-   a reader at the URL. `ci/shardlist.py` still omits `players` (its own
-   slice) and both readers still draw `?`.
+2. **Player counts: the code is done end to end; what is left is operator
+   acts.** A row may carry `status_url` and both readers poll it every
+   `STATUS_POLL_SECS` (`DECISIONS.md` §open "shard status poll v0"); the
+   count is never baked into the document, because a generated number is
+   stale before it is served. The three remaining steps are all on a box:
+   set `status_addr` in `shard.toml`, open that TCP port (the cloud firewall
+   too), and put the url in `shards.toml`. Until then every row draws `?`,
+   which is correct.
 3. **Ungated, by hand only:** the end-to-end kill-the-shard-mid-play run
    behind `Screen::Disconnected`.
 
