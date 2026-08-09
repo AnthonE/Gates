@@ -39,22 +39,25 @@ standing instruction. Building blocks are 250/500/1000, a stone wall takes
 four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
 Two bands moved and the raid ratio re-priced itself to 1.04/1.73/3.46.
 
-**The economy is measured now (2026-08-09), and the agreement check is
-in.** `balance.rs` refuses a `farm_per_min` above the sim's at-node
-ceiling (weak mark included — the walker's first run beat the naive
-ceiling, so the bonus is part of standing at the node), pinned with its
-derivation in `content.rs` and a hash probe `farm_per_min` never had. The
-travel term is measured, the way the §open row asked: `server
-tests/farmwalk.rs` walks a greedy farmer tree-to-tree on the real island
-— **1001 wood/min effective at the kit hatchet: 72.9% duty against that
-tool's 1373/min at-node ceiling, ~20× the declared 50** — so the
-farm-minute currency is ~20× slower than play and
-`starter_minutes` 85.6 / `satchel_minutes` 29.6 / upkeep 8.56 are model
-prices, not clock claims (`CONTENT.md` §3's header says so now). What
-remains is the operator's speak on the `DECISIONS.md` §open row
-(semantics PROPOSED there), then the yield move — which also wants
-reference data `BALANCE.md` never recorded (per-hit yields for
-stone/sulfur/metal nodes, tool multipliers).
+**The agreement check is in and the ceiling is measured (2026-08-09).**
+`balance.rs` refuses a `farm_per_min` above the sim's at-node ceiling
+(weak mark included — the walker's first run beat the naive ceiling, so
+the bonus is part of standing at the node), pinned in `content.rs` with a
+hash probe `farm_per_min` never had. `server tests/farmwalk.rs` walks a
+greedy farmer tree-to-tree on the real island: **1001 wood/min, 72.9%
+duty against that tool's 1373/min ceiling, ~20× the declared 50**.
+
+**That 20× is an upper bound on the error, not the error** (operator,
+2026-08-09: the reference is hardcore PvP — *"your NEVER solo farming and
+people and animals are randomly killing you"*). The walker is alone,
+uncontested, never banks a load and never dies carrying one; a populated
+shard subtracts a threat term this island cannot charge, because nothing
+fights back yet (§0m item 2). A travel-and-threat-inclusive 50/min may be
+close to right, which is why the semantics stayed the operator's.
+
+Next: `reference/RIPLIST.md` is the queue — every number with a reference
+equivalent, what blocks taking it, and the research gaps that block three
+of the four nodes.
 
 What a returning player still finds wrong, in rank order:
 
@@ -607,8 +610,8 @@ mutants reproduced red, `NOT_COVERED` is empty, and the ledger seat stays
 for the next code. **Remains, and it is not tests**: the stronger form is a
 payload-role table both the emit site and the check read, a swap as a
 *compile* error (`reference/FINDINGS.md` §1 end) — bigger than one pass.
-`CLAUDE.md`'s trap list still reads "law with no gate" flat; correct it the
-next time that shared doc is edited.
+(The `CLAUDE.md` trap-list correction this item asked for is done — that
+entry names the landed gate and keeps the mechanism as the lesson.)
 
 ---
 

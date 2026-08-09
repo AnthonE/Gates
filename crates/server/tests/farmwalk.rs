@@ -1,26 +1,39 @@
-//! `farmwalk` — the travel term, measured (DECISIONS.md §open, "the
-//! economy has never been measured against the sim").
+//! `farmwalk` — the **unthreatened solo ceiling**, measured
+//! (DECISIONS.md §open, "the economy has never been measured against the
+//! sim").
 //!
-//! `[globals] farm_per_min` declares an *effective* gather rate, travel
-//! included; the sim's at-node ceiling is 27–41× hotter (weak mark
-//! included — 1373/min at the kit hatchet, 2060 at the best tier-1 tool,
-//! against the declared 50), and until this test nothing in the repo had
-//! ever farmed on the real island to say where between the two a player
-//! actually lands. The named method is the one used here: a bot walk on a
-//! real shard. A greedy walker with the
-//! spawn kit's stone hatchet targets the nearest standing tree, sprints to
-//! it, chops it out, and repeats until it has a wood goal in its pockets —
-//! the same `movement::step`, the same `gather::swing`, the same shipped
-//! content a player gets.
+//! `[globals] farm_per_min` declares an *effective* gather rate; the
+//! sim's at-node ceiling is 27–41× hotter (weak mark included — 1373/min
+//! at the kit hatchet, 2060 at the best tier-1 tool, against the declared
+//! 50), and until this test nothing in the repo had ever farmed on the
+//! real island to say where between the two a player lands. The named
+//! method is the one used here: a bot walk on a real shard. A greedy
+//! walker with the spawn kit's stone hatchet targets the nearest standing
+//! tree, sprints to it, chops it out, and repeats until it has a wood
+//! goal in its pockets — the same `movement::step`, the same
+//! `gather::swing`, the same shipped content a player gets.
+//!
+//! **Read the number for what it is.** This walker is alone on an empty
+//! island: nothing contests the node it is walking to, nothing attacks it,
+//! it never banks a load at a base and never dies carrying one. The
+//! reference game is hardcore PvP and none of those hold there (operator,
+//! 2026-08-09) — so what this measures is the CEILING on effective
+//! farming, travel and node exhaustion being the only costs the island can
+//! currently charge. A populated shard subtracts a threat-and-logistics
+//! term on top, and that term is not measurable here yet, because nothing
+//! in this game fights back (`NOW.md` §0m item 2) and no shard has ever
+//! held a hostile population. The gap between this number and the declared
+//! rate is therefore an upper bound on the declaration's error, never a
+//! verdict that the declaration is wrong.
 //!
 //! What it asserts is structure, not pacing: the island is farmable (a
 //! spawn can reach trees and fell them), the yield arrives, and the
-//! measured effective rate obeys the arithmetic law the content crate now
-//! gates (effective ≤ at-node). The *measurement* — effective wood/min,
-//! travel included — is printed, not banded: what the number should be is
-//! the operator's knob, and this test is the instrument, refreshed on
-//! every run, that lets that knob be spoken from evidence instead of
-//! guessed. No clock, no sockets: ticks and counts only.
+//! measured rate obeys the arithmetic law the content crate now gates
+//! (effective ≤ at-node). The *measurement* is printed, not banded: what
+//! the number should be is the operator's knob, and this test is the
+//! instrument, refreshed on every run, that lets that knob be spoken from
+//! evidence instead of guessed. No clock, no sockets: ticks and counts
+//! only.
 
 use server::core::ShardCore;
 use server::stats::ShardStats;
@@ -273,8 +286,10 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
     );
 
     // The measurement. `farm_per_min` declares wood at an effective rate
-    // 27× under this tool's at-node ceiling; this is where the walk
-    // actually landed. Duty is effective/at-node, both printed above it.
+    // 27× under this tool's at-node ceiling; this is where an UNTHREATENED
+    // SOLO walk landed. Duty is effective/at-node, both printed. A
+    // populated PvP shard subtracts a threat term this island cannot
+    // charge — see the header.
     let declared = c.balance.globals.farm_per_min.get("item.wood").copied();
     println!(
         "farmwalk: {got} wood in {ticks} ticks ({:.1} sim-min) — effective \
