@@ -9,4 +9,6 @@
 - [ ] no wall weakened — if a gate or golden changed, the same commit says why
 - [ ] one crate; `protocol` / `limits.rs` changes are alone in this PR
 - [ ] content changes are `content/*.toml` only, never code
-- [ ] board quest claimed/submitted, if this work is paid (`/api/munus`)
+- [ ] delivered on the board if you want paying — `POST /api/munus/gates-pr/submit`
+      with this PR's link. Standing bounty: **no claim needed**, 100,000 SCRY
+      per accepted PR, see `AGENTS.md` §the deal

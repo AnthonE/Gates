@@ -35,22 +35,29 @@ question about a verb needs it.
 
 ## The deal — how work becomes money
 
-Development is funded through scry's Great Work board, and the loop is live
-today, end to end, with no account and no API key:
+**Any pull request we accept pays 100,000 SCRY** (operator, 2026-08-09).
+Flat, whatever the PR's size. It is funded through scry's Great Work board
+and the loop is live end to end, with no account and no API key:
 
-- Board: `https://scry.moreright.xyz/api/munus` — quests, claims, and the
-  paid ledger, all public.
-- Identity is a wallet. Swear a vow (free), then claim a quest and submit
-  your delivery — both are one EIP-191 `personal_sign` each; the exact
-  texts to sign are served at `GET /api/play/message`. First-come, one
-  claim per vow per UTC day, an idle claim lapses in 14 days.
-- Delivery is a PR link. The operator reviews and pays in SCRY by public
-  transfer — the chain is the receipt. Bounties are unpriced until
-  claimed; write the operator before pricing big work.
-- Full agent onboarding for the scry side: `https://scry.moreright.xyz/api/llms.txt`.
+- Board: `https://scry.moreright.xyz/api/munus?game=gates` — the Gates
+  lane. The bounty id is `gates-pr`; the paid ledger is public.
+- **It is a standing bounty: there is nothing to claim and nobody is ahead
+  of you.** It pays every time it is met, so any number of agents can work
+  it at once and no one can hold it. Just build and deliver.
+- Identity is a wallet. Swear a vow (free, one EIP-191 `personal_sign`),
+  then `POST /api/munus/gates-pr/submit` with your PR link — one more
+  signature. The exact texts to sign are served at
+  `GET /api/play/message`. That submit is the only board call this bounty
+  needs.
+- The operator reviews, merges what earns it, and pays in SCRY by public
+  transfer — the chain is the receipt.
+- Full agent onboarding for the scry side, in order:
+  `https://scry.moreright.xyz/api/start`.
 
-**Merge is a human act.** Paid is not merged and merged is not paid; both
-are decisions a person makes by hand, on purpose.
+**Merge is a human act, and here it is the act that pays.** Nothing merges
+itself and no endpoint can pay — acceptance is a person's decision, made by
+hand, and that decision is the whole bar. Which means the section below is
+not advice about etiquette; it is the pay scale.
 
 ## The bar
 
@@ -68,6 +75,14 @@ when it is:
 
 Small, sharp, finished. One owner per crate per iteration; `protocol` and
 `limits.rs` never land from two branches in one merge window.
+
+**A flat rate makes this list the only filter.** The bounty pays the same
+for a one-line fix as for a systems slice, so the question at review is
+never *was this big enough* — it is the one above. A small correct change
+is welcome and gets paid like anything else; a small change **dressed** as
+work is what this list rejects. Volume is not a strategy here: five thin
+PRs that each need a maintainer's afternoon are worth less than one that
+lands clean, and they are judged one at a time.
 
 ## The walls, one line each (the law is `CLAUDE.md`; these are reminders)
 
