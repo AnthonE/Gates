@@ -28,8 +28,14 @@ const REJOIN: u32 = 0x201;
 
 /// A world with every table armed, so a restored body has hp to keep, meters
 /// to keep and a recipe to be mid-craft on.
-fn armed() -> World {
-    let mut w = World::new(SEED);
+///
+/// Boxed, for the reason `gather.rs`'s `world_at` is: a `World` is several
+/// hundred KB, and by-value copies through test frames overflow the default
+/// 2 MiB test-thread stack. This file is the one that proves it — the restore
+/// assertions hold *two* worlds live at once (the played character's and the
+/// one they rejoin), which is twice what any sibling suite asks for.
+fn armed() -> Box<World> {
+    let mut w = Box::new(World::new(SEED));
     w.combat = CombatContent::probe_fixture();
     w.survival = SurvivalContent::probe_fixture();
     w.craft = CraftContent::probe_fixture();
@@ -42,7 +48,7 @@ fn armed() -> World {
 /// the first thing a test can observe, so an exact comparison of `food` would
 /// be asserting the clock's rate rather than the restore. The clock's own
 /// restore has its own test below.
-fn armed_still() -> World {
+fn armed_still() -> Box<World> {
     let mut w = armed();
     w.survival = SurvivalContent::EMPTY;
     w
@@ -50,7 +56,7 @@ fn armed_still() -> World {
 
 /// A player who has been somewhere and done something: joined, walked to a
 /// known point, and picked up a stack. Returns the world and their record.
-fn a_played_character() -> (World, PlayerSave) {
+fn a_played_character() -> (Box<World>, PlayerSave) {
     let mut w = armed_still();
     w.tick(&[Command::Join { id: ID }]);
     // Move the body to a spot the spawn ring would never pick, so "restored
