@@ -17,13 +17,38 @@
 //! **Do not edit the vendored file.** [`VENDORED_SHA256`] pins it and
 //! `vendored_sdk_has_not_been_edited_here` goes red if anyone does. A patch
 //! applied here would fix Gates and leave every other game on the broken
-//! version — fix it upstream and re-vendor. Verify the pin against the source
-//! of record with:
+//! version — fix it upstream and re-vendor.
+//!
+//! ⚠ **The pin catches a local edit and CANNOT catch upstream moving**, and
+//! confusing the two cost this repo a real capability. Both sides stayed green
+//! for days while the vendored copy sat 326 lines behind the source: no
+//! Windows transport (the file `use`d `std::os::unix::net::UnixStream`
+//! unconditionally, so a Windows build of this client could not compile at
+//! all), no `prove`, no `profile`. Upstream's own gate — scry's
+//! `crates/scry-broker/tests/sdk_parity.rs` — compiles `sdk/rust/…` and calls
+//! it *"what Gates has compiled into its binary byte-for-byte"*, which was a
+//! claim about a file in another repo that nothing checked. So the drift check
+//! is a **command somebody runs**, not a gate either repo owns, and it is one
+//! line against a number scry publishes beside the SDK:
 //!
 //! ```text
 //! sha256sum crates/client/src/scry_overlay.rs
-//! # compare with sdk/rust/scry_overlay.rs in AnthonE/scry
+//! # must appear in sdk/SHA256SUMS in AnthonE/scry — if it does not, upstream
+//! # has moved: re-vendor, re-pin, and run the client's tests.
 //! ```
+//!
+//! That file did not exist until this re-vendor asked for it, and neither did
+//! the two upstream checks beside it (`sdk/test_sdk.py` §what a vendoring game
+//! checks against): the SDK is now gated rustfmt-clean, because an unformatted
+//! upstream reddens THIS repo's `cargo fmt --all --check` and upstream has no
+//! fmt gate of its own — measured, both times it happened.
+//!
+//! Re-vendored 2026-08-09 and the pin moved with it. That re-vendor was a
+//! drop-in: this wrapper calls `connect`, `signer`, `servers_url`, `address`
+//! and `sign`, none of which changed shape. `Overlay::title` DID change
+//! (`Option<Value>` → `Option<String>`) and nothing here calls it, which is
+//! luck rather than design — check the call sites, not just the compile, on
+//! the next one.
 //!
 //! ## What the launcher is for, and what it is not
 //!
@@ -52,6 +77,15 @@
 //! lands here is the client knowing who it is, from the launcher when one is
 //! running and from `--identity` when the player says so, which is the half
 //! that has to exist first either way.
+//!
+//! When that slice IS built, the verb to reach for is `Overlay::prove(server,
+//! nonce)`, not [`sign_siwe`]. `sign_siwe` hands the launcher a string this
+//! process composed; `prove` binds the signature to a server name and a nonce
+//! the SHARD chose, which is the difference between a signature a shard can
+//! verify and one it can only replay. The SDK's own doc on `Proof::message`
+//! says the rest: the echoed message is for logging, and a server MUST
+//! recompute what it verifies against. `prove` arrived with the 2026-08-09
+//! re-vendor and has no call site here yet.
 
 #[path = "scry_overlay.rs"]
 pub mod overlay;
@@ -66,7 +100,7 @@ pub const SLUG: &str = "gates";
 /// scry repo. Regenerate ONLY when re-vendoring an upstream change:
 /// `sha256sum crates/client/src/scry_overlay.rs`.
 pub const VENDORED_SHA256: &str =
-    "87e3f80afc59e18b4c55826eebf79efd761e4f2bc819f69b6c179f3559f3f4d7";
+    "3a81c7020ef166702d34f4dd5708e1782df0adc75b09d7aa679915e2deab93cd";
 
 /// Who is playing, and how we came to believe it. The variants are kept
 /// distinct because they carry different weight and a single `Option<String>`

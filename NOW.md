@@ -20,6 +20,36 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0ab · The store seam — what the SDK re-vendor and the depot job left *(platform lane)*
+
+Landed 2026-08-09. The vendored SDK was **326 lines behind upstream** with
+every gate in both repos green: no Windows transport (`std::os::unix::net`
+was imported unconditionally, so a Windows build of this client could not
+compile), no `prove`, no `profile`. Re-vendored and re-pinned; upstream now
+publishes `sdk/SHA256SUMS` and gates its own rustfmt-cleanliness, so the drift
+check is one `sha256sum`. `nightly.yml` now builds `--features render` and
+runs `ci/depot.py`, so the depot is a CI artifact instead of one box's output.
+
+What remains, in order:
+
+1. **Nothing here publishes.** A build goes live when the origin's
+   `published.json` names it and the digest is notarized — operator acts,
+   both. The nightly artifact is the tree those acts consume.
+2. **The shard list is written and never served.** `ci/shardlist.py` produces
+   the document and both consumers parse it, but `manifest.servers.url` on
+   scry's side is `null`, so the launcher's Servers window and our own menu
+   are dark for the same missing file.
+3. **`prove` has no call site.** `sign_siwe` hands the launcher a string this
+   process composed; `Overlay::prove(server, nonce)` binds it to a name and a
+   nonce the SHARD chose, which is the difference between a signature a shard
+   can verify and one it can replay. Wiring it is a wire change (wall 6), so
+   it waits for the identity-in-handshake slice, not for this one.
+4. **The depot is Linux only.** `ci/depot.py` says so in its first line and
+   scry's platform enum has the other rows. The SDK can now reach a launcher
+   on Windows; nothing packages a Windows build of this game.
+
+---
+
 ## 0aa · Building rights — what the four slices left standing *(systems lane)*
 
 Landed 2026-08-08. `reference/BUILDING.md` is the research; the four rows
