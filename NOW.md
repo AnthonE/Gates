@@ -67,11 +67,14 @@ whole slice. What remains, in order:
    says why) but it means the digits are typed and there is nothing to
    click. A small pointer-free overlay would be strictly better and is not
    free.
-4. **`ci/client_smoke.mjs` hand-builds bit frames**, and v28 cost four of
-   them a fix — one only because a field crossing a byte boundary made the
-   decoder read past the frame. That is the byte-golden's blind spot wearing
-   a different hat; a frame builder that took field widths from the encoder
-   would not have it.
+4. ~~**`ci/client_smoke.mjs` hand-builds bit frames**~~ **RETIRED with the
+   file** (verified 2026-08-09: deleted by `7d7a9f5` with the web build).
+   What holds the invariant now is `crates/client-core/tests/wire.rs`,
+   which links `protocol::encode_event_*` instead of hand-framing — the
+   exact fix this item asked for, so the defect class (a frame builder's
+   reading of the layout drifting from the encoder's) is gone by
+   construction. Width-change detection stays `test_protocol_golden`'s
+   job, as `wire.rs`'s own header says.
 
 **Not owed, and stated so it is not re-litigated**: the key lock (its keys
 need per-item instance data `ItemStack` has no room for, and it is the
