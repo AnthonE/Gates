@@ -147,7 +147,8 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
         let stats = ShardStats::default();
         let mut core = armed_core();
         assert_eq!(
-            core.connect_as(0, id_of(0), Some(me), None),
+            core.connect_as(0, id_of(0), Some(me), None)
+                .map(|(how, _)| how),
             Some(Admitted::Fresh),
             "a first visit"
         );
@@ -220,7 +221,8 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
     // And the player walks back into their own body — a *different*
     // connection id, resolved through the key the file carried.
     assert_eq!(
-        core.connect_as(0, id_of(0), Some(me), None),
+        core.connect_as(0, id_of(0), Some(me), None)
+            .map(|(how, _)| how),
         Some(Admitted::TookOver),
         "the returning player did not get their body back"
     );
@@ -276,7 +278,8 @@ fn a_body_with_no_identity_beside_it_is_unclaimable() {
     assert_eq!(core.world.sleepers(), 1, "the body survived");
     // ...and the returning player is a stranger to it.
     assert_eq!(
-        core.connect_as(0, id_of(0), Some(me), None),
+        core.connect_as(0, id_of(0), Some(me), None)
+            .map(|(how, _)| how),
         Some(Admitted::Fresh),
         "an unnamed body was handed to somebody the file never named"
     );
@@ -304,7 +307,8 @@ fn the_shutdown_flush_takes_the_world_before_it_drops_the_players() {
     let mut core = armed_core();
     let me = key("dev-anthone");
     assert_eq!(
-        core.connect_as(0, id_of(0), Some(me), None),
+        core.connect_as(0, id_of(0), Some(me), None)
+            .map(|(how, _)| how),
         Some(Admitted::Fresh)
     );
     core.tick(&stats, |_, _, _| true);

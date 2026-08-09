@@ -523,16 +523,26 @@ rotation landed with the call. Plan, sources and reasoning: `reference/SAVES.md`
    `two_shards_loading_one_file_stay_in_lockstep`. Knobs: `world_file`,
    `world_save_interval_ticks` (1800). Gates: 12 + 2 in sim-core, 7 in
    `server/tests/world_persist.rs`.
-3. **The store's job is now exactly §9.2's, and one hole is left in it.** A
-   sleeper's record is still frozen at the moment they left — `disconnect`
-   reads it before the `Leave`, and the sweep walks *connection* slots. With
-   the world file on this no longer costs a restart (the body itself
-   persists), so the window narrowed to one case: **eviction**. A sleeper
-   raided and then evicted for slot pressure comes back from the stale record.
-   The fix is two-phase eviction — the server picks the victim, takes its
-   save, and queues `Command::Evict { id }` *before* the join, instead of
-   `seat` evicting on its own authority. Deterministic (the id is in the
-   stream) and small; not built.
+3. ~~**The store's job is now exactly §9.2's, and one hole is left in
+   it.**~~ **DONE 2026-08-09 — two-phase eviction.** The hole was eviction:
+   a sleeper's record freezes at their leave (the sweep walks *connection*
+   slots), so a sleeper raided and then evicted for slot pressure came back
+   from the stale record. Now the server picks the victim (longest-asleep,
+   `ShardCore::evict_victim`), takes a **current** save off the live body,
+   files it keyed (`SaveMsg::key` — an evicted sleeper has no connection
+   slot for `drain_saves` to resolve), and queues `Command::Evict { id }`
+   ahead of the join. `seat` no longer evicts on its own authority: a
+   full-shard join with no `Evict` ahead of it refuses silently, as
+   all-awake-full always did. Deterministic — the id is in the stream
+   (`worldsave.rs` lockstep and `sleepers.rs` both script one) — and two
+   joins in one window pick two victims (`slots_short`/`spoken_for` fold
+   the queue into the count). Gates: `sleepers.rs` (+2), `worldsave.rs`,
+   `persist_store.rs` (+3 — the raid-then-evict window end to end).
+   **Left open:** the same-window rejoin — a victim reconnecting in the
+   very window that evicts them gets the store record `install` fetched
+   *before* the eviction save is filed; one window wide, same freshness
+   class as the save ring's other drops, and the takeover hint already
+   refuses to wake a condemned body.
 4. **Blueprints** are the wipe-surviving payload the split was shaped for;
    nothing to build until BPs exist.
 5. **Still no WAL, and item 2 answered the question it was going to force.**

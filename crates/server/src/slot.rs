@@ -194,6 +194,16 @@ pub struct Connect {
 #[derive(Clone, Copy)]
 pub struct SaveMsg {
     pub id: u32,
+    /// `Some` ⇒ `ShardCore` already knows whose record this is and the
+    /// accept loop must file it under this key as-is. One producer: the
+    /// eviction save (two-phase eviction, `ShardCore::connect_as`) — the
+    /// victim is a sleeper whose connection ended long ago, so the accept
+    /// loop's per-connection-slot table cannot resolve its id, and the
+    /// arrow the sim's own sleeper index held is the only pairing left.
+    /// Not a second wall breach: the key was already on the sim thread
+    /// (`Connect::key` is the boundary where that stops being a rule), and
+    /// it still never enters `sim-core`.
+    pub key: Option<PlayerKey>,
     pub save: PlayerSave,
 }
 
