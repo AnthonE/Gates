@@ -35,9 +35,8 @@ upkeep/decay v1) are what was built. What remains:
 2. **The privilege walk has no cache.** One BFS per placement, capped at
    `PRIV_BFS_CELLS`. Fine for a keypress; it would not be fine if
    something per-tick started asking.
-3. **Locks on boxes** (`DOORS.md` §9.8) — still the cheapest unbuilt
-   thing in either document, and cheaper now: `pick_up` already consults
-   `Locks::passes` at an arbitrary address, so the predicate is wired.
+3. ~~**Locks on boxes** (`DOORS.md` §9.8)~~ Landed (see §0z item 1 for
+   what remains: the client's L verb and the server's container view).
 4. **No `AutoTurret`, so the roster has two customers and not three.**
    `roster.rs` exists because the reference has four; ours has two.
 
@@ -49,11 +48,19 @@ Landed 2026-08-08. `reference/DOORS.md` is the research (owns nothing);
 `sim-core/lock.rs` is the answer, and `DECISIONS.md` §open "lock v1" has the
 whole slice. What remains, in order:
 
-1. **Locks on boxes.** `inventory.rs`'s `CONT_BOX` already reasons "open to
-   anyone, exactly like an unlocked door" and declines to copy the door's
-   owner bit. The lock is now a side-store keyed by an address and a box has
-   an address, so the predicate is the same function called from one more
-   place. No new concepts (`DOORS.md` §9.8).
+1. **Locks on boxes — the sim half landed** (`DOORS.md` §9.8): a code lock
+   bolts onto `ARCH_BOX` (`deploy::lockable`, `PLACE_DOOR` widened to the
+   plane), the move verb — the box's only mutating path — asks
+   `Locks::passes` at the box's address and refuses with the door's own
+   `REFUSE_D_OWNER`, the mirror bits ride the existing wire record (zero
+   protocol edits), and `rebuild_doors` re-derives them for boxes at load.
+   Gated by `tests/lock_box.rs` (a mutant-killer on the open-path check)
+   and three tests beside the door's in `deploy.rs`. **Remains, two
+   halves, neither sim**: the client's `L` verb only targets doors
+   (`ui/keypad.rs` — client lane), and the server's container *view*
+   (`server/core.rs` cont sync) still shows a locked box's slots read-only
+   to a stranger; gate it on the same `Deploys::lock_passes` at the box's
+   plane address when the server lane is open.
 2. ~~**A pickup verb for an unsecured deployable.**~~ Landed with
    demolish v1 (§0aa), including the rule that a locked door cannot be
    lifted out of its frame.

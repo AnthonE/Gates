@@ -117,7 +117,9 @@ pub const EV_STOCK: u8 = 13;
 /// keypad moved it (lock v1). Broadcast — door state is a world fact like
 /// a placement. The three bits are the door as the world sees it and
 /// nothing more: no code, no owner and no remembered list is on this
-/// lane, because none of it is a client's to know.
+/// lane, because none of it is a client's to know. A **box's** lock rides
+/// the same lane (locks on boxes): the event is addressed, and a box's
+/// `open` bit is simply always 0.
 pub const EV_DOOR: u8 = 14;
 /// EV_HIT: a = attacker player id, b = victim player id, c = damage dealt.
 /// The attacker's fact — the hitmarker, not the truth; EV_HEALTH is what
@@ -1198,6 +1200,28 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
                 }
+                // The lock's question, asked where the box actually opens
+                // (locks on boxes, `DOORS.md` §9.8). The move verb IS the
+                // box's open path — the container view is a subscription
+                // that grants nothing — so this one check gates deposit
+                // and withdrawal alike, on both halves of a move. The box
+                // stands on the plane (`loc_fits_placement`), so its lock
+                // shares `box_key`'s triple plus `LOC_PLANE`; an oven at
+                // the same shape of address can carry no lock (`lockable`)
+                // and passes as bare. The refusal is the locked door's
+                // own, not a move reason: the panel draws server truth and
+                // predicted nothing to roll back (`ui/slots.rs`), and
+                // *this lock does not know you* is one sentence whichever
+                // verb it refused.
+                let b = self.deploys.boxes()[i];
+                if !self
+                    .deploys
+                    .lock_passes(b.cx, b.cz, b.level, build::LOC_PLANE, pid)
+                {
+                    self.events
+                        .push(EV_DEPLOY_REFUSED, pid, deploy::REFUSE_D_OWNER, 0);
+                    return;
+                }
                 Some(i)
             }
             _ => None,
@@ -1625,14 +1649,20 @@ impl World {
     /// locked door that the access check waves everyone through. Deriving
     /// them here means the store is the only thing the save has to get
     /// right, which is the same argument that keeps `Pieces::cols` out of
-    /// the file entirely.
+    /// the file entirely. Every lockable archetype gets the derivation —
+    /// a **box** carries the same lock as a door (locks on boxes,
+    /// `DOORS.md` §9.8); only the door touches the collision index,
+    /// because only a door has a leaf that blocks.
     pub fn rebuild_doors(&mut self) {
         for i in 0..self.deploys.len() {
             let d = self.deploys.entries()[i];
-            if self.deploy.defs[d.row as usize].arch != crate::deploy::ARCH_DOOR {
+            let arch = self.deploy.defs[d.row as usize].arch;
+            if arch == crate::deploy::ARCH_DOOR {
+                self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
+            }
+            if !crate::deploy::lockable(arch) {
                 continue;
             }
-            self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
             let lock = self
                 .deploys
                 .locks()

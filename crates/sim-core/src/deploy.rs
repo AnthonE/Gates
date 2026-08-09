@@ -56,6 +56,12 @@
 //!   toggle, for lock v0's reason: two presses racing must agree on the
 //!   result, not swap it. Locking never moves the leaf.
 //!
+//!   A **box takes the same lock** (`DOORS.md` §9.8): [`lockable`] names
+//!   the two archetypes, the box's lid asks `Locks::passes` where the
+//!   door's leaf does (`world.rs`'s move verb, the box's only open path),
+//!   and the refusal is the door's own `REFUSE_D_OWNER` — *this lock does
+//!   not know you* is one sentence whichever thing refused it.
+//!
 //!   This retires lock v0's "a door places locked to its placer". That
 //!   rule made the door free and the security free; the reference makes
 //!   the door free and charges for the security, and an unlocked door
@@ -64,12 +70,9 @@
 //!
 //! Not in this slice (documented, not forgotten): no support cascade when
 //! a piece decays away (floating pieces keep decaying on their own if
-//! unpaid), no lock on a **box** — the predicate is the same function and
-//! a box has an address, so it is a follow-on with no new concepts
-//! (`DOORS.md` §9.8) — no **key** lock, which is blocked on per-item
-//! instance data our `ItemStack` has no room for and is the system the
-//! reference itself gave up on (§9.7), and no pickup verb for an
-//! unsecured door (§9.10, verb 9).
+//! unpaid), and no **key** lock, which is blocked on per-item instance
+//! data our `ItemStack` has no room for and is the system the reference
+//! itself gave up on (§9.7).
 
 use crate::build::{
     BuildContent, Pieces, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, SHAPE_DOORWAY,
@@ -159,6 +162,24 @@ pub fn holds_items(arch: u8) -> bool {
     arch == ARCH_BOX || arch == ARCH_FIRE || arch == ARCH_FURNACE
 }
 
+/// What a code lock may bolt onto: a door's leaf or a storage box's lid
+/// (lock v1; locks on boxes, `reference/DOORS.md` §9.8). The fire and the
+/// furnace are containers too and deliberately **not** here — the
+/// reference locks neither, and an oven is a shared amenity whose cook
+/// loop rewrites its own slots, so a lock on one would be a claim the
+/// sim itself ignores every burn tick.
+pub fn lockable(arch: u8) -> bool {
+    arch == ARCH_DOOR || arch == ARCH_BOX
+}
+
+/// The one archetype the use verb toggles. Named so `use_door` and
+/// `lock_op` can share `door_in_reach` while disagreeing about what may
+/// stand at the address: a box carries a lock, but pressing E at one is
+/// the container panel's business, never a leaf toggle.
+fn arch_is_door(arch: u8) -> bool {
+    arch == ARCH_DOOR
+}
+
 /// Placement-class codes (schema order).
 pub const PLACE_GROUND: u8 = 0;
 pub const PLACE_FOUNDATION: u8 = 1;
@@ -181,13 +202,15 @@ pub const REFUSE_D_CLAIM: u32 = 7;
 pub const REFUSE_D_OVERLAP: u32 = 8;
 pub const REFUSE_D_BAG_CAP: u32 = 9;
 pub const REFUSE_D_HEARTH: u32 = 10;
-/// A use request named an address holding no door.
+/// A use request named an address holding no door — or a lock op named
+/// one holding nothing a lock bolts to (`lockable`).
 pub const REFUSE_D_DOOR: u32 = 11;
-/// The lock says no: a use on a locked door you are not remembered by, or
-/// a full-rights lock op from a guest or a stranger (lock v1). One reason
-/// for both halves, because both are the same sentence — *this lock does
-/// not know you* — and a client that could tell them apart would learn
-/// something about the lock it was refused by.
+/// The lock says no: a use on a locked door you are not remembered by, a
+/// move against a locked box's slots (locks on boxes, `world.rs`), or a
+/// full-rights lock op from a guest or a stranger (lock v1). One reason
+/// for every half, because all of them are the same sentence — *this lock
+/// does not know you* — and a client that could tell them apart would
+/// learn something about the lock it was refused by.
 pub const REFUSE_D_OWNER: u32 = 12;
 /// A use press on an oven with nothing in it that burns (oven v0,
 /// `oven.rs`). Lighting is a match, not a delivery: the fuel has to be
@@ -1111,8 +1134,12 @@ fn player_xz(p: &Player) -> (f32, f32) {
 /// Whether `loc` is the kind of slot the placement class occupies.
 fn loc_fits_placement(placement: u8, loc: u8) -> bool {
     match placement {
-        // A lock goes where a door goes, because it goes *on* one.
-        PLACE_DOORWAY | PLACE_DOOR => loc == LOC_EDGE_W || loc == LOC_EDGE_N,
+        PLACE_DOORWAY => loc == LOC_EDGE_W || loc == LOC_EDGE_N,
+        // A lock goes where its target lives: a door on a doorway's edge,
+        // a box on the plane (locks on boxes, `DOORS.md` §9.8). The
+        // support arm below still requires a lockable deployable at the
+        // exact address, so this widening admits no empty cell.
+        PLACE_DOOR => loc == LOC_EDGE_W || loc == LOC_EDGE_N || loc == LOC_PLANE,
         PLACE_GROUND | PLACE_FOUNDATION | PLACE_ANY => loc == LOC_PLANE,
         _ => false,
     }
@@ -1197,13 +1224,15 @@ pub fn place_deploy(
         PLACE_DOORWAY => pieces
             .find(cx, cz, level, loc)
             .is_some_and(|r| bc.pieces[r.row as usize].shape == SHAPE_DOORWAY),
-        // A lock's support is the door itself. Anyone in reach may bolt
-        // one onto a door that has none — including a door somebody else
-        // built, which is the reference's claim mechanic (`DOORS.md` §5:
-        // the lock is not only who opens it, it is whose door this is).
+        // A lock's support is the thing it bolts to — a door or a box
+        // (`lockable`; locks on boxes, `DOORS.md` §9.8). Anyone in reach
+        // may bolt one onto a target that has none — including one
+        // somebody else built, which is the reference's claim mechanic
+        // (`DOORS.md` §5: the lock is not only who opens it, it is whose
+        // door this is).
         PLACE_DOOR => deploys
             .find(cx, cz, level, loc)
-            .is_some_and(|r| dc.defs[r.row as usize].arch == ARCH_DOOR),
+            .is_some_and(|r| lockable(dc.defs[r.row as usize].arch)),
         _ => false,
     };
     if !supported {
@@ -1237,11 +1266,13 @@ pub fn place_deploy(
         inv_take(&mut p.inv, def.item, 1);
         // Bolted on, not armed: a fresh lock has no code and lets
         // everyone through until `ACCESS_OP_SET_CODE` gives it one, which
-        // is the reference's own sequence. The door announcement carries
-        // the new `has_lock` bit so the client can prompt for a code.
+        // is the reference's own sequence. The announcement carries the
+        // new `has_lock` bit so the client can prompt for a code — for a
+        // box exactly as for a door, since EV_DOOR is addressed and the
+        // client's mirror updates whatever record stands there.
         let di = deploys
             .find_index(cx, cz, level, loc)
-            .expect("the support check just found the door");
+            .expect("the support check just found the lock's target");
         deploys.entries[di].has_lock = true;
         deploys.entries[di].locked = false;
         announce_door(deploys, di, p.id, events);
@@ -1393,9 +1424,12 @@ pub fn feed(
     );
 }
 
-/// The door at the address, if one is there and the player stands within
-/// build reach of its cell center. Both refusals are pushed here, so the
-/// use and lock paths bounce identically for the same reason.
+/// The verb's target at the address, if one of an `accept`ed archetype is
+/// there and the player stands within build reach of its cell center.
+/// Both refusals are pushed here, so the use and lock paths bounce
+/// identically for the same reason. `accept` is `arch_is_door` for the
+/// use verb (only a door has a leaf to toggle) and `lockable` for the
+/// lock verb (a box carries the same lock — `DOORS.md` §9.8).
 #[allow(clippy::too_many_arguments)]
 fn door_in_reach(
     dc: &DeployContent,
@@ -1405,12 +1439,13 @@ fn door_in_reach(
     cz: u16,
     level: u8,
     loc: u8,
+    accept: fn(u8) -> bool,
     events: &mut EventQueue,
 ) -> Option<usize> {
     let hit = deploys.entries[..deploys.len]
         .iter()
         .position(|d| d.cx == cx && d.cz == cz && d.level == level && d.loc == loc)
-        .filter(|&i| dc.defs[deploys.entries[i].row as usize].arch == ARCH_DOOR);
+        .filter(|&i| accept(dc.defs[deploys.entries[i].row as usize].arch));
     let Some(i) = hit else {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_DOOR, 0);
         return None;
@@ -1425,9 +1460,12 @@ fn door_in_reach(
     Some(i)
 }
 
-/// EV_DOOR: the door's whole state after a change, absolute (world.rs
-/// documents the packing). One announcement serves the toggle and the
-/// lock, so a client never holds half a door.
+/// EV_DOOR: the deployable's whole leaf-and-lock state after a change,
+/// absolute (world.rs documents the packing). One announcement serves the
+/// toggle and the lock, so a client never holds half a door — and it
+/// serves a **box's** lock bits too (locks on boxes): the event is
+/// addressed, the client's mirror updates whatever record stands there,
+/// and a box's `open` is simply always false.
 fn announce_door(deploys: &Deploys, i: usize, by: u32, events: &mut EventQueue) {
     let d = &deploys.entries[i];
     events.push(
@@ -1470,7 +1508,7 @@ pub fn use_door(
     loc: u8,
     events: &mut EventQueue,
 ) {
-    let Some(i) = door_in_reach(dc, deploys, p, cx, cz, level, loc, events) else {
+    let Some(i) = door_in_reach(dc, deploys, p, cx, cz, level, loc, arch_is_door, events) else {
         return;
     };
     if !deploys.locks.passes(cx, cz, level, loc, p.id) {
@@ -1521,7 +1559,7 @@ pub fn lock_op(
     tick: u64,
     events: &mut EventQueue,
 ) {
-    let Some(di) = door_in_reach(dc, deploys, p, cx, cz, level, loc, events) else {
+    let Some(di) = door_in_reach(dc, deploys, p, cx, cz, level, loc, lockable, events) else {
         return;
     };
     let Some(li) = deploys.locks.find_index(cx, cz, level, loc) else {
@@ -1587,10 +1625,11 @@ pub fn lock_op(
 /// on unclaimed ground **anyone in reach may take it**, which is what
 /// makes a hearth worth placing.
 ///
-/// A door with a lock on it is the one extra check: the lock is the thing
-/// saying whose door it is, so a hand it does not know cannot lift the
-/// door out of the frame. Without that, every code lock in the game would
-/// be defeated by picking up what it is bolted to.
+/// A deployable with a lock on it is the one extra check: the lock is the
+/// thing saying whose door — or whose box — this is, so a hand it does
+/// not know cannot lift the thing out from under it. Without that, every
+/// code lock in the game would be defeated by picking up what it is
+/// bolted to.
 #[allow(clippy::too_many_arguments)]
 pub fn pick_up(
     dc: &DeployContent,
@@ -1832,11 +1871,14 @@ fn drop_deploy(
     deploys.remove_at(di, dc);
     if dc.defs[rec.row as usize].arch == ARCH_DOOR {
         pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, false);
-        // A lock dies with what it is bolted to (`DOORS.md` §2.2). Here
-        // rather than at each caller, because this is the one removal
-        // path — decay, a raid swing and a collapsing doorway all arrive
-        // through it, and a lock left behind at a dead address would
-        // silently refuse the next door built there.
+    }
+    if lockable(dc.defs[rec.row as usize].arch) {
+        // A lock dies with what it is bolted to (`DOORS.md` §2.2) — a
+        // box's exactly as a door's. Here rather than at each caller,
+        // because this is the one removal path — decay, a raid swing and
+        // a collapsing doorway all arrive through it, and a lock left
+        // behind at a dead address would silently refuse the next thing
+        // built there.
         deploys
             .locks
             .remove_at_address(rec.cx, rec.cz, rec.level, rec.loc);
@@ -3859,6 +3901,315 @@ mod tests {
         assert_eq!(deploys.locks().len(), 0, "and the lock came off with it");
         assert_eq!(crate::craft::inv_count(&p.inv, 4), doors + 1, "the door");
         assert_eq!(crate::craft::inv_count(&p.inv, 7), locks + 1, "the lock");
+    }
+
+    /// `probe_fixture` plus a storage box on row 6 (item 8). A local
+    /// fixture rather than a new shipped row, deliberately: the replay
+    /// golden is read off worlds built from `probe_fixture`, and a row
+    /// nothing in the probe script places would still move `def_count`
+    /// under it for no exercised behaviour.
+    fn boxed_fixture() -> DeployContent {
+        let mut d = DeployContent::probe_fixture();
+        d.defs[6] = DeployDef {
+            arch: ARCH_BOX,
+            placement: PLACE_FOUNDATION,
+            hp: 60,
+            item: 8,
+            n_costs: 0,
+            costs: [(0, 0); MAX_DEPLOY_COSTS],
+        };
+        d.def_count = 7;
+        d
+    }
+
+    /// `GatherContent::probe_fixture` with a stack ladder for the box
+    /// item above — without one, `pick_up`'s give-back hands item 8 to
+    /// `inv_add` at a ceiling of zero and the box silently drops.
+    fn boxed_gather() -> GatherContent {
+        let mut g = GatherContent::probe_fixture();
+        g.stack_max[8] = 100;
+        g
+    }
+
+    /// A foundation at (CX, CZ) with a box (row 6) standing on it, placed
+    /// by the returned player — `doored`'s shape, one storey lower.
+    fn boxed(
+        bc: &BuildContent,
+        dc: &DeployContent,
+        pieces: &mut Pieces,
+        deploys: &mut Deploys,
+        ev: &mut EventQueue,
+    ) -> Player {
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (8, 2), (7, 2)]);
+        founded(bc, pieces, &mut p, CX, CZ);
+        place_deploy(
+            SEED, dc, bc, pieces, deploys, &mut p, 0, 6, CX, CZ, 0, LOC_PLANE, ev,
+        );
+        assert_eq!(last(ev).0, crate::world::EV_DEPLOY_PLACED, "box lands");
+        p
+    }
+
+    /// Locks on boxes (`DOORS.md` §9.8): the box takes the door's lock —
+    /// same store, same ops, same mirror bits — at its own plane address.
+    #[test]
+    fn a_code_lock_bolts_onto_a_box_and_the_same_ops_run() {
+        let dc = boxed_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = boxed_gather();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = boxed(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+
+        // Bolt the lock (row 5) onto the box's plane address. No deploy
+        // record is minted — a lock is a record about one — and the box's
+        // record announces its new bit on the door lane.
+        let before = deploys.len();
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), before, "a lock is not a deployable record");
+        assert_eq!(deploys.locks().len(), 1, "it is a lock record");
+        let d = deploys.find(CX, CZ, 0, LOC_PLANE).unwrap();
+        assert!(d.has_lock && !d.locked, "bolted on, not yet armed");
+        assert_eq!(
+            (last(&ev).0, last(&ev).2 & 7),
+            (crate::world::EV_DOOR, 4),
+            "EV_DOOR carries has_lock << 2, open 0 — a box has no leaf"
+        );
+        assert!(
+            deploys.lock_passes(CX, CZ, 0, LOC_PLANE, 999),
+            "unarmed, it still lets everyone through"
+        );
+
+        // Arm it. The mirror follows the store, exactly as a door's does.
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::deploy::ACCESS_OP_SET_CODE,
+            1234,
+            0,
+            &mut ev,
+        );
+        assert!(deploys.locks.is_locked(CX, CZ, 0, LOC_PLANE));
+        assert!(
+            deploys.find(CX, CZ, 0, LOC_PLANE).unwrap().locked,
+            "the locked bit mirrors via is_locked"
+        );
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = 9;
+        assert!(!deploys.lock_passes(CX, CZ, 0, LOC_PLANE, stranger.id));
+
+        // The guest code grants the same tier it grants at a door.
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::deploy::ACCESS_OP_SET_GUEST,
+            4321,
+            0,
+            &mut ev,
+        );
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::deploy::ACCESS_OP_ENTER,
+            4321,
+            1,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2 & 0xff),
+            (crate::world::EV_AUTH, crate::lock::GRANT_GUEST as u32),
+            "the guest code authorizes at a box exactly as at a door"
+        );
+        assert!(deploys.lock_passes(CX, CZ, 0, LOC_PLANE, stranger.id));
+
+        // Unlocking reopens it to everyone — a shop's counter chest.
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::deploy::ACCESS_OP_UNLOCK,
+            0,
+            2,
+            &mut ev,
+        );
+        assert!(!deploys.locks.is_locked(CX, CZ, 0, LOC_PLANE));
+        assert!(!deploys.find(CX, CZ, 0, LOC_PLANE).unwrap().locked);
+        assert!(deploys.lock_passes(CX, CZ, 0, LOC_PLANE, 424242));
+    }
+
+    /// The lock refuses every archetype `lockable` does not name — an
+    /// oven is a container with the same shape of address, and the arm
+    /// that widened for boxes must not have widened for it.
+    #[test]
+    fn a_lock_refuses_an_oven_for_support() {
+        let dc = boxed_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        // A fire (row 4, ground class) on bare terrain at the cell.
+        let mut p = player_at_cell(CX, CZ, &[(6, 2), (7, 2)]);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            4,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED, "fire lands");
+
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev).2,
+            REFUSE_D_SUPPORT,
+            "a fire is not a thing a lock bolts to"
+        );
+        assert_eq!(deploys.locks().len(), 0);
+    }
+
+    /// The pickup rule a locked door already has, verified at a box: a
+    /// locked deployable cannot be lifted by a hand its lock does not
+    /// know, and the owner's pickup takes the lock record with the box.
+    #[test]
+    fn a_lock_guards_the_box_against_being_picked_up() {
+        let dc = boxed_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = boxed_gather();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = boxed(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::deploy::ACCESS_OP_SET_CODE,
+            1234,
+            0,
+            &mut ev,
+        );
+
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = 9;
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER),
+            "a locked box cannot be lifted out from under its lock"
+        );
+        assert_eq!(deploys.len(), 1, "the box is still standing");
+
+        // The hand the lock knows lifts it, empty, and the lock comes up
+        // as a second item; the lock record dies with the box rather than
+        // haunting the address for the next thing built there.
+        let locks_held = crate::craft::inv_count(&p.inv, 7);
+        let boxes_held = crate::craft::inv_count(&p.inv, 8);
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 0);
+        assert_eq!(deploys.locks().len(), 0, "the lock record came off with it");
+        assert_eq!(crate::craft::inv_count(&p.inv, 7), locks_held + 1);
+        assert_eq!(crate::craft::inv_count(&p.inv, 8), boxes_held + 1);
     }
 
     /// Upkeep/decay v1: a half-stocked hearth does half the job, and an

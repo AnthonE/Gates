@@ -68,11 +68,13 @@ pub const CONT_BAG: u8 = 1;
 /// of new wire.
 ///
 /// Open to anyone who can reach it, exactly like an unlocked door
-/// (`use_door`) and exactly like a bag. Not owner-only: a box a raider
-/// cannot empty is the "a raid takes nothing" complaint with an extra
-/// step. Lock v0 is the spoken decision that would change this
-/// (DECISIONS.md §open) — when it lands it belongs on the same `locked`
-/// bit a door already carries, not on a second rule invented here.
+/// (`use_door`) and exactly like a bag — **unless a code lock is bolted
+/// on and armed** (lock v1; locks on boxes, `reference/DOORS.md` §9.8).
+/// The gate is the door's own predicate asked at the box's address
+/// (`Locks::passes`, in `world.rs`'s move verb), never a second rule
+/// invented here, and the refusal is the door's own `REFUSE_D_OWNER`.
+/// Still not owner-only: a bare box is anyone's, and breaking a locked
+/// one spills its contents — a raid takes what a raid breaks open.
 pub const CONT_BOX: u8 = 2;
 /// The highest kind the sim understands. Two bits cross the wire, so
 /// value 3 is forgeable and refuses — at decode as `Malformed`
