@@ -179,10 +179,6 @@ pub struct Menu {
     /// endpoint. Collected as a batch rather than per row so the frame does
     /// one `try_recv` however many shards are listed.
     status_poll: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<(usize, shardlist::Status)>>>,
-    /// Seconds since the last round went out. Bevy's frame delta, not an
-    /// `Instant` — the screen has one clock and it is the renderer's, which
-    /// is the same rule `Connecting::waited_s` follows.
-    since_poll: f32,
 }
 
 impl Menu {
@@ -200,7 +196,6 @@ impl Menu {
             servers_url,
             fetch: None,
             status_poll: None,
-            since_poll: 0.0,
         }
     }
 }
@@ -351,11 +346,10 @@ pub fn poll_fetch(mut menu: ResMut<Menu>) {
             menu.status = format!("{} shard(s)", shards.len());
             menu.rows.extend(shards.iter().map(Row::from_shard));
             menu.dirty = true;
-            // Poll the counts immediately rather than after the interval: the
-            // rows have just appeared reading `?`, and the whole point of the
-            // endpoint is that they do not stay that way while the player
-            // looks at them.
-            menu.since_poll = STATUS_POLL_SECS;
+            // `begin_status_poll` notices the row count moved and polls at
+            // once rather than after the interval: the rows have just appeared
+            // reading `?`, and the whole point of the endpoint is that they do
+            // not stay that way while the player looks at them.
         }
         // The reason is drawn verbatim. `shardlist::parse` writes these for
         // a reader, which is why they name the row and the cap.
@@ -374,17 +368,35 @@ pub fn poll_fetch(mut menu: ResMut<Menu>) {
 /// sixty-four threads on a full list to save a few hundred milliseconds of
 /// something nobody is waiting on, and the frame loop only ever `try_recv`s
 /// either way.
-pub fn begin_status_poll(time: Res<Time>, mut menu: ResMut<Menu>) {
+/// **The timer is a `Local`, not a field on `Menu`, and that is a change-
+/// detection fix rather than a style choice.** `ResMut` flags its resource
+/// changed on the first *mutable* deref, so a `menu.since_poll += delta` every
+/// frame would mark `Menu` changed every frame — and `refresh_status` is
+/// guarded on `menu.is_changed()` precisely to avoid doing work when nothing
+/// moved. Keeping the clock outside the resource means this system touches
+/// `Menu` mutably only on the frame it actually starts a round.
+pub fn begin_status_poll(
+    time: Res<Time>,
+    mut since: Local<f32>,
+    mut seen_rows: Local<usize>,
+    mut menu: ResMut<Menu>,
+) {
     if menu.status_poll.is_some() {
         // A round is still out. Do not stack another on top of it — that is
         // how a slow shard turns a ten-second poll into a busy loop.
         return;
     }
-    menu.since_poll += time.delta_secs();
-    if menu.since_poll < STATUS_POLL_SECS {
+    // The list just grew (or was replaced). Poll now rather than leaving fresh
+    // rows reading `?` for ten seconds — see `poll_fetch`.
+    if *seen_rows != menu.rows.len() {
+        *seen_rows = menu.rows.len();
+        *since = STATUS_POLL_SECS;
+    }
+    *since += time.delta_secs();
+    if *since < STATUS_POLL_SECS {
         return;
     }
-    menu.since_poll = 0.0;
+    *since = 0.0;
 
     let targets: Vec<(usize, String)> = menu
         .rows
@@ -431,6 +443,13 @@ fn status_blocking(url: &str) -> Result<shardlist::Status, String> {
 
 /// Collect a finished round and redraw only if a number moved.
 pub fn poll_status(mut menu: ResMut<Menu>) {
+    // Checked through an IMMUTABLE deref first, so the overwhelmingly common
+    // frame — no round in flight — does not flag `Menu` changed and make
+    // `refresh_status` re-examine the status line for nothing. See
+    // `begin_status_poll` for the same point at more length.
+    if menu.status_poll.is_none() {
+        return;
+    }
     let Some(rx) = &mut menu.status_poll else {
         return;
     };
@@ -850,7 +869,10 @@ mod tests {
         assert_eq!(m.rows[0].status_url(), None);
         let st = shardlist::parse_status(br#"{"players":3,"max_players":100}"#).unwrap();
         let mut direct = Row::direct("127.0.0.1:4433");
-        assert!(!direct.apply_status(&st), "the direct row has no count to set");
+        assert!(
+            !direct.apply_status(&st),
+            "the direct row has no count to set"
+        );
         assert_eq!(direct.detail, "the address this client was started with");
 
         // A listed shard that names one is polled; one that does not, is not.

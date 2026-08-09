@@ -318,7 +318,12 @@ mod tests {
         ] {
             assert!(!is_shareable(mine), "{mine:?} is not shareable");
         }
-        for theirs in ["game.moreright.xyz", "10.0.0.4", "192.168.1.20", "203.0.113.7"] {
+        for theirs in [
+            "game.moreright.xyz",
+            "10.0.0.4",
+            "192.168.1.20",
+            "203.0.113.7",
+        ] {
             assert!(is_shareable(theirs), "{theirs:?} is shareable");
         }
         // A bracketed v6 literal arrives with its brackets on, from the same
@@ -333,7 +338,9 @@ mod tests {
         // shareable form — this is what keeps `link_for` the single writer.
         let link = crate::deeplink::link_for("game.moreright.xyz:61234");
         assert_eq!(
-            crate::deeplink::parse(&link).expect("drawn link parses").addr,
+            crate::deeplink::parse(&link)
+                .expect("drawn link parses")
+                .addr,
             "game.moreright.xyz:61234"
         );
     }

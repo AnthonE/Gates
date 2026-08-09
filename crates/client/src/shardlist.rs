@@ -182,8 +182,7 @@ pub fn parse_status(bytes: &[u8]) -> Result<Status, String> {
             bytes.len()
         ));
     }
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|e| format!("status: {e}"))?;
+    let v: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| format!("status: {e}"))?;
     if !v.is_object() {
         return Err("status: top level is not an object".into());
     }
@@ -540,11 +539,11 @@ mod tests {
     #[test]
     fn a_bad_status_url_is_refused_and_names_its_row() {
         for bad in [
-            "h:8080/status.json",       // no scheme
-            "ftp://h/status.json",      // wrong scheme
-            "https://",                 // no host
-            "https:///status.json",     // no host
-            "https://h/ status.json",   // whitespace
+            "h:8080/status.json",     // no scheme
+            "ftp://h/status.json",    // wrong scheme
+            "https://",               // no host
+            "https:///status.json",   // no host
+            "https://h/ status.json", // whitespace
         ] {
             let doc = format!(
                 r#"{{"servers":[{{"id":"eu-1","name":"n","addr":"h:1","status_url":"{bad}"}}]}}"#
@@ -560,8 +559,8 @@ mod tests {
     fn a_polled_status_is_what_lights_the_count() {
         // The whole point of the field: `?` becomes `3/100` without the
         // document having claimed a number it could not know.
-        let mut s = parse(br#"{"servers":[{"id":"a","name":"A","addr":"h:1"}]}"#).unwrap()[0]
-            .clone();
+        let mut s =
+            parse(br#"{"servers":[{"id":"a","name":"A","addr":"h:1"}]}"#).unwrap()[0].clone();
         assert_eq!(s.population(), "?");
         let st = parse_status(br#"{"players":3,"max_players":100,"tick":123456}"#)
             .expect("the shard's own shape");
@@ -630,8 +629,8 @@ mod tests {
         // The other half of the honesty rule, and it is easy to get backwards:
         // a shard that ANSWERED "nobody is on" states `0/100`, which is a
         // measurement. Only an unmeasured count is `?`.
-        let mut s = parse(br#"{"servers":[{"id":"a","name":"A","addr":"h:1"}]}"#).unwrap()[0]
-            .clone();
+        let mut s =
+            parse(br#"{"servers":[{"id":"a","name":"A","addr":"h:1"}]}"#).unwrap()[0].clone();
         s.apply_status(&parse_status(br#"{"players":0,"max_players":100}"#).unwrap());
         assert_eq!(s.population(), "0/100");
     }

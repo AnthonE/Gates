@@ -75,9 +75,10 @@ pub struct Join {
 /// thing.
 pub fn is_link(s: &str) -> bool {
     let t = s.trim();
-    SCHEMES
-        .iter()
-        .any(|scheme| t.len() > scheme.len() + 3 && t[..scheme.len() + 3].eq_ignore_ascii_case(&format!("{scheme}://")))
+    SCHEMES.iter().any(|scheme| {
+        t.len() > scheme.len() + 3
+            && t[..scheme.len() + 3].eq_ignore_ascii_case(&format!("{scheme}://"))
+    })
 }
 
 /// Parse a join link.
@@ -93,9 +94,9 @@ pub fn parse(link: &str) -> Result<Join, String> {
             raw.len()
         ));
     }
-    let (scheme, rest) = raw
-        .split_once("://")
-        .ok_or_else(|| format!("{raw:?} is not a join link — expected scry://join/{SLUG}/host:port"))?;
+    let (scheme, rest) = raw.split_once("://").ok_or_else(|| {
+        format!("{raw:?} is not a join link — expected scry://join/{SLUG}/host:port")
+    })?;
     let scheme = scheme.to_ascii_lowercase();
     if !SCHEMES.contains(&scheme.as_str()) {
         return Err(format!(
