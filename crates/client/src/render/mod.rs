@@ -218,9 +218,9 @@ pub fn world_placed(eye: Res<Eye>) -> bool {
 /// to the entity that draws it; a ring that kept its keys after the entities
 /// were despawned would report a chunk resident that is not, and the next
 /// world's loading screen would sit at a bar it could never fill.
-// Nine parameters because the world is nine things: its entities, the five
-// indexes that point at them, and the two view resources that would otherwise
-// carry the last world's eye into the next one.
+// A parameter per thing the world is: its entities, the five indexes that
+// point at them, and the view resources that would otherwise carry the last
+// world's eye — or its keypad — into the next one.
 #[allow(clippy::too_many_arguments)]
 pub fn world_teardown(
     mut commands: Commands,
@@ -236,6 +236,7 @@ pub fn world_teardown(
     mut eye: ResMut<Eye>,
     mut look: ResMut<input::Look>,
     mut readout: ResMut<hud::Readout>,
+    mut pad: ResMut<verbs::Pad>,
 ) {
     let mut n = 0usize;
     for e in entities.iter() {
@@ -260,6 +261,9 @@ pub fn world_teardown(
     // The readout holds the LAST wall hit and charge clock — facts about
     // the world that just went, worth up to TOAST_SECS of lies in the next.
     *readout = hud::Readout::default();
+    // The keypad addresses a lock in the world that just went; left open it
+    // would draw over the next one and eat its digit keys.
+    pad.0.close();
     *eye = Eye::default();
     *look = input::Look::default();
     commands.remove_resource::<WorldId>();
@@ -706,6 +710,11 @@ impl Plugin for GatesRenderPlugin {
                     // (`feed.rs` — a reader borrows, only the drain pops).
                     hud::readout,
                     hud::prompt,
+                    // The keypad's small panel, beside the prompt that
+                    // goes quiet while it is up. HUD, not `panels::` — it
+                    // must not grab the pointer, so it runs on a capture
+                    // build too (where the pad simply never opens).
+                    hud::pad_overlay,
                 )
                     .in_set(Stream)
                     .run_if(world_placed),

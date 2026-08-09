@@ -70,10 +70,15 @@ whole slice. What remains, in order:
    lifted out of its frame — tightened 2026-08-09 to the full tier: a
    GUEST code works the leaf and cannot lift a locked door or box
    (`Locks::passes_full`; `DECISIONS.md` §open, pickup tier row).
-3. **The keypad is a HUD line, not a panel.** Deliberate (`ui/keypad.rs`
-   says why) but it means the digits are typed and there is nothing to
-   click. A small pointer-free overlay would be strictly better and is not
-   free.
+3. ~~**The keypad is a HUD line, not a panel.**~~ **DONE 2026-08-09** — a
+   small panel in the house grammar (`hud::pad_overlay`): four digit
+   cells, the hot line on the next empty cell, the same ops
+   (`keypad::OPS_HINT` — one string, so the panel and `Keypad::line`
+   cannot drift). Still **pointer-free** — presentation only: the buffer
+   rules and key→op map are untouched in `ui/keypad.rs`, nothing grabs
+   the mouse, and the centre prompt goes quiet while it is up. Also
+   found: the pad survived a disconnect aimed at the dead world's lock;
+   `world_teardown` closes it now.
 4. ~~**`ci/client_smoke.mjs` hand-builds bit frames**~~ **RETIRED with the
    file** (verified 2026-08-09: deleted by `7d7a9f5` with the web build).
    What holds the invariant now is `crates/client-core/tests/wire.rs`,
@@ -378,35 +383,29 @@ already sends it. `DECISIONS.md` "the build wheel is one ring".
 
 ## 0p2 · What the UI still owes *(client lane)*
 
-**0 · Before the hammer's wheel: the action lane is FULL.** Demolish and
-rotate have no `Command` in `sim-core`, and adding either is not "add a code":
-`ACTION_SUB_BITS` is 4 and all sixteen codes are live, with a `const` assert
-and a unit test (`the_action_lane_has_the_room_it_claims`) both stating the
-room as **zero**. A seventeenth action widens the field to 5 bits, which moves
-every action message by one bit — a `PROTO_VER` turn and all 72 goldens
-regenerated, the v12 turn again. That is a price worth paying **once, for both
-verbs at the same time** (5 bits holds 32), not twice.
+**0 · ~~Before the hammer's wheel: the action lane is FULL.~~** Stale the
+day after it was written: demolish v1 (2026-08-08) paid the widening —
+`ACTION_SUB_BITS` is 5 since v30, `ACT_DEMOLISH = 16` addresses both stores
+with a leading bit (piece demolish / deploy pick-up, one wire verb), and the
+client sends it (`Backspace`, `render/verbs.rs::demolish_near`; the grace
+window is never guessed client-side — a spent one comes back
+`REFUSE_B_WINDOW`). What stands is the rotate half: still no `Command`, and
+still **invisible** — a placed piece is `{cx, cz, level, loc, row, hp, uh}`,
+no facing, so rotate waits on an asymmetry worth turning, not on lane room
+(5 bits holds 32).
 
-And **rotate would be invisible in our game today.** A placed piece is
-`{cx, cz, level, loc, row, hp, uh}` — no facing, nothing to turn. In the
-reference rotation matters because a wall has a soft side and a doorway has a
-hinge side; ours are symmetric boxes. So rotate is a facing field across the
-store, `persist.rs`, the world save, the snapshot wire and the renderer, in
-service of a difference a player cannot see. **Demolish first, rotate when
-pieces have an asymmetry worth turning.**
-
-**1 · The hammer wants its own wheel.** The mouse is held-item modal now
-(`DECISIONS.md` 2026-08-07) and the plan's half is done: hold right for the
-shape ring, left click places, the ghost is up for as long as the plan is
-out. The hammer's half is not. It has left-click repair and keyboard
-`U`/`R`/`X`, but **holding right with a hammer opens nothing** — deliberately,
-because opening the shape wheel would place with the wrong verb.
-What it wants is the reference's second radial: demolish, rotate, upgrade,
-repair, pick up, **firing on pick rather than latching**. `ring.rs` already
-bakes an annulus from a segment count, so the drawing is close to free; the
-work is a second `Panel`, a second segment set, and an action-on-release path
-that the shape wheel deliberately does not have. Two verbs it would want that
-the sim has no command for: **rotate** and **demolish**.
+**1 · ~~The hammer wants its own wheel.~~ DONE 2026-08-09.** Hold right with
+the hammer: a four-wedge ring — upgrade, repair, demolish, pick up — that
+**fires on release** where the shape wheel latches (`Panel::Hammer`;
+`ui/hammer.rs` is the pure half, `panels/wheel.rs` draws, `ring.rs` bakes
+the 4-segment annulus beside the shapes'). Every wedge rides an encoder the
+keys already press (`U`/`R`/`Backspace`) — zero wire; the store filters that
+keep PICK UP from felling a wall (pick-up and demolish are one action code
+split by the store bit) are `ui::hammer::act`, gated `tests/ui.rs` §K.
+Rotate got **no wedge** — item 0 says why there is nothing to turn. Left
+behind: the wedges are text (no verb icons are baked; `glyph`'s fallback
+carries them) and the centre readout names the verb, not the target or the
+upgrade's cost.
 
 **2 · ~~A starter kit~~** — landed 2026-08-07, `DECISIONS.md` "spawn kit v0".
 Kept below only for the reasoning, which generalises: content is the

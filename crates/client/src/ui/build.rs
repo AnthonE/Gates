@@ -142,11 +142,19 @@ impl Default for Rings {
 /// Segment 0 is centred on **straight up**, and indices increase
 /// **clockwise**, which is what `dx.atan2(dy)` gives directly.
 pub fn pick(dx: f32, dy: f32, rings: Rings) -> Option<usize> {
+    pick_in(dx, dy, rings, SHAPES.len())
+}
+
+/// [`pick`] over a band of `n` segments. The shape wheel and the hammer's
+/// wheel ([`super::hammer`]) are the same annulus with different segment
+/// counts, so the radius test lives once — two copies of "is the pointer on
+/// the ring" is how two wheels come to disagree about where the ring is.
+pub fn pick_in(dx: f32, dy: f32, rings: Rings, n: usize) -> Option<usize> {
     let r = (dx * dx + dy * dy).sqrt();
     if r < rings.dead || r > rings.rim {
         return None;
     }
-    Some(segment(dx, dy, SHAPES.len()))
+    Some(segment(dx, dy, n))
 }
 
 /// The segment index of a direction, in a ring of `n`, segment 0 centred up

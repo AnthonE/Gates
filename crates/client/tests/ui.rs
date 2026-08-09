@@ -425,7 +425,8 @@ fn segments_increase_clockwise() {
 
 #[test]
 fn every_direction_lands_in_exactly_one_segment() {
-    for n in [3usize, 6] {
+    // 4 is the hammer wheel's count (§K rides this arithmetic).
+    for n in [3usize, 4, 6] {
         let mut hits = vec![0u32; n];
         // A full sweep at a degree a step: no direction may fall outside the
         // ring, and every segment must be reachable.
@@ -448,7 +449,7 @@ fn the_labels_sit_in_the_segments_they_name() {
     // resolved by `segment`. If those two ever disagree the wheel highlights
     // one thing and selects another, so they are checked against each other
     // rather than each against a constant.
-    for n in [3usize, 6] {
+    for n in [3usize, 4, 6] {
         for i in 0..n {
             let a = build::segment_angle(i, n);
             assert_eq!(build::segment(a.sin(), a.cos(), n), i);
@@ -1599,4 +1600,233 @@ fn a_cut_is_marked_and_a_multibyte_name_is_cut_on_chars_not_bytes() {
     // chars, not bytes: a name with multibyte glyphs must not split one.
     let out = craft::cell_abbrev("Ébénisterie", 7);
     assert_eq!(out, "Ébénis.");
+}
+
+// ---------------------------------------------------------------------------
+// §K · the hammer's wheel — four live verbs, firing on release
+//
+// The second radial (`NOW.md` §0p2 item 1). What is gated here is what could
+// be silently wrong: the segment set (a rotate wedge would be a dead button;
+// a missing verb would be a mechanic no wheel reaches), the pick arithmetic
+// (§D's, at this ring's own count), and `hammer::act` — the store filters
+// that keep a release named PICK UP from felling a wall, since pick-up and
+// demolish are ONE wire verb split by the store bit (`ACT_DEMOLISH`), which
+// is exactly the positional-payload class `CLAUDE.md` warns about.
+
+use client::ui::hammer::{self, Act, Verb as HVerb};
+use client::ui::structure::{Store, Target};
+use sim_core::build::PieceDef;
+use sim_core::limits::MAX_PIECE_COSTS;
+
+/// A wood→stone→metal ladder, one shape — enough for the rung question.
+fn hammer_piece_defs() -> (BuildContent, u16) {
+    let mut c = BuildContent::EMPTY;
+    for (i, material) in [MAT_WOOD, MAT_STONE, MAT_METAL].into_iter().enumerate() {
+        c.pieces[i] = PieceDef {
+            shape: SHAPE_WALL,
+            material,
+            hp: 500,
+            n_costs: 0,
+            costs: [(0, 0); MAX_PIECE_COSTS],
+        };
+    }
+    c.piece_count = 3;
+    (c, 3)
+}
+
+fn target(store: Store, row: u8, hp: u16, hp_max: u16) -> Target {
+    Target {
+        store,
+        cx: 7,
+        cz: 9,
+        level: 1,
+        loc: 2,
+        row,
+        hp,
+        hp_max,
+    }
+}
+
+#[test]
+fn the_ring_is_four_distinct_verbs_and_rotate_is_not_one() {
+    // Four segments, each verb exactly once. Rotate has no segment and no
+    // variant to give one to — a placed piece has no facing, so a rotate
+    // wedge would teach a verb the game does not have (§0p2 item 0).
+    assert_eq!(hammer::VERBS.len(), 4);
+    for v in [
+        HVerb::Upgrade,
+        HVerb::Repair,
+        HVerb::Demolish,
+        HVerb::PickUp,
+    ] {
+        assert_eq!(
+            hammer::VERBS.iter().filter(|w| **w == v).count(),
+            1,
+            "{v:?} must appear exactly once"
+        );
+        assert!(
+            !hammer::label(v).is_empty(),
+            "a blank wedge is the dark-panel defect"
+        );
+        assert!(!hammer::blurb(v).is_empty());
+    }
+}
+
+#[test]
+fn the_hammer_pick_is_the_shape_wheels_arithmetic_at_four() {
+    let r = Rings::default();
+    // Dead centre and past the rim release without firing.
+    assert_eq!(hammer::pick(0.0, 0.0, r), None);
+    assert_eq!(hammer::pick(0.0, r.dead - 1.0, r), None);
+    assert_eq!(hammer::pick(0.0, r.rim + 1.0, r), None);
+    // Four quadrants, clockwise from up — and each segment's own centre
+    // angle picks it, the same drawn-vs-picked agreement §D holds for the
+    // shapes.
+    let mid = (r.dead + r.rim) * 0.5;
+    assert_eq!(hammer::pick(0.0, mid, r), Some(0));
+    assert_eq!(hammer::pick(mid, 0.0, r), Some(1));
+    assert_eq!(hammer::pick(0.0, -mid, r), Some(2));
+    assert_eq!(hammer::pick(-mid, 0.0, r), Some(3));
+    for i in 0..hammer::VERBS.len() {
+        let a = build::segment_angle(i, hammer::VERBS.len());
+        assert_eq!(hammer::pick(a.sin() * mid, a.cos() * mid, r), Some(i));
+    }
+}
+
+#[test]
+fn each_verb_acts_only_through_its_own_store() {
+    let (defs, have) = hammer_piece_defs();
+    let piece = target(Store::Piece, 0, 250, 500);
+    let deploy = target(Store::Deploy, 0, 250, 500);
+
+    // Demolish fells a PIECE (deploy bit false) and refuses a deployable —
+    // the same four numbers with the bit flipped would silently pick the
+    // box up instead, which is the whole reason the filter exists.
+    assert_eq!(
+        hammer::act(HVerb::Demolish, Some(&piece), &defs, have),
+        Act::Demolish {
+            deploy: false,
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: 2
+        }
+    );
+    assert!(matches!(
+        hammer::act(HVerb::Demolish, Some(&deploy), &defs, have),
+        Act::Say(_)
+    ));
+
+    // Pick-up lifts a DEPLOYABLE (deploy bit true) and refuses a piece.
+    assert_eq!(
+        hammer::act(HVerb::PickUp, Some(&deploy), &defs, have),
+        Act::Demolish {
+            deploy: true,
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: 2
+        }
+    );
+    assert!(matches!(
+        hammer::act(HVerb::PickUp, Some(&piece), &defs, have),
+        Act::Say(_)
+    ));
+
+    // Repair addresses both stores, and the bit follows the store.
+    assert_eq!(
+        hammer::act(HVerb::Repair, Some(&piece), &defs, have),
+        Act::Repair {
+            deploy: false,
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: 2
+        }
+    );
+    assert_eq!(
+        hammer::act(HVerb::Repair, Some(&deploy), &defs, have),
+        Act::Repair {
+            deploy: true,
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: 2
+        }
+    );
+}
+
+#[test]
+fn upgrade_picks_the_next_rung_the_way_u_does() {
+    let (defs, have) = hammer_piece_defs();
+    // Wood (row 0) upgrades into stone — `structure::next_material`'s
+    // answer, the same one press `U` sends.
+    assert_eq!(
+        hammer::act(
+            HVerb::Upgrade,
+            Some(&target(Store::Piece, 0, 500, 500)),
+            &defs,
+            have
+        ),
+        Act::Upgrade {
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: 2,
+            material: MAT_STONE
+        }
+    );
+    // Metal (row 2) is the top of the ladder.
+    assert_eq!(
+        hammer::act(
+            HVerb::Upgrade,
+            Some(&target(Store::Piece, 2, 500, 500)),
+            &defs,
+            have
+        ),
+        Act::Say("nothing to upgrade into")
+    );
+    // A deployable has no ladder — `upgrade_near`'s own sentence.
+    assert_eq!(
+        hammer::act(
+            HVerb::Upgrade,
+            Some(&target(Store::Deploy, 0, 500, 500)),
+            &defs,
+            have
+        ),
+        Act::Say("that is not a building piece")
+    );
+}
+
+#[test]
+fn refusals_before_the_round_trip_match_the_key_paths() {
+    let (defs, have) = hammer_piece_defs();
+    // Nothing in reach: every verb says so instead of sending.
+    for v in hammer::VERBS {
+        assert!(
+            matches!(hammer::act(v, None, &defs, have), Act::Say(_)),
+            "{v:?} with no target must refuse, not send"
+        );
+    }
+    // An intact piece has nothing to mend — `repair_near`'s guard.
+    assert_eq!(
+        hammer::act(
+            HVerb::Repair,
+            Some(&target(Store::Piece, 0, 500, 500)),
+            &defs,
+            have
+        ),
+        Act::Say("not damaged")
+    );
+    // An undripped row (max 0) sends and lets the sim answer, because the
+    // client does not know the maximum — also `repair_near`'s rule.
+    assert!(matches!(
+        hammer::act(
+            HVerb::Repair,
+            Some(&target(Store::Piece, 0, 100, 0)),
+            &defs,
+            have
+        ),
+        Act::Repair { .. }
+    ));
 }

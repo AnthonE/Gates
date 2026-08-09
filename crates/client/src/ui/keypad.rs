@@ -6,15 +6,18 @@
 //! `tests/ui.rs`; `render/verbs.rs` reads keys and hands bytes to the
 //! session, and `render/hud.rs` draws the line this produces.
 //!
-//! ## Why the keypad is a HUD line and not a panel
+//! ## Why the keypad is an overlay and not a `Panel`
 //!
 //! Every other menu in this client grabs the pointer, and a keypad must
 //! not: the door is in front of you, the person knocking on the other side
 //! of it is not waiting, and a screen that takes your mouse to type four
 //! digits is a screen you die in. The reference's own keypad is a small
-//! overlay for the same reason. So this is a line under the prompt and a
-//! handful of keys, and the cost of that choice is that the digits are
-//! typed rather than clicked.
+//! overlay for the same reason. So this is a small on-screen panel
+//! (`render/hud.rs::pad_overlay`) that owns nothing — the digits are typed
+//! rather than clicked, and the panel is presentation only. It began as a
+//! bare HUD line; [`Keypad::line`] is that line, kept as the one-string
+//! rendering the overlay's pieces ([`Keypad::cells`], [`OPS_HINT`]) compose
+//! into, so the two surfaces cannot drift apart.
 //!
 //! ## What it deliberately does not know
 //!
@@ -107,21 +110,34 @@ impl Keypad {
         Some(v)
     }
 
-    /// The HUD line: what is typed, dotted out to four, and the ops.
+    /// What each of the four digit cells shows: the typed digit, or `None`
+    /// for a cell not reached yet. The overlay draws these as cells and
+    /// [`Self::line`] draws them as characters — one source for both.
+    pub fn cells(&self) -> [Option<u8>; DIGITS] {
+        std::array::from_fn(|i| (i < self.len).then(|| self.digits[i]))
+    }
+
+    /// The one-line rendering: what is typed, dotted out to four, and the
+    /// ops. Composed from [`Self::cells`] and [`OPS_HINT`] so it cannot say
+    /// something the overlay does not.
     pub fn line(&self) -> String {
         let mut code = String::with_capacity(DIGITS);
-        for i in 0..DIGITS {
-            if i < self.len {
-                code.push((b'0' + self.digits[i]) as char);
-            } else {
-                code.push('_');
-            }
+        for c in self.cells() {
+            code.push(match c {
+                Some(d) => (b'0' + d) as char,
+                None => '_',
+            });
         }
-        format!(
-            "CODE {code}  ·  [ENTER] TRY  [S] SET  [G] GUEST  [K] LOCK  [U] UNLOCK  [T] TAKE  [ESC] CLOSE"
-        )
+        format!("CODE {code}  ·  {OPS_HINT}")
     }
 }
+
+/// The ops the surface offers, key by key, in the order drawn — one string
+/// shared by [`Keypad::line`] and the overlay, so what is offered cannot be
+/// said two ways. The letters are [`op_for`]'s; the reachability test below
+/// holds the two lists together.
+pub const OPS_HINT: &str =
+    "[ENTER] TRY  [S] SET  [G] GUEST  [K] LOCK  [U] UNLOCK  [T] TAKE  [ESC] CLOSE";
 
 /// What the `L` press addresses, resolved from the pick.
 ///
@@ -273,6 +289,41 @@ mod tests {
         assert!(k.line().starts_with("CODE 7___"), "{}", k.line());
         assert!(k.line().contains("[ENTER] TRY"), "the ops are named");
         assert!(k.line().contains("[T] TAKE"));
+    }
+
+    /// The overlay's cells and the line are one rendering: cell `i` is the
+    /// typed digit exactly up to `len`, and the line is the cells plus the
+    /// shared ops string — composition, not agreement by luck.
+    #[test]
+    fn the_cells_are_the_line_in_pieces() {
+        let mut k = Keypad::default();
+        assert_eq!(k.cells(), [None; DIGITS]);
+        for d in [0u8, 4] {
+            k.push(d);
+        }
+        assert_eq!(k.cells(), [Some(0), Some(4), None, None]);
+        assert!(k.line().starts_with("CODE 04__"), "{}", k.line());
+        assert!(k.line().ends_with(OPS_HINT), "{}", k.line());
+    }
+
+    /// Every key the pad answers is offered on the hint, and the hint
+    /// offers nothing the pad does not answer — the surface must not
+    /// advertise a dead key or hide a live one.
+    #[test]
+    fn the_hint_names_every_key_and_only_those() {
+        for tag in [
+            "[ENTER] TRY",
+            "[S] SET",
+            "[G] GUEST",
+            "[K] LOCK",
+            "[U] UNLOCK",
+            "[T] TAKE",
+            "[ESC] CLOSE",
+        ] {
+            assert!(OPS_HINT.contains(tag), "{tag} missing from the hint");
+        }
+        // Seven brackets: the six ops plus close, and nothing else.
+        assert_eq!(OPS_HINT.matches('[').count(), 7);
     }
 
     #[test]

@@ -481,6 +481,58 @@ fn keypad_keys(keys: &ButtonInput<KeyCode>, net: &Net, pad: &mut Pad, toast: &mu
     pad.0.close();
 }
 
+/// The hammer wheel's release (`NOW.md` §0p2 item 1): fire the picked
+/// segment at the nearest structure, through the same encoders `U`, `R`
+/// and `Backspace` press — zero new wire.
+///
+/// Every decision — the store filters, the next rung, the refusal
+/// sentences — is [`crate::ui::hammer::act`], pure and gated in
+/// `tests/ui.rs` §K. This translates its answer into a send, exactly as
+/// the keypad's `op_for` split keeps `keypad_keys` decisionless.
+pub fn hammer_fire(net: &Net, near: &Option<Target>, seg: usize, toast: &mut Toast) {
+    use crate::ui::hammer::{self, Act};
+    let Some(&verb) = hammer::VERBS.get(seg) else {
+        return;
+    };
+    let core = &net.session.core;
+    match hammer::act(verb, near.as_ref(), &core.piece_defs, core.piece_defs_have) {
+        Act::Demolish {
+            deploy,
+            cx,
+            cz,
+            level,
+            loc,
+        } => {
+            send(net, toast, "demolish", |buf| {
+                protocol::encode_action_demolish(deploy, cx, cz, level, loc, buf)
+            });
+        }
+        Act::Upgrade {
+            cx,
+            cz,
+            level,
+            loc,
+            material,
+        } => {
+            send(net, toast, "upgrade", |buf| {
+                protocol::encode_action_upgrade(cx, cz, level, loc, material, buf)
+            });
+        }
+        Act::Repair {
+            deploy,
+            cx,
+            cz,
+            level,
+            loc,
+        } => {
+            send(net, toast, "repair", |buf| {
+                protocol::encode_action_repair(deploy, cx, cz, level, loc, buf)
+            });
+        }
+        Act::Say(s) => toast.say(s),
+    }
+}
+
 /// `Backspace` — take the nearest structure back down (demolish v1).
 ///
 /// Reads the same [`Near`] target `R` repairs and `U` upgrades, and
