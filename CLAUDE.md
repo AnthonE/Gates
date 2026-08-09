@@ -187,9 +187,13 @@ do not rediscover)
   caught none of them. Ours has the same hole: swap `a` and `b` at an
   `events.push` site and the encoder is untouched (golden green), the
   event queue is not in `state_hash` (replay green), and every field is
-  `u32` (clippy green). `reference/FINDINGS.md` §1 has the shape of a gate
-  that would catch it; until one exists, the `/// EV_*: a = … b = …` lines
-  in `world.rs` are law with no gate.
+  `u32` (clippy green). `reference/FINDINGS.md` §1 had the shape of the
+  gate that catches it, and it exists now: `crates/sim-core/tests/
+  event_roles.rs` role-checks every event's payload against its
+  `/// EV_*: a = … b = …` doc line — 32 of 32 as of 2026-08-09, each
+  proven red under its own a/b swap. The trap stays listed because the
+  mechanism (three green gates over a wrong payload) is what to remember
+  when the NEXT event lands: an event without its role gate re-opens it.
 - **The item-move verb is the most bug-prone thing in the reference, and
   it fails as a kick.** Three Oxide fixes in 28 minutes on one 2019 day —
   the third titled as a fix of the fix — all one-line splice-point moves
@@ -394,12 +398,17 @@ a box that installs only what that line lists still fails. Running the client
 adds a fourth, and it is a runtime `.so` rather than a build dep, so
 `pkg-config` never mentions it: `libxkbcommon-x11-0`, whose absence panics
 inside `winit` at `App::run` with every gate already green. **Then ask the
-second question for each**, because one of the four does not survive it:
-`alsa` is required solely because `bevy_audio` is on by default and this
-client has **zero** audio call sites. That is not a missing capability, it is
-one we request and do not use, and the trim is `NOW.md` §0x item 1. `wayland`
-(and `x11`) are real — a shipped desktop client faces both — and `libudev` is
-`bevy_gilrs`, which is gamepads and wanted.
+second question for each** — and the answer moved under this entry once
+already, which is its own lesson: this paragraph used to say `alsa` was
+requested and unused, and since audio v0 (2026-08-06) **`bevy_audio` is
+load-bearing** — `render/audio.rs` plays the generated bank through it — so
+`alsa` earns its keep. `wayland` (and `x11`) are real — a shipped desktop
+client faces both. `libudev` is `bevy_gilrs`, which grep still shows
+**unused** (no gamepad code) — that and `vorbis` are the honest trim
+targets, while `bevy_gltf`/`bevy_animation` joined the load-bearing set
+with the mannequin (2026-08-07). `NOW.md` §0x's trim item tracks what a
+grep actually shows rather than what this paragraph last said — re-verify
+there before trimming anything.
 Neither of these repeals the rule above:
 they are missing capabilities, which are diagnosable and permanent, not timing,
 which is neither.

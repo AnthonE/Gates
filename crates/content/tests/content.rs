@@ -1129,12 +1129,29 @@ fn a_clock_with_no_answer_is_refused() {
         "[gatherable.secondary]\noutput = \"item.cloth_UNUSED\"",
         "is not an item",
     );
-    // The honest version of the same defect — the row simply absent.
-    refuses(
-        "gatherables.toml",
+    // The honest version of the same defect — the rows simply absent. Both
+    // of them, since 2026-08-09: the tree's mushrooms answer hunger on
+    // their own, so deleting only the bush's berries no longer starves the
+    // island — which is the redundancy working, not the check weakening.
+    let mut srcs = sources();
+    let g = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "gatherables.toml")
+        .unwrap();
+    for row in [
+        "\n[gatherable.secondary]\noutput = \"item.mushrooms\"\nper_hit = 1\n",
         "\n[gatherable.secondary]\noutput = \"item.berries\"\nper_hit = 5\n",
-        "\n",
-        "the clock has no answer",
+    ] {
+        assert!(
+            g.1.contains(row),
+            "test fixture rot: `{row}` not in gatherables.toml"
+        );
+        g.1 = g.1.replace(row, "\n");
+    }
+    let err = build(&srcs).expect_err("a foodless island must be refused");
+    assert!(
+        err.contains("the clock has no answer"),
+        "expected the unanswerable-clock refusal, got: {err}"
     );
     // And the thirst half. It takes **both** answers off the island now:
     // the drink verb (wire v15) is the second way to answer thirst, so
@@ -1225,7 +1242,7 @@ fn the_shipped_loot_tables_bake() {
     let t = lc
         .table(sim_core::loot::LOOT_BARREL)
         .expect("the barrel table is armed");
-    assert_eq!(t.len, 8, "the barrel table lost or gained a row");
+    assert_eq!(t.len, 9, "the barrel table lost or gained a row");
     assert_eq!(t.rolls_min, 1);
     assert_eq!(t.rolls_max, 2);
     assert_eq!(t.hits, 3, "the barrel's hits came from content");
@@ -1850,6 +1867,135 @@ fn the_meal_left_on_the_fire_burns() {
     assert!(
         !c.cooks.iter().any(|k| k.input == "item.burnt_meat"),
         "burnt meat cooks into something — the overcook chain must end"
+    );
+}
+
+/// Every consumable id in `c` with no producer, walked from the live verbs.
+///
+/// The seed set is what the world pays DIRECTLY, one entry per verb the sim
+/// actually runs: a swing on a node (gather primary + secondary), a kill
+/// (mob drops), a smashed barrel (`gather::smash` rolls `LOOT_BARREL` and
+/// nothing else — no verb opens a cache or a crate yet, `loot.rs`'s own
+/// words, so counting their rows would be exactly the lie `validate.rs`'s
+/// clock comment warns about; when those verbs land, this widens in that
+/// commit), and the spawn kit. The closure then walks the transformations:
+/// the oven's burn (fuel → byproduct), cook rows, and recipes whose inputs
+/// — and whose station, itself an item that must be produced — are all
+/// reachable, to a fixpoint.
+fn unreachable_consumables(c: &Content) -> Vec<String> {
+    let mut have = std::collections::BTreeSet::new();
+    for g in &c.gatherables {
+        have.insert(g.output.as_str());
+        if let Some(s) = &g.secondary {
+            have.insert(s.output.as_str());
+        }
+    }
+    for m in &c.mobs {
+        for d in &m.drops {
+            have.insert(d.item.as_str());
+        }
+    }
+    for l in &c.loot_tables {
+        if l.container == "barrel" {
+            for e in &l.entries {
+                have.insert(e.item.as_str());
+            }
+        }
+    }
+    for s in &c.balance.spawn_kit {
+        have.insert(s.item.as_str());
+    }
+    loop {
+        let mut grew = false;
+        if have.contains(c.fuel.item.as_str()) {
+            grew |= have.insert(c.fuel.byproduct.as_str());
+        }
+        for k in &c.cooks {
+            if have.contains(k.input.as_str()) {
+                grew |= have.insert(k.output.as_str());
+            }
+        }
+        for r in &c.recipes {
+            let station_ok = match r.station {
+                content::schema::Station::None => true,
+                content::schema::Station::Workbench1 => have.contains("item.workbench1"),
+                content::schema::Station::Furnace => have.contains("item.furnace"),
+            };
+            if station_ok && r.inputs.iter().all(|i| have.contains(i.item.as_str())) {
+                grew |= have.insert(r.output.as_str());
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    c.consumables
+        .iter()
+        .filter(|k| !have.contains(k.id.as_str()))
+        .map(|k| k.id.clone())
+        .collect()
+}
+
+/// **Every consumable the content ships is REACHABLE** — the general form
+/// of the meal-loop gate, and the one that would have caught mushrooms and
+/// corn the day `consumables.toml` grew them. Five rows shipped 2026-08-03
+/// with the survival clock and two of them (`item.mushrooms`, `item.corn`)
+/// were producible by nothing for six days: parsed, validated, hashed into
+/// the WAL header, drawn in the eat verb's tables, and absent from every
+/// verb that puts an item in a hand. The clock wall (`validate.rs`) only
+/// asks that SOMETHING answers hunger, so berries alone kept it green —
+/// this asks the per-row question the wall deliberately does not.
+#[test]
+fn every_consumable_the_content_ships_is_reachable() {
+    let c = build(&sources()).expect("shipped content builds");
+    assert!(
+        c.consumables.len() >= 5,
+        "the consumable set shrank to {} rows — this gate is checking little",
+        c.consumables.len()
+    );
+    let missing = unreachable_consumables(&c);
+    assert!(
+        missing.is_empty(),
+        "consumables nothing in the world can produce: {missing:?} — every \
+         row in consumables.toml must be producible by a live verb chain \
+         (gather, kill, barrel smash, spawn kit; then burn/cook/recipe \
+         closure)"
+    );
+
+    // The enumeration is honest: strip one producer row and its consumable
+    // must be reported stranded — exactly, so a walk that quietly counted
+    // everything (or nothing) goes red here rather than in a shipped file.
+    let mut srcs = sources();
+    let g = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "gatherables.toml")
+        .unwrap();
+    let row = "\n[gatherable.secondary]\noutput = \"item.mushrooms\"\nper_hit = 1\n";
+    assert!(
+        g.1.contains(row),
+        "fixture rot: the tree's mushroom row moved"
+    );
+    g.1 = g.1.replace(row, "\n");
+    let mutant = build(&srcs).expect("still valid — berries keep the clock answered");
+    assert_eq!(
+        unreachable_consumables(&mutant),
+        vec!["item.mushrooms".to_string()],
+        "deleting the tree's mushroom secondary must strand exactly the mushrooms"
+    );
+
+    let mut srcs = sources();
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    let row = "    { item = \"item.corn\", weight = 8, count_min = 2, count_max = 4 },\n";
+    assert!(
+        l.1.contains(row),
+        "fixture rot: the barrel's corn row moved"
+    );
+    l.1 = l.1.replace(row, "");
+    let mutant = build(&srcs).expect("still valid — a loot row is not the clock's answer");
+    assert_eq!(
+        unreachable_consumables(&mutant),
+        vec!["item.corn".to_string()],
+        "deleting the barrel's corn row must strand exactly the corn"
     );
 }
 

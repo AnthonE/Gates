@@ -23,6 +23,10 @@
 //! not a world), and `pause` owns the Esc menu, which is this screen seen from
 //! inside the world. `settings` hangs off both.
 //!
+//! The `Disconnect` arrow above is the *voluntary* leave. Its involuntary
+//! twin — the shard hanging up mid-play — lands on `Disconnected` first
+//! (`disconnected`), a screen that says so, and comes back here through it.
+//!
 //! **Bevy still does not decide.** Nothing in this module touches gameplay
 //! state; it owns an address string and a list of rows, and the moment a
 //! `Session` exists it hands it to `Net` and gets out of the way. `WorldId`
@@ -68,6 +72,12 @@ pub enum Screen {
     /// Reachable from `Menu` and from `Paused`; `settings::Settings::back`
     /// carries which. `settings`.
     Settings,
+    /// The shard hung up mid-play — the INVOLUNTARY half of leaving, where
+    /// `pause::Verb::Disconnect` is the verb a player takes. The world is
+    /// torn down on entry (the session under it is dead, and a live world
+    /// drawn over a dead wire is a lie), and the screen names the reason
+    /// before offering the way back. `disconnected`.
+    Disconnected,
 }
 
 /// One row a player may join. The direct row is always present and always

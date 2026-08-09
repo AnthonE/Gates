@@ -20,6 +20,18 @@ hand = 5
 "item.hatchet_stone" = 20
 "item.hatchet_metal" = 30
 
+# The understory: mushrooms are the forest floor's food (CONTENT §2), and
+# the schema has no forest-floor archetype to scatter them on — a node kind
+# is a sim occupant (`terrain.rs`), which is code and not content. The
+# honest reach is the tree's own `secondary`: the swing that fells the
+# forest pays what grows under it, flat like the bush's berries because
+# picking is not chopping. per_hit 1 is the floor a secondary can pay; a
+# whole tree still totals 10 mushrooms, so a wood farmer eats — the
+# standalone forest-floor pickup stays owed (NOW.md §5).
+[gatherable.secondary]
+output = "item.mushrooms"
+per_hit = 1
+
 [[gatherable]]
 id = "gather.stone_node"
 archetype = "stone_node"

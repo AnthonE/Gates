@@ -15,15 +15,18 @@
 //!   terrain with no plane piece; `foundation` = on a plane piece at the
 //!   level; `doorway` = in a doorway edge piece; `any` = foundation, else
 //!   ground.
-//! - A **hearth** claims building privilege in `HEARTH_RADIUS_M`: piece
-//!   and deployable placement inside a *foreign* hearth's radius refuses
-//!   (`REFUSE_B_CLAIM` / `REFUSE_D_CLAIM`). No hearth may be placed
-//!   inside any hearth's radius, own included.
+//! - A **hearth** claims building privilege over its base's own volume
+//!   (`claim.rs`, privilege v1): piece and deployable placement inside a
+//!   *foreign* claim refuses (`REFUSE_B_CLAIM` / `REFUSE_D_CLAIM`). No
+//!   hearth may be placed inside any claim, own included.
 //! - **Upkeep**: every `UPKEEP_PERIOD_TICKS`, each placed piece charges
 //!   `ceil(cost × upkeep_pct_per_day / 100 / 24)` per cost row from the
-//!   first hearth (list order) in radius that can pay the whole charge.
-//!   Unpaid pieces **decay** `DECAY_PCT_PER_PERIOD`% of max hp (min 1)
-//!   per period; at 0 hp the piece is removed, and any deployable at the
+//!   first hearth (list order) whose claim volume covers it and can pay
+//!   that row — the **same shape the build verbs answer to**, read from
+//!   `claim::ClaimCache` because the sweep runs per tick where the walk
+//!   runs per keypress. Unpaid rows **decay** the piece by its
+//!   material's ladder rate (flat `DECAY_PCT_PER_PERIOD` when no ladder
+//!   is priced); at 0 hp the piece is removed, and any deployable at the
 //!   removed piece's exact address goes with it.
 //! - Deployables charge nothing: covered by any hearth with stock, they
 //!   are free; uncovered, they decay on the same cadence (the map sheds
@@ -248,8 +251,14 @@ pub const REFUSE_D_NOT_EMPTY: u32 = 19;
 // (`client/ui/refusals.rs`), and two codes for one sentence is exactly
 // how the two drift.
 
-/// Hearth privilege radius in meters, planar from the hearth's cell
-/// center. Proposed default, DECISIONS.md §open ("deployables v0").
+/// The **legacy** hearth privilege radius in meters, planar from the
+/// hearth's cell center. Proposed default, DECISIONS.md §open
+/// ("deployables v0"). No live path asks it any more: the build verbs
+/// moved to the base's own volume with privilege v1 (`claim.rs`), and
+/// the upkeep sweep followed onto the cached form of the same shape —
+/// the split `NOW.md` §0aa item 1 named is closed. What still reads it
+/// is [`Deploys::foreign_claim`], the circle kept as the crew tests'
+/// probe.
 pub const HEARTH_RADIUS_M: f32 = 24.0;
 /// Upkeep/decay cadence: one period per real hour at the 30 Hz tick.
 /// Proposed default, DECISIONS.md §open ("upkeep/decay v0").
@@ -636,6 +645,17 @@ pub struct Deploys {
     /// Not `Box<Locks>` — `Locks` boxes its own array, for the shadow-stack
     /// reason its doc comment records.
     locks: Locks,
+    /// The privilege volumes, cached per hearth — the shape the upkeep
+    /// sweep's coverage questions read (`claim::ClaimCache`, whose doc
+    /// carries the determinism and bounds arguments whole). Derived state
+    /// like `Pieces::cols`: never hashed, never saved, rebuilt by
+    /// [`Deploys::refresh_claims`] when the stamps below say it is stale.
+    claim: Box<crate::claim::ClaimCache>,
+    /// Bumped by every hearth add, removal and restore — `Pieces::gen`'s
+    /// twin for the hearth list, and like it derived-cache plumbing
+    /// rather than state: never hashed, never saved, deterministic
+    /// anyway (every bump site is stream-ordered).
+    hearth_gen: u64,
 }
 
 impl Deploys {
@@ -649,7 +669,38 @@ impl Deploys {
             hearth_count: 0,
             boxes: Box::new(BoxStore::new()),
             locks: Locks::new(),
+            claim: crate::claim::ClaimCache::new(),
+            hearth_gen: 0,
         }
+    }
+
+    /// Rebuild the claim cache if a piece or a hearth changed since it
+    /// was last built. Called from exactly one place — the top of
+    /// [`upkeep_sweep`], the fixed point in the tick the determinism
+    /// argument in `claim.rs` names — and from the gates.
+    pub(crate) fn refresh_claims(&mut self, pieces: &Pieces) {
+        if self
+            .claim
+            .fresh_for(pieces.footprint_gen(), self.hearth_gen)
+        {
+            return;
+        }
+        let hg = self.hearth_gen;
+        self.claim.rebuild(
+            pieces,
+            &self.hearths[..self.hearth_count],
+            pieces.footprint_gen(),
+            hg,
+        );
+    }
+
+    /// Whether hearth `hi`'s **cached** claim volume covers the planar
+    /// point — the upkeep sweep's coverage question, and since the cache
+    /// landed the only coverage question the sweep asks: the base's own
+    /// shape, not a circle. Callers hold the cache fresh via
+    /// [`Deploys::refresh_claims`].
+    pub(crate) fn hearth_covers(&self, hi: usize, x: f32, z: f32) -> bool {
+        self.claim.covers(hi, x, z)
     }
 
     pub fn len(&self) -> usize {
@@ -705,6 +756,7 @@ impl Deploys {
             crew: CrewList::of(owner),
         };
         self.hearth_count += 1;
+        self.hearth_gen += 1;
     }
 
     /// The hearth records, writable. **Tests and fixtures only** — every
@@ -783,6 +835,9 @@ impl Deploys {
         self.placed[..self.len].copy_from_slice(&placed[..self.len]);
         self.hearth_count = hearths.len().min(MAX_HEARTHS);
         self.hearths[..self.hearth_count].copy_from_slice(&hearths[..self.hearth_count]);
+        // The loaded list replaced the live one wholesale; the bump makes
+        // the first sweep after a load rebuild the claim cache.
+        self.hearth_gen += 1;
         debug_assert_eq!(boxes.len(), ovens.len(), "oven state must be index-aligned");
         self.boxes.len = boxes.len().min(MAX_BOXES);
         self.boxes.entries[..self.boxes.len].copy_from_slice(&boxes[..self.boxes.len]);
@@ -962,6 +1017,11 @@ impl Deploys {
             {
                 self.hearth_count -= 1;
                 self.hearths[h] = self.hearths[self.hearth_count];
+                // The cache row moves with the record it describes —
+                // mid-tick, before any rebuild, a query for hearth `h`
+                // must not read the removed hearth's volume.
+                self.claim.hearth_swap_remove(h, self.hearth_count);
+                self.hearth_gen += 1;
             }
         }
         if holds_items(dc.defs[rec.row as usize].arch) {
@@ -991,23 +1051,25 @@ impl Deploys {
         }
     }
 
-    /// First hearth (list order) whose radius covers the planar point.
-    /// `require_stock` skips empty hearths (decay coverage); the claim
-    /// checks pass false (an empty foreign hearth still claims).
-    fn covering_hearth(&self, x: f32, z: f32, require_stock: bool) -> Option<usize> {
-        let r2 = HEARTH_RADIUS_M * HEARTH_RADIUS_M;
-        self.hearths[..self.hearth_count].iter().position(|h| {
-            if require_stock && h.stock.iter().all(|&s| s == 0) {
-                return false;
-            }
-            let (hx, hz) = cell_center(h.cx, h.cz);
-            let (dx, dz) = (hx - x, hz - z);
-            dx * dx + dz * dz <= r2
+    /// First hearth (list order) with any stock whose **cached claim
+    /// volume** covers the planar point — the deployable half of the
+    /// sweep's coverage test, asked of the base's own shape rather than
+    /// `HEARTH_RADIUS_M` since the cache landed. An empty hearth covers
+    /// nothing (itself included), unchanged from the circle days; stock
+    /// is read live because the piece half of the same sweep spends it
+    /// between visits, and geometry is the cache's because nothing inside
+    /// a sweep visit moves structure.
+    fn covering_hearth(&self, x: f32, z: f32) -> Option<usize> {
+        (0..self.hearth_count).find(|&hi| {
+            self.hearths[hi].stock.iter().any(|&s| s != 0) && self.hearth_covers(hi, x, z)
         })
     }
 
-    /// Whether a *foreign* hearth claims the planar point — the privilege
-    /// wall piece and deploy placement both check.
+    /// Whether a *foreign* hearth's **legacy circle** claims the planar
+    /// point. No verb asks this any more — placement, upgrade, repair and
+    /// the sweep all answer to the base's own volume (`claim.rs`) — and
+    /// it survives as the crew tests' probe: pure who-is-on-the-list
+    /// semantics with the simplest geometry there is.
     pub fn foreign_claim(&self, x: f32, z: f32, placer: u32) -> bool {
         let r2 = HEARTH_RADIUS_M * HEARTH_RADIUS_M;
         self.hearths[..self.hearth_count].iter().any(|h| {
@@ -1114,10 +1176,14 @@ pub fn box_drop_pos(seed: u64, cx: u16, cz: u16, level: u8) -> (f32, f32, f32) {
 
 /// The point `place_deploy` measures reach to, for every `loc`. `build.rs`
 /// measures `repair` to `build::anchor` instead, which is this point for a
-/// plane and half a cell off it for an edge; `pub(crate)` so the test that
+/// plane and half a cell off it for an edge; named so the test that
 /// pins that relation can name both functions rather than re-deriving one of
 /// them and gating its own arithmetic.
-pub(crate) fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
+///
+/// `pub` because the client's deploy ghost is the second caller
+/// (`client/ui/place.rs::deploy_verdict`): its reach guess must measure to
+/// the same point this verb refuses on, not to a copy of it.
+pub fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
     (
         cx as f32 * crate::build::BUILD_CELL_M + crate::build::BUILD_CELL_M * 0.5,
         cz as f32 * crate::build::BUILD_CELL_M + crate::build::BUILD_CELL_M * 0.5,
@@ -1132,7 +1198,12 @@ fn player_xz(p: &Player) -> (f32, f32) {
 }
 
 /// Whether `loc` is the kind of slot the placement class occupies.
-fn loc_fits_placement(placement: u8, loc: u8) -> bool {
+///
+/// `pub` because the client's deploy ghost is the second caller
+/// (`client/ui/place.rs::deploy_verdict`): a preview that guessed this rule
+/// instead of asking it would be the drift the quantize-both-sides law
+/// exists to close.
+pub fn loc_fits_placement(placement: u8, loc: u8) -> bool {
     match placement {
         PLACE_DOORWAY => loc == LOC_EDGE_W || loc == LOC_EDGE_N,
         // A lock goes where its target lives: a door on a doorway's edge,
@@ -1349,6 +1420,7 @@ pub fn place_deploy(
             crew: CrewList::of(p.id),
         };
         deploys.hearth_count += 1;
+        deploys.hearth_gen += 1;
     }
     // A box, a fire and a furnace are one store: an oven's contents are a
     // box's contents, which is what lets `CONT_BOX` address a campfire
@@ -2018,6 +2090,13 @@ pub fn upkeep_sweep(
     if dc.mat_count == 0 {
         return; // no upkeep materials priced: decay is off (inert table)
     }
+    // The coverage cache every question below reads, refreshed at this
+    // one fixed point in the tick — after the commands, before any query,
+    // whether or not any entry is due. `claim::ClaimCache`'s doc carries
+    // the determinism argument; what matters here is the order: no
+    // coverage question is ever asked of a cache the tick's commands have
+    // not been folded into.
+    deploys.refresh_claims(pieces);
     let h_now = (tick / UPKEEP_PERIOD_TICKS) as u16;
 
     // --- pieces ---------------------------------------------------------
@@ -2032,6 +2111,21 @@ pub fn upkeep_sweep(
         }
         let def = bc.pieces[rec.row as usize];
         let (x, z) = cell_center(rec.cx, rec.cz);
+        // Which hearths cover this piece, in hearth-list order — asked of
+        // the cached claim volume (the base's own shape, `claim.rs`)
+        // rather than a circle, which is the whole change: the far end of
+        // a long base is covered because the structure reaches it, and a
+        // detached shack inside the old radius is not. Asked once per
+        // visit, outside the hour steps below, because the steps spend
+        // stock and never move structure.
+        let mut cover = [0u16; MAX_HEARTHS];
+        let mut cover_n = 0usize;
+        for hi in 0..deploys.hearth_count {
+            if deploys.hearth_covers(hi, x, z) {
+                cover[cover_n] = hi as u16;
+                cover_n += 1;
+            }
+        }
         let mut hp = rec.hp;
         let mut uh = rec.uh;
         let mut removed = false;
@@ -2041,9 +2135,9 @@ pub fn upkeep_sweep(
             uh += 1;
             // **Per material, not all-or-nothing** (upkeep/decay v1,
             // `reference/BUILDING.md` §4). Each cost row is charged to the
-            // first hearth in list order that is in radius and can cover
-            // *that row*; the piece is protected only if **every** row
-            // found a payer.
+            // first covering hearth in list order that can cover *that
+            // row*; the piece is protected only if **every** row found a
+            // payer.
             //
             // The old rule wanted one hearth to cover the whole charge, so
             // a hearth holding stone but no wood protected nothing at all
@@ -2057,16 +2151,12 @@ pub fn upkeep_sweep(
             // honest reading of a partial payment: the materials went into
             // the base, and the base still rots for want of the one that
             // did not.
-            // **A hearth has to be there at all**, before any row is
+            // **A hearth has to cover it at all**, before any row is
             // priced. Without this the per-row loop calls a piece paid
             // when it simply costs nothing, and an unpriced piece in open
             // ground would never rot — which is the old rule's one
             // property worth keeping: no hearth, no protection.
-            let mut all_paid = deploys.hearths[..deploys.hearth_count].iter().any(|hr| {
-                let (hx, hz) = cell_center(hr.cx, hr.cz);
-                let (dx, dz) = (hx - x, hz - z);
-                dx * dx + dz * dz <= HEARTH_RADIUS_M * HEARTH_RADIUS_M
-            });
+            let mut all_paid = cover_n > 0;
             for m in 0..(if all_paid { dc.mat_count as usize } else { 0 }) {
                 let due: u32 = def
                     .costs
@@ -2078,15 +2168,11 @@ pub fn upkeep_sweep(
                 if due == 0 {
                     continue;
                 }
-                let payer = deploys.hearths[..deploys.hearth_count]
+                let payer = cover[..cover_n]
                     .iter()
-                    .position(|hr| {
-                        let (hx, hz) = cell_center(hr.cx, hr.cz);
-                        let (dx, dz) = (hx - x, hz - z);
-                        dx * dx + dz * dz <= HEARTH_RADIUS_M * HEARTH_RADIUS_M && hr.stock[m] >= due
-                    });
+                    .position(|&hi| deploys.hearths[hi as usize].stock[m] >= due);
                 match payer {
-                    Some(hi) => deploys.hearths[hi].stock[m] -= due,
+                    Some(ci) => deploys.hearths[cover[ci] as usize].stock[m] -= due,
                     None => all_paid = false,
                 }
             }
@@ -2162,7 +2248,7 @@ pub fn upkeep_sweep(
             uh += 1;
             // Covered by any stocked hearth ⇒ free; uncovered ⇒ decay.
             // (An empty hearth covers nothing, itself included.)
-            if deploys.covering_hearth(x, z, true).is_none() {
+            if deploys.covering_hearth(x, z).is_none() {
                 // The flat rate: a deployable has no build material, so
                 // the ladder has nothing to key on (`piece_decay_pct`).
                 let d = decay_at(def.hp, DECAY_PCT_PER_PERIOD);
@@ -2999,6 +3085,185 @@ mod tests {
             "uncovered deployables decay ({} vs {})",
             far_rec.hp,
             dc.defs[3].hp
+        );
+    }
+
+    /// A corridor of foundations `n` cells long from `(100, 100)`, a
+    /// hearth on the first cell with `stock` of material row 0 — the
+    /// long-base fixture the shape tests below share. Built by writing
+    /// the stores directly, for `Pieces::insert_for_test`'s stated
+    /// reason: the verbs ask the claim, and these tests are about it.
+    fn corridor(bc: &BuildContent, n: u16, stock: u32) -> (Pieces, Deploys) {
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        for cx in 100..100 + n {
+            pieces.insert_for_test(cx, 100, 0, LOC_PLANE, 0, bc);
+        }
+        deploys.push_hearth_for_test(100, 100, 0, 7);
+        deploys.hearths_mut()[0].stock[0] = stock;
+        (pieces, deploys)
+    }
+
+    fn sweep_once(
+        dc: &DeployContent,
+        bc: &BuildContent,
+        pieces: &mut Pieces,
+        deploys: &mut Deploys,
+        tick: u64,
+    ) {
+        let mut ev = EventQueue::default();
+        let (mut pc, mut dcur) = (0u32, 0u32);
+        upkeep_sweep(
+            dc,
+            bc,
+            pieces,
+            deploys,
+            tick,
+            &mut pc,
+            &mut dcur,
+            &mut tick_budget(),
+            &mut ev,
+        );
+    }
+
+    /// The upkeep sweep asks the base's own shape now, not a circle
+    /// (`NOW.md` §0aa item 1). A corridor twenty cells long puts its far
+    /// end 57 m from the hearth: under `HEARTH_RADIUS_M` that end rotted
+    /// with a stocked hearth standing at the near one; under the cached
+    /// claim volume every cell is covered, because the structure reaches
+    /// it — which is the sentence privilege v1 already bought the build
+    /// verbs.
+    #[test]
+    fn upkeep_covers_the_far_end_of_a_long_base() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let (mut pieces, mut deploys) = corridor(&bc, 20, 1_000);
+        // Pin the fixture's meaning against constant drift: the far cell
+        // must genuinely outrun the old circle.
+        const {
+            assert!(
+                19.0 * crate::build::BUILD_CELL_M > HEARTH_RADIUS_M,
+                "the fixture no longer outruns the circle it is about"
+            )
+        };
+        sweep_once(&dc, &bc, &mut pieces, &mut deploys, UPKEEP_PERIOD_TICKS + 1);
+        for p in pieces.entries() {
+            assert_eq!(
+                p.hp, bc.pieces[0].hp,
+                "cell {} went unpaid on a base its own hearth reaches",
+                p.cx
+            );
+        }
+        assert_eq!(
+            deploys.hearths()[0].stock[0],
+            1_000 - 20,
+            "and every cell paid its row rather than being covered free"
+        );
+    }
+
+    /// The inverse gate: a detached piece — and a detached deployable —
+    /// inside the old 24 m circle but outside the base's 16 m cushion is
+    /// NOT covered any more. The circle over-claimed open ground on every
+    /// side a base does not extend to; the shape does not.
+    #[test]
+    fn a_detached_neighbor_inside_the_old_circle_is_not_covered() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let (mut pieces, mut deploys) = corridor(&bc, 1, 1_000);
+        // Seven cells is 21 m: inside the circle, outside the cushion —
+        // pinned, so a constant move cannot quietly hollow this test.
+        let d = 7.0 * crate::build::BUILD_CELL_M;
+        assert!(
+            d <= HEARTH_RADIUS_M && d > crate::claim::PRIV_CUSHION_M,
+            "the fixture distance no longer separates circle from cushion"
+        );
+        pieces.insert_for_test(107, 100, 0, LOC_PLANE, 0, &bc);
+        // A workbench the same distance the other way, on open ground.
+        assert!(deploys.insert(
+            DeployRec {
+                cx: 100,
+                cz: 107,
+                level: 0,
+                loc: LOC_PLANE,
+                row: 1,
+                owner: 7,
+                hp: dc.defs[1].hp,
+                uh: 0,
+                open: false,
+                has_lock: false,
+                locked: false,
+            },
+            0,
+        ));
+        sweep_once(&dc, &bc, &mut pieces, &mut deploys, UPKEEP_PERIOD_TICKS + 1);
+        assert_eq!(
+            pieces.find(100, 100, 0, LOC_PLANE).unwrap().hp,
+            bc.pieces[0].hp,
+            "the piece the base is made of is paid for"
+        );
+        assert!(
+            pieces.find(107, 100, 0, LOC_PLANE).unwrap().hp < bc.pieces[0].hp,
+            "a detached piece the structure does not reach decays, however \
+             close the hearth stands"
+        );
+        assert!(
+            deploys.find(100, 107, 0, LOC_PLANE).unwrap().hp < dc.defs[1].hp,
+            "and so does a detached deployable"
+        );
+        assert_eq!(
+            deploys.hearths()[0].stock[0],
+            1_000 - 1,
+            "only the piece inside the shape was charged"
+        );
+    }
+
+    /// The cache-invalidation mutant-killer `NOW.md` §0aa item 2 asks
+    /// for: place, sweep, demolish the corridor, sweep — the second sweep
+    /// must see the shrunk shape. Delete any link in the invalidation
+    /// chain (the gen bump in `Pieces::remove_at`, the stamp compare, the
+    /// refresh call at the sweep's top) and the far piece stays covered
+    /// by structure that is no longer there, and this test reddens.
+    #[test]
+    fn the_sweep_sees_a_demolished_base_shrink() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let (mut pieces, mut deploys) = corridor(&bc, 10, 1_000);
+        // The far cell is 27 m out: outside the circle AND outside the
+        // lone foundation's cushion, so after the demolition below only
+        // the shape argument can protect or rot it.
+        const { assert!(9.0 * crate::build::BUILD_CELL_M > HEARTH_RADIUS_M) };
+        sweep_once(&dc, &bc, &mut pieces, &mut deploys, UPKEEP_PERIOD_TICKS + 1);
+        assert_eq!(
+            pieces.find(109, 100, 0, LOC_PLANE).unwrap().hp,
+            bc.pieces[0].hp,
+            "before the demolition the far end is covered"
+        );
+        assert_eq!(deploys.hearths()[0].stock[0], 1_000 - 10);
+        // Demolish the corridor between — the same `remove_at` every
+        // removal path funnels through, so the gen bump under test is the
+        // one the live verbs exercise.
+        for cx in 101..109u16 {
+            let i = pieces.find_index(cx, 100, 0, LOC_PLANE).unwrap();
+            let shape = bc.pieces[pieces.entries()[i].row as usize].shape;
+            pieces.remove_at(i, shape);
+        }
+        sweep_once(
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            2 * UPKEEP_PERIOD_TICKS + 1,
+        );
+        assert_eq!(
+            pieces.find(100, 100, 0, LOC_PLANE).unwrap().hp,
+            bc.pieces[0].hp,
+            "the cell the hearth stands on is still covered"
+        );
+        assert!(
+            pieces.find(109, 100, 0, LOC_PLANE).unwrap().hp < bc.pieces[0].hp,
+            "the second sweep must see the shrunk shape — a far piece the \
+             demolition detached has to rot, and if it did not, the claim \
+             cache was not invalidated"
         );
     }
 

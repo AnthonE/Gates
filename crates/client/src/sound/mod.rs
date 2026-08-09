@@ -113,11 +113,25 @@ pub enum Cue {
     /// everything after it and regenerate waveforms this cue has nothing to
     /// do with. Discriminant order is append order from here on.
     Snort,
+    /// Another player's footstep: [`Cue::StepSand`] heard at THEIR body.
+    /// A separate cue rather than a positional flag on the local one,
+    /// because whether a cue is positional is the def's fact and the
+    /// mixer's one distance law hangs off it — the local step is an
+    /// own-fact at the listener, this is a place in the world, and one row
+    /// cannot be both. The waveform is the local surface's byte for byte
+    /// (`synth::render` delegates): the ground decides what a step sounds
+    /// like, not whose boot it is. Appended after `Snort` — the enum's
+    /// append-order rule.
+    RemoteStepSand,
+    RemoteStepGrass,
+    RemoteStepLitter,
+    RemoteStepRock,
+    RemoteStepWater,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 23;
+pub const CUE_COUNT: usize = 28;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -149,6 +163,11 @@ impl Cue {
         Cue::BedSurf,
         Cue::BedUnder,
         Cue::Snort,
+        Cue::RemoteStepSand,
+        Cue::RemoteStepGrass,
+        Cue::RemoteStepLitter,
+        Cue::RemoteStepRock,
+        Cue::RemoteStepWater,
     ];
 
     /// Is this cue a looping bed?
@@ -190,9 +209,16 @@ impl Cue {
     /// vary; the interface does not.
     pub fn pitch_var(self) -> f32 {
         match self {
-            Cue::StepSand | Cue::StepGrass | Cue::StepLitter | Cue::StepRock | Cue::StepWater => {
-                0.10
-            }
+            Cue::StepSand
+            | Cue::StepGrass
+            | Cue::StepLitter
+            | Cue::StepRock
+            | Cue::StepWater
+            | Cue::RemoteStepSand
+            | Cue::RemoteStepGrass
+            | Cue::RemoteStepLitter
+            | Cue::RemoteStepRock
+            | Cue::RemoteStepWater => 0.10,
             Cue::Swing
             | Cue::ImpactWood
             | Cue::ImpactStone
@@ -338,6 +364,8 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // register: ambience, not signal. The cooldown is per-cue, so it is the
     // herd's stagger, not one animal's — `sound::pig` spaces one animal.
     row(GAME, 40.0, 0.55, 150, 2, true),   // snort
+    // Remote footsteps: the STEP family heard at another body — see RSTEP.
+    RSTEP, RSTEP, RSTEP, RSTEP, RSTEP,
 ];
 
 /// The five footsteps share every number but their timbre — see [`CUES`].
@@ -348,6 +376,26 @@ const STEP: CueDef = CueDef {
     cooldown_ms: 90,
     priority: 1,
     positional: false,
+};
+
+/// The remote five (`DECISIONS.md` §open, "remote footsteps v0"). Radius and
+/// gain are read off [`STEP`] rather than restated — the 24 m the local row
+/// always carried was written for exactly this positional half, and tying
+/// them means the two families cannot drift apart on how far a boot carries.
+/// What differs is deliberate: **positional** (the whole point — the cue is
+/// at the body, panned and culled by the one falloff law); **priority 2**,
+/// above your own feet, because another player's step is the sound that
+/// decides fights and yours tells you nothing; and a **40 ms cooldown** (the
+/// impacts' register, not the local 90 ms) since the cooldown is per-CUE and
+/// therefore shared across every remote on that surface — a stride-length
+/// cooldown would let your own pool mask a second attacker entirely.
+const RSTEP: CueDef = CueDef {
+    bus: Bus::Game,
+    radius_m: STEP.radius_m,
+    gain: STEP.gain,
+    cooldown_ms: 40,
+    priority: 2,
+    positional: true,
 };
 
 /// The furthest any cue carries, metres. Read by `render/audio.rs` to pick the

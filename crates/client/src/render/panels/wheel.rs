@@ -1,9 +1,12 @@
-//! The radial build menu.
+//! The two radial menus: the plan's shape wheel and the hammer's action
+//! wheel.
 //!
-//! Held open with `B`, released to keep whatever it was last over. The
-//! geometry is [`crate::ui::build`]'s and the picking is
-//! [`crate::ui::build::pick`] — **not** Bevy's node hit-testing, and that is
-//! the design rather than an accident:
+//! Each is held open on right-click by the item that owns it
+//! (`crate::ui::hold`); the shape wheel releases to keep whatever it was
+//! last over, the hammer's releases to FIRE it. The geometry is
+//! [`crate::ui::build`]'s and the picking is
+//! [`crate::ui::build::pick`] / [`crate::ui::hammer::pick`] — **not**
+//! Bevy's node hit-testing, and that is the design rather than an accident:
 //!
 //! - a wedge is not a rectangle, so node picking would need one collider per
 //!   segment and would still be wrong at the corners;
@@ -40,14 +43,18 @@ use crate::ui::build::{
     SHAPES,
 };
 use crate::ui::craft::item_label;
+use crate::ui::hammer;
 
-/// Follow the pointer and latch what it is over.
+/// Follow the pointer over whichever wheel is up.
 ///
-/// Latched on hover rather than on release, which is the reference's own
-/// feel: the centre readout updates as the thumb sweeps, so the price is
-/// visible *before* the commitment, and releasing is just letting go.
+/// The shape wheel **latches** what it is over — the reference's own feel:
+/// the centre readout updates as the thumb sweeps, so the price is visible
+/// *before* the commitment, and releasing is just letting go. The hammer's
+/// wheel latches nothing: its verbs fire on release (`panels::keys` reads
+/// the hover this system last wrote), and a latched "demolish" would be an
+/// armed verb living in a field nothing shows.
 pub fn track(mut ui: ResMut<Ui>, window: Query<&Window, With<PrimaryWindow>>) {
-    if ui.panel != Panel::Wheel {
+    if ui.panel != Panel::Wheel && ui.panel != Panel::Hammer {
         if ui.hover.is_some() {
             ui.hover = None;
         }
@@ -61,14 +68,20 @@ pub fn track(mut ui: ResMut<Ui>, window: Query<&Window, With<PrimaryWindow>>) {
     let cy = window.height() * 0.5;
     // Bevy's UI y grows downward; `pick` is written in the orientation the
     // trigonometry is readable in, so the flip happens here, once.
-    let hover = crate::ui::build::pick(p.x - cx, -(p.y - cy), Rings::default());
+    let (dx, dy) = (p.x - cx, -(p.y - cy));
+    let hover = match ui.panel {
+        Panel::Wheel => crate::ui::build::pick(dx, dy, Rings::default()),
+        _ => crate::ui::hammer::pick(dx, dy, Rings::default()),
+    };
 
     if hover == ui.hover {
         return;
     }
     ui.hover = hover;
-    if let Some(i) = hover {
-        ui.shape = i;
+    if ui.panel == Panel::Wheel {
+        if let Some(i) = hover {
+            ui.shape = i;
+        }
     }
     ui.dirty = true;
 }
@@ -198,6 +211,140 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                     Text::new(
                         "the ring picks the shape   -   let go to keep it   \
                          -   left click places it",
+                    ),
+                    font(12.0),
+                    TextColor(TEXT_DIM),
+                ));
+            });
+        });
+}
+
+/// Draw the hammer's wheel — the second radial (`NOW.md` §0p2 item 1).
+///
+/// The same annulus as the shape wheel, four wedges (`ui::hammer::VERBS`),
+/// and one deliberate difference the drawing makes visible: **the highlight
+/// is only up while a segment is hovered**, because the highlight is the
+/// answer to "what will the release do" and this wheel fires on release
+/// rather than latching. No wedge lit, nothing fires.
+///
+/// The wedges carry their labels as text — no verb icons are baked
+/// (`ui::icons::STEMS` is items and shapes), and `glyph`'s fallback is
+/// exactly this case.
+pub fn build_hammer_screen(commands: &mut Commands, ui: &Ui) {
+    let rings = Rings::default();
+
+    commands
+        .spawn((
+            super::PanelRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            // The shape wheel's scrim, for the shape wheel's reason: the
+            // structure this wheel acts on has to stay visible under it.
+            BackgroundColor(Color::srgba(0.02, 0.02, 0.025, 0.30)),
+        ))
+        .with_children(|root| {
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                top: Val::Percent(50.0),
+                margin: UiRect {
+                    left: Val::Px(-rings.rim),
+                    top: Val::Px(-rings.rim),
+                    ..default()
+                },
+                width: Val::Px(rings.rim * 2.0),
+                height: Val::Px(rings.rim * 2.0),
+                ..default()
+            })
+            .with_children(|box_| {
+                plate(box_, rings, ring::HAMMER_BASE);
+                if let Some(i) = ui.hover {
+                    let i = i.min(hammer::VERBS.len() - 1);
+                    plate(box_, rings, ring::HAMMER_HI[i].clone());
+                }
+
+                // The centre readout: the verb the release would fire, or
+                // what to do when none is chosen. Same soft disc as the
+                // shape wheel's, same reason (no blur to sit on).
+                box_.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(rings.rim - rings.dead),
+                        top: Val::Px(rings.rim - rings.dead),
+                        width: Val::Px(rings.dead * 2.0),
+                        height: Val::Px(rings.dead * 2.0),
+                        padding: UiRect::all(Val::Px(10.0)),
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        row_gap: Val::Px(2.0),
+                        border_radius: BorderRadius::MAX,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.04, 0.036, 0.032, 0.72)),
+                    Pickable::IGNORE,
+                ))
+                .with_children(|c| {
+                    let (name, line) = match ui.hover {
+                        Some(i) => {
+                            let v = hammer::VERBS[i.min(hammer::VERBS.len() - 1)];
+                            (hammer::label(v), hammer::blurb(v))
+                        }
+                        None => ("Hammer", "sweep to a verb"),
+                    };
+                    c.spawn((
+                        Text::new(name.to_string()),
+                        font_bold(18.0),
+                        TextColor(Color::srgb(0.99, 0.98, 0.96)),
+                        Pickable::IGNORE,
+                    ));
+                    c.spawn((
+                        Node {
+                            max_width: Val::Px(150.0),
+                            ..default()
+                        },
+                        Text::new(line.to_string()),
+                        font(11.0),
+                        TextColor(TEXT_DIM),
+                        Pickable::IGNORE,
+                    ));
+                });
+
+                for (i, v) in hammer::VERBS.iter().enumerate() {
+                    glyph(
+                        box_,
+                        rings,
+                        (rings.dead + rings.rim) * 0.5,
+                        segment_angle(i, hammer::VERBS.len()),
+                        38.0,
+                        None,
+                        hammer::label(*v),
+                        ui.hover == Some(i),
+                        true,
+                    );
+                }
+            });
+
+            // The hint line, at the shape wheel's own hotbar clearance.
+            root.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: Val::Px(76.0),
+                    width: Val::Percent(100.0),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                Pickable::IGNORE,
+            ))
+            .with_children(|b| {
+                b.spawn((
+                    Text::new(
+                        "the ring picks the verb   -   release fires it   \
+                         -   let go over the centre to cancel",
                     ),
                     font(12.0),
                     TextColor(TEXT_DIM),

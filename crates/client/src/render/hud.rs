@@ -197,6 +197,14 @@ pub struct HitMark;
 #[derive(Component)]
 pub struct Compass;
 
+/// The code lock's keypad, drawn — the root of [`pad_overlay`]'s small
+/// panel. Spawned and despawned by the system itself, so it lives here in
+/// the HUD (over the world, pointer-free) and not in `panels::` (which
+/// would grab the pointer, the one thing a keypad must not do —
+/// `crate::ui::keypad` has the argument).
+#[derive(Component)]
+pub struct PadRoot;
+
 pub fn setup(mut commands: Commands) {
     // The hotbar: six cells, bottom centre.
     commands
@@ -499,31 +507,58 @@ pub fn update(
         // nothing; "TOO FAR" or "NO ROOM" beside it teaches the rule. Level is
         // here for the same reason: `R`/`F` step it and nothing showed it, so
         // a player building on level 2 by accident had no way to notice.
-        let out = match row_for(&core.piece_defs, shape, material) {
-            Some(_) => {
-                let why = match ghost.as_ref().map(|g| g.verdict) {
-                    Some(crate::ui::place::Verdict::No(w)) if !w.is_empty() => w,
-                    _ => "",
-                };
-                let level = ghost.as_ref().map(|g| g.level).unwrap_or(0);
-                if why.is_empty() {
-                    format!(
-                        "BUILD  {} {}  L{}   (hold right)",
-                        material_label(material),
-                        shape_label(shape),
-                        level
-                    )
-                } else {
-                    format!(
-                        "BUILD  {} {}  L{}  — {}",
-                        material_label(material),
-                        shape_label(shape),
-                        level,
-                        why.to_uppercase()
-                    )
-                }
+        // A held deployable claims the line ahead of the build latch: the
+        // hand decides what the mouse means (`ui::hold`), and its ghost has
+        // a verdict to say while AIMING — the same grammar the build ghost
+        // uses below, red reason and all, so a preview that has gone red
+        // names the sim's own sentence before the click spends the item.
+        let held = core.inv[(net.sel as usize).min(core.inv.len().saturating_sub(1))];
+        let deploy_held =
+            crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held.item)
+                .is_some();
+        let out = if deploy_held {
+            let name = core
+                .catalog
+                .name(held.item as usize)
+                .iter()
+                .map(|b| (*b as char).to_ascii_uppercase())
+                .collect::<String>();
+            let why = match ghost.as_ref().map(|g| g.deploy_verdict) {
+                Some(crate::ui::place::DeployVerdict::No(w)) if !w.is_empty() => w,
+                _ => "",
+            };
+            if why.is_empty() {
+                format!("PLACE  {name}   (right click)")
+            } else {
+                format!("PLACE  {name}  — {}", why.to_uppercase())
             }
-            None => "BUILD  -   (hold right)".to_string(),
+        } else {
+            match row_for(&core.piece_defs, shape, material) {
+                Some(_) => {
+                    let why = match ghost.as_ref().map(|g| g.verdict) {
+                        Some(crate::ui::place::Verdict::No(w)) if !w.is_empty() => w,
+                        _ => "",
+                    };
+                    let level = ghost.as_ref().map(|g| g.level).unwrap_or(0);
+                    if why.is_empty() {
+                        format!(
+                            "BUILD  {} {}  L{}   (hold right)",
+                            material_label(material),
+                            shape_label(shape),
+                            level
+                        )
+                    } else {
+                        format!(
+                            "BUILD  {} {}  L{}  — {}",
+                            material_label(material),
+                            shape_label(shape),
+                            level,
+                            why.to_uppercase()
+                        )
+                    }
+                }
+                None => "BUILD  -   (hold right)".to_string(),
+            }
         };
         if text.0 != out {
             text.0 = out;
@@ -837,9 +872,11 @@ pub fn prompt(
         // The keypad outranks both, and for the ordering's own reason
         // turned up a level: while four digits are being typed, `E` and
         // the swing are not what the keys mean, so a prompt naming them
-        // would name the wrong verb (lock v1, `crate::ui::keypad`).
+        // would name the wrong verb (lock v1, `crate::ui::keypad`). The
+        // pad itself is [`pad_overlay`]'s panel now, so this line goes
+        // quiet rather than saying the same thing twice.
         let want = if pad.0.is_open() {
-            pad.0.line()
+            String::new()
         } else {
             match aimed.0.prompt() {
                 s if !s.is_empty() => s,
@@ -856,6 +893,132 @@ pub fn prompt(
             text.0 = want;
         }
     }
+}
+
+/// The keypad, as a small panel in the house grammar (`NOW.md` §0z item 3).
+///
+/// **Pointer-free is the bar**: this is presentation, not a mouse flow.
+/// The pad stays a resource beside [`super::verbs::Pad`] and its keys stay
+/// `verbs::keypad_keys`'s; nothing here is clickable, the cursor stays
+/// locked, and the world keeps rendering behind it. What changed is only
+/// that four digits and seven ops are a panel above the hotbar instead of
+/// one line through the middle of the door you are standing at.
+///
+/// Everything drawn is [`crate::ui::keypad`]'s own arithmetic —
+/// [`Keypad::cells`] for the digit boxes, `OPS_HINT` for the key line, the
+/// buffer's `len` for the cursor — so the overlay says exactly what the
+/// old HUD line said ([`Keypad::line`] composes the same pieces, and the
+/// unit tests hold them together).
+///
+/// Rebuilt only when the pad changes; a `Keypad` is sixteen bytes and the
+/// compare is the cost of a still frame.
+///
+/// [`Keypad::cells`]: crate::ui::keypad::Keypad::cells
+/// [`Keypad::line`]: crate::ui::keypad::Keypad::line
+pub fn pad_overlay(
+    mut commands: Commands,
+    pad: Res<super::verbs::Pad>,
+    roots: Query<Entity, With<PadRoot>>,
+    mut seen: Local<Option<crate::ui::keypad::Keypad>>,
+) {
+    if *seen == Some(pad.0) {
+        return;
+    }
+    *seen = Some(pad.0);
+    for e in roots.iter() {
+        commands.entity(e).despawn();
+    }
+    if !pad.0.is_open() {
+        return;
+    }
+
+    // Cosmetics ride the toast's row (`DECISIONS.md` §open, client
+    // cosmetics); the palette is `panels`'s, so a keypad and an inventory
+    // read as one product. Bottom-centred at the wheel hint's own hotbar
+    // clearance — the centre of the screen stays on the door.
+    use super::panels::{CELL_BG, CELL_FULL, LINE, LINE_HOT, PANEL_BG, TEXT_DIM};
+    let cells = pad.0.cells();
+    let cursor = pad.0.len();
+    commands
+        .spawn((
+            super::WorldEntity,
+            PadRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(76.0),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Pickable::IGNORE,
+        ))
+        .with_children(|row| {
+            row.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::all(Val::Px(10.0)),
+                    row_gap: Val::Px(6.0),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(PANEL_BG),
+                BorderColor::all(LINE),
+                Pickable::IGNORE,
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("CODE"),
+                    super::ui::font_bold(13.0),
+                    TextColor(TEXT_DIM),
+                    Pickable::IGNORE,
+                ));
+                // The four digit cells. Typed digits in the clear — the
+                // HUD line never masked them and the panel keeps its
+                // information; the next empty cell wears the hot line, so
+                // where the fifth keystroke would be dropped is visible.
+                panel
+                    .spawn((
+                        Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(6.0),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ))
+                    .with_children(|digits| {
+                        for (i, c) in cells.iter().enumerate() {
+                            digits.spawn((
+                                Node {
+                                    width: Val::Px(30.0),
+                                    height: Val::Px(36.0),
+                                    justify_content: JustifyContent::Center,
+                                    align_items: AlignItems::Center,
+                                    border: UiRect::all(Val::Px(1.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(if c.is_some() { CELL_FULL } else { CELL_BG }),
+                                BorderColor::all(if i == cursor { LINE_HOT } else { LINE }),
+                                Pickable::IGNORE,
+                                children![(
+                                    Text::new(match c {
+                                        Some(d) => d.to_string(),
+                                        None => String::new(),
+                                    }),
+                                    super::ui::font_bold(18.0),
+                                    TextColor(Color::srgb(0.98, 0.97, 0.95)),
+                                )],
+                            ));
+                        }
+                    });
+                panel.spawn((
+                    Text::new(crate::ui::keypad::OPS_HINT),
+                    super::ui::font(11.0),
+                    TextColor(TEXT_DIM),
+                    Pickable::IGNORE,
+                ));
+            });
+        });
 }
 
 /// The swing prompt, plus the weak-spot cue when the player is standing in

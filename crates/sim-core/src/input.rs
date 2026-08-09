@@ -37,6 +37,19 @@ pub const BTN_CROUCH: u8 = 1 << 1;
 pub const BTN_PRIMARY: u8 = 1 << 2;
 pub const BTN_JUMP: u8 = 1 << 3;
 
+/// Every button bit the sim means — the closed set of the four above.
+///
+/// The wire carries `buttons` as a full unmasked octet (see the JUMP note),
+/// so bits 4–7 cross intact and mean nothing: no verb reads them, but
+/// `state_hash` hashes the stored frame, so an unmasked garbage bit would be
+/// client-writable state that no rule owns (NOW.md §5b's forgery slack).
+/// The server refuses a wire frame carrying one (`net.rs` `accept_input`);
+/// `world::apply` masks non-wire frames instead — `sel`'s fallback rule.
+/// A new button joins this mask in the same commit that declares its bit,
+/// or every press of it is refused at the door;
+/// `tests/domain_ledger.rs` fails if the two drift apart.
+pub const BTN_MASK: u8 = BTN_SPRINT | BTN_CROUCH | BTN_PRIMARY | BTN_JUMP;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct InputFrame {
     pub seq: u16,

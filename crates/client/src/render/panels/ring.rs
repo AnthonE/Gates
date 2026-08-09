@@ -7,13 +7,14 @@
 //! nothing rectangular approximates that. Rasterising the annulus once is the
 //! whole fix, and it costs a texture.
 //!
-//! **Baked at plugin-build time, never per frame.** Seven images — the base
-//! ring and one highlight per shape segment — generated beside
-//! `ui::build_fonts` and `audio::build_bank`. The wheel
-//! rebuilds whenever the pointer crosses a segment boundary, which while
-//! sweeping is several times a second; generating a megabyte there would be
-//! an allocation on a hot path for a thing that has ten possible states. So
-//! the ten are made once and a rebuild only picks handles.
+//! **Baked at plugin-build time, never per frame.** Twelve images — a base
+//! ring and one highlight per segment, for each of the two wheels (the
+//! shapes' six, the hammer's four) — generated beside `ui::build_fonts` and
+//! `audio::build_bank`. A wheel rebuilds whenever the pointer crosses a
+//! segment boundary, which while sweeping is several times a second;
+//! generating a megabyte there would be an allocation on a hot path for a
+//! thing with a handful of possible states. So all twelve are made once and
+//! a rebuild only picks handles.
 //!
 //! **Geometry comes from [`Rings`]**, the same struct `ui::build::pick`
 //! resolves the pointer with, so what is drawn and what is picked cannot
@@ -66,6 +67,18 @@ pub const SHAPE_HI: [Handle<Image>; 6] = [
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e6"),
 ];
 
+/// The hammer wheel's base ring — same band, four wedges
+/// (`ui::hammer::VERBS`).
+pub const HAMMER_BASE: Handle<Image> = uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e7");
+
+/// One highlight per hammer verb, indexed as `VERBS` is.
+pub const HAMMER_HI: [Handle<Image>; 4] = [
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e8"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e9"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5ea"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5eb"),
+];
+
 /// Which band a pixel is in, in texture units where `rim` maps to `TEX/2`.
 #[derive(Clone, Copy)]
 struct Band {
@@ -98,9 +111,9 @@ fn covers(b: Band, r: f32, theta: f32, seg: Option<usize>) -> bool {
     }
 }
 
-/// Rasterise the wheel. `pick` selects which segment is drawn; `None` draws
-/// the whole ring, which is the base.
-fn bake(rings: Rings, pick: Option<usize>, rgb: [u8; 3]) -> Image {
+/// Rasterise a wheel of `segments` wedges. `pick` selects which segment is
+/// drawn; `None` draws the whole ring, which is the base.
+fn bake(rings: Rings, segments: usize, pick: Option<usize>, rgb: [u8; 3]) -> Image {
     let n = TEX as usize;
     let mut data = vec![0u8; n * n * 4];
     let half = TEX as f32 * 0.5;
@@ -110,7 +123,7 @@ fn bake(rings: Rings, pick: Option<usize>, rgb: [u8; 3]) -> Image {
     let band = Band {
         inner: rings.dead,
         outer: rings.rim,
-        segments: SHAPES.len(),
+        segments,
     };
 
     for py in 0..n {
@@ -156,18 +169,30 @@ fn bake(rings: Rings, pick: Option<usize>, rgb: [u8; 3]) -> Image {
     )
 }
 
-/// Bake all seven, at plugin-build time.
+/// Bake all twelve, at plugin-build time.
 pub fn build_rings(app: &mut App) {
     let rings = Rings::default();
     let mut images = app.world_mut().resource_mut::<Assets<Image>>();
 
     images
-        .insert(BASE.id(), bake(rings, None, CREAM))
+        .insert(BASE.id(), bake(rings, SHAPES.len(), None, CREAM))
         .expect("the wheel's base ring");
     for (i, h) in SHAPE_HI.iter().enumerate() {
         images
-            .insert(h.id(), bake(rings, Some(i), CHOSEN))
+            .insert(h.id(), bake(rings, SHAPES.len(), Some(i), CHOSEN))
             .expect("a shape highlight");
+    }
+
+    // The hammer's ring: same band, same colours, its own wedge count —
+    // the two wheels must read as one instrument with two dials.
+    let verbs = crate::ui::hammer::VERBS.len();
+    images
+        .insert(HAMMER_BASE.id(), bake(rings, verbs, None, CREAM))
+        .expect("the hammer wheel's base ring");
+    for (i, h) in HAMMER_HI.iter().enumerate() {
+        images
+            .insert(h.id(), bake(rings, verbs, Some(i), CHOSEN))
+            .expect("a hammer verb highlight");
     }
 }
 
@@ -217,5 +242,17 @@ mod tests {
         let edge = step * 0.5;
         assert!(!covers(band(6), 150.0, edge - GAP * 0.5, None));
         assert!(!covers(band(6), 150.0, edge + GAP * 0.5, None));
+    }
+
+    /// The hammer's four-wedge band draws with the same arithmetic — each
+    /// wedge covers its own centre angle, `tests/ui.rs` §K's claim about
+    /// `hammer::pick` made about what is drawn.
+    #[test]
+    fn a_ring_of_four_covers_its_own_centres() {
+        let step = std::f32::consts::TAU / 4.0;
+        for i in 0..4usize {
+            assert!(covers(band(4), 150.0, step * i as f32, Some(i)));
+            assert!(!covers(band(4), 150.0, step * i as f32, Some((i + 1) % 4)));
+        }
     }
 }

@@ -26,12 +26,12 @@ use sim_core::limits::MAX_BUILD_LEVELS;
 
 use crate::look::yaw_u16;
 use crate::ui::build::{row_for, PLACE_MATERIAL, SHAPES};
-use crate::ui::place::{self, Site, Target, Verdict};
+use crate::ui::place::{self, DeploySite, DeployVerdict, Site, Target, Verdict};
 
 use super::hud::Toast;
 use super::input::Look;
 use super::panels::Ui;
-use super::structures::{base_transform, cell_center, level_base_y, shape_parts};
+use super::structures::{base_transform, deploy_transform, shape_parts};
 use super::{Net, WorldId};
 
 /// The ghost's translucency, and its two verdicts. Cosmetics
@@ -46,13 +46,18 @@ const GHOST_NO: Color = Color::srgba(0.86, 0.28, 0.22, 0.34);
 /// merge that silently invalidated the first choice.**
 ///
 /// It has to be neither of the two above, because those two mean something:
-/// blue is "ready to place" and red is "refused", and this preview computes
-/// no verdict at all (see `deploy_track`). The first version was a pale
-/// blue-grey chosen to contrast with a build ghost that was GREEN at the time.
-/// The reference-blue change landed on `main` in the same window and the two
-/// merged without touching a common line — leaving a deploy preview a shade
-/// off the build ghost's own blue, silently promising the readiness it
-/// explicitly must not. Warm bone grey instead: adjacent to neither hue.
+/// blue is "ready to place" and red is "refused" — and while the deploy
+/// ghost now computes a verdict (`place::deploy_verdict`), that verdict can
+/// only ever say NO or UNKNOWN, never yes: the claim and the capacity caps
+/// are the server's alone, so "nothing visible refuses it" may not wear the
+/// ready colour. Neutral is the honest face of Unknown; a refused deploy
+/// wears [`GHOST_NO`] like a refused piece. The first version of this
+/// constant was a pale blue-grey chosen to contrast with a build ghost that
+/// was GREEN at the time. The reference-blue change landed on `main` in the
+/// same window and the two merged without touching a common line — leaving a
+/// deploy preview a shade off the build ghost's own blue, silently promising
+/// the readiness it explicitly must not. Warm bone grey instead: adjacent to
+/// neither hue.
 const GHOST_DEPLOY: Color = Color::srgba(0.87, 0.84, 0.76, 0.32);
 
 /// The one ghost entity, and what it is currently showing.
@@ -81,6 +86,12 @@ pub struct Ghost {
     pub verdict: Verdict,
     pub row: Option<u16>,
     pub shape: u8,
+    /// The deploy ghost's own latched pair, for the same rule: `deploy_key`
+    /// sends the address that was drawn, and the HUD says the reason the
+    /// drawing is red. Defaults are the empty address and `Unknown` —
+    /// neutral, never red, on a frame nobody computed.
+    pub deploy_target: Target,
+    pub deploy_verdict: DeployVerdict,
 }
 
 /// `R` raises the working level, `F` lowers it.
@@ -308,7 +319,8 @@ pub fn place_key(
     }
 }
 
-/// Park a translucent preview over where the held deployable would land.
+/// Park a translucent preview over where the held deployable would land —
+/// and say WHETHER, where that is honestly computable (`NOW.md` §0u item 2).
 ///
 /// **The deploy path had no ghost at all, and `deploy_key`'s own header says
 /// why that matters**: "the client does not try to guess which, because
@@ -317,14 +329,22 @@ pub fn place_key(
 /// box. The build ghost has existed since `NOW.md` §0w item 1 and this half
 /// was never built, so the riskier of the two verbs was the blind one.
 ///
-/// **It is deliberately colourless about legality.** `place::verdict` answers
-/// for BUILD pieces — spot taken, reach, ground, cost against `piece_defs` —
-/// and a deployable is refused by a different set the client cannot check
-/// (`REFUSE_D_*`: needs a floor, needs a doorway, too close to a hearth
-/// claim). Drawing this green would promise a check nobody ran, which is the
-/// one direction the module header forbids: "what must never happen is a red
-/// ghost on something the sim would have accepted" — and its mirror, a green
-/// one on something it would refuse. So this ghost says WHERE, not WHETHER.
+/// **The colour split, and the honesty rule behind it.** The verdict is
+/// [`place::deploy_verdict`] — the sim's own predicates run on the client's
+/// own mirror, never a copy of them (its doc states which `REFUSE_D_*`
+/// reasons are mirrored and which the mirror genuinely cannot hold: the
+/// hearth claim needs crew lists the wire never carries, the caps are the
+/// server's store lengths). A mirrored NO draws [`GHOST_NO`] with the
+/// refusal's own sentence on the HUD line; everything else stays the neutral
+/// [`GHOST_DEPLOY`], because "nothing visible refuses it" may never wear the
+/// ready blue — that would promise a claim check nobody can run, the exact
+/// mirror of the module header's forbidden direction.
+///
+/// **A door previews in its edge** (`NOW.md` §0u item 3): a doorway-class
+/// deployable aims an edge address (`place::deploy_target`) and the box is
+/// posed by `structures::deploy_transform` — the one emit site the standing
+/// deployable uses — so the preview stands exactly where the placed door
+/// will, in the doorway rather than on the cell body.
 // Nine, and each is a distinct source this frame reads — the same shape and
 // the same justification `track` above carries.
 #[allow(clippy::too_many_arguments)]
@@ -344,6 +364,12 @@ pub fn deploy_track(
         ghost.deploy_mat = Some(materials.add(translucent(GHOST_DEPLOY)));
         if ghost.mesh.is_none() {
             ghost.mesh = Some(meshes.add(Cuboid::new(1.0, 1.0, 1.0)));
+        }
+        // The red is shared with the build ghost, but either system can be
+        // the first to need it (a player can hold a box before ever holding
+        // the plan), so both build it on first use.
+        if ghost.no_mat.is_none() {
+            ghost.no_mat = Some(materials.add(translucent(GHOST_NO)));
         }
     }
     let busy = ui
@@ -375,14 +401,40 @@ pub fn deploy_track(
 
     let [x, _, z] = core.predict.render_position();
     let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
-    let t = place::target(x, z, fx, fz, sim_core::build::SHAPE_FOUNDATION, 0);
-    let base_y = level_base_y(world.seed, t.cx, t.cz, t.level);
-    let (cxm, czm) = cell_center(t.cx, t.cz);
-    // Standing ON the cell body, so the box's centre is half its height up —
-    // the same convention `structures` draws a placed deployable with.
-    let pos = Vec3::new(cxm, base_y + size.y * 0.5, czm);
-    let transform = Transform::from_translation(pos).with_scale(size);
-    let mat = ghost.deploy_mat.clone().expect("built above");
+    // A doorway-class deployable resolves an edge (the level is the build
+    // ghost's working latch — placing a doorway at L1 leaves the latch
+    // there, so the door that follows it aims the same storey); everything
+    // else keeps `deploy_key`'s original plane target at level 0.
+    let t = place::deploy_target(x, z, fx, fz, def.placement, ghost.level);
+    let verdict = place::deploy_verdict(
+        t,
+        row,
+        &DeploySite {
+            seed: world.seed,
+            at: (x, z),
+            pieces: core.pieces.entries(),
+            piece_defs: &core.piece_defs,
+            piece_have: core.piece_defs_have,
+            deploys: core.deploys.entries(),
+            deploy_defs: &core.deploy_defs,
+            deploy_have: core.deploy_defs_have,
+            inv: &core.inv,
+        },
+    );
+    ghost.deploy_target = t;
+    ghost.deploy_verdict = verdict;
+
+    // The one pose site (`structures::deploy_transform`, closed): the ghost
+    // and the deployable it becomes are the same box in the same place —
+    // for a door, in the doorway's edge.
+    let transform = deploy_transform(world.seed, (t.cx, t.cz, t.level, t.loc), arch as u8, false)
+        .with_scale(size);
+    let mat = if verdict.refused() {
+        ghost.no_mat.clone()
+    } else {
+        ghost.deploy_mat.clone()
+    }
+    .expect("built above");
 
     match ghost.deploy_entity {
         Some(e) => {
@@ -409,6 +461,9 @@ fn hide_deploy(commands: &mut Commands, ghost: &mut Ghost) {
     if let Some(e) = ghost.deploy_entity {
         commands.entity(e).insert(Visibility::Hidden);
     }
+    // A hidden ghost has no verdict: the HUD line must not keep saying a
+    // reason about an aim that is no longer drawn.
+    ghost.deploy_verdict = DeployVerdict::Unknown;
 }
 
 /// Right-click **outside** build mode places the held deployable.
@@ -419,15 +474,17 @@ fn hide_deploy(commands: &mut Commands, ghost: &mut Ghost) {
 /// hotbar slot IS the choice and no second wheel is owed; the reference does
 /// it exactly this way.
 ///
-/// The aimed address is `place::target` with a plane shape, because every
-/// deployable that is not a door stands on the cell body. A door goes in a
-/// doorway edge, and the sim answers `REFUSE_D_DOOR` for one aimed anywhere
-/// else — the client does not try to guess which, because guessing wrong
-/// costs the player the item.
+/// It acts on the ghost's own latched target rather than re-aiming —
+/// `place_key`'s rule, "what was drawn is what is sent" — which is what lets
+/// a door be sent at the doorway EDGE its preview stands in
+/// (`place::deploy_target`; `deploy_track` runs earlier in the same chain
+/// under the same guards, so the latch is this frame's). The local verdict
+/// stays advisory exactly as the build one is: a red ghost still sends, and
+/// the sentence rides the toast so the press teaches the rule.
 pub fn deploy_key(
     mouse: Res<ButtonInput<MouseButton>>,
     net: NonSend<Net>,
-    look: Res<Look>,
+    ghost: Res<Ghost>,
     mut toast: ResMut<Toast>,
     ui: Option<Res<Ui>>,
     chat: Option<Res<super::chat::Chat>>,
@@ -446,13 +503,17 @@ pub fn deploy_key(
     else {
         return; // not holding a deployable; nothing to say about it
     };
-    let [x, _, z] = core.predict.render_position();
-    let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
-    let t = crate::ui::place::target(x, z, fx, fz, sim_core::build::SHAPE_FOUNDATION, 0);
+    let t = ghost.deploy_target;
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     match protocol::encode_action_deploy(row as u16, t.cx, t.cz, t.level, t.loc, &mut buf) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
-            Ok(()) => {}
+            Ok(()) => {
+                if let DeployVerdict::No(why) = ghost.deploy_verdict {
+                    if !why.is_empty() {
+                        toast.say(why);
+                    }
+                }
+            }
             Err(e) => toast.say(e.to_string()),
         },
         Err(e) => toast.say(format!("that deployable would not encode ({e:?})")),

@@ -17,7 +17,8 @@
 //! |---|---|---|
 //! | inventory + crafting | `Tab` | `Rust Images/inventory.jpeg`, `crafting.png` |
 //! | container | opens itself when the sim says one is open | `storageandtoolchest.jpeg` |
-//! | build wheel | hold `B` | the radial in the operator's second frame |
+//! | build wheel | hold right, building plan in hand | the radial in the operator's second frame |
+//! | hammer wheel | hold right, hammer in hand | the reference's second radial ("right click when equipped for more options") |
 //!
 //! ## Two things this deliberately does not do
 //!
@@ -55,8 +56,13 @@ pub enum Panel {
     /// The `Tab` screen: crafting on the left, your inventory below, the
     /// open container beside it when there is one.
     Inventory,
-    /// The build wheel, up for as long as its key is held.
+    /// The build wheel, up while right is held with the building plan.
+    /// Latches its choice; releasing keeps it.
     Wheel,
+    /// The hammer's wheel, up while right is held with the hammer.
+    /// Latches nothing: releasing **fires** the hovered verb (`keys`),
+    /// which is the two wheels' one deliberate difference.
+    Hammer,
 }
 
 impl Panel {
@@ -105,7 +111,11 @@ pub struct Ui {
     /// places one rung and the hammer climbs the ladder, which is the
     /// reference's split — `ui::build::PLACE_MATERIAL` has the argument.
     pub shape: usize,
-    /// Which shape segment the wheel's pointer is over this frame.
+    /// Which segment the open wheel's pointer is over this frame — the
+    /// shape wheel's (`ui::build::SHAPES`) or the hammer's
+    /// (`ui::hammer::VERBS`), whichever is up. For the hammer's it is also
+    /// what the release fires, which is why `keys` reads it before
+    /// `wheel::track` clears it.
     pub hover: Option<usize>,
     /// Rebuild the panel's node tree on the next frame.
     pub dirty: bool,
@@ -325,6 +335,11 @@ pub fn keys(
     mut toast: ResMut<super::hud::Toast>,
     mut keyboard: ResMut<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    // The hammer wheel's release fires at the nearest structure — the same
+    // `Near` the keyboard verbs read, resolved last frame, which is the
+    // frame the player was shown (the wheel holds movement at zero, so the
+    // target under a held wheel does not walk away).
+    near: Res<super::verbs::Near>,
     mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
 ) {
     // **The wheel is held RIGHT, and only by an item that owns one.**
@@ -373,25 +388,40 @@ pub fn keys(
     }
 
     // The wheel wins over nothing and loses to the inventory screen: a
-    // player with the inventory open who brushes B is not asking for a
-    // wheel on top of it.
+    // player with the inventory open who brushes the button is not asking
+    // for a wheel on top of it.
     if ui.panel != Panel::Inventory {
         let want = if holding_wheel {
-            // One wheel per item. The hammer's is the reference's second
-            // radial and is `NOW.md` §0p2; until it lands, holding right
-            // with a hammer opens nothing rather than opening the shapes,
-            // which would place with the wrong verb.
+            // One wheel per item (`crate::ui::hold`'s table). Opening the
+            // OTHER item's wheel would place with the wrong verb, which is
+            // why the hammer opened nothing until it had its own.
             match hand {
                 crate::ui::hold::Held::Plan => Panel::Wheel,
-                _ => Panel::None,
+                crate::ui::hold::Held::Hammer => Panel::Hammer,
+                crate::ui::hold::Held::Other => Panel::None,
             }
         } else {
             Panel::None
         };
         if want != ui.panel {
-            // Releasing the wheel commits whatever it was over — the latch
-            // lives in `ui.shape`, which `wheel::track` has
-            // already written, so there is nothing to resolve here.
+            // Releasing the shape wheel commits whatever it was over — the
+            // latch lives in `ui.shape`, which `wheel::track` has already
+            // written, so there is nothing to resolve here.
+            //
+            // **Releasing the hammer's wheel FIRES what it was over** —
+            // the deliberate difference (`NOW.md` §0p2 item 1): an action
+            // is done once, not kept. The hover is last frame's
+            // `wheel::track` answer, i.e. the wedge the highlight is
+            // showing; `None` (dead centre, past the rim, or Escape's
+            // close re-opening on the held button) fires nothing, which is
+            // how a player backs out. Only the released wheel fires —
+            // swapping hotbar slots mid-hold transitions Hammer→Wheel and
+            // is not a release.
+            if ui.panel == Panel::Hammer && want == Panel::None {
+                if let Some(seg) = ui.hover {
+                    super::verbs::hammer_fire(&net, &near.0, seg, &mut toast);
+                }
+            }
             ui.panel = want;
             ui.hover = None;
             ui.dirty = true;
@@ -532,5 +562,8 @@ pub fn rebuild(
             let icons = icons.as_deref().unwrap_or(&fallback);
             wheel::build_screen(&mut commands, &ui, core, icons)
         }
+        // No core and no icons: the hammer wheel draws four fixed verbs,
+        // and what they would act on is `verbs::Near`'s at release time.
+        Panel::Hammer => wheel::build_hammer_screen(&mut commands, &ui),
     }
 }

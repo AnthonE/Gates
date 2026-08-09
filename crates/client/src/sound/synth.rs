@@ -283,6 +283,19 @@ fn render(cue: Cue) -> Vec<f32> {
 
         // ---- the animals ------------------------------------------------
         Cue::Snort => snort(&mut r),
+
+        // ---- remote footsteps -------------------------------------------
+        // The same ground under someone else's boot: BYTE-IDENTICAL to the
+        // local surface, by delegation rather than by copied parameters, so
+        // a tuning pass on a footstep can never fork the two. What makes a
+        // remote step remote is its def — positional, at the body, culled by
+        // the falloff law — never its waveform. `tests/sound.rs` pins the
+        // equality.
+        Cue::RemoteStepSand => render(Cue::StepSand),
+        Cue::RemoteStepGrass => render(Cue::StepGrass),
+        Cue::RemoteStepLitter => render(Cue::StepLitter),
+        Cue::RemoteStepRock => render(Cue::StepRock),
+        Cue::RemoteStepWater => render(Cue::StepWater),
     }
 }
 
