@@ -1390,3 +1390,67 @@ fn the_content_still_names_the_plan_and_the_hammer() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// §I · the 44 px cell's fallback label
+//
+// A cell with no baked icon prints the item's name (the dark-panel rule: an
+// empty cell says nothing). The cell clips, so nothing bleeds over borders —
+// but a clip cuts mid-glyph and `Gunpowde` reads as a typo, which is the
+// operator-found half of `NOW.md` §0p2 item 3. `cell_abbrev` cuts on purpose
+// instead: within budget passes through, over budget is cut with a trailing
+// `.` that says the cut was chosen. Pure arithmetic, so it is gated here in
+// the code tier rather than trusted behind a window.
+
+#[test]
+fn a_name_that_fits_the_cell_is_left_alone() {
+    for name in ["Wood", "Stone", "Torch", "#12", "#65535"] {
+        assert_eq!(
+            craft::cell_abbrev(name, craft::CELL_LINE_CHARS),
+            name,
+            "a fitting name must pass through untouched"
+        );
+    }
+}
+
+#[test]
+fn the_operators_three_names_read_as_abbreviations_not_typos() {
+    // The three names the first look found bleeding (`NOW.md` §0p2 item 3).
+    // Each cut ends in `.`, so the cell reads as deliberate.
+    assert_eq!(craft::cell_abbrev("Gunpowder", 7), "Gunpow.");
+    assert_eq!(craft::cell_abbrev("Workbench", 7), "Workbe.");
+    assert_eq!(craft::cell_abbrev("Metal Fragments", 7), "Metal Fragme.");
+}
+
+#[test]
+fn no_emitted_word_exceeds_the_line_budget() {
+    // Names off the content's own shape: multi-word, long single words, and
+    // the degenerate budgets. Every word of every result fits its line, so
+    // the clip never gets to cut mid-glyph.
+    for name in [
+        "Metal Fragments",
+        "Low Grade Fuel",
+        "Sheet Metal Door",
+        "Antidisestablishmentarianism",
+        "a",
+    ] {
+        for budget in [2usize, 4, 7, 12] {
+            let out = craft::cell_abbrev(name, budget);
+            for word in out.split(' ') {
+                assert!(
+                    word.chars().count() <= budget,
+                    "`{word}` (of `{out}`, budget {budget}) still overflows the line"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_cut_is_marked_and_a_multibyte_name_is_cut_on_chars_not_bytes() {
+    let out = craft::cell_abbrev("Gunpowder", 7);
+    assert!(out.ends_with('.'), "a cut word must end in `.`");
+    // chars, not bytes: a name with multibyte glyphs must not split one.
+    let out = craft::cell_abbrev("Ébénisterie", 7);
+    assert_eq!(out, "Ébénis.");
+}
