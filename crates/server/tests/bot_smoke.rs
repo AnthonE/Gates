@@ -93,6 +93,21 @@ async fn test_bot_smoke_50() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
+    // The `players` gauge is a mirror — one `ShardStats::set` off
+    // `ShardCore::connected` per tick in the net loop (`net.rs`) — and a
+    // mirror with no gate is the round-1 hole: delete that line and every
+    // suite stayed green while `/status.json` said 0 forever. This suite is
+    // the only one that runs the loop the mirror lives in, so the claim is
+    // made here, on observable state bounded by a timeout (never on elapsed
+    // time): the gauge must leave 0 while bots are connected...
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while ShardStats::get(&handle.stats.players) == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the players gauge never tracked a join — the net-loop mirror is gone");
+
     let mut reports = Vec::with_capacity(BOTS);
     for (i, t) in tasks.into_iter().enumerate() {
         let report = t
@@ -101,6 +116,16 @@ async fn test_bot_smoke_50() {
             .unwrap_or_else(|e| panic!("bot {i} failed: {e}"));
         reports.push(report);
     }
+
+    // ...and return to 0 once every bot has left, which is what separates a
+    // gauge (set each tick off occupancy) from a counter that only climbs.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while ShardStats::get(&handle.stats.players) != 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the players gauge never tracked the leaves back to 0");
 
     // Every bot got welcomed with the shard's seed and a unique id.
     let mut ids: Vec<u32> = reports.iter().map(|r| r.player_id).collect();

@@ -687,3 +687,203 @@ fn a_box_opens_by_its_packed_address() {
     // a panel draw slots the sim refuses to move into.
     assert!(clients[0].1.cont[BOX_SLOTS..].iter().all(|s| s.count == 0));
 }
+
+// --- the locked box: the view asks the lock, not only reach ---------------
+
+/// `probe_fixture` (rows 0..=5, the code lock on 5 / item 7) plus a box on
+/// row 6 / item 8 — `sim-core/tests/lock_box.rs`'s arrangement, so the two
+/// files agree about what a locked box is.
+const LOCKED_BOX_ROW: u16 = 6;
+const LOCKED_BOX_ITEM: u16 = 8;
+const LOCK_ROW: u16 = 5;
+const LOCK_ITEM: u16 = 7;
+
+fn locked_box_fixture() -> DeployContent {
+    let mut d = DeployContent::probe_fixture();
+    d.defs[LOCKED_BOX_ROW as usize] = DeployDef {
+        arch: ARCH_BOX,
+        placement: PLACE_FOUNDATION,
+        hp: 60,
+        item: LOCKED_BOX_ITEM,
+        ..DeployDef::INERT
+    };
+    d.def_count = 7;
+    d
+}
+
+/// The view-side half of locks on boxes (`NOW.md` §0z item 1), and a
+/// **mutant-killer**: every mutation was already refused by the sim
+/// (`lock_box.rs`), so nothing in this test moves an item — delete only the
+/// `lock_passes` filter in the container-view resolution (`core.rs`) and
+/// the first assertion goes red, because the stranger's subscription
+/// streams a locked box's slots read-only, every tick, which is the raid
+/// intelligence the lock exists to hide.
+///
+/// The refused view degrades exactly as a box that stopped existing: the
+/// close (`CONT_SELF`, reset, no rows), not a new refusal — one fact to a
+/// panel, no wire change.
+#[test]
+fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
+    let stats = ShardStats::default();
+    let (cx, cz) = buildable_cell(SEED);
+    let (x, z) = cell_center(cx, cz);
+
+    let mut core = ShardCore::new(SEED);
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = locked_box_fixture();
+    core.world.dev_spawn = Some((x, z));
+    core.catalog = ItemCatalog::EMPTY;
+    // Client 0 is the owner (the hand that bolts the lock on), client 1
+    // the stranger — standing on the box, in reach, exactly where the old
+    // reach-only view would have paid them.
+    let mut clients = two_clients(&mut core, &stats);
+    let (w0, w1) = (world_slot(&core, id_of(0)), world_slot(&core, id_of(1)));
+    core.world.players[w0].body = Body::at(SEED, x, z);
+    core.world.players[w1].body = Body::at(SEED, x, z);
+
+    // Foundation, box, goods inside, lock bolted on and armed — the
+    // `lock_box.rs` fixture, driven with the owner's connected id.
+    core.world.players[w0].inv[0] = ItemStack { item: 0, count: 5 };
+    core.world.players[w0].inv[1] = ItemStack {
+        item: LOCKED_BOX_ITEM,
+        count: 1,
+    };
+    core.world.players[w0].inv[2] = ItemStack {
+        item: LOCK_ITEM,
+        count: 1,
+    };
+    core.world.tick(&[Command::Place {
+        id: id_of(0),
+        row: FOUNDATION_ROW,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    core.world.tick(&[Command::PlaceDeploy {
+        id: id_of(0),
+        row: LOCKED_BOX_ROW,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(core.world.deploys.boxes().len(), 1, "the box must place");
+    core.world.deploys.set_box_slot(
+        0,
+        SLOT_A,
+        ItemStack {
+            item: JUNK,
+            count: COUNT_A,
+        },
+    );
+    core.world.tick(&[Command::PlaceDeploy {
+        id: id_of(0),
+        row: LOCK_ROW,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    core.world.tick(&[Command::Access {
+        id: id_of(0),
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        op: sim_core::deploy::ACCESS_OP_SET_CODE,
+        code: 1234,
+    }]);
+    let d = core
+        .world
+        .deploys
+        .find(cx, cz, 0, LOC_PLANE)
+        .expect("the box record");
+    assert!(d.has_lock && d.locked, "the fixture needs its lock armed");
+    let key = box_key(cx, cz, 0);
+
+    // The stranger subscribes. What comes back is the same close a box
+    // that stopped existing yields — and never a slot.
+    let mut seen = Vec::new();
+    ask(&mut core, 1, CONT_BOX, key);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    let got = syncs(&seen);
+    assert!(
+        got.iter()
+            .filter(|(slot, ..)| *slot == 1)
+            .all(|(_, kind, _, _, rows)| *kind == CONT_SELF && rows.is_empty()),
+        "a locked box's contents crossed to a hand its lock does not know: {got:?}"
+    );
+    assert!(
+        got.iter().any(|(slot, ..)| *slot == 1),
+        "the refused view must degrade to the close, not to silence: {got:?}"
+    );
+    assert_eq!(
+        (clients[1].1.cont_kind, clients[1].1.cont_handle),
+        (CONT_SELF, 0),
+        "the stranger's panel must have nothing in it"
+    );
+
+    // The owner's subscription simply works — the lock remembers the hand
+    // that bolted it on, at the view exactly as at the move.
+    let mut owner_seen = Vec::new();
+    ask(&mut core, 0, CONT_BOX, key);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut owner_seen);
+    }
+    let got = syncs(&owner_seen);
+    assert_eq!(got.len(), 1, "one open, one payment: {got:?}");
+    let (slot, kind, handle, reset, rows) = &got[0];
+    assert_eq!((*slot, *kind, *handle, *reset), (0, CONT_BOX, key, true));
+    assert_eq!(
+        rows,
+        &vec![(
+            SLOT_A as u8,
+            ItemStack {
+                item: JUNK,
+                count: COUNT_A
+            }
+        )],
+        "the owner was shown the wrong slots"
+    );
+    ask(&mut core, 0, CONT_SELF, 0);
+
+    // Unlocking reopens the view to anyone, like the shop-front state
+    // reopens the move — the stranger asks again (their panel was shut,
+    // not starved) and is paid.
+    core.world.tick(&[Command::Access {
+        id: id_of(0),
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        op: sim_core::deploy::ACCESS_OP_UNLOCK,
+        code: 0,
+    }]);
+    let mut after = Vec::new();
+    ask(&mut core, 1, CONT_BOX, key);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut after);
+    }
+    let got: Vec<Sync> = syncs(&after)
+        .into_iter()
+        .filter(|(slot, ..)| *slot == 1)
+        .collect();
+    assert_eq!(got.len(), 1, "an unlocked box answers anyone: {got:?}");
+    let (_, kind, handle, reset, rows) = &got[0];
+    assert_eq!((*kind, *handle, *reset), (CONT_BOX, key, true));
+    assert_eq!(
+        rows,
+        &vec![(
+            SLOT_A as u8,
+            ItemStack {
+                item: JUNK,
+                count: COUNT_A
+            }
+        )],
+        "the unlocked view pays the same contents the owner saw"
+    );
+}

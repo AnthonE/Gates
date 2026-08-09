@@ -23,7 +23,7 @@ use protocol::{
     SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH,
     DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
-use sim_core::build::PieceRec;
+use sim_core::build::{PieceRec, LOC_PLANE};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::DeployRec;
 use sim_core::gather::{ItemStack, NO_ITEM};
@@ -1805,10 +1805,17 @@ impl ShardCore {
         // written here rather than left to the reader: an open grants
         // nothing. Every tick the server resolves the handle again and
         // spends the *same* `in_reach` the move verb will spend, on the
-        // same quantized body position, against the same store. A forged
+        // same quantized body position, against the same store — and, for
+        // a box, the same `lock_passes` at the same plane address
+        // (`World::move_item`'s `CONT_BOX` arm; `DOORS.md` §9.8). A forged
         // open of a box across the map resolves and fails reach, so it
         // yields the close below and not one slot. A real open of a box
-        // the player then walks away from does the same. The set of
+        // the player then walks away from does the same. A locked box a
+        // stranger opens — or one that locks while their panel is up —
+        // does the same again, deliberately through the same close and
+        // not a new refusal: the sim already refuses every mutation, and
+        // a view that kept streaming a locked box's slots read-only would
+        // be raid intelligence the lock exists to hide. The set of
         // containers a client can see is therefore exactly the set it can
         // move items in — which is the quantize-both-sides law applied to
         // containers, and the reason a refusal can never disagree with
@@ -1827,12 +1834,24 @@ impl ShardCore {
                     .world
                     .deploys
                     .box_index(handle)
-                    .filter(|&i| self.world.deploys.box_in_reach(i, p)),
+                    .filter(|&i| self.world.deploys.box_in_reach(i, p))
+                    .filter(|&i| {
+                        // The box stands on the plane, so its lock shares
+                        // `box_key`'s triple plus `LOC_PLANE` — the move
+                        // path's address, byte for byte. An oven at the
+                        // same shape of address carries no lock
+                        // (`lockable`) and passes as bare.
+                        let b = self.world.deploys.boxes()[i];
+                        self.world
+                            .deploys
+                            .lock_passes(b.cx, b.cz, b.level, LOC_PLANE, p.id)
+                    }),
                 _ => None,
             };
             match live {
-                // Gone, or out of reach. Same message either way, and
-                // deliberately: "the bag despawned" and "you walked away"
+                // Gone, out of reach, or behind a lock that does not know
+                // this hand. Same message every way, and deliberately:
+                // "the bag despawned", "you walked away" and "it locked"
                 // are one fact to a panel, which is that it must shut. The
                 // client is told rather than left holding a view the
                 // server has stopped feeding — a stale panel is where a

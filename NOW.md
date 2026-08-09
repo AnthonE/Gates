@@ -58,12 +58,13 @@ whole slice. What remains, in order:
    for **every** archetype, so a forged save cannot present locked on a
    fire or a hearth (`tests/worldsave.rs` owns it).
    Gated by `tests/lock_box.rs` (a mutant-killer on the open-path check)
-   and three tests beside the door's in `deploy.rs`. **Remains, two
-   halves, neither sim**: the client's `L` verb only targets doors
-   (`ui/keypad.rs` — client lane), and the server's container *view*
-   (`server/core.rs` cont sync) still shows a locked box's slots read-only
-   to a stranger; gate it on the same `Deploys::lock_passes` at the box's
-   plane address when the server lane is open.
+   and three tests beside the door's in `deploy.rs`. **The server's
+   container view landed too** (2026-08-09): the cont-sync resolution asks
+   the same `Deploys::lock_passes` at the box's plane address every tick,
+   and a refused view degrades to the existing close — no new refusal, no
+   wire change (`server/core.rs`; mutant-killer in `container_wire.rs`).
+   **Remains, one half, not sim**: the client's `L` verb only targets
+   doors (`ui/keypad.rs` — client lane).
 2. ~~**A pickup verb for an unsecured deployable.**~~ Landed with
    demolish v1 (§0aa), including the rule that a locked door cannot be
    lifted out of its frame — tightened 2026-08-09 to the full tier: a
