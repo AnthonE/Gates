@@ -38,7 +38,10 @@ properly. The short version:
 - **item**: id, name, stack, tier (0–2), rarity (`common|uncommon|rare|
   very_rare` → despawn multiplier), slot (`hand|head|body|none`)
 - **gatherable**: node/tree archetype → per-tool yield table + hit count,
-  weak-spot bonus
+  weak-spot bonus, finish bonus. The node's payout is `hits × per-hit`
+  and **both percentages move when it arrives, never how much**: the
+  weak spot spends budget faster (skill buys speed), the finish share is
+  withheld for whoever lands the last swing
 - **recipe**: output, station (`none|workbench1|furnace`), inputs, seconds
 - **building_piece**: shape (foundation/wall/doorway/floor/stairs/roof/
   door), per-material hp + upgrade cost (wood→stone→metal). One `cost` row

@@ -442,18 +442,24 @@ fn exhaustion_clears_the_chase_and_mutes_the_mark() {
     let mut w = world_at(pos);
     let hits = w.gather.nodes[0].hits;
     let mut marks_seen = 0u32;
+    let mut landed = 0u32;
     let mut harvested_tick_had_mark = false;
     let mut saw_harvest = false;
     'outer: for t in 0..SWING_INTERVAL_TICKS * (hits as u64 + 1) {
         w.tick(&[hold_primary(yaw, t as u16)]);
         let mut tick_harvest = false;
         let mut tick_mark = false;
+        let mut tick_gather = false;
         for e in w.events.entries() {
             match e.code {
                 EV_WEAK_MARK => tick_mark = true,
                 EV_SLOT_HARVESTED => tick_harvest = true,
+                EV_GATHER => tick_gather = true,
                 _ => {}
             }
+        }
+        if tick_gather || tick_harvest {
+            landed += 1;
         }
         if tick_mark {
             marks_seen += 1;
@@ -469,10 +475,20 @@ fn exhaustion_clears_the_chase_and_mutes_the_mark() {
         !harvested_tick_had_mark,
         "the exhausting hit must not announce a mark for a vanished node"
     );
+    // Counted against the swings that actually LANDED, not against
+    // `hits`: since the mark buys speed (2026-08-09) a marked swing
+    // spends more than one hit's budget, so the swing count depends on
+    // how often the swinger happens to stand in the sector — and this
+    // walker stands still, which stumbles into it about a quarter of the
+    // time. `hits` is the node's budget, no longer its swing count.
     assert_eq!(
         marks_seen,
-        hits as u32 - 1,
-        "every other landed hit announces one"
+        landed - 1,
+        "every landed hit but the exhausting one announces a mark"
+    );
+    assert!(
+        landed <= hits as u32,
+        "a swing can never spend less than one hit's budget"
     );
     assert_eq!(w.players[0].ws_cell, NO_CELL, "chase cleared");
     assert_eq!(w.players[0].ws_hits, 0);
@@ -541,4 +557,145 @@ fn inert_content_gathers_nothing() {
     }
     assert_eq!(w.players[0].inv[0], ItemStack::default());
     assert!(w.slot_lives.is_empty());
+}
+
+/// Strike an isolated node to exhaustion, re-standing before every swing
+/// either INSIDE the current mark's sector (`chase`, what a skilled
+/// player does) or directly opposite it (what a player who never finds
+/// it does). Returns (swings landed, total primary yield).
+///
+/// The unchased run must *avoid* the mark rather than merely ignore it:
+/// the sector is 90° wide, so a fixed stand point lands in it about a
+/// quarter of the time by luck, and the first cut of this helper
+/// measured 3 swings for both runs because the "plain" walker kept
+/// stumbling onto the mark.
+fn strike_out(occ: Occupant, chase: bool) -> (u32, u32) {
+    let (pos, yaw, (cx, cz)) = find_isolated(SEED, occ);
+    let (cxu, czu) = (cx as u16, cz as u16);
+    let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(SEED);
+    let s = terrain::scatter(SEED, &table, &haven, cx, cz);
+    let mut w = world_at(pos);
+    let mut face = yaw;
+    let (mut swings, mut seq) = (0u32, 0u16);
+    // The first swing lands immediately; each later one waits a cadence.
+    // Bounded by the budget's own worst case so a stuck chase cannot spin.
+    for _ in 0..64 {
+        if w.players[0].ws_hits > 0 {
+            let mark = weak_mark8(SEED, cxu, czu, 1, w.players[0].ws_hits);
+            let bearing = if chase { mark } else { mark.wrapping_add(128) };
+            face = stand_at_bearing(&mut w, s.x, s.y, s.z, bearing);
+        }
+        let before = w.players[0].inv[0].count;
+        seq = seq.wrapping_add(1);
+        w.tick(&[hold_primary(face, seq)]);
+        if w.players[0].inv[0].count != before || w.slot_lives.is_harvested(cxu, czu) {
+            swings += 1;
+        }
+        if w.slot_lives.is_harvested(cxu, czu) {
+            break;
+        }
+        for _ in 1..SWING_INTERVAL_TICKS {
+            seq = seq.wrapping_add(1);
+            w.tick(&[stand_still(face, seq)]);
+        }
+    }
+    assert!(
+        w.slot_lives.is_harvested(cxu, czu),
+        "the node never exhausted — the strike loop is broken, not the sim"
+    );
+    (swings, w.players[0].inv[0].count as u32)
+}
+
+/// **The mark buys speed, not yield** (operator, 2026-08-09; the
+/// reference's own model). Chasing the mark must empty the node in
+/// strictly fewer swings and pay exactly the same total — the old model
+/// paid 1.5× per marked hit and made a skilled player richer, which is a
+/// different game from the one being copied.
+///
+/// This is the gate for a change no other gate can see: every payout is
+/// still integer, still bounded, still deterministic, and the node still
+/// exhausts. Only the *total* distinguishes the two models.
+#[test]
+fn the_mark_buys_speed_and_never_yield() {
+    let (plain_swings, plain_total) = strike_out(Occupant::Tree, false);
+    let (chased_swings, chased_total) = strike_out(Occupant::Tree, true);
+
+    assert_eq!(
+        plain_total, chased_total,
+        "chasing the mark changed the node's payout ({plain_total} plain vs \
+         {chased_total} chased) — the mark is paying yield again"
+    );
+    assert!(
+        chased_swings < plain_swings,
+        "chasing the mark cost {chased_swings} swings against {plain_swings} \
+         plain — it bought no speed, so it bought nothing"
+    );
+    // And the payout is the table's own arithmetic, not an accident of
+    // the loop: hits × per-hit for the tool in hand (bare, here).
+    let def = GatherContent::probe_fixture().nodes[0];
+    assert_eq!(
+        plain_total,
+        def.hits as u32 * def.hand_yield as u32,
+        "an unmarked strike-out must pay exactly `hits × per-hit`"
+    );
+}
+
+/// The finishing share is a redistribution, never a bonus on top: a node
+/// with one pays the same total as one without, but back-loads it onto
+/// whoever lands the exhausting swing — so abandoning a half-struck node
+/// costs you (the reference's anti-cherry-picking rule, Devblog 166).
+#[test]
+fn the_finish_share_moves_when_yield_arrives_not_how_much() {
+    let fixture = GatherContent::probe_fixture();
+    let stone = fixture.nodes[1];
+    assert!(
+        stone.finish_pct > 0,
+        "fixture stone node must withhold a finish share"
+    );
+
+    let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::StoneNode);
+    let (cxu, czu) = (cx as u16, cz as u16);
+    let mut w = world_at(pos);
+    let mut seq = 0u16;
+    let mut last = 0u16;
+    let mut pays: Vec<u16> = Vec::new();
+    for _ in 0..(stone.hits as u32 + 2) {
+        seq = seq.wrapping_add(1);
+        w.tick(&[hold_primary(yaw, seq)]);
+        let now = w.players[0].inv[0].count;
+        if now != last {
+            pays.push(now - last);
+            last = now;
+        }
+        if w.slot_lives.is_harvested(cxu, czu) {
+            break;
+        }
+        for _ in 1..SWING_INTERVAL_TICKS {
+            seq = seq.wrapping_add(1);
+            w.tick(&[stand_still(yaw, seq)]);
+        }
+    }
+    assert!(
+        w.slot_lives.is_harvested(cxu, czu),
+        "the stone node never exhausted"
+    );
+
+    // Total is the table's, untouched by the withholding.
+    let total: u32 = pays.iter().map(|p| *p as u32).sum();
+    assert_eq!(
+        total,
+        stone.hits as u32 * stone.hand_yield as u32,
+        "the finish share changed the node's payout — it is a \
+         redistribution, not a bonus"
+    );
+    // And it is genuinely back-loaded: the last swing beats every other.
+    let finish = *pays.last().expect("at least one payout");
+    for (i, p) in pays.iter().enumerate().take(pays.len() - 1) {
+        assert!(
+            finish > *p,
+            "swing {i} paid {p} and the finishing swing paid {finish} — \
+             nothing is being withheld for the finisher"
+        );
+    }
 }

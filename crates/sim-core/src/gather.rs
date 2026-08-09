@@ -53,6 +53,14 @@ pub const MAX_TOOLS_PER_NODE: usize = 8;
 /// Ticks between swings while the primary button is held: ~47 swings/min
 /// at 30 Hz, the melee-band cadence. Paid per swing, hit or whiff.
 pub const SWING_INTERVAL_TICKS: u64 = 38;
+
+/// Budget one unmarked swing spends against a node's pool, and the
+/// denominator every proportional payout divides by. A node holds
+/// `NodeDef::hits × HIT_UNIT`; `SlotLife::hits` counts budget SPENT, not
+/// swings landed, which is what lets a marked swing take a bigger bite
+/// without paying more in total (`NodeDef::weak_pct`). 100 so a content
+/// percentage lands on it exactly. Structural, not a knob.
+pub const HIT_UNIT: u32 = 100;
 /// Reach in meters (matches the melee weapon rows' range_m = 2).
 pub const REACH_M: f32 = 2.0;
 /// Aim cone half-angle 30°: cos authored offline (√3/2), no trig at
@@ -88,13 +96,35 @@ const CH_WEAK: u32 = 98;
 pub struct NodeDef {
     /// Item index this node yields.
     pub output: u16,
-    /// Swings to exhaust the node.
+    /// Unmarked swings to exhaust the node. The node's whole payout is
+    /// `hits × yield_for(tool)` however it is struck — see `weak_pct`.
     pub hits: u16,
     /// Units per bare-hand swing.
     pub hand_yield: u16,
-    /// Extra yield % on a weak-spot hit (content `weak_spot_bonus_pct`);
-    /// 0 disables the mark for this archetype.
+    /// Extra **budget** a marked swing consumes, % (content
+    /// `weak_spot_bonus_pct`); 0 disables the mark for this archetype.
+    ///
+    /// **The mark buys speed, not yield** (operator, 2026-08-09; the
+    /// reference's own model, `reference/RIPLIST.md` §4.3 — Facepunch:
+    /// *"you will not actually earn more resources, but by using skill
+    /// and good aim you can harvest the ore faster"*). A node holds
+    /// `hits × HIT_UNIT` of budget; an unmarked swing spends `HIT_UNIT`
+    /// and a marked one spends `HIT_UNIT + weak_pct`, and pay is
+    /// proportional to the budget spent. So the total is invariant and
+    /// the skilled player empties the node in fewer swings — where the
+    /// old model paid them 1.5× and made them richer instead.
     pub weak_pct: u16,
+    /// Share of the node's whole payout withheld from the per-swing pay
+    /// and handed over on the swing that exhausts it, % (content
+    /// `finish_bonus_pct`); 0 pays evenly.
+    ///
+    /// The reference's anti-cherry-picking rule (Devblog 166, *"should
+    /// mitigate cherry picking and leaving half finished nodes around
+    /// the map"*): their ore node pays ~20% of its total on the final
+    /// strike and their tree withholds half its wood until it falls. It
+    /// is a *redistribution*, never a bonus on top — a node abandoned
+    /// half-struck is worth strictly less per swing than one finished.
+    pub finish_pct: u16,
     /// (item index, units per swing) rows; `(NO_ITEM, 0)` = empty row.
     pub tools: [(u16, u16); MAX_TOOLS_PER_NODE],
     /// A second thing this node pays, flat: `(item index, units per swing)`,
@@ -112,6 +142,7 @@ impl NodeDef {
         hits: 0,
         hand_yield: 0,
         weak_pct: 0,
+        finish_pct: 0,
         tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
         secondary: (NO_ITEM, 0),
     };
@@ -177,22 +208,31 @@ impl GatherContent {
             c.stack_max[i] = 100;
             i += 1;
         }
-        // (output, hits, hand, weak %, tool-item, tool-yield) per archetype.
-        let rows: [(u16, u16, u16, u16, u16, u16); GATHERABLE_KINDS] = [
-            (0, 4, 7, 100, 1, 13),     // Tree
-            (1, 5, 6, 50, 0, 11),      // StoneNode
-            (2, 6, 3, 25, 0, 9),       // MetalNode
-            (3, 6, 3, 75, 1, 9),       // SulfurNode
-            (4, 1, 10, 0, NO_ITEM, 0), // Bush: one-hit pickup, no mark
+        // (output, hits, hand, weak %, finish %, tool-item, tool-yield).
+        // Finish shares are deliberately varied and deliberately NOT the
+        // shipped content's — a fixture that matches the game hides a
+        // bake that ignores the column.
+        let rows: [(u16, u16, u16, u16, u16, u16, u16); GATHERABLE_KINDS] = [
+            // Tree and Bush withhold nothing, so the mark and side-payout
+            // gates read pay directly. Stone and Sulfur carry the finish
+            // coverage, at different shares and deliberately NOT the
+            // shipped content's — a fixture that matches the game hides a
+            // bake that ignores the column.
+            (0, 4, 7, 100, 0, 1, 13),     // Tree
+            (1, 5, 6, 50, 40, 0, 11),     // StoneNode
+            (2, 6, 3, 25, 0, 0, 9),       // MetalNode: pays evenly
+            (3, 6, 3, 75, 10, 1, 9),      // SulfurNode
+            (4, 1, 10, 0, 0, NO_ITEM, 0), // Bush: one-hit pickup, no mark
         ];
         let mut k = 0;
         while k < GATHERABLE_KINDS {
-            let (out, hits, hand, weak, tool, per) = rows[k];
+            let (out, hits, hand, weak, finish, tool, per) = rows[k];
             c.nodes[k] = NodeDef {
                 output: out,
                 hits,
                 hand_yield: hand,
                 weak_pct: weak,
+                finish_pct: finish,
                 tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
                 secondary: (NO_ITEM, 0),
             };
@@ -561,17 +601,10 @@ pub fn swing(
     let Some(life) = lives.find_or_insert(cx, cz) else {
         return Swing::Free; // store exhausted by harvested entries — refuse the hit
     };
-    life.hits += 1;
-    let exhausted = life.hits >= def.hits;
-    if exhausted {
-        let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
-        life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
-    }
-
     // The weak-spot chase: switching nodes restarts it; the mark only
     // exists after the first landed hit. A hit landed while standing in
-    // the current mark's sector pays the content bonus; point-blank has
-    // no bearing to judge, so it never bonuses.
+    // the current mark's sector spends the content's extra budget;
+    // point-blank has no bearing to judge, so it never marks.
     let ck = cell_key(cx, cz);
     if p.ws_cell != ck {
         p.ws_cell = ck;
@@ -585,15 +618,60 @@ pub fn swing(
     }
     p.ws_hits = p.ws_hits.saturating_add(1);
 
+    // Spend the swing's budget against the node's pool. A marked swing
+    // takes a bigger bite (`weak_pct`) and is paid pro rata for it, so
+    // the node's total never moves and only the swing COUNT falls —
+    // `NodeDef::weak_pct` has the reasoning. The last swing takes
+    // whatever is left rather than overdrawing, which is what keeps the
+    // total exact instead of approximately right.
+    let budget = def.hits as u32 * HIT_UNIT;
+    let want = if weak_hit {
+        HIT_UNIT + def.weak_pct as u32
+    } else {
+        HIT_UNIT
+    };
+    let take = want.min(budget - life.hits as u32);
+    life.hits += take as u16;
+    let exhausted = life.hits as u32 >= budget;
+    if exhausted {
+        let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
+        life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
+    }
+
     let held = if p.inv[p.frame.sel as usize].count > 0 {
         p.inv[p.frame.sel as usize].item
     } else {
         NO_ITEM
     };
-    let mut pay = def.yield_for(held);
-    if weak_hit {
-        pay = ((pay as u32 * (100 + def.weak_pct as u32)) / 100).min(u16::MAX as u32) as u16;
+    // Pay pro rata for the budget spent, less the share this node holds
+    // back for whoever finishes it.
+    //
+    // **Exact by construction, and it has to be.** Paying
+    // `floor(per_swing_share)` each swing loses the remainder every time
+    // and a node quietly pays less than `hits × per-hit` — the first cut
+    // of this lost 3 of 30 on the fixture's stone. So the running total
+    // is the difference of two CUMULATIVE floors (drift can never
+    // exceed one unit and always closes by the last swing), and the
+    // finisher's share is the exact remainder `total − pool` rather than
+    // a second independent percentage. The two therefore sum to `total`
+    // for any content, divisible by 100 or not.
+    //
+    // Both halves read the tool in hand on THIS swing, so switching to a
+    // better tool for the last hit pays a better finish — the
+    // reference's shape too (their HQM comes only off the final strike).
+    // A switch mid-node re-bases the schedule, so the cumulative
+    // difference is saturating: a worse tool never claws yield back.
+    let full = def.yield_for(held) as u64;
+    let total = full * def.hits as u64;
+    let pool = total * (100 - def.finish_pct as u64) / 100;
+    let spent_after = life.hits as u64;
+    let spent_before = spent_after - take as u64;
+    let budget = budget as u64;
+    let mut pay = (pool * spent_after / budget).saturating_sub(pool * spent_before / budget);
+    if exhausted {
+        pay += total - pool;
     }
+    let pay = pay.min(u16::MAX as u64) as u16;
     let added = inv_add(
         &mut p.inv,
         def.output,

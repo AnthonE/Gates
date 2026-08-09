@@ -42,15 +42,15 @@ Against our own measurement that is damning, and the arithmetic is in
 
 | | ours, measured | theirs, researched |
 |---|---|---|
-| logistics divisor | **1.37×** (travel cost 27% of the walk) | ~10–30× |
+| logistics divisor | **1.40×** (travel cost 29% of the walk) | ~10–30× |
 | threat divisor | **1.0×** — nothing can kill a farmer | ~2–5× |
 
 So the honest reading of the 20× gap is **not** that `farm_per_min = 50`
 is wrong. Apply the reference's own decomposition to our at-node ceiling
-of 1373/min and you land at 9–69/min — **50 sits inside that band.** What
+of 1353/min and you land at 9–68/min — **50 sits inside that band.** What
 is missing is not a corrected constant; it is the friction that would
 make 50 the right answer. Our island is a farming paradise: trees dense
-enough that a walker spends 27% of its time travelling, no carry limit
+enough that a walker spends 29% of its time travelling, no carry limit
 forcing a deposit trip, no scarcity, and nothing hunting it.
 
 Three consequences a pass must hold:
@@ -108,11 +108,11 @@ number is meaningless until something else is built).
 
 | # | number | status | what it costs to take |
 |---|---|---|---|
-| 1 | **gather yields / node totals** | **`READY` for totals** (§4.1) · `BLOCKED-RESEARCH` for per-hit | Their totals are now known — stone **1000** and metal **600** EXACT, sulfur DISPUTED 300/200, tree 500–1000 by prefab — and our schema needs only the total, since we declare `hits × yield_per_hit`. Breaks **both** node bands at once: stone 1000 against `node_yield` [250,400] is 3.3× our 300, and their 15–28 hits are outside `node_hits` [8,12]. Per §7 that is a look-at-the-band moment, not a refusal. Also re-prices `wood_wall_minutes` and every farm-minute anchor, so bands, yields and the re-speak land in ONE commit. `farm_per_min`'s ceiling gate catches the half that used to be silent. **Read §0 first** — taking a 3.3× total onto an island with a 1.37× logistics term is where "faster than theirs, not equal to theirs" actually bites. |
+| 1 | **gather yields / node totals** | **`READY` for totals** (§4.1) · `BLOCKED-RESEARCH` for per-hit | Their totals are now known — stone **1000** and metal **600** EXACT, sulfur DISPUTED 300/200, tree 500–1000 by prefab — and our schema needs only the total, since we declare `hits × yield_per_hit`. Breaks **both** node bands at once: stone 1000 against `node_yield` [250,400] is 3.3× our 300, and their 15–28 hits are outside `node_hits` [8,12]. Per §7 that is a look-at-the-band moment, not a refusal. Also re-prices `wood_wall_minutes` and every farm-minute anchor, so bands, yields and the re-speak land in ONE commit. `farm_per_min`'s ceiling gate catches the half that used to be silent. **Read §0 first** — taking a 3.3× total onto an island with a 1.40× logistics term is where "faster than theirs, not equal to theirs" actually bites. |
 | 2 | **per-material damage resistance** | `READY` (mechanism build, not a lookup) | The biggest *model* gap, and `BALANCE.md` §4.1 calls it a build: a schema column plus a sim multiply. Their stone wall takes 4 satchels and their sheet metal 23; ours takes 8 because one `structure` column serves every material. Until this exists, their raid numbers above stone cannot be taken at all — the ladder has nowhere to go. |
 | 3 | **smelt rates and craft times** | `BLOCKED-RESEARCH` | `BALANCE.md` §4.3: same `farm_per_min` dependency, smaller blast radius. §4.2 already retired the excuse ("no reason was ever given beyond inertia"). Craft seconds are ignored by the anchors by declaration, so this moves *play* without moving the anchors — the cheapest real row here once the numbers exist. |
 | 4 | **the animal roster** | `BLOCKED-RESEARCH` + `NEEDS-MECHANISM` | Chicken, stag, wolf, bear all have roles there; we have a pig. Health and drops are lookups. The wolf and bear are `NEEDS-MECHANISM` — they exist to threaten, and nothing can hurt a player yet. |
-| 5 | **logistics friction** — carry limits, node density, deposit trips | `NEEDS-MECHANISM` | **The largest single term in the reference's economy (~10–30×) and the one we charge almost none of** (§0: ours measures 1.37×). Not one number but a set: how far apart nodes sit (`terrain::scatter` density), whether a full pocket forces a trip home, and whether nodes are scarce enough to walk for. Nothing here is blocked on research — it is blocked on nobody having decided the island should be harder to farm. Until it moves, every yield we take from them lands in a world that charges a fraction of what theirs does. |
+| 5 | **logistics friction** — carry limits, node density, deposit trips | `NEEDS-MECHANISM` | **The largest single term in the reference's economy (~10–30×) and the one we charge almost none of** (§0: ours measures 1.40×). Not one number but a set: how far apart nodes sit (`terrain::scatter` density), whether a full pocket forces a trip home, and whether nodes are scarce enough to walk for. Nothing here is blocked on research — it is blocked on nobody having decided the island should be harder to farm. Until it moves, every yield we take from them lands in a world that charges a fraction of what theirs does. |
 | 6 | **mob→player damage** | `NEEDS-MECHANISM` | Not a number. Ranked below logistics on the *magnitude* evidence (~2–5× against ~10–30×), which is the opposite of where this list first put it — but it is the half the operator asked for and the one a player feels, since a threat that cannot hurt you is scenery. Costs a new death cause on a 2-bit field saturated since wire v24, so it is a wire widening (wall 6: version bump + regenerated goldens in one commit). §5's warning applies: model it as trip shape and load loss, never as a flat rate multiplier. |
 
 ---
@@ -203,7 +203,14 @@ per-hit yield**: rock 28 hits/275 wood, bone club 34/309, **metal hatchet
 
 ### 4.3 · Two mechanism divergences that outrank the numbers
 
-**(a) Their marker pays SPEED; ours pays YIELD.** Facepunch, Devblog 170:
+**(a) Their marker pays SPEED; ours did too, as of 2026-08-09.** ✅ TAKEN
+(operator: *"we need the marker to just be faster not more yield"*;
+`DECISIONS.md` Spoken). A node holds `hits × HIT_UNIT` of budget, a
+marked swing spends `HIT_UNIT + weak_spot_bonus_pct` of it and is paid
+pro rata, so the total is invariant and the glint empties a tree in 7
+swings instead of 10. The research that produced this is below.
+
+Facepunch, Devblog 170:
 the node's overall yield does not increase — *"you will not actually earn
 more resources, but by using skill and good aim you can harvest the ore
 faster."* Ore hotspot is 150% on that hit, stacking to 300%, reset to zero
@@ -213,19 +220,26 @@ and **invisible at night** without a lit hat. The tree mark appears only
 closer together and always travelling the same direction; a metal hatchet
 ramps 16 wood/hit by +2 per mark hit, capped at 30.
 
-Ours (`weak_spot_bonus_pct = 50`) pays 1.5× *extra yield* on the hit. So
-**theirs makes a skilled player faster and everyone equally rich; ours
-makes a skilled player richer.** That is a pillar choice, not a constant —
-and it is load-bearing for us in a way it is not for them, because our
-at-node ceiling gate (`balance.rs`) computes the weak bonus as extra
-yield. Adopting their model changes that arithmetic. `DECISIONS.md` §open.
+Ours *used to* pay 1.5× extra yield on the hit, which made a skilled
+player richer where theirs makes one faster and everyone equally rich.
+That was a pillar difference rather than a constant, and it was
+load-bearing for us in a way it is not for them: the at-node ceiling gate
+computed the bonus as extra yield. Both moved together — the ceiling is
+now the invariant total over the fewest swings, 2030/min.
 
-**(b) They have a finishing bonus and we have none.** The final strike on
+**(b) They have a finishing bonus — and now so do we.** ✅ TAKEN
+2026-08-09 (operator: *"we need the finish bonus"*). The final strike on
 an ore node pays ~20% of the node total, stated purpose *"to mitigate
 cherry picking and leaving half finished nodes around the map"* (Devblog
 166) — and HQM is available **only** as that final-strike bonus. A tree
-withholds **half** its wood to the moment it falls (Devblog 187). We have
-no equivalent, so a half-chopped node costs a player nothing here.
+withholds **half** its wood to the moment it falls (Devblog 187). Both
+numbers are taken as `finish_bonus_pct`: 20 on each ore node, 50 on the
+tree, cited at their rows. It is a redistribution and never a bonus on
+top, so a half-chopped node is now what costs a player.
+
+**Not taken, and worth naming**: HQM gated *only* to the final strike is
+their sharpest version of this and we have no HQM tier to gate. If one
+lands, the finish share is where it belongs.
 
 **Respawn is not a timer.** No per-node respawn exists; population is
 managed by a spawn handler, which corroborates `SPAWN.md` §3.5 exactly.

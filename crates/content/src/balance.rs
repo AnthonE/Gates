@@ -10,7 +10,7 @@
 
 use crate::schema::*;
 use crate::Content;
-use sim_core::gather::SWING_INTERVAL_TICKS;
+use sim_core::gather::{HIT_UNIT, SWING_INTERVAL_TICKS};
 use sim_core::limits::TICK_HZ;
 
 /// The computed anchor values, for the boot log and the test output.
@@ -20,10 +20,12 @@ pub struct Anchors {
     pub ttk: Vec<(String, u32)>,
     /// Per `farm_per_min` row: (item id, declared effective units/min,
     /// sim at-node ceiling units/min). The ceiling is the most a body
-    /// standing at the node can be paid: best tier-≤1 per-hit, every hit
-    /// after the first striking the weak mark, at the swing cadence.
-    /// Declared ≤ ceiling is enforced; the gap between them is the travel
-    /// term (`DECISIONS.md` §open, measured by the server's farmwalk).
+    /// standing at the node can be paid: the node's invariant payout at
+    /// the best tier-≤1 tool, over the fewest swings that exhaust it
+    /// (every one marked). Declared ≤ ceiling is enforced; the gap is
+    /// the friction the world charges — travel, measured by the server's
+    /// farmwalk, plus everything `reference/RIPLIST.md` §0 says we do
+    /// not charge yet.
     pub farm_rates: Vec<(String, u32, u32)>,
     pub satchel_minutes: f64,
     pub starter_minutes: f64,
@@ -143,20 +145,17 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
     // Anchor 3's agreement face — the declared rate against the sim's own
     // arithmetic (the latent defect `reference/BALANCE.md` §4.3 named:
     // nothing compared the two). `farm_per_min` claims an *effective*
-    // rate, travel included; the ceiling it may never cross is the most
-    // the sim can sustain paying a body standing at the node. That is not
-    // per-hit × cadence alone: the weak mark pays `weak_spot_bonus_pct`
-    // extra on every hit after the first (the first finds the mark, the
-    // rest may strike it — the farmwalk measured a walker beating the
-    // naive ceiling before this term was in). Per node cycle: best
-    // tier-≤1 per-hit on the first swing, the weak-struck rate on the
-    // remaining `hits − 1`, over `hits` swings at the cadence — each hit
-    // clamped to u16 exactly as `gather::swing` pays it. A `secondary`
-    // pays too — flat, any hand, no weak bonus — so an item a node pays
-    // only that way is still priceable here. Cadence and tick rate are
-    // the sim's own constants, imported, so a cadence change moves this
+    // rate; the ceiling it may never cross is the most the sim can
+    // sustain paying a body standing at the node. Since the mark buys
+    // speed rather than yield (`NodeDef::weak_pct`), that is the node's
+    // whole invariant payout over the fewest swings that can exhaust it
+    // — the per-node arithmetic is below. A `secondary` pays too —
+    // flat, any hand, no mark — so an item a node pays only that way is
+    // still priceable here. Cadence, tick rate and the budget unit are
+    // the sim's own constants, imported, so a change there moves this
     // check and not just the game. What the gap between declared and
-    // ceiling *means* (the travel term) is the operator's knob; the
+    // ceiling *means* (travel, and the friction we do not yet charge —
+    // `reference/RIPLIST.md` §0) is the operator's knob; the
     // semantics-independent half is that an effective rate can never
     // beat standing at the node.
     for (item, declared) in &c.balance.globals.farm_per_min {
@@ -175,12 +174,19 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
                     .unwrap_or(0);
                 if best_per_hit > 0 {
                     payable = true;
-                    // Integer floor then u16 clamp, as `gather::swing` pays.
-                    let weak_hit = (best_per_hit * (100 + u64::from(g.weak_spot_bonus_pct)) / 100)
-                        .min(u64::from(u16::MAX));
-                    let per_cycle = best_per_hit + u64::from(g.hits - 1) * weak_hit;
-                    let ceiling = per_cycle * u64::from(TICK_HZ) * 60
-                        / (u64::from(g.hits) * SWING_INTERVAL_TICKS);
+                    // The node's payout is invariant under marking
+                    // (`NodeDef::weak_pct`) — a marked swing only spends
+                    // the budget faster. So the ceiling is the whole
+                    // total over the FEWEST swings that can exhaust it,
+                    // every one of them marked, rounding up exactly as
+                    // the sim's budget arithmetic does. The finish share
+                    // moves when yield arrives, never how much, so it
+                    // does not enter here.
+                    let total = best_per_hit * u64::from(g.hits);
+                    let budget = u64::from(g.hits) * u64::from(HIT_UNIT);
+                    let want = u64::from(HIT_UNIT) + u64::from(g.weak_spot_bonus_pct);
+                    let swings = budget.div_ceil(want);
+                    let ceiling = total * u64::from(TICK_HZ) * 60 / (swings * SWING_INTERVAL_TICKS);
                     at_node = at_node.max(ceiling);
                 }
             }

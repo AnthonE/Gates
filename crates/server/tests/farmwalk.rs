@@ -3,10 +3,10 @@
 //! sim").
 //!
 //! `[globals] farm_per_min` declares an *effective* gather rate; the
-//! sim's at-node ceiling is 27–41× hotter (weak mark included — 1373/min
-//! at the kit hatchet, 2060 at the best tier-1 tool, against the declared
-//! 50), and until this test nothing in the repo had ever farmed on the
-//! real island to say where between the two a player lands. The named
+//! sim's at-node ceiling is ~27–41× hotter (1353/min at the kit hatchet,
+//! 2030 at the best tier-1 tool, against the declared 50), and until
+//! this test nothing in the repo had ever farmed on the real island to
+//! say where between the two a player lands. The named
 //! method is the one used here: a bot walk on a real shard. A greedy
 //! walker with the spawn kit's stone hatchet targets the nearest standing
 //! tree, sprints to it, chops it out, and repeats until it has a wood
@@ -37,7 +37,7 @@
 
 use server::core::ShardCore;
 use server::stats::ShardStats;
-use sim_core::gather::SWING_INTERVAL_TICKS;
+use sim_core::gather::{HIT_UNIT, SWING_INTERVAL_TICKS};
 use sim_core::input::{BTN_PRIMARY, BTN_SPRINT};
 use sim_core::limits::{HOTBAR_SLOTS, TICK_HZ};
 use sim_core::movement::POS_XZ_Q;
@@ -163,15 +163,17 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
     let per_hit = u32::from(def.yield_for(hatchet));
     let per_tree = per_hit * u32::from(def.hits);
     let goal = TREES_WORTH * per_tree;
-    // The at-node ceiling for THIS tool, weak mark included — per cycle
-    // the first hit finds the mark and the rest strike it (per-hit ×
-    // (100 + weak)/100, floored per hit, exactly as `gather::swing` pays).
-    // The walker's own first run measured 1001/min against the weakless
-    // 947 — the bonus is part of standing at the node.
-    let weak_hit = u64::from(per_hit) * (100 + u64::from(def.weak_pct)) / 100;
-    let per_cycle = u64::from(per_hit) + u64::from(def.hits - 1) * weak_hit;
-    let at_node =
-        (per_cycle * u64::from(TICK_HZ) * 60 / (u64::from(def.hits) * SWING_INTERVAL_TICKS)) as u32;
+    // The at-node ceiling for THIS tool. Since the mark buys speed and
+    // not yield (2026-08-09), a node's payout is invariant and the
+    // ceiling is that whole payout over the fewest swings that can
+    // exhaust it — every swing marked, rounding up as the sim's budget
+    // arithmetic does. The finish share back-loads WHEN the yield lands
+    // and not how much, so it does not enter here.
+    let budget = u64::from(def.hits) * u64::from(HIT_UNIT);
+    let want = u64::from(HIT_UNIT) + u64::from(def.weak_pct);
+    let fewest_swings = budget.div_ceil(want);
+    let at_node = (u64::from(per_tree) * u64::from(TICK_HZ) * 60
+        / (fewest_swings * SWING_INTERVAL_TICKS)) as u32;
 
     let carried = |core: &ShardCore| -> u32 {
         core.world.players[p]
@@ -278,11 +280,16 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
         effective <= u64::from(at_node),
         "measured {effective}/min beats the at-node ceiling {at_node}/min"
     );
-    // The yield arrived whole: at least the trees' worth, at most the
-    // weak-marked rate on every hit plus one overshooting swing.
+    // The yield arrived whole, and now EXACTLY: a node's payout is
+    // invariant under marking, so the walk banks whole trees' worth plus
+    // whatever partial tree it was on when it crossed the goal. That
+    // upper bound is one tree — much tighter than the old model allowed,
+    // and the tightening is the point: a per-swing bonus would show up
+    // here as an overshoot.
     assert!(
-        got >= goal && u64::from(got) <= u64::from(goal) * 3 / 2 + weak_hit,
-        "banked {got} against a goal of {goal} — yield leaked or doubled"
+        got >= goal && got <= goal + per_tree,
+        "banked {got} against a goal of {goal} (one tree = {per_tree}) — \
+         yield leaked, or the mark is paying yield again"
     );
 
     // The measurement. `farm_per_min` declares wood at an effective rate

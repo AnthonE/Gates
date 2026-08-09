@@ -1,8 +1,22 @@
 # Gates · content/gatherables.toml — node/tree archetypes → per-tool yield
 # (CONTENT.md §1). Archetypes name sim-core scatter occupants (terrain.rs).
 # `hand` is the bare-hand row — a naked spawn bootstraps by punching stone
-# for a rock. Weak-spot hits (the glint / the X, DESIGN.md §2) pay
-# `weak_spot_bonus_pct` extra on that hit's yield.
+# for a rock.
+#
+# **A node's whole payout is `hits × yield_per_hit[tool]`, and the two
+# percentages below move WHEN it arrives, never how much** (operator,
+# 2026-08-09; the reference's own model, reference/RIPLIST.md §4.3):
+#
+# - `weak_spot_bonus_pct` — the glint / the X (DESIGN.md §2). A marked
+#   hit spends that much extra of the node's budget and is paid pro rata,
+#   so skill buys SPEED. Facepunch: "you will not actually earn more
+#   resources, but by using skill and good aim you can harvest the ore
+#   faster." It used to pay 1.5× yield here, which made the skilled
+#   player richer instead of quicker.
+# - `finish_bonus_pct` — the share withheld from every swing and paid to
+#   whoever lands the last one, so walking away from a half-struck node
+#   costs you. Theirs: ~20% on an ore node's final strike, half a tree's
+#   wood when it falls.
 #
 # The farm band (balance.toml, CONTENT §4 anchor 3): archetypes listed in
 # `banded_nodes` must total 250–400 units over 8–12 hits with a tier-1 tool.
@@ -13,6 +27,9 @@ archetype = "tree"
 output = "item.wood"
 hits = 10
 weak_spot_bonus_pct = 50
+# Half the tree's wood arrives when it falls (their Devblog 187 split the
+# tree's payout exactly this way). reference/RIPLIST.md §4.3.
+finish_bonus_pct = 50
 
 [gatherable.yield_per_hit]
 hand = 5
@@ -38,6 +55,9 @@ archetype = "stone_node"
 output = "item.stone"
 hits = 10
 weak_spot_bonus_pct = 50
+# The final strike pays a fifth of the node — their anti-cherry-picking
+# rule (Devblog 166, ~20%). reference/RIPLIST.md §4.3.
+finish_bonus_pct = 20
 
 [gatherable.yield_per_hit]
 hand = 5
@@ -51,6 +71,9 @@ archetype = "metal_node"
 output = "item.metal_ore"
 hits = 10
 weak_spot_bonus_pct = 50
+# The final strike pays a fifth of the node — their anti-cherry-picking
+# rule (Devblog 166, ~20%). reference/RIPLIST.md §4.3.
+finish_bonus_pct = 20
 
 [gatherable.yield_per_hit]
 hand = 3
@@ -64,6 +87,9 @@ archetype = "sulfur_node"
 output = "item.sulfur_ore"
 hits = 10
 weak_spot_bonus_pct = 50
+# The final strike pays a fifth of the node — their anti-cherry-picking
+# rule (Devblog 166, ~20%). reference/RIPLIST.md §4.3.
+finish_bonus_pct = 20
 
 [gatherable.yield_per_hit]
 hand = 3

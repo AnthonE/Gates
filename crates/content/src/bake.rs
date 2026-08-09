@@ -100,6 +100,8 @@ impl Content {
                 hand_yield: 0,
                 weak_pct: u16::try_from(g.weak_spot_bonus_pct)
                     .map_err(|_| format!("bake: `{}` weak-spot bonus overflows u16", g.id))?,
+                finish_pct: u16::try_from(g.finish_bonus_pct)
+                    .map_err(|_| format!("bake: `{}` finish bonus overflows u16", g.id))?,
                 tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
                 secondary: match &g.secondary {
                     None => (NO_ITEM, 0),

@@ -86,6 +86,26 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if g.yield_per_hit.is_empty() {
             return Err(format!("gatherable `{}`: empty yield table", g.id));
         }
+        // The finish share is a slice of the node's own payout, so 100
+        // means "pays nothing until it falls" and past 100 the per-swing
+        // arithmetic would owe negative yield. A one-hit node cannot
+        // withhold from itself — its only swing is the finishing one —
+        // so a share there is a content mistake wearing a plausible
+        // number, not a harmless no-op.
+        if g.finish_bonus_pct > 100 {
+            return Err(format!(
+                "gatherable `{}`: finish_bonus_pct {} is a share of the node's \
+                 own payout and cannot exceed 100",
+                g.id, g.finish_bonus_pct
+            ));
+        }
+        if g.finish_bonus_pct > 0 && g.hits < 2 {
+            return Err(format!(
+                "gatherable `{}`: finish_bonus_pct {} on a {}-hit node — the \
+                 only swing IS the finish, so nothing is withheld from anyone",
+                g.id, g.finish_bonus_pct, g.hits
+            ));
+        }
         for (tool, per_hit) in &g.yield_per_hit {
             if *per_hit == 0 {
                 return Err(format!("gatherable `{}`: zero yield for `{tool}`", g.id));

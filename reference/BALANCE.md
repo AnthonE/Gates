@@ -171,10 +171,10 @@ tuning one unmeasured number against another.
 
 *(2026-08-09: the checking half landed — `balance.rs` refuses a declared
 rate above the sim's at-node ceiling, weak mark included, and the travel
-term is measured: `server tests/farmwalk.rs` walked 1001 wood/min
-effective at the kit hatchet — 72.9% duty against that tool's
-weak-included 1373/min ceiling, not against the weakless 947 above,
-which the walker beat. "Nothing checks it" above is kept as the finding
+term is measured: `server tests/farmwalk.rs` walked 969 wood/min
+effective at the kit hatchet — 71.6% duty against that tool's 1353/min
+at-node ceiling, which is the node's whole payout over the fewest
+swings that can exhaust it, not the 947 above. "Nothing checks it" above is kept as the finding
 it was; the semantics speak and the yield move are what remain —
 `DECISIONS.md` §open.)*
 

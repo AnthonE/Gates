@@ -495,28 +495,27 @@ fn band_breaks_refused() {
 /// that it agrees with `yield_per_hit`") is closed as a ceiling: an
 /// effective travel-included rate can never beat standing at the node.
 /// The values here are the shipped set's derivation, pinned so the
-/// at-node side is hand-checkable: per node cycle, the best tier-≤1
-/// per-hit finds the weak mark and the remaining `hits − 1` strike it
-/// (per-hit × 1.5, floored), over `hits` swings at the 38-tick cadence —
-/// the farmwalk measured a walker beating the weakless ceiling, so the
-/// bonus is part of standing at the node, not a footnote to it. A yield
-/// or cadence move re-pins these numbers in the same commit — that is
-/// fixture discipline, not rot.
+/// at-node side is hand-checkable. Since the mark buys speed and not
+/// yield (2026-08-09), a node's payout is invariant at `hits × per-hit`
+/// and the ceiling is that total over the FEWEST swings that exhaust it
+/// — every swing marked, `ceil(hits × 100 / (100 + weak))`. A yield,
+/// mark or cadence move re-pins these numbers in the same commit — that
+/// is fixture discipline, not rot.
 #[test]
 fn the_declared_farm_rate_cannot_beat_standing_at_the_node() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let rates = &c.anchors().farm_rates;
-    // (item, declared, at-node): wood/stone best tier-≤1 swing is the
-    // metal tool's 30 → (30 + 9 × 45) × 1800 / 380 = 2060; ores likewise
-    // 2060; cloth is the bush's hand 10, one hit, no weak mark → 473.
-    // Declared sits ~24–69× under the ceiling (cloth 23.7×, wood/stone
-    // 41.2×, the ores 68.7×) — the travel term the farmwalk measures,
-    // recorded where it is visible.
+    // (item, declared, at-node): wood/stone/ores hold 10 × 30 = 300 at
+    // the metal tool, emptied in ceil(1000/150) = 7 marked swings →
+    // 300 × 1800 / (7 × 38) = 2030. Cloth is the bush's hand 10 over one
+    // hit with no mark → 10 × 1800 / 38 = 473. Declared sits ~24–68×
+    // under the ceiling (cloth 23.7×, wood/stone 40.6×, ores 67.7×) —
+    // the friction the world charges, recorded where it is visible.
     for (item, declared, at_node) in [
-        ("item.wood", 50, 2060),
-        ("item.stone", 50, 2060),
-        ("item.metal_ore", 30, 2060),
-        ("item.sulfur_ore", 30, 2060),
+        ("item.wood", 50, 2030),
+        ("item.stone", 50, 2030),
+        ("item.metal_ore", 30, 2030),
+        ("item.sulfur_ore", 30, 2030),
         ("item.cloth", 20, 473),
     ] {
         let row = rates

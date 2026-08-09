@@ -61,6 +61,7 @@ pub fn hash(c: &Content) -> u64 {
         h.s(&g.output);
         h.u(g.hits);
         h.u(g.weak_spot_bonus_pct);
+        h.u(g.finish_bonus_pct);
         h.u(g.yield_per_hit.len() as u32);
         for (tool, per_hit) in &g.yield_per_hit {
             h.s(tool);

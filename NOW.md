@@ -46,13 +46,20 @@ balance number; do not re-derive that list here.
 
 Two results worth carrying at this level. `balance.rs` refuses a
 `farm_per_min` above the sim's at-node ceiling and `tests/farmwalk.rs`
-measures **1001 wood/min, 72.9% duty**, ~20× the declared 50. But that
-20× is a **debt owed by the world, not an error in the number**: their
+measures **969 wood/min, 71.6% duty**, ~19× the declared 50. But that
+gap is a **debt owed by the world, not an error in the number**: their
 ladder falls ~30× from at-node to real farming with no threat in it at
-all, ours charges 1.37×, and applying their decomposition to our ceiling
+all, ours charges 1.40×, and applying their decomposition to our ceiling
 puts the declared 50 inside the band. So the queue's ranking inverted —
 **logistics friction (~10–30×) outranks mob→player damage (~2–5×)**, and
 threat wants modelling as trip shape, never as a rate multiplier.
+
+**Two gather mechanics are theirs as of 2026-08-09** (operator: the mark
+must buy speed, not yield, and we need the finish bonus). A node's payout
+is invariant at `hits × per-hit`; the glint spends its budget faster (a
+tree falls in 7 swings instead of 10 for the same 300), and 20% of an ore
+node / 50% of a tree is withheld for whoever lands the last swing. Gated
+in `sim-core tests/gather.rs`; no wire byte moved.
 
 Still wrong for a returning player, in rank order, all of it detailed in
 `RIPLIST.md` §2: the boar does not fight back; no per-material damage
