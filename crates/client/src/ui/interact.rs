@@ -35,7 +35,8 @@
 use protocol::event::WireBag;
 use sim_core::build::BUILD_CELL_M;
 use sim_core::deploy::{
-    box_key, DeployContent, DeployRec, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
+    box_key, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
+    ARCH_HEARTH,
 };
 
 pub use sim_core::build::BUILD_REACH_M as REACH_M;
@@ -109,6 +110,13 @@ impl Verb {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Pick {
     pub verb: Verb,
+    /// The archetype of the record this pick resolved, exactly as the
+    /// deploy sync named it (`ARCH_BAG` for a bag, which arrives on its
+    /// own lane and has no deploy record). Carried so the access verb can
+    /// ask `sim_core::deploy::lockable` — the sim's own predicate — rather
+    /// than matching verbs, which would be a second copy of the lockable
+    /// set waiting to drift (`ui::keypad::lock_target`).
+    pub arch: u8,
     /// The container handle: a bag id, or a box's packed `box_key`.
     pub handle: u32,
     pub cx: u16,
@@ -162,6 +170,19 @@ impl Pick {
                 // its keypad, and a shut one says so. Naming `[L]` on
                 // the middle case is the only place a player learns the
                 // key exists.
+                match (self.has_lock, self.locked) {
+                    (false, _) => "",
+                    (true, false) => "  ·  [L] KEYPAD",
+                    (true, true) => "  ·  LOCKED  ·  [L] KEYPAD",
+                }
+            ),
+            // The box borrows the door's whole lock grammar (locks on
+            // boxes, `DOORS.md` §9.8): a bare lid says nothing extra, a
+            // bolted one advertises its keypad, an armed one says LOCKED
+            // too. `E` stays the open — whether it succeeds against a
+            // locked lid is the sim's verdict, never this line's.
+            Verb::Box => format!(
+                "[E] OPEN BOX{}",
                 match (self.has_lock, self.locked) {
                     (false, _) => "",
                     (true, false) => "  ·  [L] KEYPAD",
@@ -300,7 +321,8 @@ pub fn resolve(
         if (rec.row as u16) >= have {
             continue;
         }
-        let verb = match defs.defs[rec.row as usize].arch {
+        let arch = defs.defs[rec.row as usize].arch;
+        let verb = match arch {
             ARCH_DOOR => Verb::Door,
             ARCH_BOX => Verb::Box,
             ARCH_HEARTH => Verb::Hearth,
@@ -326,6 +348,7 @@ pub fn resolve(
         if !best.wins(&mut out, &aim, f, verb, x, z) {
             continue;
         }
+        out.arch = arch;
         out.handle = handle;
         out.cx = rec.cx;
         out.cz = rec.cz;
@@ -344,6 +367,7 @@ pub fn resolve(
         if !best.wins(&mut out, &aim, f, Verb::Bag, x, z) {
             continue;
         }
+        out.arch = ARCH_BAG;
         out.handle = bag.id;
         out.cx = 0;
         out.cz = 0;

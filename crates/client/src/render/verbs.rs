@@ -341,53 +341,59 @@ fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
 
 /// `L` and `K` — the access verb, on whatever the crosshair is on.
 ///
-/// **One key, two stores, because the sim's verb is one verb.** At a door
-/// it opens the keypad (which then speaks — six ops share one action code
-/// and which one a press means depends on four digits nobody has typed
-/// yet). At a hearth it sends a crew op immediately: there is nothing to
-/// type, and a pad that asked for four digits at a cupboard would be
-/// asking the wrong question.
+/// **One key, two stores, because the sim's verb is one verb.** At
+/// anything a lock bolts to — a door or a box, and the set is the sim's
+/// own `deploy::lockable` by way of `ui::keypad::lock_target`, never a
+/// list here — it opens the keypad (which then speaks: six ops share one
+/// action code and which one a press means depends on four digits nobody
+/// has typed yet). At a hearth it sends a crew op immediately: there is
+/// nothing to type, and a pad that asked for four digits at a cupboard
+/// would be asking the wrong question.
 ///
 /// `leave` is the `K` half. Passing it in rather than reading the pick
 /// twice is what keeps `K` meaning LOCK at a door and LEAVE at a hearth
 /// without two resolvers that could disagree about which is aimed at.
 ///
-/// A door with no lock bolted on says so rather than opening an empty pad:
-/// the wire carries `has_lock` precisely so this prompt can be honest
+/// A lockable with no lock bolted on says so rather than opening an empty
+/// pad: the wire carries `has_lock` precisely so this prompt can be honest
 /// without the client learning anything about who the lock remembers.
 fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, leave: bool) {
-    match pick.verb {
-        Verb::Door if !leave => {
-            if !pick.has_lock {
-                toast.say("no lock on that door — deploy one");
-                return;
-            }
-            pad.0.open(pick.cx, pick.cz, pick.level, pick.loc);
-        }
-        Verb::Hearth => {
-            let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
-            let op = if leave {
-                sim_core::deploy::ACCESS_OP_CREW_LEAVE
-            } else {
-                sim_core::deploy::ACCESS_OP_CREW_JOIN
-            };
-            send(net, toast, "crew", |buf| {
-                protocol::encode_action_access(
-                    cx,
-                    cz,
-                    level,
-                    sim_core::build::LOC_PLANE,
-                    op,
-                    sim_core::lock::CODE_NONE,
-                    buf,
-                )
-            });
-        }
-        // `K` at a door is the keypad's own LOCK and is handled there;
-        // outside the pad it means nothing, and saying so beats a silent
-        // press.
-        _ if leave => {}
-        _ => toast.say("nothing to authorize in reach"),
+    use crate::ui::keypad::{lock_target, LockTarget};
+    if pick.verb == Verb::Hearth {
+        let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
+        let op = if leave {
+            sim_core::deploy::ACCESS_OP_CREW_LEAVE
+        } else {
+            sim_core::deploy::ACCESS_OP_CREW_JOIN
+        };
+        send(net, toast, "crew", |buf| {
+            protocol::encode_action_access(
+                cx,
+                cz,
+                level,
+                sim_core::build::LOC_PLANE,
+                op,
+                sim_core::lock::CODE_NONE,
+                buf,
+            )
+        });
+        return;
+    }
+    // `K` at a door is the keypad's own LOCK and is handled there; outside
+    // the pad and away from a hearth it means nothing.
+    if leave {
+        return;
+    }
+    match lock_target(pick) {
+        LockTarget::Pad(cx, cz, level, loc) => pad.0.open(cx, cz, level, loc),
+        LockTarget::Bare => toast.say(format!(
+            "no lock on that {} — deploy one",
+            // "DOOR"/"BOX", said the toast's way. The label is never
+            // empty here: a bare `lock_target` means the pick resolved a
+            // real lockable archetype, and every verb of one has a noun.
+            pick.verb.label().to_lowercase()
+        )),
+        LockTarget::None => toast.say("nothing to authorize in reach"),
     }
 }
 

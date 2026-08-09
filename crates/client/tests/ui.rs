@@ -1426,7 +1426,9 @@ fn the_operators_three_names_read_as_abbreviations_not_typos() {
 fn no_emitted_word_exceeds_the_line_budget() {
     // Names off the content's own shape: multi-word, long single words, and
     // the degenerate budgets. Every word of every result fits its line, so
-    // the clip never gets to cut mid-glyph.
+    // the clip never gets to cut mid-glyph. Budget 1 is in the sweep since
+    // the guard landed: it used to emit a 2-char `X.`, and the sweep used
+    // to start at 2 — the contract and its gate had the same blind spot.
     for name in [
         "Metal Fragments",
         "Low Grade Fuel",
@@ -1434,7 +1436,7 @@ fn no_emitted_word_exceeds_the_line_budget() {
         "Antidisestablishmentarianism",
         "a",
     ] {
-        for budget in [2usize, 4, 7, 12] {
+        for budget in [1usize, 2, 4, 7, 12] {
             let out = craft::cell_abbrev(name, budget);
             for word in out.split(' ') {
                 assert!(
@@ -1444,6 +1446,150 @@ fn no_emitted_word_exceeds_the_line_budget() {
             }
         }
     }
+}
+
+#[test]
+fn a_one_character_budget_keeps_the_glyph_and_drops_the_marker() {
+    // No room for `.`: the first glyph alone is the only emission that
+    // holds the budget, and it beats a lone `.` that says nothing.
+    assert_eq!(craft::cell_abbrev("Gunpowder", 1), "G");
+    assert_eq!(craft::cell_abbrev("Metal Fragments", 1), "M F");
+    // Chars, not bytes, in the degenerate case too.
+    assert_eq!(craft::cell_abbrev("Ébénisterie", 1), "É");
+    // A word that fits a budget of one still passes through untouched.
+    assert_eq!(craft::cell_abbrev("a", 1), "a");
+}
+
+// ---------------------------------------------------------------------------
+// §J · the L verb's target — a lock bolts where the SIM says it bolts
+//
+// Locks-on-boxes landed in the sim (`DOORS.md` §9.8) while the client's `L`
+// kept targeting doors alone. The fix is deliberately not a second list: the
+// pick carries the archetype the deploy sync named (`Pick::arch`), and
+// `keypad::lock_target` asks `sim_core::deploy::lockable` — the predicate
+// the sim's own lock verb gates on. So the load-bearing test here is the
+// agreement sweep, not the box case: a lockable set restated in the client
+// would pass a box test today and drift silently on the next archetype.
+
+use client::ui::interact as pick_mod;
+use client::ui::keypad::{lock_target, LockTarget};
+use sim_core::deploy::{DeployDef, DeployRec, ARCH_BOX, ARCH_DOOR, ARCH_LOCK};
+
+/// A pick as `resolve` would fill it for a deploy record: address, sync'd
+/// archetype, and the wire's lock mirror bit.
+fn lock_pick(arch: u8, has_lock: bool) -> pick_mod::Pick {
+    pick_mod::Pick {
+        arch,
+        has_lock,
+        cx: 3,
+        cz: 4,
+        level: 1,
+        loc: 2,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_resolver_hands_l_the_arch_the_sync_named() {
+    // One box record, aimed at. `resolve` must stamp the pick with the
+    // archetype from the def table — the fact `lock_target` runs on.
+    let mut defs = DeployContent::EMPTY;
+    defs.defs[0] = DeployDef {
+        arch: ARCH_BOX,
+        ..DeployDef::INERT
+    };
+    defs.def_count = 1;
+    let recs = [DeployRec {
+        cx: 2,
+        cz: 2,
+        row: 0,
+        owner: 1,
+        hp: 100,
+        has_lock: true,
+        locked: true,
+        ..DeployRec::default()
+    }];
+    let cell = 2.0 * sim_core::build::BUILD_CELL_M + sim_core::build::BUILD_CELL_M * 0.5;
+    let p = pick_mod::resolve(
+        pick_mod::Aim::new(cell, cell - 2.0, 0.0, 1.0),
+        &recs,
+        &defs,
+        1,
+        &[],
+    );
+    assert_eq!(p.verb, pick_mod::Verb::Box);
+    assert_eq!(p.arch, ARCH_BOX, "the sync's archetype rides the pick");
+    assert!(p.has_lock && p.locked, "the wire's mirror bits ride it too");
+    // And the whole chain: this pick opens the keypad at the box's own
+    // plane address, exactly as a door's would at its edge.
+    assert_eq!(lock_target(&p), LockTarget::Pad(2, 2, 0, 0));
+}
+
+#[test]
+fn a_box_with_a_lock_opens_the_keypad_where_a_door_does() {
+    // Same flow, both archetypes, addresses preserved verbatim — the sim
+    // answers refusals at the address the record carries, so the client
+    // must not normalize it.
+    assert_eq!(
+        lock_target(&lock_pick(ARCH_DOOR, true)),
+        LockTarget::Pad(3, 4, 1, 2)
+    );
+    assert_eq!(
+        lock_target(&lock_pick(ARCH_BOX, true)),
+        LockTarget::Pad(3, 4, 1, 2)
+    );
+    // Bare lockables prompt for a lock rather than opening an empty pad.
+    assert_eq!(lock_target(&lock_pick(ARCH_DOOR, false)), LockTarget::Bare);
+    assert_eq!(lock_target(&lock_pick(ARCH_BOX, false)), LockTarget::Bare);
+    // A default pick (nothing in reach) offers nothing, lock bit or not.
+    assert_eq!(lock_target(&pick_mod::Pick::default()), LockTarget::None);
+}
+
+#[test]
+fn the_lockable_set_is_the_sims_not_a_second_list() {
+    // The agreement sweep, over every archetype the schema could name
+    // (`ARCH_LOCK` is the highest today; the headroom past it costs
+    // nothing and catches an addition that skips a number). If the sim
+    // grows or shrinks `lockable`, this fails HERE rather than shipping a
+    // keypad the sim refuses — the mirror property itself is the gate.
+    for arch in 0..=(ARCH_LOCK + 8) {
+        let opens = lock_target(&lock_pick(arch, true)) == LockTarget::Pad(3, 4, 1, 2);
+        assert_eq!(
+            opens,
+            sim_core::deploy::lockable(arch),
+            "arch {arch}: the client and `deploy::lockable` disagree"
+        );
+        // And nothing bare ever opens a pad, lockable or not.
+        assert!(
+            !matches!(lock_target(&lock_pick(arch, false)), LockTarget::Pad(..)),
+            "arch {arch}: an empty pad opened with no lock bolted on"
+        );
+    }
+}
+
+#[test]
+fn a_box_prompt_advertises_its_keypad_like_a_door() {
+    let mut p = pick_mod::Pick {
+        verb: pick_mod::Verb::Box,
+        arch: ARCH_BOX,
+        ..Default::default()
+    };
+    // Bare: the verb alone — no keypad to name (lock v1's door rule).
+    assert_eq!(p.prompt(), "[E] OPEN BOX");
+    // Bolted but not armed: the keypad is named, LOCKED is not claimed.
+    p.has_lock = true;
+    assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
+    assert!(
+        !p.prompt().contains("LOCKED"),
+        "an unarmed lock is not a locked box: {}",
+        p.prompt()
+    );
+    // Armed: both, and `E` still offers the open — whether it succeeds is
+    // the sim's verdict, not the prompt's.
+    p.locked = true;
+    assert!(p.prompt().contains("LOCKED"), "{}", p.prompt());
+    assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
+    assert!(p.prompt().starts_with("[E] OPEN BOX"), "{}", p.prompt());
 }
 
 #[test]

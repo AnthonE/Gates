@@ -386,14 +386,23 @@ pub const CELL_LINE_CHARS: usize = 7;
 /// short name come back unchanged, which is why the common case allocates
 /// only what `item_label` already allocated.
 ///
+/// A budget of one has no room for the marker, so a cut word there is its
+/// first glyph alone: a lone `.` says nothing, and `X.` — what this
+/// emitted before the guard — is two characters on a one-character line,
+/// breaking the very contract the function exists to hold. (Zero is not a
+/// budget: a cell that cannot hold a glyph is not a cell, and zero
+/// degrades to one rather than to silence.)
+///
 /// Pure and code-tier on purpose — the arithmetic is gated in
 /// `tests/ui.rs`, where a Bevy system cannot be.
 pub fn cell_abbrev(name: &str, max_chars: usize) -> String {
-    let keep = max_chars.saturating_sub(1).max(1);
+    let keep = max_chars.saturating_sub(1);
     name.split(' ')
         .map(|word| {
             if word.chars().count() <= max_chars {
                 word.to_string()
+            } else if keep == 0 {
+                word.chars().take(1).collect()
             } else {
                 let cut: String = word.chars().take(keep).collect();
                 format!("{cut}.")
