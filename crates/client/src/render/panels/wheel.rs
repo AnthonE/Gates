@@ -293,7 +293,9 @@ pub fn build_hammer_screen(commands: &mut Commands, ui: &Ui, icons: &Icons) {
                     // Clamped once: the readout's words and its glyph have to
                     // name the same verb, and two copies of the same bound is
                     // how they would come to disagree.
-                    let verb = ui.hover.map(|i| hammer::VERBS[i.min(hammer::VERBS.len() - 1)]);
+                    let verb = ui
+                        .hover
+                        .map(|i| hammer::VERBS[i.min(hammer::VERBS.len() - 1)]);
                     let (name, line) = match verb {
                         Some(v) => (hammer::label(v), hammer::blurb(v)),
                         None => ("Hammer", "sweep to a verb"),

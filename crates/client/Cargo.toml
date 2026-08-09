@@ -108,9 +108,20 @@ required-features = ["render"]
 # what someone edits when they do the trim.
 #
 # Genuinely unused, by grep: `bevy_gilrs` (no `Gamepad` reference anywhere,
-# and the only real system-dep win — `libudev`), `bevy_gltf` (every mesh in
-# the tree is procedural), `bevy_scene`, `bevy_animation`, and `vorbis` (we
-# generate WAV in memory). `RENDER.md` §9 carries the reasoning.
+# and the only real system-dep win — `libudev`) and `vorbis` (we generate WAV
+# in memory). `RENDER.md` §9 carries the reasoning.
+#
+# **`bevy_gltf`, `bevy_scene` and `bevy_animation` came OFF this list on
+# 2026-08-07 and the line above did not follow them** — re-checked 2026-08-09.
+# This is the `bevy_audio` mistake in the paragraph above, repeated one
+# paragraph below it: the mannequin ships as `assets/models/mannequin.gltf`,
+# and `render/anim.rs` (compiled — `pub mod anim`) resolves clips through
+# `Gltf::named_animations` into an `AnimationGraph` driven by
+# `AnimationPlayer`, while `render/bodies.rs` spawns the body as a
+# `SceneRoot(Handle<Scene>)`. Trimming any of the three by following the old
+# wording removes every animated player from the world. `NOW.md` §0x item 1
+# has carried the correct set since the mannequin landed — **trust the grep,
+# then this file, and re-run both before touching the feature list.**
 #
 # **The trim was attempted on 2026-08-06 and backed out**, for two reasons
 # that are neither the code nor the feature list — a feature change

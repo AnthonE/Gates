@@ -129,15 +129,19 @@ Stages, in order — each cheap, each deterministic:
    absence of trees. One `Occupant::HavenShelter` slot carries the whole
    structure (a cell holds one slot, and five containers on a 10 m ring
    already spend the pad's packing budget at the 11.31 m cell diagonal), and
-   the client draws it as fourteen boxes: a 6.2 m room with a 2.4 × 2.8 m
+   the sim blocks it as fourteen boxes: a 6.2 m room with a 2.4 × 2.8 m
    doorway, corner posts overrunning the roof, and a tower to 9.2 m against a
    6.6 m pine. It stands `HAVEN_SHELTER_R_M` off center in a gap in the ring,
    on a bearing searched against `road_band` — because the pad's center IS
    the road's center line, and `tests/road.rs` caught the first draft
    blocking the loop it exists to serve.
-   **The sim owns those fourteen boxes too** — `terrain::SHELTER_BOXES`, a
-   row-for-row mirror of the client's, with `ci/haven_shelter.mjs` holding all
-   14 × 6 fields equal across the language seam. The plinth is floor rather
+   **The sim owns those fourteen boxes too** — `terrain::SHELTER_BOXES`.
+   ⚠ **It is no longer a checked mirror of the client's.** `ci/haven_shelter.mjs`
+   held all 14 × 6 fields equal across the language seam and **was deleted
+   with the browser client with nothing replacing it**; the drawn mesh is now
+   nine hand-written rows in `render/props.rs` against the sim's fourteen.
+   See §7.1 for what that costs and `NOW.md` §0x for the gate that is owed.
+   The plinth is floor rather
    than the fourteenth wall (`SHELTER_FLOOR_IX`), or the building seals from
    outside. **It is called now** — `movement.rs:158` → `occupy.rs`'s `blocks`
    → `terrain::slot_blocks`, so these walls stop a body. What is still missing
@@ -447,7 +451,7 @@ The reads a survival map must produce, and which stage buys each:
 | authored sites | 3 — one haven pad + 2 waystations, all on the ring |
 | pad containers | 5 `crate` on a 10 m ring, 2.64× the shoulder's density |
 | waystation containers | 2 `cache` on a 6.5 m ring, ≥ 600 m from every other site |
-| greyboxes | 2 kinds, one per tier: the pad's enclosed 7 m block to a 9.2 m tower, and the waystation's open canopy — 4 posts, one knee-high parapet, 4.1 m — standing in a gap in that 6.5 m ring rather than at the site centre, which is the road (`ci/waystation_canopy.mjs`) |
+| greyboxes | 2 kinds, one per tier: the pad's enclosed 7 m block to a 9.2 m tower, and the waystation's open canopy — 4 posts, one knee-high parapet, 4.1 m — standing in a gap in that 6.5 m ring rather than at the site centre, which is the road. **These are the numbers the sim blocks** (`terrain::WAYSTATION_CANOPY_BOXES`, gated by `sim-core/tests/{waystation,solid}.rs`); the mesh that draws them is no longer held to them — see §7 |
 | tier prices | E[items] per container barrel 14.3 < cache 20.8 < crate 33.1; per site pad 165 > waystation 42 (`ci/haven_prize.mjs`) |
 | node respawn | 20–45 min jittered, privilege-vetoed **(knob)** |
 
@@ -501,7 +505,7 @@ element a cell may earn, at a rate the ground sets:
   ground's **0.005** — 18×.
 - **It is frame-budget-bound, and that is the finding.**
   `CLUTTER_RICH_PER_TILE = 96` of 625 cells is not a design number: it is what
-  `ci/clutter_shape.mjs` §4's 20%-of-1.5 M triangle share left after the
+  the deleted `ci/clutter_shape.mjs` §4's 20%-of-1.5 M triangle share left after the
   coverage stratum and the skirts. **Note what that makes it downstream of**:
   1.5 M is `DESIGN.md` §9's browser-era ceiling, so this number inherits a
   WebGL constraint. If the native budget is ever re-derived, this is one of
@@ -590,3 +594,31 @@ client (`DECISIONS.md` 2026-08-06), so nothing photographs this at all now.
   generator's best natural ground, and the 3.76 m is the argument for the
   carve rather than evidence it happened.
 - Chunk-build time and instancing counts ride the client perf harness.
+
+### 7.1 · ⚠ The greybox mirror lost its gate, and the two halves have drifted
+
+**Measured 2026-08-09, while sweeping the browser out of the docs.** The two
+authored structures are declared twice — once as the volume the sim blocks,
+once as the mesh the client draws — and the gate that held the two lists
+equal was `ci/haven_shelter.mjs` + `ci/waystation_canopy.mjs`, both deleted
+with the browser client. **Nothing replaced them**, and the lists no longer
+agree:
+
+| | sim blocks (`terrain.rs`, centre + **full size**) | client draws (`render/props.rs`, centre + **half extent**) |
+|---|---|---|
+| haven shelter | `SHELTER_BOXES`, **14 rows** | `shelter`, **9 rows** |
+| waystation canopy | `WAYSTATION_CANOPY_BOXES`, **9 rows**, finial top **4.1 m**, eave half-width 2.8 m | `canopy`, **6 rows**, top **2.09 m**, plate half-width 1.9 m |
+
+The canopy is the loud one: the drawn structure is **about half the blocked
+one in both height and width**, and `scale: 1.0` is authored on that slot
+(`terrain.rs`, "Authored, not drawn"), so no instance transform reconciles
+them. A player is stopped ~0.7 m outside the posts they can see. Note the
+two tables are also in **different units** — full size against half extent —
+which is exactly the transcription hazard the deleted gate existed to cover.
+
+**This is not fixed here** — which list is authoritative is a design call
+(the sim's numbers are the ones `ART.md` §6 and the tier-silhouette argument
+were written against), and this pass is a doc sweep. What is owed is the
+native gate, and `CLAUDE.md` already says its shape: *what may be gated about
+a frame is arithmetic — the mesh fits the volume the sim blocks, in Rust, the
+shape of `crates/client/tests/tree.rs`*. `NOW.md` carries the item.
