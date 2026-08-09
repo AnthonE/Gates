@@ -1511,7 +1511,7 @@ pub fn use_door(
     let Some(i) = door_in_reach(dc, deploys, p, cx, cz, level, loc, arch_is_door, events) else {
         return;
     };
-    if !deploys.locks.passes(cx, cz, level, loc, p.id) {
+    if !deploys.locks.passes_full(cx, cz, level, loc, p.id) {
         // Knocking is the whole reason a refusal here is not silent
         // (`DOORS.md` §4): it is the only channel a locked-out player has
         // to the person inside, and it costs one broadcast. Both go out —
@@ -1629,7 +1629,12 @@ pub fn lock_op(
 /// thing saying whose door — or whose box — this is, so a hand it does
 /// not know cannot lift the thing out from under it. Without that, every
 /// code lock in the game would be defeated by picking up what it is
-/// bolted to.
+/// bolted to. The tier is **full rights**, not any grant
+/// (`Locks::passes_full`): a pickup pockets the lock, and taking the lock
+/// off is on the guest tier's "nothing else" side (`DOORS.md` §2.2,
+/// Devblog 149's list) — so a guest-code holder is refused here exactly
+/// as `ACCESS_OP_TAKE` refuses them. An unlocked one stays anyone's,
+/// which is demolish v1's landed rule.
 #[allow(clippy::too_many_arguments)]
 pub fn pick_up(
     dc: &DeployContent,
@@ -1658,7 +1663,7 @@ pub fn pick_up(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_CLAIM, 0);
         return;
     }
-    if !deploys.locks.passes(cx, cz, level, loc, p.id) {
+    if !deploys.locks.passes_full(cx, cz, level, loc, p.id) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
         return;
     }
@@ -4210,6 +4215,277 @@ mod tests {
         assert_eq!(deploys.locks().len(), 0, "the lock record came off with it");
         assert_eq!(crate::craft::inv_count(&p.inv, 7), locks_held + 1);
         assert_eq!(crate::craft::inv_count(&p.inv, 8), boxes_held + 1);
+    }
+
+    /// The guest tier stops at the door verb (`DOORS.md` §2.2, Devblog
+    /// 149: open and close, no unlock, no code change, no taking the
+    /// lock off) — so a guest must not lift a locked door out of its
+    /// frame, which would pocket the lock: `ACCESS_OP_TAKE` wearing the
+    /// pickup verb's clothes.
+    ///
+    /// **Mutant-killer**: soften `pick_up`'s check back to the door-tier
+    /// `Locks::passes` and the guest's lift lands — the refusal
+    /// assertion goes red with the door out of the world and the lock in
+    /// the guest's pocket.
+    #[test]
+    fn a_guest_works_a_locked_door_and_cannot_pocket_it() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            crate::deploy::ACCESS_OP_SET_GUEST,
+            4321,
+            0,
+            &mut ev,
+        );
+
+        let mut guest = player_at_cell(CX, CZ, &[]);
+        guest.id = 9;
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut guest,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            crate::deploy::ACCESS_OP_ENTER,
+            4321,
+            1,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2 & 0xff),
+            (crate::world::EV_AUTH, crate::lock::GRANT_GUEST as u32),
+            "the fixture minted a guest, not a member"
+        );
+        assert!(
+            deploys.lock_passes(CX, CZ, 0, LOC_EDGE_W, guest.id),
+            "the door verb answers the guest"
+        );
+
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut guest,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER),
+            "a guest may work the door and nothing else — lifting it \
+             would pocket the lock"
+        );
+        assert_eq!(deploys.len(), 1, "the door is still hanging");
+        assert_eq!(deploys.locks().len(), 1, "the lock is still on it");
+        assert_eq!(crate::craft::inv_count(&guest.inv, 4), 0);
+        assert_eq!(crate::craft::inv_count(&guest.inv, 7), 0);
+
+        // A hand that entered the MAIN code holds full rights and lifts
+        // it — the strengthening is a tier, not an owner check.
+        let mut friend = player_at_cell(CX, CZ, &[]);
+        friend.id = 11;
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut friend,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            crate::deploy::ACCESS_OP_ENTER,
+            1234,
+            2,
+            &mut ev,
+        );
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut friend,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 0, "a full member lifts it");
+        assert_eq!(deploys.locks().len(), 0);
+        assert_eq!(crate::craft::inv_count(&friend.inv, 4), 1, "the door");
+        assert_eq!(crate::craft::inv_count(&friend.inv, 7), 1, "the lock");
+    }
+
+    /// The same wall at the box's plane address — and the boundary the
+    /// stronger tier must not have moved: **unlocked stays anyone's**
+    /// (demolish v1's landed rule, `DOORS.md` §5).
+    #[test]
+    fn a_guest_cannot_pocket_a_locked_box_and_unlocked_stays_anyones() {
+        let dc = boxed_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = boxed_gather();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = boxed(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::deploy::ACCESS_OP_SET_CODE,
+            1234,
+            0,
+            &mut ev,
+        );
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::deploy::ACCESS_OP_SET_GUEST,
+            4321,
+            0,
+            &mut ev,
+        );
+
+        let mut guest = player_at_cell(CX, CZ, &[]);
+        guest.id = 9;
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut guest,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::deploy::ACCESS_OP_ENTER,
+            4321,
+            1,
+            &mut ev,
+        );
+        assert!(
+            deploys.lock_passes(CX, CZ, 0, LOC_PLANE, guest.id),
+            "the lid answers the guest"
+        );
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut guest,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(
+            (last(&ev).0, last(&ev).2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER),
+            "the guest code opens the lid, never the ground under the box"
+        );
+        assert_eq!(deploys.len(), 1, "the box is still standing");
+        assert_eq!(deploys.locks().len(), 1);
+
+        // The owner unlocks — the shop-front state — and a hand with no
+        // grant at all lifts it, box and lock both.
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::deploy::ACCESS_OP_UNLOCK,
+            0,
+            2,
+            &mut ev,
+        );
+        let mut nobody = player_at_cell(CX, CZ, &[]);
+        nobody.id = 21;
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut nobody,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(
+            deploys.len(),
+            0,
+            "an unlocked box is anyone's, lifting included"
+        );
+        assert_eq!(deploys.locks().len(), 0);
+        assert_eq!(crate::craft::inv_count(&nobody.inv, 8), 1, "the box");
+        assert_eq!(crate::craft::inv_count(&nobody.inv, 7), 1, "the lock");
     }
 
     /// Upkeep/decay v1: a half-stocked hearth does half the job, and an

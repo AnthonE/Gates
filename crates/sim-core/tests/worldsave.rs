@@ -23,7 +23,7 @@ use sim_core::build::{
 };
 use sim_core::combat::CombatContent;
 use sim_core::craft::CraftContent;
-use sim_core::deploy::DeployContent;
+use sim_core::deploy::{DeployContent, ARCH_DOOR, ARCH_HEARTH};
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::loot::LootContent;
 use sim_core::movement::{Body, POS_XZ_Q};
@@ -547,6 +547,69 @@ fn a_corrupt_world_is_refused_by_reason() {
         bent(&|b| b[piece0..piece0 + 2].copy_from_slice(&u16::MAX.to_le_bytes())),
         Err(WorldSaveError::AddressOutOfRange)
     );
+}
+
+/// A forged save cannot claim a mirror state no lock verb can produce.
+/// The decoder reads each deploy record's `locked` byte for layout and
+/// drops it (`worldsave.rs`: the decoder deliberately distrusts the
+/// mirror bits — **both** of them), and `rebuild_doors` re-derives the
+/// pair from the lock section for the archetypes `lockable` names — so
+/// locked:true on a hearth, which the rebuild never visits, must come
+/// back cleared rather than ridden into the world. The door's byte is
+/// forged too: lockable, but with no lock in the file the rebuild clears
+/// it, which pins the half that already held.
+///
+/// **Mutant-killer**: put the file's `locked` back into the decoded
+/// record (`locked` instead of `locked: false` in `decode_into`) and the
+/// hearth's record loads locked with no lock anywhere — the last
+/// assertion goes red.
+#[test]
+fn forged_lock_bits_load_cleared_never_trusted() {
+    let w = a_lived_in_world();
+    assert!(w.deploys.locks().is_empty(), "fixture: no lock in the file");
+    let mut blob = vec![0u8; WORLD_SAVE_MAX_BYTES];
+    let n = w.save_world(&mut blob).expect("encodes");
+    blob.truncate(n);
+
+    // Walk to the deploy section the way the corruption test above does:
+    // head + counts, players at 240 each, pieces at 19 (11 + the
+    // placement tick), then 25 per deploy record (17 + bag_ready) with
+    // `locked` at offset 16 of each.
+    const COUNTS_AT: usize = 34;
+    let players = w.players.iter().filter(|p| p.active).count();
+    let deploy0 = COUNTS_AT + 20 + players * 240 + w.pieces.len() * 19;
+    let mut saw = (false, false);
+    for (i, rec) in w.deploys.entries().iter().enumerate() {
+        let at = deploy0 + i * 25;
+        // Anchor the offset math on the record's own address bytes
+        // before bending anything — a wrong stride would forge noise.
+        assert_eq!(
+            u16::from_le_bytes([blob[at], blob[at + 1]]),
+            rec.cx,
+            "the deploy stride drifted under this test"
+        );
+        blob[at + 16] = 1; // locked := true, hearth and door alike
+        match w.deploy.defs[rec.row as usize].arch {
+            ARCH_HEARTH => saw.0 = true,
+            ARCH_DOOR => saw.1 = true,
+            _ => {}
+        }
+    }
+    assert!(
+        saw.0 && saw.1,
+        "the fixture must cover a non-lockable and a lockable archetype"
+    );
+
+    let mut back = armed();
+    back.load(&blob)
+        .expect("a forged mirror bit is cleared, not refused");
+    for rec in back.deploys.entries() {
+        assert!(
+            !rec.locked && !rec.has_lock,
+            "no lock is in the file, so no record may load locked — \
+             whatever the file claimed"
+        );
+    }
 }
 
 /// A refused blob leaves the world untouched. The alternative is a shard

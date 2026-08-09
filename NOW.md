@@ -54,6 +54,9 @@ whole slice. What remains, in order:
    `Locks::passes` at the box's address and refuses with the door's own
    `REFUSE_D_OWNER`, the mirror bits ride the existing wire record (zero
    protocol edits), and `rebuild_doors` re-derives them for boxes at load.
+   Tightened 2026-08-09: the decoder now drops the file's `locked` byte
+   for **every** archetype, so a forged save cannot present locked on a
+   fire or a hearth (`tests/worldsave.rs` owns it).
    Gated by `tests/lock_box.rs` (a mutant-killer on the open-path check)
    and three tests beside the door's in `deploy.rs`. **Remains, two
    halves, neither sim**: the client's `L` verb only targets doors
@@ -63,7 +66,9 @@ whole slice. What remains, in order:
    plane address when the server lane is open.
 2. ~~**A pickup verb for an unsecured deployable.**~~ Landed with
    demolish v1 (§0aa), including the rule that a locked door cannot be
-   lifted out of its frame.
+   lifted out of its frame — tightened 2026-08-09 to the full tier: a
+   GUEST code works the leaf and cannot lift a locked door or box
+   (`Locks::passes_full`; `DECISIONS.md` §open, pickup tier row).
 3. **The keypad is a HUD line, not a panel.** Deliberate (`ui/keypad.rs`
    says why) but it means the digits are typed and there is nothing to
    click. A small pointer-free overlay would be strictly better and is not
