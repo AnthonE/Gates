@@ -52,6 +52,14 @@ pub const BAG_GONE_EMPTIED: u32 = 1;
 /// first" — one key does both, because a bag's expiry already encodes its
 /// age *and* its best tier.
 pub const BAG_GONE_EVICTED: u32 = 2;
+/// The highest reason above — `DEATH_BY_MAX`'s posture for this ledger.
+/// The wire field is two bits, so a forged `why == 3` fits the width; the
+/// server refuses it against this constant at the encode boundary
+/// (`server/core.rs`, NOW.md §5b). A **literal**, unlike `DEATH_BY_MAX`,
+/// because `protocol`'s domain scrape reads this block as text and its
+/// exempt list is a wire-pass edit; `tests/domain_ledger.rs` fails if the
+/// literal stops naming the ledger's top.
+pub const BAG_GONE_MAX: u32 = 2;
 
 /// The despawn ladder the sim knows, baked from content.
 #[derive(Clone, Copy, Debug)]

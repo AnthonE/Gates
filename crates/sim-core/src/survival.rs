@@ -230,6 +230,15 @@ pub const REFUSE_C_FULL: u32 = 2;
 /// at dry ground. Announced rather than swallowed for `REFUSE_C_NOT_FOOD`'s
 /// reason: the player needs to learn where the verb works.
 pub const REFUSE_C_NO_WATER: u32 = 3;
+/// The highest reason above — `DEATH_BY_MAX`'s posture for this ledger.
+/// The wire field is four bits, so a forged `reason` in 4..=15 fits the
+/// width (zero the encoder already refuses); the server refuses the whole
+/// out-of-domain range against this constant at the encode boundary
+/// (`server/core.rs`, NOW.md §5b). A **literal**, unlike `DEATH_BY_MAX`,
+/// because `protocol`'s domain scrape reads this block as text and its
+/// exempt list is a wire-pass edit; `tests/domain_ledger.rs` fails if the
+/// literal stops naming the ledger's top.
+pub const REFUSE_C_MAX: u32 = 3;
 
 /// One rational step: add `num` to `acc`, take out whole units against
 /// `den`, keep the remainder. The one piece of arithmetic every meter in
