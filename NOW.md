@@ -647,10 +647,19 @@ Remaining, in order:
    `tests/sound.rs`. Remaining: `ImpactWood`/`ImpactMetal` need to know WHAT
    was hit, which the gather toast does not say, and `UiClick` needs a hook
    in the per-screen click handlers.
-6. **Remote players are silent.** Only the local body has an odometer, so
-   another player's footsteps — the sound that decides fights — do not exist.
-   `bodies.rs` has their interpolated transforms; a `Steps` per remote body
-   and a positional step cue is the slice.
+6. ~~**Remote players are silent.**~~ **DONE 2026-08-09** — a `Steps`
+   odometer per drawn body (`audio::RemoteSteps`, a component, so it dies
+   with the entity and AOI re-entry starts fresh) fed the interpolated
+   transform `bodies::stream` writes; the same `terrain::splat` surface
+   pick at *their* position; five positional twins of the step cues
+   (waveforms byte-identical by delegation — the ground decides what a
+   step sounds like, not whose boot), culled by the mixer's one falloff at
+   the STEP row's own 24 m and priced above your own feet (theirs is
+   intel). Cadence is distance-integrated, so the remote's unknown buttons
+   cost nothing; the wire has no grounded bit (§0v item 1), so a jumper
+   ticks by its horizontal arc, hitch-capped at one step. `DECISIONS.md`
+   §open "remote footsteps v0"; gated in `tests/sound.rs`. Nobody has
+   heard it — audio v0's caveat holds.
 7. **No occlusion, and it needs a prerequisite rather than a pass.** A wall
    between you and a sound needs a geometry query, and the correct one is the
    sim's (`collide.rs`), not a raycast against render meshes.

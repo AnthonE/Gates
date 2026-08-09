@@ -14,7 +14,7 @@
 //! loop seam) before any number about it is read.
 
 use client::sound::mixer::{Mixer, Request};
-use client::sound::steps::{surface_cue, Steps, STRIDE_M};
+use client::sound::steps::{remote, surface_cue, Steps, STRIDE_M};
 use client::sound::synth;
 use client::sound::{
     Bus, Cue, Mix, CUES, CUE_COUNT, CUE_QUEUE_CAP, MAX_AUDIBLE_M, SAMPLE_RATE, STARTS_PER_FRAME,
@@ -476,6 +476,86 @@ fn reset_forgets_the_previous_world() {
         s.sample([900.0, 0.0, 900.0], true, 0.016).is_none(),
         "a teleport was heard as a footstep"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Remote footsteps (`NOW.md` §0x item 6): the local family's positional
+// twins. The odometer half is the SAME `Steps` gated above — a remote body
+// carries its own instance — so what is new here is the mapping, the table
+// row, and the mixer treating the cue as a place in the world.
+// ---------------------------------------------------------------------------
+
+/// Every surface has a remote twin, the twin is the same sound byte for
+/// byte, and what differs is exactly what should: positional at the body,
+/// outranking your own feet, on the step family's own radius.
+#[test]
+fn a_remote_step_is_the_same_boot_on_the_same_ground() {
+    let pairs = [
+        (Cue::StepSand, Cue::RemoteStepSand),
+        (Cue::StepGrass, Cue::RemoteStepGrass),
+        (Cue::StepLitter, Cue::RemoteStepLitter),
+        (Cue::StepRock, Cue::RemoteStepRock),
+        (Cue::StepWater, Cue::RemoteStepWater),
+    ];
+    for (local, far) in pairs {
+        assert_eq!(remote(local), far, "{local:?} maps to the wrong twin");
+        // The ground decides what a step sounds like, not whose boot it is.
+        assert_eq!(
+            synth::wav(local),
+            synth::wav(far),
+            "{far:?} is not {local:?}'s own waveform"
+        );
+        let (l, f) = (local.def(), far.def());
+        assert!(f.positional, "{far:?} is an own-fact - it must be a place");
+        assert!(!l.positional, "{local:?} grew a position");
+        assert_eq!(
+            f.radius_m, l.radius_m,
+            "the two step families drifted on how far a boot carries"
+        );
+        assert_eq!(f.gain, l.gain, "the two step families drifted on gain");
+        assert!(
+            f.priority > l.priority,
+            "another player's step is the sound that decides fights - it must \
+             outrank your own feet"
+        );
+        assert!(far.pitch_var() > 0.0, "{far:?} is diegetic and must vary");
+    }
+    // The mapping is closed over the step family: a non-step cue has no
+    // twin and passes through unchanged.
+    assert_eq!(remote(Cue::Swing), Cue::Swing);
+}
+
+/// The mixer hears a remote step where the body is and not past the radius:
+/// the one falloff law is the cull, exactly as it is for the falling tree.
+#[test]
+fn a_remote_step_is_heard_at_the_body_and_culled_by_distance() {
+    let mix = Mix::default();
+    // In earshot: one voice, positional, attenuated below the table gain.
+    let mut m = Mixer::new();
+    m.push(Request::at(Cue::RemoteStepGrass, [8.0, 0.0, 0.0]));
+    let starts: Vec<_> = m.tick(16.0, AT_ORIGIN, 0, &mix).to_vec();
+    assert_eq!(starts.len(), 1, "a nearby remote step was not heard");
+    assert_eq!(
+        starts[0].at,
+        Some([8.0, 0.0, 0.0]),
+        "the step did not play at the body"
+    );
+    assert!(
+        starts[0].gain < Cue::RemoteStepGrass.def().gain,
+        "8 m away did not attenuate"
+    );
+    // Past the radius: no voice at all, not a quiet one — and not counted
+    // as starvation, because a cue nobody could hear was never owed a slot.
+    let mut m = Mixer::new();
+    m.push(Request::at(
+        Cue::RemoteStepGrass,
+        [Cue::RemoteStepGrass.def().radius_m + 1.0, 0.0, 0.0],
+    ));
+    assert!(
+        m.tick(16.0, AT_ORIGIN, 0, &mix).is_empty(),
+        "a step past its radius was heard"
+    );
+    assert_eq!(m.starved, 0, "a culled step was counted as starvation");
 }
 
 // ---------------------------------------------------------------------------

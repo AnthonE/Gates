@@ -752,6 +752,9 @@ impl Plugin for GatesRenderPlugin {
                 audio::place,
                 audio::hurt,
                 audio::steps,
+                // Everyone else's, off the interpolated bodies `Stream`
+                // just moved — positional, culled by the mixer's falloff.
+                audio::remote_steps,
                 audio::fell,
                 // The pig's voice, off the herd `mobs::stream` just moved.
                 audio::pigs,

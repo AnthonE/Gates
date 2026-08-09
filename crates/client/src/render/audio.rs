@@ -243,6 +243,47 @@ pub fn steps(
     sound.play(Request::own(cue).with_gain(step.gain));
 }
 
+/// One remote body's step odometer — the same `sound::steps::Steps` the
+/// local player runs, one per drawn body, carried as a component so it dies
+/// with the entity and a body that leaves AOI and returns starts fresh (no
+/// map to sweep, no reset to remember). `bodies::stream` inserts it at
+/// spawn.
+#[derive(Component, Default)]
+pub struct RemoteSteps(pub Steps);
+
+/// Another player's footsteps — the sound that decides fights, and until
+/// this system nothing produced it: only the local body has a predictor,
+/// so a remote's cadence comes off the same distance-integrated odometer
+/// fed the INTERPOLATED transform `bodies::stream` just wrote (this runs
+/// after `Stream`). The surface is `terrain::splat` at THEIR position, the
+/// cue is the local family's positional twin (`steps::remote`), and "only
+/// nearby" is the mixer's own falloff at the cue's radius — the falling
+/// tree's pattern: push with a position, let the one distance law cull.
+///
+/// Two honest gaps, both the wire's: there is no grounded bit (`NOW.md`
+/// §0v item 1), so a jumping remote ticks the odometer by the horizontal
+/// half of its arc; and a teleport (death, respawn) reads as ground
+/// covered, which the odometer's own hitch cap bounds at ONE step. A
+/// sleeper stands still and the speed floor keeps it silent for free.
+pub fn remote_steps(
+    world: Res<super::WorldId>,
+    time: Res<Time>,
+    mut bodies: Query<(&Transform, &mut RemoteSteps), With<super::bodies::Body>>,
+    mut sound: ResMut<Sound>,
+) {
+    let dt = time.delta_secs();
+    for (t, mut steps) in bodies.iter_mut() {
+        let pos = [t.translation.x, t.translation.y, t.translation.z];
+        let Some(step) = steps.0.sample(pos, true, dt) else {
+            continue;
+        };
+        let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
+        let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
+        let cue = crate::sound::steps::remote(crate::sound::steps::surface_cue(splat, below_sea));
+        sound.play(Request::at(cue, pos).with_gain(step.gain));
+    }
+}
+
 /// This frame's own-facts, as cues.
 ///
 /// **Reads [`super::feed::Feed`]; pops nothing.** It used to pop the core's
