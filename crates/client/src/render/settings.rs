@@ -16,10 +16,20 @@
 //! meter is undrawn, not drawn empty", and the same rule the intro screen
 //! obeys when it says why the shard list is empty rather than showing nothing.
 //!
-//! **Nothing here is persisted yet.** Settings live for the run and go back to
-//! their defaults on the next launch; a config file is its own slice (a path,
-//! a format, and a version for when a knob is renamed). Said in the footer, so
-//! the screen does not quietly forget on the player's behalf.
+//! **Settings persist.** `crate::config` owns the file — the path (the
+//! platform's config dir), the format (hand-rolled `key = value` TOML, the
+//! server's `shard.toml` precedent), the `version` field for when a knob is
+//! renamed, and the ignore-and-preserve policy for a key this build does not
+//! know. This module owns the Bevy half: [`load`] runs once at plugin build,
+//! before the first frame that applies anything, and [`save_on_change`]
+//! writes on every real change rather than at exit — a crash must not cost
+//! the player their settings, and a change is a click, not a hot path. What
+//! comes off disk is sanitized HERE, beside the steppers' own bounds: a
+//! hand-edited `fov_deg = 500` is clamped exactly where a clicked one would
+//! be, so the file cannot reach a state the screen cannot. The footer names
+//! the file, or says when nothing is being saved (a capture run, a box with
+//! no config dir) — the screen does not quietly forget on the player's
+//! behalf, and it does not quietly claim to remember either.
 //!
 //! **One thing this screen deliberately cannot do is touch the sim.** Every
 //! field below changes how the client draws or how the mouse maps to a view
@@ -31,6 +41,8 @@
 
 use bevy::prelude::*;
 use bevy::window::{PresentMode, PrimaryWindow, WindowMode};
+
+use crate::config::{self, Persisted};
 
 use super::menu::Screen;
 use super::rig::{EyeCam, FOV_DEG};
@@ -170,6 +182,106 @@ impl Settings {
             Knob::VolAmbience => pct(self.vol_ambience),
         }
     }
+
+    /// The eight values that go to disk — everything a player set, none of
+    /// the UI state (`cat`, `back`, `dirty` describe this run's screen, not
+    /// the player's choices).
+    fn persisted(&self) -> Persisted {
+        Persisted {
+            fov_deg: self.fov_deg,
+            sensitivity: self.sensitivity,
+            invert_look: self.invert_look,
+            vsync: self.vsync,
+            fullscreen: self.fullscreen,
+            vol_master: self.vol_master,
+            vol_game: self.vol_game,
+            vol_ambience: self.vol_ambience,
+        }
+    }
+
+    /// A loaded file, sanitized against the SAME bounds the steppers
+    /// enforce. `config::parse` already refused non-finite floats; the range
+    /// and the step live here, beside the controls, so a hand-edited file
+    /// cannot reach a value a hundred clicks cannot — `fov_deg = 500` loads
+    /// as 110, and an off-step sensitivity is rounded exactly as a click
+    /// would round it, because the screen prints the step's precision.
+    fn from_persisted(p: Persisted) -> Self {
+        let step = |v: f32, s: f32| (v / s).round() * s;
+        Self {
+            fov_deg: p.fov_deg.clamp(FOV_MIN_DEG, FOV_MAX_DEG),
+            sensitivity: step(p.sensitivity, SENS_STEP).clamp(SENS_MIN, SENS_MAX),
+            invert_look: p.invert_look,
+            vsync: p.vsync,
+            fullscreen: p.fullscreen,
+            vol_master: step(p.vol_master, VOL_STEP).clamp(0.0, 1.0),
+            vol_game: step(p.vol_game, VOL_STEP).clamp(0.0, 1.0),
+            vol_ambience: step(p.vol_ambience, VOL_STEP).clamp(0.0, 1.0),
+            ..Self::default()
+        }
+    }
+}
+
+/// What is on the disk right now, held so [`save_on_change`] can tell a real
+/// change from a rebuild flag — `dirty` is also set by picking a rail row,
+/// which changes nothing worth a write. Only inserted when there is a file
+/// to keep: a capture run never gets one (frames must not depend on the
+/// box's config, so it loads nothing and saves nothing), and neither does a
+/// box whose environment names no config dir.
+#[derive(Resource)]
+pub struct Disk {
+    path: std::path::PathBuf,
+    /// The loaded file's version — carried so a save under a newer file
+    /// keeps its stamp (`config::serialize` takes the max).
+    version: u32,
+    /// Another build's keys, preserved verbatim (`crate::config`'s policy).
+    unknown: Vec<String>,
+    /// The sanitized view of what was loaded, NOT the raw file: an
+    /// out-of-range value on disk is corrected in memory at load and on disk
+    /// only at the player's next change — a boot must not write.
+    written: Persisted,
+}
+
+/// Read the settings file once, before the first frame that applies
+/// anything. Missing or corrupt is the defaults, silently; no resolvable
+/// path is the defaults with persistence off for the run (`None`).
+pub fn load() -> (Settings, Option<Disk>) {
+    let Some(path) = config::settings_path() else {
+        return (Settings::default(), None);
+    };
+    let loaded = config::load(&path, Settings::default().persisted());
+    let settings = Settings::from_persisted(loaded.values);
+    let disk = Disk {
+        path,
+        version: loaded.version,
+        unknown: loaded.unknown,
+        written: settings.persisted(),
+    };
+    (settings, Some(disk))
+}
+
+/// Save on change, not on exit: a crash must not cost the player their
+/// settings, and a change is a click on a menu screen, not a hot path — the
+/// write is a few hundred bytes behind a change-detection early-out and a
+/// field compare, so an idle frame pays one branch.
+pub fn save_on_change(settings: Res<Settings>, disk: Option<ResMut<Disk>>) {
+    let Some(mut disk) = disk else {
+        return;
+    };
+    if !settings.is_changed() {
+        return;
+    }
+    let now = settings.persisted();
+    if now == disk.written {
+        return;
+    }
+    let text = config::serialize(&now, disk.version, &disk.unknown);
+    match config::save(&disk.path, &text) {
+        Ok(()) => disk.written = now,
+        // Warn and keep `written` as it was, so the next change retries.
+        // Never a panic and never a dialog: a full disk must not cost the
+        // player the fov they just picked, only its survival.
+        Err(e) => warn!("gates: settings not saved - {e}"),
+    }
 }
 
 /// One click of a volume slider, rounded onto the step and clamped to 0..1.
@@ -281,7 +393,12 @@ pub struct Adjust {
     pub delta: i32,
 }
 
-pub fn setup(mut commands: Commands, settings: Res<Settings>, cameras: Query<(), With<Camera>>) {
+pub fn setup(
+    mut commands: Commands,
+    settings: Res<Settings>,
+    disk: Option<Res<Disk>>,
+    cameras: Query<(), With<Camera>>,
+) {
     // Entered from the Esc menu there is a `Camera3d` up and the UI draws
     // against it; entered from the intro screen the menu's own camera went
     // with the menu. Two cameras would fight for the frame and Bevy would
@@ -289,7 +406,7 @@ pub fn setup(mut commands: Commands, settings: Res<Settings>, cameras: Query<(),
     if cameras.is_empty() {
         commands.spawn((SettingsRoot, SettingsCamera, Camera2d));
     }
-    build(&mut commands, &settings);
+    build(&mut commands, &settings, disk.as_deref());
 }
 
 /// Rebuild after a click. Both the rail's selection and every drawn value are
@@ -299,6 +416,7 @@ pub fn setup(mut commands: Commands, settings: Res<Settings>, cameras: Query<(),
 pub fn rebuild(
     mut commands: Commands,
     mut settings: ResMut<Settings>,
+    disk: Option<Res<Disk>>,
     roots: Query<Entity, (With<SettingsRoot>, Without<SettingsCamera>)>,
 ) {
     if !settings.dirty {
@@ -308,15 +426,23 @@ pub fn rebuild(
     for e in roots.iter() {
         commands.entity(e).despawn();
     }
-    build(&mut commands, &settings);
+    build(&mut commands, &settings, disk.as_deref());
 }
 
 /// The screen, as a plain function so `setup` and `rebuild` are provably the
 /// same drawing — the shape `menu::build` already uses for the same reason.
-fn build(commands: &mut Commands, settings: &Settings) {
+fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
     let back = match settings.back {
         Screen::Paused => "Esc goes back to the game",
         _ => "Esc goes back to the server list",
+    };
+    // The footer names the file, or says that nothing is being kept — the
+    // honest states are "saved to <path>" and "not saved this run" (a
+    // capture run, or a box whose environment names no config dir), and the
+    // screen must not claim the wrong one.
+    let saved = match disk {
+        Some(d) => format!("saved to {}", d.path.display()),
+        None => "settings are not being saved this run".to_string(),
     };
 
     commands
@@ -409,11 +535,7 @@ fn build(commands: &mut Commands, settings: &Settings) {
                 });
 
             root.spawn((
-                ui::label(
-                    format!("{back}    -    nothing here is saved between runs yet"),
-                    12.0,
-                    ui::FAINT,
-                ),
+                ui::label(format!("{back}    -    {saved}"), 12.0, ui::FAINT),
                 Node {
                     margin: UiRect::new(Val::Px(34.0), Val::Px(0.0), Val::Px(0.0), Val::Px(16.0)),
                     ..default()
@@ -669,5 +791,58 @@ mod tests {
         // whose default is owned somewhere else.
         assert_eq!(Settings::default().fov_deg, FOV_DEG);
         assert_eq!(Settings::default().sensitivity, 1.0);
+    }
+
+    #[test]
+    fn what_a_player_set_survives_a_round_trip() {
+        // The whole slice in one assertion: walk every knob off its default,
+        // serialize what would be written, parse it back over the defaults,
+        // and the settings that come up are the settings that were set.
+        let mut s = Settings::default();
+        s.adjust(Knob::Fov, 2);
+        s.adjust(Knob::Sensitivity, -3);
+        s.adjust(Knob::InvertLook, 0);
+        s.adjust(Knob::Vsync, 0);
+        s.adjust(Knob::Fullscreen, 0);
+        s.adjust(Knob::VolMaster, -2);
+        s.adjust(Knob::VolGame, -5);
+        s.adjust(Knob::VolAmbience, -10);
+        let text = config::serialize(&s.persisted(), config::SETTINGS_VERSION, &[]);
+        let back =
+            Settings::from_persisted(config::parse(&text, Settings::default().persisted()).values);
+        assert_eq!(back.persisted(), s.persisted(), "{text}");
+    }
+
+    #[test]
+    fn a_hand_edited_file_cannot_reach_what_a_hundred_clicks_cannot() {
+        // `config::parse` already refused non-finite floats; this is the
+        // range half, applied at load beside the steppers' own bounds. The
+        // clamp is the same call `adjust` makes, so the two paths cannot
+        // disagree about where the ends are.
+        let wild = Persisted {
+            fov_deg: 500.0,
+            sensitivity: -2.0,
+            vol_master: 7.0,
+            vol_game: -0.4,
+            // Off the step: the screen prints tenths, so the file loads tenths.
+            vol_ambience: 0.44,
+            ..Settings::default().persisted()
+        };
+        let s = Settings::from_persisted(wild);
+        assert_eq!(s.fov_deg, FOV_MAX_DEG);
+        assert_eq!(s.sensitivity, SENS_MIN);
+        assert_eq!(s.vol_master, 1.0);
+        assert_eq!(s.vol_game, 0.0);
+        assert_eq!(s.value(Knob::VolAmbience), "40%");
+    }
+
+    #[test]
+    fn loading_the_defaults_changes_nothing() {
+        // A fresh boot must be byte-for-byte the old behaviour: no file is
+        // the defaults, and the defaults sanitized are still the defaults —
+        // a default off its own step would mean every boot "changed" a value
+        // and the first click wrote a file the player never asked for.
+        let d = Settings::default().persisted();
+        assert_eq!(Settings::from_persisted(d).persisted(), d);
     }
 }

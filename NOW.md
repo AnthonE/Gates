@@ -878,10 +878,16 @@ Remaining, in order:
    Until it is wired, the four menu screens are covered only by unit tests and
    nothing photographs one — and a menu vantage is now cheaper than it was,
    because the capture harness passes THROUGH `Loading`.
-4. **Settings are forgotten on exit.** `settings.rs` holds five working
-   settings and writes none of them: a config path, a format and a version for
-   when a knob is renamed is its own slice, and the footer says so rather than
-   pretending. `DECISIONS.md` §open "settings v0" is the row.
+4. **Settings persist now** (client lane, 2026-08-09). `crate::config` owns
+   the file: hand-rolled `key = value` TOML (the `shard.toml` precedent, no
+   new dep) at the platform config dir — `~/.config/gates/settings.toml` here
+   — with `version = 1` and unknown keys preserved, so an older build cannot
+   strip a newer one's knob. Loaded once before the first frame, sanitized
+   against the steppers' own bounds, saved on change rather than exit;
+   missing or corrupt is the defaults, silently, and a `--capture` run
+   neither loads nor saves. Gates: `config::tests` (code tier) and
+   `render::settings::tests`. `DECISIONS.md` §open "settings v0" has the
+   policy in full.
 5. **No `Screen::Disconnected`.** A shard that drops the session mid-play still
    leaves the client sitting in a dead world — `pause::Disconnect` is a verb
    the *player* takes, and the involuntary half has no state. `world_teardown`

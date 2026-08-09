@@ -317,12 +317,28 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<highlight::Highlight>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
-            .init_resource::<Settings>()
             .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
             .init_resource::<audio::LastHp>()
             .init_resource::<water::Sea>()
             .insert_non_send_resource(menu::Connecting::default());
+
+        // Settings come off disk ONCE, here — before the first frame, so the
+        // fov, vsync and volumes a player picked last run are what the first
+        // frame applies (`settings::apply_view`/`apply_window` run every
+        // Update). A capture run loads nothing and saves nothing: the visual
+        // gate's frames must not depend on the box's config file, so it takes
+        // the defaults and gets no `Disk` — which is also what makes
+        // `save_on_change` a no-op there.
+        if self.capture.is_none() {
+            let (settings, disk) = settings::load();
+            app.insert_resource(settings);
+            if let Some(disk) = disk {
+                app.insert_resource(disk);
+            }
+        } else {
+            app.init_resource::<Settings>();
+        }
 
         // `Menu` is inserted either way, because a system that reads it must
         // not care which door the app came through — and the disconnect that
@@ -480,7 +496,9 @@ impl Plugin for GatesRenderPlugin {
         // The two `apply_*` systems are deliberately NOT gated on the screen
         // being open: a setting is a property of the client, not of the panel
         // that changed it, and the camera it applies to may not exist until
-        // two states later.
+        // two states later. `save_on_change` is ungated for the same reason —
+        // it watches the resource, not the screen — and it self-gates on the
+        // `Disk` resource, which a capture run never gets.
         app.add_systems(OnEnter(Screen::Settings), settings::setup)
             .add_systems(OnExit(Screen::Settings), settings::teardown)
             .add_systems(
@@ -489,7 +507,14 @@ impl Plugin for GatesRenderPlugin {
                     .chain()
                     .run_if(in_state(Screen::Settings)),
             )
-            .add_systems(Update, (settings::apply_view, settings::apply_window));
+            .add_systems(
+                Update,
+                (
+                    settings::apply_view,
+                    settings::apply_window,
+                    settings::save_on_change,
+                ),
+            );
 
         // One hover handler for every screen that has buttons on it.
         app.add_systems(Update, ui::hover);

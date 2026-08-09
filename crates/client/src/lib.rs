@@ -15,6 +15,12 @@
 //! against the same shard, at the same `PROTO_VER`.
 
 pub mod args;
+// The settings file: path, format, version, and the unknown-key policy. NOT
+// feature-gated, for `ui`'s reason exactly: parse and serialize are pure, and
+// a test behind `--features render` runs in the renderer tier where nobody
+// looks at it. `render/settings.rs` is the Bevy half (load once, save on
+// change). The server-side precedent is `server/src/config.rs`.
+pub mod config;
 // Which way is right. Pure and unconditional for the same reason `ui` is:
 // the mapping from a keypress to a wire axis is arithmetic, it was WRONG
 // (see the module header), and a mapping that lives inside a Bevy system is
