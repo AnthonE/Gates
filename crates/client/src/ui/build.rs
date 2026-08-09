@@ -79,6 +79,25 @@ pub fn shape_blurb(shape: u8) -> &'static str {
     }
 }
 
+/// The icon file for a shape. Separate from [`shape_label`] because a label
+/// is prose and a stem is an asset name.
+///
+/// **Here rather than beside the draw** (where it lived until the hammer
+/// wheel got its own glyphs) for `ui::icons`' stated reason: a stem map can
+/// be silently wrong, and being wrong draws an empty wedge, so it belongs
+/// where a headless test can check it against what `assets/icons/` ships.
+/// `tests/ui.rs` §G does.
+pub fn shape_icon(shape: u8) -> &'static str {
+    match shape {
+        SHAPE_FOUNDATION => "shape_foundation",
+        SHAPE_WALL => "shape_wall",
+        SHAPE_DOORWAY => "shape_doorway",
+        SHAPE_FLOOR => "shape_floor",
+        SHAPE_STAIRS => "shape_stairs",
+        _ => "shape_roof",
+    }
+}
+
 pub fn material_label(material: u8) -> &'static str {
     match material {
         MAT_WOOD => "Wood",

@@ -73,6 +73,10 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `sulfur_ore.png` | `lorc/crystal-cluster` |
 | `tarp.png` | `delapouite/camping-tent` |
 | `torch.png` | `delapouite/torch` |
+| `verb_demolish.png` | `lorc/demolish` |
+| `verb_pick_up.png` | `lorc/grab` |
+| `verb_repair.png` | `lorc/auto-repair` |
+| `verb_upgrade.png` | `delapouite/upgrade` |
 | `wood.png` | `delapouite/log` |
 | `wooden_arrow.png` | `delapouite/plain-arrow` |
 | `wooden_door.png` | `delapouite/door` |

@@ -61,6 +61,24 @@ pub fn label(v: Verb) -> &'static str {
     }
 }
 
+/// The icon file for a verb — the shape wheel's
+/// [`super::build::shape_icon`] for the second ring.
+///
+/// A stem is an asset name and a label is prose, so they are two functions
+/// even though today they cover the same four cases. The gate is
+/// `tests/ui.rs` §G: every stem named here has to be a file `assets/icons/`
+/// actually ships, because a miss here is not a crash — `Icons::verb`
+/// returns `None` and the wedge quietly falls back to its label, which is
+/// the wheel it had before these were baked.
+pub fn verb_icon(v: Verb) -> &'static str {
+    match v {
+        Verb::Upgrade => "verb_upgrade",
+        Verb::Repair => "verb_repair",
+        Verb::Demolish => "verb_demolish",
+        Verb::PickUp => "verb_pick_up",
+    }
+}
+
 /// The centre's one-liner, the shape wheel's `shape_blurb` for verbs.
 pub fn blurb(v: Verb) -> &'static str {
     match v {

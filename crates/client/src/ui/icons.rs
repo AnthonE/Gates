@@ -36,14 +36,19 @@ pub fn stem(name: &str) -> String {
 /// not do I/O to find out what it has — and because a gate can then compare
 /// it against the directory and fail on either half drifting
 /// (`tests/ui.rs` §G).
-pub const STEMS: [&str; 58] = [
-    // the wheel
+pub const STEMS: [&str; 62] = [
+    // the shape wheel
     "shape_foundation",
     "shape_wall",
     "shape_doorway",
     "shape_floor",
     "shape_stairs",
     "shape_roof",
+    // the hammer wheel's verbs (`ui::hammer::verb_icon`)
+    "verb_upgrade",
+    "verb_repair",
+    "verb_demolish",
+    "verb_pick_up",
     // items, by normalised display name
     "wood",
     "stone",
@@ -94,9 +99,11 @@ pub const STEMS: [&str; 58] = [
     "berries",
     "mushrooms",
     "corn",
-    // The food loop's states. Their PNGs are the only three in
-    // `assets/icons/` that are not game-icons.net — see that directory's
-    // `CREDITS.md`.
+    // The food loop's states. `burnt_meat` is the one PNG in
+    // `assets/icons/` that is not game-icons.net — the archive has none, so
+    // it is ours. The other two were briefly ours as well and are archive
+    // icons again; `CREDITS.md` draws the line, and this comment claimed all
+    // three until 2026-08-09.
     "raw_meat",
     "cooked_meat",
     "burnt_meat",

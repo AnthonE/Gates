@@ -39,8 +39,8 @@ use client_core::core::ClientCore;
 use super::{font, font_bold, ring, Panel, Ui, BADGE, TEXT_DIM, TEXT_SHORT};
 use crate::render::icons::Icons;
 use crate::ui::build::{
-    costs, material_label, row_for, segment_angle, shape_blurb, shape_label, Rings, PLACE_MATERIAL,
-    SHAPES,
+    costs, material_label, row_for, segment_angle, shape_blurb, shape_icon, shape_label, Rings,
+    PLACE_MATERIAL, SHAPES,
 };
 use crate::ui::craft::item_label;
 use crate::ui::hammer;
@@ -227,10 +227,11 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
 /// answer to "what will the release do" and this wheel fires on release
 /// rather than latching. No wedge lit, nothing fires.
 ///
-/// The wedges carry their labels as text — no verb icons are baked
-/// (`ui::icons::STEMS` is items and shapes), and `glyph`'s fallback is
-/// exactly this case.
-pub fn build_hammer_screen(commands: &mut Commands, ui: &Ui) {
+/// The wedges carry icons (`ui::hammer::verb_icon`), as the shape wheel's
+/// do. They were text until 2026-08-09 — `glyph`'s label fallback, which is
+/// still the path when a stem has no file — and four words in four wedges is
+/// the reading, not scanning, defect `render::icons` was written about.
+pub fn build_hammer_screen(commands: &mut Commands, ui: &Ui, icons: &Icons) {
     let rings = Rings::default();
 
     commands
@@ -289,13 +290,34 @@ pub fn build_hammer_screen(commands: &mut Commands, ui: &Ui) {
                     Pickable::IGNORE,
                 ))
                 .with_children(|c| {
-                    let (name, line) = match ui.hover {
-                        Some(i) => {
-                            let v = hammer::VERBS[i.min(hammer::VERBS.len() - 1)];
-                            (hammer::label(v), hammer::blurb(v))
-                        }
+                    // Clamped once: the readout's words and its glyph have to
+                    // name the same verb, and two copies of the same bound is
+                    // how they would come to disagree.
+                    let verb = ui.hover.map(|i| hammer::VERBS[i.min(hammer::VERBS.len() - 1)]);
+                    let (name, line) = match verb {
+                        Some(v) => (hammer::label(v), hammer::blurb(v)),
                         None => ("Hammer", "sweep to a verb"),
                     };
+                    // The chosen verb's own glyph over its name, the way the
+                    // shape wheel's `readout` puts the piece's over its. Only
+                    // while a wedge is hovered: with nothing chosen there is
+                    // no verb to draw, and the ring behind is already showing
+                    // all four.
+                    if let Some(image) = verb.and_then(|v| icons.verb(hammer::verb_icon(v))) {
+                        c.spawn((
+                            Node {
+                                width: Val::Px(34.0),
+                                height: Val::Px(34.0),
+                                ..default()
+                            },
+                            ImageNode {
+                                image,
+                                color: Color::srgb(0.82, 0.25, 0.16),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ));
+                    }
                     c.spawn((
                         Text::new(name.to_string()),
                         font_bold(18.0),
@@ -321,9 +343,13 @@ pub fn build_hammer_screen(commands: &mut Commands, ui: &Ui) {
                         (rings.dead + rings.rim) * 0.5,
                         segment_angle(i, hammer::VERBS.len()),
                         38.0,
-                        None,
+                        icons.verb(hammer::verb_icon(*v)),
                         hammer::label(*v),
                         ui.hover == Some(i),
+                        // Every verb is always live. Whether THIS structure
+                        // can take it is `hammer::act`'s answer at release,
+                        // and it needs `verbs::Near`, which this draw does
+                        // not hold — so a greyed wedge here would be a guess.
                         true,
                     );
                 }
@@ -368,20 +394,6 @@ fn plate(parent: &mut ChildSpawnerCommands, rings: Rings, image: Handle<Image>) 
         // The wheel is picked by arithmetic, never by nodes.
         Pickable::IGNORE,
     ));
-}
-
-/// The icon file for a shape and for a material. Separate from
-/// `shape_label` because a label is prose and a stem is an asset name — and
-/// because `icons::STEMS` has to be greppable for the gate.
-fn shape_icon(shape: u8) -> &'static str {
-    match shape {
-        sim_core::build::SHAPE_FOUNDATION => "shape_foundation",
-        sim_core::build::SHAPE_WALL => "shape_wall",
-        sim_core::build::SHAPE_DOORWAY => "shape_doorway",
-        sim_core::build::SHAPE_FLOOR => "shape_floor",
-        sim_core::build::SHAPE_STAIRS => "shape_stairs",
-        _ => "shape_roof",
-    }
 }
 
 /// One glyph on a ring, placed along its segment's centre angle.
