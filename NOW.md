@@ -553,9 +553,14 @@ crate-wide, but its *contiguity* claim is file-local.
 - **Dropped loot should land somewhere you can find, not inside the floor**
   — and `gather::inv_add` still loses overflow, a documented policy
   (`DECISIONS.md` §open) pointing at exactly this slice.
-- **Mushrooms and corn are still unreachable**, deliberately: they want a
-  forest-floor pickup and a farming lane respectively, and inventing either
-  to satisfy the content wall would have been inventing content.
+- **Mushrooms and corn drop now** (2026-08-09, content rows only): the
+  tree's secondary pays 1 mushroom a swing — the forest floor through the
+  tree that shades it — and the coast-road barrel rolls a 2–4 corn ration.
+  `content.rs::every_consumable_the_content_ships_is_reachable` gates the
+  general form (every consumable producible by a live verb chain). Still
+  owed, and both are code: a standalone forest-floor pickup archetype and a
+  farming lane; plus the cache/crate open verb before loot-only food could
+  sit at a destination — the gate deliberately counts barrel rows alone.
 - **Day/night does not exist.** `DESIGN.md` §2 pairs it with the survival
   clock; nothing in `crates/` reads a time of day.
 
