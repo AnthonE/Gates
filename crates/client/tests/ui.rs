@@ -1426,7 +1426,9 @@ fn the_operators_three_names_read_as_abbreviations_not_typos() {
 fn no_emitted_word_exceeds_the_line_budget() {
     // Names off the content's own shape: multi-word, long single words, and
     // the degenerate budgets. Every word of every result fits its line, so
-    // the clip never gets to cut mid-glyph.
+    // the clip never gets to cut mid-glyph. Budget 1 is in the sweep since
+    // the guard landed: it used to emit a 2-char `X.`, and the sweep used
+    // to start at 2 — the contract and its gate had the same blind spot.
     for name in [
         "Metal Fragments",
         "Low Grade Fuel",
@@ -1434,7 +1436,7 @@ fn no_emitted_word_exceeds_the_line_budget() {
         "Antidisestablishmentarianism",
         "a",
     ] {
-        for budget in [2usize, 4, 7, 12] {
+        for budget in [1usize, 2, 4, 7, 12] {
             let out = craft::cell_abbrev(name, budget);
             for word in out.split(' ') {
                 assert!(
@@ -1444,6 +1446,18 @@ fn no_emitted_word_exceeds_the_line_budget() {
             }
         }
     }
+}
+
+#[test]
+fn a_one_character_budget_keeps_the_glyph_and_drops_the_marker() {
+    // No room for `.`: the first glyph alone is the only emission that
+    // holds the budget, and it beats a lone `.` that says nothing.
+    assert_eq!(craft::cell_abbrev("Gunpowder", 1), "G");
+    assert_eq!(craft::cell_abbrev("Metal Fragments", 1), "M F");
+    // Chars, not bytes, in the degenerate case too.
+    assert_eq!(craft::cell_abbrev("Ébénisterie", 1), "É");
+    // A word that fits a budget of one still passes through untouched.
+    assert_eq!(craft::cell_abbrev("a", 1), "a");
 }
 
 #[test]
