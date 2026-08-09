@@ -135,14 +135,17 @@ ITEMS = {
 # Fuel" — so this is derived from `content/items.toml` rather than typed out,
 # and a rename that broke it would break it loudly here instead of silently
 # in a cell.
-# The two icons that are OURS, and the reason they exist.
+# The icons that are OURS, and the reason they exist.
 #
 # `raw_meat` and `cooked_meat` are not in the archive's table because they
 # could not be rasterised from it: game-icons.net is behind this session's
 # egress policy, the same block `DECISIONS.md` 2026-08-07 records for every
 # 3D asset host, and the food loop needed two pictures the day it landed.
-# They are authored SVGs in `ci/icons/`, committed so they regenerate, drawn
-# in the archive's own 512-unit box at the archive's own weight.
+# `burnt_meat` followed by the same route for the same reason — the burnt
+# state's item could not land without a picture (NOW.md §0v records the
+# park), and the archive is still unreachable. They are authored SVGs in
+# `ci/icons/`, committed so they regenerate, drawn in the archive's own
+# 512-unit box at the archive's own weight.
 #
 # They are kept in a SEPARATE map rather than dropped into `ITEMS` because
 # the CC BY notice below is generated from that map: sweeping our own art
@@ -151,6 +154,7 @@ ITEMS = {
 OURS = {
     "raw_meat": "raw_meat",
     "cooked_meat": "cooked_meat",
+    "burnt_meat": "burnt_meat",
 }
 OURS_SRC = ROOT / "ci/icons"
 

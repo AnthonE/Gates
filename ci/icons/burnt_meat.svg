@@ -1,0 +1,50 @@
+<!--
+  Burnt Meat — ours, not game-icons.net. See `raw_meat.svg` for why these
+  are authored rather than rasterised from the archive.
+
+  **The cooked glyph, cracked.** The pair's grammar is one item read as
+  states: raw is the plain haunch, cooked is the same haunch giving off
+  heat, and burnt keeps the steam — it just came off the same fire — and
+  changes exactly one thing again: the meat is split by char cracks. So a
+  player reading the three side by side sees one item advance, never
+  three items.
+
+  The cracks are HOLES, not black paint: every icon in the set is
+  white-on-transparent and the client tints white pixels at the draw
+  (`ImageNode.color`), so a black stroke would ship as black under every
+  tint. cairosvg does not implement `<mask>` (verified: a masked rect
+  renders unmasked), so the haunch is `raw_meat.svg`'s ellipse rewritten
+  as two arcs in one `fill-rule="evenodd"` path with two jagged crack
+  polygons as subpath holes, kept strictly inside the meat — evenodd
+  would FILL the part of a hole that crossed the silhouette. ~28 units
+  wide before the group's 0.86, about 2 px in a 44 px hotbar cell;
+  anything finer dissolves.
+
+  No attribution is owed for this file; `assets/icons/CREDITS.md` says so.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <g fill="#fff">
+    <!-- Steam: `cooked_meat.svg`'s three wisps, unchanged — the state
+         change lives in the meat, nowhere else. -->
+    <g fill="none" stroke="#fff" stroke-width="30" stroke-linecap="round">
+      <path d="M150 132c-26-22 26-40 0-62"/>
+      <path d="M250 108c-26-26 26-46 0-72"/>
+      <path d="M350 132c-26-22 26-40 0-62"/>
+    </g>
+    <!-- The bone: `cooked_meat.svg`'s, verbatim. The cracks stop at the
+         meat — a cracked BONE would be a different item. -->
+    <g transform="translate(36 132) scale(0.86)">
+      <path d="M262 262 L392 132" stroke="#fff" stroke-width="52" stroke-linecap="round" fill="none"/>
+      <circle cx="404" cy="96" r="42"/>
+      <circle cx="440" cy="132" r="42"/>
+      <!-- The haunch: the same ellipse (cx 212, cy 312, rx 152, ry 128,
+           rotated -38°) as the endpoints of its major axis joined by two
+           half-ellipse arcs, then the two crack holes. Zigzags on
+           purpose — a straight slash reads as a knife cut, a zigzag
+           reads as split char. -->
+      <path fill-rule="evenodd" d="M331.8 218.4 A152 128 -38 0 1 92.2 405.6 A152 128 -38 0 1 331.8 218.4 Z
+        M155 230 L183 290 L137 352 L165 416 L191 416 L163 352 L209 290 L181 230 Z
+        M249 246 L227 306 L267 362 L293 362 L253 306 L275 246 Z"/>
+    </g>
+  </g>
+</svg>

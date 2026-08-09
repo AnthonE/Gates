@@ -220,12 +220,17 @@ cook; the pig drops `item.raw_meat`, and closing it took the shape this
 item had predicted — one `[[cook]]` row, one consumable row, no code. The fire's other job, fuel → charcoal, is
 unchanged and is still the T0 source for the powder chain.
 
-Still open here, and it is now the cheap one:
-
-- **The burnt state.** Reference-true and free now that food exists: a
-  burnt row is a cook row whose input is the cooked item, so it is content
-  and not a mechanic. It could not be demonstrated before there was a
-  cooked item to overcook, and now there is.
+- **The burnt state — LANDED 2026-08-09** (`lane/burnt-unblock`), on the
+  second try: built and verified 2026-08-08 (`36a8dad`), parked because a
+  content-only lane cannot add an item — `ui.rs`'s
+  `every_item_in_the_content_has_an_icon` spans content and client, so the
+  unblock took a lane that owns both. The rows are the predicted shape
+  (`item.burnt_meat`; cooked → burnt at the fire's own 20 s; 5 food / 0 hp
+  / 2 s, strictly-worst food asserted as an ordering by
+  `content.rs::the_meal_left_on_the_fire_burns`). The icon is
+  **authored-ours** (`ci/icons/burnt_meat.svg` — the cooked glyph plus
+  char cracks) pending archive art, the meat pair's own posture (§0m): the
+  swap is a mapping move in `ci/bake_icons.py` and nothing else.
 
 Also still open, and deliberately: the furnace's ore rows are still
 station-gated crafts in `recipes.toml`. Moving them into the oven is the
