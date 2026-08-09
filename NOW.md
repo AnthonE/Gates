@@ -195,9 +195,13 @@ Owed, in rank order — `reference/ANIMALS.md` §9.5 has the reasoning:
 2. **Nothing fights back.** Needs a mob→player damage path, a new death
    cause on the wire, and a combat-feel answer to being hit by something you
    cannot reliably hit back.
-3. **No sound.** `sound/synth.rs` generates the bank at boot and has no
-   voice for an animal; the reference identifies a boar by its snorting
-   before you see it.
+3. ~~**No sound.**~~ **DONE 2026-08-09** — `Cue::Snort` in the generated
+   bank (two nasal exhales fluttered at ~26 Hz over a falling grunt) and a
+   positional producer off the drawn herd (`audio::pigs`): cadence hashed
+   per roster slot and cycle (`sound/pig.rs`, 4.5–13.5 s), so no metronome
+   and no OS randomness; AOI (208 m) sits inside dormancy (240 m), so a
+   voiced pig is always a simmed pig. `DECISIONS.md` §open "pig voice v0";
+   gated in `tests/sound.rs`. Nobody has heard it — audio v0's caveat holds.
 4. **No animation, and the massing is boxy up close.** Legs do not move, so
    a walking pig slides, and at 8 m the head barely separates from the body
    (captured 2026-08-08). `anim.rs` drives the player rig off a glTF and there is no
@@ -612,15 +616,16 @@ Remaining, in order:
    mixer saw one. No test could see it; each half is correct alone. There is
    now one drain, and `tests/sound.rs` greps `src/render/` for a second
    `pop_*` call site, because the defect is a call site and not a value.
-5. **Four of the nineteen cues have no producer**, which is `MENUS.md` §4's
-   dark-content defect inside a thing that just shipped: `Place`,
-   `ImpactWood`, `ImpactMetal` and `UiClick` are generated, in the table and
-   playable, and nothing asks for them. `Place` is the cheap one now that
-   `structures.rs` streams piece and deploy changes with cells — it is the
-   second positional cue and would exercise that path against something other
-   than a falling tree. The two impacts need to know WHAT was hit, which the
-   gather toast does not say. `UiClick` needs a hook in the per-screen click
-   handlers.
+5. **Three cues still have no producer** (`MENUS.md` §4's dark-content
+   defect inside a thing that just shipped). ~~`Place`~~ **DONE 2026-08-09**
+   — the second positional cue, fired at `base_transform`'s own anchor off a
+   broadcast-only ring in `ClientCore`: `PiecePlaced`/`DeployPlaced` ring it,
+   the sync walks never do, so a join or resync restating N pieces is silent
+   by construction (no timer knob) and `feed::drain` is still the one `pop_*`
+   site. `DECISIONS.md` §open "the place cue has a producer"; gated in
+   `tests/sound.rs`. Remaining: `ImpactWood`/`ImpactMetal` need to know WHAT
+   was hit, which the gather toast does not say, and `UiClick` needs a hook
+   in the per-screen click handlers.
 6. **Remote players are silent.** Only the local body has an odometer, so
    another player's footsteps — the sound that decides fights — do not exist.
    `bodies.rs` has their interpolated transforms; a `Steps` per remote body

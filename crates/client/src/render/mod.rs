@@ -668,9 +668,14 @@ impl Plugin for GatesRenderPlugin {
                 // do by it.
                 audio::water,
                 audio::feed,
+                // The second positional cue: placements off the feed's
+                // broadcast-only ring (the join-flood guard is the core's).
+                audio::place,
                 audio::hurt,
                 audio::steps,
                 audio::fell,
+                // The pig's voice, off the herd `mobs::stream` just moved.
+                audio::pigs,
                 audio::bed,
                 audio::pump,
             )

@@ -35,6 +35,8 @@
 //! did not happen.
 
 pub mod mixer;
+// When a pig speaks. Pure cadence — the render half reads the drawn herd.
+pub mod pig;
 pub mod steps;
 pub mod synth;
 // What water sounds like from where you are standing. `reference/WATER.md` §7
@@ -105,11 +107,17 @@ pub enum Cue {
     /// The submerged bed. Crossfaded in by [`Snapshot::Submerged`], never by
     /// the world directly.
     BedUnder,
+    /// The pig. Appended after the beds rather than beside the other
+    /// diegetic cues, deliberately: every cue's noise is seeded off its own
+    /// discriminant (`synth::render`), so inserting mid-enum would renumber
+    /// everything after it and regenerate waveforms this cue has nothing to
+    /// do with. Discriminant order is append order from here on.
+    Snort,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 22;
+pub const CUE_COUNT: usize = 23;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -140,6 +148,7 @@ impl Cue {
         Cue::BedWind,
         Cue::BedSurf,
         Cue::BedUnder,
+        Cue::Snort,
     ];
 
     /// Is this cue a looping bed?
@@ -192,6 +201,7 @@ impl Cue {
             | Cue::Place
             | Cue::Splash
             | Cue::TreeFall
+            | Cue::Snort
             | Cue::Hurt => 0.07,
             Cue::CraftDone
             | Cue::Refused
@@ -322,6 +332,12 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(AMB,   0.0, 0.30,   0, 0, false),  // wind
     row(AMB,   0.0, 0.34,   0, 0, false),  // surf
     row(AMB,   0.0, 0.40,   0, 0, false),  // submerged
+    // The pig announces itself before you see it (`reference/ANIMALS.md` —
+    // the boar is identified by its snorting), so it carries past the
+    // impacts but nowhere near a falling tree. Priority with the footsteps'
+    // register: ambience, not signal. The cooldown is per-cue, so it is the
+    // herd's stagger, not one animal's — `sound::pig` spaces one animal.
+    row(GAME, 40.0, 0.55, 150, 2, true),   // snort
 ];
 
 /// The five footsteps share every number but their timbre — see [`CUES`].
