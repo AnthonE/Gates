@@ -38,19 +38,18 @@
 //! constants in this file are structure — cadences, caps and the shape of
 //! the walk — and are registered in `DECISIONS.md` §open ("animals v0").
 
+use crate::backpack::{BackpackContent, Backpacks, BAG_Y_OFFSET_Q};
 use crate::collide::ColIndex;
 use crate::combat::{held_item, CombatContent};
 use crate::fmath::fabs;
-use crate::gather::{
-    inv_add, GatherContent, ItemStack, CONE_COS, DY_MAX_M, NO_ITEM, POINT_BLANK_M2,
-};
+use crate::gather::{ItemStack, CONE_COS, DY_MAX_M, NO_ITEM, POINT_BLANK_M2};
 use crate::input::{InputFrame, BTN_SPRINT};
-use crate::limits::{MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS, MOB_WAKE_CM};
+use crate::limits::{INV_SLOTS, MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS, MOB_WAKE_CM};
 use crate::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
 use crate::rng::cell_hash;
 use crate::terrain::{self, Haven};
-use crate::world::{EventQueue, Player, EV_GATHER, EV_HIT};
+use crate::world::{EventQueue, Player, EV_HIT};
 use crate::yaw_lut::yaw_dir;
 
 /// Species ordinals. The wire does not carry one — a client reads the
@@ -111,8 +110,9 @@ pub struct MobDef {
     /// population migrates over a wipe (`reference/SPAWN.md` §3.5). Ours is
     /// the slot model `TERRAIN.md` §2 already applies to trees.
     pub respawn_ticks: u32,
-    /// What the killing blow pays, straight into the killer's inventory.
-    /// `NO_ITEM` ends the table.
+    /// What the corpse holds: the killing blow stands these rows up as a
+    /// ground bag at the death cell (`strike`), and the killer loots it
+    /// like any other bag. `NO_ITEM` ends the table.
     pub loot: [ItemStack; MOB_LOOT_ROWS],
 }
 
@@ -482,24 +482,32 @@ fn think(
 /// player is always the intended target over an animal, and an animal is
 /// always the intended target over the wall behind it.
 ///
-/// The kill pays straight into the killer's inventory as `EV_GATHER`,
-/// which is not a shortcut: that event already means "these units entered
-/// your inventory" for gathering **and** for looting a backpack, the
-/// client already draws it as `+N Item`, and a butchering verb would be a
-/// second verb to design rather than a first animal to shoot. What the
-/// slice therefore does not have is a corpse — a killed pig leaves the
-/// snapshot and is simply gone. `NOW.md` carries that.
+/// **The kill leaves a body, not a payment.** The loot rows stand up as a
+/// ground bag at the death position (`Backpacks::stand_up` — the same
+/// container a player's death, a barrel and a broken box already use), so
+/// the killer walks over and opens it like any bag, and nothing new
+/// crosses the wire. The reference's real interaction is a butchering
+/// *verb* on the corpse — a tool-gated harvest — and that verb now has a
+/// landing place: this bag is where its output would go (`NOW.md` §0m).
+///
+/// Two exits pay nothing, both the bag store's own policy, restated here
+/// because this is a call site wall 4 reads: an **inert ladder**
+/// (`base_ticks == 0`, content that never armed backpacks) stands up no
+/// bag, so a kill under such a set drops nothing rather than inventing a
+/// lifetime; and a **full store** evicts the bag nearest its own despawn
+/// (`BAG_GONE_EVICTED`), exactly as a player death does.
 ///
 /// Bounded: one pass over `MAX_MOBS`, on a swing tick only, allocation-free.
 #[allow(clippy::too_many_arguments)]
 pub fn strike(
     cc: &CombatContent,
-    gc: &GatherContent,
+    bc: &BackpackContent,
     mc: &MobContent,
     tick: u64,
     attacker: usize,
-    players: &mut [Player; MAX_PLAYERS],
+    players: &[Player; MAX_PLAYERS],
     mobs: &mut Mobs,
+    bags: &mut Backpacks,
     events: &mut EventQueue,
 ) -> bool {
     let a = &players[attacker];
@@ -556,22 +564,24 @@ pub fn strike(
     mob.hp = 0;
     mob.respawn_at = tick + species.respawn_ticks as u64;
 
+    // The corpse: the loot rows, packed into a bag standing where the
+    // animal died. The killer's inventory is untouched until they press
+    // the loot verb on it — which is what makes the take a choice, and
+    // what a butchering verb will later gate with a tool. `owner` is the
+    // dead animal's own tagged id, the field's meaning ("who died")
+    // applied to a body that was never a player; the wire never carries
+    // it (world.rs, `EV_BAG_DROPPED`).
+    let mut items = [ItemStack::default(); INV_SLOTS];
+    let mut n = 0usize;
     for row in species.loot.iter() {
         if row.item == NO_ITEM || row.count == 0 {
             continue;
         }
-        let stack_max = gc.stack_max_of(row.item);
-        let added = inv_add(&mut players[attacker].inv, row.item, row.count, stack_max);
-        // Announced even at zero — a full inventory loses the meat, and
-        // `EV_GATHER`'s contract is that the loss is said out loud rather
-        // than being silent (world.rs).
-        events.push(
-            EV_GATHER,
-            attacker_id,
-            ((row.item as u32) << 16) | added as u32,
-            0,
-        );
+        items[n] = *row;
+        n += 1;
     }
+    let (qx, qy, qz) = (mob.body.qx, mob.body.qy + BAG_Y_OFFSET_Q, mob.body.qz);
+    bags.stand_up(bc, qx, qy, qz, mob_id(slot), &items, tick, events);
     true
 }
 

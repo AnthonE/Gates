@@ -4,11 +4,16 @@
 //! and never on a number this file chose. The species numbers come from
 //! `MobContent::probe_fixture`; the placement rules come from `terrain.rs`.
 
+use sim_core::backpack::BackpackContent;
+use sim_core::combat::CombatContent;
+use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
+use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS, MOB_WAKE_CM};
 use sim_core::mob::{self, MobContent, MOB_PIG};
-use sim_core::movement::POS_XZ_Q;
+use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::terrain;
 use sim_core::world::{Command, World};
+use sim_core::yaw_dir;
 
 fn armed(seed: u64) -> World {
     let mut w = World::new(seed);
@@ -205,6 +210,153 @@ fn two_shards_agree_about_the_roster() {
         a.mobs.m.iter().any(|m| m.awake),
         "nothing woke up to compare"
     );
+}
+
+/// The fixture's item 0: 34 damage, 2 m reach — three swings kill the
+/// 80 hp fixture pig. Same numbers `tests/backpack.rs`'s duel uses.
+const SPEAR: u16 = 0;
+/// Two fixture item indices for the loot rows. Indices are a property of
+/// the loaded set; these exist in `GatherContent::probe_fixture`'s ladder
+/// (stack cap 100) and `BackpackContent::probe_fixture`'s (90 ticks).
+const MEAT: u16 = 5;
+const HIDE: u16 = 7;
+
+/// A world with a huntable, stationary pig one metre in front of an armed
+/// player, on the spawn ring's own pad — which the spawn selector keeps
+/// clear of scatter for 4 m, so no tree or barrel can absorb the swing.
+///
+/// The pig is made docile (gait and flee gait 0) because this file gates
+/// the *kill's consequences*, not the chase — `crates/server/tests/hunt.rs`
+/// owns the chase, against shipped content. Returns the world and the
+/// pig's roster slot.
+fn hunt_world() -> (World, usize) {
+    let mut w = World::new(11);
+    w.gather = GatherContent::probe_fixture();
+    w.combat = CombatContent::probe_fixture();
+    w.backpack = BackpackContent::probe_fixture();
+    w.mob = MobContent::probe_fixture();
+    let def = &mut w.mob.defs[MOB_PIG as usize];
+    def.gait = 0;
+    def.flee_gait = 0;
+    def.loot[0] = ItemStack {
+        item: MEAT,
+        count: 3,
+    };
+    def.loot[1] = ItemStack {
+        item: HIDE,
+        count: 15,
+    };
+    w.dev_spawn = Some(w.spawn_pos(1));
+    w.tick(&[Command::Join { id: 1 }]);
+    let slot = w.mobs.m.iter().position(|m| m.alive).expect("a live pig");
+    // Stand the pig one metre in front of the player's yaw-0 facing —
+    // inside the weapon's 2 m reach, outside point blank.
+    let (fx, fz) = yaw_dir(0);
+    let b = w.players[0].body;
+    let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
+    w.mobs.m[slot].body = Body::at(11, ax + fx, az + fz);
+    (w, slot)
+}
+
+/// Hold the swing until the pig dies. Cadence, not re-pressing, paces the
+/// swings; every tick is checked because the kill can land on any of them.
+fn kill_the_pig(w: &mut World, slot: usize) {
+    w.players[0].inv[0] = ItemStack {
+        item: SPEAR,
+        count: 1,
+    };
+    for seq in 0..(SWING_INTERVAL_TICKS as u16 * 8) {
+        let frame = InputFrame {
+            seq,
+            buttons: BTN_PRIMARY,
+            yaw: 0,
+            pitch: 128,
+            sel: 0,
+            ..InputFrame::default()
+        };
+        w.tick(&[Command::Input { id: 1, frame }]);
+        if !w.mobs.m[slot].alive {
+            return;
+        }
+    }
+    panic!("three fixture spear hits must kill inside eight swing intervals");
+}
+
+/// The kill leaves a body, not a payment: the killer's inventory holds
+/// nothing new until the loot verb, a ground bag stands where the animal
+/// died holding exactly the content rows, and E takes them — the direct
+/// `EV_GATHER` pay this replaced would redden every assert here.
+#[test]
+fn a_killed_pig_leaves_a_corpse_bag_and_pays_nothing_by_itself() {
+    let (mut w, slot) = hunt_world();
+    let (bx, bz) = (w.mobs.m[slot].body.qx, w.mobs.m[slot].body.qz);
+    kill_the_pig(&mut w, slot);
+
+    let carried: Vec<(u16, u16)> = w.players[0]
+        .inv
+        .iter()
+        .filter(|s| s.count > 0)
+        .map(|s| (s.item, s.count))
+        .collect();
+    assert_eq!(
+        carried,
+        vec![(SPEAR, 1)],
+        "the blow itself paid into the killer's inventory — the corpse bag \
+         was bypassed"
+    );
+    assert_eq!(w.backpacks.len(), 1, "the kill stood up exactly one bag");
+    let bag = w.backpacks.entries()[0];
+    assert_eq!(
+        (bag.qx, bag.qz),
+        (bx, bz),
+        "the bag is where the animal died, not where the killer stood"
+    );
+    assert_eq!(bag.owner, mob::mob_id(slot), "the bag is the dead animal's");
+    let held: Vec<(u16, u16)> = bag
+        .items
+        .iter()
+        .filter(|s| s.count > 0)
+        .map(|s| (s.item, s.count))
+        .collect();
+    assert_eq!(
+        held,
+        vec![(MEAT, 3), (HIDE, 15)],
+        "the corpse holds the content rows verbatim"
+    );
+
+    // E: the same loot verb every bag answers. The bag empties into the
+    // killer and leaves; the amounts are the rows, exactly.
+    w.tick(&[Command::Loot { id: 1 }]);
+    let carried: Vec<(u16, u16)> = w.players[0]
+        .inv
+        .iter()
+        .filter(|s| s.count > 0)
+        .map(|s| (s.item, s.count))
+        .collect();
+    assert_eq!(carried, vec![(SPEAR, 1), (MEAT, 3), (HIDE, 15)]);
+    assert!(
+        w.backpacks.is_empty(),
+        "an emptied corpse leaves immediately"
+    );
+}
+
+/// The stated inert-ladder policy at the call site, as a gate: content
+/// that never armed the backpack module stands up no corpse bag, and the
+/// kill pays nothing rather than falling back to a direct grant.
+#[test]
+fn an_inert_bag_ladder_means_a_kill_drops_nothing() {
+    let (mut w, slot) = hunt_world();
+    w.backpack = BackpackContent::EMPTY;
+    kill_the_pig(&mut w, slot);
+    assert!(!w.mobs.m[slot].alive, "the kill itself still lands");
+    assert!(w.backpacks.is_empty(), "no bag under a disarmed module");
+    let carried: Vec<(u16, u16)> = w.players[0]
+        .inv
+        .iter()
+        .filter(|s| s.count > 0)
+        .map(|s| (s.item, s.count))
+        .collect();
+    assert_eq!(carried, vec![(SPEAR, 1)], "and no direct pay either");
 }
 
 /// The id tag is the whole wire contract: a mob id is not a player id, and
