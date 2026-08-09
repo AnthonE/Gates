@@ -144,48 +144,61 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
     // arithmetic (the latent defect `reference/BALANCE.md` §4.3 named:
     // nothing compared the two). `farm_per_min` claims an *effective*
     // rate, travel included; the ceiling it may never cross is the most
-    // the sim can pay a body standing at the node. That is not per-hit ×
-    // cadence alone: the weak mark pays `weak_spot_bonus_pct` extra on
-    // every hit after the first (the first finds the mark, the rest may
-    // strike it — the farmwalk measured a walker beating the naive
-    // ceiling before this term was in). Per node cycle: best tier-≤1
-    // per-hit on the first swing, the weak-struck rate on the remaining
-    // `hits − 1`, over `hits` swings at the cadence. Cadence and tick
-    // rate are the sim's own constants, imported, so a cadence change
-    // moves this check and not just the game. What the gap between
-    // declared and ceiling *means* (the travel term) is the operator's
-    // knob; the semantics-independent half is that an effective rate can
-    // never beat standing at the node.
+    // the sim can sustain paying a body standing at the node. That is not
+    // per-hit × cadence alone: the weak mark pays `weak_spot_bonus_pct`
+    // extra on every hit after the first (the first finds the mark, the
+    // rest may strike it — the farmwalk measured a walker beating the
+    // naive ceiling before this term was in). Per node cycle: best
+    // tier-≤1 per-hit on the first swing, the weak-struck rate on the
+    // remaining `hits − 1`, over `hits` swings at the cadence — each hit
+    // clamped to u16 exactly as `gather::swing` pays it. A `secondary`
+    // pays too — flat, any hand, no weak bonus — so an item a node pays
+    // only that way is still priceable here. Cadence and tick rate are
+    // the sim's own constants, imported, so a cadence change moves this
+    // check and not just the game. What the gap between declared and
+    // ceiling *means* (the travel term) is the operator's knob; the
+    // semantics-independent half is that an effective rate can never
+    // beat standing at the node.
     for (item, declared) in &c.balance.globals.farm_per_min {
         let mut at_node: u64 = 0;
         let mut payable = false;
         for g in &c.gatherables {
-            if g.output != *item {
-                continue;
+            if g.output == *item {
+                let best_per_hit = g
+                    .yield_per_hit
+                    .iter()
+                    .filter(|(tool, _)| {
+                        *tool == "hand" || c.item(tool).is_some_and(|i| i.tier <= 1)
+                    })
+                    .map(|(_, per_hit)| u64::from(*per_hit).min(u64::from(u16::MAX)))
+                    .max()
+                    .unwrap_or(0);
+                if best_per_hit > 0 {
+                    payable = true;
+                    // Integer floor then u16 clamp, as `gather::swing` pays.
+                    let weak_hit = (best_per_hit * (100 + u64::from(g.weak_spot_bonus_pct)) / 100)
+                        .min(u64::from(u16::MAX));
+                    let per_cycle = best_per_hit + u64::from(g.hits - 1) * weak_hit;
+                    let ceiling = per_cycle * u64::from(TICK_HZ) * 60
+                        / (u64::from(g.hits) * SWING_INTERVAL_TICKS);
+                    at_node = at_node.max(ceiling);
+                }
             }
-            let best_per_hit = g
-                .yield_per_hit
-                .iter()
-                .filter(|(tool, _)| *tool == "hand" || c.item(tool).is_some_and(|i| i.tier <= 1))
-                .map(|(_, per_hit)| u64::from(*per_hit))
-                .max()
-                .unwrap_or(0);
-            if best_per_hit == 0 {
-                continue;
+            if let Some(sec) = g.secondary.as_ref().filter(|s| s.output == *item) {
+                let per_swing = u64::from(sec.per_hit).min(u64::from(u16::MAX));
+                if per_swing > 0 {
+                    payable = true;
+                    let ceiling = per_swing * u64::from(TICK_HZ) * 60 / SWING_INTERVAL_TICKS;
+                    at_node = at_node.max(ceiling);
+                }
             }
-            payable = true;
-            // Integer floor per hit, exactly as `gather::swing` pays it.
-            let weak_hit = best_per_hit * (100 + u64::from(g.weak_spot_bonus_pct)) / 100;
-            let per_cycle = best_per_hit + u64::from(g.hits - 1) * weak_hit;
-            let ceiling =
-                per_cycle * u64::from(TICK_HZ) * 60 / (u64::from(g.hits) * SWING_INTERVAL_TICKS);
-            at_node = at_node.max(ceiling);
         }
         if !payable {
             return Err(format!(
                 "`{item}` has a declared farm rate and no gatherable pays it at \
-                 tier ≤ 1 (hand or a tier-0/1 tool) — a `farm_per_min` row prices \
-                 a node output; a barrel-only drop is `component_minutes`"
+                 tier ≤ 1 — not as an output (hand or a tier-0/1 tool row) and \
+                 not as a secondary — a `farm_per_min` row prices what a node \
+                 pays; a barrel-only drop is `component_minutes`"
             ));
         }
         if u64::from(*declared) > at_node {

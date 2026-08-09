@@ -509,8 +509,9 @@ fn the_declared_farm_rate_cannot_beat_standing_at_the_node() {
     // (item, declared, at-node): wood/stone best tier-≤1 swing is the
     // metal tool's 30 → (30 + 9 × 45) × 1800 / 380 = 2060; ores likewise
     // 2060; cloth is the bush's hand 10, one hit, no weak mark → 473.
-    // Declared sits 20–41× under the ceiling — the travel term the
-    // farmwalk measures, recorded where it is visible.
+    // Declared sits ~24–69× under the ceiling (cloth 23.7×, wood/stone
+    // 41.2×, the ores 68.7×) — the travel term the farmwalk measures,
+    // recorded where it is visible.
     for (item, declared, at_node) in [
         ("item.wood", 50, 2060),
         ("item.stone", 50, 2060),

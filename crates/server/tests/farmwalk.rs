@@ -2,10 +2,12 @@
 //! economy has never been measured against the sim").
 //!
 //! `[globals] farm_per_min` declares an *effective* gather rate, travel
-//! included; the sim's at-node arithmetic is 19–28× hotter, and until this
-//! test nothing in the repo had ever farmed on the real island to say
-//! where between the two a player actually lands. The named method is the
-//! one used here: a bot walk on a real shard. A greedy walker with the
+//! included; the sim's at-node ceiling is 27–41× hotter (weak mark
+//! included — 1373/min at the kit hatchet, 2060 at the best tier-1 tool,
+//! against the declared 50), and until this test nothing in the repo had
+//! ever farmed on the real island to say where between the two a player
+//! actually lands. The named method is the one used here: a bot walk on a
+//! real shard. A greedy walker with the
 //! spawn kit's stone hatchet targets the nearest standing tree, sprints to
 //! it, chops it out, and repeats until it has a wood goal in its pockets —
 //! the same `movement::step`, the same `gather::swing`, the same shipped
@@ -201,7 +203,16 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
             stall = 0;
             best_d2 = f32::INFINITY;
         }
-        let ti = target.expect("an island with standing trees");
+        let ti = target.unwrap_or_else(|| {
+            panic!(
+                "every tree is felled or skipped ({} scattered, {} skipped) with \
+                 {} of {goal} wood banked — the island ran out of reachable trees \
+                 before the walk banked its goal",
+                trees.len(),
+                skip.iter().filter(|s| **s).count(),
+                carried(&core),
+            )
+        });
         let (dx, dz) = (trees[ti].2 - px, trees[ti].3 - pz);
         let d2 = dx * dx + dz * dz;
 
@@ -261,8 +272,9 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
         "banked {got} against a goal of {goal} — yield leaked or doubled"
     );
 
-    // The measurement. `farm_per_min` declares wood at an effective rate a
-    // 19–28× gap below at-node; this is where the walk actually landed.
+    // The measurement. `farm_per_min` declares wood at an effective rate
+    // 27× under this tool's at-node ceiling; this is where the walk
+    // actually landed. Duty is effective/at-node, both printed above it.
     let declared = c.balance.globals.farm_per_min.get("item.wood").copied();
     println!(
         "farmwalk: {got} wood in {ticks} ticks ({:.1} sim-min) — effective \

@@ -46,8 +46,9 @@ ceiling, so the bonus is part of standing at the node), pinned with its
 derivation in `content.rs` and a hash probe `farm_per_min` never had. The
 travel term is measured, the way the §open row asked: `server
 tests/farmwalk.rs` walks a greedy farmer tree-to-tree on the real island
-— **1001 wood/min effective at the kit hatchet, 72.9% duty** against the
-declared 50, so the farm-minute currency is ~20× slower than play and
+— **1001 wood/min effective at the kit hatchet: 72.9% duty against that
+tool's 1373/min at-node ceiling, ~20× the declared 50** — so the
+farm-minute currency is ~20× slower than play and
 `starter_minutes` 85.6 / `satchel_minutes` 29.6 / upkeep 8.56 are model
 prices, not clock claims (`CONTENT.md` §3's header says so now). What
 remains is the operator's speak on the `DECISIONS.md` §open row
@@ -68,7 +69,8 @@ What a returning player still finds wrong, in rank order:
    compressed. A schema column plus a sim multiply.
 3. **One animal.** Chicken, stag, wolf, bear all have roles there.
 4. **Gather yields, smelt and craft times are still ours, and that is a
-   deferral rather than a decision** — see the audit above. Upkeep, decay
+   deferral rather than a decision** — `BALANCE.md` §4.2/§4.3 is the
+   audit (the 2026-08-08 second pass). Upkeep, decay
    and the armour ladder ARE on purpose (different mechanisms, not
    different numbers), and `BALANCE.md` §4.1 is the list that stays.
 
