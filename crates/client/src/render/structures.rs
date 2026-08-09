@@ -405,7 +405,11 @@ fn build_kit(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>
     // twice, so `==` is the right comparison and a near-miss SHOULD build a
     // second mesh, because a near-miss is two parts claiming to differ.
     const NO_MESH: Option<Handle<Mesh>> = None;
-    let mut shape_mesh = [[NO_MESH; MAX_PARTS]; N_SHAPES];
+    // The outer repeat can't be `[[NO_MESH; MAX_PARTS]; N_SHAPES]`: only the
+    // inner repeat's operand is a const item — the outer would Copy a built
+    // non-Copy row (E0277). `from_fn` evaluates the const repeat per row.
+    let mut shape_mesh: [[Option<Handle<Mesh>>; MAX_PARTS]; N_SHAPES] =
+        std::array::from_fn(|_| [NO_MESH; MAX_PARTS]);
     let mut sized: Vec<(Vec3, Handle<Mesh>)> = Vec::new();
     for (shape, row) in shape_mesh.iter_mut().enumerate() {
         let (parts, n) = shape_parts(shape as u8);
