@@ -39,43 +39,36 @@ standing instruction. Building blocks are 250/500/1000, a stone wall takes
 four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
 Two bands moved and the raid ratio re-priced itself to 1.04/1.73/3.46.
 
-**The largest open number question in the repo, found while checking the
-above: the economy has never been measured against the sim.**
-`farm_per_min` declares 50 wood/min; the sim pays **947/min** at a tree
-(200 wood / 10 swings / 38-tick cadence), 1421 with a metal hatchet.
-Nothing compares them, so `starter_minutes`, `satchel_minutes`, upkeep and
-the raid ratio are all priced off a number with no measured relation to
-play — and the anchors miss `CONTENT.md` §3's own prose (45 min starter
-target vs 85.6 computed) with no band on it. Decide what `farm_per_min`
-means, band the pacing table or stop claiming minutes, THEN move the gather
-yields. `DECISIONS.md` §open.
+**The measurement landed 2026-08-09 and `reference/RIPLIST.md` is now the
+queue for this item** — what is taken, what is outstanding, what blocks
+each row, and the six steps for executing one. Read it before touching a
+balance number; do not re-derive that list here.
 
-**The audit (2026-08-08, second pass).** Asked to explain why we had rolled
-our own numbers, three of six reasons turned out to be cost dressed as
-principle (`BALANCE.md` §4). The meters are paid off — 500/250 with the
-reference's meat-feeds/forage-hydrates split. Gather yields are the one
-left, and the blocker is real: `[globals] farm_per_min` is declared
-separately from `yield_per_hit` and **nothing checks the two agree**, so
-moving yields means re-deriving `farm_per_min`, `node_yield`, `node_hits`
-and four anchors in one commit. That is the next content slice, and the
-missing agreement check is worth landing with it.
+Two results worth carrying at this level. `balance.rs` refuses a
+`farm_per_min` above the sim's at-node ceiling and `tests/farmwalk.rs`
+measures **969 wood/min, 71.6% duty**, ~19× the declared 50. But that
+gap is a **debt owed by the world, not an error in the number**: their
+ladder falls ~30× from at-node to real farming with no threat in it at
+all, ours charges 1.40×, and applying their decomposition to our ceiling
+puts the declared 50 inside the band. So the queue's ranking inverted —
+**logistics friction (~10–30×) outranks mob→player damage (~2–5×)**, and
+threat wants modelling as trip shape, never as a rate multiplier.
 
-What a returning player still finds wrong, in rank order:
+**Two gather mechanics are theirs as of 2026-08-09** (operator: the mark
+must buy speed, not yield, and we need the finish bonus). A node's payout
+is invariant at `hits × per-hit`; the glint spends its budget faster (a
+tree falls in 7 swings instead of 10 for the same 300), and 20% of an ore
+node / 50% of a tree is withheld for whoever lands the last swing. Gated
+in `sim-core tests/gather.rs`; no wire byte moved.
 
-1. **The boar does not fight back.** Theirs charges and flees under half
-   health. Biggest "that's not how it goes" moment left, and it is a
-   mechanic not a number — mob→player damage needs a death cause on the
-   wire (§0m, `ANIMALS.md` §9.5).
-2. **No per-material damage resistance.** Theirs scales damage by what it
-   hits, which is why their stone wall takes 4 satchels and their sheet
-   metal takes 23; ours takes 8 because we have one `structure` column. The
-   ordering is right and the early game is right; the ladder above stone is
-   compressed. A schema column plus a sim multiply.
-3. **One animal.** Chicken, stag, wolf, bear all have roles there.
-4. **Gather yields, smelt and craft times are still ours, and that is a
-   deferral rather than a decision** — see the audit above. Upkeep, decay
-   and the armour ladder ARE on purpose (different mechanisms, not
-   different numbers), and `BALANCE.md` §4.1 is the list that stays.
+Still wrong for a returning player, in rank order, all of it detailed in
+`RIPLIST.md` §2: the boar does not fight back; no per-material damage
+resistance (one `structure` column, so the ladder above stone is
+compressed); one animal; and gather yields, smelt and craft times are
+still ours — node totals are `READY` now, per-hit yields are not, and our
+schema does not need them. Upkeep, decay and the armour ladder differ on
+purpose (`BALANCE.md` §4.1), though the upkeep *rate* turned out to match
+theirs.
 
 ---
 
@@ -615,8 +608,8 @@ mutants reproduced red, `NOT_COVERED` is empty, and the ledger seat stays
 for the next code. **Remains, and it is not tests**: the stronger form is a
 payload-role table both the emit site and the check read, a swap as a
 *compile* error (`reference/FINDINGS.md` §1 end) — bigger than one pass.
-`CLAUDE.md`'s trap list still reads "law with no gate" flat; correct it the
-next time that shared doc is edited.
+(The `CLAUDE.md` trap-list correction this item asked for is done — that
+entry names the landed gate and keeps the mechanism as the lesson.)
 
 ---
 

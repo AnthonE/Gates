@@ -38,7 +38,10 @@ properly. The short version:
 - **item**: id, name, stack, tier (0–2), rarity (`common|uncommon|rare|
   very_rare` → despawn multiplier), slot (`hand|head|body|none`)
 - **gatherable**: node/tree archetype → per-tool yield table + hit count,
-  weak-spot bonus
+  weak-spot bonus, finish bonus. The node's payout is `hits × per-hit`
+  and **both percentages move when it arrives, never how much**: the
+  weak spot spends budget faster (skill buys speed), the finish share is
+  withheld for whoever lands the last swing
 - **recipe**: output, station (`none|workbench1|furnace`), inputs, seconds
 - **building_piece**: shape (foundation/wall/doorway/floor/stairs/roof/
   door), per-material hp + upgrade cost (wood→stone→metal). One `cost` row
@@ -150,7 +153,7 @@ missing leaves a player holding an item with no use.
 That's the whole alpha economy: two ores, one powder chain, one gun, one
 raid tool. Everything else is reachable-by-schema without touching sim.
 
-## 3 · Progression pacing targets (knobs, tested as bands)
+## 3 · Progression pacing targets (knobs — aspirations, mostly untested)
 
 | milestone | target from fresh spawn |
 |---|---|
@@ -159,6 +162,18 @@ raid tool. Everything else is reachable-by-schema without touching sim.
 | revolver era | ~2 h solo / ~1 h duo |
 | first satchel | ~3–4 h of group farm |
 | full wipe arc | fits the cadence: nobody "finishes" week 1 |
+
+This header used to claim the table was "tested as bands", and for four of
+five rows nothing tested them — the computed `starter_minutes` anchor is
+85.6 against the ~45 above, with no band asserting either, and the
+farm-minute currency itself is ~20× slower than measured play (the
+farmwalk measured 1001 wood/min effective against the declared 50 —
+`DECISIONS.md` §open, "the economy has never been measured against the
+sim"). Only the wood-wall cost and the upkeep ceiling in §4 anchor 3 are
+banded. Whether this table becomes bands or stops claiming minutes is
+that same open knob; until it is spoken these rows are aspirations, and
+re-deriving them is the blocker in front of moving gather yields to the
+reference's.
 
 ## 4 · The balance anchors (the three numbers that ARE the game)
 

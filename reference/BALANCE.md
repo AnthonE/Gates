@@ -133,7 +133,13 @@ which is worse than plainly differing.
 
 - **Gather yields and node totals.** Theirs: a tree is ~460 wood over ~16
   hits with a stone hatchet, a stone node 1000, sulfur 300. Ours are ~200
-  over 10 hits and in the same *shape* but a different *scale*. This is not
+  over 10 hits and in the same *shape* but a different *scale*.
+  ⚠ **The tree figure is misattributed and the correction is
+  `RIPLIST.md` §4** (2026-08-09): 459 wood over 16 hits is the **metal**
+  hatchet in the source table, and that table is from 2017 — it predates
+  the tree minigame that restructured per-hit yield entirely. The stone
+  hatchet's wood total is one of the numbers no public source records.
+  This is not
   a lookup because `[globals] farm_per_min` is a **separately declared**
   number that the anchors price everything with — and nothing currently
   checks that it agrees with `yield_per_hit`, which is its own latent
@@ -162,6 +168,15 @@ That is not a reference-alignment problem and it would exist if the
 reference did not. It is the economy's own foundation being unmeasured, and
 it should be fixed **before** the gather yields move, or the move will be
 tuning one unmeasured number against another.
+
+*(2026-08-09: the checking half landed — `balance.rs` refuses a declared
+rate above the sim's at-node ceiling, weak mark included, and the travel
+term is measured: `server tests/farmwalk.rs` walked 969 wood/min
+effective at the kit hatchet — 71.6% duty against that tool's 1353/min
+at-node ceiling, which is the node's whole payout over the fewest
+swings that can exhaust it, not the 947 above. "Nothing checks it" above is kept as the finding
+it was; the semantics speak and the yield move are what remain —
+`DECISIONS.md` §open.)*
 
 **Nothing is live** — no season, no wipe, no player holding a number in
 their head from a shard of ours. So the cost of moving these is a

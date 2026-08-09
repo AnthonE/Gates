@@ -10,12 +10,23 @@
 
 use crate::schema::*;
 use crate::Content;
+use sim_core::gather::{HIT_UNIT, SWING_INTERVAL_TICKS};
+use sim_core::limits::TICK_HZ;
 
 /// The computed anchor values, for the boot log and the test output.
 #[derive(Debug, Clone, Default)]
 pub struct Anchors {
     /// Banded weapons: (item id, body hits to kill, no armor).
     pub ttk: Vec<(String, u32)>,
+    /// Per `farm_per_min` row: (item id, declared effective units/min,
+    /// sim at-node ceiling units/min). The ceiling is the most a body
+    /// standing at the node can be paid: the node's invariant payout at
+    /// the best tier-≤1 tool, over the fewest swings that exhaust it
+    /// (every one marked). Declared ≤ ceiling is enforced; the gap is
+    /// the friction the world charges — travel, measured by the server's
+    /// farmwalk, plus everything `reference/RIPLIST.md` §0 says we do
+    /// not charge yet.
+    pub farm_rates: Vec<(String, u32, u32)>,
     pub satchel_minutes: f64,
     pub starter_minutes: f64,
     /// Satchel cost to break one wall over starter cost: wood, stone, metal.
@@ -131,7 +142,86 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
         )?;
     }
 
-    // "A full wood wall ≈ 7 min of wood at T1 tools" (CONTENT §3).
+    // Anchor 3's agreement face — the declared rate against the sim's own
+    // arithmetic (the latent defect `reference/BALANCE.md` §4.3 named:
+    // nothing compared the two). `farm_per_min` claims an *effective*
+    // rate; the ceiling it may never cross is the most the sim can
+    // sustain paying a body standing at the node. Since the mark buys
+    // speed rather than yield (`NodeDef::weak_pct`), that is the node's
+    // whole invariant payout over the fewest swings that can exhaust it
+    // — the per-node arithmetic is below. A `secondary` pays too —
+    // flat, any hand, no mark — so an item a node pays only that way is
+    // still priceable here. Cadence, tick rate and the budget unit are
+    // the sim's own constants, imported, so a change there moves this
+    // check and not just the game. What the gap between declared and
+    // ceiling *means* (travel, and the friction we do not yet charge —
+    // `reference/RIPLIST.md` §0) is the operator's knob; the
+    // semantics-independent half is that an effective rate can never
+    // beat standing at the node.
+    for (item, declared) in &c.balance.globals.farm_per_min {
+        let mut at_node: u64 = 0;
+        let mut payable = false;
+        for g in &c.gatherables {
+            if g.output == *item {
+                let best_per_hit = g
+                    .yield_per_hit
+                    .iter()
+                    .filter(|(tool, _)| {
+                        *tool == "hand" || c.item(tool).is_some_and(|i| i.tier <= 1)
+                    })
+                    .map(|(_, per_hit)| u64::from(*per_hit).min(u64::from(u16::MAX)))
+                    .max()
+                    .unwrap_or(0);
+                if best_per_hit > 0 {
+                    payable = true;
+                    // The node's payout is invariant under marking
+                    // (`NodeDef::weak_pct`) — a marked swing only spends
+                    // the budget faster. So the ceiling is the whole
+                    // total over the FEWEST swings that can exhaust it,
+                    // every one of them marked, rounding up exactly as
+                    // the sim's budget arithmetic does. The finish share
+                    // moves when yield arrives, never how much, so it
+                    // does not enter here.
+                    let total = best_per_hit * u64::from(g.hits);
+                    let budget = u64::from(g.hits) * u64::from(HIT_UNIT);
+                    let want = u64::from(HIT_UNIT) + u64::from(g.weak_spot_bonus_pct);
+                    let swings = budget.div_ceil(want);
+                    let ceiling = total * u64::from(TICK_HZ) * 60 / (swings * SWING_INTERVAL_TICKS);
+                    at_node = at_node.max(ceiling);
+                }
+            }
+            if let Some(sec) = g.secondary.as_ref().filter(|s| s.output == *item) {
+                let per_swing = u64::from(sec.per_hit).min(u64::from(u16::MAX));
+                if per_swing > 0 {
+                    payable = true;
+                    let ceiling = per_swing * u64::from(TICK_HZ) * 60 / SWING_INTERVAL_TICKS;
+                    at_node = at_node.max(ceiling);
+                }
+            }
+        }
+        if !payable {
+            return Err(format!(
+                "`{item}` has a declared farm rate and no gatherable pays it at \
+                 tier ≤ 1 — not as an output (hand or a tier-0/1 tool row) and \
+                 not as a secondary — a `farm_per_min` row prices what a node \
+                 pays; a barrel-only drop is `component_minutes`"
+            ));
+        }
+        if u64::from(*declared) > at_node {
+            return Err(format!(
+                "farm rate break: `{item}` declares {declared}/min effective; the sim \
+                 pays at most {at_node}/min standing at the node (weak mark included, \
+                 at the {SWING_INTERVAL_TICKS}-tick cadence) — an effective \
+                 travel-included rate that beats standing at the node prices \
+                 walking as a bonus"
+            ));
+        }
+        anchors
+            .farm_rates
+            .push((item.clone(), *declared, at_node as u32));
+    }
+
+    // "A full wood wall ≈ 7 min of wood at T1 tools" (CONTENT §4 anchor 3).
     let wall_cost = |material: Material| -> Result<(u32, f64), String> {
         let wall = c
             .pieces

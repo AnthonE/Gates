@@ -69,10 +69,21 @@ pub struct Gatherable {
     pub archetype: NodeArchetype,
     /// Item this node yields.
     pub output: String,
-    /// Hits to exhaust the node.
+    /// Unmarked hits to exhaust the node. The node's whole payout is
+    /// `hits × yield_per_hit[tool]` however it is struck.
     pub hits: u32,
-    /// Extra yield % paid on a weak-spot hit (the glint / the X).
+    /// Extra **budget** % a weak-spot hit (the glint / the X) spends.
+    /// The mark buys SPEED, not yield: a marked swing takes a bigger
+    /// bite of the same pool and is paid pro rata, so a skilled player
+    /// empties the node in fewer swings and everyone banks the same
+    /// total. `sim_core::gather::NodeDef::weak_pct` has the model.
     pub weak_spot_bonus_pct: u32,
+    /// % of the node's whole payout withheld from the per-swing pay and
+    /// handed to whoever lands the exhausting swing. A redistribution,
+    /// never a bonus on top — it prices abandoning a half-struck node.
+    /// 0 pays evenly.
+    #[serde(default)]
+    pub finish_bonus_pct: u32,
     /// Tool item id (or `hand`) → units per hit. BTreeMap: canonical order.
     pub yield_per_hit: BTreeMap<String, u32>,
     /// The optional side payout. Absent on every node that pays one thing.

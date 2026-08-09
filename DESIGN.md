@@ -50,9 +50,12 @@ The Rust loop, cut to what a skeleton must prove:
 - **Spawn** naked on a beach of a seeded island (~2km × 2km, heightfield
   terrain, biome tint by noise). Day/night cycle. Hunger/thirst minimal —
   a slow health drain past a timer, food to reset it **(knob: depth)**.
-- **Gather**: trees, stone/ore nodes (hit the glowing weak spot for bonus —
-  the Rust juice), and **salvage barrels** along roads/shore (the loot
-  tension source; they drop components and OBOL salvage, §3).
+- **Gather**: trees, stone/ore nodes (hit the glowing weak spot to fell it
+  **faster** — the node's payout is fixed, so skill buys time, not riches;
+  and a share of it is withheld until the felling blow, so walking away
+  from a half-cut tree costs you), and **salvage barrels** along
+  roads/shore (the loot tension source; they drop components and OBOL
+  salvage, §3).
 - **Craft**: tier ladder. T0 rock/torch/spear → workbench → T1 bow, stone
   tools, furnace, metal fragments → T2 revolver, metal tools, armor. Guns
   exist but are expensive; melee/bow era dominates a fresh wipe.
