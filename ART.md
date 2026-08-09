@@ -337,14 +337,19 @@ The rule that replaces it:
   in `DECISIONS.md` §open and its stated reason is explicitly a browser one —
   at 16, *"a second browser tab did not reach the world at all on this box"*,
   a software rasterizer running two tabs. Every real GPU answers 16 and the
-  native client is one process. The knob is **not** raised here (it is
-  spoken, and the browser client still ships it), but a native value is a
-  legitimate proposal rather than a re-litigation.
+  native client is one process. The knob is **not** raised here — it is
+  spoken, and a spoken knob moves by being spoken again — but a native
+  value is now a legitimate proposal rather than a re-litigation, because
+  **the reason on the row no longer describes anything that exists.** The
+  browser client that produced it is deleted; nothing ships this ceiling for
+  the stated cause.
 - **Meshes are the same deal** when the time comes, but procedural vegetation
   may well win on variety — and now does: the native conifer is generated
   (`crates/client/src/render/tree.rs`). The three.js skill pack
-  (`.claude/skills/threejs-procedural-vegetation`) still holds for the
-  browser build and for technique, not for the native path.
+  (`.claude/skills/threejs-procedural-vegetation`) is **guidance about
+  technique only** — there is no browser build for it to describe, and its
+  API is not ours. Reach for it for the physics, never for the calls
+  (`CLAUDE.md` §third-party credit).
 
 ## 8 · What passes review
 

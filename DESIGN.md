@@ -6,15 +6,22 @@
 > shell. This file drops at the repo root and is the design of record until
 > superseded.
 
-A browser survival game in the Rust (Facepunch) tradition: wake with nothing
-on a hostile island, gather, craft, build a base, raid, lose it all, wipe,
-again. 100 players a shard, no install — a link. OBOL is the working coin
-you earn and risk in the world; SCRY and MYRRH buy skins and nothing else.
-Backend in Rust (the language), frontend three.js, transport QUIC via
-WebTransport. **The v1 deliverable is the skeleton** — netcode, determinism,
-and the server discipline laws — built so every later system (content,
-monuments, vehicles, AI) is data and systems plugged into a frame that
-already doesn't blip.
+> **The browser client is deleted** (operator, 2026-08-06; the crate that
+> still said otherwise went 2026-08-08). This file was written for a
+> three.js page and every claim that depended on one has been corrected in
+> place — §1 pillar 2, §5.1, §9, §11, §14. Where a number was *chosen*
+> because the target was a browser it now says so rather than being
+> silently reused. `CLAUDE.md` has the posture, including how to read the
+> deleted client out of git history when a question about a verb needs it.
+
+A survival game in the Rust (Facepunch) tradition: wake with nothing on a
+hostile island, gather, craft, build a base, raid, lose it all, wipe, again.
+100 players a shard. OBOL is the working coin you earn and risk in the world;
+SCRY and MYRRH buy skins and nothing else. Backend in Rust (the language), a
+**native Rust desktop client** (Bevy), transport QUIC via WebTransport.
+**The v1 deliverable is the skeleton** — netcode, determinism, and the server
+discipline laws — built so every later system (content, monuments, vehicles,
+AI) is data and systems plugged into a frame that already doesn't blip.
 
 This is a **separate product in its own repo**. It orbits scry (sold through
 the Great Work board as quest `munus-first-sale`, settled in SCRY, coins from
@@ -29,9 +36,17 @@ the ones restated here. Tickers are bare: SCRY, OBOL, MYRRH — never a `$`.
    hot-path laws come first and are gated by CI. Content is data. If the
    frame is right, the game grows for years; if it's wrong, no amount of
    content saves it.
-2. **Browser-native, zero install.** three.js + WebTransport. The crypto
-   audience lives in a browser next to a wallet; the distance from tweet to
-   in-game must be one click.
+2. **One native client, and the game is sold.** A Rust desktop binary on
+   Bevy (`RENDER.md` owns its path), delivered as a scry depot the launcher
+   installs (`ci/depot.py`). This pillar read *"browser-native, zero
+   install — three.js + WebTransport"* until 2026-08-05, and **both halves
+   were repudiated, not merely outgrown**: the operator retired instant
+   guest play as a pillar outright (*"NO INSTANT GUEST PLAY IS NOT A PILLAR
+   IN A RUST CLONE LOL… everyone has to buy the game"*), then cut the
+   browser client the next day. What survives is the thing the old pillar
+   was actually about — the shortest distance from interest to in-game —
+   and its answer is no longer a URL. **What it is instead is open**
+   (`DECISIONS.md` §open, "the board's playable link").
 3. **The server never blips.** Fixed tick, no blocking, no locks, no
    allocations in the hot path, bounded everything, and a *defined*
    degradation ladder instead of an emergent freeze.
@@ -175,10 +190,15 @@ gates/
     sim-core/      # the deterministic heart: world state, movement, combat,
                    # building, economy rules. No I/O, no clock, no threads,
                    # no std collections that iterate nondeterministically.
-                   # Compiles native (server) AND wasm32 (client prediction
-                   # + shared worldgen). The only crate the game rules live in.
+                   # Compiles native AND wasm32 — the second target is the
+                   # DETERMINISM GATE, not a web build: `test_parity_wasm`
+                   # diffs its state hashes against native byte for byte,
+                   # which is wall 1's enforcement and is worth the same
+                   # with no browser in existence. The only crate the game
+                   # rules live in.
     protocol/      # packet schemas, bit-level codec, quantization tables,
-                   # golden tests. Shared native/wasm. Zero game logic.
+                   # golden tests. Built for both targets, same reason.
+                   # Zero game logic.
     server/        # tokio + wtransport termination, session/auth, AOI +
                    # snapshot encoding, WAL persistence, admin, bots.
     client-core/   # the client netcode core (snapshot view, prediction/
@@ -224,24 +244,41 @@ gates/
   oldest input dropped (the client re-sends; §5.4). Full outbound ring →
   that client skips a snapshot (they're not draining; their problem, not
   the tick's).
-- **Shared movement, exactly shared**: the client predicts with the same
-  `sim-core` machine code paths compiled to wasm — not a JS re-imp. Kept
+- **Shared movement, exactly shared**: the client predicts by calling the
+  same `sim-core` — literally the same rlib, linked into the client
+  process, no bridge and no re-implementation. Kept
   bit-identical across native/wasm by restricting sim-core float ops to
   `+ - * / sqrt min max clamp` (all IEEE-exact both targets), banning libm
   transcendentals (yaw → direction goes through a shared lookup table
   indexed by the quantized yaw byte), and never letting FMA contraction in
   (default Rust behavior). A CI test drives 10,000 random input sequences
-  through both builds and asserts byte-equal output (§12).
+  through both builds and asserts byte-equal output (§12). **Client and
+  server are now both native, so the wasm half is no longer a shipping
+  target — it is the instrument.** A second architecture that must agree
+  bit for bit is what catches a float path quietly going
+  platform-dependent, and it keeps its whole value with no browser in
+  existence.
 
 ## 5 · Netcode — the spine
 
 ### 5.1 · Transport: why QUIC, and what rides where
 
-WebTransport gives the browser the two things WebSocket can't: **unreliable
+WebTransport gives us the two things WebSocket can't: **unreliable
 datagrams** (state that's stale the moment a newer one exists must be
 allowed to die in the network, not queue behind a lost packet) and
 **independent streams** (a chunk download never head-of-line-blocks a chat
 line). One connection, three lanes:
+
+> **Both reasons were written for a browser and both survive it unchanged** —
+> they are properties of the traffic, not of the client. What the browser cut
+> *does* change is that WebTransport is no longer forced: a native client
+> could speak raw QUIC. It does not, and the cost of keeping WebTransport is
+> approximately zero (`wtransport` wraps quinn and both ends already speak
+> it), while the benefit is that a browser client remains possible later
+> without a server rewrite. **Nobody has re-litigated this** and no decision
+> is recorded either way; it is noted here so the next reader knows the
+> choice is inherited rather than re-argued. `NETCODE.md` §2 owns the config
+> and beats this section.
 
 | lane | reliability | carries |
 |---|---|---|
@@ -323,8 +360,8 @@ bytes (§12) so the wire can't drift by accident.
 
 ### 5.6 · Prediction and reconciliation (local player)
 
-Client simulates its own capsule immediately through wasm `sim-core` —
-same code, same constants, zero drift by construction (§4). Each snapshot
+Client simulates its own capsule immediately by calling `sim-core`
+directly — same code, same constants, zero drift by construction (§4). Each snapshot
 carries `last_executed_seq`; the client rewinds its predicted state to the
 server's authoritative state at that seq and **replays every unacked
 input** on top. Mispredictions (a door closed server-side first) correct
@@ -387,7 +424,7 @@ Rules that make it true, all enforced in `sim-core`:
   disallowed-types; state lives in slotmaps/dense vecs with explicit
   ordering).
 - All mutations flow through a command buffer applied in a fixed order.
-- Float ops restricted as §4 (also what makes wasm prediction bit-exact).
+- Float ops restricted as §4 (also what keeps the wasm parity gate green).
 
 `state_hash` (xxh3 over canonical entity state) computed every 32 ticks,
 logged, and stamped into the WAL. A `replay` binary re-simulates a recorded
@@ -436,27 +473,23 @@ built:
 
 ## 9 · Client
 
-**The shipping client is native Rust + Bevy** (operator, 2026-08-05;
-`RENDER.md` owns its path). The three.js build in `web/` still compiles and
-is still gated, and is being retired slice by slice rather than deleted — so
-this section carries both, and says which half a number belongs to. **Every
-budget below was chosen for the browser.** They are not yet re-derived for a
-desktop binary on a real GPU, and until they are, a native measurement that
-exceeds one is evidence about the budget, not automatically a defect.
+**The native Rust + Bevy client is the only client** (operator, 2026-08-05;
+`RENDER.md` owns its path). `web/` is **deleted** — not retiring, not
+compiling, not gated (operator, 2026-08-06; the `client-wasm` crate that
+still implied otherwise went 2026-08-08). **Every budget below was
+nonetheless chosen for the browser**, and they are not yet re-derived for a
+desktop binary on a real GPU, so a native measurement that exceeds one is
+evidence about the budget, not automatically a defect. Re-deriving them is
+`NOW.md` §0u.
 
-- **Structure (native)**: one process. `sim-core` is called directly — no
-  wasm bridge, no worker, no transferable buffers — and `ClientCore` owns
+- **Structure**: one process. `sim-core` is called directly — no wasm
+  bridge, no worker, no transferable buffers — and `ClientCore` owns
   prediction and interpolation. Bevy draws and does not decide
   (`RENDER.md` §1).
-- **Structure (browser, retiring)**: net worker owns the WebTransport
-  session (datagram decode off the main thread, transferable buffers over);
-  main thread runs sim prediction (wasm), interpolation, three.js scene.
-  COOP/COEP headers set from day one so SharedArrayBuffer is available when
-  wanted.
 - **World**: terrain chunks generated client-side from the seed by the same
-  worldgen `sim-core` uses — through wasm in the browser, by direct call
-  natively — so terrain costs zero bandwidth either way and is identical by
-  the float discipline; server remains collision-authoritative.
+  worldgen `sim-core` uses — by direct call, an rlib away — so terrain costs
+  zero bandwidth and is identical by the float discipline; server remains
+  collision-authoritative.
   Buildables/nodes/barrels render as instance pools per archetype — a base
   is hundreds of instances, not hundreds of draw calls.
 - **Budgets, browser-era (knob: all four)**: 60 fps on a mid laptop iGPU;
@@ -518,7 +551,7 @@ exceeds one is evidence about the budget, not automatically a defect.
   clamps, impossible-input counts, damage outliers) exists from day one so
   the data is there when those get built. The two gaps that survive an
   authoritative sim are **ESP inside AOI** and **aimbot**, and both have an
-  answer that costs no client trust and works in a browser: server-side
+  answer that costs no client trust and needs no kernel hook: server-side
   occlusion culling (the genre's proven measure — and cheap here, because a
   seeded terrain bakes its occlusion grid once, `NOW.md` 18) and offline aim
   analysis over the WAL, which every round already produces as verifiable
@@ -529,7 +562,7 @@ exceeds one is evidence about the budget, not automatically a defect.
 
 ## 11 · Milestones
 
-**M0 — the shell (the overnight).** Exit: two browser tabs walk around each
+**M0 — the shell (the overnight).** Exit: two clients walk around each
 other on a seeded island through a real server, and the laws already bite.
 - [ ] workspace + five crates, CI runs fmt/clippy/test on push
 - [ ] `sim-core`: tick loop, seeded worldgen (heightfield), kinematic
@@ -572,11 +605,19 @@ all. Until one is spoken this clause names a thing that is not built.
 | `test_parity_wasm` | 10k random input sequences through native + wasm movement: byte-identical states |
 | `test_protocol_golden` | every packet type's encoding is byte-stable against checked-in fixtures |
 | `test_snapshot_budget` | worst-case scene (cap players, dense base) per-client snapshot ≤ 1100 B and staleness ceilings hold |
-| `test_crash_recovery` | SIGKILL mid-tick → restart < 10 s, ledger/build state intact from WAL |
-| `soak` (nightly) | 4 h, 200 bots: RSS slope ≈ 0, fd count flat, p99 sim < 8 ms, induced overload walks the L6 ladder and recovers |
+| `test_crash_recovery` | **PLANNED, does not exist.** SIGKILL mid-tick → restart < 10 s, ledger/build state intact from WAL. What *is* built covers the restart half without the kill or the clock: `server/tests/world_persist.rs`, `sim-core/tests/{persist,worldsave}.rs` (a shard restart is a world you walk back into; a restore replays bit for bit) |
+| `soak` (nightly) | **PLANNED, does not exist** — `nightly.yml` runs the gates, builds the release server and packages the depot, and has no soak job. 4 h, 200 bots: RSS slope ≈ 0, fd count flat, p99 sim < 8 ms, induced overload walks the L6 ladder and recovers |
 | clippy walls | disallowed types/methods per L3/L5 + HashMap-iteration ban in `sim-core` |
 
 A change that reddens a wall does not merge. The walls are the skeleton.
+
+**Two rows above are plans, and they are marked so on purpose.** This table
+is the design's list, not `ci/gates.sh`'s — derive the real one from the
+script, which is what CI runs. The gap matters beyond this file: the missing
+soak was cited as the enforcement of wall 3 in both `CLAUDE.md` and
+`AGENTS.md`, and `test_raid_storm` — which also does not exist — as wall 4's.
+Both walls hold on their other half (clippy for 3, per-site cap tests for 4),
+and both lists now say which half is missing rather than implying coverage.
 
 ## 13 · How it ships through scry
 
@@ -595,7 +636,7 @@ is scry's standing rule: the operator's eye and a public SCRY transfer.
 | shard cap / reference hardware | 100 players / 4-core VPS |
 | game price + currency | unset — an operator act; no number invented here |
 | what the purchase gates | the native client + the official armed shards; unarmed self-hosted shards stay free |
-| desktop client renderer | three.js stays for the web demo; a native renderer is unscheduled (`DECISIONS.md` 2026-08-05) |
+| ~~desktop client renderer~~ | **RESOLVED, not a knob.** Read "three.js stays for the web demo; a native renderer is unscheduled" (`DECISIONS.md` 2026-08-05). Both halves are gone: the native Bevy client shipped and the browser client was cut 2026-08-06. `RENDER.md` owns the path |
 | kernel anti-cheat on armed shards | not integrated (`ALPHA.md` §5) |
 | wipe cadence + BP survival | monthly map, BPs survive one cycle |
 | hunger/thirst depth | minimal timer-drain v1 |

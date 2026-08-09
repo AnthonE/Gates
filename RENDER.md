@@ -293,9 +293,10 @@ sides already agree on it.
   shipped shape is the starting point: a near ring of 64 m chunks at 1 m
   resolution, a far mesh at 8 m dropped 0.15 m to hide the seam.
 - Vertex attributes carry what the material needs: normal from the analytic
-  gradient (not from the triangulation — `ci/bump_basis.mjs` holds that
-  arithmetic and it is language-agnostic), and `splat()`'s four identity
-  weights.
+  gradient (not from the triangulation — `ci/bump_basis.mjs` **held** that
+  arithmetic and is deleted with the browser client; the derivation is
+  language-agnostic and readable from git, and has no native gate), and
+  `splat()`'s four identity weights.
 - Water is **not** this slice's and no longer a plane — `render/water.rs`
   owns it, and R1's only remaining relationship to it is that the seabed is
   the same heightfield (`TERRAIN.md` §4, R8 below).
@@ -361,8 +362,11 @@ six passes proved it.
   the haven and waystation structures. Instanced, one mesh+material per
   archetype so Bevy's automatic batching collapses them to a draw each.
   `ART.md` rule 6: **silhouette before surface** — a smooth cone is wrong at
-  any texture budget; the pine is tall, thin and ragged-edged, and
-  `ci/pine_shape.mjs` already holds that shape as arithmetic.
+  any texture budget; the pine is tall, thin and ragged-edged.
+  `ci/pine_shape.mjs` held that shape as arithmetic and is deleted;
+  **this one did get a native successor** — `crates/client/tests/tree.rs`,
+  which gates the generated conifer against the volume the sim blocks and the
+  frame's triangle ceiling.
 - **Clutter** (`terrain::clutter_fill`, 721 elements/tile over a 5×5 tile
   ring): tufts, pebbles, shards, twigs. This is `ART.md` rule 4 — no bare
   ground over ~3 m² inside 15 m — and it is already *placed* natively and
@@ -408,7 +412,9 @@ that work is lost; it moves to WGSL.
 - **Probe (R-G4)**: the shipped estimators, ported and cross-checked against
   the JS ones on the same input — along-colour vs orthogonal chroma residual in
   the 0.077–0.193 band, `ALBEDO_LUMA_BAND` respected, and the biplanar identity
-  `ci/prop_photo.mjs` already asserts in closed form.
+  `ci/prop_photo.mjs` asserted in closed form — that gate is deleted with the
+  browser client and the closed form is readable from git, so porting it is
+  part of this slice rather than a cross-check against a live gate.
 
 ### R5 · The light rig, metered — the tonal bar
 

@@ -4,6 +4,16 @@
 > the canon (Gaffer on Games, Source, Overwatch GDC, Quake 3) and in what
 > Facepunch actually shipped for the same four mechanics — citations inline.
 > Everything here is buildable as written; knobs are marked **(knob)**.
+>
+> **The client is native (Bevy) and the browser one is deleted** (operator,
+> 2026-08-06). Almost nothing in this file turned on that — the replication
+> classes, the budgets and the lag-comp arithmetic are properties of the
+> traffic, not the client — so the edit was narrow and is confined to §2:
+> four JS-API queue knobs that no longer have an API, the
+> `serverCertificateHashes` rules, and three config *reasons* that cited
+> Chrome. **Where a
+> browser-era mechanism left a behaviour with no native owner, §2.1 says so
+> rather than quietly dropping it.**
 
 ## 0 · The one law this file adds
 
@@ -83,17 +93,26 @@ controller says so, no opt-out. What that means for us, concretely:
   RTP-over-QUIC study]
 - **Datagram size**: 1,200 B is the guaranteed QUIC path floor; quinn's
   DPLPMTUD (on by default, ceiling 1452) can grow it server-side. Our
-  design number stays **≤ 1,100 B payload**. Sharp edge in the browser:
-  a JS datagram write larger than `datagrams.maxDatagramSize` is
-  **silently dropped — the promise resolves fine** — so the client clamps
-  every send against the live value.
-- **The client tunes its queues**: constructor `congestionControl:
-  "low-latency"` (a hint, harmless), `outgoingMaxAge: 50` ms so stale
-  inputs die in the queue instead of arriving in a burst after a stall,
-  small `incomingHighWaterMark` (the spec drops **oldest** incoming on
-  overflow — correct for us). Loss/RTT telemetry for the HUD and the
-  adaptive interp buffer comes from `WebTransport.getStats()`
-  (feature-detect; not Baseline).
+  design number stays **≤ 1,100 B payload**. **Clamp every send against
+  the live `max_datagram_size()`** (server: `net.rs`). The *silent* form of
+  this failure was the browser's — a JS write over `maxDatagramSize`
+  resolved its promise and sent nothing — and that trap died with the
+  browser client. The ceiling itself did not: it is a property of the path,
+  wtransport reports it the same way, and an oversized write is still a
+  write that does not arrive.
+- **Queue tuning is now quinn's, not the JS API's.** This bullet used to
+  specify `congestionControl: "low-latency"`, `outgoingMaxAge: 50` ms, a
+  small `incomingHighWaterMark`, and `WebTransport.getStats()` for the
+  HUD's loss/RTT — **four browser-API knobs on a client that is gone**.
+  What is actually configured now lives one table down and is server-side
+  (`datagram_send_buffer_size` 64 KiB, idle timeout, keep-alive). The two
+  *behaviours* the JS knobs bought are worth keeping and **neither has a
+  named native owner yet**: stale outbound inputs dying in the queue rather
+  than arriving as a post-stall burst, and drop-oldest on inbound overflow.
+  Ours is a bounded SPSC ring with an explicit overflow policy
+  (`DESIGN.md` §6), which is the right shape — nobody has checked it
+  against these two properties. Client-side loss/RTT telemetry has no
+  native source wired at all.
 
 ### 2.2 · Transport config of record (server)
 
@@ -103,12 +122,12 @@ controller says so, no opt-out. What that means for us, concretely:
 | congestion control | CUBIC (default); `--cc bbr` server flag for A/B | BBR is labeled experimental in quinn; measure before trusting |
 | datagram send buffer | 64 KiB (down from quinn's 1 MiB default) | bounds worst-case queued staleness at our rate; snapshots replace, never accumulate |
 | MTU | initial/min 1200, DPLPMTUD on, ceiling 1452 (defaults) | free server→client headroom; design number stays 1,100 |
-| idle timeout / keep-alive | 30 s / **server-side keep-alive 10 s** | the JS API cannot send keep-alives; effective idle timeout is the min of both peers |
+| idle timeout / keep-alive | 30 s / **server-side keep-alive 10 s** | both shipped in `net.rs`. The old reason — "the JS API cannot send keep-alives" — is retired with the browser; quinn can keep-alive from either end. Server-side stays because the effective idle timeout is the min of both peers, so the end that must not time out is the one that should send |
 | UDP socket | sysctl `rmem_max`/`wmem_max` ≥ 8 MiB, SO_RCVBUF/SNDBUF 8 MiB, passed via `with_bind_socket` | quinn is one socket for all connections and its README warns the OS defaults (~208 KiB) are too small |
 | admission | quinn defaults + `Incoming::retry()` for unvalidated addresses past ~2× cap, `refuse()` at hard cap | rides QUIC's built-in 3× anti-amplification + retry tokens |
-| certs, dev | `Identity::self_signed` + `serverCertificateHashes`: ECDSA P-256, validity < 14 days, regenerated on build | browser-enforced rules for the hash flow |
-| certs, prod | ordinary ACME cert on the game's own subdomain, no hashes | the hash flow is a dev tool, not a deployment |
-| migration | server tolerates NAT rebinding (default on); **client treats network change as death** | Chrome ships no client-side QUIC migration — fast-reconnect is an app feature (§6.3, §10) |
+| certs, dev | `Identity::self_signed`; the server computes the SHA-256 and `shard` prints it | **The rules this row used to cite were Chrome's** (ECDSA P-256, validity < 14 days, regenerated on build — the conditions `serverCertificateHashes` imposed). Nothing enforces them now and nothing consumes the hash: the native client calls `with_no_cert_validation()` and trusts the chain outright (`client/src/lib.rs`), as the bot client does. The printed hash is **vestigial** until something reads it |
+| certs, prod | ordinary ACME cert on the game's own subdomain, no hashes | unchanged, and now load-bearing rather than merely tidy. ⚠ **The client does not validate today.** That is a dev posture the code names as such — *"a shipping client validates, and that is a `DECISIONS.md` row before anything is published, not a default to drift into"* — and it is unwritten. Publishing a shard the public reaches is blocked on it |
+| migration | server tolerates NAT rebinding (default on); **client treats network change as death** | the behaviour is unchanged; the reason is not. It read "Chrome ships no client-side QUIC migration", and there is no Chrome — quinn *can* migrate. Fast-reconnect stays an app feature (§6.3, §10) because it has to handle the cases migration cannot (a dead server, a new address that must re-prove SIWE), not because the client is incapable |
 
 ## 3 · Class D — the hot pipeline
 
@@ -434,7 +453,7 @@ where the sim says.
 | lost input datagram | covered by unacked-input redundancy (≤ 10 frames ≈ 333 ms); beyond that the server reuses the last input (you glide briefly), dilation refills the buffer |
 | ack gap > baseline ring | baseline drops to the canonical zero-state; the same delta path streams the world back by priority (Q3's dummy-gamestate move) |
 | chunk event lane stalls | QUIC retransmits (reliable); if the stream resets, resubscribe at V → tail replay |
-| tab backgrounded (browser throttles timers) | dilation hard-resync on return; > 30 s → treated as disconnect: **you become a sleeper where you stand** |
+| client stops stepping (was: a throttled background tab; now a suspended laptop, an unfocused window, a compositor stall) | dilation hard-resync on return; > 30 s → treated as disconnect: **you become a sleeper where you stand**. The cause changed with the client and the handling did not — §4 says why it never was tab-specific |
 | network change (Wi-Fi↔cellular) | the connection dies; the client reconnects and proves the same address (SIWE) — inside the 10 s standing grace it's seamless, past it you wake your sleeper |
 | client disconnect | standing grace 10 s, then sleeper (§6.3); the same proved address wakes the body |
 | server crash | DESIGN L7: restart < 10 s from snapshot + WAL; clients auto-reconnect, rejoin as wakers; ≤ 1 tick of acked transactions lost, and none that were acked |

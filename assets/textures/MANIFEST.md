@@ -11,8 +11,15 @@ whatever helps us. then we can replace later."* These are a working set, not a
 final art pass — the point is that the renderer finally has real measured
 detail to sample. Replacing one is a file swap, not a code change.
 
-Fetched at 1K, re-encoded for the browser: albedo 1024 q82, normal 1024 q90,
-roughness and AO 512 greyscale q80. **9 materials, 34 files, 6.5 MB total.**
+Fetched at 1K, re-encoded: albedo 1024 q82, normal 1024 q90, roughness and AO
+512 greyscale q80. **9 materials, 34 files, 6.5 MB total.**
+
+⚠ **That encode spec was chosen for a first-visit browser download and the
+constraint is gone** (the browser client was cut 2026-08-06; the client
+installs a depot and reads from disk). `ART.md` §7 retires the 12 MB payload
+ceiling with it and says re-sourcing at 2K/4K is unblocked — what is real
+natively is VRAM and disk, and nothing has measured either. **Treat every
+size and quality number below as a browser-era artifact, not a budget.**
 
 **`rock` is the one exception to that encode spec — albedo q74, normal q82.** It
 holds the swap at **553 KB against `cliff_side`'s 562 KB**, so the only identity
@@ -93,8 +100,10 @@ file. Saturation does not — 2.5% against a 10–19% band — but that band was
 measured on *lit* reference frames, not on albedo, and mineral hue is what the
 per-identity tint octave exists to add. **Nothing in `materials.js` was edited
 for this**: the keep is derived from the file's own span, exactly as that
-constant's comment promises, and `browser_smoke` asserts the derivation rather
-than the value. The anisotropy figure is not a shipped gate — it was added for
+constant's comment promises, and `browser_smoke` asserted the derivation
+rather than the value — that gate went with the browser client and **the
+derivation is unasserted natively**. The anisotropy figure is not a shipped
+gate — it was added for
 this selection because "streaking" was the defect, and a layered source is how
 you buy it back. Rock022 scored an identical span of 1.03 and was rejected on
 it: 1.58, the same stratification defect as the incumbent.

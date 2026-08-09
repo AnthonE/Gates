@@ -90,7 +90,10 @@ lands clean, and they are judged one at a time.
    ops restricted. Gate: clippy walls + `test_parity_wasm`.
 2. Zero allocation in the tick after warmup. Gate: `test_alloc_zero`.
 3. No locks, syscalls, `String`, or logging in the sim thread — rings and
-   integer event codes only. Gate: clippy + soak jitter assert.
+   integer event codes only. Gate: clippy (`sim-core/clippy.toml` disallows
+   the lock, clock, I/O and `String` types by name). ⚠ **The other half of
+   this wall's stated gate does not exist** — there is no soak and so no
+   tick-jitter assert anywhere in the repo. `DESIGN.md` §12 marks it.
 4. Bounded everything; every client-driven `push` checks a cap from
    `limits.rs`. Gate: review + `test_raid_storm`.
 5. Determinism: same build + seed + WAL → same hashes. Gate: `test_replay`,
@@ -118,13 +121,15 @@ cargo run -p client --features render --bin gates   # the game
 - **`gates` workflow** — runs `./ci/gates.sh` on every PR and push to
   `main` that touches code paths. Red means do not merge; there is no
   override lane.
-- **`nightly` workflow** — every night, builds from `main` and uploads
-  artifacts. The rule it was written around still holds and is the one worth
-  keeping: a builder with nothing to build is a fact, not a failure, but the
-  *test* gate is never allowed to skip-pass. (It names a wasm client; that was
-  the browser one. What a nightly should ship now is the native client and the
-  depot `ci/depot.py` stages — unverified here, so check the workflow rather
-  than trusting this line.)
+- **`nightly` workflow** — every night, runs `./ci/gates.sh` against `main`,
+  builds the release server, and packages the desktop client as a scry depot
+  (`ci/depot.py`) in a second job. It does **not** publish: a build goes live
+  when a person writes the origin's `published.json`. The rule it was written
+  around still holds — a builder with nothing to build is a fact, not a
+  failure, but the *test* gate is never allowed to skip-pass. (This entry used
+  to warn that the workflow named a wasm client and that the claim was
+  unverified. It was verified 2026-08-09: the header had already been
+  corrected and the depot job exists.)
 
 ## For any harness
 

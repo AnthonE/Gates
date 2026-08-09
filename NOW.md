@@ -28,6 +28,17 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 > gained two (standing ON occupants, the 100-bot soak) and §5 three (the
 > invisible arrow, mushrooms/corn, day/night) — the same rescue the first
 > prune performed.
+>
+> ⚠ **Section labels collide, and it is the merge strategy again.** Eight are
+> duplicated (`0a 0u 0v 0w 0x 0y 0z 4b` — `0v` three times), because
+> `merge=union` lets each lane pick "the next free letter" against a file
+> that does not yet have the others' picks. About 39 citations in other docs
+> point at an ambiguous target that way; `NOW.md §0y` is nine of them and
+> resolves to either the sea or persistence. **Not renumbered here**: the
+> citations are mostly in `DECISIONS.md`, which is the dated record and is
+> not rewritten to match a later tidy. Read a `§`-citation as a hint and
+> match on the title, and when you next edit a colliding section, give it a
+> label no other section has.
 
 ---
 
@@ -413,12 +424,18 @@ and Map exist, the look/strafe inversion is fixed (`look.rs`). Remaining:
    49G disk, `rust-lld` SIGBUS), and a green compile is not evidence — Bevy
    answers a missing decoder with a white fallback and keeps going. It wants
    disk headroom and a `--capture` run someone looks at.
-2. **Uncovered since the browser-gate deletion**: the haven shelter, the
-   waystation canopy, the clutter ring, and the occupant table for
-   everything that is not a tree — eight deleted gates held "the mesh the
-   client draws == the volume the server blocks". The replacement's shape is
-   `crates/client/tests/tree.rs` — Rust, against the mesh we draw; cheap,
-   and worth doing the next time one of those meshes is touched.
+2. **Uncovered since the browser-gate deletion, and now measured as actually
+   drifted.** Eight deleted gates held "the mesh the client draws == the
+   volume the server blocks"; the canopy is already wrong. Sim
+   `WAYSTATION_CANOPY_BOXES` is 9 rows to a 4.1 m finial, the drawn `canopy`
+   is 6 rows topping out at 2.09 m, and that slot is authored `scale: 1.0`,
+   so nothing reconciles them — you are stopped ~0.7 m outside posts you can
+   see. Shelter is 14 rows against 9. The two tables are also in different
+   units (full size vs half extent), which is the transcription hazard the
+   gate covered. Measurements in `TERRAIN.md` §7.1. Replacement shape is
+   `crates/client/tests/tree.rs`; **which list is authoritative is a design
+   call and is not made yet.** Also uncovered: the clutter ring and the
+   occupant table for everything that is not a tree.
 3. **World-space anchors are still dropped** (the HUD line landed —
    `hud::readout` pins struct-hit fraction and the charge clock under the
    toast): the wall's own number at the wall itself, a clock on the charge

@@ -120,7 +120,10 @@ Vehicles · farming · electricity · ~~NPC/animal AI~~ **(animals un-cut
 2026-08-08, see below)** · voice chat · teams UI
 · ~~server browser (one shard)~~ **un-cut 2026-08-06, see below** ·
 anti-cheat beyond authoritative sim + anomaly log · localization · mobile
-controls (Android runs, but it's a desktop game) · monuments beyond the
+controls (**and now mobile itself**: this read "Android runs, but it's a
+desktop game", which was true of a web page opened on a phone. The browser
+client is cut, the shipping artifact is a desktop depot, and nothing runs on
+Android) · monuments beyond the
 haven (TERRAIN's pad carver is the hook) · skin trading/editions (A3
 sells; trading is its own later gate).
 

@@ -26,6 +26,16 @@ the native client now carries (the two pick resolvers, `map.js`'s hillshade,
 `web/src/props.js` for a constant still point at something real. Read it from
 history; never restore it to the tree.
 
+⚠ **Separate the two kinds of dead citation, because only one is harmless.**
+"The browser held this constant" is history and stays. "`ci/<gate>.mjs`
+refuses a drift between them" is a claim that **something is enforced**, and
+eleven deleted gates make many of those false in the present tense — the doc
+reads as covered while nothing checks it. Swept 2026-08-09 in the `.md`
+files. **`crates/` was not swept**: `grep -rn 'ci/[a-z_]*\.mjs\|browser_smoke'
+crates/` returns 33 citations and only 2 say the gate is gone, so assume a
+doc comment naming a `.mjs` gate is describing something that no longer runs.
+The first mirror anybody actually re-checked had drifted (`TERRAIN.md` §7.1).
+
 **Bevy draws, it does not decide.** `sim-core` keeps the walls and
 `ClientCore` keeps prediction, so gameplay state never enters the ECS, where
 it would retire the determinism walls with nothing in CI to notice. This is
@@ -87,6 +97,13 @@ engineering clothes, and it cost context on every pass that never touched
 money. It lives in `BUSINESS.md` now: read that when you are working on the
 store, and not otherwise.
 
+⚠ **Two enforcements named below were aspirational and are marked so
+(re-checked 2026-08-09): there is no soak, and `test_raid_storm` does not
+exist.** Both walls still hold on their other half — clippy for 3, per-site
+cap tests for 4 — so neither is ungated, but the list overstated itself and
+that is the exact failure the header warns about. Grep before citing a gate;
+`DESIGN.md` §12 marks the same two.
+
 1. **sim-core is pure.** No I/O, no clock, no threads, no `HashMap`/
    `HashSet` iteration, no libm/trig, floats restricted to
    `+ − × ÷ sqrt min max clamp floor-by-cast`. → clippy disallowed
@@ -94,11 +111,20 @@ store, and not otherwise.
 2. **Zero allocation in the tick after warmup.** → counting allocator,
    `test_alloc_zero`.
 3. **No locks, no syscalls, no `String`/`format!`/logging in the sim
-   thread.** Rings only; integer event codes only. → clippy walls + soak
-   tick-jitter assert.
+   thread.** Rings only; integer event codes only. → clippy walls
+   (`sim-core/clippy.toml` disallows the lock, clock, I/O and `String` types
+   by name, and `ci/gates.sh` runs clippy `-D warnings`). ⚠ **The soak
+   tick-jitter assert this line also named does not exist** — there is no
+   soak anywhere in the repo.
 4. **Bounded everything.** Every queue, map, and per-tick work item has a
    cap in `limits.rs` and a stated overflow policy. No `push` on a
-   client-driven path without a cap check. → review wall + `test_raid_storm`.
+   client-driven path without a cap check. → the review wall, plus
+   per-site cap tests across ~40 suites (`the_queue_is_bounded_and_says_so`,
+   `event_ring_overflow_heals_by_resync`, `the_bag_cap_stays_neutral`,
+   `the_autosave_sweep_is_bounded_and_skips_the_unchanged`,
+   `the_voice_cap_refuses_rather_than_steals`). ⚠ **`test_raid_storm` does
+   not exist** — the caps are gated one site at a time and nothing drives
+   them all at once.
 5. **Determinism is a gate, not a vibe.** Same build + seed + WAL →
    same state hashes. → `test_replay`, `test_terrain_golden`.
 6. **The wire never drifts by accident.** Packet layouts change only with
@@ -394,9 +420,12 @@ headless image has no reason to carry — `libwayland-dev`, `libasound2-dev`,
 `libudev-dev` — and each fails identically, as a `pkg-config exited with status
 code 1` panic from a `*-sys` build script (`wayland-sys`, `alsa-sys`,
 `libudev-sys`) with the crate named only in the backtrace. Install them; it is
-the box, not the tree. `ci/gates.sh`'s native-client gate names the first two
-in its own echo line; **`libudev-dev` is the third and was measured here**, so
-a box that installs only what that line lists still fails. Running the client
+the box, not the tree. `ci/gates.sh`'s native-client gate now names **all
+three** in its own echo line — it listed only the first two when
+`libudev-dev` was measured here, and following that line was itself a failure;
+it was fixed, so the echo is trustworthy again. Re-confirmed 2026-08-09 on a
+fresh container: the gate died at `wayland-sys` and installing the three the
+line lists ran it green. Running the client
 adds a fourth, and it is a runtime `.so` rather than a build dep, so
 `pkg-config` never mentions it: `libxkbcommon-x11-0`, whose absence panics
 inside `winit` at `App::run` with every gate already green. **Then ask the
@@ -473,7 +502,7 @@ which is neither.
   two meshes out; the crate's plugin is deliberately unused, because a plugin
   that regenerates entities on change would put tree state in the ECS.
 - **game-icons.net** (CC BY 3.0) — the client's item and building icons,
-  **shipped**: 57 white-on-transparent PNGs in `assets/icons/`, rasterised
+  **shipped**: 62 white-on-transparent PNGs in `assets/icons/`, rasterised
   from the project's public SVG archive by `ci/bake_icons.py`. CC BY is a
   *notice* licence — `assets/icons/CREDITS.md` names the four authors whose
   work ships (lorc, delapouite, carl-olsen, john-redman) and `tests/ui.rs` §G
