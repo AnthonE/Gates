@@ -17,7 +17,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
-use crate::ui::map::{self, GRID_COLS, GRID_LETTERS};
+use crate::ui::map::{self, MarkKind, GRID_COLS, GRID_LETTERS};
 
 use super::menu::Screen;
 use super::{ui, Net, WorldId};
@@ -29,6 +29,18 @@ pub const MAP_PX: usize = 512;
 
 /// How large the map is drawn, in screen pixels.
 const MAP_DRAW_PX: f32 = 640.0;
+
+/// An anchor marker's edge (bed, hearth, backpack, waystation), screen px.
+/// Smaller than the player square's 9 on purpose: the panel's first job is
+/// *where am I*, and a marker the same size as the answer competes with it.
+/// `DECISIONS.md` §open, map markers v1 — carried from the retired browser
+/// row's rationale.
+const MAP_MARK_PX: f32 = 7.0;
+
+/// The haven ring's edge. Larger than an anchor — it is the island's one
+/// authored destination — but drawn as an OUTLINE, so it stays visually
+/// lighter than the player's solid square whatever its extent.
+const HAVEN_PX: f32 = MAP_MARK_PX + 4.0;
 
 /// Everything this screen owns.
 #[derive(Component)]
@@ -111,6 +123,23 @@ pub fn setup(
     let square = map::grid_label(x, z);
     let bearing = bearing_text(look.yaw);
 
+    // The markers: the authored destinations off the memoized `Haven`, the
+    // beds and hearths off the deploy mirror, the standing death bags.
+    // Resolved on OPEN, like the paint — the marked things move on the
+    // timescale of raids, not frames, so a deploy placed while the screen is
+    // open waits for the next M. The player marker is the one thing `track`
+    // moves.
+    let core = &net.session.core;
+    let mut marks = map::Marks::default();
+    map::resolve_marks(
+        &mut marks,
+        &world.haven,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        core.deploy_defs_have,
+        core.bags.entries(),
+    );
+
     commands
         .spawn((MapRoot, ui::screen(Color::srgba(0.02, 0.02, 0.025, 0.94))))
         .with_children(|root| {
@@ -176,6 +205,15 @@ pub fn setup(
                         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18)),
                     ));
                 }
+                // The marks, UNDER the player: a sibling spawned later draws
+                // on top, and *where am I* outranks everything else drawn
+                // here. Positions are `resolve_marks`'s fractions — the same
+                // `world_to_map` the player goes through, so the two cannot
+                // disagree about the projection.
+                for m in &marks.a[..marks.count] {
+                    spawn_mark(frame, m);
+                }
+
                 // The marker. `world_to_map` with size 1 gives a fraction, so
                 // it places by percentage and the frame can be any size.
                 frame.spawn((
@@ -195,6 +233,23 @@ pub fn setup(
                 ));
             });
 
+            // The cap is drop-newest and NOT silent: a truncated map that
+            // says nothing reads as "everything is drawn" (`CLAUDE.md` §4's
+            // stated-overflow-policy law, applied to a picture).
+            if marks.dropped > 0 {
+                root.spawn((
+                    ui::label(
+                        format!("{} marks beyond the cap", marks.dropped),
+                        12.0,
+                        ui::FAINT,
+                    ),
+                    Node {
+                        margin: UiRect::top(Val::Px(6.0)),
+                        ..default()
+                    },
+                ));
+            }
+
             root.spawn((
                 ui::label(
                     format!(
@@ -210,6 +265,65 @@ pub fn setup(
                 },
             ));
         });
+}
+
+/// One mark. Shape and weight are per KIND — colour alone is the channel a
+/// player reading a small panel in a hurry confuses, so no two marked kinds
+/// share both:
+///
+/// - haven / waystation: a RING (outline only), large tier and small — a
+///   place you go, not a thing you own;
+/// - bed: a solid square, hearth: the same square turned 45° into a diamond,
+///   backpack: a solid disc — the browser layer's shapes, kept.
+///
+/// The exhaustive `match` is the gate the browser needed a table-walk for: a
+/// kind added without a draw branch fails to compile.
+fn spawn_mark(frame: &mut ChildSpawnerCommands, m: &map::Mark) {
+    let f = m.kind.fill();
+    let fill = Color::srgb(f[0] / 255.0, f[1] / 255.0, f[2] / 255.0);
+    let px = match m.kind {
+        MarkKind::Haven => HAVEN_PX,
+        _ => MAP_MARK_PX,
+    };
+    let node = |border: f32| Node {
+        position_type: PositionType::Absolute,
+        left: Val::Percent(m.px * 100.0),
+        top: Val::Percent(m.py * 100.0),
+        width: Val::Px(px),
+        height: Val::Px(px),
+        margin: UiRect::axes(Val::Px(-px * 0.5), Val::Px(-px * 0.5)),
+        border: UiRect::all(Val::Px(border)),
+        ..default()
+    };
+    match m.kind {
+        // Never in a live `Marks` — `count` bounds the caller's iteration —
+        // and drawing nothing keeps that true on screen too.
+        MarkKind::None => {}
+        MarkKind::Haven | MarkKind::Waystation => {
+            let mut n = node(2.0);
+            n.border_radius = BorderRadius::MAX;
+            frame.spawn((n, BorderColor::all(fill)));
+        }
+        MarkKind::Bed | MarkKind::Hearth => {
+            let mut e = frame.spawn((
+                node(1.0),
+                BackgroundColor(fill),
+                BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+            ));
+            if m.kind == MarkKind::Hearth {
+                e.insert(UiTransform::from_rotation(Rot2::degrees(45.0)));
+            }
+        }
+        MarkKind::Backpack => {
+            let mut n = node(1.0);
+            n.border_radius = BorderRadius::MAX;
+            frame.spawn((
+                n,
+                BackgroundColor(fill),
+                BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+            ));
+        }
+    }
 }
 
 /// Keep the marker under the player while the screen is open — the world is

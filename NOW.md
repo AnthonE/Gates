@@ -1184,29 +1184,35 @@ its cost rows never reach `web/src` — the client cannot show what mending a
 door costs, and `describeDeploy` reads `b+3` of a stride-4 row because that is
 all there is. Same shape as §0e: a widened export, ~10 lines.
 
-## 0a · The island has a map now — what it still cannot show *(ui lane)*
+## 0a · The island has a map now — and the trip has both ends *(ui lane)*
 
-From the judge's **ranked gap 3**, `pass-20260805-074623-01-judge.md`: "There is
-nowhere to go", leading with `MENUS.md:102` Map MISSING. **Landed:** M opens
-`#map`; `map.js` paints the island from `terrain::splat_from` through the bridge
-— one wasm fill, the same law the 3D ground blends by — hillshaded, 16×16
-A–P/1–16 grid, your position and heading. `ui_smoke` 510 → 561 (§U); ten mutants
-red, two of them gate holes this pass found and closed. `DECISIONS.md` §open has
-`MAP_GRID_M` and the shade floor's derivation. **Gates ran `fast`** (renderer
-tier off this run by operator act); the diff touches `main.js`, so `auto` would
-schedule it and §3's two clean-trunk reds still stand.
+From the judge's **ranked gap 3**, `pass-20260805-074623-01-judge.md`: "There
+is nowhere to go." The browser map landed first (`map.js`, gone with `web/`);
+the native map is `ui/map.rs` (all arithmetic) + `render/map.rs` (draw only).
 
-What remains, and none of it is a UI call:
+**Landed 2026-08-09: the marker layer, restored and finished** (`DECISIONS.md`
+§open, map markers v1; seven lib tests in `ui/map.rs`):
 
-- **Systems lane, one export please:** `terrain_haven_xz(seed)` — the judge's
-  own named item, now with a screen to land on. The map draws no marker at all,
-  so the one authored destination is still unfindable. `terrain::haven` is pure
-  and `bridge.rs:92` memoizes it already.
-- **Operator: may the map pin anything?** `ALPHA.md` §1's "no map position"
-  binds the DEATH screen and the map stays off it. A haven pin, a bag pin and a
-  death marker are three separate calls; `mapstylized.jpg` shows all three.
-- **Looks lane, information only:** the map paints the alpine channel as rock
-  while the world whitens it above `materials.js`'s `SNOW_RANGE`.
+- The **haven and both waystations** draw as rings. This item's "systems lane,
+  one export please" was stale twice over — the bridge it wanted is deleted,
+  and the native client never needed it: `render::WorldId` memoizes
+  `terrain::haven(seed)` already.
+- **Bed / hearth / backpack** marks are back (the browser layer, `04d79ec`,
+  lost in the port): deploy mirror + bag set, cell-centre metric, and the drip
+  guard — `DeployDef::INERT.arch == ARCH_BAG`, so an unguarded unknown row
+  would draw as somebody's bed.
+- One projection: every mark goes through `world_to_map`, asserted as an
+  identity. Cap 64 drop-newest, authored tier first, refused count drawn.
+
+Still open, neither of it ours:
+
+- **Operator:** the death marker (`ALPHA.md` §1 keeps position off the death
+  screen; the map touches no death fact today), and whether the marked set is
+  right — boxes and doors stay unmarked deliberately.
+- ~~Looks lane: snow above `SNOW_RANGE`~~ — **stale, struck**: the constant
+  died with `materials.js` and the native renderer whitens nothing (no snow in
+  `crates/`), so map and world agree about the alpine channel. Real again only
+  if the native ground gains a snow line (`RENDER.md` lane).
 
 **Respawn — the gap's other half — is BLOCKED, measured.** The wire carries
 `Respawn { on_bag: bool }` and nothing else; no owner bit and no cooldown ride
