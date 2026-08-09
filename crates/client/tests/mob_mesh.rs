@@ -24,7 +24,10 @@
 #![cfg(feature = "render")]
 
 use bevy::prelude::*;
-use client::render::mobs::{pig_mesh, PIG_H_M, PIG_LEN_M};
+use client::render::mobs::{
+    leg_swing_rad, pig_body_mesh, pig_leg_mesh, pig_mesh, Gait, LEG_ANCHORS, PIG_H_M,
+    PIG_LEG_CYCLE_M, PIG_LEG_FULL_MPS, PIG_LEG_SWING_RAD, PIG_LEN_M,
+};
 
 /// Every position in the mesh, as an axis-aligned box.
 fn aabb(mesh: &Mesh) -> (Vec3, Vec3) {
@@ -161,4 +164,167 @@ fn the_pig_is_not_a_ghost() {
         c.iter().all(|v| v[0] > v[2]),
         "some of the massing is cooler than it is warm — this is a pig, not a rock"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The legs, since they move (`NOW.md` §0m item 4). The massing split into a
+// body mesh and four leg children, so the gate grew the arithmetic the split
+// created: the hinge geometry, and the trot that drives it. Nothing above
+// was weakened — `pig_mesh` assembles the whole animal at rest from the same
+// tables the draw path spawns from, so every earlier assertion still
+// measures shipped geometry.
+// ---------------------------------------------------------------------------
+
+/// The hinge: a leg's pivot is its own origin, the anchor holds that pivot
+/// at exactly the leg's length, and the pieces reassemble into the animal
+/// the earlier tests measure — so swinging is a rotation about the hip and
+/// a resting herd is byte-for-byte the massing that shipped before legs
+/// moved.
+#[test]
+fn the_legs_hang_from_their_own_hips() {
+    let (lo, hi) = aabb(&pig_leg_mesh());
+    assert!(
+        hi.y.abs() < 1e-4,
+        "the leg's top is at y = {:.4}, not its origin — rotating the child \
+         transform would swing it about a point inside (or outside) the box",
+        hi.y
+    );
+    let len = -lo.y;
+    assert!(len > 0.0, "the leg has no length");
+    assert_eq!(LEG_ANCHORS.len(), 4, "a pig has four legs");
+    for (anchor, _) in LEG_ANCHORS {
+        assert!(
+            (anchor[1] - len).abs() < 1e-4,
+            "a {len:.2} m leg hung at y = {:.2} either floats or sinks its foot",
+            anchor[1]
+        );
+    }
+    // The assembled animal is the body plus the legs and nothing less: its
+    // box is the union of the parts' boxes.
+    let (alo, ahi) = aabb(&pig_mesh());
+    let (blo, bhi) = aabb(&pig_body_mesh());
+    assert!(alo.y.abs() < 1e-4, "the assembled pig left the ground");
+    assert!(
+        blo.y > 1e-3,
+        "the body mesh reaches y = {:.3} — it contains the legs it is meant \
+         to have shed",
+        blo.y
+    );
+    assert!((ahi - bhi).length() < 1e-4, "the legs grew past the body");
+}
+
+/// The trot's phase table: diagonal pairs in phase, lateral and fore-aft
+/// neighbours π apart. Anything else is a pace or a bound wearing a trot's
+/// comment.
+#[test]
+fn the_legs_trot_in_diagonal_pairs() {
+    for (a, pa) in LEG_ANCHORS {
+        for (b, pb) in LEG_ANCHORS {
+            let diagonal = (a[0] * b[0] > 0.0) == (a[2] * b[2] > 0.0);
+            let gap = (pa - pb).abs();
+            if diagonal {
+                assert!(
+                    gap < 1e-6,
+                    "diagonal partners at {a:?}/{b:?} are {gap:.3} rad apart"
+                );
+            } else {
+                assert!(
+                    (gap - std::f32::consts::PI).abs() < 1e-6,
+                    "opposed legs at {a:?}/{b:?} are {gap:.3} rad apart, not π"
+                );
+            }
+        }
+    }
+}
+
+/// The swing itself, pure: rests at a stand, scales with speed, saturates
+/// at the flight gait, mirrors across the π offset — and stays under
+/// horizontal, which is what makes "a swing can only RAISE a foot" true
+/// (foot height is hip − len·cos(swing), and cos is positive below π/2).
+#[test]
+fn the_swing_rests_scales_and_never_cartwheels() {
+    use std::f32::consts::FRAC_PI_2;
+    // A standing animal's legs are vertical wherever its phase stopped.
+    for i in 0..12 {
+        assert_eq!(leg_swing_rad(i as f32, 0.0, 0.0), 0.0);
+    }
+    // Amplitude grows with speed and clamps at the flight gait: a spooked
+    // pig at full flee and one hit by a speed spike swing identically.
+    let at = |v: f32| leg_swing_rad(FRAC_PI_2, 0.0, v); // sin = 1: the peak
+    assert!(
+        at(1.0) > 0.0 && at(2.0) > at(1.0),
+        "the swing ignores speed"
+    );
+    assert!((at(PIG_LEG_FULL_MPS) - PIG_LEG_SWING_RAD).abs() < 1e-6);
+    assert_eq!(at(PIG_LEG_FULL_MPS), at(50.0), "the amplitude must clamp");
+    // Diagonal pairs mirror their opposed pairs exactly.
+    let fore = leg_swing_rad(1.234, 0.0, 3.0);
+    let aft = leg_swing_rad(1.234, std::f32::consts::PI, 3.0);
+    assert!(
+        (fore + aft).abs() < 1e-5,
+        "the π-offset legs do not mirror: {fore} vs {aft}"
+    );
+    // And the amplitude is under horizontal — past it the foot rises above
+    // its own hip, which is a cartwheel wearing a stride's name. A const
+    // block so the claim fails at compile time, which is where a constant's
+    // claims belong.
+    const {
+        assert!(PIG_LEG_SWING_RAD < std::f32::consts::FRAC_PI_2);
+    }
+}
+
+/// Cadence is distance, not time — the footstep odometer's rule
+/// (`sound/steps.rs`), applied to legs: standing holds the phase, ground
+/// covered advances it by the cycle's own arithmetic, and climbing is not
+/// ground.
+#[test]
+fn the_stride_integrates_ground_not_frames() {
+    use std::f32::consts::{PI, TAU};
+    let p0 = Gait::new(0).phase;
+    // Standing: any number of frames, no stride.
+    let mut g = Gait::new(0);
+    g.observe(Vec3::ZERO, 0.016);
+    for _ in 0..100 {
+        g.observe(Vec3::ZERO, 0.016);
+    }
+    assert_eq!(g.phase, p0, "a standing pig strode");
+    assert!(g.speed < 0.01, "a standing pig reads as moving");
+    // Half a cycle of ground moves the phase π, however long it took.
+    let mut a = Gait::new(0);
+    a.observe(Vec3::ZERO, 0.016);
+    a.observe(Vec3::new(PIG_LEG_CYCLE_M / 2.0, 0.0, 0.0), 0.1);
+    let moved = (a.phase - p0).rem_euclid(TAU);
+    assert!(
+        (moved - PI).abs() < 1e-3,
+        "half a cycle of ground moved the phase {moved:.3} rad, not π"
+    );
+    // Climbing: vertical travel is not ground covered.
+    let mut c = Gait::new(0);
+    c.observe(Vec3::ZERO, 0.016);
+    c.observe(Vec3::new(0.0, 3.0, 0.0), 0.016);
+    assert_eq!(c.phase, p0, "a lifted pig pedalled");
+}
+
+/// Two pigs do not march in step: the phase origin is hashed from the
+/// roster slot (`sound::pig::hash01`, the snort's own convention), so a
+/// herd walked into is strides in four places rather than a chorus line.
+#[test]
+fn two_pigs_do_not_march_in_step() {
+    let phases: Vec<f32> = (0..8usize).map(|slot| Gait::new(slot).phase).collect();
+    for p in &phases {
+        assert!(
+            (0.0..std::f32::consts::TAU).contains(p),
+            "phase {p} left [0, TAU)"
+        );
+    }
+    let lo = phases.iter().cloned().fold(f32::MAX, f32::min);
+    let hi = phases.iter().cloned().fold(0.0f32, f32::max);
+    assert!(
+        hi - lo > 0.5,
+        "eight slots' phases span {:.3} rad — the herd marches in step",
+        hi - lo
+    );
+    // And deterministic: the same slot always starts its stride at the
+    // same place, which is what keeps two clients' herds in agreement.
+    assert_eq!(Gait::new(3).phase, Gait::new(3).phase);
 }

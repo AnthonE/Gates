@@ -102,7 +102,12 @@ fn interval(slot: usize, cycle: u32) -> f32 {
 /// A uniform draw in [0, 1) from two integers. The same integer-mixing
 /// register as `synth`'s seeding (splitmix-style multiplies), self-contained
 /// so the sound model stays free of anyone else's stream.
-fn hash01(slot: u32, cycle: u32) -> f32 {
+///
+/// Public because it is now the house convention for per-animal variation,
+/// not only the voice's: the gait's phase offset (`render/mobs.rs::Gait`)
+/// draws from the same well, so one roster slot's walk and snort are both
+/// its own and neither needs a second hash to forget to match this one.
+pub fn hash01(slot: u32, cycle: u32) -> f32 {
     let mut x = slot
         .wrapping_mul(0x9E37_79B9)
         .wrapping_add(cycle.wrapping_mul(0x85EB_CA6B));

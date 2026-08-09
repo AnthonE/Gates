@@ -698,6 +698,8 @@ impl Plugin for GatesRenderPlugin {
                     structures::stream,
                     bodies::stream,
                     mobs::stream,
+                    // The legs read the gait `mobs::stream` just advanced.
+                    mobs::trot,
                     rig::follow_eye,
                     hud::update,
                     // The feedback surface. Under `world_running` rather than

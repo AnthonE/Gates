@@ -221,11 +221,19 @@ Owed, in rank order — `reference/ANIMALS.md` §9.5 has the reasoning:
    and no OS randomness; AOI (208 m) sits inside dormancy (240 m), so a
    voiced pig is always a simmed pig. `DECISIONS.md` §open "pig voice v0";
    gated in `tests/sound.rs`. Nobody has heard it — audio v0's caveat holds.
-4. **No animation, and the massing is boxy up close.** Legs do not move, so
-   a walking pig slides, and at 8 m the head barely separates from the body
-   (captured 2026-08-08). `anim.rs` drives the player rig off a glTF and there is no
-   equivalent here; the cheapest honest version is a per-leg transform off
-   the interpolated speed, not a rig.
+4. **~~No animation~~ — the legs move now (2026-08-09); the massing is
+   still boxy up close.** The cheapest honest version, as this item asked:
+   the four legs are one shared mesh hung as child transforms (hip at each
+   leg's own origin) swung by a distance-integrated phase — a trot, diagonal
+   pairs π apart, phase origin hashed per roster slot (the snort's own
+   convention, `sound::pig::hash01`) — with amplitude off the interpolated
+   speed, so a standing pig rests wherever its stride stopped. Nobody has
+   watched it walk — the audio caveat, in pictures. `DECISIONS.md` §open
+   "pig gait v0"; gated in `tests/mob_mesh.rs` (hinge geometry, trot
+   pairing, distance-not-time, per-slot spread; the massing/mean gates
+   unweakened — `pig_mesh` reassembles the animal at rest). **What remains
+   of this item**: at 8 m the head barely separates from the body (captured
+   2026-08-08) — massing detail, not animation.
 5. **`MAX_MOBS = 64` has never met a playtest.** It is derived (§ the wire
    budget) rather than felt, and it is the one number a player answers.
 
