@@ -1,0 +1,156 @@
+//! `hunt` — a naked spawn can actually catch and kill a pig, and the kill
+//! pays a raw food a campfire will take.
+//!
+//! **This is the gate for a defect no other gate could see.** The pig's
+//! flight speed shipped at 100% of `SPRINT_SPEED` for one build: every
+//! automated check was green, the animal was correct in every measurable
+//! way, and it simply could not be caught — a sprinting player never closed
+//! the gap, so the first thing a naked spawn was supposed to be able to
+//! kill was unkillable forever. It was found by booting the game and
+//! looking, which does not scale and does not run in CI.
+//!
+//! What makes it gateable is that "catchable" is not a feeling: it is a
+//! chase, run in the sim, against the shipped content, with the same
+//! `movement::step` both bodies use. The player here does exactly what a
+//! player does — sprint at it and swing — and the assertion is that the pig
+//! is dead at the end. `tests/content.rs` gates the ratio that makes it
+//! possible; this gates the outcome.
+//!
+//! No clock, no sockets: everything is ticks and observable state.
+
+use server::core::ShardCore;
+use server::stats::ShardStats;
+use sim_core::input::{BTN_PRIMARY, BTN_SPRINT};
+use sim_core::limits::TICK_HZ;
+use sim_core::movement::POS_XZ_Q;
+use sim_core::world::Command;
+
+/// The wire yaw whose LUT entry points closest to `(dx, dz)` — the same
+/// pick `mob::think` makes, done here off the public `yaw_dir` so the test
+/// steers on the sim's own direction space rather than an angle it computed
+/// some other way.
+fn yaw_toward(dx: f32, dz: f32) -> u16 {
+    let (mut best, mut best_dot) = (0u16, f32::NEG_INFINITY);
+    for i in 0..256u16 {
+        let (ex, ez) = sim_core::yaw_dir(i << 8);
+        let dot = ex * dx + ez * dz;
+        if dot > best_dot {
+            best_dot = dot;
+            best = i << 8;
+        }
+    }
+    best
+}
+
+/// Ticks a chase may take before the hunt is called a failure — 60 s.
+///
+/// Generous on purpose. The claim being gated is *possible*, not *quick*:
+/// a number tight enough to measure the fun would redden on a rebalance
+/// that is nobody's bug, and a chase that takes longer than a minute of
+/// open-ground sprinting is not a chase, it is the 100%-flee defect back.
+const HUNT_LIMIT_TICKS: u32 = 60 * TICK_HZ;
+
+#[test]
+fn a_sprinting_player_can_catch_and_kill_a_pig() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let c = content::Content::load_dir(&dir).expect("shipped content loads");
+    let stats = ShardStats::default();
+    let mut core = ShardCore::new(20260731);
+    core.world.mob = c.bake_mobs().expect("animals bake");
+    core.world.combat = c.bake_combat().expect("weapons bake");
+    core.world.gather = c.bake_gather().expect("gather bakes");
+    core.world.spawn_kit = c.bake_spawn_kit().expect("the kit bakes");
+    core.tick(&stats, |_, _, _| true);
+
+    let slot = core
+        .world
+        .mobs
+        .m
+        .iter()
+        .position(|m| m.alive)
+        .expect("the roster hatched");
+    let (mx, mz) = (
+        core.world.mobs.m[slot].body.qx as f32 * POS_XZ_Q,
+        core.world.mobs.m[slot].body.qz as f32 * POS_XZ_Q,
+    );
+    // Twelve metres: exactly the fright radius, so the pig is running from
+    // the first tick and the chase is the whole test.
+    core.world.dev_spawn = Some((mx + 12.0, mz));
+    assert!(core.connect(0, 0x100), "connect");
+    core.tick(&stats, |_, _, _| true);
+    let p = core
+        .world
+        .players
+        .iter()
+        .position(|p| p.active)
+        .expect("seated");
+
+    // **The spear, put in hand, because the spawn kit contains no weapon.**
+    // That is not a workaround, it is the finding this test produced: the
+    // kit is a *building* kit (plan, hammer, hatchet, pickaxe, torch,
+    // bandage) and `weapons.toml` arms six things, none of which is a
+    // hatchet — tools have no melee row, so `held_melee` is `None` for
+    // every pocket a fresh character owns. An earlier cut of this test hunted
+    // a pig with a building plan for sixty seconds and blamed the animal.
+    //
+    // The wooden spear is the first weapon the game lets you craft (T0), so
+    // this is the earliest hand that can hunt at all, which is the state the
+    // claim is about.
+    let combat = c.bake_combat().expect("weapons bake");
+    let spear = c
+        .item_index("item.spear_wood")
+        .expect("the content still names a wooden spear");
+    assert!(
+        combat.held_melee(spear).is_some(),
+        "the first weapon in the game does no damage"
+    );
+    core.world.players[p].inv[0] = sim_core::gather::ItemStack {
+        item: spear,
+        count: 1,
+    };
+    let mut frame = core.world.players[p].frame;
+    frame.sel = 0;
+    let mut caught = None;
+    for t in 0..HUNT_LIMIT_TICKS {
+        let (px, pz) = (core.world.players[p].body.qx, core.world.players[p].body.qz);
+        let (bx, bz) = (
+            core.world.mobs.m[slot].body.qx,
+            core.world.mobs.m[slot].body.qz,
+        );
+        frame.seq = frame.seq.wrapping_add(1);
+        frame.yaw = yaw_toward((bx - px) as f32 * POS_XZ_Q, (bz - pz) as f32 * POS_XZ_Q);
+        frame.move_z = 127;
+        frame.buttons = BTN_SPRINT | BTN_PRIMARY;
+        core.world.tick(&[Command::Input { id: 0x100, frame }]);
+        if !core.world.mobs.m[slot].alive {
+            caught = Some(t);
+            break;
+        }
+    }
+
+    let t = caught.unwrap_or_else(|| {
+        let (px, pz) = (core.world.players[p].body.qx, core.world.players[p].body.qz);
+        let (bx, bz) = (
+            core.world.mobs.m[slot].body.qx,
+            core.world.mobs.m[slot].body.qz,
+        );
+        let d = (((bx - px) as f64 * 0.03).powi(2) + ((bz - pz) as f64 * 0.03).powi(2)).sqrt();
+        panic!(
+            "60 s of sprinting and the pig is still alive at {} hp, {d:.1} m away — \
+             this is the flee-speed defect: an animal at or above the player's \
+             sprint can never be caught, and every other gate stays green",
+            core.world.mobs.m[slot].hp
+        )
+    });
+    println!("caught in {t} ticks ({:.1} s)", t as f32 / TICK_HZ as f32);
+
+    // And the kill paid the raw food the fire is waiting for.
+    let raw = c.item_index("item.raw_meat").expect("raw meat is an item");
+    let got: u32 = core.world.players[p]
+        .inv
+        .iter()
+        .filter(|s| s.item == raw)
+        .map(|s| s.count as u32)
+        .sum();
+    assert!(got > 0, "the kill paid no raw meat");
+}

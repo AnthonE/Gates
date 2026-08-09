@@ -8,7 +8,8 @@
 //! in this module runs on the sim thread.
 
 use crate::schema::{
-    DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, Weapon, WeaponKind,
+    CookStation, DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, Weapon,
+    WeaponKind,
 };
 use crate::Content;
 use sim_core::backpack::BackpackContent;
@@ -28,13 +29,15 @@ use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
 use sim_core::inventory::SpawnKit;
 use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
-    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_DEPLOY_COSTS,
-    MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS, MAX_LOOT_TABLES,
-    MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
+    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS,
+    MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
+    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
 };
+use sim_core::mob::{MobContent, MobDef, MOB_LOOT_ROWS, MOB_PIG};
+use sim_core::oven::{CookContent, CookRow};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
@@ -792,6 +795,62 @@ impl Content {
     /// ladder that does not rise strictly with rarity; what this adds is
     /// the arithmetic refusal — a product that overflows the sim's u32
     /// tick field is a content bug, not a saturated bag.
+    /// The oven table: the one fuel row and every cook row, with seconds
+    /// resolved to ticks the way a recipe's are.
+    ///
+    /// `validate::structural` has already refused rows naming items that
+    /// do not exist and a fuel that burns for no time; what this adds is
+    /// the arithmetic and capacity refusals, which are the sim's and not
+    /// the content's — a table past `MAX_COOK_ROWS` is a refused boot
+    /// rather than a silently truncated tail, because a row the sim never
+    /// sees is a transformation the player is told about and cannot
+    /// perform.
+    pub fn bake_cooking(&self) -> Result<CookContent, String> {
+        let mut cc = CookContent::EMPTY;
+        let f = &self.fuel;
+        cc.fuel_item = self
+            .item_index(&f.item)
+            .ok_or_else(|| format!("bake: fuel `{}` names no item", f.item))?;
+        cc.byproduct = self
+            .item_index(&f.byproduct)
+            .ok_or_else(|| format!("bake: fuel byproduct `{}` names no item", f.byproduct))?;
+        cc.fuel_ticks = f
+            .seconds
+            .checked_mul(TICK_HZ)
+            .ok_or_else(|| format!("bake: fuel burn {} s overflows the tick span", f.seconds))?;
+        cc.byproduct_pct = u16::try_from(f.byproduct_pct)
+            .map_err(|_| format!("bake: fuel byproduct_pct {} overflows u16", f.byproduct_pct))?;
+        if self.cooks.len() > MAX_COOK_ROWS {
+            return Err(format!(
+                "bake: {} cook rows exceed the sim's {MAX_COOK_ROWS}-row table",
+                self.cooks.len()
+            ));
+        }
+        for (i, c) in self.cooks.iter().enumerate() {
+            let input = self
+                .item_index(&c.input)
+                .ok_or_else(|| format!("bake: cook input `{}` names no item", c.input))?;
+            let output = self
+                .item_index(&c.output)
+                .ok_or_else(|| format!("bake: cook output `{}` names no item", c.output))?;
+            let ticks = c
+                .seconds
+                .checked_mul(TICK_HZ)
+                .ok_or_else(|| format!("bake: cook `{}` {} s overflows", c.input, c.seconds))?;
+            cc.rows[i] = CookRow {
+                input,
+                output,
+                ticks,
+                arch: match c.station {
+                    CookStation::Fire => ARCH_FIRE,
+                    CookStation::Furnace => ARCH_FURNACE,
+                },
+            };
+        }
+        cc.row_count = self.cooks.len() as u16;
+        Ok(cc)
+    }
+
     pub fn bake_backpack(&self) -> Result<BackpackContent, String> {
         if self.items.len() > MAX_ITEM_DEFS {
             return Err(format!(
@@ -910,5 +969,82 @@ impl Content {
             lc.tables[which] = t;
         }
         Ok(lc)
+    }
+    /// The animal species table (`sim-core/src/mob.rs`).
+    ///
+    /// Three conversions happen here and nowhere else, which is the point
+    /// of the bake: seconds become ticks, metres become the centimetres the
+    /// sim compares distances in, and a percentage of the player's speed
+    /// becomes the `−127..=127` move axis `movement::step` scales by. After
+    /// this, `mob.rs` does not know what a second, a metre or a percent is.
+    ///
+    /// The species *ordinal* is resolved from the id here, exactly as a
+    /// loot table's container is: an unknown name is a refusal at boot and
+    /// never a silently ignored row, because a shard that booted with a row
+    /// nothing reads is a shard whose content hash promises wildlife it
+    /// does not have.
+    pub fn bake_mobs(&self) -> Result<MobContent, String> {
+        let mut mc = MobContent::EMPTY;
+        for m in &self.mobs {
+            let which = match m.id.as_str() {
+                "mob.pig" => MOB_PIG as usize,
+                other => {
+                    return Err(format!(
+                        "bake: mobs names species `{other}`, which the sim has no roster kind for"
+                    ))
+                }
+            };
+            if mc.defs[which].hp != 0 {
+                return Err(format!("bake: duplicate mob row for `{}`", m.id));
+            }
+            if m.drops.len() > MOB_LOOT_ROWS {
+                return Err(format!(
+                    "bake: mob `{}` drops {} stacks, past the sim's {MOB_LOOT_ROWS}",
+                    m.id,
+                    m.drops.len()
+                ));
+            }
+            let small = |v: u32, what: &str| -> Result<u16, String> {
+                u16::try_from(v)
+                    .map_err(|_| format!("bake: mob `{}` {what} {v} overflows the sim", m.id))
+            };
+            // A percentage of the axis, floored: 50% is 63, which is
+            // 1.4882 m/s out of `WALK_SPEED`. Floored rather than rounded
+            // because the axis is the ceiling on speed and a content
+            // number should never buy more than it asked for.
+            let axis = |pct: u32| -> u8 { ((pct.min(100) * 127) / 100) as u8 };
+            let mut def = MobDef {
+                hp: small(m.hp, "hp")?,
+                gait: axis(m.walk_pct),
+                flee_gait: axis(m.flee_pct),
+                flee_ticks: small(
+                    m.flee_seconds
+                        .checked_mul(TICK_HZ)
+                        .ok_or_else(|| format!("bake: mob `{}` flee span overflows", m.id))?,
+                    "flee_seconds",
+                )?,
+                roam_cm: m.roam_m as i64 * 100,
+                spook_cm: m.spook_m as i64 * 100,
+                respawn_ticks: m
+                    .respawn_seconds
+                    .checked_mul(TICK_HZ)
+                    .ok_or_else(|| format!("bake: mob `{}` respawn span overflows", m.id))?,
+                loot: [ItemStack {
+                    item: NO_ITEM,
+                    count: 0,
+                }; MOB_LOOT_ROWS],
+            };
+            for (i, d) in m.drops.iter().enumerate() {
+                let item = self
+                    .item_index(&d.item)
+                    .ok_or_else(|| format!("bake: mob `{}` drops unknown `{}`", m.id, d.item))?;
+                def.loot[i] = ItemStack {
+                    item,
+                    count: small(d.count, "drop count")?,
+                };
+            }
+            mc.defs[which] = def;
+        }
+        Ok(mc)
     }
 }

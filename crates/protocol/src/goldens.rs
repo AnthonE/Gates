@@ -27,7 +27,7 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 80] = [
+pub const FIXTURES: [&str; 82] = [
     "v30_input_acks_only.bin",
     "v30_input_full.bin",
     "v30_snapshot_keyframe.bin",
@@ -104,7 +104,9 @@ pub const FIXTURES: [&str; 80] = [
     "v30_event_charge_placed_deploy.bin",
     "v30_challenge.bin",
     "v30_auth.bin",
-    // Appended rather than slotted beside `v29_event_door`: the
+    "v30_event_oven_lit.bin",
+    "v30_event_oven_out.bin",
+    // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
     "v30_event_knock.bin",
@@ -1073,4 +1075,19 @@ pub fn event_charge_placed_piece() -> (bool, u16, u16, u8, u8, u8, u16) {
 
 pub fn event_charge_placed_deploy() -> (bool, u16, u16, u8, u8, u8, u16) {
     (true, 64, 900, 3, sim_core::build::LOC_PLANE, 9, 44)
+}
+
+/// An oven announcement: the same body address a deployable sync uses, lit
+/// by a hand — and the same address gone out with **no** hand, which is
+/// what a fire that ran dry looks like on the wire. Two fixtures because
+/// the actor is the field that separates them and a single one would pin
+/// only half of it.
+///
+/// `(cx, cz, level, lit, by)`.
+pub fn event_oven_lit() -> (u16, u16, u8, bool, u32) {
+    (64, 900, 3, true, 0x0000_1F07)
+}
+
+pub fn event_oven_out() -> (u16, u16, u8, bool, u32) {
+    (64, 900, 3, false, 0)
 }

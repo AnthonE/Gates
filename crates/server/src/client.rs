@@ -17,7 +17,7 @@ use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
 use sim_core::inventory::CONT_SELF;
 use sim_core::limits::{
-    CRAFT_QUEUE, INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INV_SLOTS, MAX_PLAYERS,
+    CRAFT_QUEUE, INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INV_SLOTS, MAX_MOBS, MAX_PLAYERS,
     MAX_SNAPSHOT_ENTITIES, PENDING_REMOVALS_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS,
 };
 
@@ -87,6 +87,18 @@ pub struct ClientNetState {
     pub accum: [f32; MAX_PLAYERS],
     /// Snapshots since last sent, per interest entity (staleness ceiling).
     pub unsent: [u8; MAX_PLAYERS],
+
+    // --- the same three, for the animal roster (mob.rs) ---
+    /// A parallel set rather than one widened array, and the reason is the
+    /// removal rule above: a *world slot* is reused by a different player
+    /// and needs `tracked_id` to notice, where a *roster slot* is one animal
+    /// for the life of the shard — it dies and hatches again as itself, at
+    /// the same id. There is no tenant change to watch for, so there is no
+    /// third array here, and merging the two would have meant carrying a
+    /// column for animals that answers a question they cannot ask.
+    pub m_interest: [bool; MAX_MOBS],
+    pub m_accum: [f32; MAX_MOBS],
+    pub m_unsent: [u8; MAX_MOBS],
 
     // --- input buffer (NETCODE.md §4) ---
     in_frames: [InputFrame; INPUT_BUFFER_CAP],
@@ -191,6 +203,9 @@ impl ClientNetState {
             interest: [false; MAX_PLAYERS],
             accum: [0.0; MAX_PLAYERS],
             unsent: [0; MAX_PLAYERS],
+            m_interest: [false; MAX_MOBS],
+            m_accum: [0.0; MAX_MOBS],
+            m_unsent: [0; MAX_MOBS],
             in_frames: [InputFrame::default(); INPUT_BUFFER_CAP],
             in_valid: [false; INPUT_BUFFER_CAP],
             last_executed: 0,

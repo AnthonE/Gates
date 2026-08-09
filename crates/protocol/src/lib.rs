@@ -46,7 +46,7 @@ pub use event::{
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
     encode_event_hit, encode_event_inv, encode_event_knock, encode_event_move_refused,
-    encode_event_moved, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_removed, encode_event_respawn, encode_event_slot_change, encode_event_slot_sync,
     encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
@@ -213,7 +213,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 ///
 /// The version turns because the *meaning* did, and here the mismatch is
 /// worse than v18's declined drag. `movement::step` is shared verbatim by the
-/// server and `client-wasm`'s predictor — that sharing IS the
+/// server and `client-core`'s predictor — that sharing IS the
 /// quantize-both-sides law (`NETCODE.md` §3) — so a v22 client against a v21
 /// server would predict an arc the server never simulates and be hard-snapped
 /// back to the ground on every press. Not a refused action but a permanent,
@@ -281,57 +281,71 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// Fixtures are keyed `v27_*` — all 74 renamed and regenerated (the kind
 /// width touches every one), plus two new: `v27_challenge` and `v27_auth`.
 ///
-/// v28 — **the code lock** (lock v1, `reference/DOORS.md`). Four layout
-/// changes, and none of them widened a shared field:
+/// v28 — **the oven** (`sim-core/src/oven.rs`): the `SUB_OVEN` event
+/// subtype, the 42nd of v13's 64, and `REFUSE_M_BITS` 3 → 4 for the eighth
+/// move refusal, `REFUSE_M_OVEN`. Fixtures keyed `v28_*`.
 ///
-/// - `ACT_ACCESS` traded its one `locked` bit for a 3-bit op and a 14-bit
-///   code. Six lock verbs on one action code, deliberately, because
-///   `ACT_MAX` was full at 15 in `ACTION_SUB_BITS` = 4 and a sixth action
-///   would have moved every C→S message by a bit to buy what three bits
-///   of payload buy here.
+/// v29 put animals on the snapshot lane (`sim-core/src/mob.rs`), and it is
+/// the cheapest kind of version turn and the most easily got wrong. **Not
+/// one bit of layout moved**: an animal is a class-D body exactly as a
+/// player is, so it rides the record that already exists, and what says
+/// which is which is the high bit of the id (`limits::MOB_ID_TAG`) — a bit
+/// the player-id allocator was quietly capable of setting and is now
+/// masked out of (`server/net.rs`).
+///
+/// The version turns anyway, on **v18's precedent stated one screen up**:
+/// *a widened meaning is a wire change even when the layout is
+/// byte-identical.* The consequence here is worse than v18's declined drag
+/// and about as bad as v22's mispredicted jump — a v28 client against a v29
+/// server parses every animal as a player and draws a human being standing
+/// in a field, walking at half speed and facing wherever the pig is going.
+/// It would look like a bug in the renderer forever. The handshake refusing
+/// the pairing is the correct outcome, and it is the only mechanism that
+/// can produce it.
+///
+/// The alternative — a `kind` field on `EntityState` — was rejected on
+/// cost: it spends bits on every record of every snapshot, including the
+/// overwhelming majority that are players, to carry a value that never
+/// changes for the life of an entity and that the id already distinguishes.
+/// Fixtures are keyed `v29_*`: all renamed, and exactly **one** differs in
+/// bytes from its v28 self — `v29_hello`, which carries the version number.
+/// That single changed file is what a bump with no layout change looks
+/// like, and it is worth looking at: a diff here with more than one file in
+/// it would mean the layout moved after all.
+///
+/// v30 — **the code lock, the crew, and demolish**, landed in one turn
+/// because they merged from one branch (lock v1 + hearth crew v1 +
+/// demolish v1; `reference/DOORS.md` and `reference/BUILDING.md`). Five
+/// layout changes:
+///
+/// - **`ACTION_SUB_BITS` widened 4 → 5**, so every C→S action message
+///   moved by one bit and every C→S golden regenerated. This is the price
+///   `ACT_THROW`'s comment quoted at v23 and it finally came due:
+///   `ACT_MAX` was full at 15, and `ACT_DEMOLISH` addresses two stores
+///   with a leading bit rather than asking an access question, so unlike
+///   the two verbs before it it could not fold into an op field.
+/// - `ACT_LOCK` is now **`ACT_ACCESS`** and carries a 4-bit op plus a
+///   14-bit code where its one `locked` bit was. Nine verbs on one action
+///   code — the lock's six and the hearth's three crew ops — because they
+///   are one question, *who may do this here*, and which store an op
+///   addresses is the sim's branch and not the wire's.
 /// - `SUB_DOOR` and the placed-deployable record each grew a `has_lock`
 ///   bit (the record is 32 bits now). "Bare", "bolted" and "shut" are
 ///   three prompts, and two bits could only say two of them.
-/// - Two new S→C subtypes: `SUB_KNOCK` (41, broadcast) and `SUB_AUTH`
-///   (42, own-fact). Both inside what v13's widening to `SUB_BITS` = 6
+/// - Two new S→C subtypes: `SUB_KNOCK` (42, broadcast) and `SUB_AUTH`
+///   (43, own-fact). Both inside what v13's widening to `SUB_BITS` = 6
 ///   already bought, so no field moved for them.
-/// - `PLACEMENT_BITS` widened 2 → 3 for `PLACE_DOOR`, the fifth
-///   placement class. It rides only the deploy-defs batch.
+/// - `PLACEMENT_BITS` widened 2 → 3 for `PLACE_DOOR`, the fifth placement
+///   class. It rides only the deploy-defs batch.
 ///
-/// Fixtures are keyed `v28_*` — all 76 renamed, the lock action and the
-/// three door/deploy-carrying cases regenerated, plus the hello (which
-/// puts the version on the wire), plus two new: `v28_knock` and
-/// `v28_auth`.
+/// Also, and it is a wire change for v18's stated precedent even though
+/// no field moved for it: `REFUSE_B_*` grew two reasons (window spent,
+/// nothing there) and `REFUSE_D_*` grew six (no lock, has lock, wrong
+/// code, locked out, list full, not empty).
 ///
-/// v29 — **the crew** (hearth crew v1, `reference/BUILDING.md`). One
-/// layout change and one rename:
-///
-/// - `ACT_LOCK` is now **`ACT_ACCESS`**, and its op field widened 3 → 4
-///   bits. The hearth's three crew ops joined the lock's six in one op
-///   space, because they are one question — *who may do this here* — and
-///   a second action code did not exist to spend (`ACT_MAX` is still full
-///   at 15). Which store an op addresses is the sim's branch, not the
-///   wire's.
-/// - Nothing else moved. The rename costs no bytes; the widened op field
-///   costs one bit on this one message.
-///
-/// Fixtures are keyed `v29_*` — all 78 renamed, `v29_action_access.bin`
-/// regenerated (it is a byte longer), plus the hello.
-///
-/// v30 — **demolish** (demolish v1, `reference/BUILDING.md` §6). The
-/// seventeenth C→S action, and the one that finally paid the price
-/// `ACT_THROW`'s comment quoted at v23: **`ACTION_SUB_BITS` widened
-/// 4 → 5**, so every action message moved by one bit and every C→S golden
-/// regenerated. The two verbs before it dodged the bump by folding into
-/// `ACT_ACCESS`'s op field; this one could not, because it addresses two
-/// stores with a leading bit rather than asking an access question.
-///
-/// Also: `REFUSE_B_*` grew two reasons (window spent, nothing there),
-/// which is a widened meaning and therefore a wire change even though no
-/// field moved for it.
-///
-/// Fixtures are keyed `v30_*` — all 79 renamed and every C→S action
-/// regenerated, plus the hello, plus one new: `v30_action_demolish`.
+/// Fixtures are keyed `v30_*` — all renamed and every C→S action
+/// regenerated, plus the hello and the three door/deploy-carrying cases,
+/// plus three new: `v30_action_demolish`, `v30_knock` and `v30_auth`.
 pub const PROTO_VER: u16 = 30;
 
 /// Datagram kind field width.

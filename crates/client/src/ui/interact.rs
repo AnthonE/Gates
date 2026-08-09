@@ -34,7 +34,9 @@
 
 use protocol::event::WireBag;
 use sim_core::build::BUILD_CELL_M;
-use sim_core::deploy::{box_key, DeployContent, DeployRec, ARCH_BOX, ARCH_DOOR, ARCH_HEARTH};
+use sim_core::deploy::{
+    box_key, DeployContent, DeployRec, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
+};
 
 pub use sim_core::build::BUILD_REACH_M as REACH_M;
 
@@ -56,6 +58,9 @@ pub enum Verb {
     Bag,
     Box,
     Hearth,
+    /// A fire or a furnace — one verb for both, because they are one
+    /// thing in the sim (`sim-core/oven.rs`) and the prompt names a KIND.
+    Fire,
 }
 
 impl Verb {
@@ -77,6 +82,12 @@ impl Verb {
             Verb::Bag => 2,
             Verb::Box => 3,
             Verb::Hearth => 4,
+            // Last, and it costs nothing to say why: an oven stands on
+            // the plane like a box, so a dead tie between the two is a
+            // box and an oven in one cell, which placement already
+            // forbids. The rung exists so the order is total, not because
+            // anything can reach it.
+            Verb::Fire => 5,
         }
     }
 
@@ -89,6 +100,7 @@ impl Verb {
             Verb::Bag => "BACKPACK",
             Verb::Box => "BOX",
             Verb::Hearth => "HEARTH",
+            Verb::Fire => "FIRE",
         }
     }
 }
@@ -109,6 +121,14 @@ pub struct Pick {
     pub open: bool,
     pub locked: bool,
     pub has_lock: bool,
+    /// Fire state, and the one field of a pick the resolver does not
+    /// fill: whether a fire is burning lives in `ClientCore`'s own lit
+    /// set rather than on the mirrored deploy record (`core.rs` says
+    /// why), so the caller stamps it after resolving. False on every
+    /// other verb and on a fire nobody has heard about yet, which reads
+    /// as "out" — the honest default, since an unheard fire is one this
+    /// client has no news of.
+    pub lit: bool,
     /// Squared distance from the player, and from the aim line. Diagnostics
     /// for the gate; nothing draws them.
     pub d2: f32,
@@ -152,6 +172,14 @@ impl Pick {
             // nowhere else a player would look for them, and `L` is
             // already the access key at a door (hearth crew v1).
             Verb::Hearth => "[E] FEED HEARTH  ·  [L] JOIN CREW  ·  [K] LEAVE".to_string(),
+            // Two verbs on one thing, and both named: the panel is where
+            // the wood goes and `C` is the match. The state is stated the
+            // way a door's is, because it is the same question — which
+            // way the second key will move it.
+            Verb::Fire => format!(
+                "[E] OPEN FIRE  ·  [C] {}",
+                if self.lit { "PUT OUT" } else { "LIGHT" }
+            ),
             v => format!("[E] OPEN {}", v.label()),
         }
     }
@@ -276,6 +304,7 @@ pub fn resolve(
             ARCH_DOOR => Verb::Door,
             ARCH_BOX => Verb::Box,
             ARCH_HEARTH => Verb::Hearth,
+            ARCH_FIRE | ARCH_FURNACE => Verb::Fire,
             _ => continue,
         };
         // A box is addressed by its packed cell. `box_key(0, 0, 0)` is 0 and
@@ -284,7 +313,7 @@ pub fn resolve(
         // one this client should not have, so it is not offered at all —
         // better than a prompt for a box the key would decline to open.
         let mut handle = 0u32;
-        if verb == Verb::Box {
+        if verb == Verb::Box || verb == Verb::Fire {
             handle = box_key(rec.cx, rec.cz, rec.level);
             if handle == 0 {
                 continue;

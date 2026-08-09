@@ -227,10 +227,19 @@ const TICKS: u64 = 900;
 /// material's rate rather than a flat 5 %. The script leaps thirty
 /// upkeep periods at its midpoint, so both changes bite hard on it.
 ///
+/// Regenerated once more by the **merge** of the building-rights branch
+/// with the oven/mob work that landed on `main` in parallel. Purely the
+/// first shape again and none of it a behaviour change of mine: the
+/// probe fixture grew a sixth deployable row, the oven's burn state is
+/// hashed, animals are on the world, and the script's kit grew the
+/// fixture's two new items. Two branches that each moved this number
+/// cannot both be right about it, so it is read fresh off the merged
+/// tree.
+///
 /// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
 /// this value was read off, which is the check that keeps a regenerated
 /// golden evidence rather than a shrug.
-const GOLDEN_FINAL_HASH: u64 = 0x2ECB_07DC_7E17_D1D4;
+const GOLDEN_FINAL_HASH: u64 = 0x7278_55C8_AA9A_A6D4;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
@@ -572,10 +581,11 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                         (2, 50),
                         (3, 50),
                         (4, 50),
-                        // Item 6 is the probe fixture's code lock (lock
-                        // v1) — the hand the lock arc below bolts one
-                        // with.
+                        // Item 6 is the probe fixture's fire (oven v0) and
+                        // item 7 its code lock (lock v1) — the hands the
+                        // oven and lock arcs below need.
                         (6, 50),
+                        (7, 50),
                     ]
                     .iter()
                     .enumerate()
@@ -713,7 +723,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 // remember, so the refusal path is replayed too.
                 155 => cmds.push(Command::PlaceDeploy {
                     id,
-                    row: 4,
+                    row: 5,
                     cx,
                     cz,
                     level: 0,

@@ -162,13 +162,21 @@ const SUB_PIECE_REPAIRED: u32 = 39;
 /// actor. `SUB_PIECE_REPAIRED`'s address layout, with the fuse where its
 /// `healed`/`hp` pair sits.
 const SUB_CHARGE_PLACED: u32 = 40;
-/// Somebody knocked (lock v1, wire v28). Broadcast, `SUB_DOOR`'s address
+/// The oven at the address is now lit or out (oven v0, `sim-core/oven.rs`).
+/// `SUB_DOOR`'s shape minus the `loc` — an oven stands on the plane, never
+/// on an edge — plus the actor, because "who lit this" is the one thing a
+/// door's event does not have to carry and a fire's does: zero means the
+/// fire ran out of fuel and snuffed itself, and a client that could not
+/// tell that from a hand on the switch would owe a toast it should not
+/// print.
+const SUB_OVEN: u32 = 41;
+/// Somebody knocked (lock v1, wire v30). Broadcast, `SUB_DOOR`'s address
 /// with a player id where its three state bits sit.
-const SUB_KNOCK: u32 = 41;
-/// A correct code (lock v1, wire v28). **Own-fact**, and the reason it is
+const SUB_KNOCK: u32 = 42;
+/// A correct code (lock v1, wire v30). **Own-fact**, and the reason it is
 /// its own subtype rather than a fourth bit on `SUB_DOOR`: `SUB_DOOR` is a
 /// broadcast, and a grant is true of exactly one recipient.
-const SUB_AUTH: u32 = 42;
+const SUB_AUTH: u32 = 43;
 /// The highest live subtype, named rather than counted — `world.rs`'s
 /// `EV_MAX` discipline applied to the wire half.
 ///
@@ -198,7 +206,7 @@ const MOVE_SLOT_BITS: u32 = 5;
 /// Move-refusal reason width — `inventory::REFUSE_M_*` runs `1..=7` and
 /// zero is reserved as "no reason", refused at both ends the way
 /// `SUB_CONSUME_REFUSED` already refuses its own zero.
-const REFUSE_M_BITS: u32 = 3;
+const REFUSE_M_BITS: u32 = 4;
 /// Death-cause width (`sim_core::world::DEATH_BY_*`: hand, clock, salt).
 /// Three values in two bits, so the fourth is forgeable and both the
 /// encoder and the decoder refuse it — the hotbar selector's posture. Two
@@ -561,6 +569,16 @@ pub enum EventMsg {
         level: u8,
         loc: u8,
         grant: u8,
+    },
+    /// The oven at the address is now `lit` (broadcast). Absolute, never
+    /// a delta, for `Door`'s reason. `by` is the hand that pressed, or 0
+    /// when the fire ran dry on its own.
+    Oven {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        lit: bool,
+        by: u32,
     },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list (item index, units).
@@ -1452,6 +1470,33 @@ pub fn encode_event_auth(
     Ok(w.finish())
 }
 
+/// The oven at the address is now `lit` (broadcast) — see
+/// `EventMsg::Oven`. No `loc`: an oven is a body deployable and stands at
+/// `LOC_PLANE`, so carrying the field would be carrying a constant and
+/// inviting a client to believe a fire could be in a doorway.
+pub fn encode_event_oven(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    lit: bool,
+    by: u32,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= MAX_BUILD_COORD
+        || cz as usize >= MAX_BUILD_COORD
+        || level as usize >= MAX_BUILD_LEVELS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_OVEN)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write_bit(lit)?;
+    w.write(by, 32)?;
+    Ok(w.finish())
+}
+
 /// The attacker's hitmarker: `damage` landed on `victim`.
 /// One standing backpack as the wire carries it: identity and where it
 /// is, nothing else. Owner, expiry and contents stay sim-side — the
@@ -2221,6 +2266,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             locked: r.read_bit()?,
             has_lock: r.read_bit()?,
         },
+        SUB_OVEN => EventMsg::Oven {
+            cx: r.read(BUILD_CELL_BITS)? as u16,
+            cz: r.read(BUILD_CELL_BITS)? as u16,
+            level: r.read(BUILD_LEVEL_BITS)? as u8,
+            lit: r.read_bit()?,
+            by: r.read(32)?,
+        },
         SUB_KNOCK => EventMsg::Knock {
             cx: r.read(BUILD_CELL_BITS)? as u16,
             cz: r.read(BUILD_CELL_BITS)? as u16,
@@ -2888,7 +2940,7 @@ mod tests {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
-        assert_eq!(took, 5, "fixture has 5 rows, all fit one batch");
+        assert_eq!(took, 6, "fixture has 6 rows, all fit one batch");
         match decode_event(&buf[..len]).unwrap() {
             EventMsg::DeployDefs {
                 total,
@@ -2896,14 +2948,19 @@ mod tests {
                 count,
                 rows,
             } => {
-                assert_eq!((total, first, count), (5, 0, 5));
+                assert_eq!((total, first, count), (6, 0, 6));
                 assert_eq!(rows[0], dc.defs[0], "decode rebuilds the sim row");
-                assert_eq!(rows[4], dc.defs[4], "including the code lock row");
+                assert_eq!(rows[3], dc.defs[3]);
+                // The oven row (oven v0) and the code lock row (lock v1),
+                // the fixture's two newest and therefore the ones a batch
+                // walk would drop off the end.
+                assert_eq!(rows[4], dc.defs[4]);
+                assert_eq!(rows[5], dc.defs[5]);
             }
             other => panic!("wrong variant: {other:?}"),
         }
         assert_eq!(
-            encode_event_deploy_defs(&dc, 5, &mut buf),
+            encode_event_deploy_defs(&dc, 6, &mut buf),
             Err(WireError::Range),
             "cursor past the table refuses"
         );
@@ -3494,12 +3551,20 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/loot.rs"),
         },
         Module {
+            file: "mob.rs",
+            src: include_str!("../../sim-core/src/mob.rs"),
+        },
+        Module {
             file: "movement.rs",
             src: include_str!("../../sim-core/src/movement.rs"),
         },
         Module {
             file: "occupy.rs",
             src: include_str!("../../sim-core/src/occupy.rs"),
+        },
+        Module {
+            file: "oven.rs",
+            src: include_str!("../../sim-core/src/oven.rs"),
         },
         Module {
             file: "probe.rs",
@@ -3566,9 +3631,9 @@ mod wire_domains {
             prefix: "pub const REFUSE_M_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 7,
+            min_members: 8,
             bits: REFUSE_M_BITS,
-            live_max: 7,
+            live_max: 8,
         },
         Domain {
             what: "consume refusal",

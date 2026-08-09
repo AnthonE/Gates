@@ -42,8 +42,20 @@
   rate, range falloff curve, ballistic (speed, drop) or hitscan, ammo id
 - **armor**: slot, damage reduction %, movement penalty
 - **consumable**: health/food/water deltas over seconds
+- **mob**: one animal species — hp, speeds as a percentage of the player's
+  own, the leash and fright radii in metres, the respawn in seconds, and
+  the stacks a kill pays. `content/mobs.toml`; the sim's side is
+  `sim-core/src/mob.rs` and the design is `reference/ANIMALS.md` §9.
 - **deployable**: entity archetype (bag, hearth, cupboard, box, furnace,
   workbench), placement rules, hp
+- **fuel / cook** (`cooking.toml`): what an oven burns — item, seconds per
+  unit, byproduct + `byproduct_pct` (hundredths of a unit per unit burned,
+  banked and paid whole, never rolled) — and one row per transformation:
+  input → output, seconds, `station` (`fire|furnace`). A campfire and a
+  furnace are one thing in the sim (`oven.rs`); the station column is the
+  only thing that separates them. **No cook row ships yet**: cooking wants
+  a raw food and the island pays none (§2's food line), so the table is
+  the machinery arriving before its first row.
 - **loot_table**: container archetype → weighted entries + count range
 - **skin**: id, covers (item id), price (SCRY or MYRRH — one coin per
   row, bare tickers), season — the catalog is content too (dark until A3)
@@ -94,9 +106,35 @@ crossbow
 N + rope + tarp) · door_metal · armor_roadsign (component-gated) ·
 medkit
 
-**Food**: berries · mushrooms · corn (meadow scatter) · cooked_meat
-(animals are post-alpha; meat drops from… nothing yet — cut meat, keep
-berries/mushrooms/corn) **(knob: cut list)**
+**Food**: berries · mushrooms · corn (meadow scatter) · **raw_meat +
+cooked_meat** (the pig drops raw, a campfire cooks it, and only the cooked
+half is edible) **(knob: cut list)**
+
+The parenthesis used to read "animals are post-alpha; meat drops from…
+nothing yet", and **both halves of that stopped being true on 2026-08-08**,
+in two branches that landed hours apart and did not know about each other.
+Animals arrived (`content/mobs.toml` — the pig pays `item.fat` and
+`item.cloth`, and `item.fat` had existed since the first content set with
+nothing in the world dropping it). Cooking arrived the same day
+(`sim-core/oven.rs`), and §1's `cook` row says its table ships **empty**
+because "cooking wants a raw food and the island pays none".
+
+**Both are closed, and it cost four content rows and not one line of
+code** (operator, 2026-08-08). `item.raw_meat` and `item.cooked_meat` in
+`items.toml`, a `drops` row on the pig, a `[[cook]]` row on the fire, and
+a `consumable` row on the cooked half. `cooking.toml`'s own header had
+predicted the shape of it — "adding one is a one-row content edit and no
+code" — which is the table shipping before its first row working as
+intended, and both files keep that history rather than tidying it away.
+
+**Raw meat is the one item in the set you cannot eat**, and that asymmetry
+is the whole point: without it the fire is optional and the walk from a
+kill to a meal is a detour rather than a loop. No sickness verb is invented
+to punish eating it — the eat verb simply does not accept it, which the
+schema already expresses (`consumables.toml` names what may be eaten and
+nothing else). `crates/content/tests/content.rs` gates the three-file loop,
+because each row validates perfectly on its own while any one of them
+missing leaves a player holding an item with no use.
 
 That's the whole alpha economy: two ores, one powder chain, one gun, one
 raid tool. Everything else is reachable-by-schema without touching sim.

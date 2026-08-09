@@ -5,7 +5,7 @@
 //! set by the sync walk, and the broadcast/walk overlap dedups on the
 //! client. Deterministic, no sockets; asserts are structural and exact.
 
-use client_wasm::core::{
+use client_core::core::{
     ClientCore, APPLIED_BUILD_REFUSED, APPLIED_PIECES, APPLIED_PIECE_DEFS, APPLIED_PIECE_RESET,
 };
 use protocol::{ActionMsg, ItemCatalog};

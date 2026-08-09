@@ -96,6 +96,11 @@ pub fn resolve(
         core.deploy_defs_have,
         core.bags.entries(),
     );
+    // The one field the resolver cannot fill: it is handed the deploy
+    // records, and whether a fire is burning is deliberately not on one
+    // (`client-core/core.rs`). Stamped here, where the core is in hand.
+    aimed.0.lit = aimed.0.verb == interact::Verb::Fire
+        && core.ovens().is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level);
     // The scatter pick needs the island, which does not exist until the
     // welcome names a seed — so this is `Option` and stands down rather than
     // guessing one. `render::world_placed`'s discipline, applied to a verb.
@@ -217,6 +222,9 @@ pub fn keys(
     if keys.just_pressed(KeyCode::KeyX) {
         throw_near(&net, &near.0, &mut toast);
     }
+    if keys.just_pressed(KeyCode::KeyC) {
+        light_aimed(&net, &aimed.0, &mut toast);
+    }
     // `Backspace` — take the nearest structure back down. A destructive
     // verb gets a key nothing else is near, and one a hand resting on WASD
     // cannot reach by accident: the sim gates it on a ten-minute window
@@ -284,6 +292,19 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 send(net, toast, "loot", protocol::encode_action_loot);
             }
         }
+        Verb::Fire => {
+            // `E` opens it, because the panel is where the wood goes and a
+            // fire with nothing in it will not light. The match is `C`
+            // below — two presses where the reference has one hold-`E`
+            // menu with two entries, which is the same two verbs without
+            // a radial menu this client does not have.
+            let handle = pick.handle;
+            if send(net, toast, "open", |buf| {
+                protocol::encode_action_container(CONT_BOX, handle, buf)
+            }) {
+                open_panel(ui);
+            }
+        }
         Verb::Hearth => {
             let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
             send(net, toast, "feed", |buf| {
@@ -295,6 +316,27 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
         // island because the hearth happened to be the last link tried.
         Verb::None => toast.say("nothing in reach"),
     }
+}
+
+/// `C` — light the aimed fire, or put it out.
+///
+/// One action for both directions, and no state on the wire: `ACT_USE`
+/// carries an address and the sim toggles what stands there (`oven.rs`).
+/// That is the opposite of `L`'s absolute lock bit, and deliberately —
+/// a lock races with itself when two hands press it, while a fire is a
+/// thing you are standing at. What the client does NOT do is predict it:
+/// whether there is fuel inside is the sim's verdict, and a flame drawn
+/// on the press and taken back a tick later is worse than a flame that
+/// arrives a tick late.
+fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
+    if pick.verb != Verb::Fire {
+        toast.say("no fire in reach");
+        return;
+    }
+    let (cx, cz, level, loc) = (pick.cx, pick.cz, pick.level, pick.loc);
+    send(net, toast, "light", |buf| {
+        protocol::encode_action_use(cx, cz, level, loc, buf)
+    });
 }
 
 /// `L` and `K` — the access verb, on whatever the crosshair is on.

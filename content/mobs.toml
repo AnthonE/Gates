@@ -1,0 +1,92 @@
+# Gates · content/mobs.toml — the animal roster's species table
+# (`sim-core/src/mob.rs`, `reference/ANIMALS.md`). One species; the file
+# exists so a second is a row here and not a commit in `crates/`.
+#
+# Speeds are percentages of the PLAYER's, because that is the only speed an
+# animal can have: it drives `movement::step` through the same `InputFrame`
+# a player does, and that function scales by `move_z / 127` of `WALK_SPEED`
+# (or of `SPRINT_SPEED` while the sprint bit is set). A m/s field would be a
+# number the bake rounded to the nearest 1/127th without telling anyone.
+#
+# Distances are metres and times are seconds — the units a balance pass is
+# argued in. The bake converts; nothing in the sim knows what a second is.
+#
+# Every number below is a **proposed default** registered in DECISIONS.md
+# §open ("animals v0"), not a spoken one. Where the reference game is the
+# source, the reference is named — but our pig is not their boar and does
+# not pretend to be: theirs charges and ours only runs.
+
+[[mob]]
+id = "mob.pig"
+name = "Pig"
+
+# **80 hp is four hits with the wooden spear, three with the metal spear or
+# the bow** — and the first draft of this line said "three hits with the
+# stone hatchet", which was simply false. `weapons.toml` arms six things and
+# a hatchet is not one of them: hatchets and pickaxes are *gather tools*,
+# they have no melee row, and `held_melee` returns `None` for them. So a pig
+# cannot be killed with the spawn kit at all, and the sentence pricing it
+# against "the tool a naked spawn has" was pricing it against a tool that
+# does no damage to anything. `crates/server/tests/hunt.rs` is what found
+# that, by trying.
+#
+# What 80 actually means: the wooden spear is the first weapon in the game
+# (T0, `recipes.toml`), so the walk is gather → craft a spear → hunt, and
+# the metal spear and the bow each take a hit off the count, which is the
+# upgrade being worth something. Deliberately cheaper than the reference
+# boar, which is a mid-game animal with a bite.
+hp = 80
+
+# 50% of WALK_SPEED = 1.49 m/s, an amble a player outwalks without trying.
+walk_pct = 50
+
+# **70% of SPRINT_SPEED = 3.85 m/s, and 100 was WRONG — found by booting the
+# game and looking, which is the only visual gate this repo has.** At 100 a
+# spooked pig runs at exactly the player's top speed, so a sprinting player
+# never closes the gap; and because the fright re-arms whenever a player is
+# inside `spook_m`, the pig re-triggers before it ever settles. The observed
+# behaviour was a pig that lived permanently 50–80 m west of the spawn and
+# could not be reached, which makes it un-meleeable **forever** — a naked
+# spawn could never take fat or cloth off one, and the reference game's boar
+# is killable with a rock. Every automated gate was green through all of it,
+# because "is this animal reachable" is not arithmetic.
+#
+# At 70 a sprinting player gains 1.65 m/s, so a 12 m head start closes in
+# about seven seconds of open ground — losable on rough terrain or through
+# trees, winnable on a meadow, which is the chase this wants to be.
+flee_pct = 70
+flee_seconds = 3
+
+# The leash and the fright radius, and the pair is the whole behaviour.
+# 60 m of roam keeps a pig findable near where the seed put it — the
+# reference game's own fix for animals that "ended up at the coast of the
+# island" (reference/ANIMALS.md §2) — and 12 m is close enough that a
+# player who walks a treeline sends one running before they see it.
+roam_m = 60
+spook_m = 12
+
+# Five minutes. Long enough that clearing the pigs near your base is worth
+# doing and short enough that it is not permanent. The slot hatches at its
+# OWN home, which is where we and the reference part company: theirs
+# re-rolls the population's distribution and the herd migrates over a wipe
+# (reference/SPAWN.md §3.5).
+respawn_seconds = 300
+
+# What the kill pays, straight into the killer's inventory.
+#
+# **Raw meat leads, and it is the reason the campfire has a job.** Meat was
+# cut from the alpha food set because nothing dropped it and nothing could
+# cook it; `sim-core/oven.rs` landed the same day this did with an empty
+# cook table for the mirror-image reason, so the two halves closed each
+# other (DECISIONS.md 2026-08-08). Raw meat is the one item in the set you
+# cannot eat — `cooking.toml` turns it into `item.cooked_meat` on a fire,
+# and that walk is the whole loop: kill it, carry it, light a fire, eat.
+#
+# Fat and cloth ride behind it. `item.fat` had existed since the first
+# content set with nothing in the world dropping it, and cloth is the
+# sleeping bag.
+drops = [
+  { item = "item.raw_meat", count = 3 },
+  { item = "item.fat", count = 15 },
+  { item = "item.cloth", count = 10 },
+]

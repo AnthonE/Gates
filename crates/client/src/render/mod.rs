@@ -38,6 +38,8 @@ pub mod feed;
 pub mod death;
 // The build ghost: the cell being aimed at, and the click that commits it.
 pub mod ghost;
+// The blue wash over the piece a hammer is aimed at.
+pub mod highlight;
 pub mod hud;
 pub mod input;
 pub mod loading;
@@ -45,6 +47,7 @@ pub mod loading;
 // blends by, so the map and the world are one worldgen seen two ways.
 pub mod map;
 pub mod menu;
+pub mod mobs;
 // The in-game panels — inventory, crafting, the build wheel. Distinct from
 // `ui`, which is the chrome the full-screen MENU screens share: `ui` is what a
 // player sees instead of the world, `panels` is what they see on top of it.
@@ -61,6 +64,9 @@ pub mod terrain_mesh;
 pub mod textures;
 pub mod tree;
 pub mod ui;
+// The sea: a graded volume with a swell on it. `reference/WATER.md` is the
+// research, `TERRAIN.md` §4 is what it replaces.
+pub mod water;
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
 pub mod anim;
 pub mod verbs;
@@ -214,7 +220,9 @@ pub fn world_teardown(
     mut clutter: ResMut<clutter::ClutterRing>,
     mut structures: ResMut<structures::StructRing>,
     mut ghost: ResMut<ghost::Ghost>,
+    mut highlight: ResMut<highlight::Highlight>,
     mut bodies: ResMut<bodies::Bodies>,
+    mut herd: ResMut<mobs::Herd>,
     mut eye: ResMut<Eye>,
     mut look: ResMut<input::Look>,
 ) {
@@ -234,7 +242,10 @@ pub fn world_teardown(
     // The ghost holds an `Entity` from the world that just went; keeping it
     // would have the next world's first aim insert components onto a dead id.
     *ghost = ghost::Ghost::default();
+    // Same reason, same shape: the hammer's wash holds an `Entity` too.
+    highlight::forget_in(&mut highlight);
     *bodies = bodies::Bodies::default();
+    *herd = mobs::Herd::default();
     *eye = Eye::default();
     *look = input::Look::default();
     commands.remove_resource::<WorldId>();
@@ -288,6 +299,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<clutter::ClutterRing>()
             .init_resource::<structures::StructRing>()
             .init_resource::<bodies::Bodies>()
+            .init_resource::<mobs::Herd>()
             .init_resource::<menu::Picked>()
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
@@ -298,11 +310,13 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<verbs::Pad>()
             .init_resource::<death::Answer>()
             .init_resource::<ghost::Ghost>()
+            .init_resource::<highlight::Highlight>()
             .init_resource::<hud::Toast>()
             .init_resource::<Settings>()
             .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
             .init_resource::<audio::LastHp>()
+            .init_resource::<water::Sea>()
             .insert_non_send_resource(menu::Connecting::default());
 
         // `Menu` is inserted either way, because a system that reads it must
@@ -339,7 +353,10 @@ impl Plugin for GatesRenderPlugin {
         // Textures load at Startup rather than on entering the world: they
         // are wanted whichever screen comes first, and warming them while a
         // player reads the menu is free time the old shape did not have.
-        app.add_systems(Startup, (textures::load, icons::load, anim::load));
+        app.add_systems(
+            Startup,
+            (textures::load, icons::load, anim::load, mobs::load),
+        );
         // The sound bank is generated rather than loaded (`sound/synth.rs`)
         // and is built HERE, not at `Startup`. **`OnEnter(Screen::Loading)`
         // runs before `Startup`** on a connected start — Bevy schedules the
@@ -485,7 +502,10 @@ impl Plugin for GatesRenderPlugin {
         // looking at the result.
         app.add_systems(
             OnEnter(Screen::Loading),
-            (rig::setup, terrain_mesh::setup_water),
+            // The sea replaced `terrain_mesh::setup_water` here: it builds one
+            // eye-centred mesh and a ripple map rather than a plane, and it
+            // needs nothing the rig owns.
+            (rig::setup, water::setup),
         )
         // The HUD's viewmodel is parented to the camera, so it must be
         // built after the rig has spawned one.
@@ -526,6 +546,13 @@ impl Plugin for GatesRenderPlugin {
         // Leaving a shard resets the step odometer and the bed's fade. The
         // bed entity itself is a `WorldEntity` and goes with the rest.
         .add_systems(OnEnter(Screen::Menu), audio::teardown.after(world_teardown))
+        // The sea's caches are one island's depths; the next island's would
+        // be read off them until the eye happened to cross a snap cell.
+        .add_systems(OnEnter(Screen::Menu), water::teardown.after(world_teardown))
+        // The swell runs wherever the world runs — it is a surface, not a
+        // streamer, and a sea that froze while the Esc menu was up would
+        // resume with a visible jump in every wave.
+        .add_systems(Update, water::animate.run_if(world_running))
         // Input is the one thing that is `InWorld` and nothing else: it is
         // the only system that writes what the sim reads, and a player
         // reading a settings pane must not be swinging an axe.
@@ -558,6 +585,9 @@ impl Plugin for GatesRenderPlugin {
                 ghost::deploy_track,
                 ghost::place_key,
                 ghost::deploy_key,
+                // After `verbs::resolve` has answered what is aimed at, and
+                // before the click that acts on it.
+                highlight::track,
             )
                 .chain()
                 .after(input::place_eye)
@@ -581,11 +611,16 @@ impl Plugin for GatesRenderPlugin {
                 input::place_eye,
                 (
                     terrain_mesh::stream,
+                    // The sea re-centres like a ring does, and for the same
+                    // reason: it reads `Eye::pos`, so it belongs where the
+                    // other things that read it are.
+                    water::stream,
                     props::stream,
                     props::harvest,
                     clutter::stream,
                     structures::stream,
                     bodies::stream,
+                    mobs::stream,
                     rig::follow_eye,
                     hud::update,
                     // The feedback surface. Under `world_running` rather than
@@ -619,6 +654,10 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             (
+                // `water` first of the audio systems: it resolves the frame's
+                // snapshot, and both `bed` and `pump` scale everything they
+                // do by it.
+                audio::water,
                 audio::feed,
                 audio::hurt,
                 audio::steps,

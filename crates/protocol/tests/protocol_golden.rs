@@ -14,12 +14,12 @@ use protocol::goldens::{
     event_consume_refused, event_consumed, event_cont_close, event_cont_sync, event_craft_done,
     event_craft_q, event_craft_refused, event_death, event_deploy_defs, event_deploy_placed,
     event_deploy_refused, event_deploy_sync, event_door, event_drank, event_gather, event_health,
-    event_hit, event_inv, event_knock, event_move_refused, event_moved, event_piece_defs,
-    event_piece_placed, event_piece_repaired_deploy, event_piece_repaired_piece, event_piece_sync,
-    event_recipes, event_removed, event_respawn, event_slot_change, event_slot_sync, event_stock,
-    event_struct_hit_deploy, event_struct_hit_piece, event_vitals, event_weak_mark, hello,
-    input_acks_only, input_full, refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe,
-    welcome, SnapshotCase, FIXTURES,
+    event_hit, event_inv, event_knock, event_move_refused, event_moved, event_oven_lit,
+    event_oven_out, event_piece_defs, event_piece_placed, event_piece_repaired_deploy,
+    event_piece_repaired_piece, event_piece_sync, event_recipes, event_removed, event_respawn,
+    event_slot_change, event_slot_sync, event_stock, event_struct_hit_deploy,
+    event_struct_hit_piece, event_vitals, event_weak_mark, hello, input_acks_only, input_full,
+    refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe, welcome, SnapshotCase, FIXTURES,
 };
 use protocol::{
     decode_action, decode_auth, decode_challenge, decode_chat, decode_event, decode_hello,
@@ -36,7 +36,7 @@ use protocol::{
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
     encode_event_health, encode_event_hit, encode_event_inv, encode_event_knock,
-    encode_event_move_refused, encode_event_moved, encode_event_piece_defs,
+    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
     encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
     encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_slot_change,
     encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
@@ -51,7 +51,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 80] = [
+const GOLDEN: [&[u8]; 82] = [
     include_bytes!("golden/v30_input_acks_only.bin"),
     include_bytes!("golden/v30_input_full.bin"),
     include_bytes!("golden/v30_snapshot_keyframe.bin"),
@@ -128,6 +128,8 @@ const GOLDEN: [&[u8]; 80] = [
     include_bytes!("golden/v30_event_charge_placed_deploy.bin"),
     include_bytes!("golden/v30_challenge.bin"),
     include_bytes!("golden/v30_auth.bin"),
+    include_bytes!("golden/v30_event_oven_lit.bin"),
+    include_bytes!("golden/v30_event_oven_out.bin"),
     include_bytes!("golden/v30_event_knock.bin"),
     include_bytes!("golden/v30_event_auth.bin"),
     include_bytes!("golden/v30_action_access_crew.bin"),
@@ -228,21 +230,25 @@ fn test_protocol_golden() {
     // computed over a nonce that arrived in one of them.
     golden_challenge(GOLDEN[74], FIXTURES[74]);
     golden_auth(GOLDEN[75], FIXTURES[75]);
-    // Lock v1's two new S→C lanes (v28), appended for the reason
-    // `goldens::FIXTURES` states: the manifest is positional.
+    // The oven's two (v28), lit by a hand and out by itself — the actor is
+    // what separates them and both bytes are pinned.
     golden_event(GOLDEN[76], FIXTURES[76]);
     golden_event(GOLDEN[77], FIXTURES[77]);
-    // The crew half of `ACT_ACCESS` (v29): its own fixture, because the
+    // Lock v1's two new S→C lanes (v30), appended for the reason
+    // `goldens::FIXTURES` states: the manifest is positional.
+    golden_event(GOLDEN[78], FIXTURES[78]);
+    golden_event(GOLDEN[79], FIXTURES[79]);
+    // The crew half of `ACT_ACCESS` (v30): its own fixture, because the
     // op field picks which store the address means.
-    golden_action(GOLDEN[78], FIXTURES[78]);
+    golden_action(GOLDEN[80], FIXTURES[80]);
     // The seventeenth action (v30), the one that widened the lane.
-    golden_action(GOLDEN[79], FIXTURES[79]);
+    golden_action(GOLDEN[81], FIXTURES[81]);
     // Every fixture in the manifest was dispatched above: the loop bounds
     // are hand-written, so a fixture added to `FIXTURES` and forgotten
     // here would be a golden nobody checks. This is the count that makes
     // that impossible to miss quietly.
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 80, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 82, "a new fixture must be dispatched above");
 }
 
 /// S→C challenge: byte-stable, kind-peekable, decode-exact.
@@ -1182,6 +1188,25 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_event_cont_sync(kind, cont, reset, &[], &mut buf).unwrap()
+        }
+        "v30_event_oven_lit.bin" | "v30_event_oven_out.bin" => {
+            let (cx, cz, level, lit, by) = if name == "v30_event_oven_lit.bin" {
+                event_oven_lit()
+            } else {
+                event_oven_out()
+            };
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Oven {
+                    cx,
+                    cz,
+                    level,
+                    lit,
+                    by,
+                },
+                "{name}: decode mismatch"
+            );
+            encode_event_oven(cx, cz, level, lit, by, &mut buf).unwrap()
         }
         other => panic!("unknown event fixture {other}"),
     };

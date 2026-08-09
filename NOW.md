@@ -73,6 +73,159 @@ system the reference abandoned in Devblog 193) and door tiers past wood and
 metal (a content row, not a mechanic).
 
 ---
+## 0y · The sea is a volume — what it still cannot do *(client lane)*
+
+Landed 2026-08-08. Water was one translucent plane at one alpha, and the last
+visual report's note that it "has no wave normals" was the smallest half of it.
+Now: `render/water.rs` (one eye-centred mesh, four-wave swell with analytic
+normals retired at each wave's own Nyquist, per-channel optics off
+`exp(-depth·σ)`, shore foam slope-weighted, a tiling ripple normal map with its
+own mips), `terrain_mesh::wetted` (the land side of the waterline), and
+`sound/water.rs` + `sound::Snapshots` (a surf bed, a submerged snapshot, a
+splash). Research is `reference/WATER.md`; knobs are `DECISIONS.md` §open,
+"water v0" and "water audio v0". Gated by `crates/client/tests/water.rs` (22)
+and eight new assertions in `tests/sound.rs`.
+
+**Two defects were found by looking, not by a gate**, which is the point:
+straight alpha blending scaled the sky's Fresnel reflection away in shallow
+water (the shallows rendered as wet sand), and a shallow→deep body-colour lerp
+made the sea a grey sheet because it treated extinction as if it darkened the
+water's *own* light. Both are physics errors with physics fixes; both are
+written up where they were made.
+
+**The shoreline was a second pass, from the operator holding a reference frame
+beside ours and asking why ours is a cut.** Reading that frame: there is no
+edge in it anywhere — a wide damp gradient, then wet sand, then water thin
+enough to be only a sheen, and the white is a soft streaky wash standing
+*offshore*. Three of ours were wrong. Foam peaked at zero depth, which outlines
+the seam it should hide (it now peaks 0.6 m out and is zero at the edge); its
+band edges were exact iso-depth contours of a smooth heightfield, which reads
+as drafting (a noise field displaces them into lobes); and the damp band was
+keyed on height alone, so it was sixty metres wide on a gentle beach and sixty
+centimetres on a steep one (it is bounded by a horizontal run as well). Plus a
+surge, because a moving edge cannot be a hard edge.
+
+Remaining, in order:
+
+1. **The last hard edge needs the depth prepass, and that is the next slice.**
+   The alpha ramp is a *vertex* quantity off `terrain::height`, so it fades
+   correctly against the terrain and not at all against anything else — a
+   boulder, a foundation or a player in the shallows gets a ring, because no
+   vertex of the sea has heard of them. The fix is standard: sample the depth
+   prepass in the fragment, fade alpha and add foam as the scene depth
+   approaches the water's own. It needs an `ExtendedMaterial` and the **first
+   WGSL in the tree** (`RENDER.md` §8), and SSAO already puts a depth prepass
+   on the camera, so the input exists.
+2. **There is one sea state and no weather.** The wave set is a constant, so
+   it is always this calm. A storm is `WAVES` scaled by a scalar the sim would
+   have to publish, which makes it wire, not renderer.
+3. **Nothing reflects.** `reference/WATER.md` §5 says reflections are the
+   expensive half and §6 says the payoff is the *sky* — which the atmosphere's
+   specular already gives. A screen-space pass is a real want and not a cheap
+   one; read those two sections before starting.
+4. **Underwater is audio-only.** A colour grade under the surface is a second
+   owner of the frame's haze, which `CLAUDE.md`'s coupled-lighting law
+   forbids; it wants the lighting owner, not this lane. The mix ducks and the
+   bed goes dark, and that is all.
+5. **The submerged duck is not a filter.** rodio gives gain, rate and panning;
+   a real low-pass needs a DSP node. Stated in `SNAPSHOTS`, not implied.
+6. **`Splash` is the only producer of the waterline.** Swimming has no stroke,
+   no wake and no interactive deformation — the reference merges an
+   interactive sim into its own displacement (§3) and we have no producer for
+   one.
+## 0m · The pig is in — what the roster still owes *(systems lane)*
+
+Landed 2026-08-08 (operator: *"let's get a pig in"*). 64 fixed roster slots,
+homes drawn from the seed, staggered think, dormancy at 240 m, a leash, a
+flight, and a kill that pays fat and cloth. No navmesh: the terrain is a pure
+function, so the animal steers and `movement::step` decides — which also
+means it inherits tree and piece collision for free. Research is
+`reference/ANIMALS.md`; the design call is `DECISIONS.md` 2026-08-08.
+
+**Three defects were found by booting the game and looking, and every gate
+was green through all of them** — which is what `CLAUDE.md`'s "the operator
+boots the game and looks" is for. (1) `flee_pct = 100` made the pig run at
+exactly the player's sprint, so it could never be caught or melee'd; now 70,
+and `tests/content.rs` gates `flee_gait < 127`. (2) The massing wore
+`props::tint1`, a **mean-1** modulation meant for a photograph, and rendered
+near-white on an untextured material; `boxes_mesh_with` splits the two and
+`tests/mob_mesh.rs` gates the mean. (3) `bodies.rs` drew a humanoid rig at
+every pig's position as well, because its only filter was "not me".
+
+**§0v below is closed by this item and vice versa** (operator, 2026-08-08:
+*"go ahead and finish"*). The oven shipped cooking nothing because nothing
+on the island was raw; the pig is the first thing that is. `item.raw_meat`
+→ campfire → `item.cooked_meat`, the cooked half the best food in the set
+and the raw half the only item in it you cannot eat. Four content rows, no
+code, gated across all three files by
+`content.rs::the_kill_the_fire_and_the_meal_are_one_loop`.
+
+**Two more things were found by making the sim actually do it**
+(`server/tests/hunt.rs`, which sprints at a pig and swings until it dies).
+(1) The spawn kit contains **no weapon** — plan, hammer, hatchet, pickaxe,
+torch, bandage, and `weapons.toml` arms six things of which a hatchet is
+not one, so `held_melee` is `None` for every pocket a fresh character owns.
+The first hand that can hunt is a crafted wooden spear. (2) `mobs.toml`
+priced the pig's 80 hp at "three hits with the stone hatchet", which was
+therefore false; it is four with the wooden spear, three with the metal one
+or the bow. The hunt takes **8.9 s** from a 12 m start, and the test
+reddens with the exact message it should when `flee_pct` goes back to 100.
+
+**The two meat icons are ours, not game-icons.net.** That archive is behind
+this session's egress policy, so they are authored SVGs in `ci/icons/`
+rasterised by the same baker. `assets/icons/CREDITS.md` keeps the licensed
+and unlicensed halves in separate tables. Replacing them with archive art
+later is a mapping move in `ci/bake_icons.py` and nothing else.
+
+Owed, in rank order — `reference/ANIMALS.md` §9.5 has the reasoning:
+
+1. **No corpse.** A killed pig leaves the snapshot and is gone; the loot is
+   paid straight into the killer's inventory as `EV_GATHER`. The reference's
+   actual interaction is a *butchering verb* on the body, which is a verb to
+   design, not a species to add.
+2. **Nothing fights back.** Needs a mob→player damage path, a new death
+   cause on the wire, and a combat-feel answer to being hit by something you
+   cannot reliably hit back.
+3. **No sound.** `sound/synth.rs` generates the bank at boot and has no
+   voice for an animal; the reference identifies a boar by its snorting
+   before you see it.
+4. **No animation, and the massing is boxy up close.** Legs do not move, so
+   a walking pig slides, and at 8 m the head barely separates from the body
+   (captured 2026-08-08). `anim.rs` drives the player rig off a glTF and there is no
+   equivalent here; the cheapest honest version is a per-leg transform off
+   the interpolated speed, not a rig.
+5. **`MAX_MOBS = 64` has never met a playtest.** It is derived (§ the wire
+   budget) rather than felt, and it is the one number a player answers.
+
+---
+## 0v · The fire cooks now — one item closed it *(systems lane)*
+
+Landed 2026-08-08: the oven (`sim-core/oven.rs`, `DECISIONS.md` §open "oven
+v0"). A campfire lights on `C`, opens on `E`, burns its wood at the
+reference's own rate, banks charcoal at the reference's own 75%, cooks what
+`content/cooking.toml` names, and snuffs itself when it runs dry. The
+furnace is the same class — a fire and a furnace differ only by which cook
+rows name them, which is how the reference builds it (`BaseOven`).
+
+**The missing food arrived the same day, from the other lane** (§0m
+above). This item shipped with zero `[[cook]]` rows because the alpha food
+set was berries, mushrooms and corn and none of the three is a thing you
+cook; the pig drops `item.raw_meat`, and closing it took the shape this
+item had predicted — one `[[cook]]` row, one consumable row, no code. The fire's other job, fuel → charcoal, is
+unchanged and is still the T0 source for the powder chain.
+
+Still open here, and it is now the cheap one:
+
+- **The burnt state.** Reference-true and free now that food exists: a
+  burnt row is a cook row whose input is the cooked item, so it is content
+  and not a mechanic. It could not be demonstrated before there was a
+  cooked item to overcook, and now there is.
+
+Also still open, and deliberately: the furnace's ore rows are still
+station-gated crafts in `recipes.toml`. Moving them into the oven is the
+reference's model and re-prices the whole powder chain against
+`CONTENT.md` §4's bands — a balance pass with an operator's number on it,
+not a refactor.
 
 ## 0u · The ghost tells the truth — what it still cannot promise *(client lane)*
 
@@ -187,6 +340,23 @@ was lost — `sim_core::build::upgrade` and `ACT_UPGRADE` predate this and `U`
 already sends it. `DECISIONS.md` "the build wheel is one ring".
 
 ## 0p2 · What the UI still owes *(client lane)*
+
+**0 · Before the hammer's wheel: the action lane is FULL.** Demolish and
+rotate have no `Command` in `sim-core`, and adding either is not "add a code":
+`ACTION_SUB_BITS` is 4 and all sixteen codes are live, with a `const` assert
+and a unit test (`the_action_lane_has_the_room_it_claims`) both stating the
+room as **zero**. A seventeenth action widens the field to 5 bits, which moves
+every action message by one bit — a `PROTO_VER` turn and all 72 goldens
+regenerated, the v12 turn again. That is a price worth paying **once, for both
+verbs at the same time** (5 bits holds 32), not twice.
+
+And **rotate would be invisible in our game today.** A placed piece is
+`{cx, cz, level, loc, row, hp, uh}` — no facing, nothing to turn. In the
+reference rotation matters because a wall has a soft side and a doorway has a
+hinge side; ours are symmetric boxes. So rotate is a facing field across the
+store, `persist.rs`, the world save, the snapshot wire and the renderer, in
+service of a difference a player cannot see. **Demolish first, rotate when
+pieces have an asymmetry worth turning.**
 
 **1 · The hammer wants its own wheel.** The mouse is held-item modal now
 (`DECISIONS.md` 2026-08-07) and the plan's half is done: hold right for the
@@ -472,7 +642,7 @@ locally."* All three questions answered and executed in the same pass —
 2. **`web/` itself: deleted.** It is in git history on GitHub, which is what
    makes it still readable as the reference implementation of every verb —
    `git show <commit>:web/src/interact.js`.
-3. **`client-wasm`: kept**, and so is `test_parity_wasm`. Two codegen backends
+3. **`client-core`: kept**, and so is `test_parity_wasm`. Two codegen backends
    agreeing is a real determinism check and it is cheap; a missing browser does
    not repeal wall 1.
 
@@ -737,7 +907,7 @@ rasterizer running two tabs, and it does not transfer.
 ## 0c6 · systems lane request: bridge `terrain::haven(seed)`
 
 One export. `terrain::haven(seed)` already returns the pad and the waystation
-array in one struct (`terrain.rs:799`); nothing in `client-wasm/src/bridge.rs`
+array in one struct (`terrain.rs:799`); nothing in `client-core/src/bridge.rs`
 exposes it, so a client learns a destination exists only by standing in its
 chunk. `map.js`'s `resolveMarks` takes world positions and is already gated, so
 this is a caller change on the ui side and not a rewrite. Ranked gap 1 of
@@ -1043,7 +1213,7 @@ on the native↔wasm parity surface — landed on `loop/site-parity`; see
 `DECISIONS.md` §open "probe coverage v0". Measured before the fix: of the
 golden's 256 cells, **zero** were inside `in_haven`/`in_waystation` on all
 three probe seeds, so `haven()`'s value reached the digest through nothing
-while `client-wasm` reads it off wasm and the server off native. Its other
+while `client-core` reads it off wasm and the server off native. Its other
 two fixes were left, deliberately, and are below. That report's ranked
 **gaps** 1–3 — projectiles, day/night + AI, the recycler — are all systems
 lane; the newest visual report's gaps are all texture/material work, which
@@ -2021,7 +2191,7 @@ behind it, not a one-line assert, and that deserves its own measurement.
    verdict, so a player can drag. It is armed over a workaround, and this is
    what retires it.
 
-   Both reports call the cure "one constant in `crates/client-wasm`". **It is
+   Both reports call the cure "one constant in `crates/client-core`". **It is
    not, and a pass that starts there will hit a wall in ten minutes.**
    `core.rs:38-122` assigns every bit 0..31 of the `APPLIED_*` word — bit 31
    (`APPLIED_MOVE`) is the last one, and `core.rs:115-121` says so in its own
@@ -2296,7 +2466,7 @@ behind it, not a one-line assert, and that deserves its own measurement.
    `setInventory` outranking the rollback snapshot. Eight mutants, all red.
 
    **Systems lane, one-line request — this is the blocker.** `APPLIED_MOVE`
-   (`client-wasm/src/core.rs:122`) and `STREAM_ERR` (`client-wasm/src/bridge.rs:64`)
+   (`client-core/src/core.rs:122`) and `STREAM_ERR` (`client-core/src/bridge.rs:64`)
    are both `1 << 31`. `main.js:759` reads that bit as a decode error, so the
    first `Moved`/`MoveRefused` logs `console.error` — which fails the browser
    gates — and returns early, dropping the inventory diff in the same message.

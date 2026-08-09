@@ -296,8 +296,9 @@ sides already agree on it.
   gradient (not from the triangulation — `ci/bump_basis.mjs` holds that
   arithmetic and it is language-agnostic), and `splat()`'s four identity
   weights.
-- One translucent plane at sea level for water. It does not simulate
-  (`TERRAIN.md` §4) and it is not this slice's subject.
+- Water is **not** this slice's and no longer a plane — `render/water.rs`
+  owns it, and R1's only remaining relationship to it is that the seabed is
+  the same heightfield (`TERRAIN.md` §4, R8 below).
 - **Probe (R-G1)**: structural. From the spawn vantage, the bottom third of
   the frame is ground and not sky; the camera's feet are within ε of
   `terrain::height(seed, x, z)`; the horizon line exists and sky is above it.
@@ -496,9 +497,53 @@ custom node can be ordered against it at all.
 Still owed: the deck reads as high stratus, not cumulus. Vertical structure
 and a real light march are the difference.
 
+### R8 · The sea — `render/water.rs` — **LANDED (water v0)**
+
+Research is `reference/WATER.md`; every number is `DECISIONS.md` §open,
+"water v0". Built in **the reference's own published order** — surface,
+optics, motion, foam — which puts waves third rather than first.
+
+- **One eye-centred mesh**, uniform 2 m core to 64 m then a geometric skirt
+  out to 2.6 km. One rather than a near grid plus a far plane: two translucent
+  surfaces that overlap blend twice, and the sea would darken along a seam
+  that moves with the player.
+- **The optics are a volume.** Colour is `S·(1 − e^{-d·σ})` per channel and
+  alpha is `1 − mean(e^{-d·σ})` — the reference's "depth-based colour
+  extinction" and "thickness-based visibility" are one arithmetic because they
+  are one fact. `AlphaMode::Premultiplied`, so the sky's Fresnel reflection
+  survives in shallow water where the alpha is near zero.
+- **The swell** is four directional waves with analytic gradients, each
+  retired where the mesh under it is coarser than its own quarter wavelength —
+  the ground material's octave-retirement law applied to geometry. Below the
+  shortest, a tiling ripple normal map with its own mip chain, scrolled by
+  `uv_transform`.
+- **The waterline is a band, not a line**, and it is worked from four sides:
+  the wash *stands off* the water's edge (peaking at 0.6 m of depth, zero at
+  the edge itself — foam that peaks at the seam outlines it), its contour is
+  displaced by world-space noise so its edges are lobes rather than iso-depth
+  curves, it surges with the swell so the edge moves, and on the land side
+  `terrain_mesh::wet_factor` damps a few metres of *ground* inland, bounded by
+  a run as well as a height.
+- **What is still a hard edge**: the alpha ramp is a vertex quantity read off
+  `terrain::height`, so it fades correctly against the terrain and not at all
+  against a boulder, a foundation or a player standing in the shallows. The
+  fix is a depth-prepass fade in the fragment — an `ExtendedMaterial` and the
+  first WGSL in the tree. `NOW.md` §0y.
+- **Budget**: 7,921 vertices, one mesh, one draw. Per snap (an 8 m cell
+  crossing) ~7.9 k `terrain::height` taps; per frame four sines a vertex and
+  three attribute writes, no allocation.
+- **Not built, and §5/§6 of the research is the licence**: screen-space
+  reflections (their expensive half; the payoff they name is the sky, which
+  the atmosphere's specular already gives us), rivers and lakes, and any
+  underwater colour grade — the last refused because haze has one owner.
+
+*Picture bought*: the island stops sitting on a blue plate.
+
 ### R7 · What is deliberately not in this plan
 
-Water that simulates, billboard/impostor LOD for distant trees, meshlets,
+Water that simulates *the player back* (a wave that pushes a body is sim state
+in the ECS), water reflections, billboard/impostor LOD for distant trees,
+meshlets,
 Solari (hardware raytracing — the gate box has no GPU at all), decals, and
 any texture compression work. Each is a real want; none of them is the reason
 the current frame does not look like the reference. `TERRAIN.md` §4 holds the

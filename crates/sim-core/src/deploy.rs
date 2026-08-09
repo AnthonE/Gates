@@ -146,6 +146,19 @@ pub fn op_is_crew(op: u8) -> bool {
     )
 }
 
+/// Does a deployable of this archetype hold items — that is, does
+/// placing it stand up a container record in the box store?
+///
+/// Three archetypes say yes and they share one store deliberately: a
+/// storage box is a container, and an oven (`oven.rs`) is a container
+/// that burns. One store means one address space, one `CONT_BOX` handle,
+/// one reach rule and one spill path when a raid takes the thing apart —
+/// so a campfire's contents fall on the floor by the same route a box's
+/// do, with no second contract on the wire and none in the sim.
+pub fn holds_items(arch: u8) -> bool {
+    arch == ARCH_BOX || arch == ARCH_FIRE || arch == ARCH_FURNACE
+}
+
 /// Placement-class codes (schema order).
 pub const PLACE_GROUND: u8 = 0;
 pub const PLACE_FOUNDATION: u8 = 1;
@@ -176,29 +189,33 @@ pub const REFUSE_D_DOOR: u32 = 11;
 /// not know you* — and a client that could tell them apart would learn
 /// something about the lock it was refused by.
 pub const REFUSE_D_OWNER: u32 = 12;
+/// A use press on an oven with nothing in it that burns (oven v0,
+/// `oven.rs`). Lighting is a match, not a delivery: the fuel has to be
+/// inside already.
+pub const REFUSE_D_FUEL: u32 = 13;
 /// A lock op named an address carrying no lock (lock v1).
-pub const REFUSE_D_NO_LOCK: u32 = 13;
+pub const REFUSE_D_NO_LOCK: u32 = 14;
 /// A lock placement named a door that already carries one. The reference's
 /// rule and ours: one lock per door, and bolting a second on is how a
 /// raider would otherwise evict an owner for the price of an item.
-pub const REFUSE_D_HAS_LOCK: u32 = 14;
+pub const REFUSE_D_HAS_LOCK: u32 = 15;
 /// Wrong code. The shock has already been taken off the sender's hp —
 /// this is the announcement, not the punishment.
-pub const REFUSE_D_CODE: u32 = 15;
+pub const REFUSE_D_CODE: u32 = 16;
 /// The keypad is shut: `lock::LOCKOUT_TRIES` wrong codes inside
 /// `lock::LOCKOUT_TICKS`. A *correct* code is refused too while it lasts,
 /// which is the point.
-pub const REFUSE_D_LOCKOUT: u32 = 16;
+pub const REFUSE_D_LOCKOUT: u32 = 17;
 /// A remembered list is full (`limits.rs` `LOCK_AUTH_CAP` /
 /// `LOCK_GUEST_CAP`). Wall 4's overflow policy, said out loud: refuse,
 /// never evict — a door that forgot its owner is the one failure this cap
 /// may not have.
-pub const REFUSE_D_AUTH_FULL: u32 = 17;
+pub const REFUSE_D_AUTH_FULL: u32 = 18;
 /// A pickup named a container that still has something in it. Refused
 /// rather than spilled: a box that vanished with its contents into an
 /// inventory that could not hold them would be the worst kind of loss —
 /// silent, and caused by the player's own verb.
-pub const REFUSE_D_NOT_EMPTY: u32 = 18;
+pub const REFUSE_D_NOT_EMPTY: u32 = 19;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does
@@ -328,7 +345,7 @@ impl DeployContent {
     /// target inside the gates rather than only in a unit test.
     pub fn probe_fixture() -> Self {
         let mut d = Self::EMPTY;
-        d.def_count = 5;
+        d.def_count = 6;
         d.defs[0] = DeployDef {
             arch: ARCH_HEARTH,
             placement: PLACE_FOUNDATION,
@@ -361,15 +378,32 @@ impl DeployContent {
             n_costs: 0,
             costs: [(0, 0); MAX_DEPLOY_COSTS],
         };
+        // The oven (oven v0): a body deployable on the ground, so the
+        // gates can place one, feed it the fixture's fuel (item 0) and
+        // watch it burn. `CookContent::probe_fixture` is the other half —
+        // item 0 burns to item 5, item 1 cooks into item 6 — and the two
+        // fixtures are only meaningful together.
+        d.defs[4] = DeployDef {
+            arch: ARCH_FIRE,
+            placement: PLACE_GROUND,
+            hp: 40,
+            item: 6,
+            n_costs: 1,
+            costs: [(0, 25), (0, 0), (0, 0), (0, 0)],
+        };
         // The code lock (lock v1). In the probe fixture rather than only
         // in `content/` because the parity, alloc and replay gates all
         // install *this* table, and a wall that cannot see a verb is not
         // a wall — the lock ops have to run inside every one of them.
-        d.defs[4] = DeployDef {
+        //
+        // Item **7**, not 6: the oven above already spends 6, and two
+        // deployables sharing an item would make `lock_row`'s give-back
+        // hand out an oven.
+        d.defs[5] = DeployDef {
             arch: ARCH_LOCK,
             placement: PLACE_DOOR,
             hp: 40,
-            item: 6,
+            item: 7,
             n_costs: 1,
             costs: [(1, 12), (0, 0), (0, 0), (0, 0)],
         };
@@ -504,6 +538,17 @@ pub fn box_key(cx: u16, cz: u16, level: u8) -> u32 {
 pub struct BoxStore {
     entries: [BoxRec; MAX_BOXES],
     len: usize,
+    /// Oven state, index-aligned to `entries` (`oven.rs`). Every
+    /// container carries a row and a storage box's says `ARCH_BOX`, which
+    /// is how `is_oven` answers without a second lookup.
+    ///
+    /// A parallel array for `bag_ready`'s reason, one layer down: the box
+    /// record is what the container-sync message is built from, so a burn
+    /// timer and twelve cook counters may not ride on it — the client
+    /// draws a fire, it does not adjudicate one. Kept aligned by the two
+    /// places that can move a box: the insert in `place_deploy` and the
+    /// swap-remove in `remove_at`.
+    ovens: [crate::oven::OvenState; MAX_BOXES],
     /// Contents of boxes removed this tick, awaiting a ground bag.
     /// `drop_deploy` is reached from decay and from a raid and holds
     /// neither the bag store nor the clock, so it parks the record here
@@ -517,6 +562,7 @@ impl BoxStore {
         Self {
             entries: [BoxRec::default(); MAX_BOXES],
             len: 0,
+            ovens: [crate::oven::OvenState::default(); MAX_BOXES],
             spill: [BoxRec::default(); MAX_BOX_SPILL_PER_TICK],
             spill_len: 0,
         }
@@ -680,15 +726,23 @@ impl Deploys {
     /// Replace every store from a decoded world save. Boot-only
     /// (`worldsave.rs`).
     ///
-    /// Four arrays because the store is four arrays, and the file writes
-    /// `bag_ready` inline on the deploy record it belongs to — so the one
+    /// Seven arrays because the store is seven arrays, and the file writes
+    /// each parallel one inline on the record it belongs to — so the one
     /// invariant worth stating is the one the caller has to hold up:
-    /// `ready` is index-aligned to `recs`, exactly as the field it lands in
-    /// is index-aligned to `entries`. A shorter `ready` leaves the tail at
-    /// zero, which reads as "ready from the first tick" and not as a
-    /// sentinel, so the failure would be silently generous bags rather than
-    /// a panic. The decoder writes them as one record and cannot produce
-    /// that; the `debug_assert` is here so a second caller cannot either.
+    /// `ready` is index-aligned to `recs` and `ovens` to `boxes`, exactly
+    /// as the fields they land in are index-aligned to their entries. A
+    /// shorter `ready` leaves the tail at zero, which reads as "ready from
+    /// the first tick" and not as a sentinel, so the failure would be
+    /// silently generous bags rather than a panic. The decoder writes them
+    /// as one record and cannot produce that; the `debug_assert`s are here
+    /// so a second caller cannot either.
+    ///
+    /// The argument count is over clippy's line and stays that way rather
+    /// than being bundled into a struct: every one of these is a decoded
+    /// slice the caller already has laid out separately, and a wrapper
+    /// would be a type that exists for one call site and hides which
+    /// slices have to be aligned to which.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn restore(
         &mut self,
         recs: &[DeployRec],
@@ -696,6 +750,7 @@ impl Deploys {
         placed: &[u64],
         hearths: &[HearthRec],
         boxes: &[BoxRec],
+        ovens: &[crate::oven::OvenState],
         locks: &[LockRec],
     ) {
         debug_assert_eq!(recs.len(), ready.len(), "bag_ready must be index-aligned");
@@ -705,14 +760,43 @@ impl Deploys {
         self.placed[..self.len].copy_from_slice(&placed[..self.len]);
         self.hearth_count = hearths.len().min(MAX_HEARTHS);
         self.hearths[..self.hearth_count].copy_from_slice(&hearths[..self.hearth_count]);
+        debug_assert_eq!(boxes.len(), ovens.len(), "oven state must be index-aligned");
         self.boxes.len = boxes.len().min(MAX_BOXES);
         self.boxes.entries[..self.boxes.len].copy_from_slice(&boxes[..self.boxes.len]);
+        self.boxes.ovens[..self.boxes.len].copy_from_slice(&ovens[..self.boxes.len]);
         self.locks.len = locks.len().min(MAX_LOCKS);
         self.locks.entries[..self.locks.len].copy_from_slice(&locks[..self.locks.len]);
         // The spill list is within-tick scratch (`BoxStore`), never state:
         // a save taken between ticks cannot hold one, and a load must not
         // leave a stale one for `World::step` to stand a bag up from.
         self.boxes.spill_len = 0;
+    }
+
+    /// The live oven states, index-aligned to `boxes()`. Read by
+    /// `state_hash` (a burn timer is sim state), by `worldsave.rs`, and
+    /// by the gates.
+    pub fn oven_states(&self) -> &[crate::oven::OvenState] {
+        &self.boxes.ovens[..self.boxes.len]
+    }
+
+    /// The two halves an oven step writes, as live slices. One call
+    /// rather than two accessors because a step reads a box's slots and
+    /// writes its state in the same breath, and handing them out
+    /// separately would be handing out two `&mut` to one store.
+    pub(crate) fn oven_parts_mut(&mut self) -> (&mut [BoxRec], &mut [crate::oven::OvenState]) {
+        let n = self.boxes.len;
+        (&mut self.boxes.entries[..n], &mut self.boxes.ovens[..n])
+    }
+
+    /// Resolve a packed address to a container index whose state says
+    /// **oven**. `box_index`'s filter, and the whole of what `world.rs`
+    /// needs to route a use press between the door verb and the oven
+    /// verb: the two never share an address (a door lives on a doorway's
+    /// edge, an oven on the plane), so the routing is a lookup and not a
+    /// guess about what the player aimed at.
+    pub fn oven_index(&self, key: u32) -> Option<usize> {
+        self.box_index(key)
+            .filter(|&i| self.boxes.ovens[i].is_oven())
     }
 
     /// Resolve a packed box address to an index into `boxes()`, or `None`
@@ -857,13 +941,18 @@ impl Deploys {
                 self.hearths[h] = self.hearths[self.hearth_count];
             }
         }
-        if dc.defs[rec.row as usize].arch == ARCH_BOX {
+        if holds_items(dc.defs[rec.row as usize].arch) {
             if let Some(b) = self.box_index(box_key(rec.cx, rec.cz, rec.level)) {
                 let bx = self.boxes.entries[b];
                 self.boxes.len -= 1;
                 let last = self.boxes.len;
                 self.boxes.entries[b] = self.boxes.entries[last];
                 self.boxes.entries[last] = BoxRec::default();
+                // Both halves move together, or the oven states stop
+                // describing the containers they are indexed against —
+                // `bag_ready`'s invariant one store down.
+                self.boxes.ovens[b] = self.boxes.ovens[last];
+                self.boxes.ovens[last] = crate::oven::OvenState::default();
                 // What was inside outlives the box. Parked rather than
                 // dropped where it stands, because this path is reached
                 // from decay and from a raid and holds neither the bag
@@ -1183,7 +1272,7 @@ pub fn place_deploy(
     // Checked before the insert for the same reason the hearth cap is: the
     // record below cannot be written into a full store, so the append that
     // follows the insert needs no second guard.
-    if def.arch == ARCH_BOX && deploys.boxes.len == MAX_BOXES {
+    if holds_items(def.arch) && deploys.boxes.len == MAX_BOXES {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
         return;
     }
@@ -1230,7 +1319,11 @@ pub fn place_deploy(
         };
         deploys.hearth_count += 1;
     }
-    if def.arch == ARCH_BOX {
+    // A box, a fire and a furnace are one store: an oven's contents are a
+    // box's contents, which is what lets `CONT_BOX` address a campfire
+    // and the open/move/sync verbs work on one without a wire field
+    // invented for a second kind of container (`oven.rs`).
+    if holds_items(def.arch) {
         let n = deploys.boxes.len;
         deploys.boxes.entries[n] = BoxRec {
             cx,
@@ -1238,6 +1331,10 @@ pub fn place_deploy(
             level,
             owner: p.id,
             items: [ItemStack::default(); BOX_SLOTS],
+        };
+        deploys.boxes.ovens[n] = crate::oven::OvenState {
+            arch: def.arch,
+            ..Default::default()
         };
         deploys.boxes.len += 1;
     }
@@ -2870,7 +2967,7 @@ mod tests {
         deploys: &mut Deploys,
         ev: &mut EventQueue,
     ) -> Player {
-        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (4, 2), (6, 2)]);
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (4, 2), (7, 2)]);
         founded(bc, pieces, &mut p, CX, CZ);
         crate::build::place(
             SEED, bc, deploys, pieces, &mut p, 0, 3, CX, CZ, 0, LOC_EDGE_W, ev,
@@ -3237,7 +3334,7 @@ mod tests {
             &mut deploys,
             &mut p,
             0,
-            4,
+            5,
             CX,
             CZ,
             0,
@@ -3355,7 +3452,7 @@ mod tests {
             &mut deploys,
             &mut p,
             0,
-            4,
+            5,
             CX,
             CZ,
             0,
@@ -3461,7 +3558,7 @@ mod tests {
             &mut deploys,
             &mut p,
             0,
-            4,
+            5,
             CX,
             CZ,
             0,
@@ -3477,7 +3574,7 @@ mod tests {
             &mut deploys,
             &mut p,
             0,
-            4,
+            5,
             CX,
             CZ,
             0,
@@ -3553,7 +3650,7 @@ mod tests {
         );
 
         // Taking it off returns the item and makes the door anyone's.
-        let held = crate::craft::inv_count(&p.inv, 6);
+        let held = crate::craft::inv_count(&p.inv, 7);
         lock_op(
             &dc,
             &gc,
@@ -3570,7 +3667,7 @@ mod tests {
         );
         assert_eq!(deploys.locks().len(), 0);
         assert_eq!(
-            crate::craft::inv_count(&p.inv, 6),
+            crate::craft::inv_count(&p.inv, 7),
             held + 1,
             "the item comes back"
         );
@@ -3711,7 +3808,7 @@ mod tests {
             &mut deploys,
             &mut p,
             0,
-            4,
+            5,
             CX,
             CZ,
             0,
@@ -3745,7 +3842,7 @@ mod tests {
         // The hand the lock knows lifts it, and the lock comes up as a
         // second item rather than being destroyed with the frame.
         let doors = crate::craft::inv_count(&p.inv, 4);
-        let locks = crate::craft::inv_count(&p.inv, 6);
+        let locks = crate::craft::inv_count(&p.inv, 7);
         pick_up(
             &dc,
             &gc,
@@ -3761,7 +3858,7 @@ mod tests {
         assert_eq!(deploys.len(), 0);
         assert_eq!(deploys.locks().len(), 0, "and the lock came off with it");
         assert_eq!(crate::craft::inv_count(&p.inv, 4), doors + 1, "the door");
-        assert_eq!(crate::craft::inv_count(&p.inv, 6), locks + 1, "the lock");
+        assert_eq!(crate::craft::inv_count(&p.inv, 7), locks + 1, "the lock");
     }
 
     /// Upkeep/decay v1: a half-stocked hearth does half the job, and an
@@ -4231,7 +4328,7 @@ mod tests {
             &mut deploys,
             &mut p,
             0,
-            4,
+            5,
             CX,
             CZ,
             0,

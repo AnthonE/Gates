@@ -21,7 +21,7 @@ use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
 use sim_core::inventory::CONT_SELF;
 use sim_core::limits::{
-    CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_DEPLOYS,
+    CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
     MAX_PIECES, MAX_SLOT_LIVES,
 };
 use sim_core::occupy::{Harvested, Occupants, SlotCache};
@@ -521,6 +521,66 @@ impl DeploySet {
     }
 }
 
+/// The lit-fire set: addresses only, bounded by the sim's own container
+/// cap, insertion-ordered, swap-removed. No allocation and no map — the
+/// client is a hot path too (CLAUDE.md's trap list), and the set is
+/// walked once per frame by the renderer at a size the sim has already
+/// bounded.
+pub struct LitOvens {
+    addrs: [(u16, u16, u8); MAX_BOXES],
+    len: usize,
+}
+
+impl LitOvens {
+    fn new() -> Self {
+        Self {
+            addrs: [(0, 0, 0); MAX_BOXES],
+            len: 0,
+        }
+    }
+
+    /// Absolute, never a toggle — the event carries the state and this
+    /// stores exactly what it carried, so two announcements crossing can
+    /// never leave a client inverted (`EV_OVEN`'s own argument).
+    fn set(&mut self, cx: u16, cz: u16, level: u8, lit: bool) {
+        let at = self.addrs[..self.len]
+            .iter()
+            .position(|a| *a == (cx, cz, level));
+        match (lit, at) {
+            (true, None) => {
+                if self.len < MAX_BOXES {
+                    self.addrs[self.len] = (cx, cz, level);
+                    self.len += 1;
+                }
+            }
+            (false, Some(i)) => {
+                self.len -= 1;
+                self.addrs[i] = self.addrs[self.len];
+            }
+            _ => {}
+        }
+    }
+
+    pub fn is_lit(&self, cx: u16, cz: u16, level: u8) -> bool {
+        self.addrs[..self.len].contains(&(cx, cz, level))
+    }
+
+    pub fn addrs(&self) -> &[(u16, u16, u8)] {
+        &self.addrs[..self.len]
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+impl ClientCore {
+    /// The fires this client has heard are burning.
+    pub fn ovens(&self) -> &LitOvens {
+        &self.ovens
+    }
+}
+
 /// True if deploy row `row` is a door **and this client knows it is**.
 /// Rows that haven't dripped in yet read as arch 0, so the `have` gate
 /// is what keeps an unknown row from sealing a doorway it doesn't own;
@@ -740,6 +800,17 @@ pub struct ClientCore {
     auth_len: usize,
     deploy_refusal_head: usize,
     deploy_refusal_len: usize,
+    /// Which ovens this client has heard are lit, by address.
+    ///
+    /// Its own store rather than a bit on the mirrored `DeployRec`, and
+    /// that is the same argument the sim makes one layer down: the deploy
+    /// record is what the deploy-sync packet carries, the burn state
+    /// deliberately is not on it, and a client that wrote `lit` into the
+    /// record would lose every fire the moment a resync walked the store
+    /// and overwrote it with the server's own (unlit) copy. Keyed by
+    /// address, so a resync leaves it standing and the next toggle still
+    /// lands on the right fire.
+    ovens: LitOvens,
     /// The address of a door this client toggled optimistically on its
     /// own input and has not heard back about (NETCODE.md §6.1: your own
     /// door plays on input, remote doors on the event). At most one is
@@ -873,6 +944,7 @@ impl ClientCore {
             auth_len: 0,
             deploy_refusal_head: 0,
             deploy_refusal_len: 0,
+            ovens: LitOvens::new(),
             pending_door: None,
             removed_addr: (0, 0, 0, 0),
             struct_hit: (0, 0, 0, 0, 0, 0),
@@ -1097,6 +1169,15 @@ impl ClientCore {
                     // prediction has nothing left to roll back onto.
                     self.pending_door = None;
                     self.deploys.clear();
+                    // The fires go out with them, and that is the honest
+                    // reading rather than a loss: a deploy reset means
+                    // this client's picture of the furniture is being
+                    // rebuilt from the server's, and the walk carries no
+                    // burn state, so keeping a lit address across it
+                    // would be keeping a fire that may no longer stand.
+                    // The next toggle or self-snuff re-lights it, which
+                    // is at most one fuel unit away.
+                    self.ovens.clear();
                     self.pieces
                         .rebuild_cols(&self.piece_defs, self.piece_defs_have);
                     flags |= APPLIED_DEPLOY_RESET;
@@ -1329,6 +1410,20 @@ impl ClientCore {
                     self.push_deploy_change(rec);
                     flags |= APPLIED_DEPLOYS;
                 }
+            }
+            EventMsg::Oven {
+                cx,
+                cz,
+                level,
+                lit,
+                by: _,
+            } => {
+                // Absolute state, like the door's. The actor is on the
+                // wire and deliberately unread here: what a toast should
+                // say about someone else's fire is a UI question, and the
+                // core's job is the fact.
+                self.ovens.set(cx, cz, level, lit);
+                flags |= APPLIED_DEPLOYS;
             }
             EventMsg::Vitals {
                 food,

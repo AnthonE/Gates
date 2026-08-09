@@ -409,3 +409,30 @@ stack = 50
 tier = 0
 rarity = "common"
 slot = "hand"
+
+# Meat, un-cut 2026-08-08 (DECISIONS.md). It was cut because nothing dropped
+# it and nothing could cook it, and both halves stopped being true on one
+# day: the pig pays raw meat (`mobs.toml`) and the campfire turns it into
+# cooked (`cooking.toml`).
+#
+# **Raw meat is deliberately NOT a consumable.** It is the only item in the
+# set you cannot eat, and that is the whole point of it existing: the fire
+# had no job that mattered, and a food you must cook is the smallest thing
+# that gives it one. No sickness mechanic is invented to punish eating it —
+# there is simply no verb that does, which is a rule the schema already
+# expresses (`consumables.toml` names what may be eaten and nothing else).
+[[item]]
+id = "item.raw_meat"
+name = "Raw Meat"
+stack = 20
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.cooked_meat"
+name = "Cooked Meat"
+stack = 20
+tier = 0
+rarity = "common"
+slot = "hand"

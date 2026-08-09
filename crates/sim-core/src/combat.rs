@@ -933,7 +933,7 @@ mod tests {
         let mut owner = raider(CX, CZ);
         owner.inv[0] = ItemStack { item: 0, count: 99 };
         owner.inv[4] = ItemStack { item: 4, count: 9 };
-        owner.inv[5] = ItemStack { item: 6, count: 2 };
+        owner.inv[5] = ItemStack { item: 7, count: 2 };
         crate::build::place(
             SEED,
             &bc,
@@ -979,7 +979,7 @@ mod tests {
             &mut ev,
         );
         assert_eq!(deploys.len(), 1, "the door hangs in the doorway");
-        // Bolt the code lock on (row 4) and arm it — lock v1: a door is
+        // Bolt the code lock on (row 5) and arm it — lock v1: a door is
         // bare until somebody pays for the security.
         crate::deploy::place_deploy(
             SEED,
@@ -989,7 +989,7 @@ mod tests {
             &mut deploys,
             &mut owner,
             0,
-            4,
+            5,
             CX,
             CZ,
             0,

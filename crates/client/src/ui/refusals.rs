@@ -71,7 +71,7 @@ pub const BUILD: [&str; 13] = [
 /// words, but not all of them: `REFUSE_D_COST` is an item you are not
 /// carrying where `REFUSE_B_COST` is materials you cannot afford. The two
 /// tables are separate for that reason and no check ties them together.
-pub const DEPLOY: [&str; 19] = [
+pub const DEPLOY: [&str; 20] = [
     "no such deployable",
     "spot taken",
     "needs support",
@@ -89,6 +89,7 @@ pub const DEPLOY: [&str; 19] = [
     // op. Kept as one because telling them apart would tell a raider
     // something about the lock refusing them.
     "the lock says no",
+    "nothing in it to burn",
     "no lock on that door",
     "that door already has a lock",
     "wrong code",

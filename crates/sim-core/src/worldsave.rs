@@ -82,6 +82,7 @@ use crate::limits::{
 };
 use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
 use crate::movement;
+use crate::oven::OvenState;
 use crate::persist::{PlayerSave, SaveError, PLAYER_SAVE_BYTES};
 use crate::terrain::ISLAND_SIZE;
 use crate::world::{Player, World};
@@ -92,7 +93,14 @@ use crate::world::{Player, World};
 /// refused at boot rather than reinterpreted (`server/src/store.rs` checks
 /// it), so a field added here without turning this number is a world
 /// silently decoded as a different world.
-pub const WORLD_SAVE_FORMAT: u16 = 2;
+///
+/// **3 skips no shape — it resolves a collision.** Two lanes were open at
+/// once and each bumped 1→2 for its own layout (the oven state inline on a
+/// container; the lock section, the crew tail and the two placement ticks).
+/// Merging them makes a third layout that is neither, and a version number
+/// that two different files can both claim is worse than no version number
+/// at all, so the merge takes the next free one.
+pub const WORLD_SAVE_FORMAT: u16 = 3;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
 /// the next bag id, and the nine section counts.
@@ -133,7 +141,13 @@ const DEPLOY_BYTES: usize = 17 + 8 + 8;
 /// roster is hashed, tail included, so a save that dropped the tail would
 /// reload to a different hash).
 const HEARTH_BYTES: usize = 9 + HEARTH_STOCK_ROWS * 4 + 1 + HEARTH_CREW_CAP * 4;
-const BOX_BYTES: usize = 9 + BOX_SLOTS * 4;
+/// A container record plus its oven state, which lives in a parallel
+/// array for `bag_ready`'s reason and is written inline here for
+/// `DEPLOY_BYTES`'s: a file has no parallel arrays worth having. Every
+/// container carries the state — a storage box's says `ARCH_BOX` and is
+/// six zeroed bytes plus twelve zeroed counters, which is the price of
+/// the two stores staying one store (`deploy::holds_items`).
+const BOX_BYTES: usize = 9 + BOX_SLOTS * 4 + 6 + BOX_SLOTS * 2;
 /// One code lock (lock v1). Address, owner, both codes, the locked bit,
 /// both remembered lists with their counts, and the three brute-force
 /// counters — the whole `LockRec`, because every field of it is hashed
@@ -389,13 +403,23 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
             o.u32(*id);
         }
     }
-    for b in w.deploys.boxes() {
+    for (b, ov) in w.deploys.boxes().iter().zip(w.deploys.oven_states()) {
         o.u16(b.cx);
         o.u16(b.cz);
         o.u8(b.level);
         o.u32(b.owner);
         for s in b.items.iter() {
             o.stack(s);
+        }
+        // The oven half, inline on the container it belongs to — the two
+        // are index-aligned in the store and writing them together is
+        // what makes that alignment unforgeable in a file.
+        o.u8(ov.arch);
+        o.b(ov.lit);
+        o.u16(ov.burn);
+        o.u16(ov.bank);
+        for c in ov.cook.iter() {
+            o.u16(*c);
         }
     }
     for l in w.deploys.locks() {
@@ -801,7 +825,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     }
 
     let mut boxes = [BoxRec::default(); MAX_BOXES];
-    for b in boxes.iter_mut().take(n_boxes) {
+    let mut ovens = [OvenState::default(); MAX_BOXES];
+    for (b, ov) in boxes.iter_mut().zip(ovens.iter_mut()).take(n_boxes) {
         let cx = r.u16()?;
         let cz = r.u16()?;
         let level = r.u8()?;
@@ -810,8 +835,25 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         for s in items.iter_mut() {
             *s = r.stack(max_item)?;
         }
+        let arch = r.u8()?;
+        let lit = r.b()?;
+        let burn = r.u16()?;
+        let bank = r.u16()?;
+        let mut cook = [0u16; BOX_SLOTS];
+        for c in cook.iter_mut() {
+            *c = r.u16()?;
+        }
         if !build_addr_ok(cx, cz, level) {
             return Err(WorldSaveError::AddressOutOfRange);
+        }
+        // A save is the one non-command path into `World`
+        // (`reference/SAVES.md` §9.3: their loader trusts the file and
+        // ours cannot), so the archetype is checked here rather than
+        // trusted: a byte naming an archetype the sim has no store for
+        // would be a container that is neither box nor oven, and every
+        // reader downstream would disagree about which.
+        if !crate::deploy::holds_items(arch) {
+            return Err(WorldSaveError::BadContentRow);
         }
         *b = BoxRec {
             cx,
@@ -819,6 +861,13 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             level,
             owner,
             items,
+        };
+        *ov = OvenState {
+            arch,
+            lit,
+            burn,
+            bank,
+            cook,
         };
     }
 
@@ -995,6 +1044,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         &deploy_placed[..n_deploys],
         &hearths[..n_hearths],
         &boxes[..n_boxes],
+        &ovens[..n_boxes],
         &locks[..n_locks],
     );
     w.backpacks.restore(&bags[..n_bags], next_bag);
@@ -1035,7 +1085,7 @@ mod tests {
             + 8_192 * 19                    // pieces + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
             + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
-            + 256 * 57                      // boxes
+            + 256 * 87                      // containers: 57 + the oven's 30
             + 512 * 98                      // code locks
             + 256 * 148                     // bags
             + 64 * 21                       // charges
@@ -1055,7 +1105,7 @@ mod tests {
         assert_eq!(DEPLOY_BYTES, 33);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 563_766,
+            WORLD_SAVE_MAX_BYTES, 571_446,
             "the world save ceiling moved"
         );
     }

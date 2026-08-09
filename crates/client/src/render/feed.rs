@@ -25,14 +25,14 @@
 //!
 //! ## The bound
 //!
-//! Every array here is [`FEED_CAP`] long, which is `client_wasm`'s own
+//! Every array here is [`FEED_CAP`] long, which is `client_core`'s own
 //! `TOAST_RING` — the core cannot hand over more per frame than its rings
 //! hold, so the cap is exact rather than generous. Overflow policy: **drop the
 //! newest and count it** ([`Feed::dropped`]), matching `sound::CUE_QUEUE_CAP`.
 //! A non-zero count means the core grew a ring and this file did not follow.
 
 use bevy::prelude::*;
-use client_wasm::core::TOAST_RING;
+use client_core::core::TOAST_RING;
 
 use super::Net;
 

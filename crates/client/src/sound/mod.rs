@@ -37,6 +37,9 @@
 pub mod mixer;
 pub mod steps;
 pub mod synth;
+// What water sounds like from where you are standing. `reference/WATER.md` §7
+// is the research; this is the model, and `render/audio.rs` plays it.
+pub mod water;
 
 /// The mixer's output sample rate, Hz.
 ///
@@ -86,17 +89,27 @@ pub enum Cue {
     Hurt,
     Death,
     Place,
+    /// Breaking the surface, in either direction. The *edge*, not the wading:
+    /// [`Cue::StepWater`] is already playing for every stride taken in the
+    /// shallows.
+    Splash,
     TreeFall,
     UiClick,
-    /// The wind bed. Looped, not fired — the only cue the mixer never starts,
-    /// because a loop is a voice that is turned up and down rather than
-    /// triggered. `render/audio.rs` owns its one entity.
+    /// The wind bed. Looped, not fired — a bed is a voice that is turned up
+    /// and down rather than triggered, and [`Cue::is_bed`] is the rule the
+    /// mixer refuses them by. `render/audio.rs` owns the one entity each.
     BedWind,
+    /// The surf bed: heard when there is sea within earshot, at a level that
+    /// reads how much (`water::shore_exposure`).
+    BedSurf,
+    /// The submerged bed. Crossfaded in by [`Snapshot::Submerged`], never by
+    /// the world directly.
+    BedUnder,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 19;
+pub const CUE_COUNT: usize = 22;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -121,10 +134,25 @@ impl Cue {
         Cue::Hurt,
         Cue::Death,
         Cue::Place,
+        Cue::Splash,
         Cue::TreeFall,
         Cue::UiClick,
         Cue::BedWind,
+        Cue::BedSurf,
+        Cue::BedUnder,
     ];
+
+    /// Is this cue a looping bed?
+    ///
+    /// A bed is never started by the mixer: [`mixer::Mixer::push`] refuses one
+    /// and counts it as the caller bug it is. The rule exists as a predicate
+    /// rather than as three remembered names because it is now checked in
+    /// three places — the mixer, the frame-budget gate, and the
+    /// cooldown-stacking gate, all of which would otherwise each carry their
+    /// own list to forget a fourth bed from.
+    pub fn is_bed(self) -> bool {
+        matches!(self, Cue::BedWind | Cue::BedSurf | Cue::BedUnder)
+    }
 
     /// The cue's index into every table in this module.
     pub fn idx(self) -> usize {
@@ -162,11 +190,17 @@ impl Cue {
             | Cue::ImpactMetal
             | Cue::Gather
             | Cue::Place
+            | Cue::Splash
             | Cue::TreeFall
             | Cue::Hurt => 0.07,
-            Cue::CraftDone | Cue::Refused | Cue::Hit | Cue::Death | Cue::UiClick | Cue::BedWind => {
-                0.0
-            }
+            Cue::CraftDone
+            | Cue::Refused
+            | Cue::Hit
+            | Cue::Death
+            | Cue::UiClick
+            | Cue::BedWind
+            | Cue::BedSurf
+            | Cue::BedUnder => 0.0,
         }
     }
 }
@@ -274,13 +308,20 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // the socket (`reference/AUDIO.md` §6). Ours carries a position or it does
     // not fire.
     row(GAME, 32.0, 0.60,  30, 4, true),   // place
+    // Breaking the surface. Your own body, so non-positional, and the cooldown
+    // is what stops a player bobbing on the waterline from machine-gunning it:
+    // the crossing test is a sign change, and a body oscillating around
+    // `SEA_LEVEL` produces one every frame.
+    row(GAME,  0.0, 0.65, 220, 5, false),  // splash
     // A tree coming down is the loudest thing in the forest and the one cue
     // whose radius sets `MAX_AUDIBLE_M`.
     row(GAME, 96.0, 0.90,   0, 6, true),   // tree fall
     row(GAME,  0.0, 0.30,  40, 2, false),  // ui click
-    // The bed. Never started by the mixer; `render/audio.rs` holds one looping
-    // voice and moves its gain.
+    // The beds. Never started by the mixer (`Cue::is_bed`); `render/audio.rs`
+    // holds one looping voice each and moves their gains.
     row(AMB,   0.0, 0.30,   0, 0, false),  // wind
+    row(AMB,   0.0, 0.34,   0, 0, false),  // surf
+    row(AMB,   0.0, 0.40,   0, 0, false),  // submerged
 ];
 
 /// The five footsteps share every number but their timbre — see [`CUES`].
@@ -352,6 +393,166 @@ impl Mix {
             Bus::Ambience => self.ambience,
         };
         (self.master * g).clamp(0.0, 1.0)
+    }
+
+    /// This mix seen through a snapshot. The player's sliders stay the
+    /// player's; a snapshot only ever scales them down.
+    pub fn under(&self, snap: &SnapshotDef) -> Mix {
+        Mix {
+            master: self.master,
+            game: self.game * snap.game,
+            ambience: self.ambience * snap.ambience,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Snapshots.
+// ---------------------------------------------------------------------------
+
+/// A named whole-mixer state.
+///
+/// **This is the reference's own step 2 and the one `reference/AUDIO.md` §9.1
+/// named as owed.** Their published build order for audio is groups, then
+/// *snapshots* — "a whole mixer state" — then *fades between snapshots*, and
+/// only then occlusion and reverb. We had the groups and nothing else; this is
+/// the missing middle, and the thing that finally needed it is water.
+///
+/// It is two states because there are two, not because two is easy. A cave
+/// snapshot and a hostile-contact snapshot are the obvious next ones and
+/// neither has a cause in the client yet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Snapshot {
+    Above,
+    Submerged,
+}
+
+/// What a snapshot sets: the two buses, and the level each bed is held at.
+///
+/// The beds are in here rather than in the world's own gains because a
+/// snapshot is *a whole mixer state* — the point of the mechanism is that one
+/// value moves everything at once and nothing has to remember to move with it.
+#[derive(Clone, Copy, Debug)]
+pub struct SnapshotDef {
+    pub game: f32,
+    pub ambience: f32,
+    pub wind: f32,
+    pub surf: f32,
+    pub under: f32,
+}
+
+/// The two states (`DECISIONS.md` §open, "water audio v0").
+///
+/// **What `Submerged` cannot do, said plainly.** Real submerged audio is a
+/// steep low-pass: the top end goes, and that is a filter. We have no DSP
+/// node — rodio gives us gain, rate and panning — so the substitution is to
+/// duck the game bus and crossfade to a bed that is *generated* dark
+/// (`synth::under`). That is the same kind of substitution as pitch jitter
+/// standing in for a recorded variation bank (`reference/AUDIO.md` §9.5): a
+/// stand-in, not an equal, and it is written down rather than implied.
+pub const SNAPSHOTS: [SnapshotDef; 2] = [
+    // Above.
+    SnapshotDef {
+        game: 1.0,
+        ambience: 1.0,
+        wind: 1.0,
+        surf: 1.0,
+        under: 0.0,
+    },
+    // Submerged. The game bus survives at a level a player can still fight on
+    // — being underwater must not be a stealth advantage handed out by the
+    // mixer — and a little surf comes through, because it does.
+    SnapshotDef {
+        game: 0.45,
+        ambience: 1.0,
+        wind: 0.0,
+        surf: 0.22,
+        under: 1.0,
+    },
+];
+
+/// How long a full crossfade between snapshots takes, seconds.
+///
+/// Short, because the cause is instantaneous and a slow fade would have the
+/// mix lagging a head that has already gone under. Not zero, because a step
+/// change in five gains at once is a click in five voices at once.
+pub const SNAPSHOT_FADE_S: f32 = 0.30;
+
+/// The crossfade, as state.
+///
+/// `t` is how far toward [`Snapshot::Submerged`] the mix currently is. Held
+/// rather than recomputed because a fade is state by definition — the same
+/// shape `render/audio.rs` already keeps for each bed's gain.
+#[derive(Default)]
+pub struct Snapshots {
+    t: f32,
+}
+
+impl Snapshots {
+    /// Move toward `want` and return the mixer state to apply this frame.
+    pub fn tick(&mut self, want: Snapshot, dt_s: f32) -> SnapshotDef {
+        let target = match want {
+            Snapshot::Above => 0.0,
+            Snapshot::Submerged => 1.0,
+        };
+        let step = if SNAPSHOT_FADE_S > 0.0 {
+            dt_s / SNAPSHOT_FADE_S
+        } else {
+            1.0
+        };
+        self.t = if self.t < target {
+            (self.t + step).min(target)
+        } else {
+            (self.t - step).max(target)
+        };
+        self.blend()
+    }
+
+    /// Where the fade is, 0..1.
+    pub fn t(&self) -> f32 {
+        self.t
+    }
+
+    /// Snap to a state without fading — leaving a world, where there is
+    /// nothing to hear through the fade and a half-submerged mix would be
+    /// carried into the next island.
+    pub fn reset(&mut self) {
+        self.t = 0.0;
+    }
+
+    fn blend(&self) -> SnapshotDef {
+        let (a, b) = (&SNAPSHOTS[0], &SNAPSHOTS[1]);
+        let t = self.t.clamp(0.0, 1.0);
+        let mix = |x: f32, y: f32| x + (y - x) * t;
+        SnapshotDef {
+            game: mix(a.game, b.game),
+            ambience: mix(a.ambience, b.ambience),
+            wind: mix(a.wind, b.wind),
+            surf: mix(a.surf, b.surf),
+            under: mix(a.under, b.under),
+        }
+    }
+}
+
+impl Default for SnapshotDef {
+    /// [`Snapshot::Above`] — the state a client that has not looked at the
+    /// world yet is in, and the one it returns to when a world is left.
+    fn default() -> Self {
+        SNAPSHOTS[0]
+    }
+}
+
+impl SnapshotDef {
+    /// The level this snapshot holds a bed at. Panics on a cue that is not a
+    /// bed, which is a programming error rather than a runtime condition —
+    /// [`Cue::is_bed`] is the question to ask first.
+    pub fn bed(&self, cue: Cue) -> f32 {
+        match cue {
+            Cue::BedWind => self.wind,
+            Cue::BedSurf => self.surf,
+            Cue::BedUnder => self.under,
+            _ => 0.0,
+        }
     }
 }
 

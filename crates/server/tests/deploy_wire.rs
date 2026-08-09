@@ -7,7 +7,7 @@
 //! in-progress walk. Deterministic, no sockets; asserts are structural
 //! and exact (the build_wire shape).
 
-use client_wasm::core::{
+use client_core::core::{
     ClientCore, APPLIED_DEPLOYS, APPLIED_DEPLOY_DEFS, APPLIED_DEPLOY_REFUSED, APPLIED_DEPLOY_RESET,
     APPLIED_PIECE_REMOVED, APPLIED_STOCK,
 };
@@ -195,7 +195,7 @@ fn deployables_ride_the_wire() {
     );
     let flags = pump(&mut core, &stats, &mut clients);
     assert_ne!(
-        flags[1] & client_wasm::core::APPLIED_BUILD_REFUSED,
+        flags[1] & client_core::core::APPLIED_BUILD_REFUSED,
         0,
         "claim refusal never arrived"
     );
@@ -342,7 +342,7 @@ fn doors_toggle_across_the_wire() {
     let w0 = world_slot(&core, id_of(0));
     core.world.players[w0].inv[0] = ItemStack { item: 0, count: 50 };
     core.world.players[w0].inv[1] = ItemStack { item: 4, count: 5 };
-    core.world.players[w0].inv[2] = ItemStack { item: 6, count: 2 };
+    core.world.players[w0].inv[2] = ItemStack { item: 7, count: 2 };
 
     for a in [
         ActionMsg::Place {
@@ -465,7 +465,7 @@ fn doors_toggle_across_the_wire() {
         &mut core,
         0,
         ActionMsg::Deploy {
-            row: 4,
+            row: 5,
             cx: CX,
             cz: CZ,
             level: 0,

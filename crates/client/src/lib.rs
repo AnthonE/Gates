@@ -1,11 +1,11 @@
 //! The native client's session: one wtransport connection, the handshake,
-//! and the pump that drives `client_wasm::ClientCore`.
+//! and the pump that drives `client_core::ClientCore`.
 //!
 //! This crate exists because the client is moving off the browser
 //! (DECISIONS.md 2026-08-05). What it deliberately does NOT do is
 //! reimplement the client: `ClientCore`, the predictor, the interpolator
 //! and the clock are the same code the browser build runs, and they were
-//! always pure — `client-wasm` depends on nothing but `sim-core` and
+//! always pure — `client-core` depends on nothing but `sim-core` and
 //! `protocol`, and already builds as an rlib. The browser-shaped half is
 //! `bridge.rs`'s raw C ABI, and that is exactly the half a native client
 //! does not need.
@@ -38,7 +38,7 @@ pub mod ui;
 #[cfg(feature = "render")]
 pub mod render;
 
-use client_wasm::core::{ClientCore, Ingest};
+use client_core::core::{ClientCore, Ingest};
 use protocol::{
     decode_refuse, decode_welcome, encode_hello, peek_kind, Hello, Welcome, KIND_REFUSE,
     KIND_WELCOME, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES, PROTO_VER,

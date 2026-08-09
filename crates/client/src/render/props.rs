@@ -706,18 +706,36 @@ fn blob_mesh(radius: f32, jitter: f32, seed: u32, hex: u32, sub: usize, textured
 
 /// A box massing, for the two authored structures. Each entry is
 /// `(centre, half-extent, hex)`.
-fn boxes_mesh(parts: &[([f32; 3], [f32; 3], u32)]) -> Mesh {
-    // Half a tile per metre — planks and field stone read at a coarser scale
-    // than granite grain, and a box massing has flat metre-scale faces where
-    // a tight repeat would be visible tiling (`ART.md` rule 7).
-    let mut s = Soup::tiling(0.5);
+///
+/// Half a tile per metre — planks and field stone read at a coarser scale
+/// than granite grain, and a box massing has flat metre-scale faces where a
+/// tight repeat would be visible tiling (`ART.md` rule 7). Mean-1 tint,
+/// because every massing on this path wears a photograph.
+pub(super) fn boxes_mesh(parts: &[([f32; 3], [f32; 3], u32)]) -> Mesh {
+    boxes_mesh_with(parts, tint1, 0.5)
+}
+
+/// The same massing, with the two things a textured prop and an untextured
+/// one cannot share.
+///
+/// **The colour function is not a convenience, it is a correctness split, and
+/// it cost a capture to find.** `tint1` divides the authored hex by its own
+/// luma, so what reaches the vertex is a mean-1 *modulation* of a photograph
+/// — exactly right for a shelter wearing a granite map, and it renders
+/// **near-white** on a material with no texture behind it. The pig shipped
+/// that way for one build and read as a pale ghost in the frame while every
+/// gate stayed green, because no gate in this repo looks at a colour. An
+/// untextured massing passes `linear` and carries its own albedo.
+pub(super) fn boxes_mesh_with(
+    parts: &[([f32; 3], [f32; 3], u32)],
+    colour: fn(u32) -> [f32; 3],
+    tiles_per_m: f32,
+) -> Mesh {
+    let mut s = Soup::tiling(tiles_per_m);
     for (c, h, hex) in parts {
         let c = Vec3::from_array(*c);
         let h = Vec3::from_array(*h);
-        // Mean-1, not the colour: every box massing wears a photograph now, so
-        // the authored hex keeps only the RELATIVE difference between a wall
-        // and its roof and hands the level to the map (`tint1`).
-        let base = tint1(*hex);
+        let base = colour(*hex);
         let corner = |sx: f32, sy: f32, sz: f32| c + Vec3::new(h.x * sx, h.y * sy, h.z * sz);
         // Six faces, each two triangles, each face at its own value so the
         // massing reads as a solid rather than a silhouette.
