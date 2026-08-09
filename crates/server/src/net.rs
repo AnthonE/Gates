@@ -447,13 +447,19 @@ async fn accept_loop(
 /// the newest record (limits.rs `SAVE_RING_CAP`), which costs freshness and
 /// never correctness — the sweep comes round again and a record is filed by
 /// key, in place.
+///
+/// One caller passes `key`: the eviction save, whose ring-drop story is
+/// different and still freshness — the store keeps the record the victim's
+/// leave filed, stale by the raid but present, and the same interval the
+/// autosave sweep already leaves at risk.
 fn push_save(
     save_tx: &mut rtrb::Producer<SaveMsg>,
     id: u32,
+    key: Option<PlayerKey>,
     save: sim_core::persist::PlayerSave,
     stats: &Arc<ShardStats>,
 ) {
-    if save_tx.push(SaveMsg { id, save }).is_err() {
+    if save_tx.push(SaveMsg { id, key, save }).is_err() {
         ShardStats::bump(&stats.save_ring_drops);
     }
 }
@@ -482,14 +488,26 @@ fn drain_saves(
     stats: &Arc<ShardStats>,
 ) {
     while let Ok(msg) = save_rx.pop() {
-        // `id = generation << 8 | slot` (see `install`), so the slot is the
-        // low byte and the generation check is the id equality below.
-        let slot = (msg.id & 0xFF) as usize;
-        if slot >= MAX_PLAYERS || keys[slot].id != msg.id {
-            continue;
-        }
-        let Some(key) = keys[slot].key else {
-            continue; // a guest: admitted, remembered by nobody
+        let key = match msg.key {
+            // The sim named the key itself: an eviction save. The victim's
+            // connection ended long ago, so the id below names a slot some
+            // later tenant may hold — the table here cannot resolve it, and
+            // the sim's own sleeper index was the last pairing standing
+            // (`SaveMsg::key`).
+            Some(key) => key,
+            None => {
+                // `id = generation << 8 | slot` (see `install`), so the
+                // slot is the low byte and the generation check is the id
+                // equality below.
+                let slot = (msg.id & 0xFF) as usize;
+                if slot >= MAX_PLAYERS || keys[slot].id != msg.id {
+                    continue;
+                }
+                let Some(key) = keys[slot].key else {
+                    continue; // a guest: admitted, remembered by nobody
+                };
+                key
+            }
         };
         let stamp = now_secs();
         let put = store.put(&key, stamp, msg.save);
@@ -1339,9 +1357,19 @@ fn sim_thread(
     while !shutdown.load(Ordering::Relaxed) {
         // Install fresh connections.
         while let Ok(c) = ctrl_rx.pop() {
-            if let Some(how) = core.connect_as(c.slot, c.id, c.key, c.save) {
+            if let Some((how, evicted)) = core.connect_as(c.slot, c.id, c.key, c.save) {
                 links[c.slot] = Some(c.link);
                 ShardStats::bump(&stats.joins);
+                // Two-phase eviction, the filing half: this join is about
+                // to cost a sleeper its slot, and this record is that body
+                // as it stands NOW — raid included — not as its leave left
+                // it. Keyed by the sim (the victim has no connection slot
+                // for `drain_saves` to resolve), and pushed before the
+                // tick below applies the `Evict`, on the same ring every
+                // other record rides.
+                if let Some((key, save)) = evicted {
+                    push_save(&mut save_tx, 0, Some(key), save, &stats);
+                }
                 // Counted here and nowhere else, because here is the only
                 // place that knows which door opened. The accept task can
                 // see that a record *exists*; it cannot see that the world
@@ -1386,7 +1414,7 @@ fn sim_thread(
                     // key into the accept loop's table ahead of this record
                     // (`KeySlot`). The order here is what closes that.
                     if let Some((id, save)) = core.disconnect(slot) {
-                        push_save(&mut save_tx, id, save, &stats);
+                        push_save(&mut save_tx, id, None, save, &stats);
                     }
                     slots.free(slot, generation);
                     ShardStats::bump(&stats.leaves);
@@ -1425,7 +1453,7 @@ fn sim_thread(
         // already `MAX_PLAYERS` ticks coarse, and it keeps the save read out
         // of the tick's own borrow of the world.
         if let Some((id, save)) = core.autosave() {
-            push_save(&mut save_tx, id, save, &stats);
+            push_save(&mut save_tx, id, None, save, &stats);
         }
         // Buffers coming home from the store thread.
         while let Ok(done) = world_done_rx.pop() {
@@ -1475,15 +1503,16 @@ fn sim_thread(
         });
         ShardStats::bump(&stats.ticks);
         stats.current_tick.store(core.world.tick, Ordering::Relaxed);
-        // Two gauges, mirrored off the world rather than accumulated here:
+        // Three gauges, mirrored off the state rather than accumulated here:
         // the eviction policy lives in `World::seat` and nothing on this
         // thread is told when it fires, so the counter is read, not bumped.
-        // `sleepers()` is an O(MAX_PLAYERS) scan of a 100-element array on
-        // a thread that has just done a tick's work — measured against the
-        // alternative, which is a second copy of the count that can drift
-        // from the array it describes.
+        // `sleepers()` and `connected()` are each an O(MAX_PLAYERS) scan of
+        // a 100-element array on a thread that has just done a tick's work —
+        // measured against the alternative, which is a second copy of the
+        // count that can drift from the array it describes.
         ShardStats::set(&stats.sleepers_evicted, core.world.evictions);
         ShardStats::set(&stats.sleepers, core.world.sleepers() as u64);
+        ShardStats::set(&stats.players, core.connected() as u64);
 
         // Pace (the boundary).
         next += tick_dur;
@@ -1532,7 +1561,7 @@ fn sim_thread(
     // leave takes and is what makes a clean restart cost nobody anything.
     for slot in 0..MAX_PLAYERS {
         if let Some((id, save)) = core.disconnect(slot) {
-            push_save(&mut save_tx, id, save, &stats);
+            push_save(&mut save_tx, id, None, save, &stats);
         }
     }
     // Both producers drop here, which is the signal the other two threads

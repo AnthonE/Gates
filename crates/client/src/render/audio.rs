@@ -39,6 +39,7 @@ use bevy::audio::{
 use bevy::prelude::*;
 
 use crate::sound::mixer::{Mixer, Request, Start};
+use crate::sound::pig::Snorts;
 use crate::sound::steps::Steps;
 use crate::sound::water::Waterline;
 use crate::sound::{
@@ -98,6 +99,9 @@ pub struct Sound {
     pub steps: Steps,
     /// The waterline, as a thing the local body crosses.
     pub waterline: Waterline,
+    /// Each roster slot's snort clock (`sound::pig` — pure; [`pigs`] is
+    /// the producer that reads it against the drawn herd).
+    pub snorts: Snorts,
     /// Each bed's current gain, moving toward its target at
     /// [`BED_FADE_PER_S`]. Held rather than recomputed so the crossfade is
     /// state, not a function of a frame.
@@ -196,6 +200,9 @@ pub fn setup(mut commands: Commands, bank: Res<Bank>, cam: Query<Entity, With<Ey
 /// covered and fires a burst of footsteps on the first frame of the next.
 pub fn teardown(mut sound: ResMut<Sound>, mut last_hp: ResMut<LastHp>) {
     sound.steps.reset();
+    // The herd's clocks too: a countdown carried into the next island would
+    // voice its pigs on this island's schedule.
+    sound.snorts.reset();
     sound.bed_gain = [0.0; BEDS.len()];
     sound.bed_target = [0.0; BEDS.len()];
     // The waterline and the snapshot go with it, and the second one is the
@@ -302,6 +309,61 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
             Cue::ImpactStone
         };
         sound.play(Request::at(cue, [p.x, p.y, p.z]));
+    }
+}
+
+/// A placement landing — the second positional cue, at the cell it landed.
+///
+/// **Reads [`super::feed::Feed`]; pops nothing** (`feed::drain` is the one
+/// pop site). The join-flood guard lives in the CORE, not here: the ring
+/// behind `Feed::placed` is fed only by the `PiecePlaced`/`DeployPlaced`
+/// broadcasts — a placement *happening* — and never by the sync walks, which
+/// merely restate the world. So a fresh join streaming every standing piece,
+/// or a resync restating them, produces zero entries here by construction,
+/// with no timer deciding when the flood is over. Distance does the rest the
+/// way it does for the falling tree: the request carries the position and
+/// `sound::falloff` culls it at the cue's own radius.
+///
+/// The position is [`super::structures::base_transform`]'s — the same
+/// anchor the mesh stands at, edge canonicalisation included, so the sound
+/// cannot come from a different place than the wall appears in.
+pub fn place(feed: Res<super::feed::Feed>, world: Res<super::WorldId>, mut sound: ResMut<Sound>) {
+    for &(cx, cz, level, loc, _deploy) in feed.placed() {
+        let p = super::structures::base_transform(world.seed, (cx, cz, level, loc)).translation;
+        sound.play(Request::at(Cue::Place, [p.x, p.y, p.z]));
+    }
+}
+
+/// The pig's voice, off the drawn herd's interpolated positions.
+///
+/// Dormancy-respecting by construction: a `Pig` entity exists only for a
+/// mob inside AOI (208 m), and every mob a client can see is awake —
+/// `MOB_WAKE_CM` (240 m) deliberately encloses AOI (`limits.rs`), so a
+/// voiced pig is always a simmed pig. "Only nearby" is then the mixer's own
+/// falloff at the cue's 40 m radius — the falling-tree pattern: push with a
+/// position, let the one distance law cull.
+///
+/// The cadence is `sound::pig`'s — hashed per roster slot and cycle, so it
+/// is deterministic (no OS randomness) and not a metronome. The snout
+/// height puts the emitter at the head rather than under the hooves.
+pub fn pigs(
+    herd: Query<(&super::mobs::Pig, &Transform)>,
+    time: Res<Time>,
+    mut sound: ResMut<Sound>,
+) {
+    let dt = time.delta_secs();
+    for (pig, t) in herd.iter() {
+        let Some(slot) = sim_core::mob::slot_of_id(pig.0) else {
+            continue;
+        };
+        if !sound.snorts.due(slot, dt) {
+            continue;
+        }
+        let p = t.translation;
+        sound.play(Request::at(
+            Cue::Snort,
+            [p.x, p.y + super::mobs::PIG_H_M * 0.6, p.z],
+        ));
     }
 }
 

@@ -369,6 +369,49 @@ pub fn item_label(catalog: &ItemCatalog, item: u16) -> String {
     }
 }
 
+/// How many characters of 10 px bold condensed fit on one line of a 44 px
+/// cell: 36 px inside the border and padding, ~5 px per glyph (`DECISIONS.md`
+/// §open, `CELL_LINE_CHARS`).
+pub const CELL_LINE_CHARS: usize = 7;
+
+/// An item name cut to fit a 44 px cell, for the cells that have no icon to
+/// be the picture (`NOW.md` §0p2 item 3).
+///
+/// The cell already clips (`Overflow::clip`), so nothing bleeds over the
+/// border any more — but a clip cuts mid-glyph, and `Gunpowde` reads as a
+/// defect where `Gunpow.` reads as an abbreviation. The rule, per word
+/// because the cell is narrow and `Text` wraps on spaces: a word within
+/// `max_chars` passes through untouched; a longer one is cut to the budget
+/// with a trailing `.` marking the cut deliberate. `#12` labels and every
+/// short name come back unchanged, which is why the common case allocates
+/// only what `item_label` already allocated.
+///
+/// A budget of one has no room for the marker, so a cut word there is its
+/// first glyph alone: a lone `.` says nothing, and `X.` — what this
+/// emitted before the guard — is two characters on a one-character line,
+/// breaking the very contract the function exists to hold. (Zero is not a
+/// budget: a cell that cannot hold a glyph is not a cell, and zero
+/// degrades to one rather than to silence.)
+///
+/// Pure and code-tier on purpose — the arithmetic is gated in
+/// `tests/ui.rs`, where a Bevy system cannot be.
+pub fn cell_abbrev(name: &str, max_chars: usize) -> String {
+    let keep = max_chars.saturating_sub(1);
+    name.split(' ')
+        .map(|word| {
+            if word.chars().count() <= max_chars {
+                word.to_string()
+            } else if keep == 0 {
+                word.chars().take(1).collect()
+            } else {
+                let cut: String = word.chars().take(keep).collect();
+                format!("{cut}.")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// One live job in the queue strip. `eta_s` is the head job's remaining
 /// time; the tail jobs have not started, so the reference draws them without
 /// one and so does this.

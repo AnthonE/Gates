@@ -756,7 +756,10 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let hp = r.u16()?;
         let uh = r.u16()?;
         let open = r.b()?;
-        let locked = r.b()?;
+        // The locked byte is consumed (and bool-checked, so a corrupt
+        // file still refuses) but deliberately never kept — the mirror
+        // comment below says why.
+        let _locked = r.b()?;
         let ready = r.u64()?;
         if !build_addr_ok(cx, cz, level) {
             return Err(WorldSaveError::AddressOutOfRange);
@@ -774,13 +777,17 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             hp,
             uh,
             open,
-            // The two mirror bits are read but not trusted: `has_lock` is
-            // re-derived from the lock section by `World::rebuild_doors`
-            // at the commit below, exactly as the collision index is
-            // rebuilt from the pieces. A file could otherwise say
-            // "locked" about a door whose lock is not in the file.
+            // The two mirror bits are read but not trusted — **neither of
+            // them**: both are re-derived from the lock section by
+            // `World::rebuild_doors` at the commit below, exactly as the
+            // collision index is rebuilt from the pieces. The rebuild only
+            // walks archetypes `lockable` names, so the file's `locked`
+            // byte has to be dropped *here* or a forged save could present
+            // locked:true / has_lock:false on a fire or a hearth — a
+            // mirror state no lock verb can produce — and nothing after
+            // this line would ever look at it again.
             has_lock: false,
-            locked,
+            locked: false,
         };
         bag_ready[i] = ready;
     }

@@ -219,6 +219,16 @@ impl LockRec {
         !self.locked || self.grant(id) != GRANT_NONE
     }
 
+    /// Whether this lock lets `id` take the leaf **out of the world** —
+    /// one tier stricter than [`Self::passes`]: a locked leaf answers
+    /// only to full rights, because lifting it pockets the lock, and
+    /// taking the lock off is on the guest tier's "nothing else" side
+    /// (`DOORS.md` §2.2, Devblog 149's own list). Unlocked, it keeps
+    /// `passes`' rule — a shop front is anyone's, lifting included.
+    pub fn passes_full(&self, id: u32) -> bool {
+        !self.locked || self.grant(id) == GRANT_FULL
+    }
+
     /// Remember `id` at `grant`. Returns false when the list is full,
     /// which is the caller's cue to refuse (never to evict — the
     /// `Roster`'s own rule, and `limits.rs` names the caps).
@@ -298,6 +308,18 @@ impl Locks {
         match self.find(cx, cz, level, loc) {
             None => true,
             Some(l) => l.passes(id),
+        }
+    }
+
+    /// What the lock at this address (if any) lets `id` do to the leaf
+    /// *itself* — the pickup gate `deploy::pick_up` asks. A bare address
+    /// passes for [`Self::passes`]' reason; a locked one answers only to
+    /// full rights ([`LockRec::passes_full`]), because a pickup takes the
+    /// lock with it and a guest holds the door verb and nothing else.
+    pub fn passes_full(&self, cx: u16, cz: u16, level: u8, loc: u8, id: u32) -> bool {
+        match self.find(cx, cz, level, loc) {
+            None => true,
+            Some(l) => l.passes_full(id),
         }
     }
 
@@ -580,6 +602,29 @@ mod tests {
             );
         }
         assert_eq!(locks.len(), 1, "and the lock is still on the door");
+    }
+
+    #[test]
+    fn the_pickup_tier_is_full_rights_where_the_door_tier_is_any_grant() {
+        let mut locks = armed();
+        apply(&mut locks, 0, OWNER, ACCESS_OP_SET_GUEST, 4321, 10);
+        apply(&mut locks, 0, FRIEND, ACCESS_OP_ENTER, 4321, 11);
+        assert!(locks.passes(4, 5, 0, 1, FRIEND), "a guest works the door");
+        assert!(
+            !locks.passes_full(4, 5, 0, 1, FRIEND),
+            "and may not lift what it is bolted to — the guest tier is \
+             the door verb and nothing else (DOORS.md §2.2)"
+        );
+        assert!(locks.passes_full(4, 5, 0, 1, OWNER));
+        apply(&mut locks, 0, RAIDER, ACCESS_OP_ENTER, 1234, 12);
+        assert!(
+            locks.passes_full(4, 5, 0, 1, RAIDER),
+            "the main code is full rights, whoever entered it"
+        );
+        // Unlocked, both tiers open to everyone; a bare address too.
+        apply(&mut locks, 0, OWNER, ACCESS_OP_UNLOCK, 0, 13);
+        assert!(locks.passes_full(4, 5, 0, 1, 999));
+        assert!(locks.passes_full(9, 9, 0, 1, 999));
     }
 
     #[test]

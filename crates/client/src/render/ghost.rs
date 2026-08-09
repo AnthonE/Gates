@@ -22,10 +22,6 @@
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
-use sim_core::build::{
-    BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_W, SHAPE_DOORWAY, SHAPE_STAIRS, SHAPE_WALL,
-};
-use sim_core::collide::{DOOR_POST_W_M, WALL_THICKNESS_M};
 use sim_core::limits::MAX_BUILD_LEVELS;
 
 use crate::look::yaw_u16;
@@ -35,10 +31,7 @@ use crate::ui::place::{self, Site, Target, Verdict};
 use super::hud::Toast;
 use super::input::Look;
 use super::panels::Ui;
-use super::structures::{
-    cell_center, door_opening_w, door_post_gap, level_base_y, LINTEL_DROP_M, LINTEL_H_M, SEAM_M,
-    SLAB_T, STAIRS_RUN_M,
-};
+use super::structures::{base_transform, cell_center, level_base_y, shape_parts};
 use super::{Net, WorldId};
 
 /// The ghost's translucency, and its two verdicts. Cosmetics
@@ -71,7 +64,6 @@ pub struct Ghost {
     /// is one. Respawning them per frame would churn entities on the client's
     /// hot path for a value that changes when the player turns a wheel.
     built_shape: Option<u8>,
-    parts: Vec<(Vec3, Vec3)>,
     /// The deploy preview — a separate entity from the build ghost because the
     /// two are never up at once but are driven by different systems, and one
     /// entity shared between them would need a mode flag that could disagree.
@@ -193,23 +185,10 @@ pub fn track(
     ghost.row = Some(row);
     ghost.shape = shape;
 
-    shape_parts(shape, &mut ghost.parts);
-    let base_y = level_base_y(world.seed, target.cx, target.cz, target.level);
-    let (cxm, czm) = cell_center(target.cx, target.cz);
-    let pos = match target.loc {
-        LOC_EDGE_W => Vec3::new(target.cx as f32 * BUILD_CELL_M, base_y, czm),
-        sim_core::build::LOC_EDGE_N => Vec3::new(cxm, base_y, target.cz as f32 * BUILD_CELL_M),
-        _ => Vec3::new(cxm, base_y, czm),
-    };
-    // North edges are the west shape turned a quarter — the same rotation
-    // `structures::spawn_piece` gives the real thing, so the ghost and the
-    // piece it becomes are the same object in the same pose.
-    let yaw = if target.loc == sim_core::build::LOC_EDGE_N {
-        std::f32::consts::FRAC_PI_2
-    } else {
-        0.0
-    };
-    let transform = Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw));
+    // The same base point and quarter-turn `structures::spawn_piece` gives
+    // the real thing, from the same function, so the ghost and the piece it
+    // becomes are the same object in the same pose.
+    let transform = base_transform(world.seed, (target.cx, target.cz, target.level, target.loc));
     let mat = if verdict.ok() {
         ghost.ok_mat.clone()
     } else {
@@ -238,9 +217,12 @@ pub fn track(
         ghost.built_shape = Some(shape);
         commands.entity(root).despawn_related::<Children>();
         let mesh = ghost.mesh.clone().expect("built above");
-        let parts = ghost.parts.clone();
+        // The shared table (`structures::shape_parts`): one unit cube scaled
+        // per part, where the piece will use a real-size mesh per part —
+        // same sizes, same offsets, same pitch, one emit site.
+        let (parts, n) = shape_parts(shape);
         commands.entity(root).with_children(|c| {
-            for (scale, offset) in parts {
+            for part in &parts[..n] {
                 c.spawn((
                     Mesh3d(mesh.clone()),
                     MeshMaterial3d(mat.clone()),
@@ -251,7 +233,7 @@ pub fn track(
                     // exactly the "darkens the ground" the comment promised it
                     // would not do. A comment is not an implementation.
                     NotShadowCaster,
-                    Transform::from_translation(offset).with_scale(scale),
+                    part.transform().with_scale(part.size),
                 ));
             }
         });
@@ -501,63 +483,5 @@ fn translucent(base_color: Color) -> StandardMaterial {
         double_sided: true,
         cull_mode: None,
         ..default()
-    }
-}
-
-/// The unit cube's scale and offset for each PART of a shape, relative to the
-/// address's base point. Mirrors `structures::spawn_piece`.
-///
-/// **A doorway is three parts and it used to be drawn as one.** The ghost
-/// scaled a single cube to the full wall box for `SHAPE_DOORWAY`, so the
-/// preview of a doorway was a solid slab — the player could not see where the
-/// opening would land, which is the one thing a doorway is for. `RENDER.md`
-/// §8: the opening is 1.2 m x 2.1 m because `collide::edge_hit` blocks exactly
-/// `t` in `[0, 0.9]` and `[2.1, 3.0]`, and "draw it elsewhere and the frame
-/// lies about where a player can walk". The ghost lied one step earlier than
-/// the piece could, while the player was still choosing.
-///
-/// **The numbers are shared with `structures`, the LAYOUT is not, and that is
-/// the remaining hole.** `door_post_gap`, `door_opening_w`, `LINTEL_H_M` and
-/// `LINTEL_DROP_M` are that module's constants now rather than copies, so the
-/// two cannot disagree about a dimension. Which parts exist and where they go
-/// is still written twice, and nothing holds those equal — `tests/ghost.rs`
-/// asserts the doorway's opening against `collide::edge_hit` itself, which is
-/// the property that actually matters, but a shape added to one and not the
-/// other would still pass. The real fix is one shared parts table both emit
-/// from; `NOW.md` carries it.
-fn shape_parts(shape: u8, out: &mut Vec<(Vec3, Vec3)>) {
-    out.clear();
-    let span = BUILD_CELL_M - SEAM_M;
-    match shape {
-        SHAPE_WALL => out.push((
-            Vec3::new(WALL_THICKNESS_M, LEVEL_H_M, span),
-            Vec3::new(0.0, LEVEL_H_M * 0.5, 0.0),
-        )),
-        SHAPE_DOORWAY => {
-            let gap = door_post_gap();
-            let mid = LEVEL_H_M * 0.5;
-            // Two posts, hugging each end of the edge...
-            for z in [-gap, gap] {
-                out.push((
-                    Vec3::new(WALL_THICKNESS_M, LEVEL_H_M, DOOR_POST_W_M),
-                    Vec3::new(0.0, mid, z),
-                ));
-            }
-            // ...and the lintel over what they leave. Its underside is the
-            // top of the opening the sim refuses to let a player through.
-            out.push((
-                Vec3::new(WALL_THICKNESS_M, LINTEL_H_M, door_opening_w()),
-                Vec3::new(0.0, mid + mid - LINTEL_DROP_M - LEVEL_H_M * 0.5, 0.0),
-            ));
-        }
-        SHAPE_STAIRS => out.push((
-            Vec3::new(span, SLAB_T, STAIRS_RUN_M),
-            Vec3::new(0.0, LEVEL_H_M * 0.5, 0.0),
-        )),
-        // Foundation / floor / roof: the slab under the level plane.
-        _ => out.push((
-            Vec3::new(span, SLAB_T, span),
-            Vec3::new(0.0, -SLAB_T * 0.5, 0.0),
-        )),
     }
 }

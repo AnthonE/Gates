@@ -743,6 +743,59 @@ fn footsteps_are_transients() {
     }
 }
 
+/// The pig's voice is a snort, not a hiss, and this pins the two things that
+/// make it one. **Dark**: the whole cue lives under the 2–5 kHz band the
+/// reference carves clear for what matters (`reference/AUDIO.md` §4), so its
+/// zero-crossing rate must sit well below a bright transient's — the same
+/// proxy the footstep surfaces are separated by. **Double**: a pig snorts in
+/// pairs, so the energy must dip between the two exhales and come back —
+/// a single decaying burst would be a large footstep with a species name.
+#[test]
+fn a_snort_is_dark_and_double() {
+    let s = pcm(&synth::wav(Cue::Snort));
+    let zcr = |s: &[f32]| {
+        let n = s
+            .windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count();
+        n as f32 / s.len() as f32
+    };
+    let rock = pcm(&synth::wav(Cue::StepRock));
+    assert!(
+        zcr(&s) < zcr(&rock) * 0.8,
+        "the snort ({:.4}) is not darker than a rock step ({:.4}) - it is a hiss, not a breath",
+        zcr(&s),
+        zcr(&rock)
+    );
+    // The pair: first exhale, the gap, second exhale (`synth::snort`'s own
+    // timeline — bursts at 0.0 s and 0.24 s).
+    let at = |t: f32| ((t * SAMPLE_RATE as f32) as usize).min(s.len());
+    let first = rms(&s[at(0.02)..at(0.14)]);
+    let gap = rms(&s[at(0.18)..at(0.235)]);
+    let second = rms(&s[at(0.25)..at(0.38)]);
+    assert!(
+        first > gap * 1.1,
+        "no first exhale: burst {first:.4} against gap {gap:.4}"
+    );
+    assert!(
+        second > gap * 1.1,
+        "the snort does not snort twice: second burst {second:.4} against gap {gap:.4}"
+    );
+    // And the table row is a positional animal call, not an own-fact: a
+    // snort with no place would be refused by the mixer (its own gate above).
+    let d = Cue::Snort.def();
+    assert!(d.positional, "a snort happens at an animal, not to you");
+    assert!(
+        d.radius_m > 0.0 && d.radius_m < Cue::TreeFall.def().radius_m,
+        "the snort carries {} m - past the loudest thing in the forest",
+        d.radius_m
+    );
+    assert!(
+        Cue::Snort.pitch_var() > 0.0,
+        "a diegetic animal call must vary in pitch"
+    );
+}
+
 /// The surfaces must actually differ in brightness, or five footstep cues are
 /// one footstep cue with five names. Rock returns the top end; sand absorbs
 /// it. Measured as a zero-crossing rate, which is the cheapest honest proxy
@@ -940,6 +993,215 @@ fn a_splash_is_a_crossing_not_a_state() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The two producers landed 2026-08-09: the pig's cadence, and the place
+// cue's supply line (broadcast rings, walks stay silent).
+// ---------------------------------------------------------------------------
+
+/// The snort cadence: primed silently, bounded, deterministic, and **not a
+/// metronome** — a fixed period is the tell that gives away a generated
+/// voice, the same way a clock-driven footstep gives away a footstep system.
+#[test]
+fn the_snort_cadence_is_not_a_metronome() {
+    use client::sound::pig::{Snorts, SNORT_JITTER, SNORT_PERIOD_S};
+    let lo = SNORT_PERIOD_S * (1.0 - SNORT_JITTER);
+    let hi = SNORT_PERIOD_S * (1.0 + SNORT_JITTER);
+    let dt = 0.05f32;
+
+    // First sight primes and says nothing — a world join must not be
+    // sixty-four pigs clearing their throats at once (the `Steps` /
+    // `Waterline` pattern: the first observation establishes state).
+    let mut s = Snorts::default();
+    assert!(!s.due(0, dt), "a pig snorted the instant it was seen");
+
+    // Ten minutes of frames for one animal: every interval inside the
+    // declared band, and the band actually used.
+    let mut s = Snorts::default();
+    let mut t = 0.0f32;
+    let mut fires = Vec::new();
+    while t < 600.0 {
+        if s.due(0, dt) {
+            fires.push(t);
+        }
+        t += dt;
+    }
+    assert!(
+        fires.len() >= 30,
+        "only {} snorts in ten minutes",
+        fires.len()
+    );
+    let intervals: Vec<f32> = fires.windows(2).map(|w| w[1] - w[0]).collect();
+    for i in &intervals {
+        assert!(
+            *i >= lo - dt * 2.0 && *i <= hi + dt * 2.0,
+            "interval {i:.2}s left the declared band [{lo}, {hi}]"
+        );
+    }
+    let min = intervals.iter().cloned().fold(f32::MAX, f32::min);
+    let max = intervals.iter().cloned().fold(0.0f32, f32::max);
+    assert!(
+        max - min > 1.0,
+        "the pig is a metronome: every interval within {:.2}s of every other",
+        max - min
+    );
+
+    // Two animals never share a schedule: across eight slots the first
+    // calls spread out rather than landing together.
+    let mut firsts = Vec::new();
+    for slot in 0..8 {
+        let mut s = Snorts::default();
+        let mut t = 0.0f32;
+        loop {
+            if s.due(slot, dt) {
+                firsts.push(t);
+                break;
+            }
+            t += dt;
+            assert!(t < 60.0, "slot {slot} never spoke");
+        }
+    }
+    let fmin = firsts.iter().cloned().fold(f32::MAX, f32::min);
+    let fmax = firsts.iter().cloned().fold(0.0f32, f32::max);
+    assert!(
+        fmax - fmin > 1.0,
+        "eight pigs spoke within {:.2}s of each other - a chorus",
+        fmax - fmin
+    );
+
+    // Deterministic: same slot, same frames, same schedule — the property
+    // that keeps the voice out of the OS's random stream.
+    let run = |slot: usize| {
+        let mut s = Snorts::default();
+        let mut t = 0.0f32;
+        let mut log = Vec::new();
+        while t < 120.0 {
+            if s.due(slot, dt) {
+                log.push(t.to_bits());
+            }
+            t += dt;
+        }
+        log
+    };
+    assert_eq!(run(5), run(5), "two identical runs spoke differently");
+
+    // A hitch that swallowed three intervals buys ONE snort, not a banked
+    // burst — the step odometer's rule, applied to a voice.
+    let mut s = Snorts::default();
+    s.due(2, dt); // prime
+    let mut fired = 0;
+    if s.due(2, 100.0) {
+        fired += 1;
+    }
+    for _ in 0..20 {
+        if s.due(2, 0.016) {
+            fired += 1;
+        }
+    }
+    assert_eq!(fired, 1, "a 100s hitch banked {fired} snorts");
+
+    // A reset forgets the schedule: the next world's herd primes afresh.
+    let mut s = Snorts::default();
+    s.due(1, dt);
+    s.reset();
+    assert!(!s.due(1, dt), "a reset herd spoke on first sight");
+}
+
+/// **The place cue's supply line: a placement broadcast rings, a sync walk
+/// never does.** This is the join-flood gate. The initial world sync (and
+/// every resync) restates the whole standing world as `PieceSync` /
+/// `DeploySync` walk batches — if those rang, a fresh join into a base
+/// would be N place cues at once, and the "fix" would be a timer knob
+/// deciding when the flood is over. Instead the core's ring is fed only by
+/// the `PiecePlaced` / `DeployPlaced` broadcasts, which the server sends
+/// exactly when a placement *happens* — so the guard is the wire's own
+/// distinction between an event and a restatement, and no clock is
+/// involved. Runs in the code tier against the real decoder: these are the
+/// same bytes the shard sends.
+#[test]
+fn a_placement_broadcast_rings_and_a_sync_walk_does_not() {
+    use client_core::core::ClientCore;
+    use protocol::{
+        encode_event_deploy_placed, encode_event_deploy_sync, encode_event_piece_placed,
+        encode_event_piece_sync, MAX_EVENT_MSG_BYTES,
+    };
+    use sim_core::build::{PieceRec, LOC_PLANE};
+    use sim_core::deploy::DeployRec;
+
+    let mut core = ClientCore::new(1, 7, 0);
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+
+    // The join flood: a reset walk restating a standing base, both stores.
+    let batch: [PieceRec; 6] = core::array::from_fn(|i| PieceRec {
+        cx: 10 + i as u16,
+        cz: 20,
+        level: 0,
+        loc: LOC_PLANE,
+        row: 0,
+        ..PieceRec::default()
+    });
+    let len = encode_event_piece_sync(true, &batch, &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    let dbatch = [DeployRec {
+        cx: 11,
+        cz: 20,
+        level: 0,
+        loc: LOC_PLANE,
+        row: 0,
+        ..DeployRec::default()
+    }];
+    let len = encode_event_deploy_sync(true, &dbatch, &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert!(
+        core.pop_placed().is_none(),
+        "a sync walk restating the world rang the place cue - a fresh join would be N cues at once"
+    );
+
+    // A live placement broadcast rings exactly once, with its address.
+    let rec = PieceRec {
+        cx: 40,
+        cz: 41,
+        level: 1,
+        loc: LOC_PLANE,
+        row: 0,
+        ..PieceRec::default()
+    };
+    let len = encode_event_piece_placed(&rec, &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert_eq!(
+        core.pop_placed(),
+        Some((40, 41, 1, LOC_PLANE, false)),
+        "a piece placement broadcast did not ring"
+    );
+    assert!(core.pop_placed().is_none(), "one placement rang twice");
+
+    // The wire then sends the walk's tail batch carrying the SAME record
+    // (broadcast first, walk after — `pump_events`' order); the mirror
+    // insert is idempotent, so the duplicate delivery stays silent.
+    let len = encode_event_piece_sync(false, &[rec], &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert!(
+        core.pop_placed().is_none(),
+        "the walk's tail batch double-rang a placement the broadcast already rang"
+    );
+
+    // A deployable broadcast rings too, carrying the store bit.
+    let drec = DeployRec {
+        cx: 50,
+        cz: 51,
+        level: 0,
+        loc: LOC_PLANE,
+        row: 0,
+        ..DeployRec::default()
+    };
+    let len = encode_event_deploy_placed(&drec, &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert_eq!(
+        core.pop_placed(),
+        Some((50, 51, 0, LOC_PLANE, true)),
+        "a deployable placement broadcast did not ring"
+    );
+}
+
 /// **`render::feed::drain` must be the only caller of `ClientCore::pop_*` in
 /// the client**, and this test exists because the alternative already
 /// happened.
@@ -983,7 +1245,7 @@ fn only_the_feed_drain_pops_the_core() {
     // single-reader surface by nature (one composer) and `render/chat.rs` owns
     // it — if a second reader ever wants it, it joins the feed and joins this
     // list in the same commit.
-    const DESTRUCTIVE: [&str; 7] = [
+    const DESTRUCTIVE: [&str; 8] = [
         "pop_hit(",
         "pop_death(",
         "pop_toast(",
@@ -991,6 +1253,7 @@ fn only_the_feed_drain_pops_the_core() {
         "pop_craft_refusal(",
         "pop_build_refusal(",
         "pop_deploy_refusal(",
+        "pop_placed(",
     ];
 
     let mut offenders = Vec::new();

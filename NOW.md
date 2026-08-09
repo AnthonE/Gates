@@ -35,9 +35,8 @@ upkeep/decay v1) are what was built. What remains:
 2. **The privilege walk has no cache.** One BFS per placement, capped at
    `PRIV_BFS_CELLS`. Fine for a keypress; it would not be fine if
    something per-tick started asking.
-3. **Locks on boxes** (`DOORS.md` §9.8) — still the cheapest unbuilt
-   thing in either document, and cheaper now: `pick_up` already consults
-   `Locks::passes` at an arbitrary address, so the predicate is wired.
+3. ~~**Locks on boxes** (`DOORS.md` §9.8)~~ Landed (see §0z item 1 for
+   what remains: the client's L verb and the server's container view).
 4. **No `AutoTurret`, so the roster has two customers and not three.**
    `roster.rs` exists because the reference has four; ours has two.
 
@@ -49,23 +48,33 @@ Landed 2026-08-08. `reference/DOORS.md` is the research (owns nothing);
 `sim-core/lock.rs` is the answer, and `DECISIONS.md` §open "lock v1" has the
 whole slice. What remains, in order:
 
-1. **Locks on boxes.** `inventory.rs`'s `CONT_BOX` already reasons "open to
-   anyone, exactly like an unlocked door" and declines to copy the door's
-   owner bit. The lock is now a side-store keyed by an address and a box has
-   an address, so the predicate is the same function called from one more
-   place. No new concepts (`DOORS.md` §9.8).
+1. ~~**Locks on boxes.**~~ **Landed whole, 2026-08-08/09** (`DOORS.md`
+   §9.8), all four quarters: the sim (`deploy::lockable`, the move-path
+   gate, `tests/lock_box.rs`'s mutant-killer), the save decoder's
+   distrust of the file's `locked` byte on every archetype
+   (`tests/worldsave.rs`), the server's container view asking
+   `Deploys::lock_passes` before it streams a slot (`server/core.rs`,
+   `container_wire.rs`), and the client's `L` verb reaching whatever
+   `deploy::lockable` says takes a lock — the sim's own predicate, no
+   second list (`ui::keypad::lock_target`, `tests/ui.rs` §J). Zero
+   protocol edits end to end. Nothing remains here.
 2. ~~**A pickup verb for an unsecured deployable.**~~ Landed with
    demolish v1 (§0aa), including the rule that a locked door cannot be
-   lifted out of its frame.
+   lifted out of its frame — tightened 2026-08-09 to the full tier: a
+   GUEST code works the leaf and cannot lift a locked door or box
+   (`Locks::passes_full`; `DECISIONS.md` §open, pickup tier row).
 3. **The keypad is a HUD line, not a panel.** Deliberate (`ui/keypad.rs`
    says why) but it means the digits are typed and there is nothing to
    click. A small pointer-free overlay would be strictly better and is not
    free.
-4. **`ci/client_smoke.mjs` hand-builds bit frames**, and v28 cost four of
-   them a fix — one only because a field crossing a byte boundary made the
-   decoder read past the frame. That is the byte-golden's blind spot wearing
-   a different hat; a frame builder that took field widths from the encoder
-   would not have it.
+4. ~~**`ci/client_smoke.mjs` hand-builds bit frames**~~ **RETIRED with the
+   file** (verified 2026-08-09: deleted by `7d7a9f5` with the web build).
+   What holds the invariant now is `crates/client-core/tests/wire.rs`,
+   which links `protocol::encode_event_*` instead of hand-framing — the
+   exact fix this item asked for, so the defect class (a frame builder's
+   reading of the layout drifting from the encoder's) is gone by
+   construction. Width-change detection stays `test_protocol_golden`'s
+   job, as `wire.rs`'s own header says.
 
 **Not owed, and stated so it is not re-litigated**: the key lock (its keys
 need per-item instance data `ItemStack` has no room for, and it is the
@@ -186,9 +195,13 @@ Owed, in rank order — `reference/ANIMALS.md` §9.5 has the reasoning:
 2. **Nothing fights back.** Needs a mob→player damage path, a new death
    cause on the wire, and a combat-feel answer to being hit by something you
    cannot reliably hit back.
-3. **No sound.** `sound/synth.rs` generates the bank at boot and has no
-   voice for an animal; the reference identifies a boar by its snorting
-   before you see it.
+3. ~~**No sound.**~~ **DONE 2026-08-09** — `Cue::Snort` in the generated
+   bank (two nasal exhales fluttered at ~26 Hz over a falling grunt) and a
+   positional producer off the drawn herd (`audio::pigs`): cadence hashed
+   per roster slot and cycle (`sound/pig.rs`, 4.5–13.5 s), so no metronome
+   and no OS randomness; AOI (208 m) sits inside dormancy (240 m), so a
+   voiced pig is always a simmed pig. `DECISIONS.md` §open "pig voice v0";
+   gated in `tests/sound.rs`. Nobody has heard it — audio v0's caveat holds.
 4. **No animation, and the massing is boxy up close.** Legs do not move, so
    a walking pig slides, and at 8 m the head barely separates from the body
    (captured 2026-08-08). `anim.rs` drives the player rig off a glTF and there is no
@@ -214,12 +227,17 @@ cook; the pig drops `item.raw_meat`, and closing it took the shape this
 item had predicted — one `[[cook]]` row, one consumable row, no code. The fire's other job, fuel → charcoal, is
 unchanged and is still the T0 source for the powder chain.
 
-Still open here, and it is now the cheap one:
-
-- **The burnt state.** Reference-true and free now that food exists: a
-  burnt row is a cook row whose input is the cooked item, so it is content
-  and not a mechanic. It could not be demonstrated before there was a
-  cooked item to overcook, and now there is.
+- **The burnt state — LANDED 2026-08-09** (`lane/burnt-unblock`), on the
+  second try: built and verified 2026-08-08 (`36a8dad`), parked because a
+  content-only lane cannot add an item — `ui.rs`'s
+  `every_item_in_the_content_has_an_icon` spans content and client, so the
+  unblock took a lane that owns both. The rows are the predicted shape
+  (`item.burnt_meat`; cooked → burnt at the fire's own 20 s; 5 food / 0 hp
+  / 2 s, strictly-worst food asserted as an ordering by
+  `content.rs::the_meal_left_on_the_fire_burns`). The icon is
+  **authored-ours** (`ci/icons/burnt_meat.svg` — the cooked glyph plus
+  char cracks) pending archive art, the meat pair's own posture (§0m): the
+  swap is a mapping move in `ci/bake_icons.py` and nothing else.
 
 Also still open, and deliberately: the furnace's ore rows are still
 station-gated crafts in `recipes.toml`. Moving them into the oven is the
@@ -248,10 +266,15 @@ Three mutants run, all red.
 
 Remaining:
 
-1. **Which parts exist and where they go is still written twice** — once in
-   `ghost::shape_parts`, once in `structures::spawn_piece`. The dimensions are
-   shared and the doorway is gated against the sim, but a shape added to one
-   and not the other passes. One shared parts table both emit from is the fix.
+1. ~~Which parts exist and where they go is still written twice~~ **DONE
+   2026-08-09** — `structures::shape_parts` is the one table; the piece and
+   the ghost both emit from it, and `base_transform` shares the edge
+   canonicalisation the same way. The duplicate had already diverged, which
+   is the finding: the ghost hung the doorway's lintel at waist height
+   (centre 1.05 m against the piece's 2.55 m) and previewed stairs as a
+   level plate against the piece's pitched ramp — every CONSTANT shared,
+   layout not, and no gate could see either. `tests/ghost.rs` now reads the
+   table's own emit against the sim.
 2. **The deploy ghost says WHERE, not WHETHER.** `place::verdict` answers for
    build pieces only; the `REFUSE_D_*` set (needs a floor, needs a doorway,
    hearth claim) is uncheckable client-side, so the preview is deliberately
@@ -436,12 +459,15 @@ Remaining, in order. **Item 1 blocks items 3 and 4:**
    traced from the reference (the IP rail). `ART.md` §7 permits real assets.
    **This is the operator question**, and it gates how the panels ever stop
    reading as a spreadsheet.
-3. **Two defects the first look found, both cheap.** An item name overflows
-   its 44 px cell — `Gunpowde`, `Workbenc`, `Metal Fragments` bleeding over
-   its border — so the browser is least readable exactly where content grew;
-   it wants clipping plus an abbreviation, not a bigger cell (the 720p budget
-   is why). And the wheel's hint line is drawn at `bottom: 40px`, straight
-   through the hotbar behind it.
+3. ~~Two defects the first look found, both cheap~~ **DONE 2026-08-09 — and
+   half was already done and unrecorded.** The wheel's hint line moved clear
+   of the hotbar (`bottom: 76px`) with the icons landing; this item never
+   updated. The name half: cells have clipped since the icons
+   (`Overflow::clip`), and the no-icon fallback now abbreviates instead of
+   letting the clip cut mid-glyph — `ui::craft::cell_abbrev`, `Gunpow.` not
+   `Gunpowde` (`DECISIONS.md` §open `CELL_LINE_CHARS`; gate `tests/ui.rs`
+   §I). With every content item iconed (§G), the fallback fires only for a
+   shard item this build has no icon for.
 4. **Twelve sizes is not a scale.** Collapsing to five is a real improvement
    and may not be done blind: the numbers were budgeted against 720p and the
    first cut clipped a column at both ends.
@@ -497,16 +523,26 @@ rotation landed with the call. Plan, sources and reasoning: `reference/SAVES.md`
    `two_shards_loading_one_file_stay_in_lockstep`. Knobs: `world_file`,
    `world_save_interval_ticks` (1800). Gates: 12 + 2 in sim-core, 7 in
    `server/tests/world_persist.rs`.
-3. **The store's job is now exactly §9.2's, and one hole is left in it.** A
-   sleeper's record is still frozen at the moment they left — `disconnect`
-   reads it before the `Leave`, and the sweep walks *connection* slots. With
-   the world file on this no longer costs a restart (the body itself
-   persists), so the window narrowed to one case: **eviction**. A sleeper
-   raided and then evicted for slot pressure comes back from the stale record.
-   The fix is two-phase eviction — the server picks the victim, takes its
-   save, and queues `Command::Evict { id }` *before* the join, instead of
-   `seat` evicting on its own authority. Deterministic (the id is in the
-   stream) and small; not built.
+3. ~~**The store's job is now exactly §9.2's, and one hole is left in
+   it.**~~ **DONE 2026-08-09 — two-phase eviction.** The hole was eviction:
+   a sleeper's record freezes at their leave (the sweep walks *connection*
+   slots), so a sleeper raided and then evicted for slot pressure came back
+   from the stale record. Now the server picks the victim (longest-asleep,
+   `ShardCore::evict_victim`), takes a **current** save off the live body,
+   files it keyed (`SaveMsg::key` — an evicted sleeper has no connection
+   slot for `drain_saves` to resolve), and queues `Command::Evict { id }`
+   ahead of the join. `seat` no longer evicts on its own authority: a
+   full-shard join with no `Evict` ahead of it refuses silently, as
+   all-awake-full always did. Deterministic — the id is in the stream
+   (`worldsave.rs` lockstep and `sleepers.rs` both script one) — and two
+   joins in one window pick two victims (`slots_short`/`spoken_for` fold
+   the queue into the count). Gates: `sleepers.rs` (+2), `worldsave.rs`,
+   `persist_store.rs` (+3 — the raid-then-evict window end to end).
+   **Left open:** the same-window rejoin — a victim reconnecting in the
+   very window that evicts them gets the store record `install` fetched
+   *before* the eviction save is filed; one window wide, same freshness
+   class as the save ring's other drops, and the takeover hint already
+   refuses to wake a condemned body.
 4. **Blueprints** are the wipe-surviving payload the split was shaped for;
    nothing to build until BPs exist.
 5. **Still no WAL, and item 2 answered the question it was going to force.**
@@ -580,15 +616,16 @@ Remaining, in order:
    mixer saw one. No test could see it; each half is correct alone. There is
    now one drain, and `tests/sound.rs` greps `src/render/` for a second
    `pop_*` call site, because the defect is a call site and not a value.
-5. **Four of the nineteen cues have no producer**, which is `MENUS.md` §4's
-   dark-content defect inside a thing that just shipped: `Place`,
-   `ImpactWood`, `ImpactMetal` and `UiClick` are generated, in the table and
-   playable, and nothing asks for them. `Place` is the cheap one now that
-   `structures.rs` streams piece and deploy changes with cells — it is the
-   second positional cue and would exercise that path against something other
-   than a falling tree. The two impacts need to know WHAT was hit, which the
-   gather toast does not say. `UiClick` needs a hook in the per-screen click
-   handlers.
+5. **Three cues still have no producer** (`MENUS.md` §4's dark-content
+   defect inside a thing that just shipped). ~~`Place`~~ **DONE 2026-08-09**
+   — the second positional cue, fired at `base_transform`'s own anchor off a
+   broadcast-only ring in `ClientCore`: `PiecePlaced`/`DeployPlaced` ring it,
+   the sync walks never do, so a join or resync restating N pieces is silent
+   by construction (no timer knob) and `feed::drain` is still the one `pop_*`
+   site. `DECISIONS.md` §open "the place cue has a producer"; gated in
+   `tests/sound.rs`. Remaining: `ImpactWood`/`ImpactMetal` need to know WHAT
+   was hit, which the gather toast does not say, and `UiClick` needs a hook
+   in the per-screen click handlers.
 6. **Remote players are silent.** Only the local body has an odometer, so
    another player's footsteps — the sound that decides fights — do not exist.
    `bodies.rs` has their interpolated transforms; a `Steps` per remote body
@@ -718,18 +755,23 @@ Remaining, in order:
    and three material changes measured byte-identical statistics before
    anyone read the log. Do not land this on a compile alone; it wants disk
    headroom and a `--capture` run that someone looks at.
-5. **`bodies::stream` allocates a `Vec` per frame** and scans it linearly to
-   retire remotes. `structures::stream` does the same job with a generation
-   stamp and no allocation; this is the same fix, four lines.
-6. **Five read-side signals are still decoded and dropped.** The verb list is
-   complete; this is not. `pop_death` is the kill FEED (every death, not your
-   own — the death SCREEN reads `core.dead` and the `own_death_*` fields and
-   is done); `struct_hit` is the damage number on a wall you are breaking;
-   `charge_placed` is the countdown on a charged one; `stock`/`stock_addr` is
-   what a hearth is holding; `mark_cell`/`mark8` is the gather weak spot,
-   which is the reference's own `OnDispenserBonus` and the closest thing this
-   game has to a skill expression. Each is a small HUD slice on top of what
-   this branch built, and none of them is blocked.
+5. ~~`bodies::stream` allocates a `Vec` per frame~~ **DONE, verified
+   2026-08-09**: the generation stamp landed (`store.gen`, `bodies.rs`), and
+   the path was re-read for stragglers — `interp.ids()` is an iterator,
+   `RemoteState` is `Copy` on the stack, spawns and `Reshade` fire on
+   transitions only. Nothing on the per-frame path allocates.
+6. **The five read-side signals all have consumers now; the WHERE landed
+   on the HUD for two of three.** `hud::readout` (2026-08-09) pins a line
+   under the toast, off `Feed`'s freshness bits (a second reader — the
+   drain architecture's point): `struct_hit` persists as the wall's
+   fraction plus bearing+distance and refreshes per hit, so a gather no
+   longer stomps a raid's progress mid-swing, and `charge_placed` is a
+   ticking clock with the bearing a defender runs on, not the one-shot
+   toast it was. Gated in `hud.rs`'s own tests (`whereabouts`, the two
+   line builders). Genuinely dropped still: the WORLD-SPACE anchors — a
+   number at the wall itself, a clock on the charge mesh
+   (`charge_deploy` unread until that mesh half wants it) — and
+   `stock_addr` never says WHICH hearth. None is blocked.
 
 ## 0s · The six unlanded loop branches — triaged, and five are dead
 
@@ -817,10 +859,15 @@ Remaining, in order:
    `DECISIONS.md` §open and an operator act: serve `servers.json`, set
    `servers.url` in scry's `data/launcher/gates.manifest.json`. Until then both
    the menu and the launcher's Servers window are correctly dark.
-2. **No player counts, and this is the honest half.** `players`/`ping_ms` are
-   omitted, never zeroed — the shard serves no status endpoint. `stats.rs`
-   already holds `joins`/`leaves` as atomics and its header names the status
-   page as what would read them. That endpoint is the whole slice.
+2. **Player counts: the shard's half landed; lighting them is an operator
+   act.** `status_addr` (`DECISIONS.md` §open "shard status endpoint v0")
+   serves `GET /status.json` — `players`/`max_players`/`tick` as integers,
+   off `ShardStats` on its own thread. `players` is a real occupancy gauge
+   (`ShardCore::connected`), not `joins - leaves`, which drifts on refused
+   installs. Absent by default, so live shards change nothing until the
+   operator sets it, opens the TCP port, and points a reader at the URL —
+   `ci/shardlist.py` still omits `players` (untouched, its own slice) and
+   both readers still draw `?`. Gate: `crates/server/tests/status.rs`.
 3. **`ci/gates.sh` never builds `--features render`, so nothing in CI compiles
    the native client at all** — the code tier's `clippy --workspace` and
    `cargo test --workspace` both run with the feature off (it is off by default

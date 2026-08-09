@@ -164,7 +164,7 @@ pub fn stream(
                 let entity = commands
                     .spawn((
                         super::WorldEntity,
-                        Pig,
+                        Pig(id),
                         Mesh3d(assets.mesh.clone()),
                         MeshMaterial3d(assets.material.clone()),
                         Transform::from_translation(pos).with_rotation(facing),
@@ -186,6 +186,9 @@ pub fn stream(
     });
 }
 
-/// One drawn animal.
+/// One drawn animal, carrying its wire id — the roster slot inside it
+/// (`mob::slot_of_id`) is what keys the voice's per-animal cadence
+/// (`sound::pig`), so the identity has to ride the entity rather than be
+/// re-derived from a position.
 #[derive(Component)]
-pub struct Pig;
+pub struct Pig(pub u32);

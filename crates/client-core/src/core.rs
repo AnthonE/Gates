@@ -798,6 +798,20 @@ pub struct ClientCore {
     auths: [(u16, u16, u8, u8, u8); REFUSAL_RING],
     auth_head: usize,
     auth_len: usize,
+    /// Placements that HAPPENED (`PiecePlaced`/`DeployPlaced` broadcasts):
+    /// address + which store (`true` = deployable). **Never fed by a sync
+    /// walk**, and that asymmetry is the ring's whole reason to exist: the
+    /// walk *restates* the world (a join streams every standing piece, a
+    /// resync streams them again), while the broadcast is the server saying
+    /// one just went down — so the place cue's producer can read this and
+    /// stay silent through a join flood with no timer knob deciding when
+    /// the flood is over. The same-tick duplicate delivery (a broadcast is
+    /// followed by the walk's tail batch carrying the same record) cannot
+    /// double-ring, because the mirror insert is idempotent and only a
+    /// successful insert rings.
+    placed: [(u16, u16, u8, u8, bool); TOAST_RING],
+    placed_head: usize,
+    placed_len: usize,
     deploy_refusal_head: usize,
     deploy_refusal_len: usize,
     /// Which ovens this client has heard are lit, by address.
@@ -942,6 +956,9 @@ impl ClientCore {
             auths: [(0, 0, 0, 0, 0); REFUSAL_RING],
             auth_head: 0,
             auth_len: 0,
+            placed: [(0, 0, 0, 0, false); TOAST_RING],
+            placed_head: 0,
+            placed_len: 0,
             deploy_refusal_head: 0,
             deploy_refusal_len: 0,
             ovens: LitOvens::new(),
@@ -1103,6 +1120,10 @@ impl ClientCore {
                     .insert(rec, &self.piece_defs, self.piece_defs_have)
                 {
                     self.push_piece_change(rec);
+                    // A broadcast is a placement HAPPENING; only it rings
+                    // (see `placed`). The walk's tail batch carrying the
+                    // same record fails the insert above and stays silent.
+                    self.push_placed(rec.cx, rec.cz, rec.level, rec.loc, false);
                     flags |= APPLIED_PIECES;
                 }
             }
@@ -1158,6 +1179,9 @@ impl ClientCore {
                 if self.deploys.insert(rec) {
                     self.seal_for(rec);
                     self.push_deploy_change(rec);
+                    // Broadcast, not walk — rings for the same reason the
+                    // `PiecePlaced` arm does.
+                    self.push_placed(rec.cx, rec.cz, rec.level, rec.loc, true);
                     flags |= APPLIED_DEPLOYS;
                 }
             }
@@ -1766,6 +1790,33 @@ impl ClientCore {
         self.auth_head = (self.auth_head + 1) % REFUSAL_RING;
         self.auth_len -= 1;
         Some(a)
+    }
+
+    /// Drop-oldest, like the knock ring and for its reason: a placement is
+    /// a sound rather than a state change (the mirror already holds the
+    /// state), so stalling the newest would be worse than losing one.
+    fn push_placed(&mut self, cx: u16, cz: u16, level: u8, loc: u8, deploy: bool) {
+        if self.placed_len == TOAST_RING {
+            self.placed_head = (self.placed_head + 1) % TOAST_RING;
+            self.placed_len -= 1;
+        }
+        self.placed[(self.placed_head + self.placed_len) % TOAST_RING] =
+            (cx, cz, level, loc, deploy);
+        self.placed_len += 1;
+    }
+
+    /// Oldest buffered placement broadcast: address + which store (`true` =
+    /// deployable). Only a `PiecePlaced`/`DeployPlaced` broadcast rings —
+    /// never a sync walk, so a join or resync restating the world hands
+    /// over nothing here (see the `placed` field).
+    pub fn pop_placed(&mut self) -> Option<(u16, u16, u8, u8, bool)> {
+        if self.placed_len == 0 {
+            return None;
+        }
+        let p = self.placed[self.placed_head];
+        self.placed_head = (self.placed_head + 1) % TOAST_RING;
+        self.placed_len -= 1;
+        Some(p)
     }
 
     /// Oldest buffered build refusal reason (`sim_core::build::REFUSE_B_*`).

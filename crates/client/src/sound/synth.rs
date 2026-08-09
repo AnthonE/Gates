@@ -280,6 +280,9 @@ fn render(cue: Cue) -> Vec<f32> {
         Cue::BedWind => bed(&mut r),
         Cue::BedSurf => surf(&mut r),
         Cue::BedUnder => under(&mut r),
+
+        // ---- the animals ------------------------------------------------
+        Cue::Snort => snort(&mut r),
     }
 }
 
@@ -750,6 +753,66 @@ fn splash(r: &mut Rng) -> Vec<f32> {
         }
         // And a thin wash under them, dying with the rest.
         out[i] += r.noise() * 0.03 * (-time / 0.22).exp();
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// The pig: two nasal exhales with a grunt under them.
+///
+/// **The flutter is what makes it a snort.** A snort is breath forced
+/// through a nostril, and the nostril flaps — so the noise band is
+/// amplitude-modulated at ~26 Hz, which is the one thing that separates it
+/// from a puff of band-passed static. Two bursts rather than one because a
+/// pig snorts in pairs (the second shorter and softer, like an echo of
+/// intent), and it is the double that reads as an animal rather than as a
+/// pneumatic valve. The band is low (230–950 Hz) on purpose: the cue lives
+/// in the ambience register and must not fight the 2–5 kHz carve the
+/// reference keeps clear for what matters (`reference/AUDIO.md` §4).
+///
+/// Under both runs the grunt — a low sine falling from 105 Hz as the breath
+/// runs out, phase integrated rather than computed from an instantaneous
+/// frequency (see `sweep` — the one arithmetic trap in this file).
+fn snort(r: &mut Rng) -> Vec<f32> {
+    let dur = 0.55f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    let mut lp = Lp::new(950.0);
+    let mut hp = Lp::new(230.0);
+    // (start s, length s, level) — the pair. The second at full level: the
+    // first cut had it at 0.8 under a grunt with a 0.18 s tail, and the gap
+    // between the exhales measured LOUDER than the second one — a pair the
+    // gate could not hear as a pair (`a_snort_is_dark_and_double` found it).
+    for (start, len, amp) in [(0.0f32, 0.16f32, 1.0f32), (0.24, 0.20, 1.0)] {
+        let from = samples(start);
+        for k in 0..samples(len) {
+            let i = from + k;
+            if i >= n {
+                break;
+            }
+            let t = k as f32 / sr;
+            let env = attack(t, 0.010) * (-t / (len * 0.38)).exp();
+            let flutter = 0.55 + 0.45 * (std::f32::consts::TAU * 26.0 * t).sin();
+            let x = r.noise();
+            let band = {
+                let l = lp.run(x);
+                l - hp.run(l)
+            };
+            out[i] += band * env * flutter * amp;
+        }
+    }
+    // The grunt decays fast enough (0.10 s tau) to be out of the way before
+    // the second exhale — a longer tail fills the gap between the pair and
+    // the snort stops snorting twice.
+    let mut phase = 0.0f32;
+    for (i, v) in out.iter_mut().enumerate() {
+        let time = i as f32 / sr;
+        let hz = 105.0 - 30.0 * (time / dur).min(1.0);
+        phase += std::f32::consts::TAU * hz / sr;
+        *v += phase.sin() * 0.32 * (-time / 0.10).exp();
     }
     for (i, v) in out.iter_mut().enumerate() {
         *v *= edges(i, n);

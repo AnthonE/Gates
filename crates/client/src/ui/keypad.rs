@@ -32,17 +32,19 @@ use sim_core::deploy::{
 /// Digits in a code. The wire's own space (0000..=9999).
 pub const DIGITS: usize = 4;
 
-/// The keypad, aimed at one door. `None` in `at` means closed.
+/// The keypad, aimed at one lock — a door's or a box's, one flow for both
+/// (locks on boxes, `DOORS.md` §9.8). `None` in `at` means closed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Keypad {
-    /// The door this keypad is bolted to, if it is open at all.
+    /// The address of the lock this keypad speaks to, if it is open at
+    /// all: a door's edge address, or a box's plane address.
     pub at: Option<(u16, u16, u8, u8)>,
     digits: [u8; DIGITS],
     len: usize,
 }
 
 impl Keypad {
-    /// Open the keypad on a door, clearing whatever was typed at the last
+    /// Open the keypad on a lock, clearing whatever was typed at the last
     /// one. Retyping is the right default: a code left in the buffer would
     /// be entered at a *different* lock by the next press of `Enter`, and
     /// a wrong code costs hp.
@@ -119,6 +121,41 @@ impl Keypad {
             "CODE {code}  ·  [ENTER] TRY  [S] SET  [G] GUEST  [K] LOCK  [U] UNLOCK  [T] TAKE  [ESC] CLOSE"
         )
     }
+}
+
+/// What the `L` press addresses, resolved from the pick.
+///
+/// **The set of things a lock bolts to is the sim's, by import.** The pick
+/// carries the archetype the deploy sync named ([`Pick::arch`]), and this
+/// asks `sim_core::deploy::lockable` — the exact predicate the sim's lock
+/// verb gates on one crate down — instead of matching verbs. A third
+/// lockable archetype reaches the keypad the day the sim grows one, not a
+/// release later; that is the same no-second-list rule `interact` holds
+/// for reach (locks on boxes, `DOORS.md` §9.8).
+///
+/// [`Pick::arch`]: crate::ui::interact::Pick::arch
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockTarget {
+    /// Open the keypad at this address — a door's edge, a box's plane;
+    /// the six ops speak from there and the sim answers refusals.
+    Pad(u16, u16, u8, u8),
+    /// Lockable, but nothing bolted on: prompt to deploy a lock rather
+    /// than opening an empty pad.
+    Bare,
+    /// Nothing a lock bolts to.
+    None,
+}
+
+/// Resolve what `L` does with a pick. Pure, and gated in `tests/ui.rs` §J
+/// — including the agreement sweep against `deploy::lockable` itself.
+pub fn lock_target(pick: &crate::ui::interact::Pick) -> LockTarget {
+    if !sim_core::deploy::lockable(pick.arch) {
+        return LockTarget::None;
+    }
+    if !pick.has_lock {
+        return LockTarget::Bare;
+    }
+    LockTarget::Pad(pick.cx, pick.cz, pick.level, pick.loc)
 }
 
 /// What a keypad op needs from the buffer.

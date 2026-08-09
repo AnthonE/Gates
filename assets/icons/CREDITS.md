@@ -93,5 +93,6 @@ Replacing them with archive icons later is a mapping move in
 
 | file | source |
 |---|---|
+| `burnt_meat.png` | `ci/icons/burnt_meat.svg` (ours) |
 | `cooked_meat.png` | `ci/icons/cooked_meat.svg` (ours) |
 | `raw_meat.png` | `ci/icons/raw_meat.svg` (ours) |

@@ -225,6 +225,7 @@ pub fn world_teardown(
     mut herd: ResMut<mobs::Herd>,
     mut eye: ResMut<Eye>,
     mut look: ResMut<input::Look>,
+    mut readout: ResMut<hud::Readout>,
 ) {
     let mut n = 0usize;
     for e in entities.iter() {
@@ -246,6 +247,9 @@ pub fn world_teardown(
     highlight::forget_in(&mut highlight);
     *bodies = bodies::Bodies::default();
     *herd = mobs::Herd::default();
+    // The readout holds the LAST wall hit and charge clock — facts about
+    // the world that just went, worth up to TOAST_SECS of lies in the next.
+    *readout = hud::Readout::default();
     *eye = Eye::default();
     *look = input::Look::default();
     commands.remove_resource::<WorldId>();
@@ -312,6 +316,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()
             .init_resource::<hud::Toast>()
+            .init_resource::<hud::Readout>()
             .init_resource::<Settings>()
             .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
@@ -628,6 +633,10 @@ impl Plugin for GatesRenderPlugin {
                     // up is still owed to the player, and a ring nobody drains
                     // is a ring that overflows and drops the newest.
                     hud::feedback,
+                    // The pinned readout: `Feed`'s second HUD reader,
+                    // which the drain architecture exists to make free
+                    // (`feed.rs` — a reader borrows, only the drain pops).
+                    hud::readout,
                     hud::prompt,
                 )
                     .in_set(Stream)
@@ -659,9 +668,14 @@ impl Plugin for GatesRenderPlugin {
                 // do by it.
                 audio::water,
                 audio::feed,
+                // The second positional cue: placements off the feed's
+                // broadcast-only ring (the join-flood guard is the core's).
+                audio::place,
                 audio::hurt,
                 audio::steps,
                 audio::fell,
+                // The pig's voice, off the herd `mobs::stream` just moved.
+                audio::pigs,
                 audio::bed,
                 audio::pump,
             )

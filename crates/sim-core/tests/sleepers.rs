@@ -23,8 +23,11 @@
 //! 4. A sleeper's clock runs. It can starve, and starving drops the bag.
 //! 5. A returning connection takes over the body rather than getting a
 //!    second one.
-//! 6. Slots are `MAX_PLAYERS` and sleepers hold them, so the eviction
-//!    policy is real code with a stated order, not a comment.
+//! 6. Slots are `MAX_PLAYERS` and sleepers hold them, so eviction is real
+//!    code with a stated order — **two-phase** since `NOW.md` §0y item 3:
+//!    the server picks and saves the victim (`ShardCore::evict_victim`),
+//!    and the stream carries `Command::Evict` ahead of the join. The world
+//!    obeys the id and never evicts on its own authority.
 //!
 //! Nothing here invents a number: hp, damage and reach come from
 //! `CombatContent::probe_fixture`, the clock from
@@ -398,15 +401,19 @@ fn waking_a_sleeper_that_is_gone_seats_nobody() {
 }
 
 /// Sleepers hold slots, so a shard every slot of which is asleep must
-/// still admit somebody. The policy is **evict the longest-asleep**, and
-/// this checks the order rather than just the fact: the body that has been
-/// down longest is the one that goes.
-///
-/// Not a cosmetic choice. The alternative orders are "lowest slot", which
-/// reaps whoever happened to join first and never anyone else, and "most
-/// recent", which reaps the player most likely to still be coming back.
+/// still admit somebody — but the world no longer decides who pays for
+/// that. Eviction is **two-phase** now (`reference/SAVES.md` §9.2): the
+/// server picks the victim and files a *current* save off the live body
+/// (`ShardCore::evict_victim` owns the longest-asleep policy), then puts
+/// `Command::Evict` in the stream ahead of the join. World-side that
+/// splits into the two facts this test pins: a join with no free slot and
+/// no `Evict` ahead of it seats nobody — the old behaviour was to take
+/// the longest-asleep right here, which is exactly the stale-record hole,
+/// because a body the world deletes unannounced is one the server saved
+/// at its leave and never again — and the same join lands once the
+/// `Evict` is in the stream.
 #[test]
-fn a_full_shard_evicts_the_longest_asleep() {
+fn a_full_shard_join_needs_an_evict_in_the_stream() {
     let mut w = World::new(SEED);
     w.combat = CombatContent::probe_fixture();
     for i in 0..MAX_PLAYERS as u32 {
@@ -415,29 +422,69 @@ fn a_full_shard_evicts_the_longest_asleep() {
     assert_eq!(w.players.iter().filter(|p| p.active).count(), MAX_PLAYERS);
 
     // Put them to sleep in a known order, one per tick, so `slept_at` is
-    // strictly increasing and the oldest is unambiguous.
+    // strictly increasing and "longest-asleep" is unambiguous to the
+    // server-side scan this stream is standing in for.
     for i in 0..MAX_PLAYERS as u32 {
         w.tick(&[Command::Leave { id: 100 + i }]);
     }
     assert_eq!(w.sleepers(), MAX_PLAYERS);
     assert_eq!(w.evictions, 0, "nothing should have been evicted yet");
 
+    // A bare join: refused, and nobody pays for it.
     w.tick(&[Command::Join { id: 9_999 }]);
+    assert_eq!(w.evictions, 0, "the world evicted on its own authority");
+    assert!(
+        !w.players.iter().any(|p| p.active && p.id == 9_999),
+        "a join with no evict ahead of it was seated over a sleeper"
+    );
+    assert_eq!(w.sleepers(), MAX_PLAYERS, "a refusal must cost nobody");
 
-    assert_eq!(w.evictions, 1, "the join did not evict");
-    assert!(
-        !w.is_sleeper(100),
-        "the longest-asleep body survived; a newer one was taken instead"
-    );
-    assert!(
-        w.is_sleeper(101),
-        "the second-oldest should still be asleep"
-    );
+    // The two-phase order as the server queues it — evict, then join, one
+    // window. The victim id is the stream's fact, not a scan's, which is
+    // what keeps a replay evicting the same body (wall 5).
+    w.tick(&[Command::Evict { id: 100 }, Command::Join { id: 9_999 }]);
+
+    assert_eq!(w.evictions, 1, "the evict did not land");
+    assert!(!w.is_sleeper(100), "the named victim is still here");
+    assert!(w.is_sleeper(101), "only the named victim goes");
     assert!(
         w.players.iter().any(|p| p.active && p.id == 9_999),
-        "the join was refused on a shard that had a slot to give"
+        "the join was refused on a shard the evict had opened"
     );
     assert_eq!(w.players.iter().filter(|p| p.active).count(), MAX_PLAYERS);
+}
+
+/// `Evict` takes a sleeping body and nothing else. An id that names an
+/// awake player — or nobody — is a legal no-op, `Wake`'s posture: the
+/// server mints the command, but a WAL replays against a world that may
+/// have diverged, and a diverged replay must refuse to delete a body
+/// somebody is driving.
+#[test]
+fn an_evict_takes_only_a_sleeping_body() {
+    let mut w = duel_world();
+    w.tick(&[Command::Evict { id: 1 }]);
+    assert_eq!(w.evictions, 0, "an awake body was evicted");
+    assert!(w.players.iter().any(|p| p.active && p.id == 1));
+    w.tick(&[Command::Evict { id: 0xBEEF }]);
+    assert_eq!(w.evictions, 0, "a missing id counted an eviction");
+
+    // The real thing, for contrast: the sleeper leaves every scan, the
+    // count moves, and so does the hash — `evictions` is hashed because
+    // an eviction's only other evidence is an absence.
+    w.tick(&[Command::Leave { id: 2 }]);
+    let before = w.state_hash();
+    w.tick(&[Command::Evict { id: 2 }]);
+    assert_eq!(w.evictions, 1);
+    assert!(!w.is_sleeper(2));
+    assert!(
+        !w.players.iter().any(|p| p.active && p.id == 2),
+        "an evicted body is still in the player scan"
+    );
+    assert_ne!(
+        before,
+        w.state_hash(),
+        "an eviction is invisible to the hash"
+    );
 }
 
 /// A second `Leave` for a body already asleep must not restamp
@@ -482,6 +529,11 @@ fn sleeping_is_hashed_and_reproducible() {
             id: 0x0202,
             sleeper: 2,
         }]);
+        // And the two-phase pair, so the reproducibility claim covers the
+        // eviction path: the victim id is in the stream, and both runs
+        // must delete the same body under the join that needed the slot.
+        w.tick(&[Command::Leave { id: 1 }]);
+        w.tick(&[Command::Evict { id: 1 }, Command::Join { id: 0x0777 }]);
         w.state_hash()
     };
     let mut a = World::new(SEED);

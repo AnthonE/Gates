@@ -23,7 +23,7 @@ use protocol::{
     SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH,
     DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
-use sim_core::build::PieceRec;
+use sim_core::build::{PieceRec, LOC_PLANE};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::DeployRec;
 use sim_core::gather::{ItemStack, NO_ITEM};
@@ -187,12 +187,15 @@ pub enum Admitted {
 /// hard ceiling on sleepers: a sleeper holds a world player slot, and there
 /// are `MAX_PLAYERS` of those.
 ///
-/// Entries go stale — the world evicts a sleeper on its own authority when
-/// a join needs the slot, and it does not report which. So a hit here is a
-/// *hint*, checked against `World::is_sleeper` before it is acted on, and a
-/// full table is swept of its dead entries before it is called full. That
-/// ordering is the reason this cannot wedge: staleness is bounded by the
-/// same number as the thing it tracks.
+/// Entries can go stale — a disconnect files the arrow *before* its `Leave`
+/// lands, so a `Leave` a full queue refused leaves an arrow at a body that
+/// never slept. (Eviction used to be the other source, when the world took
+/// sleepers on its own authority; two-phase eviction forgets the arrow at
+/// the pick, `connect_as`.) So a hit here is a *hint*, checked against
+/// `World::is_sleeper` before it is acted on, and a full table is swept of
+/// its dead entries before it is called full. That ordering is the reason
+/// this cannot wedge: staleness is bounded by the same number as the thing
+/// it tracks.
 struct SleeperIndex {
     entries: Box<[Option<(PlayerKey, u32)>]>,
 }
@@ -210,6 +213,19 @@ impl SleeperIndex {
             .flatten()
             .find(|(k, _)| k == key)
             .map(|(_, id)| *id)
+    }
+
+    /// The key filed for sleeper `id`, if any — `find` reversed, for the
+    /// eviction path: a victim is picked by body, and the record it leaves
+    /// behind has to be filed under the identity that will come back for
+    /// it. `None` ⇒ a guest's body: admitted, remembered by nobody, so
+    /// there is no record to file and never was.
+    fn key_of(&self, id: u32) -> Option<PlayerKey> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|(_, i)| *i == id)
+            .map(|(k, _)| *k)
     }
 
     fn forget(&mut self, key: &PlayerKey) {
@@ -289,6 +305,80 @@ impl ShardCore {
         self.connect_as(slot, id, None, None).is_some()
     }
 
+    /// Whether the next queued seat would meet a world with no free slot —
+    /// the moment two-phase eviction has to act. Counted against the world
+    /// **plus this window's own queue**: seats queued ahead will consume
+    /// free slots before this one lands and queued `Evict`s will open them,
+    /// so the arithmetic is about the world the join will actually meet,
+    /// not the one standing now. (A `Wake` is neither: a takeover reuses
+    /// the sleeper's own slot.)
+    fn slots_short(&self) -> bool {
+        let free = self.world.players.iter().filter(|p| !p.active).count();
+        let mut seats = 0usize;
+        let mut freed = 0usize;
+        for cmd in self.queued[..self.queued_len].iter() {
+            match cmd {
+                Command::Join { .. } | Command::JoinAs { .. } => seats += 1,
+                Command::Evict { .. } => freed += 1,
+                _ => {}
+            }
+        }
+        free + freed <= seats
+    }
+
+    /// Whether this window's queue has already committed the sleeping body
+    /// `id`: an `Evict` is about to remove it, or a `Wake` is about to hand
+    /// it back to its owner. Either way it is not available to be woken by
+    /// — or evicted for — the join being admitted now, and without this
+    /// check two joins in one window would nominate the same victim and
+    /// the second would land on a world with no slot to give.
+    fn spoken_for(&self, sleeper: u32) -> bool {
+        self.queued[..self.queued_len].iter().any(|cmd| match *cmd {
+            Command::Evict { id } => id == sleeper,
+            Command::Wake { sleeper: s, .. } => s == sleeper,
+            _ => false,
+        })
+    }
+
+    /// The eviction policy — **the longest-asleep sleeper**, ties broken on
+    /// slot index — moved here from `World::seat` with two-phase eviction:
+    /// the same scan `seat` ran when it evicted on its own authority, minus
+    /// bodies this window has already spoken for. The server owns the pick
+    /// because only the server can file the victim's save before the world
+    /// forgets the body; the world only obeys the id (`Command::Evict`),
+    /// which keeps the choice in the command stream (wall 5).
+    fn evict_victim(&self) -> Option<u32> {
+        let mut pick: Option<usize> = None;
+        for (i, p) in self.world.players.iter().enumerate() {
+            if !p.active || !p.sleeping || self.spoken_for(p.id) {
+                continue;
+            }
+            let older = match pick {
+                None => true,
+                Some(b) => p.slept_at < self.world.players[b].slept_at,
+            };
+            if older {
+                pick = Some(i);
+            }
+        }
+        pick.map(|i| self.world.players[i].id)
+    }
+
+    /// Players with a live connection right now — the number the status
+    /// endpoint publishes as `players` (`stats.rs` mirrors it each tick).
+    ///
+    /// Counted off `clients[].connected` rather than derived from the
+    /// `joins`/`leaves` counters, because those can legitimately disagree
+    /// with occupancy: a refused `connect_as` parks the link and rides the
+    /// LEAVING sweep out, which bumps `leaves` with no matching `join`, so
+    /// the difference drifts one short per refusal. An O(MAX_PLAYERS) scan
+    /// of a 100-element array, priced and justified where `sleepers` is
+    /// (`net.rs`): a second copy of the count could drift from the array
+    /// it describes.
+    pub fn connected(&self) -> usize {
+        self.clients.iter().filter(|c| c.connected).count()
+    }
+
     /// Install a client: onto the body they left behind if it is still
     /// standing, restoring `save` if it is not and the store had one, and
     /// as a fresh character otherwise.
@@ -308,6 +398,21 @@ impl ShardCore {
     /// `JoinAs` says it at more length). The takeover check is a pure read
     /// on the sim thread, which is the same posture `disconnect` already
     /// takes with `World::save_of`.
+    ///
+    /// **The second return value is two-phase eviction's phase one.** A
+    /// seat with no free slot needs one made, and the world no longer
+    /// evicts on its own authority — its record of the victim would be
+    /// frozen at their leave, so a sleeper raided and then evicted came
+    /// back from the stale record (`reference/SAVES.md` §9.2's one
+    /// remaining hole). Instead this picks the victim ([`Self::evict_victim`]),
+    /// takes a **current** save off the live body, queues `Command::Evict`
+    /// *ahead of* the join, and hands the record back — `Some` ⇒ the caller
+    /// must file it on the sweep's own write path, keyed, before the tick
+    /// that applies the `Evict`. `None` rides most admissions: no slot
+    /// pressure, a takeover (which reuses its own sleeper's slot), or a
+    /// keyless victim with no record to file. The record returns rather
+    /// than being pushed here because `ShardCore` holds no rings — the
+    /// same seam `disconnect` and `autosave` already cross by returning.
     #[must_use]
     pub fn connect_as(
         &mut self,
@@ -315,16 +420,58 @@ impl ShardCore {
         id: u32,
         key: Option<PlayerKey>,
         save: Option<PlayerSave>,
-    ) -> Option<Admitted> {
+    ) -> Option<(Admitted, Option<(PlayerKey, PlayerSave)>)> {
         // A hint from the index, verified against the world before it is
-        // trusted: the world evicts sleepers without telling anyone.
+        // trusted — and against this window's own queue, because a sleeper
+        // a queued `Evict` has already condemned is one this join must not
+        // count on waking.
         let sleeper = key
             .and_then(|k| self.sleepers.find(&k))
-            .filter(|&s| self.world.is_sleeper(s));
+            .filter(|&s| self.world.is_sleeper(s))
+            .filter(|&s| !self.spoken_for(s));
         let (cmd, how) = match (sleeper, save) {
             (Some(sleeper), _) => (Command::Wake { id, sleeper }, Admitted::TookOver),
             (None, Some(save)) => (Command::JoinAs { id, save }, Admitted::Restored),
             (None, None) => (Command::Join { id }, Admitted::Fresh),
+        };
+        // Two-phase eviction, phase one. Order is the design: save, then
+        // `Evict`, then the join — all inside one window, so the tick
+        // applies them back to back and the join lands on the freed slot.
+        let evicted = if !matches!(how, Admitted::TookOver) && self.slots_short() {
+            match self.evict_victim() {
+                Some(victim) => {
+                    // Room for both commands or neither: an `Evict` whose
+                    // join was then refused by a full queue would delete a
+                    // body and seat nobody in its place.
+                    if self.queued_len + 2 > MAX_COMMANDS_PER_TICK - MAX_PLAYERS {
+                        return None;
+                    }
+                    // The record comes off the live body NOW — the current
+                    // state, raid included, not the one frozen at the
+                    // victim's leave. A keyless victim is a guest: no
+                    // record to file, and never was one.
+                    let record = self
+                        .sleepers
+                        .key_of(victim)
+                        .and_then(|k| self.world.save_of(victim).map(|s| (k, s)));
+                    if let Some((k, _)) = record.as_ref() {
+                        // The arrow points at a body the command below is
+                        // about to remove.
+                        self.sleepers.forget(k);
+                    }
+                    let roomed = self.queue(Command::Evict { id: victim });
+                    debug_assert!(roomed, "room for two was checked above");
+                    record
+                }
+                // Every slot holds an awake body (or a sleeper this window
+                // already spoke for). Queue the join anyway: the world
+                // refuses it silently, which is the full-shard behaviour
+                // that predates sleepers, and the accept path hard-caps
+                // connections ahead of this.
+                None => None,
+            }
+        } else {
+            None
         };
         if !self.queue(cmd) {
             return None;
@@ -342,7 +489,7 @@ impl ShardCore {
         // The sweep must not read this connection's arrival as "nothing has
         // changed" against the previous tenant of the slot.
         self.last_saved[slot] = PlayerSave::EMPTY;
-        Some(how)
+        Some((how, evicted))
     }
 
     /// Encode the whole world into `out`, returning its length.
@@ -1790,10 +1937,17 @@ impl ShardCore {
         // written here rather than left to the reader: an open grants
         // nothing. Every tick the server resolves the handle again and
         // spends the *same* `in_reach` the move verb will spend, on the
-        // same quantized body position, against the same store. A forged
+        // same quantized body position, against the same store — and, for
+        // a box, the same `lock_passes` at the same plane address
+        // (`World::move_item`'s `CONT_BOX` arm; `DOORS.md` §9.8). A forged
         // open of a box across the map resolves and fails reach, so it
         // yields the close below and not one slot. A real open of a box
-        // the player then walks away from does the same. The set of
+        // the player then walks away from does the same. A locked box a
+        // stranger opens — or one that locks while their panel is up —
+        // does the same again, deliberately through the same close and
+        // not a new refusal: the sim already refuses every mutation, and
+        // a view that kept streaming a locked box's slots read-only would
+        // be raid intelligence the lock exists to hide. The set of
         // containers a client can see is therefore exactly the set it can
         // move items in — which is the quantize-both-sides law applied to
         // containers, and the reason a refusal can never disagree with
@@ -1812,12 +1966,24 @@ impl ShardCore {
                     .world
                     .deploys
                     .box_index(handle)
-                    .filter(|&i| self.world.deploys.box_in_reach(i, p)),
+                    .filter(|&i| self.world.deploys.box_in_reach(i, p))
+                    .filter(|&i| {
+                        // The box stands on the plane, so its lock shares
+                        // `box_key`'s triple plus `LOC_PLANE` — the move
+                        // path's address, byte for byte. An oven at the
+                        // same shape of address carries no lock
+                        // (`lockable`) and passes as bare.
+                        let b = self.world.deploys.boxes()[i];
+                        self.world
+                            .deploys
+                            .lock_passes(b.cx, b.cz, b.level, LOC_PLANE, p.id)
+                    }),
                 _ => None,
             };
             match live {
-                // Gone, or out of reach. Same message either way, and
-                // deliberately: "the bag despawned" and "you walked away"
+                // Gone, out of reach, or behind a lock that does not know
+                // this hand. Same message every way, and deliberately:
+                // "the bag despawned", "you walked away" and "it locked"
                 // are one fact to a panel, which is that it must shut. The
                 // client is told rather than left holding a view the
                 // server has stopped feeding — a stale panel is where a
