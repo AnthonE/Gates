@@ -220,24 +220,12 @@ cook; the pig drops `item.raw_meat`, and closing it took the shape this
 item had predicted — one `[[cook]]` row, one consumable row, no code. The fire's other job, fuel → charcoal, is
 unchanged and is still the T0 source for the powder chain.
 
-Still open here, and it is one out-of-lane line from cheap:
+Still open here, and it is now the cheap one:
 
-- **The burnt state — BUILT AND VERIFIED, PARKED in `lane/burnt-state`
-  history (commit `36a8dad`, reverted at the tip): blocked by the icon
-  gate, not by content.** The four rows are exactly the predicted shape —
-  `item.burnt_meat`, a fire row cooked → burnt at the cook's own 20 s, a
-  consumable row (5 food, 0 hp, 2 s: the reference docs here give the
-  burnt state's shape and no numbers, so the conservative call is
-  strictly-worst food in the set, asserted as an ordering), and
-  `content.rs::the_meal_left_on_the_fire_burns`, mutation-verified red on
-  deleting just the burnt cook row. All 50 content tests green. What
-  reddens is `client/tests/ui.rs::every_item_in_the_content_has_an_icon`
-  — headless, inside `cargo test --workspace` — which requires every
-  `items.toml` name to stem into `icons::STEMS`; `cell_abbrev`'s text
-  fallback exists but that gate does not accept it, so **content cannot
-  land an item alone**. The unblock is the icon lane's, and it is the
-  meat pair's own route (§0m): one authored SVG in `ci/icons/`, one
-  `burnt_meat` stem in STEMS, then revert the revert.
+- **The burnt state.** Reference-true and free now that food exists: a
+  burnt row is a cook row whose input is the cooked item, so it is content
+  and not a mechanic. It could not be demonstrated before there was a
+  cooked item to overcook, and now there is.
 
 Also still open, and deliberately: the furnace's ore rows are still
 station-gated crafts in `recipes.toml`. Moving them into the oven is the
