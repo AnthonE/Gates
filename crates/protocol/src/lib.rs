@@ -3,16 +3,23 @@
 //! (`InputFrame`, the quantized body fields) come from `sim-core`; this
 //! crate only says how they cross the wire.
 //!
-//! Two datagram schemas, v0 (DESIGN.md §5.4/§5.5, NETCODE.md §3):
+//! Two datagram schemas. The widths below are the wire as it stands at
+//! [`PROTO_VER`] — not the v0 sketch DESIGN.md §5.4/§5.5 and NETCODE.md §3
+//! describe, which several bumps have since moved. The kind field is
+//! [`KIND_BITS`] wide, widened 3 → 4 at v27. This block is the only
+//! end-to-end statement of either layout, so it is what anyone costing a
+//! worst-case packet reads; `test_module_header_states_the_real_kind_width`
+//! checks it against the constant, because a byte-golden compares bytes the
+//! same encoder produced and can never notice the prose drifting.
 //!
-//! **Input, C→S** — `kind:3 · snapshot_ack:16 · ack_bits:32 ·
+//! **Input, C→S** — `kind:4 · snapshot_ack:16 · ack_bits:32 ·
 //! first_client_tick:32 · frame_count:4`, then if any frames:
 //! `first_seq:16` and per frame `buttons:8 · yaw:16 · pitch:8 · move_x:8 ·
 //! move_z:8 · sel:3` (hotbar selector 0–5; 6–7 refuse as malformed).
 //! Frames are the client's unacked tail, oldest first, seq-consecutive by
 //! construction (seq rides the wire once).
 //!
-//! **Snapshot, S→C** — `kind:3 · tick:32 · baseline_age:8 ·
+//! **Snapshot, S→C** — `kind:4 · tick:32 · baseline_age:8 ·
 //! last_executed_seq:16 · nudge:2 · removed_count:7 · entity_count:7`,
 //! then removed ids (`u32` each), then entity records. `baseline_age == 0`
 //! is the canonical zero-state (NETCODE.md §3, the Quake-3 move): every
@@ -366,8 +373,9 @@ pub const KIND_BITS: u32 = 4;
 pub const KIND_INPUT: u32 = 0;
 pub const KIND_SNAPSHOT: u32 = 1;
 /// Stream-lane message kinds (the bidi handshake, DESIGN.md §5.9). Same
-/// 3-bit kind space; stream messages ride length-prefixed (u16 LE) frames
-/// on the reliable lane, never datagrams.
+/// kind space as the datagrams above — [`KIND_BITS`] wide, so the codes
+/// below run past the eight a kind field once held; stream messages ride
+/// length-prefixed (u16 LE) frames on the reliable lane, never datagrams.
 pub const KIND_HELLO: u32 = 2;
 pub const KIND_WELCOME: u32 = 3;
 pub const KIND_REFUSE: u32 = 4;
@@ -1539,7 +1547,13 @@ pub struct InputDatagram {
     /// Bit n set ⇒ snapshot tick `snapshot_ack − n − 1` also applied.
     pub ack_bits: u32,
     /// Client tick of `frames[0]`; with no frames, the client's current
-    /// tick (the datagram still feeds the server's clock estimate).
+    /// tick. **Nothing on the server reads it.** This line used to say the
+    /// field "feeds the server's clock estimate", which described an
+    /// estimate that was never built: `Core::push_input` folds the acks and
+    /// the frame tail and drops the rest, and the accessor below has no
+    /// callers. It stays on the wire because taking it off is a layout
+    /// change (wall 6) and because it is what a clock estimate would be
+    /// built from — the field is not evidence that one exists.
     pub first_client_tick: u32,
     frames: [InputFrame; MAX_INPUT_FRAMES],
     frame_count: u8,
