@@ -42,6 +42,35 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0wd · A new world register is proposed *(operator lane — blocked, skip)*
+
+**A loop cannot pick this up.** Logged here so it is visible, not queued.
+`WORLD.md` (new, 2026-08-10) carries an exploratory operator direction: the
+island as the corpse of an ancient civilization — obsidian, lapis, gold — a
+coast→interior corruption gradient, a regenerating **ward** over health,
+falls that cost ward instead of hp, and monuments that players switch back on
+to change the whole shard. `DECISIONS.md` §open has the row; nothing is
+spoken and nothing may land on it.
+
+Two items in it are findings about the tree rather than proposals, and both
+are true today:
+
+- **`ART.md`'s bar and the visual rubric are measured off `Rust Images/`,
+  and the rubric is checksummed outside this repo.** If the register
+  changes, every visual pass is scored against pine-and-granite while
+  building obsidian, and the builder cannot fix it. Three operator acts —
+  palette, a reference set, rubric style section — and 2026-08-01's art row
+  already names that exit. **Until then, no visual pass chases this.**
+- **A ward would invalidate `CONTENT.md` §4 anchor 2 without reddening
+  `test_content`.** The TTK bands compute against `balance.toml`'s
+  `globals.player_hp = 100`; a second regenerating pool makes them measure a
+  different quantity while staying green. The anchor learns about effective
+  hp in the same commit as the pool, or not at all.
+
+Cheapest real slice if it is ever spoken: the biome gradient — a radial third
+input to `biome(h, moist)` (`terrain.rs:263`) plus regenerated terrain
+goldens. `WORLD.md` §8 has the full order.
+
 ## 0n1 · The class-S join walk has no interest filter *(server lane)*
 
 `reference/NETWORK.md` §9.2.1, measured 2026-08-10. `pump_events` drips the
