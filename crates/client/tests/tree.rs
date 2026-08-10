@@ -19,9 +19,9 @@
 #![cfg(feature = "render")]
 
 use bevy::prelude::*;
-use client::render::props::{PINE_H, PINE_MAX_R};
 use client::render::tree::{
-    bounds, conifer, min_y, needle_image, tris, CONIFER_MAX_TRIS, CONIFER_POOL,
+    bounds, conifer, min_y, needle_image, species_of, tris, CONIFER_MAX_TRIS, CONIFER_POOL,
+    SPECIES, TREE_MAX_R,
 };
 
 /// Trees inside the client's 5×5×64 m prop ring, p90 over 100 eye positions
@@ -34,20 +34,76 @@ fn every_variant_fits_the_volume_the_sim_blocks() {
     for v in 0..CONIFER_POOL {
         let (bark, needles) = conifer(v);
         let (h, r) = bounds(&[&bark, &needles]);
+        // **Per species now, not one global pair.** A broadleaf is shorter
+        // and much wider than a conifer, and holding both to the conifer's
+        // envelope would either forbid the broadleaf or slacken the pine's
+        // ceiling to fit it. `TREE_MAX_R` is the island-wide number the sim
+        // clears; each species has its own inside it.
+        let sp = &SPECIES[species_of(v)];
         assert!(
-            r <= PINE_MAX_R,
-            "variant {v} canopy reaches {r:.3} m, past PINE_MAX_R {PINE_MAX_R} — \
-             world.rs derives SPAWN_CLEAR_M from that ceiling, so this puts \
-             fresh spawns inside trees"
+            r <= sp.max_r_m,
+            "variant {v} canopy reaches {r:.3} m, past its species ceiling \
+             {:.3} m — world.rs clears TREE_MAX_R, so this puts fresh spawns \
+             inside trees",
+            sp.max_r_m
+        );
+        assert!(
+            sp.max_r_m <= TREE_MAX_R,
+            "species ceiling {:.3} exceeds TREE_MAX_R {TREE_MAX_R} — the \
+             island-wide constant is what the sim's clearance is derived \
+             from, so a species may not quietly opt out of it",
+            sp.max_r_m
         );
         // Height is normalised, so this is an equality within float slop and
-        // not a range. A tree that is not PINE_H is a tree whose fell pivot,
-        // wind band and stump lift are all measured against the wrong number.
+        // not a range. A tree that is not its species' height is a tree whose
+        // fell pivot, wind band and colour bands are measured against the
+        // wrong number.
         assert!(
-            (h - PINE_H).abs() < 1e-3,
-            "variant {v} is {h:.3} m tall, expected PINE_H {PINE_H}"
+            (h - sp.height_m).abs() < 1e-3,
+            "variant {v} is {h:.3} m tall, expected {:.3}",
+            sp.height_m
         );
     }
+}
+
+/// **The arithmetic `world.rs` claimed was closed and was not.**
+///
+/// `SPAWN_CLEAR_M`'s comment derived itself from the tree's canopy radius, the
+/// slot scale range and the player capsule — and credited `ci/pine_shape.mjs`
+/// with checking it. That gate went with the browser client and **does not
+/// exist**, so from then until now the derivation was a dead citation: a
+/// sentence asserting that something was enforced while nothing was. This is
+/// exactly the class `CLAUDE.md` warns is still un-swept in `crates/`.
+///
+/// Adding a second, wider species is what made it urgent — the ceiling moved
+/// 1.7 → 2.9 m, which is precisely the change the missing gate existed to
+/// catch. So it is written in Rust, in the crate that can see both sides.
+#[test]
+fn a_fresh_spawn_stands_clear_of_the_widest_tree() {
+    // The widest canopy edge a slot can actually present: the ceiling at the
+    // largest scale `scatter` may roll.
+    let canopy = TREE_MAX_R * sim_core::terrain::SLOT_SCALE_MAX;
+    // Touching distance — canopy edge plus the player's own radius.
+    let touching = canopy + sim_core::collide::CAPSULE_RADIUS_M;
+    assert!(
+        touching < sim_core::world::SPAWN_CLEAR_M,
+        "a fresh spawn would touch the widest tree: canopy {canopy:.3} m + \
+         capsule {:.3} m = {touching:.3} m against SPAWN_CLEAR_M {:.3} m",
+        sim_core::collide::CAPSULE_RADIUS_M,
+        sim_core::world::SPAWN_CLEAR_M
+    );
+    // **Not merely outside it — standing clear of it**, which is the phrase
+    // `world.rs` uses and the reason the constant is not simply `touching`.
+    // Room to stand and turn, so a spawn does not open with a trunk filling
+    // the frame.
+    const STANDING_ROOM_M: f32 = 0.85;
+    assert!(
+        touching + STANDING_ROOM_M <= sim_core::world::SPAWN_CLEAR_M,
+        "clearance {:.3} m leaves only {:.3} m past touching the widest \
+         canopy; the rule is standing room, not tangency",
+        sim_core::world::SPAWN_CLEAR_M,
+        sim_core::world::SPAWN_CLEAR_M - touching
+    );
 }
 
 #[test]
@@ -83,7 +139,7 @@ fn every_variant_is_rooted_at_the_ground() {
 }
 
 #[test]
-fn the_pool_is_three_distinct_silhouettes() {
+fn the_pool_is_distinct_silhouettes() {
     // `ART.md` rule 7: no two identical instances adjacent. Yaw and scale
     // vary per slot, but at the measured p90 of 328 trees in the draw ring one
     // silhouette repeated 328 times reads as one silhouette repeated.

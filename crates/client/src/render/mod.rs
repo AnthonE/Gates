@@ -790,6 +790,10 @@ impl Plugin for GatesRenderPlugin {
                     water::stream,
                     props::stream,
                     props::harvest,
+                    // After `harvest`, which owns the discrete transition and
+                    // arms the topple this integrates. Reversed, a tree would
+                    // spend one frame at the pose the previous chop left it.
+                    props::fall,
                     clutter::stream,
                     structures::stream,
                     bodies::stream,
