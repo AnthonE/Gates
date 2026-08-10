@@ -58,6 +58,39 @@ pub struct ShardStats {
     /// Entities refused by the encoder's range check — a sim bug counter,
     /// asserted zero in tests.
     pub encode_range_errors: AtomicU64,
+    /// Interest entities a snapshot could not carry — the datagram budget
+    /// or `MAX_SNAPSHOT_ENTITIES` refused them and the accumulator re-offers
+    /// them next time (`core.rs` `encode_snapshot`).
+    ///
+    /// **Not an error counter, and that is why it needs to exist.** Shedding
+    /// is the designed degradation: the snapshot sheds entities rather than
+    /// fragmenting, which is correct and is what keeps a 1% loss rate from
+    /// becoming 9.5% (NETCODE.md §3). But it was previously the only path in
+    /// the whole pipeline by which quality drops under load with *nothing*
+    /// recording it — `snapshot_budget.rs` proves the budget holds and could
+    /// not tell you how close it runs. A shard where this climbs is a shard
+    /// whose players are seeing staler bodies than the design promises, and
+    /// before this counter the only symptom was a complaint.
+    /// `reference/NETWORK.md` §3 is the reason: their fragmentation bug and
+    /// their Lidgren stall were both found by instrumentation, not by
+    /// reasoning about the code.
+    pub snap_entities_shed: AtomicU64,
+    /// Class-S join walks restarted from zero (`core.rs`, the swap-remove
+    /// rule): a piece or deployable removal landed while a client's sync
+    /// cursor was still inside the store, so that client's walk begins
+    /// again with a reset batch.
+    ///
+    /// Correct under the store's swap-remove — a walk cannot trust a cursor
+    /// into a set that reshuffled beneath it — and **unbounded in cost**,
+    /// which is the half worth counting. A full walk is `store_len / 32`
+    /// ticks; removals arriving faster than that walk the client back to
+    /// zero indefinitely, and a raid removes pieces far faster than that.
+    /// The client's symptom is a world that never finishes loading, which
+    /// reads as anything but a network problem. `reference/NETWORK.md`
+    /// §9.2.1 has the arithmetic; the interest filter that would shrink the
+    /// walk is a `NOW.md` item, and this counter is what will say whether it
+    /// worked.
+    pub piece_walk_restarts: AtomicU64,
     /// Clients forced back to the zero-state baseline by a bookkeeping
     /// overflow (pending removals) — the honest escape hatch.
     pub forced_resyncs: AtomicU64,
@@ -180,6 +213,14 @@ pub struct ShardStats {
 impl ShardStats {
     pub fn bump(field: &AtomicU64) {
         field.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Add `n` to a counter in one operation. `bump` in a loop is the same
+    /// number and a different cost — and for `snap_entities_shed` it is also
+    /// the wrong number, because an entity can be refused twice on one pass
+    /// and must be counted once (`core.rs` says where).
+    pub fn add(field: &AtomicU64, n: u64) {
+        field.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn get(field: &AtomicU64) -> u64 {

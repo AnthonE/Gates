@@ -187,6 +187,74 @@ fn test_snapshot_budget() {
     assert_eq!(ShardStats::get(&stats.forced_resyncs), 0);
 }
 
+/// Shedding is the designed degradation and it must be **visible**
+/// (`reference/NETWORK.md` §9.2.3 · §3). A snapshot that cannot carry every
+/// ranked entity drops the tail rather than fragmenting — correct, and until
+/// `snap_entities_shed` existed it was the only path in the pipeline by
+/// which quality falls under load with nothing recording it.
+///
+/// Two-sided on purpose, which is the whole point of the test: a counter
+/// that only ever goes up proves nothing, because a `bump` on the wrong line
+/// would pass a one-sided assert. So the same core shape is driven twice —
+/// clustered, where 99 peers cannot fit in 1,100 B and the counter must
+/// move; and sparse, where nothing is offered that does not fit and the
+/// counter must not move at all.
+#[test]
+fn the_shed_counter_sees_the_budget_refuse() {
+    // Clustered: the full cap inside one AOI cell. `test_snapshot_budget`
+    // measures ~38 absolute records per datagram against 99 peers, so the
+    // fill refuses on every snapshot of every client.
+    let stats = ShardStats::default();
+    let mut core = clustered_core(&stats);
+    for _ in 0..4 {
+        snapshot_round(&mut core, &stats);
+    }
+    let shed = ShardStats::get(&stats.snap_entities_shed);
+    assert!(
+        shed > 0,
+        "the worst-case scene shed nothing — either the fill stopped \
+         refusing or the counter is not wired to it"
+    );
+    // Sanity on the magnitude, not a pinned number: each of the 100 clients
+    // is offered 99 peers per snapshot and can carry a few dozen, so four
+    // snapshot rounds shed hundreds at minimum. A counter reading 1 would
+    // satisfy `> 0` and mean the bump landed inside a branch it should not.
+    assert!(
+        shed > MAX_PLAYERS as u64,
+        "shed {shed} across 4 rounds of {MAX_PLAYERS} clients is too low to \
+         be the tail of a refused fill"
+    );
+
+    // Sparse: two players 500 m apart — well past the 208 m exit — and no
+    // animals, so every client's candidate list is empty and the only
+    // record in a snapshot is its own entity. Nothing is offered that does
+    // not fit, so nothing may be counted as shed.
+    let stats = ShardStats::default();
+    let mut core = ShardCore::new(SEED);
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    core.tick(&stats, |_, _, _| true);
+    for m in core.world.mobs.m.iter_mut() {
+        // The roster is worldgen's, not this test's: an animal that happens
+        // to stand near a player is a candidate, and this assertion is about
+        // the counter rather than about where the pigs spawned.
+        m.alive = false;
+    }
+    let q = |m: f32| (m / 0.03) as i32;
+    for (i, p) in core.world.players.iter_mut().filter(|p| p.active).enumerate() {
+        p.body.qx = q(700.0 + i as f32 * 500.0);
+        p.body.qz = q(700.0);
+    }
+    for _ in 0..4 {
+        snapshot_round(&mut core, &stats);
+    }
+    assert_eq!(
+        ShardStats::get(&stats.snap_entities_shed),
+        0,
+        "nothing was offered that did not fit, so nothing may read as shed"
+    );
+}
+
 /// AOI hysteresis (DESIGN.md §5.5): enter under 176 m, leave over 208 m,
 /// and the band between flaps neither way. Structural, two players.
 #[test]
