@@ -124,6 +124,20 @@ pub const PENDING_REMOVALS_CAP: usize = 256;
 /// default, DECISIONS.md §open (gather bounds row).
 pub const MAX_ITEM_DEFS: usize = 64;
 
+/// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
+///
+/// Four because that is what the reference game's bow actually carries —
+/// wooden, bone, high-velocity and fire arrows (`reference/PROJECTILES.md`
+/// §4) — and a fifth would be a content row nobody has argued for. The bake
+/// refuses a longer list rather than truncating it: a silently dropped
+/// round is a weapon that stops firing when its first three run out, which
+/// reads as a bug in the quiver and not in the table.
+///
+/// Structural, not a balance number: it sizes a fixed array inside
+/// `RangedDef`, so it is a cap in the `MAX_ITEM_DEFS` sense.
+/// Proposed default, DECISIONS.md §open (ballistics-on-ammo row).
+pub const MAX_WEAPON_AMMO: usize = 4;
+
 /// Stacks a fresh character may be granted at spawn (`content/balance.toml`
 /// `[[spawn_kit]]`). Bounded like everything else on a content-driven path:
 /// the kit lands in `INV_SLOTS`, so a kit longer than the inventory could

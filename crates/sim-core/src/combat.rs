@@ -65,7 +65,9 @@ use crate::collide::{col_base_y, CAPSULE_HEIGHT_M};
 use crate::deploy::{damage_deploy, damage_piece, DeployContent, Deploys};
 use crate::fmath::fabs;
 use crate::gather::{CONE_COS, DY_MAX_M, NO_ITEM, POINT_BLANK_M2};
-use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PLAYERS};
+use crate::limits::{
+    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO,
+};
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT};
 use crate::yaw_lut::yaw_dir;
@@ -139,29 +141,70 @@ pub struct ThrowDef {
 /// list) applied to a projectile: the sim integrates in exactly the integers
 /// it was handed, so an arrow's path has no rounding to accumulate and no
 /// per-tick float to drift between native and wasm.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RangedDef {
     /// Body damage on a hit. No falloff — `content/weapons.toml` has no
     /// falloff curve to read (CONTENT.md §1 describes one; the schema has
     /// never had the field).
     pub damage: u16,
-    /// Muzzle speed in **millimetres per tick**, from `ballistic.speed_mps`.
-    pub speed_mmpt: u16,
-    /// Gravity in **millimetres per tick²**, from `ballistic.drop_mps2`,
-    /// subtracted from the vertical velocity once per tick.
-    pub drop_mmpt2: u16,
-    /// Item index of the round this weapon spends, one per shot. The bake
-    /// resolves `weapons.toml`'s `ammo` id through the same sorted-rank
-    /// mapping every other item index uses.
-    pub ammo: u16,
+    /// Item indices of the rounds this weapon can spend, in **preference
+    /// order**, `NO_ITEM`-padded. The sim walks the list and spends the
+    /// first round the shooter is actually carrying.
+    ///
+    /// A list because the reference game's bow is a `BaseProjectile` that
+    /// can `SwitchAmmoTo` (`reference/PROJECTILES.md` §1) — one weapon,
+    /// several rounds. No switch verb exists here, so order is the whole
+    /// of the policy.
+    pub ammo: [u16; MAX_WEAPON_AMMO],
     /// Ticks between shots, from `rate_per_min`. A bow does not borrow the
     /// melee cadence: `SWING_INTERVAL_TICKS` is one shared number and a
     /// 30/min bow is not a 47/min club.
     pub rate_ticks: u16,
-    /// Ticks of flight before the arrow expires unspent, derived at bake
-    /// from `range_m` and the muzzle speed and clamped to
-    /// `MAX_ARROW_LIFE_TICKS`.
-    pub life_ticks: u16,
+    /// The weapon's reach in **millimetres**, from `range_m`.
+    ///
+    /// Flight time used to be baked here as `life_ticks` and cannot be any
+    /// more: with ballistics on the round (§9.3), one bow's fast arrow and
+    /// its slow arrow cross the same range in different numbers of ticks.
+    /// The sim divides this by the chosen round's speed at the moment of
+    /// the shot — integer division, once per shot, never per tick.
+    pub range_mm: u32,
+}
+
+/// **Hand-written rather than derived, and the reason is the ammo array.**
+/// `#[derive(Default)]` fills a `[u16; N]` with zeros, and zero is a valid
+/// item index — item 0 in the sorted-rank mapping is a real item — so a
+/// derived default would describe a weapon that fires four copies of
+/// whatever sorts first. The empty round slot is `NO_ITEM`, not 0.
+///
+/// Nothing constructs one this way today (`CombatContent::EMPTY`, the bake
+/// and the test fixture all fill every field), and `held_ranged` filters on
+/// `damage > 0` so an unarmed row is never handed out regardless. This
+/// exists so that stays true by construction rather than by coincidence.
+impl Default for RangedDef {
+    fn default() -> Self {
+        Self {
+            damage: 0,
+            ammo: [NO_ITEM; MAX_WEAPON_AMMO],
+            rate_ticks: 0,
+            range_mm: 0,
+        }
+    }
+}
+
+/// One round's ballistics — what used to be a `[weapon.ballistic]` block on
+/// the bow and is now the ammo's own (`reference/PROJECTILES.md` §9.3, the
+/// reference game's `ItemModProjectile`). Indexed by item index like every
+/// other table here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AmmoDef {
+    /// Muzzle speed in **millimetres per tick**, from `speed_mps`. Zero is
+    /// the inert default and means "this item is not a round"; `validate`
+    /// refuses a zero in content, so a zero here is only ever an unarmed
+    /// slot and never a shipped value.
+    pub speed_mmpt: u16,
+    /// Gravity in **millimetres per tick squared**, from `drop_mps2`,
+    /// subtracted from the vertical velocity once per tick.
+    pub drop_mmpt2: u16,
 }
 
 /// The whole combat ruleset the sim knows. Construction input like the
@@ -179,6 +222,10 @@ pub struct CombatContent {
     /// exclusive in the type, but nothing in the alpha data is both, and
     /// `ranged::armed` reads this one first — a bow in hand does not swing.
     pub ranged: [RangedDef; MAX_ITEM_DEFS],
+    /// Ballistics, indexed by the **round's** item index rather than the
+    /// weapon's (`reference/PROJECTILES.md` §9.3). A stack of arrows in a
+    /// pocket has a row here; the bow that fires them does not.
+    pub ammo: [AmmoDef; MAX_ITEM_DEFS],
     /// Max player hp — `content/balance.toml` `globals.player_hp`. Zero is
     /// the inert default and disarms the module entirely: no hp is granted
     /// at join, so no damage is applied and nobody can die.
@@ -201,11 +248,13 @@ impl CombatContent {
         }; MAX_ITEM_DEFS],
         ranged: [RangedDef {
             damage: 0,
+            ammo: [NO_ITEM; MAX_WEAPON_AMMO],
+            rate_ticks: 0,
+            range_mm: 0,
+        }; MAX_ITEM_DEFS],
+        ammo: [AmmoDef {
             speed_mmpt: 0,
             drop_mmpt2: 0,
-            ammo: 0,
-            rate_ticks: 0,
-            life_ticks: 0,
         }; MAX_ITEM_DEFS],
         player_hp: 0,
     };
@@ -347,6 +396,16 @@ impl CombatContent {
             return None;
         }
         Some(self.ranged[held as usize]).filter(|d| d.damage > 0)
+    }
+
+    /// The ballistics of round `item`, or `None` when that item is not a
+    /// round. `held_ranged`'s bounds rule against the ammo table.
+    #[inline]
+    pub fn ammo_def(&self, item: u16) -> Option<AmmoDef> {
+        if item == NO_ITEM || item as usize >= MAX_ITEM_DEFS {
+            return None;
+        }
+        Some(self.ammo[item as usize]).filter(|a| a.speed_mmpt > 0)
     }
 }
 

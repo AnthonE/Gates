@@ -311,7 +311,35 @@ a `PROTO_VER` 30→31 bump with regenerated goldens *in the same commit*; and
 which is more than the `(a, b, c)` triple the queue carries, and *that*
 sizing question is the real work in the slice, not the tracer.
 
-### 9.3 · Our ballistics are on the wrong object
+### 9.3 · Our ballistics were on the wrong object — **landed 2026-08-10**
+
+**Done.** `[weapon.ballistic]` is gone; `content/weapons.toml` carries an
+`[[ammo]]` table and speed and drop belong to the round. The move was
+value-preserving on purpose — `item.arrow_wood` is the bow's old 40 m/s and
+`item.arrow_metal` the crossbow's old 55 — so nothing shipped flies
+differently; what changed is what the schema can now express. A weapon's
+`ammo` is a list (`MAX_WEAPON_AMMO = 4`, their four arrow types) and the sim
+spends the first round the shooter carries.
+
+Two consequences that were not free, both recorded in `DECISIONS.md`
+§open ("ballistics on the ammo"): `life_ticks` could not stay baked on the
+weapon, because flight is reach over speed and one bow's fast and slow
+arrows cross the same range in different tick counts — so `RangedDef`
+carries `range_mm` and `ranged::draw` divides at the shot. And the sampler
+wall moved with the number, which is the better place for it: an
+untraceably fast round is now refused whichever bow picks it up.
+
+**Still not theirs**: no per-round damage column, so every arrow out of one
+bow hits equally hard (their HV arrow is −20 %, and that multiplier is
+unspoken — §open, not invented into content); and no `SwitchAmmoTo`, so list
+order is the whole ammo policy.
+
+The rest of this section is the argument as it stood before the change, kept
+because it is why the shape is what it is.
+
+---
+
+### 9.3a · The argument (pre-2026-08-10)
 
 `content/weapons.toml` puts `[weapon.ballistic]` on the **bow**:
 
@@ -338,6 +366,11 @@ change (wall 7: `content/*.toml` + `validate` + `canon` + the content hash),
 and it gets strictly harder every arrow we add first. It is the single
 highest-leverage thing in this document and it is not urgent — which is
 exactly the combination that means write it down now.
+
+*(Written 2026-08-09; the operator called it the next day and §9.3 above
+records what landed. Kept unedited — the reasoning is the reason the shape
+is what it is, and a prediction is worth more when you can still read what
+it said.)*
 
 ### 9.4 · `headshot_mult` is armed and unread, which is a bug we have seen
 
@@ -394,6 +427,49 @@ and no reason of ours to differ takes theirs and cites it. Candidates:
 The bands in `CONTENT.md` §4 still decide whether any of it may land;
 `ttk_bow = [3, 4]` against `player_hp = 100` means a bow row must sit in
 25–34 damage, so their ~35 **would not load** without moving the band.
+
+### 9.7 · Arrow recovery: why we do not have it, and what it costs
+
+Asked directly by the operator on 2026-08-10 ("why cant we get arrows
+back?"). The honest answer is that **nothing prevents it** — no wall, no
+determinism problem, no trade. It is unbuilt. But it is not a small build,
+and the reason is specific and worth stating so the next pass does not
+discover it halfway through.
+
+**The blocker is that every verb we have is addressed to a building grid.**
+`ActionMsg`'s whole interaction set — `Use`, `Repair`, `Demolish`, `Throw`,
+`Feed`, `Access` — takes `(cx, cz, level, loc)`, a cell in the build grid.
+That is the right shape for a door, a box or a wall, all of which are
+*placed at addresses*. An arrow lands at an arbitrary point on a hillside.
+There is no verb in the protocol that can name it, and no store that can
+hold it.
+
+So recovery is four pieces, and only the first is small:
+
+1. **A spent-arrow store** in `sim-core` — bounded like `Arrows`, in
+   `state_hash`, holding position, item and the tick it landed. The break
+   roll is already tractable: `rng::splitmix64` over the seed, tick and slot
+   is deterministic, which is what the 15 % would need (§5).
+2. **The lodge timer** — 10 s at `TICK_HZ` is 300 ticks, and the rule is
+   theirs: an arrow that dealt damage waits, an arrow that missed does not.
+3. **A pickup verb the wire can carry.** This is the real work. Either a new
+   `ActionMsg` variant addressed by world position or by store index — the
+   first non-grid-addressed verb in the protocol, so its shape sets a
+   precedent — or proximity auto-pickup, which needs no wire at all.
+   **The operator's direction settles which**: as close to theirs as we can,
+   and theirs is a deliberate press, so it is the verb.
+4. **A protocol bump** for that verb, and it should ride with `EV_SHOT`
+   (§9.2) rather than after it. Both are wire changes to the same system;
+   two bumps for one feature is two sets of regenerated goldens and two
+   chances to get wall 6 wrong.
+
+**The economy consequence, stated because it is the reason to want this.**
+Our arrow is spent permanently, so our ammunition is strictly harsher than
+theirs — and §9.6 already refuses their damage number on exactly that
+ground. Recovery is therefore not a comfort feature; it is the thing that
+has to land *before* the bow's numbers can track theirs at all. That makes
+it the highest-value item left in this section, and `NOW.md` carries it as
+one slice with §9.2.
 
 ---
 

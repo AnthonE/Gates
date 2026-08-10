@@ -1616,6 +1616,7 @@ fn the_code_lock_bakes_to_the_archetype_the_sim_branches_on() {
 /// than against a remembered constant.
 #[test]
 fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
+    use sim_core::gather::NO_ITEM;
     use sim_core::limits::{ARROW_STEP_MM, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, TICK_HZ};
 
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
@@ -1634,66 +1635,98 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
             continue;
         }
         bows += 1;
-        let b = w
-            .ballistic
-            .as_ref()
-            .expect("validate refuses a bow without one");
-
         assert_eq!(baked.damage as u32, w.damage, "`{}` damage", w.id);
-        assert_eq!(
-            baked.speed_mmpt as u32,
-            b.speed_mps * 1000 / TICK_HZ,
-            "`{}` muzzle speed in mm/tick",
-            w.id
-        );
-        assert_eq!(
-            baked.drop_mmpt2 as u32,
-            b.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ),
-            "`{}` drop in mm/tick^2",
-            w.id
-        );
         assert_eq!(
             baked.rate_ticks as u32,
             TICK_HZ * 60 / w.rate_per_min,
             "`{}` ticks between shots",
             w.id
         );
-        let ammo = w.ammo.as_ref().expect("validate refuses a bow without one");
         assert_eq!(
-            baked.ammo,
-            c.item_index(ammo).expect("ammo is an item"),
-            "`{}` spends the ammo it names",
+            baked.range_mm,
+            w.range_m * 1000,
+            "`{}` reach in millimetres",
             w.id
         );
 
-        // The flight must actually cover the reach the data claims, and
-        // then stop: a life derived too short makes `range_m` a lie, and
-        // one derived too long makes `MAX_ARROWS` a leak.
-        assert!(
-            baked.life_ticks > 0 && baked.life_ticks <= MAX_ARROW_LIFE_TICKS,
-            "`{}` lives {} ticks",
-            w.id,
-            baked.life_ticks
-        );
-        let reach_mm = baked.life_ticks as u32 * baked.speed_mmpt as u32;
-        assert!(
-            reach_mm >= w.range_m * 1000 - baked.speed_mmpt as u32,
-            "`{}` expires {} mm short of its declared {} m",
-            w.id,
-            w.range_m * 1000 - reach_mm,
-            w.range_m
-        );
+        // The round list bakes in **declared order** — order is the whole
+        // ammo policy until a switch verb exists (`PROJECTILES.md` §9.3),
+        // so a bake that sorted or deduped it would silently change which
+        // arrow a bow reaches for first.
+        let rounds = w.ammo.as_ref().expect("validate refuses a bow without one");
+        for (slot, id) in rounds.iter().enumerate() {
+            assert_eq!(
+                baked.ammo[slot],
+                c.item_index(id).expect("round is an item"),
+                "`{}` round {slot} is the one it names",
+                w.id
+            );
+        }
+        for slot in rounds.len()..baked.ammo.len() {
+            assert_eq!(
+                baked.ammo[slot], NO_ITEM,
+                "`{}` pads unused round slots rather than repeating one",
+                w.id
+            );
+        }
 
-        // And the sampler wall, checked on the shipped rows rather than
-        // only on the refusal path below — a weapon that sits exactly on
-        // the ceiling would be traced honestly by one sample per step and
-        // nothing would say so.
-        assert!(
-            baked.speed_mmpt as usize <= ARROW_STEP_MM as usize * MAX_ARROW_SUBSTEPS,
-            "`{}` outruns the collision sampler at {} mm/tick",
-            w.id,
-            baked.speed_mmpt
-        );
+        // Every round the bow lists must fly, and must cover the reach the
+        // weapon claims. Flight time is no longer baked — it is
+        // `range_mm / speed` at the moment of the shot, because with the
+        // speed on the round one bow's fast arrow and its slow arrow cross
+        // the same range in different numbers of ticks. This asserts the
+        // sim's arithmetic against the data for each round in turn.
+        for id in rounds {
+            let a = c
+                .ammo
+                .iter()
+                .find(|a| &a.id == id)
+                .expect("validate refuses a round with no [[ammo]] row");
+            let ball = cc
+                .ammo_def(c.item_index(id).expect("round is an item"))
+                .expect("a listed round is armed");
+            assert_eq!(
+                ball.speed_mmpt as u32,
+                a.speed_mps * 1000 / TICK_HZ,
+                "`{id}` muzzle speed in mm/tick"
+            );
+            assert_eq!(
+                ball.drop_mmpt2 as u32,
+                a.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ),
+                "`{id}` drop in mm/tick^2"
+            );
+
+            // The flight must actually cover the reach the data claims and
+            // then stop: derived too short makes `range_m` a lie, too long
+            // makes `MAX_ARROWS` a leak. Same expression `ranged::draw`
+            // evaluates, asserted against `weapons.toml` rather than a
+            // remembered constant.
+            let life =
+                (baked.range_mm / ball.speed_mmpt as u32).clamp(1, MAX_ARROW_LIFE_TICKS as u32);
+            assert!(
+                life > 0 && life <= MAX_ARROW_LIFE_TICKS as u32,
+                "`{}` firing `{id}` lives {life} ticks",
+                w.id
+            );
+            let reach_mm = life * ball.speed_mmpt as u32;
+            assert!(
+                reach_mm >= w.range_m * 1000 - ball.speed_mmpt as u32,
+                "`{}` firing `{id}` expires {} mm short of its declared {} m",
+                w.id,
+                w.range_m * 1000 - reach_mm,
+                w.range_m
+            );
+
+            // And the sampler wall, checked on the shipped rows rather than
+            // only on the refusal path below — a round that sits exactly on
+            // the ceiling would be traced honestly by one sample per step
+            // and nothing would say so.
+            assert!(
+                ball.speed_mmpt as usize <= ARROW_STEP_MM as usize * MAX_ARROW_SUBSTEPS,
+                "`{id}` outruns the collision sampler at {} mm/tick",
+                ball.speed_mmpt
+            );
+        }
     }
     assert_eq!(bows, 2, "the alpha data ships a bow and a crossbow");
 }
@@ -1702,13 +1735,113 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
 /// not clamped at tick time. A clamped projectile is a weapon whose reach
 /// is a lie the data never admits to, and it would first be noticed as an
 /// arrow passing through a wall.
+///
+/// **The refusal belongs to the round, not to the bow, and that is the
+/// point of where it now lives** (`reference/PROJECTILES.md` §9.3). While
+/// the speed sat on the weapon, an untraceably fast arrow was only refused
+/// if some weapon declared that speed; with the speed on the ammo, the
+/// arrow is refused whichever bow picks it up — including a bow added later
+/// that lists it as a second round.
 #[test]
-fn a_bow_that_outruns_the_collision_sampler_is_refused() {
+fn a_round_that_outruns_the_collision_sampler_is_refused() {
     refuses_bake(
         "weapons.toml",
         "speed_mps = 40",
         "speed_mps = 400",
         "collision sampler",
+    );
+}
+
+/// A bow naming a round with no `[[ammo]]` row is refused at boot.
+///
+/// This is the check the schema move exists for. A bow used to carry its own
+/// ballistics and could not be missing them; now it names rounds that have
+/// to supply them, and the failure mode without this refusal is quiet — the
+/// round bakes to a zero-speed `AmmoDef`, `ammo_def` filters it out, and the
+/// bow silently refuses to fire with a full quiver.
+#[test]
+fn a_bow_whose_round_has_no_ballistics_is_refused() {
+    refuses(
+        "weapons.toml",
+        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.cloth\"]",
+        "no [[ammo]] row",
+    );
+}
+
+/// A weapon may not list the same round twice.
+///
+/// Order is the whole of the ammo policy until a switch verb exists, so a
+/// duplicate is not harmless padding — it is an entry that can never be
+/// reached, in the one field whose meaning is its ordering.
+#[test]
+fn a_weapon_that_lists_a_round_twice_is_refused() {
+    refuses(
+        "weapons.toml",
+        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_wood\"]",
+        "listed twice",
+    );
+}
+
+/// A round with no muzzle speed is refused rather than defaulted.
+///
+/// Zero is a division at the shot (`range_mm / speed`), and it is also the
+/// inert value the whole table starts at, so a shipped zero would be
+/// indistinguishable from an unarmed slot.
+#[test]
+fn a_round_that_cannot_fly_is_refused() {
+    refuses(
+        "weapons.toml",
+        "speed_mps = 40",
+        "speed_mps = 0",
+        "muzzle speed",
+    );
+}
+
+/// Ballistics live on the round, and the whole point is that a second round
+/// on one bow flies by its own numbers.
+///
+/// The shipped data lists one round per bow, so nothing in `weapons.toml`
+/// exercises the list — this builds a two-round bow and proves the bake
+/// keeps both, in order, with each round's own speed. Without this, §9.3's
+/// capacity is asserted by a comment and nothing else.
+#[test]
+fn one_bow_carries_several_rounds_each_with_its_own_ballistics() {
+    let mut src = sources();
+    let w = src
+        .iter_mut()
+        .find(|(n, _)| *n == "weapons.toml")
+        .expect("weapons.toml is a source");
+    w.1 = w.1.replace(
+        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_metal\"]",
+    );
+    let c = build(&src).expect("a bow with two rounds is legal content");
+    let cc = c.bake_combat().expect("and it bakes");
+
+    let bow = c.item_index("item.bow").expect("the bow is an item");
+    let wood = c.item_index("item.arrow_wood").expect("wood is an item");
+    let metal = c.item_index("item.arrow_metal").expect("metal is an item");
+    let baked = cc.ranged[bow as usize];
+
+    assert_eq!(
+        [baked.ammo[0], baked.ammo[1]],
+        [wood, metal],
+        "the bow keeps both rounds in declared order"
+    );
+    let a = cc.ammo_def(wood).expect("wood is armed");
+    let b = cc.ammo_def(metal).expect("metal is armed");
+    assert_ne!(
+        a.speed_mmpt, b.speed_mmpt,
+        "the two rounds must differ, or this proves nothing about per-round ballistics"
+    );
+    // And the flight the sim would derive differs with them — the reason
+    // `life_ticks` could not stay a baked constant on the weapon.
+    assert_ne!(
+        baked.range_mm / a.speed_mmpt as u32,
+        baked.range_mm / b.speed_mmpt as u32,
+        "one bow's two rounds must not share a flight time"
     );
 }
 

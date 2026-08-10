@@ -25,8 +25,8 @@
 #![allow(clippy::disallowed_macros)]
 
 use sim_core::collide::ColIndex;
-use sim_core::combat::{CombatContent, RangedDef};
-use sim_core::gather::ItemStack;
+use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
+use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{MAX_ARROWS, MAX_PLAYERS};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
@@ -59,11 +59,18 @@ fn bow_fixture() -> CombatContent {
     c.player_hp = 100;
     c.ranged[BOW as usize] = RangedDef {
         damage: 30,
+        ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        // 60 m, the real bow's reach. `ranged::draw` divides this by the
+        // round's speed for the flight, which at 1333 mm/tick is the 45
+        // ticks this fixture used to state as a constant.
+        range_mm: 60_000,
+    };
+    // The ballistics belong to the round now (`reference/PROJECTILES.md`
+    // §9.3), so the fixture arms the arrow rather than the bow.
+    c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
         drop_mmpt2: 22,
-        ammo: ARROW,
-        rate_ticks: 60,
-        life_ticks: 45,
     };
     c
 }
