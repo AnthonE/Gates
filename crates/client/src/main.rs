@@ -45,7 +45,7 @@ async fn main() {
         println!("client: identity {id} (declared, unverified; launcher skipped)");
     }
 
-    let endpoint = match client_endpoint() {
+    let endpoint = match client_endpoint(&server, a.cert_hash.as_deref()) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("client: {e}");

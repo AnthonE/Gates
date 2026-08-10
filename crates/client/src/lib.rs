@@ -89,11 +89,103 @@ async fn read_frame<const N: usize>(recv: &mut RecvStream) -> Option<([u8; N], u
     Some((buf, len))
 }
 
-/// The dev-trust endpoint. Same posture as `server::botclient::bot_endpoint`
-/// and for the same reason: shards we run, self-signed certs. A shipping
-/// client validates, and that is a `DECISIONS.md` row before anything is
-/// published, not a default to drift into.
-pub fn client_endpoint() -> Result<Endpoint<Client>, String> {
+/// Whether `server` names this machine's own loopback — the one address at
+/// which [`client_endpoint`] deliberately skips certificate validation.
+///
+/// The split mirrors `shardlist::check_addr`'s rule exactly (bracketed IPv6
+/// literal, otherwise the LAST colon) and is repeated rather than shared
+/// because that function answers a different question — whether an address is
+/// *well shaped* — and one of the two must keep working if the other is
+/// relaxed. Anything this cannot read is NOT loopback, which is the safe
+/// direction: an unparseable host falls through to validation.
+///
+/// `localhost` counts. An `/etc/hosts` that points it elsewhere is an
+/// attacker who already writes files on this box, which is the same person
+/// the carve-out below already concedes.
+pub fn is_loopback_host(server: &str) -> bool {
+    let server = server.trim();
+    let host = if let Some(rest) = server.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((h, _)) => h,
+            None => return false,
+        }
+    } else {
+        match server.rsplit_once(':') {
+            // A bare IPv6 literal has colons of its own and is not a shape
+            // this client accepts at all (`check_addr` refuses it) — so it is
+            // not loopback here either, rather than being half-parsed.
+            Some((h, _)) if h.contains(':') => return false,
+            Some((h, _)) => h,
+            None => server,
+        }
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The client's transport endpoint, and **the only thing in this stack that
+/// asks who the far end is.**
+///
+/// Three postures, chosen from the address being dialled and the operator's
+/// `--cert-hash` (operator, `DECISIONS.md` 2026-08-10):
+///
+/// | target | pin | trust |
+/// |---|---|---|
+/// | any | `Some` | that certificate and no other |
+/// | loopback | `None` | **anything** — the carve-out |
+/// | anything else | `None` | the platform's root store |
+///
+/// **Why this is not cosmetic, and what it costs to get wrong.** This used
+/// to be `with_no_cert_validation()` unconditionally, at all three call
+/// sites across both player binaries: `client` (`main.rs`), and the `gates`
+/// that `ci/depot.py` ships, which dials from two places — `--server` at
+/// boot (`bin/gates.rs`) and the shard picked out of the list
+/// (`render/menu.rs`). SIWE has **no channel
+/// binding**: the handshake proves the joiner holds the key behind an
+/// address and says nothing about which TLS connection that proof arrived
+/// on. So an on-path relay terminating the player's QUIC and opening its own
+/// to the shard forwards the challenge, forwards the signature, and is
+/// admitted as the victim — a live session hijack with the key never leaving
+/// the wallet and the nonce perfectly fresh. There is no credential theft to
+/// notice afterwards, which is exactly why nothing else in the stack refuses
+/// it. `crates/server/tests/tls_posture.rs` gates the three postures — and
+/// `crates/client/tests/tls_callsite.rs` gates the *argument*, because a
+/// posture chosen from an address is only as good as the address it is
+/// asked about, and `tls_posture` stays 4/4 green over a call site pointed
+/// at loopback while the real one is dialled.
+///
+/// **Why loopback stays permissive.** An attacker sitting between two
+/// sockets on this machine is already executing code on this machine, so the
+/// carve-out costs nothing against the threat above — and it is what keeps
+/// every local dev flow working with no flag, including the capture harness,
+/// whose invocation lives outside this repo and cannot be edited from
+/// inside it. `args::DEFAULT_SERVER` is `127.0.0.1:4433`, so the bare
+/// `gates` a developer types is the carved-out case by construction.
+///
+/// **Why a hash and not a private CA for the dev path.** The shard already
+/// self-signs a P-256 certificate with a 14-day validity and already prints
+/// its SHA-256 (`server::net::spawn_shard`), and those two properties are
+/// precisely what wtransport's `with_server_certificate_hashes` requires of
+/// a certificate before it will pin one. So the number the shard has printed
+/// since the browser days — vestigial for a year, since nothing read it —
+/// becomes the dev path, and no second trust store has to exist.
+pub fn client_endpoint(server: &str, cert_hash: Option<&str>) -> Result<Endpoint<Client>, String> {
+    // Refused here, at endpoint construction, rather than surfacing as a
+    // handshake failure ten seconds later: a typo'd digest and a genuinely
+    // untrusted shard must not present as the same thing to the operator.
+    let pin = match cert_hash.map(str::trim).filter(|h| !h.is_empty()) {
+        None => None,
+        Some(h) => Some(h.parse::<wtransport::tls::Sha256Digest>().map_err(|_| {
+            format!(
+                "--cert-hash {h:?} is not a SHA-256 digest — expected the 32-byte \
+                 dotted hex the shard prints at boot (`aa:bb:...`)"
+            )
+        })?),
+    };
+    let loopback = is_loopback_host(server);
+
     // **Bind IPv4 first, and fall back to the dual-stack default.**
     // `with_bind_default()` is `INADDR_ANY` dual-stack, which fails outright
     // on a container with no IPv6 — `Address family not supported by protocol
@@ -108,12 +200,13 @@ pub fn client_endpoint() -> Result<Endpoint<Client>, String> {
     // the scry launcher installed died here at startup, before any address
     // was parsed, on a container with IPv6 off.
     let build = |ip: IpBindConfig| {
-        Endpoint::client(
-            ClientConfig::builder()
-                .with_bind_config(ip)
-                .with_no_cert_validation()
-                .build(),
-        )
+        let roots = ClientConfig::builder().with_bind_config(ip);
+        let cfg = match (pin.clone(), loopback) {
+            (Some(digest), _) => roots.with_server_certificate_hashes([digest]).build(),
+            (None, true) => roots.with_no_cert_validation().build(),
+            (None, false) => roots.with_native_certs().build(),
+        };
+        Endpoint::client(cfg)
     };
     match build(IpBindConfig::InAddrAnyV4) {
         Ok(e) => Ok(e),
@@ -564,7 +657,41 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_datagram, drain_lane};
+    use super::{drain_datagram, drain_lane, is_loopback_host};
+
+    /// **Which addresses get the carve-out, exhaustively enough to be
+    /// evidence.** `tls_posture.rs` proves the two postures over a real
+    /// socket at two addresses; this is the code-tier half, and it exists
+    /// because the failure mode of a loopback predicate is not a crash —
+    /// it is a public address quietly reading as `127.0.0.1` and a client
+    /// trusting anything on it, which no wire test would notice because
+    /// nobody would think to run one against `127.0.0.1.evil.test`.
+    #[test]
+    fn only_this_machines_own_loopback_is_carved_out() {
+        for yes in [
+            "127.0.0.1:4433", // args::DEFAULT_SERVER, the whole dev flow
+            "localhost:4433", //
+            "LOCALHOST:4433", // a host name is case-insensitive
+            "127.9.9.9:1",    // all of 127/8 is loopback
+            "[::1]:4433",     // the bracketed v6 literal `check_addr` takes
+            "127.0.0.1",      // no port: still this machine
+        ] {
+            assert!(is_loopback_host(yes), "{yes} should be carved out");
+        }
+        for no in [
+            "192.0.2.2:4433",
+            "game.moreright.xyz:61234",
+            "0.0.0.0:4433",             // reachable from off-box, not loopback
+            "127.0.0.1.evil.test:4433", // a NAME that merely starts like one
+            "localhost.evil.test:4433", // ...and the other spelling of it
+            "evil.test:4433",
+            "[2001:db8::1]:4433",
+            "::1:4433", // a bare v6 literal `check_addr` refuses
+            "",
+        ] {
+            assert!(!is_loopback_host(no), "{no} must be validated, not trusted");
+        }
+    }
 
     /// The disconnect detector must not cry wolf: an empty lane whose sender
     /// is alive is a quiet frame, not a dead shard.

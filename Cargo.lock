@@ -5222,6 +5222,7 @@ dependencies = [
 name = "server"
 version = "0.1.0"
 dependencies = [
+ "client",
  "client-core",
  "content",
  "getrandom 0.2.17",
