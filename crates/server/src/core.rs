@@ -1996,29 +1996,53 @@ impl ShardCore {
         if c.own_wslot != usize::MAX && c.open_cont_kind != CONT_SELF {
             let (kind, handle) = (c.open_cont_kind, c.open_cont_handle);
             let p = &self.world.players[c.own_wslot];
-            let live = match kind {
-                CONT_BAG => self
-                    .world
-                    .backpacks
-                    .index_of_id(handle)
-                    .filter(|&i| self.world.backpacks.in_reach(i, p)),
-                CONT_BOX => self
-                    .world
-                    .deploys
-                    .box_index(handle)
-                    .filter(|&i| self.world.deploys.box_in_reach(i, p))
-                    .filter(|&i| {
-                        // The box stands on the plane, so its lock shares
-                        // `box_key`'s triple plus `LOC_PLANE` — the move
-                        // path's address, byte for byte. An oven at the
-                        // same shape of address carries no lock
-                        // (`lockable`) and passes as bare.
-                        let b = self.world.deploys.boxes()[i];
-                        self.world
-                            .deploys
-                            .lock_passes(b.cx, b.cz, b.level, LOC_PLANE, p.id)
-                    }),
-                _ => None,
+            // A corpse resolves nothing. `World::die` keeps the slot, the
+            // body and the position — that is what the death screen is
+            // made of — so reach and the lock both still say yes at the
+            // address the player fell on, and the subscription would go on
+            // paying. Nothing on the death path shuts it: `die` writes no
+            // client state, and the open is not a command the sim ever
+            // hears, so this resolution is the only place that can.
+            //
+            // It belongs *here*, in the resolution, rather than at the
+            // action: refusing the open would leave a panel opened while
+            // alive streaming through the death, which is the same bug
+            // wearing the fix's clothes. Falling through to `None` shuts
+            // both mouths with the message that is already encoded below.
+            //
+            // And it is the sentence above, not a new rule: the move verb
+            // resolves through `World::live_slot_of`, so a corpse moves no
+            // item — a corpse that could still *see* a box would be
+            // exactly the see-but-cannot-move split this view exists to
+            // forbid. Dying next to your own loot must not buy you a
+            // camera on the raider emptying it.
+            let live = if p.dead {
+                None
+            } else {
+                match kind {
+                    CONT_BAG => self
+                        .world
+                        .backpacks
+                        .index_of_id(handle)
+                        .filter(|&i| self.world.backpacks.in_reach(i, p)),
+                    CONT_BOX => self
+                        .world
+                        .deploys
+                        .box_index(handle)
+                        .filter(|&i| self.world.deploys.box_in_reach(i, p))
+                        .filter(|&i| {
+                            // The box stands on the plane, so its lock
+                            // shares `box_key`'s triple plus `LOC_PLANE` —
+                            // the move path's address, byte for byte. An
+                            // oven at the same shape of address carries no
+                            // lock (`lockable`) and passes as bare.
+                            let b = self.world.deploys.boxes()[i];
+                            self.world
+                                .deploys
+                                .lock_passes(b.cx, b.cz, b.level, LOC_PLANE, p.id)
+                        }),
+                    _ => None,
+                }
             };
             match live {
                 // Gone, out of reach, or behind a lock that does not know
