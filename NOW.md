@@ -547,19 +547,25 @@ say.** LOD was rank 1; it is now rank 3, because clumping puts MORE stems in
 the near ring and an LOD tuned against today's lattice is tuned against a
 distribution we are about to replace. Measure between the two.
 
-1. **The species table.** One species at three seeds (`tree.rs`'s own words).
-   `TreeType::Deciduous` is a variant we never use and ez-tree ships 15 MIT
-   preset JSONs over the same parameter space — four species × three sizes is
-   a table port, not an asset. Watch `PINE_MAX_R`: it is a *sim* ceiling
-   (`world.rs` derives `SPAWN_CLEAR_M` from it), so a wider crown is a
-   sim-core conversation and not a render one.
-2. **The scatter lattice.** `terrain::scatter` draws one occupant per 8 m cell
-   with ±3 m jitter, so max density is one stem per 64 m² and two trees can
-   never be under 2 m apart — a forest cannot have a thicket. `ART.md` rule 7
-   forbids uniform spacing and this is uniform spacing. Cheapest fix is a
-   two-level draw (clump centres, then members) off another `cell_hash`
-   channel: pure, O(1) per cell, wall-1 clean. **Reddens `test_terrain_golden`
-   and `test_replay` by design** — a regenerate, and a wipe of every world.
+1. **Species v0 landed; the broadleaf has never been LOOKED at.** `SPECIES` is
+   a two-row table (conifer 6.6 m / 2.9 m-wide broadleaf), pool 6, and
+   `SPAWN_CLEAR_M` rose 4.0 → 4.5 with the arithmetic finally gated in Rust
+   (`a_fresh_spawn_stands_clear_of_the_widest_tree` — `ci/pine_shape.mjs` was
+   a dead citation). **Every check on it is arithmetic and arithmetic cannot
+   say whether it reads as a tree.** Boot it and look; the parameters most
+   likely to be wrong are `children`/`angle[1]` (crown spread) and leaf
+   `count`/`size`, and `reference/PLANTS.md` §3.1 has ez-tree's 15 presets to
+   pull real ash/aspen/oak numbers from instead of our derived-from-defaults
+   block. More species is now a row in `SPECIES`, not a refactor.
+2. ~~The scatter lattice~~ — **this item was wrong and is retired.**
+   `terrain::clump` has always existed: an fBm field `scatter` multiplies the
+   whole weight row by, squared for a ragged edge, gated by
+   `sim-core/tests/scatter.rs` against a closed-form independent-draw null.
+   Groves and clearings are built. What is actually open is the density
+   **ceiling** — one occupant per 8 m cell — and `reference/PLANTS.md` §3.2
+   prices the three ways to raise it. All are sim-core, none is cheap, and
+   the cheapest (`CELL_SIZE` 8 → 4) quadruples the live `SlotLives` rows
+   against `TERRAIN.md` §6's budget. Do not start it as a rendering change.
 3. **The billboard LOD.** 328 trees × 5.9 k tris is 1.9 M against DESIGN §9's
    1.5 M. Octahedral impostors beat SeedThree's crossed cards (a card edge-on
    disappears); `PLANTS.md` §3.3 has both. Whatever LOD1 becomes, it sways.

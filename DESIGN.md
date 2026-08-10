@@ -88,8 +88,12 @@ The Rust loop, cut to what a skeleton must prove:
   the safe zone (no build, no damage) holding the recycler, the bank
   terminal, and the skin vendor (§3).
 - **Wipe**: the world ends on a posted schedule **(knob: cadence, default
-  monthly map / blueprints survive one extra cycle)**. New seed, fresh
-  island. What survives a wipe is exactly: blueprints (per schedule),
+  weekly map / blueprints survive one extra cycle)** — moved from monthly by
+  the operator, 2026-08-10, on the ground that an update already wipes the
+  map, so a monthly promise described a world that did not last a month.
+  **BP survival did not move with it**, which makes the blueprint rule
+  materially more generous at this cadence than it was at the old one. New
+  seed, fresh island. What survives a wipe is exactly: blueprints (per schedule),
   banked OBOL, and skins. Nothing else.
 
 Out of scope for v1, by design (the skeleton must not wait on them):
@@ -658,7 +662,7 @@ is scry's standing rule: the operator's eye and a public SCRY transfer.
 | what the purchase gates | the native client + the official armed shards; unarmed self-hosted shards stay free |
 | ~~desktop client renderer~~ | **RESOLVED, not a knob.** Read "three.js stays for the web demo; a native renderer is unscheduled" (`DECISIONS.md` 2026-08-05). Both halves are gone: the native Bevy client shipped and the browser client was cut 2026-08-06. `RENDER.md` owns the path |
 | kernel anti-cheat on armed shards | not integrated (`ALPHA.md` §5) |
-| wipe cadence + BP survival | monthly map, BPs survive one cycle |
+| wipe cadence + BP survival | **weekly** map (operator, 2026-08-10), BPs survive one cycle |
 | hunger/thirst depth | minimal timer-drain v1 |
 | bank deposit fee | 2%, burns |
 | OBOL allotment + claim cadence | unset — scry-side operator act |

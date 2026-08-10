@@ -28,22 +28,39 @@ this tree:
    three seeds rather than three species."* `CONIFER_POOL = 3`, all
    `TreeType::Evergreen`, all `PINE_H = 6.6 m`. Every tree on the island is
    the same 6.6 m conifer at one of three seeds and a yaw.
-2. **The placement is a lattice.** `terrain::scatter` draws **one occupant per
-   8 m cell** (`CELL_SIZE = 8.0`) and jitters it ±3 m. So the maximum density
-   of anything, anywhere, is **one stem per 64 m²**, and two trees can never
-   be closer than 2 m. A forest cannot have a thicket, a clump, or a dense
-   edge onto a clearing — not because the weights say so but because the grid
-   cannot express one.
+2. **The placement has a density CEILING, set by the grid.** `terrain::scatter`
+   draws **one occupant per 8 m cell** (`CELL_SIZE = 8.0`), jittered ±3 m — so
+   the maximum density of anything, anywhere, is **one stem per 64 m²** and two
+   trees can never be closer than 2 m. A thicket at 1–3 m spacing is not
+   something the weights can ask for; the grid cannot express it.
+
+   ⚠ **This row said "the placement is a lattice, a forest cannot have a
+   thicket or a clearing" and that was wrong — corrected 2026-08-10, same day,
+   before anything was built on it.** Clearings and groves already exist:
+   `terrain::clump` is a low-frequency fBm field that `scatter` multiplies the
+   whole weight row by, squared per `SPAWN.md` §9.4 so a grove edge is a
+   ragged gradient rather than a contour line. It is gated
+   (`sim-core/tests/scatter.rs`) against a closed-form independent-draw null,
+   and the measurement that motivated it is recorded on the function: variance
+   of the tree count in a 40 m window was 1.05× the null before it existed.
+   **So the density field is done and only the ceiling is open.** The error
+   was reading `CELL_SIZE` and not reading forty lines further; the lesson is
+   that "our terrain does not do X" needs a grep for X, not an inference from
+   a constant.
 3. **It is knowingly over budget past ~80 m.** `CONIFER_MAX_TRIS = 6_000` × a
    p90 of 328 trees in the draw ring = 1.97 M against `DESIGN.md` §9's 1.5 M.
    `tests/tree.rs` prints the arithmetic so it cannot be forgotten, and
    `NOW.md` §0t item 1 has queued the billboard LOD that fixes it.
 
-Point 2 is the one nobody has written down before, and it is the biggest of
-the three. **`ART.md` rule 7 forbids uniform spacing, and the scatter grid is
-uniform spacing** — a regular 8 m lattice with one item per cell is exactly
-the failure mode the rule names, applied to every tree, rock, bush and node
-on the island at once. No mesh fixes it and no texture fixes it.
+Point 1 is the one to act on, and §6.1 is why it is nearly free.
+
+Point 2 is real but **much narrower than the first cut of this doc claimed**,
+and raising the ceiling is not cheap: a second occupant in a cell breaks
+`gather::cell_key`, which packs one slot per cell and is read by the wire
+(`EV_SLOT_HARVESTED`), the save (`worldsave.rs`) and the client's mirror.
+Halving `CELL_SIZE` is the cheaper lever and is not free either — 4× the
+cells, 4× the live `SlotLives` rows against `TERRAIN.md` §6's budget. Neither
+is a rendering change and neither should be attempted as one.
 
 ---
 
@@ -115,7 +132,7 @@ with it is the gap:
   the Rust port dropped ez-tree's texture selection. So the port gives us
   geometry and no leaf art, which is precisely where §4 says the money goes.
 
-### 3.2 · Placement — our actual gap, and it is sim-core work
+### 3.2 · Placement — mostly built, and the open half is the ceiling
 
 The canonical treatment is Deussen et al., *Realistic Modeling and Rendering
 of Plant Ecosystems* (SIGGRAPH '98, Stanford/Calgary/ZKM). Its two placement
@@ -125,31 +142,32 @@ distribution is the output. Its third contribution is *approximate
 instancing*: replace similar plants with instances of a representative before
 rendering, which is the same idea as our shared mesh pool one level up.
 
-Nobody needs the full ecosystem sim. What a game takes from it is the shape of
-the answer: **real vegetation is clustered and ours is not.** The cheap
-techniques that get there, in ascending cost:
+**We already took the takeable half.** `terrain::clump` is the density-field
+answer: a low-frequency fBm shared between neighbouring cells, multiplied
+into the whole scatter weight row and squared so an edge is a gradient. Its
+own doc comment explains why the reference's approach was NOT copied — theirs
+is a stateful sampler drawing `ClusterSizeMin..Max` objects out of a quadtree
+leaf with a 20 m local-density brake, and `scatter` has to stay a pure
+function of one cell or every on-demand caller resolves the island. So a cell
+still decides alone, against a field its neighbours can see.
 
-1. **Two-level draw.** Roll clump *centres* on the coarse grid; each centre
-   emits 3–8 members at 1–3 m with their own jitter. One extra hash per cell,
-   still O(1) per cell, still pure, still replayable — and it is the smallest
-   change that lets a thicket exist.
-2. **Density field × blue noise.** Score each candidate against a field
-   (`splat_from` already gives height/moisture/slope → four channels) and
-   reject below threshold. This carves clearings and meadows out of solid
-   forest instead of thinning it uniformly. We have the field already;
-   `scatter_row` reads it. What we do not have is candidates finer than 8 m.
-3. **Poisson-disk with a per-layer radius.** The standard answer for
-   "irregular but never overlapping". Radius per layer — canopy 4 m, shrub
-   1 m, herb 0.2 m — gives the layer structure of §2 for free, since a shrub
-   may stand under a tree but not inside one.
+What is left is the **ceiling**, and the three ways to raise it are all
+sim-core with real costs:
 
-**All three are `sim-core`, which means wall 1 applies**: no `HashMap`
-iteration, no trig, no libm, floats restricted. That rules out a relaxation
-loop or a dart-throwing Poisson sampler with a live candidate list, and
-points at hash-driven variants (Wang tiles, or the two-level draw, which
-needs nothing but another `cell_hash` channel). Determinism is not negotiable
-here — the scatter is replayed and the client mirrors it, so a client that
-rolled clumps differently would draw trees that are not there.
+1. **More than one occupant per cell.** Breaks `gather::cell_key` — one slot
+   per cell is baked into the wire, the save and the client mirror. Large.
+2. **A smaller `CELL_SIZE`.** 8 → 4 m quadruples max density and also
+   quadruples the cell count and the live `SlotLives` rows, against
+   `TERRAIN.md` §6's 8–12 k budget. Also re-derives the clutter skirt's
+   `SKIRT_TILE_CELLS * 8 == CLUTTER_TILE_M` assert.
+3. **Leave it.** One stem per 64 m² is a real forest density for mature
+   conifers; what it cannot draw is a young dense stand.
+
+**All three are wall-1 territory** — no `HashMap` iteration, no trig, no libm,
+floats restricted — which is what rules out a relaxation loop or a
+dart-throwing Poisson sampler with a live candidate list. Determinism is not
+negotiable: the scatter is replayed and the client mirrors it, so a client
+that rolled placement differently would draw trees that are not there.
 
 ### 3.3 · Rendering at scale — the budget, and it is queued already
 
