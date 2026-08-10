@@ -1813,7 +1813,7 @@ fn the_shipped_pig_bakes() {
     let mc = c.bake_mobs().expect("the pig must bake");
     let pig = mc.def(sim_core::mob::MOB_PIG);
 
-    assert_eq!(pig.hp, 150);
+    assert_eq!(pig.hp, 80);
     // 50% and 70% of the −127..=127 axis, floored.
     assert_eq!(pig.gait, 63);
     assert_eq!(pig.flee_gait, 88);
@@ -2134,7 +2134,7 @@ fn every_consumable_the_content_ships_is_reachable() {
 /// bug that would read as a bug in the sim if it booted.
 #[test]
 fn mob_refusals() {
-    refuses("mobs.toml", "hp = 150", "hp = 0", "zero hp");
+    refuses("mobs.toml", "hp = 80", "hp = 0", "zero hp");
     refuses(
         "mobs.toml",
         "walk_pct = 50",

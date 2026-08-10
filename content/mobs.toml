@@ -36,20 +36,25 @@ name = "Pig"
 # first kill behind a workbench walk. Tools are armed now, and the number
 # comes from the reference rather than from us (`reference/BALANCE.md`).
 #
-# ⚠ **The source is split 80/150 and this row deliberately carries both.**
-# The 2026-08-08 pass took 150 from a split source; the 2026-08-09 gather
-# research (`reference/RIPLIST.md` §4.6) put the boar at **~80** in a
-# roster table that also reads chicken 25, stag ~80, wolf 100, bear 400.
-# So the 150 camp is now the thinner of the two — but a tie is not broken
-# by the newer reading alone, and §0's rule is that a disagreement is
-# **recorded, never averaged**. Both stay written down until something
-# breaks the tie; the value below does not move on a lean.
+# ⚠ **80, not 150 — the tie is broken and the row ships one number**
+# (operator, 2026-08-10; the tiebreak ladder is `reference/BALANCE.md` §6).
+# The 2026-08-08 pass took 150 from a source that was *already* split
+# 80/150, so "150" was never the better-evidenced reading, it was the one
+# picked first. The 2026-08-09 research put the boar at ~80 inside a
+# complete roster table — chicken 25, stag ~80, wolf 100, bear 400,
+# consistent units, five species — and a complete table beats a single
+# figure quoted in prose (§6 rung 3).
 #
-# What would break it: a devblog or the wiki's own boar page read as
-# primary text (neither is reachable from every box — `SOURCES.md`), or
-# our own decision that 6 hatchet swings is the fight we want, which is a
-# design answer and not a research one.
-hp = 150
+# **This used to say "carry both until someone breaks the tie", and that
+# sentence is why it sat wrong for two days.** Carrying both is not
+# neutrality: with no tiebreak procedure attached, its only effect is to
+# preserve whichever guess shipped first. The procedure existed three
+# sections up in the same document the whole time — the sulfur 300/200
+# dispute was settled in one pass by scoring each source on the cells we
+# could already check. Nobody pointed it at the boar.
+#
+# Five hatchet swings instead of six at the kit's stone hatchet (25 dmg).
+hp = 80
 
 # 50% of WALK_SPEED = 1.49 m/s, an amble a player outwalks without trying.
 walk_pct = 50

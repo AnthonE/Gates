@@ -205,14 +205,60 @@ point and it is correct: take more of the math now, tune later.
    entirely (`ALPHA.md` §5), listed so nobody reads their absence as a
    balance decision.
 
-## 6 · The standing instruction
+## 6 · The standing instruction (rewritten 2026-08-10)
 
-**When a number has an equivalent in the reference and no reason of ours to
-differ, take theirs and cite it at the row.** When we differ, the row says
-why. That is the whole rule, and the thing that keeps it from becoming
-"copy the spreadsheet" is the second half: `test_content`'s bands still
-decide whether a number may land, so a reference value that does not fit our
-sim is refused here exactly as an invented one would be.
+**Take theirs. That is the default and it does not need an argument.**
+Operator, 2026-08-10: *"I REALLY REALLY REALLY REALLY REALLY WANNA USE
+RUST NUMBERS."* The old wording — "no reason of ours to differ" — read as
+neutral and was not: it put the burden on the person taking the number,
+so every row needed a case made for it and any hesitation won by default.
+The burden is the other way round now.
+
+**6.1 · No case is needed to take. A case is needed to differ**, in the
+row, in one sentence.
+
+**6.2 · The only admissible reason to differ is that the MECHANISM
+differs.** Theirs scales damage by the material it hits and we have one
+`structure` column; theirs re-rolls population on death and ours is
+seeded. Those are real. These are not, and §4 caught all three wearing
+principle's clothes once already:
+
+- *"It would break a band of ours."* → §7. Look at the band; a band is
+  ours and can be the stale half.
+- *"The sources are not certain enough."* → §6.3. Uncertainty picks a
+  number, it does not defer one.
+- *"It is more than a lookup / nobody has built the thing yet."* → that
+  is a **cost**, and a cost gets a row in `RIPLIST.md` §2 with what it
+  costs. Writing it here as a reason is how a deferral becomes permanent.
+
+**6.3 · A split source is not a blocker, and "carry both" is not an
+outcome.** Every row ships exactly one number. Walk this ladder and stop
+at the first rung that separates the sources:
+
+1. **Score each source on the cells we can already check.** Whichever
+   gets the checkable cells right wins the cell we came for. This settled
+   sulfur 300-vs-200 in a single pass (`RIPLIST.md` §4.1) after two
+   passes of stalling — the page claiming 200 also called stone 750 and
+   metal 500, both wrong against figures we hold EXACT.
+2. **Source tier**: devblog primary text > wiki > SEO aggregator.
+3. **The more complete artifact**: a full table with consistent units
+   beats a single figure quoted in prose.
+4. **Recency.** The game moves, and the newer reading describes the game
+   a returning player just left.
+5. **Still tied? Take one anyway and ship it.** Note the loser in the row
+   so a later pass can flip it in one line. A tie is not a reason to keep
+   our own invented number, which is what deferring actually does.
+
+**6.4 · What survives from the old rule, and it is the only part that was
+ever right: never average.** 80 and 150 do not make 115. That is a number
+nobody reported and no reading of the game supports, and false precision
+is worse than picking a side. Pick one, say which, keep the other written
+down.
+
+The thing that keeps all of this from becoming "copy the spreadsheet" is
+unchanged: `test_content`'s bands still decide whether a number may land,
+so a reference value that does not fit our sim is refused here exactly as
+an invented one would be — and then §7 asks which of the two is stale.
 
 The rails are unchanged and they were never about arithmetic: no traced
 art, no proper nouns, nothing decompiled (`ART.md` §7, `reference/README.md`).
