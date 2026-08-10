@@ -177,6 +177,17 @@ const SUB_KNOCK: u32 = 42;
 /// its own subtype rather than a fourth bit on `SUB_DOOR`: `SUB_DOOR` is a
 /// broadcast, and a grant is true of exactly one recipient.
 const SUB_AUTH: u32 = 43;
+/// An arrow left a bow (`sim-core/ranged.rs`, wire v31). Broadcast — an
+/// arrow in the air is a world fact like a door swinging.
+///
+/// The five fields are exactly what redraws the sim's own arc and nothing
+/// more: the shooter (whose snapshot position, plus the constant eye
+/// height both sides know, is the origin), the two aim angles, and the
+/// round's speed and drop. `client-core` holds no content tables, so the
+/// ballistics have to cross; carrying them also means the tracer
+/// integrates the same integers the sim did rather than approximating
+/// them. See `world.rs`'s `EV_SHOT` for the full argument.
+const SUB_SHOT: u32 = 44;
 /// The highest live subtype, named rather than counted — `world.rs`'s
 /// `EV_MAX` discipline applied to the wire half.
 ///
@@ -186,7 +197,7 @@ const SUB_AUTH: u32 = 43;
 /// probe of a **live** code — it caught it here only because the new
 /// decoder arm rejected its all-zero payload, which is luck, not a gate.
 /// Deriving the probe from this constant is what makes it stay a probe.
-const SUB_MAX: u32 = SUB_AUTH;
+const SUB_MAX: u32 = SUB_SHOT;
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
 /// worst shape of wire drift there is, since both ends would agree on
@@ -579,6 +590,18 @@ pub enum EventMsg {
         level: u8,
         lit: bool,
         by: u32,
+    },
+    /// An arrow left `shooter`'s bow, aimed at (`yaw`, `pitch`), flying at
+    /// `speed_mmpt` and falling `drop_mmpt2` a tick (broadcast).
+    ///
+    /// No origin and no item — the client reconstructs the first from the
+    /// shooter's snapshot and does not need the second to draw a shaft.
+    Shot {
+        shooter: u32,
+        yaw: u16,
+        pitch: u8,
+        speed_mmpt: u16,
+        drop_mmpt2: u16,
     },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list (item index, units).
@@ -1498,6 +1521,37 @@ pub fn encode_event_oven(
     Ok(w.finish())
 }
 
+/// An arrow left a bow — the tracer's whole input (wire v31).
+///
+/// The angles ride as **16 and 8 bits, separately** — the same two widths
+/// the input frame spends on its way in (`lib.rs`), so a shot goes back
+/// out at exactly the precision it was aimed with. Deliberately not one
+/// packed word: the sim packs them into `EV_SHOT.b` because a `SimEvent`
+/// has only three fields to spend, and a packed word is where a swap of
+/// the halves hides. The wire has room, so it unpacks them.
+pub fn encode_event_shot(
+    shooter: u32,
+    yaw: u16,
+    pitch: u8,
+    speed_mmpt: u16,
+    drop_mmpt2: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    // A round with no speed is not a round (`content::validate` refuses
+    // one), and a zero here would be a tracer that hangs in the air at the
+    // shooter's eye forever. Refused at the encoder rather than drawn.
+    if speed_mmpt == 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_SHOT)?;
+    w.write(shooter, 32)?;
+    w.write(yaw as u32, 16)?;
+    w.write(pitch as u32, 8)?;
+    w.write(speed_mmpt as u32, 16)?;
+    w.write(drop_mmpt2 as u32, 16)?;
+    Ok(w.finish())
+}
+
 /// The attacker's hitmarker: `damage` landed on `victim`.
 /// One standing backpack as the wire carries it: identity and where it
 /// is, nothing else. Owner, expiry and contents stay sim-side — the
@@ -2267,6 +2321,22 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             locked: r.read_bit()?,
             has_lock: r.read_bit()?,
         },
+        SUB_SHOT => {
+            let m = EventMsg::Shot {
+                shooter: r.read(32)?,
+                yaw: r.read(16)? as u16,
+                pitch: r.read(8)? as u8,
+                speed_mmpt: r.read(16)? as u16,
+                drop_mmpt2: r.read(16)? as u16,
+            };
+            // The encoder's refusal, mirrored: a zero-speed tracer is a
+            // value no honest sender produces, so it is malformed rather
+            // than drawn. Same posture as the address ranges above.
+            if matches!(m, EventMsg::Shot { speed_mmpt: 0, .. }) {
+                return Err(WireError::Malformed);
+            }
+            m
+        }
         SUB_OVEN => EventMsg::Oven {
             cx: r.read(BUILD_CELL_BITS)? as u16,
             cz: r.read(BUILD_CELL_BITS)? as u16,

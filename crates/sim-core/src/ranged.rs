@@ -36,8 +36,7 @@
 //!
 //! No headshots (melee has none either — `frame.pitch` aims the shot but no
 //! part of a body is worth more than another), no damage falloff (the schema
-//! has no curve to read), no arrow drawn on any screen (that is a wire
-//! event and a client lane's tracer, both unbuilt), and no structure damage
+//! has no curve to read), and no structure damage
 //! — an arrow that reaches a wall stops dead rather than chipping it.
 //! `collide::blocked` also inflates every query by `CAPSULE_RADIUS_M`
 //! because that constant is baked into it, so an arrow goes exactly where a
@@ -57,7 +56,7 @@ use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
 use crate::pitch_lut::pitch_dir;
 use crate::terrain;
-use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT};
+use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_SHOT};
 use crate::yaw_lut::yaw_dir;
 
 /// Height above the feet an arrow leaves from, millimetres. The eye, not
@@ -202,7 +201,13 @@ impl Default for Arrows {
 /// skips the gather-and-melee path entirely when it answers `true`, whether
 /// the shot was refused for cadence, for an empty quiver or for a full
 /// store.
-pub fn draw(tick: u64, cc: &CombatContent, arrows: &mut Arrows, p: &mut Player) -> bool {
+pub fn draw(
+    tick: u64,
+    cc: &CombatContent,
+    arrows: &mut Arrows,
+    events: &mut EventQueue,
+    p: &mut Player,
+) -> bool {
     let Some(def) = cc.held_ranged(held_item(p)) else {
         return false;
     };
@@ -269,6 +274,17 @@ pub fn draw(tick: u64, cc: &CombatContent, arrows: &mut Arrows, p: &mut Player) 
         life,
         flown: 0,
     };
+    // Announced only where an arrow actually left the bow — after the
+    // cadence, the quiver and the store have all had their say. Every one
+    // of those paths returns above, so a client can treat `EV_SHOT` as
+    // "an arrow exists" rather than "someone pressed the button", which
+    // is the difference between a tracer and a phantom.
+    events.push(
+        EV_SHOT,
+        p.id,
+        (p.frame.yaw as u32) << 8 | p.frame.pitch as u32,
+        (ball.speed_mmpt as u32) << 16 | ball.drop_mmpt2 as u32,
+    );
     true
 }
 

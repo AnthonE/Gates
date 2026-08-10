@@ -79,10 +79,10 @@ use sim_core::build::{
     foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE,
     REFUSE_B_COST, REFUSE_B_PIECE,
 };
-use sim_core::combat::CombatContent;
+use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::craft::{CraftContent, REFUSE_INPUTS, REFUSE_RECIPE};
 use sim_core::deploy::{box_key, DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
-use sim_core::gather::{cell_key, weak_mark8, GatherContent, ItemStack};
+use sim_core::gather::{cell_key, weak_mark8, GatherContent, ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
 use sim_core::limits::TICK_HZ;
@@ -96,7 +96,7 @@ use sim_core::world::{
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
     EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
-    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED,
     EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
@@ -387,6 +387,93 @@ fn distinct3(e: SimEvent, what: &str) {
         e.a,
         e.b,
         e.c
+    );
+}
+
+/// `EV_SHOT: a = shooter id, b = yaw << 8 | pitch, c = speed << 16 | drop`.
+///
+/// The two packed fields are the exposure here. `b` and `c` are each two
+/// numbers in one word, so a check that only asserted "b is nonzero" would
+/// survive the halves being swapped inside the word — which is the byte-
+/// golden hole this file exists for, one level inside a field. Both are
+/// unpacked and asserted by half, with a fixture whose halves cannot be
+/// mistaken for each other (a yaw that does not fit in a byte, a pitch that
+/// is not the level default, a speed and a drop two orders apart).
+///
+/// The ballistics come from the **round**, not the bow — `PROJECTILES.md`
+/// §9.3 — so arming the bow alone must leave the shot unfired, and the
+/// fixture below would fail loudly rather than quietly if `ammo_def` ever
+/// started answering for the weapon.
+#[test]
+fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
+    /// Deliberately past a byte, so a swap of the halves of `b` cannot
+    /// produce a value that still looks like a plausible yaw.
+    const SHOT_YAW: u16 = 4_097;
+    /// Not 128 (the level default), so a zeroed pitch fails the check.
+    const SHOT_PITCH: u8 = 200;
+    const BOW: u16 = 5;
+    const ARROW: u16 = 6;
+    const SPEED_MMPT: u16 = 1_333;
+    const DROP_MMPT2: u16 = 22;
+
+    let mut w = duel_world();
+    w.combat.ranged[BOW as usize] = RangedDef {
+        damage: 30,
+        ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        range_mm: 60_000,
+    };
+    w.combat.ammo[ARROW as usize] = AmmoDef {
+        speed_mmpt: SPEED_MMPT,
+        drop_mmpt2: DROP_MMPT2,
+    };
+    w.players[0].inv[0] = ItemStack {
+        item: BOW,
+        count: 1,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: ARROW,
+        count: 5,
+    };
+    w.tick(&[Command::Input {
+        id: ATTACKER,
+        frame: InputFrame {
+            seq: 1,
+            buttons: BTN_PRIMARY,
+            yaw: SHOT_YAW,
+            pitch: SHOT_PITCH,
+            move_x: 0,
+            move_z: 0,
+            sel: 0,
+        },
+    }]);
+
+    let shot = only(&w, EV_SHOT);
+    distinct3(shot, "EV_SHOT");
+    assert_eq!(
+        shot.a, ATTACKER,
+        "EV_SHOT.a is who fired, not who was aimed at"
+    );
+    assert_eq!(
+        shot.b >> 8,
+        SHOT_YAW as u32,
+        "EV_SHOT.b's high half is yaw — the halves are the wrong way round"
+    );
+    assert_eq!(
+        shot.b & 0xff,
+        SHOT_PITCH as u32,
+        "EV_SHOT.b's low byte is pitch"
+    );
+    assert_eq!(
+        shot.c >> 16,
+        SPEED_MMPT as u32,
+        "EV_SHOT.c's high half is speed — a tracer flown at the drop would \
+         cross the island in a tick"
+    );
+    assert_eq!(
+        shot.c & 0xffff,
+        DROP_MMPT2 as u32,
+        "EV_SHOT.c's low half is drop"
     );
 }
 
@@ -2998,7 +3085,7 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 32] = [
+    const COVERED: [(&str, u8); 33] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
@@ -3031,6 +3118,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_CRAFT_DONE", EV_CRAFT_DONE),
         ("EV_BAG_REMOVED", EV_BAG_REMOVED),
         ("EV_RESPAWN", EV_RESPAWN),
+        ("EV_SHOT", EV_SHOT),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next

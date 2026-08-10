@@ -298,18 +298,32 @@ Write this down because the pressure to reverse it will arrive as a
 complaint about arrow lag, and the answer to that complaint is a client-side
 *tracer* (§9.2), never a client-side *arrow*.
 
-### 9.2 · The gap a player actually sees is one wire event
+### 9.2 · The gap a player actually sees — **landed 2026-08-10**
 
-`ranged.rs` fires, flies and kills correctly today. It has no `EV_SHOT`, so
-a shot reaches the client as `EV_HIT`/`EV_HEALTH`/`EV_DEATH` and **the arrow
-is invisible**. That is the whole of the felt gap.
+**Done. The arrow is visible.** `EV_SHOT = 33` (wire v31) broadcasts the
+shooter, the two aim angles, and the round's speed and drop;
+`crates/client/src/render/tracer.rs` draws it.
 
-The shape: `EV_MAX` is 32 (`world.rs`), so `EV_SHOT = 33`; wall 6 makes that
-a `PROTO_VER` 30→31 bump with regenerated goldens *in the same commit*; and
-`event_roles.rs` needs its 33rd row, proven red under its own a/b swap
-(CLAUDE.md's byte-golden trap). Payload wants origin, direction and item —
-which is more than the `(a, b, c)` triple the queue carries, and *that*
-sizing question is the real work in the slice, not the tracer.
+The payload question this section flagged as "the real work" resolved by
+**not carrying the origin at all**. The client knows where the shooter is
+from the snapshot and `ARROW_EYE_MM` is a constant on both sides, so origin
+is derivable; the item is not carried either, because an arrow is an arrow
+to look at. What *had* to cross instead was the ballistics — `client-core`
+holds no content tables, it is a wire and prediction layer — and carrying
+them turned out to be the better design rather than a concession: handed
+speed and drop in mm/tick, the tracer runs **the same integer integration
+the sim runs**, so the drawn arc is not an approximation of the real one
+that drifts over a second of flight. It is the same arithmetic. That is the
+quantize-both-sides law applied to a tracer.
+
+Everything the section predicted about cost was right: `EV_MAX` 32 → 33,
+`PROTO_VER` 30 → 31 with all 82 goldens renamed and regenerated in the same
+commit plus one new (`v31_event_shot.bin`), and `event_roles.rs`'s 33rd row
+— proven red under a b/c swap before being called done.
+
+**And it is a tracer, not a projectile.** Nothing downstream may read it;
+the arrow that kills you is the server's and its `EV_HIT` arrives whether
+or not anything was drawn. §9.1 is why that line is where it is.
 
 ### 9.3 · Our ballistics were on the wrong object — **landed 2026-08-10**
 

@@ -45,8 +45,8 @@ use client_core::core::{
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_cont_sync, encode_event_death, encode_event_hit, encode_event_move_refused,
-    encode_event_moved, encode_event_respawn, encode_event_struct_hit, encode_event_vitals,
-    InvSlot, WireBag, MAX_EVENT_MSG_BYTES,
+    encode_event_moved, encode_event_respawn, encode_event_shot, encode_event_struct_hit,
+    encode_event_vitals, InvSlot, WireBag, MAX_EVENT_MSG_BYTES,
 };
 use sim_core::backpack::{BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
 use sim_core::gather::ItemStack;
@@ -235,6 +235,88 @@ fn the_hit_ring_fills_and_drains() {
     assert_eq!(feed(&mut c, &buf[..len]) & APPLIED_HIT, APPLIED_HIT);
     assert_eq!(c.pop_hit(), Some(37), "hitmarker damage mismatch");
     assert_eq!(c.pop_hit(), None, "the hit ring must drain");
+}
+
+/// A shot crosses whole and drains once (wire v31).
+///
+/// **The five fields are the test.** `EV_SHOT` carries two pairs of
+/// same-typed neighbours — (yaw, pitch) and (speed, drop) — and the tracer
+/// flies the arc they describe, so a transposition inside either pair is an
+/// arrow that leaves at the wrong angle or falls at its own muzzle speed.
+/// The fixture picks values no two of which could be mistaken for each
+/// other, and asserts each by name rather than asserting the tuple is
+/// non-default.
+///
+/// It also pins the ring's contract: drained exactly once. `render::feed`
+/// is the single consumer, and CLAUDE.md's clean-merge trap is what a
+/// second one costs.
+#[test]
+fn a_shot_crosses_whole_and_drains_once() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    assert_eq!(c.pop_shot(), None, "the shot ring starts empty");
+
+    // A yaw past a byte, a pitch that is not the level default, and a
+    // speed two orders off the drop: every field distinguishable from
+    // every other.
+    let (shooter, yaw, pitch, speed, drop) = (0x2B17u32, 41_234u16, 203u8, 1_333u16, 22u16);
+    let len = encode_event_shot(shooter, yaw, pitch, speed, drop, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(
+        c.pop_shot(),
+        Some((shooter, yaw, pitch, speed, drop)),
+        "the shot arrived with a field in the wrong seat"
+    );
+    assert_eq!(c.pop_shot(), None, "the shot ring must drain");
+}
+
+/// A round with no muzzle speed is refused rather than drawn.
+///
+/// Zero speed is a tracer that hangs at the shooter's eye forever, and
+/// `content::validate` refuses such a round at boot, so the value can only
+/// reach a client from a forged or corrupted datagram. Both ends refuse it:
+/// the encoder returns `Range`, and this is the decoder's half.
+///
+/// **The forge is bit-exact and paired with a control**, because a test that
+/// corrupted the frame at large would be refused for any number of reasons
+/// and prove nothing about this one. The event header is 10 bits
+/// (`KIND_BITS` 4 + `SUB_BITS` 6) and the writer packs LSB-first, so the
+/// fields land at bit 10 (shooter, 32), 42 (yaw, 16), 58 (pitch, 8), 66
+/// (speed, 16), 82 (drop, 16). Only bits 66..=81 are cleared; the control
+/// clears a strict subset that leaves the speed nonzero and must still
+/// decode. If the control ever starts failing, this test has stopped
+/// isolating the zero.
+#[test]
+fn a_shot_with_no_speed_is_malformed() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    // speed = 1, so the field's only set bit is its bit 0, at wire
+    // position 66 — byte 8, offset 2.
+    let len = encode_event_shot(0x2B17, 41_234, 203, 1, 22, &mut buf).unwrap();
+
+    // Control: clear the speed's middle byte only. Speed stays 1, and the
+    // whole frame must still decode — which is what proves the assertion
+    // below is about the zero and not about the tampering.
+    let mut control = buf[..len].to_vec();
+    control[9] = 0;
+    assert!(
+        c.on_stream(&control).is_ok(),
+        "the control must decode, or the forge below proves nothing"
+    );
+    assert!(c.pop_shot().is_some(), "and it must reach the ring");
+
+    // Forge: clear exactly bits 66..=81. Byte 8 keeps its low two bits
+    // (the top of `pitch`), byte 10 keeps everything above its low two
+    // (the bottom of `drop`).
+    let mut forged = buf[..len].to_vec();
+    forged[8] &= 0b0000_0011;
+    forged[9] = 0;
+    forged[10] &= 0b1111_1100;
+    assert!(
+        c.on_stream(&forged).is_err(),
+        "a zero-speed shot must be refused, not drawn"
+    );
+    assert_eq!(c.pop_shot(), None, "and nothing may reach the ring");
 }
 
 /// The kill feed and the death screen are two different things, and the

@@ -48,6 +48,7 @@ pub mod disconnected;
 pub mod ghost;
 // The blue wash over the piece a hammer is aimed at.
 pub mod highlight;
+pub mod tracer;
 // The launcher-backed nav entries: the title manifest's fetch, and the click
 // that hands NEWS / ITEM STORE / WORKSHOP to the launcher's own window. The
 // model is `crate::ui::hub`.
@@ -361,6 +362,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<disconnected::Chosen>()
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()
+            .init_resource::<tracer::Tracers>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
             .init_resource::<feed::Feed>()
@@ -446,6 +448,9 @@ impl Plugin for GatesRenderPlugin {
                 icons::load,
                 anim::load,
                 mobs::load,
+                // The tracer pool. Spawned once here so the frame path
+                // never spawns an entity for an arrow (`tracer.rs`).
+                tracer::setup,
                 // The menu's footage. Wanted on the first screen after the
                 // splash, so it warms while everything else does.
                 ui::load_backdrop,
@@ -682,6 +687,13 @@ impl Plugin for GatesRenderPlugin {
                 viewmodel::animate
                     .after(feed::drain)
                     .after(viewmodel::spawn_item),
+                // The tracer's two halves. `launch` reads the drained feed,
+                // so it must follow the drain for the swing's reason —
+                // the other order reacts a frame late. `fly` then advances
+                // whatever is live, including the shot just claimed, so a
+                // tracer's first frame already shows motion.
+                tracer::launch.after(feed::drain),
+                tracer::fly.after(tracer::launch),
             )
                 .run_if(world_running)
                 .run_if(move || !plate),
