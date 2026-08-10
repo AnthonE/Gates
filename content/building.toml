@@ -4,6 +4,20 @@
 # deployables (deployables.toml) that mount in a doorway — validation
 # asserts a door is always weaker than its material's wall, so the door
 # stays the intended breach point.
+#
+# The price of a shape is a RATIO of its material's wall, and the ratios
+# are the reference game's (`reference/BUILDING.md` §7b.3, taken whole
+# 2026-08-10 under `reference/BALANCE.md` §6):
+#
+#   1.0  foundation · wall · stairs      0.7  doorway
+#   0.5  floor · roof
+#
+# hp is a property of the MATERIAL alone and never of the shape, which is
+# what those ratios are for. A stone floor and a stone wall are both 500,
+# so a floor buys twice the hp per stone that a wall does and a player who
+# stacks the cheap shapes is rewarded for it — that spread is the whole
+# reason to have more than one shape, and pricing every shape alike (which
+# is what this file did until 2026-08-10) deletes it.
 
 # --- foundation ---------------------------------------------------------
 
@@ -58,21 +72,21 @@ id = "build.doorway_wood"
 shape = "doorway"
 material = "wood"
 hp = 250
-cost = [{ item = "item.wood", count = 280 }]
+cost = [{ item = "item.wood", count = 245 }]
 
 [[piece]]
 id = "build.doorway_stone"
 shape = "doorway"
 material = "stone"
 hp = 500
-cost = [{ item = "item.stone", count = 280 }]
+cost = [{ item = "item.stone", count = 245 }]
 
 [[piece]]
 id = "build.doorway_metal"
 shape = "doorway"
 material = "metal"
 hp = 1000
-cost = [{ item = "item.metal_frags", count = 160 }]
+cost = [{ item = "item.metal_frags", count = 140 }]
 
 # --- floor --------------------------------------------------------------
 
@@ -81,21 +95,21 @@ id = "build.floor_wood"
 shape = "floor"
 material = "wood"
 hp = 250
-cost = [{ item = "item.wood", count = 350 }]
+cost = [{ item = "item.wood", count = 175 }]
 
 [[piece]]
 id = "build.floor_stone"
 shape = "floor"
 material = "stone"
 hp = 500
-cost = [{ item = "item.stone", count = 350 }]
+cost = [{ item = "item.stone", count = 175 }]
 
 [[piece]]
 id = "build.floor_metal"
 shape = "floor"
 material = "metal"
 hp = 1000
-cost = [{ item = "item.metal_frags", count = 200 }]
+cost = [{ item = "item.metal_frags", count = 100 }]
 
 # --- stairs -------------------------------------------------------------
 
@@ -104,21 +118,21 @@ id = "build.stairs_wood"
 shape = "stairs"
 material = "wood"
 hp = 250
-cost = [{ item = "item.wood", count = 200 }]
+cost = [{ item = "item.wood", count = 350 }]
 
 [[piece]]
 id = "build.stairs_stone"
 shape = "stairs"
 material = "stone"
 hp = 500
-cost = [{ item = "item.stone", count = 200 }]
+cost = [{ item = "item.stone", count = 350 }]
 
 [[piece]]
 id = "build.stairs_metal"
 shape = "stairs"
 material = "metal"
 hp = 1000
-cost = [{ item = "item.metal_frags", count = 120 }]
+cost = [{ item = "item.metal_frags", count = 200 }]
 
 # --- roof ---------------------------------------------------------------
 
@@ -127,18 +141,18 @@ id = "build.roof_wood"
 shape = "roof"
 material = "wood"
 hp = 250
-cost = [{ item = "item.wood", count = 350 }]
+cost = [{ item = "item.wood", count = 175 }]
 
 [[piece]]
 id = "build.roof_stone"
 shape = "roof"
 material = "stone"
 hp = 500
-cost = [{ item = "item.stone", count = 350 }]
+cost = [{ item = "item.stone", count = 175 }]
 
 [[piece]]
 id = "build.roof_metal"
 shape = "roof"
 material = "metal"
 hp = 1000
-cost = [{ item = "item.metal_frags", count = 200 }]
+cost = [{ item = "item.metal_frags", count = 100 }]

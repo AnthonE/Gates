@@ -75,7 +75,11 @@ Landed 2026-08-08 (operator: *"balance the game similar to rust so people
 dont get too lost"*). `reference/BALANCE.md` is the research and §6 is the
 standing instruction. Building blocks are 250/500/1000, a stone wall takes
 four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
-Two bands moved and the raid ratio re-priced itself to 1.04/1.73/3.46.
+Two bands moved and the raid ratio re-priced itself. ⚠ **The three numbers
+that used to sit here — 1.04/1.73/3.46 — were 2026-08-08's and were stale
+by two days**; measured 2026-08-10 the tree read 0.69/1.38/2.77 before the
+shape re-price below and **0.76/1.52/3.04** after. Derive it (the probe is
+five lines against `balance::check`), never quote it.
 
 **The measurement landed 2026-08-09 and `reference/RIPLIST.md` is now the
 queue for this item** — what is taken, what is outstanding, what blocks

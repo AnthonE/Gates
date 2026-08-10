@@ -555,7 +555,7 @@ fn the_declared_farm_rate_cannot_beat_standing_at_the_node() {
 fn upgrade_ladder_must_be_whole() {
     refuses(
         "building.toml",
-        "[[piece]]\nid = \"build.roof_wood\"\nshape = \"roof\"\nmaterial = \"wood\"\nhp = 250\ncost = [{ item = \"item.wood\", count = 350 }]\n",
+        "[[piece]]\nid = \"build.roof_wood\"\nshape = \"roof\"\nmaterial = \"wood\"\nhp = 250\ncost = [{ item = \"item.wood\", count = 175 }]\n",
         "",
         "upgrade ladder must be whole",
     );
