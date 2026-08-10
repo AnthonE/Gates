@@ -289,7 +289,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
             // successes cover stock. The gated craft (recipe 2) arms once
             // bot 2's workbench stands.
             //
-            // The modulus is the fixture's `def_count` (7 since recycler
+            // The modulus is the fixture's `def_count` (8 since research
             // v0), so every archetype the table declares gets placed here
             // — including the lock, which almost always refuses because no
             // door stands at the address, and the recycler, whose switch
@@ -304,7 +304,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
             };
             let place_deploy = Command::PlaceDeploy {
                 id: 2,
-                row: ((t / 16) % 7) as u16,
+                row: ((t / 16) % 8) as u16,
                 cx: own2.0,
                 cz: own2.1,
                 level: ((t / 64) % 2) as u8,

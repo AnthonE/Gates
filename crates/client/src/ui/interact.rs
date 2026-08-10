@@ -36,7 +36,7 @@ use protocol::event::WireBag;
 use sim_core::build::BUILD_CELL_M;
 use sim_core::deploy::{
     box_key, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
-    ARCH_HEARTH, ARCH_RECYCLER,
+    ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH,
 };
 
 pub use sim_core::build::BUILD_REACH_M as REACH_M;
@@ -70,6 +70,10 @@ pub enum Verb {
     /// two arms agreeing everywhere the code asks a question about
     /// containers, never as one variant doing both jobs.
     Recycler,
+    /// A research table (research v0). The one verb here that acts on what
+    /// is in your HAND rather than on what is at the address — the table
+    /// holds nothing — so the prompt names the held item and `E` spends it.
+    Research,
 }
 
 impl Verb {
@@ -98,6 +102,7 @@ impl Verb {
             // anything can reach it.
             Verb::Fire => 5,
             Verb::Recycler => 6,
+            Verb::Research => 7,
         }
     }
 
@@ -112,6 +117,7 @@ impl Verb {
             Verb::Hearth => "HEARTH",
             Verb::Fire => "FIRE",
             Verb::Recycler => "RECYCLER",
+            Verb::Research => "RESEARCH TABLE",
         }
     }
 }
@@ -219,6 +225,10 @@ impl Pick {
                 "[E] OPEN RECYCLER  ·  [C] {}",
                 if self.lit { "STOP" } else { "START" }
             ),
+            // Not "OPEN": there is nothing to open, and a prompt that
+            // promised a panel would be teaching the wrong gesture. What
+            // `E` does here is spend the held item, so the prompt says so.
+            Verb::Research => "[E] RESEARCH HELD ITEM".to_string(),
             v => format!("[E] OPEN {}", v.label()),
         }
     }
@@ -346,6 +356,7 @@ pub fn resolve(
             ARCH_HEARTH => Verb::Hearth,
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,
             ARCH_RECYCLER => Verb::Recycler,
+            ARCH_RESEARCH => Verb::Research,
             _ => continue,
         };
         // A box is addressed by its packed cell. `box_key(0, 0, 0)` is 0 and

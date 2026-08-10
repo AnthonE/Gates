@@ -414,6 +414,26 @@ pub const MAX_BOX_SPILL_PER_TICK: usize = 16;
 /// catalog and cannot perform.
 pub const MAX_COOK_ROWS: usize = 32;
 
+/// Research rows the sim preallocates for (`content/research.toml`,
+/// `research.rs`). Structural cap like [`MAX_COOK_ROWS`], and bounded by
+/// [`MAX_RECIPES`] for a stronger reason than symmetry: a research row
+/// unlocks exactly one recipe and `Player::known` is a bitmask over recipe
+/// indices, so a table longer than the recipe set could only be naming a
+/// recipe twice. The bake refuses past it.
+pub const MAX_RESEARCH_ROWS: usize = MAX_RECIPES;
+
+/// The width of `Player::known`, and therefore the hard ceiling on how
+/// many recipes a blueprint can gate. Asserted equal to [`MAX_RECIPES`]
+/// rather than assumed: the mask is a `u64` in the sim, in the save file
+/// and on the wire, so a 65th recipe is a widening in three places and
+/// must fail here rather than silently become unlockable.
+pub const KNOWN_MASK_BITS: usize = 64;
+const _: () = assert!(
+    MAX_RECIPES <= KNOWN_MASK_BITS,
+    "Player::known is a u64 mask over recipe indices — a recipe past bit 63 \
+     could never be researched, and nothing else would say so"
+);
+
 /// Loot tables the sim preallocates for — one per container archetype
 /// (`content/loot.toml` ships 2: barrel and crate). The content bake
 /// refuses a set past this. Structural cap like `MAX_DEPLOY_DEFS`, not a

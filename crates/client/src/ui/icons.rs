@@ -36,7 +36,7 @@ pub fn stem(name: &str) -> String {
 /// not do I/O to find out what it has — and because a gate can then compare
 /// it against the directory and fail on either half drifting
 /// (`tests/ui.rs` §G).
-pub const STEMS: [&str; 64] = [
+pub const STEMS: [&str; 65] = [
     // the shape wheel
     "shape_foundation",
     "shape_wall",
@@ -85,6 +85,7 @@ pub const STEMS: [&str; 64] = [
     "large_box",
     "code_lock",
     "recycler",
+    "research_table",
     "wooden_door",
     "building_plan",
     "hammer",

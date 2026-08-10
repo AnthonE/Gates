@@ -60,8 +60,11 @@ use crate::world::Player;
 /// file's `record_len` against it at boot).
 pub const PLAYER_SAVE_BYTES: usize = SCALARS_BYTES + CRAFT_QUEUE * 4 + INV_SLOTS * 4;
 
-/// The fixed head of the record: body, meters, heal and counters.
-const SCALARS_BYTES: usize = 52;
+/// The fixed head of the record: body, meters, heal, counters and the
+/// blueprint mask. 52 → 60 at research v0, which took `SAVE_FORMAT` with
+/// it (`store.rs`) — a record whose layout moves without the format
+/// version is the one bug the header check exists to catch.
+const SCALARS_BYTES: usize = 60;
 
 /// Vertical sanity bound on a decoded body, in centimetres of `POS_Y_Q`
 /// (±1000 m). Not a gameplay limit — the island's own heights are inside a
@@ -168,6 +171,15 @@ pub struct PlayerSave {
     /// materials for closing the game, and refunding it would need a
     /// mutation on the leave path that the WAL never recorded.
     pub jobs: [CraftJob; CRAFT_QUEUE],
+    /// Blueprints known: bit `i` = recipe `i` (`research.rs`). Saved for
+    /// the reason research exists — a blueprint you paid a hoard of coin
+    /// for and lost by closing the game would make the sink a punishment.
+    /// **Not validated on read, deliberately**: every one of the 64 bits
+    /// is a legal value, and a bit set past `MAX_RECIPES` names no recipe
+    /// and can never be read (`research::knows` bounds the shift and
+    /// `craft::enqueue` only ever asks about a live index), so there is
+    /// nothing a forged mask can do that refusing it would prevent.
+    pub known: u64,
     /// Hit points and the ceiling a heal clamps to. You log off hurt, you
     /// log in hurt.
     pub hp: u16,
@@ -228,6 +240,7 @@ impl PlayerSave {
         heal_total: 0,
         heal_span: 0,
         heal_acc: 0,
+        known: 0,
     };
 
     /// The record for a player as they stand. A pure read — the server
@@ -240,6 +253,7 @@ impl PlayerSave {
             dead: p.dead,
             inv: p.inv,
             jobs: p.jobs,
+            known: p.known,
             hp: p.hp,
             hp_max: p.hp_max,
             deaths: p.deaths,
@@ -277,6 +291,7 @@ impl PlayerSave {
         out[42..44].copy_from_slice(&self.heal_total.to_le_bytes());
         out[44..48].copy_from_slice(&self.heal_span.to_le_bytes());
         out[48..52].copy_from_slice(&self.heal_acc.to_le_bytes());
+        out[52..60].copy_from_slice(&self.known.to_le_bytes());
         let mut at = SCALARS_BYTES;
         for j in self.jobs.iter() {
             out[at..at + 2].copy_from_slice(&j.recipe.to_le_bytes());
@@ -386,6 +401,7 @@ impl PlayerSave {
             heal_total: u16_at(42),
             heal_span: u32_at(44),
             heal_acc: u32_at(48),
+            known: u64::from_le_bytes(src[52..60].try_into().expect("8 bytes at 52")),
         })
     }
 }
@@ -410,6 +426,10 @@ mod tests {
             dead: false,
             inv: [ItemStack::default(); INV_SLOTS],
             jobs: [CraftJob::default(); CRAFT_QUEUE],
+            // Distinct in every byte, like everything else here: a mask of
+            // all-ones or all-zeros could not catch a codec that wrote the
+            // halves in the wrong order.
+            known: 0x0123_4567_89AB_CDEF,
             hp: 71,
             hp_max: 100,
             deaths: 3,
@@ -459,7 +479,7 @@ mod tests {
     /// here to make somebody read (`store.rs` `SAVE_FORMAT`).
     #[test]
     fn the_record_is_the_size_the_format_declares() {
-        assert_eq!(PLAYER_SAVE_BYTES, 188, "the on-disk record size moved");
+        assert_eq!(PLAYER_SAVE_BYTES, 196, "the on-disk record size moved");
         assert_eq!(INV_SLOTS, 30);
         assert_eq!(CRAFT_QUEUE, 4);
     }
@@ -494,11 +514,19 @@ mod tests {
         assert_eq!(&buf[42..44], &40u16.to_le_bytes(), "heal_total at 42");
         assert_eq!(&buf[44..48], &300u32.to_le_bytes(), "heal_span at 44");
         assert_eq!(&buf[48..52], &17u32.to_le_bytes(), "heal_acc at 48");
+        // The blueprint mask closes the head (research v0), which is what
+        // moved both arrays eight bytes along — the shift this whole block
+        // exists to make loud.
+        assert_eq!(
+            &buf[52..60],
+            &0x0123_4567_89AB_CDEFu64.to_le_bytes(),
+            "known at 52"
+        );
         // The two arrays start where the head ends, in declaration order.
-        assert_eq!(&buf[52..54], &2u16.to_le_bytes(), "jobs[0].recipe at 52");
-        assert_eq!(&buf[54..56], &5u16.to_le_bytes(), "jobs[0].remaining at 54");
-        assert_eq!(&buf[68..70], &5u16.to_le_bytes(), "inv[0].item at 68");
-        assert_eq!(&buf[70..72], &42u16.to_le_bytes(), "inv[0].count at 70");
+        assert_eq!(&buf[60..62], &2u16.to_le_bytes(), "jobs[0].recipe at 60");
+        assert_eq!(&buf[62..64], &5u16.to_le_bytes(), "jobs[0].remaining at 62");
+        assert_eq!(&buf[76..78], &5u16.to_le_bytes(), "inv[0].item at 76");
+        assert_eq!(&buf[78..80], &42u16.to_le_bytes(), "inv[0].count at 78");
     }
 
     /// Every refusal, one per reason, built by hand off a legal record —
@@ -544,25 +572,25 @@ mod tests {
         // The one that would panic the sim thread: a recipe row that does
         // not exist, indexed unchecked by `craft::step`.
         assert_eq!(
-            bent(&|b| b[52..54].copy_from_slice(&(MAX_RECIPES as u16).to_le_bytes())),
+            bent(&|b| b[60..62].copy_from_slice(&(MAX_RECIPES as u16).to_le_bytes())),
             Err(SaveError::BadCraftJob)
         );
         assert_eq!(
-            bent(&|b| b[54..56].copy_from_slice(&(CRAFT_COUNT_MAX + 1).to_le_bytes())),
+            bent(&|b| b[62..64].copy_from_slice(&(CRAFT_COUNT_MAX + 1).to_le_bytes())),
             Err(SaveError::BadCraftJob)
         );
         // A gap before a live job: job 0 emptied, jobs 1 still live.
         assert_eq!(
-            bent(&|b| b[54..56].copy_from_slice(&0u16.to_le_bytes())),
+            bent(&|b| b[62..64].copy_from_slice(&0u16.to_le_bytes())),
             Err(SaveError::SparseCraftQueue)
         );
         // An item past the table, and a non-canonical empty.
         assert_eq!(
-            bent(&|b| b[68..70].copy_from_slice(&(MAX_ITEM_DEFS as u16).to_le_bytes())),
+            bent(&|b| b[76..78].copy_from_slice(&(MAX_ITEM_DEFS as u16).to_le_bytes())),
             Err(SaveError::BadItemStack)
         );
         assert_eq!(
-            bent(&|b| b[70..72].copy_from_slice(&0u16.to_le_bytes())),
+            bent(&|b| b[78..80].copy_from_slice(&0u16.to_le_bytes())),
             Err(SaveError::BadItemStack)
         );
     }

@@ -1,0 +1,71 @@
+# Gates · content/research.toml — the blueprint table (CONTENT.md §1,
+# research). The sink OBOL exists for: you find the thing, you take it to a
+# table with a fistful of coin, and from then on you can make it yourself.
+# The sim's side is `sim-core/research.rs`; every number here is a knob with
+# this file as its documented default (DECISIONS.md §open, "research v0").
+#
+# **What research is paid in, named here rather than assumed in code.**
+# `sim-core` receives an item index and never learns it is currency —
+# `DESIGN.md` §3.1's coin stays out of `crates/` the same way every other
+# number does. And to be clear about which OBOL this is: the carried,
+# item-stack kind, which is scrap (operator, 2026-08-10). Nothing in this
+# file touches a wallet, a ledger or a chain.
+[coin]
+item = "item.obol"
+
+# --- what may be learned ------------------------------------------------
+#
+# `[[research]] item` is the thing you consume; the recipe it unlocks is
+# the one that OUTPUTS that item, resolved at bake. The file never names a
+# recipe id, so the two cannot drift, and a row for an item nothing crafts
+# is a bake error rather than a coin sink that unlocks nothing
+# (`bake_research`). A recipe marked `blueprint` with no row here is the
+# same error from the other end and `validate::structural` refuses it:
+# that combination is a recipe nobody could ever craft.
+#
+# **Which rows are gated is the whole design decision, and it is small on
+# purpose.** Only the powder era — the things a player would go raiding
+# for — is behind research; the whole T0 and workbench ladder stays open,
+# because gating the hatchet you need to gather the wood to build the bench
+# to research the hatchet is the kind of circle a tech tree gets wrong
+# once and never lives down. Everything here is reachable as loot before it
+# is craftable (`content/loot.toml`: the crate table pays gunpowder, the
+# medkit, pistol ammo and metal arrows), which is what makes the verb a
+# reason to walk to the haven rather than a tax on crafting.
+#
+# **The prices are ours** (`reference/RIPLIST.md` has no research row; what
+# theirs charges per blueprint is unresearched). The anchor is the recycler:
+# a component pays 1–2 obol, a barrel rolls 1–2 components, so 20 is a
+# handful of barrels and 75 is a deliberate trip. The ladder is 20 / 40 /
+# 75 — reachable, a session, a project — and it moves with the faucet
+# counts or the ratio breaks (DECISIONS.md §open, "OBOL faucet v0").
+
+# 20 — a handful of barrels. The first thing most players will research,
+# and cheap because it is the one that teaches what the verb IS.
+[[research]]
+item = "item.medkit"
+cost = 20
+
+[[research]]
+item = "item.arrow_metal"
+cost = 20
+
+# 40 — a session. The powder chain proper.
+[[research]]
+item = "item.gunpowder"
+cost = 40
+
+[[research]]
+item = "item.armor_roadsign_body"
+cost = 40
+
+# 75 — a project, and both of these are what a raid is made of. The
+# revolver is also a rare barrel drop (`loot.toml`), so the fastest route
+# to owning one is still luck; this is the route to owning several.
+[[research]]
+item = "item.revolver"
+cost = 75
+
+[[research]]
+item = "item.satchel_charge"
+cost = 75

@@ -730,16 +730,18 @@ crate-wide, but its *contiguity* claim is file-local.
   sit at a destination — the gate deliberately counts barrel rows alone.
 - **Day/night does not exist.** `DESIGN.md` §2 pairs it with the survival
   clock; nothing in `crates/` reads a time of day.
-- **OBOL is an item nothing pays and nothing charges** (recycler v0). The
-  faucet is three rows commented out at the foot of `content/cooking.toml`
-  and arming them is an operator act (`ALPHA.md` A1 → A2), so the loop's
-  half is done. **The sink is not**, and it is the open design question:
-  scrap's job in the reference is the research/tech-tree, which we have
-  cut, so without something to spend it on a coin is a lootable trophy.
-  Cheapest honest answer that needs no new system — OBOL as an input to
-  recipes that already exist, the workbench first, which is how the
-  reference prices its own bench. Content only. Wants a spoken call before
-  it lands, not a loop's guess.
+- **The coin loop is closed and the tech TREE is not.** OBOL is paid by
+  the recycler and burned at the research table (research v0, and the
+  operator's 2026-08-10 call that OBOL is scrap — what stages is the claim
+  rail). What research does NOT have is depth: a row unlocks one recipe
+  and depends on nothing, so there is no ladder, no tier, no "unlocks the
+  next". The reference has a research table *and* a tech tree and they are
+  separate systems; ours is the first. A tree is a content graph over the
+  bits `Player::known` already carries — a `requires` column and a
+  reachability check in `validate` — not a change to the sim. Also absent:
+  a blueprint ITEM (learning is instant and personal, so there is nothing
+  to trade) and the wipe schedule `DESIGN.md` §8 promises blueprints will
+  outlive, which is unbuilt because no wipe is.
 - **No verb opens a world container.** `loot.crate` and `loot.cache` are
   parsed, content-hashed, placed and openable by nothing — barrels are
   smashed, and `Occupant::{CrateSlot, CacheSlot}` appear only in terrain

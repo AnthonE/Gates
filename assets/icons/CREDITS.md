@@ -55,6 +55,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `pistol_round.png` | `delapouite/heavy-bullets` |
 | `raw_meat.png` | `delapouite/steak` |
 | `recycler.png` | `lorc/recycle` |
+| `research_table.png` | `lorc/scroll-unfurled` |
 | `revolver.png` | `delapouite/revolver` |
 | `roadsign_vest.png` | `lorc/armor-vest` |
 | `rock.png` | `john-redman/rock` |

@@ -116,6 +116,37 @@ pub struct Recipe {
     pub station: Station,
     pub seconds: u32,
     pub inputs: Vec<Stack>,
+    /// Locked behind research (`content/research.toml`, research v0):
+    /// nobody may craft this until they have learned it. Defaults false —
+    /// most of the ladder is open, and a gate you have to opt into is a
+    /// gate you cannot apply by accident.
+    #[serde(default)]
+    pub blueprint: bool,
+}
+
+/// One row of `content/research.toml`: an item you can take to a table,
+/// and what learning it costs in the coin the file names.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Research {
+    /// The item consumed. The recipe it unlocks is the one that outputs
+    /// this item — resolved at bake, so the file never names a recipe id
+    /// and the two can never disagree about which thing was learned.
+    pub item: String,
+    /// Units of the coin burned. Zero is legal (a free unlock is a
+    /// tutorial, not a mistake).
+    pub cost: u32,
+}
+
+/// The head of `content/research.toml`: what research is paid in.
+///
+/// One coin for the whole table, named here rather than assumed in code —
+/// `sim-core/research.rs` receives an item index and never learns that it
+/// is currency, which is what keeps `DESIGN.md` §3.1 out of `crates/`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchCoin {
+    pub item: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -258,6 +289,10 @@ pub enum DeployArchetype {
     /// and the economy's first faucet — what it pays is rows in
     /// `content/cooking.toml`, never code.
     Recycler,
+    /// A research table (research v0). A **station** rather than a
+    /// container — checked by proximity like the workbench, holding
+    /// nothing (`sim-core/research.rs` says why) — and the coin's sink.
+    Research,
 }
 
 #[derive(Debug, Clone, Deserialize)]

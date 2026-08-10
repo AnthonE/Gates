@@ -38,18 +38,29 @@
 
 ## 2 · Staged economy arming (do NOT launch coins into an unstable game)
 
-The coins are designed (DESIGN §3) but they arm in stages, each its own
-switch, so a netcode bug never becomes a token incident — and the
-break-things-freely privilege (which expires when the operator posts)
-is spent on A1, not A3:
+**What stages is the CLAIM RAIL, not the currency** (operator,
+2026-08-10). Two things share the name OBOL and only one of them is a
+token risk:
 
-- **A1 — pure survival** (first playtests): OBOL faucets OFF, salvage
-  drops components only, no bank terminal, skins vendor dark. The game
-  must be fun broke first.
-- **A2 — OBOL on, off-chain**: faucets/sinks live, carried/banked split
-  live, ledger accruing — **no merkle export yet**; balances are real but
-  unclaimable while wipe cadence and dupe-testing settle. Posted plainly
-  on the site: "banked OBOL becomes claimable at A3."
+- **Carried OBOL is an ordinary item** — paid by the recycler, dropped on
+  death, raidable, spent at the research table. That is scrap's job, it is
+  **live from A1**, and there is nothing to stage: an item stack in a save
+  file cannot be cashed out.
+- **The claim rail is the banked balance** — a ledger row keyed to a
+  wallet, its merkle export, redemption on-chain. That is what a netcode
+  bug could turn into a token incident, so that is what arms in stages,
+  each its own switch. The break-things-freely privilege (which expires
+  when the operator posts) is spent on A1, not A3:
+
+- **A1 — the survival economy, whole** (first playtests): OBOL is earned
+  and spent in world, no bank terminal, no ledger, skins vendor dark.
+  Everything a player touches is here; the game must be fun before a
+  balance is worth anything.
+- **A2 — the ledger, off-chain**: the bank terminal opens and the
+  carried/banked split goes live, balances accruing — **no merkle export
+  yet**; they are real and unclaimable while wipe cadence and dupe-testing
+  settle. Posted plainly on the site: "banked OBOL becomes claimable at
+  A3."
 - **A3 — the claim + the counter**: merkle export on the scry claim rail,
   skin catalog opens (SCRY/MYRRH), munus-first-sale delivery includes a
   recorded round. This is the moment that needs the operator's announce,

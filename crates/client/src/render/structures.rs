@@ -41,7 +41,7 @@ use sim_core::build::{
 use sim_core::collide::{DOOR_POST_W_M, PIECE_LIFT_M, WALL_THICKNESS_M};
 use sim_core::deploy::{
     DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH, ARCH_RECYCLER,
-    ARCH_WORKBENCH,
+    ARCH_RESEARCH, ARCH_WORKBENCH,
 };
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain;
@@ -71,7 +71,8 @@ const TIER: [(Color, f32, f32); 3] = [
 ];
 
 /// Deployable stand-ins by archetype (`sim_core::deploy` order: bag, hearth,
-/// box, fire, furnace, workbench, door, lock, recycler): full size `w × h × d` in metres,
+/// box, fire, furnace, workbench, door, lock, recycler, research): full size
+/// `w × h × d` in metres,
 /// colour, roughness, metallic. Cosmetics, same registry row.
 /// Public so the DEPLOY GHOST can be the size of what it becomes. Sharing the
 /// table is the whole point: a preview sized independently of the thing it
@@ -81,7 +82,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
     Vec3::new(w, h, d)
 }
 
-const DEPLOY: [([f32; 3], Color, f32, f32); 9] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 10] = [
     (
         [1.2, 0.25, 0.7],
         Color::srgb(0.478, 0.612, 0.306),
@@ -116,6 +117,15 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 9] = [
         0.55,
         0.6,
     ), // recycler
+    // 9 · the research table (research v0). Waist-high and wide where the
+    // workbench is wide and low: they stand side by side in a base and the
+    // silhouette is how you tell them apart across a room.
+    (
+        [1.5, 0.8, 0.8],
+        Color::srgb(0.478, 0.427, 0.353),
+        0.72,
+        0.15,
+    ), // research table
 ];
 
 /// A locked door wears banded iron: the one bit of door state a passer-by
@@ -734,4 +744,12 @@ pub fn is_station(arch: u8) -> bool {
         arch,
         ARCH_WORKBENCH | ARCH_FURNACE | ARCH_FIRE | ARCH_HEARTH
     )
+}
+
+/// Which archetypes are checked by PROXIMITY rather than opened — the
+/// craft stations above plus the research table, which gates no recipe and
+/// so is deliberately not one of them (`craft::enqueue` reads `is_station`'s
+/// set and would silently start accepting a table as a workbench).
+pub fn is_proximity(arch: u8) -> bool {
+    is_station(arch) || arch == ARCH_RESEARCH
 }

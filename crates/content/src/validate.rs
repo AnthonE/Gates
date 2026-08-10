@@ -862,6 +862,75 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // The research table (`content/research.toml`, research v0). Same
+    // posture as the oven rules above: every one of these refuses a
+    // *silently inert* sink rather than a taste call, because a coin with
+    // a faucet and no working sink is the exact failure research exists to
+    // close.
+    if !c.items.iter().any(|i| i.id == c.research_coin.item) {
+        return Err(format!(
+            "research: coin `{}` is not an item",
+            c.research_coin.item
+        ));
+    }
+    if !c.research.is_empty() {
+        // A table nobody can stand at teaches nothing. The deployable is
+        // what makes the verb reachable, so its absence is a bake error
+        // and not a shrug — the cook rows one block up take the same
+        // check for the same reason.
+        if !c
+            .deployables
+            .iter()
+            .any(|d| d.archetype == DeployArchetype::Research)
+        {
+            return Err(
+                "research: rows exist and no deployable is a research table —                  a sink nobody can reach"
+                    .to_string(),
+            );
+        }
+    }
+    let mut research_seen = BTreeSet::new();
+    for r in &c.research {
+        if !c.items.iter().any(|i| i.id == r.item) {
+            return Err(format!("research: `{}` is not an item", r.item));
+        }
+        if !research_seen.insert(r.item.clone()) {
+            return Err(format!("research: two rows for `{}`", r.item));
+        }
+        // The row must unlock something, and exactly one thing. Two
+        // recipes for one item would make WHICH one a blueprint teaches an
+        // accident of file order — the positional-payload trap, in the one
+        // table where the player has paid for the answer.
+        let n = c.recipes.iter().filter(|k| k.output == r.item).count();
+        if n == 0 {
+            return Err(format!(
+                "research: `{}` unlocks nothing — no recipe outputs it",
+                r.item
+            ));
+        }
+        if n > 1 {
+            return Err(format!(
+                "research: `{}` is output by {n} recipes, so which one a \
+                 blueprint teaches would be file order",
+                r.item
+            ));
+        }
+    }
+    // Every gate must have a key, and this is the half a content editor
+    // actually gets wrong: a recipe marked `blueprint` with no research row
+    // is a recipe **nobody can ever craft**, and it fails silently — the
+    // catalog lists it, the craft panel offers it, and the refusal says
+    // "you have not learned this" forever.
+    for k in &c.recipes {
+        if k.blueprint && !c.research.iter().any(|r| r.item == k.output) {
+            return Err(format!(
+                "recipe `{}` is blueprint-gated and no research row teaches \
+                 `{}` — nobody could ever craft it",
+                k.id, k.output
+            ));
+        }
+    }
+
     // The backpack despawn ladder: a base that exists, and multipliers
     // that rise strictly with rarity. Without the strict rise a rarer
     // item could make a bag despawn *sooner* than a common one — the

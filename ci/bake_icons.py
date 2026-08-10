@@ -140,6 +140,9 @@ ITEMS = {
     "box_large": "delapouite/cargo-crate",
     "lock_code": "delapouite/dial-padlock",
     "recycler": "lorc/recycle",
+    # The blueprint you unroll, not the bench you unroll it on: a table at
+    # 44 px is a rectangle, and the thing the verb produces reads.
+    "research_table": "lorc/scroll-unfurled",
     # The coin that pays the ferryman (DESIGN.md §3.1). Two coins rather
     # than one because a single disc at 44 px reads as a full stop.
     "obol": "delapouite/two-coins",

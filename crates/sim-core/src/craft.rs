@@ -41,6 +41,16 @@ pub const REFUSE_COUNT: u32 = 1;
 pub const REFUSE_STATION: u32 = 2;
 pub const REFUSE_QUEUE_FULL: u32 = 3;
 pub const REFUSE_INPUTS: u32 = 4;
+/// The recipe is blueprint-gated and this player has not researched it
+/// (`research.rs`). Its own reason rather than `REFUSE_RECIPE`, because
+/// the two mean opposite things to a player: one says the recipe does not
+/// exist, and this says *go find one and take it to a table*.
+/// (No `_MAX` beside these, unlike the deployable and research refusals:
+/// the craft-refused subtype writes a full byte and the wire bounds
+/// nothing, which `NOW.md` §5b already carries as the decode-side gap.
+/// A `REFUSE_C_MAX` here would also collide with `survival.rs`'s consume
+/// refusals, whose prefix the domain gate scans crate-wide.)
+pub const REFUSE_BLUEPRINT: u32 = 5;
 
 /// One baked recipe row. `out_count == 0` ⇒ inert (the empty-table row).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +65,11 @@ pub struct RecipeDef {
     /// `STATION_*` code. Anything but `STATION_NONE` needs a placed
     /// station deployable near the crafter at enqueue.
     pub station: u8,
+    /// Locked behind research: nobody may craft this until they have
+    /// learned it (`research.rs`, `Player::known`). A **per-player** gate,
+    /// unlike `station`, which is a fact about where you are standing —
+    /// so it is checked against the crafter and never against the world.
+    pub blueprint: bool,
     /// Live rows in `inputs`.
     pub n_inputs: u8,
     /// (item index, units per craft) — consumed per unit crafted.
@@ -67,6 +82,7 @@ impl RecipeDef {
         out_count: 0,
         ticks: 1,
         station: STATION_NONE,
+        blueprint: false,
         n_inputs: 0,
         inputs: [(0, 0); MAX_RECIPE_INPUTS],
     };
@@ -90,8 +106,13 @@ impl CraftContent {
     };
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
-    /// probe fixture's 8 items (fixture, not game content). Row 2 is
-    /// station-gated so the refusal path is inside the gates too.
+    /// probe fixture's 8 items (fixture, not game content). **Row 2 is
+    /// both station-gated and blueprint-gated**, so both refusal paths are
+    /// inside the gates — and stacked on one row rather than two on
+    /// purpose: it proves the checks are ordered rather than merely
+    /// present, because a player at a bench without the blueprint must
+    /// hear about the blueprint. `ResearchContent::probe_fixture` unlocks
+    /// exactly this recipe.
     pub fn probe_fixture() -> Self {
         let mut c = Self::EMPTY;
         c.recipe_count = 3;
@@ -100,6 +121,7 @@ impl CraftContent {
             out_count: 2,
             ticks: 2,
             station: STATION_NONE,
+            blueprint: false,
             n_inputs: 1,
             inputs: [(0, 3), (0, 0), (0, 0), (0, 0)],
         };
@@ -108,6 +130,7 @@ impl CraftContent {
             out_count: 1,
             ticks: 3,
             station: STATION_NONE,
+            blueprint: false,
             n_inputs: 2,
             inputs: [(1, 2), (2, 1), (0, 0), (0, 0)],
         };
@@ -116,6 +139,7 @@ impl CraftContent {
             out_count: 1,
             ticks: 1,
             station: STATION_WORKBENCH1,
+            blueprint: true,
             n_inputs: 1,
             inputs: [(0, 1), (0, 0), (0, 0), (0, 0)],
         };
@@ -198,6 +222,18 @@ pub fn enqueue(
     let def = &cc.recipes[recipe as usize];
     if def.out_count == 0 || def.output as usize >= MAX_ITEM_DEFS {
         events.push(EV_CRAFT_REFUSED, p.id, REFUSE_RECIPE, 0);
+        return;
+    }
+    // The blueprint, **before** the station, and the order is a design
+    // call rather than an accident. A recipe can be gated by both, and
+    // only one of the two refusals is worth a player's attention: a
+    // missing station is transient and self-evident (walk to your bench),
+    // while a missing blueprint is permanent until you go and do something
+    // else entirely. Reporting the station first would send a player who
+    // needs a research table back to a workbench they are already
+    // standing at, which is the refusal actively misleading them.
+    if def.blueprint && !crate::research::knows(p.known, recipe) {
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_BLUEPRINT, 0);
         return;
     }
     if def.station != STATION_NONE {
@@ -420,13 +456,23 @@ mod tests {
             (99, 1, REFUSE_RECIPE),
             (0, 0, REFUSE_COUNT),
             (0, CRAFT_COUNT_MAX + 1, REFUSE_COUNT),
-            (2, 1, REFUSE_STATION),
+            // Recipe 2 is gated twice, and the BLUEPRINT is what a
+            // player hears — the order `enqueue` states, asserted here so
+            // it cannot be swapped back without a red gate.
+            (2, 1, REFUSE_BLUEPRINT),
         ];
         for (recipe, count, reason) in cases {
             enqueue(&cc, &dc, &nod, 10, &mut p, recipe, count, &mut ev);
             let e = ev.entries()[ev.len() - 1];
             assert_eq!((e.code, e.a, e.b), (EV_CRAFT_REFUSED, 7, reason));
         }
+        // And with the blueprint learned, the SAME request falls through
+        // to the station — so the ordering above is a priority and not a
+        // check that swallowed the other one.
+        p.known |= 1 << 2;
+        enqueue(&cc, &dc, &nod, 10, &mut p, 2, 1, &mut ev);
+        let e = ev.entries()[ev.len() - 1];
+        assert_eq!((e.code, e.a, e.b), (EV_CRAFT_REFUSED, 7, REFUSE_STATION));
         // Missing inputs: recipe 1 wants 2×item1 + 1×item2 per unit.
         let mut poor = player(&[(1, 1)]);
         enqueue(&cc, &dc, &nod, 10, &mut poor, 1, 1, &mut ev);
@@ -520,7 +566,9 @@ mod tests {
             crate::world::EV_DEPLOY_PLACED
         );
 
-        // Beside the bench, the workbench recipe enqueues.
+        // Beside the bench, the workbench recipe enqueues — once its
+        // blueprint is learned, which row 2 also wants (research v0).
+        p.known |= 1 << 2;
         enqueue(&cc, &dc, &nod, 10, &mut p, 2, 1, &mut ev);
         assert_eq!(
             p.jobs[0],
@@ -530,8 +578,11 @@ mod tests {
             }
         );
 
-        // Out of the station radius, it refuses again.
+        // Out of the station radius, it refuses again — with the
+        // blueprint learned, so the reason is the distance and not the
+        // gate that outranks it.
         let mut far = player(&[(0, 10)]);
+        far.known |= 1 << 2;
         far.body = Body::at(SEED, 1024.0 + STATION_RADIUS_M + 2.0, 1024.0);
         enqueue(&cc, &dc, &nod, 10, &mut far, 2, 1, &mut ev);
         let e = ev.entries()[ev.len() - 1];

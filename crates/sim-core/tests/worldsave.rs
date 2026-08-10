@@ -29,7 +29,7 @@ use sim_core::loot::LootContent;
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World};
-use sim_core::worldsave::{self, WorldSaveError, WORLD_SAVE_MAX_BYTES};
+use sim_core::worldsave::{self, WorldSaveError, PLAYER_BYTES, WORLD_SAVE_MAX_BYTES};
 
 const SEED: u64 = 20260807;
 /// The doorway row in the build fixture, and the door row in the deploy
@@ -543,7 +543,7 @@ fn a_corrupt_world_is_refused_by_reason() {
     // A piece naming a content row that does not exist. The first piece
     // record's `row` byte sits after the player section.
     let players = w.players.iter().filter(|p| p.active).count();
-    let piece0 = COUNTS_AT + 20 + players * 240;
+    let piece0 = COUNTS_AT + 20 + players * PLAYER_BYTES;
     assert_eq!(
         bent(&|b| b[piece0 + 6] = 200),
         Err(WorldSaveError::BadContentRow),
@@ -579,12 +579,12 @@ fn forged_lock_bits_load_cleared_never_trusted() {
     blob.truncate(n);
 
     // Walk to the deploy section the way the corruption test above does:
-    // head + counts, players at 240 each, pieces at 19 (11 + the
+    // head + counts, players at `PLAYER_BYTES` each, pieces at 19 (11 + the
     // placement tick), then 25 per deploy record (17 + bag_ready) with
     // `locked` at offset 16 of each.
     const COUNTS_AT: usize = 34;
     let players = w.players.iter().filter(|p| p.active).count();
-    let deploy0 = COUNTS_AT + 20 + players * 240 + w.pieces.len() * 19;
+    let deploy0 = COUNTS_AT + 20 + players * PLAYER_BYTES + w.pieces.len() * 19;
     let mut saw = (false, false);
     for (i, rec) in w.deploys.entries().iter().enumerate() {
         let at = deploy0 + i * 25;

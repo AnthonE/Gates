@@ -122,6 +122,15 @@ pub const ARCH_LOCK: u8 = 7;
 /// gate that says so is `every_domain_fits_its_wire_field`, and it is why
 /// the tenth archetype is cheap and the seventeenth is not.
 pub const ARCH_RECYCLER: u8 = 8;
+/// A research table (research v0). A **station**, not a container: it is
+/// checked by proximity the way `craft.rs` checks a workbench, so it holds
+/// no items, mints no box record, and the thing being researched comes out
+/// of the player's own inventory (`research.rs` says why).
+///
+/// The tenth archetype, and free — `ARCH_BITS` widened to four for the
+/// recycler one commit earlier and holds sixteen. That is what the
+/// recycler's price bought.
+pub const ARCH_RESEARCH: u8 = 9;
 
 /// The **access verb's** operations — `Command::Access`'s `op`, wire
 /// `ACT_ACCESS`. One action with an op field rather than nine action
@@ -390,7 +399,7 @@ impl DeployContent {
     /// target inside the gates rather than only in a unit test.
     pub fn probe_fixture() -> Self {
         let mut d = Self::EMPTY;
-        d.def_count = 7;
+        d.def_count = 8;
         d.defs[0] = DeployDef {
             arch: ARCH_HEARTH,
             placement: PLACE_FOUNDATION,
@@ -469,6 +478,22 @@ impl DeployContent {
             item: 8,
             n_costs: 1,
             costs: [(1, 15), (0, 0), (0, 0), (0, 0)],
+        };
+        // The research table (research v0), here for the recycler's and
+        // the lock's reason: the parity, alloc and replay gates install
+        // *this* table, and a verb no wall can see is not walled.
+        // `ResearchContent::probe_fixture` is the other half — item 4
+        // unlocks craft recipe 2, which is the blueprint-gated one.
+        //
+        // Item **10**: 8 is the recycler's and 9 is the box a unit-test
+        // fixture appends past the shared set (`boxed_fixture`).
+        d.defs[7] = DeployDef {
+            arch: ARCH_RESEARCH,
+            placement: PLACE_GROUND,
+            hp: 45,
+            item: 10,
+            n_costs: 1,
+            costs: [(0, 18), (0, 0), (0, 0), (0, 0)],
         };
         // The build probe fixture costs items 0 and 1.
         d.mats = [0, 1, 0, 0];

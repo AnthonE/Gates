@@ -64,6 +64,16 @@ archetype = "recycler"
 placement = "any"
 hp = 300
 
+# The research table (research v0). `foundation` like the workbench it sits
+# beside — a table is furniture for a base, not something you drop in a
+# field — and hp 400 is the workbench's, because they are the same object
+# to a raider: the thing that makes the base a workshop.
+[[deployable]]
+id = "item.research_table"
+archetype = "research"
+placement = "foundation"
+hp = 400
+
 [[deployable]]
 id = "item.lock_code"
 archetype = "lock"

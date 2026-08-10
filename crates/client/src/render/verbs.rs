@@ -319,6 +319,18 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 open_panel(ui);
             }
         }
+        Verb::Research => {
+            // The one `E` that spends what is in your hand rather than
+            // opening what is at the address. The slot is the hotbar
+            // selection — the same `net.sel` the eat verb uses — because
+            // "the held item" is the only thing the prompt can honestly
+            // name, and the sim refuses a slot that holds the wrong thing
+            // with a sentence of its own.
+            let slot = net.sel;
+            send(net, toast, "research", |buf| {
+                protocol::encode_action_research(slot, buf)
+            });
+        }
         Verb::Hearth => {
             let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
             send(net, toast, "feed", |buf| {

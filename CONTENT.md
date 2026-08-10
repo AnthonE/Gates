@@ -42,7 +42,8 @@ properly. The short version:
   and **both percentages move when it arrives, never how much**: the
   weak spot spends budget faster (skill buys speed), the finish share is
   withheld for whoever lands the last swing
-- **recipe**: output, station (`none|workbench1|furnace`), inputs, seconds
+- **recipe**: output, station (`none|workbench1|furnace`), inputs, seconds,
+  and `blueprint` — locked until researched (see **research** below)
 - **building_piece**: shape (foundation/wall/doorway/floor/stairs/roof/
   door), per-material hp + upgrade cost (wood→stone→metal). One `cost` row
   serves three verbs: build it, upgrade into it, and **mend it** — a repair
@@ -58,7 +59,7 @@ properly. The short version:
   the stacks a kill pays. `content/mobs.toml`; the sim's side is
   `sim-core/src/mob.rs` and the design is `reference/ANIMALS.md` §9.
 - **deployable**: entity archetype (bag, hearth, cupboard, box, furnace,
-  workbench, door, lock, recycler), placement rules, hp
+  workbench, door, lock, recycler, research), placement rules, hp
 - **fuel / cook** (`cooking.toml`): what an oven burns — item, seconds per
   unit, byproduct + `byproduct_pct` (hundredths of a unit per unit burned,
   banked and paid whole, never rolled) — and one row per transformation:
@@ -71,6 +72,15 @@ properly. The short version:
   refuses two rows paying the same output. That is what lets one component
   pay a material *and* a coin, and it is why arming `ALPHA.md`'s A2 faucet
   is an edit to this file rather than to `crates/`.
+- **research** (`research.toml`): `[coin]` names what research is paid in
+  (one item for the whole table — `sim-core` never learns it is currency),
+  and `[[research]] item + cost` is what may be learned. The recipe a row
+  unlocks is the one that **outputs** that item, resolved at bake, so the
+  file never names a recipe id and the two cannot drift. A recipe's
+  `blueprint = true` is the other half; the two are checked against each
+  other both ways — a gated recipe with no row is uncraftable forever, a
+  row for an item nothing crafts is a coin sink that unlocks nothing, and
+  `validate::structural` refuses both.
 - **loot_table**: container archetype → weighted entries + count range
 - **skin**: id, covers (item id), price (SCRY or MYRRH — one coin per
   row, bare tickers), season — the catalog is content too (dark until A3)

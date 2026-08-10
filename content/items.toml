@@ -122,20 +122,21 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 
-# The working coin (DESIGN.md §3.1) — scrap's job in this game, and an
-# ordinary item stack on purpose: **carried** OBOL is dropped on death,
-# raidable in your base, and lost on a wipe, which is what makes the walk
-# to the haven worth anything. Banked OBOL is not this row and never will
-# be — it is a ledger balance keyed to a wallet (A2), and the whole design
-# is the difference between the two states.
+# The working coin (DESIGN.md §3.1) — **scrap's job in this game**, and an
+# ordinary item stack on purpose: it is dropped on death, raidable in your
+# base, and lost on a wipe, which is what makes the walk home worth
+# anything. The recycler pays it (`cooking.toml`) and the research table
+# burns it (`research.toml`); it is live, and it always should have been.
 #
-# **Nothing pays it and nothing charges it, deliberately.** `ALPHA.md` §2
-# stages the economy and A1 is *faucets off, salvage drops components
-# only*; arming A2 is an operator act (`CLAUDE.md` loop discipline), not a
-# loop's. So the item ships and the tables stay silent: the faucet is
-# three commented rows in `cooking.toml` and the sink is a recipe input,
-# both content edits, neither one a code change. That is the whole reason
-# the recycler pays out of a content table rather than a function.
+# **This row is not the redeemable thing** (operator, 2026-08-10: *"this
+# isnt the same as the crypto coin u can cash out as"*). Two states share
+# the name and only the other one is a token: *banked* OBOL is a ledger
+# balance keyed to a wallet, with a merkle export and an on-chain claim,
+# and THAT is what `ALPHA.md` §2 arms in stages. An item stack in a save
+# file cannot be cashed out, so there was never anything here to gate —
+# reading A1's "faucets off" as covering this row shipped an inert
+# currency for a few hours on 2026-08-10, which is what the paragraph
+# above now exists to prevent.
 #
 # Stack 1000 like the raw materials rather than 50 like the components:
 # a hoard is the point, and a coin that filled your pockets at 50 would
@@ -300,6 +301,17 @@ slot = "hand"
 [[item]]
 id = "item.lock_code"
 name = "Code Lock"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+# The research table (research v0) — where a found thing becomes a thing
+# you can make. Workbench era and priced there, because it is the second
+# station a base wants and the whole powder ladder is behind it.
+[[item]]
+id = "item.research_table"
+name = "Research Table"
 stack = 1
 tier = 1
 rarity = "uncommon"

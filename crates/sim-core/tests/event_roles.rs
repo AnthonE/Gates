@@ -96,8 +96,9 @@ use sim_core::world::{
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
     EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
-    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED,
+    EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS,
+    EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -2998,7 +2999,7 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 32] = [
+    const COVERED: [(&str, u8); 34] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
@@ -3031,6 +3032,8 @@ fn coverage_is_stated_not_implied() {
         ("EV_CRAFT_DONE", EV_CRAFT_DONE),
         ("EV_BAG_REMOVED", EV_BAG_REMOVED),
         ("EV_RESPAWN", EV_RESPAWN),
+        ("EV_RESEARCH", EV_RESEARCH),
+        ("EV_RESEARCH_REFUSED", EV_RESEARCH_REFUSED),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -3272,4 +3275,89 @@ fn death_causes_are_a_closed_ledger() {
             seen
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Research (research v0) — `EV_RESEARCH` and `EV_RESEARCH_REFUSED`.
+//
+// Both are own-facts keyed on `a = the player`, which is what lets the
+// server route them with `client_slot_of`. `EV_RESEARCH` then carries two
+// small integers in `b` and `c` — the recipe and the coin burned — which is
+// exactly the positional payload a byte-golden cannot see swapped, since
+// each fits the other's field. The fixture's recipe is 2 and its cost is 5
+// so the swap is visible.
+
+/// A world with a placed research table (fixture row 7) and a player
+/// holding the sample (item 4) and the coin (item 3).
+fn table_world(w: &mut World) {
+    w.gather = GatherContent::probe_fixture();
+    w.build = BuildContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.craft = sim_core::craft::CraftContent::probe_fixture();
+    w.research = sim_core::research::ResearchContent::probe_fixture();
+    w.tick(&[Command::Join { id: BUILDER }]);
+    let (cx, cz) = buildable_cell(SEED);
+    let (x, z) = (
+        (cx as f32 + 0.5) * BUILD_CELL_M,
+        (cz as f32 + 0.5) * BUILD_CELL_M,
+    );
+    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].inv[0] = ItemStack { item: 10, count: 1 };
+    w.tick(&[Command::PlaceDeploy {
+        id: BUILDER,
+        row: 7,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(
+        w.deploys.len(),
+        1,
+        "the table has to stand or nothing fires"
+    );
+    w.players[0].inv[0] = ItemStack { item: 4, count: 1 };
+    w.players[0].inv[1] = ItemStack { item: 3, count: 20 };
+}
+
+/// `EV_RESEARCH: a = player, b = recipe, c = coin burned`.
+#[test]
+fn research_names_the_player_then_the_recipe_then_the_price() {
+    let mut w = World::new(SEED);
+    table_world(&mut w);
+    w.tick(&[Command::Research {
+        id: BUILDER,
+        slot: 0,
+    }]);
+    let ev = only(&w, EV_RESEARCH);
+    assert_eq!(ev.a, BUILDER, "EV_RESEARCH.a is the LEARNER");
+    assert_eq!(ev.b, 2, "EV_RESEARCH.b is the RECIPE, not the cost");
+    assert_eq!(ev.c, 5, "EV_RESEARCH.c is the COST, not the recipe");
+    assert_ne!(
+        ev.b, ev.c,
+        "the fixture's two fields must differ or this check proves nothing"
+    );
+}
+
+/// `EV_RESEARCH_REFUSED: a = player, b = reason`.
+#[test]
+fn research_refused_names_the_player_then_why() {
+    let mut w = World::new(SEED);
+    table_world(&mut w);
+    // An empty slot: a refusal that needs nothing else arranged.
+    w.tick(&[Command::Research {
+        id: BUILDER,
+        slot: 9,
+    }]);
+    let ev = only(&w, EV_RESEARCH_REFUSED);
+    assert_eq!(ev.a, BUILDER, "EV_RESEARCH_REFUSED.a is the ASKER");
+    assert_eq!(
+        ev.b,
+        sim_core::research::REFUSE_R_SLOT,
+        "EV_RESEARCH_REFUSED.b is the REASON"
+    );
+    assert_ne!(
+        ev.a, ev.b,
+        "and they differ, so a swap shows here rather than passing"
+    );
 }
