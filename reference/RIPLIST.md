@@ -97,6 +97,68 @@ re-litigate them. `BALANCE.md` §2 (matched before anyone tried) and §3
 Two bands moved as arithmetic fallout, both spoken: `wall_breach_swings_min`
 150 → 60, and the raid ratio re-pricing to 1.04/1.73/3.46.
 
+## 1a · The node totals (2026-08-10) — row 1, and what it actually cost
+
+Operator, 2026-08-10 (*"lets apply that"*, on the balance deltas these
+documents imply). `DECISIONS.md` carries the call.
+
+| node | theirs, best tool | ours before | ours now | conf |
+|---|---|---|---|---|
+| stone | 1000 | 300 | **1000** | EXACT |
+| metal ore | 600 | 300 | **600** | EXACT |
+| sulfur ore | 300 | 300 | **300** (unmoved) | EXACT |
+| tree (large) | 867 metal hatchet | 300 | **870** | EXACT per tool |
+
+And the ladder below the best tool, which is the §4.2 finding rather than
+a constant — a worse tool draws less of the same node:
+
+| | rock | stone tool | metal tool |
+|---|---|---|---|
+| stone node | 380 (theirs 375) | 790 (794) | 1000 |
+| metal node | 250 | 490 (485) | 600 |
+| sulfur node | 100 | 260 (257) | 300 |
+| tree | 500 | 810 | 870 (867) |
+
+Per-hit is `total ÷ 10` rounded, so each total lands within 1.3% of
+theirs. `hand` rows have no reference equivalent and kept our own
+relation to the rock.
+
+**Three things this row taught, all of which contradict what it predicted
+of itself.**
+
+1. **`node_hits` did not have to move.** The row said both node bands
+   break. Only `node_yield` did (400 → 1000). Their 15–28 hits are
+   unobtainable rather than merely unfound (§4.1a), our schema needs only
+   the total, so the hit count stayed at 10 and its band stayed put. A
+   band you do not have to move is a band you should not move.
+2. **It did NOT re-price `wood_wall_minutes` or any farm-minute anchor** —
+   the row asserted it would, and that was wrong in a way worth keeping.
+   Every cost anchor is priced off `[globals] farm_per_min`, never off the
+   node's actual yield, so tripling what a node pays moved **no** anchor:
+   `starter_minutes`, `satchel_minutes`, `wood_wall_minutes`, the three
+   raid ratios and daily upkeep are all bit-identical across this commit.
+   That decoupling *is* the latent defect `BALANCE.md` §4.3 named, seen
+   from the other side: the economy prices farming with a declared number
+   that the game's own yields cannot contradict.
+3. **So the declared/at-node gap widened rather than closed** — ~24–68×
+   before, ~24–135× after, and the farmwalk's measured effective rate went
+   969 → 3927 wood/min while its **duty held at 71.6% to the decimal**.
+   Duty measures the walk's shape, and a pure payout rescale cannot move
+   it; that invariance is the evidence this was a clean scale move and not
+   a pacing change. `farm_per_min` was deliberately left alone: §3 says it
+   has no reference equivalent to take, and its semantics are the open
+   operator knob. Tuning it here would have been tuning one unmeasured
+   number against another, which §4.3 of `BALANCE.md` explicitly warns
+   against.
+
+**What did not come with the totals**, each for a stated reason: the flat
+**2 HQM** on a metal node's finishing strike (no HQM tier to gate); the
+proper-tool requirement on the finish bonus (§4.3b — a rock still finishes
+a node for full value here, and that is a schema column plus a sim branch,
+not a number); and the per-species tree spread (§4.1b — one `tree`
+archetype, so ours is their *large* tree and the variance is a terrain
+question).
+
 ---
 
 ## 2 · Outstanding — the queue
@@ -108,9 +170,9 @@ number is meaningless until something else is built).
 
 | # | number | status | what it costs to take |
 |---|---|---|---|
-| 1 | **gather yields / node totals** | **`READY` for totals** (§4.1) · `BLOCKED-RESEARCH` for per-hit | Their totals are now known — stone **1000** and metal **600** EXACT, sulfur DISPUTED 300/200, tree 500–1000 by prefab — and our schema needs only the total, since we declare `hits × yield_per_hit`. Breaks **both** node bands at once: stone 1000 against `node_yield` [250,400] is 3.3× our 300, and their 15–28 hits are outside `node_hits` [8,12]. Per §7 that is a look-at-the-band moment, not a refusal. Also re-prices `wood_wall_minutes` and every farm-minute anchor, so bands, yields and the re-speak land in ONE commit. `farm_per_min`'s ceiling gate catches the half that used to be silent. **Read §0 first** — taking a 3.3× total onto an island with a 1.40× logistics term is where "faster than theirs, not equal to theirs" actually bites. |
+| 1 | ~~**gather yields / node totals**~~ | ✅ **TAKEN 2026-08-10** | Struck — see §1 and §1a. Totals are theirs, the hit count stayed ours, one band ceiling moved. |
 | 2 | **per-material damage resistance** | `READY` (mechanism build, not a lookup) | The biggest *model* gap, and `BALANCE.md` §4.1 calls it a build: a schema column plus a sim multiply. Their stone wall takes 4 satchels and their sheet metal 23; ours takes 8 because one `structure` column serves every material. Until this exists, their raid numbers above stone cannot be taken at all — the ladder has nowhere to go. |
-| 3 | **smelt rates and craft times** | `BLOCKED-RESEARCH` | `BALANCE.md` §4.3: same `farm_per_min` dependency, smaller blast radius. §4.2 already retired the excuse ("no reason was ever given beyond inertia"). Craft seconds are ignored by the anchors by declaration, so this moves *play* without moving the anchors — the cheapest real row here once the numbers exist. |
+| 3 | **smelt rates and craft times** | **smelt: `ANSWERED`, not taken** · craft rebate: `NEEDS-MECHANISM` | Smelt closed 2026-08-10 and the answer was *don't move*: §4.6's two sources contradict each other on shape as well as magnitude (metal 2.5 / sulfur 2.5 against metal 3.3 / sulfur 1.7), ours carries the second's shape and sits inside both envelopes, so taking either is a coin toss and §0 says record rather than average. Noted at the rows in `recipes.toml`. **The mechanism half did check out and matters more than the seconds** — their furnace is parallel per slot, and `oven::sweep` already is. The craft-time rebate (50% one tier up, 75% two) has no equivalent to land on: we have no workbench tier ladder for it to key off. |
 | 4 | **the animal roster** | `BLOCKED-RESEARCH` + `NEEDS-MECHANISM` | Chicken, stag, wolf, bear all have roles there; we have a pig. Health and drops are lookups. The wolf and bear are `NEEDS-MECHANISM` — they exist to threaten, and nothing can hurt a player yet. |
 | 5 | **logistics friction** — carry limits, node density, deposit trips | `NEEDS-MECHANISM` | **The largest single term in the reference's economy (~10–30×) and the one we charge almost none of** (§0: ours measures 1.40×). Not one number but a set: how far apart nodes sit (`terrain::scatter` density), whether a full pocket forces a trip home, and whether nodes are scarce enough to walk for. Nothing here is blocked on research — it is blocked on nobody having decided the island should be harder to farm. Until it moves, every yield we take from them lands in a world that charges a fraction of what theirs does. |
 | 6 | **mob→player damage** | `NEEDS-MECHANISM` | Not a number. Ranked below logistics on the *magnitude* evidence (~2–5× against ~10–30×), which is the opposite of where this list first put it — but it is the half the operator asked for and the one a player feels, since a threat that cannot hurt you is scenery. Costs a new death cause on a 2-bit field saturated since wire v24, so it is a wire widening (wall 6: version bump + regenerated goldens in one commit). §5's warning applies: model it as trip shape and load loss, never as a flat rate multiplier. |

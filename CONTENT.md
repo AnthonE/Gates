@@ -196,8 +196,12 @@ reference's.
    every melee weapon's. `test_content` asserts all of it.
 2. **TTK bands** (body hits, no armor): melee 3–5 · bow 3–4 · revolver
    4–6; headshot × 2. Armor may add at most +2 hits. Asserted from data.
-3. **Farm rate** — one node ≈ 300 units over ~10 swings; a full wood wall
-   ≈ 7 min of wood at T1 tools. Upkeep (DESIGN §2) prices decay in these
+3. **Farm rate** — a node pays the reference game's total over ~10 swings
+   (2026-08-10: stone 1000, metal 600, sulfur 300, large tree 870 — it
+   read "≈ 300 units" for every node before that); a full wood wall ≈ 7
+   min of wood at T1 tools. The wall figure is unchanged by the node take
+   and that is not an oversight: it is priced off `[globals] farm_per_min`,
+   which the take left alone (`reference/RIPLIST.md` §1a). Upkeep (DESIGN §2) prices decay in these
    same farm-minutes; the band keeps a solo's daily upkeep under ~15 min
    **(knob)**.
 

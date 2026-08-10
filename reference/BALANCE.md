@@ -131,7 +131,13 @@ which is worse than plainly differing.
 
 ### 4.3 · Deferred with a stated cost, which is not the same as a reason
 
-- **Gather yields and node totals.** Theirs: a tree is ~460 wood over ~16
+- ~~**Gather yields and node totals.**~~ **DONE 2026-08-10** — the scale
+  is theirs now (`RIPLIST.md` §1a, `DECISIONS.md` Spoken). What follows is
+  kept as it stood, because the paragraph after it is the finding that
+  survived and the prediction inside it turned out to be **wrong in an
+  instructive way**: moving the yields re-priced *no* anchor at all, since
+  every anchor is priced off `farm_per_min` and not off what a node pays.
+  Theirs: a tree is ~460 wood over ~16
   hits with a stone hatchet, a stone node 1000, sulfur 300. Ours are ~200
   over 10 hits and in the same *shape* but a different *scale*.
   ⚠ **The tree figure is misattributed and the correction is

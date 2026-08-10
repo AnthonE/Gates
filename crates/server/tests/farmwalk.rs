@@ -3,10 +3,17 @@
 //! sim").
 //!
 //! `[globals] farm_per_min` declares an *effective* gather rate; the
-//! sim's at-node ceiling is ~27–41× hotter (1353/min at the kit hatchet,
-//! 2030 at the best tier-1 tool, against the declared 50), and until
-//! this test nothing in the repo had ever farmed on the real island to
-//! say where between the two a player lands. The named
+//! sim's at-node ceiling is ~110–118× hotter (5481/min at the kit
+//! hatchet, 5887 at the best tier-1 tool, against the declared 50), and
+//! until this test nothing in the repo had ever farmed on the real island
+//! to say where between the two a player lands.
+//!
+//! **Those two ceilings tripled on 2026-08-10** when the node totals
+//! became the reference game's (`reference/RIPLIST.md` §2 row 1) — they
+//! read 1353 and 2030 before it, against the same declared 50, which did
+//! not move. The measured *duty* below is unchanged at 71.6% to the
+//! decimal, which is the useful part: the walk's shape is what duty
+//! measures, and a pure payout rescale cannot move it. The named
 //! method is the one used here: a bot walk on a real shard. A greedy
 //! walker with the spawn kit's stone hatchet targets the nearest standing
 //! tree, sprints to it, chops it out, and repeats until it has a wood
@@ -293,7 +300,7 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
     );
 
     // The measurement. `farm_per_min` declares wood at an effective rate
-    // 27× under this tool's at-node ceiling; this is where an UNTHREATENED
+    // 110× under this tool's at-node ceiling; this is where an UNTHREATENED
     // SOLO walk landed. Duty is effective/at-node, both printed. A
     // populated PvP shard subtracts a threat term this island cannot
     // charge — see the header.

@@ -19,7 +19,29 @@
 #   wood when it falls.
 #
 # The farm band (balance.toml, CONTENT §4 anchor 3): archetypes listed in
-# `banded_nodes` must total 250–400 units over 8–12 hits with a tier-1 tool.
+# `banded_nodes` must total 250–1000 units over 8–12 hits with a tier-1 tool.
+#
+# **The totals below are the reference game's, taken 2026-08-10**
+# (`reference/RIPLIST.md` §2 row 1, the standing instruction in
+# `reference/BALANCE.md` §6; operator, 2026-08-10). Two things about the
+# shape of that take, because they decide every row:
+#
+# - **We take the TOTAL and keep our own hit count.** Their per-node total
+#   is EXACT and published; their hit count is not, and cannot be — the
+#   marker made hits-to-clear a function of aim, so modern sources publish
+#   durations only (§4.1a). Our schema declares `hits × yield_per_hit`, so
+#   a total is takeable on its own. `hits` stays 10 everywhere, inside the
+#   band it has always been in, and `yield_per_hit` is `total ÷ 10`
+#   rounded — which lands each total within ~1.3% of theirs.
+# - **A worse tool takes LESS of the same node** (§4.2). The pool is fixed
+#   per node *and tool*, not per node: their stone pickaxe draws ~0.8 of
+#   what the best tool draws, measured twice on two different nodes and
+#   agreeing to within 0.014. Ours already had that shape by another
+#   route; what changes here is the scale and the ratio.
+#
+# `hand` has no reference row on any node — bare hands gather nothing
+# there — so every hand row keeps our own relation to the rock (half of
+# it on wood and stone, 0.6 on the ores) rather than inventing a source.
 
 [[gatherable]]
 id = "gather.tree"
@@ -31,11 +53,19 @@ weak_spot_bonus_pct = 50
 # tree's payout exactly this way). reference/RIPLIST.md §4.3.
 finish_bonus_pct = 50
 
+# Their large-tree totals, per tool (RIPLIST §4.1a, EXACT per tool): rock
+# 500, stone hatchet 810, metal hatchet 867. Wood is the one resource
+# whose total is set by species and size rather than by tool alone — large
+# beech/oak 1000 at the very best tool, smaller pine/palm ~¾, dead logs
+# ~¼ (§4.1b) — and we have one `tree` archetype, so this row is their
+# LARGE tree and the species spread is a terrain question we do not model.
+# Note the wood ladder is much flatter than the ore ladder: 810 → 867 is
+# 0.93, where a stone pickaxe draws 0.79 of a metal one.
 [gatherable.yield_per_hit]
-hand = 5
-"item.rock" = 10
-"item.hatchet_stone" = 20
-"item.hatchet_metal" = 30
+hand = 25
+"item.rock" = 50
+"item.hatchet_stone" = 81
+"item.hatchet_metal" = 87
 
 # The understory: mushrooms are the forest floor's food (CONTENT §2), and
 # the schema has no forest-floor archetype to scatter them on — a node kind
@@ -59,11 +89,17 @@ weak_spot_bonus_pct = 50
 # rule (Devblog 166, ~20%). reference/RIPLIST.md §4.3.
 finish_bonus_pct = 20
 
+# Their stone node, per tool (RIPLIST §4.1a, EXACT): pickaxe 1000, stone
+# pickaxe 794, rock 375. The 1000 is the largest single move in this file
+# — 3.3× what this node used to pay — and it is the row that forced
+# `node_yield`'s ceiling up. Read §0's friction frame before reading it as
+# generosity: their 1000 is priced for a world where you are shot off the
+# node, and ours is not.
 [gatherable.yield_per_hit]
-hand = 5
-"item.rock" = 10
-"item.pickaxe_stone" = 20
-"item.pickaxe_metal" = 30
+hand = 19
+"item.rock" = 38
+"item.pickaxe_stone" = 79
+"item.pickaxe_metal" = 100
 
 [[gatherable]]
 id = "gather.metal_node"
@@ -75,11 +111,16 @@ weak_spot_bonus_pct = 50
 # rule (Devblog 166, ~20%). reference/RIPLIST.md §4.3.
 finish_bonus_pct = 20
 
+# Their metal node, per tool (RIPLIST §4.1a, EXACT): pickaxe 600, stone
+# pickaxe 485, rock 250. Theirs also pays a flat **2 HQM**, available only
+# on the finishing strike and only to a proper tool — we have no HQM tier
+# to gate, so that half is not taken (§4.3b names it as the place HQM
+# belongs if a tier ever lands).
 [gatherable.yield_per_hit]
-hand = 3
-"item.rock" = 5
-"item.pickaxe_stone" = 15
-"item.pickaxe_metal" = 30
+hand = 15
+"item.rock" = 25
+"item.pickaxe_stone" = 49
+"item.pickaxe_metal" = 60
 
 [[gatherable]]
 id = "gather.sulfur_node"
@@ -91,10 +132,17 @@ weak_spot_bonus_pct = 50
 # rule (Devblog 166, ~20%). reference/RIPLIST.md §4.3.
 finish_bonus_pct = 20
 
+# Their sulfur node, per tool (RIPLIST §4.1a): pickaxe 300, stone pickaxe
+# 257, rock 100. **The tier-1 row does not move — ours was already 300**,
+# and that is the one node where we and the reference already agreed. The
+# 300 was DISPUTED for two passes against a 200 camp and settled
+# 2026-08-09 by scoring each source on cells we could already check: the
+# page claiming 200 also calls stone 750 and metal 500, both wrong against
+# EXACT figures. What changes here is only the ladder below the best tool.
 [gatherable.yield_per_hit]
-hand = 3
-"item.rock" = 5
-"item.pickaxe_stone" = 15
+hand = 6
+"item.rock" = 10
+"item.pickaxe_stone" = 26
 "item.pickaxe_metal" = 30
 
 # Bush: an instant hand pickup, not a swung node — outside the node band.
