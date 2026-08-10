@@ -629,30 +629,49 @@ client (`DECISIONS.md` 2026-08-06), so nothing photographs this at all now.
   zero width). §2.1 has the design.
 - Chunk-build time and instancing counts ride the client perf harness.
 
-### 7.1 · ⚠ The greybox mirror lost its gate, and the two halves have drifted
+### 7.1 · The greybox mirror: one list now, and a gate over the rest
 
-**Measured 2026-08-09, while sweeping the browser out of the docs.** The two
-authored structures are declared twice — once as the volume the sim blocks,
-once as the mesh the client draws — and the gate that held the two lists
-equal was `ci/haven_shelter.mjs` + `ci/waystation_canopy.mjs`, both deleted
-with the browser client. **Nothing replaced them**, and the lists no longer
-agree:
+**Was a live defect; fixed 2026-08-10.** The two authored structures were
+declared twice — once in `terrain.rs` as the volume the sim blocks, once in
+`render/props.rs` as the mesh the client draws — and the gate that held the
+lists equal was `ci/haven_shelter.mjs` + `ci/waystation_canopy.mjs`, both
+deleted with the browser client. Nothing replaced them and they had drifted:
 
-| | sim blocks (`terrain.rs`, centre + **full size**) | client draws (`render/props.rs`, centre + **half extent**) |
+| | sim blocked (centre + **full size**) | client drew (centre + **half extent**) |
 |---|---|---|
-| haven shelter | `SHELTER_BOXES`, **14 rows** | `shelter`, **9 rows** |
-| waystation canopy | `WAYSTATION_CANOPY_BOXES`, **9 rows**, finial top **4.1 m**, eave half-width 2.8 m | `canopy`, **6 rows**, top **2.09 m**, plate half-width 1.9 m |
+| haven shelter | `SHELTER_BOXES`, 14 rows, peak 9.2 m | 9 rows, peak 5.6 m — no corner posts, no tower-cap |
+| waystation canopy | `WAYSTATION_CANOPY_BOXES`, 9 rows, finial 4.1 m | 6 rows, top 2.09 m |
 
-The canopy is the loud one: the drawn structure is **about half the blocked
-one in both height and width**, and `scale: 1.0` is authored on that slot
-(`terrain.rs`, "Authored, not drawn"), so no instance transform reconciles
-them. A player is stopped ~0.7 m outside the posts they can see. Note the
-two tables are also in **different units** — full size against half extent —
-which is exactly the transcription hazard the deleted gate existed to cover.
+A player was stopped ~0.7 m outside posts they could see. Note the units: full
+size against half extent, which is the transcription hazard the deleted gate
+existed to cover.
 
-**This is not fixed here** — which list is authoritative is a design call
-(the sim's numbers are the ones `ART.md` §6 and the tier-silhouette argument
-were written against), and this pass is a doc sweep. What is owed is the
-native gate, and `CLAUDE.md` already says its shape: *what may be gated about
-a frame is arithmetic — the mesh fits the volume the sim blocks, in Rust, the
-shape of `crates/client/tests/tree.rs`*. `NOW.md` carries the item.
+**The design call the old text left open is made: the sim's list is
+authoritative** — `ART.md` §6 and the tier-silhouette argument were written
+against those numbers, `OCCUPANT_R_M`/`OCCUPANT_TOP_M` are *defined* as the
+tables' own bounds, and the drawn list was the one that had lost rows.
+
+**And the fix is derivation rather than a second gate.** `props::authored`
+builds the mesh from the sim's rows, converting full size to half extent in
+one place against a length the type system pins; only the colours are the
+client's. There is one list, so this particular drift cannot recur.
+
+What `crates/client/tests/greybox.rs` gates is what derivation cannot make
+true by construction, and it reaches further than the two structures:
+
+- the unit conversion, row for row, on bit patterns;
+- every row reaching the mesh, by vertex count (36 a box, measured);
+- the authored pair's drawn bounds **equalling** the published broad phase in
+  both directions — a gap either way means the scalar and the table came apart;
+- **every other archetype fitting the volume the sim blocks**, which closes
+  `OCCUPANT_R_M`'s own admission that "nothing in the Rust workspace can see a
+  triangle, so the asserts below prove only that this file agrees with itself";
+- a coverage check, so a new occupant arrives measured or explicitly excused.
+
+Left open and ratcheted rather than fixed: the *generated* props block wider
+than they draw (a boulder reaches 1.1145 m inside a 1.5 m blocked cylinder),
+because `blob_mesh` pulls vertices inward from its nominal radius. That is an
+invisible collision skirt — the same defect in the survivable direction — and
+closing it moves collision radii, so it is a knob (`DECISIONS.md` §open,
+"greybox mirror v1") and not a mechanical fix. The gate caps the slack at the
+measured values so it cannot widen unnoticed.

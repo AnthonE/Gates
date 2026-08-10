@@ -77,6 +77,12 @@ building). §9.1 is what we already got right and must not relitigate; §9.2 is
 built this pass (`SiteFootprint` / `site_sweep` — a site publishes masks, not
 a radius; clutter no longer grows across the pad).
 
+Landed since: §9.3a (the drawn structure is derived from the sim's box table
+— one list, so the mirror cannot drift again — plus `tests/greybox.rs` over
+**every** archetype), §9.3b (the world file refuses an island that moved under
+the same seed), and the debug/release probe diff that closes float contraction
+on the one axis this box can reach.
+
 §9.3 is the gap and it is not urgent yet: `haven()` + `pick_minor` produce two
 kinds of site, the separation floor is one hand-asserted constant
 (`WAYSTATION_MIN_SEP_M`), and there is no reservation ledger. That is correct
@@ -473,18 +479,13 @@ and Map exist, the look/strafe inversion is fixed (`look.rs`). Remaining:
    49G disk, `rust-lld` SIGBUS), and a green compile is not evidence — Bevy
    answers a missing decoder with a white fallback and keeps going. It wants
    disk headroom and a `--capture` run someone looks at.
-2. **Uncovered since the browser-gate deletion, and now measured as actually
-   drifted.** Eight deleted gates held "the mesh the client draws == the
-   volume the server blocks"; the canopy is already wrong. Sim
-   `WAYSTATION_CANOPY_BOXES` is 9 rows to a 4.1 m finial, the drawn `canopy`
-   is 6 rows topping out at 2.09 m, and that slot is authored `scale: 1.0`,
-   so nothing reconciles them — you are stopped ~0.7 m outside posts you can
-   see. Shelter is 14 rows against 9. The two tables are also in different
-   units (full size vs half extent), which is the transcription hazard the
-   gate covered. Measurements in `TERRAIN.md` §7.1. Replacement shape is
-   `crates/client/tests/tree.rs`; **which list is authoritative is a design
-   call and is not made yet.** Also uncovered: the clutter ring and the
-   occupant table for everything that is not a tree.
+2. **Closed 2026-08-10.** The greybox mirror is one list now — the drawn
+   structure is derived from the sim's box table (`props::authored`), so the
+   drift cannot recur — and `crates/client/tests/greybox.rs` gates the rest,
+   including the occupant table for everything that is not a tree. The sim's
+   list won the authority call; `TERRAIN.md` §7.1 has it. **Still uncovered:
+   the clutter ring**, and the props' *ratcheted* slack (a boulder blocks
+   0.39 m wider than it draws — `DECISIONS.md` §open "greybox mirror v1").
 3. **World-space anchors are still dropped** (the HUD line landed —
    `hud::readout` pins struct-hit fraction and the charge clock under the
    toast): the wall's own number at the wall itself, a clock on the charge

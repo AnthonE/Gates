@@ -366,6 +366,77 @@ call is still right. What is **not** paid for is everything around it:
   When one does, the port is the cheap answer and the road-finding search is
   not.
 
+### 9.3a · Built this pass: the drawn world is gated against the blocked world
+
+§4's failure mode does not apply to us as *arithmetic* (9.1), but it applies
+in full as **duplicated authorship**, and we had a live instance of it. The
+two authored structures were declared once in `sim_core::terrain` as the
+volume the sim blocks and once in `render/props.rs` as the mesh the client
+draws; the gate that held them equal was a browser `.mjs` deleted with the
+browser client, and they had drifted (`TERRAIN.md` §7.1): the canopy nine
+rows to a 4.1 m finial against six rows topping at 2.09 m, the shelter
+fourteen rows against nine — no corner posts, no tower-cap, a 9.2 m peak
+drawn at 5.6 m. A player was stopped ~0.7 m outside posts they could see.
+That is their rock-edge bug with the floats taken out of it.
+
+Landed:
+
+- **The mesh is DERIVED from the sim's table, not mirrored from it**
+  (`render/props.rs`, `authored()`). One list. The `* 0.5` full-size →
+  half-extent conversion — the transcription hazard that let the two come
+  apart while both looked plausible — is written once against a length the
+  type system pins. Only the colours stay client-side, because what a wall
+  is made of is not a fact about the volume it occupies.
+- **`archetype_mesh` / `archetype_lift` / `SINK_M`** make the renderer's
+  geometry a pure function, so a test can ask the question the draw asks.
+  Before this every archetype was an expression inside `assets()`, reachable
+  only from a running app — which is why `OCCUPANT_R_M`'s own doc says
+  "nothing in the Rust workspace can see a triangle, so the asserts below
+  prove only that this file agrees with itself".
+- **`crates/client/tests/greybox.rs`** (5 tests): the half-extent conversion,
+  every row reaching the mesh by vertex count, the authored pair's bounds
+  equalling the published broad phase in *both* directions, every other
+  archetype fitting the volume the sim blocks, and a coverage check that a new
+  occupant arrives measured or explicitly excused. Proven red under the
+  historical drift itself (truncate the canopy to six rows → "drawn peak
+  3.0000 m against the sim's published 4.1000 m") and under the units bug.
+
+Measured while building it, and **left open deliberately**: the generated
+props block wider than they draw. `blob_mesh` pulls vertices inward from its
+nominal radius, so a boulder `OCCUPANT_R_M` calls 1.5 m actually reaches
+1.1145 m — a 0.39 m invisible collision skirt, and 0.52 m of headroom on the
+ore nodes. It is the canopy's defect in the *survivable* direction (you are
+stopped short of something you can see, rather than walking through
+something solid), and closing it means moving collision radii, which is a
+gameplay change and a replay-golden move. The gate ratchets it at the
+measured values so it cannot widen silently; `DECISIONS.md` §open carries the
+proposal.
+
+### 9.3b · Built this pass: the same seed can no longer mean two islands
+
+§4, applied to persistence rather than to the wire. The world file's header
+already refused a wrong seed and a moved content hash (`worldfile.rs`) — but
+the seed is not the island. Change a noise constant, a road width or a site's
+scoring weight and the *same* seed generates different ground, and the file
+would have loaded happily with every base at coordinates describing terrain
+that no longer exists: foundations in the air, doorways inside hills. That is
+their rock-edge disagreement with a restart in the middle of it.
+
+The header now carries `probe_terrain(seed)` — the digest
+`test_terrain_golden` already pins and the parity gate already diffs, so the
+number the shard refuses on is the number CI refuses on. Computed once at
+boot, never per save. `WORLD_FILE_FORMAT` turned 1 → 2 and the new field
+spends the padding the header was written with. The refusal names the remedy
+in the operator's own terms, and `world_persist.rs` asserts both the refusal
+and that the message says "wipe".
+
+**This is detection, not policy.** The policy is the operator's and is
+spoken: a worldgen change is a wipe (2026-08-10), matching the reference
+game's own posture — they force wipes on map-affecting changes and could not
+avoid it either, because there is no converter that can move a base onto
+ground that changed shape under it. What this buys is that the wipe is a
+message at boot instead of a bug report a week later.
+
 ### 9.4 · What is absent, ranked by when it will bite
 
 1. **Class S has no interest filter at all** — the join walk drips the entire
@@ -390,6 +461,25 @@ call is still right. What is **not** paid for is everything around it:
    seven gates are all unbuilt and `test_raid_storm` does not exist
    (`CLAUDE.md` wall 4). Whatever it becomes, the load case is *at a
    destination*, not on open ground.
+7. **Only x86_64 ↔ wasm32 is gated, and a third CPU is not runnable here.**
+   aarch64 (Apple Silicon) and Windows/MSVC are latent; the depot is Linux
+   only, so nothing is broken today. The op set is IEEE-754-*specified* — the
+   ban on `mul_add`, on every transcendental and on libm leaves only
+   correctly-rounded operations — so cross-target equality is safe by
+   construction, and wasm32 is a genuinely different LLVM backend agreeing,
+   which is evidence rather than nothing. What was missing is that "safe by
+   construction" had no check at all on the axis we *can* reach: **float
+   contraction is opt-level-dependent**, and both sides of the wasm diff are
+   `--release`. `ci/gates.sh` now also diffs the debug probe against the
+   release one, which is the same failure an ARM build would show. Verified
+   identical on 2026-08-10. Running a real third target needs qemu and a cross
+   linker, neither of which this box has — it belongs with the first Mac build,
+   and it is one `diff` when that exists.
+8. **Worldgen changing under a live shard is now a refusal** (see 9.3b), which
+   is the *detection*. The economics are the operator's and are settled: **a
+   worldgen change is a wipe** (2026-08-10), which is the reference game's own
+   posture. What has no mechanism is the wipe itself — `NOW.md` §0q item 2
+   still describes it as unscoped.
 
 ### 9.5 · One thing to steal verbatim
 
