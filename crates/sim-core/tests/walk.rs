@@ -143,17 +143,29 @@ fn a_body_stops_at_a_trunk_from_every_bearing() {
 }
 
 /// The widest scattered thing on the island stops a body too, and by more.
-/// `Rock` is 1.5 m where a trunk is 0.26, so a check that passed on a tree
-/// by accident of the quantum cannot pass here the same way.
+/// A boulder's collision radius is several times a trunk's, so a check that
+/// passed on a tree by accident of the quantum cannot pass here the same way.
+///
+/// **The fixture check below is DERIVED from the table, and it used to be the
+/// literal 1.5.** That literal was the boulder's *nominal* radius —
+/// "DodecahedronGeometry(1.5)" — and on 2026-08-10 the row became the mesh's
+/// measured bound (1.1145; `blob_mesh` displaces vertices inward, so the
+/// nominal was blocking 0.39 m of ground nobody could see). The literal went
+/// red, correctly: it was asserting a number that had stopped being true.
+/// Reading `occupant_volume` here says what the test actually means — this
+/// occupant is much wider than a trunk — and cannot go stale that way again.
 #[test]
 fn a_boulder_stops_a_body_at_its_own_radius() {
     for seed in SEEDS {
         let mut sc = Scratch::live(seed);
         let (_, _, rock) = find(seed, &sc.table, &sc.haven, Occupant::Rock);
         let stop = reach(&rock);
+        let (trunk_r, _) = terrain::occupant_volume(Occupant::Tree);
         assert!(
-            stop > 1.5,
-            "fixture check: a boulder should reach past 1.5 m"
+            stop > trunk_r * 3.0 + CAPSULE_RADIUS_M,
+            "fixture check: a boulder reaches {stop:.3} m, not comfortably \
+             past three trunk radii — this test would prove nothing a tree \
+             had not already proved"
         );
         for k in 0..4u16 {
             let b = charge_at(seed, &mut sc.occupants(), &rock, k);

@@ -168,6 +168,24 @@ $NICE cargo run -p sim-core --release --example probe > "$native_out" \
 $NICE node ci/parity.mjs > "$wasm_out" || fail "wasm probe"
 diff -u "$native_out" "$wasm_out" \
   || fail "test_parity_wasm: native and wasm digests differ"
+
+# Same target, different optimizer. `reference/MONUMENTS.md` §9.4: a third CPU
+# is not runnable on this box (no qemu, no cross linker), so aarch64 and MSVC
+# stay ungated — but the failure that would bite there is float contraction,
+# and THAT is reachable here. If LLVM ever fuses an `a*b + c` at -O3 that it
+# leaves alone at -O0, worldgen's digest moves with the profile, which is the
+# same bug an ARM build would show and is what `sim-core/clippy.toml`'s ban on
+# `mul_add` exists to prevent. The wasm diff above cannot see it: both sides
+# are --release. Cost, measured 2026-08-10 on this box: **39 s**, against 43 s
+# for the release probe beside it — the crate is already compiled in debug by
+# every other gate in this file, so it is the RUN and not the build, and it is
+# the same order as the step it sits next to rather than a new tier of cost.
+debug_out="$(mktemp)"
+trap 'rm -f "$native_out" "$wasm_out" "$debug_out"' EXIT
+$NICE cargo run -p sim-core --example probe > "$debug_out" || fail "debug probe"
+diff -u "$debug_out" "$native_out" \
+  || fail "test_parity_wasm: debug and release digests differ — the optimizer \
+changed a float result, which is the contraction class wall 1 bans by name"
 grep -q '^parity ' "$native_out" || fail "probe output empty — parity not exercised"
 grep -q '^combat ' "$native_out" || fail "probe output has no combat line — melee not exercised"
 grep -q '^bags ' "$native_out" || fail "probe output has no bags line — respawn-on-bag not exercised"

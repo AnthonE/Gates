@@ -755,6 +755,153 @@ fn blob_mesh(radius: f32, jitter: f32, seed: u32, hex: u32, sub: usize, textured
     s.mesh()
 }
 
+// ── The authored structures are DERIVED from the sim's tables ──────────────
+//
+// `TERRAIN.md` §7.1 and `reference/MONUMENTS.md` §9.4. Until this block, the
+// haven shelter and the waystation canopy were declared TWICE — once in
+// `sim_core::terrain` as the volume the sim blocks, once here as the mesh the
+// client draws — and the gate that held the two lists equal was a browser
+// `.mjs` deleted with the browser client. **They had drifted, measured:** the
+// canopy was 9 rows to a 4.1 m finial in the sim and 6 rows topping out at
+// 2.09 m here, so a player was stopped ~0.7 m outside posts they could see;
+// the shelter was 14 rows against 9, missing its four corner posts and its
+// tower-cap, with a 9.2 m peak drawn at 5.6 m. The two tables were also in
+// DIFFERENT UNITS — full size there, half extent here — which is the
+// transcription hazard the deleted gate existed to cover.
+//
+// **The fix is derivation, not a new mirror plus a new gate.** A gate over two
+// hand-written tables can only catch drift after someone writes it; a mesh
+// built from the sim's own rows cannot drift at all, because there is one
+// list. What is left for `tests/greybox.rs` to check is the part derivation
+// cannot make true by construction: that the resulting triangles fit the
+// broad-phase radius and peak the sim publishes (`OCCUPANT_R_M`,
+// `OCCUPANT_TOP_M`), whose own doc admits "nothing in the Rust workspace can
+// see a triangle".
+//
+// Only the COLOURS live here, because the sim has none and should not: what
+// a wall is made of is not a fact about the volume it occupies.
+
+/// Per-row colour for `terrain::SHELTER_BOXES`, index for index.
+///
+/// The array length is the sim table's length as a type, so adding a box to
+/// the sim and forgetting to colour it is a compile error rather than a
+/// silently untinted wall.
+pub const SHELTER_HEX: [u32; terrain::SHELTER_BOXES.len()] = [
+    0x6f6a60, // plinth — the one course that is not wall
+    0x8a8479, // wall-back
+    0x8a8479, // wall-left
+    0x8a8479, // wall-right
+    0x8a8479, // jamb-left
+    0x8a8479, // jamb-right
+    0x8a8479, // lintel
+    0x5f5b53, // roof — darker, so the mass reads against the sky
+    0x8a8479, // post-nw
+    0x8a8479, // post-ne
+    0x8a8479, // post-sw
+    0x8a8479, // post-se
+    0x8a8479, // tower
+    0x5f5b53, // tower-cap — roof stone, because it is roof
+];
+
+/// Per-row colour for `terrain::WAYSTATION_CANOPY_BOXES`, index for index.
+/// Timber rather than the pad's field stone: the two tiers differ in material
+/// as well as in silhouette (`terrain.rs`'s note on the canopy table).
+pub const CANOPY_HEX: [u32; terrain::WAYSTATION_CANOPY_BOXES.len()] = [
+    0x6a5940, // deck
+    0x6a5940, // post-nw
+    0x6a5940, // post-ne
+    0x6a5940, // post-sw
+    0x6a5940, // post-se
+    0x6a5940, // parapet
+    0x7b6a4f, // eave — the plates are lighter, sun-bleached above
+    0x7b6a4f, // cap
+    0x7b6a4f, // finial
+];
+
+/// One sim box table plus its colours, as the `(centre, half-extent, hex)`
+/// triples `boxes_mesh` wants.
+///
+/// **The `* 0.5` is the whole point of this function.** The sim states FULL
+/// size and the mesh builder wants a HALF extent, and that conversion written
+/// by hand at fourteen call sites is exactly how the two lists came apart. It
+/// is written once, here, against a length the type system pins.
+pub fn authored<const N: usize>(
+    rows: &[[f32; 6]; N],
+    hex: &[u32; N],
+) -> Vec<([f32; 3], [f32; 3], u32)> {
+    rows.iter()
+        .zip(hex.iter())
+        .map(|(r, h)| ([r[0], r[1], r[2]], [r[3] * 0.5, r[4] * 0.5, r[5] * 0.5], *h))
+        .collect()
+}
+
+/// How far every prop is pushed into the ground, metres.
+///
+/// `ART.md` rule 2: nothing sits ON the ground, everything sits IN it. Sinking
+/// the lift slightly is the cheapest half of that; the crowding half is the
+/// clutter skirt, which `sim_core` already places.
+///
+/// Hoisted out of `spawn_slot` so `tests/greybox.rs` can evaluate the rule
+/// rather than restate it — "nothing floats" is `lift + mesh_base - SINK_M
+/// <= 0`, which is not checkable while the number is a local.
+pub const SINK_M: f32 = 0.06;
+
+/// The mesh the client draws for one occupant, as a pure function.
+///
+/// **Extracted so the gate can ask the renderer's own question.** Before this,
+/// every archetype's geometry was an expression inside `assets()`, reachable
+/// only through `Assets<Mesh>` and therefore only from a running app — which
+/// is why `OCCUPANT_R_M`'s doc in `sim_core` says, accurately, that "nothing
+/// in the Rust workspace can see a triangle, so the asserts below prove only
+/// that this file agrees with itself". `tests/greybox.rs` calls this and
+/// counts vertices, which is the arithmetic `CLAUDE.md` says a frame may be
+/// gated on.
+///
+/// `None` for the two rows that are not one mesh: `Occupant::None`, and
+/// `Tree`, whose `CONIFER_POOL` variants are generated and gated one by one
+/// in `tests/tree.rs` already.
+pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
+    Some(match o {
+        Occupant::None | Occupant::Tree => return None,
+        // One blob serves all three ore nodes; they differ by material only.
+        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => {
+            blob_mesh(1.0, 0.46, 0x51ed_270b, 0x9c968a, 2, true)
+        }
+        Occupant::Bush => blob_mesh(0.7, 0.58, 0x2545_f491, 0x2c5f2e, 1, false),
+        Occupant::Rock => blob_mesh(1.5, 0.52, 0x1b87_3593, 0x8e887c, 3, true),
+        Occupant::BarrelSlot => Cylinder::new(0.45, 0.95).mesh().resolution(10).build(),
+        Occupant::CrateSlot => boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)]),
+        Occupant::CacheSlot => boxes_mesh(&[([0., 0., 0.], [0.45, 0.275, 0.35], 0x6a5940)]),
+        Occupant::HavenShelter => boxes_mesh(&authored(&terrain::SHELTER_BOXES, &SHELTER_HEX)),
+        Occupant::WaystationCanopy => {
+            boxes_mesh(&authored(&terrain::WAYSTATION_CANOPY_BOXES, &CANOPY_HEX))
+        }
+    })
+}
+
+/// How far an archetype's mesh origin sits above the slot's ground — the
+/// browser's `lift`, kept because these meshes are centred and a slot's `y` is
+/// the surface.
+///
+/// **One table, read by the draw and by the gate.** `sim_core`'s
+/// `OCCUPANT_TOP_M` documents every one of its rows as "lift + half-extent",
+/// which is a claim about a number that lived only in `spawn_slot`'s match
+/// arm; now the gate can evaluate it.
+pub fn archetype_lift(o: Occupant) -> f32 {
+    match o {
+        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => 0.5,
+        Occupant::Bush => 0.45,
+        Occupant::Rock => 0.55,
+        Occupant::BarrelSlot => 0.5,
+        Occupant::CrateSlot => 0.4,
+        Occupant::CacheSlot => 0.275,
+        // The two authored structures and the tree stand on their own base:
+        // their tables put ground at y = 0 rather than centring the mesh.
+        Occupant::HavenShelter | Occupant::WaystationCanopy | Occupant::Tree => 0.0,
+        Occupant::None => 0.0,
+    }
+}
+
 /// A box massing, for the two authored structures. Each entry is
 /// `(centre, half-extent, hex)`.
 ///
@@ -917,8 +1064,8 @@ pub fn assets(
         // tens of thousands, which is not the budget's problem.
         // Jitter is up from 0.28/0.32 with the frequency drop above: at the
         // old amplitude a low-frequency lobe is a bulge, not a shape.
-        blob: meshes.add(blob_mesh(1.0, 0.46, 0x51ed_270b, 0x9c968a, 2, true)),
-        boulder: meshes.add(blob_mesh(1.5, 0.52, 0x1b87_3593, 0x8e887c, 3, true)),
+        blob: meshes.add(archetype_mesh(Occupant::StoneNode).expect("node mesh")),
+        boulder: meshes.add(archetype_mesh(Occupant::Rock).expect("boulder mesh")),
         stump: meshes.add(stump_mesh()),
         // The bush keeps its colour in its vertices: it is the one blob that
         // wears the untextured `foliage` material, and there is no leaf map in
@@ -928,34 +1075,14 @@ pub fn assets(
         // bush wants a ragged outline (`ART.md` rule 6) and 320 smooth
         // triangles gave it a green dome. 80 is enough to stop reading as a
         // die and few enough that the lobes stay visible.
-        bush: meshes.add(blob_mesh(0.7, 0.58, 0x2545_f491, 0x2c5f2e, 1, false)),
-        barrel: meshes.add(Cylinder::new(0.45, 0.95).mesh().resolution(10).build()),
-        crate_box: meshes.add(boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)])),
-        cache_box: meshes.add(boxes_mesh(&[([0., 0., 0.], [0.45, 0.275, 0.35], 0x6a5940)])),
-        // The pad's greybox: a walled block with a tower. Not a kit of
-        // wall-sized slots — one slot, one structure (`terrain.rs`
-        // `Occupant::HavenShelter`).
-        shelter: meshes.add(boxes_mesh(&[
-            ([0.0, 0.15, 0.0], [3.5, 0.15, 3.5], 0x6f6a60),
-            ([0.0, 1.6, -3.2], [3.5, 1.45, 0.3], 0x8a8479),
-            ([-3.2, 1.6, 0.0], [0.3, 1.45, 3.5], 0x8a8479),
-            ([3.2, 1.6, 0.0], [0.3, 1.45, 3.5], 0x8a8479),
-            ([-2.35, 1.6, 3.2], [1.15, 1.45, 0.3], 0x8a8479),
-            ([2.35, 1.6, 3.2], [1.15, 1.45, 0.3], 0x8a8479),
-            ([0.0, 2.75, 3.2], [1.2, 0.3, 0.3], 0x8a8479),
-            ([0.0, 3.2, 0.0], [3.6, 0.25, 3.6], 0x5f5b53),
-            ([1.8, 4.4, -1.8], [1.1, 1.2, 1.1], 0x8a8479),
-        ])),
-        // The lesser tier's: an open roof on four posts, deliberately NOT the
-        // pad's building at 0.6 scale — under half its height, squatter.
-        canopy: meshes.add(boxes_mesh(&[
-            ([-1.5, 0.9, -1.5], [0.12, 0.9, 0.12], 0x6a5940),
-            ([1.5, 0.9, -1.5], [0.12, 0.9, 0.12], 0x6a5940),
-            ([-1.5, 0.9, 1.5], [0.12, 0.9, 0.12], 0x6a5940),
-            ([1.5, 0.9, 1.5], [0.12, 0.9, 0.12], 0x6a5940),
-            ([0.0, 1.95, 0.0], [1.9, 0.14, 1.9], 0x7b6a4f),
-            ([0.0, 1.0, -1.62], [1.6, 0.9, 0.1], 0x6a5940),
-        ])),
+        bush: meshes.add(archetype_mesh(Occupant::Bush).expect("bush mesh")),
+        barrel: meshes.add(archetype_mesh(Occupant::BarrelSlot).expect("barrel mesh")),
+        crate_box: meshes.add(archetype_mesh(Occupant::CrateSlot).expect("crate mesh")),
+        cache_box: meshes.add(archetype_mesh(Occupant::CacheSlot).expect("cache mesh")),
+        // Both authored structures come off the sim's own box tables — see
+        // the `authored` block above for what mirroring them by hand cost.
+        shelter: meshes.add(archetype_mesh(Occupant::HavenShelter).expect("shelter mesh")),
+        canopy: meshes.add(archetype_mesh(Occupant::WaystationCanopy).expect("canopy mesh")),
         foliage: surface(0.86, 0.10, materials),
         needle: materials.add(StandardMaterial {
             base_color: Color::WHITE,
@@ -1091,27 +1218,28 @@ fn spawn_slot(
     // above the ground — the browser's `lift`, kept because these meshes are
     // centred and the slot's y is the surface.
     let mut variant = 0usize;
-    let (mesh, material, lift) = match slot.occupant {
+    // The lift comes off `archetype_lift` rather than being written here, so
+    // the number the draw uses and the number `tests/greybox.rs` checks
+    // against `OCCUPANT_TOP_M` are the same number.
+    let lift = archetype_lift(slot.occupant);
+    let (mesh, material) = match slot.occupant {
         Occupant::Tree => {
             variant = (slot.yaw as usize) % a.pines.len();
-            (a.pines[variant].clone(), a.bark.clone(), 0.0)
+            (a.pines[variant].clone(), a.bark.clone())
         }
-        Occupant::StoneNode => (a.blob.clone(), a.ore_stone.clone(), 0.5),
-        Occupant::MetalNode => (a.blob.clone(), a.ore_metal.clone(), 0.5),
-        Occupant::SulfurNode => (a.blob.clone(), a.ore_sulfur.clone(), 0.5),
-        Occupant::Bush => (a.bush.clone(), a.foliage.clone(), 0.45),
-        Occupant::Rock => (a.boulder.clone(), a.rock.clone(), 0.55),
-        Occupant::BarrelSlot => (a.barrel.clone(), a.metal.clone(), 0.5),
-        Occupant::CrateSlot => (a.crate_box.clone(), a.wood.clone(), 0.4),
-        Occupant::CacheSlot => (a.cache_box.clone(), a.wood.clone(), 0.275),
-        Occupant::HavenShelter => (a.shelter.clone(), a.stone.clone(), 0.0),
-        Occupant::WaystationCanopy => (a.canopy.clone(), a.wood.clone(), 0.0),
+        Occupant::StoneNode => (a.blob.clone(), a.ore_stone.clone()),
+        Occupant::MetalNode => (a.blob.clone(), a.ore_metal.clone()),
+        Occupant::SulfurNode => (a.blob.clone(), a.ore_sulfur.clone()),
+        Occupant::Bush => (a.bush.clone(), a.foliage.clone()),
+        Occupant::Rock => (a.boulder.clone(), a.rock.clone()),
+        Occupant::BarrelSlot => (a.barrel.clone(), a.metal.clone()),
+        Occupant::CrateSlot => (a.crate_box.clone(), a.wood.clone()),
+        Occupant::CacheSlot => (a.cache_box.clone(), a.wood.clone()),
+        Occupant::HavenShelter => (a.shelter.clone(), a.stone.clone()),
+        Occupant::WaystationCanopy => (a.canopy.clone(), a.wood.clone()),
         Occupant::None => return,
     };
-    // Rule 2: nothing sits ON the ground, everything sits IN it. Sinking the
-    // lift slightly is the cheapest half of that; the crowding half is the
-    // clutter skirt, which `sim_core` already places.
-    let sink = 0.06;
+    let sink = SINK_M;
     let transform = Transform {
         translation: Vec3::new(slot.x, slot.y + lift * slot.scale - sink, slot.z),
         rotation: Quat::from_rotation_y(yaw),
