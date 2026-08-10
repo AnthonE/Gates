@@ -1707,17 +1707,31 @@ impl ShardCore {
                                 // shrunken store): restart that walk with
                                 // a reset batch. Finished walks (cursor
                                 // past the store) hear the broadcast.
+                                //
+                                // Counted, because the restart is correct
+                                // and its *cost* is unbounded: a full walk
+                                // is `store_len / PIECE_SYNC_BATCH` ticks,
+                                // and removals arriving faster than that
+                                // walk a client back to zero indefinitely.
+                                // A raid clears that bar easily. Nothing
+                                // said so before this counter and the
+                                // client-side symptom — a world that never
+                                // finishes arriving — does not read as a
+                                // network problem (`reference/NETWORK.md`
+                                // §9.2.1, and §3 for why we count first).
                                 let c = &mut self.clients[slot];
                                 if piece {
                                     if c.piece_sync_cursor > 0 && c.piece_sync_cursor <= store_len {
                                         c.piece_sync_cursor = 0;
                                         c.piece_sync_reset = true;
+                                        ShardStats::bump(&stats.piece_walk_restarts);
                                     }
                                 } else if c.deploy_sync_cursor > 0
                                     && c.deploy_sync_cursor <= store_len
                                 {
                                     c.deploy_sync_cursor = 0;
                                     c.deploy_sync_reset = true;
+                                    ShardStats::bump(&stats.piece_walk_restarts);
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                     ShardStats::bump(&stats.ev_sent);
@@ -2456,6 +2470,22 @@ impl ShardCore {
                     ShardStats::bump(&stats.encode_range_errors);
                 }
             }
+        }
+
+        // What the fill could not carry. Counted once, here, rather than at
+        // the three ways out of the loop above — an entity can be skipped by
+        // an overflow and then skipped again by the break, so counting at
+        // the refusal sites double-counts exactly when the budget is
+        // tightest. `n_sent` includes the own entity, which is not a
+        // candidate, hence the `- 1`.
+        //
+        // Not an error. Shedding is the designed degradation (NETCODE.md §3:
+        // shed, never fragment) and it was previously the only path by which
+        // snapshot quality drops under load with nothing recording it — see
+        // `stats.rs` and `reference/NETWORK.md` §9.2.3.
+        let shed = n_cand.saturating_sub(n_sent.saturating_sub(1));
+        if shed > 0 {
+            ShardStats::add(&stats.snap_entities_shed, shed as u64);
         }
 
         let len = match enc.finish() {

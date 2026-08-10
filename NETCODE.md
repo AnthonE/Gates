@@ -118,7 +118,7 @@ controller says so, no opt-out. What that means for us, concretely:
 
 | knob | value | why |
 |---|---|---|
-| wtransport version | **git-pin ≥ commit `0f7609a`** (or 0.7.2 once cut) | 0.7.1 has a remotely triggerable panic — two bytes on the CONNECT stream kill a worker (#317); fixed on main 2026-07-25, unreleased as of this writing |
+| wtransport version | **git-pin ≥ commit `0f7609a`** (or 0.7.2 once cut). ⚠ The tree pins `rev = a11e6a8e…` (`server/Cargo.toml:26`, `client/Cargo.toml:185`), resolving to `0.7.1` from git. **Nothing in the repo records whether `a11e6a8` descends from `0f7609a`, and nothing gates it** — write the ancestry down next to the pin when this seam is next touched | 0.7.1 has a remotely triggerable panic — two bytes on the CONNECT stream kill a worker (#317); fixed on main 2026-07-25, unreleased as of this writing |
 | congestion control | CUBIC (default); `--cc bbr` server flag for A/B | BBR is labeled experimental in quinn; measure before trusting |
 | datagram send buffer | 64 KiB (down from quinn's 1 MiB default) | bounds worst-case queued staleness at our rate; snapshots replace, never accumulate |
 | MTU | initial/min 1200, DPLPMTUD on, ceiling 1452 (defaults) | free server→client headroom; design number stays 1,100 |
@@ -397,6 +397,20 @@ Subscribe cost is dominated by first-visit chunk state; the join bundle
 pre-streams the spawn ring (9 chunks) before the first keyframe so a fresh
 spawn never sees pop-in of the base they spawned beside.
 
+⚠ **That paragraph is the design; the tree does neither half of it**
+(measured 2026-08-10, `reference/NETWORK.md` §9.3). There is no grid and no
+chunk subscription. Class D is a flat scan of `MAX_PLAYERS + MAX_MOBS` with
+a radial hysteresis compare, per client per tick
+(`server/src/core.rs:2163`, `:2208`) — 16,400 distance tests per tick at
+cap, which is affordable and is not the problem. **Class S has no interest
+filter at all**: the join walk drips the *entire* piece store to every
+client regardless of distance, 32 per tick, and any piece removal mid-walk
+restarts it from zero (`core.rs:1872`, `:1663`). That is
+`reference/NETWORK.md` §2 — the reference game's own 2014 mistake — plus a
+re-send amplification it did not have. §9.2.1 there has the arithmetic and
+the smallest fix; the interest filter is the real one and is a `NOW.md`
+item, not a patch.
+
 **The planned extension is occlusion, and it lands here** (`DECISIONS.md`
 2026-08-04 · `NOW.md` 18): a class-D member fully occluded by terrain is
 dropped from the snapshot set rather than merely deprioritized, which is
@@ -459,7 +473,22 @@ where the sim says.
 | server crash | DESIGN L7: restart < 10 s from snapshot + WAL; clients auto-reconnect, rejoin as wakers; ≤ 1 tick of acked transactions lost, and none that were acked |
 | mid-raid restart | the raid's events are WAL'd before ack — the wall you blew is still blown |
 
-## 11 · Added CI gates
+## 11 · The CI gates this file asks for — ⚠ **none of them exist**
+
+> **Retitled 2026-08-10.** This section was headed "Added CI gates" and
+> listed seven. A grep over `crates/` and `ci/` returns **zero hits for all
+> seven**. Nothing here was ever built, and the old title asserted the
+> opposite — which is precisely the failure `CLAUDE.md` names as the
+> dangerous one: a doc that reads as covered while nothing checks it. The
+> designs below are good and are kept verbatim as designs; every one of
+> them is unbuilt. `reference/NETWORK.md` §9.3 carries the audit, and §9.2
+> ranks the gaps three of these gates would have caught —
+> `test_stream_in` and `test_raid_storm` both bear directly on the class-S
+> join walk (§9.2.1), and `netem profiles` is the only item here that would
+> exercise the reorder/loss/dup torture list at all.
+>
+> Two of them are also named as enforcement elsewhere and marked there:
+> `test_raid_storm` in `CLAUDE.md` wall 4 and `DESIGN.md` §12.
 
 - `test_chunk_epoch`: fuzz subscribe/unsubscribe/re-subscribe against a
   mutating chunk; client-reconstructed state must equal server state at
