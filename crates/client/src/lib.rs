@@ -194,9 +194,14 @@ pub struct Session {
     /// synchronous and non-blocking, which is what a UI system can call.
     actions: tokio::sync::mpsc::Sender<Vec<u8>>,
     events: tokio::sync::mpsc::Receiver<Vec<u8>>,
-    datagrams: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    /// The unreliable lane, depth one — see [`datagram_lane`] for why it is a
+    /// `watch` and what that costs at a bad frame rate.
+    datagrams: DatagramRx,
     snapshots: u64,
     input_buf: [u8; DATAGRAM_BUDGET_BYTES],
+    /// Reused landing buffer for the newest datagram, so the watch's read
+    /// guard is released before the decode runs — see [`drain_datagram`].
+    dg_buf: Vec<u8>,
     /// The shard hung up. Latched by [`Session::pump`] when either receive
     /// lane's reader task ends — the event task on a closed or desynced
     /// stream, the datagram task on a dead connection — because a reader
@@ -224,6 +229,88 @@ fn drain_lane(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>, mut each: impl FnMu
             Err(TryRecvError::Disconnected) => return true,
         }
     }
+}
+
+/// The receiving end of the datagram mailbox — see [`datagram_lane`].
+type DatagramRx = tokio::sync::watch::Receiver<Vec<u8>>;
+
+/// The datagram mailbox: **depth one, latest-wins**. A `watch` and not an
+/// mpsc, because the lane carries snapshots and a snapshot REPLACES its
+/// predecessor rather than adding to it — the policy the server's own writer
+/// already runs three files away and states in one line (`server::net`:
+/// *"Drain to the newest — snapshots replace, never accumulate"*). This end
+/// was a `channel::<Vec<u8>>(256)` with `send().await` behind it, which is
+/// backpressure: an INVENTED LITERAL DEPTH with no stated overflow policy,
+/// opened in the same function as — and just above — a lane that takes its
+/// depth from `ACTION_RING_CAP` and spells its policy out. Wall 4 wants the
+/// cap and the policy named; latest-wins is both, and it is the server's,
+/// not a new one.
+///
+/// The initial value is an empty payload that is never delivered: a `watch`
+/// hands a fresh receiver its seed already marked seen, so [`drain_datagram`]
+/// sees no change until the reader task actually sends.
+///
+/// **Why dropping older snapshots is safe, and it is a property of the wire
+/// rather than a hope** (re-read against the tree on 2026-08-10): the server
+/// deltas only against a snapshot the client ACKED (`server::client::baseline`
+/// takes `newest_acked`), and an ack can only name a snapshot that was really
+/// applied (`client_core::view` writes the ring on the success path and
+/// `ack_fields` reads that ring) — so a snapshot dropped here is a baseline
+/// the server never offers. Removed entity ids are not exactly-once either:
+/// they stay in `pending_removals` and ride EVERY snapshot until an ack
+/// clears them (`ClientSlot::on_acks` → `pending_remove`). `nudge` and
+/// `last_executed_seq` are levels stamped into every header, not edges. And
+/// the shard has exactly one `send_datagram` (`server::net`), so this lane
+/// carries snapshots and nothing else.
+///
+/// **What it costs, stated rather than hidden.** Below ~15 fps two snapshots
+/// can land inside one frame and depth one keeps only the second, so the
+/// interpolator loses a sample — `INTERP_DELAY_TICKS = 4` over a 16-deep
+/// `HISTORY` (`client_core::interp`), i.e. it eats history it would rather
+/// have exactly when the frame rate is worst. The trade is deliberate: the
+/// alternative is a queue that hands a stalled client old world states to
+/// draw, and stale is worse than sparse.
+fn datagram_lane() -> (tokio::sync::watch::Sender<Vec<u8>>, DatagramRx) {
+    tokio::sync::watch::channel(Vec::new())
+}
+
+/// Take whatever is in the mailbox — at most one payload — and answer
+/// whether the sender has hung up. The counterpart of [`drain_lane`] for the
+/// unreliable lane, and deliberately a SECOND function rather than a change
+/// to that one: `drain_lane` is shared with the 64-deep reliable event lane
+/// (inventory, container echoes, toasts, refusals, chat), where every message
+/// is owed and none may be skipped.
+///
+/// **The hangup is asked BEFORE the value is read**, which is the whole
+/// subtlety here. `has_changed` answers `Err` the instant the sender drops,
+/// unseen payload or not, so returning early on it would eat the last
+/// snapshot — the property `the_last_words_land_before_the_hangup_is_reported`
+/// pins on the other lane, and it has to hold on this one too. The payload
+/// outlives its sender in the watch's slot, and its seen-flag with it, so the
+/// read below is still correct after the hangup.
+///
+/// **The payload is copied out before `each` runs, and that is not
+/// bookkeeping.** A `watch::Ref` is a read guard over the slot's lock, so
+/// holding it across the callback would hold it across a whole snapshot
+/// decode — and `each` here is `ClientCore::on_datagram`. The reader task's
+/// `send` is synchronous now, so it would block a tokio worker thread for
+/// that span; the mpsc this replaced took no lock on the frame path at all,
+/// and a change that fixes a queue by adding a lock to the frame path has
+/// not paid for itself. `scratch` is owned by the [`Session`] and reused, so
+/// the copy costs a `memcpy` and no allocation after the first frame — the
+/// per-frame-allocation rule the client is held to, same as the sim thread.
+fn drain_datagram(rx: &mut DatagramRx, scratch: &mut Vec<u8>, mut each: impl FnMut(&[u8])) -> bool {
+    let gone = rx.has_changed().is_err();
+    {
+        let newest = rx.borrow_and_update();
+        if !newest.has_changed() {
+            return gone;
+        }
+        scratch.clear();
+        scratch.extend_from_slice(&newest);
+    }
+    each(scratch);
+    gone
 }
 
 impl Session {
@@ -341,12 +428,15 @@ impl Session {
         let connection = std::sync::Arc::new(connection);
 
         // Datagrams get their own task for the same reason the events do:
-        // the pump must never await the network mid-frame.
-        let (dg_tx, datagrams) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+        // the pump must never await the network mid-frame. The mailbox
+        // itself is depth one and latest-wins (`datagram_lane`), so the
+        // handoff cannot await either — a full queue is not a state this
+        // lane can be in.
+        let (dg_tx, datagrams) = datagram_lane();
         let dg_conn = connection.clone();
         tokio::spawn(async move {
             while let Ok(dgram) = dg_conn.receive_datagram().await {
-                if dg_tx.send(dgram.to_vec()).await.is_err() {
+                if dg_tx.send(dgram.to_vec()).is_err() {
                     return;
                 }
             }
@@ -383,6 +473,7 @@ impl Session {
             datagrams,
             snapshots: 0,
             input_buf: [0u8; DATAGRAM_BUDGET_BYTES],
+            dg_buf: Vec::with_capacity(DATAGRAM_BUDGET_BYTES),
             closed: false,
         })
     }
@@ -428,7 +519,9 @@ impl Session {
         let core = &mut self.core;
         let snapshots = &mut self.snapshots;
         // Datagrams first: freshest state before we predict on top of it.
-        let dg_gone = drain_lane(&mut self.datagrams, |dgram| {
+        // At most one, and it is the newest the wire delivered since the
+        // last frame — the lane replaces rather than queues.
+        let dg_gone = drain_datagram(&mut self.datagrams, &mut self.dg_buf, |dgram| {
             if core.on_datagram(dgram) != Ingest::Error {
                 *snapshots += 1;
             }
@@ -471,7 +564,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::drain_lane;
+    use super::{drain_datagram, drain_lane};
 
     /// The disconnect detector must not cry wolf: an empty lane whose sender
     /// is alive is a quiet frame, not a dead shard.
@@ -506,6 +599,67 @@ mod tests {
         // And the verdict is repeatable: asking a dead lane again says dead
         // again, which is what lets `pump` run on after the latch is set.
         assert!(drain_lane(&mut rx, |_| unreachable!(
+            "nothing left to hand over"
+        )));
+    }
+
+    /// The unreliable lane replaces, it does not accumulate: six datagrams
+    /// arriving between two frames hand over ONE payload, the newest. Six
+    /// because the join is where a backlog was really reachable — `bin/gates`
+    /// connects before `App::new()`, so the mailbox filled through window,
+    /// asset and first-chunk time on every join, and those pre-first-ack
+    /// snapshots are zero-state and all apply.
+    ///
+    /// **Be honest about which half of that this test can defend.** The
+    /// keeps-only-the-newest half is enforced by the TYPE — a `watch` slot is
+    /// physically unable to accumulate — so no edit to [`drain_datagram`] can
+    /// redden the `got == [6]` assertion; it was seen red only against the
+    /// mpsc this replaced, and a revert to mpsc would delete this test along
+    /// with the code. What the test actually gates is the ordering that IS
+    /// hand-written and IS breakable: the seed is never delivered, a seen
+    /// payload is never redelivered, and the last snapshot lands in the same
+    /// drain that reports the hangup rather than being eaten by it —
+    /// `watch::has_changed` answers `Err` on a dropped sender whether or not
+    /// a payload is unseen, which is the same property
+    /// `the_last_words_land_before_the_hangup_is_reported` pins on the
+    /// reliable lane. Each of those three fails on a one-line mutation.
+    #[test]
+    fn the_datagram_mailbox_keeps_only_the_newest() {
+        let (tx, mut rx) = super::datagram_lane();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut got: Vec<usize> = Vec::new();
+        assert!(
+            !drain_datagram(&mut rx, &mut buf, |_| unreachable!("nothing has arrived")),
+            "a quiet lane with a live sender is not a dead one"
+        );
+        for n in 1..=6usize {
+            tx.send(vec![0u8; n]).unwrap();
+        }
+        assert!(
+            !drain_datagram(&mut rx, &mut buf, |b| got.push(b.len())),
+            "the sender is alive"
+        );
+        assert_eq!(got, [6], "only the newest snapshot is handed over");
+        // And a second drain with nothing new is not a redelivery: the
+        // payload stays in the slot, but it has been marked seen.
+        assert!(!drain_datagram(&mut rx, &mut buf, |_| unreachable!(
+            "the newest was already handed over"
+        )));
+
+        got.clear();
+        tx.send(vec![0u8; 7]).unwrap();
+        drop(tx); // the reader task ending is exactly this drop
+        assert!(
+            drain_datagram(&mut rx, &mut buf, |b| got.push(b.len())),
+            "a dropped sender must be reported as gone"
+        );
+        assert_eq!(
+            got,
+            [7],
+            "the last snapshot lands in the drain that reports the hangup"
+        );
+        // Repeatable, which is what lets `pump` run on after the latch is set.
+        assert!(drain_datagram(&mut rx, &mut buf, |_| unreachable!(
             "nothing left to hand over"
         )));
     }
