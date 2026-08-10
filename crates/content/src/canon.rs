@@ -17,15 +17,6 @@ impl Canon {
     fn u(&mut self, v: u32) {
         self.0.update(&v.to_le_bytes());
     }
-    fn opt_s(&mut self, v: Option<&str>) {
-        match v {
-            None => self.u(0),
-            Some(s) => {
-                self.u(1);
-                self.s(s);
-            }
-        }
-    }
     fn stacks(&mut self, v: &[Stack]) {
         self.u(v.len() as u32);
         for s in v {
@@ -111,15 +102,22 @@ pub fn hash(c: &Content) -> u64 {
         h.u(w.headshot_mult);
         h.u(w.rate_per_min);
         h.u(w.range_m);
-        match w.ballistic {
+        // The round list walks in **declared order, not sorted**, and that
+        // is deliberate: order is the ammo policy (the sim spends the first
+        // round the shooter carries), so two bows differing only in which
+        // arrow they prefer play differently and must digest differently.
+        // Sorting here would be the same defect the `[survival]` comment
+        // above describes, one level down.
+        match w.ammo.as_deref() {
             None => h.u(0),
-            Some(b) => {
+            Some(rounds) => {
                 h.u(1);
-                h.u(b.speed_mps);
-                h.u(b.drop_mps2);
+                h.u(rounds.len() as u32);
+                for id in rounds {
+                    h.s(id);
+                }
             }
         }
-        h.opt_s(w.ammo.as_deref());
         // The fuse walks here for the reason the `[survival]` and
         // `[backpack]` comments above give: a field that reaches the sim
         // and not the digest lets two contents that play differently
@@ -142,6 +140,18 @@ pub fn hash(c: &Content) -> u64 {
                 h.u(b);
             }
         }
+    }
+
+    // The ballistics, on the object they belong to. These reach
+    // `AmmoDef` (bake.rs) and decide where every arrow lands, so two
+    // contents whose arrows fly differently must not digest the same.
+    // Sorted, unlike the round list above: this table is a keyed lookup
+    // and its file order means nothing.
+    h.s("ammo");
+    for a in sorted(&c.ammo, |a| &a.id) {
+        h.s(&a.id);
+        h.u(a.speed_mps);
+        h.u(a.drop_mps2);
     }
 
     h.s("armor");

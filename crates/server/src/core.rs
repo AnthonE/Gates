@@ -18,11 +18,11 @@ use protocol::{
     encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
     encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
     encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_respawn, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog,
-    SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH,
-    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_research_refused, encode_event_respawn, encode_event_shot,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
+    encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
+    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
+    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{PieceRec, LOC_PLANE};
@@ -45,7 +45,7 @@ use sim_core::world::{
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
     EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
     EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED,
-    EV_RESPAWN, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS,
+    EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS,
     EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 
@@ -1535,6 +1535,32 @@ impl ShardCore {
                     let level = (ev.b >> 16) as u8;
                     let lit = ev.b & 1 != 0;
                     match encode_event_oven(cx, cz, level, lit, ev.c, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_SHOT => {
+                    // Broadcast, `EV_OVEN`'s posture and its reason: an
+                    // arrow in the air is a world fact, visible from
+                    // outside whatever base it was loosed in. A client
+                    // that misses one loses a tracer and nothing else —
+                    // the arrow itself is the sim's, and the hit arrives
+                    // on its own events whether the shot was drawn or not.
+                    let (yaw, pitch) = ((ev.b >> 8) as u16, ev.b as u8);
+                    let (speed, drop) = ((ev.c >> 16) as u16, ev.c as u16);
+                    match encode_event_shot(ev.a, yaw, pitch, speed, drop, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {

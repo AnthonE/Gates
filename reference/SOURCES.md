@@ -1,13 +1,22 @@
 # reference/SOURCES.md — what to read, and which question it settles
 
-**Most of it is reachable, and the line above used to say the opposite.**
-Re-probed 2026-08-09 (second probe, same day): `rust.facepunch.com/news`
-and `wiki.facepunch.com` **serve full page text**, and the devblog
-quotations in `RIPLIST.md` §4.3 are now primary-text, not paraphrase. The
-earlier "every Rust domain 403s" reading was wrong — whatever produced it
-was not an organization policy denial, because the same hosts answer now.
-Do not trust a blanket claim of blockage in this file again without
-re-probing; that claim cost a whole research pass its confidence.
+⚠ **Reachability is a property of the container, not of the hosts. Probe;
+never read the state below as current.** This header has now been rewritten
+in both directions and both rewrites were honest measurements:
+
+- 2026-08-09 found `rust.facepunch.com/news` and `wiki.facepunch.com`
+  **open**, serving full page text, and corrected an earlier blanket "every
+  Rust domain 403s" claim that had cost a research pass its confidence. The
+  devblog quotations in `RIPLIST.md` §4.3 are primary text from that pass.
+- 2026-08-10 (`PROJECTILES.md`, a different container) found the same two
+  hosts plus `wiki.rustclash.com` returning **`EGRESS_BLOCKED`** from the
+  egress proxy. That pass ran tier 2 and tier 3 on search summaries alone
+  and says so in its own §0.
+
+Neither answer generalises. What does: a doc may record *what a probe
+found, when, and on which pass* — it may not record "reachable" as a
+standing fact, and a reader may not skip probing because a table below says
+OPEN. The map is a starting guess with a date on it.
 
 So this file exists for a human with a browser. Each row says **what to
 look for**, not just where — a link with no question attached comes back
@@ -17,8 +26,8 @@ they land in `RIPLIST.md` §4/§5.
 
 Ordered by what it unblocks.
 
-**The measured map** (re-probed 2026-08-09, and it is mixed — probe the
-row you need rather than assuming either extreme):
+**The measured map** — *as probed on 2026-08-09, and the first two rows did
+not hold on 2026-08-10 (see above)*. Probe the row you need:
 
 | host | state | note |
 |---|---|---|

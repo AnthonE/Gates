@@ -8,7 +8,7 @@
 //! in this module runs on the sim thread.
 
 use crate::schema::{
-    CookStation, DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, Weapon,
+    Ammo, CookStation, DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, Weapon,
     WeaponKind,
 };
 use crate::Content;
@@ -17,7 +17,7 @@ use sim_core::build::{
     BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
     SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
 };
-use sim_core::combat::{CombatContent, MeleeDef, RangedDef, ThrowDef};
+use sim_core::combat::{AmmoDef, CombatContent, MeleeDef, RangedDef, ThrowDef};
 use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
@@ -29,10 +29,10 @@ use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
 use sim_core::inventory::SpawnKit;
 use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
-    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS,
-    MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
-    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
-    MAX_RESEARCH_ROWS, TICK_HZ,
+    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
+    MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS, MAX_LOOT_TABLES,
+    MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS,
+    MAX_WEAPON_AMMO, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -492,6 +492,13 @@ impl Content {
         if cc.player_hp == 0 {
             return Err("bake: player_hp 0 would disarm combat entirely".to_string());
         }
+        // Rounds before weapons: a bow's row is meaningless without the
+        // ballistics its rounds carry, and baking them first means a
+        // failure names the round rather than the weapon that happened to
+        // list it.
+        for a in &self.ammo {
+            self.bake_ammo(a, &mut cc)?;
+        }
         for w in &self.weapons {
             if w.kind == WeaponKind::Bow {
                 self.bake_bow(w, &mut cc)?;
@@ -608,71 +615,98 @@ impl Content {
             .item_index(&w.id)
             .ok_or_else(|| format!("bake: weapon `{}` arms no item", w.id))?
             as usize;
-        let b = w
-            .ballistic
-            .as_ref()
-            .ok_or_else(|| format!("bake: bow `{}` has no ballistic block", w.id))?;
-        let ammo_id = w
+        let round_ids = w
             .ammo
-            .as_ref()
+            .as_deref()
+            .filter(|a| !a.is_empty())
             .ok_or_else(|| format!("bake: bow `{}` names no ammo", w.id))?;
-        let ammo = self
-            .item_index(ammo_id)
-            .ok_or_else(|| format!("bake: bow `{}` ammo `{ammo_id}` is not an item", w.id))?;
+        // Refused, never truncated: a list past the cap silently losing its
+        // tail is a bow that stops firing when its first rounds run out,
+        // which reads as a bug in the quiver rather than in the table.
+        if round_ids.len() > MAX_WEAPON_AMMO {
+            return Err(format!(
+                "bake: bow `{}` lists {} rounds, past the {MAX_WEAPON_AMMO} a weapon may carry",
+                w.id,
+                round_ids.len()
+            ));
+        }
+        let mut ammo = [NO_ITEM; MAX_WEAPON_AMMO];
+        for (slot, id) in ammo.iter_mut().zip(round_ids) {
+            *slot = self
+                .item_index(id)
+                .ok_or_else(|| format!("bake: bow `{}` ammo `{id}` is not an item", w.id))?;
+        }
 
         let damage = u16::try_from(w.damage)
             .map_err(|_| format!("bake: `{}` damage {} overflows u16", w.id, w.damage))?;
         if damage == 0 {
             return Err(format!("bake: bow `{}` deals no damage", w.id));
         }
-        // m/s -> mm/tick. Floor: an arrow that flies a hair slower than the
-        // data says is honest, one that flies faster than it was sampled
-        // for is not.
-        let speed_mmpt = b.speed_mps * 1000 / TICK_HZ;
-        if speed_mmpt == 0 {
-            return Err(format!(
-                "bake: bow `{}` fires slower than one mm a tick",
-                w.id
-            ));
-        }
-        let ceiling = ARROW_STEP_MM as u32 * MAX_ARROW_SUBSTEPS as u32;
-        if speed_mmpt > ceiling {
-            return Err(format!(
-                "bake: bow `{}` at {} m/s is {speed_mmpt} mm/tick, past the {ceiling} mm/tick \
-                 the collision sampler can trace ({ARROW_STEP_MM} mm x {MAX_ARROW_SUBSTEPS} \
-                 samples); it would pass through a wall between two taps",
-                w.id, b.speed_mps
-            ));
-        }
-        let speed_mmpt = u16::try_from(speed_mmpt)
-            .map_err(|_| format!("bake: bow `{}` speed overflows u16 mm/tick", w.id))?;
-        // m/s^2 -> mm/tick^2, over the square of the rate.
-        let drop_mmpt2 = u16::try_from(b.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ))
-            .map_err(|_| format!("bake: bow `{}` drop overflows u16 mm/tick^2", w.id))?;
         if w.rate_per_min == 0 {
             return Err(format!("bake: bow `{}` never fires (rate 0)", w.id));
         }
         let rate_ticks = u16::try_from((TICK_HZ * 60 / w.rate_per_min).max(1))
             .map_err(|_| format!("bake: bow `{}` rate overflows u16 ticks", w.id))?;
-        // Ticks to cross `range_m` at the muzzle speed, clamped to the
-        // store's backstop. Derived rather than authored so the one number
-        // the data states about reach — `range_m` — is the one that governs
-        // it, exactly as `reach_cm` does for melee.
-        let life = (w.range_m * 1000 / speed_mmpt as u32).max(1);
-        let life_ticks = u16::try_from(life)
-            .unwrap_or(MAX_ARROW_LIFE_TICKS)
-            .min(MAX_ARROW_LIFE_TICKS);
 
         if cc.ranged[idx].damage != 0 {
             return Err(format!("bake: duplicate weapon row for `{}`", w.id));
         }
         cc.ranged[idx] = RangedDef {
             damage,
-            speed_mmpt,
-            drop_mmpt2,
             ammo,
             rate_ticks,
-            life_ticks,
+            // Reach in millimetres. Flight time is no longer derived here
+            // because it is no longer the weapon's to derive: with the
+            // speed on the round, `range_m` over *which* speed? The sim
+            // divides by the round it actually fires (`ranged::draw`).
+            range_mm: w.range_m * 1000,
+        };
+        Ok(())
+    }
+
+    /// One `[[ammo]]` row into the sim's ballistics table.
+    ///
+    /// **The sampler wall lives here now, and moving it is the point.** It
+    /// used to guard a bow, which meant a round too fast for the collision
+    /// tracer was only refused if some *weapon* declared that speed. With
+    /// ballistics on the round, the refusal belongs to the round: an arrow
+    /// that outruns the sampler would pass through a wall between two taps
+    /// whichever bow launched it.
+    fn bake_ammo(&self, a: &Ammo, cc: &mut CombatContent) -> Result<(), String> {
+        let idx =
+            self.item_index(&a.id)
+                .ok_or_else(|| format!("bake: ammo `{}` arms no item", a.id))? as usize;
+        // m/s -> mm/tick. Floor: a round that flies a hair slower than the
+        // data says is honest, one that flies faster than it was sampled
+        // for is not.
+        let speed_mmpt = a.speed_mps * 1000 / TICK_HZ;
+        if speed_mmpt == 0 {
+            return Err(format!(
+                "bake: ammo `{}` flies slower than one mm a tick",
+                a.id
+            ));
+        }
+        let ceiling = ARROW_STEP_MM as u32 * MAX_ARROW_SUBSTEPS as u32;
+        if speed_mmpt > ceiling {
+            return Err(format!(
+                "bake: ammo `{}` at {} m/s is {speed_mmpt} mm/tick, past the {ceiling} mm/tick \
+                 the collision sampler can trace ({ARROW_STEP_MM} mm x {MAX_ARROW_SUBSTEPS} \
+                 samples); it would pass through a wall between two taps",
+                a.id, a.speed_mps
+            ));
+        }
+        let speed_mmpt = u16::try_from(speed_mmpt)
+            .map_err(|_| format!("bake: ammo `{}` speed overflows u16 mm/tick", a.id))?;
+        // m/s^2 -> mm/tick^2, over the square of the rate.
+        let drop_mmpt2 = u16::try_from(a.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ))
+            .map_err(|_| format!("bake: ammo `{}` drop overflows u16 mm/tick^2", a.id))?;
+
+        if cc.ammo[idx].speed_mmpt != 0 {
+            return Err(format!("bake: duplicate ammo row for `{}`", a.id));
+        }
+        cc.ammo[idx] = AmmoDef {
+            speed_mmpt,
+            drop_mmpt2,
         };
         Ok(())
     }

@@ -301,6 +301,34 @@ pub const EV_RESEARCH: u8 = 33;
 /// that pressed.
 pub const EV_RESEARCH_REFUSED: u8 = 34;
 
+/// EV_SHOT: a = the shooter's player id, b = yaw << 8 | pitch, c =
+/// speed mm/tick << 16 | drop mm/tick². **Broadcast** — an arrow in the
+/// air is a world fact like a door swinging, and it is the one fact in
+/// combat that everyone near it needs and only the shooter had.
+///
+/// **The payload is what a tracer needs and not one field more, and the
+/// omissions are the design.** No origin: the client knows where the
+/// shooter is from the snapshot, and `ranged::ARROW_EYE_MM` above the feet
+/// is a constant on both sides. No item: an arrow is an arrow to look at,
+/// and the day a fire arrow must *look* different is the day this earns a
+/// field. What it does carry is the ballistics, because `client-core`
+/// holds no content tables at all — it is a wire and prediction layer, so
+/// speed and drop have to cross or the client cannot draw the curve.
+///
+/// Carrying them has a better reason than necessity, though. The
+/// trajectory is a pure function of `(origin, yaw, pitch, speed, drop)`,
+/// so a client handed all five integrates **the same arc the sim did** —
+/// the quantize-both-sides law (CLAUDE.md's trap list) applied to a
+/// tracer. The drawn arrow is not an approximation of the real one that
+/// drifts over a second of flight; it is the same arithmetic.
+///
+/// This is deliberately **not** the reference game's model, and §9.1 of
+/// `reference/PROJECTILES.md` is why: theirs lets the client own the
+/// projectile and audits it with thirteen tolerance convars. Here the
+/// client owns a *picture* of a projectile the server already fired, and
+/// a forged one changes nothing but what its author sees.
+pub const EV_SHOT: u8 = 35;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -308,7 +336,7 @@ pub const EV_RESEARCH_REFUSED: u8 = 34;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_RESEARCH_REFUSED;
+pub const EV_MAX: u8 = EV_SHOT;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -2320,8 +2348,13 @@ impl World {
             // an archer's shot for the crime of standing next to a tree —
             // and standing next to a tree is where an archer stands. The
             // bow answers first or it does not work at all.
-            let swung = if ranged::draw(tick, &self.combat, &mut self.arrows, &mut self.players[i])
-            {
+            let swung = if ranged::draw(
+                tick,
+                &self.combat,
+                &mut self.arrows,
+                &mut self.events,
+                &mut self.players[i],
+            ) {
                 gather::Swing::Absorbed
             } else {
                 gather::swing(

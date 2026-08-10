@@ -812,6 +812,18 @@ pub struct ClientCore {
     knocks: [(u16, u16, u8, u8, u32); REFUSAL_RING],
     knock_head: usize,
     knock_len: usize,
+    /// Shots seen this frame (wire v33): shooter, yaw, pitch, speed and
+    /// drop in mm/tick. Broadcast like `knocks`, and for the same reason —
+    /// an arrow in the air is somebody else's action that this client has
+    /// to draw.
+    ///
+    /// **Purely cosmetic, and that is load-bearing.** Nothing downstream
+    /// of this ring may decide anything: the arrow that matters is the
+    /// server's, and its hit arrives on `EV_HIT` whether or not a tracer
+    /// was ever drawn. A dropped entry costs one streak of motion.
+    shots: [(u32, u16, u8, u16, u16); REFUSAL_RING],
+    shot_head: usize,
+    shot_len: usize,
     /// Grants this client earned (lock v1): address + `lock::GRANT_*`. An
     /// own-fact, and the only thing that tells a client its code landed —
     /// the door itself does not move on a correct code.
@@ -971,6 +983,9 @@ impl ClientCore {
             deploy_defs_have: 0,
             deploy_refusals: [0; REFUSAL_RING],
             knocks: [(0, 0, 0, 0, 0); REFUSAL_RING],
+            shots: [(0, 0, 0, 0, 0); REFUSAL_RING],
+            shot_head: 0,
+            shot_len: 0,
             knock_head: 0,
             knock_len: 0,
             auths: [(0, 0, 0, 0, 0); REFUSAL_RING],
@@ -1613,6 +1628,24 @@ impl ClientCore {
                 self.woke_on_bag = on_bag;
                 flags |= APPLIED_RESPAWN;
             }
+            EventMsg::Shot {
+                shooter,
+                yaw,
+                pitch,
+                speed_mmpt,
+                drop_mmpt2,
+            } => {
+                // Drop-oldest, the knock ring's policy: under a volley
+                // worth more than `REFUSAL_RING`, the newest tracers are
+                // the ones still worth drawing.
+                if self.shot_len == REFUSAL_RING {
+                    self.shot_head = (self.shot_head + 1) % REFUSAL_RING;
+                    self.shot_len -= 1;
+                }
+                self.shots[(self.shot_head + self.shot_len) % REFUSAL_RING] =
+                    (shooter, yaw, pitch, speed_mmpt, drop_mmpt2);
+                self.shot_len += 1;
+            }
             EventMsg::Knock {
                 cx,
                 cz,
@@ -1836,6 +1869,22 @@ impl ClientCore {
         self.knock_head = (self.knock_head + 1) % REFUSAL_RING;
         self.knock_len -= 1;
         Some(k)
+    }
+
+    /// Oldest buffered shot: who fired, where they aimed, and the round's
+    /// speed and drop in mm/tick.
+    ///
+    /// **Single-consumer, like every `pop_*` here** — CLAUDE.md's
+    /// clean-merge trap is exactly this ring shape, so the one caller is
+    /// `render::feed::drain` and a second reader takes `Res<Feed>`.
+    pub fn pop_shot(&mut self) -> Option<(u32, u16, u8, u16, u16)> {
+        if self.shot_len == 0 {
+            return None;
+        }
+        let s = self.shots[self.shot_head];
+        self.shot_head = (self.shot_head + 1) % REFUSAL_RING;
+        self.shot_len -= 1;
+        Some(s)
     }
 
     /// Oldest buffered grant: the lock's address and what it now allows

@@ -56,11 +56,12 @@ pub use event::{
     encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
     encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
     encode_event_recipes, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_respawn, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_research_refused, encode_event_respawn, encode_event_shot,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
+    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
+    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -374,7 +375,29 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// Fixtures are keyed `v30_*` — all renamed and every C→S action
 /// regenerated, plus the hello and the three door/deploy-carrying cases,
 /// plus three new: `v30_action_demolish`, `v30_knock` and `v30_auth`.
-pub const PROTO_VER: u16 = 32;
+///
+/// **v33 — the arrow becomes visible.** One new event subtype,
+/// `SUB_SHOT = 47`, carrying the shooter, the two aim angles and the
+/// round's speed and drop (`sim-core`'s `EV_SHOT`). Nothing widened and
+/// nothing moved: it is a subtype added at the top of a 6-bit field with
+/// sixteen values still free, so every other fixture's bytes are
+/// unchanged and only the version they are keyed under moves.
+///
+/// It is a version bump anyway, and that is the rule working rather than
+/// an inconvenience. A v32 client handed a `SUB_SHOT` datagram reads an
+/// unknown subtype and treats the whole message as malformed; the bump is
+/// what makes that a refused handshake instead of a client that silently
+/// drops every shot on the shard.
+///
+/// **It was authored as v31 and landed as v33**, because research v0 took
+/// 32 and `SUB_RESEARCH`/`_REFUSED`/`SUB_KNOWN` took 44–46 while this
+/// branch was open — a head-on collision on both numbering axes, and the
+/// exact case `CLAUDE.md`'s "protocol and limits.rs never land from two
+/// branches in one merge window" names. Renumbering above them at the
+/// merge is the resolution; nothing about either feature moved.
+///
+/// Fixtures are keyed `v33_*`, plus one new: `v33_event_shot`.
+pub const PROTO_VER: u16 = 33;
 
 /// Datagram kind field width.
 ///

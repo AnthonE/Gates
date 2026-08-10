@@ -98,8 +98,29 @@ pub const AOI_EXIT_CM: i64 = 20_800;
 /// that improves 19 places takes a held slot.
 /// Proposed default, DECISIONS.md §open (interest rank cap v0).
 pub const AOI_RANK_EXIT: usize = MAX_SNAPSHOT_ENTITIES;
-pub const AOI_RANK_ENTER: usize = (MAX_SNAPSHOT_ENTITIES as i64 * AOI_ENTER_CM * AOI_ENTER_CM
-    / (AOI_EXIT_CM * AOI_EXIT_CM)) as usize;
+/// **Written as the number it is, with its derivation asserted beside it
+/// rather than substituted for it.** It shipped as the expression itself,
+/// which read well and cost the whole gate suite: `ci/knob_registry.mjs`
+/// pins a registry claim against the constant a source file actually
+/// declares, and it cannot evaluate arithmetic — so a computed initializer
+/// is not a value it can check, and it fails loudly rather than passing
+/// over one. `ci/gates.sh` was red on a clean `main` because of it (found
+/// 2026-08-10, merging the tracer branch).
+///
+/// The literal is what the registry pins; the `assert!` below is what
+/// keeps the literal honest, and it is strictly stronger than the
+/// expression was — it fails at compile time if either radius or
+/// `MAX_SNAPSHOT_ENTITIES` moves without this number moving with them,
+/// which is the drift the expression existed to prevent and the gate
+/// could not see.
+pub const AOI_RANK_ENTER: usize = 45;
+const _: () = assert!(
+    AOI_RANK_ENTER
+        == (MAX_SNAPSHOT_ENTITIES as i64 * AOI_ENTER_CM * AOI_ENTER_CM
+            / (AOI_EXIT_CM * AOI_EXIT_CM)) as usize,
+    "AOI_RANK_ENTER must stay the enter/exit area ratio of AOI_RANK_EXIT — \
+     a radius or the entity cap moved and this number did not"
+);
 
 /// Per-client ring of sent snapshots the server deltas against
 /// (NETCODE.md §3: "the last 32 sent states"). An ack that falls outside
@@ -180,6 +201,20 @@ pub const PENDING_REMOVALS_CAP: usize = 256;
 /// CONTENT.md §2). The content bake refuses a set past this. Proposed
 /// default, DECISIONS.md §open (gather bounds row).
 pub const MAX_ITEM_DEFS: usize = 64;
+
+/// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
+///
+/// Four because that is what the reference game's bow actually carries —
+/// wooden, bone, high-velocity and fire arrows (`reference/PROJECTILES.md`
+/// §4) — and a fifth would be a content row nobody has argued for. The bake
+/// refuses a longer list rather than truncating it: a silently dropped
+/// round is a weapon that stops firing when its first three run out, which
+/// reads as a bug in the quiver and not in the table.
+///
+/// Structural, not a balance number: it sizes a fixed array inside
+/// `RangedDef`, so it is a cap in the `MAX_ITEM_DEFS` sense.
+/// Proposed default, DECISIONS.md §open (ballistics-on-ammo row).
+pub const MAX_WEAPON_AMMO: usize = 4;
 
 /// Stacks a fresh character may be granted at spawn (`content/balance.toml`
 /// `[[spawn_kit]]`). Bounded like everything else on a content-driven path:

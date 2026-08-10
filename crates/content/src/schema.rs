@@ -188,9 +188,27 @@ pub enum WeaponKind {
     Throwable,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+/// One round, and **the object its own ballistics belong to**.
+///
+/// This used to be a `[weapon.ballistic]` block on the bow, and moving it
+/// here is `reference/PROJECTILES.md` §9.3 (operator, 2026-08-10). The
+/// reference game hangs ballistics off `ItemModProjectile` — a mod on the
+/// *ammo item* — which is why one bow there fires four arrows that differ
+/// in speed, drop and impact while the bow stays one object. With the
+/// numbers on the weapon, an arrow variant is unreachable at any values:
+/// the bow decides how fast its arrow flies, so every arrow it fires flies
+/// the same.
+///
+/// Damage stays on the weapon. That is not the reference's split — theirs
+/// scales the weapon's damage by the round's — but the multiplier is a
+/// number nobody has spoken, and inventing one is `DECISIONS.md` §open's
+/// job rather than this struct's.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Ballistic {
+pub struct Ammo {
+    /// Item id this row arms — ammo is an item first, exactly as weapons
+    /// are. An `[[ammo]]` row naming no item is refused at boot.
+    pub id: String,
     pub speed_mps: u32,
     pub drop_mps2: u32,
 }
@@ -210,9 +228,17 @@ pub struct Weapon {
     pub headshot_mult: u32,
     pub rate_per_min: u32,
     pub range_m: u32,
-    /// Required for projectile kinds; absent on a firearm = hitscan.
-    pub ballistic: Option<Ballistic>,
-    pub ammo: Option<String>,
+    /// The rounds this weapon can fire, in **preference order** — the sim
+    /// spends the first one the shooter is actually carrying. Required on
+    /// `bow`, refused on melee and throwable.
+    ///
+    /// A list rather than one id because the reference game's bow is a
+    /// `BaseProjectile` with `SwitchAmmoTo`: one weapon, several rounds.
+    /// We have the *capacity* here and not yet the verb — there is no way
+    /// to ask for a particular arrow, so order in this list is the whole
+    /// of the policy. Every shipped row names exactly one round today, so
+    /// nothing about what a bow fires has changed with the schema.
+    pub ammo: Option<Vec<String>>,
     /// Fuse seconds — required on `throwable`, refused on every other
     /// kind (`validate.rs`), because it is the one column a swing has no
     /// meaning for. The bake turns it into ticks against `TICK_HZ` the

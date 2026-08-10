@@ -1,7 +1,8 @@
 # Gates · content/weapons.toml — combat rows (CONTENT.md §1). Damage is
 # per body hit; TTK bands in balance.toml assert hits-to-kill (CONTENT §4
-# anchor 2). `ballistic` present = projectile (M2 consumes speed/drop);
-# absent on a firearm = hitscan.
+# anchor 2). A `kind = "bow"` row is a projectile weapon and its rounds
+# carry the ballistics (the `[[ammo]]` table at the foot of this file); a
+# firearm names rounds with no `[[ammo]]` row and is hitscan.
 #
 # `structure` is the second damage column: what one hit takes off a
 # building piece or a deployable. It is its own number, never `damage`
@@ -109,11 +110,7 @@ structure = 1
 headshot_mult = 2
 rate_per_min = 30
 range_m = 60
-ammo = "item.arrow_wood"
-
-[weapon.ballistic]
-speed_mps = 40
-drop_mps2 = 20
+ammo = ["item.arrow_wood"]
 
 [[weapon]]
 id = "item.crossbow"
@@ -123,11 +120,7 @@ structure = 1
 headshot_mult = 2
 rate_per_min = 20
 range_m = 80
-ammo = "item.arrow_metal"
-
-[weapon.ballistic]
-speed_mps = 55
-drop_mps2 = 20
+ammo = ["item.arrow_metal"]
 
 [[weapon]]
 id = "item.revolver"
@@ -137,7 +130,7 @@ structure = 1
 headshot_mult = 2
 rate_per_min = 150
 range_m = 50
-ammo = "item.pistol_ammo"
+ammo = ["item.pistol_ammo"]
 
 [[weapon]]
 id = "item.satchel_charge"
@@ -170,3 +163,40 @@ fuse_s = 10
 # standing in it — is the NEXT slice's, not this one's.
 # Proposed default, DECISIONS.md §open ("satchel blast v0").
 blast_m = 3
+
+# --- the rounds ------------------------------------------------------------
+#
+# **Ballistics belong to the round, not to the bow that fires it**
+# (`reference/PROJECTILES.md` §9.3; operator, 2026-08-10). These two blocks
+# were `[weapon.ballistic]` on the bow and the crossbow until the schema
+# moved, and the numbers are unchanged in the move — `item.arrow_wood` is
+# the bow's old 40 m/s and `item.arrow_metal` the crossbow's old 55, so no
+# arrow shipped today flies differently than it did before.
+#
+# The reference game hangs these off `ItemModProjectile`, a mod on the ammo
+# item, which is how one bow there fires wooden, bone, high-velocity and
+# fire arrows that differ in speed, drop and impact. With the numbers on the
+# weapon that is unreachable at any values: the bow decides how fast its
+# arrow flies, so every arrow it fires flies the same.
+#
+# What this table does NOT yet carry is a damage column. Theirs scales the
+# weapon's damage by the round's (a high-velocity arrow is −20 %), and that
+# multiplier is a number nobody has spoken — `DECISIONS.md` §open, not this
+# file. So damage stays on the weapon and every round out of one bow hits
+# equally hard, which is the honest half-way house and is stated rather
+# than hidden.
+#
+# `speed_mps` has a hard ceiling the bake enforces and it is not a taste
+# call: an arrow faster than `ARROW_STEP_MM × MAX_ARROW_SUBSTEPS` per tick
+# (2.72 m) passes through a wall between two collision samples. Content
+# that fast is refused at boot rather than clamped.
+
+[[ammo]]
+id = "item.arrow_wood"
+speed_mps = 40
+drop_mps2 = 20
+
+[[ammo]]
+id = "item.arrow_metal"
+speed_mps = 55
+drop_mps2 = 20

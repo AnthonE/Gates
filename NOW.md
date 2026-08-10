@@ -735,13 +735,24 @@ crate-wide, but its *contiguity* claim is file-local.
 
 ## 5 · Gameplay still missing, in rough order of what a player notices
 
-- **The arrow is invisible and does no structure damage.** Ranged landed
-  (salvaged 2026-08-06, wire v24) and `ranged.rs`'s own header records what
-  is left: no `EV_SHOT`, so no client can draw a tracer — a shot arrives as
-  `EV_HIT`/`EV_HEALTH`/`EV_DEATH` and nothing else; and an arrow that
-  reaches a wall stops dead rather than chipping it — `collide::blocked`
-  bakes `CAPSULE_RADIUS_M` into its query, so an arrow is as fat as a body
-  and threads a doorway but never an arrow slit.
+- **The arrow does no structure damage, and it is as fat as a body.** An
+  arrow that reaches a wall stops dead rather than chipping it, and
+  `collide::blocked` bakes `CAPSULE_RADIUS_M` into its query, so an arrow
+  threads a doorway but never an arrow slit. The honest fix for the second
+  is a radius parameter on `collide` — a `sim-core` change with a
+  replay-gate consequence, so it wants its own commit.
+  **Operator, 2026-08-10: ranged tracks the reference game as closely as we
+  can, and arrows come back** (`DECISIONS.md`; `reference/PROJECTILES.md` §9
+  is the sized list). Landed off it: ballistics on the round (§9.3), and
+  `EV_SHOT` + the tracer, so the arrow is visible at last (§9.2, wire v33).
+  Next is **arrow recovery** (§9.7) — the spent-arrow store, the ~15 % break
+  and the 10 s lodge, and the first verb in the protocol addressed to a
+  world position rather than a build cell, which is why it is a protocol
+  pass and not an afternoon. It gates §9.6: their bow damage is priced
+  against arrows that come back, so no bow number may track theirs until it
+  lands. Then `headshot_mult`, armed-and-unread since the content crate
+  (§9.4) — §7 says take the most significant body part, never the first
+  intersection.
 - **The revolver still cannot fire.** Hitscan wants M2's rewound raycast, so
   `bake_combat` drops firearm rows deliberately, not by omission.
 - **Dropped loot should land somewhere you can find, not inside the floor**

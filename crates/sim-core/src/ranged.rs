@@ -36,8 +36,7 @@
 //!
 //! No headshots (melee has none either — `frame.pitch` aims the shot but no
 //! part of a body is worth more than another), no damage falloff (the schema
-//! has no curve to read), no arrow drawn on any screen (that is a wire
-//! event and a client lane's tracer, both unbuilt), and no structure damage
+//! has no curve to read), and no structure damage
 //! — an arrow that reaches a wall stops dead rather than chipping it.
 //! `collide::blocked` also inflates every query by `CAPSULE_RADIUS_M`
 //! because that constant is baked into it, so an arrow goes exactly where a
@@ -48,13 +47,16 @@
 use crate::collide::{self, ColIndex, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M};
 use crate::combat::{held_item, CombatContent};
 use crate::craft::{inv_count, inv_take};
+use crate::gather::NO_ITEM;
 use crate::input::BTN_PRIMARY;
-use crate::limits::{ARROW_STEP_MM, MAX_ARROWS, MAX_ARROW_SUBSTEPS, MAX_PLAYERS};
+use crate::limits::{
+    ARROW_STEP_MM, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_PLAYERS,
+};
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
 use crate::pitch_lut::pitch_dir;
 use crate::terrain;
-use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT};
+use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_SHOT};
 use crate::yaw_lut::yaw_dir;
 
 /// Height above the feet an arrow leaves from, millimetres. The eye, not
@@ -199,7 +201,13 @@ impl Default for Arrows {
 /// skips the gather-and-melee path entirely when it answers `true`, whether
 /// the shot was refused for cadence, for an empty quiver or for a full
 /// store.
-pub fn draw(tick: u64, cc: &CombatContent, arrows: &mut Arrows, p: &mut Player) -> bool {
+pub fn draw(
+    tick: u64,
+    cc: &CombatContent,
+    arrows: &mut Arrows,
+    events: &mut EventQueue,
+    p: &mut Player,
+) -> bool {
     let Some(def) = cc.held_ranged(held_item(p)) else {
         return false;
     };
@@ -213,20 +221,43 @@ pub fn draw(tick: u64, cc: &CombatContent, arrows: &mut Arrows, p: &mut Player) 
     // a refused shot must not be re-attempted every tick.
     p.next_swing = tick + def.rate_ticks.max(1) as u64;
 
-    if inv_count(&p.inv, def.ammo) == 0 {
+    // The first round in the weapon's preference order the shooter is
+    // actually carrying — and it must have ballistics to fly by, which
+    // `validate` guarantees for every listed round, so the `find_map` is a
+    // re-check rather than the first check.
+    //
+    // Walking the list here rather than baking one round is the whole of
+    // §9.3's payoff at the sim end: a bow with wooden and high-velocity
+    // arrows listed fires wood until the wood runs out and then keeps
+    // firing, at the other arrow's speed and drop. There is no verb to
+    // choose, so the list order is the choice.
+    let Some((round, ball)) = def
+        .ammo
+        .iter()
+        .copied()
+        .take_while(|&a| a != NO_ITEM)
+        .filter(|&a| inv_count(&p.inv, a) > 0)
+        .find_map(|a| cc.ammo_def(a).map(|b| (a, b)))
+    else {
         return true;
-    }
+    };
     // Space before ammo, always. A full store must cost the shooter
     // nothing — spending the arrow first and finding no slot for it is how
     // a cap turns into a bug report about vanishing ammunition.
     let Some(ix) = arrows.free() else {
         return true;
     };
-    inv_take(&mut p.inv, def.ammo, 1);
+    inv_take(&mut p.inv, round, 1);
 
     let (fx, fz) = yaw_dir(p.frame.yaw);
     let (ch, sv) = pitch_dir(p.frame.pitch);
-    let speed = def.speed_mmpt as f32;
+    let speed = ball.speed_mmpt as f32;
+    // Flight time is the weapon's reach over this round's speed, so a fast
+    // arrow and a slow one out of the same bow both expire at the range
+    // the bow claims instead of at a baked tick count that only one of
+    // them earned. Integer division, once per shot. `speed_mmpt > 0` is
+    // `ammo_def`'s filter, so this cannot divide by zero.
+    let life = (def.range_mm / ball.speed_mmpt as u32).clamp(1, MAX_ARROW_LIFE_TICKS as u32) as u16;
     arrows.a[ix] = Arrow {
         qx: p.body.qx * (POS_XZ_Q * MM_PER_M) as i32,
         qy: p.body.qy * (POS_Y_Q * MM_PER_M) as i32 + ARROW_EYE_MM,
@@ -236,13 +267,24 @@ pub fn draw(tick: u64, cc: &CombatContent, arrows: &mut Arrows, p: &mut Player) 
         vx: crate::fmath::floor_i32(fx * ch * speed),
         vy: crate::fmath::floor_i32(sv * speed),
         vz: crate::fmath::floor_i32(fz * ch * speed),
-        drop: def.drop_mmpt2,
+        drop: ball.drop_mmpt2,
         owner: p.id,
         item: held_item(p),
         damage: def.damage,
-        life: def.life_ticks.max(1),
+        life,
         flown: 0,
     };
+    // Announced only where an arrow actually left the bow — after the
+    // cadence, the quiver and the store have all had their say. Every one
+    // of those paths returns above, so a client can treat `EV_SHOT` as
+    // "an arrow exists" rather than "someone pressed the button", which
+    // is the difference between a tracer and a phantom.
+    events.push(
+        EV_SHOT,
+        p.id,
+        (p.frame.yaw as u32) << 8 | p.frame.pitch as u32,
+        (ball.speed_mmpt as u32) << 16 | ball.drop_mmpt2 as u32,
+    );
     true
 }
 

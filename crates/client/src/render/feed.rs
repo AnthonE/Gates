@@ -84,6 +84,14 @@ pub struct Feed {
     /// Grants earned this frame: address + `sim_core::lock::GRANT_*`.
     auths: [(u16, u16, u8, u8, u8); FEED_CAP],
     n_auths: usize,
+    /// Arrows loosed this frame (wire v33): shooter id, yaw, pitch, and the
+    /// round's speed and drop in mm/tick. Broadcast, like `knocks`.
+    ///
+    /// Cosmetic only. The tracer spawned from this decides nothing — the
+    /// arrow that can kill you is the server's, and its hit arrives on its
+    /// own events whether or not anything drew a streak.
+    shots: [(u32, u16, u8, u16, u16); FEED_CAP],
+    n_shots: usize,
     /// Placements that happened this frame: address + which store (`true` =
     /// deployable). Broadcast-only by construction — the core's ring is fed
     /// by `PiecePlaced`/`DeployPlaced` and never by a sync walk, so a join
@@ -136,6 +144,10 @@ impl Feed {
         &self.knocks[..self.n_knocks]
     }
     /// Grants earned this frame, oldest first.
+    /// `(shooter, yaw, pitch, speed mm/tick, drop mm/tick²)` this frame.
+    pub fn shots(&self) -> &[(u32, u16, u8, u16, u16)] {
+        &self.shots[..self.n_shots]
+    }
     pub fn auths(&self) -> &[(u16, u16, u8, u8, u8)] {
         &self.auths[..self.n_auths]
     }
@@ -154,6 +166,7 @@ impl Feed {
         self.n_learned = 0;
         self.n_knocks = 0;
         self.n_auths = 0;
+        self.n_shots = 0;
         self.n_placed = 0;
     }
 
@@ -236,6 +249,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_auths;
             feed.auths[n] = a;
             feed.n_auths += 1;
+        }
+    }
+    while let Some(sh) = core.pop_shot() {
+        if feed.n_shots >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_shots;
+            feed.shots[n] = sh;
+            feed.n_shots += 1;
         }
     }
     while let Some(p) = core.pop_placed() {

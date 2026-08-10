@@ -261,26 +261,49 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
         match w.kind {
             WeaponKind::Bow => {
-                if w.ballistic.is_none() {
-                    return Err(format!("weapon `{}`: bows are ballistic", w.id));
-                }
-                let ammo = w
+                let rounds = w
                     .ammo
                     .as_deref()
+                    .filter(|a| !a.is_empty())
                     .ok_or_else(|| format!("weapon `{}`: bows need ammo", w.id))?;
-                item_exists(ammo, &format!("weapon `{}` ammo", w.id))?;
+                // Every round is an item AND has a ballistic row. The
+                // second half is the check the schema move exists for: a
+                // bow used to carry its own numbers and could not miss
+                // them, and now it names rounds that have to supply them.
+                // A bow whose arrow has no `[[ammo]]` row would otherwise
+                // fire at zero speed rather than refuse to load.
+                for id in rounds {
+                    item_exists(id, &format!("weapon `{}` ammo", w.id))?;
+                    if !c.ammo.iter().any(|a| &a.id == id) {
+                        return Err(format!(
+                            "weapon `{}`: round `{id}` has no [[ammo]] row to fly by",
+                            w.id
+                        ));
+                    }
+                }
+                // Preference order is the whole of the ammo policy until a
+                // switch verb exists, so a duplicate is a silently dead
+                // entry rather than a harmless one.
+                for (i, id) in rounds.iter().enumerate() {
+                    if rounds[..i].contains(id) {
+                        return Err(format!("weapon `{}`: round `{id}` listed twice", w.id));
+                    }
+                }
             }
             WeaponKind::Firearm => {
-                let ammo = w
+                let rounds = w
                     .ammo
                     .as_deref()
+                    .filter(|a| !a.is_empty())
                     .ok_or_else(|| format!("weapon `{}`: firearms need ammo", w.id))?;
-                item_exists(ammo, &format!("weapon `{}` ammo", w.id))?;
+                for id in rounds {
+                    item_exists(id, &format!("weapon `{}` ammo", w.id))?;
+                }
             }
             WeaponKind::Melee | WeaponKind::Throwable => {
-                if w.ammo.is_some() || w.ballistic.is_some() {
+                if w.ammo.is_some() {
                     return Err(format!(
-                        "weapon `{}`: melee/throwable carries no ammo or ballistic",
+                        "weapon `{}`: melee/throwable carries no ammo",
                         w.id
                     ));
                 }
@@ -331,6 +354,26 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 }
             }
         }
+    }
+
+    // Ammo: item-backed rounds carrying the ballistics that used to sit on
+    // the bow (`reference/PROJECTILES.md` §9.3). The sampler wall — a round
+    // too fast for the collision tracer — is deliberately NOT here: it is
+    // arithmetic over `ARROW_STEP_MM` and `TICK_HZ`, which are sim-core's
+    // constants, so `bake.rs` keeps it where it can read them.
+    for a in &c.ammo {
+        item_exists(&a.id, "ammo")?;
+        if c.ammo.iter().filter(|o| o.id == a.id).count() > 1 {
+            return Err(format!("ammo `{}`: listed twice", a.id));
+        }
+        // Zero speed is an arrow that never leaves the bow, and it is a
+        // division below (`range_mm / speed`), so it is refused at the
+        // door rather than guarded at the use.
+        if a.speed_mps == 0 {
+            return Err(format!("ammo `{}`: a round with no muzzle speed", a.id));
+        }
+        // Zero drop is legal and means a flat round — the schema has no
+        // opinion about gravity, only about a round that cannot fly.
     }
 
     // Armor: item-backed, worn in the slot the item declares, sane range.

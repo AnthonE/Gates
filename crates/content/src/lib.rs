@@ -65,6 +65,12 @@ struct BuildingFile {
 #[serde(deny_unknown_fields)]
 struct WeaponsFile {
     weapon: Vec<Weapon>,
+    /// The ammo table (`PROJECTILES.md` §9.3). Defaulted rather than
+    /// required so a content set with no projectile weapon in it does not
+    /// have to carry an empty table; `validate` refuses a bow whose round
+    /// has no row here, which is the check that actually matters.
+    #[serde(default)]
+    ammo: Vec<Ammo>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -136,6 +142,9 @@ pub struct Content {
     pub recipes: Vec<Recipe>,
     pub pieces: Vec<Piece>,
     pub weapons: Vec<Weapon>,
+    /// Rounds, with the ballistics that belong to them rather than to the
+    /// weapon that fires them (`reference/PROJECTILES.md` §9.3).
+    pub ammo: Vec<Ammo>,
     pub armors: Vec<Armor>,
     pub consumables: Vec<Consumable>,
     pub deployables: Vec<Deployable>,
@@ -226,6 +235,7 @@ impl Content {
             recipes: recipes.recipe,
             pieces: building.piece,
             weapons: weapons.weapon,
+            ammo: weapons.ammo,
             armors: armor.armor,
             consumables: consumables.consumable,
             deployables: deployables.deployable,
