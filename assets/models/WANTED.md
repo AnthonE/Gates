@@ -12,8 +12,13 @@ leaves a gap they can walk through, so the numbers are a fit test and not a
 style note. `crates/client/tests/tree.rs` is the shape of the gate that
 checks one (`CLAUDE.md`: what may be gated about a frame is arithmetic).
 
-**59 objects.** 12 world scatter · 6 build shapes · 12 deployables · 22 held
-items · 3 worn · 1 animal · 3 projectile/misc.
+**63 meshes and 6 texture sets.** 12 world scatter · 6 build shapes · 12
+deployables · 22 held items · 3 worn · 1 animal · 3 projectile/misc · 4
+deadfall (§9). The texture sets are §9 too, and they are the only thing on
+this page a mesh generator cannot make.
+
+**Two of the 63 are marked do-not-buy** (§2.1 pine, §2.6 bush) and stay listed
+only so the inventory is complete — see §1.
 
 ---
 
@@ -94,13 +99,15 @@ Everything else in §2–§8 has a slot that already indexes it.
   is welcome (§6 note) but it must be rigged to the same skeleton or the clips
   go with it. Generated meshes are not rigged; this is the one row where a
   generator is the wrong tool.
-- **The conifer.** `bevy_procedural_tree` generates bark + needle meshes per
-  variant, with UVs already cylindrical so the bark map lands grain-up. It is
-  a dependency whose code ships and it works. A hand-made tree would have to
-  beat a generator that gives unlimited variants for free — `ART.md` rule 7
-  ("no two identical instances adjacent") is the bar, and a single static
-  `.glb` tree fails it by construction. **Listed in §2 anyway, at low
-  priority, because §2.1 is the one prop a judge names first.**
+- **Every plant.** Trees, bushes, grass — **do not buy a foliage `.glb`, from
+  a generator or anywhere else.** `reference/PLANTS.md` is the whole argument;
+  the short form is that a plant is an alpha-card problem and a mesh generator
+  emits opaque hulls, so a bought bush is the green potato we already have.
+  The forest's gaps are a **species table** (ez-tree's 15 MIT presets port
+  into settings we already ship, no asset), a **placement fix** (scatter is a
+  uniform 8 m lattice, which `ART.md` rule 7 forbids), an **LOD**, and
+  **leaf/bark textures** — three code slices and a texture hunt, no models.
+  §2.1 and §2.6 stay listed as rows only so the inventory is complete.
 - **Grass, pebbles, twigs, litter** (`clutter.rs`). Thousands of elements per
   16 m tile, built as one merged mesh per tile. This is a population, not an
   object; a `.glb` blade of grass would be 721 draw calls a tile.
@@ -121,12 +128,12 @@ Sizes are the **full extents at scale 1.0**; the terrain applies a per-slot
 
 | # | object | full size (m) | tris | what it is |
 |---|---|---|---|---|
-| 2.1 | **Pine** | 3.4 ⌀ × **6.6** tall | ≤ 8 k | Temperate conifer. `props::PINE_H` = 6.6 m and `PINE_MAX_R` = 1.7 m are hard — `tests/tree.rs` asserts the canopy fits inside them and that the base sits at y = 0. Thin, **ragged silhouette**; `ART.md` rule 6 says a smooth cone is wrong at any texture budget. Bark and needles as two material slots. *Low priority — see §1.* |
+| 2.1 | **Pine** | 3.4 ⌀ × **6.6** tall | ≤ 8 k | Generated (`tree.rs`), and staying generated. **Do not buy — §1, and `reference/PLANTS.md` §4.** Listed so the inventory is complete. |
 | 2.2 | **Pine stump** | 0.64 ⌀ × 0.34 tall | ≤ 500 | What a felled tree leaves. Bark ring, and a **fresh cut face** lighter than the bark — that contrast is the whole reason a stump reads as a stump. Drawn by `apply_fell` the instant a tree drops. |
 | 2.3 | **Stone node** | 2.0 × 2.0 × 2.0 | ≤ 1.5 k | Granite outcrop, not a boulder — it should read as *bedrock breaking the surface*. Sits 0.5 m into the ground. |
 | 2.4 | **Metal node** | 2.0 × 2.0 × 2.0 | ≤ 1.5 k | Same rock, with dark ore seams and a metallic glint. `ART.md`: a node's identity is the glint its reflectance gives it. |
 | 2.5 | **Sulfur node** | 2.0 × 2.0 × 2.0 | ≤ 1.5 k | Same rock, yellow crystalline crust in the fissures. |
-| 2.6 | **Berry bush** | 1.4 × 1.4 × 1.4 | ≤ 800 | Ragged outline, **not a green dome** — the current 320-triangle blob read as a die and had to be dropped to 80. Leaf cards, red berries. |
+| 2.6 | **Berry bush** | 1.4 × 1.4 × 1.4 | ≤ 800 | A green sphere today, and the fix is ez-tree's three `bush_*` presets, not a model. **Do not buy — §1.** |
 | 2.7 | **Boulder** | 3.0 × 3.0 × 3.0 | ≤ 3 k | Granite erratic. Grass grows over its meeting line (rule 2), so the base wants to be irregular rather than flat-cut. |
 | 2.8 | **Loot barrel** | 0.9 ⌀ × 0.95 | ≤ 800 | Weathered steel drum, dented, ribbed. Smashable — it is a gatherable, not scenery. |
 | 2.9 | **Supply crate** | 1.1 × 0.8 × 0.8 | ≤ 600 | The haven pad's container. Wooden slatted crate, banded, latched lid. |
@@ -275,7 +282,47 @@ so a replacement is gated on fitting 1.5 × 0.78.
 
 ---
 
-## 9 · If you are only doing fifteen
+## 9 · Plants — 4 meshes and 6 texture sets
+
+`reference/PLANTS.md` is the research; this is its §6.4 in buying order. The
+split matters: **the meshes below are opaque solids, which is what a mesh
+generator is good at. The textures are alpha cut-outs, which is what it is
+not** — and the plants themselves stay generated, so they appear nowhere here.
+
+**Deadfall — 4 meshes.** The cheapest thing that makes a forest floor read as
+a forest floor and not as ground with trees standing on it. No alpha, no
+leaves, so a generator is exactly right.
+
+| # | object | size (m) | tris | notes |
+|---|---|---|---|---|
+| 9.1 | **Fallen log, long** | 0.5 ⌀ × 6.0 | ≤ 1.5 k | Bark sloughing off one side, broken at both ends. Lies flat — a player walks over it. |
+| 9.2 | **Fallen log, short** | 0.45 ⌀ × 2.5 | ≤ 1 k | Same identity, different footprint so a clearing does not repeat. |
+| 9.3 | **Root plate** | 2.5 × 2.2 × 0.8 | ≤ 1.5 k | The disc of roots and soil an uprooted tree tears up. Stands near-vertical; the single most legible "a tree fell here" silhouette. |
+| 9.4 | **Rotting stump** | 0.7 ⌀ × 0.5 | ≤ 600 | Older and softer than §2.2's fresh cut — no clean face, collapsed centre. |
+
+**Textures — 6 sets**, and this is where the actual gap is. Alpha cut-out
+atlases unless noted; `ART.md` §7's sourcing rules apply and are not a
+formality — score candidates on gain span with the shipped estimator *before*
+committing, since that lever took `rock` from keep 0.17 to 0.97 on a file swap
+with no code change.
+
+| # | set | why | priority |
+|---|---|---|---|
+| 9.5 | **Conifer sprig atlas** | Replaces `tree::needle_image`, which is *generated* and is the weakest link in the canopy today. Highest-value texture on this page. | 1 |
+| 9.6 | **Broadleaf atlas** | Needed the moment `TreeType::Deciduous` is switched on. Ash / aspen / oak read very differently — one sheet with all three is fine. | 2 |
+| 9.7 | **Grass blade atlas** | Blades are vertex-coloured today with **no map at all**, on the layer `ART.md` calls the largest structural gap. | 3 |
+| 9.8 | **Fern / frond atlas** | The shrub layer's one irreducible texture — a branch generator has no grammar for a frond. | 4 |
+| 9.9 | **Bark ×2–3** (not alpha) | We ship one. Birch and a dead/weathered bark carry most of the species read at trunk level. | 5 |
+| 9.10 | **Flower / forb atlas** | Meadow-biome variety. Small, cheap, last. | 6 |
+
+Sources to start from: [`madjin/awesome-cc0`](https://github.com/madjin/awesome-cc0)
+indexes the CC0 collections; ambientCG and Poly Haven are the usual bark
+sources. Every asset host is blocked by this box's egress proxy, so these are
+the operator's to fetch — a loop cannot pull them.
+
+---
+
+## 10 · If you are only doing fifteen
 
 Ranked by what a player looks at most, weighted by how bad the current
 stand-in is:
@@ -288,6 +335,13 @@ stand-in is:
 6. §4.7 / §4.8 the two doors — every base has several and they are identical today
 7. §7.1 pig — the only animal
 8. §8.3 death backpack — the object a player hunts for after every death
+9. §9.1–9.3 deadfall — cheapest per-unit gain on the page: three logs and a
+   root plate turn "ground with trees on it" into a forest floor, and unlike
+   everything else here they need no code change to be placeable
+
+And separately from the fifteen, **§9.5 the conifer sprig atlas** — it is a
+texture rather than a model, so it does not compete for the same budget, and
+it replaces a canopy card the client is currently *generating*.
 
 Everything in §5's food and utility block is small, cheap, and rarely the
 thing on screen; do it last.
