@@ -86,6 +86,16 @@ queue for this item** — what is taken, what is outstanding, what blocks
 each row, and the six steps for executing one. Read it before touching a
 balance number; do not re-derive that list here.
 
+⚠ **Two rules changed on 2026-08-10 and both are operator-spoken.**
+(a) *"lighten our own math and lean on them for now"* — a band of ours
+yields to a number of theirs by default (`BALANCE.md` §6.5); re-speak it
+rather than treating it as evidence. (b) A number **absent** from
+`RIPLIST.md` has not been decided either: asking that question found six
+of twelve content files with zero coverage, now rows 1c/1d/1e. The
+largest single gap on the list is the **tool cupboard at 1,000 wood
+against our 300 + 100 stone** — and 1c must not land without 1d, because
+a door's price without its health is the trap row 1b exists to name.
+
 Two results worth carrying at this level. `balance.rs` refuses a
 `farm_per_min` above the sim's at-node ceiling and `tests/farmwalk.rs`
 measures **969 wood/min, 71.6% duty**, ~19× the declared 50. But that

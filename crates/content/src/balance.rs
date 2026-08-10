@@ -229,7 +229,9 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
             .push((item.clone(), *declared, at_node as u32));
     }
 
-    // "A full wood wall ≈ 7 min of wood at T1 tools" (CONTENT §4 anchor 3).
+    // "A full wood wall ≈ 4 min of wood at T1 tools" (CONTENT §4 anchor 3).
+    // It read 7 until 2026-08-10, when the cost column was taken from the
+    // reference and the band was re-spoken under `BALANCE.md` §7.
     let wall_cost = |material: Material| -> Result<(u32, f64), String> {
         let wall = c
             .pieces
