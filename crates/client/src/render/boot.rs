@@ -41,9 +41,9 @@
 
 use bevy::prelude::*;
 
-use super::menu::{Connecting, Screen};
-use super::{icons, ui};
-use crate::scry::Player;
+use super::menu::{Connecting, Menu, Screen};
+use super::{hub, icons, ui};
+use crate::scry::{Player, Scry};
 use crate::ui::boot::{Boot, Next};
 
 /// Who the launcher says is playing.
@@ -69,8 +69,13 @@ impl Default for Who {
 #[derive(Resource)]
 pub struct Warmup {
     pub boot: Boot,
-    /// The identity round trip, or `None` once collected.
-    greet: Option<tokio::sync::mpsc::UnboundedReceiver<Player>>,
+    /// The launcher handshake, or `None` once collected.
+    ///
+    /// **The whole `Scry` comes back, not just the `Player`.** The first cut
+    /// sent the player and dropped the connection, which closed the socket
+    /// that could sign a challenge, name a shard list and open a page — three
+    /// seams the SDK is vendored for. It is held now (`Launcher`).
+    greet: Option<tokio::sync::mpsc::UnboundedReceiver<Scry>>,
     /// What `--identity` declared, held so the thread can answer without
     /// reaching back into the app.
     declared: Option<String>,
@@ -122,8 +127,10 @@ pub fn begin_greet(mut warm: ResMut<Warmup>) {
     let declared = warm.declared.clone();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     std::thread::spawn(move || {
-        let scry = crate::scry::Scry::discover(declared.as_deref(), env!("CARGO_PKG_VERSION"));
-        let _ = tx.send(scry.player);
+        let _ = tx.send(Scry::discover(
+            declared.as_deref(),
+            env!("CARGO_PKG_VERSION"),
+        ));
     });
     warm.greet = Some(rx);
 }
@@ -179,9 +186,13 @@ pub fn setup(mut commands: Commands, warm: Res<Warmup>) {
 /// lifted after N frames would lift early on a cold page cache and late on a
 /// warm one, which is the clock-shaped bug `CLAUDE.md` names as its own trap
 /// class.
+#[allow(clippy::too_many_arguments)]
 pub fn update(
+    mut commands: Commands,
     mut warm: ResMut<Warmup>,
     mut who: ResMut<Who>,
+    mut menu: ResMut<Menu>,
+    mut state: ResMut<hub::HubState>,
     assets: Res<AssetServer>,
     icons: Option<Res<icons::Icons>>,
     mut line: Query<&mut Text, With<BootLine>>,
@@ -201,11 +212,10 @@ pub fn update(
     // ---- wait 2: who is playing? --------------------------------------
     if let Some(rx) = &mut warm.greet {
         match rx.try_recv() {
-            Ok(player) => {
-                who.0 = player;
+            Ok(scry) => {
                 warm.greet = None;
                 warm.boot.greeted = true;
-                info!("gates: {}", who.0.line());
+                land(&mut commands, &mut who, &mut menu, &mut state, scry);
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
             // The thread died without answering. Anonymous is the correct
@@ -233,6 +243,62 @@ pub fn update(
         Some(Next::Connect) => next.set(Screen::Connecting),
         None => {}
     }
+}
+
+/// Take everything the launcher just told us, and keep the connection.
+///
+/// **Three of these four were being thrown away**, and each is the same class
+/// of defect as `Connecting::address`: a field the SDK fills, that this client
+/// computed and then dropped on the floor, with nothing failing.
+///
+/// 1. **The player** — the only one that was already used.
+/// 2. **The shard list url.** `Scry::discover` has always asked the launcher
+///    for it (`Overlay::servers_url`) and stored it in a field nothing read,
+///    so a player who started the game from scry-works still got *"no shard
+///    list to fetch - pass --servers URL"* on a menu the launcher had just
+///    told us how to fill. `--servers` still wins, because a flag typed by
+///    hand is more specific than a default.
+/// 3. **The manifest url**, which is what NEWS / ITEM STORE / WORKSHOP hang
+///    off — the fetch starts here so it is in flight while the splash is
+///    still up, rather than when the player first clicks one.
+/// 4. **The connection itself**, held from here on. It is non-send because
+///    `Overlay` owns a `UnixStream`; `Commands` cannot insert one of those,
+///    so it goes through the world the same way `Net` does.
+fn land(
+    commands: &mut Commands,
+    who: &mut Who,
+    menu: &mut Menu,
+    state: &mut hub::HubState,
+    mut scry: Scry,
+) {
+    who.0 = scry.player.clone();
+    info!("gates: {}", who.0.line());
+
+    if menu.servers_url.is_none() {
+        if let Some(url) = scry.servers_url.clone() {
+            info!("gates: the launcher names a shard list - {url}");
+            menu.status = format!("fetching the shard list from {url}");
+            menu.servers_url = Some(url);
+        }
+    }
+
+    state.hub.launcher = scry.connected();
+    if state.hub.launcher {
+        match scry.title_url() {
+            Some(url) => hub::begin_fetch(state, url),
+            // The launcher is up and does not know this title. A real answer,
+            // and one a player can act on (reinstall from the launcher), so it
+            // is said rather than left as a spinner.
+            None => {
+                state.hub.why =
+                    Some("the launcher does not know this title - no manifest to read".into())
+            }
+        }
+    }
+
+    commands.queue(move |world: &mut World| {
+        world.insert_non_send_resource(scry);
+    });
 }
 
 /// Has this handle stopped moving?

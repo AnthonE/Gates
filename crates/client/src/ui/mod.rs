@@ -46,6 +46,12 @@
 //! [`hammer`] is the hammer's wheel — the second radial, whose segments
 //! fire on release where [`build`]'s latch.
 //!
+//! [`hub`] is the third piece of the front door and the one that is not
+//! ours: NEWS, ITEM STORE and WORKSHOP are the scry-works launcher's
+//! (operator, 2026-08-09), so this owns which state each is in and what the
+//! screen says about it — four states, never collapsed, because "no launcher"
+//! and "not published yet" have different fixes.
+//!
 //! [`boot`] and [`servers`] are the two halves of the front door, and they
 //! are here for [`load`]'s reason exactly. `boot` decides when the splash
 //! lifts and which screen it lifts into — a one-bit answer that used to be a
@@ -74,6 +80,7 @@ pub mod craft;
 pub mod death;
 pub mod hammer;
 pub mod hold;
+pub mod hub;
 pub mod icons;
 pub mod interact;
 pub mod keypad;

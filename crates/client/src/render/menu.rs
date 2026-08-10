@@ -43,12 +43,23 @@
 //! swaps a tinted control column and a wide content pane. `render/ui.rs`'s
 //! shell section owns that arrangement; this module is its first tenant.
 //!
-//! What the nav does **not** carry is the other four of their entries. NEWS,
-//! INVENTORY, ITEM STORE and WORKSHOP each have a live service behind them,
-//! we have none of the four, and `settings.rs` already set this policy for the
-//! repo: a category with nothing behind it says so, rather than drawing a row
-//! that implies a feature exists. Three entries that all work beats six where
-//! half are dead.
+//! **The nav carries NEWS, ITEM STORE and WORKSHOP, and the first cut of this
+//! file was wrong to leave them off.** It argued they had no service behind
+//! them; they have one — the scry-works launcher (operator, 2026-08-09) — so
+//! the argument was a mistake about the product, not an application of the
+//! rule. `settings.rs`'s policy is that a section with nothing behind it
+//! *says so*, and `crate::ui::hub` is that sentence: four states, never
+//! collapsed, from "no launcher is running" to a link. Each hands off to the
+//! launcher's own window rather than drawing a shopfront here — see
+//! `ui::hub` for why that is a rule about money and not a shortcut.
+//!
+//! The one entry of theirs we still do not carry is `RUST+`, their companion
+//! app. There is no equivalent to be honest about.
+//!
+//! **The backdrop is footage, not a live scene** (operator, same day: *"rust
+//! uses a video for the background"*). `ui::backdrop` owns it and the
+//! correction it replaced: rendering the island behind the menu is the
+//! expensive way to buy the cheap thing.
 //!
 //! **Bevy still does not decide.** Nothing in this module touches gameplay
 //! state; it owns an address string and a list of rows, and the moment a
@@ -67,8 +78,10 @@
 use bevy::prelude::*;
 
 use super::boot::Who;
+use super::hub::HubState;
 use super::ui;
 use crate::shardlist::{self, Shard, MAX_DOC_BYTES};
+use crate::ui::hub::{Hub, Section};
 use crate::ui::servers::{self, Cat, Favourites, Filter, Listing};
 
 /// Where the client is. `Boot` is the default because the *absence* of a
@@ -168,25 +181,55 @@ pub struct Browse {
     pub favourites: Favourites,
 }
 
-/// The nav column. Three entries, all of which do something — see the module
-/// header for the four the reference has that we deliberately do not.
+/// The nav column, in the reference's own order.
+///
+/// **The three middle entries are the launcher's, not ours** (operator,
+/// 2026-08-09: NEWS is the scry-works community, and the item store and
+/// workshop are part of that setup too). The first cut left all three off on
+/// the grounds that nothing was behind them — wrong about the product, not
+/// about the rule. `crate::ui::hub` owns which of four states each is in;
+/// what a pane must never do is draw a greyed row that says nothing.
+///
+/// The one entry the reference has that we still do not is `RUST+`, its
+/// companion app. There is no equivalent to be honest about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Nav {
     #[default]
     Play,
+    /// A launcher-backed section: NEWS, ITEM STORE, WORKSHOP.
+    Hub(Section),
     Settings,
     Quit,
 }
 
 impl Nav {
-    const ALL: [Nav; 3] = [Nav::Play, Nav::Settings, Nav::Quit];
+    const ALL: [Nav; 6] = [
+        Nav::Play,
+        Nav::Hub(Section::News),
+        Nav::Hub(Section::Store),
+        Nav::Hub(Section::Workshop),
+        Nav::Settings,
+        Nav::Quit,
+    ];
 
-    fn label(self) -> &'static str {
+    /// The drawn label. A hub entry may be renamed by the manifest, so the
+    /// platform can rename a section of its own site without a client
+    /// release — [`crate::ui::hub::Section::label`] is where the blank-and-
+    /// whitespace guard lives.
+    fn label(self, hub: &Hub) -> String {
         match self {
-            Nav::Play => "PLAY GAME",
-            Nav::Settings => "OPTIONS",
-            Nav::Quit => "QUIT",
+            Nav::Play => "PLAY GAME".to_string(),
+            Nav::Hub(s) => s.label(hub),
+            Nav::Settings => "OPTIONS".to_string(),
+            Nav::Quit => "QUIT".to_string(),
         }
+    }
+
+    /// Does picking this entry open a pane, or act at once? QUIT and OPTIONS
+    /// are verbs; everything else is a screen. Drawn identically either way,
+    /// which is the reference's arrangement too.
+    fn is_pane(self) -> bool {
+        matches!(self, Nav::Play | Nav::Hub(_))
     }
 }
 
@@ -285,6 +328,10 @@ pub struct SlotFilter {
     /// True for "hide empty", false for "hide full".
     pub empty: bool,
 }
+
+/// OPEN IN LAUNCHER, on a hub pane.
+#[derive(Component)]
+pub struct HubButton(pub Section);
 
 /// CLEAR FILTERS and REFRESH.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
@@ -511,8 +558,22 @@ pub fn poll_status(mut menu: ResMut<Menu>) {
 
 /// Build the screen. Rebuilt from scratch on entry, so the row list is
 /// whatever `Menu` holds at that moment.
-pub fn setup(mut commands: Commands, menu: Res<Menu>, browse: Res<Browse>, who: Res<Who>) {
-    build(&mut commands, &menu, &browse, &who);
+pub fn setup(
+    mut commands: Commands,
+    menu: Res<Menu>,
+    browse: Res<Browse>,
+    who: Res<Who>,
+    state: Res<HubState>,
+    backdrop: Option<Res<ui::Backdrop>>,
+) {
+    build(
+        &mut commands,
+        &menu,
+        &browse,
+        &who,
+        &state.hub,
+        backdrop.as_deref(),
+    );
 }
 
 /// Redraw. **One rebuild path for every reason the screen can change** — a
@@ -529,16 +590,29 @@ pub fn rebuild(
     mut menu: ResMut<Menu>,
     browse: Res<Browse>,
     who: Res<Who>,
+    mut state: ResMut<HubState>,
+    backdrop: Option<Res<ui::Backdrop>>,
     roots: Query<Entity, With<MenuRoot>>,
 ) {
-    if !menu.dirty {
+    // Either resource landing something redraws the one screen they share —
+    // the manifest arriving changes a nav LABEL, not just a pane, so a hub
+    // update that only redrew the pane would leave the column stale.
+    if !menu.dirty && !state.dirty {
         return;
     }
     menu.dirty = false;
+    state.dirty = false;
     for e in roots.iter() {
         commands.entity(e).despawn();
     }
-    build(&mut commands, &menu, &browse, &who);
+    build(
+        &mut commands,
+        &menu,
+        &browse,
+        &who,
+        &state.hub,
+        backdrop.as_deref(),
+    );
 }
 
 /// Column widths, pixels. The nav is wide enough for the longest entry at 26
@@ -551,7 +625,14 @@ const PING_W: f32 = 56.0;
 
 /// The UI, as a plain function rather than a system — two callers need it and
 /// a system cannot call another system directly.
-fn build(commands: &mut Commands, menu: &Menu, browse: &Browse, who: &Who) {
+fn build(
+    commands: &mut Commands,
+    menu: &Menu,
+    browse: &Browse,
+    who: &Who,
+    hub: &Hub,
+    backdrop: Option<&ui::Backdrop>,
+) {
     // A camera, because the menu may be the first thing that ever exists —
     // the render rig only spawns on entering the world.
     commands.spawn((Camera2d, MenuRoot));
@@ -569,6 +650,14 @@ fn build(commands: &mut Commands, menu: &Menu, browse: &Browse, who: &Who) {
             BackgroundColor(ui::BG),
         ))
         .with_children(|root| {
+            // Footage, then the wash over it, then everything else. Both sit
+            // at a negative `ZIndex` rather than trusting spawn order — the
+            // shell's children come from three functions and none of them can
+            // promise to be first.
+            if let Some(b) = backdrop {
+                root.spawn(ui::backdrop(b.0.clone()));
+                root.spawn(ui::scrim());
+            }
             header(root, who);
             root.spawn(Node {
                 flex_direction: FlexDirection::Row,
@@ -576,12 +665,17 @@ fn build(commands: &mut Commands, menu: &Menu, browse: &Browse, who: &Who) {
                 ..default()
             })
             .with_children(|body| {
-                nav(body, browse.nav);
-                // The panel and the pane. Only `Play` has a payload; the other
-                // two nav entries act on click rather than opening a screen,
-                // so there is no third arm to write and no dead pane to draw.
-                filters(body, menu, browse);
-                table(body, menu, browse);
+                nav(body, browse.nav, hub);
+                // The payload. OPTIONS and QUIT are verbs rather than screens
+                // (`Nav::is_pane`), so they never reach here — the pane keeps
+                // whatever was last open while they act.
+                match browse.nav {
+                    Nav::Hub(section) => hub_pane(body, section, hub),
+                    _ => {
+                        filters(body, menu, browse);
+                        table(body, menu, browse);
+                    }
+                }
             });
         });
 }
@@ -606,7 +700,7 @@ fn header(root: &mut ChildSpawnerCommands, who: &Who) {
     });
 }
 
-fn nav(body: &mut ChildSpawnerCommands, picked: Nav) {
+fn nav(body: &mut ChildSpawnerCommands, picked: Nav, hub: &Hub) {
     body.spawn(Node {
         width: Val::Px(NAV_W),
         flex_direction: FlexDirection::Column,
@@ -615,8 +709,91 @@ fn nav(body: &mut ChildSpawnerCommands, picked: Nav) {
     })
     .with_children(|col| {
         for n in Nav::ALL {
-            col.spawn((ui::nav_item(n.label(), n == picked), NavButton(n)));
+            col.spawn((ui::nav_item(&n.label(hub), n == picked), NavButton(n)));
         }
+    });
+}
+
+/// A launcher-backed section: what it is, what state it is in, and the one
+/// button that hands it to the launcher.
+///
+/// **Deliberately not a shopfront.** The reference draws its item store and
+/// workshop in-game because it owns the whole client-plus-platform stack;
+/// ours must not, and the sentence under the button says why in the player's
+/// own terms. `crate::ui::hub` carries the full argument — the short version
+/// is that a game draws its own pixels, so a checkout it draws is a checkout
+/// it could forge, and the launcher's window is where a real one lives.
+///
+/// It uses the same panel-plus-pane shell as PLAY GAME rather than a bespoke
+/// layout, because a nav that changed the page's whole geometry per entry is
+/// the thing the shell exists to prevent.
+fn hub_pane(body: &mut ChildSpawnerCommands, section: Section, hub: &Hub) {
+    let status = section.status(hub);
+    let ready = status.url().is_some();
+    let label = section.label(hub);
+
+    body.spawn(ui::panel(PANEL_W)).with_children(|panel| {
+        panel.spawn(ui::strong(label.clone(), 22.0, ui::TITLE));
+        panel.spawn((
+            ui::label(section.blurb(), 13.0, ui::DIM),
+            Node {
+                margin: UiRect::top(Val::Px(6.0)),
+                ..default()
+            },
+        ));
+
+        panel.spawn(ui::group("WHERE THIS LIVES"));
+        // Always something, and it always names what would change it — the
+        // rule the shard list obeys, applied to a different document. The
+        // four states are four sentences (`ui::hub::Status::line`).
+        panel.spawn(ui::label(status.line(), 12.0, ui::FAINT));
+
+        // **Both are pinned absolutely rather than pushed by a spacer.** A
+        // wrapping column whose only content was text measured ZERO tall and
+        // took its children off the bottom of the window with it — found by
+        // tinting the spacer, which then visibly ran past the window's edge.
+        // `flex_shrink: 0` did not help, because the node was not being
+        // shrunk; it never had a height to begin with.
+        panel.spawn((
+            ui::label(section.handoff_reason(), 11.0, ui::FAINT),
+            ui::pinned_bottom(ui::BUTTON_H + 26.0, PANEL_W - 32.0),
+        ));
+        // Drawn dim rather than removed when there is nothing to open: a
+        // button that comes and goes is a layout that jumps under the
+        // pointer, and the line above already says why.
+        panel
+            .spawn((
+                ui::pinned_button(PANEL_W - 32.0, ready, 16.0),
+                HubButton(section),
+            ))
+            .with_children(|b| {
+                b.spawn(ui::strong(
+                    "OPEN IN LAUNCHER",
+                    12.0,
+                    if ready { ui::TITLE } else { ui::FAINT },
+                ));
+            });
+    });
+
+    // The content side. Nothing is drawn *in* it, and that is the honest
+    // shape: the page is the launcher's, so a pane full of invented chrome
+    // would be this client pretending to host a service it hands off.
+    body.spawn(ui::pane()).with_children(|pane| {
+        pane.spawn((
+            ui::label(
+                format!(
+                    "{label} is part of scry-works, the launcher this game is sold \
+                     through. It opens there rather than here."
+                ),
+                14.0,
+                ui::DIM,
+            ),
+            Node {
+                margin: UiRect::all(Val::Px(24.0)),
+                max_width: Val::Px(560.0),
+                ..default()
+            },
+        ));
     });
 }
 
@@ -703,11 +880,12 @@ fn filters(body: &mut ChildSpawnerCommands, menu: &Menu, browse: &Browse) {
         }
 
         // The two buttons, pinned to the bottom the way the reference's are.
+        panel.spawn(ui::spacer());
         panel
             .spawn(Node {
-                margin: UiRect::top(Val::Auto),
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(8.0),
+                flex_shrink: 0.0,
                 ..default()
             })
             .with_children(|bar| {
@@ -798,11 +976,12 @@ fn table(body: &mut ChildSpawnerCommands, menu: &Menu, browse: &Browse) {
         }
 
         // ---- the status line -----------------------------------------
+        pane.spawn(ui::spacer());
         pane.spawn((
             StatusLine,
             ui::label(menu.status.clone(), 12.0, ui::FAINT),
             Node {
-                margin: UiRect::new(Val::Px(12.0), Val::Px(12.0), Val::Auto, Val::Px(10.0)),
+                margin: UiRect::new(Val::Px(12.0), Val::Px(12.0), Val::Px(0.0), Val::Px(10.0)),
                 max_width: Val::Px(620.0),
                 ..default()
             },
@@ -903,6 +1082,7 @@ pub fn click(
     cats: Query<(&Interaction, &CatButton), Changed<Interaction>>,
     slots: Query<(&Interaction, &SlotFilter), Changed<Interaction>>,
     buttons: Query<(&Interaction, &PanelButton), Changed<Interaction>>,
+    hubs: Query<(&Interaction, &HubButton), Changed<Interaction>>,
     mut picked: ResMut<Picked>,
 ) {
     let pressed = |i: &Interaction| *i == Interaction::Pressed;
@@ -937,6 +1117,11 @@ pub fn click(
                 PanelButton::Clear => Pick::Clear,
                 PanelButton::Refresh => Pick::Refresh,
             });
+        }
+    }
+    for (i, h) in hubs.iter() {
+        if pressed(i) {
+            picked.0 = Some(Pick::Open(h.0));
         }
     }
 }
@@ -1002,8 +1187,12 @@ pub enum Pick {
     Row(usize),
     Star(usize),
     Nav(Nav),
+    /// Hand a launcher-backed section to the launcher.
+    Open(Section),
     Category(Cat),
-    Slots { empty: bool },
+    Slots {
+        empty: bool,
+    },
     Clear,
     Refresh,
 }
@@ -1021,6 +1210,10 @@ pub fn take_pick(
     mut browse: ResMut<Browse>,
     mut settings: ResMut<super::settings::Settings>,
     mut connecting: NonSendMut<Connecting>,
+    state: Res<HubState>,
+    // The launcher, if one answered at boot. `Option` because the majority
+    // case is no launcher at all, which is playable and never a fault.
+    mut scry: Option<NonSendMut<crate::scry::Scry>>,
     mut next: ResMut<NextState<Screen>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -1028,8 +1221,16 @@ pub fn take_pick(
         return;
     };
     match pick {
-        Pick::Nav(Nav::Play) => {
-            browse.nav = Nav::Play;
+        // Every entry that opens a pane is the same arm: set it and redraw.
+        // Keeping this one branch rather than one per section is what makes
+        // adding a section a change to `Nav::ALL` and nothing else.
+        Pick::Nav(n) if n.is_pane() => {
+            browse.nav = n;
+            menu.dirty = true;
+        }
+        Pick::Open(section) => {
+            let outcome = super::hub::open(scry.as_deref_mut(), &state.hub, section);
+            menu.status = outcome.line(&section.label(&state.hub));
             menu.dirty = true;
         }
         Pick::Nav(Nav::Settings) => {
@@ -1040,6 +1241,11 @@ pub fn take_pick(
         Pick::Nav(Nav::Quit) => {
             exit.write(AppExit::Success);
         }
+        // `is_pane` already took Play and Hub; Settings and Quit have their
+        // own arms above. An arm here would be unreachable, and a `_ => {}`
+        // would silently swallow a nav entry added without an action —
+        // which is exactly the dead row this nav is arranged to prevent.
+        Pick::Nav(Nav::Play | Nav::Hub(_)) => unreachable!("handled by is_pane"),
         Pick::Category(cat) => {
             browse.filter.cat = cat;
             menu.dirty = true;
@@ -1253,20 +1459,39 @@ mod tests {
     }
 
     #[test]
-    fn the_nav_is_only_as_long_as_what_works() {
-        // The reference's nav is six entries with a live service behind each.
-        // Copying its LENGTH rather than its policy is how a menu grows rows
-        // that do nothing — the thing `settings.rs` already refuses for its
-        // rail. So the count is pinned: a fourth entry is a deliberate diff
-        // that has to bring a service and an arm in `take_pick` with it.
-        assert_eq!(Nav::ALL.len(), 3, "a nav entry needs something behind it");
-        let labels: Vec<&str> = Nav::ALL.iter().map(|n| n.label()).collect();
+    fn every_nav_entry_reads_as_itself() {
+        // A nav entry needs something behind it — `settings.rs`'s policy
+        // against greyed rows, applied to the column. Three of these six are
+        // the launcher's and their "something" is a state sentence rather
+        // than a screen we drew (`crate::ui::hub`), which is why they are
+        // here rather than left off.
+        //
+        // Distinctness is the assertion that can actually fail: the three hub
+        // entries take their labels from a document nobody in this repo
+        // controls, so two of them reading the same word is a real outcome
+        // of a manifest edit, and it would leave a player unable to tell
+        // which column they clicked.
+        let hub = Hub::default();
+        let labels: Vec<String> = Nav::ALL.iter().map(|n| n.label(&hub)).collect();
         for l in &labels {
-            assert!(!l.is_empty());
+            assert!(!l.trim().is_empty(), "an unclickable hole in the nav");
         }
         let mut sorted = labels.clone();
-        sorted.sort_unstable();
+        sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), labels.len(), "two nav entries read the same");
+
+        // Exactly the entries that open a pane are the ones `take_pick`
+        // routes through `is_pane`; the other two are verbs. An entry in
+        // neither set would hit the `unreachable!` there, so this pins the
+        // split rather than trusting it.
+        for n in Nav::ALL {
+            let verb = matches!(n, Nav::Settings | Nav::Quit);
+            assert_ne!(
+                n.is_pane(),
+                verb,
+                "{n:?} is both a pane and a verb, or neither"
+            );
+        }
     }
 }

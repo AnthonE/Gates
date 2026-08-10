@@ -48,6 +48,10 @@ pub mod disconnected;
 pub mod ghost;
 // The blue wash over the piece a hammer is aimed at.
 pub mod highlight;
+// The launcher-backed nav entries: the title manifest's fetch, and the click
+// that hands NEWS / ITEM STORE / WORKSHOP to the launcher's own window. The
+// model is `crate::ui::hub`.
+pub mod hub;
 pub mod hud;
 pub mod input;
 pub mod loading;
@@ -316,6 +320,10 @@ pub struct Start {
     /// Nothing to ask a launcher — `--no-launcher`, or a start that already
     /// resolved its player before the window.
     pub no_launcher: bool,
+    /// `--no-hud`: a capture run that shoots a clean PLATE — no HUD, no
+    /// viewmodel, no compass. The menu backdrop is footage
+    /// (`ui::backdrop`), and a frame with a hotbar across it is not footage.
+    pub no_hud: bool,
 }
 
 pub struct GatesRenderPlugin {
@@ -326,6 +334,9 @@ pub struct GatesRenderPlugin {
 
 impl Plugin for GatesRenderPlugin {
     fn build(&self, app: &mut App) {
+        // Copied out so the `run_if` closures below capture a `bool` rather
+        // than borrowing `self`, which does not outlive `build`.
+        let plate = self.start.no_hud;
         app.init_resource::<Eye>()
             .init_resource::<input::Look>()
             .init_resource::<terrain_mesh::Ring>()
@@ -336,6 +347,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<mobs::Herd>()
             .init_resource::<menu::Picked>()
             .init_resource::<menu::Browse>()
+            .init_resource::<hub::HubState>()
             .init_resource::<boot::Who>()
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
@@ -429,7 +441,15 @@ impl Plugin for GatesRenderPlugin {
         // player reads the menu is free time the old shape did not have.
         app.add_systems(
             Startup,
-            (textures::load, icons::load, anim::load, mobs::load),
+            (
+                textures::load,
+                icons::load,
+                anim::load,
+                mobs::load,
+                // The menu's footage. Wanted on the first screen after the
+                // splash, so it warms while everything else does.
+                ui::load_backdrop,
+            ),
         );
         // The sound bank is generated rather than loaded (`sound/synth.rs`)
         // and is built HERE, not at `Startup`. **`OnEnter(Screen::Loading)`
@@ -471,6 +491,10 @@ impl Plugin for GatesRenderPlugin {
             Update,
             (
                 menu::poll_fetch,
+                // The title manifest, beside the shard list: both are
+                // documents a menu waits on, both raise a dirty flag, and
+                // `menu::rebuild` at the end of this chain is the one redraw.
+                hub::poll,
                 // The count half, after the list half: `poll_fetch` is what
                 // creates the rows a poll addresses by index, and both raise
                 // the one `dirty` flag `rebuild` below acts on.
@@ -636,7 +660,16 @@ impl Plugin for GatesRenderPlugin {
         )
         // The HUD's viewmodel is parented to the camera, so it must be
         // built after the rig has spawned one.
-        .add_systems(OnEnter(Screen::Loading), hud::setup.after(rig::setup))
+        //
+        // **A plate run spawns none of it.** Every HUD system reads its
+        // entities through a guarded `single()`, so an absent HUD is a set of
+        // no-ops rather than a panic — which is what makes `--no-hud` two
+        // conditions here instead of a mode inside `capture.rs`. The harness
+        // itself is untouched, so the gate's own frames cannot move.
+        .add_systems(
+            OnEnter(Screen::Loading),
+            hud::setup.after(rig::setup).run_if(move || !plate),
+        )
         // Both in `Update` and NOT on the `Loading` transition — that
         // transition runs before `Startup`, so `PropMaps` does not exist yet
         // (see `viewmodel::spawn_item`). `animate` runs after `feed::drain`,
@@ -650,7 +683,8 @@ impl Plugin for GatesRenderPlugin {
                     .after(feed::drain)
                     .after(viewmodel::spawn_item),
             )
-                .run_if(world_running),
+                .run_if(world_running)
+                .run_if(move || !plate),
         )
         // The rig. `build` runs until the glTF is in and then costs one
         // branch; `bind` catches every `AnimationPlayer` the scene spawner

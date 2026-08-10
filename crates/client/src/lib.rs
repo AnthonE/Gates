@@ -26,6 +26,12 @@ pub mod config;
 // (see the module header), and a mapping that lives inside a Bevy system is
 // one no test in the code tier can call.
 pub mod look;
+// The launcher's title manifest: where this game's NEWS, ITEM STORE and
+// WORKSHOP live. Unconditional for `shardlist`'s reason exactly — it parses
+// bytes off a network from a host named by another host, and one of the
+// values in it is handed to the launcher to OPEN on the player's desktop, so
+// the scheme allowlist is the part that most needs a test in the code tier.
+pub mod manifest;
 // Join links — `scry://join/gates/host:port`. Unconditional for the reason
 // `shardlist` is: it parses a string a stranger wrote and handed to a friend,
 // which is the input in this client that most needs a test in the code tier.

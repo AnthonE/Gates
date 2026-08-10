@@ -138,6 +138,7 @@ fn main() -> AppExit {
         chosen: straight_in || a.server_given,
         identity: a.identity.clone(),
         no_launcher: a.no_launcher,
+        no_hud: a.no_hud,
     };
     app.add_plugins(GatesRenderPlugin { start, capture });
     // **Returned, not discarded.** `App::run` hands back an `AppExit`, which
