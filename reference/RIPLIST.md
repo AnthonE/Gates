@@ -16,9 +16,12 @@ file is not a substitute for it.
 
 ## 0 · The two rules that decide every row
 
-**§6, unchanged:** a number with a reference equivalent and no reason of
-ours to differ takes theirs and cites it at the row. When we differ, the
-row says why.
+**§6, rewritten 2026-08-10 and now the stronger of the two rules:** take
+theirs, by default, with no case to make. A case is needed only to
+*differ*, and the only admissible one is that the **mechanism** differs —
+not effort, not a band, not source uncertainty, each of which §6.2 names
+as a cost wearing principle's clothes. A split source never blocks a row:
+§6.3's ladder breaks the tie and the row ships one number. Never average.
 
 **The friction frame** (operator, 2026-08-09: *"rust is hardcore PvP,
 your NEVER solo farming and people and animals are randomly killing
@@ -89,7 +92,7 @@ re-litigate them. `BALANCE.md` §2 (matched before anyone tried) and §3
 | building blocks 250 / 500 / 1000 | wood / stone / sheet metal | `building.toml` |
 | satchel structure 125, body 475 | 4 satchels per stone wall soft side | `weapons.toml` |
 | wooden spear 20 · stone tools 25 · metal tools 30 | theirs | `weapons.toml` |
-| pig 150 hp, drops 5 raw meat | their boar (sources disagreed 80 vs 150) | `mobs.toml` |
+| pig **80** hp, drops 5 raw meat | their boar — split 80/150, tie broken for 80 on 2026-08-10 (`BALANCE.md` §6.3 rung 3) | `mobs.toml` |
 | hunger 500 · hydration 250 | theirs | `balance.toml` |
 | cooked meat 50/3 · berries 10/20 · mushrooms 15/5 +3 hp | their feeds-vs-hydrates split | `consumables.toml` |
 | `upkeep_pct_per_day = 10` | ~10% of build cost per 24 h (rising toward ~30% when the cupboard runs low) | `balance.toml` — **found matching 2026-08-09**; §4.1 filed upkeep as "a different mechanism, not a different rate", and the rate turns out to be theirs too. Their low-stock ramp is the part we do not have |
@@ -168,12 +171,21 @@ order. **Status** is one of: `BLOCKED-RESEARCH` (we do not have their
 number), `READY` (we have it and could land it), `NEEDS-MECHANISM` (the
 number is meaningless until something else is built).
 
+⚠ **`NEEDS-MECHANISM` is a BUILD ORDER, not a shelf** (operator,
+2026-08-10, on finding that the "did not change" list was a list of
+everything they wanted). Every row below is wanted; none is declined. The
+status says what has to exist first, and that is a sequence — so a row
+sitting here is a row nobody has started, never a row that was decided
+against. §6.2 is the matching rule on the other side: a cost may be
+recorded as a cost and never rewritten as a reason to differ.
+
 | # | number | status | what it costs to take |
 |---|---|---|---|
 | 1 | ~~**gather yields / node totals**~~ | ✅ **TAKEN 2026-08-10** | Struck — see §1 and §1a. Totals are theirs, the hit count stayed ours, one band ceiling moved. |
 | 2 | **per-material damage resistance** | `READY` (mechanism build, not a lookup) | The biggest *model* gap, and `BALANCE.md` §4.1 calls it a build: a schema column plus a sim multiply. Their stone wall takes 4 satchels and their sheet metal 23; ours takes 8 because one `structure` column serves every material. Until this exists, their raid numbers above stone cannot be taken at all — the ladder has nowhere to go. |
-| 3 | **smelt rates and craft times** | **smelt: `ANSWERED`, not taken** · craft rebate: `NEEDS-MECHANISM` | Smelt closed 2026-08-10 and the answer was *don't move*: §4.6's two sources contradict each other on shape as well as magnitude (metal 2.5 / sulfur 2.5 against metal 3.3 / sulfur 1.7), ours carries the second's shape and sits inside both envelopes, so taking either is a coin toss and §0 says record rather than average. Noted at the rows in `recipes.toml`. **The mechanism half did check out and matters more than the seconds** — their furnace is parallel per slot, and `oven::sweep` already is. The craft-time rebate (50% one tier up, 75% two) has no equivalent to land on: we have no workbench tier ladder for it to key off. |
-| 4 | **the animal roster** | `BLOCKED-RESEARCH` + `NEEDS-MECHANISM` | Chicken, stag, wolf, bear all have roles there; we have a pig. Health and drops are lookups. The wolf and bear are `NEEDS-MECHANISM` — they exist to threaten, and nothing can hurt a player yet. |
+| 3 | **smelt rates** ✅ · **craft-time rebate** | smelt: ✅ **TAKEN 2026-08-10** · rebate: `NEEDS-MECHANISM` | Smelt landed via §6.3's ladder — rung 3 picked metal 2.5 / sulfur 2.5 over metal 3.3 / sulfur 1.7, and **the shape was the real win**: theirs smelt alike where ours had sulfur at half of metal, so sulfur went 1 → 2. Both rows sit at 2 because `seconds` is integer (row 3a). The mechanism half already matched — their furnace is parallel per slot and `oven::sweep` is too. **The rebate (50% one tier up, 75% two) is blocked on a ladder we do not have**: every crafted row in `recipes.toml` is `none` or `workbench1`, so there is no second tier for a rebate to key off. Build the tier ladder, then this is a lookup. |
+| 3a | **sub-second smelt/craft precision** | `NEEDS-MECHANISM` (schema) | Their 2.5 s is not expressible: `Recipe::seconds` is a `u32` baked as `seconds × TICK_HZ`, so content can only say 2 or 3 while the sim happily runs 75 ticks. Widen the content field (tenths, or ticks outright) and the smelt rows can carry their real number. Small, self-contained, and it unblocks every future time that is not a whole second. |
+| 4 | **the animal roster** | chicken/stag: `READY` · wolf/bear: `NEEDS-MECHANISM` (row 6) | Research is **closed**, not blocked — §4.6 has hp and drops for all five: chicken 25, boar 80 (taken), stag ~80, wolf 100, bear 400. The cost is one line of code per species, not a lookup: `mob.rs` holds `MOB_KINDS = 1` and a species ordinal, and its own comment says the array "is what makes a second a content row" — so add the ordinal, then the numbers are content. **Chicken and stag are landable today** (they flee, which is all our AI does). Wolf and bear are not worth adding until row 6 lands, because an animal that exists to threaten and cannot hurt you is scenery. |
 | 5 | **logistics friction** — carry limits, node density, deposit trips | `NEEDS-MECHANISM` | **The largest single term in the reference's economy (~10–30×) and the one we charge almost none of** (§0: ours measures 1.40×). Not one number but a set: how far apart nodes sit (`terrain::scatter` density), whether a full pocket forces a trip home, and whether nodes are scarce enough to walk for. Nothing here is blocked on research — it is blocked on nobody having decided the island should be harder to farm. Until it moves, every yield we take from them lands in a world that charges a fraction of what theirs does. |
 | 6 | **mob→player damage** | `NEEDS-MECHANISM` | Not a number. Ranked below logistics on the *magnitude* evidence (~2–5× against ~10–30×), which is the opposite of where this list first put it — but it is the half the operator asked for and the one a player feels, since a threat that cannot hurt you is scenery. Costs a new death cause on a 2-bit field saturated since wire v24, so it is a wire widening (wall 6: version bump + regenerated goldens in one commit). §5's warning applies: model it as trip shape and load loss, never as a flat rate multiplier. |
 
@@ -216,7 +228,9 @@ summary. `SOURCES.md` carries the measured host map.
 
 What did not change is the contamination warning, and it now has a
 receipt — see §4.1. Confidence labels stay mandatory and are never
-averaged (§0's rule, and why our boar remembers both 80 and 150).
+averaged — but a confidence label is not a licence to defer, and
+§6.3's ladder now breaks a tie rather than letting a row carry two
+numbers forever (which is what the boar did for two days).
 
 ### 4.1 · Node totals — vanilla 1×, best tool
 
@@ -461,10 +475,14 @@ the duration. Worked example: a revolver **10 s at T1 → 2.5 s at T3**.
 | wolf | 100 | 5 wolf meat, 10 fat, 75 leather, 35 cloth, 40 bone |
 | bear | 400 | 19 bear meat, 100 fat, 100 leather, 50 cloth, 150 bone |
 
-**The boar reads ~80 here, and we shipped 150.** §1 took 150 from a source
-split 80/150; this pass lands on 80. That does not flip the row on its own
-— but the 150 camp is now the thinner one, and `mobs.toml` should carry
-both until someone breaks the tie.
+**The boar reads ~80 here, and we shipped 150 — flipped to 80 on
+2026-08-10.** §1 took 150 from a source that was *already* split 80/150,
+so 150 was never better-evidenced, only earlier. This paragraph used to
+end "`mobs.toml` should carry both until someone breaks the tie", which
+sounded careful and was not: with no tiebreak procedure attached, its
+only effect was to preserve the first guess indefinitely. `BALANCE.md`
+§6.3 is that procedure now, and rung 3 decides this row — 80 sits in a
+complete five-species table with consistent units, 150 in prose.
 
 **Upkeep — the ramp we were missing.** ~**10%**/24 h while the cupboard is
 above **50%** stocked, ramping toward ~**30%**/24 h below it: a **3×**
