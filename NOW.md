@@ -42,6 +42,37 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0wd · A new world register is proposed *(operator lane — blocked, skip)*
+
+**A loop cannot pick this up.** Logged here so it is visible, not queued.
+`WORLD.md` (new, 2026-08-10) carries an exploratory operator direction, and
+is a **roadmap rather than a v1 spec** — nothing in it competes with the
+alpha. `DECISIONS.md` §open has the row; nothing is spoken.
+
+Three findings in it are about the tree rather than the fiction:
+
+- **`ART.md`'s bar and the visual rubric are measured off `Rust Images/`,
+  and the rubric is checksummed outside this repo.** If the register
+  changes, every visual pass is scored against pine-and-granite while
+  building obsidian, and the builder cannot fix it. Three operator acts —
+  palette, a reference set, rubric style section — and 2026-08-01's art row
+  already names that exit. **Until then, no visual pass chases this.**
+- **A ward would invalidate `CONTENT.md` §4 anchor 2 without reddening
+  `test_content`.** The TTK bands compute against `balance.toml`'s
+  `globals.player_hp = 100`; a second regenerating pool makes them measure a
+  different quantity while staying green. Conditional — the ward is
+  explicitly undecided and nothing else depends on it.
+- **Extraction and world states are one system or they are two.** An opened
+  gate at the bank terminal and a repaired monument are the same object: a
+  bounded, tick-expiring, hashed, broadcast state. The terminal lands at A2
+  (`ALPHA.md` §2); if it ships a bespoke gate first, that is one idea paid
+  for twice.
+
+Cheapest real slice if it is ever spoken: the biome gradient — a radial third
+input to `biome(h, moist)` (`terrain.rs:263`) plus regenerated terrain
+goldens. `WORLD.md` §9.2 has the full order, and §9.1 the timing: **decide
+the register early, build it late.**
+
 ## 0n1 · The class-S join walk has no interest filter *(server lane)*
 
 `reference/NETWORK.md` §9.2.1, measured 2026-08-10. `pump_events` drips the
