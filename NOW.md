@@ -81,7 +81,19 @@ Landed since: §9.3a (the drawn structure is derived from the sim's box table
 — one list, so the mirror cannot drift again — plus `tests/greybox.rs` over
 **every** archetype), §9.3b (the world file refuses an island that moved under
 the same seed), and the debug/release probe diff that closes float contraction
-on the one axis this box can reach.
+on the one axis this box can reach. **All of it looked at** (§0p3 has the
+recipe); two art rows fell out and are in `DECISIONS.md` §open — the shelter's
+corner posts stand 1.2 m proud of its roof and read as stubs, and swept ground
+reads as scattered shards at 2 m because of the pebble mesh.
+
+**Next in this class, and it is a feature rather than a reconciliation: no
+deployable blocks movement.** `movement.rs` never consults `Deploys` and
+`collide::blocked` takes only the piece column index, so a player walks
+through a furnace, a box, a hearth and a recycler; only a closed door stops
+anyone, and it does that as a piece-edge bit. The client draws all ten
+archetypes at authored sizes (`structures::deploy_size`), so this is drawn
+geometry with no blocked volume at all — the greybox gate cannot catch it
+because there is nothing on the sim side to compare against. Systems lane.
 
 §9.3 is the gap and it is not urgent yet: `haven()` + `pick_minor` produce two
 kinds of site, the separation floor is one hand-asserted constant
@@ -96,6 +108,29 @@ ranges, then nav the day something defends a site. Vertical AOI layers are
 premature (no underground) and moving monuments are refused on the record.
 
 ---
+
+## 0p3 · You can photograph any authored site, and it is a config line *(client lane)*
+
+Found 2026-08-10 while checking the greybox fix by eye. §0p2 item 3 asks for a
+**viewer** for the screens nothing can photograph; four fifths of one already
+exists and nobody had connected the pieces. The capture harness stands its
+camera at the player's spawn, and `shard.toml`'s `dev_spawn = "x,z"` puts that
+spawn anywhere. So:
+
+1. `terrain::haven(seed)` / `haven_shelter` / `waystation_canopy` give the
+   coordinates; stand 15–35 m off on the bearing you want in frame.
+2. `Xvfb :9 -screen 0 1280x720x24 &`, then the shard, then
+   `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json DISPLAY=:9
+   WGPU_BACKEND=vulkan target/release/gates --server 127.0.0.1:4433
+   --capture <dir>` — six vantages, ~40 s.
+3. The vantages face N/E/S/W, so place the camera on the opposite side of
+   what you want to see. Two of four attempts missed for this reason.
+
+**This asserts nothing and must not become a gate** (`CLAUDE.md`: the visual
+gate is a person, and `vantages.mjs` is why). What it changes is the cost of
+looking, which was "boot the game on a machine with a GPU" and is now a
+command on this box. Still owed from §0p2 item 3: the panels, which need the
+camera pointed at a screen rather than at a place.
 
 ## 0b · Balance sits on the reference's numbers now — what is still off *(content lane)*
 
