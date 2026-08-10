@@ -1864,3 +1864,463 @@ fn refusals_before_the_round_trip_match_the_key_paths() {
         Act::Repair { .. }
     ));
 }
+
+// ---------------------------------------------------------------------------
+// §L · the front door — the splash's handoff, and the browser's filters
+//
+// Two screens' arithmetic, both of it new, and both of it the kind that has
+// no natural symptom.
+//
+// The splash's is one bit wide and decides which screen a launch opens on. It
+// used to be a branch in `main` before any window existed, where the only way
+// to check it was to launch the game two ways and watch. Get it wrong in the
+// `chosen` direction and a launcher join asks the player to pick a shard they
+// already picked; get it wrong the other way and a bare `gates` connects to
+// whatever default address was compiled in, with no menu ever shown.
+//
+// The browser's is worse, because every one of its failures LOOKS like data.
+// A sort that puts unknown counts first reads as a shard with nobody on it
+// being the busiest. A filter that hides the Direct row reads as a fetch
+// failure. A favourite keyed on an empty id lights up several rows at once.
+// None of those crash, none of them warn, and all of them are a screenshot
+// away from looking correct.
+
+use client::ui::boot::{Boot, Next};
+// `Cat` is aliased because `ui::craft` has one too and this file already
+// imports it — two rails, two vocabularies, one module namespace.
+use client::ui::servers::{self, Cat as SCat, Favourites, Filter, Listing, MAX_FAVOURITES};
+use client::ui::MAX_QUERY_CHARS;
+
+fn shard(name: &str, players: Option<u32>) -> Listing {
+    Listing {
+        id: format!("id-{name}"),
+        name: name.to_string(),
+        addr: format!("{name}.example:4433"),
+        map: None,
+        players,
+        max_players: Some(100),
+        ping_ms: Some(20),
+        status_url: None,
+        direct: false,
+    }
+}
+
+/// The Direct row plus three shards at three populations.
+fn listing() -> Vec<Listing> {
+    vec![
+        Listing::direct("127.0.0.1:4433"),
+        shard("quiet", Some(0)),
+        shard("busy", Some(90)),
+        shard("full", Some(100)),
+        shard("unknown", None),
+    ]
+}
+
+fn names(rows: &[Listing], picked: &[usize]) -> Vec<String> {
+    picked.iter().map(|i| rows[*i].name.clone()).collect()
+}
+
+// ---- the splash ----------------------------------------------------------
+
+#[test]
+fn the_splash_lifts_on_both_waits_and_not_on_either() {
+    // The asset server and the launcher socket know nothing about each other
+    // and finish in either order, which is why this is an `&&` and not a
+    // sequence — and why both orders are driven here.
+    for (first, second) in [(true, false), (false, true)] {
+        let mut b = Boot::new(false);
+        b.warm = first;
+        b.greeted = second;
+        assert!(b.next().is_none(), "one wait answered is not ready");
+        assert_eq!(b.fraction(), 0.5, "and the bar says exactly that");
+    }
+    let mut b = Boot::new(false);
+    b.warm = true;
+    b.greeted = true;
+    assert_eq!(b.fraction(), 1.0);
+    assert_eq!(b.next(), Some(Next::Menu));
+}
+
+#[test]
+fn a_launcher_join_is_never_asked_to_choose_twice() {
+    // `chosen` is `args::server_given`: the launcher's Servers window already
+    // picked, so the splash hands to the connect screen and the menu is never
+    // drawn. The inverse matters just as much — a bare `gates` must NOT
+    // connect to its default address without ever showing a list.
+    let ready = |chosen| {
+        let mut b = Boot::new(chosen);
+        b.warm = true;
+        b.greeted = true;
+        b
+    };
+    assert_eq!(ready(true).next(), Some(Next::Connect));
+    assert_eq!(ready(false).next(), Some(Next::Menu));
+    // And the bit does not leak into readiness: a chosen start still waits.
+    assert!(Boot::new(true).next().is_none());
+}
+
+#[test]
+fn the_splash_names_the_wait_it_is_actually_in() {
+    // A stage that reports nothing is a stage nobody can diagnose from a
+    // screenshot — `Progress::line`'s rule, one screen earlier. The four
+    // states must be four distinct sentences.
+    let line = |warm, greeted| {
+        Boot {
+            warm,
+            greeted,
+            chosen: false,
+        }
+        .line()
+    };
+    let all = [
+        line(false, false),
+        line(false, true),
+        line(true, false),
+        line(true, true),
+    ];
+    for (i, a) in all.iter().enumerate() {
+        for b in all.iter().skip(i + 1) {
+            assert_ne!(a, b, "two boot stages say the same thing");
+        }
+    }
+}
+
+// ---- the browser ---------------------------------------------------------
+
+#[test]
+fn the_list_is_sorted_busy_first_with_unknown_last() {
+    // The reference's own order (its list reads 145, 110, 101, 54, …) and the
+    // question the screen answers: where is there a game happening. The
+    // failure this pins is `Option`'s natural ordering, which puts `None`
+    // FIRST — a shard nobody could poll would head the list as if it were the
+    // busiest thing on it.
+    let rows = listing();
+    let shown = servers::visible(&rows, &Filter::default(), &Favourites::default());
+    assert_eq!(
+        names(&rows, &shown),
+        ["Direct", "full", "busy", "quiet", "unknown"],
+        "busy first, unknown last, Direct pinned above all of it"
+    );
+}
+
+#[test]
+fn the_direct_row_survives_every_filter_except_the_search_box() {
+    // The invariant the intro screen has carried since it existed: a shard
+    // list that fails to load must never leave nothing to click. "Hide empty"
+    // alone would take the Direct row away, because it has no population —
+    // an artefact of it not being a published shard, not a fact about it.
+    let rows = listing();
+    let favs = Favourites::default();
+    for filter in [
+        Filter {
+            hide_empty: true,
+            ..default_filter()
+        },
+        Filter {
+            hide_full: true,
+            ..default_filter()
+        },
+        Filter {
+            cat: SCat::Favourites,
+            ..default_filter()
+        },
+    ] {
+        let shown = servers::visible(&rows, &filter, &favs);
+        assert_eq!(
+            rows[shown[0]].name, "Direct",
+            "{filter:?} hid the direct row"
+        );
+    }
+
+    // The query is the deliberate exception: a row that survived every search
+    // reads as a broken search box. The safety net is one keystroke away and
+    // `empty_reason` is what says so.
+    let typed = Filter {
+        query: "busy".into(),
+        ..default_filter()
+    };
+    let shown = servers::visible(&rows, &typed, &favs);
+    assert_eq!(names(&rows, &shown), ["busy"]);
+    assert!(servers::empty_reason(&typed, rows.len(), shown.len()).is_none());
+}
+
+fn default_filter() -> Filter {
+    Filter::default()
+}
+
+#[test]
+fn empty_and_unknown_are_not_the_same_thing() {
+    // The honesty rule `shardlist` states, applied to a filter: a shard that
+    // failed its status poll has `None`, not zero, and "hide empty" must not
+    // treat the two alike — that would hide every shard the network happened
+    // to miss and read as them all being deserted.
+    let rows = listing();
+    let favs = Favourites::default();
+    let shown = servers::visible(
+        &rows,
+        &Filter {
+            hide_empty: true,
+            ..Filter::default()
+        },
+        &favs,
+    );
+    assert_eq!(names(&rows, &shown), ["Direct", "full", "busy", "unknown"]);
+
+    let shown = servers::visible(
+        &rows,
+        &Filter {
+            hide_full: true,
+            ..Filter::default()
+        },
+        &favs,
+    );
+    assert_eq!(names(&rows, &shown), ["Direct", "busy", "quiet", "unknown"]);
+}
+
+#[test]
+fn a_search_reads_only_what_the_row_prints() {
+    // A search that matched on a hidden field would hide rows on evidence the
+    // player cannot see. Name, address and map — the three things drawn.
+    let mut rows = listing();
+    rows[2].map = Some("island 20260731".into());
+    let favs = Favourites::default();
+    let hits = |q: &str| {
+        let f = Filter {
+            query: q.into(),
+            ..Filter::default()
+        };
+        names(&rows, &servers::visible(&rows, &f, &favs))
+    };
+    assert_eq!(hits("BUSY"), ["busy"], "case-insensitive");
+    assert_eq!(hits("island"), ["busy"], "the map is searched");
+    assert_eq!(hits("example:4433").len(), 4, "the address is searched");
+    assert!(hits("nothing-here").is_empty());
+}
+
+#[test]
+fn a_star_binds_to_a_row_and_survives_a_round_trip() {
+    let rows = listing();
+    let mut favs = Favourites::default();
+    assert!(favs.toggle(&rows[2].id));
+    assert!(favs.has("id-busy") && !favs.has("id-quiet"));
+
+    // The category is a filter like any other, and the Direct row is still
+    // exempt from it.
+    let f = Filter {
+        cat: SCat::Favourites,
+        ..Filter::default()
+    };
+    assert_eq!(
+        names(&rows, &servers::visible(&rows, &f, &favs)),
+        ["Direct", "busy"]
+    );
+    // The rail counts the whole list, never the filtered one: a tab that read
+    // `0` beside the thing you have to click to see anything is the opposite
+    // of what a count on a tab is for.
+    assert_eq!(servers::counts(&rows, &favs), [5, 1]);
+
+    // Off the disk and back, which is the shape `config::parse` hands over.
+    let round = Favourites::from_disk(favs.ids().to_vec());
+    assert_eq!(round, favs);
+    // Un-starring sticks, including down to empty — the case that needs the
+    // writer to emit `favourites = ""` rather than omit the key.
+    assert!(favs.toggle("id-busy"));
+    assert!(favs.is_empty());
+}
+
+#[test]
+fn a_hand_edited_favourites_list_cannot_reach_a_state_a_click_cannot() {
+    // `config::parse` deliberately does no range work (its header says so),
+    // so this is where the bound and the deduplication live. A file with a
+    // thousand ids, blanks and repeats must load as something the star could
+    // have produced.
+    let junk: Vec<String> = std::iter::repeat_n("dup".to_string(), 5)
+        .chain((0..MAX_FAVOURITES * 2).map(|i| format!("id{i}")))
+        .chain(["".to_string(), "".to_string()])
+        .collect();
+    let favs = Favourites::from_disk(junk);
+    assert_eq!(favs.len(), MAX_FAVOURITES);
+    assert!(!favs.has(""), "a blank id would light up every unnamed row");
+    assert_eq!(
+        favs.ids().iter().filter(|k| *k == "dup").count(),
+        1,
+        "a duplicate would need two clicks to un-star"
+    );
+}
+
+#[test]
+fn a_row_with_no_id_keys_its_star_on_its_address() {
+    // The failure this prevents is one star lighting several rows: a document
+    // that omits `id` would otherwise give every such row the SAME empty key.
+    let mut s = shardlist_shard("a.example:4433");
+    s.id = String::new();
+    let row = Listing::from_shard(&s);
+    assert_eq!(row.id, "a.example:4433");
+
+    let mut favs = Favourites::default();
+    favs.toggle(&row.id);
+    let mut other = shardlist_shard("b.example:4433");
+    other.id = String::new();
+    assert!(!favs.has(&Listing::from_shard(&other).id));
+}
+
+fn shardlist_shard(addr: &str) -> client::shardlist::Shard {
+    client::shardlist::Shard {
+        id: "x".into(),
+        name: "X".into(),
+        addr: addr.into(),
+        players: None,
+        max_players: None,
+        map: None,
+        ping_ms: None,
+        status_url: None,
+    }
+}
+
+#[test]
+fn a_poll_rewrites_the_count_and_the_direct_row_takes_none() {
+    // Carried over from the row type this replaced, because the property is
+    // the one that decides a redraw: the same count twice must not rebuild
+    // the screen, and the Direct row has no published count to accept.
+    let mut row = Listing::from_shard(&shardlist_shard("h:1"));
+    let st = client::shardlist::parse_status(br#"{"players":3,"max_players":100}"#).unwrap();
+    assert!(row.apply_status(&st), "the line changed and must redraw");
+    assert_eq!(row.population(), "3/100");
+    assert!(!row.apply_status(&st), "an unchanged line must not redraw");
+
+    let mut direct = Listing::direct("127.0.0.1:4433");
+    assert!(!direct.apply_status(&st));
+    assert_eq!(direct.population(), "?", "never a count nobody published");
+    assert_eq!(direct.ping(), "?");
+}
+
+#[test]
+fn a_typed_query_is_bounded_and_clearable() {
+    // Wall 4 applied to a field a player types into — the same cap the craft
+    // panel's search box has, and for the same reason.
+    let mut f = Filter::default();
+    for _ in 0..MAX_QUERY_CHARS * 2 {
+        f.push('x');
+    }
+    assert_eq!(f.query.chars().count(), MAX_QUERY_CHARS);
+    assert!(
+        !f.push('x'),
+        "a full box reports no change and must not redraw"
+    );
+    assert!(!f.push('\n'), "a control character is not a search term");
+
+    assert!(f.narrowed());
+    f.clear();
+    assert!(!f.narrowed() && f.query.is_empty() && f.cat == SCat::All);
+    assert!(!f.backspace(), "an empty box reports no change");
+}
+
+#[test]
+fn an_empty_list_says_which_kind_of_empty_it_is() {
+    // A player who cannot tell a failed fetch from an over-narrow filter is
+    // stuck. The fetch's own status line owns the first; this owns the rest.
+    // A fetch that returned nothing: the status line owns that sentence.
+    assert_eq!(servers::empty_reason(&Filter::default(), 0, 0), None);
+    // Nothing narrowed, so an empty list is not the filter's doing.
+    assert_eq!(servers::empty_reason(&Filter::default(), 5, 0), None);
+    // ...and a list with rows on it is never described as empty, whatever
+    // the filter says. The guard used to live in the one caller.
+    let narrowed = Filter {
+        query: "zz".into(),
+        ..Filter::default()
+    };
+    assert_eq!(servers::empty_reason(&narrowed, 5, 3), None);
+    let starred = Filter {
+        cat: SCat::Favourites,
+        ..Filter::default()
+    };
+    assert!(servers::empty_reason(&starred, 5, 0)
+        .unwrap()
+        .contains("star"));
+    let typed = Filter {
+        query: "zz".into(),
+        ..Filter::default()
+    };
+    assert!(servers::empty_reason(&typed, 5, 0).unwrap().contains("zz"));
+}
+
+/// The claimed address must not depend on which door the client came through.
+///
+/// This is the regression the boot split introduced and it is exactly the
+/// class `CLAUDE.md` warns about: a *field* that is right on one path and
+/// silently default on another, with nothing failing. `Connecting::address`
+/// was declared, documented, and written by nothing — the pre-window connect
+/// passed `args::address()` straight to the session, so every join that went
+/// through the menu sent `Address::GUEST` however the player had identified
+/// themselves. Moving the launcher join onto that screen would have made a
+/// menu-only bug the launcher's bug too, with a successful join either way.
+///
+/// `render/menu.rs::begin_connect` now resolves it from `Who`, which is one
+/// call and covers both provenances. This pins the VALUE half — that the two
+/// resolvers agree — and `the_connect_screen_still_claims_an_identity` below
+/// pins the CALL SITE half, because the defect was never a wrong value. It
+/// was a field nobody assigned.
+#[test]
+fn a_declared_identity_reaches_the_wire_by_either_route() {
+    const ID: &str = "0x1111111111111111111111111111111111111111";
+    let args = match client::args::parse(["--identity", ID].iter().map(|s| s.to_string())) {
+        client::args::Parsed::Run(a) => a,
+        other => panic!("expected Run, got {other:?}"),
+    };
+    // The command-line half, which is what the pre-window connect used.
+    let from_args = args.address().expect("a well-formed identity parses");
+    // The `Who` half, which is what every screen-driven connect uses now.
+    let player = client::scry::Player::Declared(ID.to_string());
+    let from_who =
+        protocol::Address::from_hex(player.address().expect("declared carries one").as_bytes())
+            .expect("the same string parses the same way");
+    assert_eq!(from_args, from_who, "two doors, two different players");
+    assert_ne!(
+        from_args,
+        protocol::Address::GUEST,
+        "an identity that resolves to GUEST is the bug this pins"
+    );
+
+    // And no identity is a guest on both halves, rather than a parse failure.
+    let bare = match client::args::parse(std::iter::empty()) {
+        client::args::Parsed::Run(a) => a,
+        other => panic!("expected Run, got {other:?}"),
+    };
+    assert_eq!(bare.address().unwrap(), protocol::Address::GUEST);
+    assert_eq!(client::scry::Player::Anonymous.address(), None);
+}
+
+/// The other half, and a grep — because the defect is a call site.
+///
+/// The same instrument `tests/sound.rs` uses for the feed drain and §F uses
+/// for the face, for the same stated reason: `connecting.address` compiles,
+/// passes clippy and joins a shard successfully whether or not anything ever
+/// writes it, and the only place a `GUEST` that should have been a player
+/// shows up is on a shard's own records. A value test cannot see an
+/// assignment that stopped happening; this can.
+#[test]
+fn the_connect_screen_still_claims_an_identity() {
+    let src = std::fs::read_to_string("src/render/menu.rs").expect("readable menu source");
+    let start = src
+        .find("pub fn begin_connect")
+        .expect("begin_connect must exist - it is the one connect the screens make");
+    // To the end of the function: the next item at column zero.
+    let body = &src[start..];
+    let end = body[1..]
+        .find("\npub fn ")
+        .map(|i| i + 1)
+        .unwrap_or(body.len());
+    let body = &body[..end];
+    assert!(
+        body.contains("connecting.address = "),
+        "begin_connect no longer sets the address it sends. It compiles, it \
+         joins, and every player on this path becomes a guest - which is \
+         exactly how the field went unwritten the first time:\n{body}"
+    );
+    assert!(
+        body.contains("who.0.address()"),
+        "the address must come from `Who`, which carries BOTH provenances - \
+         a declared `--identity` and a launcher-reported one. Reading the \
+         flag alone is what left a signed-in player anonymous"
+    );
+}

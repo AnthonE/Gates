@@ -38,6 +38,9 @@
 
 use bevy::prelude::*;
 
+// Both search boxes share one cap — see `crate::ui::MAX_QUERY_CHARS`.
+use crate::ui::MAX_QUERY_CHARS;
+
 use crate::ui::craft::{Cat, Facts};
 use crate::ui::slots::Drag;
 
@@ -468,10 +471,6 @@ pub fn keys(
     // authoritative about its own visibility.
     let _ = &net;
 }
-
-/// The longest search a player can type. Not a knob worth a row: it exists
-/// because an unbounded string fed by a keyboard is an unbounded string.
-pub const MAX_QUERY_CHARS: usize = 32;
 
 /// Put the sim's own refusals on the status line.
 ///

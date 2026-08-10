@@ -18,15 +18,10 @@
 
 use bevy::prelude::*;
 use client::args::{self, Parsed};
+use client::render::boot::Who;
 use client::render::{GatesRenderPlugin, Net, Rt, Start, WorldId};
-use client::scry::{Player, Scry};
+use client::scry::Player;
 use client::{client_endpoint, Session};
-
-/// Who the launcher (or the command line) says is playing. A Bevy resource so
-/// a HUD can draw it; **not** gameplay state, so it does not violate "Bevy
-/// draws, it does not decide" — nothing in the sim reads it and nothing can.
-#[derive(Resource)]
-pub struct Who(pub Player);
 
 fn main() -> AppExit {
     let a = match args::parse(std::env::args().skip(1)) {
@@ -42,37 +37,40 @@ fn main() -> AppExit {
     };
     let server = a.server.clone();
     let capture = a.capture.clone();
-    // **Who connects, and when.** A capture run and a `--server` launch both
-    // connect here, before the window — the probe harness is a gate and must
-    // not wait on a click, and a player who chose a shard in the scry
-    // launcher's Servers window has already chosen. Everything else opens
-    // the menu and connects from there, which is the only path on which a
-    // failed connect is survivable rather than an `exit(1)`.
-    let straight_in = capture.is_some() || a.server_given;
-
-    // Ask the scry launcher who is playing, ONCE, before anything else. It is
-    // a blocking round trip over a local socket and must never happen inside a
-    // frame; doing it here also means the answer exists before the window
-    // does. A launcher that is not running is the normal case.
+    // **Who connects before the window, and who does not.**
     //
-    // Skipped entirely under `--capture`: the probe harness is a gate, and a
+    // Only `--capture` does, now. The probe harness is a gate: a client that
+    // draws a world it is not connected to lies for its first few frames, and
+    // a harness that could photograph a half-finished handshake is a harness
+    // whose frames depend on the network. So its connect stays a hard
+    // precondition here.
+    //
+    // **A launcher join used to be the other one, and that was the defect.**
+    // `--server` meant the player had already chosen, so the client connected
+    // here and `exit(1)`'d on failure — into a terminal a double-clicked game
+    // does not have, after a black window that had not opened yet. It goes
+    // through `Screen::Boot` now: the window comes up first, the splash says
+    // what it is doing, and the connect runs in `Screen::Connecting`, which
+    // has owned a timeout, an Esc and a failure arm that names the reason
+    // since it existed. The player is still not asked to choose twice —
+    // `chosen` carries that — they are just allowed to survive a dead shard.
+    let straight_in = capture.is_some();
+
+    // The launcher handshake used to be here too, before the window, because
+    // it is a blocking round trip over a local socket and must never happen
+    // inside a frame. It still must not; it happens on a thread from the boot
+    // splash instead (`render/boot.rs`), which is the same rule with a window
+    // already up. A capture run resolves it here and asks nobody, because a
     // gate that reaches for a socket outside the repo is a gate whose result
     // depends on what else is running on the box.
-    let who = if a.no_launcher || capture.is_some() {
-        match a.identity.as_deref() {
-            Some(id) => Player::Declared(id.to_string()),
-            None => Player::Anonymous,
-        }
-    } else {
-        Scry::discover(a.identity.as_deref(), env!("CARGO_PKG_VERSION")).player
+    let who = match a.identity.as_deref() {
+        Some(id) => Player::Declared(id.to_string()),
+        None => Player::Anonymous,
     };
-    println!("gates: {}", who.line());
+    if straight_in || a.no_launcher {
+        println!("gates: {}", who.line());
+    }
 
-    // Connect before the window opens, on the two paths that already know
-    // where they are going. A client that draws a world it is not connected
-    // to is a client that lies for its first few frames — which is why this
-    // stayed a hard precondition for `--capture` rather than becoming a
-    // state the harness could photograph halfway through.
     let address = match a.address() {
         Ok(t) => t,
         Err(e) => {
@@ -100,8 +98,6 @@ fn main() -> AppExit {
             "gates: in the world — player {} seed {} tick {}",
             s.welcome.player_id, s.welcome.seed, s.welcome.tick
         );
-    } else {
-        println!("gates: server menu — no shard chosen yet");
     }
 
     let mut app = App::new();
@@ -135,6 +131,14 @@ fn main() -> AppExit {
         direct: server,
         servers_url: a.servers_url.clone(),
         connected: straight_in,
+        // The bit the menu turns on: an address the launcher chose must not be
+        // second-guessed by a screen asking the player to choose again. It is
+        // separate from `connected` now, because the two stopped being the
+        // same thing the moment the launcher's connect became a state.
+        chosen: straight_in || a.server_given,
+        identity: a.identity.clone(),
+        no_launcher: a.no_launcher,
+        no_hud: a.no_hud,
     };
     app.add_plugins(GatesRenderPlugin { start, capture });
     // **Returned, not discarded.** `App::run` hands back an `AppExit`, which

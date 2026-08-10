@@ -56,6 +56,13 @@ gates — the Gates desktop client
                        joins as a guest. Empty is the same as absent
   --capture DIR        run the probe harness instead of a player: settle, warm
                        the pipelines, shoot the vantage list, exit (RENDER.md)
+  --no-hud             with --capture: shoot the world with no HUD, no
+                       viewmodel and no compass — a clean PLATE. What it is
+                       for is the menu backdrop, which is footage rather than
+                       a live scene, and a screenshot with a hotbar across it
+                       is not footage. Refused without --capture: a HUD-less
+                       client a player could walk around in is a different
+                       thing nobody asked for
   --no-launcher        do not look for a scry launcher, even if one is running
   --help               this
 
@@ -85,6 +92,9 @@ pub struct Args {
     /// (`RENDER.md`). Only the windowed binary honours it; the headless one
     /// parses it so a shared parser cannot silently mean two things.
     pub capture: Option<PathBuf>,
+    /// `--no-hud`: shoot a clean plate. Only ever true alongside `capture`,
+    /// which the parser enforces rather than leaving to the caller.
+    pub no_hud: bool,
     pub no_launcher: bool,
 }
 
@@ -104,6 +114,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     let mut servers_url: Option<String> = None;
     let mut identity: Option<String> = None;
     let mut capture: Option<PathBuf> = None;
+    let mut no_hud = false;
     let mut no_launcher = false;
 
     let mut it = argv.into_iter();
@@ -111,6 +122,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
         match a.as_str() {
             "--help" | "-h" => return Parsed::Help,
             "--no-launcher" => no_launcher = true,
+            "--no-hud" => no_hud = true,
             "--server" => match it.next() {
                 Some(v) => server_flag = Some(v),
                 None => return Parsed::Bad("--server needs an address".into()),
@@ -204,6 +216,14 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
         Some(u) => Some(u),
     };
 
+    // Refused rather than ignored. A flag that silently does nothing is how
+    // an operator spends an afternoon wondering why their plates still have a
+    // hotbar on them — the same refuse-don't-ignore rule `--servers` above
+    // applies to a url it cannot use.
+    if no_hud && capture.is_none() {
+        return Parsed::Bad("--no-hud only means something with --capture".into());
+    }
+
     Parsed::Run(Args {
         server: raw.trim().to_string(),
         server_given,
@@ -212,6 +232,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
         capture,
+        no_hud,
         no_launcher,
     })
 }

@@ -104,6 +104,53 @@ state hash with the renderer attached and detached, on the same seed and WAL.**
 If the ECS ever decides anything, that equality breaks. It is not built; it is
 the right gate, and it is listed in §5 as R-G4.
 
+### 1.0 · The front door is four states, and the window comes first
+
+The path a player walks before any of the slices below draw a pixel:
+
+```text
+  Boot ──ready──▶ Menu ──pick──▶ Connecting ──welcome──▶ Loading ──▶ InWorld
+   └──chosen──────────────────────▲
+```
+
+**`Boot` exists because a double-click used to show nothing.** On the launcher
+path the client did a blocking scry handshake and a blocking QUIC connect
+*before the window existed*, and `exit(1)`'d on failure — into a terminal a
+double-clicked game does not have. Both are states now (`render/boot.rs`), so
+the window is the first thing that happens and everything slow is drawn while
+it happens. It ends on observable state — every `Startup` asset handle
+settled, the handshake answered — never on a clock, which is §1.1's rule one
+screen earlier and `CLAUDE.md`'s rule generally.
+
+**`--capture` is the one door that skips it** and still connects before the
+window. The probe harness is a gate: a client that draws a world it is not
+connected to lies for its first few frames, and a harness that could
+photograph a half-finished handshake is a harness whose frames depend on the
+network.
+
+What the splash still cannot cover is its own first ~3 s — wgpu adapter
+enumeration and window creation precede the first Bevy frame (measured under
+llvmpipe on this box). Covering that needs a second process; not taken, and
+`DECISIONS.md` §open says so.
+
+The screens themselves share one **shell** — wordmark, nav column, tinted
+control panel, content pane — owned by `render/ui.rs`, because the five
+reference frames the operator handed over are one screen with five payloads.
+Nothing in it decides: the browser's filtering, sort and favourites are
+`crate::ui::servers`, gated headless, and the launcher-backed entries are
+`crate::ui::hub`.
+
+**The backdrop is footage, and that is a correction.** The reference plays a
+video behind its menu (operator, 2026-08-10), so the note that used to sit
+here — render the island live behind the shell — was the expensive way to buy
+the cheap thing. A backdrop has no camera to drive, no ring to feed and no
+`WorldId` to insert and tear down; it costs one texture under a scrim, and it
+is absent-tolerant. Motion is a frame sequence and a size trade, not a
+renderer feature; `DECISIONS.md` §open "menu backdrop v0" has the numbers.
+`--capture --no-hud` shoots a clean plate, which is how the shipped still was
+made — the island is a pure function of the seed, so its title art is
+reproducible like everything else here.
+
 ### 1.1 · The corollary: nothing is loaded until the server says what
 
 "Bevy reads `ClientCore`" has a precondition that went unwritten until it bit,

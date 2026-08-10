@@ -73,6 +73,15 @@ pub struct Loaded {
     pub values: Persisted,
     pub version: u32,
     pub unknown: Vec<String>,
+    /// The starred shard ids, in file order.
+    ///
+    /// **Not on [`Persisted`]**, which is `Copy` and eight scalars, and would
+    /// stop being either. It is also not the same *kind* of thing: every field
+    /// up there is a knob with a range, and this is a list whose bound and
+    /// whose deduplication live beside the star that writes it
+    /// (`crate::ui::servers::Favourites::from_disk`) for the same reason the
+    /// numeric clamps live beside the steppers — two sanitizers drift.
+    pub favourites: Vec<String>,
 }
 
 /// Parse settings text over `defaults`. Never fails: a line that does not
@@ -84,6 +93,7 @@ pub struct Loaded {
 pub fn parse(text: &str, defaults: Persisted) -> Loaded {
     let mut v = defaults;
     let mut version = SETTINGS_VERSION;
+    let mut favourites: Vec<String> = Vec::new();
     // (key, full line) so a duplicated unknown key keeps only its last value
     // — the same last-wins the known keys get from being plain assignments.
     let mut unknown: Vec<(String, String)> = Vec::new();
@@ -114,6 +124,21 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             "vol_master" => num(&mut v.vol_master, value),
             "vol_game" => num(&mut v.vol_game, value),
             "vol_ambience" => num(&mut v.vol_ambience, value),
+            // A comma-separated list, because the format is `key = value` and
+            // a list of ids does not earn a second one. An id may not contain
+            // a comma — `shardlist::parse` caps every field at
+            // `MAX_FIELD_BYTES` and this file is written from ids that came
+            // through it — so the split is lossless for anything the game
+            // itself wrote, and a hand-typed comma costs that entry its star
+            // rather than the file its meaning.
+            "favourites" => {
+                favourites = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
             _ => {
                 if key_shaped(key) {
                     unknown.retain(|(k, _)| k != key);
@@ -126,6 +151,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
         values: v,
         version,
         unknown: unknown.into_iter().map(|(_, line)| line).collect(),
+        favourites,
     }
 }
 
@@ -161,7 +187,7 @@ fn key_shaped(key: &str) -> bool {
 /// whichever of that and `SETTINGS_VERSION` is higher, so saving from an
 /// older build under a newer file never claims the preserved keys are older
 /// than they are.
-pub fn serialize(v: &Persisted, version: u32, unknown: &[String]) -> String {
+pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[String]) -> String {
     let mut s = String::with_capacity(512);
     s.push_str("# gates client settings. Written by the game on every change;\n");
     s.push_str("# hand edits are read at the next launch. A key this build does\n");
@@ -175,6 +201,11 @@ pub fn serialize(v: &Persisted, version: u32, unknown: &[String]) -> String {
     s.push_str(&format!("vol_master = {}\n", v.vol_master));
     s.push_str(&format!("vol_game = {}\n", v.vol_game));
     s.push_str(&format!("vol_ambience = {}\n", v.vol_ambience));
+    // Written unconditionally, empty list included: a `favourites = ""` line
+    // is how un-starring the last shard *sticks*. Omitting the key when the
+    // list is empty would leave the previous file's line in place on a
+    // rewrite, and the star would come back at the next launch.
+    s.push_str(&format!("favourites = \"{}\"\n", favourites.join(",")));
     for line in unknown {
         s.push_str(line);
         s.push('\n');
@@ -192,6 +223,7 @@ pub fn load(path: &Path, defaults: Persisted) -> Loaded {
             values: defaults,
             version: SETTINGS_VERSION,
             unknown: Vec::new(),
+            favourites: Vec::new(),
         },
     }
 }
@@ -288,7 +320,7 @@ mod tests {
     #[test]
     fn a_round_trip_is_identity() {
         let unknown = vec!["future_knob = 3".to_string()];
-        let text = serialize(&changed(), SETTINGS_VERSION, &unknown);
+        let text = serialize(&changed(), SETTINGS_VERSION, &[], &unknown);
         let back = parse(&text, defaults());
         assert_eq!(back.values, changed());
         assert_eq!(back.version, SETTINGS_VERSION);
@@ -329,7 +361,7 @@ mod tests {
         let text = "vol_game = 0.5\nfuture_knob = 3\n# a comment\nnot a line\nfuture_knob = 4\n";
         let got = parse(text, defaults());
         assert_eq!(got.unknown, vec!["future_knob = 4".to_string()]);
-        let out = serialize(&got.values, got.version, &got.unknown);
+        let out = serialize(&got.values, got.version, &got.favourites, &got.unknown);
         assert!(out.contains("future_knob = 4"), "{out}");
         assert!(!out.contains("not a line"), "{out}");
     }
@@ -342,7 +374,7 @@ mod tests {
         let got = parse(text, defaults());
         assert_eq!(got.version, 9);
         assert_eq!(got.values.fov_deg, 80.0);
-        let out = serialize(&got.values, got.version, &got.unknown);
+        let out = serialize(&got.values, got.version, &got.favourites, &got.unknown);
         assert!(out.contains("version = 9"), "{out}");
     }
 
@@ -353,7 +385,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gates-settings-test-{}", std::process::id()));
         let path = dir.join("deeper").join("settings.toml");
         assert_eq!(load(&path, defaults()).values, defaults());
-        save(&path, &serialize(&changed(), SETTINGS_VERSION, &[])).expect("save");
+        save(&path, &serialize(&changed(), SETTINGS_VERSION, &[], &[])).expect("save");
         assert_eq!(load(&path, defaults()).values, changed());
         std::fs::remove_dir_all(&dir).ok();
     }

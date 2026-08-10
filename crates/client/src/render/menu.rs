@@ -1,4 +1,5 @@
-//! The intro screen: pick a shard, then join it.
+//! The front end: a wordmark, a nav column, and whatever the picked nav entry
+//! puts beside it. Today that is one thing — the server browser.
 //!
 //! **What this changes structurally.** Before this module the client
 //! connected *before* the window existed and `exit(1)`'d if it could not —
@@ -8,14 +9,21 @@
 //! a precondition, and the screens are the states:
 //!
 //! ```text
-//!   Menu ──pick──▶ Connecting ──welcome──▶ Loading ──built──▶ InWorld
-//!    ▲   ▲              │                     │                  │
-//!    │   └why it failed─┘                     │              Esc │
-//!    │                                        │                  ▼
-//!    └────────── Disconnect ──────────────────┴───────────── Paused
-//!                                                                │
-//!    Settings ◀───────────────────────────────────────────────────
+//!   Boot ──ready──▶ Menu ──pick──▶ Connecting ──welcome──▶ Loading ──▶ InWorld
+//!    │               ▲   ▲              │                     │           │
+//!    └──chosen───────┼───┴why it failed─┘                     │       Esc │
+//!                    │                                        │           ▼
+//!                    └────── Disconnect ──────────────────────┴──── Paused
+//!                                                                     │
+//!    Settings ◀────────────────────────────────────────────────────────
 //! ```
+//!
+//! **`Boot` is the splash a double-click needs** and it is new (`boot`): the
+//! window now exists before the launcher handshake and before any connect,
+//! so the several seconds that used to be a black nothing are drawn, and the
+//! launcher's own connect goes through `Connecting` like every other — which
+//! is what makes a dead shard survivable on that path rather than an
+//! `exit(1)` into a terminal nobody has.
 //!
 //! **`Connecting` ends at the welcome, not at a playable world.** The states
 //! after it are the other two modules in this trio: `loading` owns the
@@ -27,33 +35,65 @@
 //! twin — the shard hanging up mid-play — lands on `Disconnected` first
 //! (`disconnected`), a screen that says so, and comes back here through it.
 //!
+//! ## The shell, and why it is the part worth copying
+//!
+//! The five reference frames the operator handed over — main menu, PLAY GAME,
+//! NEWS, INVENTORY, WORKSHOP — are **one screen with five payloads**: the
+//! wordmark never moves, the nav column never re-orders, and picking an entry
+//! swaps a tinted control column and a wide content pane. `render/ui.rs`'s
+//! shell section owns that arrangement; this module is its first tenant.
+//!
+//! **The nav carries NEWS, ITEM STORE and WORKSHOP, and the first cut of this
+//! file was wrong to leave them off.** It argued they had no service behind
+//! them; they have one — the scry-works launcher (operator, 2026-08-09) — so
+//! the argument was a mistake about the product, not an application of the
+//! rule. `settings.rs`'s policy is that a section with nothing behind it
+//! *says so*, and `crate::ui::hub` is that sentence: four states, never
+//! collapsed, from "no launcher is running" to a link. Each hands off to the
+//! launcher's own window rather than drawing a shopfront here — see
+//! `ui::hub` for why that is a rule about money and not a shortcut.
+//!
+//! The one entry of theirs we still do not carry is `RUST+`, their companion
+//! app. There is no equivalent to be honest about.
+//!
+//! **The backdrop is footage, not a live scene** (operator, same day: *"rust
+//! uses a video for the background"*). `ui::backdrop` owns it and the
+//! correction it replaced: rendering the island behind the menu is the
+//! expensive way to buy the cheap thing.
+//!
 //! **Bevy still does not decide.** Nothing in this module touches gameplay
 //! state; it owns an address string and a list of rows, and the moment a
-//! `Session` exists it hands it to `Net` and gets out of the way. `WorldId`
+//! `Session` exists it hands it to `Net` and gets out of the way. The
+//! browser's arithmetic — filtering, the busy-first sort, the favourite set —
+//! is `crate::ui::servers`, gated headless in `tests/ui.rs` §L. `WorldId`
 //! cannot be built until the welcome names the seed, which is exactly why it
-//! is inserted by `poll_connect` rather than at plugin construction — the menu
-//! is what made the old shape impossible, not a preference.
+//! is inserted by `poll_connect` rather than at plugin construction.
 //!
-//! **Two doors are deliberately NOT this screen.** A `--capture` run and a
-//! `--server` launch both skip it: the probe harness is a gate and must not
-//! wait on a click, and a player who already picked a shard in the scry
-//! launcher's own Servers window has chosen once and must not be asked
-//! twice. `args::server_given` is that bit, and an unfilled `{server}`
-//! placeholder deliberately does not set it — a launcher that started the
-//! game without picking a shard lands here, which is the intended path.
+//! **One door is deliberately NOT this screen.** A `--capture` run skips it:
+//! the probe harness is a gate and must not wait on a click. A launcher join
+//! (`args::server_given`) no longer skips it either — it passes *through*
+//! `Boot` straight into `Connecting`, which is the same "asked once, not
+//! twice" outcome with a failure arm that lands here instead of on stderr.
 
 use bevy::prelude::*;
 
+use super::boot::Who;
+use super::hub::HubState;
 use super::ui;
 use crate::shardlist::{self, Shard, MAX_DOC_BYTES};
+use crate::ui::hub::{Hub, Section};
+use crate::ui::servers::{self, Cat, Favourites, Filter, Listing};
 
-/// Where the client is. `Menu` is the default because the *absence* of a
-/// chosen server is the state a bare `gates` starts in; the two callers that
-/// have already chosen (`--server`, `--capture`) jump straight to `Loading`,
-/// which is the first state that has a world to build.
+/// Where the client is. `Boot` is the default because the *absence* of a
+/// warmed client is the state every launch starts in, including the two that
+/// have already chosen a shard — they leave it for `Connecting` rather than
+/// for `Menu`, which is one bit and lives in `crate::ui::boot`.
 #[derive(States, Default, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Screen {
+    /// The splash. The window exists, the client is warming, and nothing has
+    /// been asked of the player yet. `boot`.
     #[default]
+    Boot,
     Menu,
     Connecting,
     /// The welcome has landed and the rings are filling. `loading`.
@@ -80,87 +120,15 @@ pub enum Screen {
     Disconnected,
 }
 
-/// One row a player may join. The direct row is always present and always
-/// first — a shard list that fails to load must never leave the player with
-/// nothing to click, which is the same rule the launcher's dark panels obey.
-#[derive(Debug, Clone)]
-pub struct Row {
-    pub name: String,
-    pub addr: String,
-    pub detail: String,
-    /// The list row this came from. `None` on the Direct row, which is not a
-    /// shard anybody published — it is the address this binary was started
-    /// with, and there is no document behind it to poll.
-    ///
-    /// Kept whole rather than as loose fields so `detail` has exactly one
-    /// place it is computed: a poll rewrites the count *in the shard* and the
-    /// line is re-derived, which is what keeps a refreshed row from losing
-    /// the map and ping it already had.
-    pub shard: Option<Shard>,
-}
-
-impl Row {
-    fn direct(addr: &str) -> Self {
-        Self {
-            name: "Direct".into(),
-            addr: addr.to_string(),
-            detail: "the address this client was started with".into(),
-            shard: None,
-        }
-    }
-
-    /// The second line of a row: population, then whatever else it states.
-    fn detail_of(s: &Shard) -> String {
-        let mut detail = s.population();
-        if let Some(m) = &s.map {
-            detail.push_str("  ");
-            detail.push_str(m);
-        }
-        if let Some(p) = s.ping_ms {
-            detail.push_str(&format!("  {p} ms"));
-        }
-        detail
-    }
-
-    fn from_shard(s: &Shard) -> Self {
-        Self {
-            name: s.name.clone(),
-            addr: s.addr.clone(),
-            detail: Self::detail_of(s),
-            shard: Some(s.clone()),
-        }
-    }
-
-    /// Where this row's live count is polled from, if anywhere.
-    fn status_url(&self) -> Option<&str> {
-        self.shard.as_ref()?.status_url.as_deref()
-    }
-
-    /// Fold a poll in. Returns whether the drawn line actually changed, which
-    /// is what decides a rebuild: re-spawning the whole screen every ten
-    /// seconds to redraw an identical `3/100` is a visible flicker for
-    /// nothing.
-    fn apply_status(&mut self, st: &shardlist::Status) -> bool {
-        let Some(s) = self.shard.as_mut() else {
-            return false;
-        };
-        s.apply_status(st);
-        let redrawn = Self::detail_of(s);
-        let changed = redrawn != self.detail;
-        self.detail = redrawn;
-        changed
-    }
-}
-
 /// The menu's whole state. A plain resource — no gameplay state, no session.
 #[derive(Resource)]
 pub struct Menu {
-    pub rows: Vec<Row>,
-    /// What the screen says under the title. Always something: a menu that
+    pub rows: Vec<Listing>,
+    /// What the screen says under the table. Always something: a menu that
     /// is empty and silent about why is the defect both repos call a dark
     /// panel that cannot say what would light it.
     pub status: String,
-    /// Set when `rows` grew and the screen has to be rebuilt. An explicit
+    /// Set when the drawn screen no longer matches this resource. An explicit
     /// flag rather than a `Local` row count, because a count starts at zero
     /// and would make the first frame in the menu rebuild what `setup` had
     /// just spawned — the screen built twice on every entry.
@@ -184,7 +152,7 @@ pub struct Menu {
 impl Menu {
     pub fn new(direct: &str, servers_url: Option<String>) -> Self {
         Self {
-            rows: vec![Row::direct(direct)],
+            rows: vec![Listing::direct(direct)],
             status: match &servers_url {
                 Some(u) => format!("fetching the shard list from {u}"),
                 // The honest empty state, and it names what would fill it.
@@ -197,6 +165,71 @@ impl Menu {
             fetch: None,
             status_poll: None,
         }
+    }
+}
+
+/// What the player has narrowed the list to, and which nav entry is open.
+///
+/// Split from [`Menu`] because the two change for different reasons and at
+/// very different rates: `Menu` moves when the network answers, this moves on
+/// every keystroke. One resource for both would mark the fetch's own change
+/// detection dirty on every letter typed into the search box.
+#[derive(Resource, Default)]
+pub struct Browse {
+    pub nav: Nav,
+    pub filter: Filter,
+    pub favourites: Favourites,
+}
+
+/// The nav column, in the reference's own order.
+///
+/// **The three middle entries are the launcher's, not ours** (operator,
+/// 2026-08-09: NEWS is the scry-works community, and the item store and
+/// workshop are part of that setup too). The first cut left all three off on
+/// the grounds that nothing was behind them — wrong about the product, not
+/// about the rule. `crate::ui::hub` owns which of four states each is in;
+/// what a pane must never do is draw a greyed row that says nothing.
+///
+/// The one entry the reference has that we still do not is `RUST+`, its
+/// companion app. There is no equivalent to be honest about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Nav {
+    #[default]
+    Play,
+    /// A launcher-backed section: NEWS, ITEM STORE, WORKSHOP.
+    Hub(Section),
+    Settings,
+    Quit,
+}
+
+impl Nav {
+    const ALL: [Nav; 6] = [
+        Nav::Play,
+        Nav::Hub(Section::News),
+        Nav::Hub(Section::Store),
+        Nav::Hub(Section::Workshop),
+        Nav::Settings,
+        Nav::Quit,
+    ];
+
+    /// The drawn label. A hub entry may be renamed by the manifest, so the
+    /// platform can rename a section of its own site without a client
+    /// release — [`crate::ui::hub::Section::label`] is where the blank-and-
+    /// whitespace guard lives.
+    fn label(self, hub: &Hub) -> String {
+        match self {
+            Nav::Play => "PLAY GAME".to_string(),
+            Nav::Hub(s) => s.label(hub),
+            Nav::Settings => "OPTIONS".to_string(),
+            Nav::Quit => "QUIT".to_string(),
+        }
+    }
+
+    /// Does picking this entry open a pane, or act at once? QUIT and OPTIONS
+    /// are verbs; everything else is a screen. Drawn identically either way,
+    /// which is the reference's arrangement too.
+    fn is_pane(self) -> bool {
+        matches!(self, Nav::Play | Nav::Hub(_))
     }
 }
 
@@ -246,10 +279,12 @@ pub const CONNECT_TIMEOUT_S: f32 = 20.0;
 #[derive(Default)]
 pub struct Connecting {
     pub addr: String,
-    /// The address this connect claims (`Address::GUEST` for none), carried
-    /// here rather than re-read at connect time because the connect runs on
-    /// the runtime, off the frame, and must not reach back into the app for
-    /// it.
+    /// The address this connect claims (`Address::GUEST` for none).
+    ///
+    /// Written by [`begin_connect`] from `Who` and then copied into the task,
+    /// because the connect runs on the runtime, off the frame, and must not
+    /// reach back into the app for it. It was a field nobody wrote until
+    /// 2026-08-09 — see [`begin_connect`] for what that cost.
     pub address: protocol::Address,
     pub rx: Option<std::sync::mpsc::Receiver<Result<crate::Session, String>>>,
     /// Seconds spent on this attempt. Accumulated from Bevy's frame delta
@@ -273,11 +308,39 @@ pub struct MenuRoot;
 #[derive(Component)]
 pub struct RowButton(pub usize);
 
-/// The one row on this screen that is not a shard.
+/// The star on a row, by the same index. A separate button inside the row so
+/// starring does not join — the reference's star is a hit target of its own
+/// for exactly that reason.
 #[derive(Component)]
-pub struct SettingsButton;
+pub struct StarButton(pub usize);
 
-/// The status line.
+/// A nav entry.
+#[derive(Component)]
+pub struct NavButton(pub Nav);
+
+/// A rail category.
+#[derive(Component)]
+pub struct CatButton(pub Cat);
+
+/// One of the two slot filters.
+#[derive(Component)]
+pub struct SlotFilter {
+    /// True for "hide empty", false for "hide full".
+    pub empty: bool,
+}
+
+/// OPEN IN LAUNCHER, on a hub pane.
+#[derive(Component)]
+pub struct HubButton(pub Section);
+
+/// CLEAR FILTERS and REFRESH.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub enum PanelButton {
+    Clear,
+    Refresh,
+}
+
+/// The status line under the table.
 #[derive(Component)]
 pub struct StatusLine;
 
@@ -288,12 +351,24 @@ pub struct StatusLine;
 /// ever does a `try_recv`. The client is a hot path too (CLAUDE.md traps) —
 /// a synchronous GET inside a system would be a multi-second frame.
 pub fn begin_fetch(mut menu: ResMut<Menu>) {
+    if menu.fetch.is_some() {
+        // Already out. Entering the menu twice must not stack two GETs — the
+        // guard REFRESH deliberately does not have, which is why the two
+        // callers share the body below and not this line.
+        return;
+    }
+    fetch_now(&mut menu);
+}
+
+/// Start a fetch, replacing any in flight.
+///
+/// Two callers: [`begin_fetch`] on entering the screen, and REFRESH, which is
+/// a player saying "ask again now" and must not be silently dropped because a
+/// slow round is still out.
+fn fetch_now(menu: &mut Menu) {
     let Some(url) = menu.servers_url.clone() else {
         return;
     };
-    if menu.fetch.is_some() {
-        return;
-    }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     std::thread::spawn(move || {
         let _ = tx.send(fetch_blocking(&url));
@@ -341,10 +416,14 @@ pub fn poll_fetch(mut menu: ResMut<Menu>) {
             // Not an error, and not drawn as one: "nobody is running a shard
             // right now" is a real answer and the launcher renders it too.
             menu.status = "the shard list is up and lists no shards".into();
+            menu.dirty = true;
         }
         Ok(shards) => {
             menu.status = format!("{} shard(s)", shards.len());
-            menu.rows.extend(shards.iter().map(Row::from_shard));
+            // Replace rather than extend: REFRESH re-enters this path, and an
+            // extend would double every row on the second fetch.
+            menu.rows.retain(|r| r.direct);
+            menu.rows.extend(shards.iter().map(Listing::from_shard));
             menu.dirty = true;
             // `begin_status_poll` notices the row count moved and polls at
             // once rather than after the interval: the rows have just appeared
@@ -353,7 +432,10 @@ pub fn poll_fetch(mut menu: ResMut<Menu>) {
         }
         // The reason is drawn verbatim. `shardlist::parse` writes these for
         // a reader, which is why they name the row and the cap.
-        Err(why) => menu.status = why,
+        Err(why) => {
+            menu.status = why;
+            menu.dirty = true;
+        }
     }
 }
 
@@ -371,10 +453,10 @@ pub fn poll_fetch(mut menu: ResMut<Menu>) {
 /// **The timer is a `Local`, not a field on `Menu`, and that is a change-
 /// detection fix rather than a style choice.** `ResMut` flags its resource
 /// changed on the first *mutable* deref, so a `menu.since_poll += delta` every
-/// frame would mark `Menu` changed every frame — and `refresh_status` is
-/// guarded on `menu.is_changed()` precisely to avoid doing work when nothing
-/// moved. Keeping the clock outside the resource means this system touches
-/// `Menu` mutably only on the frame it actually starts a round.
+/// frame would mark `Menu` changed every frame — and the redraw is guarded on
+/// `menu.dirty` precisely to avoid doing work when nothing moved. Keeping the
+/// clock outside the resource means this system touches `Menu` mutably only on
+/// the frame it actually starts a round.
 pub fn begin_status_poll(
     time: Res<Time>,
     mut since: Local<f32>,
@@ -402,7 +484,7 @@ pub fn begin_status_poll(
         .rows
         .iter()
         .enumerate()
-        .filter_map(|(i, r)| r.status_url().map(|u| (i, u.to_string())))
+        .filter_map(|(i, r)| r.status_url.as_ref().map(|u| (i, u.to_string())))
         .collect();
     if targets.is_empty() {
         return;
@@ -444,9 +526,7 @@ fn status_blocking(url: &str) -> Result<shardlist::Status, String> {
 /// Collect a finished round and redraw only if a number moved.
 pub fn poll_status(mut menu: ResMut<Menu>) {
     // Checked through an IMMUTABLE deref first, so the overwhelmingly common
-    // frame — no round in flight — does not flag `Menu` changed and make
-    // `refresh_status` re-examine the status line for nothing. See
-    // `begin_status_poll` for the same point at more length.
+    // frame — no round in flight — does not flag `Menu` changed for nothing.
     if menu.status_poll.is_none() {
         return;
     }
@@ -478,180 +558,643 @@ pub fn poll_status(mut menu: ResMut<Menu>) {
 
 /// Build the screen. Rebuilt from scratch on entry, so the row list is
 /// whatever `Menu` holds at that moment.
-pub fn setup(mut commands: Commands, menu: Res<Menu>) {
-    build(&mut commands, &menu);
+pub fn setup(
+    mut commands: Commands,
+    menu: Res<Menu>,
+    browse: Res<Browse>,
+    who: Res<Who>,
+    state: Res<HubState>,
+    backdrop: Option<Res<ui::Backdrop>>,
+) {
+    build(
+        &mut commands,
+        &menu,
+        &browse,
+        &who,
+        &state.hub,
+        backdrop.as_deref(),
+    );
 }
 
-/// The UI, as a plain function rather than a system.
+/// Redraw. **One rebuild path for every reason the screen can change** — a
+/// fetch landing, a poll moving a count, a keystroke, a star, a filter — and
+/// it is a full respawn rather than a patch.
 ///
-/// Two callers need it — `setup` on entering the screen and
-/// `rebuild_on_new_rows` when the fetch lands — and a system cannot call
-/// another system directly. Extracting it is cheaper than registering a
-/// cached one-shot system and keeps both paths provably identical.
-fn build(commands: &mut Commands, menu: &Menu) {
+/// The same call `settings::rebuild` makes and for the same stated reason: a
+/// screen whose every drawn value is derived from two resources is cheaper to
+/// rebuild than to diff, and a patch path is exactly where a drawn value
+/// drifts from the held one. Which matters more here than there, because the
+/// values on this screen are *numbers a player acts on*.
+pub fn rebuild(
+    mut commands: Commands,
+    mut menu: ResMut<Menu>,
+    browse: Res<Browse>,
+    who: Res<Who>,
+    mut state: ResMut<HubState>,
+    backdrop: Option<Res<ui::Backdrop>>,
+    roots: Query<Entity, With<MenuRoot>>,
+) {
+    // Either resource landing something redraws the one screen they share —
+    // the manifest arriving changes a nav LABEL, not just a pane, so a hub
+    // update that only redrew the pane would leave the column stale.
+    if !menu.dirty && !state.dirty {
+        return;
+    }
+    menu.dirty = false;
+    state.dirty = false;
+    for e in roots.iter() {
+        commands.entity(e).despawn();
+    }
+    build(
+        &mut commands,
+        &menu,
+        &browse,
+        &who,
+        &state.hub,
+        backdrop.as_deref(),
+    );
+}
+
+/// Column widths, pixels. The nav is wide enough for the longest entry at 26
+/// px; the panel matches the reference's proportion against a 1280 frame.
+const NAV_W: f32 = 250.0;
+const PANEL_W: f32 = 300.0;
+/// The two right-aligned table columns.
+const PLAYERS_W: f32 = 90.0;
+const PING_W: f32 = 56.0;
+
+/// The UI, as a plain function rather than a system — two callers need it and
+/// a system cannot call another system directly.
+fn build(
+    commands: &mut Commands,
+    menu: &Menu,
+    browse: &Browse,
+    who: &Who,
+    hub: &Hub,
+    backdrop: Option<&ui::Backdrop>,
+) {
     // A camera, because the menu may be the first thing that ever exists —
     // the render rig only spawns on entering the world.
     commands.spawn((Camera2d, MenuRoot));
 
     commands
-        .spawn((MenuRoot, ui::screen(ui::BG)))
+        .spawn((
+            MenuRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+            BackgroundColor(ui::BG),
+        ))
         .with_children(|root| {
-            root.spawn(ui::title("GATES"));
-            root.spawn((
-                StatusLine,
-                ui::label(menu.status.clone(), 15.0, ui::DIM),
-                Node {
-                    max_width: Val::Px(620.0),
-                    margin: UiRect::bottom(Val::Px(14.0)),
-                    ..default()
-                },
-            ));
-
-            for (i, row) in menu.rows.iter().enumerate() {
-                root.spawn((ui::row(ROW_W), RowButton(i)))
-                    .with_children(|b| {
-                        // The number is drawn because the key works — a bind the
-                        // player is never told about is a bind that does not
-                        // exist, which is the rule `LEARN_TASKS` already holds
-                        // the in-world verbs to.
-                        b.spawn(ui::strong(
-                            format!("{}  {}", i + 1, row.name),
-                            20.0,
-                            ui::TEXT,
-                        ));
-                        b.spawn(ui::label(
-                            format!("{}   {}", row.addr, row.detail),
-                            13.0,
-                            ui::DIM,
-                        ));
-                    });
+            // Footage, then the wash over it, then everything else. Both sit
+            // at a negative `ZIndex` rather than trusting spawn order — the
+            // shell's children come from three functions and none of them can
+            // promise to be first.
+            if let Some(b) = backdrop {
+                root.spawn(ui::backdrop(b.0.clone()));
+                root.spawn(ui::scrim());
             }
-
-            // Settings, which is the same screen the Esc menu opens. Drawn
-            // apart from the shard rows and keyed on a letter rather than a
-            // number, because the numbers belong to the list — a settings row
-            // that took the next digit would renumber itself every time a
-            // shard appeared.
-            root.spawn((ui::row(ROW_W), SettingsButton))
-                .with_children(|b| {
-                    b.spawn(ui::strong("S  Settings", 20.0, ui::TEXT));
-                    b.spawn(ui::label(
-                        "view, controls, screen - and the keybind list",
-                        13.0,
-                        ui::DIM,
-                    ));
-                });
-
-            root.spawn((
-                ui::label(
-                    "click a shard, or press its number    -    S settings    -    Esc quits",
-                    13.0,
-                    ui::FAINT,
-                ),
-                Node {
-                    margin: UiRect::top(Val::Px(16.0)),
-                    ..default()
-                },
-            ));
+            header(root, who);
+            root.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                flex_grow: 1.0,
+                ..default()
+            })
+            .with_children(|body| {
+                nav(body, browse.nav, hub);
+                // The payload. OPTIONS and QUIT are verbs rather than screens
+                // (`Nav::is_pane`), so they never reach here — the pane keeps
+                // whatever was last open while they act.
+                match browse.nav {
+                    Nav::Hub(section) => hub_pane(body, section, hub),
+                    _ => {
+                        filters(body, menu, browse);
+                        table(body, menu, browse);
+                    }
+                }
+            });
         });
 }
 
-/// Row width, pixels — the shard rows and the settings row are one column.
-const ROW_W: f32 = 560.0;
+/// The wordmark, and who the launcher says is playing.
+///
+/// **The identity chip is the reference's profile corner, and it is the first
+/// thing in this client to draw `Who` at all** — it was resolved at startup
+/// and read by nothing. `Player::line` is what says it, so the menu cannot
+/// disagree with the console line printed at boot.
+fn header(root: &mut ChildSpawnerCommands, who: &Who) {
+    root.spawn(Node {
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
+        justify_content: JustifyContent::SpaceBetween,
+        padding: UiRect::new(Val::Px(34.0), Val::Px(34.0), Val::Px(26.0), Val::Px(22.0)),
+        ..default()
+    })
+    .with_children(|bar| {
+        bar.spawn(ui::wordmark());
+        bar.spawn(ui::label(who.0.line(), 13.0, ui::DIM));
+    });
+}
 
-/// Redraw the status line in place. The rows are rebuilt only on entry, so
-/// this is what makes an in-flight fetch visible.
-pub fn refresh_status(menu: Res<Menu>, mut line: Query<&mut Text, With<StatusLine>>) {
-    if !menu.is_changed() {
-        return;
-    }
-    if let Ok(mut t) = line.single_mut() {
-        if t.0 != menu.status {
-            t.0 = menu.status.clone();
+fn nav(body: &mut ChildSpawnerCommands, picked: Nav, hub: &Hub) {
+    body.spawn(Node {
+        width: Val::Px(NAV_W),
+        flex_direction: FlexDirection::Column,
+        padding: UiRect::new(Val::Px(34.0), Val::Px(0.0), Val::Px(10.0), Val::Px(0.0)),
+        ..default()
+    })
+    .with_children(|col| {
+        for n in Nav::ALL {
+            col.spawn((ui::nav_item(&n.label(hub), n == picked), NavButton(n)));
         }
-    }
+    });
 }
 
-/// Rows arriving after the screen was built need the screen rebuilt. Cheap
-/// and rare — it happens once, when the fetch lands.
-pub fn rebuild_on_new_rows(
-    mut commands: Commands,
-    mut menu: ResMut<Menu>,
-    roots: Query<Entity, With<MenuRoot>>,
-) {
-    if !menu.dirty {
-        return;
-    }
-    menu.dirty = false;
-    for e in roots.iter() {
-        commands.entity(e).despawn();
-    }
-    build(&mut commands, &menu);
+/// A launcher-backed section: what it is, what state it is in, and the one
+/// button that hands it to the launcher.
+///
+/// **Deliberately not a shopfront.** The reference draws its item store and
+/// workshop in-game because it owns the whole client-plus-platform stack;
+/// ours must not, and the sentence under the button says why in the player's
+/// own terms. `crate::ui::hub` carries the full argument — the short version
+/// is that a game draws its own pixels, so a checkout it draws is a checkout
+/// it could forge, and the launcher's window is where a real one lives.
+///
+/// It uses the same panel-plus-pane shell as PLAY GAME rather than a bespoke
+/// layout, because a nav that changed the page's whole geometry per entry is
+/// the thing the shell exists to prevent.
+fn hub_pane(body: &mut ChildSpawnerCommands, section: Section, hub: &Hub) {
+    let status = section.status(hub);
+    let ready = status.url().is_some();
+    let label = section.label(hub);
+
+    body.spawn(ui::panel(PANEL_W)).with_children(|panel| {
+        panel.spawn(ui::strong(label.clone(), 22.0, ui::TITLE));
+        panel.spawn((
+            ui::label(section.blurb(), 13.0, ui::DIM),
+            Node {
+                margin: UiRect::top(Val::Px(6.0)),
+                ..default()
+            },
+        ));
+
+        panel.spawn(ui::group("WHERE THIS LIVES"));
+        // Always something, and it always names what would change it — the
+        // rule the shard list obeys, applied to a different document. The
+        // four states are four sentences (`ui::hub::Status::line`).
+        panel.spawn(ui::label(status.line(), 12.0, ui::FAINT));
+
+        // **Both are pinned absolutely rather than pushed by a spacer.** A
+        // wrapping column whose only content was text measured ZERO tall and
+        // took its children off the bottom of the window with it — found by
+        // tinting the spacer, which then visibly ran past the window's edge.
+        // `flex_shrink: 0` did not help, because the node was not being
+        // shrunk; it never had a height to begin with.
+        panel.spawn((
+            ui::label(section.handoff_reason(), 11.0, ui::FAINT),
+            ui::pinned_bottom(ui::BUTTON_H + 26.0, PANEL_W - 32.0),
+        ));
+        // Drawn dim rather than removed when there is nothing to open: a
+        // button that comes and goes is a layout that jumps under the
+        // pointer, and the line above already says why.
+        panel
+            .spawn((
+                ui::pinned_button(PANEL_W - 32.0, ready, 16.0),
+                HubButton(section),
+            ))
+            .with_children(|b| {
+                b.spawn(ui::strong(
+                    "OPEN IN LAUNCHER",
+                    12.0,
+                    if ready { ui::TITLE } else { ui::FAINT },
+                ));
+            });
+    });
+
+    // The content side. Nothing is drawn *in* it, and that is the honest
+    // shape: the page is the launcher's, so a pane full of invented chrome
+    // would be this client pretending to host a service it hands off.
+    body.spawn(ui::pane()).with_children(|pane| {
+        pane.spawn((
+            ui::label(
+                format!(
+                    "{label} is part of scry-works, the launcher this game is sold \
+                     through. It opens there rather than here."
+                ),
+                14.0,
+                ui::DIM,
+            ),
+            Node {
+                margin: UiRect::all(Val::Px(24.0)),
+                max_width: Val::Px(560.0),
+                ..default()
+            },
+        ));
+    });
 }
 
-/// Mouse. One click picks a shard, or opens settings. Hover is `ui::hover`'s
-/// job now, which is why this only reads `Pressed`: one hover handler across
-/// four screens cannot disagree with itself.
+/// The tinted control column: the rail, the search box, the slot filters and
+/// the two buttons — the reference's left panel, minus the groups whose data
+/// we do not publish.
+fn filters(body: &mut ChildSpawnerCommands, menu: &Menu, browse: &Browse) {
+    let counts = servers::counts(&menu.rows, &browse.favourites);
+    body.spawn(ui::panel(PANEL_W)).with_children(|panel| {
+        for (i, cat) in Cat::ALL.into_iter().enumerate() {
+            let picked = cat == browse.filter.cat;
+            panel
+                .spawn((
+                    Button,
+                    Node {
+                        padding: UiRect::axes(Val::Px(12.0), Val::Px(9.0)),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(2.0),
+                        ..default()
+                    },
+                    BackgroundColor(if picked { ui::ACCENT } else { ui::ROW_IDLE }),
+                    // The picked row keeps its own idle colour, which is the
+                    // whole reason `Hover` is carried per entity.
+                    ui::Hover::new(
+                        if picked { ui::ACCENT } else { ui::ROW_IDLE },
+                        if picked {
+                            ui::ACCENT_HOVER
+                        } else {
+                            ui::ROW_HOVER
+                        },
+                    ),
+                    CatButton(cat),
+                ))
+                .with_children(|b| {
+                    b.spawn(ui::strong(
+                        format!("{}  ({})", cat.label(), counts[i]),
+                        16.0,
+                        ui::TEXT,
+                    ));
+                    b.spawn(ui::label(cat.blurb(), 11.0, ui::DIM));
+                });
+        }
+
+        // The search box. Not a widget — a rectangle showing what the keyboard
+        // has put in the filter, because Bevy has no text input and one built
+        // here would be a text-editing engine in a menu. The same call the
+        // craft panel makes, for the same reason.
+        panel
+            .spawn((
+                Node {
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)),
+                    margin: UiRect::top(Val::Px(8.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(ui::ROW_IDLE),
+                BorderColor::all(ui::RULE),
+            ))
+            .with_children(|b| {
+                let empty = browse.filter.query.is_empty();
+                b.spawn(ui::label(
+                    if empty {
+                        "Search shards...".to_string()
+                    } else {
+                        browse.filter.query.clone()
+                    },
+                    13.0,
+                    if empty { ui::FAINT } else { ui::TEXT },
+                ));
+            });
+
+        panel.spawn(ui::group("PLAYER SLOTS"));
+        for (label, empty) in [("Hide empty", true), ("Hide full", false)] {
+            let on = if empty {
+                browse.filter.hide_empty
+            } else {
+                browse.filter.hide_full
+            };
+            panel
+                .spawn((ui::check(on), SlotFilter { empty }))
+                .with_children(|b| {
+                    b.spawn(ui::label(label, 13.0, ui::DIM));
+                });
+        }
+
+        // The two buttons, pinned to the bottom the way the reference's are.
+        panel.spawn(ui::spacer());
+        panel
+            .spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(8.0),
+                flex_shrink: 0.0,
+                ..default()
+            })
+            .with_children(|bar| {
+                let w = (PANEL_W - 32.0 - 8.0) / 2.0;
+                bar.spawn((ui::button(w, false), PanelButton::Clear))
+                    .with_children(|b| {
+                        b.spawn(ui::strong(
+                            "CLEAR FILTERS",
+                            12.0,
+                            if browse.filter.narrowed() {
+                                ui::TEXT
+                            } else {
+                                // Nothing to clear. Dimmed rather than
+                                // removed: a button that comes and goes is a
+                                // layout that jumps under the pointer.
+                                ui::FAINT
+                            },
+                        ));
+                    });
+                bar.spawn((ui::button(w, true), PanelButton::Refresh))
+                    .with_children(|b| {
+                        b.spawn(ui::strong("REFRESH", 12.0, ui::TITLE));
+                    });
+            });
+    });
+}
+
+/// The content pane: a header row, the rows, and the status line.
+fn table(body: &mut ChildSpawnerCommands, menu: &Menu, browse: &Browse) {
+    let shown = servers::visible(&menu.rows, &browse.filter, &browse.favourites);
+    body.spawn(ui::pane()).with_children(|pane| {
+        // ---- the header ----------------------------------------------
+        pane.spawn((
+            Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(10.0),
+                padding: UiRect::axes(Val::Px(12.0), Val::Px(10.0)),
+                border: UiRect::bottom(Val::Px(1.0)),
+                ..default()
+            },
+            BorderColor::all(ui::RULE),
+        ))
+        .with_children(|h| {
+            // The star column's width, so the header's name lines up with the
+            // rows' rather than sitting a star to the left of them.
+            h.spawn(Node {
+                width: Val::Px(STAR_W),
+                ..default()
+            });
+            h.spawn((
+                ui::strong("SERVER NAME", 12.0, ui::FAINT),
+                Node {
+                    flex_grow: 1.0,
+                    ..default()
+                },
+            ));
+            h.spawn(ui::column(PLAYERS_W)).with_children(|c| {
+                c.spawn(ui::strong("PLAYERS", 12.0, ui::FAINT));
+            });
+            h.spawn(ui::column(PING_W)).with_children(|c| {
+                c.spawn(ui::strong("PING", 12.0, ui::FAINT));
+            });
+        });
+
+        // ---- the rows ------------------------------------------------
+        for i in &shown {
+            row(
+                pane,
+                &menu.rows[*i],
+                *i,
+                browse.favourites.has(&menu.rows[*i].id),
+            );
+        }
+
+        // Asked unconditionally: the function checks whether the list it is
+        // describing is actually empty, so the guard is not duplicated here.
+        if let Some(why) = servers::empty_reason(&browse.filter, menu.rows.len(), shown.len()) {
+            pane.spawn((
+                ui::label(why, 13.0, ui::DIM),
+                Node {
+                    margin: UiRect::all(Val::Px(16.0)),
+                    max_width: Val::Px(520.0),
+                    ..default()
+                },
+            ));
+        }
+
+        // ---- the status line -----------------------------------------
+        pane.spawn(ui::spacer());
+        pane.spawn((
+            StatusLine,
+            ui::label(menu.status.clone(), 12.0, ui::FAINT),
+            Node {
+                margin: UiRect::new(Val::Px(12.0), Val::Px(12.0), Val::Px(0.0), Val::Px(10.0)),
+                max_width: Val::Px(620.0),
+                ..default()
+            },
+        ));
+
+        pane.spawn((
+            ui::label(
+                "click a shard to join    -    type to search    -    Esc clears the search, \
+                 then quits",
+                11.0,
+                ui::FAINT,
+            ),
+            Node {
+                margin: UiRect::new(Val::Px(12.0), Val::Px(12.0), Val::Px(0.0), Val::Px(12.0)),
+                ..default()
+            },
+        ));
+    });
+}
+
+/// The star's hit box. Wide enough to click without aiming, and the header
+/// reserves the same width so the two agree.
+const STAR_W: f32 = 26.0;
+
+fn row(pane: &mut ChildSpawnerCommands, listing: &Listing, index: usize, starred: bool) {
+    pane.spawn((ui::table_row(), RowButton(index)))
+        .with_children(|r| {
+            // The star. A button inside a button: Bevy's `Interaction` picks
+            // the topmost, so a click on the star does not also join — which
+            // is the behaviour the reference's star has and the reason it is
+            // its own hit target rather than a corner of the row.
+            //
+            // The Direct row has no star, because there is nothing stable to
+            // key one on: its id is the address this binary happened to be
+            // started with, and a favourite that changes meaning with a
+            // command-line flag is worse than no favourite.
+            if listing.direct {
+                r.spawn(Node {
+                    width: Val::Px(STAR_W),
+                    ..default()
+                });
+            } else {
+                r.spawn((
+                    Button,
+                    Node {
+                        width: Val::Px(STAR_W),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    ui::Hover::new(Color::NONE, ui::ROW_HOVER),
+                    StarButton(index),
+                ))
+                .with_children(|s| {
+                    // A filled star and a hollow one, not a colour change on
+                    // one glyph: the two must be distinguishable in a
+                    // screenshot and at a glance, and colour alone is neither.
+                    s.spawn(ui::strong(
+                        if starred { "\u{2605}" } else { "\u{2606}" },
+                        16.0,
+                        if starred { ui::ACCENT } else { ui::FAINT },
+                    ));
+                });
+            }
+
+            r.spawn(Node {
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(2.0),
+                ..default()
+            })
+            .with_children(|c| {
+                c.spawn(ui::strong(listing.name.clone(), 17.0, ui::TEXT));
+                c.spawn(ui::label(listing.sub_line(), 12.0, ui::DIM));
+            });
+
+            r.spawn(ui::column(PLAYERS_W)).with_children(|c| {
+                c.spawn(ui::strong(listing.population(), 15.0, ui::TEXT));
+            });
+            r.spawn(ui::column(PING_W)).with_children(|c| {
+                c.spawn(ui::strong(listing.ping(), 15.0, ui::DIM));
+            });
+        });
+}
+
+/// Mouse. Everything on the screen, in one pass, into [`Picked`].
+///
+/// One system rather than five because they all write the same resource and
+/// the ordering between them matters: a click that lands on a star must not
+/// also be read as a click on the row under it. Bevy resolves that for us by
+/// only marking the topmost node `Pressed`, but collecting them in one place
+/// is what makes that checkable rather than incidental.
+#[allow(clippy::too_many_arguments)]
 pub fn click(
     rows: Query<(&Interaction, &RowButton), Changed<Interaction>>,
-    settings: Query<&Interaction, (Changed<Interaction>, With<SettingsButton>)>,
+    stars: Query<(&Interaction, &StarButton), Changed<Interaction>>,
+    navs: Query<(&Interaction, &NavButton), Changed<Interaction>>,
+    cats: Query<(&Interaction, &CatButton), Changed<Interaction>>,
+    slots: Query<(&Interaction, &SlotFilter), Changed<Interaction>>,
+    buttons: Query<(&Interaction, &PanelButton), Changed<Interaction>>,
+    hubs: Query<(&Interaction, &HubButton), Changed<Interaction>>,
     mut picked: ResMut<Picked>,
 ) {
-    for (interaction, row) in rows.iter() {
-        if *interaction == Interaction::Pressed {
-            picked.0 = Some(Pick::Row(row.0));
+    let pressed = |i: &Interaction| *i == Interaction::Pressed;
+    for (i, s) in stars.iter() {
+        if pressed(i) {
+            picked.0 = Some(Pick::Star(s.0));
         }
     }
-    for interaction in settings.iter() {
-        if *interaction == Interaction::Pressed {
-            picked.0 = Some(Pick::Settings);
+    for (i, r) in rows.iter() {
+        if pressed(i) {
+            picked.0 = Some(Pick::Row(r.0));
+        }
+    }
+    for (i, n) in navs.iter() {
+        if pressed(i) {
+            picked.0 = Some(Pick::Nav(n.0));
+        }
+    }
+    for (i, c) in cats.iter() {
+        if pressed(i) {
+            picked.0 = Some(Pick::Category(c.0));
+        }
+    }
+    for (i, s) in slots.iter() {
+        if pressed(i) {
+            picked.0 = Some(Pick::Slots { empty: s.empty });
+        }
+    }
+    for (i, b) in buttons.iter() {
+        if pressed(i) {
+            picked.0 = Some(match b {
+                PanelButton::Clear => Pick::Clear,
+                PanelButton::Refresh => Pick::Refresh,
+            });
+        }
+    }
+    for (i, h) in hubs.iter() {
+        if pressed(i) {
+            picked.0 = Some(Pick::Open(h.0));
         }
     }
 }
 
-/// Keyboard. Number keys pick a shard, S opens settings, Esc leaves.
+/// Keyboard. **Typing goes to the search box**, which is what the reference's
+/// browser does and what a list of sixty-four rows needs.
+///
+/// That costs the number-key picks the first cut had, deliberately: a digit
+/// cannot be both a row index and a character in `us-west-2`, and a search box
+/// that silently ate every number would be the worse of the two. Esc is the
+/// one bind that survived, and it now does the smaller thing first — clear the
+/// query — so quitting is never one keystroke away from a player who was only
+/// trying to undo a search.
 pub fn keys(
     keyboard: Res<ButtonInput<KeyCode>>,
-    menu: Res<Menu>,
-    mut picked: ResMut<Picked>,
+    mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
+    mut browse: ResMut<Browse>,
+    mut menu: ResMut<Menu>,
     // `MessageWriter`, not `EventWriter` — Bevy 0.18 renamed events to
     // messages and the prelude carries only the new name.
     mut exit: MessageWriter<AppExit>,
 ) {
     if keyboard.just_pressed(KeyCode::Escape) {
-        exit.write(AppExit::Success);
-        return;
-    }
-    if keyboard.just_pressed(KeyCode::KeyS) {
-        picked.0 = Some(Pick::Settings);
-        return;
-    }
-    const DIGITS: [KeyCode; 9] = [
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Digit5,
-        KeyCode::Digit6,
-        KeyCode::Digit7,
-        KeyCode::Digit8,
-        KeyCode::Digit9,
-    ];
-    for (i, k) in DIGITS.iter().enumerate() {
-        if keyboard.just_pressed(*k) && i < menu.rows.len() {
-            picked.0 = Some(Pick::Row(i));
+        chars.clear();
+        if browse.filter.query.is_empty() {
+            exit.write(AppExit::Success);
+        } else {
+            browse.filter.query.clear();
+            menu.dirty = true;
         }
+        return;
+    }
+
+    let mut changed = false;
+    for ev in chars.read() {
+        if !ev.state.is_pressed() {
+            continue;
+        }
+        match &ev.logical_key {
+            bevy::input::keyboard::Key::Backspace => changed |= browse.filter.backspace(),
+            bevy::input::keyboard::Key::Character(s) => {
+                for c in s.chars() {
+                    changed |= browse.filter.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+    if changed {
+        menu.dirty = true;
     }
 }
 
-/// What this screen can be asked for. Two things, and only one of them is a
-/// row — which is why the pick is an enum rather than the row index it used
-/// to be: a settings entry smuggled in as `rows.len()` would have been an
-/// index that means "not a row" and nothing in the type would say so.
+/// What this screen can be asked for.
+///
+/// An enum rather than the row index the first cut used, because a settings
+/// entry smuggled in as `rows.len()` would have been an index that means "not
+/// a row" with nothing in the type to say so. Every entry below is a thing a
+/// player clicked, and [`take_pick`] is the one place any of them becomes a
+/// state change or a mutation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
     Row(usize),
-    Settings,
+    Star(usize),
+    Nav(Nav),
+    /// Hand a launcher-backed section to the launcher.
+    Open(Section),
+    Category(Cat),
+    Slots {
+        empty: bool,
+    },
+    Clear,
+    Refresh,
 }
 
 /// What was chosen this frame, if anything. A resource rather than an event
@@ -659,32 +1202,93 @@ pub enum Pick {
 #[derive(Resource, Default)]
 pub struct Picked(pub Option<Pick>);
 
-/// Turn a pick into a state change.
+/// Turn a pick into a state change, a filter change, or a star.
+#[allow(clippy::too_many_arguments)]
 pub fn take_pick(
     mut picked: ResMut<Picked>,
-    menu: Res<Menu>,
+    mut menu: ResMut<Menu>,
+    mut browse: ResMut<Browse>,
     mut settings: ResMut<super::settings::Settings>,
     mut connecting: NonSendMut<Connecting>,
+    state: Res<HubState>,
+    // The launcher, if one answered at boot. `Option` because the majority
+    // case is no launcher at all, which is playable and never a fault.
+    mut scry: Option<NonSendMut<crate::scry::Scry>>,
     mut next: ResMut<NextState<Screen>>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     let Some(pick) = picked.0.take() else {
         return;
     };
-    let i = match pick {
-        Pick::Settings => {
+    match pick {
+        // Every entry that opens a pane is the same arm: set it and redraw.
+        // Keeping this one branch rather than one per section is what makes
+        // adding a section a change to `Nav::ALL` and nothing else.
+        Pick::Nav(n) if n.is_pane() => {
+            browse.nav = n;
+            menu.dirty = true;
+        }
+        Pick::Open(section) => {
+            let outcome = super::hub::open(scry.as_deref_mut(), &state.hub, section);
+            menu.status = outcome.line(&section.label(&state.hub));
+            menu.dirty = true;
+        }
+        Pick::Nav(Nav::Settings) => {
             settings.back = Screen::Menu;
             settings.dirty = false;
             next.set(Screen::Settings);
-            return;
         }
-        Pick::Row(i) => i,
-    };
-    let Some(row) = menu.rows.get(i) else {
-        return;
-    };
-    connecting.addr = row.addr.clone();
-    connecting.rx = None;
-    next.set(Screen::Connecting);
+        Pick::Nav(Nav::Quit) => {
+            exit.write(AppExit::Success);
+        }
+        // `is_pane` already took Play and Hub; Settings and Quit have their
+        // own arms above. An arm here would be unreachable, and a `_ => {}`
+        // would silently swallow a nav entry added without an action —
+        // which is exactly the dead row this nav is arranged to prevent.
+        Pick::Nav(Nav::Play | Nav::Hub(_)) => unreachable!("handled by is_pane"),
+        Pick::Category(cat) => {
+            browse.filter.cat = cat;
+            menu.dirty = true;
+        }
+        Pick::Slots { empty } => {
+            if empty {
+                browse.filter.hide_empty = !browse.filter.hide_empty;
+            } else {
+                browse.filter.hide_full = !browse.filter.hide_full;
+            }
+            menu.dirty = true;
+        }
+        Pick::Clear => {
+            browse.filter.clear();
+            menu.dirty = true;
+        }
+        Pick::Refresh => {
+            // Re-fetch. The status line says so at once rather than after the
+            // round trip, because a button that looks inert for a second is a
+            // button a player clicks twice.
+            if menu.servers_url.is_some() {
+                menu.status = "refreshing the shard list...".into();
+                menu.dirty = true;
+                fetch_now(&mut menu);
+            }
+        }
+        Pick::Star(i) => {
+            let Some(id) = menu.rows.get(i).map(|r| r.id.clone()) else {
+                return;
+            };
+            if browse.favourites.toggle(&id) {
+                menu.dirty = true;
+            }
+        }
+        Pick::Row(i) => {
+            let Some(row) = menu.rows.get(i) else {
+                return;
+            };
+            connecting.addr = row.addr.clone();
+            connecting.rx = None;
+            next.set(Screen::Connecting);
+        }
+    }
 }
 
 /// Leave the menu: despawn everything it owns.
@@ -695,7 +1299,32 @@ pub fn teardown(mut commands: Commands, roots: Query<Entity, With<MenuRoot>>) {
 }
 
 /// Start the connect, on the runtime, off the frame.
-pub fn begin_connect(rt: NonSend<Rt>, mut connecting: NonSendMut<Connecting>) {
+///
+/// **The claimed address is resolved HERE, from `Who`, and that is a fix
+/// rather than a move.** It used to be a field nothing ever wrote: the
+/// pre-window connect in `gates.rs` passed `args::address()` directly, and
+/// every connect that went through this screen — every menu pick, and now the
+/// launcher join too — sent `Address::GUEST` however the player had
+/// identified themselves. Reading `Who` instead covers both provenances, and
+/// the launcher-reported one is new: the old path only ever looked at
+/// `--identity`, so a player signed in to the launcher and started without
+/// the flag reached the shard anonymous.
+///
+/// It is still a *claim* and the shard still treats it as one — `sign_siwe`
+/// is what turns it into anything, and `Player`'s own doc says an address is
+/// never authentication.
+pub fn begin_connect(rt: NonSend<Rt>, who: Res<Who>, mut connecting: NonSendMut<Connecting>) {
+    connecting.address = match who.0.address() {
+        None => protocol::Address::GUEST,
+        Some(a) => protocol::Address::from_hex(a.as_bytes()).unwrap_or_else(|| {
+            // A malformed `--identity` already failed at the command line
+            // (`args::address`), so this is the launcher having reported
+            // something we cannot parse. Play as a guest and SAY so, rather
+            // than refusing to connect over a field that is a claim anyway.
+            warn!("gates: launcher reported an unreadable address ({a}) - joining as a guest");
+            protocol::Address::GUEST
+        }),
+    };
     let addr = connecting.addr.clone();
     let address = connecting.address;
     connecting.waited_s = 0.0;
@@ -720,14 +1349,21 @@ pub fn connecting_screen(mut commands: Commands, connecting: NonSend<Connecting>
         MenuRoot,
         ui::screen(ui::BG),
         children![
-            ui::strong(
-                format!("connecting to {}...", connecting.addr),
-                22.0,
-                ui::TITLE
+            ui::wordmark(),
+            (
+                ui::strong(
+                    format!("connecting to {}...", connecting.addr),
+                    20.0,
+                    ui::TEXT
+                ),
+                Node {
+                    margin: UiRect::top(Val::Px(18.0)),
+                    ..default()
+                },
             ),
             // Says the way out, because there has to be one: a shard that is
             // not running never refuses a QUIC connect, it just goes quiet.
-            ui::label("Esc goes back", 13.0, ui::FAINT),
+            ui::label("Esc goes back", 12.0, ui::FAINT),
         ],
     ));
 }
@@ -816,84 +1452,46 @@ mod tests {
         let m = Menu::new("127.0.0.1:4433", None);
         assert_eq!(m.rows.len(), 1);
         assert_eq!(m.rows[0].addr, "127.0.0.1:4433");
+        assert!(m.rows[0].direct);
         // ...and the empty menu says what would fill it, rather than being
         // silently bare.
         assert!(m.status.contains("--servers"), "{}", m.status);
     }
 
-    fn shard(addr: &str) -> Shard {
-        Shard {
-            id: "a".into(),
-            name: "A".into(),
-            addr: addr.into(),
-            players: None,
-            max_players: None,
-            map: None,
-            ping_ms: None,
-            status_url: None,
+    #[test]
+    fn every_nav_entry_reads_as_itself() {
+        // A nav entry needs something behind it — `settings.rs`'s policy
+        // against greyed rows, applied to the column. Three of these six are
+        // the launcher's and their "something" is a state sentence rather
+        // than a screen we drew (`crate::ui::hub`), which is why they are
+        // here rather than left off.
+        //
+        // Distinctness is the assertion that can actually fail: the three hub
+        // entries take their labels from a document nobody in this repo
+        // controls, so two of them reading the same word is a real outcome
+        // of a manifest edit, and it would leave a player unable to tell
+        // which column they clicked.
+        let hub = Hub::default();
+        let labels: Vec<String> = Nav::ALL.iter().map(|n| n.label(&hub)).collect();
+        for l in &labels {
+            assert!(!l.trim().is_empty(), "an unclickable hole in the nav");
         }
-    }
+        let mut sorted = labels.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), labels.len(), "two nav entries read the same");
 
-    #[test]
-    fn a_row_never_invents_a_population() {
-        // `?`, never `0/0` — the row states what it knows and no more.
-        assert_eq!(Row::from_shard(&shard("h:1")).detail, "?");
-    }
-
-    #[test]
-    fn a_poll_rewrites_the_count_and_keeps_the_rest_of_the_line() {
-        // The regression this row shape exists to prevent: `detail` used to
-        // be a string built once, so folding a count in would have had to
-        // rebuild it — and the obvious rebuild loses the map and the ping.
-        let mut s = shard("h:1");
-        s.map = Some("island 20260731".into());
-        s.ping_ms = Some(31);
-        let mut row = Row::from_shard(&s);
-        assert_eq!(row.detail, "?  island 20260731  31 ms");
-
-        let st = shardlist::parse_status(br#"{"players":3,"max_players":100}"#).unwrap();
-        assert!(row.apply_status(&st), "the line changed and must redraw");
-        assert_eq!(row.detail, "3/100  island 20260731  31 ms");
-
-        // The same count again is not a redraw. Rebuilding the screen every
-        // ten seconds to draw an identical line is a flicker for nothing.
-        assert!(!row.apply_status(&st), "an unchanged line must not redraw");
-    }
-
-    #[test]
-    fn only_a_listed_shard_is_polled() {
-        // The Direct row is the address this binary was started with, not a
-        // shard anybody published — there is no document behind it naming a
-        // status endpoint, and it must not be invented.
-        let m = Menu::new("127.0.0.1:4433", None);
-        assert_eq!(m.rows[0].status_url(), None);
-        let st = shardlist::parse_status(br#"{"players":3,"max_players":100}"#).unwrap();
-        let mut direct = Row::direct("127.0.0.1:4433");
-        assert!(
-            !direct.apply_status(&st),
-            "the direct row has no count to set"
-        );
-        assert_eq!(direct.detail, "the address this client was started with");
-
-        // A listed shard that names one is polled; one that does not, is not.
-        let mut s = shard("h:1");
-        assert_eq!(Row::from_shard(&s).status_url(), None);
-        s.status_url = Some("https://h:8080/status.json".into());
-        assert_eq!(
-            Row::from_shard(&s).status_url(),
-            Some("https://h:8080/status.json")
-        );
-    }
-
-    #[test]
-    fn the_poll_interval_outlasts_its_own_timeout() {
-        // A round must finish before the next is due, or a slow shard stacks
-        // rounds until the list is polling itself in a loop. `begin_status_poll`
-        // also refuses to start a second round, so this is belt and braces —
-        // but the constant that makes it true should not drift silently.
-        assert!(
-            (STATUS_TIMEOUT_S as f32) < STATUS_POLL_SECS,
-            "a poll can outlive its own interval"
-        );
+        // Exactly the entries that open a pane are the ones `take_pick`
+        // routes through `is_pane`; the other two are verbs. An entry in
+        // neither set would hit the `unreachable!` there, so this pins the
+        // split rather than trusting it.
+        for n in Nav::ALL {
+            let verb = matches!(n, Nav::Settings | Nav::Quit);
+            assert_ne!(
+                n.is_pane(),
+                verb,
+                "{n:?} is both a pane and a verb, or neither"
+            );
+        }
     }
 }

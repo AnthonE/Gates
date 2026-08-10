@@ -43,6 +43,7 @@ use bevy::prelude::*;
 use bevy::window::{PresentMode, PrimaryWindow, WindowMode};
 
 use crate::config::{self, Persisted};
+use crate::ui::servers::Favourites;
 
 use super::menu::Screen;
 use super::rig::{EyeCam, FOV_DEG};
@@ -239,44 +240,70 @@ pub struct Disk {
     /// out-of-range value on disk is corrected in memory at load and on disk
     /// only at the player's next change — a boot must not write.
     written: Persisted,
+    /// The starred shards as last written. Compared the same way `written`
+    /// is, and for the same reason: a star is a click on a different screen
+    /// entirely, so this file has two writers' worth of state in it and
+    /// exactly one writer.
+    written_favs: Vec<String>,
 }
 
 /// Read the settings file once, before the first frame that applies
 /// anything. Missing or corrupt is the defaults, silently; no resolvable
 /// path is the defaults with persistence off for the run (`None`).
-pub fn load() -> (Settings, Option<Disk>) {
+pub fn load() -> (Settings, Favourites, Option<Disk>) {
     let Some(path) = config::settings_path() else {
-        return (Settings::default(), None);
+        return (Settings::default(), Favourites::default(), None);
     };
     let loaded = config::load(&path, Settings::default().persisted());
     let settings = Settings::from_persisted(loaded.values);
+    // Bounded and deduplicated where the star is, not where the file is —
+    // `config::parse`'s own header says range work does not live there, and a
+    // hand-edited list of a thousand ids must reach the browser as the same
+    // thing a thousand clicks could have produced.
+    let favs = Favourites::from_disk(loaded.favourites);
     let disk = Disk {
         path,
         version: loaded.version,
         unknown: loaded.unknown,
         written: settings.persisted(),
+        written_favs: favs.ids().to_vec(),
     };
-    (settings, Some(disk))
+    (settings, favs, Some(disk))
 }
 
 /// Save on change, not on exit: a crash must not cost the player their
 /// settings, and a change is a click on a menu screen, not a hot path — the
 /// write is a few hundred bytes behind a change-detection early-out and a
 /// field compare, so an idle frame pays one branch.
-pub fn save_on_change(settings: Res<Settings>, disk: Option<ResMut<Disk>>) {
+/// **One writer, two watched resources.** The settings screen owns eight
+/// knobs and the server browser owns the favourite list, and both live in one
+/// file — so the alternative was two systems serializing the whole document,
+/// which is the shape where the last one to run silently drops the other's
+/// change. `Browse` is read here rather than `Settings` growing a list,
+/// because a favourite is not a knob and `Settings::adjust` has no arm that
+/// could take one.
+pub fn save_on_change(
+    settings: Res<Settings>,
+    browse: Res<super::menu::Browse>,
+    disk: Option<ResMut<Disk>>,
+) {
     let Some(mut disk) = disk else {
         return;
     };
-    if !settings.is_changed() {
+    if !settings.is_changed() && !browse.is_changed() {
         return;
     }
     let now = settings.persisted();
-    if now == disk.written {
+    let favs = browse.favourites.ids();
+    if now == disk.written && favs == disk.written_favs {
         return;
     }
-    let text = config::serialize(&now, disk.version, &disk.unknown);
+    let text = config::serialize(&now, disk.version, favs, &disk.unknown);
     match config::save(&disk.path, &text) {
-        Ok(()) => disk.written = now,
+        Ok(()) => {
+            disk.written = now;
+            disk.written_favs = favs.to_vec();
+        }
         // Warn and keep `written` as it was, so the next change retries.
         // Never a panic and never a dialog: a full disk must not cost the
         // player the fov they just picked, only its survival.
@@ -807,7 +834,7 @@ mod tests {
         s.adjust(Knob::VolMaster, -2);
         s.adjust(Knob::VolGame, -5);
         s.adjust(Knob::VolAmbience, -10);
-        let text = config::serialize(&s.persisted(), config::SETTINGS_VERSION, &[]);
+        let text = config::serialize(&s.persisted(), config::SETTINGS_VERSION, &[], &[]);
         let back =
             Settings::from_persisted(config::parse(&text, Settings::default().persisted()).values);
         assert_eq!(back.persisted(), s.persisted(), "{text}");

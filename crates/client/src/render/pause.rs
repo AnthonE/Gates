@@ -130,7 +130,10 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>) {
             ui::screen(Color::srgba(0.02, 0.02, 0.025, 0.86)),
         ))
         .with_children(|root| {
-            root.spawn(ui::title("GATES"));
+            // The same mark the splash, the menu and the loading screen
+            // carry — the Esc menu is the front screen seen from inside the
+            // world, so it must not be the one place the identity changes.
+            root.spawn(ui::wordmark());
             root.spawn((
                 ui::label(addr, 14.0, ui::DIM),
                 Node {

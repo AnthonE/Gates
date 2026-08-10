@@ -442,6 +442,35 @@ and Map exist, the look/strafe inversion is fixed (`look.rs`). Remaining:
    mesh (`charge_deploy` unread until that mesh half wants it), and
    `stock_addr` never says WHICH hearth. None is blocked.
 
+## 0s · The front door — what the shell, the splash and the hub left *(client lane)*
+
+Landed 2026-08-09/10 over two passes. `Screen::Boot` is the splash (the
+launcher handshake and connect are states now, so a dead shard lands on the
+server list instead of `exit(1)`). `render/ui.rs` owns the shell the five
+reference frames share. PLAY GAME is the reference's table. NEWS / ITEM
+STORE / WORKSHOP are the scry-works launcher's and hand off to it
+(`ui/hub.rs` + `manifest.rs`), and the backdrop is **footage** under a scrim,
+not a live scene — the operator's correction, and the cheap way round.
+Three seams that were computed and dropped are now read: the claimed
+address, the launcher's shard-list url, and the launcher connection itself.
+Remaining:
+
+1. **The backdrop does not move.** Bevy decodes no video; a loop is a frame
+   sequence, ~12 MB for three seconds at 720p/20fps. That trade is the
+   operator's — `DECISIONS.md` §open, "menu backdrop v0". The shipped still
+   is a `--capture --no-hud` plate of our own island, so a better one is a
+   command, not an art commission.
+2. **Nothing publishes `news`/`store`/`workshop` yet**, so all three read
+   "the launcher's manifest names no link for this". The client side is
+   done; the remaining act is the platform's — add the keys beside
+   `servers.url` in `data/launcher/gates.manifest.json`.
+3. **Ungated, by hand only:** the star, the search box, the filters and the
+   OPEN IN LAUNCHER click were driven headless with `xdotool` and looked at,
+   never against a populated list or a live launcher (§0v item 1).
+4. **The splash cannot cover its own first ~3 s** — wgpu adapter enumeration
+   and window creation precede the first Bevy frame. A second process would;
+   not taken.
+
 ## 0w · The native menus landed — what they cannot do *(client lane)*
 
 Landed 2026-08-06: `Tab` inventory + crafting, `B` build wheel, drag/drop —

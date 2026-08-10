@@ -51,6 +51,17 @@ pub struct Icons {
 }
 
 impl Icons {
+    /// Every handle this set asked the asset server for.
+    ///
+    /// Exists for the boot splash, which is the one caller that cares about
+    /// the *set* rather than about any icon in it: it lifts when every handle
+    /// has settled (`render/boot.rs`). Order-independent by construction — it
+    /// is folded with `all`, never indexed — so iterating the map is safe
+    /// here in a way wall 1 forbids inside the sim.
+    pub fn handles(&self) -> impl Iterator<Item = &Handle<Image>> {
+        self.by_name.values()
+    }
+
     /// The icon for an item's display name, if one was baked.
     pub fn item(&self, name: &str) -> Option<Handle<Image>> {
         self.by_name.get(&stem(name)).cloned()

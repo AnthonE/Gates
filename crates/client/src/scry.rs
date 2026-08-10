@@ -208,6 +208,46 @@ impl Scry {
     pub fn connected(&self) -> bool {
         self.overlay.is_some()
     }
+
+    /// Where this title's manifest lives — the document naming its news,
+    /// store and workshop pages (`crate::manifest`).
+    ///
+    /// ⚠ **A URL, not the document.** The launcher does not proxy a game's
+    /// own files; `Overlay::title` says so in full, and the same rule already
+    /// governs `servers_url`. The caller fetches it, capped, off the frame.
+    ///
+    /// ⚠ **Not from a frame system.** One round trip over a local socket is
+    /// cheap — the SDK calls `overlay()` cheap enough to poll every frame —
+    /// but this runs beside the boot handshake on a thread anyway, and the
+    /// habit is worth more than the microseconds.
+    pub fn title_url(&mut self) -> Option<String> {
+        self.overlay.as_mut()?.title(SLUG)
+    }
+
+    /// Ask the launcher to open a page in the player's browser.
+    ///
+    /// **This is how NEWS, ITEM STORE and WORKSHOP work, and the handoff is
+    /// the point rather than a shortcut.** A game draws its own pixels, so it
+    /// can draw a convincing fake of any dialog — the SDK's warning on
+    /// `Overlay::overlay`, in those words. A checkout drawn by a game teaches
+    /// players that a checkout drawn by a game is normal, and the next one
+    /// they see will be a forgery. So the money door is the launcher's.
+    ///
+    /// Returns whether the launcher accepted it. `false` covers both "no
+    /// launcher" and "it declined", and the caller says so rather than
+    /// pretending the click worked — a button that silently does nothing is
+    /// the worst of the three outcomes.
+    ///
+    /// The URL is checked against `manifest::check_url` **by the caller**,
+    /// before it ever reaches here, because that is where a bad one is worth
+    /// reporting; this is the last mile and the launcher has its own opinion
+    /// too.
+    pub fn open(&mut self, url: &str) -> bool {
+        match self.overlay.as_mut() {
+            Some(ov) => ov.open_url(url),
+            None => false,
+        }
+    }
 }
 
 #[cfg(test)]
