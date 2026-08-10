@@ -460,18 +460,20 @@ fn band_breaks_refused() {
     // Farm rate: a 3-per-hit tier-1 hatchet starves the tree band.
     refuses(
         "gatherables.toml",
-        "\"item.hatchet_metal\" = 30",
+        "\"item.hatchet_metal\" = 87",
         "\"item.hatchet_metal\" = 3",
         "band break: node yield",
     );
     // The declared effective rate may never beat standing at the node:
-    // wood's at-node ceiling is 2060/min (30 on the finding hit, then
-    // 9 weak-marked 45s, over ten 38-tick swings), and a declaration
-    // above it prices walking as a bonus.
+    // wood's at-node ceiling is 5887/min (870 over the 7 marked swings
+    // that exhaust a 10-hit node, at the 38-tick cadence), and a
+    // declaration above it prices walking as a bonus. The mutation has to
+    // clear the ceiling to be refused, so it moved with the yields —
+    // 3000 was over the old 2030 and sits comfortably under this one.
     refuses(
         "balance.toml",
         "\"item.wood\" = 50",
-        "\"item.wood\" = 3000",
+        "\"item.wood\" = 9000",
         "farm rate break",
     );
     // Armor: 60% reduction turns 4 hits into 10 — over the +2 cap.
@@ -505,16 +507,25 @@ fn band_breaks_refused() {
 fn the_declared_farm_rate_cannot_beat_standing_at_the_node() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let rates = &c.anchors().farm_rates;
-    // (item, declared, at-node): wood/stone/ores hold 10 × 30 = 300 at
-    // the metal tool, emptied in ceil(1000/150) = 7 marked swings →
-    // 300 × 1800 / (7 × 38) = 2030. Cloth is the bush's hand 10 over one
-    // hit with no mark → 10 × 1800 / 38 = 473. Declared sits ~24–68×
-    // under the ceiling (cloth 23.7×, wood/stone 40.6×, ores 67.7×) —
-    // the friction the world charges, recorded where it is visible.
+    // (item, declared, at-node). Every node empties in the same
+    // ceil(1000/150) = 7 marked swings, so the ceiling is just the node's
+    // total × 1800 / (7 × 38 = 266): wood 870 → 5887, stone 1000 → 6766,
+    // metal 600 → 4060, sulfur 300 → 2030. Cloth is the bush's hand 10
+    // over one unmarked hit → 10 × 1800 / 38 = 473.
+    //
+    // **The ceilings tripled on 2026-08-10 and the declared rates did
+    // not**, so the gap widened from ~24–68× to ~24–135× (cloth 23.7×,
+    // sulfur 67.7×, wood 117.7×, stone and metal 135.3×). That is not a
+    // regression being pinned quietly: `farm_per_min` is a number the
+    // reference has no equivalent for (`reference/RIPLIST.md` §3), its
+    // semantics are the open operator knob, and the node take deliberately
+    // left it alone rather than tune one unmeasured number against
+    // another. The widening is the visible cost of that choice and it
+    // belongs in a fixture where the next pass cannot miss it.
     for (item, declared, at_node) in [
-        ("item.wood", 50, 2030),
-        ("item.stone", 50, 2030),
-        ("item.metal_ore", 30, 2030),
+        ("item.wood", 50, 5887),
+        ("item.stone", 50, 6766),
+        ("item.metal_ore", 30, 4060),
         ("item.sulfur_ore", 30, 2030),
         ("item.cloth", 20, 473),
     ] {
@@ -573,13 +584,16 @@ fn bake_carries_the_shipped_numbers() {
     assert_eq!(gc.item_count as usize, c.items.len());
     assert_eq!(gc.stack_max[wood as usize], 1000, "items.toml wood stack");
 
-    // gatherables.toml gather.tree: output wood, 10 hits, hand 5,
-    // stone hatchet 20, weak-spot +50% — read back from the baked table.
+    // gatherables.toml gather.tree: output wood, 10 hits, hand 25,
+    // stone hatchet 81, weak-spot +50% — read back from the baked table.
+    // The two yields are the reference's large-tree totals over our own
+    // 10 hits (810 ÷ 10 at the stone hatchet); they moved 2026-08-10 with
+    // the rest of the node take and are re-pinned here in the same commit.
     let tree = &gc.nodes[0];
     assert_eq!(tree.output, wood);
     assert_eq!(tree.hits, 10);
-    assert_eq!(tree.yield_for(sim_core::gather::NO_ITEM), 5);
-    assert_eq!(tree.yield_for(hatchet), 20);
+    assert_eq!(tree.yield_for(sim_core::gather::NO_ITEM), 25);
+    assert_eq!(tree.yield_for(hatchet), 81);
     assert_eq!(tree.weak_pct, 50, "gatherables.toml weak_spot_bonus_pct");
     assert_eq!(gc.nodes[4].weak_pct, 0, "the bush carries no mark");
 

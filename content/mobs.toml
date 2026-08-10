@@ -35,6 +35,20 @@ name = "Pig"
 # pricing the animal against a *crafted* weapon, which quietly moved the
 # first kill behind a workbench walk. Tools are armed now, and the number
 # comes from the reference rather than from us (`reference/BALANCE.md`).
+#
+# ⚠ **The source is split 80/150 and this row deliberately carries both.**
+# The 2026-08-08 pass took 150 from a split source; the 2026-08-09 gather
+# research (`reference/RIPLIST.md` §4.6) put the boar at **~80** in a
+# roster table that also reads chicken 25, stag ~80, wolf 100, bear 400.
+# So the 150 camp is now the thinner of the two — but a tie is not broken
+# by the newer reading alone, and §0's rule is that a disagreement is
+# **recorded, never averaged**. Both stay written down until something
+# breaks the tie; the value below does not move on a lean.
+#
+# What would break it: a devblog or the wiki's own boar page read as
+# primary text (neither is reachable from every box — `SOURCES.md`), or
+# our own decision that 6 hatchet swings is the fight we want, which is a
+# design answer and not a research one.
 hp = 150
 
 # 50% of WALK_SPEED = 1.49 m/s, an amble a player outwalks without trying.

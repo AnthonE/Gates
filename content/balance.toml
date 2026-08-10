@@ -55,7 +55,22 @@ headshot_mult = 2
 # Any single armor piece may add at most this many hits vs any banded weapon.
 armor_extra_hits_max = 2
 # Anchor 3 — a banded node's total yield and hit count at tier-1 tools.
-node_yield = [250, 400]
+#
+# The ceiling moved 400 → 1000 on 2026-08-10, and it is the band that had
+# to move for the reference's node totals to land (`reference/RIPLIST.md`
+# §2 row 1; operator, 2026-08-10). It is not a loosening for its own sake:
+# 1000 is exactly their stone node, the largest of the four, and 250 keeps
+# the floor it has always had because nothing in the take argues about the
+# floor. The band now brackets their own spread — sulfur 300 to stone 1000
+# — which is the citation, so a value outside it is a value outside
+# theirs.
+#
+# **`node_hits` did NOT move, and that is the deliberate half.** Their hit
+# counts run 15–28 and would break [8, 12] — but they are unobtainable
+# rather than merely unfound (§4.1a: the marker made hits-to-clear a
+# function of aim, so no modern source publishes them). Our schema needs
+# only the total, so the hit count stays ours and this band stays put.
+node_yield = [250, 1000]
 node_hits = [8, 12]
 # "A full wood wall ≈ 7 min of wood at T1 tools" (CONTENT §4 anchor 3).
 wood_wall_minutes = [5, 9]
@@ -181,6 +196,14 @@ count = 1
 # hotbar, so the plan and the hammer are on 1 and 2 the moment you open
 # your eyes. Materials are enough for a small base plus an upgrade or two,
 # priced off `[globals] farm_per_min` at roughly twenty minutes of farm.
+#
+# ⚠ **That "twenty minutes" is the declared rate's opinion, and since
+# 2026-08-10 it is no longer what the kit feels like.** The node take gave
+# a tree 810 wood at the stone hatchet this kit carries, so 900 wood is
+# now about **one tree** where it used to be four and a half. Nothing is
+# broken — `farm_per_min` did not move, so every anchor still prices the
+# kit the same — but the two readings have visibly parted, and which one
+# is right is the open knob, not this comment (`reference/RIPLIST.md` §1a).
 [[spawn_kit]]
 item = "item.building_plan"
 count = 1
