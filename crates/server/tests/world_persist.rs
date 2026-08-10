@@ -40,6 +40,13 @@ use std::path::{Path, PathBuf};
 const SEED: u64 = 20_260_807;
 const CONTENT: u64 = 0x0123_4567_89ab_cdef;
 const INTERVAL: u64 = 1_800;
+/// The island `SEED` actually generates, as `worldfile`'s header pins it.
+/// A literal would be a second copy of a number the sim already computes, and
+/// the whole point of the field is that it tracks worldgen rather than being
+/// declared beside it.
+fn world_digest() -> u64 {
+    sim_core::probe::probe_terrain(SEED)
+}
 
 fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32
@@ -139,8 +146,9 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
     let (want_hash, want_body, cell) = {
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, found) = worldfile::open(&path, &mut trial, SEED, CONTENT, INTERVAL)
-            .expect("a fresh file opens");
+        let (boot, found) =
+            worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
+                .expect("a fresh file opens");
         assert!(found.created, "the first open must create nothing yet");
         let mut file = boot.file;
 
@@ -199,8 +207,15 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
     // --- session two: a different process, the same file ------------------
     let mut boot_world = World::new(SEED);
     install_content(&mut boot_world);
-    let (boot, found) =
-        worldfile::open(&path, &mut boot_world, SEED, CONTENT, INTERVAL).expect("the file reopens");
+    let (boot, found) = worldfile::open(
+        &path,
+        &mut boot_world,
+        SEED,
+        CONTENT,
+        world_digest(),
+        INTERVAL,
+    )
+    .expect("the file reopens");
     assert!(!found.created, "the second open must find the file");
     assert_eq!(found.bodies, 1, "the shard forgot the only body it had");
     assert_eq!(found.claimable, 1, "the body came back with no name on it");
@@ -261,7 +276,8 @@ fn a_body_with_no_identity_beside_it_is_unclaimable() {
 
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, INTERVAL).expect("opens");
+        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
+            .expect("opens");
         let mut file = boot.file;
         // A keyless session leaves a body and no name for it — which is
         // exactly what a guest does on a shard with `require_auth = false`.
@@ -351,7 +367,8 @@ fn a_wrong_world_file_is_refused_by_reason() {
     {
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, INTERVAL).expect("opens");
+        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
+            .expect("opens");
         let mut file = boot.file;
         let stats = ShardStats::default();
         let mut core = armed_core();
@@ -359,12 +376,23 @@ fn a_wrong_world_file_is_refused_by_reason() {
         core.tick(&stats, |_, _, _| true);
         write_world(&core, &mut file);
     }
-    let reopen = |seed: u64, content: u64| {
+    let reopen_with = |seed: u64, content: u64, digest: u64| {
         let mut w = World::new(seed);
         install_content(&mut w);
-        worldfile::open(&path, &mut w, seed, content, INTERVAL).map(|(_, f)| f)
+        worldfile::open(&path, &mut w, seed, content, digest, INTERVAL).map(|(_, f)| f)
     };
+    let reopen = |seed: u64, content: u64| reopen_with(seed, content, world_digest());
     assert!(reopen(SEED, CONTENT).is_ok(), "the base file must be legal");
+
+    // **The island moved under the same seed.** The seed test above cannot
+    // see this one: worldgen changing is not an operator pointing at the
+    // wrong file, it is the ground under every base changing shape while
+    // every coordinate in the file stays where it was. A worldgen change is
+    // a wipe (operator, 2026-08-10) and this is what makes that a refusal
+    // rather than something everyone has to remember.
+    let e = reopen_with(SEED, CONTENT, world_digest() ^ 1).expect_err("a moved island must refuse");
+    assert!(e.contains("island digest"), "{e}");
+    assert!(e.contains("wipe"), "the message must name the remedy: {e}");
 
     // A different island: every base in the file stands where there is now
     // sea. Refused, and the message says which seed the file was made on.
@@ -406,7 +434,8 @@ fn a_refused_file_does_not_half_load_the_world() {
     {
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, INTERVAL).expect("opens");
+        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
+            .expect("opens");
         let mut file = boot.file;
         let stats = ShardStats::default();
         let mut core = armed_core();
@@ -417,7 +446,7 @@ fn a_refused_file_does_not_half_load_the_world() {
     let mut w = World::new(SEED);
     install_content(&mut w);
     let before = w.state_hash();
-    assert!(worldfile::open(&path, &mut w, SEED + 9, CONTENT, INTERVAL).is_err());
+    assert!(worldfile::open(&path, &mut w, SEED + 9, CONTENT, world_digest(), INTERVAL).is_err());
     assert_eq!(w.state_hash(), before, "a refused boot wrote to the world");
     sweep(&path);
 }
@@ -430,7 +459,8 @@ fn a_successful_write_leaves_no_temp_file_behind() {
     let path = scratch("atomic");
     let mut trial = World::new(SEED);
     install_content(&mut trial);
-    let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, INTERVAL).expect("opens");
+    let (boot, _) =
+        worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL).expect("opens");
     let mut file = boot.file;
     let stats = ShardStats::default();
     let mut core = armed_core();

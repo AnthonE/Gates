@@ -100,6 +100,71 @@ its gates are unbuilt**, retitled this pass to stop claiming otherwise).
 
 ---
 
+## 0n2 · Monuments — the solver is two hand-written tiers *(world lane)*
+
+Research landed 2026-08-10: `reference/MONUMENTS.md` (operator briefing —
+**§0 says its provenance is the weakest here**, so read §9, not §1–§8, before
+building). §9.1 is what we already got right and must not relitigate; §9.2 is
+built this pass (`SiteFootprint` / `site_sweep` — a site publishes masks, not
+a radius; clutter no longer grows across the pad).
+
+Landed since: §9.3a (the drawn structure is derived from the sim's box table
+— one list, so the mirror cannot drift again — plus `tests/greybox.rs` over
+**every** archetype), §9.3b (the world file refuses an island that moved under
+the same seed), and the debug/release probe diff that closes float contraction
+on the one axis this box can reach. **All of it looked at** (§0p3 has the
+recipe); two art rows fell out and are in `DECISIONS.md` §open — the shelter's
+corner posts stand 1.2 m proud of its roof and read as stubs, and swept ground
+reads as scattered shards at 2 m because of the pebble mesh. **The collision
+skirt is closed** (operator, 2026-08-10): every occupant blocks what it draws
+now, within a millimetre, and the gate holds it there.
+
+**Next in this class, and it is a feature rather than a reconciliation: no
+deployable blocks movement.** `movement.rs` never consults `Deploys` and
+`collide::blocked` takes only the piece column index, so a player walks
+through a furnace, a box, a hearth and a recycler; only a closed door stops
+anyone, and it does that as a piece-edge bit. The client draws all ten
+archetypes at authored sizes (`structures::deploy_size`), so this is drawn
+geometry with no blocked volume at all — the greybox gate cannot catch it
+because there is nothing on the sim side to compare against. Systems lane.
+
+§9.3 is the gap and it is not urgent yet: `haven()` + `pick_minor` produce two
+kinds of site, the separation floor is one hand-asserted constant
+(`WAYSTATION_MIN_SEP_M`), and there is no reservation ledger. That is correct
+at two tiers and is §1's starvation shape at five. **The trigger to fix it is
+a third destination kind, not a spare pass** — the per-tier check chains stay
+separate by a call the code already records.
+
+Ranked after that, all from §9.4: class S still has no interest filter at all
+(§0n1 — and a monument is the worst place to discover it), per-entity interest
+ranges, then nav the day something defends a site. Vertical AOI layers are
+premature (no underground) and moving monuments are refused on the record.
+
+---
+
+## 0p3 · You can photograph any authored site, and it is a config line *(client lane)*
+
+Found 2026-08-10 while checking the greybox fix by eye. §0p2 item 3 asks for a
+**viewer** for the screens nothing can photograph; four fifths of one already
+exists and nobody had connected the pieces. The capture harness stands its
+camera at the player's spawn, and `shard.toml`'s `dev_spawn = "x,z"` puts that
+spawn anywhere. So:
+
+1. `terrain::haven(seed)` / `haven_shelter` / `waystation_canopy` give the
+   coordinates; stand 15–35 m off on the bearing you want in frame.
+2. `Xvfb :9 -screen 0 1280x720x24 &`, then the shard, then
+   `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json DISPLAY=:9
+   WGPU_BACKEND=vulkan target/release/gates --server 127.0.0.1:4433
+   --capture <dir>` — six vantages, ~40 s.
+3. The vantages face N/E/S/W, so place the camera on the opposite side of
+   what you want to see. Two of four attempts missed for this reason.
+
+**This asserts nothing and must not become a gate** (`CLAUDE.md`: the visual
+gate is a person, and `vantages.mjs` is why). What it changes is the cost of
+looking, which was "boot the game on a machine with a GPU" and is now a
+command on this box. Still owed from §0p2 item 3: the panels, which need the
+camera pointed at a screen rather than at a place.
+
 ## 0b · Balance sits on the reference's numbers now — what is still off *(content lane)*
 
 Landed 2026-08-08 (operator: *"balance the game similar to rust so people
@@ -482,18 +547,14 @@ and Map exist, the look/strafe inversion is fixed (`look.rs`). Remaining:
    49G disk, `rust-lld` SIGBUS), and a green compile is not evidence — Bevy
    answers a missing decoder with a white fallback and keeps going. It wants
    disk headroom and a `--capture` run someone looks at.
-2. **Uncovered since the browser-gate deletion, and now measured as actually
-   drifted.** Eight deleted gates held "the mesh the client draws == the
-   volume the server blocks"; the canopy is already wrong. Sim
-   `WAYSTATION_CANOPY_BOXES` is 9 rows to a 4.1 m finial, the drawn `canopy`
-   is 6 rows topping out at 2.09 m, and that slot is authored `scale: 1.0`,
-   so nothing reconciles them — you are stopped ~0.7 m outside posts you can
-   see. Shelter is 14 rows against 9. The two tables are also in different
-   units (full size vs half extent), which is the transcription hazard the
-   gate covered. Measurements in `TERRAIN.md` §7.1. Replacement shape is
-   `crates/client/tests/tree.rs`; **which list is authoritative is a design
-   call and is not made yet.** Also uncovered: the clutter ring and the
-   occupant table for everything that is not a tree.
+2. **Closed 2026-08-10.** The greybox mirror is one list now — the drawn
+   structure is derived from the sim's box table (`props::authored`), so the
+   drift cannot recur — and `crates/client/tests/greybox.rs` gates the rest,
+   including the occupant table for everything that is not a tree. The sim's
+   list won the authority call, and the props' invisible collision skirt is
+   closed too (a boulder blocked 0.39 m wider than it drew; the rows carry
+   measured bounds now and the gate is an equality check). `TERRAIN.md` §7.1
+   has it. **Still uncovered: the clutter ring.**
 3. **World-space anchors are still dropped** (the HUD line landed —
    `hud::readout` pins struct-hit fraction and the charge clock under the
    toast): the wall's own number at the wall itself, a clock on the charge
@@ -555,6 +616,14 @@ hangup through the menu's own teardown. Remaining:
    `DECISIONS.md` §open and an operator act: serve `servers.json`, set
    `servers.url` in scry's `data/launcher/gates.manifest.json`. Until then
    both the menu and the launcher's Servers window are correctly dark.
+   ⚠ **Measured 2026-08-10: "serve it" has no route to serve it from.**
+   `ci/shardlist.py` prints `https://scry.moreright.xyz/depot/gates/servers.json`
+   and `/depot/` is not a `location` in `deploy/nginx/scry.moreright.xyz.conf`
+   — the only depot path there is `/games/gates/alpha/`, the deleted browser
+   client's. So this is two acts, not one: add the route, then the copy. The
+   scry-side manifest note now carries the same finding, and `servers.url`
+   stays null rather than pointing at a 404 — an error dialog on a game that
+   is running fine is worse than an honest "no shards published".
 2. **Player counts: the code is done end to end; what is left is operator
    acts.** A row may carry `status_url` and both readers poll it every
    `STATUS_POLL_SECS` (`DECISIONS.md` §open "shard status poll v0"); the
@@ -566,25 +635,48 @@ hangup through the menu's own teardown. Remaining:
 3. **Ungated, by hand only:** the end-to-end kill-the-shard-mid-play run
    behind `Screen::Disconnected`.
 
-## 0t · the native pine is generated — what it owes
+## 0t · the forest — what it owes, re-ranked off `reference/PLANTS.md`
 
-Landed: `render/tree.rs` calls `bevy_procedural_tree` as ONE pure function —
-no plugin, no ECS; `props.rs`'s whorl builder stays as the far-LOD
-silhouette. Gate: `crates/client/tests/tree.rs`. Owed, in rank order:
+Landed: `render/tree.rs` calls `bevy_procedural_tree` as ONE pure function.
+**Felling v0** (2026-08-10): a chopped tree topples on a bearing derived from
+the cell key, keeps its own mesh, and stays down — gate `tests/fell.rs`, knob
+`DECISIONS.md` felling v0. Gates: `tests/tree.rs`, `tests/fell.rs`.
 
-1. **The billboard LOD.** 328 trees × 5.9 k tris is 1.9 M against DESIGN
-   §9's 1.5 M, so the full ring is knowingly over budget and only the ~80 m
-   band is affordable; `tests/tree.rs` prints the arithmetic. SeedThree's
-   `impostor.js` is the worked reference (two crossed alpha cards baked
-   front/side in a worker, readback row order probed once); its per-tree
-   `Group` emit is the part to throw away — this client wants an instanced
-   pool. Whatever LOD1 becomes, it sways: a billboard has four vertices to
-   put a wind weight on.
-2. **`aWind`** — `StandardMaterial` cannot read a custom attribute, so wind
-   needs the custom material `RENDER.md` already lists.
-3. **The needle card is generated** (`tree::needle_image`); a photographed
-   sprig is a later swap, not a prerequisite.
-4. **Owed upstream as a bug report:** `BranchForce` pointing down hits the
+**The order below is `PLANTS.md` §6.2's and it inverts what this item used to
+say.** LOD was rank 1; it is now rank 3, because clumping puts MORE stems in
+the near ring and an LOD tuned against today's lattice is tuned against a
+distribution we are about to replace. Measure between the two.
+
+1. **Species v0 landed; the broadleaf has never been LOOKED at.** `SPECIES` is
+   a two-row table (conifer 6.6 m / 2.9 m-wide broadleaf), pool 6, and
+   `SPAWN_CLEAR_M` rose 4.0 → 4.5 with the arithmetic finally gated in Rust
+   (`a_fresh_spawn_stands_clear_of_the_widest_tree` — `ci/pine_shape.mjs` was
+   a dead citation). **Every check on it is arithmetic and arithmetic cannot
+   say whether it reads as a tree.** Boot it and look; the parameters most
+   likely to be wrong are `children`/`angle[1]` (crown spread) and leaf
+   `count`/`size`, and `reference/PLANTS.md` §3.1 has ez-tree's 15 presets to
+   pull real ash/aspen/oak numbers from instead of our derived-from-defaults
+   block. More species is now a row in `SPECIES`, not a refactor.
+2. ~~The scatter lattice~~ — **this item was wrong and is retired.**
+   `terrain::clump` has always existed: an fBm field `scatter` multiplies the
+   whole weight row by, squared for a ragged edge, gated by
+   `sim-core/tests/scatter.rs` against a closed-form independent-draw null.
+   Groves and clearings are built. What is actually open is the density
+   **ceiling** — one occupant per 8 m cell — and `reference/PLANTS.md` §3.2
+   prices the three ways to raise it. All are sim-core, none is cheap, and
+   the cheapest (`CELL_SIZE` 8 → 4) quadruples the live `SlotLives` rows
+   against `TERRAIN.md` §6's budget. Do not start it as a rendering change.
+3. **The billboard LOD.** 328 trees × 5.9 k tris is 1.9 M against DESIGN §9's
+   1.5 M. Octahedral impostors beat SeedThree's crossed cards (a card edge-on
+   disappears); `PLANTS.md` §3.3 has both. Whatever LOD1 becomes, it sways.
+4. **`aWind`** — `StandardMaterial` cannot read a custom attribute, so wind
+   needs the custom material `RENDER.md` already lists. Gets LOD1 for free.
+5. **The sub-canopy and shrub layers are empty** (`PLANTS.md` §2). ez-tree's
+   three `bush_*` presets and a small tree at 40 % are new `Occupant`
+   variants plus scatter rows once item 1 lands.
+6. **The needle card is generated** (`tree::needle_image`); `WANTED.md` §9.5
+   is the swap, and it is the highest-value texture on that page.
+7. **Owed upstream as a bug report:** `BranchForce` pointing down hits the
    antipodal singularity in `Quat::from_rotation_arc(Y, dir)` and bends the
    whole tree sideways — droop is the limb ANGLE's job.
 

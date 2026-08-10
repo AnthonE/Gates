@@ -271,7 +271,7 @@ pub fn stream(
             //
             // It has been in `sim-core` and gated the whole time. The native
             // client simply never called it.
-            let grid = terrain::clutter_fill(world.seed, key.0, key.1, &mut buf);
+            let grid = terrain::clutter_fill(world.seed, &world.haven, key.0, key.1, &mut buf);
             let skirt = terrain::skirt_fill(
                 world.seed,
                 &world.table,
