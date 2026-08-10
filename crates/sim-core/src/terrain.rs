@@ -1426,7 +1426,8 @@ pub fn waystation_crate(ws: &Waystation, k: i32) -> (f32, f32, u8) {
     )
 }
 
-/// True if (x, z) stands inside any live waystation's exclusion zone.
+/// True if (x, z) stands inside any live waystation's **scatter** mask
+/// (`WAYSTATION_FOOTPRINT.scatter_m`) — the exclusion zone the grid reads.
 /// Squared compare throughout, `in_haven`'s posture and `SPAWN.md` §9.4's
 /// point: the squared form is the acceptance test, not an optimization of one.
 pub fn in_waystation(haven: &Haven, x: f32, z: f32) -> bool {
@@ -1439,7 +1440,8 @@ pub fn in_waystation(haven: &Haven, x: f32, z: f32) -> bool {
         }
         let dx = x - ws.x;
         let dz = z - ws.z;
-        if dx * dx + dz * dz < WAYSTATION_RADIUS_M * WAYSTATION_RADIUS_M {
+        let r = WAYSTATION_FOOTPRINT.scatter_m;
+        if dx * dx + dz * dz < r * r {
             return true;
         }
     }
@@ -1488,13 +1490,17 @@ pub fn sites_live(haven: &Haven) -> u32 {
     n
 }
 
-/// True if (x, z) stands inside the pad — the exclusion zone. Squared
-/// compare, no sqrt (and `SPAWN.md` §9.4's point: the squared form is the
-/// acceptance test, not an optimization of one).
+/// True if (x, z) stands inside the pad's **scatter** mask
+/// (`HAVEN_FOOTPRINT.scatter_m`) — the exclusion zone the grid reads. It is
+/// one of the pad's masks and no longer all of them: `site_sweep` answers the
+/// ground-clutter question, which used to be nobody's. Squared compare, no
+/// sqrt (and `SPAWN.md` §9.4's point: the squared form is the acceptance test,
+/// not an optimization of one).
 pub fn in_haven(haven: &Haven, x: f32, z: f32) -> bool {
     let dx = x - haven.x;
     let dz = z - haven.z;
-    dx * dx + dz * dz < HAVEN_RADIUS_M * HAVEN_RADIUS_M
+    let r = HAVEN_FOOTPRINT.scatter_m;
+    dx * dx + dz * dz < r * r
 }
 
 /// Anchor `k` of the pad's container ring: position and the yaw that faces
@@ -1583,6 +1589,146 @@ pub fn waystation_canopy(ws: &Waystation) -> (f32, f32, u8) {
         // Facing in: half a turn from the outward bearing it stands on.
         ws.canopy.wrapping_add(128),
     )
+}
+
+// --- Site footprints: one site, several masks ------------------------------
+//
+// `reference/MONUMENTS.md` §2 and §9.2. Until this block existed an authored
+// site had exactly ONE footprint — a single radius (`HAVEN_RADIUS_M`,
+// `WAYSTATION_RADIUS_M`) answering a single question, "does the scatter grid
+// stand anything here" — and every other world system that should have asked
+// the site something either asked that same circle or was never wired to the
+// site list at all.
+//
+// The measured consequence was ground clutter: `clutter_fill` had no `Haven`
+// parameter, so grass, twigs and scree grew straight across the haven pad and
+// both waystations while the carriageway running through them was correctly
+// swept to grit — 661 grass-and-litter elements on the default seed's pad
+// floor alone. The road got an override; the destinations it leads to did not.
+//
+// The shape of the fix is the reference game's own conclusion after ten years
+// of the opposite (`MONUMENTS.md` §3): a site publishes a SET of masks, not a
+// radius, and each world system reads the mask that is its business. Two are
+// declared here because two are consumed; `MONUMENTS.md` §9.2 lists the rest
+// (build-block, height stamp, nav, water) as rows this struct gains when the
+// system that would read one exists. A mask nobody reads is a circle nobody
+// checks.
+
+/// The radii one authored site publishes, one per job the world asks it.
+///
+/// **Ordered outside-in and asserted so** (the const block below): a mask that
+/// grew past the one outside it would be a site whose swept floor reached
+/// beyond the ground it cleared, which is a footprint drawn against nothing.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SiteFootprint {
+    /// Where the scatter grid stops. No tree, node, bush or barrel stands
+    /// inside this — the site's containers are authored instead
+    /// (`haven_crate`, `waystation_crate`), which is what makes a destination
+    /// read as arranged where the island reads as weather.
+    pub scatter_m: f32,
+    /// Where the ground is SWEPT — made floor rather than weather. Inside it
+    /// the clutter population is grit, exactly as the carriageway's is, and
+    /// the richness stratum is refused outright.
+    ///
+    /// Derived, not chosen: the container ring plus one clutter cell, so the
+    /// swept floor is *the ground the site's own arrangement stands on* and
+    /// nothing else. A site that moves its ring drags its floor with it, the
+    /// same way `skirt_base_r` reaches off `occupant_volume`.
+    pub swept_m: f32,
+}
+
+/// The pad's masks.
+pub const HAVEN_FOOTPRINT: SiteFootprint = SiteFootprint {
+    scatter_m: HAVEN_RADIUS_M,
+    swept_m: HAVEN_CRATE_R_M + CLUTTER_CELL_M,
+};
+
+/// The lesser tier's masks — the same derivation on the smaller site, which is
+/// the point of deriving it: `WAYSTATION_RADIUS_M` and `WAYSTATION_CRATE_R_M`
+/// are already the pad's numbers scaled down, so the swept floor scales too
+/// without a second knob being spoken.
+pub const WAYSTATION_FOOTPRINT: SiteFootprint = SiteFootprint {
+    scatter_m: WAYSTATION_RADIUS_M,
+    swept_m: WAYSTATION_CRATE_R_M + CLUTTER_CELL_M,
+};
+
+// Wall 4 at the definition, as the haven and waystation blocks do it.
+const _: () = {
+    // Outside-in, with room for the band between them to be a band. Both
+    // margins are wider than one clutter cell, so the ramp is never a single
+    // cell wide — a one-cell ramp is a hard edge that cost a dither.
+    assert!(HAVEN_FOOTPRINT.swept_m + CLUTTER_CELL_M < HAVEN_FOOTPRINT.scatter_m);
+    assert!(WAYSTATION_FOOTPRINT.swept_m + CLUTTER_CELL_M < WAYSTATION_FOOTPRINT.scatter_m);
+    // The swept floor covers the arrangement that stands on it: every
+    // container, and the structure in the ring's gap.
+    assert!(HAVEN_FOOTPRINT.swept_m > HAVEN_CRATE_R_M);
+    assert!(HAVEN_FOOTPRINT.swept_m > HAVEN_SHELTER_R_M);
+    assert!(WAYSTATION_FOOTPRINT.swept_m > WAYSTATION_CRATE_R_M);
+    assert!(WAYSTATION_FOOTPRINT.swept_m > WAYSTATION_CANOPY_OFF_M);
+    // The scatter mask is the number `in_haven` / `in_waystation` have always
+    // used. Stated as an assert rather than trusted, because the two readings
+    // diverging is exactly how a footprint stops being one thing.
+    assert!(HAVEN_FOOTPRINT.scatter_m == HAVEN_RADIUS_M);
+    assert!(WAYSTATION_FOOTPRINT.scatter_m == WAYSTATION_RADIUS_M);
+};
+
+/// How swept the ground at (x, z) is: 1.0 on an authored site's made floor,
+/// 0.0 out in the world, smoothstepped across the band between each site's
+/// `swept_m` and its `scatter_m`.
+///
+/// **A scalar with a profile, not a circle** — `MONUMENTS.md` §3's whole
+/// lesson, which the reference game learned by shipping monuments that sat on
+/// visible circular plateaus for years. A hard boundary at one radius would
+/// draw the pad's edge as a ring on the ground; the band, plus the per-element
+/// dither its consumers apply, makes the same transition without an edge to
+/// see. `ramp` is the smoothstep the splat already uses, so the profile is the
+/// one the ground's own material identities get.
+///
+/// Max over the sites rather than a sum: two overlapping swept floors are one
+/// swept floor, and `WAYSTATION_MIN_SEP_M` puts them far enough apart that the
+/// case cannot arise anyway.
+///
+/// Cost is a squared reject per site for every point off a site — one multiply
+/// pair and a compare, which is what lets `clutter_cell` call this 625 times a
+/// tile. The `sqrt` runs only for a point actually inside a footprint.
+pub fn site_sweep(haven: &Haven, x: f32, z: f32) -> f32 {
+    let mut s = sweep_of(&HAVEN_FOOTPRINT, haven.x, haven.z, x, z);
+    let mut w = 0usize;
+    while w < WAYSTATIONS {
+        let ws = &haven.minor[w];
+        w += 1;
+        if !ws.live {
+            continue;
+        }
+        s = s.max(sweep_of(&WAYSTATION_FOOTPRINT, ws.x, ws.z, x, z));
+    }
+    s
+}
+
+/// One site's contribution to `site_sweep`.
+fn sweep_of(fp: &SiteFootprint, sx: f32, sz: f32, x: f32, z: f32) -> f32 {
+    let dx = x - sx;
+    let dz = z - sz;
+    let d2 = dx * dx + dz * dz;
+    if d2 >= fp.scatter_m * fp.scatter_m {
+        return 0.0;
+    }
+    1.0 - ramp(fp.swept_m, fp.scatter_m, d2.sqrt())
+}
+
+/// Whether a clutter element drawn at (x, z) with dither byte `d` stands on
+/// swept ground.
+///
+/// The dither is what turns `site_sweep`'s profile into a population: each
+/// element rolls its own already-drawn hash byte against the local sweep, so
+/// the swept floor thins outward across the band instead of ending on a line.
+/// This is `NOW.md` §0a's recipe for the clutter ring's fade, applied to the
+/// one place in the world that already had a boundary worth hiding.
+///
+/// `/ 256.0` rather than `/ 255.0` so the two ends are exact: at sweep 0.0 no
+/// byte passes, and at sweep 1.0 every byte does.
+fn swept_here(haven: &Haven, x: f32, z: f32, d: u8) -> bool {
+    (d as f32) * (1.0 / 256.0) < site_sweep(haven, x, z)
 }
 
 /// What a scatter cell holds (TERRAIN.md §1 stage 9's occupant list).
@@ -2183,13 +2329,27 @@ pub const CLUTTER_NONE: ClutterElem = ClutterElem {
 ///
 /// `roll_bits` is the caller's already-drawn hash, shifted to whichever slice
 /// it is spending here, so this adds no draw of its own.
-fn clutter_kind_at(seed: u64, x: f32, z: f32, y: f32, roll_bits: u64) -> Clutter {
+///
+/// `swept` is the caller's answer to `swept_here` — the authored-site override,
+/// passed in rather than computed here because each caller owns a different
+/// dither byte and the sites are the caller's `Haven` to know about.
+fn clutter_kind_at(seed: u64, x: f32, z: f32, y: f32, roll_bits: u64, swept: bool) -> Clutter {
     // The carriageway keeps its grit and loses its grass. This is the one
     // place clutter overrides the splat, and it is the same override the
     // scatter grid already makes for the same reason: a road that grows a
     // continuous lawn is not a road, and `TERRAIN.md` §1 stage 7 wants the
     // ring legible from a distance without a road material existing yet.
     if road_band(seed, x, z) == RoadBand::Carriageway {
+        return Clutter::Pebble;
+    }
+    // An authored site's swept floor is the second, and it is the same
+    // override for the same reason one level up: a destination that grows the
+    // same lawn as the wilderness around it does not read as made. It is
+    // Pebble rather than `None` deliberately — the coverage guarantee (rule 4,
+    // no bare disc) is a property of this population and a hole punched here
+    // would be a hole in it, measured by `tests/clutter.rs`. Swept ground is
+    // still ground; it is grit.
+    if swept {
         return Clutter::Pebble;
     }
     let w = splat_from(y, moisture(seed, x, z), slope(seed, x, z));
@@ -2227,7 +2387,12 @@ fn clutter_kind_at(seed: u64, x: f32, z: f32, y: f32, roll_bits: u64) -> Clutter
 /// it) is what keeps the grid invisible while leaving the coverage guarantee
 /// intact: the element never leaves its own cell, so a disc that contains a
 /// cell contains an element, whatever the draw did.
-pub fn clutter_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
+///
+/// Takes the `Haven` for the reason `skirt_fill` beside it already does: an
+/// authored site sweeps its own floor (`site_sweep`), and a population that
+/// cannot see the site list grows a lawn across the pad — which is exactly
+/// what this one did until `reference/MONUMENTS.md` §9.2 was built.
+pub fn clutter_cell(seed: u64, haven: &Haven, cell_x: i32, cell_z: i32) -> ClutterElem {
     if !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_x)
         || !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_z)
     {
@@ -2245,7 +2410,10 @@ pub fn clutter_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
         return CLUTTER_NONE;
     }
 
-    let kind = clutter_kind_at(seed, x, z, y, h >> 32);
+    // Bits 0..7 are this draw's one unspent slice — every other byte of `h` is
+    // already carrying jitter, kind, yaw or scale — so the sweep dither costs
+    // no second hash, which is the rule this whole population is built on.
+    let kind = clutter_kind_at(seed, x, z, y, h >> 32, swept_here(haven, x, z, h as u8));
 
     ClutterElem {
         kind,
@@ -2328,7 +2496,7 @@ const RICH_ACCEPT_MAX: u32 = 32;
 /// ever ADDS to a cell that the coverage stratum has already populated, so
 /// the largest bare disc is unchanged by construction and the wall in
 /// `tests/clutter.rs` re-measures it anyway.
-pub fn clutter_rich_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
+pub fn clutter_rich_cell(seed: u64, haven: &Haven, cell_x: i32, cell_z: i32) -> ClutterElem {
     if !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_x)
         || !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_z)
     {
@@ -2353,8 +2521,19 @@ pub fn clutter_rich_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
         return CLUTTER_NONE;
     }
 
+    // The understory is REFUSED on swept ground rather than turned to grit.
+    // The two strata answer the site differently on purpose: coverage is a
+    // guarantee and must survive the override as grit (`clutter_kind_at`),
+    // richness is a second element the ground earned and a made floor has not
+    // earned one. Its own dither byte, so the two decisions are independent
+    // and the band thins in both populations without them agreeing cell by
+    // cell — which would put the hard edge back one stratum down.
+    if swept_here(haven, x, z, h as u8) {
+        return CLUTTER_NONE;
+    }
+
     ClutterElem {
-        kind: clutter_kind_at(seed, x, z, y, h >> 32),
+        kind: clutter_kind_at(seed, x, z, y, h >> 32, false),
         x,
         y,
         z,
@@ -2379,7 +2558,13 @@ pub fn clutter_rich_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
 /// never an overrun. The richness stratum carries its own bound on top of
 /// that: `CLUTTER_RICH_PER_TILE` is the budget a client pool is sized for, so
 /// a tile that is rich everywhere stops adding rather than overrunning it.
-pub fn clutter_fill(seed: u64, tile_x: i32, tile_z: i32, out: &mut [ClutterElem]) -> usize {
+pub fn clutter_fill(
+    seed: u64,
+    haven: &Haven,
+    tile_x: i32,
+    tile_z: i32,
+    out: &mut [ClutterElem],
+) -> usize {
     let cx0 = tile_x * CLUTTER_CELLS_PER_TILE;
     let cz0 = tile_z * CLUTTER_CELLS_PER_TILE;
     let mut n = 0usize;
@@ -2389,7 +2574,7 @@ pub fn clutter_fill(seed: u64, tile_x: i32, tile_z: i32, out: &mut [ClutterElem]
             if n >= out.len() {
                 return n;
             }
-            let e = clutter_cell(seed, cx0 + i, cz0 + j);
+            let e = clutter_cell(seed, haven, cx0 + i, cz0 + j);
             if e.kind != Clutter::None {
                 out[n] = e;
                 n += 1;
@@ -2397,7 +2582,7 @@ pub fn clutter_fill(seed: u64, tile_x: i32, tile_z: i32, out: &mut [ClutterElem]
             if rich >= CLUTTER_RICH_PER_TILE || n >= out.len() {
                 continue;
             }
-            let r = clutter_rich_cell(seed, cx0 + i, cz0 + j);
+            let r = clutter_rich_cell(seed, haven, cx0 + i, cz0 + j);
             if r.kind != Clutter::None {
                 out[n] = r;
                 n += 1;
@@ -2512,6 +2697,7 @@ pub fn skirt_count(o: Occupant) -> usize {
 /// native and wasm by construction.
 pub fn skirt_elem(
     seed: u64,
+    haven: &Haven,
     cell_x: i32,
     cell_z: i32,
     slot: &Slot,
@@ -2538,8 +2724,13 @@ pub fn skirt_elem(
         return CLUTTER_NONE;
     }
 
+    // The prop this rings stands outside the site's scatter mask by
+    // construction, but its skirt reaches inward up to `SKIRT_BAND_M` past a
+    // footprint that can be metres wide — so an element of it CAN land on
+    // swept ground, and the site's floor has to be able to say so. Bits 0..7,
+    // this draw's unspent slice, exactly as `clutter_cell`'s.
     ClutterElem {
-        kind: clutter_kind_at(seed, x, z, y, h >> 32),
+        kind: clutter_kind_at(seed, x, z, y, h >> 32, swept_here(haven, x, z, h as u8)),
         x,
         y,
         z,
@@ -2582,7 +2773,7 @@ pub fn skirt_fill(
                 if n >= out.len() {
                     return n;
                 }
-                let e = skirt_elem(seed, cx, cz, &slot, i, count);
+                let e = skirt_elem(seed, haven, cx, cz, &slot, i, count);
                 if e.kind == Clutter::None {
                     continue;
                 }

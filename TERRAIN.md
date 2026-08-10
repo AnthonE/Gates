@@ -309,6 +309,33 @@ claimed building's privilege volume — no farming your own living room.
 This is the same shape `NETCODE.md` §5 uses for buildings, which is the
 point: **terrain life is just chunk events over a generated backdrop.**
 
+### 2.1 · An authored site publishes masks, not a radius
+
+Landed 2026-08-10; research `reference/MONUMENTS.md` §3, knob row
+`DECISIONS.md` §open "site footprints v0".
+
+The haven pad and the waystations used to carry exactly one number each
+(`HAVEN_RADIUS_M`, `WAYSTATION_RADIUS_M`) answering exactly one question —
+*does the scatter grid stand anything here*. Every other world system either
+asked that same circle or was never told the sites exist. Ground clutter was
+the second kind: `clutter_fill` had no `Haven` parameter, so grass and litter
+grew straight across both tiers while the carriageway through them was
+correctly grit.
+
+`SiteFootprint` is now the site's published table — `scatter_m` (the grid
+veto, asserted equal to the radius it replaced) and `swept_m` (the made
+floor, derived as the container ring plus one clutter cell). Between them
+`site_sweep` is a **smoothstep profile, not a circle**: consumers dither each
+element against it with a hash byte they had already drawn, so the edge of a
+destination is a thinning population rather than a ring on the ground. That
+distinction is the whole of `MONUMENTS.md` §3 — the reference game shipped
+monuments on visible circular plateaus for a decade because a footprint was a
+radius — and `tests/clutter.rs` §S refuses a hard circle explicitly.
+
+Rows this struct gains when a reader exists: build-block (open for the
+operator), a height stamp (there is no carve — §1 stage 8 finds flat ground
+rather than making it), nav, water.
+
 ## 3 · Collision (server truth, client prediction — same code)
 
 - Ground: bilinear height sample under the capsule; walkable up to the
@@ -593,6 +620,13 @@ client (`DECISIONS.md` 2026-08-06), so nothing photographs this at all now.
   site rather than making one (§1 stage 8), so this suite measures the
   generator's best natural ground, and the 3.76 m is the argument for the
   carve rather than evidence it happened.
+- `tests/clutter.rs` §S: the authored sites sweep their own floor, measured
+  against the same seed rendered with the site list parked offshore, so all
+  three claims are exact rather than statistical — the floor is grit and
+  carries no understory, **the wilderness is bit-identical**, and the band
+  between the two masks contains both outcomes. Each is proven red under its
+  own mutant (sweep disabled · sweep as a hard circle · the band collapsed to
+  zero width). §2.1 has the design.
 - Chunk-build time and instancing counts ride the client perf harness.
 
 ### 7.1 · ⚠ The greybox mirror lost its gate, and the two halves have drifted

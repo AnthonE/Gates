@@ -22,6 +22,13 @@ game, the client, or the build.
 | `PROJECTILES.md` | how the reference game does **bows and arrows** — there is no `Bow` class (a bow is a one-round-magazine `BaseProjectile`, the same class as every gun), the projectile is **simulated on the client** and audited by a thirteen-convar tolerance budget, the arrow is an item three times over (inventory → projectile → world pickup, ~15 % break, 10 s lodge), the compound bow's draw prices exposure *and* durability, hit detection takes the **most significant** body part rather than the first intersection, and **§9 what it means for us**. `DOORS.md`'s source ranking applies; its proxy caveat applies again and in the opposite direction from `SOURCES.md`'s last reading — see its §0 |
 | `SAVES.md` | how the reference game remembers a player — **there is no player save file**: the body stays in the world as a sleeper and is saved because it is an entity, the save and the wire on one base class, the stop-the-world stall it never fixed, the wipe split, and **§9 what it means for us**. Same clean posture as `AUDIO.md`; the operator adopted its model, so §9 is a plan |
 
+| `MONUMENTS.md` | how the reference game decides **where a large authored place goes** — placement as a solve rather than a guess (three rewrites over ten years and still moving), the collision list every worldgen system built after monuments produced (rivers, cliffs, ice lakes, roads, ring roads, rails), terrain blending as authored per-monument masks instead of a flattened circle, the 2015 client-worldgen checksum mismatch they had to stop kicking for, vertical AOI layers, per-class interest ranges, what one moving monument actually costs, and **§9 what it means for us**. **Weakest provenance in this directory and its §0 says so at length**: an operator briefing summarising sources nobody here has opened, so no number in it may reach `content/` — the finding is the ORDER, which is checkable against our tree |
+
+> ⚠ This table is **incomplete and was already incomplete before `MONUMENTS.md`
+> was added to it**: `ANIMALS.md`, `WATER.md`, `NETWORK.md`, `BALANCE.md` and
+> `RIPLIST.md` are in this directory and have no row here. `CLAUDE.md`'s doc
+> table is the one that is kept current — read that one.
+
 ## How to regenerate
 
 ```

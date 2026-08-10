@@ -69,6 +69,28 @@ its gates are unbuilt**, retitled this pass to stop claiming otherwise).
 
 ---
 
+## 0n2 · Monuments — the solver is two hand-written tiers *(world lane)*
+
+Research landed 2026-08-10: `reference/MONUMENTS.md` (operator briefing —
+**§0 says its provenance is the weakest here**, so read §9, not §1–§8, before
+building). §9.1 is what we already got right and must not relitigate; §9.2 is
+built this pass (`SiteFootprint` / `site_sweep` — a site publishes masks, not
+a radius; clutter no longer grows across the pad).
+
+§9.3 is the gap and it is not urgent yet: `haven()` + `pick_minor` produce two
+kinds of site, the separation floor is one hand-asserted constant
+(`WAYSTATION_MIN_SEP_M`), and there is no reservation ledger. That is correct
+at two tiers and is §1's starvation shape at five. **The trigger to fix it is
+a third destination kind, not a spare pass** — the per-tier check chains stay
+separate by a call the code already records.
+
+Ranked after that, all from §9.4: class S still has no interest filter at all
+(§0n1 — and a monument is the worst place to discover it), per-entity interest
+ranges, then nav the day something defends a site. Vertical AOI layers are
+premature (no underground) and moving monuments are refused on the record.
+
+---
+
 ## 0b · Balance sits on the reference's numbers now — what is still off *(content lane)*
 
 Landed 2026-08-08 (operator: *"balance the game similar to rust so people

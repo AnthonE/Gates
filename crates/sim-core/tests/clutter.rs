@@ -23,7 +23,7 @@ const NEAR_R_M: f32 = 15.0;
 /// Every element within `r` of (ox, oz), brute-forced off the cell grid —
 /// BOTH strata, because a query that saw only the coverage draw would measure
 /// a population the client does not draw.
-fn elements_near(seed: u64, ox: f32, oz: f32, r: f32) -> Vec<ClutterElem> {
+fn elements_near(seed: u64, haven: &Haven, ox: f32, oz: f32, r: f32) -> Vec<ClutterElem> {
     let c0x = ((ox - r) / CLUTTER_CELL_M) as i32 - 1;
     let c1x = ((ox + r) / CLUTTER_CELL_M) as i32 + 1;
     let c0z = ((oz - r) / CLUTTER_CELL_M) as i32 - 1;
@@ -32,8 +32,8 @@ fn elements_near(seed: u64, ox: f32, oz: f32, r: f32) -> Vec<ClutterElem> {
     for cz in c0z..=c1z {
         for cx in c0x..=c1x {
             for e in [
-                terrain::clutter_cell(seed, cx, cz),
-                terrain::clutter_rich_cell(seed, cx, cz),
+                terrain::clutter_cell(seed, haven, cx, cz),
+                terrain::clutter_rich_cell(seed, haven, cx, cz),
             ] {
                 if e.kind != Clutter::None {
                     out.push(e);
@@ -114,12 +114,13 @@ fn test_no_bare_patch_inside_fifteen_metres() {
 
     let mut stood: Vec<(f32, f32)> = Vec::new();
     for &seed in SEEDS.iter() {
+        let haven = terrain::haven(seed);
         for bearing in 0..ORIGINS_PER_SEED {
             let (ox, oz) = a_land_origin(seed, bearing);
             stood.push((ox, oz));
             // Elements out to 15 m + a margin, so a query point at the rim
             // still sees everything that could be its nearest neighbour.
-            let els = elements_near(seed, ox, oz, NEAR_R_M + 3.0);
+            let els = elements_near(seed, &haven, ox, oz, NEAR_R_M + 3.0);
             assert!(
                 !els.is_empty(),
                 "seed {seed:#x} bearing {bearing}: no clutter at all within \
@@ -207,13 +208,13 @@ fn test_no_bare_patch_inside_fifteen_metres() {
 }
 
 /// Elements in one clutter tile, both strata, and the tile's mean splat.
-fn tile_census(seed: u64, tx: i32, tz: i32) -> (usize, usize, [u32; 4]) {
+fn tile_census(seed: u64, haven: &Haven, tx: i32, tz: i32) -> (usize, usize, [u32; 4]) {
     let (cx0, cz0) = (tx * CLUTTER_CELLS_PER_TILE, tz * CLUTTER_CELLS_PER_TILE);
     let (mut base, mut rich, mut w) = (0usize, 0usize, [0u32; 4]);
     for j in 0..CLUTTER_CELLS_PER_TILE {
         for i in 0..CLUTTER_CELLS_PER_TILE {
             let (cx, cz) = (cx0 + i, cz0 + j);
-            if terrain::clutter_cell(seed, cx, cz).kind != Clutter::None {
+            if terrain::clutter_cell(seed, haven, cx, cz).kind != Clutter::None {
                 base += 1;
                 let (x, z) = (cx as f32 * CLUTTER_CELL_M, cz as f32 * CLUTTER_CELL_M);
                 let s = terrain::splat(seed, x, z);
@@ -221,7 +222,7 @@ fn tile_census(seed: u64, tx: i32, tz: i32) -> (usize, usize, [u32; 4]) {
                     w[k] += *v as u32;
                 }
             }
-            if terrain::clutter_rich_cell(seed, cx, cz).kind != Clutter::None {
+            if terrain::clutter_rich_cell(seed, haven, cx, cz).kind != Clutter::None {
                 rich += 1;
             }
         }
@@ -248,10 +249,11 @@ fn test_richness_follows_the_biome() {
     let mut grow = (0usize, 0usize); // (rich elements, base elements)
     let mut bare = (0usize, 0usize);
     for &seed in SEEDS.iter() {
+        let haven = terrain::haven(seed);
         for stance in 0..ORIGINS_PER_SEED {
             let (x, z) = a_land_origin(seed, stance);
             let (tx, tz) = ((x / CLUTTER_TILE_M) as i32, (z / CLUTTER_TILE_M) as i32);
-            let (base, rich, w) = tile_census(seed, tx, tz);
+            let (base, rich, w) = tile_census(seed, &haven, tx, tz);
             if base < 100 {
                 continue; // mostly sea — not a ground sample
             }
@@ -305,6 +307,7 @@ fn test_richness_follows_the_biome() {
 fn rich_dispersion(block: i32) -> (f32, f32, usize) {
     let mut counts: Vec<f32> = Vec::new();
     for &seed in SEEDS.iter() {
+        let haven = &terrain::haven(seed);
         for stance in 0..ORIGINS_PER_SEED {
             let (x, z) = a_land_origin(seed, stance);
             let (cx0, cz0) = (
@@ -319,10 +322,11 @@ fn rich_dispersion(block: i32) -> (f32, f32, usize) {
                         for i in 0..block {
                             let cx = cx0 + (bi - 2) * block + i;
                             let cz = cz0 + (bj - 2) * block + j;
-                            if terrain::clutter_cell(seed, cx, cz).kind != Clutter::None {
+                            if terrain::clutter_cell(seed, haven, cx, cz).kind != Clutter::None {
                                 land += 1;
                             }
-                            if terrain::clutter_rich_cell(seed, cx, cz).kind != Clutter::None {
+                            if terrain::clutter_rich_cell(seed, haven, cx, cz).kind != Clutter::None
+                            {
                                 n += 1.0;
                             }
                         }
@@ -406,10 +410,11 @@ fn test_richness_is_spread_across_its_tile() {
     let mut tiles = 0usize;
     let mut at_budget = 0usize;
     for &seed in SEEDS.iter() {
+        let haven = &terrain::haven(seed);
         for stance in 0..ORIGINS_PER_SEED {
             let (x, z) = a_land_origin(seed, stance);
             let (tx, tz) = ((x / CLUTTER_TILE_M) as i32, (z / CLUTTER_TILE_M) as i32);
-            let (base, _, _) = tile_census(seed, tx, tz);
+            let (base, _, _) = tile_census(seed, haven, tx, tz);
             if base < 600 {
                 continue; // a tile with a shoreline in it is not a fair split
             }
@@ -419,7 +424,7 @@ fn test_richness_is_spread_across_its_tile() {
             let (cx0, cz0) = (tx * CLUTTER_CELLS_PER_TILE, tz * CLUTTER_CELLS_PER_TILE);
             for j in 0..CLUTTER_CELLS_PER_TILE {
                 for i in 0..CLUTTER_CELLS_PER_TILE {
-                    let e = terrain::clutter_rich_cell(seed, cx0 + i, cz0 + j);
+                    let e = terrain::clutter_rich_cell(seed, haven, cx0 + i, cz0 + j);
                     if e.kind == Clutter::None {
                         continue;
                     }
@@ -504,6 +509,7 @@ fn test_each_kind_stands_on_its_own_splat_channel() {
     let mut sums = [[0.0f64; 4]; 4]; // [kind][channel]
     let mut counts = [0usize; 4];
     for &seed in SEEDS.iter() {
+        let haven = &terrain::haven(seed);
         for j in 0..90 {
             for i in 0..90 {
                 // A coprime stride so the scan is not aligned to any field.
@@ -512,7 +518,7 @@ fn test_each_kind_stands_on_its_own_splat_channel() {
                 if cx >= CLUTTER_CELLS_PER_SIDE || cz >= CLUTTER_CELLS_PER_SIDE {
                     continue;
                 }
-                let e = terrain::clutter_cell(seed, cx, cz);
+                let e = terrain::clutter_cell(seed, haven, cx, cz);
                 if e.kind == Clutter::None {
                     continue;
                 }
@@ -552,12 +558,13 @@ fn test_each_kind_stands_on_its_own_splat_channel() {
 #[test]
 fn test_clutter_never_stands_in_water() {
     for &seed in SEEDS.iter() {
+        let haven = &terrain::haven(seed);
         let mut wet = 0usize;
         for j in 0..120 {
             for i in 0..120 {
                 let cx = i * 26;
                 let cz = j * 26;
-                let e = terrain::clutter_cell(seed, cx, cz);
+                let e = terrain::clutter_cell(seed, haven, cx, cz);
                 if e.kind == Clutter::None {
                     continue;
                 }
@@ -585,10 +592,11 @@ fn test_clutter_never_stands_in_water() {
 fn test_carriageway_grows_grit_not_grass() {
     let mut on_road = 0usize;
     for &seed in SEEDS.iter() {
+        let haven = &terrain::haven(seed);
         for j in 0..CLUTTER_CELLS_PER_SIDE / 7 {
             for i in 0..CLUTTER_CELLS_PER_SIDE / 7 {
                 let (cx, cz) = (i * 7, j * 7);
-                let e = terrain::clutter_cell(seed, cx, cz);
+                let e = terrain::clutter_cell(seed, haven, cx, cz);
                 if e.kind == Clutter::None {
                     continue;
                 }
@@ -621,9 +629,11 @@ fn test_clutter_is_deterministic_and_seed_dependent() {
     let mut b = [CLUTTER_NONE; CLUTTER_PER_TILE];
     let mut c = [CLUTTER_NONE; CLUTTER_PER_TILE];
     let (tx, tz) = (64, 64);
-    let na = terrain::clutter_fill(SEEDS[0], tx, tz, &mut a);
-    let nb = terrain::clutter_fill(SEEDS[0], tx, tz, &mut b);
-    let nc = terrain::clutter_fill(SEEDS[1], tx, tz, &mut c);
+    let h0 = terrain::haven(SEEDS[0]);
+    let h1 = terrain::haven(SEEDS[1]);
+    let na = terrain::clutter_fill(SEEDS[0], &h0, tx, tz, &mut a);
+    let nb = terrain::clutter_fill(SEEDS[0], &h0, tx, tz, &mut b);
+    let nc = terrain::clutter_fill(SEEDS[1], &h1, tx, tz, &mut c);
     assert_eq!(na, nb);
     for i in 0..na {
         assert_eq!(a[i].kind, b[i].kind);
@@ -648,13 +658,14 @@ fn test_clutter_is_deterministic_and_seed_dependent() {
 #[test]
 fn test_a_short_buffer_truncates_and_never_overruns() {
     let mut small = [CLUTTER_NONE; 7];
-    let n = terrain::clutter_fill(SEEDS[0], 64, 64, &mut small);
+    let h0 = terrain::haven(SEEDS[0]);
+    let n = terrain::clutter_fill(SEEDS[0], &h0, 64, 64, &mut small);
     assert!(
         n <= 7,
         "clutter_fill wrote {n} elements into a 7-element buffer"
     );
     let mut full = [CLUTTER_NONE; CLUTTER_PER_TILE];
-    let m = terrain::clutter_fill(SEEDS[0], 64, 64, &mut full);
+    let m = terrain::clutter_fill(SEEDS[0], &h0, 64, 64, &mut full);
     assert!(
         m >= n,
         "the short fill returned more than the full one ({n} > {m})"
@@ -919,7 +930,7 @@ fn test_a_skirt_is_spread_not_clumped() {
                 let mut quad = [0usize; 4];
                 let mut on_land = 0;
                 for i in 0..n {
-                    let e = terrain::skirt_elem(seed, c0x + dx, c0z + dz, &slot, i, n);
+                    let e = terrain::skirt_elem(seed, &haven, c0x + dx, c0z + dz, &slot, i, n);
                     if e.kind == Clutter::None {
                         continue;
                     }
@@ -1236,7 +1247,7 @@ fn test_the_waterline_veto_fires_where_the_land_ends() {
                     let slot = terrain::scatter(seed, &table, &haven, gx, gz);
                     let n = terrain::skirt_count(slot.occupant);
                     for i in 0..n {
-                        let e = terrain::skirt_elem(seed, gx, gz, &slot, i, n);
+                        let e = terrain::skirt_elem(seed, &haven, gx, gz, &slot, i, n);
                         if e.kind == Clutter::None {
                             vetoed += 1;
                         } else {
@@ -1329,7 +1340,7 @@ fn test_a_prop_is_skirted_by_exactly_one_tile() {
                         let slot = terrain::scatter(seed, &table, &haven, gx, gz);
                         let n = terrain::skirt_count(slot.occupant);
                         for i in 0..n {
-                            let e = terrain::skirt_elem(seed, gx, gz, &slot, i, n);
+                            let e = terrain::skirt_elem(seed, &haven, gx, gz, &slot, i, n);
                             if e.kind == Clutter::None {
                                 continue;
                             }
@@ -1374,4 +1385,233 @@ fn test_a_prop_is_skirted_by_exactly_one_tile() {
             "seed {seed:#x}: the coastal block owns no skirt element to partition"
         );
     }
+}
+
+// ── §S · The authored sites sweep their own floor ──────────────────────────
+//
+// `reference/MONUMENTS.md` §9.2. Until the site footprint block landed, this
+// population had no `Haven` parameter at all: grass, twigs and scree grew
+// straight across the haven pad and both waystations while the carriageway
+// running through them was correctly swept to grit. The road got an override;
+// the destination it leads to did not.
+//
+// **Every assertion below is exact, not statistical, and that is deliberate.**
+// The natural way to test "the pad has less grass on it" is to count blades
+// and compare — which would pass on a change that also thinned the wilderness,
+// and would be blind to the failure that actually matters. So the control is
+// the SAME seed rendered against an inert site list (`sites_parked_offshore`),
+// and the three claims are differences against it:
+//
+//   1. where the sweep is full, the floor is grit and carries no understory;
+//   2. where the sweep is zero, the field is bit-identical to the control —
+//      this change may not move one element of the island;
+//   3. across the band between them, BOTH outcomes occur — the transition is
+//      a dithered population, not a ring drawn on the ground.
+//
+// Claim 3 is the one `MONUMENTS.md` §3 is about: the reference game shipped
+// monuments on visible circular plateaus for years because a footprint was a
+// radius. A gate that only checked 1 and 2 would pass a hard circle.
+
+/// A site list parked off the island, so `site_sweep` answers 0.0 everywhere
+/// a real scan looks. The control for every difference measured below —
+/// `occupy.rs` builds the same thing for the same reason.
+fn sites_parked_offshore() -> Haven {
+    Haven {
+        x: -100_000.0,
+        z: -100_000.0,
+        y: 0.0,
+        relief: 0.0,
+        phase: 0,
+        shelter: 0,
+        minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
+    }
+}
+
+/// Every live site of a seed, as (centre, footprint).
+fn sites_of(haven: &Haven) -> Vec<(f32, f32, terrain::SiteFootprint)> {
+    let mut v = vec![(haven.x, haven.z, terrain::HAVEN_FOOTPRINT)];
+    for ws in haven.minor.iter().filter(|w| w.live) {
+        v.push((ws.x, ws.z, terrain::WAYSTATION_FOOTPRINT));
+    }
+    v
+}
+
+/// The profile is a band, as a property of the function itself: 1.0 on the
+/// floor, 0.0 at the scatter mask and outside it, strictly between across the
+/// band, and never rising as you walk out.
+///
+/// Asserted on `site_sweep` directly as well as on the population, because a
+/// population test cannot tell a narrow band from no band — and the band is
+/// the whole difference between this and the circular plateau `MONUMENTS.md`
+/// §3 is written about.
+#[test]
+fn test_the_sweep_profile_is_a_band_and_not_a_step() {
+    for &seed in SEEDS.iter() {
+        let haven = terrain::haven(seed);
+        for (sx, sz, fp) in sites_of(&haven) {
+            let at = |r: f32| terrain::site_sweep(&haven, sx + r, sz);
+            assert_eq!(at(0.0), 1.0, "seed {seed:#x}: the site centre is not swept");
+            assert_eq!(
+                at(fp.swept_m),
+                1.0,
+                "seed {seed:#x}: the floor's own edge is not fully swept"
+            );
+            assert_eq!(
+                at(fp.scatter_m),
+                0.0,
+                "seed {seed:#x}: the sweep reaches past the scatter mask"
+            );
+            let mid = (fp.swept_m + fp.scatter_m) * 0.5;
+            let m = at(mid);
+            assert!(
+                m > 0.0 && m < 1.0,
+                "seed {seed:#x}: sweep at the band's midpoint is {m}, so the \
+                 boundary is a step and not a band"
+            );
+            // Monotone out, in 5 cm steps: a profile that rose anywhere would
+            // draw a second edge further out than the one it is hiding.
+            let mut prev = 1.0f32;
+            let mut r = 0.0f32;
+            while r <= fp.scatter_m + 1.0 {
+                let v = at(r);
+                assert!(
+                    v <= prev + 1e-6,
+                    "seed {seed:#x}: sweep rises from {prev} to {v} at r {r:.2}"
+                );
+                prev = v;
+                r += 0.05;
+            }
+        }
+    }
+}
+
+/// The three claims, measured cell by cell against the parked control.
+#[test]
+fn test_an_authored_site_sweeps_its_own_floor() {
+    let far = sites_parked_offshore();
+    // Pooled across seeds and sites: the band must contain both outcomes
+    // somewhere, not in every one of the nine sites individually — a
+    // waystation whose band is half in the sea has fewer cells to say it with.
+    let (mut band_swept, mut band_kept) = (0usize, 0usize);
+    let mut floor_cells = 0usize;
+
+    for &seed in SEEDS.iter() {
+        let haven = terrain::haven(seed);
+        for (sx, sz, fp) in sites_of(&haven) {
+            let pad = fp.scatter_m + 2.0 * CLUTTER_CELL_M;
+            let c0x = ((sx - pad) / CLUTTER_CELL_M) as i32;
+            let c1x = ((sx + pad) / CLUTTER_CELL_M) as i32;
+            let c0z = ((sz - pad) / CLUTTER_CELL_M) as i32;
+            let c1z = ((sz + pad) / CLUTTER_CELL_M) as i32;
+
+            for cz in c0z..=c1z {
+                for cx in c0x..=c1x {
+                    let e = terrain::clutter_cell(seed, &haven, cx, cz);
+                    let r = terrain::clutter_rich_cell(seed, &haven, cx, cz);
+                    let e0 = terrain::clutter_cell(seed, &far, cx, cz);
+                    let r0 = terrain::clutter_rich_cell(seed, &far, cx, cz);
+
+                    // **The two strata are classified by their OWN positions,
+                    // not by the cell's.** They jitter independently inside the
+                    // same 0.64 m cell, so near a mask edge one can be swept
+                    // while the other is not — and the first draft of this test
+                    // judged both by the coverage element's position, which the
+                    // hard-circle mutant caught as a false failure of claim 2.
+                    // The point `swept_here` was asked about is the only point
+                    // that can be asked about here.
+                    if e0.kind == Clutter::None {
+                        // Sea or off-island: the control has nothing to say and
+                        // the site cannot have added anything.
+                        assert_eq!(
+                            e.kind,
+                            Clutter::None,
+                            "seed {seed:#x}: the sweep created an element in the sea"
+                        );
+                    } else {
+                        let sweep = terrain::site_sweep(&haven, e0.x, e0.z);
+                        if sweep >= 1.0 {
+                            floor_cells += 1;
+                            // 1 · grit, and the coverage guarantee survives it:
+                            // Pebble rather than None, so no hole is punched in
+                            // the population `test_no_bare_patch_inside
+                            // _fifteen_metres` measures.
+                            assert_eq!(
+                                e.kind,
+                                Clutter::Pebble,
+                                "seed {seed:#x}: a fully swept floor at ({:.1}, {:.1}) grows \
+                                 {:?} instead of grit",
+                                e0.x,
+                                e0.z,
+                                e.kind
+                            );
+                        } else if sweep <= 0.0 {
+                            // 2 · outside the mask nothing moved, bit for bit.
+                            assert_eq!(
+                                (e.kind, e.x.to_bits(), e.z.to_bits(), e.yaw),
+                                (e0.kind, e0.x.to_bits(), e0.z.to_bits(), e0.yaw),
+                                "seed {seed:#x}: the sweep changed a coverage element at \
+                                 ({:.1}, {:.1}), outside every site's scatter mask",
+                                e0.x,
+                                e0.z
+                            );
+                        }
+                    }
+
+                    // The sweep only ever REMOVES understory, so a cell the
+                    // control left empty must still be empty.
+                    if r0.kind == Clutter::None {
+                        assert_eq!(
+                            r.kind,
+                            Clutter::None,
+                            "seed {seed:#x}: the sweep created an understory element"
+                        );
+                        continue;
+                    }
+                    let sweep = terrain::site_sweep(&haven, r0.x, r0.z);
+                    if sweep >= 1.0 {
+                        // 1 · a made floor has no understory at all.
+                        assert_eq!(
+                            r.kind,
+                            Clutter::None,
+                            "seed {seed:#x}: a fully swept floor at ({:.1}, {:.1}) carries \
+                             an understory element",
+                            r0.x,
+                            r0.z
+                        );
+                    } else if sweep <= 0.0 {
+                        // 2 · outside the mask nothing moved, bit for bit.
+                        assert_eq!(
+                            (r.kind, r.x.to_bits(), r.z.to_bits(), r.yaw),
+                            (r0.kind, r0.x.to_bits(), r0.z.to_bits(), r0.yaw),
+                            "seed {seed:#x}: the sweep changed an understory element at \
+                             ({:.1}, {:.1}), outside every site's scatter mask",
+                            r0.x,
+                            r0.z
+                        );
+                    } else if r.kind == Clutter::None {
+                        // 3 · in the band, count which way each element fell.
+                        // The understory is the discriminator and the coverage
+                        // kind is not: the splat draws Pebble on sand of its
+                        // own accord, while `clutter_rich_cell` refuses
+                        // outright when swept and is untouched when not.
+                        band_swept += 1;
+                    } else {
+                        band_kept += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        floor_cells > 500,
+        "only {floor_cells} cells landed on a swept floor across every seed — \
+         the scan is not reaching the sites it means to measure"
+    );
+    assert!(
+        band_swept > 0 && band_kept > 0,
+        "the band swept {band_swept} understory elements and kept {band_kept}: \
+         a boundary that is all one or all the other is a ring drawn on the \
+         ground, which is the failure reference/MONUMENTS.md §3 is about"
+    );
 }
