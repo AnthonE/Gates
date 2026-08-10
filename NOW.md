@@ -596,25 +596,48 @@ hangup through the menu's own teardown. Remaining:
 3. **Ungated, by hand only:** the end-to-end kill-the-shard-mid-play run
    behind `Screen::Disconnected`.
 
-## 0t · the native pine is generated — what it owes
+## 0t · the forest — what it owes, re-ranked off `reference/PLANTS.md`
 
-Landed: `render/tree.rs` calls `bevy_procedural_tree` as ONE pure function —
-no plugin, no ECS; `props.rs`'s whorl builder stays as the far-LOD
-silhouette. Gate: `crates/client/tests/tree.rs`. Owed, in rank order:
+Landed: `render/tree.rs` calls `bevy_procedural_tree` as ONE pure function.
+**Felling v0** (2026-08-10): a chopped tree topples on a bearing derived from
+the cell key, keeps its own mesh, and stays down — gate `tests/fell.rs`, knob
+`DECISIONS.md` felling v0. Gates: `tests/tree.rs`, `tests/fell.rs`.
 
-1. **The billboard LOD.** 328 trees × 5.9 k tris is 1.9 M against DESIGN
-   §9's 1.5 M, so the full ring is knowingly over budget and only the ~80 m
-   band is affordable; `tests/tree.rs` prints the arithmetic. SeedThree's
-   `impostor.js` is the worked reference (two crossed alpha cards baked
-   front/side in a worker, readback row order probed once); its per-tree
-   `Group` emit is the part to throw away — this client wants an instanced
-   pool. Whatever LOD1 becomes, it sways: a billboard has four vertices to
-   put a wind weight on.
-2. **`aWind`** — `StandardMaterial` cannot read a custom attribute, so wind
-   needs the custom material `RENDER.md` already lists.
-3. **The needle card is generated** (`tree::needle_image`); a photographed
-   sprig is a later swap, not a prerequisite.
-4. **Owed upstream as a bug report:** `BranchForce` pointing down hits the
+**The order below is `PLANTS.md` §6.2's and it inverts what this item used to
+say.** LOD was rank 1; it is now rank 3, because clumping puts MORE stems in
+the near ring and an LOD tuned against today's lattice is tuned against a
+distribution we are about to replace. Measure between the two.
+
+1. **Species v0 landed; the broadleaf has never been LOOKED at.** `SPECIES` is
+   a two-row table (conifer 6.6 m / 2.9 m-wide broadleaf), pool 6, and
+   `SPAWN_CLEAR_M` rose 4.0 → 4.5 with the arithmetic finally gated in Rust
+   (`a_fresh_spawn_stands_clear_of_the_widest_tree` — `ci/pine_shape.mjs` was
+   a dead citation). **Every check on it is arithmetic and arithmetic cannot
+   say whether it reads as a tree.** Boot it and look; the parameters most
+   likely to be wrong are `children`/`angle[1]` (crown spread) and leaf
+   `count`/`size`, and `reference/PLANTS.md` §3.1 has ez-tree's 15 presets to
+   pull real ash/aspen/oak numbers from instead of our derived-from-defaults
+   block. More species is now a row in `SPECIES`, not a refactor.
+2. ~~The scatter lattice~~ — **this item was wrong and is retired.**
+   `terrain::clump` has always existed: an fBm field `scatter` multiplies the
+   whole weight row by, squared for a ragged edge, gated by
+   `sim-core/tests/scatter.rs` against a closed-form independent-draw null.
+   Groves and clearings are built. What is actually open is the density
+   **ceiling** — one occupant per 8 m cell — and `reference/PLANTS.md` §3.2
+   prices the three ways to raise it. All are sim-core, none is cheap, and
+   the cheapest (`CELL_SIZE` 8 → 4) quadruples the live `SlotLives` rows
+   against `TERRAIN.md` §6's budget. Do not start it as a rendering change.
+3. **The billboard LOD.** 328 trees × 5.9 k tris is 1.9 M against DESIGN §9's
+   1.5 M. Octahedral impostors beat SeedThree's crossed cards (a card edge-on
+   disappears); `PLANTS.md` §3.3 has both. Whatever LOD1 becomes, it sways.
+4. **`aWind`** — `StandardMaterial` cannot read a custom attribute, so wind
+   needs the custom material `RENDER.md` already lists. Gets LOD1 for free.
+5. **The sub-canopy and shrub layers are empty** (`PLANTS.md` §2). ez-tree's
+   three `bush_*` presets and a small tree at 40 % are new `Occupant`
+   variants plus scatter rows once item 1 lands.
+6. **The needle card is generated** (`tree::needle_image`); `WANTED.md` §9.5
+   is the swap, and it is the highest-value texture on that page.
+7. **Owed upstream as a bug report:** `BranchForce` pointing down hits the
    antipodal singularity in `Quat::from_rotation_arc(Y, dir)` and bends the
    whole tree sideways — droop is the limb ANGLE's job.
 

@@ -341,14 +341,24 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
             // minutes (`TERRAIN.md` §2) does not do so audibly.
             continue;
         }
-        let p = t.translation();
-        // A tree is the thing that stumps; everything else that retires is a
-        // rock or an ore node coming apart.
-        let cue = if f.stumps {
-            Cue::TreeFall
-        } else {
-            Cue::ImpactStone
+        // **One cue per SLOT, not one per entity — and this was already wrong
+        // before the tree could topple.** A tree has always been more than one
+        // `Fellable`: the canopy is a sibling carrying its own, so a chop fired
+        // `TreeFall` for the trunk *and* `ImpactStone` for the needles, at the
+        // same position on the same frame. Nothing caught it because both cues
+        // are real cues and the mix is the only place the pair is audible.
+        // Felling v0 would have made it three, which is what made it visible.
+        //
+        // `FellPart` names the parts, so the rule can be stated instead of
+        // inferred: the trunk speaks for the tree, a `Vanish` node speaks for
+        // itself, and the canopy and the stump are silent because they are
+        // parts of something that already made a sound.
+        let cue = match f.part {
+            super::props::FellPart::Trunk => Cue::TreeFall,
+            super::props::FellPart::Vanish => Cue::ImpactStone,
+            super::props::FellPart::Canopy | super::props::FellPart::Stump => continue,
         };
+        let p = t.translation();
         sound.play(Request::at(cue, [p.x, p.y, p.z]));
     }
 }
@@ -443,7 +453,7 @@ pub fn bed(
     mut sound: ResMut<Sound>,
     eye: Res<Eye>,
     world: Res<super::WorldId>,
-    props: Query<&GlobalTransform, With<super::props::Fellable>>,
+    props: Query<(&GlobalTransform, &super::props::Fellable)>,
     time: Res<Time>,
     settings: Res<super::Settings>,
     mut sinks: Query<(&Bed, &mut AudioSink)>,
@@ -453,15 +463,34 @@ pub fn bed(
     //
     // **It counts every gatherable slot, not only trees** — a boulder field
     // reads as cover here and a pine wood reads the same. That is a
-    // simplification and not a claim: the honest version needs the occupant
-    // kind, which `Fellable` carries only as `stumps`, and a bed that told
-    // rock from canopy is the localized-emitter slice (`reference/AUDIO.md`
-    // §9.3), not this one.
+    // simplification and not a claim: a bed that told rock from canopy is the
+    // localized-emitter slice (`reference/AUDIO.md` §9.3), not this one.
+    //
+    // **What it must count is SLOTS, and a slot is more than one entity.** A
+    // tree is three `Fellable`s (trunk, canopy, stump) and every other slot is
+    // one, so counting entities would score a pine wood 3× a boulder field of
+    // the same density — and `COVER_FULL` was calibrated when a tree was two.
+    // Counting the parts that are one-per-slot fixes the units. This is the
+    // second thing felling v0 found by adding a part: `Fellable` is not a
+    // slot, it is a piece of one.
+    //
+    // **So `COVER_FULL` moves 14 → 7, and that is a unit conversion rather
+    // than a retune.** It was tuned by ear in a pine wood, where every slot
+    // counted twice, so 14 entities WAS 7 trees. Leaving it at 14 in the
+    // corrected unit would silently double how much forest the bed needs and
+    // make the woods quieter — a tuning change nobody chose, arriving as a
+    // side effect of a bug fix, which is the worst way for one to arrive.
     const FOREST_R2: f32 = 22.0 * 22.0;
-    const COVER_FULL: f32 = 14.0;
+    const COVER_FULL: f32 = 7.0;
     let near = props
         .iter()
-        .filter(|t| t.translation().distance_squared(eye.pos) < FOREST_R2)
+        .filter(|(_, f)| {
+            matches!(
+                f.part,
+                super::props::FellPart::Trunk | super::props::FellPart::Vanish
+            )
+        })
+        .filter(|(t, _)| t.translation().distance_squared(eye.pos) < FOREST_R2)
         .count() as f32;
     let cover = (near / COVER_FULL).clamp(0.0, 1.0);
     // Open ground is windier than the inside of a forest, but a forest is not

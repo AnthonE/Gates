@@ -169,12 +169,63 @@ pub struct Fellable {
     /// re-seeds or teleports an entity without resetting `felled` drifts it
     /// 0.17 m per missed pair; an absolute set cannot drift.
     pub base_y: f32,
-    /// Whether this slot leaves a stump. Only a tree does — a rock that stops
-    /// being a rock has nothing to leave behind, so it simply goes.
-    pub stumps: bool,
+    /// The yaw this slot was spawned at, radians. Stored because the fall
+    /// COMPOSES onto it — `Quat::from_axis_angle(..) * from_rotation_y(yaw)`
+    /// — and a system that read the live rotation to find the yaw back would
+    /// be integrating its own output.
+    pub yaw: f32,
+    /// Which piece of the slot this entity is. Was a `stumps: bool` while a
+    /// felled tree was a mesh swap; a topple has four distinct behaviours and
+    /// a bool cannot name them.
+    pub part: FellPart,
     /// What is currently drawn, so the swap happens on the transition rather
     /// than every frame.
     pub felled: bool,
+}
+
+/// How far through its topple a trunk or a canopy is, seconds. Negative means
+/// "not falling" — the resting state both before a chop and after a respawn.
+///
+/// **Its own component, and that is not tidiness — it is a bug that was
+/// written and caught before it shipped.** `fall_t` lived on [`Fellable`]
+/// first, which meant [`fall`] took `&mut Fellable` and marked it changed on
+/// every frame of the ~96-frame topple. `audio::fell` fires on
+/// `Ref<Fellable>::is_changed()`, so one chop would have played the tree-fall
+/// cue ninety-six times — and nothing in this repo would have gone red,
+/// because every assertion about felling is about geometry and the defect is
+/// audible. Splitting the animating field out means `fall` reads `Fellable`
+/// immutably and change detection keeps meaning "the sim retired this slot".
+///
+/// The general shape, which is `CLAUDE.md`'s silent-merge trap one turn on:
+/// **a component that something else change-detects may not carry a field
+/// that changes every frame.**
+#[derive(Component)]
+pub struct Topple {
+    pub t: f32,
+}
+
+/// Which piece of a harvestable slot an entity draws.
+///
+/// **The tree is three entities and the split is what lets it topple.** While
+/// a felled tree was a mesh swap on one entity, `stumps: bool` said everything
+/// there was to say: the bark entity became the stump and the needle entity
+/// hid. A tree that falls needs the trunk to still exist after the cut — so
+/// the stump has to be its own entity, and the trunk's job changes from
+/// "become the stump" to "lie down".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FellPart {
+    /// A node that simply stops being there: an ore node, a bush, a boulder,
+    /// a barrel. Nothing to animate and nothing left behind.
+    Vanish,
+    /// The trunk and its limbs. Topples on the slot's own bearing and **stays
+    /// down** until the slot respawns.
+    Trunk,
+    /// The needle canopy. Rides the trunk down on the same bearing — it is a
+    /// sibling carrying the same transform, never a child, because a child
+    /// would inherit the trunk's pose twice.
+    Canopy,
+    /// The stump, hidden until the cut lands.
+    Stump,
 }
 
 /// What the scatter ring has spawned, one parent entity per chunk.
@@ -1209,16 +1260,36 @@ fn spawn_slot(
             | Occupant::Rock
             | Occupant::BarrelSlot
     );
+    let is_tree = slot.occupant == Occupant::Tree;
+    // One constructor for all three parts: every field but `part` is the same
+    // for the trunk, the canopy and the stump, and writing them out three
+    // times is how the trunk and the canopy would eventually disagree about
+    // the yaw they compose their fall onto.
+    let fellable = |part: FellPart| Fellable {
+        key,
+        variant,
+        base_y: transform.translation.y,
+        yaw,
+        part,
+        felled: false,
+    };
     let mut e = commands.entity(parent);
-    if harvestable {
+    // Three spawn shapes, split rather than merged with a conditional
+    // component: only a tree topples, so only a tree carries a [`Topple`],
+    // and `fall`'s query is then exactly the set of things that can move. A
+    // boulder holding a disabled `Topple` would be a boulder the animation
+    // iterates every frame forever to decide it is not animating.
+    if is_tree {
         e.with_child((
-            Fellable {
-                key,
-                variant,
-                base_y: transform.translation.y,
-                stumps: slot.occupant == Occupant::Tree,
-                felled: false,
-            },
+            fellable(FellPart::Trunk),
+            Topple { t: -1.0 },
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            transform,
+        ));
+    } else if harvestable {
+        e.with_child((
+            fellable(FellPart::Vanish),
             Mesh3d(mesh),
             MeshMaterial3d(material),
             transform,
@@ -1226,24 +1297,47 @@ fn spawn_slot(
     } else {
         e.with_child((Mesh3d(mesh), MeshMaterial3d(material), transform));
     }
-    // The needle half rides as a SIBLING carrying the same transform, never as
-    // a child of the bark entity: the fell swap lifts the bark to the stump's
-    // height, and a child would inherit that lift and hang a canopy over it.
+    // The stump, spawned WITH the tree and hidden until the cut lands.
     //
-    // It carries its own `Fellable` with `stumps: false`, which is not a
-    // trick — that is precisely the "node that leaves no stump" case
-    // `apply_fell` already handles by toggling visibility. So a felled tree
-    // hides its canopy and a respawned one restores it with no new branch in
-    // the swap, and the gate that covers rocks covers this too.
-    if slot.occupant == Occupant::Tree {
+    // **Spawned up front rather than at fell time, because fell time has no
+    // `Commands`.** `apply_fell` runs behind a predicate so it can be gated
+    // headless (`tests/fell.rs`), and handing it a command buffer would put
+    // entity creation inside the one function whose whole purpose is to be
+    // callable without a world to create things in. The cost is one hidden
+    // entity per tree in the ring — ~328 at the measured p90 — against a
+    // `Visibility` flip on a mesh that was going to be built anyway.
+    if is_tree {
         e.with_child((
-            Fellable {
-                key,
-                variant,
-                base_y: transform.translation.y,
-                stumps: false,
-                felled: false,
+            fellable(FellPart::Stump),
+            Mesh3d(a.stump.clone()),
+            MeshMaterial3d(a.wood.clone()),
+            Transform {
+                translation: Vec3::new(
+                    slot.x,
+                    transform.translation.y + STUMP_LIFT_M * slot.scale,
+                    slot.z,
+                ),
+                rotation: Quat::from_rotation_y(yaw),
+                scale: Vec3::splat(slot.scale),
             },
+            Visibility::Hidden,
+        ));
+    }
+    // The needle half rides as a SIBLING carrying the same transform, never as
+    // a child of the trunk entity — and felling v0 changed the reason without
+    // changing the arrangement. It used to be that the swap LIFTED the bark to
+    // the stump's height and a child would inherit that lift. Now the trunk
+    // rotates, and a child canopy would inherit the topple and then apply its
+    // own on top of it: the needles would swing through twice the angle and
+    // leave the tree. `tests/fell.rs` compares the two poses for exactly that.
+    //
+    // What makes two independent entities agree is that neither stores the
+    // bearing: both derive it from the cell key (`fell_bearing`), which is
+    // also what makes two CLIENTS agree.
+    if is_tree {
+        e.with_child((
+            fellable(FellPart::Canopy),
+            Topple { t: -1.0 },
             Mesh3d(a.needles[variant].clone()),
             MeshMaterial3d(a.needle.clone()),
             transform,
@@ -1251,7 +1345,7 @@ fn spawn_slot(
     }
 }
 
-/// Swap a felled tree for its stump, and back when the slot respawns.
+/// Fell the slot the sim retired, and restore it when the slot respawns.
 ///
 /// **This is the whole visible half of gathering.** The sim has owned chopping
 /// for a long time — ten swings with the right tool, a yield table, a
@@ -1259,21 +1353,15 @@ fn spawn_slot(
 /// and the native client's entire contribution was to keep drawing the tree.
 /// The most physical verb in the game read as a rendering bug.
 ///
-/// What this is NOT is the browser's fall animation (`FELL_TICKS` 33, then a
-/// 60-tick sink). That needs a per-instance timer and a fall bearing derived
-/// from the cell hash so two players see the same tree land the same way; it
-/// is a slice, and this is the state change it would animate.
+/// It then read as a *pop*: the first cut swapped the tree's mesh for a stump
+/// in one frame and hid the canopy, so the most physical verb in the game
+/// happened between two frames with nothing in between. The topple is
+/// [`fall`]; this is the discrete state change that starts and reverses it.
 pub fn harvest(
     net: NonSend<Net>,
-    mut store: Local<Option<PropAssets>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-    maps: Res<super::textures::PropMaps>,
     q: Query<(
         &mut Fellable,
-        &mut Mesh3d,
-        &mut MeshMaterial3d<StandardMaterial>,
+        Option<&mut Topple>,
         &mut Transform,
         &mut Visibility,
     )>,
@@ -1281,63 +1369,150 @@ pub fn harvest(
     if q.is_empty() {
         return;
     }
-    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials, &mut images, &maps));
     // The session is read through a predicate so the swap below is testable
     // without a socket. `HarvestedSet` is the authority; this is the only
     // place it is consulted.
     let core = &net.session.core;
-    apply_fell(a, q, &|key| core.harvested.contains(key));
+    apply_fell(q, &|key| core.harvested.contains(key));
 }
 
 /// Half a metre of stump lift: the mesh is centred on its own axis while the
 /// slot's `y` is the ground. `web/src/props.js` ships the same 0.17.
 pub const STUMP_LIFT_M: f32 = 0.17;
 
-/// The swap itself, with the wire behind a predicate.
+/// How long a tree takes to go from standing to flat, seconds.
+///
+/// Knob (`DECISIONS.md` §open, "felling v0"). The browser's `FELL_TICKS` was
+/// 33 at 30 Hz — 1.1 s — and this is deliberately slower: the browser then
+/// SANK the trunk out of the world over 60 more ticks, so its fall only had
+/// to hold the eye until the vanish covered for it. Ours has to survive being
+/// looked at afterwards, and 1.1 s reads as a swat rather than as a tree.
+pub const FELL_FALL_S: f32 = 1.6;
+
+/// Hash channel for the fall bearing. Its own channel, never the scatter's:
+/// `spawn_slot` already derives the tree's YAW from `slot.yaw`, and a bearing
+/// sharing that source would make every tree fall the way it happens to face.
+const CH_FELL: u32 = 0x_46_45_4c_4c;
+
+/// Which way this slot's tree goes down, radians, as a pure function of the
+/// cell key.
+///
+/// **Derived rather than stored, because two entities have to agree without
+/// talking.** The trunk and the canopy are siblings, not parent and child
+/// (`spawn_slot` says why), so nothing carries a shared bearing between them.
+/// Both call this with the same key and get the same float — which is also
+/// what makes two *clients* agree, since the key is the sim's own
+/// `gather::cell_key`. A bearing rolled at fell time would differ per client
+/// and two players would watch the same tree land two ways.
+pub fn fell_bearing(key: u32) -> f32 {
+    hash01(key, CH_FELL) * std::f32::consts::TAU
+}
+
+/// The pose of a slot part `t` seconds into its topple.
+///
+/// Split from the system so the curve is gated as arithmetic rather than by
+/// looking at it — `crates/client/tests/fell.rs` drives it at both ends and
+/// in the middle. `RENDER.md`'s framing: what may be gated about a frame is
+/// arithmetic, and an angle is arithmetic.
+///
+/// **The curve is quadratic and that is not laziness.** A rigid rod pivoting
+/// under gravity obeys `θ'' = (3g/2L)·sin θ`, which starts at zero angular
+/// acceleration and whips at the end; integrating it per frame would be a
+/// state variable and a stiffness knob for a motion that lasts 1.6 s. `p²`
+/// has the property that actually reads — slow off the stump, fastest at the
+/// ground — and it is one expression with no state.
+pub fn fell_rotation(yaw: f32, bearing: f32, t: f32) -> Quat {
+    let p = (t / FELL_FALL_S).clamp(0.0, 1.0);
+    let angle = std::f32::consts::FRAC_PI_2 * p * p;
+    // The axis is horizontal and perpendicular to the bearing, so tipping
+    // about it walks the trunk's +Y onto the bearing exactly at 90°.
+    let (sb, cb) = (bearing.sin(), bearing.cos());
+    Quat::from_axis_angle(Vec3::new(cb, 0.0, -sb), angle) * Quat::from_rotation_y(yaw)
+}
+
+/// Advance every topple in flight.
+///
+/// **Only the ones in flight.** [`Topple::t`] is negative while a slot is
+/// standing and clamps at [`FELL_FALL_S`] once it is down, so this touches an
+/// entity
+/// on the ~96 frames of its fall and never again — a forest of felled trees
+/// costs this system one comparison each. That matters because the client is
+/// held to the sim thread's discipline (`CLAUDE.md`'s client trap) and this
+/// runs every frame over every prop in the ring.
+pub fn fall(time: Res<Time>, mut q: Query<(&Fellable, &mut Topple, &mut Transform)>) {
+    let dt = time.delta_secs();
+    for (f, mut top, mut t) in q.iter_mut() {
+        if top.t < 0.0 || top.t >= FELL_FALL_S {
+            continue;
+        }
+        top.t = (top.t + dt).min(FELL_FALL_S);
+        t.rotation = fell_rotation(f.yaw, fell_bearing(f.key), top.t);
+    }
+}
+
+/// The state change itself, with the wire behind a predicate.
 ///
 /// Split out so it can be exercised headless — `crates/client/tests/fell.rs`
-/// drives it with a fixed key set and asserts the mesh, the material and the
-/// lift, in both directions. Without that split the only way to test a felled
-/// tree would be to chop one over a live socket, which is not a gate.
+/// drives it with a fixed key set and asserts the pose and the visibility of
+/// all four parts, in both directions. Without that split the only way to test
+/// a felled tree would be to chop one over a live socket, which is not a gate.
+///
+/// **No mesh or material is touched here any more, and that is the shape of
+/// the change.** A tree that topples keeps being the mesh it already was — it
+/// is the same trunk, lying down — so the trunk's 6 k triangles are the ones
+/// that were already in the frame and a felled forest costs no more than a
+/// standing one. What used to be a mesh swap on one entity is now a pose on
+/// the trunk and a `Visibility` on a stump that was spawned with it.
 pub fn apply_fell(
-    a: &PropAssets,
     mut q: Query<(
         &mut Fellable,
-        &mut Mesh3d,
-        &mut MeshMaterial3d<StandardMaterial>,
+        Option<&mut Topple>,
         &mut Transform,
         &mut Visibility,
     )>,
     harvested: &dyn Fn(u32) -> bool,
 ) {
-    for (mut f, mut mesh, mut mat, mut t, mut vis) in q.iter_mut() {
+    for (mut f, top, mut t, mut vis) in q.iter_mut() {
         let felled = harvested(f.key);
         if felled == f.felled {
             continue;
         }
         f.felled = felled;
-        if !f.stumps {
+        match f.part {
             // A rock that stops being a rock has nothing to animate.
-            *vis = if felled {
-                Visibility::Hidden
-            } else {
-                Visibility::Inherited
-            };
-            continue;
-        }
-        if felled {
-            mesh.0 = a.stump.clone();
-            mat.0 = a.wood.clone();
-            t.translation.y = f.base_y + STUMP_LIFT_M * t.scale.y;
-        } else {
-            // Through the SAME accessor `spawn_slot` and the gate use, not a
-            // raw index. A direct `a.pines[f.variant]` panics the client if a
-            // stored variant ever outlives a pool that shrank under it — and
-            // "two paths derive the variant differently" is the exact bug this
-            // function's own gate was written to catch.
-            mesh.0 = a.pine_mesh(f.variant).clone();
-            mat.0 = a.bark.clone();
-            t.translation.y = f.base_y;
+            FellPart::Vanish => {
+                *vis = if felled {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Inherited
+                };
+            }
+            // Revealed by the cut, and revealed INSTANTLY rather than when the
+            // trunk lands: the stump is what the saw leaves behind, so it is
+            // there from the first frame the trunk starts to lean.
+            FellPart::Stump => {
+                *vis = if felled {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+            }
+            FellPart::Trunk | FellPart::Canopy => {
+                // `Option` because only these two parts carry a [`Topple`].
+                // A missing one is a spawn-site bug rather than a state to
+                // handle, so it leaves the pose alone instead of guessing.
+                let Some(mut top) = top else { continue };
+                if felled {
+                    // Start the topple. `fall` owns the pose from here.
+                    top.t = 0.0;
+                } else {
+                    // Respawned: back upright, and back to "not falling" so
+                    // the next chop starts from the top of the curve rather
+                    // than from wherever the last one ended.
+                    top.t = -1.0;
+                    t.rotation = Quat::from_rotation_y(f.yaw);
+                }
+            }
         }
     }
 }
@@ -1352,6 +1527,13 @@ impl PropAssets {
     }
     pub fn pine_variants(&self) -> usize {
         self.pines.len()
+    }
+    /// The canopy half of a variant. Indexed modulo the pool for the reason
+    /// `pine_mesh` is: the two arrays are built from one `conifers` vector, so
+    /// a variant that is valid for one is valid for the other, and a raw index
+    /// would panic the client rather than wrap if that ever stopped holding.
+    pub fn needle_mesh(&self, variant: usize) -> &Handle<Mesh> {
+        &self.needles[variant % self.needles.len()]
     }
     pub fn wood_material(&self) -> &Handle<StandardMaterial> {
         &self.wood

@@ -65,6 +65,35 @@ SLUG = "gates"
 PLATFORM = "linux-x86_64"
 DEPOT_VERSION = 1
 
+# ── the platforms this packager can produce ──────────────────────────────────
+# **The tag is the launcher's vocabulary, not ours.** `scry-depot`'s `PLATFORMS`
+# is the list a manifest is validated against and Windows is spelled
+# `win-x86_64` there — `windows-x86_64` is not a near-miss, it is refused as
+# `unknown platform` and the row never renders. The tag is also the key in
+# `published.json`, so a wrong one publishes a build nothing will ever ask for.
+#
+# `triple` is None for the host: no `--target`, so cargo writes to
+# `target/release/` rather than `target/<triple>/release/`. Every other field
+# exists because it differs per platform and guessing it produces a depot that
+# installs and then fails to start — the executable's NAME is part of the
+# launch contract, and `strip` is a different binary for a cross target.
+TARGETS = {
+    "linux-x86_64": {
+        "triple": None,
+        "exec": "gates",
+        "strip": "strip",
+        "method": "elf-dt-needed",
+        "dlopen": "libxkbcommon-x11, libGL, libvulkan",
+    },
+    "win-x86_64": {
+        "triple": "x86_64-pc-windows-gnu",
+        "exec": "gates.exe",
+        "strip": "x86_64-w64-mingw32-strip",
+        "method": "pe-import-table",
+        "dlopen": "vulkan-1.dll, d3d12.dll",
+    },
+}
+
 # Where the bytes will be fetched from. Baked at package time and NOT rewritten
 # by the origin, because the digest is taken over the whole document including
 # this field — a server that edited it would change the number a player
@@ -135,8 +164,15 @@ def build_id(binary: Path | None = None) -> str:
 
 # ── what the binary needs from the machine ───────────────────────────────────
 
-def needed_libs(binary: Path) -> tuple[list[str], str]:
-    """The ELF's DT_NEEDED sonames. ([libs], why-if-empty).
+def needed_libs(binary: Path, platform: str = PLATFORM) -> tuple[list[str], str]:
+    """What the binary asks the machine for. ([libs], why-if-empty).
+
+    Two formats, one idea. On Linux it is the ELF's `DT_NEEDED` sonames; on
+    Windows it is the PE import table's `DLL Name:` entries, read with the same
+    `objdump` (GNU binutils parses both, so no second tool is owed). The
+    incompleteness warning below applies to BOTH and for the same reason —
+    an import table is link-time too, and a `LoadLibrary` at runtime appears in
+    it exactly as little as a `dlopen` appears in DT_NEEDED.
 
     Measured with whichever of objdump/readelf is present, and an empty list
     is NOT reported as "needs nothing" — a build tool that is missing and a
@@ -156,10 +192,18 @@ def needed_libs(binary: Path) -> tuple[list[str], str]:
     on it is definitely required, so a machine missing one of these will
     definitely fail.
     """
-    for cmd, pat in (
-        (["objdump", "-p", str(binary)], r"^\s*NEEDED\s+(\S+)"),
-        (["readelf", "-d", str(binary)], r"\(NEEDED\).*\[([^\]]+)\]"),
-    ):
+    if TARGETS.get(platform, {}).get("method") == "pe-import-table":
+        probes = ((["objdump", "-p", str(binary)], r"^\s*DLL Name:\s*(\S+)"),)
+        absent = ("objdump is not installed on the build machine, so the DLLs "
+                  "this build imports were NOT measured")
+    else:
+        probes = (
+            (["objdump", "-p", str(binary)], r"^\s*NEEDED\s+(\S+)"),
+            (["readelf", "-d", str(binary)], r"\(NEEDED\).*\[([^\]]+)\]"),
+        )
+        absent = ("neither objdump nor readelf is installed on the build machine, "
+                  "so the shared libraries this build needs were NOT measured")
+    for cmd, pat in probes:
         if shutil.which(cmd[0]) is None:
             continue
         p = subprocess.run(cmd, text=True, capture_output=True)
@@ -167,8 +211,7 @@ def needed_libs(binary: Path) -> tuple[list[str], str]:
             continue
         libs = sorted(set(re.findall(pat, p.stdout, re.M)))
         return libs, ""
-    return [], ("neither objdump nor readelf is installed on the build machine, "
-                "so the shared libraries this build needs were NOT measured")
+    return [], absent
 
 
 # ── the depot document ───────────────────────────────────────────────────────
@@ -192,6 +235,7 @@ def safe_relpath(raw: str) -> str:
 
 def build_depot_doc(stage: Path, build: str, root: str, *,
                     exec_name: str = "gates",
+                    platform: str = PLATFORM,
                     executables: set[str] | None = None,
                     requires: dict | None = None) -> dict:
     """Walk a staged build directory and produce the depot index.
@@ -225,7 +269,7 @@ def build_depot_doc(stage: Path, build: str, root: str, *,
         "depot_version": DEPOT_VERSION,
         "slug": SLUG,
         "build": build,
-        "platform": PLATFORM,
+        "platform": platform,
         "root": root.format(slug=SLUG, build=build),
         "files": files,
         "launch": {
@@ -246,33 +290,41 @@ def build_depot_doc(stage: Path, build: str, root: str, *,
 
 # ── staging ──────────────────────────────────────────────────────────────────
 
-def stage_build(out: Path, *, do_build: bool, do_strip: bool) -> tuple[Path, dict]:
+def stage_build(out: Path, *, platform: str, do_build: bool,
+                do_strip: bool) -> tuple[Path, dict]:
     """Compile (optionally), strip, and stage into `<out>/.staging`.
 
     The staging directory is deliberately NOT named for the build: the build id
     for a dirty tree is keyed on the staged binary's hash, so the name cannot
     be known until after the strip. `main` renames once it is.
     """
+    spec = TARGETS[platform]
+    triple, exec_name = spec["triple"], spec["exec"]
+    cmd = ["cargo", "build", "--release", "-p", "client", "--features", "render",
+           "--bin", "gates"]
+    if triple:
+        cmd += ["--target", triple]
     if do_build:
-        print("== cargo build --release -p client --features render --bin gates")
-        p = subprocess.run(
-            ["cargo", "build", "--release", "-p", "client", "--features", "render",
-             "--bin", "gates"],
-            cwd=ROOT, text=True)
+        print("== " + " ".join(cmd))
+        p = subprocess.run(cmd, cwd=ROOT, text=True)
         if p.returncode != 0:
             sys.exit("depot: the build failed — nothing staged")
 
-    binary = ROOT / "target" / "release" / "gates"
-    if not binary.is_file():
-        sys.exit(f"depot: {binary} is not there. Drop --no-build, or build it first.")
+    # cargo writes a cross build under `target/<triple>/release/`, the host
+    # build straight into `target/release/`. Reading the wrong one is how a
+    # "windows depot" ends up holding the linux binary under a .exe name.
+    built = ROOT / "target" / (f"{triple}/release" if triple else "release") / exec_name
+    if not built.is_file():
+        sys.exit(f"depot: {built} is not there. Drop --no-build, or build it first.")
+    binary = built
 
-    libs, lib_why = needed_libs(binary)
+    libs, lib_why = needed_libs(binary, platform)
 
     stage = out / ".staging"
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
-    dest = stage / "gates"
+    dest = stage / exec_name
     shutil.copy2(binary, dest)
 
     # **The assets ride along, and forgetting them would not look like an
@@ -297,25 +349,32 @@ def stage_build(out: Path, *, do_build: bool, do_strip: bool) -> tuple[Path, dic
         sys.exit(f"depot: {src_assets} holds no files — the client would ship untextured")
     print(f"   staged {n_assets} asset file(s) from {src_assets}")
 
-    if do_strip and shutil.which("strip"):
+    # The cross target gets the CROSS strip. The host's `strip` on a PE is not
+    # a no-op that leaves a fat binary — binutils either refuses the format or
+    # rewrites it, and a corrupted .exe passes every check this packager makes
+    # (it hashes, it stages, it installs) and dies on the player's machine.
+    stripper = spec["strip"]
+    if do_strip and shutil.which(stripper):
         before = dest.stat().st_size
-        subprocess.run(["strip", str(dest)], check=False)
+        subprocess.run([stripper, str(dest)], check=False)
         print(f"   stripped {before:,} -> {dest.stat().st_size:,} bytes")
+    elif do_strip:
+        print(f"   NOT stripped — {stripper} is not on this machine")
     dest.chmod(0o755)
 
     requires = {
         "libs": libs,
-        "method": "elf-dt-needed",
+        "method": spec["method"],
         # The honest bound on the list above. Everything in it IS required;
-        # it is not everything that is required — winit and wgpu dlopen
-        # libxkbcommon-x11, libGL and libvulkan at runtime, and those appear
-        # in no DT_NEEDED entry. A launcher may use this to say "you are
-        # definitely missing X"; it may never say "you have everything".
+        # it is not everything that is required — winit and wgpu load the
+        # graphics stack at runtime, and those appear in no link-time entry on
+        # either platform. A launcher may use this to say "you are definitely
+        # missing X"; it may never say "you have everything".
         "complete": False,
         "why": ("loaded from the player's machine at start. Nothing is bundled: "
-                "shipping one distro's copies of these to another trades a clear "
+                "shipping one machine's copies of these to another trades a clear "
                 "error for a confusing one. LINK-TIME entries only — libraries "
-                "opened at runtime (libxkbcommon-x11, libGL, libvulkan) are not "
+                f"opened at runtime ({spec['dlopen']}) are not "
                 "listed and this is not a checklist."),
     }
     if lib_why:
@@ -446,6 +505,36 @@ def self_test() -> int:
     ok(all(not f["executable"] for f in ndoc["files"] if f["path"] != "gates"),
        "an asset is never marked executable")
 
+    # ── the platform table ───────────────────────────────────────────────────
+    # These tags are not ours to spell. `scry-depot`'s PLATFORMS is what a
+    # manifest is validated against and what `platform_tag()` computes on the
+    # player's machine, so a tag that is merely *plausible* — `windows-x86_64`,
+    # `win64` — is refused as `unknown platform` and the row never renders.
+    # Pinned literally here because the failure is silent at this end: this
+    # packager would happily write one and the depot would look perfect.
+    ok(set(TARGETS) == {"linux-x86_64", "win-x86_64"},
+       "the platform tags are the launcher's own vocabulary, spelled its way")
+    for tag, spec in TARGETS.items():
+        ok(set(spec) == {"triple", "exec", "strip", "method", "dlopen"},
+           f"{tag}: the target spec is complete")
+    ok(TARGETS["win-x86_64"]["exec"].endswith(".exe"),
+       "a windows build launches a .exe — the name is part of the launch contract")
+    ok(TARGETS["linux-x86_64"]["triple"] is None,
+       "the host build takes no --target, so it reads target/release/")
+
+    # A windows depot names the windows platform and the windows executable.
+    # Both travel into the digest, so getting either wrong is not cosmetic.
+    wstage = tmp / "win"
+    wstage.mkdir(parents=True)
+    (wstage / "gates.exe").write_bytes(b"MZ")
+    wdoc = build_depot_doc(wstage, "0.0.0", DEFAULT_ROOT,
+                           exec_name="gates.exe", platform="win-x86_64")
+    ok(wdoc["platform"] == "win-x86_64", "a windows depot says win-x86_64")
+    ok(wdoc["launch"]["exec"] == "gates.exe", "and launches gates.exe")
+    ok([f["path"] for f in wdoc["files"]] == ["gates.exe"] and
+       wdoc["files"][0]["executable"],
+       "and marks the .exe executable")
+
     # The depot must serialise to JSON with no surprises — it is fetched and
     # parsed by two independent implementations (python and rust).
     blob = json.dumps(doc, indent=2)
@@ -471,6 +560,9 @@ def main() -> int:
                          "the number that gets notarized")
     ap.add_argument("--out", default=str(ROOT / "target" / "depot"),
                     help="where the staged build tree is written")
+    ap.add_argument("--platform", default=PLATFORM, choices=sorted(TARGETS),
+                    help="which platform to package. The tag is the launcher's "
+                         "own vocabulary and the key in published.json")
     ap.add_argument("--build", default=None, help="override the build id")
     ap.add_argument("--no-build", action="store_true", help="package what is compiled")
     ap.add_argument("--no-strip", action="store_true", help="keep debug symbols")
@@ -480,15 +572,17 @@ def main() -> int:
     if a.self_test:
         return self_test()
 
-    out = Path(a.out)
-    print(f"== depot {SLUG} ({PLATFORM})")
+    out = Path(a.out) / a.platform if a.platform != PLATFORM else Path(a.out)
+    exec_name = TARGETS[a.platform]["exec"]
+    print(f"== depot {SLUG} ({a.platform})")
 
-    stage, requires = stage_build(out, do_build=not a.no_build,
+    stage, requires = stage_build(out, platform=a.platform,
+                                  do_build=not a.no_build,
                                   do_strip=not a.no_strip)
 
     # The id comes AFTER staging: a dirty tree keys it on the staged binary's
     # own hash, so it cannot be known before the strip.
-    build = a.build or build_id(stage / "gates")
+    build = a.build or build_id(stage / exec_name)
     final = out / build
     if final.exists():
         shutil.rmtree(final)
@@ -499,7 +593,8 @@ def main() -> int:
         print("   NOTE: the tree has uncommitted changes. The id carries the "
               "binary's own hash so two dirty builds cannot collide.")
 
-    doc = build_depot_doc(stage, build, a.root, requires=requires)
+    doc = build_depot_doc(stage, build, a.root, exec_name=exec_name,
+                          platform=a.platform, requires=requires)
     index = stage / "depot.json"
     index.write_text(json.dumps(doc, indent=2) + "\n", "utf-8")
 
@@ -525,8 +620,16 @@ def main() -> int:
 
     print("\n== to publish (OPERATOR ACT — read the tree first)")
     print(f"   rsync -a {stage}/ <origin>:/data/apps/scry-data/depots/{SLUG}/{build}/")
-    print(f"   echo '{{\"{PLATFORM}\": \"{build}\"}}' > "
-          f"<origin>:/data/apps/scry-data/depots/{SLUG}/published.json")
+    # **A MERGE, not an overwrite.** `published.json` holds one row per
+    # platform, so the obvious `echo '{...}' >` publishes this build and
+    # silently UNPUBLISHES every other platform — the linux row disappears the
+    # moment a windows build is published, and nothing reports it because an
+    # absent row is the same shape as a title that has never shipped one.
+    print(f"   python3 -c \"import json,pathlib;"
+          f"p=pathlib.Path('/data/apps/scry-data/depots/{SLUG}/published.json');"
+          f"d=json.loads(p.read_text()) if p.exists() else {{}};"
+          f"d['{a.platform}']='{build}';"
+          f"p.write_text(json.dumps(d))\"   # on <origin>")
     print("   ...and notarize the digest with ScryNotary on 4663.")
     print("   Until published.json names it, the manifest's native row stays a slot.")
     return 0
