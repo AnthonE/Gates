@@ -45,15 +45,11 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 ## 0wd · A new world register is proposed *(operator lane — blocked, skip)*
 
 **A loop cannot pick this up.** Logged here so it is visible, not queued.
-`WORLD.md` (new, 2026-08-10) carries an exploratory operator direction: the
-island as the corpse of an ancient civilization — obsidian, lapis, gold — a
-coast→interior corruption gradient, a regenerating **ward** over health,
-falls that cost ward instead of hp, and monuments that players switch back on
-to change the whole shard. `DECISIONS.md` §open has the row; nothing is
-spoken and nothing may land on it.
+`WORLD.md` (new, 2026-08-10) carries an exploratory operator direction, and
+is a **roadmap rather than a v1 spec** — nothing in it competes with the
+alpha. `DECISIONS.md` §open has the row; nothing is spoken.
 
-Two items in it are findings about the tree rather than proposals, and both
-are true today:
+Three findings in it are about the tree rather than the fiction:
 
 - **`ART.md`'s bar and the visual rubric are measured off `Rust Images/`,
   and the rubric is checksummed outside this repo.** If the register
@@ -64,12 +60,18 @@ are true today:
 - **A ward would invalidate `CONTENT.md` §4 anchor 2 without reddening
   `test_content`.** The TTK bands compute against `balance.toml`'s
   `globals.player_hp = 100`; a second regenerating pool makes them measure a
-  different quantity while staying green. The anchor learns about effective
-  hp in the same commit as the pool, or not at all.
+  different quantity while staying green. Conditional — the ward is
+  explicitly undecided and nothing else depends on it.
+- **Extraction and world states are one system or they are two.** An opened
+  gate at the bank terminal and a repaired monument are the same object: a
+  bounded, tick-expiring, hashed, broadcast state. The terminal lands at A2
+  (`ALPHA.md` §2); if it ships a bespoke gate first, that is one idea paid
+  for twice.
 
 Cheapest real slice if it is ever spoken: the biome gradient — a radial third
 input to `biome(h, moist)` (`terrain.rs:263`) plus regenerated terrain
-goldens. `WORLD.md` §8 has the full order.
+goldens. `WORLD.md` §9.2 has the full order, and §9.1 the timing: **decide
+the register early, build it late.**
 
 ## 0n1 · The class-S join walk has no interest filter *(server lane)*
 
