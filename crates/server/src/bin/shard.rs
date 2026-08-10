@@ -372,7 +372,15 @@ async fn main() {
         }
         let s = &handle.stats;
         println!(
+            // `aoi offered/carried/shed` is why the fill counts at all: the
+            // question a 100-bot soak is run to answer — does the linear
+            // interest scan need a spatial structure — is `offered / ticks`,
+            // and whether the shard is degrading is `shed / offered`. Neither
+            // is readable from a shed count alone, and neither is readable
+            // from a status endpoint the operator has not turned on, so the
+            // three ride the line that always prints.
             "tick {} · joins {} leaves {} · in ok/bad/drop {}/{}/{} · snap sent/skip/err {}/{}/{} · \
+             aoi offered/carried/shed {}/{}/{} · \
              refused v/full {}/{} · dropped-ticks {} · saves restored/written/lost {}/{}/{} · \
              sleepers {} (took over {}, evicted {}) · worlds written/skipped/failed {}/{}/{}",
             ShardStats::get(&s.current_tick),
@@ -384,6 +392,9 @@ async fn main() {
             ShardStats::get(&s.snap_sent),
             ShardStats::get(&s.snap_ring_skips),
             ShardStats::get(&s.snap_send_errors),
+            ShardStats::get(&s.snap_candidates),
+            ShardStats::get(&s.snap_entities_sent),
+            ShardStats::get(&s.snap_entities_shed),
             ShardStats::get(&s.refused_version),
             ShardStats::get(&s.refused_full),
             ShardStats::get(&s.ticks_dropped),

@@ -46,6 +46,31 @@
 //!   the reason `inventory.rs` gives — a half-applied conversion is a
 //!   dupe or a loss depending on which half you count.)
 //!
+//! **The recycler is the third one, and it is the same class again**
+//! (recycler v0, `DECISIONS.md` §open). `ARCH_RECYCLER` holds items, takes
+//! a use press, and advances on this sweep — what it does not do is burn,
+//! so the fuel half of a step runs only for the archetypes that
+//! [`OvenState::burns`]. Two deltas, both small, and both bought
+//! deliberately rather than by writing a second module:
+//! - **No fuel.** A recycler lights on a press with nothing laid in it,
+//!   because there is nothing to lay. `accepts` therefore refuses wood at
+//!   a recycler: an archetype that cannot burn must not become a wood
+//!   chest by inheriting the fuel clause.
+//! - **More than one output per conversion.** A `CookRow` pays `count`
+//!   units now, and **every row sharing an (archetype, input) fires
+//!   together** — that is what makes a gear worth metal *and* coin without
+//!   a second table. The bake holds such rows to one `seconds`
+//!   (`validate::structural`), because the timer belongs to the slot; and
+//!   the whole conversion is applied to a scratch copy and committed only
+//!   if all of it fits, since with two outputs the half-applied case is
+//!   reachable rather than theoretical (`inventory.rs`: a half-applied
+//!   move is a dupe or a loss depending on which half you count).
+//!
+//! **What the recycler pays is content, and that is the point.** Nothing
+//! here knows the difference between paying metal and paying a coin, so
+//! arming the economy's first faucet (`ALPHA.md` A2 — an operator act) is
+//! a row in `content/cooking.toml` and not a line in this file.
+//!
 //! Not in this slice (documented, not forgotten): no burnt state (the
 //! reference's overcook), because a burnt row is a cook row whose input
 //! is a cooked item and the food to demonstrate it does not exist yet;
@@ -55,7 +80,7 @@
 //! here is a content decision that re-prices the powder chain, not a
 //! code one.
 
-use crate::deploy::{Deploys, ARCH_FIRE, ARCH_FURNACE};
+use crate::deploy::{Deploys, ARCH_FIRE, ARCH_FURNACE, ARCH_RECYCLER};
 use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{BOX_SLOTS, MAX_COOK_ROWS};
 use crate::world::{EventQueue, EV_OVEN};
@@ -78,10 +103,22 @@ pub const OVEN_PERIOD_TICKS: u64 = 15;
 pub struct CookRow {
     pub input: u16,
     pub output: u16,
+    /// Units of `output` one conversion pays. One for every cooking row —
+    /// a fire turns one steak into one steak — and the reason the field
+    /// exists is the recycler, where a component is worth eight fragments
+    /// and the ladder would otherwise be eight rows deep. The bake refuses
+    /// zero, so a live row always pays.
+    pub count: u16,
     /// Ticks one unit takes (content seconds × TICK_HZ; the bake keeps
     /// this ≥ 1, so nothing converts on the step it starts).
+    ///
+    /// Every row sharing this row's `(arch, input)` carries the same value
+    /// — `validate::structural` refuses a set that disagrees — because the
+    /// timer lives on the container's slot and one slot cannot hold two
+    /// clocks.
     pub ticks: u32,
-    /// `ARCH_FIRE` or `ARCH_FURNACE` — which oven runs the row.
+    /// `ARCH_FIRE`, `ARCH_FURNACE` or `ARCH_RECYCLER` — which container
+    /// runs the row.
     pub arch: u8,
 }
 
@@ -89,6 +126,7 @@ impl CookRow {
     pub const INERT: Self = Self {
         input: 0,
         output: 0,
+        count: 0,
         ticks: 0,
         arch: ARCH_FIRE,
     };
@@ -134,32 +172,79 @@ impl CookContent {
         c.fuel_ticks = 30;
         c.byproduct = 5;
         c.byproduct_pct = 50;
-        c.row_count = 1;
+        c.row_count = 3;
         c.rows[0] = CookRow {
             input: 1,
             output: 6,
+            count: 1,
             ticks: 60,
             arch: ARCH_FIRE,
+        };
+        // The recycler's half (recycler v0), and it is deliberately TWO
+        // rows over one input: item 2 pays item 6 twice and item 7 once on
+        // a single 30-tick timer, which is the multi-row conversion path —
+        // every row over an input firing together, applied to a scratch
+        // copy and committed whole. One row would exercise nothing the
+        // fire above does not.
+        //
+        // The probe script places a recycler (deploy row 6) and switches
+        // it on, so the archetype's own branch — the burn that is skipped,
+        // and the match that must not refuse for want of fuel — runs
+        // inside parity, replay and alloc. What it does NOT drive is a
+        // conversion, because no command in the probe puts an item inside
+        // a container; the fire has had that gap since oven v0 and
+        // `tests/oven.rs` is where both are actually gated.
+        c.rows[1] = CookRow {
+            input: 2,
+            output: 6,
+            count: 2,
+            ticks: 30,
+            arch: ARCH_RECYCLER,
+        };
+        c.rows[2] = CookRow {
+            input: 2,
+            output: 7,
+            count: 1,
+            ticks: 30,
+            arch: ARCH_RECYCLER,
         };
         c
     }
 
-    /// The row this oven runs for `item`, if any.
+    /// The row that carries the CLOCK for `item` at this archetype — the
+    /// first of what may be several. Every row over one `(arch, input)`
+    /// shares a `ticks` (the bake refuses a set that does not), so "the
+    /// first" and "all of them" agree about when the conversion lands, and
+    /// only the pay differs.
     pub fn row_for(&self, arch: u8, item: u16) -> Option<&CookRow> {
         self.rows[..self.row_count as usize]
             .iter()
             .find(|r| r.ticks > 0 && r.arch == arch && r.input == item)
     }
 
-    /// May `item` go into an oven of this archetype at all — the move
+    /// Every live row over one `(arch, input)` — what a finished
+    /// conversion pays, in table order.
+    pub fn rows_for(&self, arch: u8, item: u16) -> impl Iterator<Item = &CookRow> {
+        self.rows[..self.row_count as usize]
+            .iter()
+            .filter(move |r| r.ticks > 0 && r.arch == arch && r.input == item)
+    }
+
+    /// May `item` go into a container of this archetype at all — the move
     /// verb's whole question (`inventory::REFUSE_M_OVEN`).
+    ///
+    /// The fuel and byproduct clauses are asked of BURNERS only. A
+    /// recycler that inherited them would accept wood it can never spend
+    /// and charcoal it can never make — a second wood chest wearing an
+    /// oven's rule, which is the exact thing that rule exists to prevent.
     pub fn accepts(&self, arch: u8, item: u16) -> bool {
-        (self.fuel_ticks > 0 && item == self.fuel_item)
+        let burns = OvenState::arch_burns(arch);
+        (burns && self.fuel_ticks > 0 && item == self.fuel_item)
             || self.row_for(arch, item).is_some()
-            // What the oven itself made stays where it landed: an output
-            // that could not be moved back out through its own door would
-            // be trapped by the rule meant to keep junk out.
-            || (self.byproduct_pct > 0 && item == self.byproduct)
+            // What the container itself made stays where it landed: an
+            // output that could not be moved back out through its own door
+            // would be trapped by the rule meant to keep junk out.
+            || (burns && self.byproduct_pct > 0 && item == self.byproduct)
             || self.rows[..self.row_count as usize]
                 .iter()
                 .any(|r| r.ticks > 0 && r.arch == arch && r.output == item)
@@ -190,8 +275,28 @@ pub struct OvenState {
 }
 
 impl OvenState {
-    pub fn is_oven(&self) -> bool {
-        self.arch == ARCH_FIRE || self.arch == ARCH_FURNACE
+    /// Does this archetype spend fuel to run? Fire and furnace do; the
+    /// recycler does not, and a storage box is not a converter at all.
+    ///
+    /// An associated fn rather than a method because `CookContent::accepts`
+    /// asks it of a bare archetype — the move verb knows what it is moving
+    /// into before it has a state row in hand.
+    pub fn arch_burns(arch: u8) -> bool {
+        arch == ARCH_FIRE || arch == ARCH_FURNACE
+    }
+
+    /// Does this container convert at all — the sweep's filter and
+    /// `oven_index`'s. A recycler answers yes and burns nothing.
+    pub fn arch_converts(arch: u8) -> bool {
+        Self::arch_burns(arch) || arch == ARCH_RECYCLER
+    }
+
+    pub fn burns(&self) -> bool {
+        Self::arch_burns(self.arch)
+    }
+
+    pub fn is_converter(&self) -> bool {
+        Self::arch_converts(self.arch)
     }
 }
 
@@ -303,8 +408,12 @@ pub fn toggle(
         return true;
     }
     // Fuel already inside is the whole condition: a match lights what is
-    // laid, it does not lay it.
-    let has_fuel = st.burn > 0
+    // laid, it does not lay it. Asked of BURNERS only — a recycler has no
+    // fuel to lay, so the switch is just a switch, and refusing it for
+    // want of something it never consumes would be a rule with no reason
+    // behind it.
+    let has_fuel = !st.burns()
+        || st.burn > 0
         || (cc.fuel_ticks > 0
             && boxes[i]
                 .items
@@ -338,45 +447,50 @@ pub fn sweep(
     let phase = tick % period;
     let (boxes, ovens) = deploys.oven_parts_mut();
     for i in (phase as usize..ovens.len()).step_by(period as usize) {
-        if !ovens[i].is_oven() || !ovens[i].lit {
+        if !ovens[i].is_converter() || !ovens[i].lit {
             continue;
         }
         let arch = ovens[i].arch;
         let step = period as u16;
 
-        // 1. Fuel. The unit burning now, then the next one.
-        ovens[i].burn = ovens[i].burn.saturating_sub(step);
-        if ovens[i].burn == 0 {
-            let taken = if cc.fuel_ticks == 0 {
-                false
-            } else {
-                take_one(&mut boxes[i].items, cc.fuel_item)
-            };
-            if !taken {
-                ovens[i].lit = false;
-                let (cx, cz, level) = (boxes[i].cx, boxes[i].cz, boxes[i].level);
-                announce(cx, cz, level, false, 0, events);
-                continue;
-            }
-            ovens[i].burn = cc.fuel_ticks.min(u16::MAX as u32) as u16;
-            // The byproduct, banked in hundredths and paid whole.
-            ovens[i].bank = ovens[i].bank.saturating_add(cc.byproduct_pct);
-            let units = ovens[i].bank / 100;
-            if units > 0 {
-                let cap = gather.stack_max_of(cc.byproduct);
-                if slots_room(&boxes[i].items, cc.byproduct, units, cap) {
-                    slots_add(&mut boxes[i].items, cc.byproduct, units, cap);
-                    ovens[i].bank -= units * 100;
+        // 1. Fuel. The unit burning now, then the next one. Burners only:
+        //    a recycler runs on nothing and can never snuff itself, which
+        //    is why its switch is the only thing that turns it off.
+        if ovens[i].burns() {
+            ovens[i].burn = ovens[i].burn.saturating_sub(step);
+            if ovens[i].burn == 0 {
+                let taken = if cc.fuel_ticks == 0 {
+                    false
+                } else {
+                    take_one(&mut boxes[i].items, cc.fuel_item)
+                };
+                if !taken {
+                    ovens[i].lit = false;
+                    let (cx, cz, level) = (boxes[i].cx, boxes[i].cz, boxes[i].level);
+                    announce(cx, cz, level, false, 0, events);
+                    continue;
                 }
-                // No room: the bank keeps counting. Nothing is destroyed
-                // and nothing is paid twice — the next step that finds
-                // room pays the whole debt (bounded by the accumulator's
-                // own saturating add).
+                ovens[i].burn = cc.fuel_ticks.min(u16::MAX as u32) as u16;
+                // The byproduct, banked in hundredths and paid whole.
+                ovens[i].bank = ovens[i].bank.saturating_add(cc.byproduct_pct);
+                let units = ovens[i].bank / 100;
+                if units > 0 {
+                    let cap = gather.stack_max_of(cc.byproduct);
+                    if slots_room(&boxes[i].items, cc.byproduct, units, cap) {
+                        slots_add(&mut boxes[i].items, cc.byproduct, units, cap);
+                        ovens[i].bank -= units * 100;
+                    }
+                    // No room: the bank keeps counting. Nothing is destroyed
+                    // and nothing is paid twice — the next step that finds
+                    // room pays the whole debt (bounded by the accumulator's
+                    // own saturating add).
+                }
             }
         }
 
-        // 2. Cook. Every slot, because a fire cooks what is on it rather
-        //    than one thing at a time (the reference's four-slot grill).
+        // 2. Convert. Every slot, because a fire cooks what is on it
+        //    rather than one thing at a time (the reference's four-slot
+        //    grill), and a recycler eats a hopper the same way.
         for s in 0..BOX_SLOTS {
             let stack = boxes[i].items[s];
             let Some(row) = cc.row_for(arch, stack.item).copied() else {
@@ -391,19 +505,39 @@ pub fn sweep(
             if (ovens[i].cook[s] as u32) < row.ticks {
                 continue;
             }
-            let cap = gather.stack_max_of(row.output);
-            if !slots_room(&boxes[i].items, row.output, 1, cap) {
+            // Pay every row over this input, on a scratch copy, and commit
+            // only if the WHOLE conversion fit. One output could be
+            // checked in place (`slots_room`) and several cannot: the
+            // first payment changes the room left for the second, so a
+            // per-row check would pass a set that does not fit and leave a
+            // half-converted container behind. Half-applied is a dupe or a
+            // loss depending on which half you count (`inventory.rs`), so
+            // the unit of work is the whole row set or none of it.
+            //
+            // `BOX_SLOTS` stacks on the stack, copied twice — no
+            // allocation in the tick (wall 2), and `test_alloc_zero` drives
+            // this branch through the probe fixture's fire.
+            let mut scratch = boxes[i].items;
+            scratch[s].count -= 1;
+            if scratch[s].count == 0 {
+                scratch[s] = ItemStack::default();
+            }
+            let mut fits = true;
+            for r in cc.rows_for(arch, stack.item) {
+                let cap = gather.stack_max_of(r.output);
+                if slots_add(&mut scratch, r.output, r.count, cap) < r.count {
+                    fits = false;
+                    break;
+                }
+            }
+            if !fits {
                 // Full. Hold the finished unit on the fire rather than
                 // burning it away: progress stays at the line, and the
                 // step after a slot frees pays it out.
                 ovens[i].cook[s] = row.ticks.min(u16::MAX as u32) as u16;
                 continue;
             }
-            boxes[i].items[s].count -= 1;
-            if boxes[i].items[s].count == 0 {
-                boxes[i].items[s] = ItemStack::default();
-            }
-            slots_add(&mut boxes[i].items, row.output, 1, cap);
+            boxes[i].items = scratch;
             ovens[i].cook[s] = 0;
         }
     }

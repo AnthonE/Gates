@@ -80,6 +80,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(r.count);
         h.u(r.station as u32);
         h.u(r.seconds);
+        h.u(r.blueprint as u32);
         h.stacks(&r.inputs);
     }
 
@@ -302,8 +303,24 @@ pub fn hash(c: &Content) -> u64 {
     for k in cooks {
         h.s(&k.input);
         h.s(&k.output);
+        h.u(k.count);
         h.u(k.seconds);
         h.u(k.station as u32);
+    }
+
+    // The research table, whole, and for `cooking`'s reason one block up:
+    // every field here reaches the sim (`bake_research`), so a price the
+    // digest cannot see would let two contents that charge different
+    // amounts for the same blueprint canonicalise identically. Rows sort
+    // by item id, which `validate::structural` refuses to repeat.
+    h.s("research");
+    h.s(&c.research_coin.item);
+    h.u(c.research.len() as u32);
+    let mut research: Vec<&Research> = c.research.iter().collect();
+    research.sort_by(|a, b| a.item.cmp(&b.item));
+    for r in research {
+        h.s(&r.item);
+        h.u(r.cost);
     }
 
     let sv = &c.balance.survival;

@@ -5,7 +5,7 @@
 //! with it, while the wire said nothing until the moment of the hit. A shot
 //! arrived as `EV_HIT`/`EV_HEALTH`/`EV_DEATH` and nothing else, so an archer
 //! saw their arrow only by watching somebody's health drop. `EV_SHOT` (wire
-//! v31) is the fact that was missing; this is what draws it.
+//! v33) is the fact that was missing; this is what draws it.
 //!
 //! # It re-flies the sim's own arithmetic, and that is the point
 //!

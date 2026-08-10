@@ -688,6 +688,224 @@ fn a_box_opens_by_its_packed_address() {
     assert!(clients[0].1.cont[BOX_SLOTS..].iter().all(|s| s.count == 0));
 }
 
+// --- the corpse: a subscription does not outlive the subscriber -----------
+
+/// A death shuts the panel, and the death screen cannot open a new one.
+///
+/// One more thing a container view can get wrong, and the only one whose
+/// victim is the player who is *still alive*: the view's whole security
+/// argument (`core.rs`, above the resolution) is that the set of containers
+/// a client can see is exactly the set it can move items in. A corpse can
+/// move nothing — `World::die` empties the body and every mutation verb
+/// refuses a `dead` player — but it kept its slot, its position and its
+/// `own_wslot`, so a reach-and-lock-only resolution kept answering it. The
+/// result was a death screen streaming a box's slots at 30 Hz while the
+/// killer emptied it: raid intelligence bought by dying next to your own
+/// loot, which is the one thing the sentence above the resolution promises
+/// cannot happen.
+///
+/// Two halves, because the bug has two mouths:
+///
+/// (a) a subscription opened **alive** and never closed by anything on the
+///     death path — nothing calls `close_container` at a death, and the
+///     client's death arm does not clear its mirror either, so this half
+///     needs no forged client at all; and
+/// (b) an open issued **from the death screen**, which the action layer
+///     takes like any other (`core.rs`'s `ActionMsg::Container` arm is not
+///     a command and asks the sim nothing).
+///
+/// Half (a) **mutates the box**, and that is not decoration: an unchanged
+/// container emits nothing at all (the diff is empty and `open_cont_reset`
+/// is false), so a test that only asserted "no further syncs arrive" would
+/// pass with the whole defect present. The mutation is what makes silence
+/// mean something.
+///
+/// Clock-free, like every gate here: liveness is `players[w].dead`, a bit
+/// the fight writes, and the loop below spins on `dead` rather than on any
+/// elapsed span.
+#[test]
+fn a_corpse_is_shown_no_container() {
+    let stats = ShardStats::default();
+    let (cx, cz) = buildable_cell(SEED);
+    let (x, z) = cell_center(cx, cz);
+
+    let mut core = ShardCore::new(SEED);
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.combat = CombatContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = box_fixture();
+    core.world.dev_spawn = Some((x, z));
+    core.catalog = ItemCatalog::EMPTY;
+    // The backpack module stays inert (`base_ticks == 0`), so the death
+    // drops no bag: the only container in this world is the box, and a
+    // sync that arrives can only be about it.
+    let mut clients = two_clients(&mut core, &stats);
+
+    // Client 0 stands the box up on its own foundation and is the one who
+    // will die on it. Client 1 is the killer.
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].body = Body::at(SEED, x, z);
+    core.world.players[w0].inv[0] = ItemStack { item: 0, count: 5 };
+    core.world.players[w0].inv[1] = ItemStack {
+        item: BOX_ITEM,
+        count: 1,
+    };
+    core.world.tick(&[Command::Place {
+        id: id_of(0),
+        row: FOUNDATION_ROW,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    core.world.tick(&[Command::PlaceDeploy {
+        id: id_of(0),
+        row: BOX_ROW,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(core.world.deploys.boxes().len(), 1, "the box must place");
+    core.world.deploys.set_box_slot(
+        0,
+        SLOT_A,
+        ItemStack {
+            item: JUNK,
+            count: COUNT_A,
+        },
+    );
+    let key = box_key(cx, cz, 0);
+
+    // The living open, asserted in full — otherwise the claims below could
+    // all be true because the view never worked at this address at all.
+    let mut alive = Vec::new();
+    ask(&mut core, 0, CONT_BOX, key);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut alive);
+    }
+    let got = syncs(&alive);
+    assert_eq!(got.len(), 1, "the living open paid once: {got:?}");
+    let (slot, kind, handle, reset, rows) = &got[0];
+    assert_eq!((*slot, *kind, *handle, *reset), (0, CONT_BOX, key, true));
+    assert_eq!(
+        rows,
+        &vec![(
+            SLOT_A as u8,
+            ItemStack {
+                item: JUNK,
+                count: COUNT_A
+            }
+        )],
+        "the living view is the baseline the corpse must lose"
+    );
+
+    // Kill client 0 where it stands — on the box, in reach, panel open.
+    // Both bodies are pinned coincident every tick, `bag_from_a_kill`'s
+    // arrangement, so the aim cone has no bearing to fail on and the
+    // corpse falls at the address its subscription resolves against.
+    let w1 = world_slot(&core, id_of(1));
+    core.world.players[w1].inv[0] = ItemStack {
+        item: SPEAR,
+        count: 1,
+    };
+    clients[1].1.set_input(BTN_PRIMARY, 0, 128, 0, 0, 0);
+    clients[0].1.set_input(0, 0, 128, 0, 0, 0);
+    let mut dying = Vec::new();
+    let mut fell = false;
+    for _ in 0..(SWING_INTERVAL_TICKS * 8) {
+        let (w0, w1) = (world_slot(&core, id_of(0)), world_slot(&core, id_of(1)));
+        core.world.players[w0].body = Body::at(SEED, x, z);
+        core.world.players[w1].body = Body::at(SEED, x, z);
+        pump(&mut core, &stats, &mut clients, &mut dying);
+        if core.world.players[world_slot(&core, id_of(0))].dead {
+            clients[1].1.set_input(0, 0, 128, 0, 0, 0);
+            fell = true;
+            break;
+        }
+    }
+    assert!(
+        fell,
+        "three fixture spear hits must kill inside eight swing intervals"
+    );
+
+    // The mutation the corpse must not witness: the killer empties one
+    // slot and fills another, which is what looting a box looks like from
+    // the view's side.
+    core.world
+        .deploys
+        .set_box_slot(0, SLOT_A, ItemStack::default());
+    core.world.deploys.set_box_slot(
+        0,
+        SLOT_B,
+        ItemStack {
+            item: THIRD,
+            count: COUNT_C,
+        },
+    );
+    let mut after = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut after);
+    }
+
+    // Everything the server said to slot 0 about a container from the
+    // death onward — the death tick's own traffic included, since the
+    // close is owed on the tick the body falls and not one later.
+    let post: Vec<Sync> = syncs(&dying)
+        .into_iter()
+        .chain(syncs(&after))
+        .filter(|(slot, ..)| *slot == 0)
+        .collect();
+    assert!(
+        !post.is_empty(),
+        "a death must shut the panel, not merely stop feeding it"
+    );
+    let (_, kind, handle, reset, rows) = &post[0];
+    assert_eq!(
+        (*kind, *handle, *reset, rows.len()),
+        (CONT_SELF, 0, true, 0),
+        "the first thing a corpse is told about its panel must be the close: {post:?}"
+    );
+    assert_eq!(
+        post.len(),
+        1,
+        "a corpse watched the box change after its panel shut: {post:?}"
+    );
+    assert_eq!(
+        (clients[0].1.cont_kind, clients[0].1.cont_handle),
+        (CONT_SELF, 0),
+        "the client's panel closed with the body"
+    );
+
+    // (b) The death screen asks for itself. The action layer takes the
+    // open — it is not a command and the sim never hears it — so the
+    // refusal has to be the view's, and it degrades exactly as a box that
+    // stopped existing does: the close, no rows, no new message.
+    let mut screen = Vec::new();
+    ask(&mut core, 0, CONT_BOX, key);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut screen);
+    }
+    let got: Vec<Sync> = syncs(&screen)
+        .into_iter()
+        .filter(|(slot, ..)| *slot == 0)
+        .collect();
+    assert!(
+        !got.is_empty(),
+        "a corpse's open must be answered with the close, not with silence"
+    );
+    assert!(
+        got.iter()
+            .all(|(_, kind, _, _, rows)| *kind == CONT_SELF && rows.is_empty()),
+        "a corpse opened a box from the death screen and was paid its contents: {got:?}"
+    );
+    assert_eq!(
+        (clients[0].1.cont_kind, clients[0].1.cont_handle),
+        (CONT_SELF, 0),
+        "the death screen's panel must have nothing in it"
+    );
+}
+
 // --- the locked box: the view asks the lock, not only reach ---------------
 
 /// `probe_fixture` (rows 0..=5, the code lock on 5 / item 7) plus a box on

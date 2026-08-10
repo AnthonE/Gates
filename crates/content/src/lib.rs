@@ -20,7 +20,7 @@ pub use balance::Anchors;
 
 /// Every file the content set is made of — exactly these, no extras.
 /// A missing file is a loud failure, never a defaulted section.
-pub const FILES: [&str; 13] = [
+pub const FILES: [&str; 14] = [
     "items.toml",
     "gatherables.toml",
     "recipes.toml",
@@ -30,6 +30,7 @@ pub const FILES: [&str; 13] = [
     "consumables.toml",
     "deployables.toml",
     "cooking.toml",
+    "research.toml",
     "loot.toml",
     "mobs.toml",
     "skins.toml",
@@ -103,6 +104,17 @@ struct CookingFile {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ResearchFile {
+    coin: ResearchCoin,
+    /// Absent is legal and means nothing is researchable — a shard where
+    /// the whole ladder is open, which is what every shard was before
+    /// research v0.
+    #[serde(default)]
+    research: Vec<Research>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LootFile {
     loot_table: Vec<LootTable>,
 }
@@ -138,6 +150,9 @@ pub struct Content {
     pub deployables: Vec<Deployable>,
     pub fuel: Fuel,
     pub cooks: Vec<Cook>,
+    /// What research is paid in, and what it teaches (research v0).
+    pub research_coin: ResearchCoin,
+    pub research: Vec<Research>,
     pub loot_tables: Vec<LootTable>,
     /// The animal roster's species table. Empty is legal and means a
     /// shard with no wildlife — the file still has to exist, because a
@@ -208,6 +223,7 @@ impl Content {
         let consumables: ConsumablesFile = parse("consumables.toml", get("consumables.toml")?)?;
         let deployables: DeployablesFile = parse("deployables.toml", get("deployables.toml")?)?;
         let cooking: CookingFile = parse("cooking.toml", get("cooking.toml")?)?;
+        let research: ResearchFile = parse("research.toml", get("research.toml")?)?;
         let loot: LootFile = parse("loot.toml", get("loot.toml")?)?;
         let mobs: MobsFile = parse("mobs.toml", get("mobs.toml")?)?;
         let skins: SkinsFile = parse("skins.toml", get("skins.toml")?)?;
@@ -225,6 +241,8 @@ impl Content {
             deployables: deployables.deployable,
             fuel: cooking.fuel,
             cooks: cooking.cook,
+            research_coin: research.coin,
+            research: research.research,
             loot_tables: loot.loot_table,
             mobs: mobs.mob,
             skins: skins.skin,

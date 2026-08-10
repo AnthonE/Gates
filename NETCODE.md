@@ -11,7 +11,11 @@
 > traffic, not the client — so the edit was narrow and is confined to §2:
 > four JS-API queue knobs that no longer have an API, the
 > `serverCertificateHashes` rules, and three config *reasons* that cited
-> Chrome. **Where a
+> Chrome. ⚠ **That edit over-corrected on the certificate row and §2.2 now
+> says so**: the P-256 / 14-day rules were read as *Chrome's*, and therefore
+> as gone with Chrome, when the pinned wtransport enforces them client-side
+> in Rust — so the dev pin was buildable the whole time it was recorded as
+> dead. Fixed 2026-08-10 with the validating client. **Where a
 > browser-era mechanism left a behaviour with no native owner, §2.1 says so
 > rather than quietly dropping it.**
 
@@ -118,15 +122,15 @@ controller says so, no opt-out. What that means for us, concretely:
 
 | knob | value | why |
 |---|---|---|
-| wtransport version | **git-pin ≥ commit `0f7609a`** (or 0.7.2 once cut) | 0.7.1 has a remotely triggerable panic — two bytes on the CONNECT stream kill a worker (#317); fixed on main 2026-07-25, unreleased as of this writing |
+| wtransport version | **git-pin ≥ commit `0f7609a`** (or 0.7.2 once cut). ⚠ The tree pins `rev = a11e6a8e…` (`server/Cargo.toml:26`, `client/Cargo.toml:185`), resolving to `0.7.1` from git. **Nothing in the repo records whether `a11e6a8` descends from `0f7609a`, and nothing gates it** — write the ancestry down next to the pin when this seam is next touched | 0.7.1 has a remotely triggerable panic — two bytes on the CONNECT stream kill a worker (#317); fixed on main 2026-07-25, unreleased as of this writing |
 | congestion control | CUBIC (default); `--cc bbr` server flag for A/B | BBR is labeled experimental in quinn; measure before trusting |
 | datagram send buffer | 64 KiB (down from quinn's 1 MiB default) | bounds worst-case queued staleness at our rate; snapshots replace, never accumulate |
 | MTU | initial/min 1200, DPLPMTUD on, ceiling 1452 (defaults) | free server→client headroom; design number stays 1,100 |
 | idle timeout / keep-alive | 30 s / **server-side keep-alive 10 s** | both shipped in `net.rs`. The old reason — "the JS API cannot send keep-alives" — is retired with the browser; quinn can keep-alive from either end. Server-side stays because the effective idle timeout is the min of both peers, so the end that must not time out is the one that should send |
 | UDP socket | sysctl `rmem_max`/`wmem_max` ≥ 8 MiB, SO_RCVBUF/SNDBUF 8 MiB, passed via `with_bind_socket` | quinn is one socket for all connections and its README warns the OS defaults (~208 KiB) are too small |
 | admission | quinn defaults + `Incoming::retry()` for unvalidated addresses past ~2× cap, `refuse()` at hard cap | rides QUIC's built-in 3× anti-amplification + retry tokens |
-| certs, dev | `Identity::self_signed`; the server computes the SHA-256 and `shard` prints it | **The rules this row used to cite were Chrome's** (ECDSA P-256, validity < 14 days, regenerated on build — the conditions `serverCertificateHashes` imposed). Nothing enforces them now and nothing consumes the hash: the native client calls `with_no_cert_validation()` and trusts the chain outright (`client/src/lib.rs`), as the bot client does. The printed hash is **vestigial** until something reads it |
-| certs, prod | ordinary ACME cert on the game's own subdomain, no hashes | unchanged, and now load-bearing rather than merely tidy. ⚠ **The client does not validate today.** That is a dev posture the code names as such — *"a shipping client validates, and that is a `DECISIONS.md` row before anything is published, not a default to drift into"* — and it is unwritten. Publishing a shard the public reaches is blocked on it |
+| certs, dev | `Identity::self_signed`; the server computes the SHA-256 and `shard` prints it; the client pins it with `--cert-hash` | **The printed hash stopped being vestigial on 2026-08-10.** This row used to say the P-256 / 14-day / short-validity rules "were Chrome's" and that "nothing enforces them now" — **wrong on the facts**: the pinned wtransport enforces all three CLIENT-side in `ServerHashVerification` (`SELF_MAX_VALIDITY = 14 days`, `OID_EC_P256`, current time inside the window), and `Identity::self_signed` already builds exactly such a certificate. So the dev path needed no new machinery: `--cert-hash` feeds the printed digest to `with_server_certificate_hashes` and that shard, alone, is trusted. Note the pin does **not** consult a name, which is why a dev shard's SANs (`localhost`, `127.0.0.1`, `::1`) do not have to follow it onto a LAN address |
+| certs, prod | ordinary ACME cert on the game's own subdomain, no hashes | unchanged, and load-bearing. **The client validates as of 2026-08-10** (operator; `DECISIONS.md` that date): the platform root store for every non-loopback address with no pin, `with_server_certificate_hashes` when `--cert-hash` names one, and `with_no_cert_validation` on loopback only. The warning that used to sit here — that publishing was blocked on this — is discharged. Why it mattered more than a checklist item: **SIWE has no channel binding**, so an on-path relay that terminates the player's QUIC and opens its own to the shard is admitted *as the victim* with the key never leaving the wallet. Gated by `crates/server/tests/tls_posture.rs`, which raises a self-signed shard on a NON-loopback address and asserts the refusal, the pin, a wrong pin, and the carve-out |
 | migration | server tolerates NAT rebinding (default on); **client treats network change as death** | the behaviour is unchanged; the reason is not. It read "Chrome ships no client-side QUIC migration", and there is no Chrome — quinn *can* migrate. Fast-reconnect stays an app feature (§6.3, §10) because it has to handle the cases migration cannot (a dead server, a new address that must re-prove SIWE), not because the client is incapable |
 
 ## 3 · Class D — the hot pipeline
@@ -397,6 +401,20 @@ Subscribe cost is dominated by first-visit chunk state; the join bundle
 pre-streams the spawn ring (9 chunks) before the first keyframe so a fresh
 spawn never sees pop-in of the base they spawned beside.
 
+⚠ **That paragraph is the design; the tree does neither half of it**
+(measured 2026-08-10, `reference/NETWORK.md` §9.3). There is no grid and no
+chunk subscription. Class D is a flat scan of `MAX_PLAYERS + MAX_MOBS` with
+a radial hysteresis compare, per client per tick
+(`server/src/core.rs:2163`, `:2208`) — 16,400 distance tests per tick at
+cap, which is affordable and is not the problem. **Class S has no interest
+filter at all**: the join walk drips the *entire* piece store to every
+client regardless of distance, 32 per tick, and any piece removal mid-walk
+restarts it from zero (`core.rs:1872`, `:1663`). That is
+`reference/NETWORK.md` §2 — the reference game's own 2014 mistake — plus a
+re-send amplification it did not have. §9.2.1 there has the arithmetic and
+the smallest fix; the interest filter is the real one and is a `NOW.md`
+item, not a patch.
+
 **The planned extension is occlusion, and it lands here** (`DECISIONS.md`
 2026-08-04 · `NOW.md` 18): a class-D member fully occluded by terrain is
 dropped from the snapshot set rather than merely deprioritized, which is
@@ -459,7 +477,22 @@ where the sim says.
 | server crash | DESIGN L7: restart < 10 s from snapshot + WAL; clients auto-reconnect, rejoin as wakers; ≤ 1 tick of acked transactions lost, and none that were acked |
 | mid-raid restart | the raid's events are WAL'd before ack — the wall you blew is still blown |
 
-## 11 · Added CI gates
+## 11 · The CI gates this file asks for — ⚠ **none of them exist**
+
+> **Retitled 2026-08-10.** This section was headed "Added CI gates" and
+> listed seven. A grep over `crates/` and `ci/` returns **zero hits for all
+> seven**. Nothing here was ever built, and the old title asserted the
+> opposite — which is precisely the failure `CLAUDE.md` names as the
+> dangerous one: a doc that reads as covered while nothing checks it. The
+> designs below are good and are kept verbatim as designs; every one of
+> them is unbuilt. `reference/NETWORK.md` §9.3 carries the audit, and §9.2
+> ranks the gaps three of these gates would have caught —
+> `test_stream_in` and `test_raid_storm` both bear directly on the class-S
+> join walk (§9.2.1), and `netem profiles` is the only item here that would
+> exercise the reorder/loss/dup torture list at all.
+>
+> Two of them are also named as enforcement elsewhere and marked there:
+> `test_raid_storm` in `CLAUDE.md` wall 4 and `DESIGN.md` §12.
 
 - `test_chunk_epoch`: fuzz subscribe/unsubscribe/re-subscribe against a
   mutating chunk; client-reconstructed state must equal server state at

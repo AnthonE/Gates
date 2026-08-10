@@ -110,6 +110,27 @@ pub const ARCH_DOOR: u8 = 6;
 /// `DeployRec` is what the wire mirrors, and a code, two lists and two
 /// timers may not ride on it.
 pub const ARCH_LOCK: u8 = 7;
+/// The recycler (recycler v0) — a container that converts without burning.
+/// It is an oven in every way but the fuel: `oven.rs` holds the state, the
+/// same sweep advances it, and what separates it from a furnace is which
+/// `cooking.toml` rows name it. The one mechanism it does not share is the
+/// burn — a recycler lights on a press and spends nothing to run.
+///
+/// **The ninth archetype, and that was not free.** Three bits held exactly
+/// eight, so this const cost `ARCH_BITS` a widening to four and `PROTO_VER`
+/// a turn with every golden regenerated in the same commit (wall 6). The
+/// gate that says so is `every_domain_fits_its_wire_field`, and it is why
+/// the tenth archetype is cheap and the seventeenth is not.
+pub const ARCH_RECYCLER: u8 = 8;
+/// A research table (research v0). A **station**, not a container: it is
+/// checked by proximity the way `craft.rs` checks a workbench, so it holds
+/// no items, mints no box record, and the thing being researched comes out
+/// of the player's own inventory (`research.rs` says why).
+///
+/// The tenth archetype, and free — `ARCH_BITS` widened to four for the
+/// recycler one commit earlier and holds sixteen. That is what the
+/// recycler's price bought.
+pub const ARCH_RESEARCH: u8 = 9;
 
 /// The **access verb's** operations — `Command::Access`'s `op`, wire
 /// `ACT_ACCESS`. One action with an op field rather than nine action
@@ -155,14 +176,15 @@ pub fn op_is_crew(op: u8) -> bool {
 /// Does a deployable of this archetype hold items — that is, does
 /// placing it stand up a container record in the box store?
 ///
-/// Three archetypes say yes and they share one store deliberately: a
-/// storage box is a container, and an oven (`oven.rs`) is a container
-/// that burns. One store means one address space, one `CONT_BOX` handle,
-/// one reach rule and one spill path when a raid takes the thing apart —
-/// so a campfire's contents fall on the floor by the same route a box's
-/// do, with no second contract on the wire and none in the sim.
+/// Four archetypes say yes and they share one store deliberately: a
+/// storage box is a container, an oven (`oven.rs`) is a container that
+/// burns, and a recycler is a container that converts. One store means
+/// one address space, one `CONT_BOX` handle, one reach rule and one spill
+/// path when a raid takes the thing apart — so a campfire's contents fall
+/// on the floor by the same route a box's do, with no second contract on
+/// the wire and none in the sim.
 pub fn holds_items(arch: u8) -> bool {
-    arch == ARCH_BOX || arch == ARCH_FIRE || arch == ARCH_FURNACE
+    arch == ARCH_BOX || arch == ARCH_FIRE || arch == ARCH_FURNACE || arch == ARCH_RECYCLER
 }
 
 /// What a code lock may bolt onto: a door's leaf or a storage box's lid
@@ -377,7 +399,7 @@ impl DeployContent {
     /// target inside the gates rather than only in a unit test.
     pub fn probe_fixture() -> Self {
         let mut d = Self::EMPTY;
-        d.def_count = 6;
+        d.def_count = 8;
         d.defs[0] = DeployDef {
             arch: ARCH_HEARTH,
             placement: PLACE_FOUNDATION,
@@ -438,6 +460,40 @@ impl DeployContent {
             item: 7,
             n_costs: 1,
             costs: [(1, 12), (0, 0), (0, 0), (0, 0)],
+        };
+        // The recycler (recycler v0), here for the lock's reason exactly:
+        // the parity, alloc and replay gates install *this* table, and a
+        // wall that cannot see a verb is not a wall. `CookContent::
+        // probe_fixture` is the other half — item 2 recycles into items 6
+        // and 7 on ONE timer, which is the multi-row conversion path and
+        // the newest arithmetic in `oven.rs`.
+        //
+        // Item **8**, the ninth: 0–7 are all spoken for above and by the
+        // build fixture's cost items, so `gather::GatherContent::
+        // probe_fixture` widened to nine to make room.
+        d.defs[6] = DeployDef {
+            arch: ARCH_RECYCLER,
+            placement: PLACE_GROUND,
+            hp: 45,
+            item: 8,
+            n_costs: 1,
+            costs: [(1, 15), (0, 0), (0, 0), (0, 0)],
+        };
+        // The research table (research v0), here for the recycler's and
+        // the lock's reason: the parity, alloc and replay gates install
+        // *this* table, and a verb no wall can see is not walled.
+        // `ResearchContent::probe_fixture` is the other half — item 4
+        // unlocks craft recipe 2, which is the blueprint-gated one.
+        //
+        // Item **10**: 8 is the recycler's and 9 is the box a unit-test
+        // fixture appends past the shared set (`boxed_fixture`).
+        d.defs[7] = DeployDef {
+            arch: ARCH_RESEARCH,
+            placement: PLACE_GROUND,
+            hp: 45,
+            item: 10,
+            n_costs: 1,
+            costs: [(0, 18), (0, 0), (0, 0), (0, 0)],
         };
         // The build probe fixture costs items 0 and 1.
         d.mats = [0, 1, 0, 0];
@@ -572,7 +628,7 @@ pub struct BoxStore {
     len: usize,
     /// Oven state, index-aligned to `entries` (`oven.rs`). Every
     /// container carries a row and a storage box's says `ARCH_BOX`, which
-    /// is how `is_oven` answers without a second lookup.
+    /// is how `is_converter` answers without a second lookup.
     ///
     /// A parallel array for `bag_ready`'s reason, one layer down: the box
     /// record is what the container-sync message is built from, so a burn
@@ -867,14 +923,19 @@ impl Deploys {
     }
 
     /// Resolve a packed address to a container index whose state says
-    /// **oven**. `box_index`'s filter, and the whole of what `world.rs`
+    /// **converter** — an oven or a recycler, the two things a use press
+    /// switches on. `box_index`'s filter, and the whole of what `world.rs`
     /// needs to route a use press between the door verb and the oven
     /// verb: the two never share an address (a door lives on a doorway's
     /// edge, an oven on the plane), so the routing is a lookup and not a
     /// guess about what the player aimed at.
+    ///
+    /// A plain storage box is deliberately excluded and that is the whole
+    /// filter: pressing E at a box opens the container panel, and a box
+    /// that answered here would have a switch nothing in the sim reads.
     pub fn oven_index(&self, key: u32) -> Option<usize> {
         self.box_index(key)
-            .filter(|&i| self.boxes.ovens[i].is_oven())
+            .filter(|&i| self.boxes.ovens[i].is_converter())
     }
 
     /// Resolve a packed box address to an index into `boxes()`, or `None`
@@ -4187,28 +4248,35 @@ mod tests {
     /// under it for no exercised behaviour.
     fn boxed_fixture() -> DeployContent {
         let mut d = DeployContent::probe_fixture();
-        d.defs[6] = DeployDef {
+        // Slot **7**, item **9** — both one past what the shared fixture
+        // spends, which is the whole contract of this helper: append a row
+        // the probe script never places rather than shadow one it does.
+        // It sat at 6/8 until the recycler took those (recycler v0), and
+        // moving it was not optional — a bespoke fixture that quietly
+        // replaces a shared row makes four box tests pass while asserting
+        // something about a different object.
+        d.defs[7] = DeployDef {
             arch: ARCH_BOX,
             placement: PLACE_FOUNDATION,
             hp: 60,
-            item: 8,
+            item: 9,
             n_costs: 0,
             costs: [(0, 0); MAX_DEPLOY_COSTS],
         };
-        d.def_count = 7;
+        d.def_count = 8;
         d
     }
 
     /// `GatherContent::probe_fixture` with a stack ladder for the box
-    /// item above — without one, `pick_up`'s give-back hands item 8 to
+    /// item above — without one, `pick_up`'s give-back hands item 9 to
     /// `inv_add` at a ceiling of zero and the box silently drops.
     fn boxed_gather() -> GatherContent {
         let mut g = GatherContent::probe_fixture();
-        g.stack_max[8] = 100;
+        g.stack_max[9] = 100;
         g
     }
 
-    /// A foundation at (CX, CZ) with a box (row 6) standing on it, placed
+    /// A foundation at (CX, CZ) with a box (row 7) standing on it, placed
     /// by the returned player — `doored`'s shape, one storey lower.
     fn boxed(
         bc: &BuildContent,
@@ -4217,10 +4285,10 @@ mod tests {
         deploys: &mut Deploys,
         ev: &mut EventQueue,
     ) -> Player {
-        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (8, 2), (7, 2)]);
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (9, 2), (7, 2)]);
         founded(bc, pieces, &mut p, CX, CZ);
         place_deploy(
-            SEED, dc, bc, pieces, deploys, &mut p, 0, 6, CX, CZ, 0, LOC_PLANE, ev,
+            SEED, dc, bc, pieces, deploys, &mut p, 0, 7, CX, CZ, 0, LOC_PLANE, ev,
         );
         assert_eq!(last(ev).0, crate::world::EV_DEPLOY_PLACED, "box lands");
         p
@@ -4470,7 +4538,7 @@ mod tests {
         // as a second item; the lock record dies with the box rather than
         // haunting the address for the next thing built there.
         let locks_held = crate::craft::inv_count(&p.inv, 7);
-        let boxes_held = crate::craft::inv_count(&p.inv, 8);
+        let boxes_held = crate::craft::inv_count(&p.inv, 9);
         pick_up(
             &dc,
             &gc,
@@ -4486,7 +4554,7 @@ mod tests {
         assert_eq!(deploys.len(), 0);
         assert_eq!(deploys.locks().len(), 0, "the lock record came off with it");
         assert_eq!(crate::craft::inv_count(&p.inv, 7), locks_held + 1);
-        assert_eq!(crate::craft::inv_count(&p.inv, 8), boxes_held + 1);
+        assert_eq!(crate::craft::inv_count(&p.inv, 9), boxes_held + 1);
     }
 
     /// The guest tier stops at the door verb (`DOORS.md` §2.2, Devblog
@@ -4797,7 +4865,7 @@ mod tests {
             "an unlocked box is anyone's, lifting included"
         );
         assert_eq!(deploys.locks().len(), 0);
-        assert_eq!(crate::craft::inv_count(&nobody.inv, 8), 1, "the box");
+        assert_eq!(crate::craft::inv_count(&nobody.inv, 9), 1, "the box");
         assert_eq!(crate::craft::inv_count(&nobody.inv, 7), 1, "the lock");
     }
 

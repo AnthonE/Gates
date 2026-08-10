@@ -15,9 +15,10 @@ use protocol::{
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
     encode_event_health, encode_event_hit, encode_event_inv, encode_event_knock,
-    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_shot,
+    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_research,
+    encode_event_research_refused, encode_event_respawn, encode_event_shot,
     encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
     encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
     InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
@@ -30,9 +31,10 @@ use sim_core::deploy::DeployRec;
 use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF};
 use sim_core::limits::{
-    AOI_ENTER_CM, AOI_EXIT_CM, CHAT_LOCAL_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES,
-    HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_MOBS, MAX_PLAYERS,
-    MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK,
+    AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM, CRAFT_QUEUE,
+    DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_MOBS,
+    MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
+    SYNC_SCAN_PER_TICK,
 };
 use sim_core::mob;
 use sim_core::persist::PlayerSave;
@@ -42,8 +44,9 @@ use sim_core::world::{
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
     EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
-    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED,
+    EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS,
+    EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 
 /// Unpack `sim_core::inventory::addr` — from kind, from slot, to kind, to
@@ -844,6 +847,7 @@ impl ShardCore {
                     },
                     ActionMsg::Loot => Command::Loot { id: c.id },
                     ActionMsg::Consume { slot } => Command::Consume { id: c.id, slot },
+                    ActionMsg::Research { slot } => Command::Research { id: c.id, slot },
                     ActionMsg::Drink => Command::Drink { id: c.id },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
                     ActionMsg::Move {
@@ -1047,6 +1051,51 @@ impl ShardCore {
                             }
                         }
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                // Research (research v0). Own-fact, both halves: a
+                // blueprint is personal, so only the hand that pressed
+                // hears anything. The success sends the mask too — the
+                // whole mask, not a delta, because a dropped `Research`
+                // would otherwise grey a recipe the player has paid for
+                // with no event left to correct it (`SUB_KNOWN`).
+                EV_RESEARCH | EV_RESEARCH_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // the researcher left this tick
+                    };
+                    let enc = if ev.code == EV_RESEARCH {
+                        encode_event_research(ev.b as u16, ev.c as u16, &mut self.ev_buf)
+                    } else {
+                        encode_event_research_refused(ev.b as u8, &mut self.ev_buf)
+                    };
+                    match enc {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                    if ev.code == EV_RESEARCH {
+                        let mask = self
+                            .world
+                            .live_slot_of(ev.a)
+                            .map(|p| self.world.players[p].known)
+                            .unwrap_or(0);
+                        match encode_event_known(mask, &mut self.ev_buf) {
+                            Ok(len) => {
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                            Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                        }
                     }
                 }
                 EV_BUILD_REFUSED => {
@@ -1671,31 +1720,53 @@ impl ShardCore {
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     match encode_event_removed(piece, cx, cz, level, loc, &mut self.ev_buf) {
                         Ok(len) => {
-                            let store_len = if piece {
-                                self.world.pieces.len()
-                            } else {
-                                self.world.deploys.len()
-                            };
+                            let store_len = self.world.deploys.len();
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
                                     continue;
                                 }
                                 // A swap-remove reshuffles the store under
-                                // any in-progress walk (cursor inside the
-                                // shrunken store): restart that walk with
-                                // a reset batch. Finished walks (cursor
-                                // past the store) hear the broadcast.
+                                // an in-progress **deployable** walk
+                                // (cursor inside the shrunken store):
+                                // restart that walk with a reset batch.
+                                // Finished walks (cursor past the store)
+                                // hear the broadcast and nothing else.
+                                //
+                                // **The piece walk is not here any more**,
+                                // and that is this arm's whole news. The
+                                // restart is correct and its *cost* is
+                                // unbounded: a full walk is `store_len /
+                                // PIECE_SYNC_BATCH` ticks, and removals
+                                // arriving faster than that walk a client
+                                // back to zero indefinitely — a raid clears
+                                // that bar easily, and the client-side
+                                // symptom, a world that never finishes
+                                // arriving, does not read as a network
+                                // problem (`reference/NETWORK.md` §9.2.1).
+                                // The piece walk reads its store from the
+                                // tail down instead, where the entry a
+                                // swap-remove moves is always one already
+                                // sent, so a removal costs it nothing and
+                                // it clamps its own cursor where it reads
+                                // it (`drip_client` carries the argument).
+                                //
+                                // The deployable walk still reads upward
+                                // and so still restarts here: the same
+                                // defect one store over, left standing
+                                // deliberately rather than ported blind,
+                                // because the downward walk trades the
+                                // restart for a dependency on every
+                                // *placement* reaching the client, and that
+                                // seam is worth proving one store at a time
+                                // (`stats.rs` `piece_walk_restarts`).
                                 let c = &mut self.clients[slot];
-                                if piece {
-                                    if c.piece_sync_cursor > 0 && c.piece_sync_cursor <= store_len {
-                                        c.piece_sync_cursor = 0;
-                                        c.piece_sync_reset = true;
-                                    }
-                                } else if c.deploy_sync_cursor > 0
+                                if !piece
+                                    && c.deploy_sync_cursor > 0
                                     && c.deploy_sync_cursor <= store_len
                                 {
                                     c.deploy_sync_cursor = 0;
                                     c.deploy_sync_reset = true;
+                                    ShardStats::bump(&stats.piece_walk_restarts);
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                     ShardStats::bump(&stats.ev_sent);
@@ -1892,21 +1963,69 @@ impl ShardCore {
         }
 
         // Placed-piece walk (join sync / resync), drip-fed like the
-        // harvested set. The store is append-only this slice, so the walk
-        // is stable; a piece that also arrived by broadcast lands twice
-        // and the client's address-keyed apply dedups it.
+        // harvested set — and read from the **tail down**, which is the
+        // one thing here worth understanding.
+        //
+        // The store swap-removes: taking entry `i` out moves the store's
+        // *last* entry into the hole. A walk reading upward cannot survive
+        // that, because the entry that moved can land below the cursor,
+        // where the walk will never look again — so every removal had to
+        // zero the cursor and re-send the world from scratch. Correct, and
+        // unbounded: a full walk is `len / PIECE_SYNC_BATCH` ticks and a
+        // raid removes pieces faster than that, so a client under one
+        // could be walked back to the start every tick and never converge
+        // at all (`reference/NETWORK.md` §9.2.1).
+        //
+        // Downward, the entry a swap-remove moves is always one this walk
+        // has **already sent** — it comes off the tail, and the tail is
+        // where the walk starts. It can only land in the not-yet-sent
+        // region, where it is sent a second time and the client's
+        // address-keyed apply dedups it, exactly as it dedups a piece that
+        // also arrived by broadcast. So no removal can hide an entry from
+        // the walk, the cursor only ever needs clamping to the store that
+        // is actually there, and the walk finishes in a bounded number of
+        // ticks no matter what a raid does. `piece_walk_completes` is what
+        // says it finished.
+        //
+        // `piece_sync_cursor` therefore counts entries **still owed** —
+        // `[0, cursor)` is what the client has not been sent — and
+        // `piece_sync_reset` doubles as "this walk has not started", since
+        // a fresh join and `ev_resync` both leave the cursor at 0, which is
+        // also what a *finished* walk holds.
+        //
+        // What the walk no longer re-derives is an append. A piece placed
+        // after the walk started lands on the tail, above the cursor, and
+        // reaches the client as the EV_PIECE_PLACED broadcast that every
+        // placement pushes — a refused push there calls `ev_resync`, which
+        // re-arms this walk from the new tail, and a dropped event ring
+        // does the same for everyone. That is the trade the paragraph
+        // above buys, and it is why the deployable walk was left reading
+        // upward until its own placement seam is proven.
         let c = &self.clients[slot];
         let pieces = self.world.pieces.entries();
-        if c.piece_sync_reset || c.piece_sync_cursor < pieces.len() {
-            let n = PIECE_SYNC_BATCH.min(pieces.len() - c.piece_sync_cursor.min(pieces.len()));
-            let batch = &pieces[c.piece_sync_cursor.min(pieces.len())..][..n];
+        let owed = if c.piece_sync_reset {
+            pieces.len()
+        } else {
+            c.piece_sync_cursor.min(pieces.len())
+        };
+        if c.piece_sync_reset || owed > 0 {
+            let n = PIECE_SYNC_BATCH.min(owed);
+            let batch = &pieces[owed - n..owed];
             match encode_event_piece_sync(c.piece_sync_reset, batch, &mut self.ev_buf) {
                 Ok(len) => {
                     if send(Lane::Event, slot, &self.ev_buf[..len]) {
                         ShardStats::bump(&stats.ev_sent);
                         let c = &mut self.clients[slot];
                         c.piece_sync_reset = false;
-                        c.piece_sync_cursor += n;
+                        c.piece_sync_cursor = owed - n;
+                        if c.piece_sync_cursor == 0 {
+                            // The client now holds every piece the store
+                            // had when this walk began. Counted here and
+                            // nowhere else: an empty world completes on the
+                            // reset batch alone, which is the honest answer
+                            // to "has this client got the world yet".
+                            ShardStats::bump(&stats.piece_walk_completes);
+                        }
                     } else {
                         return;
                     }
@@ -2008,29 +2127,53 @@ impl ShardCore {
         if c.own_wslot != usize::MAX && c.open_cont_kind != CONT_SELF {
             let (kind, handle) = (c.open_cont_kind, c.open_cont_handle);
             let p = &self.world.players[c.own_wslot];
-            let live = match kind {
-                CONT_BAG => self
-                    .world
-                    .backpacks
-                    .index_of_id(handle)
-                    .filter(|&i| self.world.backpacks.in_reach(i, p)),
-                CONT_BOX => self
-                    .world
-                    .deploys
-                    .box_index(handle)
-                    .filter(|&i| self.world.deploys.box_in_reach(i, p))
-                    .filter(|&i| {
-                        // The box stands on the plane, so its lock shares
-                        // `box_key`'s triple plus `LOC_PLANE` — the move
-                        // path's address, byte for byte. An oven at the
-                        // same shape of address carries no lock
-                        // (`lockable`) and passes as bare.
-                        let b = self.world.deploys.boxes()[i];
-                        self.world
-                            .deploys
-                            .lock_passes(b.cx, b.cz, b.level, LOC_PLANE, p.id)
-                    }),
-                _ => None,
+            // A corpse resolves nothing. `World::die` keeps the slot, the
+            // body and the position — that is what the death screen is
+            // made of — so reach and the lock both still say yes at the
+            // address the player fell on, and the subscription would go on
+            // paying. Nothing on the death path shuts it: `die` writes no
+            // client state, and the open is not a command the sim ever
+            // hears, so this resolution is the only place that can.
+            //
+            // It belongs *here*, in the resolution, rather than at the
+            // action: refusing the open would leave a panel opened while
+            // alive streaming through the death, which is the same bug
+            // wearing the fix's clothes. Falling through to `None` shuts
+            // both mouths with the message that is already encoded below.
+            //
+            // And it is the sentence above, not a new rule: the move verb
+            // resolves through `World::live_slot_of`, so a corpse moves no
+            // item — a corpse that could still *see* a box would be
+            // exactly the see-but-cannot-move split this view exists to
+            // forbid. Dying next to your own loot must not buy you a
+            // camera on the raider emptying it.
+            let live = if p.dead {
+                None
+            } else {
+                match kind {
+                    CONT_BAG => self
+                        .world
+                        .backpacks
+                        .index_of_id(handle)
+                        .filter(|&i| self.world.backpacks.in_reach(i, p)),
+                    CONT_BOX => self
+                        .world
+                        .deploys
+                        .box_index(handle)
+                        .filter(|&i| self.world.deploys.box_in_reach(i, p))
+                        .filter(|&i| {
+                            // The box stands on the plane, so its lock
+                            // shares `box_key`'s triple plus `LOC_PLANE` —
+                            // the move path's address, byte for byte. An
+                            // oven at the same shape of address carries no
+                            // lock (`lockable`) and passes as bare.
+                            let b = self.world.deploys.boxes()[i];
+                            self.world
+                                .deploys
+                                .lock_passes(b.cx, b.cz, b.level, LOC_PLANE, p.id)
+                        }),
+                    _ => None,
+                }
             };
             match live {
                 // Gone, out of reach, or behind a lock that does not know
@@ -2170,12 +2313,35 @@ impl ShardCore {
         world.players.iter().position(|p| p.active && p.id == id)
     }
 
-    /// AOI v0 (DESIGN.md §5.5, radius-only): planar hysteresis band, enter
-    /// 176 m / exit 208 m, plus the NETCODE.md §3 priority accrual for
-    /// everything inside. Entities leaving the client's world (range,
-    /// disconnect, or slot reuse) go to the pending-removal set until an
-    /// acked snapshot covers them.
+    /// AOI v0 (DESIGN.md §5.5): **two** hysteresis bands over the same
+    /// candidate field, plus the NETCODE.md §3 priority accrual for
+    /// everything inside. A distance band — enter 176 m, leave 208 m — and
+    /// a rank band — enter at rank < `AOI_RANK_ENTER`, leave at rank ≥
+    /// `AOI_RANK_EXIT` — because a radius alone bounds the set at
+    /// `MAX_PLAYERS + MAX_MOBS` and `MAX_SNAPSHOT_ENTITIES` claims to bound
+    /// it at 64 (wall 4; `limits.rs` states both bands). Entities leaving
+    /// the client's world — range, rank, disconnect, or slot reuse — go to
+    /// the pending-removal set until an acked snapshot covers them.
+    ///
+    /// Three passes rather than one, and the split is forced by the rank:
+    /// an entity's rank is not a property of the entity, it is its position
+    /// among *all* the candidates, so nothing can be admitted until every
+    /// candidate has been measured. Pass 1 measures and settles what is not
+    /// a rank question (a tenant change, a death). Pass 2 turns the field
+    /// into the two order statistics the bands compare against. Pass 3
+    /// decides, on both bands at once, and accrues.
     fn update_interest(&mut self, slot: usize, stats: &ShardStats) {
+        /// Packed candidate index: `< MAX_PLAYERS` is a world slot, above
+        /// it a roster slot — `encode_snapshot`'s packing, for the reason
+        /// it has one. Players and animals are ranked in **one** field
+        /// because they compete for the same 64 records, and two fields
+        /// with a merge is where the ordering would get lost.
+        const CANDIDATES: usize = MAX_PLAYERS + MAX_MOBS;
+        /// The rank key of a candidate that is not there. Sorts last, so a
+        /// sparse shard's thresholds come out unbounded and every band
+        /// decision falls through to distance — no special case needed.
+        const ABSENT: i64 = i64::MAX;
+
         let c = &mut self.clients[slot];
         if c.own_wslot == usize::MAX
             || !self.world.players[c.own_wslot].active
@@ -2188,7 +2354,16 @@ impl ShardCore {
         }
         let own = self.world.players[c.own_wslot].body;
         let mut overflow = false;
-        for w in 0..MAX_PLAYERS {
+
+        // --- pass 1: measure, and settle what the rank has no say in.
+        let mut d2_of = [ABSENT; CANDIDATES];
+        // Candidates inside the *exit* radius — the only ones the rank band
+        // can have anything to say about, since the distance band already
+        // holds everything past it out of the set. Counting these rather
+        // than every live body is what keeps pass 2 off a shard whose
+        // hundred players are spread over two kilometres.
+        let mut n_near = 0usize;
+        for (w, d2_out) in d2_of.iter_mut().enumerate().take(MAX_PLAYERS) {
             let p = &self.world.players[w];
             let live = p.active && p.id != c.id;
             if !live || c.tracked_id[w] != p.id {
@@ -2206,62 +2381,104 @@ impl ShardCore {
             }
             let dx = (p.body.qx - own.qx) as i64 * 3;
             let dz = (p.body.qz - own.qz) as i64 * 3;
+            *d2_out = dx * dx + dz * dz;
+            n_near += usize::from(*d2_out <= AOI_EXIT_CM * AOI_EXIT_CM);
+        }
+        // The roster, in the same field and on the same two bands. Simpler
+        // than the player pass by exactly one thing: there is no tenant
+        // change to detect, because a roster slot is one animal for the
+        // life of the shard (client.rs). A death is therefore the only way
+        // an animal leaves, and it leaves the way a disconnect does — into
+        // the pending-removal set, so the client despawns it rather than
+        // holding a corpse that never moves again.
+        for s in 0..MAX_MOBS {
+            let m = &self.world.mobs.m[s];
+            if !m.alive {
+                if c.m_interest[s] {
+                    overflow |= !c.pending_add(mob::mob_id(s));
+                    c.m_interest[s] = false;
+                }
+                c.m_accum[s] = 0.0;
+                c.m_unsent[s] = 0;
+                continue;
+            }
+            let dx = (m.body.qx - own.qx) as i64 * 3;
+            let dz = (m.body.qz - own.qz) as i64 * 3;
             let d2 = dx * dx + dz * dz;
+            d2_of[MAX_PLAYERS + s] = d2;
+            n_near += usize::from(d2 <= AOI_EXIT_CM * AOI_EXIT_CM);
+        }
+
+        // --- pass 2: the two order statistics the rank band compares
+        // against. `(d2, index)` is a **total** order — the index is
+        // unique — so "rank < N" is exactly "key ≤ the Nth smallest key",
+        // at most N candidates satisfy it, and `AOI_RANK_EXIT` is
+        // therefore a hard cap on the set rather than a target.
+        //
+        // Skipped whole when the field is smaller than the admission rank,
+        // which is the ordinary case (NETCODE.md §9: typical ~15 in the
+        // set): a sort here would be work done to learn that nothing is
+        // crowded out. Unstable sort — no allocation, and there is nothing
+        // to stabilise over a unique key.
+        let (enter_key, exit_key) = if n_near > AOI_RANK_ENTER {
+            let mut ranked = [(ABSENT, 0u16); CANDIDATES];
+            for (i, &d2) in d2_of.iter().enumerate() {
+                ranked[i] = (d2, i as u16);
+            }
+            ranked.sort_unstable();
+            (ranked[AOI_RANK_ENTER - 1], ranked[AOI_RANK_EXIT - 1])
+        } else {
+            ((ABSENT, u16::MAX), (ABSENT, u16::MAX))
+        };
+
+        // --- pass 3: both bands, then the accrual. An entity is in the set
+        // when it is inside *both* enter sides, and it leaves the moment it
+        // is outside *either* exit side.
+        for (w, &d2) in d2_of.iter().enumerate().take(MAX_PLAYERS) {
+            if d2 == ABSENT {
+                continue; // not a candidate; pass 1 already settled it
+            }
+            let key = (d2, w as u16);
             if c.interest[w] {
-                if d2 > AOI_EXIT_CM * AOI_EXIT_CM {
+                if d2 > AOI_EXIT_CM * AOI_EXIT_CM || key > exit_key {
                     c.interest[w] = false;
                     c.accum[w] = 0.0;
                     c.unsent[w] = 0;
-                    overflow |= !c.pending_add(p.id);
+                    overflow |= !c.pending_add(self.world.players[w].id);
                 }
-            } else if d2 <= AOI_ENTER_CM * AOI_ENTER_CM {
+            } else if d2 <= AOI_ENTER_CM * AOI_ENTER_CM && key <= enter_key {
                 c.interest[w] = true;
                 c.accum[w] = 0.0;
                 c.unsent[w] = 0;
-                c.pending_remove(p.id);
+                c.pending_remove(self.world.players[w].id);
             }
             if c.interest[w] {
                 let d_m = ((d2 as f32).sqrt()) * 0.01;
                 c.accum[w] += PRIORITY_W_PLAYER / (1.0 + d_m / PRIORITY_HALF_SCALE_M);
             }
         }
-        // The roster, on the same band and the same accrual. Simpler than
-        // the player pass by exactly one thing: there is no tenant change
-        // to detect, because a roster slot is one animal for the life of
-        // the shard (client.rs). A death is therefore the only way an
-        // animal leaves, and it leaves the way a disconnect does — into
-        // the pending-removal set, so the client despawns it rather than
-        // holding a corpse that never moves again.
-        for slot in 0..MAX_MOBS {
-            let m = &self.world.mobs.m[slot];
-            if !m.alive {
-                if c.m_interest[slot] {
-                    overflow |= !c.pending_add(mob::mob_id(slot));
-                    c.m_interest[slot] = false;
-                }
-                c.m_accum[slot] = 0.0;
-                c.m_unsent[slot] = 0;
+        for s in 0..MAX_MOBS {
+            let d2 = d2_of[MAX_PLAYERS + s];
+            if d2 == ABSENT {
                 continue;
             }
-            let dx = (m.body.qx - own.qx) as i64 * 3;
-            let dz = (m.body.qz - own.qz) as i64 * 3;
-            let d2 = dx * dx + dz * dz;
-            if c.m_interest[slot] {
-                if d2 > AOI_EXIT_CM * AOI_EXIT_CM {
-                    c.m_interest[slot] = false;
-                    c.m_accum[slot] = 0.0;
-                    c.m_unsent[slot] = 0;
-                    overflow |= !c.pending_add(mob::mob_id(slot));
+            let key = (d2, (MAX_PLAYERS + s) as u16);
+            if c.m_interest[s] {
+                if d2 > AOI_EXIT_CM * AOI_EXIT_CM || key > exit_key {
+                    c.m_interest[s] = false;
+                    c.m_accum[s] = 0.0;
+                    c.m_unsent[s] = 0;
+                    overflow |= !c.pending_add(mob::mob_id(s));
                 }
-            } else if d2 <= AOI_ENTER_CM * AOI_ENTER_CM {
-                c.m_interest[slot] = true;
-                c.m_accum[slot] = 0.0;
-                c.m_unsent[slot] = 0;
-                c.pending_remove(mob::mob_id(slot));
+            } else if d2 <= AOI_ENTER_CM * AOI_ENTER_CM && key <= enter_key {
+                c.m_interest[s] = true;
+                c.m_accum[s] = 0.0;
+                c.m_unsent[s] = 0;
+                c.pending_remove(mob::mob_id(s));
             }
-            if c.m_interest[slot] {
+            if c.m_interest[s] {
                 let d_m = ((d2 as f32).sqrt()) * 0.01;
-                c.m_accum[slot] += PRIORITY_W_MOB / (1.0 + d_m / PRIORITY_HALF_SCALE_M);
+                c.m_accum[s] += PRIORITY_W_MOB / (1.0 + d_m / PRIORITY_HALF_SCALE_M);
             }
         }
         if overflow {
@@ -2434,6 +2651,35 @@ impl ShardCore {
                     ShardStats::bump(&stats.encode_range_errors);
                 }
             }
+        }
+
+        // What the fill could not carry. Counted once, here, rather than at
+        // the three ways out of the loop above — an entity can be skipped by
+        // an overflow and then skipped again by the break, so counting at
+        // the refusal sites double-counts exactly when the budget is
+        // tightest. `n_sent` includes the own entity, which is not a
+        // candidate, hence the `- 1`.
+        //
+        // Not an error. Shedding is the designed degradation (NETCODE.md §3:
+        // shed, never fragment) and it was previously the only path by which
+        // snapshot quality drops under load with nothing recording it — see
+        // `stats.rs` and `reference/NETWORK.md` §9.2.3.
+        //
+        // The offered and carried halves are added on the same three lines
+        // for the same reason and with the same `- 1`: shedding is a ratio,
+        // and a shed count with no denominator cannot tell a shard that
+        // offered ten million from one that offered a million and one
+        // (`stats.rs` on `snap_candidates`). Counting them here rather than
+        // where each is known is not tidiness — `n_cand` is final at the
+        // sort above, but there is a `return None` between that and here for
+        // the own-entity refusal, and a snapshot that never went out must
+        // not appear in any of the three.
+        let carried = n_sent.saturating_sub(1);
+        let shed = n_cand.saturating_sub(carried);
+        ShardStats::add(&stats.snap_candidates, n_cand as u64);
+        ShardStats::add(&stats.snap_entities_sent, carried as u64);
+        if shed > 0 {
+            ShardStats::add(&stats.snap_entities_shed, shed as u64);
         }
 
         let len = match enc.finish() {

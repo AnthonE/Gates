@@ -237,7 +237,7 @@ fn the_hit_ring_fills_and_drains() {
     assert_eq!(c.pop_hit(), None, "the hit ring must drain");
 }
 
-/// A shot crosses whole and drains once (wire v31).
+/// A shot crosses whole and drains once (wire v33).
 ///
 /// **The five fields are the test.** `EV_SHOT` carries two pairs of
 /// same-typed neighbours — (yaw, pitch) and (speed, drop) — and the tracer

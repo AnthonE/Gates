@@ -51,6 +51,7 @@ pub enum Refused {
     Craft,
     Build,
     Deploy,
+    Research,
 }
 
 /// One frame of own-facts. Cleared and refilled by [`drain`]; read-only to
@@ -71,6 +72,9 @@ pub struct Feed {
     n_gathered: usize,
     crafted: [(u16, u16); FEED_CAP],
     n_crafted: usize,
+    /// `(recipe, coin burned)` per blueprint learned this frame.
+    learned: [(u16, u16); FEED_CAP],
+    n_learned: usize,
     /// Knocks heard this frame: the door's address and who knocked (lock
     /// v1). Broadcast, so this is the one entry here that can be somebody
     /// else's action — the mixer wants the address, the HUD wants to say
@@ -80,7 +84,7 @@ pub struct Feed {
     /// Grants earned this frame: address + `sim_core::lock::GRANT_*`.
     auths: [(u16, u16, u8, u8, u8); FEED_CAP],
     n_auths: usize,
-    /// Arrows loosed this frame (wire v31): shooter id, yaw, pitch, and the
+    /// Arrows loosed this frame (wire v33): shooter id, yaw, pitch, and the
     /// round's speed and drop in mm/tick. Broadcast, like `knocks`.
     ///
     /// Cosmetic only. The tracer spawned from this decides nothing — the
@@ -130,6 +134,11 @@ impl Feed {
     pub fn crafted(&self) -> &[(u16, u16)] {
         &self.crafted[..self.n_crafted]
     }
+
+    /// `(recipe index, coin burned)` learned this frame (research v0).
+    pub fn learned(&self) -> &[(u16, u16)] {
+        &self.learned[..self.n_learned]
+    }
     /// Knocks heard this frame, oldest first.
     pub fn knocks(&self) -> &[(u16, u16, u8, u8, u32)] {
         &self.knocks[..self.n_knocks]
@@ -154,6 +163,7 @@ impl Feed {
         self.n_refusals = 0;
         self.n_gathered = 0;
         self.n_crafted = 0;
+        self.n_learned = 0;
         self.n_knocks = 0;
         self.n_auths = 0;
         self.n_shots = 0;
@@ -203,6 +213,16 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             feed.deaths[n] = (victim, killer);
             feed.n_deaths += 1;
         }
+    }
+    while let Some(t) = core.pop_research_toast() {
+        if feed.n_learned < FEED_CAP {
+            let n = feed.n_learned;
+            feed.learned[n] = t;
+            feed.n_learned += 1;
+        }
+    }
+    while let Some(code) = core.pop_research_refusal() {
+        feed.push_refusal(Refused::Research, code);
     }
     while let Some(code) = core.pop_craft_refusal() {
         feed.push_refusal(Refused::Craft, code);

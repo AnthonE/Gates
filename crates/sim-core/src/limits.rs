@@ -25,9 +25,26 @@ pub const DATAGRAM_BUDGET_BYTES: usize = 1100;
 /// oldest** — the client keeps only the newest `MAX_INPUT_FRAMES` unacked.
 pub const MAX_INPUT_FRAMES: usize = 10;
 
-/// Class-D entities in one client's interest set, hard cap (NETCODE.md §9
-/// budgets table: typical ~15 / cap 64). Overflow policy: **defer** — the
-/// priority accumulator keeps accruing what didn't fit (DESIGN.md §5.5).
+/// Class-D entity records **one snapshot** may carry — a per-datagram wire
+/// count, not a world cap (NETCODE.md §9 budgets table: typical ~15 / cap
+/// 64). It is what `COUNT_BITS = 7` can name and what 1,100 B can hold, and
+/// the encoder refuses the 65th record of a single datagram.
+/// Overflow policy: **defer** — the priority accumulator keeps accruing
+/// what didn't fit (DESIGN.md §5.5).
+///
+/// ⚠ **It reads like an interest-set cap and it is not one by itself.** A
+/// client's interest set is cumulative across snapshots — a delta names
+/// only what moved and the client keeps the rest — so the set of entities
+/// a client knows about is the *union* of many datagrams, and
+/// `MAX_PLAYERS + MAX_MOBS` is what bounds a union. Until 2026-08-10 two
+/// places read it as the world cap it is not: `update_interest` marked
+/// every body in the 176 m radius interesting (up to 164 of them), and the
+/// client's `Interp` table was sized on it while being filled cumulatively,
+/// so the 65th distinct id since the last zero-state was accepted by the
+/// view, refused by the interpolator, and never drawn.
+/// `AOI_RANK_ENTER`/`AOI_RANK_EXIT` below are what make the number true of
+/// the interest set as well; `client-core`'s `INTERP_SLOTS` is what stops
+/// the client depending on it being true.
 pub const MAX_SNAPSHOT_ENTITIES: usize = 64;
 
 /// `state_hash` cadence in ticks (DESIGN.md §7).
@@ -43,6 +60,67 @@ pub const SNAPSHOT_INTERVAL_TICKS: u64 = 2;
 /// the band. Centimeters so distance² compares stay in exact i64.
 pub const AOI_ENTER_CM: i64 = 17_600;
 pub const AOI_EXIT_CM: i64 = 20_800;
+
+/// AOI v0's **second** band, in rank rather than in metres — the one that
+/// makes `MAX_SNAPSHOT_ENTITIES` true of the interest set instead of only
+/// of one datagram (wall 4).
+///
+/// A radius alone cannot bound the set: `MAX_PLAYERS + MAX_MOBS` is 164 and
+/// a fight, a raid or a spawn cluster puts far more than 64 of them inside
+/// 176 m of each other, at which point the accumulator is ranking a set the
+/// wire could never carry and the client is holding ids it will never see
+/// move. So the set is additionally capped to the **nearest**
+/// `AOI_RANK_EXIT`, ranked by planar distance with the packed candidate
+/// index as the tiebreak (unique, so the ordering is total and the cap is
+/// exact).
+///
+/// **Two ranks, for the reason there are two radii.** A single rank
+/// threshold makes two bodies a metre apart at the boundary swap places at
+/// 15 Hz, and clearing an interest bit is welded to a wire removal: the
+/// client destroys that entity's interpolation history, freezes the body
+/// for the 133–200 ms until it is re-sent, and rebuilds its mannequin. So
+/// an entity enters at rank < `AOI_RANK_ENTER` and only leaves at rank ≥
+/// `AOI_RANK_EXIT`, exactly as it enters at 176 m and leaves at 208 m.
+///
+/// The band width is **derived from the radii rather than picked**: at
+/// uniform density the count inside a radius goes as its square, so a rank
+/// band with the same forgiveness as the distance band is the same ratio in
+/// area — `AOI_ENTER_CM² / AOI_EXIT_CM²` of the exit rank, which is 45 of
+/// 64. A body must therefore improve by 19 places to re-enter after being
+/// crowded out, the rank equivalent of walking 32 m closer.
+///
+/// Overflow policy: **evict by rank**, into the same pending-removal set a
+/// distance exit uses — one path out of a client's world, not two. The cost
+/// is stated rather than hidden: on a shard denser than this, a client sees
+/// 45–64 of its neighbours and not the rest. *Near*, not *nearest* — the
+/// hysteresis above makes the set path-dependent on purpose, so an incumbent
+/// at rank 60 is kept while a newcomer at rank 46 is refused, and only a body
+/// that improves 19 places takes a held slot.
+/// Proposed default, DECISIONS.md §open (interest rank cap v0).
+pub const AOI_RANK_EXIT: usize = MAX_SNAPSHOT_ENTITIES;
+/// **Written as the number it is, with its derivation asserted beside it
+/// rather than substituted for it.** It shipped as the expression itself,
+/// which read well and cost the whole gate suite: `ci/knob_registry.mjs`
+/// pins a registry claim against the constant a source file actually
+/// declares, and it cannot evaluate arithmetic — so a computed initializer
+/// is not a value it can check, and it fails loudly rather than passing
+/// over one. `ci/gates.sh` was red on a clean `main` because of it (found
+/// 2026-08-10, merging the tracer branch).
+///
+/// The literal is what the registry pins; the `assert!` below is what
+/// keeps the literal honest, and it is strictly stronger than the
+/// expression was — it fails at compile time if either radius or
+/// `MAX_SNAPSHOT_ENTITIES` moves without this number moving with them,
+/// which is the drift the expression existed to prevent and the gate
+/// could not see.
+pub const AOI_RANK_ENTER: usize = 45;
+const _: () = assert!(
+    AOI_RANK_ENTER
+        == (MAX_SNAPSHOT_ENTITIES as i64 * AOI_ENTER_CM * AOI_ENTER_CM
+            / (AOI_EXIT_CM * AOI_EXIT_CM)) as usize,
+    "AOI_RANK_ENTER must stay the enter/exit area ratio of AOI_RANK_EXIT — \
+     a radius or the entity cap moved and this number did not"
+);
 
 /// Per-client ring of sent snapshots the server deltas against
 /// (NETCODE.md §3: "the last 32 sent states"). An ack that falls outside
@@ -427,6 +505,26 @@ pub const MAX_BOX_SPILL_PER_TICK: usize = 16;
 /// sim never sees is a transformation a player is told about by the
 /// catalog and cannot perform.
 pub const MAX_COOK_ROWS: usize = 32;
+
+/// Research rows the sim preallocates for (`content/research.toml`,
+/// `research.rs`). Structural cap like [`MAX_COOK_ROWS`], and bounded by
+/// [`MAX_RECIPES`] for a stronger reason than symmetry: a research row
+/// unlocks exactly one recipe and `Player::known` is a bitmask over recipe
+/// indices, so a table longer than the recipe set could only be naming a
+/// recipe twice. The bake refuses past it.
+pub const MAX_RESEARCH_ROWS: usize = MAX_RECIPES;
+
+/// The width of `Player::known`, and therefore the hard ceiling on how
+/// many recipes a blueprint can gate. Asserted equal to [`MAX_RECIPES`]
+/// rather than assumed: the mask is a `u64` in the sim, in the save file
+/// and on the wire, so a 65th recipe is a widening in three places and
+/// must fail here rather than silently become unlockable.
+pub const KNOWN_MASK_BITS: usize = 64;
+const _: () = assert!(
+    MAX_RECIPES <= KNOWN_MASK_BITS,
+    "Player::known is a u64 mask over recipe indices — a recipe past bit 63 \
+     could never be researched, and nothing else would say so"
+);
 
 /// Loot tables the sim preallocates for — one per container archetype
 /// (`content/loot.toml` ships 2: barrel and crate). The content bake

@@ -50,6 +50,13 @@ gates — the Gates desktop client
   --servers URL        where to fetch the scry-shardlist-v1 document the menu
                        lists. Absent, the menu offers the default shard only
                        and says why the rest of it is empty
+  --cert-hash SHA256   trust ONLY the shard certificate with this SHA-256,
+                       as the shard prints it at boot (aa:bb:...). For a dev
+                       shard that is not on loopback: without it such a shard
+                       is refused, because a self-signed certificate off this
+                       machine is indistinguishable from a relay's. Needs
+                       --server — the menu joins listed shards, which serve
+                       real certificates and need no pin
   --identity ADDR      the wallet address to play as. The handshake proves it
                        by signing the shard's SIWE challenge with the key the
                        launcher holds; no launcher (or a declined prompt)
@@ -95,6 +102,17 @@ pub struct Args {
     /// `--no-hud`: shoot a clean plate. Only ever true alongside `capture`,
     /// which the parser enforces rather than leaving to the caller.
     pub no_hud: bool,
+    /// `--cert-hash`: the ONE shard certificate this run will trust, as the
+    /// shard prints it (`client::client_endpoint`). `None` is the shipping
+    /// state and means the posture is chosen from the address — permissive on
+    /// loopback, the platform root store everywhere else.
+    ///
+    /// Shape-checked at the endpoint and not here, deliberately: the parser
+    /// owns argv and `wtransport::tls::Sha256Digest` owns what a digest is,
+    /// and a second opinion about hex in this file is a second thing to keep
+    /// in step. What this file DOES enforce is that the flag reaches
+    /// something — see the `--server` requirement below.
+    pub cert_hash: Option<String>,
     pub no_launcher: bool,
 }
 
@@ -114,6 +132,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     let mut servers_url: Option<String> = None;
     let mut identity: Option<String> = None;
     let mut capture: Option<PathBuf> = None;
+    let mut cert_hash: Option<String> = None;
     let mut no_hud = false;
     let mut no_launcher = false;
 
@@ -140,6 +159,14 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
             "--identity" => match it.next() {
                 Some(v) => identity = Some(v),
                 None => return Parsed::Bad("--identity needs an address".into()),
+            },
+            // Same empty-placeholder rule as every flag above it, even though
+            // no launcher substitutes this one today: a flag that behaves
+            // differently from its neighbours on `""` is a flag someone will
+            // wire into a launch block and be surprised by.
+            "--cert-hash" => match it.next() {
+                Some(v) => cert_hash = Some(v),
+                None => return Parsed::Bad("--cert-hash needs a sha-256 digest".into()),
             },
             "--capture" => match it.next() {
                 // Refused rather than defaulted. A capture run that shot into
@@ -224,6 +251,20 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
         return Parsed::Bad("--no-hud only means something with --capture".into());
     }
 
+    // Refused rather than ignored, for the same reason `--no-hud` is, and
+    // with a sharper edge: only the straight-in connect reads the pin, so a
+    // `--cert-hash` without a `--server` would be a player believing they had
+    // pinned a certificate while the menu dialled a shard with the flag
+    // nowhere in the path. That is the one failure mode a security flag may
+    // not have. `render::menu` therefore passes `None` and is *correct* to,
+    // because this line makes the pairing unreachable.
+    let cert_hash = cert_hash
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if cert_hash.is_some() && !server_given {
+        return Parsed::Bad("--cert-hash pins one shard's certificate and needs --server".into());
+    }
+
     Parsed::Run(Args {
         server: raw.trim().to_string(),
         server_given,
@@ -233,6 +274,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
             .filter(|s| !s.is_empty()),
         capture,
         no_hud,
+        cert_hash,
         no_launcher,
     })
 }
@@ -437,6 +479,31 @@ mod tests {
         assert_eq!(x.server, "h:9");
         assert_eq!(run(&["--join", ""]).server, DEFAULT_SERVER);
         assert!(!run(&["--join", ""]).server_given);
+    }
+
+    #[test]
+    fn a_certificate_pin_is_carried_and_cannot_be_set_without_a_shard() {
+        // The dev shape: an address and the hash the shard printed for it.
+        let x = run(&["--server", "10.0.0.4:4433", "--cert-hash", "aa:bb:cc"]);
+        assert_eq!(x.cert_hash.as_deref(), Some("aa:bb:cc"));
+        assert!(run(&[]).cert_hash.is_none());
+        // Same unfilled-placeholder rule as every other flag in this parser.
+        assert!(run(&["--server", "1.2.3.4:1", "--cert-hash", ""])
+            .cert_hash
+            .is_none());
+        // **The one that matters.** A pin with no shard to pin means the menu
+        // will do the dialling and the flag will never be read — a player
+        // believing they are pinned while nothing is. Refused, so that
+        // `render::menu` passing `None` is provably not a hole.
+        assert!(matches!(a(&["--cert-hash", "aa:bb"]), Parsed::Bad(_)));
+        assert!(matches!(a(&["--cert-hash"]), Parsed::Bad(_)));
+        // A positional address is a chosen shard too, so it pairs.
+        assert_eq!(
+            run(&["10.0.0.4:4433", "--cert-hash", "aa:bb"])
+                .cert_hash
+                .as_deref(),
+            Some("aa:bb")
+        );
     }
 
     #[test]

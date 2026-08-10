@@ -99,8 +99,10 @@ pub fn resolve(
     // The one field the resolver cannot fill: it is handed the deploy
     // records, and whether a fire is burning is deliberately not on one
     // (`client-core/core.rs`). Stamped here, where the core is in hand.
-    aimed.0.lit = aimed.0.verb == interact::Verb::Fire
-        && core.ovens().is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level);
+    aimed.0.lit = matches!(
+        aimed.0.verb,
+        interact::Verb::Fire | interact::Verb::Recycler
+    ) && core.ovens().is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level);
     // The scatter pick needs the island, which does not exist until the
     // welcome names a seed — so this is `Option` and stands down rather than
     // guessing one. `render::world_placed`'s discipline, applied to a verb.
@@ -305,6 +307,30 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 open_panel(ui);
             }
         }
+        Verb::Recycler => {
+            // `E` opens it for the fire's reason exactly — the panel is
+            // where the salvage goes — and by the same action, because a
+            // recycler's contents ARE a box's (`deploy::holds_items`).
+            // The switch is `C` below.
+            let handle = pick.handle;
+            if send(net, toast, "open", |buf| {
+                protocol::encode_action_container(CONT_BOX, handle, buf)
+            }) {
+                open_panel(ui);
+            }
+        }
+        Verb::Research => {
+            // The one `E` that spends what is in your hand rather than
+            // opening what is at the address. The slot is the hotbar
+            // selection — the same `net.sel` the eat verb uses — because
+            // "the held item" is the only thing the prompt can honestly
+            // name, and the sim refuses a slot that holds the wrong thing
+            // with a sentence of its own.
+            let slot = net.sel;
+            send(net, toast, "research", |buf| {
+                protocol::encode_action_research(slot, buf)
+            });
+        }
         Verb::Hearth => {
             let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
             send(net, toast, "feed", |buf| {
@@ -329,8 +355,12 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
 /// on the press and taken back a tick later is worse than a flame that
 /// arrives a tick late.
 fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
-    if pick.verb != Verb::Fire {
-        toast.say("no fire in reach");
+    // A recycler takes the same key and the same action: `ACT_USE` carries
+    // an address, and `oven::toggle` switches whatever converter stands
+    // there. The refusal that separates them is the sim's — a fire with
+    // nothing to burn answers `REFUSE_D_FUEL` and a recycler never does.
+    if !matches!(pick.verb, Verb::Fire | Verb::Recycler) {
+        toast.say("nothing to switch in reach");
         return;
     }
     let (cx, cz, level, loc) = (pick.cx, pick.cz, pick.level, pick.loc);

@@ -300,7 +300,7 @@ complaint about arrow lag, and the answer to that complaint is a client-side
 
 ### 9.2 · The gap a player actually sees — **landed 2026-08-10**
 
-**Done. The arrow is visible.** `EV_SHOT = 33` (wire v31) broadcasts the
+**Done. The arrow is visible.** `EV_SHOT = 35` (wire v33) broadcasts the
 shooter, the two aim angles, and the round's speed and drop;
 `crates/client/src/render/tracer.rs` draws it.
 
@@ -316,10 +316,21 @@ the sim runs**, so the drawn arc is not an approximation of the real one
 that drifts over a second of flight. It is the same arithmetic. That is the
 quantize-both-sides law applied to a tracer.
 
-Everything the section predicted about cost was right: `EV_MAX` 32 → 33,
-`PROTO_VER` 30 → 31 with all 82 goldens renamed and regenerated in the same
-commit plus one new (`v31_event_shot.bin`), and `event_roles.rs`'s 33rd row
-— proven red under a b/c swap before being called done.
+Everything the section predicted about cost was right, and one thing it did
+not predict: `EV_MAX` → `EV_SHOT`, `PROTO_VER` → 33 with all 82 goldens
+renamed and regenerated in the same commit plus one new
+(`v33_event_shot.bin`), and `event_roles.rs`'s 35th row — proven red under a
+b/c swap before being called done.
+
+**It was authored as v31 and landed as v33.** Research v0 took `PROTO_VER`
+32, `EV_RESEARCH`/`_REFUSED` 33–34 and `SUB_RESEARCH`/`_REFUSED`/`SUB_KNOWN`
+44–46 while this branch was open, so the two collided head-on on both
+numbering axes — `EV_SHOT` and `EV_RESEARCH` were both 33, `SUB_SHOT` and
+`SUB_RESEARCH` both 44. That is exactly the case `CLAUDE.md` names when it
+says `protocol` and `limits.rs` never land from two branches in one merge
+window, and the collision is *silent* in the worst way: two ends agreeing on
+bytes that mean two different things. Renumbering above them at the merge
+(35, 47, v33) was the whole fix — no behaviour on either side moved.
 
 **And it is a tracer, not a projectile.** Nothing downstream may read it;
 the arrow that kills you is the server's and its `EV_HIT` arrives whether

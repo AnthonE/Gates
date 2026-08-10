@@ -217,6 +217,36 @@ inputs = [
     { item = "item.metal_frags", count = 50 },
 ]
 
+# The research table (research v0). Cheaper than the recycler and asking
+# for no salvage, deliberately: the sink must be standable-at before the
+# faucet is worth running, or a player banks coin with nowhere to spend it.
+[[recipe]]
+id = "recipe.research_table"
+output = "item.research_table"
+count = 1
+station = "workbench1"
+seconds = 20
+inputs = [
+    { item = "item.wood", count = 200 },
+    { item = "item.metal_frags", count = 75 },
+]
+
+# The recycler (recycler v0). Priced between the furnace (275 units of
+# raw + lowgrade) and the large box, and it asks for **gears** on purpose:
+# the machine that makes salvage worth carrying is gated behind carrying
+# some. Two is a single barrel's luck, so it is a gate and not a grind.
+[[recipe]]
+id = "recipe.recycler"
+output = "item.recycler"
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.wood", count = 200 },
+    { item = "item.gears", count = 2 },
+]
+
 [[recipe]]
 id = "recipe.box_large"
 output = "item.box_large"
@@ -247,6 +277,7 @@ inputs = [{ item = "item.cloth", count = 25 }]
 [[recipe]]
 id = "recipe.arrow_metal"
 output = "item.arrow_metal"
+blueprint = true
 count = 3
 station = "workbench1"
 seconds = 5
@@ -269,21 +300,29 @@ inputs = [
 
 # --- furnace runs -------------------------------------------------------
 #
-# **Researched 2026-08-10 and deliberately NOT moved** (`reference/
-# RIPLIST.md` §4.6, §2 row 3). Their smelt seconds are APPROX and the two
-# sources contradict each other on the *shape* as well as the magnitude:
-# one reads metal 2.5 / sulfur 2.5 (the same), the other metal 3.3 /
-# sulfur 1.7 (sulfur faster). Ours — metal 2, sulfur 1 — carries the
-# second source's shape and sits inside the envelope of both, so there is
-# no side to take that is not a coin toss. §0's rule is that a
-# disagreement is recorded, never averaged; this is the record.
+# **Their shape, taken 2026-08-10** (`reference/RIPLIST.md` §4.6;
+# `BALANCE.md` §6.3's ladder). Two sources disagree: metal 2.5 / sulfur
+# 2.5 against metal 3.3 / sulfur 1.7. Rungs 1–2 do not separate them
+# (nothing checkable, neither devblog-primary), rung 3 does — 2.5/2.5 is
+# the reading two independent retellings share, where 3.3/1.7 looks like
+# an inverted rate (1/0.3, 1/0.6) reported as a duration.
 #
-# What DID check out is the mechanism, which outranks the seconds: their
+# **The shape is the real change and it is free: metal and sulfur smelt
+# ALIKE there.** Ours had sulfur at half of metal, which is a difference a
+# returning player feels every furnace load. Sulfur 1 → 2.
+#
+# The magnitude is where our schema stops: `seconds` is a `u32` baked as
+# `seconds × TICK_HZ`, so **2.5 is not expressible** and both rows land on
+# 2. That is a representation limit, not a preference — filed as its own
+# row in `RIPLIST.md` §2 rather than written up here as a reason, because
+# §6.2 is explicit that a cost dressed as a principle is how a deferral
+# becomes permanent. The sim already runs in ticks; only the content field
+# is integer-seconds.
+#
+# The mechanism half outranks the seconds and already matched: their
 # furnace smelts **every slot in parallel**, so five furnaces cost the
-# same wood as one and finish in a fifth of the time, and anyone modelling
-# it as a sequential queue gets throughput wrong by the slot count.
-# `oven::sweep` already advances every slot holding a cookable input, so
-# ours matches without a change.
+# same wood as one and finish in a fifth of the time. `oven::sweep`
+# advances every slot holding a cookable input, so ours does too.
 
 [[recipe]]
 id = "recipe.metal_frags"
@@ -298,7 +337,7 @@ id = "recipe.sulfur"
 output = "item.sulfur"
 count = 1
 station = "furnace"
-seconds = 1
+seconds = 2
 inputs = [{ item = "item.sulfur_ore", count = 1 }]
 
 [[recipe]]
@@ -314,6 +353,7 @@ inputs = [{ item = "item.wood", count = 1 }]
 [[recipe]]
 id = "recipe.gunpowder"
 output = "item.gunpowder"
+blueprint = true
 count = 10
 station = "workbench1"
 seconds = 5
@@ -325,6 +365,7 @@ inputs = [
 [[recipe]]
 id = "recipe.revolver"
 output = "item.revolver"
+blueprint = true
 count = 1
 station = "workbench1"
 seconds = 60
@@ -348,6 +389,7 @@ inputs = [
 [[recipe]]
 id = "recipe.satchel_charge"
 output = "item.satchel_charge"
+blueprint = true
 count = 1
 station = "workbench1"
 seconds = 30
@@ -380,6 +422,7 @@ inputs = [{ item = "item.metal_frags", count = 200 }]
 [[recipe]]
 id = "recipe.armor_roadsign_body"
 output = "item.armor_roadsign_body"
+blueprint = true
 count = 1
 station = "workbench1"
 seconds = 30
@@ -392,6 +435,7 @@ inputs = [
 [[recipe]]
 id = "recipe.medkit"
 output = "item.medkit"
+blueprint = true
 count = 1
 station = "workbench1"
 seconds = 20

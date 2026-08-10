@@ -132,20 +132,31 @@ pub struct ClientNetState {
     pub recipes_cursor: usize,
     /// Next piece-def row the build-menu drip sends.
     pub piece_defs_cursor: usize,
-    /// Placed-piece walk: next `world.pieces` entry index to send. A
-    /// decay removal mid-walk restarts it (the store swap-removes).
+    /// Placed-piece walk: entries **still owed**, not the next index to
+    /// send. The walk reads `world.pieces` from the tail down, so
+    /// `[0, piece_sync_cursor)` is what this client has not been sent and
+    /// zero means the walk is finished. A removal does not restart it —
+    /// the entry a swap-remove moves is always one already sent — but it
+    /// can leave this count past the end of a store that shrank under it,
+    /// so `drip_client` clamps it where it reads it (`core.rs` carries the
+    /// argument, `deploy_wire.rs` the gate).
     pub piece_sync_cursor: usize,
     /// The next piece batch carries the reset bit (fresh join or
     /// event-lane resync): the client clears its piece set first.
     pub piece_sync_reset: bool,
     /// Next deployable-def row the deploy-menu drip sends.
     pub deploy_defs_cursor: usize,
-    /// Placed-deployable walk cursor, restart semantics like the pieces'.
+    /// Placed-deployable walk: the next `world.deploys` entry index to
+    /// send, read upward, and a decay removal mid-walk restarts it (the
+    /// store swap-removes). **Not** the piece walk's semantics any more —
+    /// that one reads downward and never restarts, and this one is left as
+    /// it was until its own placement seam is proven (`core.rs`).
     pub deploy_sync_cursor: usize,
     /// The next deploy batch carries the reset bit.
     pub deploy_sync_reset: bool,
-    /// Standing-backpack walk cursor, restart semantics like the pieces'
-    /// — a bag looted or despawned mid-walk swap-removes under it.
+    /// Standing-backpack walk cursor, restart semantics like the
+    /// deployables' — a bag looted or despawned mid-walk swap-removes
+    /// under it.
     pub bag_sync_cursor: usize,
     /// The next bag batch carries the reset bit.
     pub bag_sync_reset: bool,

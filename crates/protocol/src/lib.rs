@@ -3,16 +3,23 @@
 //! (`InputFrame`, the quantized body fields) come from `sim-core`; this
 //! crate only says how they cross the wire.
 //!
-//! Two datagram schemas, v0 (DESIGN.md §5.4/§5.5, NETCODE.md §3):
+//! Two datagram schemas. The widths below are the wire as it stands at
+//! [`PROTO_VER`] — not the v0 sketch DESIGN.md §5.4/§5.5 and NETCODE.md §3
+//! describe, which several bumps have since moved. The kind field is
+//! [`KIND_BITS`] wide, widened 3 → 4 at v27. This block is the only
+//! end-to-end statement of either layout, so it is what anyone costing a
+//! worst-case packet reads; `test_module_header_states_the_real_kind_width`
+//! checks it against the constant, because a byte-golden compares bytes the
+//! same encoder produced and can never notice the prose drifting.
 //!
-//! **Input, C→S** — `kind:3 · snapshot_ack:16 · ack_bits:32 ·
+//! **Input, C→S** — `kind:4 · snapshot_ack:16 · ack_bits:32 ·
 //! first_client_tick:32 · frame_count:4`, then if any frames:
 //! `first_seq:16` and per frame `buttons:8 · yaw:16 · pitch:8 · move_x:8 ·
 //! move_z:8 · sel:3` (hotbar selector 0–5; 6–7 refuse as malformed).
 //! Frames are the client's unacked tail, oldest first, seq-consecutive by
 //! construction (seq rides the wire once).
 //!
-//! **Snapshot, S→C** — `kind:3 · tick:32 · baseline_age:8 ·
+//! **Snapshot, S→C** — `kind:4 · tick:32 · baseline_age:8 ·
 //! last_executed_seq:16 · nudge:2 · removed_count:7 · entity_count:7`,
 //! then removed ids (`u32` each), then entity records. `baseline_age == 0`
 //! is the canonical zero-state (NETCODE.md §3, the Quake-3 move): every
@@ -45,14 +52,16 @@ pub use event::{
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_knock, encode_event_move_refused,
-    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_removed, encode_event_respawn, encode_event_shot, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_hit, encode_event_inv, encode_event_knock, encode_event_known,
+    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
+    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_research,
+    encode_event_research_refused, encode_event_respawn, encode_event_shot,
+    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
+    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
+    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -313,6 +322,26 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// like, and it is worth looking at: a diff here with more than one file in
 /// it would mean the layout moved after all.
 ///
+/// v31 — **the recycler** (recycler v0). One layout change and it is the
+/// expensive kind: `ARCH_BITS` widened 3 → 4, because `ARCH_RECYCLER` = 8
+/// is the ninth archetype and three bits held exactly eight. Every
+/// `SUB_DEPLOY_DEFS` row moved by a bit, both range checks moved to the new
+/// ceiling, and all 82 goldens regenerated. A v30 client against a v31
+/// server would read every deployable definition one bit short from the
+/// archetype onward — placement landing on hp, hp on the item id — so the
+/// handshake refusal is doing real work here rather than being a
+/// formality.
+///
+/// v32 — **research** (research v0). Three changes, none of them a width:
+/// `ACT_RESEARCH` = 17 is the eighteenth action and the first to spend one
+/// of the fifteen codes `ACT_DEMOLISH`'s bump bought; `SUB_RESEARCH`,
+/// `SUB_RESEARCH_REFUSED` and `SUB_KNOWN` are three new event subtypes
+/// (44–46 of sixty-four); and `SUB_RECIPES` grew **one bit** per row for
+/// `RecipeDef::blueprint`, which is the layout move that makes this a
+/// turn rather than an additive version. A v31 client would read a recipe
+/// row a bit short from `n_inputs` onward and offer a craft ladder whose
+/// ingredient lists are garbage.
+///
 /// v30 — **the code lock, the crew, and demolish**, landed in one turn
 /// because they merged from one branch (lock v1 + hearth crew v1 +
 /// demolish v1; `reference/DOORS.md` and `reference/BUILDING.md`). Five
@@ -347,21 +376,28 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// regenerated, plus the hello and the three door/deploy-carrying cases,
 /// plus three new: `v30_action_demolish`, `v30_knock` and `v30_auth`.
 ///
-/// **v31 — the arrow becomes visible.** One new event subtype,
-/// `SUB_SHOT = 44`, carrying the shooter, the two aim angles and the
+/// **v33 — the arrow becomes visible.** One new event subtype,
+/// `SUB_SHOT = 47`, carrying the shooter, the two aim angles and the
 /// round's speed and drop (`sim-core`'s `EV_SHOT`). Nothing widened and
 /// nothing moved: it is a subtype added at the top of a 6-bit field with
-/// nineteen values still free, so every other fixture's bytes are
+/// sixteen values still free, so every other fixture's bytes are
 /// unchanged and only the version they are keyed under moves.
 ///
 /// It is a version bump anyway, and that is the rule working rather than
-/// an inconvenience. A v30 client handed a `SUB_SHOT` datagram reads an
+/// an inconvenience. A v32 client handed a `SUB_SHOT` datagram reads an
 /// unknown subtype and treats the whole message as malformed; the bump is
 /// what makes that a refused handshake instead of a client that silently
 /// drops every shot on the shard.
 ///
-/// Fixtures are keyed `v31_*`, plus one new: `v31_shot`.
-pub const PROTO_VER: u16 = 31;
+/// **It was authored as v31 and landed as v33**, because research v0 took
+/// 32 and `SUB_RESEARCH`/`_REFUSED`/`SUB_KNOWN` took 44–46 while this
+/// branch was open — a head-on collision on both numbering axes, and the
+/// exact case `CLAUDE.md`'s "protocol and limits.rs never land from two
+/// branches in one merge window" names. Renumbering above them at the
+/// merge is the resolution; nothing about either feature moved.
+///
+/// Fixtures are keyed `v33_*`, plus one new: `v33_event_shot`.
+pub const PROTO_VER: u16 = 33;
 
 /// Datagram kind field width.
 ///
@@ -381,8 +417,9 @@ pub const KIND_BITS: u32 = 4;
 pub const KIND_INPUT: u32 = 0;
 pub const KIND_SNAPSHOT: u32 = 1;
 /// Stream-lane message kinds (the bidi handshake, DESIGN.md §5.9). Same
-/// 3-bit kind space; stream messages ride length-prefixed (u16 LE) frames
-/// on the reliable lane, never datagrams.
+/// kind space as the datagrams above — [`KIND_BITS`] wide, so the codes
+/// below run past the eight a kind field once held; stream messages ride
+/// length-prefixed (u16 LE) frames on the reliable lane, never datagrams.
 pub const KIND_HELLO: u32 = 2;
 pub const KIND_WELCOME: u32 = 3;
 pub const KIND_REFUSE: u32 = 4;
@@ -662,8 +699,20 @@ const ACT_THROW: u32 = 15;
 /// stores** with a leading bit like `Repair` and `Throw`, and hanging it
 /// off the access verb would have made one action mean "who may" and
 /// "take it down" at once. The lane now has fifteen codes spare, which is
-/// where the price bought something: the next verb is free.
+/// where the price bought something: the next verb is free — and
+/// `ACT_RESEARCH` below is that verb, landed one version later at the cost
+/// of a subtype and no layout at all.
 const ACT_DEMOLISH: u32 = 16;
+/// Learn the blueprint for what is in inventory `slot`, at a research
+/// table in reach (wire v32, research v0). **The eighteenth action, and
+/// the first one that was free** — `ACTION_SUB_BITS` widened to 5 for
+/// `ACT_DEMOLISH` one version earlier and holds thirty-two, so this cost
+/// a subtype and not a layout.
+///
+/// Payload is the slot alone. The table is found by proximity the way a
+/// workbench is (`research.rs`), so there is no address to aim and nothing
+/// for the client to guess about which table it meant.
+const ACT_RESEARCH: u32 = 17;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -673,7 +722,7 @@ const ACT_DEMOLISH: u32 = 16;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_DEMOLISH;
+const ACT_MAX: u32 = ACT_RESEARCH;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -864,6 +913,11 @@ pub enum ActionMsg {
     /// wood, and a full pair of meters all come back as a consume-refused
     /// event rather than as a wire error.
     Consume { slot: u8 },
+    /// Learn the blueprint for what is in inventory `slot` (research.rs).
+    /// `Consume`'s shape exactly, and for the same reason: the slot is the
+    /// sender's claim and the sim is the verdict, so a forged index is a
+    /// refusal rather than a disconnect.
+    Research { slot: u8 },
     /// Drink from the water at your feet (survival.rs). **Payload-free
     /// for `Loot`'s reason, and a stronger one**: the only thing a drink
     /// acts on is the heightfield, which is a pure function of the seed
@@ -1014,6 +1068,17 @@ pub fn encode_action_drink(buf: &mut [u8]) -> Result<usize, WireError> {
 
 /// The eat verb. `slot` rides the inventory-slot width the event lane
 /// already uses, so the width itself is the range check.
+pub fn encode_action_research(slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_RESEARCH, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    Ok(w.finish())
+}
+
 pub fn encode_action_consume(slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if slot as usize >= sim_core::limits::INV_SLOTS {
         return Err(WireError::Range);
@@ -1473,6 +1538,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
             ActionMsg::Consume { slot }
         }
+        ACT_RESEARCH => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            if slot as usize >= sim_core::limits::INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Research { slot }
+        }
         ACT_DRINK => ActionMsg::Drink,
         ACT_RESPAWN => ActionMsg::Respawn {
             on_bag: r.read_bit()?,
@@ -1554,7 +1626,13 @@ pub struct InputDatagram {
     /// Bit n set ⇒ snapshot tick `snapshot_ack − n − 1` also applied.
     pub ack_bits: u32,
     /// Client tick of `frames[0]`; with no frames, the client's current
-    /// tick (the datagram still feeds the server's clock estimate).
+    /// tick. **Nothing on the server reads it.** This line used to say the
+    /// field "feeds the server's clock estimate", which described an
+    /// estimate that was never built: `Core::push_input` folds the acks and
+    /// the frame tail and drops the rest, and the accessor below has no
+    /// callers. It stays on the wire because taking it off is a layout
+    /// change (wall 6) and because it is what a clock estimate would be
+    /// built from — the field is not evidence that one exists.
     pub first_client_tick: u32,
     frames: [InputFrame; MAX_INPUT_FRAMES],
     frame_count: u8,
@@ -2310,13 +2388,16 @@ mod tests {
     /// that could not dodge, because it addresses two stores rather than
     /// asking an access question, so it paid the bump: five bits, every
     /// action message a bit longer, every C→S golden regenerated. The
-    /// count is **fifteen** now, and the next verb is free.
+    /// count was **fifteen** at v30, and `ACT_RESEARCH` spent the first
+    /// of them at v32 — which is the shape this assert exists to make
+    /// visible: a verb landing is supposed to move a number in a comment,
+    /// not slip in against a stale one.
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        assert_eq!(ACT_MAX, ACT_DEMOLISH);
+        assert_eq!(ACT_MAX, ACT_RESEARCH);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            15,
+            14,
             "the spare action codes moved — say so where the count is written"
         );
     }
