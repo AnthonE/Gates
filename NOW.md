@@ -708,6 +708,10 @@ crate-wide, but its *contiguity* claim is file-local.
   reaches a wall stops dead rather than chipping it — `collide::blocked`
   bakes `CAPSULE_RADIUS_M` into its query, so an arrow is as fat as a body
   and threads a doorway but never an arrow slit.
+  `reference/PROJECTILES.md` §9 sizes the whole remaining set against the
+  reference game and ranks it: the wire event is the only gap a player sees
+  (§9.2), `[weapon.ballistic]` sits on the wrong object and blocks arrow
+  variants forever (§9.3), and `headshot_mult` is armed-and-unread (§9.4).
 - **The revolver still cannot fire.** Hitscan wants M2's rewound raycast, so
   `bake_combat` drops firearm rows deliberately, not by omission.
 - **Dropped loot should land somewhere you can find, not inside the floor**
