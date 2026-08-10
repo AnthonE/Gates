@@ -1455,3 +1455,81 @@ fn test_decode_is_total() {
         try_both(s);
     }
 }
+
+/// The module header at the top of `lib.rs` is the only place either
+/// datagram's layout is spelled out end to end, so it is what a reader
+/// (or a reviewer costing a worst-case packet) reasons from — and the
+/// byte-goldens above are structurally incapable of noticing when it goes
+/// stale, because they compare bytes the same encoder produced. Nothing in
+/// a fixture disagrees with a comment. This gate closes that: the header
+/// must state the kind width the code actually writes.
+///
+/// Two assertions, and neither counts occurrences — a later lane adding a
+/// third layout line must not turn this red for the wrong reason.
+///
+/// 1. Every `kind:<n>` the header spells equals [`KIND_BITS`], and the
+///    header names `KIND_BITS` itself, so the prose points at the constant
+///    rather than restating a number that can drift away from it. It
+///    caught exactly that: the header said `kind:3` from v0 through v30,
+///    four bits wrong since the v27 widening.
+/// 2. The present-tense phrase "3-bit kind space" appears nowhere in
+///    lib.rs. Past-tense siblings are deliberately untouched and must stay
+///    ("the last code the 3-bit kind field had left", on `KIND_CHAT`):
+///    CLAUDE.md is explicit that a historical citation is history and
+///    stays, while a present-tense claim about what the wire *is* is a
+///    statement this gate is entitled to check. `KIND_CHALLENGE = 8`
+///    falsifies the present-tense reading twenty lines below where it was
+///    written.
+#[test]
+fn test_module_header_states_the_real_kind_width() {
+    const SRC: &str = include_str!("../src/lib.rs");
+    // Every `//!` line in the file, not the leading run: a blank line or an
+    // inner attribute inserted mid-header would truncate a `take_while` and
+    // leave the second schema's width silently unchecked while the vacuity
+    // guard below still saw one. `clippy.toml` disallows `String` in this
+    // crate, so the lines are walked as borrowed slices, never joined.
+    let header = || SRC.lines().filter(|l| l.starts_with("//!"));
+    assert!(
+        header().next().is_some(),
+        "lib.rs has no `//!` module header to check"
+    );
+
+    let mut widths_seen = 0usize;
+    let mut names_the_constant = false;
+    for line in header() {
+        names_the_constant |= line.contains("KIND_BITS");
+        let mut rest = line;
+        while let Some(at) = rest.find("kind:") {
+            rest = &rest[at + "kind:".len()..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            let Ok(n) = rest[..end].parse::<u32>() else {
+                continue;
+            };
+            widths_seen += 1;
+            assert_eq!(
+                n, KIND_BITS,
+                "module header says the wire's kind field is {n} bits; \
+                 KIND_BITS is {KIND_BITS} and that is what every encoder writes"
+            );
+        }
+    }
+    assert!(
+        widths_seen > 0,
+        "the module header no longer spells a `kind:<n>` width — the layout \
+         statement this gate checks has gone missing, which is not a fix"
+    );
+    assert!(
+        names_the_constant,
+        "the module header states a kind width without naming KIND_BITS — \
+         point the prose at the constant so the next widening cannot leave \
+         it behind, as v27's did"
+    );
+
+    assert!(
+        !SRC.contains("3-bit kind space"),
+        "lib.rs still claims a 3-bit kind space in the present tense; \
+         KIND_CHALLENGE = 8 does not fit in three bits"
+    );
+}

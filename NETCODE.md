@@ -11,7 +11,11 @@
 > traffic, not the client — so the edit was narrow and is confined to §2:
 > four JS-API queue knobs that no longer have an API, the
 > `serverCertificateHashes` rules, and three config *reasons* that cited
-> Chrome. **Where a
+> Chrome. ⚠ **That edit over-corrected on the certificate row and §2.2 now
+> says so**: the P-256 / 14-day rules were read as *Chrome's*, and therefore
+> as gone with Chrome, when the pinned wtransport enforces them client-side
+> in Rust — so the dev pin was buildable the whole time it was recorded as
+> dead. Fixed 2026-08-10 with the validating client. **Where a
 > browser-era mechanism left a behaviour with no native owner, §2.1 says so
 > rather than quietly dropping it.**
 
@@ -125,8 +129,8 @@ controller says so, no opt-out. What that means for us, concretely:
 | idle timeout / keep-alive | 30 s / **server-side keep-alive 10 s** | both shipped in `net.rs`. The old reason — "the JS API cannot send keep-alives" — is retired with the browser; quinn can keep-alive from either end. Server-side stays because the effective idle timeout is the min of both peers, so the end that must not time out is the one that should send |
 | UDP socket | sysctl `rmem_max`/`wmem_max` ≥ 8 MiB, SO_RCVBUF/SNDBUF 8 MiB, passed via `with_bind_socket` | quinn is one socket for all connections and its README warns the OS defaults (~208 KiB) are too small |
 | admission | quinn defaults + `Incoming::retry()` for unvalidated addresses past ~2× cap, `refuse()` at hard cap | rides QUIC's built-in 3× anti-amplification + retry tokens |
-| certs, dev | `Identity::self_signed`; the server computes the SHA-256 and `shard` prints it | **The rules this row used to cite were Chrome's** (ECDSA P-256, validity < 14 days, regenerated on build — the conditions `serverCertificateHashes` imposed). Nothing enforces them now and nothing consumes the hash: the native client calls `with_no_cert_validation()` and trusts the chain outright (`client/src/lib.rs`), as the bot client does. The printed hash is **vestigial** until something reads it |
-| certs, prod | ordinary ACME cert on the game's own subdomain, no hashes | unchanged, and now load-bearing rather than merely tidy. ⚠ **The client does not validate today.** That is a dev posture the code names as such — *"a shipping client validates, and that is a `DECISIONS.md` row before anything is published, not a default to drift into"* — and it is unwritten. Publishing a shard the public reaches is blocked on it |
+| certs, dev | `Identity::self_signed`; the server computes the SHA-256 and `shard` prints it; the client pins it with `--cert-hash` | **The printed hash stopped being vestigial on 2026-08-10.** This row used to say the P-256 / 14-day / short-validity rules "were Chrome's" and that "nothing enforces them now" — **wrong on the facts**: the pinned wtransport enforces all three CLIENT-side in `ServerHashVerification` (`SELF_MAX_VALIDITY = 14 days`, `OID_EC_P256`, current time inside the window), and `Identity::self_signed` already builds exactly such a certificate. So the dev path needed no new machinery: `--cert-hash` feeds the printed digest to `with_server_certificate_hashes` and that shard, alone, is trusted. Note the pin does **not** consult a name, which is why a dev shard's SANs (`localhost`, `127.0.0.1`, `::1`) do not have to follow it onto a LAN address |
+| certs, prod | ordinary ACME cert on the game's own subdomain, no hashes | unchanged, and load-bearing. **The client validates as of 2026-08-10** (operator; `DECISIONS.md` that date): the platform root store for every non-loopback address with no pin, `with_server_certificate_hashes` when `--cert-hash` names one, and `with_no_cert_validation` on loopback only. The warning that used to sit here — that publishing was blocked on this — is discharged. Why it mattered more than a checklist item: **SIWE has no channel binding**, so an on-path relay that terminates the player's QUIC and opens its own to the shard is admitted *as the victim* with the key never leaving the wallet. Gated by `crates/server/tests/tls_posture.rs`, which raises a self-signed shard on a NON-loopback address and asserts the refusal, the pin, a wrong pin, and the carve-out |
 | migration | server tolerates NAT rebinding (default on); **client treats network change as death** | the behaviour is unchanged; the reason is not. It read "Chrome ships no client-side QUIC migration", and there is no Chrome — quinn *can* migrate. Fast-reconnect stays an app feature (§6.3, §10) because it has to handle the cases migration cannot (a dead server, a new address that must re-prove SIWE), not because the client is incapable |
 
 ## 3 · Class D — the hot pipeline

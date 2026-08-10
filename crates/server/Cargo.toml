@@ -37,3 +37,11 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
 [dev-dependencies]
 k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
 tiny-keccak = { version = "2", features = ["keccak"] }
+# **A DEV-dependency, and the direction still holds.** `client` must never
+# depend on `server` (that would ship the authoritative sim inside the client
+# binary), and it does not; this is the other way round and only for tests.
+# `tests/tls_posture.rs` is the reason: what the client trusts can only be
+# proven against a real shard serving a real certificate, so the gate needs
+# both halves in one binary. Default features, so no Bevy — this costs the
+# server's test build one small rlib, not the renderer tier.
+client = { path = "../client" }

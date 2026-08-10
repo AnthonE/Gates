@@ -182,6 +182,23 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-ut
 # NETCODE.md §2.2): crates.io tops out at 0.7.1, which has the two-byte
 # remote panic. The client speaks the identical transport the browser does,
 # so no server change is owed to this crate.
+#
+# **`dangerous-configuration` buys exactly ONE call now, and it is the
+# loopback carve-out** (operator, DECISIONS.md 2026-08-10). It used to gate
+# the client's whole trust posture — `with_no_cert_validation()` on every
+# connect, on every player binary — and the validating paths that replaced it
+# need nothing from this feature: `with_native_certs` and
+# `with_server_certificate_hashes` are both unconditional in the pinned rev.
+# So the feature could not simply be dropped, but what it now enables is a
+# single arm of a `match` on the address being dialled (`src/lib.rs`), gated
+# by `crates/server/tests/tls_posture.rs`.
+#
+# **Removing it here would not be a compile gate anyway**, which is why the
+# gate is a test: `cargo … --workspace` unifies features, the server asks for
+# `dangerous-configuration` too, and the dangerous call would keep compiling
+# in client code with this line deleted. `ci/gates.sh`'s `-p client` clippy
+# line is the only place a manifest change would bite, and a wall that only
+# holds under one of two invocations is not a wall.
 wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8e7ff33c6eef522d308007da55d1df9f81", features = [
     "dangerous-configuration",
     "quinn",

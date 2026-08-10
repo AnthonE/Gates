@@ -81,7 +81,7 @@ fn main() -> AppExit {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let session = straight_in.then(|| {
         rt.block_on(async {
-            let endpoint = client_endpoint().unwrap_or_else(|e| {
+            let endpoint = client_endpoint(&server, a.cert_hash.as_deref()).unwrap_or_else(|e| {
                 eprintln!("gates: {e}");
                 std::process::exit(1);
             });

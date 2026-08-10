@@ -1330,7 +1330,13 @@ pub fn begin_connect(rt: NonSend<Rt>, who: Res<Who>, mut connecting: NonSendMut<
     connecting.waited_s = 0.0;
     let (tx, rx) = std::sync::mpsc::channel();
     rt.0.spawn(async move {
-        let result = match crate::client_endpoint() {
+        // **No pin, and that is enforced rather than assumed.** This screen
+        // dials a shard the player picked from the list, which serves a real
+        // certificate; `--cert-hash` is refused without `--server`, and
+        // `--server` skips this screen entirely (`args::parse`), so the flag
+        // cannot be set on a run that reaches here. The address decides the
+        // rest — loopback permissive, everything else validated.
+        let result = match crate::client_endpoint(&addr, None) {
             Ok(endpoint) => {
                 crate::Session::connect(&endpoint, &addr, address, crate::scry::sign_siwe).await
             }

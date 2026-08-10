@@ -3,15 +3,16 @@
 //! deploy action consumes its item and broadcasts the record, the hearth
 //! claim refuses a stranger's placement with its reason, feed moves
 //! materials and acks the stock, a late joiner receives the placed set by
-//! the sync walk, and a decay removal broadcasts and restarts an
-//! in-progress walk. Deterministic, no sockets; asserts are structural
-//! and exact (the build_wire shape).
+//! the sync walk, a decay removal broadcasts, a removal *storm* leaves the
+//! piece walk of every client standing, and a decay *cliff* cannot run a
+//! fresh walk's cursor off the end of the store. Deterministic, no
+//! sockets; asserts are structural and exact (the build_wire shape).
 
 use client_core::core::{
     ClientCore, APPLIED_DEPLOYS, APPLIED_DEPLOY_DEFS, APPLIED_DEPLOY_REFUSED, APPLIED_DEPLOY_RESET,
-    APPLIED_PIECE_REMOVED, APPLIED_STOCK,
+    APPLIED_PIECE_REMOVED, APPLIED_PIECE_RESET, APPLIED_STOCK,
 };
-use protocol::{ActionMsg, ItemCatalog};
+use protocol::{ActionMsg, ItemCatalog, PIECE_SYNC_BATCH};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use sim_core::build::{BuildContent, LOC_EDGE_W, LOC_PLANE};
@@ -780,5 +781,387 @@ fn doors_toggle_across_the_wire() {
     );
     assert_eq!(clients[1].1.pop_deploy_refusal(), None, "refusal leaked");
 
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// The addresses a piece store holds, sorted — the only thing the wire
+/// carries about a piece besides its row, so it is what "the mirror agrees
+/// with the world" can honestly mean here (hp and the upkeep clock are
+/// sim-only).
+fn addrs(recs: &[sim_core::build::PieceRec]) -> Vec<(u16, u16, u8, u8, u8)> {
+    let mut v: Vec<_> = recs
+        .iter()
+        .map(|r| (r.cx, r.cz, r.level, r.loc, r.row))
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+/// **A removal storm must not walk a joining client back to the start.**
+///
+/// The piece store swap-removes: taking entry `i` out moves the store's
+/// *last* entry into the hole. A sync walk reading upward cannot trust its
+/// cursor across that — the entry that moved can land below the cursor,
+/// where the walk will never look again — and the wire layer's answer was
+/// to zero the cursor and re-send the world from scratch. Correct, and
+/// unbounded: a full walk is `len / PIECE_SYNC_BATCH` ticks, and a raid
+/// removes pieces faster than that, so every client with a walk in flight
+/// is restarted every tick and **no client ever converges**
+/// (`reference/NETWORK.md` §9.2.1). The walk goes downward now, so the
+/// entry that moves is always one already sent and the cursor survives.
+///
+/// The fixture is a 196-piece base whose upkeep clocks are staggered an
+/// hour apart, so decay takes it down over eight consecutive ticks —
+/// peaking at a tick that removes a whole sync batch, which is the
+/// condition that makes the amplifier bite — instead of in one cliff. It
+/// stops with pieces still standing, so the convergence asserted at the
+/// end is convergence on a world with something in it.
+///
+/// Asserted on client state and on counters, never on the mechanism: no
+/// client sees a reset batch after its first, no walk restarts, no client
+/// ever loses mirror ground it had gained, both walks report completing,
+/// and both mirrors end address-exact with the world.
+#[test]
+fn a_removal_storm_leaves_every_walk_standing() {
+    let stats = ShardStats::default();
+    let mut core = ShardCore::new(SEED);
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+
+    // The base, built before anyone is connected so that every client in
+    // this test is a joiner meeting a world that is already there. It is
+    // laid by `build::place` against a spare world record rather than by
+    // the action lane, because 196 placements are 196 ticks that way and
+    // the verb's rules are somebody else's gate (`build_wire.rs`).
+    //
+    // `place` stamps the piece's upkeep hour from the tick it is handed,
+    // and that is the whole fixture: a piece with no hearth over it rots
+    // at a fixed rate from the hour it was placed, so staggering the hour
+    // staggers the death. The first 64 share hour 0 and go together (the
+    // cliff a raid's first breach looks like); the rest follow an hour
+    // apart (the long tail a raid actually is).
+    let builder = sim_core::limits::MAX_PLAYERS - 1;
+    let mut n = 0u16;
+    let mut place = |core: &mut ShardCore, hour: u64| {
+        let (cx, cz) = (CX + n / 24, CZ + n % 24);
+        n += 1;
+        let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
+        let p = &mut core.world.players[builder];
+        p.body = sim_core::movement::Body::at(SEED, ax, az);
+        p.inv[0] = ItemStack { item: 0, count: 10 };
+        sim_core::build::place(
+            SEED,
+            &core.world.build,
+            &core.world.deploys,
+            &mut core.world.pieces,
+            &mut core.world.players[builder],
+            hour * UPKEEP_PERIOD_TICKS,
+            0,
+            cx,
+            cz,
+            0,
+            LOC_PLANE,
+            &mut core.world.events,
+        );
+    };
+    for _ in 0..64 {
+        place(&mut core, 0);
+    }
+    for hour in 1..=11u64 {
+        for _ in 0..12 {
+            place(&mut core, hour);
+        }
+    }
+    let built = core.world.pieces.len();
+    assert!(
+        built > 6 * PIECE_SYNC_BATCH,
+        "the fixture must outlast several batches to have a mid-walk to interrupt: {built}"
+    );
+
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    // The second client joins one tick in, so its walk is still in flight
+    // when the storm starts — the case the whole gate is about.
+    const JOIN_AT: u64 = 1;
+    const STORM_LAST: u64 = 10;
+    const TICKS: u64 = 20;
+    let joined_at = [0u64, JOIN_AT];
+
+    let mut storm_ticks = 0usize;
+    let mut peak_removed = 0usize;
+    let mut mirror_was = [0usize; 2];
+    for t in 0..TICKS {
+        if t == JOIN_AT {
+            assert!(core.connect(1, id_of(1)));
+            clients.push((1usize, ClientCore::new(SEED, id_of(1), 0)));
+        }
+        // One upkeep hour per tick while the storm runs, then the clock
+        // stands still and what is left stops rotting.
+        if t <= STORM_LAST {
+            core.world.tick += UPKEEP_PERIOD_TICKS;
+        }
+        // The seam a tail-down walk leans on, driven where it is hardest:
+        // a piece placed after **both** walks have finished lands above
+        // every cursor, so nothing will ever re-derive it and the
+        // EV_PIECE_PLACED broadcast is the only way it can reach a client.
+        // Placed on the storm's last hour so the clock stops before its own
+        // upkeep comes due, and it is standing at the end to be compared.
+        if t == STORM_LAST {
+            let w0 = world_slot(&core, id_of(0));
+            core.world.players[w0].inv[0] = ItemStack { item: 0, count: 10 };
+            act(
+                &mut core,
+                0,
+                ActionMsg::Place {
+                    row: 0,
+                    cx: CX - 1,
+                    cz: CZ,
+                    level: 0,
+                    loc: LOC_PLANE,
+                },
+            );
+        }
+        let before = core.world.pieces.len();
+        let flags = pump(&mut core, &stats, &mut clients);
+        let removed = before.saturating_sub(core.world.pieces.len());
+        if removed > 0 {
+            storm_ticks += 1;
+            peak_removed = peak_removed.max(removed);
+        }
+        for (i, (slot, c)) in clients.iter().enumerate() {
+            let now = c.pieces.len();
+            // The one thing a restart cannot do without being seen: a
+            // client's mirror may only shrink by removals it was told
+            // about, never by the server deciding to start again.
+            assert!(
+                now + removed >= mirror_was[i],
+                "client {slot} lost mirror ground at t={t}: {} → {now} with {removed} removed",
+                mirror_was[i]
+            );
+            mirror_was[i] = now;
+            if t > joined_at[i] {
+                assert_eq!(
+                    flags[*slot] & APPLIED_PIECE_RESET,
+                    0,
+                    "client {slot} was sent a second reset batch at t={t}"
+                );
+            }
+        }
+    }
+
+    // The storm was real: it ran long enough to outlast a full walk of the
+    // base, and it peaked at a tick removing a whole batch's worth — the
+    // rate at which the old restart rule could never be outrun.
+    assert!(
+        storm_ticks >= built.div_ceil(PIECE_SYNC_BATCH),
+        "the storm ({storm_ticks} ticks) was shorter than a walk of {built} pieces"
+    );
+    assert!(
+        peak_removed >= PIECE_SYNC_BATCH,
+        "the storm never removed a whole batch in one tick: {peak_removed}"
+    );
+
+    // It stopped with a world still standing, so nothing below is the
+    // agreement of two empty sets.
+    let world = addrs(core.world.pieces.entries());
+    assert!(!world.is_empty(), "the storm took the whole base");
+    assert!(world.len() < built, "the storm removed nothing");
+    assert!(
+        world.contains(&(CX - 1, CZ, 0, LOC_PLANE, 0)),
+        "the late placement never landed, so the mirrors below prove nothing about it"
+    );
+    for (slot, c) in &clients {
+        assert_eq!(
+            addrs(c.pieces.entries()),
+            world,
+            "client {slot}'s mirror is not the world"
+        );
+    }
+
+    assert_eq!(
+        ShardStats::get(&stats.piece_walk_restarts),
+        0,
+        "a removal restarted a piece walk"
+    );
+    assert_eq!(
+        ShardStats::get(&stats.piece_walk_completes),
+        clients.len() as u64,
+        "not every client's walk reached the end"
+    );
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// **A cliff must not run the piece cursor off the end of the store.**
+///
+/// The walk above reads its store from the tail down and no longer
+/// restarts on a removal, so `piece_sync_cursor` is now a count of entries
+/// still *owed* against a store that shrinks under it. That leaves exactly
+/// one arithmetic that can go wrong, and it lands as a slice panic on the
+/// sim thread: a client one batch into its walk owes
+/// `len − PIECE_SYNC_BATCH`, and a tick removing more than a batch leaves
+/// that count past the end of what is there. `drip_client`'s
+/// `.min(pieces.len())` is the whole defence, and the decay sweep clears
+/// the bar without trying — `UPKEEP_SWEEP_PER_TICK` visits 64 entries a
+/// tick against a batch of 32.
+///
+/// `a_removal_storm_leaves_every_walk_standing` never reaches it, and that
+/// is not a fault in it: its hour-staggered base removes at most one whole
+/// batch in a tick, which is exactly the rate the cursor descends at, and
+/// its widest tick falls while its clients are still being handed their
+/// first batches. This fixture swaps those two things out. The doomed half
+/// is due in a single hour, so the sweep takes it 64 at a time instead of
+/// 32; and a joiner arrives on each of the three ticks the sweep is
+/// removing on, so a walk exactly one batch old meets the widest of them.
+///
+/// The *condition* is asserted alongside the outcome. `outran` counts the
+/// ticks on which a client owed more than the store held, and zero fails
+/// the test: a gate that stops reaching its own bug passes for the wrong
+/// reason, which is the one failure this test exists to answer.
+#[test]
+fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
+    let stats = ShardStats::default();
+    let mut core = ShardCore::new(SEED);
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+
+    /// Upkeep hours the clock is walked through, one per tick, before it
+    /// stops. A piece stamped at this hour is never overdue afterwards.
+    const HOURS: u64 = 3;
+    /// The half that rots, all of it due in hour 0 so the sweep meets a
+    /// whole tick's worth of overdue entries at once.
+    const DOOMED: usize = 4 * PIECE_SYNC_BATCH;
+    /// The half that does not, and the reason the agreement at the end is
+    /// not the agreement of two empty sets.
+    const STANDING: usize = 2 * PIECE_SYNC_BATCH;
+
+    // Laid before anyone connects, by `build::place` against a spare world
+    // record for the sibling test's reason: 192 placements through the
+    // action lane are 192 ticks, and the verb's rules are `build_wire.rs`'s
+    // gate. The upkeep hour `place` stamps from the tick it is handed is
+    // the only thing telling the two halves apart.
+    let builder = sim_core::limits::MAX_PLAYERS - 1;
+    for k in 0..DOOMED + STANDING {
+        let (cx, cz) = (CX + (k as u16) / 24, CZ + (k as u16) % 24);
+        let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
+        let p = &mut core.world.players[builder];
+        p.body = sim_core::movement::Body::at(SEED, ax, az);
+        p.inv[0] = ItemStack { item: 0, count: 10 };
+        let hour = if k < DOOMED { 0 } else { HOURS };
+        sim_core::build::place(
+            SEED,
+            &core.world.build,
+            &core.world.deploys,
+            &mut core.world.pieces,
+            &mut core.world.players[builder],
+            hour * UPKEEP_PERIOD_TICKS,
+            0,
+            cx,
+            cz,
+            0,
+            LOC_PLANE,
+            &mut core.world.events,
+        );
+    }
+    assert_eq!(
+        core.world.pieces.len(),
+        DOOMED + STANDING,
+        "the fixture must lay every piece it asks for"
+    );
+
+    // Slot 0 is here from the start. The other three arrive on consecutive
+    // ticks while the sweep is working, so one of them is always exactly
+    // one batch into its walk when the widest removal lands.
+    const JOINS: [u64; 3] = [3, 4, 5];
+    const TICKS: u64 = 12;
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    let joined_at = [0u64, JOINS[0], JOINS[1], JOINS[2]];
+
+    let mut outran = 0usize;
+    let mut widest = 0usize;
+    let mut mirror_was = [0usize; 4];
+    for t in 0..TICKS {
+        if let Some(i) = JOINS.iter().position(|&j| j == t) {
+            let slot = i + 1;
+            assert!(core.connect(slot, id_of(slot)));
+            clients.push((slot, ClientCore::new(SEED, id_of(slot), 0)));
+        }
+        // One upkeep hour per tick, then the clock stops and what is left
+        // of the base stops rotting.
+        if t < HOURS {
+            core.world.tick += UPKEEP_PERIOD_TICKS;
+        }
+        let before = core.world.pieces.len();
+        // What each walk owes going in, read where `drip_client` reads it:
+        // the comparison this test is about is exactly this number against
+        // the store the drip finds after the sweep has run.
+        let owed: Vec<usize> = clients
+            .iter()
+            .map(|(slot, _)| core.clients[*slot].piece_sync_cursor)
+            .collect();
+        let flags = pump(&mut core, &stats, &mut clients);
+        let now = core.world.pieces.len();
+        let removed = before - now;
+        widest = widest.max(removed);
+        outran += owed.iter().filter(|&&o| o > now).count();
+        for (i, (slot, c)) in clients.iter().enumerate() {
+            let mirror = c.pieces.len();
+            // The sibling test's rule, and it is the one a clamp could
+            // quietly break: a mirror may only shrink by removals it was
+            // told about.
+            assert!(
+                mirror + removed >= mirror_was[i],
+                "client {slot} lost mirror ground at t={t}: {} → {mirror} with {removed} removed",
+                mirror_was[i]
+            );
+            mirror_was[i] = mirror;
+            if t > joined_at[i] {
+                assert_eq!(
+                    flags[*slot] & APPLIED_PIECE_RESET,
+                    0,
+                    "client {slot} was sent a second reset batch at t={t}"
+                );
+            }
+        }
+    }
+
+    // The condition, before the outcome: a tick really did remove more
+    // than one batch, and a walk really did owe more than the store held.
+    assert!(
+        widest > PIECE_SYNC_BATCH,
+        "no tick removed more than a batch ({widest}), so no cursor could outrun the store"
+    );
+    assert!(
+        outran > 0,
+        "no walk ever owed more than the store held — the clamp was never asked anything"
+    );
+
+    // And the outcome: the clamp costs nobody an entry. Every walk finished
+    // and every mirror is the world, on a world with something in it.
+    let world = addrs(core.world.pieces.entries());
+    assert_eq!(world.len(), STANDING, "the sweep took the wrong half");
+    for (slot, c) in &clients {
+        assert_eq!(
+            addrs(c.pieces.entries()),
+            world,
+            "client {slot}'s mirror is not the world"
+        );
+    }
+    assert_eq!(
+        ShardStats::get(&stats.piece_walk_completes),
+        clients.len() as u64,
+        "not every client's walk reached the end"
+    );
+    assert_eq!(
+        ShardStats::get(&stats.piece_walk_restarts),
+        0,
+        "a removal restarted a piece walk"
+    );
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }

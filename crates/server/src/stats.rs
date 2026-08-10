@@ -75,22 +75,77 @@ pub struct ShardStats {
     /// their Lidgren stall were both found by instrumentation, not by
     /// reasoning about the code.
     pub snap_entities_shed: AtomicU64,
-    /// Class-S join walks restarted from zero (`core.rs`, the swap-remove
-    /// rule): a piece or deployable removal landed while a client's sync
-    /// cursor was still inside the store, so that client's walk begins
-    /// again with a reset batch.
+    /// Interest entities a snapshot **offered** the fill — the ranked
+    /// candidate list, one count per candidate per snapshot, summed over
+    /// every client.
     ///
-    /// Correct under the store's swap-remove — a walk cannot trust a cursor
-    /// into a set that reshuffled beneath it — and **unbounded in cost**,
-    /// which is the half worth counting. A full walk is `store_len / 32`
-    /// ticks; removals arriving faster than that walk the client back to
-    /// zero indefinitely, and a raid removes pieces far faster than that.
-    /// The client's symptom is a world that never finishes loading, which
-    /// reads as anything but a network problem. `reference/NETWORK.md`
-    /// §9.2.1 has the arithmetic; the interest filter that would shrink the
-    /// walk is a `NOW.md` item, and this counter is what will say whether it
-    /// worked.
+    /// The denominator `snap_entities_shed` has never had. A shard that has
+    /// shed a million entities is either healthy (it offered ten million) or
+    /// on fire (it offered a million and one), and nothing in the pipeline
+    /// could tell those apart: shedding is a *ratio*, and only one half of
+    /// it was counted. This is the other half, and it is also the only
+    /// number that says how much work the AOI fill is actually doing —
+    /// `NOW.md` §0's 100-bot soak exists to decide whether the linear scan
+    /// needs a spatial structure, and that decision is this counter divided
+    /// by `ticks`.
+    ///
+    /// The client's own entity is **not** counted. It rides ahead of the
+    /// ranked list, is never a candidate, and the budget is never allowed to
+    /// refuse it; counting it would add a constant `snapshots × 1` to this
+    /// and to `snap_entities_sent` alike and flatter the ratio.
+    ///
+    /// That exclusion, and the placement of the bump *below* the own-entity
+    /// `return None`, are both invisible to the identity `snap_entities_sent`
+    /// names — three counters can agree with each other while all three are
+    /// wrong the same way. What sees them is `snapshot_budget.rs`
+    /// `the_offered_counter_is_the_interest_set_and_nothing_else`, which sums
+    /// the interest flags independently over the snapshots that went out and
+    /// requires this counter to equal that sum.
+    pub snap_candidates: AtomicU64,
+    /// Interest entities a snapshot **carried** of what it was offered —
+    /// `snap_candidates` minus `snap_entities_shed`, counted rather than
+    /// derived so the three can be checked against each other
+    /// (`snapshot_budget.rs` `the_fill_counts_what_it_offered_and_what_it_
+    /// carried` asserts the identity, which is the only thing that notices
+    /// if one of them starts describing a different pass).
+    ///
+    /// Distinct from `snap_sent`, which counts **snapshots**: this counts
+    /// the entity records inside them, and excludes the own entity for the
+    /// reason `snap_candidates` gives.
+    pub snap_entities_sent: AtomicU64,
+    /// Class-S join walks restarted from zero (`core.rs`, the swap-remove
+    /// rule): a removal landed while a client's sync cursor was still
+    /// inside the store, so that client's walk begins again with a reset
+    /// batch.
+    ///
+    /// Correct under the store's swap-remove — a walk reading *upward*
+    /// cannot trust a cursor into a set that reshuffled beneath it — and
+    /// **unbounded in cost**, which is the half worth counting. A full walk
+    /// is `store_len / 32` ticks; removals arriving faster than that walk
+    /// the client back to zero indefinitely, and a raid removes pieces far
+    /// faster than that. The client's symptom is a world that never
+    /// finishes loading, which reads as anything but a network problem
+    /// (`reference/NETWORK.md` §9.2.1 has the arithmetic).
+    ///
+    /// ⚠ **The piece walk no longer restarts and no longer bumps this.**
+    /// It reads the store from the tail down, where the entry a
+    /// swap-remove moves is always one already sent, so the cursor
+    /// survives (`core.rs` `drip_client` carries the argument). What is
+    /// still counted here is the **deployable** walk, which still reads
+    /// upward and still restarts on a removal — the same defect, one store
+    /// over, and the reason this counter keeps its name.
     pub piece_walk_restarts: AtomicU64,
+    /// Piece walks that reached the end — a client that has been sent every
+    /// piece the store held when its walk began.
+    ///
+    /// The other half of `piece_walk_restarts`, and it exists because that
+    /// counter alone cannot answer the only question an operator has: a
+    /// shard reporting restarts cannot be told apart from a shard where the
+    /// walk restarted twice and then *finished* — the first is a world that
+    /// never arrives, the second is a hiccup. One completion per client per
+    /// walk, so `completes` short of the join count is a shard where
+    /// somebody is still waiting.
+    pub piece_walk_completes: AtomicU64,
     /// Clients forced back to the zero-state baseline by a bookkeeping
     /// overflow (pending removals) — the honest escape hatch.
     pub forced_resyncs: AtomicU64,
