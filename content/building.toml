@@ -19,6 +19,64 @@
 # reason to have more than one shape, and pricing every shape alike (which
 # is what this file did until 2026-08-10) deletes it.
 
+# --- twig · the placement grade ------------------------------------------
+#
+# Everything enters the world here and only here (sim-core `build::place`
+# refuses any other rung); the hammer commits it upward and the grade is
+# paid ON TOP of what twig already cost. `reference/BUILDING.md` §7b.4.
+#
+# hp 10 is theirs outright — the hp column has been theirs since
+# 2026-08-08 and 10 is what a scaffold is worth. The COST is theirs as a
+# ratio and not as an absolute, which is the one place this file departs
+# from BALANCE.md §6's "take theirs": their twig wall is 50 wood under a
+# 200-wood wall, a quarter of the grade, but our cost column is anchored
+# in farm-minutes and theirs is not — so 50 would be a number in their
+# currency dropped into ours. A quarter of OUR wood grade is 88, and
+# §7b.3's shape ratios run off that base exactly as they do off the
+# others: 88 / 62 / 44.
+
+[[piece]]
+id = "build.foundation_twig"
+shape = "foundation"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 88 }]
+
+[[piece]]
+id = "build.wall_twig"
+shape = "wall"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 88 }]
+
+[[piece]]
+id = "build.doorway_twig"
+shape = "doorway"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 62 }]
+
+[[piece]]
+id = "build.floor_twig"
+shape = "floor"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 44 }]
+
+[[piece]]
+id = "build.stairs_twig"
+shape = "stairs"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 88 }]
+
+[[piece]]
+id = "build.roof_twig"
+shape = "roof"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 44 }]
+
 # --- foundation ---------------------------------------------------------
 
 [[piece]]

@@ -2967,7 +2967,11 @@ mod tests {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
-        assert_eq!(took, 5, "fixture has 5 rows, all fit one batch");
+        // Seven rows since twig v0, against a six-row batch — so the
+        // fixture no longer fits one message and this test walks the
+        // cursor, which it never did before and which is the thing the
+        // batching exists for.
+        assert_eq!(took, PIECE_DEFS_BATCH, "the first batch is full");
         match decode_event(&buf[..len]).unwrap() {
             EventMsg::PieceDefs {
                 total,
@@ -2975,14 +2979,30 @@ mod tests {
                 count,
                 rows,
             } => {
-                assert_eq!((total, first, count), (5, 0, 5));
+                assert_eq!((total, first, count), (7, 0, PIECE_DEFS_BATCH as u8));
                 assert_eq!(rows[0], bc.pieces[0], "decode rebuilds the sim row");
-                assert_eq!(rows[4], bc.pieces[4]);
+                assert_eq!(rows[PIECE_DEFS_BATCH - 1], bc.pieces[PIECE_DEFS_BATCH - 1]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // The remainder rides the second batch, and the cursor lands it at
+        // the row the first one stopped on.
+        let (len, took) = encode_event_piece_defs(&bc, PIECE_DEFS_BATCH, &mut buf).unwrap();
+        assert_eq!(took, 1, "one row left over");
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::PieceDefs {
+                total,
+                first,
+                count,
+                rows,
+            } => {
+                assert_eq!((total, first, count), (7, PIECE_DEFS_BATCH as u8, 1));
+                assert_eq!(rows[0], bc.pieces[PIECE_DEFS_BATCH]);
             }
             other => panic!("wrong variant: {other:?}"),
         }
         assert_eq!(
-            encode_event_piece_defs(&bc, 5, &mut buf),
+            encode_event_piece_defs(&bc, 7, &mut buf),
             Err(WireError::Range),
             "cursor past the table refuses"
         );
@@ -2999,7 +3019,7 @@ mod tests {
         for i in 0..18 {
             full.pieces[i] = PieceDef {
                 shape: (i % 6) as u8,
-                material: (i % 3) as u8,
+                material: (i % 4) as u8,
                 hp: u16::MAX,
                 n_costs: MAX_PIECE_COSTS as u8,
                 costs: [(u16::MAX, u16::MAX); MAX_PIECE_COSTS],
@@ -3842,9 +3862,9 @@ mod wire_domains {
             prefix: "pub const MAT_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 3,
+            min_members: 4,
             bits: MATERIAL_BITS,
-            live_max: 2,
+            live_max: 3,
         },
         Domain {
             what: "research refusal",

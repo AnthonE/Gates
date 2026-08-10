@@ -500,7 +500,7 @@ pub fn blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, nx: f32, nz: f32, fee
 mod tests {
     use super::*;
     use crate::build::{
-        place, BuildContent, PieceDef, Pieces, LOC_PLANE, LOC_RISER, MAT_WOOD, SHAPE_DOORWAY,
+        place, BuildContent, PieceDef, Pieces, LOC_PLANE, LOC_RISER, MAT_TWIG, SHAPE_DOORWAY,
         SHAPE_STAIRS,
     };
     use crate::deploy::Deploys;
@@ -516,7 +516,10 @@ mod tests {
     const CZ: u16 = 341;
 
     /// Free pieces (n_costs 0) so tests place without inventories: rows
-    /// foundation, wall, doorway, floor, stairs.
+    /// foundation, wall, doorway, floor, stairs. **Twig**, because `put`
+    /// goes through the real `place` verb and a placement is twig or it
+    /// is refused (twig v0) — collision is a property of the shape, so
+    /// the rung these carry has never been what these tests are about.
     fn free_table() -> BuildContent {
         let shapes = [
             SHAPE_FOUNDATION,
@@ -530,7 +533,7 @@ mod tests {
         for (i, &shape) in shapes.iter().enumerate() {
             b.pieces[i] = PieceDef {
                 shape,
-                material: MAT_WOOD,
+                material: MAT_TWIG,
                 hp: 100,
                 n_costs: 0,
                 costs: [(0, 0); crate::limits::MAX_PIECE_COSTS],

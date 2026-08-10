@@ -28,6 +28,9 @@ pub struct Anchors {
     /// not charge yet.
     pub farm_rates: Vec<(String, u32, u32)>,
     pub satchel_minutes: f64,
+    /// What the starter base costs to BUILD, twig skeleton included —
+    /// which is the number a raid is priced against, because the raider
+    /// is destroying everything the builder paid for.
     pub starter_minutes: f64,
     /// Satchel cost to break one wall over starter cost: wood, stone, metal.
     pub raid_ratio: [f64; 3],
@@ -35,6 +38,11 @@ pub struct Anchors {
     pub door_breach_swings: u32,
     /// Melee swings to break a wall, best melee weapon: wood, stone, metal.
     pub wall_breach_swings: [u32; 3],
+    /// What the starter base costs to KEEP, per day. Deliberately not
+    /// `starter_minutes × the rate`: since twig v0 the sweep never charges
+    /// a scaffold upkeep (`deploy::upkeep_sweep`), so the twig half of the
+    /// build bill has no upkeep face at all and charging the anchor for it
+    /// would price a wall nobody pays for.
     pub upkeep_daily_minutes: f64,
     pub wood_wall_minutes: f64,
 }
@@ -256,6 +264,9 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
     anchors.satchel_minutes = farm_minutes(c, &satchel.id, 1.0, 0)?;
 
     let mut starter = 0.0;
+    // The graded half of the same bill — what upkeep is actually charged
+    // on, see `Anchors::upkeep_daily_minutes`.
+    let mut starter_upkept = 0.0;
     for pc in &c.balance.starter_base.pieces {
         let piece = c
             .pieces
@@ -263,7 +274,35 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
             .find(|p| p.id == pc.piece)
             .expect("validated");
         for cost in &piece.cost {
-            starter += farm_minutes(c, &cost.item, f64::from(cost.count * pc.count), 0)?;
+            let m = farm_minutes(c, &cost.item, f64::from(cost.count * pc.count), 0)?;
+            starter += m;
+            if piece.material != Material::Twig {
+                starter_upkept += m;
+            }
+        }
+        // **And the twig under it.** Since twig v0 a piece cannot be
+        // placed at its finished grade — it goes down as twig and the
+        // hammer pays the grade on top (`reference/BUILDING.md` §7b.4) —
+        // so the bill for a stone wall is the twig wall plus the stone
+        // wall, and an anchor that priced only the second would understate
+        // every base on the shard. Read off the table rather than added to
+        // the bill by hand, so the day a shape's twig rung is re-priced
+        // this moves with it and nobody has to remember.
+        if piece.material != Material::Twig {
+            let twig = c
+                .pieces
+                .iter()
+                .find(|p| p.shape == piece.shape && p.material == Material::Twig)
+                .ok_or_else(|| {
+                    format!(
+                        "starter base names `{}`, whose shape has no twig rung — \
+                         nothing could ever place it",
+                        pc.piece
+                    )
+                })?;
+            for cost in &twig.cost {
+                starter += farm_minutes(c, &cost.item, f64::from(cost.count * pc.count), 0)?;
+            }
         }
     }
     for it in &c.balance.starter_base.items {
@@ -371,9 +410,13 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
         ));
     }
 
-    // Anchor 3's upkeep face: a solo starter's daily upkeep in farm-min.
+    // Anchor 3's upkeep face: a solo starter's daily upkeep in farm-min,
+    // charged on the graded pieces only (twig pays none).
+    for it in &c.balance.starter_base.items {
+        starter_upkept += farm_minutes(c, &it.item, f64::from(it.count), 0)?;
+    }
     anchors.upkeep_daily_minutes =
-        starter * f64::from(c.balance.globals.upkeep_pct_per_day) / 100.0;
+        starter_upkept * f64::from(c.balance.globals.upkeep_pct_per_day) / 100.0;
     if anchors.upkeep_daily_minutes > f64::from(bands.upkeep_solo_daily_max_min) {
         return Err(format!(
             "band break: daily upkeep {:.1} farm-min, ceiling {}",

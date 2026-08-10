@@ -397,7 +397,35 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// merge is the resolution; nothing about either feature moved.
 ///
 /// Fixtures are keyed `v33_*`, plus one new: `v33_event_shot`.
-pub const PROTO_VER: u16 = 33;
+///
+/// v34 put **twig** under wood on the material ladder (`build.rs`
+/// `MAT_TWIG = 0`), which renumbered wood, stone and metal to 1, 2 and 3.
+/// **`MATERIAL_BITS` did not move** — it has been 2 since v4 and 2 bits
+/// hold four rungs exactly, so not one field widened and not one message
+/// changed shape. What changed is what the *values* mean: a `1` in that
+/// field was wood on a v33 shard and is twig-plus-one on a v34 one, so a
+/// v33 client would read every piece in the world one rung stronger than
+/// it is and price its own upgrades against the wrong row. That is v18's
+/// case exactly — a widened meaning inside an unchanged layout — and it
+/// is the case `PROTO_VER` exists for, because no byte-golden can see it.
+///
+/// **Three** fixtures move their bytes, and the third is the one that
+/// proves the rest: `action_upgrade` climbs to metal, which is now 3;
+/// `event_piece_defs`'s max-everything row was re-pointed at 3 so the
+/// **top** of the field is pinned by a fixture that actually writes it;
+/// and `hello`, which carries `PROTO_VER` itself and would move on any
+/// bump. The other 80 are byte-identical under a new name — which is the
+/// point, because a renumber that left them alone is exactly the shape of
+/// wire change a byte-golden cannot see.
+///
+/// It is also the first bump whose *cause* was caught by a test rather
+/// than by a reviewer: `wire_domains::every_domain_fits_its_wire_field`
+/// pins each domain's live maximum and failed on `MAT_*` topping out at 3
+/// where it was pinned at 2, with the bump, the regeneration and the pin
+/// move all named in its message. The pin is now 3.
+///
+/// Fixtures are keyed `v34_*`. None added, none removed — 83, as v33.
+pub const PROTO_VER: u16 = 34;
 
 /// Datagram kind field width.
 ///

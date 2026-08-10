@@ -35,14 +35,20 @@ upkeep_pct_per_day = 10
 repair_cost_pct = 100
 # Unpaid decay per upkeep period (1 h), as a % of the piece's max hp, by
 # the piece's own material. The reference's ladder, converted: it takes a
-# full-health block ~3 h of wood / ~5 h of stone / ~8 h of metal to rot
-# away once its upkeep runs out, so the tougher the grade the SLOWER it
-# goes and an upgrade buys time as well as hp. 100 / hours, rounded up.
+# full-health block ~1 h of twig / ~3 h of wood / ~5 h of stone / ~8 h of
+# metal to rot away once its upkeep runs out, so the tougher the grade the
+# SLOWER it goes and an upgrade buys time as well as hp. 100 / hours,
+# rounded up — which puts twig at exactly 100, one period and gone.
+#
+# Twig's rate is only half of what makes it a draft; the other half is in
+# sim-core `deploy::upkeep_sweep`, where twig is never charged upkeep and
+# therefore never protected by a hearth however well stocked. A scaffold
+# pays no rent and gets no shelter.
 #
 # It replaces one flat 5 % for everything, which made a metal base rot at
 # a wooden one's rate and took twenty hours to do it. Proposed default,
 # DECISIONS.md §open ("upkeep/decay v1").
-decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }
+decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }
 
 [bands]
 # Anchor 2 — TTK in body hits, no armor; per weapon kind.

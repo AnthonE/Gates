@@ -263,6 +263,28 @@ fn deployables_ride_the_wire() {
         "late joiner missed the deploy set"
     );
 
+    // Commit the spawn foundation: a twig piece is never upkept, so the
+    // "hearth-paid piece survives" half of the decay check below needs a
+    // graded one to be about anything (twig v0, `build::upgrade`).
+    core.world.players[w0].inv[0] = ItemStack { item: 0, count: 10 };
+    act(
+        &mut core,
+        0,
+        ActionMsg::Upgrade {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_PLANE,
+            material: sim_core::build::MAT_STONE,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+    assert_eq!(
+        core.world.pieces.entries()[0].row,
+        5,
+        "the spawn foundation never climbed to its stone rung"
+    );
+
     // Decay: unpaid pieces vanish and the removal broadcast reaches every
     // client. Leap the sim clock far enough that the far foundation
     // (placed outside any hearth radius) decays to zero. First place one
@@ -302,7 +324,12 @@ fn deployables_ride_the_wire() {
     }
     assert!(decayed, "the far foundation never decayed on the wire");
     // The spawn foundation is hearth-paid and survives; every client's
-    // mirror agrees with the world.
+    // mirror agrees with the world. **It only survives because it was
+    // upgraded above twig** (twig v0): the sweep never charges a scaffold
+    // upkeep and therefore never protects one, so had it been left as
+    // placed it would have rotted under a full hearth exactly like the far
+    // one — which is the rule, not a defect, and this is the gate that
+    // says so from the wire's side.
     assert_eq!(core.world.pieces.len(), 1);
     for (_, c) in &clients {
         assert_eq!(c.pieces.len(), core.world.pieces.len(), "mirror drifted");

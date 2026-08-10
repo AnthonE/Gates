@@ -147,6 +147,33 @@ What remains, in order:
 
 ---
 
+## 0ac · The catalogue — what twig and the cost grammar left *(systems lane)*
+
+Landed 2026-08-10 (operator: *"we need to work on building more"*).
+`reference/BUILDING.md` §7b is the research, `DECISIONS.md` §open "twig
+v0" the slice: placement is twig-only and the hammer commits it, twig is
+never upkept, and shapes are priced on their four ratios. §9 items 11 and
+12 are done; 13, 14 and 15 are not, in cost order:
+
+1. **The window and the wall frame** (§9.13). Openings are already sockets
+   here — a doorway takes a door with its own hp and its own lock — and
+   these are the same idea with the insert unbuilt. `SHAPE_BITS` is 3 and
+   6 of its 8 codes are used, so **two shapes fit with no wire widening**,
+   and §7b.3 has already decided their prices (0.7 and 0.5). The window
+   wants a collision answer first: it blocks a body and not a bullet,
+   which no shape here does yet.
+2. **Hard and soft sides** (§9.15, §7b.5). One rule that turns placement
+   *orientation* into skill, and the reason a base can be weaker than its
+   bill of materials. Needs a facing on every piece and an attack
+   direction on every swing — its own pass, and it pairs with
+   `RIPLIST.md` §2's per-material resistance rather than competing.
+3. **Triangles** (§9.14). Half the reason their bases look like that, and
+   the only item here that is a **grid change**: our cell holds one plane,
+   one riser and two canonical edges, all square. Cost it as one; do not
+   smuggle it in behind items 1 and 2.
+
+---
+
 ## 0aa · Building rights — what the four slices left standing *(systems lane)*
 
 Landed 2026-08-08/09. `reference/BUILDING.md` is the research; the rows in

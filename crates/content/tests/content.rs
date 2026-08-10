@@ -1485,22 +1485,30 @@ fn a_container_that_cannot_be_opened_is_refused() {
 
 /// The decay ladder must not invert.
 ///
-/// The three numbers look like taste and one relationship in them is
+/// The four numbers look like taste and one relationship in them is
 /// not: if metal rots faster than wood, an upgrade spends materials to
 /// *shorten* a base's life, and nothing downstream would ever say so —
-/// the sweep would just quietly eat the expensive walls first.
+/// the sweep would just quietly eat the expensive walls first. Twig
+/// leads the ladder and is the same rule at the bottom: a scaffold that
+/// outlasted a wooden wall would be a base, not a draft.
 #[test]
 fn an_inverted_decay_ladder_is_refused() {
     refuses(
         "balance.toml",
-        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
-        "decay_pct_per_period = { wood = 13, stone = 20, metal = 34 }",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { twig = 100, wood = 13, stone = 20, metal = 34 }",
         "not monotone",
     );
     refuses(
         "balance.toml",
-        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
-        "decay_pct_per_period = { wood = 34, stone = 20, metal = 0 }",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { twig = 20, wood = 34, stone = 20, metal = 13 }",
+        "not monotone",
+    );
+    refuses(
+        "balance.toml",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 0 }",
         "never rots",
     );
 }
